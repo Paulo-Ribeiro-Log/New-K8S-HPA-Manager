@@ -33,8 +33,10 @@ var eksRegionPattern = regexp.MustCompile(`\.([a-z]{2}-[a-z]+-\d)\.eks\.amazonaw
 // Retorna "aks", "eks", "gke" ou "unknown".
 func DetectCloudProvider(serverURL string, contextName ...string) string {
 	// Context GKE começa com "gke_" — mais confiável que URL para clusters privados
-	if len(contextName) > 0 && strings.HasPrefix(contextName[0], "gke_") {
-		return CloudProviderGKE
+	for _, ctx := range contextName {
+		if strings.HasPrefix(ctx, "gke_") {
+			return CloudProviderGKE
+		}
 	}
 	switch {
 	case aksURLPattern.MatchString(serverURL):

@@ -338,7 +338,8 @@ export function AutoDiscoverDialog({
   const totalSuccess = aksStats.success + eksStats.success + gkeStats.success;
   const totalErrors = aksStats.errors + eksStats.errors + gkeStats.errors;
 
-  const gcpNeedsAuth = gcpStatus && !gcpStatus.authenticated;
+  // Só mostrar aviso de auth GCP se gcloud estiver instalado mas não autenticado
+  const gcpNeedsAuth = gcpStatus && gcpStatus.has_gcloud && !gcpStatus.authenticated;
   const gcpLoginInProgress = gcpPolling && gcpLoginSession;
 
   return (

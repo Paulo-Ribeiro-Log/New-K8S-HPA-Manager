@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -279,6 +280,115 @@ func LoadSavedGCPADC() {
 	if isADCValid(path) {
 		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path) //nolint:errcheck
 	}
+}
+
+// Cache de token GKE para evitar chamada HTTP a cada requisição K8s.
+var (
+	gkeTokenCache    string
+	gkeTokenCacheExp time.Time
+	gkeTokenMu       sync.Mutex
+)
+
+// GetFreshGKEToken retorna um access token OAuth2 válido para autenticação GKE.
+//
+// Ordem de tentativas:
+//  1. Cache em memória (TTL 45min — tokens GCP duram 1h)
+//  2. Arquivo ADC da app (~/.k8s-hpa-manager/gcp-adc.json) via refresh_token
+//  3. `gcloud auth print-access-token` se gcloud estiver disponível
+//
+// Retorna "" se nenhum método funcionar (o chamador usa a auth do kubeconfig como fallback).
+func GetFreshGKEToken(ctx context.Context) string {
+	gkeTokenMu.Lock()
+	if gkeTokenCache != "" && time.Now().Before(gkeTokenCacheExp) {
+		tok := gkeTokenCache
+		gkeTokenMu.Unlock()
+		return tok
+	}
+	gkeTokenMu.Unlock()
+
+	var tok string
+	if tok = tokenFromADC(ctx); tok == "" {
+		tok = tokenFromGcloud(ctx)
+	}
+	if tok != "" {
+		gkeTokenMu.Lock()
+		gkeTokenCache = tok
+		gkeTokenCacheExp = time.Now().Add(45 * time.Minute)
+		gkeTokenMu.Unlock()
+	}
+	return tok
+}
+
+// tokenFromADC usa o refresh_token do ADC para obter um novo access_token.
+func tokenFromADC(ctx context.Context) string {
+	data, err := os.ReadFile(gcpADCPath())
+	if err != nil {
+		return ""
+	}
+	var adc struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if json.Unmarshal(data, &adc) != nil || adc.RefreshToken == "" {
+		return ""
+	}
+	return exchangeRefreshToken(ctx, adc.ClientID, adc.ClientSecret, adc.RefreshToken)
+}
+
+// exchangeRefreshToken troca um refresh_token por um novo access_token via Google OAuth.
+func exchangeRefreshToken(ctx context.Context, clientID, clientSecret, refreshToken string) string {
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	form := strings.NewReader("client_id=" + clientID +
+		"&client_secret=" + clientSecret +
+		"&refresh_token=" + refreshToken +
+		"&grant_type=refresh_token")
+
+	req, err := http.NewRequestWithContext(reqCtx, "POST",
+		"https://oauth2.googleapis.com/token", form)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	var result struct {
+		AccessToken string `json:"access_token"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+		return ""
+	}
+	return result.AccessToken
+}
+
+// tokenFromGcloud obtém um access_token via `gcloud auth print-access-token`.
+func tokenFromGcloud(ctx context.Context) string {
+	if _, err := exec.LookPath("gcloud"); err != nil {
+		return ""
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(cmdCtx, "gcloud", "auth", "print-access-token").Output()
+	if err != nil {
+		return ""
+	}
+	token := strings.TrimSpace(string(out))
+	if len(token) < 10 {
+		return ""
+	}
+	return token
 }
 
 // gcpADCPath retorna o caminho do arquivo ADC da aplicação.
