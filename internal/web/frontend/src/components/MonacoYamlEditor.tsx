@@ -3,8 +3,12 @@ import Editor, { OnChange, BeforeMount, OnMount } from "@monaco-editor/react";
 import { DiffEditor } from "@monaco-editor/react";
 import type { Monaco } from "@monaco-editor/react";
 import type * as MonacoEditorNS from "monaco-editor";
-import { configureMonacoYaml, type MonacoYaml } from "monaco-yaml";
+import { configureMonacoYaml } from "monaco-yaml";
 import { explainCronExpression, isValidCronExpression, textToCron } from "@/lib/cronParser";
+
+// configureMonacoYaml é global — deve ser chamado UMA vez por sessão.
+// Chamadas repetidas corrompem o worker YAML e podem remover actions do contexto.
+let _yamlConfigured = false;
 
 interface MonacoYamlEditorProps {
   value: string;
@@ -19,20 +23,17 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
   const [mounted, setMounted] = useState(false);
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const diffEditorRef = useRef<MonacoEditorNS.editor.IStandaloneDiffEditor | null>(null);
-  const yamlConfigRef = useRef<MonacoYaml | null>(null);
 
   const handleBeforeMount: BeforeMount = (monacoInstance: Monaco) => {
-    // Dispose previous config if exists
-    yamlConfigRef.current?.dispose();
-    
-    // Configure monaco-yaml with ALL features enabled
-    yamlConfigRef.current = configureMonacoYaml(monacoInstance, {
+    if (_yamlConfigured) return;
+    _yamlConfigured = true;
+    configureMonacoYaml(monacoInstance, {
       enableSchemaRequest: false,
-      hover: true,           // ✅ Hover com documentação
-      completion: true,      // ✅ Autocompletar
-      format: true,          // ✅ Formatação
-      validate: true,        // ✅ Validação em tempo real
-      isKubernetes: true,    // ✅ Features Kubernetes
+      hover: true,
+      completion: true,
+      format: true,
+      validate: true,
+      isKubernetes: true,
     });
   };
 
@@ -210,30 +211,14 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
 
   useEffect(() => {
     return () => {
-      // Cleanup on unmount
       if (diffEditorRef.current) {
-        try {
-          diffEditorRef.current.dispose();
-        } catch (error) {
-          console.warn('Error disposing diff editor:', error);
-        }
+        try { diffEditorRef.current.dispose(); } catch (_) {}
         diffEditorRef.current = null;
       }
       if (editorRef.current) {
-        try {
-          editorRef.current.dispose();
-        } catch (error) {
-          console.warn('Error disposing editor:', error);
-        }
+        try { editorRef.current.dispose(); } catch (_) {}
         editorRef.current = null;
       }
-      yamlConfigRef.current?.dispose();
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      yamlConfigRef.current?.dispose();
     };
   }, []);
 
