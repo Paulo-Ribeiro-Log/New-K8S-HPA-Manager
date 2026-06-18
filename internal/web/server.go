@@ -574,6 +574,13 @@ func (s *Server) setupRoutes() {
 	awsGroup.POST("/config", awsAuthHandler.SaveConfig)
 	awsGroup.DELETE("/config/:profile", awsAuthHandler.DeleteConfig)
 
+	// GCP Auth (Device Auth Grant para gcloud / gke-gcloud-auth-plugin)
+	gcpAuthHandler := handlers.NewGCPAuthHandler()
+	gcpGroup := api.Group("/gcp")
+	gcpGroup.GET("/auth/status", gcpAuthHandler.CheckStatus)
+	gcpGroup.POST("/auth/login", gcpAuthHandler.StartLogin)
+	gcpGroup.GET("/auth/poll", gcpAuthHandler.PollLogin)
+
 	// Namespaces
 	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager, s.historyTracker)
 	api.GET("/namespaces", namespaceHandler.List)

@@ -268,6 +268,9 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 		if err := gcpprovider.EnsureGKEAuthPlugin(nil); err != nil {
 			fmt.Printf("⚠️  [GKE] %v\n", err)
 		}
+		// Carregar ADC salvo pela app (gcp-adc.json) para que gke-gcloud-auth-plugin
+		// encontre as credenciais sem depender de gcloud auth login explícito.
+		gcpprovider.LoadSavedGCPADC()
 	}
 
 	var clusterNames []string
@@ -558,7 +561,10 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 	if serverURL == "" {
 		serverURL = k.getServerURL(clusterName)
 	}
-	if DetectCloudProvider(serverURL) == CloudProviderEKS && len(restConfig.CertData) == 0 && restConfig.KeyFile == "" {
+	// Passar resolved e clusterName — GKE usa prefixo gke_ no context name.
+	cloudProvider := DetectCloudProvider(serverURL, resolved, clusterName)
+
+	if cloudProvider == CloudProviderEKS && len(restConfig.CertData) == 0 && restConfig.KeyFile == "" {
 		if restConfig.ExecProvider != nil {
 			// Kubeconfig já tem exec provider configurado (ex: `aws eks update-kubeconfig --profile X`).
 			// Respeitar como está — mesmo comportamento do K9s/kubectl.
@@ -569,6 +575,15 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 				restConfig.ExecProvider = exec
 				restConfig.BearerToken = "" // Limpar token estático expirado
 			}
+		}
+	}
+
+	// Para clusters GKE, injetar BearerToken via ADC salvo ou `gcloud auth print-access-token`.
+	// Isso evita dependência do gke-gcloud-auth-plugin quando o usuário já está autenticado.
+	if cloudProvider == CloudProviderGKE {
+		if token := gcpprovider.GetFreshGKEToken(context.Background()); token != "" {
+			restConfig.ExecProvider = nil // ADC/gcloud têm prioridade sobre exec plugin
+			restConfig.BearerToken = token
 		}
 	}
 
