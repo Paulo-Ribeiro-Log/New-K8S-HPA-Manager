@@ -3702,21 +3702,21 @@ class APIClient {
     return this.request(`/code-editor/repos/${id}/branches`);
   }
 
-  async codeEditorCreateBranch(id: string, name: string, from?: string): Promise<void> {
+  async codeEditorCreateBranch(id: string, name: string, from?: string): Promise<{ branch: string; message: string }> {
     return this.request(`/code-editor/repos/${id}/branch`, {
       method: "POST",
       body: JSON.stringify({ name, from }),
     });
   }
 
-  async codeEditorCheckoutBranch(id: string, branch: string): Promise<void> {
+  async codeEditorCheckoutBranch(id: string, branch: string): Promise<{ branch: string; message: string }> {
     return this.request(`/code-editor/repos/${id}/checkout`, {
       method: "POST",
       body: JSON.stringify({ branch }),
     });
   }
 
-  async codeEditorCommit(id: string, message: string, files?: string[]): Promise<void> {
+  async codeEditorCommit(id: string, message: string, files?: string[]): Promise<{ message: string }> {
     return this.request(`/code-editor/repos/${id}/commit`, {
       method: "POST",
       body: JSON.stringify({ message, files }),

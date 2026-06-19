@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import Editor, { OnMount } from "@monaco-editor/react";
 import type * as MonacoEditorNS from "monaco-editor";
 import {
@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   Clock,
   Loader2,
+  ArrowRightLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,7 +45,8 @@ import {
 
 const API_BASE = "/api/v1";
 
-// Mapeia extensão para linguagem do Monaco
+// ─── helpers ───────────────────────────────────────────────────────────────
+
 function extToLanguage(filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   const map: Record<string, string> = {
@@ -61,7 +63,6 @@ function extToLanguage(filename: string): string {
   return map[ext] ?? "plaintext";
 }
 
-// Cor de status git
 function statusColor(s: string): string {
   if (s.includes("M")) return "text-yellow-400";
   if (s.includes("A")) return "text-green-400";
@@ -79,7 +80,42 @@ function statusLabel(s: string): string {
   return s.trim()[0] ?? "~";
 }
 
-// ─── FileTree ──────────────────────────────────────────────────────────────
+// ─── Toast ─────────────────────────────────────────────────────────────────
+
+interface Toast {
+  id: number;
+  type: "success" | "error";
+  message: string;
+}
+
+function useToasts() {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const counter = useRef(0);
+
+  function addToast(type: Toast["type"], message: string) {
+    const id = ++counter.current;
+    setToasts(t => [...t, { id, type, message }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
+  }
+
+  return { toasts, addToast };
+}
+
+function ToastContainer({ toasts }: { toasts: Toast[] }) {
+  if (toasts.length === 0) return null;
+  return (
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+      {toasts.map(t => (
+        <div key={t.id} className={`flex items-center gap-2 px-3 py-2 rounded shadow-lg text-xs font-medium animate-in slide-in-from-right-4 ${t.type === "success" ? "bg-green-900/90 text-green-200 border border-green-700" : "bg-red-900/90 text-red-200 border border-red-700"}`}>
+          {t.type === "success" ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />}
+          <span className="max-w-xs truncate">{t.message}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── FileTreeNode ───────────────────────────────────────────────────────────
 
 interface FileTreeNodeProps {
   node: CodeEditorFileNode;
@@ -91,7 +127,6 @@ interface FileTreeNodeProps {
 
 function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level }: FileTreeNodeProps) {
   const [open, setOpen] = useState(level < 1);
-
   const isSelected = selectedPath === node.path;
   const isModified = modifiedPaths.has(node.path);
 
@@ -100,7 +135,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level }: Fi
       <div>
         <button
           onClick={() => setOpen(o => !o)}
-          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left`}
+          className="w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left"
           style={{ paddingLeft: `${level * 12 + 4}px` }}
         >
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
@@ -128,7 +163,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level }: Fi
   );
 }
 
-// ─── CloneDialog ───────────────────────────────────────────────────────────
+// ─── CloneDialog ────────────────────────────────────────────────────────────
 
 interface CloneDialogProps {
   open: boolean;
@@ -155,7 +190,6 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   async function doClone() {
     const parsed = parseGitHubUrl(url);
     if (!parsed) { setError("URL inválida. Use https://github.com/owner/repo"); return; }
-
     setError(""); setLogs([]); setCloning(true);
     const token = localStorage.getItem("auth_token") || "";
     const res = await fetch(`${API_BASE}/code-editor/clone`, {
@@ -163,13 +197,11 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ ...parsed, branch }),
     });
-
     if (!res.body) { setError("Sem resposta SSE"); setCloning(false); return; }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
     let doneId = "";
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -177,15 +209,12 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
       const events = buf.split("\n\n");
       buf = events.pop() ?? "";
       for (const evt of events) {
-        const dataLine = evt.split("\n").find(l => l.startsWith("data:"));
-        if (!dataLine) continue;
+        const dl = evt.split("\n").find(l => l.startsWith("data:"));
+        if (!dl) continue;
         try {
-          const d = JSON.parse(dataLine.slice(5));
+          const d = JSON.parse(dl.slice(5));
           if (d.message) setLogs(l => [...l, d.message]);
-          if (d.done) {
-            if (d.error) setError(d.error);
-            else doneId = d.id;
-          }
+          if (d.done) { if (d.error) setError(d.error); else doneId = d.id; }
         } catch (_) {}
       }
     }
@@ -226,7 +255,7 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   );
 }
 
-// ─── CommitDialog ──────────────────────────────────────────────────────────
+// ─── CommitDialog ───────────────────────────────────────────────────────────
 
 interface CommitDialogProps {
   open: boolean;
@@ -240,15 +269,25 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [gitOutput, setGitOutput] = useState("");
+
+  // Limpa estado ao abrir
+  useEffect(() => {
+    if (open) { setMessage(""); setError(""); setGitOutput(""); }
+  }, [open]);
 
   async function doCommit() {
     if (!message.trim()) { setError("Mensagem é obrigatória"); return; }
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setGitOutput("");
     try {
-      await apiClient.codeEditorCommit(repoId, message.trim());
-      setMessage(""); onDone();
-    } catch (e: any) { setError(e.message || "Erro ao commitar"); }
-    finally { setLoading(false); }
+      const result = await apiClient.codeEditorCommit(repoId, message.trim());
+      setGitOutput(result.message || "Commit realizado.");
+      setTimeout(() => { onDone(); }, 1500);
+    } catch (e: any) {
+      setError(e.message || "Erro ao commitar");
+    } finally {
+      setLoading(false);
+    }
   }
 
   const changedFiles = status?.files ?? [];
@@ -256,12 +295,16 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
   return (
     <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
       <DialogContent className="max-w-md">
-        <DialogHeader><DialogTitle className="flex items-center gap-2"><GitCommit className="w-4 h-4" />Novo Commit</DialogTitle></DialogHeader>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <GitCommit className="w-4 h-4" />Novo Commit
+          </DialogTitle>
+        </DialogHeader>
         <div className="space-y-3">
-          {changedFiles.length > 0 && (
+          {changedFiles.length > 0 && !gitOutput && (
             <div>
-              <p className="text-xs text-muted-foreground mb-1">Arquivos alterados ({changedFiles.length}):</p>
-              <ScrollArea className="h-28 border border-border/40 rounded p-2">
+              <p className="text-xs text-muted-foreground mb-1">Arquivos ({changedFiles.length}):</p>
+              <ScrollArea className="h-24 border border-border/40 rounded p-2">
                 {changedFiles.map(f => (
                   <div key={f.path} className="flex items-center gap-2 text-xs py-0.5">
                     <span className={`font-bold w-4 text-center ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
@@ -271,70 +314,153 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
               </ScrollArea>
             </div>
           )}
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Mensagem</label>
-            <Input placeholder="feat: descrição da mudança" value={message} onChange={e => setMessage(e.target.value)} disabled={loading} onKeyDown={e => e.key === "Enter" && doCommit()} />
-          </div>
-          {error && <div className="text-red-400 text-xs flex items-center gap-1"><AlertCircle className="w-3 h-3" />{error}</div>}
+
+          {!gitOutput && (
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Mensagem do commit</label>
+              <Input
+                placeholder="feat: descrição da mudança"
+                value={message}
+                onChange={e => setMessage(e.target.value)}
+                disabled={loading}
+                onKeyDown={e => e.key === "Enter" && !e.shiftKey && doCommit()}
+                autoFocus
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">Sugestões: feat: · fix: · docs: · refactor: · chore:</p>
+            </div>
+          )}
+
+          {gitOutput && (
+            <div className="bg-black/40 border border-green-800/50 rounded p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <CheckCircle2 className="w-4 h-4 text-green-400" />
+                <span className="text-xs font-medium text-green-400">Commit realizado!</span>
+              </div>
+              <pre className="font-mono text-xs text-green-300/80 whitespace-pre-wrap">{gitOutput}</pre>
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-red-950/30 border border-red-800/50 rounded p-2 flex items-start gap-2">
+              <AlertCircle className="w-3.5 h-3.5 text-red-400 mt-0.5 flex-shrink-0" />
+              <pre className="text-xs text-red-300 whitespace-pre-wrap">{error}</pre>
+            </div>
+          )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={loading}>Cancelar</Button>
-          <Button onClick={doCommit} disabled={loading || !message.trim()}>
-            {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCommit className="w-3 h-3 mr-1" />}
-            Commitar
+          <Button variant="outline" onClick={onClose} disabled={loading}>
+            {gitOutput ? "Fechar" : "Cancelar"}
           </Button>
+          {!gitOutput && (
+            <Button onClick={doCommit} disabled={loading || !message.trim()}>
+              {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCommit className="w-3 h-3 mr-1" />}
+              Commitar
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
-// ─── BranchDialog ──────────────────────────────────────────────────────────
+// ─── BranchDialog ───────────────────────────────────────────────────────────
 
 interface BranchDialogProps {
   open: boolean;
   repoId: string;
   currentBranch: string;
   onClose: () => void;
-  onDone: () => void;
+  onDone: (newBranch: string) => void;
 }
 
 function BranchDialog({ open, repoId, currentBranch: cur, onClose, onDone }: BranchDialogProps) {
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [gitOutput, setGitOutput] = useState("");
+  const [createdBranch, setCreatedBranch] = useState("");
+
+  useEffect(() => {
+    if (open) { setName(""); setError(""); setGitOutput(""); setCreatedBranch(""); }
+  }, [open]);
 
   async function doCreate() {
     if (!name.trim()) { setError("Nome é obrigatório"); return; }
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setGitOutput("");
     try {
-      await apiClient.codeEditorCreateBranch(repoId, name.trim(), cur);
-      onDone();
-    } catch (e: any) { setError(e.message || "Erro ao criar branch"); }
-    finally { setLoading(false); }
+      const result = await apiClient.codeEditorCreateBranch(repoId, name.trim(), cur);
+      setGitOutput(result.message || `Branch '${result.branch}' criado.`);
+      setCreatedBranch(result.branch);
+      setTimeout(() => { onDone(result.branch); }, 1500);
+    } catch (e: any) {
+      setError(e.message || "Erro ao criar branch");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
       <DialogContent className="max-w-sm">
-        <DialogHeader><DialogTitle className="flex items-center gap-2"><GitBranch className="w-4 h-4" />Criar Branch</DialogTitle></DialogHeader>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><GitBranch className="w-4 h-4" />Criar Novo Branch</DialogTitle>
+        </DialogHeader>
         <div className="space-y-3">
-          <p className="text-xs text-muted-foreground">A partir de: <span className="font-mono text-foreground">{cur}</span></p>
-          <Input placeholder="feature/nova-funcionalidade" value={name} onChange={e => setName(e.target.value)} disabled={loading} onKeyDown={e => e.key === "Enter" && doCreate()} />
-          {error && <div className="text-red-400 text-xs">{error}</div>}
+          <p className="text-xs text-muted-foreground">
+            A partir de: <span className="font-mono text-foreground bg-muted px-1 py-0.5 rounded">{cur}</span>
+          </p>
+
+          {!gitOutput && (
+            <Input
+              placeholder="feature/nova-funcionalidade"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              disabled={loading}
+              onKeyDown={e => e.key === "Enter" && doCreate()}
+              autoFocus
+            />
+          )}
+
+          {gitOutput && (
+            <div className="bg-black/40 border border-green-800/50 rounded p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <CheckCircle2 className="w-4 h-4 text-green-400" />
+                <span className="text-xs font-medium text-green-400">Branch criado e ativo!</span>
+              </div>
+              <pre className="font-mono text-xs text-green-300/80 whitespace-pre-wrap">{gitOutput}</pre>
+              {createdBranch && (
+                <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <GitBranch className="w-3 h-3" />
+                  <span className="font-mono text-foreground">{createdBranch}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-red-950/30 border border-red-800/50 rounded p-2 flex items-start gap-2">
+              <AlertCircle className="w-3.5 h-3.5 text-red-400 mt-0.5 flex-shrink-0" />
+              <pre className="text-xs text-red-300 whitespace-pre-wrap">{error}</pre>
+            </div>
+          )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={loading}>Cancelar</Button>
-          <Button onClick={doCreate} disabled={loading || !name.trim()}>
-            {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null} Criar
+          <Button variant="outline" onClick={onClose} disabled={loading}>
+            {gitOutput ? "Fechar" : "Cancelar"}
           </Button>
+          {!gitOutput && (
+            <Button onClick={doCreate} disabled={loading || !name.trim()}>
+              {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitBranch className="w-3 h-3 mr-1" />}
+              Criar e Alternar
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
-// ─── SseDialog (Pull/Push) ─────────────────────────────────────────────────
+// ─── SseDialog (Pull / Push) ────────────────────────────────────────────────
 
 interface SseDialogProps {
   open: boolean;
@@ -378,10 +504,7 @@ function SseDialog({ open, title, endpoint, body, onClose, onDone }: SseDialogPr
           try {
             const d = JSON.parse(dl.slice(5));
             if (d.message) setLogs(l => [...l, d.message]);
-            if (d.done) {
-              if (d.error) setError(d.error);
-              else setSuccess(true);
-            }
+            if (d.done) { if (d.error) setError(d.error); else setSuccess(true); }
           } catch (_) {}
         }
       }
@@ -392,7 +515,7 @@ function SseDialog({ open, title, endpoint, body, onClose, onDone }: SseDialogPr
   useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight; }, [logs]);
 
   return (
-    <Dialog open={open} onOpenChange={v => { if (!v && !running) { onClose(); } }}>
+    <Dialog open={open} onOpenChange={v => { if (!v && !running) onClose(); }}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -416,7 +539,118 @@ function SseDialog({ open, title, endpoint, body, onClose, onDone }: SseDialogPr
   );
 }
 
-// ─── Main CodeEditorTab ────────────────────────────────────────────────────
+// ─── BranchesPanel (sidebar) ────────────────────────────────────────────────
+
+interface BranchesPanelProps {
+  repoId: string;
+  branches: CodeEditorBranches | null;
+  onRefresh: () => void;
+  onCheckout: (branch: string) => Promise<void>;
+  onCreateBranch: () => void;
+}
+
+function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch }: BranchesPanelProps) {
+  const [checkingOut, setCheckingOut] = useState("");
+
+  async function handleCheckout(branch: string) {
+    if (branches?.current === branch) return;
+    setCheckingOut(branch);
+    await onCheckout(branch);
+    setCheckingOut("");
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/30 flex-shrink-0">
+        <span className="text-xs text-muted-foreground font-medium">Branches</span>
+        <div className="flex gap-1">
+          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onRefresh} title="Atualizar">
+            <RefreshCw className="w-3 h-3" />
+          </Button>
+          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onCreateBranch} title="Novo branch">
+            <Plus className="w-3 h-3" />
+          </Button>
+        </div>
+      </div>
+
+      <ScrollArea className="flex-1">
+        <div className="p-2 space-y-3">
+          {/* Branch atual */}
+          {branches?.current && (
+            <div>
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Atual</p>
+              <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-primary/10 border border-primary/20">
+                <GitBranch className="w-3 h-3 text-primary flex-shrink-0" />
+                <span className="text-xs font-medium text-primary truncate">{branches.current}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Branches locais */}
+          {(branches?.local?.length ?? 0) > 0 && (
+            <div>
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Locais</p>
+              <div className="space-y-0.5">
+                {branches!.local.filter(b => b !== branches?.current).map(b => (
+                  <button
+                    key={b}
+                    onClick={() => handleCheckout(b)}
+                    disabled={checkingOut !== ""}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group"
+                  >
+                    <GitBranch className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                    <span className="truncate flex-1 text-foreground/80">{b}</span>
+                    {checkingOut === b
+                      ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                      : <ArrowRightLeft className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" title="Alternar para este branch" />
+                    }
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Branches remotos */}
+          {(branches?.remote?.length ?? 0) > 0 && (
+            <div>
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Remotos</p>
+              <div className="space-y-0.5">
+                {(branches!.remote ?? [])
+                  .filter(r => !r.includes("->"))
+                  .filter(r => {
+                    const local = r.replace("origin/", "");
+                    return !branches!.local.includes(local);
+                  })
+                  .map(b => (
+                    <button
+                      key={b}
+                      onClick={() => handleCheckout(b)}
+                      disabled={checkingOut !== ""}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group"
+                    >
+                      <GitBranch className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
+                      <span className="truncate flex-1 text-muted-foreground">{b}</span>
+                      {checkingOut === b
+                        ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                        : <Download className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" title="Baixar e alternar" />
+                      }
+                    </button>
+                  ))
+                }
+              </div>
+            </div>
+          )}
+
+          {!branches && (
+            <p className="text-xs text-muted-foreground text-center py-4">Selecione um repositório</p>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+// ─── Main CodeEditorTab ─────────────────────────────────────────────────────
 
 export function CodeEditorTab() {
   const [repos, setRepos] = useState<CodeEditorRepo[]>([]);
@@ -430,42 +664,30 @@ export function CodeEditorTab() {
   const [log, setLog] = useState<CodeEditorLogEntry[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<string[]>([]);
-
-  // Panels state
-  const [sidePanel, setSidePanel] = useState<"files" | "git" | "log">("files");
+  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log">("files");
 
   // Dialogs
   const [showClone, setShowClone] = useState(false);
   const [showCommit, setShowCommit] = useState(false);
   const [showBranch, setShowBranch] = useState(false);
   const [sseDialog, setSseDialog] = useState<{ title: string; endpoint: string; body?: object } | null>(null);
-  const [branchDropdown, setBranchDropdown] = useState(false);
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
-  const branchRef = useRef<HTMLDivElement>(null);
-
+  const { toasts, addToast } = useToasts();
   const isModified = fileContent !== savedContent;
+  const modifiedPaths = new Set((status?.files ?? []).map(f => f.path));
 
-  // Fecha dropdown de branch ao clicar fora
-  useEffect(() => {
-    const handler = (e: MouseEvent) => { if (branchRef.current && !branchRef.current.contains(e.target as Node)) setBranchDropdown(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
+  // ── carregamento inicial ──
+  useEffect(() => { loadRepos(); }, []);
 
   async function loadRepos() {
     try { setRepos(await apiClient.codeEditorListRepos()); } catch (_) {}
   }
 
-  useEffect(() => { loadRepos(); }, []);
-
   async function selectRepo(repo: CodeEditorRepo) {
     setSelectedRepo(repo);
-    setSelectedFile(null);
-    setFileContent("");
-    setSavedContent("");
-    setSearchQuery("");
-    setSearchResults([]);
+    setSelectedFile(null); setFileContent(""); setSavedContent("");
+    setSearchQuery(""); setSearchResults([]);
     await Promise.all([loadTree(repo.id), loadStatus(repo.id), loadBranches(repo.id), loadLog(repo.id)]);
   }
 
@@ -490,11 +712,9 @@ export function CodeEditorTab() {
     setSelectedFile(node);
     try {
       const { content } = await apiClient.codeEditorReadFile(selectedRepo.id, node.path);
-      setFileContent(content);
-      setSavedContent(content);
+      setFileContent(content); setSavedContent(content);
     } catch (e: any) {
-      setFileContent(`// Erro ao carregar: ${e.message}`);
-      setSavedContent("");
+      setFileContent(`// Erro ao carregar: ${e.message}`); setSavedContent("");
     }
   }
 
@@ -504,19 +724,23 @@ export function CodeEditorTab() {
       await apiClient.codeEditorWriteFile(selectedRepo.id, selectedFile.path, fileContent);
       setSavedContent(fileContent);
       await loadStatus(selectedRepo.id);
+      addToast("success", `Salvo: ${selectedFile.name}`);
     } catch (e: any) {
-      alert("Erro ao salvar: " + e.message);
+      addToast("error", "Erro ao salvar: " + e.message);
     }
   }
 
   async function handleCheckout(branch: string) {
     if (!selectedRepo) return;
-    setBranchDropdown(false);
     try {
-      await apiClient.codeEditorCheckoutBranch(selectedRepo.id, branch);
+      const result = await apiClient.codeEditorCheckoutBranch(selectedRepo.id, branch);
+      addToast("success", `Alternado para: ${result.branch}`);
       await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadTree(selectedRepo.id)]);
       setSelectedFile(null); setFileContent(""); setSavedContent("");
-    } catch (e: any) { alert("Erro: " + e.message); }
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao alternar branch");
+      throw e; // propaga para o BranchesPanel desativar spinner
+    }
   }
 
   async function handleSearch() {
@@ -528,85 +752,75 @@ export function CodeEditorTab() {
   }
 
   async function deleteRepo(id: string) {
-    if (!confirm(`Remover repositório "${id}" localmente? Os dados no GitHub não serão afetados.`)) return;
+    if (!confirm(`Remover repositório "${id}" localmente?`)) return;
     try {
       await apiClient.codeEditorDeleteRepo(id);
-      if (selectedRepo?.id === id) { setSelectedRepo(null); setTree([]); setSelectedFile(null); setFileContent(""); setSavedContent(""); setStatus(null); setBranches(null); setLog([]); }
+      if (selectedRepo?.id === id) {
+        setSelectedRepo(null); setTree([]); setSelectedFile(null);
+        setFileContent(""); setSavedContent(""); setStatus(null);
+        setBranches(null); setLog([]);
+      }
       await loadRepos();
-    } catch (e: any) { alert("Erro: " + e.message); }
+      addToast("success", `Repositório ${id} removido`);
+    } catch (e: any) { addToast("error", e.message); }
   }
 
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
-    editor.addCommand(
-      // Ctrl+S
-      (2048 | 49),
-      () => saveFile(),
-    );
+    // Ctrl+S — salvar arquivo
+    editor.addCommand(2048 | 49, () => saveFile());
   };
 
-  const modifiedPaths = new Set((status?.files ?? []).map(f => f.path));
-
-  // Todos os branches para o seletor
-  const allBranches = branches ? [...(branches.local ?? []), ...(branches.remote ?? []).filter(r => !branches.local.includes(r.replace("origin/", "")))] : [];
+  const sidePanels = [
+    { id: "files" as const, label: "Arquivos" },
+    { id: "branches" as const, label: `Branches${branches ? ` (${branches.local.length})` : ""}` },
+    { id: "git" as const, label: `Git${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}` },
+    { id: "log" as const, label: "Log" },
+  ];
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-background">
-      {/* Header */}
+      {/* ── Header ── */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 flex-shrink-0 bg-card/30">
-        <FolderGit2 className="w-4 h-4 text-blue-400" />
+        <FolderGit2 className="w-4 h-4 text-blue-400 flex-shrink-0" />
         <span className="text-sm font-medium">Editor de Código</span>
 
-        {/* Repo selector */}
+        {/* Seletor de repositório */}
         {repos.length > 0 && (
           <select
-            className="ml-2 text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground"
+            className="ml-2 text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground max-w-48"
             value={selectedRepo?.id ?? ""}
             onChange={e => { const r = repos.find(x => x.id === e.target.value); if (r) selectRepo(r); }}
           >
             <option value="">Selecionar repositório...</option>
-            {repos.map(r => (
-              <option key={r.id} value={r.id}>{r.owner}/{r.repo}</option>
-            ))}
+            {repos.map(r => <option key={r.id} value={r.id}>{r.owner}/{r.repo}</option>)}
           </select>
         )}
 
-        {/* Branch selector */}
-        {selectedRepo && branches && (
-          <div ref={branchRef} className="relative">
-            <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setBranchDropdown(d => !d)}>
-              <GitBranch className="w-3 h-3" />
-              {branches.current}
-              <ChevronDown className="w-3 h-3" />
-            </Button>
-            {branchDropdown && (
-              <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded shadow-lg min-w-48 max-h-64 overflow-y-auto">
-                <div className="px-2 py-1 text-xs text-muted-foreground border-b border-border/50 font-medium">Locais</div>
-                {(branches.local ?? []).map(b => (
-                  <button key={b} className={`w-full text-left px-3 py-1.5 text-xs hover:bg-muted ${b === branches.current ? "text-blue-400 font-medium" : ""}`} onClick={() => handleCheckout(b)}>
-                    {b === branches.current && "✓ "}{b}
-                  </button>
-                ))}
-                {(branches.remote ?? []).length > 0 && <>
-                  <div className="px-2 py-1 text-xs text-muted-foreground border-t border-b border-border/50 font-medium">Remotos</div>
-                  {(branches.remote ?? []).map(b => (
-                    <button key={b} className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted text-muted-foreground" onClick={() => handleCheckout(b)}>{b}</button>
-                  ))}
-                </>}
-              </div>
-            )}
-          </div>
+        {/* Branch atual (indicativo) */}
+        {selectedRepo && branches?.current && (
+          <button
+            onClick={() => setSidePanel("branches")}
+            className="flex items-center gap-1 text-xs bg-muted/60 border border-border/50 rounded px-2 py-1 hover:bg-muted text-foreground/80"
+            title="Ver todos os branches"
+          >
+            <GitBranch className="w-3 h-3 text-primary" />
+            <span className="font-mono">{branches.current}</span>
+          </button>
         )}
 
         <div className="flex-1" />
 
-        {/* Actions */}
+        {/* Ações Git */}
         {selectedRepo && (
           <>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull` })}>
               <Download className="w-3 h-3" />Pull
             </Button>
-            <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setShowCommit(true)} disabled={modifiedPaths.size === 0}>
+            <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
+              onClick={() => { setSidePanel("git"); setShowCommit(true); }}
+              disabled={modifiedPaths.size === 0}
+            >
               <GitCommit className="w-3 h-3" />Commit
               {modifiedPaths.size > 0 && <span className="bg-yellow-500 text-black text-[10px] px-1 rounded-full">{modifiedPaths.size}</span>}
             </Button>
@@ -614,7 +828,7 @@ export function CodeEditorTab() {
               <Upload className="w-3 h-3" />Push
               {status?.ahead && status.ahead !== "0" && <span className="bg-blue-500 text-white text-[10px] px-1 rounded-full">{status.ahead}</span>}
             </Button>
-            <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setShowBranch(true)}>
+            <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => { setSidePanel("branches"); setShowBranch(true); }}>
               <Plus className="w-3 h-3" />Branch
             </Button>
           </>
@@ -625,138 +839,187 @@ export function CodeEditorTab() {
         </Button>
       </div>
 
-      {/* Body */}
+      {/* ── Body ── */}
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
         <div className="w-56 flex-shrink-0 border-r border-border/50 flex flex-col min-h-0">
-          {/* Sidebar tabs */}
-          <div className="flex border-b border-border/50 flex-shrink-0">
-            {(["files", "git", "log"] as const).map(panel => (
-              <button key={panel} onClick={() => setSidePanel(panel)} className={`flex-1 py-1.5 text-xs font-medium transition-colors ${sidePanel === panel ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                {panel === "files" ? "Arquivos" : panel === "git" ? `Git${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}` : "Log"}
+          {/* Tabs da sidebar */}
+          <div className="flex border-b border-border/50 flex-shrink-0 overflow-x-auto">
+            {sidePanels.map(p => (
+              <button key={p.id} onClick={() => setSidePanel(p.id)}
+                className={`flex-shrink-0 px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap ${sidePanel === p.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                {p.label}
               </button>
             ))}
           </div>
 
-          {/* Sidebar content */}
+          {/* Conteúdo da sidebar */}
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+
+            {/* ── Painel: Arquivos ── */}
             {sidePanel === "files" && (
               <>
-                {/* Search */}
                 {selectedRepo && (
                   <div className="px-2 py-1.5 flex gap-1 flex-shrink-0 border-b border-border/30">
-                    <Input className="h-6 text-xs" placeholder="Buscar arquivo..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSearch()} />
+                    <Input className="h-6 text-xs" placeholder="Buscar arquivo..." value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && handleSearch()} />
                     <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={handleSearch}><Search className="w-3 h-3" /></Button>
                   </div>
                 )}
                 <ScrollArea className="flex-1">
-                  {/* Repos list if none selected */}
                   {!selectedRepo && (
                     <div className="p-2 space-y-1">
                       {repos.length === 0 ? (
-                        <p className="text-xs text-muted-foreground text-center py-4">Nenhum repositório clonado.<br />Clique em "Clonar" para começar.</p>
+                        <p className="text-xs text-muted-foreground text-center py-4">Nenhum repo clonado.<br />Clique em "Clonar".</p>
                       ) : repos.map(r => (
                         <div key={r.id} className="group flex items-center gap-1 rounded hover:bg-muted/50 px-1 py-1">
                           <button className="flex-1 text-left text-xs truncate" onClick={() => selectRepo(r)}>
                             <span className="font-medium">{r.owner}/{r.repo}</span>
                             <span className="text-muted-foreground block text-[10px]">{r.current_branch}</span>
                           </button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100" onClick={() => deleteRepo(r.id)}><Trash2 className="w-3 h-3 text-red-400" /></Button>
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100" onClick={() => deleteRepo(r.id)}>
+                            <Trash2 className="w-3 h-3 text-red-400" />
+                          </Button>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  {/* Search results */}
                   {selectedRepo && searchQuery && searchResults.length > 0 && (
                     <div className="p-1 space-y-0.5">
                       {searchResults.slice(0, 50).map(path => (
-                        <button key={path} className="w-full text-left px-2 py-0.5 text-xs hover:bg-muted/50 rounded font-mono truncate text-foreground/80" onClick={() => openFile({ name: path.split("/").pop() ?? path, path, type: "file" })}>
+                        <button key={path} className="w-full text-left px-2 py-0.5 text-xs hover:bg-muted/50 rounded font-mono truncate text-foreground/80"
+                          onClick={() => openFile({ name: path.split("/").pop() ?? path, path, type: "file" })}>
                           {path}
                         </button>
                       ))}
-                      <div className="flex justify-end px-1"><Button variant="ghost" size="sm" className="h-5 text-[10px]" onClick={() => { setSearchQuery(""); setSearchResults([]); }}>Limpar</Button></div>
+                      <div className="flex justify-end px-1">
+                        <Button variant="ghost" size="sm" className="h-5 text-[10px]" onClick={() => { setSearchQuery(""); setSearchResults([]); }}>Limpar</Button>
+                      </div>
                     </div>
                   )}
 
-                  {/* File tree */}
                   {selectedRepo && !searchQuery && (
                     <div className="p-1">
                       <div className="flex items-center justify-between px-1 mb-1">
-                        <span className="text-xs text-muted-foreground font-medium">{selectedRepo.owner}/{selectedRepo.repo}</span>
-                        <div className="flex gap-1">
+                        <span className="text-xs text-muted-foreground font-medium truncate">{selectedRepo.owner}/{selectedRepo.repo}</span>
+                        <div className="flex gap-1 flex-shrink-0">
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => loadTree(selectedRepo.id)}><RefreshCw className="w-3 h-3" /></Button>
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => { setSelectedRepo(null); setTree([]); }}><X className="w-3 h-3" /></Button>
                         </div>
                       </div>
-                      {tree.map(node => <FileTreeNode key={node.path} node={node} selectedPath={selectedFile?.path ?? ""} onSelect={openFile} modifiedPaths={modifiedPaths} level={0} />)}
+                      {tree.map(node => (
+                        <FileTreeNode key={node.path} node={node} selectedPath={selectedFile?.path ?? ""}
+                          onSelect={openFile} modifiedPaths={modifiedPaths} level={0} />
+                      ))}
                     </div>
                   )}
                 </ScrollArea>
               </>
             )}
 
-            {sidePanel === "git" && selectedRepo && (
-              <ScrollArea className="flex-1">
-                <div className="p-2 space-y-3">
-                  {status && (
-                    <div>
-                      <p className="text-xs font-medium text-muted-foreground mb-1">Alterações ({status.files.length})</p>
-                      {status.files.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">Árvore limpa</p>
-                      ) : status.files.map(f => (
-                        <div key={f.path} className="flex items-center gap-1.5 py-0.5">
-                          <span className={`text-xs font-bold w-4 text-center ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
-                          <button className="text-xs font-mono truncate hover:text-foreground text-foreground/70 flex-1 text-left" onClick={() => openFile({ name: f.path.split("/").pop() ?? f.path, path: f.path, type: "file" })}>{f.path}</button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="flex gap-1">
-                    <Button variant="outline" size="sm" className="flex-1 h-6 text-xs" onClick={() => loadStatus(selectedRepo.id)}><RefreshCw className="w-3 h-3 mr-1" />Atualizar</Button>
-                    <Button size="sm" className="flex-1 h-6 text-xs" onClick={() => setShowCommit(true)} disabled={modifiedPaths.size === 0}><GitCommit className="w-3 h-3 mr-1" />Commit</Button>
-                  </div>
-                </div>
-              </ScrollArea>
+            {/* ── Painel: Branches ── */}
+            {sidePanel === "branches" && (
+              <BranchesPanel
+                repoId={selectedRepo?.id ?? ""}
+                branches={selectedRepo ? branches : null}
+                onRefresh={() => selectedRepo && loadBranches(selectedRepo.id)}
+                onCheckout={handleCheckout}
+                onCreateBranch={() => setShowBranch(true)}
+              />
             )}
 
-            {sidePanel === "log" && selectedRepo && (
-              <ScrollArea className="flex-1">
-                <div className="p-2 space-y-2">
-                  <Button variant="ghost" size="sm" className="w-full h-6 text-xs" onClick={() => loadLog(selectedRepo.id)}><RefreshCw className="w-3 h-3 mr-1" />Atualizar</Button>
-                  {log.map(entry => (
-                    <div key={entry.hash} className="border-b border-border/30 pb-2">
-                      <p className="text-xs text-foreground/90 leading-tight">{entry.message}</p>
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <Clock className="w-2.5 h-2.5 text-muted-foreground" />
-                        <span className="text-[10px] text-muted-foreground">{entry.when}</span>
-                        <span className="text-[10px] text-muted-foreground">· {entry.author}</span>
+            {/* ── Painel: Git ── */}
+            {sidePanel === "git" && (
+              <div className="flex flex-col h-full">
+                <ScrollArea className="flex-1">
+                  <div className="p-2 space-y-3">
+                    {selectedRepo && status ? (
+                      <>
+                        <div>
+                          <p className="text-xs font-medium text-muted-foreground mb-1">
+                            Alterações ({status.files.length})
+                          </p>
+                          {status.files.length === 0 ? (
+                            <p className="text-xs text-muted-foreground italic">Árvore limpa</p>
+                          ) : status.files.map(f => (
+                            <div key={f.path} className="flex items-center gap-1.5 py-0.5">
+                              <span className={`text-xs font-bold w-4 text-center ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
+                              <button className="text-xs font-mono truncate hover:text-foreground text-foreground/70 flex-1 text-left"
+                                onClick={() => openFile({ name: f.path.split("/").pop() ?? f.path, path: f.path, type: "file" })}>
+                                {f.path}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        {(status.ahead !== "0" || status.behind !== "0") && (
+                          <div className="text-xs text-muted-foreground border border-border/30 rounded px-2 py-1">
+                            {status.ahead !== "0" && <span className="text-blue-400">↑{status.ahead} à frente </span>}
+                            {status.behind !== "0" && <span className="text-yellow-400">↓{status.behind} atrás</span>}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-xs text-muted-foreground text-center py-4">Selecione um repositório</p>
+                    )}
+                  </div>
+                </ScrollArea>
+                {selectedRepo && (
+                  <div className="flex gap-1 p-2 border-t border-border/30 flex-shrink-0">
+                    <Button variant="outline" size="sm" className="flex-1 h-6 text-xs" onClick={() => loadStatus(selectedRepo.id)}>
+                      <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                    </Button>
+                    <Button size="sm" className="flex-1 h-6 text-xs" onClick={() => setShowCommit(true)} disabled={modifiedPaths.size === 0}>
+                      <GitCommit className="w-3 h-3 mr-1" />Commit
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Painel: Log ── */}
+            {sidePanel === "log" && (
+              <div className="flex flex-col h-full">
+                <ScrollArea className="flex-1">
+                  <div className="p-2 space-y-2">
+                    {selectedRepo && (
+                      <Button variant="ghost" size="sm" className="w-full h-6 text-xs" onClick={() => loadLog(selectedRepo.id)}>
+                        <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                      </Button>
+                    )}
+                    {log.map(entry => (
+                      <div key={entry.hash} className="border-b border-border/30 pb-2">
+                        <p className="text-xs text-foreground/90 leading-tight">{entry.message}</p>
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <Clock className="w-2.5 h-2.5 text-muted-foreground" />
+                          <span className="text-[10px] text-muted-foreground">{entry.when} · {entry.author}</span>
+                        </div>
+                        <span className="font-mono text-[10px] text-muted-foreground/60">{entry.hash.slice(0, 7)}</span>
                       </div>
-                      <span className="font-mono text-[10px] text-muted-foreground/60">{entry.hash.slice(0, 7)}</span>
-                    </div>
-                  ))}
-                  {log.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">Sem commits</p>}
-                </div>
-              </ScrollArea>
+                    ))}
+                    {log.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">Sem commits</p>}
+                  </div>
+                </ScrollArea>
+              </div>
             )}
           </div>
         </div>
 
-        {/* Editor area */}
+        {/* ── Área do editor ── */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
           {selectedFile ? (
             <>
-              {/* File tab bar */}
+              {/* Aba do arquivo */}
               <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/50 flex-shrink-0 bg-card/20">
-                <File className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-xs font-mono text-foreground/80">{selectedFile.path}</span>
-                {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" title="Modificado (não salvo)" />}
+                <File className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                <span className="text-xs font-mono text-foreground/80 truncate">{selectedFile.path}</span>
+                {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" title="Não salvo" />}
                 <div className="flex-1" />
                 <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={saveFile} disabled={!isModified}>
-                  <CheckCircle2 className="w-3 h-3" />Salvar (Ctrl+S)
+                  <CheckCircle2 className="w-3 h-3" />Salvar <span className="text-muted-foreground">(Ctrl+S)</span>
                 </Button>
               </div>
-              {/* Monaco */}
               <div className="flex-1 min-h-0">
                 <Editor
                   height="100%"
@@ -787,14 +1050,16 @@ export function CodeEditorTab() {
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              <div className="text-center space-y-2">
+              <div className="text-center space-y-3">
                 <FolderGit2 className="w-12 h-12 mx-auto opacity-20" />
                 {selectedRepo ? (
-                  <p className="text-sm">Selecione um arquivo na árvore para editar</p>
+                  <p className="text-sm">Selecione um arquivo na aba "Arquivos"</p>
                 ) : (
                   <>
                     <p className="text-sm">Nenhum repositório selecionado</p>
-                    <Button size="sm" onClick={() => setShowClone(true)}><GitPullRequest className="w-3.5 h-3.5 mr-1.5" />Clonar repositório</Button>
+                    <Button size="sm" onClick={() => setShowClone(true)}>
+                      <GitPullRequest className="w-3.5 h-3.5 mr-1.5" />Clonar repositório
+                    </Button>
                   </>
                 )}
               </div>
@@ -803,18 +1068,62 @@ export function CodeEditorTab() {
         </div>
       </div>
 
-      {/* Dialogs */}
-      <CloneDialog open={showClone} onClose={() => setShowClone(false)} onDone={async id => { await loadRepos(); const r = repos.find(x => x.id === id); if (r) selectRepo(r); else { const fresh = await apiClient.codeEditorListRepos(); const found = fresh.find(x => x.id === id); if (found) { setRepos(fresh); selectRepo(found); } } }} />
+      {/* ── Dialogs ── */}
+      <CloneDialog
+        open={showClone}
+        onClose={() => setShowClone(false)}
+        onDone={async id => {
+          const fresh = await apiClient.codeEditorListRepos();
+          setRepos(fresh);
+          const found = fresh.find(x => x.id === id);
+          if (found) selectRepo(found);
+        }}
+      />
 
       {selectedRepo && (
         <>
-          <CommitDialog open={showCommit} repoId={selectedRepo.id} status={status} onClose={() => setShowCommit(false)} onDone={async () => { setShowCommit(false); await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]); }} />
-          <BranchDialog open={showBranch} repoId={selectedRepo.id} currentBranch={branches?.current ?? ""} onClose={() => setShowBranch(false)} onDone={async () => { setShowBranch(false); await Promise.all([loadBranches(selectedRepo.id), loadStatus(selectedRepo.id)]); }} />
+          <CommitDialog
+            open={showCommit}
+            repoId={selectedRepo.id}
+            status={status}
+            onClose={() => setShowCommit(false)}
+            onDone={async () => {
+              setShowCommit(false);
+              await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
+              addToast("success", "Commit criado com sucesso");
+            }}
+          />
+
+          <BranchDialog
+            open={showBranch}
+            repoId={selectedRepo.id}
+            currentBranch={branches?.current ?? ""}
+            onClose={() => setShowBranch(false)}
+            onDone={async (newBranch) => {
+              setShowBranch(false);
+              await Promise.all([loadBranches(selectedRepo.id), loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
+              setSelectedFile(null); setFileContent(""); setSavedContent("");
+              addToast("success", `Agora em: ${newBranch}`);
+            }}
+          />
+
           {sseDialog && (
-            <SseDialog open={true} title={sseDialog.title} endpoint={sseDialog.endpoint} body={sseDialog.body} onClose={() => setSseDialog(null)} onDone={async () => { setSseDialog(null); await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadLog(selectedRepo.id)]); }} />
+            <SseDialog
+              open={true}
+              title={sseDialog.title}
+              endpoint={sseDialog.endpoint}
+              body={sseDialog.body}
+              onClose={() => setSseDialog(null)}
+              onDone={async () => {
+                setSseDialog(null);
+                await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadLog(selectedRepo.id)]);
+              }}
+            />
           )}
         </>
       )}
+
+      <ToastContainer toasts={toasts} />
     </div>
   );
 }
