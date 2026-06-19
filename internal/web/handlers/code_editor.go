@@ -592,35 +592,53 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 }
 
 // Commit — POST /api/v1/code-editor/repos/:id/commit
-// Body: { "message": "...", "files": ["path1", ...] (optional — se vazio, faz add .) }
+// Body: { "message": "...", "files": ["path1", ...] (optional), "amend": false }
 func (h *CodeEditorHandler) Commit(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 	var req struct {
 		Message string   `json:"message"`
 		Files   []string `json:"files"`
+		Amend   bool     `json:"amend"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.Message == "" {
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "json inválido"})
+		return
+	}
+	if !req.Amend && req.Message == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "message é obrigatório"})
 		return
 	}
 
-	// Stage arquivos
-	if len(req.Files) == 0 {
-		if out, err := runGit(dir, "add", "."); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": out})
-			return
-		}
-	} else {
-		for _, f := range req.Files {
-			if out, err := runGit(dir, "add", f); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": out, "file": f})
+	// Stage arquivos (somente se não for amend sem mudanças ou se há arquivos indicados)
+	if !req.Amend || len(req.Files) > 0 {
+		if len(req.Files) == 0 {
+			if out, err := runGit(dir, "add", "."); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": out})
 				return
+			}
+		} else {
+			for _, f := range req.Files {
+				if out, err := runGit(dir, "add", f); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": out, "file": f})
+					return
+				}
 			}
 		}
 	}
 
-	out, err := runGit(dir, "commit", "-m", req.Message)
+	var args []string
+	if req.Amend {
+		if req.Message != "" {
+			args = []string{"commit", "--amend", "-m", req.Message}
+		} else {
+			args = []string{"commit", "--amend", "--no-edit"}
+		}
+	} else {
+		args = []string{"commit", "-m", req.Message}
+	}
+
+	out, err := runGit(dir, args...)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return
@@ -694,6 +712,12 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	if err := cmd.Wait(); err != nil {
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
 	} else {
+		// Remove token da URL remota após push bem-sucedido (segurança)
+		if token != "" {
+			owner, repo := ownerRepo(dir)
+			cleanURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+			runGit(dir, "remote", "set-url", "origin", cleanURL) //nolint:errcheck
+		}
 		sendSSE("Push concluído com sucesso.")
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 	}
@@ -797,4 +821,274 @@ func splitLines(s string) []string {
 		}
 	}
 	return result
+}
+
+// ─── Fase 2: novos handlers ────────────────────────────────────────────────
+
+// GrepFiles — GET /api/v1/code-editor/repos/:id/grep?q=&ext=
+// Busca conteúdo de arquivos com git grep.
+func (h *CodeEditorHandler) GrepFiles(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	q := c.Query("q")
+	ext := c.Query("ext") // ex: "go", "ts"
+	if q == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "q é obrigatório"})
+		return
+	}
+
+	args := []string{"grep", "-n", "--ignore-case", "-m", "5"}
+	if ext != "" {
+		args = append(args, q, "--", "*."+strings.TrimPrefix(ext, "."))
+	} else {
+		args = append(args, q)
+	}
+
+	// Exit code 1 = sem matches; ignoramos o erro
+	out, _ := runGit(dir, args...)
+
+	type GrepMatch struct {
+		File    string `json:"file"`
+		Line    int    `json:"line"`
+		Content string `json:"content"`
+	}
+	matches := []GrepMatch{}
+	for _, l := range strings.Split(out, "\n") {
+		if l == "" {
+			continue
+		}
+		parts := strings.SplitN(l, ":", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		lineNum := 0
+		fmt.Sscanf(parts[1], "%d", &lineNum)
+		matches = append(matches, GrepMatch{
+			File:    parts[0],
+			Line:    lineNum,
+			Content: strings.TrimSpace(parts[2]),
+		})
+		if len(matches) >= 200 {
+			break
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"matches": matches, "query": q})
+}
+
+// GetOriginalContent — GET /api/v1/code-editor/repos/:id/original?path=
+// Retorna o conteúdo do arquivo no HEAD (para diff view).
+func (h *CodeEditorHandler) GetOriginalContent(c *gin.Context) {
+	id := c.Param("id")
+	rel := c.Query("path")
+	if rel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path é obrigatório"})
+		return
+	}
+	dir := h.repoDir(id)
+	fullPath := filepath.Join(dir, filepath.Clean(rel))
+	if !strings.HasPrefix(fullPath, dir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "caminho inválido"})
+		return
+	}
+	// git show HEAD:<path> — exit 128 se arquivo novo (untracked)
+	out, err := runGit(dir, "show", "HEAD:"+rel)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"content": ""})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"content": out})
+}
+
+// DeleteFile — DELETE /api/v1/code-editor/repos/:id/file?path=
+func (h *CodeEditorHandler) DeleteFile(c *gin.Context) {
+	id := c.Param("id")
+	rel := c.Query("path")
+	if rel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path é obrigatório"})
+		return
+	}
+	dir := h.repoDir(id)
+	fullPath := filepath.Join(dir, filepath.Clean(rel))
+	if !strings.HasPrefix(fullPath, dir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "caminho inválido"})
+		return
+	}
+	if err := os.Remove(fullPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": rel})
+}
+
+// CreateFile — POST /api/v1/code-editor/repos/:id/file/create
+// Body: { "path": "...", "content": "" }
+func (h *CodeEditorHandler) CreateFile(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path é obrigatório"})
+		return
+	}
+	dir := h.repoDir(id)
+	fullPath := filepath.Join(dir, filepath.Clean(req.Path))
+	if !strings.HasPrefix(fullPath, dir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "caminho inválido"})
+		return
+	}
+	if _, err := os.Stat(fullPath); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "arquivo já existe"})
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := os.WriteFile(fullPath, []byte(req.Content), 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"created": req.Path})
+}
+
+// CreateDir — POST /api/v1/code-editor/repos/:id/mkdir
+// Body: { "path": "..." }
+func (h *CodeEditorHandler) CreateDir(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path é obrigatório"})
+		return
+	}
+	dir := h.repoDir(id)
+	fullPath := filepath.Join(dir, filepath.Clean(req.Path))
+	if !strings.HasPrefix(fullPath, dir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "caminho inválido"})
+		return
+	}
+	if err := os.MkdirAll(fullPath, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"created": req.Path})
+}
+
+// RenameFile — POST /api/v1/code-editor/repos/:id/rename
+// Body: { "from": "...", "to": "..." }
+func (h *CodeEditorHandler) RenameFile(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.From == "" || req.To == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from e to são obrigatórios"})
+		return
+	}
+	dir := h.repoDir(id)
+	fromPath := filepath.Join(dir, filepath.Clean(req.From))
+	toPath := filepath.Join(dir, filepath.Clean(req.To))
+	if !strings.HasPrefix(fromPath, dir) || !strings.HasPrefix(toPath, dir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "caminho inválido"})
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := os.Rename(fromPath, toPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"from": req.From, "to": req.To})
+}
+
+// ResetFile — POST /api/v1/code-editor/repos/:id/reset-file
+// Body: { "path": "..." }
+// Descarta mudanças em um arquivo (git checkout HEAD -- <path>).
+func (h *CodeEditorHandler) ResetFile(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path é obrigatório"})
+		return
+	}
+	out, err := runGit(dir, "checkout", "HEAD", "--", req.Path)
+	if err != nil {
+		// Pode ser arquivo novo (untracked) — tenta git clean
+		out2, err2 := runGit(dir, "clean", "-f", "--", req.Path)
+		if err2 != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": out + "\n" + out2})
+			return
+		}
+		out = out2
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out, "path": req.Path})
+}
+
+// Stash — POST /api/v1/code-editor/repos/:id/stash
+// Body: { "message": "..." (opcional) }
+func (h *CodeEditorHandler) Stash(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Message string `json:"message"`
+	}
+	c.ShouldBindJSON(&req) //nolint:errcheck
+
+	args := []string{"stash", "push", "--include-untracked"}
+	if req.Message != "" {
+		args = append(args, "-m", req.Message)
+	}
+	out, err := runGit(dir, args...)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
+// StashPop — POST /api/v1/code-editor/repos/:id/stash/pop
+func (h *CodeEditorHandler) StashPop(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	out, err := runGit(dir, "stash", "pop")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
+// MergeBranch — POST /api/v1/code-editor/repos/:id/merge
+// Body: { "branch": "...", "no_ff": false }
+func (h *CodeEditorHandler) MergeBranch(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Branch string `json:"branch"`
+		NoFF   bool   `json:"no_ff"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Branch == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "branch é obrigatório"})
+		return
+	}
+	args := []string{"merge"}
+	if req.NoFF {
+		args = append(args, "--no-ff")
+	}
+	args = append(args, req.Branch)
+	out, err := runGit(dir, args...)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
 }

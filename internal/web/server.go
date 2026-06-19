@@ -1141,6 +1141,17 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/log", codeEditorHandler.GetCommitLog)
 		codeEditor.GET("/repos/:id/diff", codeEditorHandler.GetFileDiff)
 		codeEditor.GET("/repos/:id/search", codeEditorHandler.SearchFiles)
+		// Fase 2
+		codeEditor.GET("/repos/:id/grep", codeEditorHandler.GrepFiles)
+		codeEditor.GET("/repos/:id/original", codeEditorHandler.GetOriginalContent)
+		codeEditor.DELETE("/repos/:id/file", codeEditorHandler.DeleteFile)
+		codeEditor.POST("/repos/:id/file/create", codeEditorHandler.CreateFile)
+		codeEditor.POST("/repos/:id/mkdir", codeEditorHandler.CreateDir)
+		codeEditor.POST("/repos/:id/rename", codeEditorHandler.RenameFile)
+		codeEditor.POST("/repos/:id/reset-file", codeEditorHandler.ResetFile)
+		codeEditor.POST("/repos/:id/stash", codeEditorHandler.Stash)
+		codeEditor.POST("/repos/:id/stash/pop", codeEditorHandler.StashPop)
+		codeEditor.POST("/repos/:id/merge", codeEditorHandler.MergeBranch)
 	}
 	fmt.Println("✅ Code Editor routes registradas")
 
