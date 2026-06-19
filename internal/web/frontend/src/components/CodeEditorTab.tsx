@@ -904,6 +904,7 @@ interface BranchesPanelProps {
 
 function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerge }: BranchesPanelProps) {
   const [checkingOut, setCheckingOut] = useState("");
+  const [filter, setFilter] = useState("");
 
   async function handleCheckout(branch: string) {
     if (branches?.current === branch) return;
@@ -911,6 +912,9 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
     await onCheckout(branch);
     setCheckingOut("");
   }
+
+  const q = filter.toLowerCase();
+  const matchBranch = (b: string) => !q || b.toLowerCase().includes(q);
 
   return (
     <div className="flex flex-col h-full">
@@ -928,10 +932,26 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
           </Button>
         </div>
       </div>
+      <div className="px-2 py-1.5 border-b border-border/20 flex-shrink-0">
+        <div className="relative">
+          <Search className="w-3 h-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            className="w-full pl-5 pr-2 py-0.5 text-xs bg-muted/50 border border-border/40 rounded focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground"
+            placeholder="Filtrar branches..."
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+          />
+          {filter && (
+            <button onClick={() => setFilter("")} className="absolute right-1 top-1/2 -translate-y-1/2">
+              <X className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+            </button>
+          )}
+        </div>
+      </div>
 
       <ScrollArea className="flex-1">
         <div className="p-2 space-y-3">
-          {branches?.current && (
+          {branches?.current && matchBranch(branches.current) && (
             <div>
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Atual</p>
               <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-primary/10 border border-primary/20">
@@ -945,7 +965,7 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
             <div>
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Locais</p>
               <div className="space-y-0.5">
-                {branches!.local.filter(b => b !== branches?.current).map(b => (
+                {branches!.local.filter(b => b !== branches?.current).filter(matchBranch).map(b => (
                   <button key={b} onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
                     className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group">
                     <GitBranch className="w-3 h-3 text-muted-foreground flex-shrink-0" />
@@ -966,6 +986,7 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
                 {(branches!.remote ?? [])
                   .filter(r => !r.includes("->"))
                   .filter(r => !branches!.local.includes(r.replace("origin/", "")))
+                  .filter(matchBranch)
                   .map(b => (
                     <button key={b} onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
                       className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group">
