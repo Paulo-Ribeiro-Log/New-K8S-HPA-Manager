@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import Editor, { OnMount } from "@monaco-editor/react";
+import Editor, { DiffEditor, OnMount } from "@monaco-editor/react";
 import type * as MonacoEditorNS from "monaco-editor";
 import {
   GitBranch,
@@ -23,6 +23,15 @@ import {
   Clock,
   Loader2,
   ArrowRightLeft,
+  Pencil,
+  FolderPlus,
+  FilePlus,
+  GitMerge,
+  RotateCcw,
+  Eye,
+  Map,
+  PackageMinus,
+  PackagePlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +50,7 @@ import {
   type CodeEditorGitStatus,
   type CodeEditorBranches,
   type CodeEditorLogEntry,
+  type CodeEditorGrepMatch,
 } from "@/lib/api/client";
 
 const API_BASE = "/api/v1";
@@ -78,6 +88,16 @@ function statusLabel(s: string): string {
   if (s === "??" || s === "? ") return "?";
   if (s.startsWith("R")) return "R";
   return s.trim()[0] ?? "~";
+}
+
+// ─── Multi-tab state ────────────────────────────────────────────────────────
+
+interface OpenTab {
+  node: CodeEditorFileNode;
+  initialContent: string;
+  currentContent: string;
+  savedContent: string;
+  repoId: string;
 }
 
 // ─── Toast ─────────────────────────────────────────────────────────────────
@@ -164,9 +184,11 @@ interface FileTreeNodeProps {
   onSelect: (node: CodeEditorFileNode) => void;
   modifiedPaths: Set<string>;
   level: number;
+  onDelete: (node: CodeEditorFileNode) => void;
+  onRename: (node: CodeEditorFileNode) => void;
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename }: FileTreeNodeProps) {
   const [open, setOpen] = useState(level < 1);
   const isSelected = selectedPath === node.path;
   const isModified = modifiedPaths.has(node.path);
@@ -174,33 +196,43 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level }: Fi
   if (node.type === "dir") {
     return (
       <div>
-        <button
-          onClick={() => setOpen(o => !o)}
-          className="w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left"
+        <div
+          className="w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer"
           style={{ paddingLeft: `${level * 12 + 4}px` }}
+          onClick={() => setOpen(o => !o)}
         >
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
           {open ? <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" /> : <Folder className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" />}
-          <span className="truncate text-foreground/80">{node.name}</span>
-        </button>
+          <span className="truncate text-foreground/80 flex-1">{node.name}</span>
+        </div>
         {open && node.children?.map(child => (
-          <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect} modifiedPaths={modifiedPaths} level={level + 1} />
+          <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
+            modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename} />
         ))}
       </div>
     );
   }
 
   return (
-    <button
-      onClick={() => onSelect(node)}
-      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 ${isSelected ? "bg-accent text-accent-foreground" : ""}`}
+    <div
+      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group ${isSelected ? "bg-accent text-accent-foreground" : ""}`}
       style={{ paddingLeft: `${level * 12 + 4}px` }}
     >
-      <span className="w-3 h-3 flex-shrink-0" />
-      <File className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" />
-      <span className={`truncate flex-1 ${isModified ? "text-yellow-400" : "text-foreground/80"}`}>{node.name}</span>
-      {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
-    </button>
+      <button className="flex items-center gap-1 flex-1 min-w-0" onClick={() => onSelect(node)}>
+        <span className="w-3 h-3 flex-shrink-0" />
+        <File className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" />
+        <span className={`truncate flex-1 ${isModified ? "text-yellow-400" : "text-foreground/80"}`}>{node.name}</span>
+        {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
+      </button>
+      <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+        <button onClick={e => { e.stopPropagation(); onRename(node); }} className="p-0.5 rounded hover:bg-muted" title="Renomear">
+          <Pencil className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
+        </button>
+        <button onClick={e => { e.stopPropagation(); onDelete(node); }} className="p-0.5 rounded hover:bg-muted" title="Deletar">
+          <Trash2 className="w-2.5 h-2.5 text-red-400/70 hover:text-red-400" />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -308,20 +340,20 @@ interface CommitDialogProps {
 
 function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogProps) {
   const [message, setMessage] = useState("");
+  const [amend, setAmend] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [gitOutput, setGitOutput] = useState("");
 
-  // Limpa estado ao abrir
   useEffect(() => {
-    if (open) { setMessage(""); setError(""); setGitOutput(""); }
+    if (open) { setMessage(""); setError(""); setGitOutput(""); setAmend(false); }
   }, [open]);
 
   async function doCommit() {
-    if (!message.trim()) { setError("Mensagem é obrigatória"); return; }
+    if (!amend && !message.trim()) { setError("Mensagem é obrigatória"); return; }
     setLoading(true); setError(""); setGitOutput("");
     try {
-      const result = await apiClient.codeEditorCommit(repoId, message.trim());
+      const result = await apiClient.codeEditorCommit(repoId, message.trim(), undefined, amend);
       setGitOutput(result.message || "Commit realizado.");
       setTimeout(() => { onDone(); }, 1500);
     } catch (e: any) {
@@ -338,7 +370,7 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <GitCommit className="w-4 h-4" />Novo Commit
+            <GitCommit className="w-4 h-4" />{amend ? "Emendar Último Commit" : "Novo Commit"}
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
@@ -357,18 +389,24 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
           )}
 
           {!gitOutput && (
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Mensagem do commit</label>
-              <Input
-                placeholder="feat: descrição da mudança"
-                value={message}
-                onChange={e => setMessage(e.target.value)}
-                disabled={loading}
-                onKeyDown={e => e.key === "Enter" && !e.shiftKey && doCommit()}
-                autoFocus
-              />
-              <p className="text-[10px] text-muted-foreground mt-1">Sugestões: feat: · fix: · docs: · refactor: · chore:</p>
-            </div>
+            <>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Mensagem do commit</label>
+                <Input
+                  placeholder={amend ? "Deixe vazio para manter a mensagem atual" : "feat: descrição da mudança"}
+                  value={message}
+                  onChange={e => setMessage(e.target.value)}
+                  disabled={loading}
+                  onKeyDown={e => e.key === "Enter" && !e.shiftKey && doCommit()}
+                  autoFocus
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">Sugestões: feat: · fix: · docs: · refactor: · chore:</p>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={amend} onChange={e => setAmend(e.target.checked)} className="rounded" />
+                <span className="text-xs text-muted-foreground">Emendar último commit (--amend)</span>
+              </label>
+            </>
           )}
 
           {gitOutput && (
@@ -393,9 +431,9 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
             {gitOutput ? "Fechar" : "Cancelar"}
           </Button>
           {!gitOutput && (
-            <Button onClick={doCommit} disabled={loading || !message.trim()}>
+            <Button onClick={doCommit} disabled={loading || (!amend && !message.trim())}>
               {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCommit className="w-3 h-3 mr-1" />}
-              Commitar
+              {amend ? "Emendar" : "Commitar"}
             </Button>
           )}
         </DialogFooter>
@@ -501,6 +539,279 @@ function BranchDialog({ open, repoId, currentBranch: cur, onClose, onDone }: Bra
   );
 }
 
+// ─── MergeDialog ───────────────────────────────────────────────────────────
+
+interface MergeDialogProps {
+  open: boolean;
+  repoId: string;
+  currentBranch: string;
+  branches: CodeEditorBranches | null;
+  onClose: () => void;
+  onDone: () => void;
+}
+
+function MergeDialog({ open, repoId, currentBranch, branches, onClose, onDone }: MergeDialogProps) {
+  const [target, setTarget] = useState("");
+  const [noFf, setNoFf] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [gitOutput, setGitOutput] = useState("");
+
+  useEffect(() => { if (open) { setTarget(""); setError(""); setGitOutput(""); } }, [open]);
+
+  const allBranches = [...(branches?.local ?? []), ...(branches?.remote ?? [])].filter(b => b !== currentBranch && !b.includes("->"));
+
+  async function doMerge() {
+    if (!target) { setError("Selecione um branch"); return; }
+    setLoading(true); setError(""); setGitOutput("");
+    try {
+      const result = await apiClient.codeEditorMerge(repoId, target, noFf);
+      setGitOutput(result.message);
+      setTimeout(() => { onDone(); }, 1500);
+    } catch (e: any) {
+      setError(e.message || "Erro ao fazer merge");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><GitMerge className="w-4 h-4" />Merge em {currentBranch}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          {!gitOutput && (
+            <>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Branch de origem</label>
+                <select className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground"
+                  value={target} onChange={e => setTarget(e.target.value)}>
+                  <option value="">Selecionar branch...</option>
+                  {allBranches.map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={noFf} onChange={e => setNoFf(e.target.checked)} className="rounded" />
+                <span className="text-xs text-muted-foreground">--no-ff (sempre criar merge commit)</span>
+              </label>
+            </>
+          )}
+
+          {gitOutput && (
+            <div className="bg-black/40 border border-green-800/50 rounded p-3">
+              <CheckCircle2 className="w-4 h-4 text-green-400 mb-1" />
+              <pre className="font-mono text-xs text-green-300/80 whitespace-pre-wrap">{gitOutput}</pre>
+            </div>
+          )}
+          {error && (
+            <div className="bg-red-950/30 border border-red-800/50 rounded p-2 flex items-start gap-2">
+              <AlertCircle className="w-3.5 h-3.5 text-red-400 mt-0.5 flex-shrink-0" />
+              <pre className="text-xs text-red-300 whitespace-pre-wrap">{error}</pre>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={loading}>{gitOutput ? "Fechar" : "Cancelar"}</Button>
+          {!gitOutput && (
+            <Button onClick={doMerge} disabled={loading || !target}>
+              {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitMerge className="w-3 h-3 mr-1" />}
+              Fazer Merge
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── CreateFileDialog ───────────────────────────────────────────────────────
+
+interface CreateFileDialogProps {
+  open: boolean;
+  mode: "file" | "dir";
+  repoId: string;
+  onClose: () => void;
+  onDone: (path: string) => void;
+}
+
+function CreateFileDialog({ open, mode, repoId, onClose, onDone }: CreateFileDialogProps) {
+  const [path, setPath] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => { if (open) { setPath(""); setError(""); } }, [open]);
+
+  async function doCreate() {
+    if (!path.trim()) { setError("Caminho é obrigatório"); return; }
+    setLoading(true); setError("");
+    try {
+      if (mode === "file") {
+        await apiClient.codeEditorCreateFile(repoId, path.trim());
+      } else {
+        await apiClient.codeEditorCreateDir(repoId, path.trim());
+      }
+      onDone(path.trim());
+      onClose();
+    } catch (e: any) {
+      setError(e.message || "Erro ao criar");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {mode === "file" ? <FilePlus className="w-4 h-4" /> : <FolderPlus className="w-4 h-4" />}
+            {mode === "file" ? "Criar Arquivo" : "Criar Pasta"}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Caminho (relativo ao repositório)</label>
+            <Input
+              placeholder={mode === "file" ? "src/utils/helper.go" : "src/utils"}
+              value={path}
+              onChange={e => setPath(e.target.value)}
+              disabled={loading}
+              onKeyDown={e => e.key === "Enter" && doCreate()}
+              autoFocus
+            />
+          </div>
+          {error && <p className="text-xs text-red-400">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={loading}>Cancelar</Button>
+          <Button onClick={doCreate} disabled={loading || !path.trim()}>
+            {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
+            Criar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── RenameDialog ───────────────────────────────────────────────────────────
+
+interface RenameDialogProps {
+  open: boolean;
+  repoId: string;
+  node: CodeEditorFileNode | null;
+  onClose: () => void;
+  onDone: (from: string, to: string) => void;
+}
+
+function RenameDialog({ open, repoId, node, onClose, onDone }: RenameDialogProps) {
+  const [newPath, setNewPath] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => { if (open && node) { setNewPath(node.path); setError(""); } }, [open, node]);
+
+  async function doRename() {
+    if (!newPath.trim() || !node) return;
+    setLoading(true); setError("");
+    try {
+      await apiClient.codeEditorRenameFile(repoId, node.path, newPath.trim());
+      onDone(node.path, newPath.trim());
+      onClose();
+    } catch (e: any) {
+      setError(e.message || "Erro ao renomear");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Pencil className="w-4 h-4" />Renomear</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground font-mono bg-muted px-2 py-1 rounded">{node?.path}</p>
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Novo caminho</label>
+            <Input value={newPath} onChange={e => setNewPath(e.target.value)} disabled={loading}
+              onKeyDown={e => e.key === "Enter" && doRename()} autoFocus />
+          </div>
+          {error && <p className="text-xs text-red-400">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={loading}>Cancelar</Button>
+          <Button onClick={doRename} disabled={loading || !newPath.trim()}>
+            {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}Renomear
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── DiffModal ──────────────────────────────────────────────────────────────
+
+interface DiffModalProps {
+  open: boolean;
+  repoId: string;
+  filePath: string;
+  currentContent: string;
+  onClose: () => void;
+}
+
+function DiffModal({ open, repoId, filePath, currentContent, onClose }: DiffModalProps) {
+  const [original, setOriginal] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open || !filePath) return;
+    setLoading(true);
+    apiClient.codeEditorGetOriginal(repoId, filePath)
+      .then(r => setOriginal(r.content))
+      .catch(() => setOriginal(""))
+      .finally(() => setLoading(false));
+  }, [open, repoId, filePath]);
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent className="max-w-5xl h-[80vh] flex flex-col">
+        <DialogHeader className="flex-shrink-0">
+          <DialogTitle className="flex items-center gap-2 text-sm">
+            <Eye className="w-4 h-4" />Diff — {filePath}
+            <span className="text-xs text-muted-foreground font-normal ml-2">HEAD ← Atual</span>
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 min-h-0">
+          {loading ? (
+            <div className="flex items-center justify-center h-full"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+          ) : (
+            <DiffEditor
+              original={original}
+              modified={currentContent}
+              language={extToLanguage(filePath.split("/").pop() ?? filePath)}
+              theme="vs-dark"
+              options={{
+                readOnly: true,
+                renderSideBySide: true,
+                minimap: { enabled: false },
+                fontSize: 12,
+                scrollBeyondLastLine: false,
+              }}
+            />
+          )}
+        </div>
+        <DialogFooter className="flex-shrink-0">
+          <Button variant="outline" onClick={onClose}>Fechar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── SseDialog (Pull / Push) ────────────────────────────────────────────────
 
 interface SseDialogProps {
@@ -588,10 +899,12 @@ interface BranchesPanelProps {
   onRefresh: () => void;
   onCheckout: (branch: string) => Promise<void>;
   onCreateBranch: () => void;
+  onMerge: () => void;
 }
 
-function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch }: BranchesPanelProps) {
+function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerge }: BranchesPanelProps) {
   const [checkingOut, setCheckingOut] = useState("");
+  const [filter, setFilter] = useState("");
 
   async function handleCheckout(branch: string) {
     if (branches?.current === branch) return;
@@ -600,11 +913,17 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch }: Bran
     setCheckingOut("");
   }
 
+  const q = filter.toLowerCase();
+  const matchBranch = (b: string) => !q || b.toLowerCase().includes(q);
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/30 flex-shrink-0">
         <span className="text-xs text-muted-foreground font-medium">Branches</span>
         <div className="flex gap-1">
+          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onMerge} title="Merge">
+            <GitMerge className="w-3 h-3" />
+          </Button>
           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onRefresh} title="Atualizar">
             <RefreshCw className="w-3 h-3" />
           </Button>
@@ -613,11 +932,26 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch }: Bran
           </Button>
         </div>
       </div>
+      <div className="px-2 py-1.5 border-b border-border/20 flex-shrink-0">
+        <div className="relative">
+          <Search className="w-3 h-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            className="w-full pl-5 pr-2 py-0.5 text-xs bg-muted/50 border border-border/40 rounded focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground"
+            placeholder="Filtrar branches..."
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+          />
+          {filter && (
+            <button onClick={() => setFilter("")} className="absolute right-1 top-1/2 -translate-y-1/2">
+              <X className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+            </button>
+          )}
+        </div>
+      </div>
 
       <ScrollArea className="flex-1">
         <div className="p-2 space-y-3">
-          {/* Branch atual */}
-          {branches?.current && (
+          {branches?.current && matchBranch(branches.current) && (
             <div>
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Atual</p>
               <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-primary/10 border border-primary/20">
@@ -627,57 +961,42 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch }: Bran
             </div>
           )}
 
-          {/* Branches locais */}
           {(branches?.local?.length ?? 0) > 0 && (
             <div>
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Locais</p>
               <div className="space-y-0.5">
-                {branches!.local.filter(b => b !== branches?.current).map(b => (
-                  <button
-                    key={b}
-                    onClick={() => handleCheckout(b)}
-                    disabled={checkingOut !== ""}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group"
-                  >
+                {branches!.local.filter(b => b !== branches?.current).filter(matchBranch).map(b => (
+                  <button key={b} onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group">
                     <GitBranch className="w-3 h-3 text-muted-foreground flex-shrink-0" />
                     <span className="truncate flex-1 text-foreground/80">{b}</span>
                     {checkingOut === b
                       ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                      : <ArrowRightLeft className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
-                    }
+                      : <ArrowRightLeft className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />}
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Branches remotos */}
           {(branches?.remote?.length ?? 0) > 0 && (
             <div>
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Remotos</p>
               <div className="space-y-0.5">
                 {(branches!.remote ?? [])
                   .filter(r => !r.includes("->"))
-                  .filter(r => {
-                    const local = r.replace("origin/", "");
-                    return !branches!.local.includes(local);
-                  })
+                  .filter(r => !branches!.local.includes(r.replace("origin/", "")))
+                  .filter(matchBranch)
                   .map(b => (
-                    <button
-                      key={b}
-                      onClick={() => handleCheckout(b)}
-                      disabled={checkingOut !== ""}
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group"
-                    >
+                    <button key={b} onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group">
                       <GitBranch className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
                       <span className="truncate flex-1 text-muted-foreground">{b}</span>
                       {checkingOut === b
                         ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                        : <Download className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
-                      }
+                        : <Download className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />}
                     </button>
-                  ))
-                }
+                  ))}
               </div>
             </div>
           )}
@@ -697,39 +1016,87 @@ export function CodeEditorTab() {
   const [repos, setRepos] = useState<CodeEditorRepo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<CodeEditorRepo | null>(null);
   const [tree, setTree] = useState<CodeEditorFileNode[]>([]);
-  const [selectedFile, setSelectedFile] = useState<CodeEditorFileNode | null>(null);
-  const [fileContent, setFileContent] = useState("");
-  const [savedContent, setSavedContent] = useState("");
+
+  // Multi-tab state
+  const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
+  const [activeTabIdx, setActiveTabIdx] = useState(0);
+
   const [status, setStatus] = useState<CodeEditorGitStatus | null>(null);
   const [branches, setBranches] = useState<CodeEditorBranches | null>(null);
   const [log, setLog] = useState<CodeEditorLogEntry[]>([]);
+
+  // Search / grep
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<string[]>([]);
+  const [grepMode, setGrepMode] = useState(false);
+  const [grepResults, setGrepResults] = useState<CodeEditorGrepMatch[]>([]);
+
+  // Sidebar
   const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log">("files");
-  const [sidebarWidth, setSidebarWidth] = useState(224); // 224px = w-56
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem("ce_sidebar_width");
+    return saved ? parseInt(saved) : 224;
+  });
+
+  // Editor options
+  const [showMinimap, setShowMinimap] = useState(false);
+
+  // Stash state (feedback)
+  const [stashLoading, setStashLoading] = useState<"push" | "pop" | null>(null);
 
   // Dialogs
   const [showClone, setShowClone] = useState(false);
   const [showCommit, setShowCommit] = useState(false);
   const [showBranch, setShowBranch] = useState(false);
+  const [showMerge, setShowMerge] = useState(false);
   const [sseDialog, setSseDialog] = useState<{ title: string; endpoint: string; body?: object } | null>(null);
+  const [createDialog, setCreateDialog] = useState<{ mode: "file" | "dir" } | null>(null);
+  const [renameNode, setRenameNode] = useState<CodeEditorFileNode | null>(null);
+  const [diffFile, setDiffFile] = useState<string | null>(null);
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const { toasts, addToast } = useToasts();
-  const isModified = fileContent !== savedContent;
+
+  const activeTab = openTabs[activeTabIdx] ?? null;
+  const isModified = activeTab ? activeTab.currentContent !== activeTab.savedContent : false;
   const modifiedPaths = new Set((status?.files ?? []).map(f => f.path));
 
+  // ── persist sidebar width ──
+  useEffect(() => {
+    localStorage.setItem("ce_sidebar_width", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  // ── persist selected repo ──
+  useEffect(() => {
+    if (selectedRepo) {
+      localStorage.setItem("ce_last_repo", selectedRepo.id);
+    }
+  }, [selectedRepo?.id]);
+
   // ── carregamento inicial ──
-  useEffect(() => { loadRepos(); }, []);
+  useEffect(() => {
+    loadRepos();
+  }, []);
 
   async function loadRepos() {
-    try { setRepos(await apiClient.codeEditorListRepos()); } catch (_) {}
+    try {
+      const fresh = await apiClient.codeEditorListRepos();
+      setRepos(fresh);
+      // Restaurar último repo usado
+      const lastId = localStorage.getItem("ce_last_repo");
+      if (lastId) {
+        const found = fresh.find(r => r.id === lastId);
+        if (found) selectRepo(found);
+      }
+    } catch (_) {}
   }
 
   async function selectRepo(repo: CodeEditorRepo) {
     setSelectedRepo(repo);
-    setSelectedFile(null); setFileContent(""); setSavedContent("");
+    setOpenTabs([]);
+    setActiveTabIdx(0);
     setSearchQuery(""); setSearchResults([]);
+    setGrepResults([]); setGrepMode(false);
     await Promise.all([loadTree(repo.id), loadStatus(repo.id), loadBranches(repo.id), loadLog(repo.id)]);
   }
 
@@ -751,22 +1118,54 @@ export function CodeEditorTab() {
 
   async function openFile(node: CodeEditorFileNode) {
     if (!selectedRepo) return;
-    setSelectedFile(node);
+    const repoId = selectedRepo.id;
+    // Já aberto? Ativar a aba existente
+    const existingIdx = openTabs.findIndex(t => t.repoId === repoId && t.node.path === node.path);
+    if (existingIdx >= 0) {
+      setActiveTabIdx(existingIdx);
+      return;
+    }
     try {
-      const { content } = await apiClient.codeEditorReadFile(selectedRepo.id, node.path);
-      setFileContent(content); setSavedContent(content);
+      const { content } = await apiClient.codeEditorReadFile(repoId, node.path);
+      const newTab: OpenTab = { node, initialContent: content, currentContent: content, savedContent: content, repoId };
+      setOpenTabs(prev => {
+        const updated = [...prev, newTab];
+        setActiveTabIdx(updated.length - 1);
+        return updated;
+      });
     } catch (e: any) {
-      setFileContent(`// Erro ao carregar: ${e.message}`); setSavedContent("");
+      addToast("error", "Erro ao abrir: " + e.message);
     }
   }
 
+  function closeTab(idx: number) {
+    const tab = openTabs[idx];
+    if (tab && tab.currentContent !== tab.savedContent) {
+      if (!confirm(`"${tab.node.name}" tem mudanças não salvas. Fechar mesmo assim?`)) return;
+    }
+    setOpenTabs(prev => {
+      const updated = prev.filter((_, i) => i !== idx);
+      if (activeTabIdx >= updated.length) {
+        setActiveTabIdx(Math.max(0, updated.length - 1));
+      } else if (idx < activeTabIdx) {
+        setActiveTabIdx(activeTabIdx - 1);
+      }
+      return updated;
+    });
+  }
+
+  function updateTabContent(value: string | undefined) {
+    if (value === undefined) return;
+    setOpenTabs(prev => prev.map((t, i) => i === activeTabIdx ? { ...t, currentContent: value } : t));
+  }
+
   async function saveFile() {
-    if (!selectedRepo || !selectedFile || !isModified) return;
+    if (!activeTab || !isModified) return;
     try {
-      await apiClient.codeEditorWriteFile(selectedRepo.id, selectedFile.path, fileContent);
-      setSavedContent(fileContent);
-      await loadStatus(selectedRepo.id);
-      addToast("success", `Salvo: ${selectedFile.name}`);
+      await apiClient.codeEditorWriteFile(activeTab.repoId, activeTab.node.path, activeTab.currentContent);
+      setOpenTabs(prev => prev.map((t, i) => i === activeTabIdx ? { ...t, savedContent: t.currentContent } : t));
+      await loadStatus(activeTab.repoId);
+      addToast("success", `Salvo: ${activeTab.node.name}`);
     } catch (e: any) {
       addToast("error", "Erro ao salvar: " + e.message);
     }
@@ -774,23 +1173,112 @@ export function CodeEditorTab() {
 
   async function handleCheckout(branch: string) {
     if (!selectedRepo) return;
+    // Confirmar se há mudanças não salvas em alguma aba
+    const hasUnsaved = openTabs.some(t => t.currentContent !== t.savedContent);
+    if (hasUnsaved && !confirm("Há arquivos com mudanças não salvas. Alternar branch vai descartá-las. Continuar?")) {
+      throw new Error("cancelado");
+    }
     try {
       const result = await apiClient.codeEditorCheckoutBranch(selectedRepo.id, branch);
       addToast("success", `Alternado para: ${result.branch}`);
+      setOpenTabs([]);
+      setActiveTabIdx(0);
       await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadTree(selectedRepo.id)]);
-      setSelectedFile(null); setFileContent(""); setSavedContent("");
     } catch (e: any) {
-      addToast("error", e.message || "Erro ao alternar branch");
-      throw e; // propaga para o BranchesPanel desativar spinner
+      if (e.message !== "cancelado") {
+        addToast("error", e.message || "Erro ao alternar branch");
+      }
+      throw e;
     }
   }
 
   async function handleSearch() {
     if (!selectedRepo || !searchQuery.trim()) return;
+    if (grepMode) {
+      try {
+        const r = await apiClient.codeEditorGrepFiles(selectedRepo.id, searchQuery);
+        setGrepResults(r.matches ?? []);
+        setSearchResults([]);
+      } catch (_) {}
+    } else {
+      try {
+        const r = await apiClient.codeEditorSearchFiles(selectedRepo.id, searchQuery);
+        setSearchResults(r.matches ?? []);
+        setGrepResults([]);
+      } catch (_) {}
+    }
+  }
+
+  async function handleDeleteFile(node: CodeEditorFileNode) {
+    if (!selectedRepo) return;
+    if (!confirm(`Deletar "${node.path}"?`)) return;
     try {
-      const r = await apiClient.codeEditorSearchFiles(selectedRepo.id, searchQuery);
-      setSearchResults(r.matches ?? []);
-    } catch (_) {}
+      await apiClient.codeEditorDeleteFile(selectedRepo.id, node.path);
+      // Fechar a aba se estiver aberta
+      const tabIdx = openTabs.findIndex(t => t.node.path === node.path);
+      if (tabIdx >= 0) closeTab(tabIdx);
+      await loadTree(selectedRepo.id);
+      await loadStatus(selectedRepo.id);
+      addToast("success", `Deletado: ${node.name}`);
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao deletar");
+    }
+  }
+
+  async function handleRenameFile(from: string, to: string) {
+    if (!selectedRepo) return;
+    // Atualiza a aba se estiver aberta
+    const tabIdx = openTabs.findIndex(t => t.node.path === from);
+    if (tabIdx >= 0) {
+      setOpenTabs(prev => prev.map((t, i) => i === tabIdx ? {
+        ...t,
+        node: { ...t.node, path: to, name: to.split("/").pop() ?? to },
+      } : t));
+    }
+    await loadTree(selectedRepo.id);
+    await loadStatus(selectedRepo.id);
+    addToast("success", `Renomeado: ${to}`);
+  }
+
+  async function handleResetFile(filePath: string) {
+    if (!selectedRepo) return;
+    if (!confirm(`Descartar mudanças em "${filePath}"?`)) return;
+    try {
+      await apiClient.codeEditorResetFile(selectedRepo.id, filePath);
+      // Recarrega a aba se estiver aberta
+      const tabIdx = openTabs.findIndex(t => t.node.path === filePath);
+      if (tabIdx >= 0) {
+        const { content } = await apiClient.codeEditorReadFile(selectedRepo.id, filePath);
+        setOpenTabs(prev => prev.map((t, i) => i === tabIdx ? {
+          ...t, initialContent: content, currentContent: content, savedContent: content,
+        } : t));
+      }
+      await loadStatus(selectedRepo.id);
+      addToast("success", `Revertido: ${filePath}`);
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao reverter");
+    }
+  }
+
+  async function handleStash(action: "push" | "pop") {
+    if (!selectedRepo) return;
+    setStashLoading(action);
+    try {
+      if (action === "push") {
+        const r = await apiClient.codeEditorStash(selectedRepo.id);
+        setOpenTabs([]);
+        setActiveTabIdx(0);
+        addToast("success", r.message || "Stash criado");
+      } else {
+        const r = await apiClient.codeEditorStashPop(selectedRepo.id);
+        addToast("success", r.message || "Stash aplicado");
+      }
+      await Promise.all([loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
+    } catch (e: any) {
+      addToast("error", e.message || `Erro no stash ${action}`);
+    } finally {
+      setStashLoading(null);
+    }
   }
 
   async function deleteRepo(id: string) {
@@ -798,9 +1286,9 @@ export function CodeEditorTab() {
     try {
       await apiClient.codeEditorDeleteRepo(id);
       if (selectedRepo?.id === id) {
-        setSelectedRepo(null); setTree([]); setSelectedFile(null);
-        setFileContent(""); setSavedContent(""); setStatus(null);
-        setBranches(null); setLog([]);
+        setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0);
+        setStatus(null); setBranches(null); setLog([]);
+        localStorage.removeItem("ce_last_repo");
       }
       await loadRepos();
       addToast("success", `Repositório ${id} removido`);
@@ -809,8 +1297,7 @@ export function CodeEditorTab() {
 
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
-    // Ctrl+S — salvar arquivo
-    editor.addCommand(2048 | 49, () => saveFile());
+    editor.addCommand(2048 | 49, () => saveFile()); // Ctrl+S
   };
 
   const sidePanels = [
@@ -827,7 +1314,6 @@ export function CodeEditorTab() {
         <FolderGit2 className="w-4 h-4 text-blue-400 flex-shrink-0" />
         <span className="text-sm font-medium">Editor de Código</span>
 
-        {/* Seletor de repositório */}
         {repos.length > 0 && (
           <select
             className="ml-2 text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground max-w-48"
@@ -839,7 +1325,6 @@ export function CodeEditorTab() {
           </select>
         )}
 
-        {/* Branch atual (indicativo) */}
         {selectedRepo && branches?.current && (
           <button
             onClick={() => setSidePanel("branches")}
@@ -856,21 +1341,23 @@ export function CodeEditorTab() {
         {/* Ações Git */}
         {selectedRepo && (
           <>
-            <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull` })}>
+            <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
+              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull` })}>
               <Download className="w-3 h-3" />Pull
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
               onClick={() => { setSidePanel("git"); setShowCommit(true); }}
-              disabled={modifiedPaths.size === 0}
-            >
+              disabled={modifiedPaths.size === 0}>
               <GitCommit className="w-3 h-3" />Commit
               {modifiedPaths.size > 0 && <span className="bg-yellow-500 text-black text-[10px] px-1 rounded-full">{modifiedPaths.size}</span>}
             </Button>
-            <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push` })}>
+            <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
+              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push` })}>
               <Upload className="w-3 h-3" />Push
               {status?.ahead && status.ahead !== "0" && <span className="bg-blue-500 text-white text-[10px] px-1 rounded-full">{status.ahead}</span>}
             </Button>
-            <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => { setSidePanel("branches"); setShowBranch(true); }}>
+            <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
+              onClick={() => { setSidePanel("branches"); setShowBranch(true); }}>
               <Plus className="w-3 h-3" />Branch
             </Button>
           </>
@@ -903,10 +1390,12 @@ export function CodeEditorTab() {
               <>
                 {selectedRepo && (
                   <div className="px-2 py-1.5 flex gap-1 flex-shrink-0 border-b border-border/30">
-                    <Input className="h-6 text-xs" placeholder="Buscar arquivo..." value={searchQuery}
-                      onChange={e => setSearchQuery(e.target.value)}
+                    <Input className="h-6 text-xs" placeholder={grepMode ? "Buscar no conteúdo..." : "Buscar arquivo..."}
+                      value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
                       onKeyDown={e => e.key === "Enter" && handleSearch()} />
-                    <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={handleSearch}><Search className="w-3 h-3" /></Button>
+                    <Button variant={grepMode ? "default" : "ghost"} size="sm" className="h-6 w-6 p-0" title={grepMode ? "Modo: conteúdo" : "Modo: nome"} onClick={() => { setGrepMode(m => !m); setSearchResults([]); setGrepResults([]); }}>
+                      <Search className="w-3 h-3" />
+                    </Button>
                   </div>
                 )}
                 <ScrollArea className="flex-1">
@@ -928,7 +1417,24 @@ export function CodeEditorTab() {
                     </div>
                   )}
 
-                  {selectedRepo && searchQuery && searchResults.length > 0 && (
+                  {/* Resultados grep */}
+                  {selectedRepo && grepMode && grepResults.length > 0 && (
+                    <div className="p-1 space-y-0.5">
+                      {grepResults.slice(0, 100).map((m, i) => (
+                        <button key={i} className="w-full text-left px-2 py-1 text-xs hover:bg-muted/50 rounded"
+                          onClick={() => openFile({ name: m.file.split("/").pop() ?? m.file, path: m.file, type: "file" })}>
+                          <div className="font-mono text-foreground/80 truncate">{m.file}:{m.line}</div>
+                          <div className="text-muted-foreground truncate text-[10px]">{m.content}</div>
+                        </button>
+                      ))}
+                      <div className="flex justify-end px-1">
+                        <Button variant="ghost" size="sm" className="h-5 text-[10px]" onClick={() => { setSearchQuery(""); setGrepResults([]); }}>Limpar</Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Resultados busca por nome */}
+                  {selectedRepo && !grepMode && searchQuery && searchResults.length > 0 && (
                     <div className="p-1 space-y-0.5">
                       {searchResults.slice(0, 50).map(path => (
                         <button key={path} className="w-full text-left px-2 py-0.5 text-xs hover:bg-muted/50 rounded font-mono truncate text-foreground/80"
@@ -947,13 +1453,16 @@ export function CodeEditorTab() {
                       <div className="flex items-center justify-between px-1 mb-1">
                         <span className="text-xs text-muted-foreground font-medium truncate">{selectedRepo.owner}/{selectedRepo.repo}</span>
                         <div className="flex gap-1 flex-shrink-0">
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "file" })} title="Novo arquivo"><FilePlus className="w-3 h-3" /></Button>
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "dir" })} title="Nova pasta"><FolderPlus className="w-3 h-3" /></Button>
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => loadTree(selectedRepo.id)}><RefreshCw className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => { setSelectedRepo(null); setTree([]); }}><X className="w-3 h-3" /></Button>
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}><X className="w-3 h-3" /></Button>
                         </div>
                       </div>
                       {tree.map(node => (
-                        <FileTreeNode key={node.path} node={node} selectedPath={selectedFile?.path ?? ""}
-                          onSelect={openFile} modifiedPaths={modifiedPaths} level={0} />
+                        <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
+                          onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
+                          onDelete={handleDeleteFile} onRename={n => setRenameNode(n)} />
                       ))}
                     </div>
                   )}
@@ -969,6 +1478,7 @@ export function CodeEditorTab() {
                 onRefresh={() => selectedRepo && loadBranches(selectedRepo.id)}
                 onCheckout={handleCheckout}
                 onCreateBranch={() => setShowBranch(true)}
+                onMerge={() => setShowMerge(true)}
               />
             )}
 
@@ -986,12 +1496,20 @@ export function CodeEditorTab() {
                           {status.files.length === 0 ? (
                             <p className="text-xs text-muted-foreground italic">Árvore limpa</p>
                           ) : status.files.map(f => (
-                            <div key={f.path} className="flex items-center gap-1.5 py-0.5">
-                              <span className={`text-xs font-bold w-4 text-center ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
-                              <button className="text-xs font-mono truncate hover:text-foreground text-foreground/70 flex-1 text-left"
+                            <div key={f.path} className="flex items-center gap-1 py-0.5 group">
+                              <span className={`text-xs font-bold w-4 text-center flex-shrink-0 ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
+                              <button className="text-xs font-mono truncate hover:text-foreground text-foreground/70 flex-1 text-left min-w-0"
                                 onClick={() => openFile({ name: f.path.split("/").pop() ?? f.path, path: f.path, type: "file" })}>
                                 {f.path}
                               </button>
+                              <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+                                <button onClick={() => setDiffFile(f.path)} title="Ver diff" className="p-0.5 rounded hover:bg-muted">
+                                  <Eye className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
+                                </button>
+                                <button onClick={() => handleResetFile(f.path)} title="Descartar mudanças" className="p-0.5 rounded hover:bg-muted">
+                                  <RotateCcw className="w-2.5 h-2.5 text-red-400/70 hover:text-red-400" />
+                                </button>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -1001,6 +1519,19 @@ export function CodeEditorTab() {
                             {status.behind !== "0" && <span className="text-yellow-400">↓{status.behind} atrás</span>}
                           </div>
                         )}
+                        {/* Stash */}
+                        <div className="border-t border-border/30 pt-2 flex gap-1">
+                          <Button variant="ghost" size="sm" className="flex-1 h-6 text-[11px]" onClick={() => handleStash("push")}
+                            disabled={stashLoading !== null || status.files.length === 0}>
+                            {stashLoading === "push" ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <PackageMinus className="w-3 h-3 mr-1" />}
+                            Stash
+                          </Button>
+                          <Button variant="ghost" size="sm" className="flex-1 h-6 text-[11px]" onClick={() => handleStash("pop")}
+                            disabled={stashLoading !== null}>
+                            {stashLoading === "pop" ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <PackagePlus className="w-3 h-3 mr-1" />}
+                            Pop
+                          </Button>
+                        </div>
                       </>
                     ) : (
                       <p className="text-xs text-muted-foreground text-center py-4">Selecione um repositório</p>
@@ -1052,29 +1583,64 @@ export function CodeEditorTab() {
 
         {/* ── Área do editor ── */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
-          {selectedFile ? (
+          {/* Barra de abas */}
+          {openTabs.length > 0 && (
+            <div className="flex items-center border-b border-border/50 flex-shrink-0 bg-card/10 overflow-x-auto">
+              {openTabs.map((tab, idx) => {
+                const unsaved = tab.currentContent !== tab.savedContent;
+                return (
+                  <div
+                    key={`${tab.repoId}/${tab.node.path}`}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-border/30 cursor-pointer flex-shrink-0 group ${idx === activeTabIdx ? "bg-background border-b-2 border-b-primary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted/30"}`}
+                    onClick={() => setActiveTabIdx(idx)}
+                    style={{ borderBottom: idx === activeTabIdx ? "2px solid hsl(var(--primary))" : undefined }}
+                  >
+                    <File className="w-3 h-3 flex-shrink-0" />
+                    <span className="truncate max-w-32">{tab.node.name}</span>
+                    {unsaved && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
+                    <button
+                      onClick={e => { e.stopPropagation(); closeTab(idx); }}
+                      className="w-3.5 h-3.5 rounded hover:bg-muted flex items-center justify-center opacity-0 group-hover:opacity-100 flex-shrink-0"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {activeTab ? (
             <>
-              {/* Aba do arquivo */}
-              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/50 flex-shrink-0 bg-card/20">
-                <File className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-                <span className="text-xs font-mono text-foreground/80 truncate">{selectedFile.path}</span>
+              {/* Barra do arquivo ativo */}
+              <div className="flex items-center gap-2 px-3 py-1 border-b border-border/50 flex-shrink-0 bg-card/20">
+                <span className="text-xs font-mono text-muted-foreground truncate flex-1">{activeTab.node.path}</span>
                 {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" title="Não salvo" />}
-                <div className="flex-1" />
-                <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={saveFile} disabled={!isModified}>
-                  <CheckCircle2 className="w-3 h-3" />Salvar <span className="text-muted-foreground">(Ctrl+S)</span>
-                </Button>
+                <div className="flex gap-1 flex-shrink-0">
+                  <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title={showMinimap ? "Ocultar minimap" : "Mostrar minimap"}
+                    onClick={() => setShowMinimap(m => !m)}>
+                    <Map className="w-3 h-3" />
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Ver diff"
+                    onClick={() => setDiffFile(activeTab.node.path)}>
+                    <Eye className="w-3 h-3" />
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={saveFile} disabled={!isModified}>
+                    <CheckCircle2 className="w-3 h-3" />Salvar <span className="text-muted-foreground text-[10px]">Ctrl+S</span>
+                  </Button>
+                </div>
               </div>
               <div className="flex-1 min-h-0">
                 <Editor
                   height="100%"
-                  language={extToLanguage(selectedFile.name)}
-                  value={fileContent}
+                  language={extToLanguage(activeTab.node.name)}
+                  value={activeTab.currentContent}
                   theme="vs-dark"
                   onMount={handleEditorMount}
-                  onChange={v => setFileContent(v ?? "")}
+                  onChange={updateTabContent}
                   options={{
                     automaticLayout: true,
-                    minimap: { enabled: false },
+                    minimap: { enabled: showMinimap },
                     fontSize: 13,
                     lineHeight: 20,
                     fontFamily: "'Cascadia Code','Fira Code','Consolas','Courier New',monospace",
@@ -1145,11 +1711,59 @@ export function CodeEditorTab() {
             onClose={() => setShowBranch(false)}
             onDone={async (newBranch) => {
               setShowBranch(false);
+              setOpenTabs([]);
+              setActiveTabIdx(0);
               await Promise.all([loadBranches(selectedRepo.id), loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
-              setSelectedFile(null); setFileContent(""); setSavedContent("");
               addToast("success", `Agora em: ${newBranch}`);
             }}
           />
+
+          <MergeDialog
+            open={showMerge}
+            repoId={selectedRepo.id}
+            currentBranch={branches?.current ?? ""}
+            branches={branches}
+            onClose={() => setShowMerge(false)}
+            onDone={async () => {
+              setShowMerge(false);
+              setOpenTabs([]);
+              setActiveTabIdx(0);
+              await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadTree(selectedRepo.id)]);
+              addToast("success", "Merge concluído");
+            }}
+          />
+
+          <CreateFileDialog
+            open={!!createDialog}
+            mode={createDialog?.mode ?? "file"}
+            repoId={selectedRepo.id}
+            onClose={() => setCreateDialog(null)}
+            onDone={async (path) => {
+              await loadTree(selectedRepo.id);
+              if (createDialog?.mode === "file") {
+                openFile({ name: path.split("/").pop() ?? path, path, type: "file" });
+              }
+              addToast("success", `Criado: ${path}`);
+            }}
+          />
+
+          <RenameDialog
+            open={!!renameNode}
+            repoId={selectedRepo.id}
+            node={renameNode}
+            onClose={() => setRenameNode(null)}
+            onDone={handleRenameFile}
+          />
+
+          {diffFile && (
+            <DiffModal
+              open={true}
+              repoId={selectedRepo.id}
+              filePath={diffFile}
+              currentContent={openTabs.find(t => t.node.path === diffFile)?.currentContent ?? ""}
+              onClose={() => setDiffFile(null)}
+            />
+          )}
 
           {sseDialog && (
             <SseDialog

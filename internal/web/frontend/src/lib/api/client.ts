@@ -3716,10 +3716,10 @@ class APIClient {
     });
   }
 
-  async codeEditorCommit(id: string, message: string, files?: string[]): Promise<{ message: string }> {
+  async codeEditorCommit(id: string, message: string, files?: string[], amend = false): Promise<{ message: string }> {
     return this.request(`/code-editor/repos/${id}/commit`, {
       method: "POST",
-      body: JSON.stringify({ message, files }),
+      body: JSON.stringify({ message, files, amend }),
     });
   }
 
@@ -3734,6 +3734,67 @@ class APIClient {
 
   async codeEditorSearchFiles(id: string, q: string): Promise<{ matches: string[] }> {
     return this.request(`/code-editor/repos/${id}/search?q=${encodeURIComponent(q)}`);
+  }
+
+  // Fase 2
+  async codeEditorGrepFiles(id: string, q: string, ext?: string): Promise<{ matches: CodeEditorGrepMatch[]; query: string }> {
+    const params = new URLSearchParams({ q });
+    if (ext) params.set("ext", ext);
+    return this.request(`/code-editor/repos/${id}/grep?${params}`);
+  }
+
+  async codeEditorGetOriginal(id: string, path: string): Promise<{ content: string }> {
+    return this.request(`/code-editor/repos/${id}/original?path=${encodeURIComponent(path)}`);
+  }
+
+  async codeEditorDeleteFile(id: string, path: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/file?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+  }
+
+  async codeEditorCreateFile(id: string, path: string, content = ""): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/file/create`, {
+      method: "POST",
+      body: JSON.stringify({ path, content }),
+    });
+  }
+
+  async codeEditorCreateDir(id: string, path: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/mkdir`, {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+  }
+
+  async codeEditorRenameFile(id: string, from: string, to: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ from, to }),
+    });
+  }
+
+  async codeEditorResetFile(id: string, path: string): Promise<{ message: string; path: string }> {
+    return this.request(`/code-editor/repos/${id}/reset-file`, {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+  }
+
+  async codeEditorStash(id: string, message?: string): Promise<{ message: string }> {
+    return this.request(`/code-editor/repos/${id}/stash`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+  }
+
+  async codeEditorStashPop(id: string): Promise<{ message: string }> {
+    return this.request(`/code-editor/repos/${id}/stash/pop`, { method: "POST" });
+  }
+
+  async codeEditorMerge(id: string, branch: string, noFf = false): Promise<{ message: string }> {
+    return this.request(`/code-editor/repos/${id}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ branch, no_ff: noFf }),
+    });
   }
 }
 
@@ -3773,6 +3834,12 @@ export interface CodeEditorLogEntry {
   message: string;
   author: string;
   when: string;
+}
+
+export interface CodeEditorGrepMatch {
+  file: string;
+  line: number;
+  content: string;
 }
 
 // Singleton instance
