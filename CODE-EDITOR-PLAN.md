@@ -5,7 +5,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Estado Atual (branch `editor-github`, último commit `7d113d1a`)
+## Estado Atual (branch `editor-github`, último commit `2b69dfd9`)
 
 ### ✅ Concluído — Fase 1 (MVP)
 
@@ -76,43 +76,52 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Fase 2 — Melhorias Planejadas
+## ✅ Concluído — Fase 2
 
 ### Edição Avançada
-- [ ] **Diff visual antes de commitar** — abrir DiffEditor do Monaco mostrando `git diff HEAD` do arquivo
-- [ ] **Aba múltipla de arquivos** — barra de abas com arquivos abertos (como VS Code)
-- [ ] **Busca em conteúdo de arquivo** — `grep -r` via `GET /api/v1/code-editor/repos/:id/grep?q=...`
-- [ ] **Rename/move/delete de arquivo** — endpoints `PATCH /file` (rename) e `DELETE /file`
-- [ ] **Criar arquivo/pasta** — botão "+" na árvore de arquivos
+- [x] **Diff visual** — `DiffModal` com Monaco DiffEditor comparando HEAD vs. arquivo atual (`GET /repos/:id/original`)
+- [x] **Abas múltiplas** — `openTabs[]` + `activeTabIdx`; barra de abas com close (X) e indicador de não salvo
+- [x] **Busca em conteúdo** — toggle grep mode na sidebar; `git grep -n --ignore-case` via `GET /repos/:id/grep?q=`; exibe file:line:content
+- [x] **Rename de arquivo** — `RenameDialog` + `POST /repos/:id/rename`; atualiza aba aberta se renomeada
+- [x] **Delete de arquivo** — ícone Trash2 no hover do tree + `DELETE /repos/:id/file`; fecha aba se estiver aberta
+- [x] **Criar arquivo/pasta** — botões `FilePlus`/`FolderPlus` no cabeçalho da árvore; `CreateFileDialog` + `POST /repos/:id/file/create` e `POST /repos/:id/mkdir`
 
 ### Git Avançado
-- [ ] **Stash** — `POST .../stash` e `POST .../stash/pop`
-- [ ] **Merge/Rebase** — dialog de merge com seleção de branch origem
-- [ ] **Amend commit** — checkbox "Emendar último commit" no dialog de commit
-- [ ] **Reset de arquivo** — botão "Descartar mudanças" por arquivo no painel Git
-- [ ] **Cherry-pick** — selecionar commit do log e aplicar no branch atual
-- [ ] **Tag** — criar tag a partir de um commit
-- [ ] **Confirmação antes de trocar branch** com alterações não commitadas
+- [x] **Stash / StashPop** — botões no painel Git; `POST /repos/:id/stash` (--include-untracked) e `.../stash/pop`
+- [x] **Merge** — `MergeDialog` no painel Branches; `POST /repos/:id/merge` com opção `no_ff`
+- [x] **Amend commit** — checkbox no `CommitDialog`; backend suporta `--amend` e `--no-edit`
+- [x] **Reset de arquivo** — ícone `RotateCcw` por arquivo no painel Git; `POST /repos/:id/reset-file` (git checkout HEAD ou git clean)
+- [x] **Confirmação antes de trocar branch** — alerta se alguma aba tiver mudanças não salvas
 
 ### UX
 - [x] **Painel redimensionável** — `ResizeDivider` entre sidebar e Monaco (mín 160px, máx 520px, padrão 224px)
-- [ ] **Persistir largura da sidebar** — salvar `sidebarWidth` no `localStorage`
-- [ ] **Persistir arquivo aberto** — salvar `selectedRepo` + `selectedFile` no `localStorage` ao trocar de aba
-- [ ] **Confirmação antes de fechar arquivo** modificado não salvo
-- [ ] **Minimap** opcional no Monaco (desligado por padrão)
-- [ ] **Terminal integrado** — abrir xterm.js na raiz do repo (reutilizar `WebSocketShell`)
+- [x] **Persistir largura da sidebar** — `localStorage["ce_sidebar_width"]`
+- [x] **Persistir último repo** — `localStorage["ce_last_repo"]`; restaurado ao carregar a aba
+- [x] **Confirmação ao fechar aba** com mudanças não salvas (confirm nativo)
+- [x] **Minimap toggle** — botão `Map` no cabeçalho do editor (desligado por padrão)
 
-### Autocomplete / LSP (Fase 3 — complexo)
-- [ ] **Go** — `gopls` via WebSocket proxy (`POST /api/v1/code-editor/repos/:id/lsp/start`)
-- [ ] **Python** — `pyright` ou `pylsp`
-- [ ] **TypeScript/JavaScript** — Monaco já tem suporte nativo (apenas habilitar `tsconfig`)
-- [ ] Monaco já tem autocomplete nativo para: JSON, YAML, HTML, CSS, SQL
+### Segurança
+- [x] **Remove token da URL remota após push** — `git remote set-url origin` com URL limpa após push bem-sucedido
 
-### Segurança / Produção
+---
+
+## Fase 3 — Planejado
+
+### Pendente da Fase 2
+- [ ] **Cherry-pick** — selecionar commit do log e aplicar no branch atual
+- [ ] **Tags** — criar/listar tags a partir de commits
+- [ ] **Confirmação ao fechar arquivo** via botão X da aba com mudanças (atualmente usa `confirm()` nativo — migrar para dialog)
+
+### Avançado
 - [ ] **Limite de repos simultâneos** por usuário (evitar disk exhaustion)
 - [ ] **Quota de disco** — checar espaço antes de clonar
 - [ ] **Audit log** de commits feitos pelo editor (integrar com `HistoryTracker`)
-- [ ] **Revoke token da URL remota** após push — substituir URL de volta para `https://github.com/...` sem token
+- [ ] **Terminal integrado** — abrir xterm.js na raiz do repo (reutilizar `WebSocketShell`)
+
+### Autocomplete / LSP (complexo)
+- [ ] **Go** — `gopls` via WebSocket proxy (`POST /api/v1/code-editor/repos/:id/lsp/start`)
+- [ ] **Python** — `pyright` ou `pylsp`
+- [ ] **TypeScript/JavaScript** — Monaco já tem suporte nativo (apenas habilitar `tsconfig`)
 
 ---
 
