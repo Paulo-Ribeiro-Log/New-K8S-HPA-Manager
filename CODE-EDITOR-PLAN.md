@@ -5,7 +5,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Estado Atual (branch `editor-github`, commit `b8fdd7f9`)
+## Estado Atual (branch `editor-github`, último commit `55e81060`)
 
 ### ✅ Concluído — Fase 1 (MVP)
 
@@ -18,10 +18,10 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 - [x] `POST /api/v1/code-editor/repos/:id/file` — salvar arquivo
 - [x] `GET  /api/v1/code-editor/repos/:id/status` — git status + ahead/behind
 - [x] `GET  /api/v1/code-editor/repos/:id/branches` — listar branches local e remoto
-- [x] `POST /api/v1/code-editor/repos/:id/branch` — criar branch a partir do atual
-- [x] `POST /api/v1/code-editor/repos/:id/checkout` — trocar branch (local ou remoto)
+- [x] `POST /api/v1/code-editor/repos/:id/branch` — criar branch + retorna `{ branch, message }` com output do git
+- [x] `POST /api/v1/code-editor/repos/:id/checkout` — trocar branch + retorna `{ branch, message }`
 - [x] `POST /api/v1/code-editor/repos/:id/pull` — git pull via SSE
-- [x] `POST /api/v1/code-editor/repos/:id/commit` — git add + commit
+- [x] `POST /api/v1/code-editor/repos/:id/commit` — git add + commit + retorna `{ message }` com output do git
 - [x] `POST /api/v1/code-editor/repos/:id/push` — git push via SSE
 - [x] `GET  /api/v1/code-editor/repos/:id/log?limit=20` — histórico de commits
 - [x] `GET  /api/v1/code-editor/repos/:id/diff?path=...` — diff do arquivo
@@ -34,26 +34,45 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 #### Frontend (`internal/web/frontend/src/components/CodeEditorTab.tsx`)
 - [x] Entrada via Tools → "Editor de Código" (`ToolsMenu.tsx`, ícone `Code2`)
 - [x] Renderizado em `Index.tsx` (case `"code-editor"`)
-- [x] Sidebar com 3 abas: **Arquivos** / **Git** / **Log**
+- [x] Sidebar com **4 abas**: **Arquivos** / **Branches** / **Git** / **Log**
 - [x] Árvore de arquivos com expansão/colapso por diretório
 - [x] Badge amarelo em arquivos modificados (não salvos e no git)
 - [x] Busca de arquivos por nome na sidebar
 - [x] Monaco Editor com detecção automática de linguagem por extensão
 - [x] Ctrl+S para salvar arquivo atual
-- [x] Indicador de "não salvo" (bolinha amarela na aba)
-- [x] Seletor de branch com dropdown (local + remoto)
-- [x] Checkout de branch remoto cria tracking branch local
+- [x] Indicador de "não salvo" (bolinha amarela na aba do arquivo)
+- [x] **Painel "Branches"** na sidebar:
+  - [x] Branch atual destacado com cor primária
+  - [x] Lista de branches locais com ícone de seta para alternar (hover)
+  - [x] Lista de branches remotos que não existem localmente (ícone download)
+  - [x] Checkout de branch remoto cria tracking branch local automaticamente
+  - [x] Spinner no branch durante o checkout
+  - [x] Botão "+" para criar novo branch no topo do painel
+  - [x] Botão "Atualizar" faz `git fetch --prune` e recarrega a lista
+- [x] Branch atual no header é botão que abre o painel Branches diretamente
+- [x] **CommitDialog**: exibe output real do git após commit antes de fechar
+  - ex: `[main abc1234] feat: ... \n 1 file changed, 2 insertions(+)`
+- [x] **BranchDialog**: exibe confirmação + output do git após criar branch
+  - mostra nome do branch criado com ícone; fecha automaticamente após 1.5s
+- [x] **Toast notifications** no canto inferior direito após cada operação:
+  - Checkout → "Alternado para: feature-x"
+  - Salvar arquivo → "Salvo: arquivo.go"
+  - Commit → "Commit criado com sucesso"
+  - Criar branch → "Agora em: feature-x"
+  - Remover repo → "Repositório X removido"
 - [x] Dialog **Clonar**: URL GitHub, branch opcional, logs SSE em tempo real
-- [x] Dialog **Commit**: lista arquivos alterados + campo de mensagem
-- [x] Dialog **Branch**: criar a partir do branch atual
 - [x] Dialog **Pull/Push** (SSE): progresso em tempo real
-- [x] Badges de contagem (arquivos alterados, commits à frente)
+- [x] Badges de contagem (arquivos alterados no botão Commit, commits à frente no Push)
 - [x] Botão para remover repo local (sem afetar GitHub)
 - [x] Seletor de repo por dropdown quando múltiplos estão clonados
+- [x] Painel Git mostra ahead/behind do upstream
 
 #### API Client (`internal/web/frontend/src/lib/api/client.ts`)
 - [x] Tipos: `CodeEditorRepo`, `CodeEditorFileNode`, `CodeEditorGitStatus`, `CodeEditorBranches`, `CodeEditorLogEntry`
-- [x] Métodos: `codeEditorListRepos`, `codeEditorDeleteRepo`, `codeEditorGetFileTree`, `codeEditorReadFile`, `codeEditorWriteFile`, `codeEditorGetStatus`, `codeEditorGetBranches`, `codeEditorCreateBranch`, `codeEditorCheckoutBranch`, `codeEditorCommit`, `codeEditorGetLog`, `codeEditorGetDiff`, `codeEditorSearchFiles`
+- [x] `codeEditorCommit` retorna `Promise<{ message: string }>` (output do git)
+- [x] `codeEditorCreateBranch` retorna `Promise<{ branch: string; message: string }>`
+- [x] `codeEditorCheckoutBranch` retorna `Promise<{ branch: string; message: string }>`
+- [x] Demais métodos: `codeEditorListRepos`, `codeEditorDeleteRepo`, `codeEditorGetFileTree`, `codeEditorReadFile`, `codeEditorWriteFile`, `codeEditorGetStatus`, `codeEditorGetBranches`, `codeEditorGetLog`, `codeEditorGetDiff`, `codeEditorSearchFiles`
 
 ---
 
@@ -69,15 +88,15 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 ### Git Avançado
 - [ ] **Stash** — `POST .../stash` e `POST .../stash/pop`
 - [ ] **Merge/Rebase** — dialog de merge com seleção de branch origem
-- [ ] **Amend commit** — checkbox "Emendatar último commit" no dialog de commit
+- [ ] **Amend commit** — checkbox "Emendar último commit" no dialog de commit
 - [ ] **Reset de arquivo** — botão "Descartar mudanças" por arquivo no painel Git
 - [ ] **Cherry-pick** — selecionar commit do log e aplicar no branch atual
 - [ ] **Tag** — criar tag a partir de um commit
+- [ ] **Confirmação antes de trocar branch** com alterações não commitadas
 
 ### UX
 - [ ] **Painel redimensionável** — arrastar borda da sidebar (usar `SplitView.tsx` existente)
 - [ ] **Persistir arquivo aberto** — salvar `selectedRepo` + `selectedFile` no `localStorage` ao trocar de aba
-- [ ] **Confirmação antes de trocar branch** com alterações não commitadas
 - [ ] **Confirmação antes de fechar arquivo** modificado não salvo
 - [ ] **Minimap** opcional no Monaco (desligado por padrão)
 - [ ] **Terminal integrado** — abrir xterm.js na raiz do repo (reutilizar `WebSocketShell`)
@@ -101,16 +120,18 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 ```
 Tools → Editor de Código
          │
-         └─ CodeEditorTab.tsx  (layout: sidebar + Monaco)
+         └─ CodeEditorTab.tsx  (layout: sidebar 4 abas + Monaco)
                │
-               ├─ FileTree (árvore com lazy expand)
-               ├─ GitPanel (status, commit, refresh)
-               ├─ LogPanel (histórico de commits)
+               ├─ FileTreeNode   (árvore com lazy expand, badges de modificado)
+               ├─ BranchesPanel  (local + remoto, checkout inline, criar branch)
+               ├─ GitPanel       (status, ahead/behind, botão commit)
+               ├─ LogPanel       (histórico de commits)
+               ├─ ToastContainer (notificações 4s no canto inferior direito)
                │
-               ├─ CloneDialog   → POST /code-editor/clone (SSE)
-               ├─ CommitDialog  → POST /code-editor/repos/:id/commit
-               ├─ BranchDialog  → POST /code-editor/repos/:id/branch
-               └─ SseDialog     → POST /code-editor/repos/:id/pull|push (SSE)
+               ├─ CloneDialog    → POST /code-editor/clone (SSE)
+               ├─ CommitDialog   → POST /code-editor/repos/:id/commit (exibe output git)
+               ├─ BranchDialog   → POST /code-editor/repos/:id/branch (exibe output git)
+               └─ SseDialog      → POST /code-editor/repos/:id/pull|push (SSE)
 ```
 
 ```
@@ -118,7 +139,7 @@ internal/web/handlers/code_editor.go
   CodeEditorHandler
     tokenStore  *storage.GitHubTokenStore   ← PAT por usuário (email via InjectUserEmail)
     reposBase   string                       ← ~/.k8s-hpa-manager/repos/
-    
+
   runGit(dir, args...)   → exec.CommandContext (timeout 2min)
   buildTree(...)         → recursivo, maxDepth=6, skip ignoredDirs
   ownerRepo(dir)         → extrai owner/repo da URL remota git
@@ -168,3 +189,5 @@ var ignoredDirs = map[string]bool{
 - **SSE clone usa stderr** do git — o progresso do `git clone --progress` vai para stderr, não stdout.
 - **Checkout de branch remoto**: se o branch `origin/feature-x` não existir localmente, faz `checkout -b feature-x origin/feature-x`. Se já existir, faz `checkout feature-x`.
 - **`git fetch --prune`** é chamado automaticamente ao listar branches — pode demorar se VPN lenta.
+- **Toast** usa `setTimeout` de 4s + remoção por ID — não usa biblioteca externa.
+- **Tipos de retorno** dos métodos commit/branch/checkout retornam `{ message }` contendo o output real do git (não apenas `void`). Usar isso para exibir feedback ao usuário.
