@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Editor, { OnMount } from "@monaco-editor/react";
 import type * as MonacoEditorNS from "monaco-editor";
 import {
@@ -112,6 +112,47 @@ function ToastContainer({ toasts }: { toasts: Toast[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// ─── ResizeDivider ─────────────────────────────────────────────────────────
+
+function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
+  const dragging = useRef(false);
+  const lastX = useRef(0);
+
+  const onMove = useCallback((e: MouseEvent) => {
+    if (!dragging.current) return;
+    onDrag(e.clientX - lastX.current);
+    lastX.current = e.clientX;
+  }, [onDrag]);
+
+  const onUp = useCallback(() => {
+    dragging.current = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [onMove, onUp]);
+
+  return (
+    <div
+      className="w-1 flex-shrink-0 bg-border/40 hover:bg-primary/60 active:bg-primary cursor-col-resize transition-colors"
+      onMouseDown={(e) => {
+        dragging.current = true;
+        lastX.current = e.clientX;
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+      }}
+    />
   );
 }
 
@@ -602,7 +643,7 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch }: Bran
                     <span className="truncate flex-1 text-foreground/80">{b}</span>
                     {checkingOut === b
                       ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                      : <ArrowRightLeft className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" title="Alternar para este branch" />
+                      : <ArrowRightLeft className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
                     }
                   </button>
                 ))}
@@ -632,7 +673,7 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch }: Bran
                       <span className="truncate flex-1 text-muted-foreground">{b}</span>
                       {checkingOut === b
                         ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                        : <Download className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" title="Baixar e alternar" />
+                        : <Download className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
                       }
                     </button>
                   ))
@@ -665,6 +706,7 @@ export function CodeEditorTab() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<string[]>([]);
   const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log">("files");
+  const [sidebarWidth, setSidebarWidth] = useState(224); // 224px = w-56
 
   // Dialogs
   const [showClone, setShowClone] = useState(false);
@@ -842,7 +884,7 @@ export function CodeEditorTab() {
       {/* ── Body ── */}
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
-        <div className="w-56 flex-shrink-0 border-r border-border/50 flex flex-col min-h-0">
+        <div className="flex-shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: sidebarWidth }}>
           {/* Tabs da sidebar */}
           <div className="flex border-b border-border/50 flex-shrink-0 overflow-x-auto">
             {sidePanels.map(p => (
@@ -1005,6 +1047,8 @@ export function CodeEditorTab() {
             )}
           </div>
         </div>
+
+        <ResizeDivider onDrag={d => setSidebarWidth(w => Math.max(160, Math.min(520, w + d)))} />
 
         {/* ── Área do editor ── */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
