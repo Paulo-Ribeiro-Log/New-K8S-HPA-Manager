@@ -5,7 +5,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Estado Atual (branch `editor-github`, último commit `55e81060`)
+## Estado Atual (branch `editor-github`, último commit `7d113d1a`)
 
 ### ✅ Concluído — Fase 1 (MVP)
 
@@ -95,7 +95,8 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 - [ ] **Confirmação antes de trocar branch** com alterações não commitadas
 
 ### UX
-- [ ] **Painel redimensionável** — arrastar borda da sidebar (usar `SplitView.tsx` existente)
+- [x] **Painel redimensionável** — `ResizeDivider` entre sidebar e Monaco (mín 160px, máx 520px, padrão 224px)
+- [ ] **Persistir largura da sidebar** — salvar `sidebarWidth` no `localStorage`
 - [ ] **Persistir arquivo aberto** — salvar `selectedRepo` + `selectedFile` no `localStorage` ao trocar de aba
 - [ ] **Confirmação antes de fechar arquivo** modificado não salvo
 - [ ] **Minimap** opcional no Monaco (desligado por padrão)
@@ -120,8 +121,9 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 ```
 Tools → Editor de Código
          │
-         └─ CodeEditorTab.tsx  (layout: sidebar 4 abas + Monaco)
+         └─ CodeEditorTab.tsx  (layout: sidebar arrastável + Monaco)
                │
+               ├─ ResizeDivider  (arrastar borda sidebar↔editor, mín 160 máx 520px)
                ├─ FileTreeNode   (árvore com lazy expand, badges de modificado)
                ├─ BranchesPanel  (local + remoto, checkout inline, criar branch)
                ├─ GitPanel       (status, ahead/behind, botão commit)
