@@ -59,6 +59,7 @@ import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
 import { FinOpsTab } from "@/components/FinOpsTab";
 import { TeamsBroadcastTab } from "@/components/TeamsBroadcastTab";
+import { CodeEditorTab } from "@/components/CodeEditorTab";
 import { ResourceCompareModal } from "@/components/ResourceCompareModal";
 import type { CompareInitial } from "@/components/ResourceCompareModal";
 import {
@@ -1268,6 +1269,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Teams Broadcast Tab">
             <TeamsBroadcastTab />
+          </ErrorBoundary>
+        );
+
+      case "code-editor":
+        return (
+          <ErrorBoundary componentName="Code Editor Tab">
+            <CodeEditorTab />
           </ErrorBoundary>
         );
 

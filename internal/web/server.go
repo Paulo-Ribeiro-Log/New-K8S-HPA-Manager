@@ -1120,6 +1120,30 @@ func (s *Server) setupRoutes() {
 	}
 	fmt.Println("✅ SRE Approval Integration routes registradas")
 
+	// Code Editor (editor de código com integração Git/GitHub)
+	codeEditorLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "code-editor").Logger()
+	codeEditorHandler := handlers.NewCodeEditorHandler(githubTokenStore, &codeEditorLogger)
+	codeEditor := api.Group("/code-editor")
+	{
+		codeEditor.GET("/repos", rbacMiddleware.InjectUserEmail(), codeEditorHandler.ListRepos)
+		codeEditor.POST("/clone", rbacMiddleware.InjectUserEmail(), codeEditorHandler.CloneRepo)
+		codeEditor.DELETE("/repos/:id", codeEditorHandler.DeleteRepo)
+		codeEditor.GET("/repos/:id/tree", codeEditorHandler.GetFileTree)
+		codeEditor.GET("/repos/:id/file", codeEditorHandler.ReadFile)
+		codeEditor.POST("/repos/:id/file", codeEditorHandler.WriteFile)
+		codeEditor.GET("/repos/:id/status", codeEditorHandler.GetGitStatus)
+		codeEditor.GET("/repos/:id/branches", codeEditorHandler.ListBranches)
+		codeEditor.POST("/repos/:id/branch", codeEditorHandler.CreateBranch)
+		codeEditor.POST("/repos/:id/checkout", codeEditorHandler.CheckoutBranch)
+		codeEditor.POST("/repos/:id/pull", rbacMiddleware.InjectUserEmail(), codeEditorHandler.Pull)
+		codeEditor.POST("/repos/:id/commit", codeEditorHandler.Commit)
+		codeEditor.POST("/repos/:id/push", rbacMiddleware.InjectUserEmail(), codeEditorHandler.Push)
+		codeEditor.GET("/repos/:id/log", codeEditorHandler.GetCommitLog)
+		codeEditor.GET("/repos/:id/diff", codeEditorHandler.GetFileDiff)
+		codeEditor.GET("/repos/:id/search", codeEditorHandler.SearchFiles)
+	}
+	fmt.Println("✅ Code Editor routes registradas")
+
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
 	api.GET("/sessions", sessionHandler.ListAllSessions)
