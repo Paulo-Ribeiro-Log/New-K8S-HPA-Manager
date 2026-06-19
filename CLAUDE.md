@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual estável: `v1.3.33`. Branch `main` atual (HEAD: `2d47aaae`) inclui: JSON Inspector inline em todos os visualizadores de log, WIF SSO + OAuth2 app-callback para Gemini Vertex AI, modelos Agentspace (gemini-3.5-flash, gemini-3.1-pro-001, gemini-2.5-pro-preview-05-06), RBAC K8s via `SelfSubjectRulesReview`. **Mudanças não commitadas no `main`**: redesign da seção Vertex AI no `AISettingsTab.tsx` (3 passos numerados) + bug fix `gemini_wif_login_url` no tipo de `getAITokens()` em `client.ts` — pendente teste e commit. Branch `criar-jobs-cronjobs` (PR #155): criação de Jobs/CronJobs via modal unificado, conversão cron↔texto no Monaco, versionamento YAML no GitHub via URL de pasta. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS. Branch `integracao-teams`: automação de browser para extração de CHGs do Mr.ViaBot no Teams via go-rod (DOM + IndexedDB, sem HTTP direto — MCAS bloqueia) e aprovação inline via SRE Approval system (devstartcd.via.com.br) com `SreApprovalButton` inline e `ServiceNowImportModal` com aba "Teams" como padrão; busca em lote de CHGs via ServiceNow após seleção.
+**IMPORTANTE**: Versão atual estável: `v1.3.33`. Branch `main` atual (HEAD: `21ec969f`) inclui: JSON Inspector inline em todos os visualizadores de log, WIF SSO + OAuth2 app-callback para Gemini Vertex AI, modelos Agentspace (gemini-3.5-flash, gemini-3.1-pro-001, gemini-2.5-pro-preview-05-06), RBAC K8s via `SelfSubjectRulesReview`, IngressTab com modal de criação YAML, ConfigMapsTab com bug fix de uid mismatch. Branch `ajustes-gcp` (HEAD: `cff82048`, em desenvolvimento): autenticação GCP via Device Auth Grant (`internal/cloudprovider/gcp/auth.go`) + `GetFreshGKEToken()` que injeta BearerToken em `GetRestConfig()` para clusters GKE (via refresh_token do ADC ou `gcloud auth print-access-token`, cache 45min) + fix Monaco YAML singleton (`_yamlConfigured` evita múltiplas chamadas a `configureMonacoYaml`). Branch `criar-jobs-cronjobs` (PR #155): criação de Jobs/CronJobs via modal unificado, conversão cron↔texto no Monaco, versionamento YAML no GitHub via URL de pasta. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS. Branch `integracao-teams`: automação de browser para extração de CHGs do Mr.ViaBot no Teams via go-rod (DOM + IndexedDB, sem HTTP direto — MCAS bloqueia) e aprovação inline via SRE Approval system (devstartcd.via.com.br) com `SreApprovalButton` inline e `ServiceNowImportModal` com aba "Teams" como padrão; busca em lote de CHGs via ServiceNow após seleção.
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -40,7 +40,7 @@ make build                    # Compilar backend Go (BUILD_PARALLEL=2 por padrã
 make build-web                # Build completo (frontend + backend)
 
 # Discovery
-./build/new-k8s-hpa autodiscover   # Descobre clusters AKS+EKS em paralelo (salva configs separadas)
+./build/new-k8s-hpa autodiscover   # Descobre clusters AKS+EKS+GKE em paralelo (salva configs separadas)
 
 # Run
 ./build/new-k8s-hpa web       # Servidor web (porta 8080)
@@ -249,18 +249,40 @@ type NodeGroupProvider interface {
 
 - **Azure** (`cloudprovider/azure/`): usa `az aks nodepool` CLI — mesma lógica de `buildNodePoolCommands()`, mas encapsulada.
 - **AWS** (`cloudprovider/aws/`): usa `aws eks` CLI. Normaliza ARN completo → nome curto via `parseEKSClusterName()`. Região pode ser extraída do ARN se não fornecida.
-- `GetNodeGroupProvider()` em `internal/config/kubeconfig.go` seleciona o provider pelo prefixo do context name: se ARN (`arn:aws:eks:...`), usa AWS; caso contrário, usa Azure.
+- **GCP** (`cloudprovider/gcp/`): usa `gcloud container node-pools` CLI. `GCPAuthManager` gerencia Device Auth Grant (RFC 8628) para autenticação sem gcloud local. `GetFreshGKEToken()` obtém access token via ADC salvo ou `gcloud auth print-access-token` (cache 45min).
+- `GetNodeGroupProvider()` em `internal/config/kubeconfig.go` seleciona o provider pelo prefixo do context name: `arn:aws:eks:...` → AWS; `gke_...` → GCP; demais → Azure.
 
-### Config EKS Separada
+### Configs de Cluster Separadas por Provider
 
-Após `fix-auto-discovery`, a config de clusters foi dividida em dois arquivos:
+A config de clusters é dividida em arquivos separados por provider:
 
 | Arquivo | Provider | Struct |
 |---------|----------|--------|
 | `~/.k8s-hpa-manager/clusters-config.json` | AKS | `ClusterConfig` (Name, ResourceGroup, Subscription) |
 | `~/.k8s-hpa-manager/eks-clusters-config.json` | EKS | `EKSClusterConfig` (Name, AwsRegion, AwsProfile, AccountID) |
+| `~/.k8s-hpa-manager/gke-clusters-config.json` | GKE | `GKEClusterConfig` (Name, ProjectID, Region) |
+| `~/.k8s-hpa-manager/gcp-adc.json` | GKE auth | ADC JSON (client_id, client_secret, refresh_token) |
 
 `GetNodeGroupProvider()` lê do arquivo correto. Retrocompatibilidade: `clusters-config.json` com campos `awsRegion`/`awsProfile` é aceito como fallback até o usuário rodar o novo `autodiscover`.
+
+### GKE — Autenticação e Leitura de Workloads (branch `ajustes-gcp`)
+
+**Problema**: clusters GKE autorizados não retornavam workloads (deployments, ingress, HPAs) porque `GetRestConfig()` não tinha tratamento GKE equivalente ao EKS. Com `USE_GKE_GCLOUD_AUTH_PLUGIN=True` setado pelo `EnsureGKEAuthPlugin()`, o kubeconfig exige o plugin, que pode não estar instalado.
+
+**Solução**: `GetRestConfig()` detecta clusters GKE (`gke_` prefix no context name) e injeta um `BearerToken` obtido via `GetFreshGKEToken()`:
+1. Tenta `~/.k8s-hpa-manager/gcp-adc.json` → troca `refresh_token` por access token via `https://oauth2.googleapis.com/token`
+2. Fallback: `gcloud auth print-access-token` se gcloud estiver no PATH e autenticado
+3. Cache em memória de 45min (tokens GCP duram 1h)
+4. Se nenhum método funcionar, deixa o kubeconfig como está (funciona se `gke-gcloud-auth-plugin` estiver instalado)
+
+**Device Auth Grant para autodiscovery GKE** (`internal/cloudprovider/gcp/auth.go`):
+- `GCPAuthManager.StartLogin()` → chama `ai.StartDeviceAuth()` → obtém `user_code` + `verify_url`
+- Frontend (`AutoDiscoverDialog.tsx`) exibe código e link para `accounts.google.com/device`
+- `GCPAuthManager.PollStatus()` verifica se o token chegou (non-blocking channel)
+- Após auth: salva `~/.k8s-hpa-manager/gcp-adc.json` e define `GOOGLE_APPLICATION_CREDENTIALS`
+- Rotas: `GET /api/v1/gcp/auth/status`, `POST /api/v1/gcp/auth/login`, `GET /api/v1/gcp/auth/poll?session_id=...`
+
+**Nota**: `gcpNeedsAuth` no `AutoDiscoverDialog` só exibe aviso quando `has_gcloud=true` AND `authenticated=false` — evita falso positivo quando gcloud não está instalado.
 
 ### Azure CLI — Timeout Obrigatório
 
@@ -343,9 +365,17 @@ history.Log(entry)
 
 `internal/monitoring/engine/monitoring_v2.go` — sem port-forwards. Discovery automático via HTTPS: `https://prometheus-{cluster}-{env}.viavarejo.com.br/`. Cache em memória (TTL 1h). Endpoints em `/api/v1/monitoring/v2/`.
 
-### Monaco Editor em Aba Anônima
+### Monaco Editor — Regras Críticas
 
-Erros como "Tracking Prevention blocked access to storage" e "Could not create web worker(s)" são **inofensivos** — Monaco tem fallback automático para modo síncrono. A funcionalidade de edição YAML não é afetada.
+**`configureMonacoYaml` é global e deve ser chamado UMA única vez por sessão.** Chamar múltiplas vezes (ex: um por instância de `MonacoYamlEditor`) recria o worker YAML global e pode invalidar `addAction`/`addCommand` registrados em instâncias anteriores — os atalhos Ctrl+Shift+D (decode base64) e Ctrl+Shift+E (encode base64) desaparecem do menu de contexto. Implementado via flag `_yamlConfigured` em `MonacoYamlEditor.tsx`. **Nunca remover esse guard.**
+
+**Atalhos registrados** (em todos os editores não-readOnly via `addAction`):
+- `Ctrl+Shift+E` → Encode seleção para Base64
+- `Ctrl+Shift+D` → Decode seleção de Base64
+- `Ctrl+Shift+Z` (context menu) → Cron → Texto legível
+- `Ctrl+Shift+X` (context menu) → Texto → Expressão Cron
+
+**Erros em aba anônima**: "Tracking Prevention blocked access to storage" e "Could not create web worker(s)" são **inofensivos** — Monaco usa fallback síncrono. YAML funciona normalmente.
 
 ### CronJobs — Criação de Jobs e CronJobs (branch `criar-jobs-cronjobs`, PR #155)
 
@@ -702,11 +732,15 @@ const { permissions } = useK8sPermissions(cluster, namespace);
 | Editor YAML "apiVersion not set" | Adicionar TypeMeta antes do yaml.Marshal |
 | AI Diagnostics timeout | Usar modelo llama3.2:3b (max viável com 6GB RAM) |
 | Cluster inacessível | VPN ou cluster desligado — testar `kubectl cluster-info --context <name>` |
+| GKE: workloads não carregam (deployments/ingress vazios) | `GetFreshGKEToken()` não encontrou credenciais. Verificar se `~/.k8s-hpa-manager/gcp-adc.json` existe (autenticar via AutoDiscover → GCP) ou se `gcloud auth print-access-token` funciona |
+| GKE: autodiscovery falha com "gcloud not found" | gcloud não instalado no servidor. Autenticar via Device Auth Grant no AutoDiscoverDialog — salva ADC em `gcp-adc.json` sem precisar do gcloud |
+| GKE: aviso de auth em AutoDiscover sem ter gcloud | `gcpNeedsAuth` estava sem verificar `has_gcloud` — corrigido. Se ainda aparecer, checar se `/api/v1/gcp/auth/status` retorna `has_gcloud: false` |
 | JSON Inspector: botão flutuante não aparece | `selectionchange` não disparou — verificar se `onMouseUp={jsonInspector.handleMouseUp}` está no container correto; em `<textarea>` o inspetor usa botão fixo no toolbar, não botão flutuante |
 | JSON Inspector: badge âmbar "JSON extraído" | Normal para logs com prefixo (`TIMESTAMP LEVEL {...}`) — só o bloco JSON foi parseado; o formato completo da linha não é JSON puro |
 | JSON Inspector: linha de erro não destaca | V8 antigo pode não incluir `(line N column M)` na mensagem — só `at position N`; nesse caso `errorLine` é calculado a partir do offset |
 | JSON Inspector: painel direito em branco | Verificar se `ValidJsonPanel` está chamando `tokenizeJson(line)` linha a linha — **nunca** tokenizar o JSON completo numa chamada só; o alinhamento com line numbers quebra |
 | Logs FluentD/EventHub não estruturados | Formato `TIMESTAMP LEVEL {...}` não é JSON puro — FluentD `@type json` falha; usar `{"time":"...","level":"...","msg":"..."}` com todos os campos dentro do objeto |
+| Monaco: Ctrl+Shift+D/E sumiu do menu de contexto | `configureMonacoYaml` foi chamado múltiplas vezes — verifique a flag `_yamlConfigured` em `MonacoYamlEditor.tsx`. Nunca remover ou contornar esse guard |
 | Terminal duplica "ç" | Verificar `event.preventDefault()` antes de `ws.send()` em PodTerminal.tsx |
 | Command Runner sem resposta | Verificar se SSE broker está iniciado e session ID é único |
 | Dependency graph não carrega | Cytoscape requer container com dimensões definidas (não `height: 0`) |
