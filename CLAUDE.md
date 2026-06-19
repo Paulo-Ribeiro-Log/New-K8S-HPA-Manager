@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual estável: `v1.3.33`. Branch `main` atual (HEAD: `21ec969f`) inclui: JSON Inspector inline em todos os visualizadores de log, WIF SSO + OAuth2 app-callback para Gemini Vertex AI, modelos Agentspace (gemini-3.5-flash, gemini-3.1-pro-001, gemini-2.5-pro-preview-05-06), RBAC K8s via `SelfSubjectRulesReview`, IngressTab com modal de criação YAML, ConfigMapsTab com bug fix de uid mismatch. Branch `ajustes-gcp` (HEAD: `cff82048`, em desenvolvimento): autenticação GCP via Device Auth Grant (`internal/cloudprovider/gcp/auth.go`) + `GetFreshGKEToken()` que injeta BearerToken em `GetRestConfig()` para clusters GKE (via refresh_token do ADC ou `gcloud auth print-access-token`, cache 45min) + fix Monaco YAML singleton (`_yamlConfigured` evita múltiplas chamadas a `configureMonacoYaml`). Branch `criar-jobs-cronjobs` (PR #155): criação de Jobs/CronJobs via modal unificado, conversão cron↔texto no Monaco, versionamento YAML no GitHub via URL de pasta. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS. Branch `integracao-teams`: automação de browser para extração de CHGs do Mr.ViaBot no Teams via go-rod (DOM + IndexedDB, sem HTTP direto — MCAS bloqueia) e aprovação inline via SRE Approval system (devstartcd.via.com.br) com `SreApprovalButton` inline e `ServiceNowImportModal` com aba "Teams" como padrão; busca em lote de CHGs via ServiceNow após seleção.
+**IMPORTANTE**: Versão atual estável: `v1.3.33`. Branch `main` atual inclui: JSON Inspector inline em todos os visualizadores de log, WIF SSO + OAuth2 app-callback para Gemini Vertex AI, modelos Agentspace (gemini-3.5-flash, gemini-3.1-pro-001, gemini-2.5-pro-preview-05-06), RBAC K8s via `SelfSubjectRulesReview`. **Mudanças não commitadas no `main`**: (1) GKE auth via `GetFreshGKEToken()` em `internal/cloudprovider/gcp/auth.go` — injeta BearerToken no `GetRestConfig()` (ADC refresh_token ou `gcloud auth print-access-token`, cache 45min); (2) fix Monaco YAML singleton (`_yamlConfigured` em `MonacoYamlEditor.tsx`); (3) **Editor de Código** (tela cheia via ToolsMenu): clone de repos GitHub, edição de arquivos com Monaco, git status/commit/push/pull/branch via SSE — backend `internal/web/handlers/code_editor.go`, frontend `CodeEditorTab.tsx`, rotas `GET /api/v1/code-editor/repos`, `POST /api/v1/code-editor/clone`, `GET|POST /api/v1/code-editor/repos/:id/file`, etc. Branch `criar-jobs-cronjobs` (PR #155): criação de Jobs/CronJobs via modal unificado, conversão cron↔texto no Monaco, versionamento YAML no GitHub via URL de pasta. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS. Branch `integracao-teams`: automação de browser para extração de CHGs do Mr.ViaBot no Teams via go-rod (DOM + IndexedDB, sem HTTP direto — MCAS bloqueia) e aprovação inline via SRE Approval system (devstartcd.via.com.br) com `SreApprovalButton` inline e `ServiceNowImportModal` com aba "Teams" como padrão; busca em lote de CHGs via ServiceNow após seleção.
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -410,7 +410,35 @@ history.Log(entry)
 
 ### ToolsMenu
 
-`ToolsMenu.tsx` — dropdown com 10 ferramentas avançadas acessíveis no header. Ao adicionar nova ferramenta, registrar aqui como novo item do dropdown.
+`ToolsMenu.tsx` — dropdown com 14 ferramentas avançadas acessíveis no header. Ao adicionar nova ferramenta, registrar aqui como novo item do dropdown.
+
+### Editor de Código (Code Editor)
+
+`CodeEditorTab.tsx` + `internal/web/handlers/code_editor.go`: editor de código completo com integração Git/GitHub, acessível via Tools → "Editor de Código" (tela cheia).
+
+**Repositórios**: clonados em `~/.k8s-hpa-manager/repos/<owner>-<repo>/`. ID local = `owner-repo`.
+
+**Operações Git via SSE** (progresso em tempo real):
+- Clone: `POST /api/v1/code-editor/clone` — injeta token GitHub na URL (`https://TOKEN@github.com/...`)
+- Pull: `POST /api/v1/code-editor/repos/:id/pull`
+- Push: `POST /api/v1/code-editor/repos/:id/push`
+
+**Operações síncronas**:
+- Árvore: `GET /api/v1/code-editor/repos/:id/tree` — profundidade máx 6, ignora `.git`, `node_modules`, `vendor`, `build`
+- Arquivo: `GET /api/v1/code-editor/repos/:id/file?path=...` — limite 5MB; `POST` para salvar
+- Status: `GET /api/v1/code-editor/repos/:id/status` — porcelain + ahead/behind
+- Branches: `GET /api/v1/code-editor/repos/:id/branches` — faz `fetch --prune` antes
+- Commit: `POST /api/v1/code-editor/repos/:id/commit` — `git add .` + `git commit -m`
+- Branch: `POST /api/v1/code-editor/repos/:id/branch` (criar), `POST .../checkout` (trocar)
+- Log: `GET /api/v1/code-editor/repos/:id/log?limit=20`
+- Diff: `GET /api/v1/code-editor/repos/:id/diff?path=...`
+- Busca: `GET /api/v1/code-editor/repos/:id/search?q=...` (busca por nome de arquivo)
+
+**GitHub PAT**: via `GitHubTokenStore` (mesmo store do GitHub Releases). Fallback para `GITHUB_TOKEN` env var. Token injetado via `InjectUserEmail` middleware.
+
+**Monaco no CodeEditorTab**: usa `@monaco-editor/react` direto (sem `MonacoYamlEditor`), detecta linguagem pela extensão do arquivo. **Não chama `configureMonacoYaml`** — evita conflito com o singleton em `MonacoYamlEditor.tsx`.
+
+**Path traversal**: `ReadFile`/`WriteFile` verificam `strings.HasPrefix(fullPath, repoDir)` antes de operar.
 
 ### AI Providers (Multi-provider)
 
@@ -777,6 +805,12 @@ const { permissions } = useK8sPermissions(cluster, namespace);
 | Teams: Chrome não abre (WSL2 sem display) | Adicionar `--no-sandbox` e verificar se há Chrome instalado em `/usr/bin/google-chrome*`. Rod tenta Chromium como fallback mas pode não estar disponível |
 | SRE Approval: aprovação retorna "já finalizada" mas é 200 | Comportamento correto — `ErrAlreadyFinalized` retorna `already_finalized: true` na resposta JSON com o email do aprovador original |
 | SreApprovalButton não carrega status | `getSreApprovalInfo` falhou silenciosamente — inspecionar o response de `/api/v1/sre-approval/info?url=...`. A página `devstartcd.via.com.br` pode estar inacessível fora da rede corporativa |
+| Code Editor: clone falha com "não autorizado" | GitHub PAT não configurado para este usuário. Ir em GitHub Releases → token, salvar PAT com scope `repo` (e SSO autorizado se org privada) |
+| Code Editor: push falha com 403 | PAT sem permissão de escrita no repo ou SSO não autorizado para a org. Classic PAT: "Configure SSO" no GitHub |
+| Code Editor: arquivo não abre (5MB limit) | Arquivo muito grande — limite de 5MB para edição. Arquivos binários também falham |
+| Code Editor: árvore não mostra `vendor/` | Ignorado intencionalmente (junto com `node_modules`, `.git`, `build`, `dist`). Editar `ignoredDirs` em `code_editor.go` se necessário |
+| Code Editor: branch remoto não aparece | `GET /api/v1/code-editor/repos/:id/branches` faz `git fetch --prune`. VPN ou rede indisponível pode bloquear |
+| Code Editor: Ctrl+S não salva | `editor.addCommand` no `handleEditorMount` usa keycode `(2048\|49)` = Ctrl+S. Salvo via `codeEditorWriteFile` — verificar console do browser |
 
 ---
 

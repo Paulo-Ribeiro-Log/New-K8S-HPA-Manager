@@ -3668,6 +3668,111 @@ class APIClient {
   async getSreCurrentUser(): Promise<{ success: boolean; email: string; error?: string }> {
     return this.request("/sre-approval/current-user");
   }
+
+  // ─── Code Editor ───────────────────────────────────────────────────────────
+
+  async codeEditorListRepos(): Promise<CodeEditorRepo[]> {
+    return this.request("/code-editor/repos");
+  }
+
+  async codeEditorDeleteRepo(id: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}`, { method: "DELETE" });
+  }
+
+  async codeEditorGetFileTree(id: string): Promise<CodeEditorFileNode[]> {
+    return this.request(`/code-editor/repos/${id}/tree`);
+  }
+
+  async codeEditorReadFile(id: string, path: string): Promise<{ content: string; path: string }> {
+    return this.request(`/code-editor/repos/${id}/file?path=${encodeURIComponent(path)}`);
+  }
+
+  async codeEditorWriteFile(id: string, path: string, content: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/file`, {
+      method: "POST",
+      body: JSON.stringify({ path, content }),
+    });
+  }
+
+  async codeEditorGetStatus(id: string): Promise<CodeEditorGitStatus> {
+    return this.request(`/code-editor/repos/${id}/status`);
+  }
+
+  async codeEditorGetBranches(id: string): Promise<CodeEditorBranches> {
+    return this.request(`/code-editor/repos/${id}/branches`);
+  }
+
+  async codeEditorCreateBranch(id: string, name: string, from?: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/branch`, {
+      method: "POST",
+      body: JSON.stringify({ name, from }),
+    });
+  }
+
+  async codeEditorCheckoutBranch(id: string, branch: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/checkout`, {
+      method: "POST",
+      body: JSON.stringify({ branch }),
+    });
+  }
+
+  async codeEditorCommit(id: string, message: string, files?: string[]): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/commit`, {
+      method: "POST",
+      body: JSON.stringify({ message, files }),
+    });
+  }
+
+  async codeEditorGetLog(id: string, limit = 20): Promise<CodeEditorLogEntry[]> {
+    return this.request(`/code-editor/repos/${id}/log?limit=${limit}`);
+  }
+
+  async codeEditorGetDiff(id: string, path?: string): Promise<{ diff: string }> {
+    const q = path ? `?path=${encodeURIComponent(path)}` : "";
+    return this.request(`/code-editor/repos/${id}/diff${q}`);
+  }
+
+  async codeEditorSearchFiles(id: string, q: string): Promise<{ matches: string[] }> {
+    return this.request(`/code-editor/repos/${id}/search?q=${encodeURIComponent(q)}`);
+  }
+}
+
+// Code Editor types
+export interface CodeEditorRepo {
+  id: string;
+  owner: string;
+  repo: string;
+  local_path: string;
+  current_branch: string;
+  remote_url: string;
+  cloned_at: string;
+}
+
+export interface CodeEditorFileNode {
+  name: string;
+  path: string;
+  type: "file" | "dir";
+  children?: CodeEditorFileNode[];
+}
+
+export interface CodeEditorGitStatus {
+  files: { path: string; status: string }[];
+  branch: string;
+  ahead: string;
+  behind: string;
+}
+
+export interface CodeEditorBranches {
+  current: string;
+  local: string[];
+  remote: string[];
+}
+
+export interface CodeEditorLogEntry {
+  hash: string;
+  message: string;
+  author: string;
+  when: string;
 }
 
 // Singleton instance
