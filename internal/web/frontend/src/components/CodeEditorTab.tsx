@@ -1400,41 +1400,23 @@ export function CodeEditorTab() {
             {sidePanel === "files" && (
               <>
                 {selectedRepo && (
-                  <div className="flex flex-col gap-1 px-2 py-1.5 flex-shrink-0 border-b border-border/30">
-                    {/* Campo de busca por nome — filtra em tempo real */}
-                    <div className="relative">
-                      <Search className="w-3 h-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-                      <input
-                        className="w-full pl-5 pr-6 py-0.5 text-xs bg-muted/50 border border-border/40 rounded focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground"
-                        placeholder="Filtrar por nome..."
-                        value={grepMode ? "" : searchQuery}
-                        disabled={grepMode}
-                        onChange={e => setSearchQuery(e.target.value)}
-                      />
-                      {!grepMode && searchQuery && (
-                        <button onClick={() => setSearchQuery("")} className="absolute right-1 top-1/2 -translate-y-1/2">
-                          <X className="w-3 h-3 text-muted-foreground hover:text-foreground" />
-                        </button>
-                      )}
-                    </div>
-                    {/* Campo de busca por conteúdo (grep) — requer Enter */}
-                    <div className="relative">
-                      <Search className="w-3 h-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-                      <input
-                        className="w-full pl-5 pr-6 py-0.5 text-xs bg-muted/50 border border-border/40 rounded focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground"
-                        placeholder="Buscar no conteúdo... (Enter)"
-                        value={grepMode ? searchQuery : ""}
-                        disabled={!grepMode && false}
-                        onChange={e => { setGrepMode(true); setSearchQuery(e.target.value); }}
-                        onKeyDown={e => e.key === "Enter" && handleGrepSearch()}
-                        onFocus={() => { if (!grepMode) { setGrepMode(true); setSearchQuery(""); } }}
-                      />
-                      {grepMode && searchQuery && (
-                        <button onClick={() => { setGrepMode(false); setSearchQuery(""); setGrepResults([]); }} className="absolute right-1 top-1/2 -translate-y-1/2">
-                          <X className="w-3 h-3 text-muted-foreground hover:text-foreground" />
-                        </button>
-                      )}
-                    </div>
+                  <div className="px-2 py-1.5 flex gap-1 flex-shrink-0 border-b border-border/30">
+                    <Input
+                      className="h-6 text-xs"
+                      placeholder={grepMode ? "Buscar no conteúdo... (Enter)" : "Filtrar por nome..."}
+                      value={searchQuery}
+                      onChange={e => { setSearchQuery(e.target.value); if (grepMode) setGrepResults([]); }}
+                      onKeyDown={e => e.key === "Enter" && handleGrepSearch()}
+                    />
+                    <Button
+                      variant={grepMode ? "default" : "ghost"}
+                      size="sm"
+                      className="h-6 w-6 p-0 flex-shrink-0"
+                      title={grepMode ? "Modo: conteúdo (clique para nome)" : "Modo: nome (clique para conteúdo)"}
+                      onClick={() => { setGrepMode(m => !m); setSearchQuery(""); setGrepResults([]); }}
+                    >
+                      <Search className="w-3 h-3" />
+                    </Button>
                   </div>
                 )}
                 <ScrollArea className="flex-1">
