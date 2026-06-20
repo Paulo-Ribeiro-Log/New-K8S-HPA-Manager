@@ -203,7 +203,7 @@ interface FileTreeNodeProps {
 }
 
 function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename }: FileTreeNodeProps) {
-  const [open, setOpen] = useState(level < 1);
+  const [open, setOpen] = useState(false);
   const isSelected = selectedPath === node.path;
   const isModified = modifiedPaths.has(node.path);
 
@@ -1408,6 +1408,17 @@ export function CodeEditorTab() {
                       onChange={e => { setSearchQuery(e.target.value); if (grepMode) setGrepResults([]); }}
                       onKeyDown={e => e.key === "Enter" && handleGrepSearch()}
                     />
+                    {searchQuery && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0 flex-shrink-0"
+                        title="Limpar busca"
+                        onClick={() => { setSearchQuery(""); setGrepResults([]); }}
+                      >
+                        <X className="w-3 h-3" />
+                      </Button>
+                    )}
                     <Button
                       variant={grepMode ? "default" : "ghost"}
                       size="sm"
