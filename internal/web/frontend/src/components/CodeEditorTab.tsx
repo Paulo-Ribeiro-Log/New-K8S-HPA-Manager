@@ -176,6 +176,20 @@ function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
   );
 }
 
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+function flattenTree(nodes: CodeEditorFileNode[]): CodeEditorFileNode[] {
+  const result: CodeEditorFileNode[] = [];
+  function walk(ns: CodeEditorFileNode[]) {
+    for (const n of ns) {
+      if (n.type === "file") result.push(n);
+      if (n.children) walk(n.children);
+    }
+  }
+  walk(nodes);
+  return result;
+}
+
 // ─── FileTreeNode ───────────────────────────────────────────────────────────
 
 interface FileTreeNodeProps {
@@ -1027,7 +1041,6 @@ export function CodeEditorTab() {
 
   // Search / grep
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<string[]>([]);
   const [grepMode, setGrepMode] = useState(false);
   const [grepResults, setGrepResults] = useState<CodeEditorGrepMatch[]>([]);
 
@@ -1095,7 +1108,7 @@ export function CodeEditorTab() {
     setSelectedRepo(repo);
     setOpenTabs([]);
     setActiveTabIdx(0);
-    setSearchQuery(""); setSearchResults([]);
+    setSearchQuery("");
     setGrepResults([]); setGrepMode(false);
     await Promise.all([loadTree(repo.id), loadStatus(repo.id), loadBranches(repo.id), loadLog(repo.id)]);
   }
@@ -1192,21 +1205,19 @@ export function CodeEditorTab() {
     }
   }
 
-  async function handleSearch() {
-    if (!selectedRepo || !searchQuery.trim()) return;
-    if (grepMode) {
-      try {
-        const r = await apiClient.codeEditorGrepFiles(selectedRepo.id, searchQuery);
-        setGrepResults(r.matches ?? []);
-        setSearchResults([]);
-      } catch (_) {}
-    } else {
-      try {
-        const r = await apiClient.codeEditorSearchFiles(selectedRepo.id, searchQuery);
-        setSearchResults(r.matches ?? []);
-        setGrepResults([]);
-      } catch (_) {}
-    }
+  // Busca por nome: client-side em tempo real (sem API)
+  const q = searchQuery.toLowerCase().trim();
+  const fileMatches: CodeEditorFileNode[] = selectedRepo && q && !grepMode
+    ? flattenTree(tree).filter(f => f.path.toLowerCase().includes(q))
+    : [];
+
+  // Busca por conteúdo (grep): requer Enter
+  async function handleGrepSearch() {
+    if (!selectedRepo || !searchQuery.trim() || !grepMode) return;
+    try {
+      const r = await apiClient.codeEditorGrepFiles(selectedRepo.id, searchQuery);
+      setGrepResults(r.matches ?? []);
+    } catch (_) {}
   }
 
   async function handleDeleteFile(node: CodeEditorFileNode) {
@@ -1389,13 +1400,41 @@ export function CodeEditorTab() {
             {sidePanel === "files" && (
               <>
                 {selectedRepo && (
-                  <div className="px-2 py-1.5 flex gap-1 flex-shrink-0 border-b border-border/30">
-                    <Input className="h-6 text-xs" placeholder={grepMode ? "Buscar no conteúdo..." : "Buscar arquivo..."}
-                      value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && handleSearch()} />
-                    <Button variant={grepMode ? "default" : "ghost"} size="sm" className="h-6 w-6 p-0" title={grepMode ? "Modo: conteúdo" : "Modo: nome"} onClick={() => { setGrepMode(m => !m); setSearchResults([]); setGrepResults([]); }}>
-                      <Search className="w-3 h-3" />
-                    </Button>
+                  <div className="flex flex-col gap-1 px-2 py-1.5 flex-shrink-0 border-b border-border/30">
+                    {/* Campo de busca por nome — filtra em tempo real */}
+                    <div className="relative">
+                      <Search className="w-3 h-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                      <input
+                        className="w-full pl-5 pr-6 py-0.5 text-xs bg-muted/50 border border-border/40 rounded focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground"
+                        placeholder="Filtrar por nome..."
+                        value={grepMode ? "" : searchQuery}
+                        disabled={grepMode}
+                        onChange={e => setSearchQuery(e.target.value)}
+                      />
+                      {!grepMode && searchQuery && (
+                        <button onClick={() => setSearchQuery("")} className="absolute right-1 top-1/2 -translate-y-1/2">
+                          <X className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+                        </button>
+                      )}
+                    </div>
+                    {/* Campo de busca por conteúdo (grep) — requer Enter */}
+                    <div className="relative">
+                      <Search className="w-3 h-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                      <input
+                        className="w-full pl-5 pr-6 py-0.5 text-xs bg-muted/50 border border-border/40 rounded focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground"
+                        placeholder="Buscar no conteúdo... (Enter)"
+                        value={grepMode ? searchQuery : ""}
+                        disabled={!grepMode && false}
+                        onChange={e => { setGrepMode(true); setSearchQuery(e.target.value); }}
+                        onKeyDown={e => e.key === "Enter" && handleGrepSearch()}
+                        onFocus={() => { if (!grepMode) { setGrepMode(true); setSearchQuery(""); } }}
+                      />
+                      {grepMode && searchQuery && (
+                        <button onClick={() => { setGrepMode(false); setSearchQuery(""); setGrepResults([]); }} className="absolute right-1 top-1/2 -translate-y-1/2">
+                          <X className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
                 <ScrollArea className="flex-1">
@@ -1417,9 +1456,12 @@ export function CodeEditorTab() {
                     </div>
                   )}
 
-                  {/* Resultados grep */}
-                  {selectedRepo && grepMode && grepResults.length > 0 && (
+                  {/* Resultados grep (conteúdo) */}
+                  {selectedRepo && grepMode && (
                     <div className="p-1 space-y-0.5">
+                      {grepResults.length === 0 && searchQuery && (
+                        <p className="text-[10px] text-muted-foreground px-2 py-2">Pressione Enter para buscar no conteúdo</p>
+                      )}
                       {grepResults.slice(0, 100).map((m, i) => (
                         <button key={i} className="w-full text-left px-2 py-1 text-xs hover:bg-muted/50 rounded"
                           onClick={() => openFile({ name: m.file.split("/").pop() ?? m.file, path: m.file, type: "file" })}>
@@ -1427,29 +1469,40 @@ export function CodeEditorTab() {
                           <div className="text-muted-foreground truncate text-[10px]">{m.content}</div>
                         </button>
                       ))}
-                      <div className="flex justify-end px-1">
-                        <Button variant="ghost" size="sm" className="h-5 text-[10px]" onClick={() => { setSearchQuery(""); setGrepResults([]); }}>Limpar</Button>
-                      </div>
                     </div>
                   )}
 
-                  {/* Resultados busca por nome */}
-                  {selectedRepo && !grepMode && searchQuery && searchResults.length > 0 && (
+                  {/* Resultados busca por nome — client-side, tempo real */}
+                  {selectedRepo && !grepMode && q && (
                     <div className="p-1 space-y-0.5">
-                      {searchResults.slice(0, 50).map(path => (
-                        <button key={path} className="w-full text-left px-2 py-0.5 text-xs hover:bg-muted/50 rounded font-mono truncate text-foreground/80"
-                          onClick={() => openFile({ name: path.split("/").pop() ?? path, path, type: "file" })}>
-                          {path}
-                        </button>
-                      ))}
-                      <div className="flex justify-end px-1">
-                        <Button variant="ghost" size="sm" className="h-5 text-[10px]" onClick={() => { setSearchQuery(""); setSearchResults([]); }}>Limpar</Button>
-                      </div>
+                      {fileMatches.length === 0 ? (
+                        <p className="text-xs text-muted-foreground px-2 py-2">Nenhum arquivo encontrado</p>
+                      ) : fileMatches.map(f => {
+                        // Destaca a parte que bate com a query
+                        const lower = f.path.toLowerCase();
+                        const idx = lower.indexOf(q);
+                        return (
+                          <button key={f.path} className="w-full text-left px-2 py-0.5 text-xs hover:bg-muted/50 rounded font-mono"
+                            onClick={() => openFile(f)}>
+                            {idx >= 0 ? (
+                              <span>
+                                <span className="text-foreground/60">{f.path.slice(0, idx)}</span>
+                                <span className="text-yellow-300 font-semibold">{f.path.slice(idx, idx + q.length)}</span>
+                                <span className="text-foreground/60">{f.path.slice(idx + q.length)}</span>
+                              </span>
+                            ) : (
+                              <span className="text-foreground/80 truncate">{f.path}</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                      <p className="text-[10px] text-muted-foreground px-2">{fileMatches.length} resultado{fileMatches.length !== 1 ? "s" : ""}</p>
                     </div>
                   )}
 
-                  {selectedRepo && !searchQuery && (
-                    <div className="p-1">
+                  {/* Árvore de arquivos — sempre visível quando não há filtro de nome ativo */}
+                  {selectedRepo && !grepMode && (
+                    <div className="p-1" style={{ display: q ? "none" : undefined }}>
                       <div className="flex items-center justify-between px-1 mb-1">
                         <span className="text-xs text-muted-foreground font-medium truncate">{selectedRepo.owner}/{selectedRepo.repo}</span>
                         <div className="flex gap-1 flex-shrink-0">
