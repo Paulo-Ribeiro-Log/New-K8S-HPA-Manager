@@ -3796,6 +3796,13 @@ class APIClient {
       body: JSON.stringify({ branch, no_ff: noFf }),
     });
   }
+
+  async codeEditorFormatFile(id: string, path: string, content: string): Promise<{ content: string }> {
+    return this.request(`/code-editor/repos/${id}/format`, {
+      method: "POST",
+      body: JSON.stringify({ path, content }),
+    });
+  }
 }
 
 // Code Editor types

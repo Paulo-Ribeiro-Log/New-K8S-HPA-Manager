@@ -1152,6 +1152,7 @@ func (s *Server) setupRoutes() {
 		codeEditor.POST("/repos/:id/stash", codeEditorHandler.Stash)
 		codeEditor.POST("/repos/:id/stash/pop", codeEditorHandler.StashPop)
 		codeEditor.POST("/repos/:id/merge", codeEditorHandler.MergeBranch)
+		codeEditor.POST("/repos/:id/format", codeEditorHandler.FormatFile)
 	}
 	fmt.Println("✅ Code Editor routes registradas")
 

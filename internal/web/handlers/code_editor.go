@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -1091,4 +1092,68 @@ func (h *CodeEditorHandler) MergeBranch(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
+// FormatFile — POST /api/v1/code-editor/repos/:id/format
+// Body: { "path": "...", "content": "..." }
+// Executa o formatter adequado para a extensão do arquivo via stdin.
+func (h *CodeEditorHandler) FormatFile(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(req.Path))
+
+	var formatter string
+	var args []string
+	switch ext {
+	case ".tf", ".tfvars":
+		formatter = "terraform"
+		args = []string{"fmt", "-"}
+	case ".go":
+		formatter = "gofmt"
+	case ".json":
+		formatter = "jq"
+		args = []string{"."}
+	case ".yaml", ".yml":
+		formatter = "yq"
+		args = []string{"eval", "."}
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sem formatter disponível para ." + strings.TrimPrefix(ext, ".")})
+		return
+	}
+
+	// Verifica se o formatter está disponível no PATH
+	if _, err := exec.LookPath(formatter); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": formatter + " não encontrado no PATH do servidor"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, formatter, args...)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(req.Content)
+
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if ok := errors.As(err, &exitErr); ok && len(exitErr.Stderr) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": string(exitErr.Stderr)})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"content": string(out)})
 }

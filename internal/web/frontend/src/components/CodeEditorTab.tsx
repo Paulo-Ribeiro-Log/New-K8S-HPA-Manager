@@ -1306,9 +1306,30 @@ export function CodeEditorTab() {
     } catch (e: any) { addToast("error", e.message); }
   }
 
+  const [formatting, setFormatting] = useState(false);
+
+  async function formatFile() {
+    if (!selectedRepo || !activeTab) return;
+    setFormatting(true);
+    try {
+      const r = await apiClient.codeEditorFormatFile(
+        selectedRepo.id,
+        activeTab.node.path,
+        activeTab.currentContent,
+      );
+      updateTabContent(r.content);
+      addToast("success", "Formatado com sucesso");
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao formatar");
+    } finally {
+      setFormatting(false);
+    }
+  }
+
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
     editor.addCommand(2048 | 49, () => saveFile()); // Ctrl+S
+    editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
   };
 
   const sidePanels = [
@@ -1670,6 +1691,9 @@ export function CodeEditorTab() {
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Ver diff"
                     onClick={() => setDiffFile(activeTab.node.path)}>
                     <Eye className="w-3 h-3" />
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-6 text-xs gap-1 px-2" title="Formatar arquivo (Shift+Alt+F)" onClick={formatFile} disabled={formatting}>
+                    {formatting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span className="font-mono font-bold text-[11px]">Fmt</span>}
                   </Button>
                   <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={saveFile} disabled={!isModified}>
                     <CheckCircle2 className="w-3 h-3" />Salvar <span className="text-muted-foreground text-[10px]">Ctrl+S</span>
