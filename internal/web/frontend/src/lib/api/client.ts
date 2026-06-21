@@ -3803,6 +3803,30 @@ class APIClient {
       body: JSON.stringify({ path, content }),
     });
   }
+
+  async codeEditorCherryPick(id: string, hash: string): Promise<{ message: string }> {
+    return this.request(`/code-editor/repos/${id}/cherry-pick`, {
+      method: "POST",
+      body: JSON.stringify({ hash }),
+    });
+  }
+
+  async codeEditorListTags(id: string): Promise<{ tags: { name: string; date: string; commit: string }[] }> {
+    return this.request(`/code-editor/repos/${id}/tags`);
+  }
+
+  async codeEditorCreateTag(id: string, name: string, hash?: string, message?: string): Promise<{ message: string }> {
+    return this.request(`/code-editor/repos/${id}/tags`, {
+      method: "POST",
+      body: JSON.stringify({ name, hash, message }),
+    });
+  }
+
+  async codeEditorDeleteTag(id: string, name: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/tags/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+  }
 }
 
 // Code Editor types

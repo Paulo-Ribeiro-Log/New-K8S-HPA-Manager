@@ -105,18 +105,25 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Fase 3 — Planejado
+## ✅ Concluído — Fase 3
 
-### Pendente da Fase 2
-- [ ] **Cherry-pick** — selecionar commit do log e aplicar no branch atual
-- [ ] **Tags** — criar/listar tags a partir de commits
-- [ ] **Confirmação ao fechar arquivo** via botão X da aba com mudanças (atualmente usa `confirm()` nativo — migrar para dialog)
+### Git Avançado
+- [x] **Cherry-pick** — botão "pick" aparece ao hover em cada commit do LogPanel; `POST /repos/:id/cherry-pick`
+- [x] **Tags** — sub-aba "Tags" no LogPanel: listar, criar (anotada ou leve) via `CreateTagDialog`, deletar; `GET|POST|DELETE /repos/:id/tags`
+
+### UX
+- [x] **Confirm dialog React** — substitui todos os `window.confirm()` nativos por `<Dialog>` assíncrono (`showConfirm()`)
+- [x] **Terminal integrado** — painel `RepoTerminal` com xterm.js + PTY real (creack/pty) via WebSocket `GET /repos/:id/terminal`; botão "Terminal" no header toggle show/hide; altura 240px fixada na base da área do editor
+- [x] **Limite de repos** — máximo 10 por instância; verificado no `CloneRepo` antes de criar o diretório
+
+### Segurança / Qualidade
+- [x] **creack/pty** adicionado ao vendor — terminal com PTY real, suporta cores ANSI, resize, programas interativos
+
+## Fase 4 — Planejado
 
 ### Avançado
-- [ ] **Limite de repos simultâneos** por usuário (evitar disk exhaustion)
-- [ ] **Quota de disco** — checar espaço antes de clonar
+- [ ] **Quota de disco** — checar espaço livre antes de clonar
 - [ ] **Audit log** de commits feitos pelo editor (integrar com `HistoryTracker`)
-- [ ] **Terminal integrado** — abrir xterm.js na raiz do repo (reutilizar `WebSocketShell`)
 
 ### Autocomplete / LSP (complexo)
 - [ ] **Go** — `gopls` via WebSocket proxy (`POST /api/v1/code-editor/repos/:id/lsp/start`)
