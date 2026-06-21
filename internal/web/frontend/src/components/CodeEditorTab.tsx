@@ -1479,9 +1479,7 @@ export function CodeEditorTab() {
       </div>
 
       {/* ── Body ── */}
-      <div className="flex flex-col flex-1 min-h-0">
-        {/* Área principal: sidebar + editor */}
-        <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
         <div className="flex-shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: sidebarWidth }}>
           {/* Tabs da sidebar */}
@@ -1877,17 +1875,15 @@ export function CodeEditorTab() {
               </div>
             </div>
           )}
+          {/* ── Terminal integrado ── */}
+          {showTerminal && selectedRepo && (
+            <RepoTerminal
+              repoId={selectedRepo.id}
+              repoName={`${selectedRepo.owner}/${selectedRepo.repo}`}
+              onClose={() => setShowTerminal(false)}
+            />
+          )}
         </div>
-        </div>{/* fim área principal */}
-
-        {/* ── Terminal integrado ── */}
-        {showTerminal && selectedRepo && (
-          <RepoTerminal
-            repoId={selectedRepo.id}
-            repoName={`${selectedRepo.owner}/${selectedRepo.repo}`}
-            onClose={() => setShowTerminal(false)}
-          />
-        )}
       </div>
 
       {/* ── CreateTag dialog ── */}
