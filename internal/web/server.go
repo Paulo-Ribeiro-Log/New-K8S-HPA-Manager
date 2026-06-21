@@ -1152,6 +1152,14 @@ func (s *Server) setupRoutes() {
 		codeEditor.POST("/repos/:id/stash", codeEditorHandler.Stash)
 		codeEditor.POST("/repos/:id/stash/pop", codeEditorHandler.StashPop)
 		codeEditor.POST("/repos/:id/merge", codeEditorHandler.MergeBranch)
+		codeEditor.POST("/repos/:id/format", codeEditorHandler.FormatFile)
+		codeEditor.POST("/repos/:id/cherry-pick", codeEditorHandler.CherryPick)
+		codeEditor.GET("/repos/:id/tags", codeEditorHandler.ListTags)
+		codeEditor.POST("/repos/:id/tags", codeEditorHandler.CreateTag)
+		codeEditor.DELETE("/repos/:id/tags/:name", codeEditorHandler.DeleteTag)
+		codeEditor.GET("/repos/:id/terminal",
+			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+			codeEditorHandler.HandleTerminal)
 	}
 	fmt.Println("✅ Code Editor routes registradas")
 

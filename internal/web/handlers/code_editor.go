@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -23,18 +24,20 @@ import (
 
 // CodeEditorHandler gerencia operações de edição de código com Git.
 type CodeEditorHandler struct {
-	tokenStore *storage.GitHubTokenStore
-	logger     *zerolog.Logger
-	reposBase  string // ~/.k8s-hpa-manager/repos
+	tokenStore     *storage.GitHubTokenStore
+	logger         *zerolog.Logger
+	reposBase      string // ~/.k8s-hpa-manager/repos
+	maxReposPerUser int
 }
 
 // NewCodeEditorHandler cria o handler do editor de código.
 func NewCodeEditorHandler(tokenStore *storage.GitHubTokenStore, logger *zerolog.Logger) *CodeEditorHandler {
 	home, _ := os.UserHomeDir()
 	return &CodeEditorHandler{
-		tokenStore: tokenStore,
-		logger:     logger,
-		reposBase:  filepath.Join(home, ".k8s-hpa-manager", "repos"),
+		tokenStore:     tokenStore,
+		logger:         logger,
+		reposBase:      filepath.Join(home, ".k8s-hpa-manager", "repos"),
+		maxReposPerUser: 10,
 	}
 }
 
@@ -186,6 +189,12 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 
 	if err := os.MkdirAll(h.reposBase, 0755); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Limite de repositórios simultâneos
+	if entries, _ := os.ReadDir(h.reposBase); len(entries) >= h.maxReposPerUser {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("limite de %d repositórios atingido — remova um antes de clonar", h.maxReposPerUser)})
 		return
 	}
 
@@ -1086,6 +1095,176 @@ func (h *CodeEditorHandler) MergeBranch(c *gin.Context) {
 	}
 	args = append(args, req.Branch)
 	out, err := runGit(dir, args...)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
+// FormatFile — POST /api/v1/code-editor/repos/:id/format
+// Body: { "path": "...", "content": "..." }
+// Executa o formatter adequado para a extensão do arquivo via stdin.
+func (h *CodeEditorHandler) FormatFile(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(req.Path))
+
+	var formatter string
+	var args []string
+	switch ext {
+	case ".tf", ".tfvars":
+		formatter = "terraform"
+		args = []string{"fmt", "-"}
+	case ".go":
+		formatter = "gofmt"
+	case ".json":
+		formatter = "jq"
+		args = []string{"."}
+	case ".yaml", ".yml":
+		formatter = "yq"
+		args = []string{"eval", "."}
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sem formatter disponível para ." + strings.TrimPrefix(ext, ".")})
+		return
+	}
+
+	// Verifica se o formatter está disponível no PATH
+	if _, err := exec.LookPath(formatter); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": formatter + " não encontrado no PATH do servidor"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, formatter, args...)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(req.Content)
+
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if ok := errors.As(err, &exitErr); ok && len(exitErr.Stderr) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": string(exitErr.Stderr)})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"content": string(out)})
+}
+// CherryPick — POST /api/v1/code-editor/repos/:id/cherry-pick
+// Body: { "hash": "abc1234" }
+func (h *CodeEditorHandler) CherryPick(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Hash string `json:"hash"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Hash == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hash é obrigatório"})
+		return
+	}
+	out, err := runGit(dir, "cherry-pick", req.Hash)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
+// ListTags — GET /api/v1/code-editor/repos/:id/tags
+func (h *CodeEditorHandler) ListTags(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	// --sort=-creatordate: mais recente primeiro; %(*objectname) pega o commit apontado por tags anotadas
+	out, err := runGit(dir, "tag", "-l", "--sort=-creatordate", "--format=%(refname:short)|%(creatordate:short)|%(*objectname)%(objectname)")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": out})
+		return
+	}
+	type TagEntry struct {
+		Name   string `json:"name"`
+		Date   string `json:"date"`
+		Commit string `json:"commit"`
+	}
+	var tags []TagEntry
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 3)
+		entry := TagEntry{Name: parts[0]}
+		if len(parts) > 1 {
+			entry.Date = parts[1]
+		}
+		if len(parts) > 2 {
+			entry.Commit = parts[2]
+			if len(entry.Commit) > 7 {
+				entry.Commit = entry.Commit[:7]
+			}
+		}
+		tags = append(tags, entry)
+	}
+	if tags == nil {
+		tags = []TagEntry{}
+	}
+	c.JSON(http.StatusOK, gin.H{"tags": tags})
+}
+
+// CreateTag — POST /api/v1/code-editor/repos/:id/tags
+// Body: { "name": "v1.0.0", "hash": "abc1234", "message": "..." }
+func (h *CodeEditorHandler) CreateTag(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Name    string `json:"name"`
+		Hash    string `json:"hash"`
+		Message string `json:"message"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name é obrigatório"})
+		return
+	}
+	args := []string{"tag"}
+	if req.Message != "" {
+		args = append(args, "-a", req.Name, "-m", req.Message)
+	} else {
+		args = append(args, req.Name)
+	}
+	if req.Hash != "" {
+		args = append(args, req.Hash)
+	}
+	out, err := runGit(dir, args...)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Tag " + req.Name + " criada", "output": out})
+}
+
+// DeleteTag — DELETE /api/v1/code-editor/repos/:id/tags/:name
+func (h *CodeEditorHandler) DeleteTag(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	name := c.Param("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name é obrigatório"})
+		return
+	}
+	out, err := runGit(dir, "tag", "-d", name)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return

@@ -32,6 +32,10 @@ import {
   Map,
   PackageMinus,
   PackagePlus,
+  Tag,
+  ChevronsUpDown,
+  Terminal,
+  Cherry,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1067,8 +1071,33 @@ export function CodeEditorTab() {
   const [renameNode, setRenameNode] = useState<CodeEditorFileNode | null>(null);
   const [diffFile, setDiffFile] = useState<string | null>(null);
 
+  // Tags e log sub-abas
+  const [tags, setTags] = useState<{ name: string; date: string; commit: string }[]>([]);
+  const [logTab, setLogTab] = useState<"commits" | "tags">("commits");
+  const [showCreateTag, setShowCreateTag] = useState<{ hash: string } | null>(null);
+
+  // Terminal integrado
+  const [showTerminal, setShowTerminal] = useState(false);
+
+  // Confirm dialog (substitui confirm() nativo)
+  const [confirmState, setConfirmState] = useState<{
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
+
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const { toasts, addToast } = useToasts();
+
+  // showConfirm — substitui window.confirm() por dialog React
+  function showConfirm(message: string): Promise<boolean> {
+    return new Promise(resolve => {
+      setConfirmState({
+        message,
+        onConfirm: () => { setConfirmState(null); resolve(true); },
+      });
+      // Adiciona handler de cancelar via setter
+    });
+  }
 
   const activeTab = openTabs[activeTabIdx] ?? null;
   const isModified = activeTab ? activeTab.currentContent !== activeTab.savedContent : false;
@@ -1110,7 +1139,7 @@ export function CodeEditorTab() {
     setActiveTabIdx(0);
     setSearchQuery("");
     setGrepResults([]); setGrepMode(false);
-    await Promise.all([loadTree(repo.id), loadStatus(repo.id), loadBranches(repo.id), loadLog(repo.id)]);
+    await Promise.all([loadTree(repo.id), loadStatus(repo.id), loadBranches(repo.id), loadLog(repo.id), loadTags(repo.id)]);
   }
 
   async function loadTree(id: string) {
@@ -1151,10 +1180,10 @@ export function CodeEditorTab() {
     }
   }
 
-  function closeTab(idx: number) {
+  async function closeTab(idx: number) {
     const tab = openTabs[idx];
     if (tab && tab.currentContent !== tab.savedContent) {
-      if (!confirm(`"${tab.node.name}" tem mudanças não salvas. Fechar mesmo assim?`)) return;
+      if (!await showConfirm(`"${tab.node.name}" tem mudanças não salvas. Fechar mesmo assim?`)) return;
     }
     setOpenTabs(prev => {
       const updated = prev.filter((_, i) => i !== idx);
@@ -1188,7 +1217,7 @@ export function CodeEditorTab() {
     if (!selectedRepo) return;
     // Confirmar se há mudanças não salvas em alguma aba
     const hasUnsaved = openTabs.some(t => t.currentContent !== t.savedContent);
-    if (hasUnsaved && !confirm("Há arquivos com mudanças não salvas. Alternar branch vai descartá-las. Continuar?")) {
+    if (hasUnsaved && !await showConfirm("Há arquivos com mudanças não salvas. Alternar branch vai descartá-las. Continuar?")) {
       throw new Error("cancelado");
     }
     try {
@@ -1222,7 +1251,7 @@ export function CodeEditorTab() {
 
   async function handleDeleteFile(node: CodeEditorFileNode) {
     if (!selectedRepo) return;
-    if (!confirm(`Deletar "${node.path}"?`)) return;
+    if (!await showConfirm(`Deletar "${node.path}"?`)) return;
     try {
       await apiClient.codeEditorDeleteFile(selectedRepo.id, node.path);
       // Fechar a aba se estiver aberta
@@ -1253,7 +1282,7 @@ export function CodeEditorTab() {
 
   async function handleResetFile(filePath: string) {
     if (!selectedRepo) return;
-    if (!confirm(`Descartar mudanças em "${filePath}"?`)) return;
+    if (!await showConfirm(`Descartar mudanças em "${filePath}"?`)) return;
     try {
       await apiClient.codeEditorResetFile(selectedRepo.id, filePath);
       // Recarrega a aba se estiver aberta
@@ -1293,7 +1322,7 @@ export function CodeEditorTab() {
   }
 
   async function deleteRepo(id: string) {
-    if (!confirm(`Remover repositório "${id}" localmente?`)) return;
+    if (!await showConfirm(`Remover repositório "${id}" localmente?`)) return;
     try {
       await apiClient.codeEditorDeleteRepo(id);
       if (selectedRepo?.id === id) {
@@ -1306,9 +1335,73 @@ export function CodeEditorTab() {
     } catch (e: any) { addToast("error", e.message); }
   }
 
+  async function handleCherryPick(hash: string) {
+    if (!selectedRepo) return;
+    if (!await showConfirm(`Aplicar commit ${hash.slice(0, 7)} no branch atual?`)) return;
+    try {
+      const r = await apiClient.codeEditorCherryPick(selectedRepo.id, hash);
+      addToast("success", "Cherry-pick aplicado");
+      await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
+      return r.message;
+    } catch (e: any) {
+      addToast("error", e.message || "Erro no cherry-pick");
+    }
+  }
+
+  async function loadTags(id: string) {
+    try {
+      const r = await apiClient.codeEditorListTags(id);
+      setTags(r.tags ?? []);
+    } catch (_) {}
+  }
+
+  async function handleCreateTag(name: string, hash: string, message?: string) {
+    if (!selectedRepo) return;
+    try {
+      await apiClient.codeEditorCreateTag(selectedRepo.id, name, hash, message);
+      addToast("success", `Tag ${name} criada`);
+      await loadTags(selectedRepo.id);
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao criar tag");
+    }
+  }
+
+  async function handleDeleteTag(name: string) {
+    if (!selectedRepo) return;
+    if (!await showConfirm(`Deletar tag "${name}"?`)) return;
+    try {
+      await apiClient.codeEditorDeleteTag(selectedRepo.id, name);
+      addToast("success", `Tag ${name} removida`);
+      await loadTags(selectedRepo.id);
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao deletar tag");
+    }
+  }
+
+  const [formatting, setFormatting] = useState(false);
+
+  async function formatFile() {
+    if (!selectedRepo || !activeTab) return;
+    setFormatting(true);
+    try {
+      const r = await apiClient.codeEditorFormatFile(
+        selectedRepo.id,
+        activeTab.node.path,
+        activeTab.currentContent,
+      );
+      updateTabContent(r.content);
+      addToast("success", "Formatado com sucesso");
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao formatar");
+    } finally {
+      setFormatting(false);
+    }
+  }
+
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
     editor.addCommand(2048 | 49, () => saveFile()); // Ctrl+S
+    editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
   };
 
   const sidePanels = [
@@ -1374,13 +1467,21 @@ export function CodeEditorTab() {
           </>
         )}
 
+        {selectedRepo && (
+          <Button variant={showTerminal ? "default" : "ghost"} size="sm" className="h-6 text-xs gap-1"
+            title="Terminal integrado" onClick={() => setShowTerminal(v => !v)}>
+            <Terminal className="w-3 h-3" />Terminal
+          </Button>
+        )}
         <Button size="sm" className="h-6 text-xs gap-1" onClick={() => setShowClone(true)}>
           <GitPullRequest className="w-3 h-3" />Clonar
         </Button>
       </div>
 
       {/* ── Body ── */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-col flex-1 min-h-0">
+        {/* Área principal: sidebar + editor */}
+        <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
         <div className="flex-shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: sidebarWidth }}>
           {/* Tabs da sidebar */}
@@ -1600,26 +1701,78 @@ export function CodeEditorTab() {
             {/* ── Painel: Log ── */}
             {sidePanel === "log" && (
               <div className="flex flex-col h-full">
+                {/* Sub-abas: Commits | Tags */}
+                <div className="flex border-b border-border/30 flex-shrink-0">
+                  {(["commits", "tags"] as const).map(t => (
+                    <button key={t} onClick={() => setLogTab(t)}
+                      className={`flex-1 py-1 text-[10px] font-medium transition-colors flex items-center justify-center gap-1 ${logTab === t ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                      {t === "commits" ? <><GitCommit className="w-3 h-3" />Commits</> : <><Tag className="w-3 h-3" />Tags ({tags.length})</>}
+                    </button>
+                  ))}
+                </div>
                 <ScrollArea className="flex-1">
-                  <div className="p-2 space-y-2">
-                    {selectedRepo && (
-                      <Button variant="ghost" size="sm" className="w-full h-6 text-xs" onClick={() => loadLog(selectedRepo.id)}>
-                        <RefreshCw className="w-3 h-3 mr-1" />Atualizar
-                      </Button>
-                    )}
-                    {log.map(entry => (
-                      <div key={entry.hash} className="border-b border-border/30 pb-2">
-                        <p className="text-xs text-foreground/90 leading-tight">{entry.message}</p>
-                        <div className="flex items-center gap-1 mt-0.5">
-                          <Clock className="w-2.5 h-2.5 text-muted-foreground" />
-                          <span className="text-[10px] text-muted-foreground">{entry.when} · {entry.author}</span>
-                        </div>
-                        <span className="font-mono text-[10px] text-muted-foreground/60">{entry.hash.slice(0, 7)}</span>
-                      </div>
-                    ))}
-                    {log.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">Sem commits</p>}
-                  </div>
-                </ScrollArea>
+                  {logTab === "commits" && (
+                          <div className="p-2 space-y-2">
+                            {selectedRepo && (
+                              <Button variant="ghost" size="sm" className="w-full h-6 text-xs" onClick={() => loadLog(selectedRepo.id)}>
+                                <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                              </Button>
+                            )}
+                            {log.map(entry => (
+                              <div key={entry.hash} className="border-b border-border/30 pb-2 group">
+                                <p className="text-xs text-foreground/90 leading-tight">{entry.message}</p>
+                                <div className="flex items-center gap-1 mt-0.5">
+                                  <Clock className="w-2.5 h-2.5 text-muted-foreground" />
+                                  <span className="text-[10px] text-muted-foreground">{entry.when} · {entry.author}</span>
+                                </div>
+                                <div className="flex items-center gap-1 mt-0.5">
+                                  <span className="font-mono text-[10px] text-muted-foreground/60">{entry.hash.slice(0, 7)}</span>
+                                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 ml-1">
+                                    <button title="Cherry-pick para branch atual"
+                                      className="text-[10px] text-primary hover:underline flex items-center gap-0.5"
+                                      onClick={() => handleCherryPick(entry.hash)}>
+                                      <Cherry className="w-2.5 h-2.5" />pick
+                                    </button>
+                                    <button title="Criar tag neste commit"
+                                      className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-0.5"
+                                      onClick={() => setShowCreateTag({ hash: entry.hash })}>
+                                      <Tag className="w-2.5 h-2.5" />tag
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                            {log.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">Sem commits</p>}
+                          </div>
+                        )}
+                        {logTab === "tags" && (
+                          <div className="p-2 space-y-1">
+                            {selectedRepo && (
+                              <div className="flex gap-1 mb-2">
+                                <Button variant="ghost" size="sm" className="flex-1 h-6 text-xs" onClick={() => loadTags(selectedRepo.id)}>
+                                  <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                                </Button>
+                                <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setShowCreateTag({ hash: "" })}>
+                                  <Plus className="w-3 h-3 mr-1" />Nova tag
+                                </Button>
+                              </div>
+                            )}
+                            {tags.map(tag => (
+                              <div key={tag.name} className="group flex items-start justify-between border-b border-border/20 pb-1">
+                                <div>
+                                  <p className="text-xs font-medium text-foreground/90">{tag.name}</p>
+                                  <p className="text-[10px] text-muted-foreground">{tag.date} {tag.commit && `· ${tag.commit}`}</p>
+                                </div>
+                                <Button variant="ghost" size="sm" className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100 flex-shrink-0"
+                                  onClick={() => handleDeleteTag(tag.name)}>
+                                  <Trash2 className="w-3 h-3 text-red-400" />
+                                </Button>
+                              </div>
+                            ))}
+                            {tags.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">Sem tags</p>}
+                          </div>
+                        )}
+                  </ScrollArea>
               </div>
             )}
           </div>
@@ -1670,6 +1823,9 @@ export function CodeEditorTab() {
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Ver diff"
                     onClick={() => setDiffFile(activeTab.node.path)}>
                     <Eye className="w-3 h-3" />
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-6 text-xs gap-1 px-2" title="Formatar arquivo (Shift+Alt+F)" onClick={formatFile} disabled={formatting}>
+                    {formatting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span className="font-mono font-bold text-[11px]">Fmt</span>}
                   </Button>
                   <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={saveFile} disabled={!isModified}>
                     <CheckCircle2 className="w-3 h-3" />Salvar <span className="text-muted-foreground text-[10px]">Ctrl+S</span>
@@ -1722,7 +1878,42 @@ export function CodeEditorTab() {
             </div>
           )}
         </div>
+        </div>{/* fim área principal */}
+
+        {/* ── Terminal integrado ── */}
+        {showTerminal && selectedRepo && (
+          <RepoTerminal
+            repoId={selectedRepo.id}
+            repoName={`${selectedRepo.owner}/${selectedRepo.repo}`}
+            onClose={() => setShowTerminal(false)}
+          />
+        )}
       </div>
+
+      {/* ── CreateTag dialog ── */}
+      {showCreateTag !== null && (
+        <CreateTagDialog
+          defaultHash={showCreateTag.hash}
+          onClose={() => setShowCreateTag(null)}
+          onCreate={handleCreateTag}
+        />
+      )}
+
+      {/* ── Confirm dialog ── */}
+      {confirmState && (
+        <Dialog open onOpenChange={() => setConfirmState(null)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Confirmar</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">{confirmState.message}</p>
+            <DialogFooter>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmState(null)}>Cancelar</Button>
+              <Button variant="destructive" size="sm" onClick={confirmState.onConfirm}>Confirmar</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* ── Dialogs ── */}
       <CloneDialog
@@ -1829,5 +2020,152 @@ export function CodeEditorTab() {
 
       <ToastContainer toasts={toasts} />
     </div>
+  );
+}
+
+// ─── RepoTerminal ────────────────────────────────────────────────────────────
+import { Terminal as XTerm } from "xterm";
+import { FitAddon } from "xterm-addon-fit";
+import "xterm/css/xterm.css";
+
+interface RepoTerminalProps {
+  repoId: string;
+  repoName: string;
+  onClose: () => void;
+}
+
+function RepoTerminal({ repoId, repoName, onClose }: RepoTerminalProps) {
+  const divRef = useRef<HTMLDivElement>(null);
+  const xtermRef = useRef<XTerm | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+
+  useEffect(() => {
+    if (!divRef.current) return;
+    const term = new XTerm({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "'Cascadia Code','Fira Code','Consolas',monospace",
+      convertEol: true,
+      scrollback: 5000,
+      theme: { background: "#1e1e1e", foreground: "#d4d4d4", cursor: "#ffffff" },
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(divRef.current);
+    fit.fit();
+    xtermRef.current = term;
+    fitRef.current = fit;
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const token = localStorage.getItem("auth_token") ?? "";
+    const ws = new WebSocket(
+      `${protocol}//${window.location.host}/api/v1/code-editor/repos/${repoId}/terminal?token=${encodeURIComponent(token)}`
+    );
+    wsRef.current = ws;
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "output") {
+          term.write(atob(msg.data));
+        }
+      } catch { term.write(e.data); }
+    };
+    ws.onclose = () => term.writeln("\r\n\x1b[2m[sessão encerrada]\x1b[0m");
+
+    term.onData(data => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data: btoa(data) }));
+      }
+    });
+
+    const handleResize = () => {
+      fit.fit();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      }
+    };
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      ws.close();
+      term.dispose();
+    };
+  }, [repoId]);
+
+  return (
+    <div className="flex flex-col border-t border-border/50 bg-[#1e1e1e]" style={{ height: 240 }}>
+      <div className="flex items-center justify-between px-3 py-1 border-b border-white/10 flex-shrink-0">
+        <span className="text-xs text-white/60 font-mono flex items-center gap-1">
+          <Terminal className="w-3 h-3" />{repoName}
+        </span>
+        <button onClick={onClose} className="text-white/40 hover:text-white/80">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div ref={divRef} className="flex-1 min-h-0 px-1" />
+    </div>
+  );
+}
+
+// ─── CreateTagDialog ─────────────────────────────────────────────────────────
+
+interface CreateTagDialogProps {
+  defaultHash: string;
+  onClose: () => void;
+  onCreate: (name: string, hash: string, message?: string) => Promise<void>;
+}
+
+function CreateTagDialog({ defaultHash, onClose, onCreate }: CreateTagDialogProps) {
+  const [name, setName] = useState("");
+  const [hash, setHash] = useState(defaultHash);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit() {
+    if (!name.trim()) return;
+    setLoading(true);
+    try {
+      await onCreate(name.trim(), hash.trim(), message.trim() || undefined);
+      onClose();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader><DialogTitle>Criar Tag</DialogTitle></DialogHeader>
+        <div className="space-y-3 py-2">
+          <div>
+            <label className="text-xs text-muted-foreground">Nome da tag *</label>
+            <Input className="h-7 text-xs mt-1" placeholder="v1.0.0" value={name}
+              onChange={e => setName(e.target.value)} autoFocus />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Commit (hash ou vazio para HEAD)</label>
+            <Input className="h-7 text-xs font-mono mt-1" placeholder="HEAD" value={hash}
+              onChange={e => setHash(e.target.value)} />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Mensagem (opcional — cria tag anotada)</label>
+            <Input className="h-7 text-xs mt-1" placeholder="Release v1.0.0" value={message}
+              onChange={e => setMessage(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancelar</Button>
+          <Button size="sm" onClick={submit} disabled={loading || !name.trim()}>
+            {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Tag className="w-3 h-3 mr-1" />}
+            Criar tag
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
