@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Editor, { DiffEditor, OnMount } from "@monaco-editor/react";
+import { Terminal as XTerm } from "xterm";
+import { FitAddon } from "xterm-addon-fit";
+import "xterm/css/xterm.css";
 import type * as MonacoEditorNS from "monaco-editor";
 import {
   GitBranch,
@@ -2020,9 +2023,6 @@ export function CodeEditorTab() {
 }
 
 // ─── RepoTerminal ────────────────────────────────────────────────────────────
-import { Terminal as XTerm } from "xterm";
-import { FitAddon } from "xterm-addon-fit";
-import "xterm/css/xterm.css";
 
 interface RepoTerminalProps {
   repoId: string;
