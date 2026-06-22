@@ -1122,7 +1122,7 @@ func (s *Server) setupRoutes() {
 
 	// Code Editor (editor de código com integração Git/GitHub)
 	codeEditorLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "code-editor").Logger()
-	codeEditorHandler := handlers.NewCodeEditorHandler(githubTokenStore, &codeEditorLogger)
+	codeEditorHandler := handlers.NewCodeEditorHandler(githubTokenStore, s.aiTokensStore, &codeEditorLogger)
 	codeEditor := api.Group("/code-editor")
 	{
 		codeEditor.GET("/repos", rbacMiddleware.InjectUserEmail(), codeEditorHandler.ListRepos)
@@ -1158,6 +1158,14 @@ func (s *Server) setupRoutes() {
 		codeEditor.POST("/repos/:id/tags", codeEditorHandler.CreateTag)
 		codeEditor.DELETE("/repos/:id/tags/:name", codeEditorHandler.DeleteTag)
 		codeEditor.GET("/fonts", codeEditorHandler.ListFonts)
+		// Fase 4
+		codeEditor.GET("/repos/:id/blame", codeEditorHandler.GetBlame)
+		codeEditor.GET("/repos/:id/file-log", codeEditorHandler.GetFileLog)
+		codeEditor.GET("/repos/:id/file-show", codeEditorHandler.GetFileAtCommit)
+		codeEditor.POST("/repos/:id/upload", codeEditorHandler.UploadFiles)
+		codeEditor.POST("/repos/:id/replace", codeEditorHandler.ReplaceInFiles)
+		codeEditor.GET("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetGitHubProfiles)
+		codeEditor.PUT("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.SaveGitHubProfiles)
 	}
 	fmt.Println("✅ Code Editor routes registradas")
 

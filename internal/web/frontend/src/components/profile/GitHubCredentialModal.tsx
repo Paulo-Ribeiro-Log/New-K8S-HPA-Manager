@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -24,6 +24,10 @@ import {
   EyeOff,
   ShieldCheck,
   User,
+  KeyRound,
+  Plus,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -33,12 +37,47 @@ import {
 } from '@/hooks/useGitHubReleases';
 import { useUserPermissions } from '@/hooks/useUserPermissions';
 import { apiClient } from '@/lib/api/client';
+
+async function fetchProfilesFromServer(): Promise<GitHubProfile[]> {
+  try {
+    const r = await apiClient.codeEditorGetGitHubProfiles();
+    // Sincroniza localStorage como cache para leitura rápida
+    localStorage.setItem('ce_github_profiles', JSON.stringify(r.profiles));
+    const active = r.profiles.find(p => p.active);
+    if (active) localStorage.setItem('ce_default_profile', active.id);
+    return r.profiles;
+  } catch { return []; }
+}
+
+async function saveProfilesToServer(profiles: GitHubProfile[]): Promise<void> {
+  await apiClient.codeEditorSaveGitHubProfiles(
+    profiles.map(p => ({ id: p.id, name: p.name, token: p.token, active: p.active ?? false }))
+  );
+  localStorage.setItem('ce_github_profiles', JSON.stringify(profiles));
+  const active = profiles.find(p => p.active);
+  if (active) localStorage.setItem('ce_default_profile', active.id);
+  else localStorage.removeItem('ce_default_profile');
+}
 import type { CredentialModalProps } from '@/types/profile';
 
-export function GitHubCredentialModal({ open, onOpenChange, onSaved }: CredentialModalProps) {
+// ── Perfis do Editor de Código ──────────────────────────────────────────────
+interface GitHubProfile { id: string; name: string; token: string; active?: boolean }
+
+export function GitHubCredentialModal({ open, onOpenChange, onSaved, openProfilesSection }: CredentialModalProps & { openProfilesSection?: boolean }) {
   const [token, setToken] = useState('');
   const [org, setOrg] = useState(() => apiClient.getGitHubOrg());
   const [showToken, setShowToken] = useState(false);
+
+  // Perfis do Editor de Código
+  const [ceProfiles, setCeProfiles] = useState<GitHubProfile[]>([]);
+  const [ceNewName, setCeNewName] = useState('');
+  const [ceNewToken, setCeNewToken] = useState('');
+  const [ceShowSection, setCeShowSection] = useState(openProfilesSection ?? false);
+
+  const refreshCeProfiles = useCallback(async () => {
+    const p = await fetchProfilesFromServer();
+    setCeProfiles(p);
+  }, []);
 
   // Email vem do contexto RBAC (Azure AD) — não é digitado manualmente
   const { data: userPerms } = useUserPermissions();
@@ -55,8 +94,11 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
       setOrg(apiClient.getGitHubOrg());
       setShowToken(false);
       refetchStatus();
+      refreshCeProfiles();
+      setCeNewName(''); setCeNewToken('');
+      if (openProfilesSection) setCeShowSection(true);
     }
-  }, [open, refetchStatus]);
+  }, [open, refetchStatus, refreshCeProfiles]);
 
   const handleSave = async () => {
     if (!token.trim()) {
@@ -111,8 +153,8 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
-        <DialogHeader>
+      <DialogContent className="max-w-lg flex flex-col max-h-[90vh]" onInteractOutside={(e) => e.preventDefault()}>
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Github className="h-5 w-5" />
             GitHub Token (SSO/SAML)
@@ -122,6 +164,7 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
           </DialogDescription>
         </DialogHeader>
 
+        <div className="overflow-y-auto flex-1 min-h-0 pr-1">
         <div className="space-y-4 py-2">
           {/* Identidade vinculada (RBAC) */}
           <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/50 border text-sm">
@@ -254,7 +297,91 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
           </div>
         </div>
 
-        <DialogFooter className="flex justify-between sm:justify-between">
+        {/* ── Perfis do Editor de Código ── */}
+        <div className="border-t pt-3">
+          <button
+            className="flex items-center gap-2 text-sm font-medium w-full text-left hover:text-foreground text-muted-foreground transition-colors"
+            onClick={() => setCeShowSection(v => !v)}
+          >
+            {ceShowSection ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            <KeyRound className="h-4 w-4" />
+            Perfis do Editor de Código
+            {ceProfiles.length > 0 && (
+              <span className="ml-auto text-xs bg-muted rounded-full px-2 py-0.5">{ceProfiles.length}</span>
+            )}
+          </button>
+
+          {ceShowSection && (
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Perfis nomeados para push/pull no Editor de Código — cada repositório pode usar um perfil diferente (pessoal, profissional, etc.).
+              </p>
+
+              {ceProfiles.length > 0 && (
+                <div className="space-y-1.5">
+                  {ceProfiles.map(p => (
+                    <div key={p.id} className="flex items-center justify-between rounded border border-border/50 bg-muted/30 px-3 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{p.name}</span>
+                        <span className="text-xs text-muted-foreground font-mono">
+                          {p.token.length > 8 ? p.token.slice(0, 4) + '...' + p.token.slice(-4) : '****'}
+                        </span>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          const updated = ceProfiles.filter(x => x.id !== p.id);
+                          await saveProfilesToServer(updated);
+                          await refreshCeProfiles();
+                        }}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground placeholder:text-muted-foreground"
+                  placeholder="Nome (ex: Pessoal)"
+                  value={ceNewName}
+                  onChange={e => setCeNewName(e.target.value)}
+                />
+                <input
+                  type="password"
+                  className="flex-[2] text-xs bg-muted border border-border/50 rounded px-2 py-1.5 font-mono text-foreground placeholder:text-muted-foreground"
+                  placeholder="ghp_... ou github_pat_..."
+                  value={ceNewToken}
+                  onChange={e => setCeNewToken(e.target.value)}
+                  onKeyDown={async e => {
+                    if (e.key === 'Enter' && ceNewName.trim() && ceNewToken.trim()) {
+                      const updated = [...ceProfiles, { id: crypto.randomUUID(), name: ceNewName.trim(), token: ceNewToken.trim(), active: ceProfiles.length === 0 }];
+                      await saveProfilesToServer(updated);
+                      await refreshCeProfiles(); setCeNewName(''); setCeNewToken('');
+                    }
+                  }}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!ceNewName.trim() || !ceNewToken.trim()}
+                  onClick={async () => {
+                    const updated = [...ceProfiles, { id: crypto.randomUUID(), name: ceNewName.trim(), token: ceNewToken.trim(), active: ceProfiles.length === 0 }];
+                    await saveProfilesToServer(updated);
+                    await refreshCeProfiles(); setCeNewName(''); setCeNewToken('');
+                  }}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+        </div>
+
+        <DialogFooter className="flex justify-between sm:justify-between flex-shrink-0">
           <div>
             {tokenStatus?.configured && (
               <Button

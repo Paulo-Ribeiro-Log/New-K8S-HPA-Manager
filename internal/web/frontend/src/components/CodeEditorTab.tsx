@@ -40,6 +40,10 @@ import {
   Terminal,
   Cherry,
   Type,
+  History,
+  Replace,
+  User,
+  Key,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,6 +63,10 @@ import {
   type CodeEditorBranches,
   type CodeEditorLogEntry,
   type CodeEditorGrepMatch,
+  type CodeEditorBlameLine,
+  type CodeEditorFileLogEntry,
+  type CodeEditorReplaceRequest,
+  type CodeEditorReplaceMatch,
 } from "@/lib/api/client";
 
 const API_BASE = "/api/v1";
@@ -249,10 +257,13 @@ interface FileTreeNodeProps {
   level: number;
   onDelete: (node: CodeEditorFileNode) => void;
   onRename: (node: CodeEditorFileNode) => void;
+  onHistory?: (node: CodeEditorFileNode) => void;
+  onUpload?: (dirPath: string, files: FileList) => void;
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
   const isModified = modifiedPaths.has(node.path);
 
@@ -260,9 +271,18 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
     return (
       <div>
         <div
-          className="w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer"
+          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer transition-colors ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
           style={{ paddingLeft: `${level * 12 + 4}px` }}
           onClick={() => setOpen(o => !o)}
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => {
+            e.preventDefault();
+            setDragOver(false);
+            if (e.dataTransfer.files.length > 0 && onUpload) {
+              onUpload(node.path, e.dataTransfer.files);
+            }
+          }}
         >
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
           {open ? <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" /> : <Folder className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" />}
@@ -270,7 +290,8 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
         </div>
         {open && node.children?.map(child => (
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
-            modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename} />
+            modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename}
+            onHistory={onHistory} onUpload={onUpload} />
         ))}
       </div>
     );
@@ -288,6 +309,11 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
         {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
       </button>
       <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+        {onHistory && (
+          <button onClick={e => { e.stopPropagation(); onHistory(node); }} className="p-0.5 rounded hover:bg-muted" title="Histórico do arquivo">
+            <History className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
+          </button>
+        )}
         <button onClick={e => { e.stopPropagation(); onRename(node); }} className="p-0.5 rounded hover:bg-muted" title="Renomear">
           <Pencil className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
         </button>
@@ -310,10 +336,22 @@ interface CloneDialogProps {
 function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   const [url, setUrl] = useState("");
   const [branch, setBranch] = useState("");
+  const [profiles, setProfiles] = useState<GitHubProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
   const [cloning, setCloning] = useState(false);
   const [error, setError] = useState("");
   const logsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      const fresh = loadProfiles();
+      setProfiles(fresh);
+      const defaultId = localStorage.getItem("ce_default_profile") ?? "";
+      setSelectedProfileId(defaultId);
+      setUrl(""); setBranch(""); setLogs([]); setError("");
+    }
+  }, [open]);
 
   function parseGitHubUrl(input: string): { owner: string; repo: string } | null {
     const match = input.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/|$)/);
@@ -327,11 +365,12 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
     const parsed = parseGitHubUrl(url);
     if (!parsed) { setError("URL inválida. Use https://github.com/owner/repo"); return; }
     setError(""); setLogs([]); setCloning(true);
-    const token = localStorage.getItem("auth_token") || "";
+    const authToken = localStorage.getItem("auth_token") || "";
+    const profileToken = profiles.find(p => p.id === selectedProfileId)?.token;
     const res = await fetch(`${API_BASE}/code-editor/clone`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ ...parsed, branch }),
+      headers: { "Content-Type": "application/json", ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+      body: JSON.stringify({ ...parsed, branch, ...(profileToken ? { token: profileToken } : {}) }),
     });
     if (!res.body) { setError("Sem resposta SSE"); setCloning(false); return; }
     const reader = res.body.getReader();
@@ -373,6 +412,20 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
             <label className="text-xs text-muted-foreground mb-1 block">Branch (opcional)</label>
             <Input placeholder="main" value={branch} onChange={e => setBranch(e.target.value)} disabled={cloning} />
           </div>
+          {profiles.length > 0 && (
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Perfil GitHub (autenticação)</label>
+              <select
+                className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground"
+                value={selectedProfileId}
+                onChange={e => setSelectedProfileId(e.target.value)}
+                disabled={cloning}
+              >
+                <option value="">— usar credential helper do sistema —</option>
+                {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          )}
           {logs.length > 0 && (
             <div ref={logsRef} className="bg-black/50 rounded p-2 h-32 overflow-y-auto font-mono text-xs space-y-0.5">
               {logs.map((l, i) => <div key={i} className="text-green-300/80">{l}</div>)}
@@ -399,9 +452,10 @@ interface CommitDialogProps {
   status: CodeEditorGitStatus | null;
   onClose: () => void;
   onDone: () => void;
+  onPush?: () => void;
 }
 
-function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogProps) {
+function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitDialogProps) {
   const [message, setMessage] = useState("");
   const [amend, setAmend] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -412,13 +466,16 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
     if (open) { setMessage(""); setError(""); setGitOutput(""); setAmend(false); }
   }, [open]);
 
-  async function doCommit() {
+  async function doCommit(andPush = false) {
     if (!amend && !message.trim()) { setError("Mensagem é obrigatória"); return; }
     setLoading(true); setError(""); setGitOutput("");
     try {
       const result = await apiClient.codeEditorCommit(repoId, message.trim(), undefined, amend);
       setGitOutput(result.message || "Commit realizado.");
-      setTimeout(() => { onDone(); }, 1500);
+      setTimeout(() => {
+        onDone();
+        if (andPush && onPush) onPush();
+      }, 800);
     } catch (e: any) {
       setError(e.message || "Erro ao commitar");
     } finally {
@@ -494,11 +551,326 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
             {gitOutput ? "Fechar" : "Cancelar"}
           </Button>
           {!gitOutput && (
-            <Button onClick={doCommit} disabled={loading || (!amend && !message.trim())}>
-              {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCommit className="w-3 h-3 mr-1" />}
-              {amend ? "Emendar" : "Commitar"}
-            </Button>
+            <>
+              <Button variant="outline" onClick={() => doCommit(false)} disabled={loading || (!amend && !message.trim())}>
+                {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCommit className="w-3 h-3 mr-1" />}
+                {amend ? "Emendar" : "Commitar"}
+              </Button>
+              {!amend && onPush && (
+                <Button onClick={() => doCommit(true)} disabled={loading || !message.trim()}>
+                  {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Upload className="w-3 h-3 mr-1" />}
+                  Commitar e Fazer Push
+                </Button>
+              )}
+            </>
           )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Token store (localStorage) ──────────────────────────────────────────────
+
+interface GitHubProfile { id: string; name: string; token: string }
+
+const PROFILES_KEY = "ce_github_profiles";
+const REPO_PROFILE_KEY = "ce_repo_profile";
+
+function loadProfiles(): GitHubProfile[] {
+  try { return JSON.parse(localStorage.getItem(PROFILES_KEY) || "[]"); } catch { return []; }
+}
+function saveProfiles(p: GitHubProfile[]) { localStorage.setItem(PROFILES_KEY, JSON.stringify(p)); }
+function loadRepoProfile(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(REPO_PROFILE_KEY) || "{}"); } catch { return {}; }
+}
+function saveRepoProfile(m: Record<string, string>) { localStorage.setItem(REPO_PROFILE_KEY, JSON.stringify(m)); }
+
+// ─── ProfileSwitcher ─────────────────────────────────────────────────────────
+// Gerencia contas GitHub diretamente no dropdown — sem precisar abrir outro modal.
+
+interface ProfileSwitcherProps {
+  repoId: string;
+  repoProfileMap: Record<string, string>;
+  onSwitch: (repoId: string, profileId: string) => void;
+}
+
+function ProfileSwitcher({ repoId, repoProfileMap, onSwitch }: ProfileSwitcherProps) {
+  const [open, setOpen] = useState(false);
+  const [profiles, setProfiles] = useState<GitHubProfile[]>([]);
+  const [newName, setNewName] = useState("");
+  const [newToken, setNewToken] = useState("");
+  const [showNewToken, setShowNewToken] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const activeId = repoId
+    ? (repoProfileMap[repoId] ?? "")
+    : (localStorage.getItem("ce_default_profile") ?? "");
+
+  const activeProfile = profiles.find(p => p.id === activeId);
+
+  function openMenu() {
+    setProfiles(loadProfiles());
+    setOpen(true);
+    setTimeout(() => nameInputRef.current?.focus(), 50);
+  }
+
+  function handleSwitch(profileId: string) {
+    onSwitch(repoId, profileId);
+    setOpen(false);
+  }
+
+  function handleAdd() {
+    const name = newName.trim();
+    const token = newToken.trim();
+    if (!name || !token) return;
+    const updated = [...loadProfiles(), { id: crypto.randomUUID(), name, token }];
+    saveProfiles(updated);
+    setProfiles(updated);
+    // Seleciona automaticamente o perfil recém-adicionado
+    const newId = updated[updated.length - 1].id;
+    onSwitch(repoId, newId);
+    setNewName("");
+    setNewToken("");
+    setShowNewToken(false);
+  }
+
+  function handleDelete(id: string) {
+    const updated = loadProfiles().filter(p => p.id !== id);
+    saveProfiles(updated);
+    // Remove associações ao perfil deletado
+    const map = loadRepoProfile();
+    Object.keys(map).forEach(k => { if (map[k] === id) delete map[k]; });
+    saveRepoProfile(map);
+    if (localStorage.getItem("ce_default_profile") === id) localStorage.removeItem("ce_default_profile");
+    setProfiles(updated);
+    if (activeId === id) onSwitch(repoId, "");
+  }
+
+  // Fecha ao clicar fora
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node) &&
+          btnRef.current && !btnRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  return (
+    <div className="relative">
+      <button
+        ref={btnRef}
+        onClick={openMenu}
+        className="flex items-center gap-1.5 text-xs bg-muted/60 border border-border/50 rounded px-2 py-1 hover:bg-muted text-foreground/80 transition-colors"
+        title="Gerenciar contas GitHub"
+      >
+        <Key className="w-3 h-3 text-primary flex-shrink-0" />
+        <span className="max-w-28 truncate">
+          {activeProfile ? activeProfile.name : <span className="opacity-60">Conta GitHub</span>}
+        </span>
+        <ChevronsUpDown className="w-3 h-3 opacity-50 flex-shrink-0" />
+      </button>
+
+      {open && (
+        <div
+          ref={menuRef}
+          className="absolute top-full left-0 mt-1 z-50 w-72 bg-popover border border-border rounded shadow-xl"
+        >
+          {/* Cabeçalho */}
+          <div className="px-3 py-2 border-b border-border/50">
+            <p className="text-[11px] font-semibold text-foreground">Contas GitHub</p>
+            <p className="text-[10px] text-muted-foreground">
+              {repoId ? "Conta usada para este repositório" : "Conta padrão (clone)"}
+            </p>
+          </div>
+
+          {/* Lista de perfis */}
+          <div className="py-1">
+            {/* Sem perfil */}
+            <button
+              className={`w-full text-left text-xs px-3 py-2 hover:bg-muted transition-colors flex items-center gap-2 ${activeId === "" ? "bg-muted/50" : ""}`}
+              onClick={() => handleSwitch("")}
+            >
+              <div className={`w-3 h-3 flex-shrink-0 ${activeId === "" ? "text-primary" : "opacity-0"}`}>
+                <CheckCircle2 className="w-3 h-3" />
+              </div>
+              <span className={`flex-1 ${activeId === "" ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                Sem conta (credential helper)
+              </span>
+            </button>
+
+            {/* Perfis configurados */}
+            {profiles.map(p => (
+              <div
+                key={p.id}
+                className={`flex items-center gap-1 px-3 py-1.5 hover:bg-muted group transition-colors ${activeId === p.id ? "bg-muted/50" : ""}`}
+              >
+                <button
+                  className="flex items-center gap-2 flex-1 text-left min-w-0"
+                  onClick={() => handleSwitch(p.id)}
+                >
+                  <div className={`w-3 h-3 flex-shrink-0 ${activeId === p.id ? "text-primary" : "opacity-0"}`}>
+                    <CheckCircle2 className="w-3 h-3" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className={`text-xs truncate ${activeId === p.id ? "font-semibold text-foreground" : "text-foreground/80"}`}>{p.name}</p>
+                    <p className="text-[10px] text-muted-foreground font-mono">
+                      {p.token.length > 8 ? p.token.slice(0, 8) + "••••" + p.token.slice(-4) : "••••••••"}
+                    </p>
+                  </div>
+                </button>
+                <button
+                  onClick={() => handleDelete(p.id)}
+                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 rounded flex-shrink-0"
+                  title="Remover conta"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+
+            {profiles.length === 0 && (
+              <p className="px-3 py-1.5 text-[11px] text-muted-foreground italic">
+                Nenhuma conta configurada ainda.
+              </p>
+            )}
+          </div>
+
+          {/* Adicionar nova conta */}
+          <div className="border-t border-border/50 px-3 py-2.5 space-y-2">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Adicionar conta</p>
+            <input
+              ref={nameInputRef}
+              className="w-full text-xs bg-background border border-border/60 rounded px-2 py-1.5 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/60"
+              placeholder="Nome (ex: Pessoal, Empresa)"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && document.getElementById("ps-token-input")?.focus()}
+            />
+            <div className="flex gap-1.5">
+              <div className="relative flex-1">
+                <input
+                  id="ps-token-input"
+                  type={showNewToken ? "text" : "password"}
+                  className="w-full text-xs bg-background border border-border/60 rounded px-2 py-1.5 pr-7 font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/60"
+                  placeholder="ghp_... ou github_pat_..."
+                  value={newToken}
+                  onChange={e => setNewToken(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handleAdd()}
+                />
+                <button
+                  type="button"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowNewToken(v => !v)}
+                  tabIndex={-1}
+                >
+                  {showNewToken
+                    ? <Eye className="w-3 h-3" />
+                    : <Eye className="w-3 h-3 opacity-50" />}
+                </button>
+              </div>
+              <button
+                className="text-xs bg-primary text-primary-foreground rounded px-2.5 py-1 hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium flex-shrink-0"
+                disabled={!newName.trim() || !newToken.trim()}
+                onClick={handleAdd}
+              >
+                Adicionar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── GitHubTokenDialog ───────────────────────────────────────────────────────
+
+function GitHubTokenDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [profiles, setProfiles] = useState<GitHubProfile[]>([]);
+  const [newName, setNewName] = useState("");
+  const [newToken, setNewToken] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (open) { setProfiles(loadProfiles()); setNewName(""); setNewToken(""); setError(""); }
+  }, [open]);
+
+  function handleAdd() {
+    if (!newName.trim()) { setError("Nome é obrigatório"); return; }
+    if (!newToken.trim()) { setError("Token é obrigatório"); return; }
+    if (profiles.some(p => p.name === newName.trim())) { setError("Já existe um perfil com esse nome"); return; }
+    const updated = [...profiles, { id: crypto.randomUUID(), name: newName.trim(), token: newToken.trim() }];
+    saveProfiles(updated);
+    setProfiles(updated);
+    setNewName(""); setNewToken(""); setError("");
+  }
+
+  function handleDelete(id: string) {
+    const updated = profiles.filter(p => p.id !== id);
+    saveProfiles(updated);
+    // remove refs de repos que usavam este perfil
+    const map = loadRepoProfile();
+    Object.keys(map).forEach(k => { if (map[k] === id) delete map[k]; });
+    saveRepoProfile(map);
+    setProfiles(updated);
+  }
+
+  function maskedToken(t: string) {
+    if (t.length <= 8) return "****";
+    return t.slice(0, 4) + "..." + t.slice(-4);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Key className="w-4 h-4" />Perfis GitHub
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          {/* Lista de perfis existentes */}
+          {profiles.length > 0 ? (
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground font-medium">Perfis salvos</p>
+              {profiles.map(p => (
+                <div key={p.id} className="flex items-center justify-between rounded border border-border/50 bg-muted/30 px-3 py-2">
+                  <div>
+                    <span className="text-sm font-medium">{p.name}</span>
+                    <span className="ml-2 text-xs text-muted-foreground font-mono">{maskedToken(p.token)}</span>
+                  </div>
+                  <button onClick={() => handleDelete(p.id)} className="text-muted-foreground hover:text-red-400 transition-colors">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground text-center py-2">Nenhum perfil configurado</p>
+          )}
+
+          {/* Adicionar novo */}
+          <div className="border border-border/50 rounded p-3 space-y-2">
+            <p className="text-xs text-muted-foreground font-medium">Adicionar perfil</p>
+            <Input placeholder="Nome (ex: Pessoal, Profissional)" value={newName} onChange={e => setNewName(e.target.value)} className="h-7 text-xs" />
+            <Input type="password" placeholder="ghp_... ou github_pat_..." value={newToken} onChange={e => setNewToken(e.target.value)} className="h-7 text-xs"
+              onKeyDown={e => e.key === "Enter" && handleAdd()} />
+            <p className="text-[10px] text-muted-foreground">GitHub → Settings → Developer settings → Personal access tokens → Scope: <code>repo</code></p>
+            {error && <p className="text-xs text-red-400">{error}</p>}
+            <Button size="sm" onClick={handleAdd} disabled={!newName.trim() || !newToken.trim()} className="w-full h-7 text-xs">
+              <Plus className="w-3 h-3 mr-1" />Adicionar Perfil
+            </Button>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Fechar</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1094,7 +1466,7 @@ export function CodeEditorTab() {
   const [grepResults, setGrepResults] = useState<CodeEditorGrepMatch[]>([]);
 
   // Sidebar
-  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log">("files");
+  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log" | "replace">("files");
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem("ce_sidebar_width");
     return saved ? parseInt(saved) : 224;
@@ -1108,6 +1480,17 @@ export function CodeEditorTab() {
 
   // Dialogs
   const [showClone, setShowClone] = useState(false);
+  const [showGitHubToken, setShowGitHubToken] = useState(false);
+  // Retorna o token da conta GitHub ativa.
+  // Usa localStorage como cache (populado pelo UserProfileMenu ao abrir).
+  function activeToken(): string | undefined {
+    const pid = localStorage.getItem("ce_default_profile") ?? "";
+    if (!pid) return undefined;
+    const profiles = loadProfiles();
+    return profiles.find(p => p.id === pid)?.token
+      ?? profiles.find(p => (p as { active?: boolean }).active)?.token;
+  }
+
   const [showCommit, setShowCommit] = useState(false);
   const [showBranch, setShowBranch] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
@@ -1131,6 +1514,25 @@ export function CodeEditorTab() {
     () => localStorage.getItem("ce_terminal_font") ?? ""
   );
 
+  // Fase 4: Blame
+  const [showBlame, setShowBlame] = useState(false);
+  const [blameLines, setBlameLines] = useState<CodeEditorBlameLine[]>([]);
+  const blameDecorationsRef = useRef<MonacoEditorNS.editor.IEditorDecorationsCollection | null>(null);
+
+  // Fase 4: Histórico de arquivo
+  const [fileHistoryNode, setFileHistoryNode] = useState<CodeEditorFileNode | null>(null);
+
+  // Fase 4: Replace
+  const [replaceQuery, setReplaceQuery] = useState("");
+  const [replaceWith, setReplaceWith] = useState("");
+  const [replaceRegex, setReplaceRegex] = useState(false);
+  const [replaceGlob, setReplaceGlob] = useState("");
+  const [replaceLoading, setReplaceLoading] = useState(false);
+  const [replaceMatches, setReplaceMatches] = useState<CodeEditorReplaceMatch[]>([]);
+  const [replaceModified, setReplaceModified] = useState(0);
+  const [replaceApplied, setReplaceApplied] = useState(false);
+  const [replaceError, setReplaceError] = useState("");
+
   // Confirm dialog (substitui confirm() nativo)
   const [confirmState, setConfirmState] = useState<{
     message: string;
@@ -1138,6 +1540,7 @@ export function CodeEditorTab() {
   } | null>(null);
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
+  const saveFileRef = useRef<() => void>(() => {});
   const { toasts, addToast } = useToasts();
 
   // showConfirm — substitui window.confirm() por dialog React
@@ -1170,6 +1573,14 @@ export function CodeEditorTab() {
   // ── carregamento inicial ──
   useEffect(() => {
     loadRepos();
+    // Sincroniza perfis do servidor para o localStorage (cache para activeToken())
+    apiClient.codeEditorGetGitHubProfiles().then(r => {
+      if (r.profiles.length > 0) {
+        localStorage.setItem("ce_github_profiles", JSON.stringify(r.profiles));
+        const active = r.profiles.find(p => p.active);
+        if (active) localStorage.setItem("ce_default_profile", active.id);
+      }
+    }).catch(() => { /* silencioso */ });
   }, []);
 
   async function loadRepos() {
@@ -1430,6 +1841,99 @@ export function CodeEditorTab() {
     }
   }
 
+  // ── Blame: injeta decorações Monaco ──
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    // Limpar decorações anteriores
+    if (blameDecorationsRef.current) {
+      blameDecorationsRef.current.clear();
+      blameDecorationsRef.current = null;
+    }
+    if (!showBlame || blameLines.length === 0) return;
+
+    // Injetar CSS para after-content
+    const styleId = "blame-inline-style";
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.textContent = `.blame-inline::after { color: #6b7280; font-size: 11px; font-style: italic; margin-left: 16px; }`;
+      document.head.appendChild(style);
+    }
+
+    const decorations: MonacoEditorNS.editor.IModelDeltaDecoration[] = blameLines.map(b => ({
+      range: { startLineNumber: b.line, startColumn: 1, endLineNumber: b.line, endColumn: 1 },
+      options: {
+        after: {
+          content: ` ${b.author} · ${b.date} · ${b.short}`,
+          inlineClassName: "blame-inline",
+        },
+        isWholeLine: false,
+      },
+    }));
+
+    blameDecorationsRef.current = editor.createDecorationsCollection(decorations);
+  }, [showBlame, blameLines]);
+
+  async function loadBlame() {
+    if (!selectedRepo || !activeTab) return;
+    if (showBlame) {
+      // Desativar blame
+      setShowBlame(false);
+      setBlameLines([]);
+      return;
+    }
+    // Ativar blame
+    setShowBlame(true);
+    try {
+      const r = await apiClient.codeEditorGetBlame(selectedRepo.id, activeTab.node.path);
+      setBlameLines(r.lines ?? []);
+    } catch (_) {
+      setBlameLines([]);
+    }
+  }
+
+  async function handleUpload(dirPath: string, files: FileList) {
+    if (!selectedRepo) return;
+    try {
+      const r = await apiClient.codeEditorUploadFiles(selectedRepo.id, dirPath, files);
+      if (r.created?.length > 0) {
+        addToast("success", `${r.created.length} arquivo(s) enviado(s)`);
+        await loadTree(selectedRepo.id);
+        await loadStatus(selectedRepo.id);
+      }
+    } catch (e: any) {
+      addToast("error", e.message || "Erro no upload");
+    }
+  }
+
+  async function handleReplace(dryRun: boolean) {
+    if (!selectedRepo || !replaceQuery.trim()) return;
+    setReplaceLoading(true);
+    setReplaceError("");
+    try {
+      const req: CodeEditorReplaceRequest = {
+        query: replaceQuery,
+        replacement: replaceWith,
+        is_regex: replaceRegex,
+        glob: replaceGlob,
+        dry_run: dryRun,
+      };
+      const r = await apiClient.codeEditorReplaceInFiles(selectedRepo.id, req);
+      setReplaceMatches(r.matches ?? []);
+      setReplaceModified(r.modified_files);
+      setReplaceApplied(r.applied);
+      if (!dryRun && r.applied) {
+        addToast("success", `Substituição aplicada em ${r.modified_files} arquivo(s)`);
+        await loadStatus(selectedRepo.id);
+      }
+    } catch (e: any) {
+      setReplaceError(e.message || "Erro na substituição");
+    } finally {
+      setReplaceLoading(false);
+    }
+  }
+
   const [formatting, setFormatting] = useState(false);
 
   async function formatFile() {
@@ -1450,9 +1954,12 @@ export function CodeEditorTab() {
     }
   }
 
+  // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
+  useEffect(() => { saveFileRef.current = saveFile; });
+
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
-    editor.addCommand(2048 | 49, () => saveFile()); // Ctrl+S
+    editor.addCommand(2048 | 49, () => saveFileRef.current()); // Ctrl+S
     editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
   };
 
@@ -1461,6 +1968,7 @@ export function CodeEditorTab() {
     { id: "branches" as const, label: `Branches${branches ? ` (${branches.local.length})` : ""}` },
     { id: "git" as const, label: `Git${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}` },
     { id: "log" as const, label: "Log" },
+    { id: "replace" as const, label: "Replace" },
   ];
 
   return (
@@ -1498,7 +2006,7 @@ export function CodeEditorTab() {
         {selectedRepo && (
           <>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull` })}>
+              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull`, body: activeToken() ? { token: activeToken() } : undefined })}>
               <Download className="w-3 h-3" />Pull
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
@@ -1508,7 +2016,7 @@ export function CodeEditorTab() {
               {modifiedPaths.size > 0 && <span className="bg-yellow-500 text-black text-[10px] px-1 rounded-full">{modifiedPaths.size}</span>}
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push` })}>
+              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}>
               <Upload className="w-3 h-3" />Push
               {status?.ahead && status.ahead !== "0" && <span className="bg-blue-500 text-white text-[10px] px-1 rounded-full">{status.ahead}</span>}
             </Button>
@@ -1656,11 +2164,22 @@ export function CodeEditorTab() {
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}><X className="w-3 h-3" /></Button>
                         </div>
                       </div>
-                      {tree.map(node => (
-                        <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
-                          onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
-                          onDelete={handleDeleteFile} onRename={n => setRenameNode(n)} />
-                      ))}
+                      <div
+                        className="min-h-8"
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={e => {
+                          e.preventDefault();
+                          if (e.dataTransfer.files.length > 0) handleUpload("", e.dataTransfer.files);
+                        }}
+                      >
+                        {tree.map(node => (
+                          <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
+                            onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
+                            onDelete={handleDeleteFile} onRename={n => setRenameNode(n)}
+                            onHistory={n => setFileHistoryNode(n)}
+                            onUpload={handleUpload} />
+                        ))}
+                      </div>
                     </div>
                   )}
                 </ScrollArea>
@@ -1825,6 +2344,83 @@ export function CodeEditorTab() {
                   </ScrollArea>
               </div>
             )}
+
+            {/* ── Painel: Replace ── */}
+            {sidePanel === "replace" && (
+              <div className="flex flex-col h-full">
+                <ScrollArea className="flex-1">
+                  <div className="p-2 space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">Find & Replace Global</p>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Buscar</label>
+                      <Input className="h-6 text-xs mt-0.5 font-mono" placeholder="texto ou regex..."
+                        value={replaceQuery} onChange={e => setReplaceQuery(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && handleReplace(true)} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Substituir por</label>
+                      <Input className="h-6 text-xs mt-0.5 font-mono" placeholder="substituição..."
+                        value={replaceWith} onChange={e => setReplaceWith(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Glob (ex: *.go)</label>
+                      <Input className="h-6 text-xs mt-0.5 font-mono" placeholder="*.go, *.ts..."
+                        value={replaceGlob} onChange={e => setReplaceGlob(e.target.value)} />
+                    </div>
+                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                      <input type="checkbox" checked={replaceRegex} onChange={e => setReplaceRegex(e.target.checked)} className="w-3 h-3" />
+                      Regex
+                    </label>
+                    {replaceError && <p className="text-xs text-red-400">{replaceError}</p>}
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="outline" className="flex-1 h-6 text-xs"
+                        onClick={() => { setReplaceMatches([]); handleReplace(true); }}
+                        disabled={replaceLoading || !replaceQuery.trim() || !selectedRepo}>
+                        {replaceLoading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Search className="w-3 h-3 mr-1" />}
+                        Buscar
+                      </Button>
+                    </div>
+                    {replaceMatches.length > 0 && !replaceApplied && (
+                      <Button size="sm" className="w-full h-6 text-xs"
+                        onClick={() => handleReplace(false)}
+                        disabled={replaceLoading}>
+                        <Replace className="w-3 h-3 mr-1" />
+                        Substituir tudo ({replaceModified} arquivo{replaceModified !== 1 ? "s" : ""})
+                      </Button>
+                    )}
+                    {replaceApplied && (
+                      <p className="text-xs text-green-400">✓ Aplicado em {replaceModified} arquivo(s)</p>
+                    )}
+                    {replaceMatches.length > 0 && (
+                      <div className="space-y-1 mt-1">
+                        <p className="text-[10px] text-muted-foreground">{replaceMatches.length} ocorrência(s)</p>
+                        {Object.entries(
+                          replaceMatches.reduce((acc, m) => {
+                            (acc[m.file] = acc[m.file] || []).push(m);
+                            return acc;
+                          }, {} as Record<string, typeof replaceMatches>)
+                        ).map(([file, fileMatches]) => (
+                          <div key={file} className="border border-border/30 rounded p-1">
+                            <p className="text-[10px] font-mono text-primary truncate mb-1">{file}</p>
+                            {fileMatches.map((m, i) => (
+                              <div key={i} className="text-[10px] font-mono border-b border-border/20 pb-0.5 mb-0.5">
+                                <span className="text-muted-foreground mr-1">L{m.line}</span>
+                                <span className="text-red-400/70 line-through">{m.before.trim()}</span>
+                                <span className="mx-1 text-muted-foreground">→</span>
+                                <span className="text-green-400">{m.after.trim()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {replaceMatches.length === 0 && !replaceLoading && replaceQuery && (
+                      <p className="text-xs text-muted-foreground italic text-center py-2">Nenhuma ocorrência</p>
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1866,6 +2462,10 @@ export function CodeEditorTab() {
                 <span className="text-xs font-mono text-muted-foreground truncate flex-1">{activeTab.node.path}</span>
                 {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" title="Não salvo" />}
                 <div className="flex gap-1 flex-shrink-0">
+                  <Button variant={showBlame ? "default" : "ghost"} size="sm" className="h-5 w-5 p-0" title="Git Blame inline"
+                    onClick={loadBlame}>
+                    <User className="w-3 h-3" />
+                  </Button>
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title={showMinimap ? "Ocultar minimap" : "Mostrar minimap"}
                     onClick={() => setShowMinimap(m => !m)}>
                     <Map className="w-3 h-3" />
@@ -1979,10 +2579,12 @@ export function CodeEditorTab() {
       )}
 
       {/* ── Dialogs ── */}
+      <GitHubTokenDialog open={showGitHubToken} onClose={() => setShowGitHubToken(false)} />
+
       <CloneDialog
         open={showClone}
         onClose={() => setShowClone(false)}
-        onDone={async id => {
+        onDone={async (id) => {
           const fresh = await apiClient.codeEditorListRepos();
           setRepos(fresh);
           const found = fresh.find(x => x.id === id);
@@ -2002,6 +2604,7 @@ export function CodeEditorTab() {
               await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
               addToast("success", "Commit criado com sucesso");
             }}
+            onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}
           />
 
           <BranchDialog
@@ -2081,8 +2684,160 @@ export function CodeEditorTab() {
         </>
       )}
 
+      {/* ── Fase 4: Histórico de arquivo ── */}
+      {fileHistoryNode && selectedRepo && (
+        <FileHistoryModal
+          repoId={selectedRepo.id}
+          node={fileHistoryNode}
+          onClose={() => setFileHistoryNode(null)}
+        />
+      )}
+
       <ToastContainer toasts={toasts} />
     </div>
+  );
+}
+
+// ─── FileHistoryModal ────────────────────────────────────────────────────────
+
+interface FileHistoryModalProps {
+  repoId: string;
+  node: CodeEditorFileNode;
+  onClose: () => void;
+}
+
+function FileHistoryModal({ repoId, node, onClose }: FileHistoryModalProps) {
+  const [entries, setEntries] = useState<CodeEditorFileLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [diffCommit, setDiffCommit] = useState<CodeEditorFileLogEntry | null>(null);
+
+  useEffect(() => {
+    apiClient.codeEditorGetFileLog(repoId, node.path)
+      .then(r => setEntries(r.entries ?? []))
+      .catch(() => setEntries([]))
+      .finally(() => setLoading(false));
+  }, [repoId, node.path]);
+
+  return (
+    <>
+      <Dialog open onOpenChange={onClose}>
+        <DialogContent className="max-w-lg max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <History className="w-4 h-4" />
+              Histórico: {node.name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+              </div>
+            ) : entries.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-8">Sem histórico</p>
+            ) : (
+              <div className="space-y-1 p-2">
+                {entries.map(e => (
+                  <div key={e.hash} className="group flex items-start gap-2 border-b border-border/20 pb-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-foreground/90 leading-tight truncate">{e.message}</p>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <span className="font-mono text-[10px] text-muted-foreground/60">{e.hash.slice(0, 7)}</span>
+                        <span className="text-[10px] text-muted-foreground">· {e.author} · {e.date}</span>
+                      </div>
+                    </div>
+                    <button
+                      className="flex-shrink-0 text-[10px] text-primary hover:underline opacity-0 group-hover:opacity-100 flex items-center gap-0.5"
+                      onClick={() => setDiffCommit(e)}
+                      title="Ver diff neste commit"
+                    >
+                      <Eye className="w-2.5 h-2.5" />diff
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {diffCommit && (
+        <CommitDiffModal
+          repoId={repoId}
+          filePath={node.path}
+          commit={diffCommit}
+          onClose={() => setDiffCommit(null)}
+        />
+      )}
+    </>
+  );
+}
+
+// ─── CommitDiffModal ─────────────────────────────────────────────────────────
+
+interface CommitDiffModalProps {
+  repoId: string;
+  filePath: string;
+  commit: CodeEditorFileLogEntry;
+  onClose: () => void;
+}
+
+function CommitDiffModal({ repoId, filePath, commit, onClose }: CommitDiffModalProps) {
+  const [original, setOriginal] = useState("");
+  const [modified, setModified] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const [cur, prev] = await Promise.all([
+          apiClient.codeEditorGetFileAtCommit(repoId, commit.hash, filePath),
+          apiClient.codeEditorGetFileAtCommit(repoId, commit.hash + "^", filePath).catch(() => ({ content: "" })),
+        ]);
+        setModified(cur.content);
+        setOriginal(prev.content);
+      } catch (_) {
+        setOriginal("");
+        setModified("");
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [repoId, commit.hash, filePath]);
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-5xl h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="text-sm font-mono flex items-center gap-2">
+            <GitCommit className="w-4 h-4 flex-shrink-0" />
+            {commit.hash.slice(0, 7)} · {commit.message}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 min-h-0">
+          {loading ? (
+            <div className="flex items-center justify-center h-full">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <DiffEditor
+              height="100%"
+              original={original}
+              modified={modified}
+              theme="vs-dark"
+              options={{ readOnly: true, automaticLayout: true, minimap: { enabled: false } }}
+            />
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

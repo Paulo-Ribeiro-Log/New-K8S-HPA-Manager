@@ -6,7 +6,12 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -22,9 +27,25 @@ import {
   XCircle,
   Loader2,
   KeyRound,
+  Key,
 } from 'lucide-react';
+
+// ── Perfis do Editor de Código ──────────────────────────────────────────────
+interface GitHubProfile { id: string; name: string; token: string }
+const CE_PROFILES_KEY = 'ce_github_profiles';
+function ceLoadProfiles(): GitHubProfile[] {
+  try { return JSON.parse(localStorage.getItem(CE_PROFILES_KEY) || '[]'); } catch { return []; }
+}
+function ceGetActiveId(): string {
+  return localStorage.getItem('ce_default_profile') ?? '';
+}
+function ceSetActiveId(id: string) {
+  if (id) localStorage.setItem('ce_default_profile', id);
+  else localStorage.removeItem('ce_default_profile');
+}
 import { useTheme } from '@/components/theme-provider';
 import { useUserProfile } from '@/hooks/useUserProfile';
+import { apiClient } from '@/lib/api/client';
 import { NexusCredentialModal } from '@/components/profile/NexusCredentialModal';
 import { GitHubCredentialModal } from '@/components/profile/GitHubCredentialModal';
 import { ServiceNowSessionModal } from '@/components/profile/ServiceNowSessionModal';
@@ -46,6 +67,39 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
   const [serviceNowModalOpen, setServiceNowModalOpen] = useState(false);
   const [awxModalOpen, setAwxModalOpen] = useState(false);
   const [ssoProfileModalOpen, setSsoProfileModalOpen] = useState(false);
+
+  // Contas do Editor de Código
+  const [ceProfiles, setCeProfiles] = useState<GitHubProfile[]>([]);
+  const [ceActiveId, setCeActiveId] = useState<string>('');
+
+  async function onMenuOpen(open: boolean) {
+    if (!open) return;
+    try {
+      const r = await apiClient.codeEditorGetGitHubProfiles();
+      setCeProfiles(r.profiles);
+      const active = r.profiles.find(p => p.active);
+      setCeActiveId(active?.id ?? '');
+      // Atualiza cache localStorage
+      localStorage.setItem('ce_github_profiles', JSON.stringify(r.profiles));
+      if (active) localStorage.setItem('ce_default_profile', active.id);
+    } catch {
+      // Fallback para localStorage se API não responder
+      setCeProfiles(ceLoadProfiles());
+      setCeActiveId(ceGetActiveId());
+    }
+  }
+
+  async function handleCeSwitch(id: string) {
+    // Marca o perfil selecionado como active=true no servidor
+    const updated = ceProfiles.map(p => ({ ...p, active: p.id === id }));
+    try {
+      await apiClient.codeEditorSaveGitHubProfiles(updated);
+    } catch { /* silencioso */ }
+    localStorage.setItem('ce_github_profiles', JSON.stringify(updated));
+    ceSetActiveId(id);
+    setCeActiveId(id);
+    setCeProfiles(updated);
+  }
 
   // Renderizar icone de status da credencial
   const renderStatusIcon = (status: CredentialStatus) => {
@@ -84,7 +138,7 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu onOpenChange={onMenuOpen}>
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
@@ -190,9 +244,55 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
               onClick={() => setGithubModalOpen(true)}
               className="cursor-pointer"
             >
-              <span className="flex-1">GitHub Token</span>
+              <span className="flex-1">GitHub Token (SSO/SAML)</span>
               {renderStatusIcon(credentials.github.status)}
             </DropdownMenuItem>
+
+            {/* Contas do Editor de Código */}
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="cursor-pointer">
+                <Key className="h-4 w-4 mr-2 text-amber-500" />
+                <span className="flex-1">Contas do Editor de Código</span>
+                {ceActiveId && ceProfiles.find(p => p.id === ceActiveId) && (
+                  <span className="text-xs text-muted-foreground ml-2 max-w-20 truncate">
+                    {ceProfiles.find(p => p.id === ceActiveId)?.name}
+                  </span>
+                )}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-56">
+                <DropdownMenuLabel className="text-xs text-muted-foreground pb-1">
+                  Conta usada para push/pull no editor
+                </DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={ceActiveId} onValueChange={handleCeSwitch}>
+                  <DropdownMenuRadioItem value="" className="cursor-pointer text-sm">
+                    Sem conta (credential helper)
+                  </DropdownMenuRadioItem>
+                  {ceProfiles.map(p => (
+                    <DropdownMenuRadioItem key={p.id} value={p.id} className="cursor-pointer">
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-sm font-medium truncate">{p.name}</span>
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          {p.token.slice(0, 8)}••••{p.token.slice(-4)}
+                        </span>
+                      </div>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+                {ceProfiles.length === 0 && (
+                  <div className="px-3 py-1.5 text-xs text-muted-foreground italic">
+                    Nenhuma conta configurada ainda.
+                  </div>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="cursor-pointer text-xs"
+                  onClick={() => setGithubModalOpen(true)}
+                >
+                  <KeyRound className="h-3.5 w-3.5 mr-2" />
+                  Gerenciar contas...
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
             <DropdownMenuItem
               onClick={() => setServiceNowModalOpen(true)}
               className="cursor-pointer"

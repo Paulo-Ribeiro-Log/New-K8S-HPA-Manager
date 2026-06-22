@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,19 +26,21 @@ import (
 
 // CodeEditorHandler gerencia operações de edição de código com Git.
 type CodeEditorHandler struct {
-	tokenStore     *storage.GitHubTokenStore
-	logger         *zerolog.Logger
-	reposBase      string // ~/.k8s-hpa-manager/repos
+	tokenStore      *storage.GitHubTokenStore
+	userTokensStore *storage.UserTokensStore
+	logger          *zerolog.Logger
+	reposBase       string // ~/.k8s-hpa-manager/repos
 	maxReposPerUser int
 }
 
 // NewCodeEditorHandler cria o handler do editor de código.
-func NewCodeEditorHandler(tokenStore *storage.GitHubTokenStore, logger *zerolog.Logger) *CodeEditorHandler {
+func NewCodeEditorHandler(tokenStore *storage.GitHubTokenStore, userTokensStore *storage.UserTokensStore, logger *zerolog.Logger) *CodeEditorHandler {
 	home, _ := os.UserHomeDir()
 	return &CodeEditorHandler{
-		tokenStore:     tokenStore,
-		logger:         logger,
-		reposBase:      filepath.Join(home, ".k8s-hpa-manager", "repos"),
+		tokenStore:      tokenStore,
+		userTokensStore: userTokensStore,
+		logger:          logger,
+		reposBase:       filepath.Join(home, ".k8s-hpa-manager", "repos"),
 		maxReposPerUser: 10,
 	}
 }
@@ -100,6 +104,37 @@ func (h *CodeEditorHandler) getToken(c *gin.Context) string {
 		return os.Getenv("GITHUB_TOKEN")
 	}
 	return tok
+}
+
+// gitCmdWithToken cria um exec.Cmd que injeta o token via GIT_ASKPASS.
+// Quando token != "", desabilita o credential helper via -c credential.helper=
+// para evitar que credenciais cacheadas no sistema sobreponham o token fornecido.
+func gitCmdWithToken(ctx context.Context, dir, token string, args ...string) (*exec.Cmd, func()) {
+	if token == "" {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dir
+		return cmd, func() {}
+	}
+
+	// Antepõe -c credential.helper= para desabilitar qualquer helper do sistema
+	allArgs := append([]string{"-c", "credential.helper="}, args...)
+	cmd := exec.CommandContext(ctx, "git", allArgs...)
+	cmd.Dir = dir
+
+	f, err := os.CreateTemp("", "git-askpass-*.sh")
+	if err != nil {
+		return cmd, func() {}
+	}
+	// Script POSIX: username=o próprio token (GitHub aceita token como username), password=token
+	fmt.Fprintf(f, "#!/bin/sh\ncase \"$1\" in\n  *sername*) echo x-token-auth;;\n  *) echo %s;;\nesac\n", token)
+	f.Close()
+	os.Chmod(f.Name(), 0700) //nolint:errcheck
+	cmd.Env = append(os.Environ(),
+		"GIT_ASKPASS="+f.Name(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1", // ignora /etc/gitconfig do sistema
+	)
+	return cmd, func() { os.Remove(f.Name()) }
 }
 
 // currentBranch retorna o branch atual do repo.
@@ -171,13 +206,17 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 		Owner  string `json:"owner"`
 		Repo   string `json:"repo"`
 		Branch string `json:"branch"`
+		Token  string `json:"token"` // token explícito sobrepõe o armazenado
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.Owner == "" || req.Repo == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "owner e repo são obrigatórios"})
 		return
 	}
 
-	token := h.getToken(c)
+	token := req.Token
+	if token == "" {
+		token = h.getToken(c)
+	}
 	id := repoID(req.Owner, req.Repo)
 	dir := h.repoDir(id)
 
@@ -199,9 +238,6 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	}
 
 	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", req.Owner, req.Repo)
-	if token != "" {
-		cloneURL = fmt.Sprintf("https://%s@github.com/%s/%s.git", token, req.Owner, req.Repo)
-	}
 
 	// SSE streaming
 	c.Header("Content-Type", "text/event-stream")
@@ -227,7 +263,8 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd, cleanup := gitCmdWithToken(ctx, "", token, args...)
+	defer cleanup()
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
 		sendEvent("Erro: " + err.Error())
@@ -240,19 +277,13 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		line := scanner.Text()
-		// Filtra linhas com o token
-		if token != "" {
-			line = strings.ReplaceAll(line, token, "***")
-		}
-		sendEvent(line)
+		sendEvent(scanner.Text())
 	}
 
 	if err := cmd.Wait(); err != nil {
 		os.RemoveAll(dir)
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
 	} else {
-		// Configura identidade git local
 		runGit(dir, "config", "user.email", "k8s-hpa-manager@local") //nolint:errcheck
 		runGit(dir, "config", "user.name", "K8s HPA Manager")        //nolint:errcheck
 		sendEvent("Clone concluído com sucesso.")
@@ -535,18 +566,48 @@ func (h *CodeEditorHandler) CheckoutBranch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"branch": branch, "message": out})
 }
 
+// injectTokenURL injeta o token diretamente na URL: https://TOKEN@github.com/...
+// É o método mais confiável — ignora credential helper e GIT_ASKPASS.
+func injectTokenURL(rawURL, token string) string {
+	if token == "" {
+		return rawURL
+	}
+	for _, prefix := range []string{"https://", "http://"} {
+		if strings.HasPrefix(rawURL, prefix) {
+			// Remove qualquer token já embutido (https://OLD@github.com)
+			rest := strings.TrimPrefix(rawURL, prefix)
+			if at := strings.Index(rest, "@"); at >= 0 {
+				rest = rest[at+1:]
+			}
+			return prefix + "x-token-auth:" + token + "@" + rest
+		}
+	}
+	return rawURL
+}
+
+// cleanRemoteURL remove token da URL para não ficar exposto no git config.
+func cleanRemoteURL(rawURL string) string {
+	for _, prefix := range []string{"https://", "http://"} {
+		if strings.HasPrefix(rawURL, prefix) {
+			rest := strings.TrimPrefix(rawURL, prefix)
+			if at := strings.Index(rest, "@"); at >= 0 {
+				rest = rest[at+1:]
+			}
+			return prefix + rest
+		}
+	}
+	return rawURL
+}
+
 // Pull — POST /api/v1/code-editor/repos/:id/pull (SSE)
 func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 
-	token := h.getToken(c)
-	if token != "" {
-		// Atualiza URL remota com o token
-		owner, repo := ownerRepo(dir)
-		newURL := fmt.Sprintf("https://%s@github.com/%s/%s.git", token, owner, repo)
-		runGit(dir, "remote", "set-url", "origin", newURL) //nolint:errcheck
+	var req struct {
+		Token string `json:"token"`
 	}
+	c.ShouldBindJSON(&req) //nolint:errcheck
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -563,11 +624,28 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 
 	sendSSE("Executando git pull...")
 
+	token := req.Token
+	if token == "" {
+		token = h.getToken(c)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "pull", "--progress")
-	cmd.Dir = dir
+	var cmd *exec.Cmd
+	if token != "" {
+		// Injeta token na URL remota — ignora credential helper do sistema
+		originURL, _ := runGit(dir, "remote", "get-url", "origin")
+		authedURL := injectTokenURL(cleanRemoteURL(originURL), token)
+		gitArgs := []string{"-c", "credential.helper=", "pull", "--progress", authedURL}
+		cmd = exec.CommandContext(ctx, "git", gitArgs...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	} else {
+		cmd = exec.CommandContext(ctx, "git", "pull", "--progress")
+		cmd.Dir = dir
+	}
+
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
@@ -582,6 +660,7 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 		for scanner.Scan() {
 			line := scanner.Text()
+			// Não expõe o token no SSE
 			if token != "" {
 				line = strings.ReplaceAll(line, token, "***")
 			}
@@ -656,21 +735,15 @@ func (h *CodeEditorHandler) Commit(c *gin.Context) {
 }
 
 // Push — POST /api/v1/code-editor/repos/:id/push (SSE)
-// Body: { "branch": "..." (optional) }
+// Body: { "branch": "..." (optional), "token": "..." (optional) }
 func (h *CodeEditorHandler) Push(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 	var req struct {
 		Branch string `json:"branch"`
+		Token  string `json:"token"`
 	}
 	c.ShouldBindJSON(&req) //nolint:errcheck
-
-	token := h.getToken(c)
-	if token != "" {
-		owner, repo := ownerRepo(dir)
-		newURL := fmt.Sprintf("https://%s@github.com/%s/%s.git", token, owner, repo)
-		runGit(dir, "remote", "set-url", "origin", newURL) //nolint:errcheck
-	}
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -692,11 +765,28 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		branch = currentBranch(dir)
 	}
 
+	token := req.Token
+	if token == "" {
+		token = h.getToken(c)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "push", "--progress", "origin", branch)
-	cmd.Dir = dir
+	var cmd *exec.Cmd
+	if token != "" {
+		// Injeta token diretamente na URL do push — ignora qualquer credential helper
+		originURL, _ := runGit(dir, "remote", "get-url", "origin")
+		authedURL := injectTokenURL(cleanRemoteURL(originURL), token)
+		gitArgs := []string{"-c", "credential.helper=", "push", "--progress", authedURL, "HEAD:" + branch}
+		cmd = exec.CommandContext(ctx, "git", gitArgs...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	} else {
+		cmd = exec.CommandContext(ctx, "git", "push", "--progress", "origin", branch)
+		cmd.Dir = dir
+	}
+
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
@@ -721,12 +811,6 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	if err := cmd.Wait(); err != nil {
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
 	} else {
-		// Remove token da URL remota após push bem-sucedido (segurança)
-		if token != "" {
-			owner, repo := ownerRepo(dir)
-			cleanURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
-			runGit(dir, "remote", "set-url", "origin", cleanURL) //nolint:errcheck
-		}
 		sendSSE("Push concluído com sucesso.")
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 	}
@@ -1302,4 +1386,386 @@ func (h *CodeEditorHandler) ListFonts(c *gin.Context) {
 	}
 	sort.Strings(fonts)
 	c.JSON(http.StatusOK, gin.H{"fonts": fonts})
+}
+
+// ─── Fase 4: Git Blame ──────────────────────────────────────────────────────
+
+// BlameLineInfo representa uma linha do git blame.
+type BlameLineInfo struct {
+	Hash    string `json:"hash"`
+	Short   string `json:"short"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+	Summary string `json:"summary"`
+	Line    int    `json:"line"`
+}
+
+func isHexStr(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func parseBlame(raw string) []BlameLineInfo {
+	cache := map[string]BlameLineInfo{}
+	var result []BlameLineInfo
+	var cur BlameLineInfo
+
+	for _, line := range strings.Split(raw, "\n") {
+		if len(line) == 0 {
+			continue
+		}
+		if line[0] == '\t' {
+			if cur.Line > 0 {
+				if cached, ok := cache[cur.Hash]; ok {
+					cur.Author = cached.Author
+					cur.Date = cached.Date
+					cur.Summary = cached.Summary
+				}
+				result = append(result, cur)
+				cur = BlameLineInfo{}
+			}
+			continue
+		}
+		if len(line) >= 40 && isHexStr(line[:40]) {
+			parts := strings.Fields(line)
+			hash := parts[0]
+			cur.Hash = hash
+			cur.Short = hash[:7]
+			if len(parts) >= 3 {
+				if n, err := strconv.Atoi(parts[2]); err == nil {
+					cur.Line = n
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "author ") && !strings.HasPrefix(line, "author-") {
+			cur.Author = strings.TrimPrefix(line, "author ")
+		} else if strings.HasPrefix(line, "author-time ") {
+			if ts, err := strconv.ParseInt(strings.TrimPrefix(line, "author-time "), 10, 64); err == nil {
+				cur.Date = time.Unix(ts, 0).Format("2006-01-02")
+			}
+		} else if strings.HasPrefix(line, "summary ") {
+			cur.Summary = strings.TrimPrefix(line, "summary ")
+		}
+		if cur.Hash != "" && cur.Author != "" {
+			cache[cur.Hash] = cur
+		}
+	}
+	return result
+}
+
+// GetBlame retorna anotações de blame para um arquivo.
+func (h *CodeEditorHandler) GetBlame(c *gin.Context) {
+	id := c.Param("id")
+	path := c.Query("path")
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path obrigatório"})
+		return
+	}
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+	out, err := runGit(dir, "blame", "--porcelain", path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	lines := parseBlame(out)
+	c.JSON(http.StatusOK, gin.H{"lines": lines})
+}
+
+// ─── Fase 4: Histórico de arquivo ──────────────────────────────────────────
+
+// FileLogEntry representa uma entrada no histórico de um arquivo.
+type FileLogEntry struct {
+	Hash    string `json:"hash"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+	Message string `json:"message"`
+}
+
+// GetFileLog retorna o histórico de commits de um arquivo específico.
+func (h *CodeEditorHandler) GetFileLog(c *gin.Context) {
+	id := c.Param("id")
+	path := c.Query("path")
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path obrigatório"})
+		return
+	}
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+	out, err := runGit(dir, "log", "--follow", "--pretty=format:%H|%an|%ad|%s", "--date=short", "--", path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	var entries []FileLogEntry
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		entries = append(entries, FileLogEntry{
+			Hash:    parts[0],
+			Author:  parts[1],
+			Date:    parts[2],
+			Message: parts[3],
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": entries})
+}
+
+// GetFileAtCommit retorna o conteúdo de um arquivo em um commit específico.
+func (h *CodeEditorHandler) GetFileAtCommit(c *gin.Context) {
+	id := c.Param("id")
+	hash := c.Query("hash")
+	path := c.Query("path")
+	if hash == "" || path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hash e path obrigatórios"})
+		return
+	}
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+	out, err := runGit(dir, "show", hash+":"+path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"content": out})
+}
+
+// ─── Fase 4: Upload de arquivos ────────────────────────────────────────────
+
+// UploadFiles aceita múltiplos arquivos via multipart form e os salva no repo.
+func (h *CodeEditorHandler) UploadFiles(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+
+	targetDir := c.PostForm("dir")
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "form inválido: " + err.Error()})
+		return
+	}
+
+	files := form.File["files"]
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nenhum arquivo enviado"})
+		return
+	}
+
+	var created []string
+	for _, fh := range files {
+		rel := filepath.Join(targetDir, filepath.Base(fh.Filename))
+		full := filepath.Join(dir, rel)
+		// Validar path traversal
+		if !strings.HasPrefix(filepath.Clean(full)+string(os.PathSeparator), filepath.Clean(dir)+string(os.PathSeparator)) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			continue
+		}
+		if err := c.SaveUploadedFile(fh, full); err != nil {
+			continue
+		}
+		created = append(created, rel)
+	}
+	c.JSON(http.StatusOK, gin.H{"created": created})
+}
+
+// ─── Fase 4: Find & Replace global ────────────────────────────────────────
+
+// ReplaceMatch representa um match de substituição.
+type ReplaceMatch struct {
+	File   string `json:"file"`
+	Line   int    `json:"line"`
+	Before string `json:"before"`
+	After  string `json:"after"`
+}
+
+// ReplaceRequest é o body do endpoint de replace.
+type ReplaceRequest struct {
+	Query       string `json:"query"`
+	Replacement string `json:"replacement"`
+	IsRegex     bool   `json:"is_regex"`
+	Glob        string `json:"glob"`    // ex: "*.go" — filtra por extensão
+	DryRun      bool   `json:"dry_run"` // se true, apenas pré-visualiza
+}
+
+var ignoredReplDirs = map[string]bool{
+	".git": true, "node_modules": true, "vendor": true, "build": true, "dist": true,
+}
+
+// ReplaceInFiles realiza find & replace em todos os arquivos do repo.
+func (h *CodeEditorHandler) ReplaceInFiles(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+
+	var req ReplaceRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "query obrigatória"})
+		return
+	}
+
+	// Construir regexp
+	var re *regexp.Regexp
+	if req.IsRegex {
+		var err error
+		re, err = regexp.Compile(req.Query)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "regex inválida: " + err.Error()})
+			return
+		}
+	}
+
+	// Calcular extensão-alvo do glob (ex: "*.go" → ".go")
+	var extFilter string
+	if req.Glob != "" {
+		extFilter = strings.TrimPrefix(req.Glob, "*")
+	}
+
+	var matches []ReplaceMatch
+	modifiedFiles := 0
+
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		// Ignorar diretórios proibidos
+		parts := strings.SplitN(rel, string(os.PathSeparator), 2)
+		if d.IsDir() {
+			if ignoredReplDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Filtro de extensão
+		if extFilter != "" && !strings.HasSuffix(d.Name(), extFilter) {
+			return nil
+		}
+		_ = parts
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		// Ignorar binários (heurística: byte nulo nos primeiros 512 bytes)
+		check := data
+		if len(check) > 512 {
+			check = check[:512]
+		}
+		for _, b := range check {
+			if b == 0 {
+				return nil
+			}
+		}
+
+		lines := strings.Split(string(data), "\n")
+		changed := false
+		for i, line := range lines {
+			var newLine string
+			if req.IsRegex {
+				newLine = re.ReplaceAllString(line, req.Replacement)
+			} else {
+				newLine = strings.ReplaceAll(line, req.Query, req.Replacement)
+			}
+			if newLine != line {
+				matches = append(matches, ReplaceMatch{
+					File:   rel,
+					Line:   i + 1,
+					Before: line,
+					After:  newLine,
+				})
+				lines[i] = newLine
+				changed = true
+			}
+		}
+		if changed && !req.DryRun {
+			newContent := strings.Join(lines, "\n")
+			if err := os.WriteFile(path, []byte(newContent), 0644); err == nil {
+				modifiedFiles++
+			}
+		} else if changed {
+			modifiedFiles++
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"matches":        matches,
+		"modified_files": modifiedFiles,
+		"applied":        !req.DryRun,
+	})
+}
+
+func profileEmail(c *gin.Context) string {
+	email, _ := c.Get("user_email")
+	s := fmt.Sprintf("%v", email)
+	if s == "" || s == "<nil>" {
+		return "default"
+	}
+	return s
+}
+
+// GetGitHubProfiles — GET /api/v1/code-editor/github-profiles
+func (h *CodeEditorHandler) GetGitHubProfiles(c *gin.Context) {
+	if h.userTokensStore == nil {
+		c.JSON(http.StatusOK, gin.H{"profiles": []storage.GitHubEditorProfile{}})
+		return
+	}
+	profiles, err := h.userTokensStore.GetGitHubEditorProfiles(profileEmail(c))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"profiles": profiles})
+}
+
+// SaveGitHubProfiles — PUT /api/v1/code-editor/github-profiles
+func (h *CodeEditorHandler) SaveGitHubProfiles(c *gin.Context) {
+	var req struct {
+		Profiles []storage.GitHubEditorProfile `json:"profiles"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "json inválido"})
+		return
+	}
+	if h.userTokensStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage não disponível"})
+		return
+	}
+	if err := h.userTokensStore.SaveGitHubEditorProfiles(profileEmail(c), req.Profiles); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

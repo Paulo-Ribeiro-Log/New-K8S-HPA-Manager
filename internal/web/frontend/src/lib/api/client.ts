@@ -3831,9 +3831,65 @@ class APIClient {
   async codeEditorListFonts(): Promise<{ fonts: string[] }> {
     return this.request("/code-editor/fonts");
   }
+
+  // Fase 4: Git Blame
+  async codeEditorGetBlame(id: string, path: string): Promise<{ lines: CodeEditorBlameLine[] }> {
+    return this.request(`/code-editor/repos/${id}/blame?path=${encodeURIComponent(path)}`);
+  }
+
+  // Fase 4: Histórico de arquivo
+  async codeEditorGetFileLog(id: string, path: string): Promise<{ entries: CodeEditorFileLogEntry[] }> {
+    return this.request(`/code-editor/repos/${id}/file-log?path=${encodeURIComponent(path)}`);
+  }
+
+  async codeEditorGetFileAtCommit(id: string, hash: string, path: string): Promise<{ content: string }> {
+    return this.request(`/code-editor/repos/${id}/file-show?hash=${encodeURIComponent(hash)}&path=${encodeURIComponent(path)}`);
+  }
+
+  // Fase 4: Upload de arquivos
+  async codeEditorUploadFiles(id: string, dir: string, files: FileList | File[]): Promise<{ created: string[] }> {
+    const form = new FormData();
+    form.append("dir", dir);
+    const arr = Array.from(files);
+    for (const f of arr) form.append("files", f);
+    const token = localStorage.getItem("auth_token") || "";
+    const res = await fetch(`/api/v1/code-editor/repos/${id}/upload`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  // Fase 4: Find & Replace global
+  async codeEditorReplaceInFiles(id: string, req: CodeEditorReplaceRequest): Promise<CodeEditorReplaceResult> {
+    return this.request(`/code-editor/repos/${id}/replace`, {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  async codeEditorGetGitHubProfiles(): Promise<{ profiles: GitHubEditorProfile[] }> {
+    return this.request("/code-editor/github-profiles");
+  }
+
+  async codeEditorSaveGitHubProfiles(profiles: GitHubEditorProfile[]): Promise<void> {
+    return this.request("/code-editor/github-profiles", {
+      method: "PUT",
+      body: JSON.stringify({ profiles }),
+    });
+  }
 }
 
 // Code Editor types
+export interface GitHubEditorProfile {
+  id: string;
+  name: string;
+  token: string;
+  active: boolean;
+}
+
 export interface CodeEditorRepo {
   id: string;
   owner: string;
@@ -3875,6 +3931,44 @@ export interface CodeEditorGrepMatch {
   file: string;
   line: number;
   content: string;
+}
+
+// Fase 4 types
+export interface CodeEditorBlameLine {
+  hash: string;
+  short: string;
+  author: string;
+  date: string;
+  summary: string;
+  line: number;
+}
+
+export interface CodeEditorFileLogEntry {
+  hash: string;
+  author: string;
+  date: string;
+  message: string;
+}
+
+export interface CodeEditorReplaceRequest {
+  query: string;
+  replacement: string;
+  is_regex: boolean;
+  glob: string;
+  dry_run: boolean;
+}
+
+export interface CodeEditorReplaceMatch {
+  file: string;
+  line: number;
+  before: string;
+  after: string;
+}
+
+export interface CodeEditorReplaceResult {
+  matches: CodeEditorReplaceMatch[];
+  modified_files: number;
+  applied: boolean;
 }
 
 // Singleton instance
