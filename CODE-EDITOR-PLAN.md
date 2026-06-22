@@ -119,16 +119,38 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 ### Segurança / Qualidade
 - [x] **creack/pty** adicionado ao vendor — terminal com PTY real, suporta cores ANSI, resize, programas interativos
 
-## Fase 4 — Planejado
+## Fase 4 — Alta utilidade / baixa complexidade
 
-### Avançado
-- [ ] **Quota de disco** — checar espaço livre antes de clonar
-- [ ] **Audit log** de commits feitos pelo editor (integrar com `HistoryTracker`)
+### Busca e edição
+- [ ] **Find & Replace global** — buscar e substituir texto em todos os arquivos do repo via `git grep` + substituição por arquivo; interface com campo regex opcional, preview das ocorrências antes de aplicar; backend: `GET /repos/:id/grep` já existe para busca, adicionar `POST /repos/:id/replace`
+- [ ] **Histórico de um arquivo** — `git log --follow <path>` mostrando commits que tocaram aquele arquivo; abre via menu de contexto da árvore; clique no commit abre diff daquele arquivo naquele commit (`git show <hash>:<path>`); backend: `GET /repos/:id/file-log?path=`
+- [ ] **Upload de arquivo via drag & drop** — arrastar arquivo do SO para um diretório da árvore faz upload; backend: `POST /repos/:id/upload` (multipart); útil para subir configs, certs, assets
+
+### Git
+- [ ] **Git blame inline** — anotação por linha com autor, hash e data via `git blame --porcelain`; Monaco decorations na gutter; backend: `GET /repos/:id/blame?path=`; aparece ao clicar no ícone de blame no header do editor
+
+## Fase 5 — Alta utilidade / complexidade média
+
+### Git
+- [ ] **Resolução visual de conflitos de merge** — quando `git merge` gera conflitos (`MERGE_HEAD` existe), detectar arquivos com marcadores `<<<<<<<`; abrir Monaco DiffEditor 3-way (base / ours / theirs); botões "Aceitar meu" / "Aceitar deles" por bloco; salvar resolve o arquivo e faz `git add`; backend: `GET /repos/:id/conflicts`, `POST /repos/:id/resolve-conflict`
+- [ ] **Diff entre duas branches** — selecionar duas branches e ver diff completo (`git diff branch-a..branch-b`); abre em DiffModal existente; útil antes de merge/PR; backend: `GET /repos/:id/branch-diff?from=&to=`
+
+### UX
+- [ ] **Preview Markdown** — split view Monaco (esquerda) + preview HTML (direita) para arquivos `.md`; toggle via botão no header do editor; usar `react-markdown` + `rehype-highlight` (já pode estar no vendor via outros usos)
+
+## Fase 6 — Menor prioridade / maior complexidade
+
+### Terminal
+- [ ] **Terminal múltiplo** — abas de terminal (como VS Code); cada aba tem seu próprio PTY/WebSocket; botão "+" cria nova aba; "×" fecha a aba e encerra o processo; estado gerenciado por array `terminalTabs[]`
+
+### Qualidade / Infra
+- [ ] **Quota de disco** — checar espaço livre (`df -h ~/.k8s-hpa-manager/repos/`) antes de clonar; alerta se < 500MB; exibir tamanho de cada repo na lista (`du -sh`)
+- [ ] **Audit log** — registrar commits feitos pelo editor no `HistoryTracker` com email do usuário, repo, hash e mensagem; integrar com `internal/history/tracker.go`
 
 ### Autocomplete / LSP (complexo)
-- [ ] **Go** — `gopls` via WebSocket proxy (`POST /api/v1/code-editor/repos/:id/lsp/start`)
-- [ ] **Python** — `pyright` ou `pylsp`
-- [ ] **TypeScript/JavaScript** — Monaco já tem suporte nativo (apenas habilitar `tsconfig`)
+- [ ] **Go** — `gopls` via processo filho + proxy WebSocket (`POST /repos/:id/lsp/start`); Monaco `MonacoLanguageClient`; requer `monaco-languageclient` no frontend
+- [ ] **Python** — `pyright` ou `pylsp`; mesma arquitetura do gopls
+- [ ] **TypeScript/JavaScript** — Monaco já tem suporte nativo; habilitar via `tsconfig` do repo
 
 ---
 
