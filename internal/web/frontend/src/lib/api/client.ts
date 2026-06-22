@@ -3869,9 +3869,27 @@ class APIClient {
       body: JSON.stringify(req),
     });
   }
+
+  async codeEditorGetGitHubProfiles(): Promise<{ profiles: GitHubEditorProfile[] }> {
+    return this.request("/code-editor/github-profiles");
+  }
+
+  async codeEditorSaveGitHubProfiles(profiles: GitHubEditorProfile[]): Promise<void> {
+    return this.request("/code-editor/github-profiles", {
+      method: "PUT",
+      body: JSON.stringify({ profiles }),
+    });
+  }
 }
 
 // Code Editor types
+export interface GitHubEditorProfile {
+  id: string;
+  name: string;
+  token: string;
+  active: boolean;
+}
+
 export interface CodeEditorRepo {
   id: string;
   owner: string;

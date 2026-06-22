@@ -329,22 +329,28 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
 
 interface CloneDialogProps {
   open: boolean;
-  profiles: GitHubProfile[];
   onClose: () => void;
-  onDone: (id: string, profileId?: string) => void;
+  onDone: (id: string) => void;
 }
 
-function CloneDialog({ open, profiles, onClose, onDone }: CloneDialogProps) {
+function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   const [url, setUrl] = useState("");
   const [branch, setBranch] = useState("");
-  const [selectedProfileId, setSelectedProfileId] = useState(() => localStorage.getItem("ce_default_profile") ?? "");
+  const [profiles, setProfiles] = useState<GitHubProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
   const [cloning, setCloning] = useState(false);
   const [error, setError] = useState("");
   const logsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) { setUrl(""); setBranch(""); setLogs([]); setError(""); }
+    if (open) {
+      const fresh = loadProfiles();
+      setProfiles(fresh);
+      const defaultId = localStorage.getItem("ce_default_profile") ?? "";
+      setSelectedProfileId(defaultId);
+      setUrl(""); setBranch(""); setLogs([]); setError("");
+    }
   }, [open]);
 
   function parseGitHubUrl(input: string): { owner: string; repo: string } | null {
@@ -388,7 +394,7 @@ function CloneDialog({ open, profiles, onClose, onDone }: CloneDialogProps) {
       }
     }
     setCloning(false);
-    if (doneId) { setTimeout(() => { onDone(doneId, selectedProfileId || undefined); onClose(); }, 800); }
+    if (doneId) { setTimeout(() => { onDone(doneId); onClose(); }, 800); }
   }
 
   useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight; }, [logs]);
@@ -581,6 +587,7 @@ function loadRepoProfile(): Record<string, string> {
 function saveRepoProfile(m: Record<string, string>) { localStorage.setItem(REPO_PROFILE_KEY, JSON.stringify(m)); }
 
 // ─── ProfileSwitcher ─────────────────────────────────────────────────────────
+// Gerencia contas GitHub diretamente no dropdown — sem precisar abrir outro modal.
 
 interface ProfileSwitcherProps {
   repoId: string;
@@ -590,20 +597,56 @@ interface ProfileSwitcherProps {
 
 function ProfileSwitcher({ repoId, repoProfileMap, onSwitch }: ProfileSwitcherProps) {
   const [open, setOpen] = useState(false);
-  const [freshProfiles, setFreshProfiles] = useState<GitHubProfile[]>([]);
+  const [profiles, setProfiles] = useState<GitHubProfile[]>([]);
+  const [newName, setNewName] = useState("");
+  const [newToken, setNewToken] = useState("");
+  const [showNewToken, setShowNewToken] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
-  // repoId="" → usa padrão global
   const activeId = repoId
     ? (repoProfileMap[repoId] ?? "")
     : (localStorage.getItem("ce_default_profile") ?? "");
-  const activeName = (freshProfiles.length > 0 ? freshProfiles : loadProfiles()).find(p => p.id === activeId)?.name;
+
+  const activeProfile = profiles.find(p => p.id === activeId);
 
   function openMenu() {
-    const latest = loadProfiles();
-    setFreshProfiles(latest);
+    setProfiles(loadProfiles());
     setOpen(true);
+    setTimeout(() => nameInputRef.current?.focus(), 50);
+  }
+
+  function handleSwitch(profileId: string) {
+    onSwitch(repoId, profileId);
+    setOpen(false);
+  }
+
+  function handleAdd() {
+    const name = newName.trim();
+    const token = newToken.trim();
+    if (!name || !token) return;
+    const updated = [...loadProfiles(), { id: crypto.randomUUID(), name, token }];
+    saveProfiles(updated);
+    setProfiles(updated);
+    // Seleciona automaticamente o perfil recém-adicionado
+    const newId = updated[updated.length - 1].id;
+    onSwitch(repoId, newId);
+    setNewName("");
+    setNewToken("");
+    setShowNewToken(false);
+  }
+
+  function handleDelete(id: string) {
+    const updated = loadProfiles().filter(p => p.id !== id);
+    saveProfiles(updated);
+    // Remove associações ao perfil deletado
+    const map = loadRepoProfile();
+    Object.keys(map).forEach(k => { if (map[k] === id) delete map[k]; });
+    saveRepoProfile(map);
+    if (localStorage.getItem("ce_default_profile") === id) localStorage.removeItem("ce_default_profile");
+    setProfiles(updated);
+    if (activeId === id) onSwitch(repoId, "");
   }
 
   // Fecha ao clicar fora
@@ -625,46 +668,122 @@ function ProfileSwitcher({ repoId, repoProfileMap, onSwitch }: ProfileSwitcherPr
         ref={btnRef}
         onClick={openMenu}
         className="flex items-center gap-1.5 text-xs bg-muted/60 border border-border/50 rounded px-2 py-1 hover:bg-muted text-foreground/80 transition-colors"
-        title={repoId ? "Conta GitHub deste repositório" : "Conta GitHub padrão"}
+        title="Gerenciar contas GitHub"
       >
         <Key className="w-3 h-3 text-primary flex-shrink-0" />
-        <span className="max-w-24 truncate">{activeName ?? "Conta GitHub"}</span>
+        <span className="max-w-28 truncate">
+          {activeProfile ? activeProfile.name : <span className="opacity-60">Conta GitHub</span>}
+        </span>
         <ChevronsUpDown className="w-3 h-3 opacity-50 flex-shrink-0" />
       </button>
 
       {open && (
         <div
           ref={menuRef}
-          className="absolute top-full left-0 mt-1 z-50 min-w-48 bg-popover border border-border rounded shadow-lg py-1"
+          className="absolute top-full left-0 mt-1 z-50 w-72 bg-popover border border-border rounded shadow-xl"
         >
-          <div className="px-3 py-1.5 text-[10px] text-muted-foreground font-medium uppercase tracking-wide border-b border-border/50 mb-1">
-            {repoId ? "Conta para este repositório" : "Conta padrão (clone)"}
+          {/* Cabeçalho */}
+          <div className="px-3 py-2 border-b border-border/50">
+            <p className="text-[11px] font-semibold text-foreground">Contas GitHub</p>
+            <p className="text-[10px] text-muted-foreground">
+              {repoId ? "Conta usada para este repositório" : "Conta padrão (clone)"}
+            </p>
           </div>
-          <button
-            className={`w-full text-left text-xs px-3 py-1.5 hover:bg-muted transition-colors flex items-center gap-2 ${activeId === "" ? "text-primary font-medium" : ""}`}
-            onClick={() => { onSwitch(repoId, ""); setOpen(false); }}
-          >
-            {activeId === "" && <CheckCircle2 className="w-3 h-3 text-primary flex-shrink-0" />}
-            <span className={activeId === "" ? "" : "ml-5"}>Sem perfil (credential helper)</span>
-          </button>
-          {freshProfiles.length === 0 && (
-            <div className="px-3 py-2 text-xs text-muted-foreground italic">
-              Nenhum perfil configurado.<br />
-              Acesse o menu do usuário → Token GitHub.
-            </div>
-          )}
-          {freshProfiles.map(p => (
+
+          {/* Lista de perfis */}
+          <div className="py-1">
+            {/* Sem perfil */}
             <button
-              key={p.id}
-              className={`w-full text-left text-xs px-3 py-1.5 hover:bg-muted transition-colors flex items-center gap-2 ${activeId === p.id ? "text-primary font-medium" : ""}`}
-              onClick={() => { onSwitch(repoId, p.id); setOpen(false); }}
+              className={`w-full text-left text-xs px-3 py-2 hover:bg-muted transition-colors flex items-center gap-2 ${activeId === "" ? "bg-muted/50" : ""}`}
+              onClick={() => handleSwitch("")}
             >
-              {activeId === p.id
-                ? <CheckCircle2 className="w-3 h-3 text-primary flex-shrink-0" />
-                : <Key className="w-3 h-3 opacity-40 flex-shrink-0" />}
-              {p.name}
+              <div className={`w-3 h-3 flex-shrink-0 ${activeId === "" ? "text-primary" : "opacity-0"}`}>
+                <CheckCircle2 className="w-3 h-3" />
+              </div>
+              <span className={`flex-1 ${activeId === "" ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                Sem conta (credential helper)
+              </span>
             </button>
-          ))}
+
+            {/* Perfis configurados */}
+            {profiles.map(p => (
+              <div
+                key={p.id}
+                className={`flex items-center gap-1 px-3 py-1.5 hover:bg-muted group transition-colors ${activeId === p.id ? "bg-muted/50" : ""}`}
+              >
+                <button
+                  className="flex items-center gap-2 flex-1 text-left min-w-0"
+                  onClick={() => handleSwitch(p.id)}
+                >
+                  <div className={`w-3 h-3 flex-shrink-0 ${activeId === p.id ? "text-primary" : "opacity-0"}`}>
+                    <CheckCircle2 className="w-3 h-3" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className={`text-xs truncate ${activeId === p.id ? "font-semibold text-foreground" : "text-foreground/80"}`}>{p.name}</p>
+                    <p className="text-[10px] text-muted-foreground font-mono">
+                      {p.token.length > 8 ? p.token.slice(0, 8) + "••••" + p.token.slice(-4) : "••••••••"}
+                    </p>
+                  </div>
+                </button>
+                <button
+                  onClick={() => handleDelete(p.id)}
+                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 rounded flex-shrink-0"
+                  title="Remover conta"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+
+            {profiles.length === 0 && (
+              <p className="px-3 py-1.5 text-[11px] text-muted-foreground italic">
+                Nenhuma conta configurada ainda.
+              </p>
+            )}
+          </div>
+
+          {/* Adicionar nova conta */}
+          <div className="border-t border-border/50 px-3 py-2.5 space-y-2">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Adicionar conta</p>
+            <input
+              ref={nameInputRef}
+              className="w-full text-xs bg-background border border-border/60 rounded px-2 py-1.5 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/60"
+              placeholder="Nome (ex: Pessoal, Empresa)"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && document.getElementById("ps-token-input")?.focus()}
+            />
+            <div className="flex gap-1.5">
+              <div className="relative flex-1">
+                <input
+                  id="ps-token-input"
+                  type={showNewToken ? "text" : "password"}
+                  className="w-full text-xs bg-background border border-border/60 rounded px-2 py-1.5 pr-7 font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/60"
+                  placeholder="ghp_... ou github_pat_..."
+                  value={newToken}
+                  onChange={e => setNewToken(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handleAdd()}
+                />
+                <button
+                  type="button"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowNewToken(v => !v)}
+                  tabIndex={-1}
+                >
+                  {showNewToken
+                    ? <Eye className="w-3 h-3" />
+                    : <Eye className="w-3 h-3 opacity-50" />}
+                </button>
+              </div>
+              <button
+                className="text-xs bg-primary text-primary-foreground rounded px-2.5 py-1 hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium flex-shrink-0"
+                disabled={!newName.trim() || !newToken.trim()}
+                onClick={handleAdd}
+              >
+                Adicionar
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1362,16 +1481,14 @@ export function CodeEditorTab() {
   // Dialogs
   const [showClone, setShowClone] = useState(false);
   const [showGitHubToken, setShowGitHubToken] = useState(false);
-  // Perfil GitHub ativo por repo: repoId → profileId
-  const [repoProfileMap, setRepoProfileMap] = useState<Record<string, string>>(loadRepoProfile);
-  const [profiles, setProfiles] = useState<GitHubProfile[]>(loadProfiles);
-
-  // Retorna o token do perfil associado ao repo atual (ou "" para usar credential helper)
-  function activeToken(repoId?: string): string | undefined {
-    if (!repoId) return undefined;
-    const pid = repoProfileMap[repoId];
+  // Retorna o token da conta GitHub ativa.
+  // Usa localStorage como cache (populado pelo UserProfileMenu ao abrir).
+  function activeToken(): string | undefined {
+    const pid = localStorage.getItem("ce_default_profile") ?? "";
     if (!pid) return undefined;
-    return profiles.find(p => p.id === pid)?.token;
+    const profiles = loadProfiles();
+    return profiles.find(p => p.id === pid)?.token
+      ?? profiles.find(p => (p as { active?: boolean }).active)?.token;
   }
 
   const [showCommit, setShowCommit] = useState(false);
@@ -1456,6 +1573,14 @@ export function CodeEditorTab() {
   // ── carregamento inicial ──
   useEffect(() => {
     loadRepos();
+    // Sincroniza perfis do servidor para o localStorage (cache para activeToken())
+    apiClient.codeEditorGetGitHubProfiles().then(r => {
+      if (r.profiles.length > 0) {
+        localStorage.setItem("ce_github_profiles", JSON.stringify(r.profiles));
+        const active = r.profiles.find(p => p.active);
+        if (active) localStorage.setItem("ce_default_profile", active.id);
+      }
+    }).catch(() => { /* silencioso */ });
   }, []);
 
   async function loadRepos() {
@@ -1864,23 +1989,6 @@ export function CodeEditorTab() {
           </select>
         )}
 
-        <ProfileSwitcher
-          repoId={selectedRepo?.id ?? ""}
-          repoProfileMap={repoProfileMap}
-          onSwitch={(repoId, profileId) => {
-            const fresh = loadProfiles();
-            setProfiles(fresh);
-            if (repoId) {
-              const updated = { ...repoProfileMap, [repoId]: profileId };
-              setRepoProfileMap(updated);
-              saveRepoProfile(updated);
-            } else {
-              // sem repo selecionado: salva como padrão global
-              localStorage.setItem("ce_default_profile", profileId);
-            }
-          }}
-        />
-
         {selectedRepo && branches?.current && (
           <button
             onClick={() => setSidePanel("branches")}
@@ -1898,7 +2006,7 @@ export function CodeEditorTab() {
         {selectedRepo && (
           <>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull`, body: activeToken(selectedRepo.id) ? { token: activeToken(selectedRepo.id) } : undefined })}>
+              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull`, body: activeToken() ? { token: activeToken() } : undefined })}>
               <Download className="w-3 h-3" />Pull
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
@@ -1908,7 +2016,7 @@ export function CodeEditorTab() {
               {modifiedPaths.size > 0 && <span className="bg-yellow-500 text-black text-[10px] px-1 rounded-full">{modifiedPaths.size}</span>}
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken(selectedRepo.id) ? { token: activeToken(selectedRepo.id) } : undefined })}>
+              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}>
               <Upload className="w-3 h-3" />Push
               {status?.ahead && status.ahead !== "0" && <span className="bg-blue-500 text-white text-[10px] px-1 rounded-full">{status.ahead}</span>}
             </Button>
@@ -2475,19 +2583,12 @@ export function CodeEditorTab() {
 
       <CloneDialog
         open={showClone}
-        profiles={profiles}
         onClose={() => setShowClone(false)}
-        onDone={async (id, profileId) => {
+        onDone={async (id) => {
           const fresh = await apiClient.codeEditorListRepos();
           setRepos(fresh);
           const found = fresh.find(x => x.id === id);
           if (found) selectRepo(found);
-          // associa o perfil escolhido no clone ao novo repo
-          if (profileId) {
-            const updated = { ...loadRepoProfile(), [id]: profileId };
-            setRepoProfileMap(updated);
-            saveRepoProfile(updated);
-          }
         }}
       />
 
@@ -2503,7 +2604,7 @@ export function CodeEditorTab() {
               await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
               addToast("success", "Commit criado com sucesso");
             }}
-            onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken(selectedRepo.id) ? { token: activeToken(selectedRepo.id) } : undefined })}
+            onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}
           />
 
           <BranchDialog

@@ -37,24 +37,33 @@ import {
 } from '@/hooks/useGitHubReleases';
 import { useUserPermissions } from '@/hooks/useUserPermissions';
 import { apiClient } from '@/lib/api/client';
+
+async function fetchProfilesFromServer(): Promise<GitHubProfile[]> {
+  try {
+    const r = await apiClient.codeEditorGetGitHubProfiles();
+    // Sincroniza localStorage como cache para leitura rápida
+    localStorage.setItem('ce_github_profiles', JSON.stringify(r.profiles));
+    const active = r.profiles.find(p => p.active);
+    if (active) localStorage.setItem('ce_default_profile', active.id);
+    return r.profiles;
+  } catch { return []; }
+}
+
+async function saveProfilesToServer(profiles: GitHubProfile[]): Promise<void> {
+  await apiClient.codeEditorSaveGitHubProfiles(
+    profiles.map(p => ({ id: p.id, name: p.name, token: p.token, active: p.active ?? false }))
+  );
+  localStorage.setItem('ce_github_profiles', JSON.stringify(profiles));
+  const active = profiles.find(p => p.active);
+  if (active) localStorage.setItem('ce_default_profile', active.id);
+  else localStorage.removeItem('ce_default_profile');
+}
 import type { CredentialModalProps } from '@/types/profile';
 
-// ── Perfis do Editor de Código (localStorage) ──────────────────────────────
-interface GitHubProfile { id: string; name: string; token: string }
-const CE_PROFILES_KEY = 'ce_github_profiles';
-const CE_REPO_PROFILE_KEY = 'ce_repo_profile';
-function ceLoadProfiles(): GitHubProfile[] {
-  try { return JSON.parse(localStorage.getItem(CE_PROFILES_KEY) || '[]'); } catch { return []; }
-}
-function ceSaveProfiles(p: GitHubProfile[]) { localStorage.setItem(CE_PROFILES_KEY, JSON.stringify(p)); }
-function ceDeleteProfile(id: string) {
-  ceSaveProfiles(ceLoadProfiles().filter(p => p.id !== id));
-  const map: Record<string, string> = JSON.parse(localStorage.getItem(CE_REPO_PROFILE_KEY) || '{}');
-  Object.keys(map).forEach(k => { if (map[k] === id) delete map[k]; });
-  localStorage.setItem(CE_REPO_PROFILE_KEY, JSON.stringify(map));
-}
+// ── Perfis do Editor de Código ──────────────────────────────────────────────
+interface GitHubProfile { id: string; name: string; token: string; active?: boolean }
 
-export function GitHubCredentialModal({ open, onOpenChange, onSaved }: CredentialModalProps) {
+export function GitHubCredentialModal({ open, onOpenChange, onSaved, openProfilesSection }: CredentialModalProps & { openProfilesSection?: boolean }) {
   const [token, setToken] = useState('');
   const [org, setOrg] = useState(() => apiClient.getGitHubOrg());
   const [showToken, setShowToken] = useState(false);
@@ -63,9 +72,12 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
   const [ceProfiles, setCeProfiles] = useState<GitHubProfile[]>([]);
   const [ceNewName, setCeNewName] = useState('');
   const [ceNewToken, setCeNewToken] = useState('');
-  const [ceShowSection, setCeShowSection] = useState(false);
+  const [ceShowSection, setCeShowSection] = useState(openProfilesSection ?? false);
 
-  const refreshCeProfiles = useCallback(() => setCeProfiles(ceLoadProfiles()), []);
+  const refreshCeProfiles = useCallback(async () => {
+    const p = await fetchProfilesFromServer();
+    setCeProfiles(p);
+  }, []);
 
   // Email vem do contexto RBAC (Azure AD) — não é digitado manualmente
   const { data: userPerms } = useUserPermissions();
@@ -84,6 +96,7 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
       refetchStatus();
       refreshCeProfiles();
       setCeNewName(''); setCeNewToken('');
+      if (openProfilesSection) setCeShowSection(true);
     }
   }, [open, refetchStatus, refreshCeProfiles]);
 
@@ -315,7 +328,11 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
                         </span>
                       </div>
                       <button
-                        onClick={() => { ceDeleteProfile(p.id); refreshCeProfiles(); }}
+                        onClick={async () => {
+                          const updated = ceProfiles.filter(x => x.id !== p.id);
+                          await saveProfilesToServer(updated);
+                          await refreshCeProfiles();
+                        }}
                         className="text-muted-foreground hover:text-destructive transition-colors"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -338,10 +355,11 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
                   placeholder="ghp_... ou github_pat_..."
                   value={ceNewToken}
                   onChange={e => setCeNewToken(e.target.value)}
-                  onKeyDown={e => {
+                  onKeyDown={async e => {
                     if (e.key === 'Enter' && ceNewName.trim() && ceNewToken.trim()) {
-                      ceSaveProfiles([...ceLoadProfiles(), { id: crypto.randomUUID(), name: ceNewName.trim(), token: ceNewToken.trim() }]);
-                      refreshCeProfiles(); setCeNewName(''); setCeNewToken('');
+                      const updated = [...ceProfiles, { id: crypto.randomUUID(), name: ceNewName.trim(), token: ceNewToken.trim(), active: ceProfiles.length === 0 }];
+                      await saveProfilesToServer(updated);
+                      await refreshCeProfiles(); setCeNewName(''); setCeNewToken('');
                     }
                   }}
                 />
@@ -349,9 +367,10 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
                   size="sm"
                   variant="outline"
                   disabled={!ceNewName.trim() || !ceNewToken.trim()}
-                  onClick={() => {
-                    ceSaveProfiles([...ceLoadProfiles(), { id: crypto.randomUUID(), name: ceNewName.trim(), token: ceNewToken.trim() }]);
-                    refreshCeProfiles(); setCeNewName(''); setCeNewToken('');
+                  onClick={async () => {
+                    const updated = [...ceProfiles, { id: crypto.randomUUID(), name: ceNewName.trim(), token: ceNewToken.trim(), active: ceProfiles.length === 0 }];
+                    await saveProfilesToServer(updated);
+                    await refreshCeProfiles(); setCeNewName(''); setCeNewToken('');
                   }}
                 >
                   <Plus className="h-3.5 w-3.5" />

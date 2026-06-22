@@ -26,19 +26,21 @@ import (
 
 // CodeEditorHandler gerencia operações de edição de código com Git.
 type CodeEditorHandler struct {
-	tokenStore     *storage.GitHubTokenStore
-	logger         *zerolog.Logger
-	reposBase      string // ~/.k8s-hpa-manager/repos
+	tokenStore      *storage.GitHubTokenStore
+	userTokensStore *storage.UserTokensStore
+	logger          *zerolog.Logger
+	reposBase       string // ~/.k8s-hpa-manager/repos
 	maxReposPerUser int
 }
 
 // NewCodeEditorHandler cria o handler do editor de código.
-func NewCodeEditorHandler(tokenStore *storage.GitHubTokenStore, logger *zerolog.Logger) *CodeEditorHandler {
+func NewCodeEditorHandler(tokenStore *storage.GitHubTokenStore, userTokensStore *storage.UserTokensStore, logger *zerolog.Logger) *CodeEditorHandler {
 	home, _ := os.UserHomeDir()
 	return &CodeEditorHandler{
-		tokenStore:     tokenStore,
-		logger:         logger,
-		reposBase:      filepath.Join(home, ".k8s-hpa-manager", "repos"),
+		tokenStore:      tokenStore,
+		userTokensStore: userTokensStore,
+		logger:          logger,
+		reposBase:       filepath.Join(home, ".k8s-hpa-manager", "repos"),
 		maxReposPerUser: 10,
 	}
 }
@@ -104,26 +106,33 @@ func (h *CodeEditorHandler) getToken(c *gin.Context) string {
 	return tok
 }
 
-// gitCmdWithToken cria um exec.Cmd que injeta o token via GIT_ASKPASS sem
-// modificar a URL remota. Retorna também uma função cleanup para remover o
-// script temporário. Se token for "", retorna o comando sem env extra.
+// gitCmdWithToken cria um exec.Cmd que injeta o token via GIT_ASKPASS.
+// Quando token != "", desabilita o credential helper via -c credential.helper=
+// para evitar que credenciais cacheadas no sistema sobreponham o token fornecido.
 func gitCmdWithToken(ctx context.Context, dir, token string, args ...string) (*exec.Cmd, func()) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
 	if token == "" {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dir
 		return cmd, func() {}
 	}
+
+	// Antepõe -c credential.helper= para desabilitar qualquer helper do sistema
+	allArgs := append([]string{"-c", "credential.helper="}, args...)
+	cmd := exec.CommandContext(ctx, "git", allArgs...)
+	cmd.Dir = dir
+
 	f, err := os.CreateTemp("", "git-askpass-*.sh")
 	if err != nil {
 		return cmd, func() {}
 	}
-	// Script POSIX que responde username/password sem interatividade
+	// Script POSIX: username=o próprio token (GitHub aceita token como username), password=token
 	fmt.Fprintf(f, "#!/bin/sh\ncase \"$1\" in\n  *sername*) echo x-token-auth;;\n  *) echo %s;;\nesac\n", token)
 	f.Close()
 	os.Chmod(f.Name(), 0700) //nolint:errcheck
 	cmd.Env = append(os.Environ(),
 		"GIT_ASKPASS="+f.Name(),
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1", // ignora /etc/gitconfig do sistema
 	)
 	return cmd, func() { os.Remove(f.Name()) }
 }
@@ -557,6 +566,39 @@ func (h *CodeEditorHandler) CheckoutBranch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"branch": branch, "message": out})
 }
 
+// injectTokenURL injeta o token diretamente na URL: https://TOKEN@github.com/...
+// É o método mais confiável — ignora credential helper e GIT_ASKPASS.
+func injectTokenURL(rawURL, token string) string {
+	if token == "" {
+		return rawURL
+	}
+	for _, prefix := range []string{"https://", "http://"} {
+		if strings.HasPrefix(rawURL, prefix) {
+			// Remove qualquer token já embutido (https://OLD@github.com)
+			rest := strings.TrimPrefix(rawURL, prefix)
+			if at := strings.Index(rest, "@"); at >= 0 {
+				rest = rest[at+1:]
+			}
+			return prefix + "x-token-auth:" + token + "@" + rest
+		}
+	}
+	return rawURL
+}
+
+// cleanRemoteURL remove token da URL para não ficar exposto no git config.
+func cleanRemoteURL(rawURL string) string {
+	for _, prefix := range []string{"https://", "http://"} {
+		if strings.HasPrefix(rawURL, prefix) {
+			rest := strings.TrimPrefix(rawURL, prefix)
+			if at := strings.Index(rest, "@"); at >= 0 {
+				rest = rest[at+1:]
+			}
+			return prefix + rest
+		}
+	}
+	return rawURL
+}
+
 // Pull — POST /api/v1/code-editor/repos/:id/pull (SSE)
 func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	id := c.Param("id")
@@ -582,15 +624,28 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 
 	sendSSE("Executando git pull...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
 	token := req.Token
 	if token == "" {
 		token = h.getToken(c)
 	}
-	cmd, cleanup := gitCmdWithToken(ctx, dir, token, "pull", "--progress")
-	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if token != "" {
+		// Injeta token na URL remota — ignora credential helper do sistema
+		originURL, _ := runGit(dir, "remote", "get-url", "origin")
+		authedURL := injectTokenURL(cleanRemoteURL(originURL), token)
+		gitArgs := []string{"-c", "credential.helper=", "pull", "--progress", authedURL}
+		cmd = exec.CommandContext(ctx, "git", gitArgs...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	} else {
+		cmd = exec.CommandContext(ctx, "git", "pull", "--progress")
+		cmd.Dir = dir
+	}
+
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
@@ -604,7 +659,12 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	go func() {
 		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 		for scanner.Scan() {
-			sendSSE(scanner.Text())
+			line := scanner.Text()
+			// Não expõe o token no SSE
+			if token != "" {
+				line = strings.ReplaceAll(line, token, "***")
+			}
+			sendSSE(line)
 		}
 	}()
 
@@ -675,7 +735,7 @@ func (h *CodeEditorHandler) Commit(c *gin.Context) {
 }
 
 // Push — POST /api/v1/code-editor/repos/:id/push (SSE)
-// Body: { "branch": "..." (optional) }
+// Body: { "branch": "..." (optional), "token": "..." (optional) }
 func (h *CodeEditorHandler) Push(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
@@ -705,15 +765,28 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		branch = currentBranch(dir)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
 	token := req.Token
 	if token == "" {
 		token = h.getToken(c)
 	}
-	cmd, cleanup := gitCmdWithToken(ctx, dir, token, "push", "--progress", "origin", branch)
-	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if token != "" {
+		// Injeta token diretamente na URL do push — ignora qualquer credential helper
+		originURL, _ := runGit(dir, "remote", "get-url", "origin")
+		authedURL := injectTokenURL(cleanRemoteURL(originURL), token)
+		gitArgs := []string{"-c", "credential.helper=", "push", "--progress", authedURL, "HEAD:" + branch}
+		cmd = exec.CommandContext(ctx, "git", gitArgs...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	} else {
+		cmd = exec.CommandContext(ctx, "git", "push", "--progress", "origin", branch)
+		cmd.Dir = dir
+	}
+
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
@@ -727,7 +800,11 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	go func() {
 		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 		for scanner.Scan() {
-			sendSSE(scanner.Text())
+			line := scanner.Text()
+			if token != "" {
+				line = strings.ReplaceAll(line, token, "***")
+			}
+			sendSSE(line)
 		}
 	}()
 
@@ -1648,4 +1725,47 @@ func (h *CodeEditorHandler) ReplaceInFiles(c *gin.Context) {
 		"modified_files": modifiedFiles,
 		"applied":        !req.DryRun,
 	})
+}
+
+func profileEmail(c *gin.Context) string {
+	email, _ := c.Get("user_email")
+	s := fmt.Sprintf("%v", email)
+	if s == "" || s == "<nil>" {
+		return "default"
+	}
+	return s
+}
+
+// GetGitHubProfiles — GET /api/v1/code-editor/github-profiles
+func (h *CodeEditorHandler) GetGitHubProfiles(c *gin.Context) {
+	if h.userTokensStore == nil {
+		c.JSON(http.StatusOK, gin.H{"profiles": []storage.GitHubEditorProfile{}})
+		return
+	}
+	profiles, err := h.userTokensStore.GetGitHubEditorProfiles(profileEmail(c))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"profiles": profiles})
+}
+
+// SaveGitHubProfiles — PUT /api/v1/code-editor/github-profiles
+func (h *CodeEditorHandler) SaveGitHubProfiles(c *gin.Context) {
+	var req struct {
+		Profiles []storage.GitHubEditorProfile `json:"profiles"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "json inválido"})
+		return
+	}
+	if h.userTokensStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage não disponível"})
+		return
+	}
+	if err := h.userTokensStore.SaveGitHubEditorProfiles(profileEmail(c), req.Profiles); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

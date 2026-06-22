@@ -306,3 +306,56 @@ func (s *UserTokensStore) HasTokens(userEmail string) (bool, error) {
 		tokens.GeminiRefreshToken != ""
 	return hasGemini || tokens.OpenAIAPIKey != "" || tokens.ClaudeAPIKey != "" || tokens.CopilotAPIKey != "", nil
 }
+
+// ── GitHub Editor Profiles ────────────────────────────────────────────────────
+
+// GitHubEditorProfile representa uma conta GitHub nomeada para o Editor de Código.
+type GitHubEditorProfile struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Token  string `json:"token"`
+	Active bool   `json:"active"` // somente um perfil deve ter Active=true
+}
+
+// GetGitHubEditorProfiles retorna os perfis do editor para o usuário.
+func (s *UserTokensStore) GetGitHubEditorProfiles(email string) ([]GitHubEditorProfile, error) {
+	_ = s.ensureGitHubEditorProfilesColumn()
+	row := s.client.db.QueryRow(
+		`SELECT COALESCE(github_editor_profiles, '[]') FROM user_ai_tokens WHERE user_email = ?`, email)
+	var raw string
+	if err := row.Scan(&raw); err != nil {
+		return []GitHubEditorProfile{}, nil // usuário ainda não tem linha
+	}
+	var profiles []GitHubEditorProfile
+	if err := json.Unmarshal([]byte(raw), &profiles); err != nil {
+		return []GitHubEditorProfile{}, nil
+	}
+	return profiles, nil
+}
+
+// SaveGitHubEditorProfiles persiste a lista de perfis (upsert por email).
+func (s *UserTokensStore) SaveGitHubEditorProfiles(email string, profiles []GitHubEditorProfile) error {
+	if email == "" {
+		return fmt.Errorf("email é obrigatório")
+	}
+	_ = s.ensureGitHubEditorProfilesColumn()
+	raw, err := json.Marshal(profiles)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.db.Exec(`
+		INSERT INTO user_ai_tokens (user_email, github_editor_profiles, preferred_provider, updated_at)
+		VALUES (?, ?, 'ollama', CURRENT_TIMESTAMP)
+		ON CONFLICT(user_email) DO UPDATE SET
+			github_editor_profiles = excluded.github_editor_profiles,
+			updated_at = excluded.updated_at
+	`, email, string(raw))
+	return err
+}
+
+func (s *UserTokensStore) ensureGitHubEditorProfilesColumn() error {
+	_, err := s.client.db.Exec(
+		`ALTER TABLE user_ai_tokens ADD COLUMN github_editor_profiles TEXT`)
+	// "duplicate column name" é esperado se coluna já existe — ignorar
+	return err
+}
