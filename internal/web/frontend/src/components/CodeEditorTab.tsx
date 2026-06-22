@@ -329,17 +329,23 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
 
 interface CloneDialogProps {
   open: boolean;
+  profiles: GitHubProfile[];
   onClose: () => void;
-  onDone: (id: string) => void;
+  onDone: (id: string, profileId?: string) => void;
 }
 
-function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
+function CloneDialog({ open, profiles, onClose, onDone }: CloneDialogProps) {
   const [url, setUrl] = useState("");
   const [branch, setBranch] = useState("");
+  const [selectedProfileId, setSelectedProfileId] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
   const [cloning, setCloning] = useState(false);
   const [error, setError] = useState("");
   const logsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open) { setUrl(""); setBranch(""); setLogs([]); setError(""); }
+  }, [open]);
 
   function parseGitHubUrl(input: string): { owner: string; repo: string } | null {
     const match = input.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/|$)/);
@@ -353,11 +359,12 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
     const parsed = parseGitHubUrl(url);
     if (!parsed) { setError("URL inválida. Use https://github.com/owner/repo"); return; }
     setError(""); setLogs([]); setCloning(true);
-    const token = localStorage.getItem("auth_token") || "";
+    const authToken = localStorage.getItem("auth_token") || "";
+    const profileToken = profiles.find(p => p.id === selectedProfileId)?.token;
     const res = await fetch(`${API_BASE}/code-editor/clone`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ ...parsed, branch }),
+      headers: { "Content-Type": "application/json", ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+      body: JSON.stringify({ ...parsed, branch, ...(profileToken ? { token: profileToken } : {}) }),
     });
     if (!res.body) { setError("Sem resposta SSE"); setCloning(false); return; }
     const reader = res.body.getReader();
@@ -381,7 +388,7 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
       }
     }
     setCloning(false);
-    if (doneId) { setTimeout(() => { onDone(doneId); onClose(); }, 800); }
+    if (doneId) { setTimeout(() => { onDone(doneId, selectedProfileId || undefined); onClose(); }, 800); }
   }
 
   useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight; }, [logs]);
@@ -399,6 +406,20 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
             <label className="text-xs text-muted-foreground mb-1 block">Branch (opcional)</label>
             <Input placeholder="main" value={branch} onChange={e => setBranch(e.target.value)} disabled={cloning} />
           </div>
+          {profiles.length > 0 && (
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Perfil GitHub (autenticação)</label>
+              <select
+                className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground"
+                value={selectedProfileId}
+                onChange={e => setSelectedProfileId(e.target.value)}
+                disabled={cloning}
+              >
+                <option value="">— usar credential helper do sistema —</option>
+                {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          )}
           {logs.length > 0 && (
             <div ref={logsRef} className="bg-black/50 rounded p-2 h-32 overflow-y-auto font-mono text-xs space-y-0.5">
               {logs.map((l, i) => <div key={i} className="text-green-300/80">{l}</div>)}
@@ -543,82 +564,103 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
   );
 }
 
+// ─── Token store (localStorage) ──────────────────────────────────────────────
+
+interface GitHubProfile { id: string; name: string; token: string }
+
+const PROFILES_KEY = "ce_github_profiles";
+const REPO_PROFILE_KEY = "ce_repo_profile";
+
+function loadProfiles(): GitHubProfile[] {
+  try { return JSON.parse(localStorage.getItem(PROFILES_KEY) || "[]"); } catch { return []; }
+}
+function saveProfiles(p: GitHubProfile[]) { localStorage.setItem(PROFILES_KEY, JSON.stringify(p)); }
+function loadRepoProfile(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(REPO_PROFILE_KEY) || "{}"); } catch { return {}; }
+}
+function saveRepoProfile(m: Record<string, string>) { localStorage.setItem(REPO_PROFILE_KEY, JSON.stringify(m)); }
+
 // ─── GitHubTokenDialog ───────────────────────────────────────────────────────
 
 function GitHubTokenDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [token, setToken] = useState("");
-  const [status, setStatus] = useState<{ configured: boolean; masked_token?: string; username?: string } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [profiles, setProfiles] = useState<GitHubProfile[]>([]);
+  const [newName, setNewName] = useState("");
+  const [newToken, setNewToken] = useState("");
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
 
   useEffect(() => {
-    if (!open) { setToken(""); setError(""); setSuccess(""); return; }
-    setLoading(true);
-    apiClient.getGitHubTokenStatus().then(s => setStatus(s)).catch(() => {}).finally(() => setLoading(false));
+    if (open) { setProfiles(loadProfiles()); setNewName(""); setNewToken(""); setError(""); }
   }, [open]);
 
-  async function handleSave() {
-    if (!token.trim()) { setError("Cole o seu Personal Access Token"); return; }
-    setSaving(true); setError(""); setSuccess("");
-    try {
-      await apiClient.saveGitHubToken(token.trim(), "");
-      setSuccess("Token salvo com sucesso!");
-      setToken("");
-      const s = await apiClient.getGitHubTokenStatus();
-      setStatus(s);
-    } catch (e: any) {
-      setError(e.message || "Erro ao salvar token");
-    } finally {
-      setSaving(false);
-    }
+  function handleAdd() {
+    if (!newName.trim()) { setError("Nome é obrigatório"); return; }
+    if (!newToken.trim()) { setError("Token é obrigatório"); return; }
+    if (profiles.some(p => p.name === newName.trim())) { setError("Já existe um perfil com esse nome"); return; }
+    const updated = [...profiles, { id: crypto.randomUUID(), name: newName.trim(), token: newToken.trim() }];
+    saveProfiles(updated);
+    setProfiles(updated);
+    setNewName(""); setNewToken(""); setError("");
+  }
+
+  function handleDelete(id: string) {
+    const updated = profiles.filter(p => p.id !== id);
+    saveProfiles(updated);
+    // remove refs de repos que usavam este perfil
+    const map = loadRepoProfile();
+    Object.keys(map).forEach(k => { if (map[k] === id) delete map[k]; });
+    saveRepoProfile(map);
+    setProfiles(updated);
+  }
+
+  function maskedToken(t: string) {
+    if (t.length <= 8) return "****";
+    return t.slice(0, 4) + "..." + t.slice(-4);
   }
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Key className="w-4 h-4" />Token GitHub
+            <Key className="w-4 h-4" />Perfis GitHub
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-3 text-sm">
-          {loading && <div className="text-xs text-muted-foreground">Verificando...</div>}
-          {status && (
-            <div className={`rounded p-2 text-xs border ${status.configured ? "border-green-700/50 bg-green-950/20" : "border-yellow-700/50 bg-yellow-950/20"}`}>
-              {status.configured ? (
-                <span className="text-green-400">✓ Token configurado{status.username ? ` (${status.username})` : ""} — {status.masked_token}</span>
-              ) : (
-                <span className="text-yellow-400">⚠ Nenhum token configurado</span>
-              )}
+        <div className="space-y-4">
+          {/* Lista de perfis existentes */}
+          {profiles.length > 0 ? (
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground font-medium">Perfis salvos</p>
+              {profiles.map(p => (
+                <div key={p.id} className="flex items-center justify-between rounded border border-border/50 bg-muted/30 px-3 py-2">
+                  <div>
+                    <span className="text-sm font-medium">{p.name}</span>
+                    <span className="ml-2 text-xs text-muted-foreground font-mono">{maskedToken(p.token)}</span>
+                  </div>
+                  <button onClick={() => handleDelete(p.id)} className="text-muted-foreground hover:text-red-400 transition-colors">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
             </div>
+          ) : (
+            <p className="text-xs text-muted-foreground text-center py-2">Nenhum perfil configurado</p>
           )}
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">
-              Novo Personal Access Token (PAT)
-            </label>
-            <Input
-              type="password"
-              placeholder="ghp_... ou github_pat_..."
-              value={token}
-              onChange={e => setToken(e.target.value)}
-              disabled={saving}
-              autoFocus
-            />
-            <p className="text-[10px] text-muted-foreground mt-1">
-              Crie em: GitHub → Settings → Developer settings → Personal access tokens → Scopes: <code>repo</code>
-            </p>
+
+          {/* Adicionar novo */}
+          <div className="border border-border/50 rounded p-3 space-y-2">
+            <p className="text-xs text-muted-foreground font-medium">Adicionar perfil</p>
+            <Input placeholder="Nome (ex: Pessoal, Profissional)" value={newName} onChange={e => setNewName(e.target.value)} className="h-7 text-xs" />
+            <Input type="password" placeholder="ghp_... ou github_pat_..." value={newToken} onChange={e => setNewToken(e.target.value)} className="h-7 text-xs"
+              onKeyDown={e => e.key === "Enter" && handleAdd()} />
+            <p className="text-[10px] text-muted-foreground">GitHub → Settings → Developer settings → Personal access tokens → Scope: <code>repo</code></p>
+            {error && <p className="text-xs text-red-400">{error}</p>}
+            <Button size="sm" onClick={handleAdd} disabled={!newName.trim() || !newToken.trim()} className="w-full h-7 text-xs">
+              <Plus className="w-3 h-3 mr-1" />Adicionar Perfil
+            </Button>
           </div>
-          {error && <p className="text-xs text-red-400">{error}</p>}
-          {success && <p className="text-xs text-green-400">{success}</p>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Fechar</Button>
-          <Button onClick={handleSave} disabled={saving || !token.trim()}>
-            {saving ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Key className="w-3 h-3 mr-1" />}
-            Salvar Token
-          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1229,6 +1271,18 @@ export function CodeEditorTab() {
   // Dialogs
   const [showClone, setShowClone] = useState(false);
   const [showGitHubToken, setShowGitHubToken] = useState(false);
+  // Perfil GitHub ativo por repo: repoId → profileId
+  const [repoProfileMap, setRepoProfileMap] = useState<Record<string, string>>(loadRepoProfile);
+  const [profiles, setProfiles] = useState<GitHubProfile[]>(loadProfiles);
+
+  // Retorna o token do perfil associado ao repo atual (ou "" para usar credential helper)
+  function activeToken(repoId?: string): string | undefined {
+    if (!repoId) return undefined;
+    const pid = repoProfileMap[repoId];
+    if (!pid) return undefined;
+    return profiles.find(p => p.id === pid)?.token;
+  }
+
   const [showCommit, setShowCommit] = useState(false);
   const [showBranch, setShowBranch] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
@@ -1715,6 +1769,24 @@ export function CodeEditorTab() {
           </select>
         )}
 
+        {selectedRepo && profiles.length > 0 && (
+          <select
+            className="text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground max-w-36"
+            title="Perfil GitHub para este repositório"
+            value={repoProfileMap[selectedRepo.id] ?? ""}
+            onChange={e => {
+              const updated = { ...repoProfileMap, [selectedRepo.id]: e.target.value };
+              setRepoProfileMap(updated);
+              saveRepoProfile(updated);
+              // sincroniza state global de profiles caso tenha mudado
+              setProfiles(loadProfiles());
+            }}
+          >
+            <option value="">— sem perfil —</option>
+            {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        )}
+
         {selectedRepo && branches?.current && (
           <button
             onClick={() => setSidePanel("branches")}
@@ -1732,7 +1804,7 @@ export function CodeEditorTab() {
         {selectedRepo && (
           <>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull` })}>
+              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull`, body: activeToken(selectedRepo.id) ? { token: activeToken(selectedRepo.id) } : undefined })}>
               <Download className="w-3 h-3" />Pull
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
@@ -1742,7 +1814,7 @@ export function CodeEditorTab() {
               {modifiedPaths.size > 0 && <span className="bg-yellow-500 text-black text-[10px] px-1 rounded-full">{modifiedPaths.size}</span>}
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push` })}>
+              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken(selectedRepo.id) ? { token: activeToken(selectedRepo.id) } : undefined })}>
               <Upload className="w-3 h-3" />Push
               {status?.ahead && status.ahead !== "0" && <span className="bg-blue-500 text-white text-[10px] px-1 rounded-full">{status.ahead}</span>}
             </Button>
@@ -2312,12 +2384,19 @@ export function CodeEditorTab() {
 
       <CloneDialog
         open={showClone}
+        profiles={profiles}
         onClose={() => setShowClone(false)}
-        onDone={async id => {
+        onDone={async (id, profileId) => {
           const fresh = await apiClient.codeEditorListRepos();
           setRepos(fresh);
           const found = fresh.find(x => x.id === id);
           if (found) selectRepo(found);
+          // associa o perfil escolhido no clone ao novo repo
+          if (profileId) {
+            const updated = { ...loadRepoProfile(), [id]: profileId };
+            setRepoProfileMap(updated);
+            saveRepoProfile(updated);
+          }
         }}
       />
 
@@ -2333,7 +2412,7 @@ export function CodeEditorTab() {
               await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
               addToast("success", "Commit criado com sucesso");
             }}
-            onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push` })}
+            onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken(selectedRepo.id) ? { token: activeToken(selectedRepo.id) } : undefined })}
           />
 
           <BranchDialog

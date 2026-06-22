@@ -197,13 +197,17 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 		Owner  string `json:"owner"`
 		Repo   string `json:"repo"`
 		Branch string `json:"branch"`
+		Token  string `json:"token"` // token explícito sobrepõe o armazenado
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.Owner == "" || req.Repo == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "owner e repo são obrigatórios"})
 		return
 	}
 
-	token := h.getToken(c)
+	token := req.Token
+	if token == "" {
+		token = h.getToken(c)
+	}
 	id := repoID(req.Owner, req.Repo)
 	dir := h.repoDir(id)
 
@@ -225,9 +229,6 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	}
 
 	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", req.Owner, req.Repo)
-	if token != "" {
-		cloneURL = fmt.Sprintf("https://%s@github.com/%s/%s.git", token, req.Owner, req.Repo)
-	}
 
 	// SSE streaming
 	c.Header("Content-Type", "text/event-stream")
@@ -253,7 +254,8 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd, cleanup := gitCmdWithToken(ctx, "", token, args...)
+	defer cleanup()
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
 		sendEvent("Erro: " + err.Error())
@@ -266,19 +268,13 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		line := scanner.Text()
-		// Filtra linhas com o token
-		if token != "" {
-			line = strings.ReplaceAll(line, token, "***")
-		}
-		sendEvent(line)
+		sendEvent(scanner.Text())
 	}
 
 	if err := cmd.Wait(); err != nil {
 		os.RemoveAll(dir)
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
 	} else {
-		// Configura identidade git local
 		runGit(dir, "config", "user.email", "k8s-hpa-manager@local") //nolint:errcheck
 		runGit(dir, "config", "user.name", "K8s HPA Manager")        //nolint:errcheck
 		sendEvent("Clone concluído com sucesso.")
@@ -566,6 +562,11 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 
+	var req struct {
+		Token string `json:"token"`
+	}
+	c.ShouldBindJSON(&req) //nolint:errcheck
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -584,7 +585,10 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	token := h.getToken(c)
+	token := req.Token
+	if token == "" {
+		token = h.getToken(c)
+	}
 	cmd, cleanup := gitCmdWithToken(ctx, dir, token, "pull", "--progress")
 	defer cleanup()
 	stderr, _ := cmd.StderrPipe()
@@ -677,6 +681,7 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	dir := h.repoDir(id)
 	var req struct {
 		Branch string `json:"branch"`
+		Token  string `json:"token"`
 	}
 	c.ShouldBindJSON(&req) //nolint:errcheck
 
@@ -703,7 +708,10 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	token := h.getToken(c)
+	token := req.Token
+	if token == "" {
+		token = h.getToken(c)
+	}
 	cmd, cleanup := gitCmdWithToken(ctx, dir, token, "push", "--progress", "origin", branch)
 	defer cleanup()
 	stderr, _ := cmd.StderrPipe()
