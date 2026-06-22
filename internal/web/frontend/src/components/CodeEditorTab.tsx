@@ -1537,6 +1537,29 @@ export function CodeEditorTab() {
   const [terminalFont, setTerminalFont] = useState(
     () => localStorage.getItem("ce_terminal_font") ?? ""
   );
+  const [terminalTabs, setTerminalTabs] = useState<{id: number; label: string}[]>([{id: 1, label: "Terminal 1"}]);
+  const [activeTerminalId, setActiveTerminalId] = useState(1);
+  const terminalCounter = useRef(1);
+
+  function addTerminalTab() {
+    const id = ++terminalCounter.current;
+    setTerminalTabs(prev => [...prev, { id, label: `Terminal ${id}` }]);
+    setActiveTerminalId(id);
+  }
+
+  function closeTerminalTab(closedId: number) {
+    setTerminalTabs(prev => {
+      const next = prev.filter(t => t.id !== closedId);
+      if (next.length === 0) {
+        setShowTerminal(false);
+        const newId = ++terminalCounter.current;
+        setActiveTerminalId(newId);
+        return [{ id: newId, label: "Terminal 1" }];
+      }
+      setActiveTerminalId(curr => curr === closedId ? next[next.length - 1].id : curr);
+      return next;
+    });
+  }
 
   // Fase 4: Blame
   const [showBlame, setShowBlame] = useState(false);
@@ -2126,9 +2149,12 @@ export function CodeEditorTab() {
                         <p className="text-xs text-muted-foreground text-center py-4">Nenhum repo clonado.<br />Clique em "Clonar".</p>
                       ) : repos.map(r => (
                         <div key={r.id} className="group flex items-center gap-1 rounded hover:bg-muted/50 px-1 py-1">
-                          <button className="flex-1 text-left text-xs truncate" onClick={() => selectRepo(r)}>
+                          <button className="flex-1 text-left text-xs truncate min-w-0" onClick={() => selectRepo(r)}>
                             <span className="font-medium">{r.owner}/{r.repo}</span>
-                            <span className="text-muted-foreground block text-[10px]">{r.current_branch}</span>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-muted-foreground text-[10px]">{r.current_branch}</span>
+                              {r.size && <span className="text-[10px] text-muted-foreground/60 font-mono">{r.size}</span>}
+                            </div>
                           </button>
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100" onClick={() => deleteRepo(r.id)}>
                             <Trash2 className="w-3 h-3 text-red-400" />
@@ -2576,7 +2602,7 @@ export function CodeEditorTab() {
               </div>
             </div>
           )}
-          {/* ── Terminal integrado ── */}
+          {/* ── Terminal integrado (multi-abas) ── */}
           {showTerminal && selectedRepo && (
             <>
               <HResizeDivider onDrag={delta => {
@@ -2586,17 +2612,59 @@ export function CodeEditorTab() {
                   return next;
                 });
               }} />
-              <RepoTerminal
-                repoId={selectedRepo.id}
-                repoName={`${selectedRepo.owner}/${selectedRepo.repo}`}
-                height={terminalHeight}
-                font={terminalFont}
-                onFontChange={f => {
-                  setTerminalFont(f);
-                  localStorage.setItem("ce_terminal_font", f);
-                }}
-                onClose={() => setShowTerminal(false)}
-              />
+              <div className="flex flex-col flex-shrink-0" style={{ height: terminalHeight }}>
+                {/* Barra de abas */}
+                <div className="flex items-center bg-[#2d2d2d] border-b border-white/10 flex-shrink-0 overflow-x-auto">
+                  {terminalTabs.map(tab => (
+                    <div
+                      key={tab.id}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-r border-white/10 flex-shrink-0 select-none transition-colors ${
+                        activeTerminalId === tab.id
+                          ? "bg-[#1e1e1e] text-white"
+                          : "text-white/40 hover:text-white/70 hover:bg-[#252525]"
+                      }`}
+                      onClick={() => setActiveTerminalId(tab.id)}
+                    >
+                      <Terminal className="w-3 h-3 flex-shrink-0" />
+                      <span>{tab.label}</span>
+                      <button
+                        className="ml-0.5 opacity-40 hover:opacity-100 transition-opacity"
+                        onClick={e => { e.stopPropagation(); closeTerminalTab(tab.id); }}
+                        title="Fechar terminal"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={addTerminalTab}
+                    className="px-2 py-1.5 text-white/40 hover:text-white/70 flex-shrink-0 transition-colors"
+                    title="Novo terminal"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                </div>
+                {/* Instâncias de terminal */}
+                {terminalTabs.map(tab => (
+                  <div
+                    key={tab.id}
+                    style={{ display: activeTerminalId === tab.id ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0 }}
+                  >
+                    <RepoTerminal
+                      repoId={selectedRepo.id}
+                      repoName={`${selectedRepo.owner}/${selectedRepo.repo}`}
+                      height={terminalHeight - 28}
+                      font={terminalFont}
+                      visible={activeTerminalId === tab.id}
+                      onFontChange={f => {
+                        setTerminalFont(f);
+                        localStorage.setItem("ce_terminal_font", f);
+                      }}
+                      onClose={() => closeTerminalTab(tab.id)}
+                    />
+                  </div>
+                ))}
+              </div>
             </>
           )}
         </div>
@@ -2931,11 +2999,12 @@ interface RepoTerminalProps {
   repoName: string;
   height: number;
   font: string;
+  visible?: boolean;
   onFontChange: (font: string) => void;
   onClose: () => void;
 }
 
-function RepoTerminal({ repoId, repoName, height, font, onFontChange, onClose }: RepoTerminalProps) {
+function RepoTerminal({ repoId, repoName, height, font, visible, onFontChange, onClose }: RepoTerminalProps) {
   const divRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -3025,6 +3094,20 @@ function RepoTerminal({ repoId, repoName, height, font, onFontChange, onClose }:
     });
     return () => cancelAnimationFrame(id);
   }, [height]);
+
+  // Refit ao tornar-se visível (troca de aba)
+  useEffect(() => {
+    if (!visible) return;
+    const id = requestAnimationFrame(() => {
+      fitRef.current?.fit();
+      const ws = wsRef.current;
+      const term = xtermRef.current;
+      if (ws?.readyState === WebSocket.OPEN && term) {
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [visible]);
 
   // Atualiza fonte do xterm dinamicamente sem recriar o terminal
   useEffect(() => {

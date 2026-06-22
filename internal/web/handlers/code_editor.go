@@ -16,11 +16,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/storage"
 )
 
@@ -28,21 +30,50 @@ import (
 type CodeEditorHandler struct {
 	tokenStore      *storage.GitHubTokenStore
 	userTokensStore *storage.UserTokensStore
+	historyTracker  *history.HistoryTracker
 	logger          *zerolog.Logger
 	reposBase       string // ~/.k8s-hpa-manager/repos
 	maxReposPerUser int
 }
 
 // NewCodeEditorHandler cria o handler do editor de código.
-func NewCodeEditorHandler(tokenStore *storage.GitHubTokenStore, userTokensStore *storage.UserTokensStore, logger *zerolog.Logger) *CodeEditorHandler {
+func NewCodeEditorHandler(tokenStore *storage.GitHubTokenStore, userTokensStore *storage.UserTokensStore, ht *history.HistoryTracker, logger *zerolog.Logger) *CodeEditorHandler {
 	home, _ := os.UserHomeDir()
 	return &CodeEditorHandler{
 		tokenStore:      tokenStore,
 		userTokensStore: userTokensStore,
+		historyTracker:  ht,
 		logger:          logger,
 		reposBase:       filepath.Join(home, ".k8s-hpa-manager", "repos"),
 		maxReposPerUser: 10,
 	}
+}
+
+// availableDiskMB retorna o espaço disponível em MB no diretório informado.
+func availableDiskMB(dir string) int64 {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return 9999
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(dir, &stat); err != nil {
+		return 9999
+	}
+	return int64(stat.Bavail) * int64(stat.Bsize) / 1024 / 1024
+}
+
+// repoSize retorna o tamanho humanizado de um repo clonado via du -sh.
+func repoSize(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "du", "-sh", dir).Output()
+	if err != nil {
+		return ""
+	}
+	parts := strings.Fields(string(out))
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return ""
 }
 
 // RepoInfo descreve um repositório clonado.
@@ -54,6 +85,7 @@ type RepoInfo struct {
 	CurrentBranch string    `json:"current_branch"`
 	RemoteURL     string    `json:"remote_url"`
 	ClonedAt      time.Time `json:"cloned_at"`
+	Size          string    `json:"size,omitempty"` // ex: "42M"
 }
 
 // FileNode representa nó na árvore de arquivos.
@@ -194,6 +226,7 @@ func (h *CodeEditorHandler) ListRepos(c *gin.Context) {
 			CurrentBranch: currentBranch(dir),
 			RemoteURL:     remoteURL(dir),
 			ClonedAt:      info.ModTime(),
+			Size:          repoSize(dir),
 		})
 	}
 	c.JSON(http.StatusOK, repos)
@@ -234,6 +267,12 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	// Limite de repositórios simultâneos
 	if entries, _ := os.ReadDir(h.reposBase); len(entries) >= h.maxReposPerUser {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("limite de %d repositórios atingido — remova um antes de clonar", h.maxReposPerUser)})
+		return
+	}
+
+	// Quota de disco: exige pelo menos 500 MB livres
+	if avail := availableDiskMB(h.reposBase); avail < 500 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("espaço em disco insuficiente: apenas %d MB disponíveis (mínimo 500 MB)", avail)})
 		return
 	}
 
@@ -731,6 +770,28 @@ func (h *CodeEditorHandler) Commit(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return
 	}
+
+	// Audit log
+	if h.historyTracker != nil {
+		branch := currentBranch(dir)
+		remote := remoteURL(dir)
+		msg := req.Message
+		if req.Amend {
+			msg = "[amend] " + msg
+		}
+		userInfo := GetUserInfoForHistory(c)
+		h.historyTracker.Log(history.HistoryEntry{ //nolint:errcheck
+			UserEmail: userInfo.Email,
+			UserName:  userInfo.Name,
+			Action:    "code_editor_commit",
+			Resource:  id,
+			Cluster:   remote,
+			Before:    map[string]interface{}{"branch": branch},
+			After:     map[string]interface{}{"message": msg, "output": strings.TrimSpace(out)},
+			Status:    history.StatusSuccess,
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": out})
 }
 

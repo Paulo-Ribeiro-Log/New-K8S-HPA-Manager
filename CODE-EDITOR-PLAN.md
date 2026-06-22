@@ -138,16 +138,16 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 ### UX
 - [x] **Preview Markdown** — botão `BookOpen` no header do editor (visível apenas em arquivos `.md`); split 50/50: Monaco à esquerda + `react-markdown` + `remark-gfm` à direita; toggle on/off sem perder o conteúdo editado
 
-## Fase 6 — Menor prioridade / maior complexidade
+## ✅ Concluído — Fase 6
 
 ### Terminal
-- [ ] **Terminal múltiplo** — abas de terminal (como VS Code); cada aba tem seu próprio PTY/WebSocket; botão "+" cria nova aba; "×" fecha a aba e encerra o processo; estado gerenciado por array `terminalTabs[]`
+- [x] **Terminal múltiplo** — barra de abas acima do terminal (como VS Code); cada aba tem seu próprio PTY/WebSocket; botão "+" cria nova aba; "×" fecha a aba e encerra o processo; estado em `terminalTabs[]` + `activeTerminalId`; troca de aba sem desmontar o xterm; `visible` prop dispara refit do xterm ao ficar visível
 
 ### Qualidade / Infra
-- [ ] **Quota de disco** — checar espaço livre (`df -h ~/.k8s-hpa-manager/repos/`) antes de clonar; alerta se < 500MB; exibir tamanho de cada repo na lista (`du -sh`)
-- [ ] **Audit log** — registrar commits feitos pelo editor no `HistoryTracker` com email do usuário, repo, hash e mensagem; integrar com `internal/history/tracker.go`
+- [x] **Quota de disco** — `availableDiskMB()` via `syscall.Statfs` verifica espaço livre antes de clonar; erro HTTP 400 se < 500 MB; `repoSize()` via `du -sh` exibido em cada repo na lista lateral
+- [x] **Audit log** — `Commit` registra no `HistoryTracker` com email, repo, remote URL, branch, mensagem e output; `CodeEditorHandler` recebe `*history.HistoryTracker` via construtor
 
-### Autocomplete / LSP (complexo)
+### Autocomplete / LSP (complexo — não implementado)
 - [ ] **Go** — `gopls` via processo filho + proxy WebSocket (`POST /repos/:id/lsp/start`); Monaco `MonacoLanguageClient`; requer `monaco-languageclient` no frontend
 - [ ] **Python** — `pyright` ou `pylsp`; mesma arquitetura do gopls
 - [ ] **TypeScript/JavaScript** — Monaco já tem suporte nativo; habilitar via `tsconfig` do repo

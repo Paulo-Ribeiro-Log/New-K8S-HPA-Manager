@@ -3922,6 +3922,7 @@ export interface CodeEditorRepo {
   current_branch: string;
   remote_url: string;
   cloned_at: string;
+  size?: string; // ex: "42M"
 }
 
 export interface CodeEditorFileNode {

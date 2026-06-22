@@ -1122,7 +1122,7 @@ func (s *Server) setupRoutes() {
 
 	// Code Editor (editor de código com integração Git/GitHub)
 	codeEditorLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "code-editor").Logger()
-	codeEditorHandler := handlers.NewCodeEditorHandler(githubTokenStore, s.aiTokensStore, &codeEditorLogger)
+	codeEditorHandler := handlers.NewCodeEditorHandler(githubTokenStore, s.aiTokensStore, s.historyTracker, &codeEditorLogger)
 	codeEditor := api.Group("/code-editor")
 	{
 		codeEditor.GET("/repos", rbacMiddleware.InjectUserEmail(), codeEditorHandler.ListRepos)
