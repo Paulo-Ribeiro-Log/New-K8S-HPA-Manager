@@ -1271,3 +1271,35 @@ func (h *CodeEditorHandler) DeleteTag(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": out})
 }
+
+// ListFonts — GET /api/v1/code-editor/fonts
+// Retorna fontes monoespaçadas instaladas no sistema via fc-list.
+// O browser acessa as fontes diretamente pelo CSS font-family (servidor e browser na mesma máquina).
+func (h *CodeEditorHandler) ListFonts(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "fc-list", ":spacing=mono", "family").Output()
+	if err != nil {
+		// fc-list não disponível — retorna lista vazia (frontend usa fallback hardcoded)
+		c.JSON(http.StatusOK, gin.H{"fonts": []string{}})
+		return
+	}
+
+	seen := map[string]bool{}
+	var fonts []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// "Fira Code,Fira Code Light" → pega o primeiro nome (família base)
+		name := strings.TrimSpace(strings.SplitN(line, ",", 2)[0])
+		if name != "" && !seen[name] {
+			seen[name] = true
+			fonts = append(fonts, name)
+		}
+	}
+	sort.Strings(fonts)
+	c.JSON(http.StatusOK, gin.H{"fonts": fonts})
+}
