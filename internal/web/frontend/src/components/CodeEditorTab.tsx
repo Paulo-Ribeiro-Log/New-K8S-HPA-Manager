@@ -580,6 +580,94 @@ function loadRepoProfile(): Record<string, string> {
 }
 function saveRepoProfile(m: Record<string, string>) { localStorage.setItem(REPO_PROFILE_KEY, JSON.stringify(m)); }
 
+// ─── ProfileSwitcher ─────────────────────────────────────────────────────────
+
+interface ProfileSwitcherProps {
+  repoId: string;
+  repoProfileMap: Record<string, string>;
+  onSwitch: (repoId: string, profileId: string) => void;
+}
+
+function ProfileSwitcher({ repoId, repoProfileMap, onSwitch }: ProfileSwitcherProps) {
+  const [open, setOpen] = useState(false);
+  const [freshProfiles, setFreshProfiles] = useState<GitHubProfile[]>([]);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const activeId = repoProfileMap[repoId] ?? "";
+  const activeName = freshProfiles.find(p => p.id === activeId)?.name ?? loadProfiles().find(p => p.id === activeId)?.name;
+
+  function openMenu() {
+    const latest = loadProfiles();
+    setFreshProfiles(latest);
+    setOpen(true);
+  }
+
+  // Fecha ao clicar fora
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node) &&
+          btnRef.current && !btnRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  return (
+    <div className="relative">
+      <button
+        ref={btnRef}
+        onClick={openMenu}
+        className="flex items-center gap-1.5 text-xs bg-muted/60 border border-border/50 rounded px-2 py-1 hover:bg-muted text-foreground/80 transition-colors"
+        title="Alternar perfil GitHub deste repositório"
+      >
+        <Key className="w-3 h-3 text-primary flex-shrink-0" />
+        <span className="max-w-24 truncate">{activeName ?? "Sem perfil"}</span>
+        <ChevronsUpDown className="w-3 h-3 opacity-50 flex-shrink-0" />
+      </button>
+
+      {open && (
+        <div
+          ref={menuRef}
+          className="absolute top-full left-0 mt-1 z-50 min-w-40 bg-popover border border-border rounded shadow-lg py-1"
+        >
+          <div className="px-2 py-1 text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+            Perfil GitHub
+          </div>
+          <button
+            className={`w-full text-left text-xs px-3 py-1.5 hover:bg-muted transition-colors flex items-center gap-2 ${activeId === "" ? "text-primary font-medium" : ""}`}
+            onClick={() => { onSwitch(repoId, ""); setOpen(false); }}
+          >
+            {activeId === "" && <CheckCircle2 className="w-3 h-3 text-primary flex-shrink-0" />}
+            <span className={activeId === "" ? "" : "ml-5"}>Sem perfil (credential helper)</span>
+          </button>
+          {freshProfiles.length === 0 && (
+            <div className="px-3 py-2 text-xs text-muted-foreground italic">
+              Nenhum perfil configurado.<br />
+              Acesse o menu do usuário → Token GitHub.
+            </div>
+          )}
+          {freshProfiles.map(p => (
+            <button
+              key={p.id}
+              className={`w-full text-left text-xs px-3 py-1.5 hover:bg-muted transition-colors flex items-center gap-2 ${activeId === p.id ? "text-primary font-medium" : ""}`}
+              onClick={() => { onSwitch(repoId, p.id); setOpen(false); }}
+            >
+              {activeId === p.id
+                ? <CheckCircle2 className="w-3 h-3 text-primary flex-shrink-0" />
+                : <Key className="w-3 h-3 opacity-40 flex-shrink-0" />}
+              {p.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── GitHubTokenDialog ───────────────────────────────────────────────────────
 
 function GitHubTokenDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -1773,22 +1861,18 @@ export function CodeEditorTab() {
           </select>
         )}
 
-        {selectedRepo && profiles.length > 0 && (
-          <select
-            className="text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground max-w-36"
-            title="Perfil GitHub para este repositório"
-            value={repoProfileMap[selectedRepo.id] ?? ""}
-            onChange={e => {
-              const updated = { ...repoProfileMap, [selectedRepo.id]: e.target.value };
+        {selectedRepo && (
+          <ProfileSwitcher
+            repoId={selectedRepo.id}
+            repoProfileMap={repoProfileMap}
+            onSwitch={(repoId, profileId) => {
+              const fresh = loadProfiles();
+              setProfiles(fresh);
+              const updated = { ...repoProfileMap, [repoId]: profileId };
               setRepoProfileMap(updated);
               saveRepoProfile(updated);
-              // sincroniza state global de profiles caso tenha mudado
-              setProfiles(loadProfiles());
             }}
-          >
-            <option value="">— sem perfil —</option>
-            {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+          />
         )}
 
         {selectedRepo && branches?.current && (
