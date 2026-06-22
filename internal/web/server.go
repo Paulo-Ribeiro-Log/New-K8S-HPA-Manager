@@ -1157,11 +1157,13 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/tags", codeEditorHandler.ListTags)
 		codeEditor.POST("/repos/:id/tags", codeEditorHandler.CreateTag)
 		codeEditor.DELETE("/repos/:id/tags/:name", codeEditorHandler.DeleteTag)
-		codeEditor.GET("/repos/:id/terminal",
-			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
-			codeEditorHandler.HandleTerminal)
 	}
 	fmt.Println("✅ Code Editor routes registradas")
+
+	// WebSocket do terminal do Code Editor (fora do grupo api — WebSocket não envia header Authorization)
+	wsCodeEditor := s.router.Group("/api/v1/code-editor")
+	wsCodeEditor.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
+	wsCodeEditor.GET("/repos/:id/terminal", codeEditorHandler.HandleTerminal)
 
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
