@@ -424,9 +424,10 @@ interface CommitDialogProps {
   status: CodeEditorGitStatus | null;
   onClose: () => void;
   onDone: () => void;
+  onPush?: () => void;
 }
 
-function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogProps) {
+function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitDialogProps) {
   const [message, setMessage] = useState("");
   const [amend, setAmend] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -437,13 +438,16 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
     if (open) { setMessage(""); setError(""); setGitOutput(""); setAmend(false); }
   }, [open]);
 
-  async function doCommit() {
+  async function doCommit(andPush = false) {
     if (!amend && !message.trim()) { setError("Mensagem é obrigatória"); return; }
     setLoading(true); setError(""); setGitOutput("");
     try {
       const result = await apiClient.codeEditorCommit(repoId, message.trim(), undefined, amend);
       setGitOutput(result.message || "Commit realizado.");
-      setTimeout(() => { onDone(); }, 1500);
+      setTimeout(() => {
+        onDone();
+        if (andPush && onPush) onPush();
+      }, 800);
     } catch (e: any) {
       setError(e.message || "Erro ao commitar");
     } finally {
@@ -519,10 +523,18 @@ function CommitDialog({ open, repoId, status, onClose, onDone }: CommitDialogPro
             {gitOutput ? "Fechar" : "Cancelar"}
           </Button>
           {!gitOutput && (
-            <Button onClick={doCommit} disabled={loading || (!amend && !message.trim())}>
-              {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCommit className="w-3 h-3 mr-1" />}
-              {amend ? "Emendar" : "Commitar"}
-            </Button>
+            <>
+              <Button variant="outline" onClick={() => doCommit(false)} disabled={loading || (!amend && !message.trim())}>
+                {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCommit className="w-3 h-3 mr-1" />}
+                {amend ? "Emendar" : "Commitar"}
+              </Button>
+              {!amend && onPush && (
+                <Button onClick={() => doCommit(true)} disabled={loading || !message.trim()}>
+                  {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Upload className="w-3 h-3 mr-1" />}
+                  Commitar e Fazer Push
+                </Button>
+              )}
+            </>
           )}
         </DialogFooter>
       </DialogContent>
@@ -2232,6 +2244,7 @@ export function CodeEditorTab() {
               await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
               addToast("success", "Commit criado com sucesso");
             }}
+            onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push` })}
           />
 
           <BranchDialog
