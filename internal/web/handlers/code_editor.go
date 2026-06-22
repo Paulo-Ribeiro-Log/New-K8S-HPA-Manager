@@ -104,6 +104,30 @@ func (h *CodeEditorHandler) getToken(c *gin.Context) string {
 	return tok
 }
 
+// gitCmdWithToken cria um exec.Cmd que injeta o token via GIT_ASKPASS sem
+// modificar a URL remota. Retorna também uma função cleanup para remover o
+// script temporário. Se token for "", retorna o comando sem env extra.
+func gitCmdWithToken(ctx context.Context, dir, token string, args ...string) (*exec.Cmd, func()) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	if token == "" {
+		return cmd, func() {}
+	}
+	f, err := os.CreateTemp("", "git-askpass-*.sh")
+	if err != nil {
+		return cmd, func() {}
+	}
+	// Script POSIX que responde username/password sem interatividade
+	fmt.Fprintf(f, "#!/bin/sh\ncase \"$1\" in\n  *sername*) echo x-token-auth;;\n  *) echo %s;;\nesac\n", token)
+	f.Close()
+	os.Chmod(f.Name(), 0700) //nolint:errcheck
+	cmd.Env = append(os.Environ(),
+		"GIT_ASKPASS="+f.Name(),
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	return cmd, func() { os.Remove(f.Name()) }
+}
+
 // currentBranch retorna o branch atual do repo.
 func currentBranch(dir string) string {
 	out, err := runGit(dir, "rev-parse", "--abbrev-ref", "HEAD")
@@ -560,8 +584,9 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "pull", "--progress")
-	cmd.Dir = dir
+	token := h.getToken(c)
+	cmd, cleanup := gitCmdWithToken(ctx, dir, token, "pull", "--progress")
+	defer cleanup()
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
@@ -678,8 +703,9 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "push", "--progress", "origin", branch)
-	cmd.Dir = dir
+	token := h.getToken(c)
+	cmd, cleanup := gitCmdWithToken(ctx, dir, token, "push", "--progress", "origin", branch)
+	defer cleanup()
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {

@@ -43,6 +43,7 @@ import {
   History,
   Replace,
   User,
+  Key,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -536,6 +537,88 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
               )}
             </>
           )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── GitHubTokenDialog ───────────────────────────────────────────────────────
+
+function GitHubTokenDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [token, setToken] = useState("");
+  const [status, setStatus] = useState<{ configured: boolean; masked_token?: string; username?: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    if (!open) { setToken(""); setError(""); setSuccess(""); return; }
+    setLoading(true);
+    apiClient.getGitHubTokenStatus().then(s => setStatus(s)).catch(() => {}).finally(() => setLoading(false));
+  }, [open]);
+
+  async function handleSave() {
+    if (!token.trim()) { setError("Cole o seu Personal Access Token"); return; }
+    setSaving(true); setError(""); setSuccess("");
+    try {
+      await apiClient.saveGitHubToken(token.trim(), "");
+      setSuccess("Token salvo com sucesso!");
+      setToken("");
+      const s = await apiClient.getGitHubTokenStatus();
+      setStatus(s);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar token");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Key className="w-4 h-4" />Token GitHub
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          {loading && <div className="text-xs text-muted-foreground">Verificando...</div>}
+          {status && (
+            <div className={`rounded p-2 text-xs border ${status.configured ? "border-green-700/50 bg-green-950/20" : "border-yellow-700/50 bg-yellow-950/20"}`}>
+              {status.configured ? (
+                <span className="text-green-400">✓ Token configurado{status.username ? ` (${status.username})` : ""} — {status.masked_token}</span>
+              ) : (
+                <span className="text-yellow-400">⚠ Nenhum token configurado</span>
+              )}
+            </div>
+          )}
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">
+              Novo Personal Access Token (PAT)
+            </label>
+            <Input
+              type="password"
+              placeholder="ghp_... ou github_pat_..."
+              value={token}
+              onChange={e => setToken(e.target.value)}
+              disabled={saving}
+              autoFocus
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Crie em: GitHub → Settings → Developer settings → Personal access tokens → Scopes: <code>repo</code>
+            </p>
+          </div>
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          {success && <p className="text-xs text-green-400">{success}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Fechar</Button>
+          <Button onClick={handleSave} disabled={saving || !token.trim()}>
+            {saving ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Key className="w-3 h-3 mr-1" />}
+            Salvar Token
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1145,6 +1228,7 @@ export function CodeEditorTab() {
 
   // Dialogs
   const [showClone, setShowClone] = useState(false);
+  const [showGitHubToken, setShowGitHubToken] = useState(false);
   const [showCommit, setShowCommit] = useState(false);
   const [showBranch, setShowBranch] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
@@ -1675,6 +1759,9 @@ export function CodeEditorTab() {
             <Terminal className="w-3 h-3" />Terminal
           </Button>
         )}
+        <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setShowGitHubToken(true)} title="Configurar token GitHub para push/pull">
+          <Key className="w-3 h-3" />Token
+        </Button>
         <Button size="sm" className="h-6 text-xs gap-1" onClick={() => setShowClone(true)}>
           <GitPullRequest className="w-3 h-3" />Clonar
         </Button>
@@ -2221,6 +2308,8 @@ export function CodeEditorTab() {
       )}
 
       {/* ── Dialogs ── */}
+      <GitHubTokenDialog open={showGitHubToken} onClose={() => setShowGitHubToken(false)} />
+
       <CloneDialog
         open={showClone}
         onClose={() => setShowClone(false)}
