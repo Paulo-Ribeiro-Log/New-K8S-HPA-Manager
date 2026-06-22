@@ -98,6 +98,7 @@ func (h *CodeEditorHandler) HandleTerminal(c *gin.Context) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer func() { recover() }() //nolint:errcheck
 		buf := make([]byte, 4096)
 		for {
 			n, err := ptmx.Read(buf)
