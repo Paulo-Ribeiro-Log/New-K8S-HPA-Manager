@@ -337,7 +337,7 @@ interface CloneDialogProps {
 function CloneDialog({ open, profiles, onClose, onDone }: CloneDialogProps) {
   const [url, setUrl] = useState("");
   const [branch, setBranch] = useState("");
-  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [selectedProfileId, setSelectedProfileId] = useState(() => localStorage.getItem("ce_default_profile") ?? "");
   const [logs, setLogs] = useState<string[]>([]);
   const [cloning, setCloning] = useState(false);
   const [error, setError] = useState("");
@@ -594,8 +594,11 @@ function ProfileSwitcher({ repoId, repoProfileMap, onSwitch }: ProfileSwitcherPr
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  const activeId = repoProfileMap[repoId] ?? "";
-  const activeName = freshProfiles.find(p => p.id === activeId)?.name ?? loadProfiles().find(p => p.id === activeId)?.name;
+  // repoId="" → usa padrão global
+  const activeId = repoId
+    ? (repoProfileMap[repoId] ?? "")
+    : (localStorage.getItem("ce_default_profile") ?? "");
+  const activeName = (freshProfiles.length > 0 ? freshProfiles : loadProfiles()).find(p => p.id === activeId)?.name;
 
   function openMenu() {
     const latest = loadProfiles();
@@ -622,20 +625,20 @@ function ProfileSwitcher({ repoId, repoProfileMap, onSwitch }: ProfileSwitcherPr
         ref={btnRef}
         onClick={openMenu}
         className="flex items-center gap-1.5 text-xs bg-muted/60 border border-border/50 rounded px-2 py-1 hover:bg-muted text-foreground/80 transition-colors"
-        title="Alternar perfil GitHub deste repositório"
+        title={repoId ? "Conta GitHub deste repositório" : "Conta GitHub padrão"}
       >
         <Key className="w-3 h-3 text-primary flex-shrink-0" />
-        <span className="max-w-24 truncate">{activeName ?? "Sem perfil"}</span>
+        <span className="max-w-24 truncate">{activeName ?? "Conta GitHub"}</span>
         <ChevronsUpDown className="w-3 h-3 opacity-50 flex-shrink-0" />
       </button>
 
       {open && (
         <div
           ref={menuRef}
-          className="absolute top-full left-0 mt-1 z-50 min-w-40 bg-popover border border-border rounded shadow-lg py-1"
+          className="absolute top-full left-0 mt-1 z-50 min-w-48 bg-popover border border-border rounded shadow-lg py-1"
         >
-          <div className="px-2 py-1 text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
-            Perfil GitHub
+          <div className="px-3 py-1.5 text-[10px] text-muted-foreground font-medium uppercase tracking-wide border-b border-border/50 mb-1">
+            {repoId ? "Conta para este repositório" : "Conta padrão (clone)"}
           </div>
           <button
             className={`w-full text-left text-xs px-3 py-1.5 hover:bg-muted transition-colors flex items-center gap-2 ${activeId === "" ? "text-primary font-medium" : ""}`}
@@ -1861,19 +1864,22 @@ export function CodeEditorTab() {
           </select>
         )}
 
-        {selectedRepo && (
-          <ProfileSwitcher
-            repoId={selectedRepo.id}
-            repoProfileMap={repoProfileMap}
-            onSwitch={(repoId, profileId) => {
-              const fresh = loadProfiles();
-              setProfiles(fresh);
+        <ProfileSwitcher
+          repoId={selectedRepo?.id ?? ""}
+          repoProfileMap={repoProfileMap}
+          onSwitch={(repoId, profileId) => {
+            const fresh = loadProfiles();
+            setProfiles(fresh);
+            if (repoId) {
               const updated = { ...repoProfileMap, [repoId]: profileId };
               setRepoProfileMap(updated);
               saveRepoProfile(updated);
-            }}
-          />
-        )}
+            } else {
+              // sem repo selecionado: salva como padrão global
+              localStorage.setItem("ce_default_profile", profileId);
+            }
+          }}
+        />
 
         {selectedRepo && branches?.current && (
           <button
