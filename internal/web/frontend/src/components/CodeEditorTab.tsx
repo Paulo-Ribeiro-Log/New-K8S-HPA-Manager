@@ -39,6 +39,7 @@ import {
   ChevronsUpDown,
   Terminal,
   Cherry,
+  Type,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -142,7 +143,7 @@ function ToastContainer({ toasts }: { toasts: Toast[] }) {
   );
 }
 
-// ─── ResizeDivider ─────────────────────────────────────────────────────────
+// ─── ResizeDivider (horizontal — sidebar) ──────────────────────────────────
 
 function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
   const dragging = useRef(false);
@@ -176,6 +177,47 @@ function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
         dragging.current = true;
         lastX.current = e.clientX;
         document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+      }}
+    />
+  );
+}
+
+// ─── HResizeDivider (vertical — terminal) ──────────────────────────────────
+
+function HResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
+  const dragging = useRef(false);
+  const lastY = useRef(0);
+
+  const onMove = useCallback((e: MouseEvent) => {
+    if (!dragging.current) return;
+    onDrag(e.clientY - lastY.current);
+    lastY.current = e.clientY;
+  }, [onDrag]);
+
+  const onUp = useCallback(() => {
+    dragging.current = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [onMove, onUp]);
+
+  return (
+    <div
+      className="h-1 flex-shrink-0 bg-border/40 hover:bg-primary/60 active:bg-primary cursor-row-resize transition-colors"
+      onMouseDown={(e) => {
+        dragging.current = true;
+        lastY.current = e.clientY;
+        document.body.style.cursor = "row-resize";
         document.body.style.userSelect = "none";
         e.preventDefault();
       }}
@@ -1081,6 +1123,13 @@ export function CodeEditorTab() {
 
   // Terminal integrado
   const [showTerminal, setShowTerminal] = useState(false);
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const saved = localStorage.getItem("ce_terminal_height");
+    return saved ? Math.max(80, Math.min(600, parseInt(saved, 10))) : 240;
+  });
+  const [terminalFont, setTerminalFont] = useState(
+    () => localStorage.getItem("ce_terminal_font") ?? ""
+  );
 
   // Confirm dialog (substitui confirm() nativo)
   const [confirmState, setConfirmState] = useState<{
@@ -1880,11 +1929,26 @@ export function CodeEditorTab() {
           )}
           {/* ── Terminal integrado ── */}
           {showTerminal && selectedRepo && (
-            <RepoTerminal
-              repoId={selectedRepo.id}
-              repoName={`${selectedRepo.owner}/${selectedRepo.repo}`}
-              onClose={() => setShowTerminal(false)}
-            />
+            <>
+              <HResizeDivider onDrag={delta => {
+                setTerminalHeight(h => {
+                  const next = Math.max(80, Math.min(600, h - delta));
+                  localStorage.setItem("ce_terminal_height", String(next));
+                  return next;
+                });
+              }} />
+              <RepoTerminal
+                repoId={selectedRepo.id}
+                repoName={`${selectedRepo.owner}/${selectedRepo.repo}`}
+                height={terminalHeight}
+                font={terminalFont}
+                onFontChange={f => {
+                  setTerminalFont(f);
+                  localStorage.setItem("ce_terminal_font", f);
+                }}
+                onClose={() => setShowTerminal(false)}
+              />
+            </>
           )}
         </div>
       </div>
@@ -2027,21 +2091,29 @@ export function CodeEditorTab() {
 interface RepoTerminalProps {
   repoId: string;
   repoName: string;
+  height: number;
+  font: string;
+  onFontChange: (font: string) => void;
   onClose: () => void;
 }
 
-function RepoTerminal({ repoId, repoName, onClose }: RepoTerminalProps) {
+function RepoTerminal({ repoId, repoName, height, font, onFontChange, onClose }: RepoTerminalProps) {
   const divRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const [fonts, setFonts] = useState<string[]>([]);
+  const [showFontPicker, setShowFontPicker] = useState(false);
 
   useEffect(() => {
     if (!divRef.current) return;
+    const fontFamily = font
+      ? `'${font}','Cascadia Code','Fira Code','Consolas',monospace`
+      : "'Cascadia Code','Fira Code','Consolas',monospace";
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: "'Cascadia Code','Fira Code','Consolas',monospace",
+      fontFamily,
       convertEol: true,
       scrollback: 5000,
       theme: { background: "#1e1e1e", foreground: "#d4d4d4", cursor: "#ffffff" },
@@ -2066,7 +2138,13 @@ function RepoTerminal({ repoId, repoName, onClose }: RepoTerminalProps) {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === "output") {
-          term.write(atob(msg.data));
+          // Uint8Array → xterm.js decodifica UTF-8 corretamente (multibyte zsh/emoji)
+          // atob() retorna binary string onde cada char é um byte — passar como string
+          // quebra sequências multibyte porque xterm trata chars como codepoints Unicode
+          const binary = atob(msg.data);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          term.write(bytes);
         }
       } catch { term.write(e.data); }
     };
@@ -2074,7 +2152,9 @@ function RepoTerminal({ repoId, repoName, onClose }: RepoTerminalProps) {
 
     term.onData(data => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data: btoa(data) }));
+        // Encode UTF-8 → base64 sem quebrar chars multibyte (btoa() falha com chars > 255)
+        const encoded = btoa(unescape(encodeURIComponent(data)));
+        ws.send(JSON.stringify({ type: "input", data: encoded }));
       }
     });
 
@@ -2093,15 +2173,99 @@ function RepoTerminal({ repoId, repoName, onClose }: RepoTerminalProps) {
     };
   }, [repoId]);
 
+  // Refit quando o painel é redimensionado verticalmente
+  useEffect(() => {
+    if (!fitRef.current || !xtermRef.current) return;
+    // rAF para deixar o DOM atualizar o height antes do fit
+    const id = requestAnimationFrame(() => {
+      fitRef.current?.fit();
+      const ws = wsRef.current;
+      const term = xtermRef.current;
+      if (ws?.readyState === WebSocket.OPEN && term) {
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [height]);
+
+  // Atualiza fonte do xterm dinamicamente sem recriar o terminal
+  useEffect(() => {
+    const term = xtermRef.current;
+    const fit = fitRef.current;
+    if (!term) return;
+    const fontFamily = font
+      ? `'${font}','Cascadia Code','Fira Code','Consolas',monospace`
+      : "'Cascadia Code','Fira Code','Consolas',monospace";
+    term.options.fontFamily = fontFamily;
+    requestAnimationFrame(() => {
+      fit?.fit();
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      }
+    });
+  }, [font]);
+
+  // Carrega lista de fontes ao abrir o picker
+  function handleOpenFontPicker() {
+    setShowFontPicker(v => {
+      if (!v && fonts.length === 0) {
+        apiClient.codeEditorListFonts().then(r => setFonts(r.fonts)).catch(() => {});
+      }
+      return !v;
+    });
+  }
+
   return (
-    <div className="flex flex-col border-t border-border/50 bg-[#1e1e1e]" style={{ height: 240 }}>
-      <div className="flex items-center justify-between px-3 py-1 border-b border-white/10 flex-shrink-0">
-        <span className="text-xs text-white/60 font-mono flex items-center gap-1">
-          <Terminal className="w-3 h-3" />{repoName}
+    <div className="flex flex-col bg-[#1e1e1e]" style={{ height }}>
+      <div className="flex items-center justify-between px-3 py-1 border-b border-white/10 flex-shrink-0 gap-2">
+        <span className="text-xs text-white/60 font-mono flex items-center gap-1 min-w-0 truncate">
+          <Terminal className="w-3 h-3 flex-shrink-0" />{repoName}
         </span>
-        <button onClick={onClose} className="text-white/40 hover:text-white/80">
-          <X className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {/* Seletor de fonte */}
+          <div className="relative">
+            <button
+              onClick={handleOpenFontPicker}
+              title="Fonte do terminal"
+              className="text-white/40 hover:text-white/80 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded hover:bg-white/10 transition-colors"
+            >
+              <Type className="w-3 h-3" />
+              {font ? <span className="max-w-[120px] truncate">{font}</span> : <span className="text-white/30">fonte</span>}
+            </button>
+            {showFontPicker && (
+              <div className="absolute bottom-full right-0 mb-1 w-56 bg-[#252526] border border-white/10 rounded shadow-xl z-50 overflow-hidden">
+                <div className="px-2 pt-2 pb-1 border-b border-white/10">
+                  <p className="text-[10px] text-white/40 uppercase tracking-wide">Fonte do terminal</p>
+                </div>
+                <div className="max-h-52 overflow-y-auto">
+                  <button
+                    className={`w-full text-left px-3 py-1.5 text-xs hover:bg-white/10 transition-colors ${font === "" ? "text-primary" : "text-white/60"}`}
+                    onClick={() => { onFontChange(""); setShowFontPicker(false); }}
+                  >
+                    Padrão (Cascadia Code / Fira Code)
+                  </button>
+                  {fonts.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-white/30 italic">carregando…</p>
+                  )}
+                  {fonts.map(f => (
+                    <button
+                      key={f}
+                      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-white/10 transition-colors truncate ${font === f ? "text-primary" : "text-white/70"}`}
+                      style={{ fontFamily: `'${f}', monospace` }}
+                      onClick={() => { onFontChange(f); setShowFontPicker(false); }}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <button onClick={onClose} className="text-white/40 hover:text-white/80">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
       <div ref={divRef} className="flex-1 min-h-0 px-1" />
     </div>

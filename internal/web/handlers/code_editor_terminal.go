@@ -58,10 +58,14 @@ func (h *CodeEditorHandler) HandleTerminal(c *gin.Context) {
 	}
 	defer ws.Close()
 
-	// Escolher shell disponível
-	shell := "bash"
-	if _, err := exec.LookPath("bash"); err != nil {
-		shell = "sh"
+	// Escolher shell: respeita $SHELL do ambiente, senão busca bash → sh
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		if path, err := exec.LookPath("bash"); err == nil {
+			shell = path
+		} else {
+			shell = "sh"
+		}
 	}
 
 	cmd := exec.Command(shell)

@@ -3827,6 +3827,10 @@ class APIClient {
       method: "DELETE",
     });
   }
+
+  async codeEditorListFonts(): Promise<{ fonts: string[] }> {
+    return this.request("/code-editor/fonts");
+  }
 }
 
 // Code Editor types
