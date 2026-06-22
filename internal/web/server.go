@@ -1164,6 +1164,12 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/file-show", codeEditorHandler.GetFileAtCommit)
 		codeEditor.POST("/repos/:id/upload", codeEditorHandler.UploadFiles)
 		codeEditor.POST("/repos/:id/replace", codeEditorHandler.ReplaceInFiles)
+		// Fase 5
+		codeEditor.GET("/repos/:id/conflicts", codeEditorHandler.GetConflicts)
+		codeEditor.POST("/repos/:id/resolve-conflict", codeEditorHandler.ResolveConflict)
+		codeEditor.POST("/repos/:id/merge/abort", codeEditorHandler.AbortMerge)
+		codeEditor.POST("/repos/:id/merge/commit", codeEditorHandler.CommitMerge)
+		codeEditor.GET("/repos/:id/branch-diff", codeEditorHandler.GetBranchDiff)
 		codeEditor.GET("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetGitHubProfiles)
 		codeEditor.PUT("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.SaveGitHubProfiles)
 	}

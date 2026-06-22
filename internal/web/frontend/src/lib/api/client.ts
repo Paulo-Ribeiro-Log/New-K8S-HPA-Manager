@@ -3870,6 +3870,30 @@ class APIClient {
     });
   }
 
+  // Fase 5: Conflitos e branch diff
+  async codeEditorGetConflicts(id: string): Promise<{ in_merge: boolean; files: string[] }> {
+    return this.request(`/code-editor/repos/${id}/conflicts`);
+  }
+
+  async codeEditorResolveConflict(id: string, path: string, content: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/resolve-conflict`, {
+      method: "POST",
+      body: JSON.stringify({ path, content }),
+    });
+  }
+
+  async codeEditorAbortMerge(id: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/merge/abort`, { method: "POST" });
+  }
+
+  async codeEditorCommitMerge(id: string): Promise<{ message: string }> {
+    return this.request(`/code-editor/repos/${id}/merge/commit`, { method: "POST" });
+  }
+
+  async codeEditorGetBranchDiff(id: string, from: string, to: string): Promise<{ diff: string; files: string; from: string; to: string }> {
+    return this.request(`/code-editor/repos/${id}/branch-diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  }
+
   async codeEditorGetGitHubProfiles(): Promise<{ profiles: GitHubEditorProfile[] }> {
     return this.request("/code-editor/github-profiles");
   }
@@ -3969,6 +3993,14 @@ export interface CodeEditorReplaceResult {
   matches: CodeEditorReplaceMatch[];
   modified_files: number;
   applied: boolean;
+}
+
+// Fase 5 types
+export interface CodeEditorConflictBlock {
+  index: number;      // índice do bloco no arquivo
+  ours: string;       // conteúdo do HEAD
+  theirs: string;     // conteúdo do branch vindo
+  label: string;      // nome do branch/ref vindo
 }
 
 // Singleton instance

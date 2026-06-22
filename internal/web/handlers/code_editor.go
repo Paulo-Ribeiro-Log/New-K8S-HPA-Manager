@@ -1180,6 +1180,11 @@ func (h *CodeEditorHandler) MergeBranch(c *gin.Context) {
 	args = append(args, req.Branch)
 	out, err := runGit(dir, args...)
 	if err != nil {
+		// Conflitos de merge: git retorna exit 1 mas o merge é iniciado
+		if strings.Contains(out, "CONFLICT") {
+			c.JSON(http.StatusOK, gin.H{"message": out, "has_conflicts": true})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return
 	}
@@ -1724,6 +1729,121 @@ func (h *CodeEditorHandler) ReplaceInFiles(c *gin.Context) {
 		"matches":        matches,
 		"modified_files": modifiedFiles,
 		"applied":        !req.DryRun,
+	})
+}
+
+// ── Fase 5: Resolução de conflitos ──────────────────────────────────────────
+
+// GetConflicts — GET /api/v1/code-editor/repos/:id/conflicts
+// Retorna se há merge em andamento e quais arquivos têm conflitos.
+func (h *CodeEditorHandler) GetConflicts(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+
+	if _, err := os.Stat(filepath.Join(dir, ".git", "MERGE_HEAD")); err != nil {
+		c.JSON(http.StatusOK, gin.H{"in_merge": false, "files": []string{}})
+		return
+	}
+
+	out, _ := runGit(dir, "diff", "--name-only", "--diff-filter=U")
+	files := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"in_merge": true, "files": files})
+}
+
+// ResolveConflict — POST /api/v1/code-editor/repos/:id/resolve-conflict
+// Body: { "path": "...", "content": "..." }
+// Grava o conteúdo resolvido e faz git add.
+func (h *CodeEditorHandler) ResolveConflict(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path obrigatório"})
+		return
+	}
+
+	fullPath := filepath.Join(dir, filepath.Clean(req.Path))
+	if !strings.HasPrefix(fullPath, dir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "caminho inválido"})
+		return
+	}
+
+	if err := os.WriteFile(fullPath, []byte(req.Content), 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	out, err := runGit(dir, "add", req.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"staged": req.Path})
+}
+
+// AbortMerge — POST /api/v1/code-editor/repos/:id/merge/abort
+func (h *CodeEditorHandler) AbortMerge(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	out, err := runGit(dir, "merge", "--abort")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
+// CommitMerge — POST /api/v1/code-editor/repos/:id/merge/commit
+// Finaliza o merge após resolver todos os conflitos (git commit --no-edit).
+func (h *CodeEditorHandler) CommitMerge(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	out, err := runGit(dir, "commit", "--no-edit")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
+// ── Fase 5: Diff entre branches ─────────────────────────────────────────────
+
+// GetBranchDiff — GET /api/v1/code-editor/repos/:id/branch-diff?from=&to=
+// Retorna diff unificado entre dois refs (branches, tags ou commits).
+func (h *CodeEditorHandler) GetBranchDiff(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	from := c.Query("from")
+	to := c.Query("to")
+	if from == "" || to == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from e to são obrigatórios"})
+		return
+	}
+
+	// Lista de arquivos alterados (formato: status<TAB>path)
+	filesOut, _ := runGit(dir, "diff", "--name-status", from+".."+to)
+
+	// Diff unificado (limite 500 KB)
+	diffOut, _ := runGit(dir, "diff", "--unified=3", from+".."+to)
+	const maxDiff = 500 * 1024
+	if len(diffOut) > maxDiff {
+		diffOut = diffOut[:maxDiff] + "\n\n... (diff truncado — muito grande para exibir)"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"diff":  diffOut,
+		"files": filesOut,
+		"from":  from,
+		"to":    to,
 	})
 }
 

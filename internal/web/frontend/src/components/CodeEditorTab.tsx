@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Editor, { DiffEditor, OnMount } from "@monaco-editor/react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Terminal as XTerm } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
@@ -44,6 +46,10 @@ import {
   Replace,
   User,
   Key,
+  BookOpen,
+  GitCompare,
+  Columns2,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -983,9 +989,10 @@ interface MergeDialogProps {
   branches: CodeEditorBranches | null;
   onClose: () => void;
   onDone: () => void;
+  onConflict: (files: string[]) => void;
 }
 
-function MergeDialog({ open, repoId, currentBranch, branches, onClose, onDone }: MergeDialogProps) {
+function MergeDialog({ open, repoId, currentBranch, branches, onClose, onDone, onConflict }: MergeDialogProps) {
   const [target, setTarget] = useState("");
   const [noFf, setNoFf] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1000,7 +1007,14 @@ function MergeDialog({ open, repoId, currentBranch, branches, onClose, onDone }:
     if (!target) { setError("Selecione um branch"); return; }
     setLoading(true); setError(""); setGitOutput("");
     try {
-      const result = await apiClient.codeEditorMerge(repoId, target, noFf);
+      const result = await apiClient.codeEditorMerge(repoId, target, noFf) as { message: string; has_conflicts?: boolean };
+      if (result.has_conflicts) {
+        // Busca lista de arquivos conflitantes e abre o resolver
+        const c = await apiClient.codeEditorGetConflicts(repoId);
+        onClose();
+        onConflict(c.files);
+        return;
+      }
       setGitOutput(result.message);
       setTimeout(() => { onDone(); }, 1500);
     } catch (e: any) {
@@ -1335,9 +1349,10 @@ interface BranchesPanelProps {
   onCheckout: (branch: string) => Promise<void>;
   onCreateBranch: () => void;
   onMerge: () => void;
+  onBranchDiff: () => void;
 }
 
-function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerge }: BranchesPanelProps) {
+function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerge, onBranchDiff }: BranchesPanelProps) {
   const [checkingOut, setCheckingOut] = useState("");
   const [filter, setFilter] = useState("");
 
@@ -1358,6 +1373,9 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
         <div className="flex gap-1">
           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onMerge} title="Merge">
             <GitMerge className="w-3 h-3" />
+          </Button>
+          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onBranchDiff} title="Comparar dois branches">
+            <GitCompare className="w-3 h-3" />
           </Button>
           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onRefresh} title="Atualizar">
             <RefreshCw className="w-3 h-3" />
@@ -1521,6 +1539,12 @@ export function CodeEditorTab() {
 
   // Fase 4: Histórico de arquivo
   const [fileHistoryNode, setFileHistoryNode] = useState<CodeEditorFileNode | null>(null);
+
+  // Fase 5: Conflitos, branch diff, markdown preview
+  const [showConflictResolver, setShowConflictResolver] = useState(false);
+  const [conflictFiles, setConflictFiles] = useState<string[]>([]);
+  const [showBranchDiff, setShowBranchDiff] = useState(false);
+  const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
 
   // Fase 4: Replace
   const [replaceQuery, setReplaceQuery] = useState("");
@@ -2195,6 +2219,7 @@ export function CodeEditorTab() {
                 onCheckout={handleCheckout}
                 onCreateBranch={() => setShowBranch(true)}
                 onMerge={() => setShowMerge(true)}
+                onBranchDiff={() => setShowBranchDiff(true)}
               />
             )}
 
@@ -2462,6 +2487,13 @@ export function CodeEditorTab() {
                 <span className="text-xs font-mono text-muted-foreground truncate flex-1">{activeTab.node.path}</span>
                 {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" title="Não salvo" />}
                 <div className="flex gap-1 flex-shrink-0">
+                  {activeTab.node.name.endsWith(".md") && (
+                    <Button variant={showMarkdownPreview ? "default" : "ghost"} size="sm" className="h-5 w-5 p-0"
+                      title={showMarkdownPreview ? "Ocultar preview Markdown" : "Preview Markdown"}
+                      onClick={() => setShowMarkdownPreview(v => !v)}>
+                      <BookOpen className="w-3 h-3" />
+                    </Button>
+                  )}
                   <Button variant={showBlame ? "default" : "ghost"} size="sm" className="h-5 w-5 p-0" title="Git Blame inline"
                     onClick={loadBlame}>
                     <User className="w-3 h-3" />
@@ -2482,32 +2514,43 @@ export function CodeEditorTab() {
                   </Button>
                 </div>
               </div>
-              <div className="flex-1 min-h-0">
-                <Editor
-                  height="100%"
-                  language={extToLanguage(activeTab.node.name)}
-                  value={activeTab.currentContent}
-                  theme="vs-dark"
-                  onMount={handleEditorMount}
-                  onChange={updateTabContent}
-                  options={{
-                    automaticLayout: true,
-                    minimap: { enabled: showMinimap },
-                    fontSize: 13,
-                    lineHeight: 20,
-                    fontFamily: "'Cascadia Code','Fira Code','Consolas','Courier New',monospace",
-                    fontLigatures: true,
-                    wordWrap: "on",
-                    tabSize: 2,
-                    scrollBeyondLastLine: false,
-                    smoothScrolling: true,
-                    cursorSmoothCaretAnimation: "on",
-                    renderLineHighlight: "all",
-                    scrollbar: { vertical: "visible", horizontal: "visible", verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
-                    suggest: { showIcons: true, showSnippets: true },
-                    quickSuggestions: true,
-                  }}
-                />
+              <div className="flex-1 min-h-0 flex flex-row">
+                <div className={showMarkdownPreview && activeTab.node.name.endsWith(".md") ? "w-1/2 min-h-0" : "flex-1 min-h-0"}>
+                  <Editor
+                    height="100%"
+                    language={extToLanguage(activeTab.node.name)}
+                    value={activeTab.currentContent}
+                    theme="vs-dark"
+                    onMount={handleEditorMount}
+                    onChange={updateTabContent}
+                    options={{
+                      automaticLayout: true,
+                      minimap: { enabled: showMinimap },
+                      fontSize: 13,
+                      lineHeight: 20,
+                      fontFamily: "'Cascadia Code','Fira Code','Consolas','Courier New',monospace",
+                      fontLigatures: true,
+                      wordWrap: "on",
+                      tabSize: 2,
+                      scrollBeyondLastLine: false,
+                      smoothScrolling: true,
+                      cursorSmoothCaretAnimation: "on",
+                      renderLineHighlight: "all",
+                      scrollbar: { vertical: "visible", horizontal: "visible", verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+                      suggest: { showIcons: true, showSnippets: true },
+                      quickSuggestions: true,
+                    }}
+                  />
+                </div>
+                {showMarkdownPreview && activeTab.node.name.endsWith(".md") && (
+                  <div className="w-1/2 border-l border-border/50 overflow-y-auto bg-background p-4">
+                    <div className="prose prose-sm prose-invert max-w-none text-foreground">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {activeTab.currentContent}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           ) : (
@@ -2634,6 +2677,10 @@ export function CodeEditorTab() {
               await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadTree(selectedRepo.id)]);
               addToast("success", "Merge concluído");
             }}
+            onConflict={(files) => {
+              setConflictFiles(files);
+              setShowConflictResolver(true);
+            }}
           />
 
           <CreateFileDialog
@@ -2690,6 +2737,36 @@ export function CodeEditorTab() {
           repoId={selectedRepo.id}
           node={fileHistoryNode}
           onClose={() => setFileHistoryNode(null)}
+        />
+      )}
+
+      {/* ── Fase 5: Resolver conflitos ── */}
+      {showConflictResolver && selectedRepo && (
+        <ConflictResolverModal
+          repoId={selectedRepo.id}
+          files={conflictFiles}
+          onClose={() => setShowConflictResolver(false)}
+          onDone={async () => {
+            setShowConflictResolver(false);
+            setOpenTabs([]);
+            setActiveTabIdx(0);
+            await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadTree(selectedRepo.id)]);
+            addToast("success", "Merge concluído após resolução de conflitos");
+          }}
+          onAbort={async () => {
+            setShowConflictResolver(false);
+            await Promise.all([loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
+            addToast("info", "Merge abortado");
+          }}
+        />
+      )}
+
+      {/* ── Fase 5: Diff entre branches ── */}
+      {showBranchDiff && selectedRepo && (
+        <BranchDiffModal
+          repoId={selectedRepo.id}
+          branches={branches}
+          onClose={() => setShowBranchDiff(false)}
         />
       )}
 
@@ -3082,5 +3159,415 @@ function CreateTagDialog({ defaultHash, onClose, onCreate }: CreateTagDialogProp
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ─── ConflictResolverModal (Fase 5) ──────────────────────────────────────────
+
+interface ConflictBlock {
+  index: number;
+  before: string;   // texto antes do bloco conflito
+  ours: string;
+  theirs: string;
+  label: string;    // nome do branch vindo
+  after: string;    // texto depois (só para reconstrução)
+  choice: "ours" | "theirs" | "manual" | null;
+  manual: string;
+}
+
+function parseConflicts(content: string): { blocks: ConflictBlock[]; hasConflict: boolean } {
+  const lines = content.split("\n");
+  const blocks: ConflictBlock[] = [];
+  let idx = 0;
+  let i = 0;
+  while (i < lines.length) {
+    const startIdx = lines.findIndex((l, j) => j >= i && l.startsWith("<<<<<<<"));
+    if (startIdx === -1) break;
+    const sepIdx = lines.findIndex((l, j) => j > startIdx && l.startsWith("======="));
+    const endIdx = lines.findIndex((l, j) => j > (sepIdx >= 0 ? sepIdx : startIdx) && l.startsWith(">>>>>>>"));
+    if (sepIdx === -1 || endIdx === -1) break;
+    const label = lines[endIdx].replace(/^>>>>>>>/, "").trim();
+    blocks.push({
+      index: idx++,
+      before: lines.slice(0, startIdx).join("\n"),
+      ours: lines.slice(startIdx + 1, sepIdx).join("\n"),
+      theirs: lines.slice(sepIdx + 1, endIdx).join("\n"),
+      label,
+      after: lines.slice(endIdx + 1).join("\n"),
+      choice: null,
+      manual: "",
+    });
+    i = endIdx + 1;
+  }
+  return { blocks, hasConflict: blocks.length > 0 };
+}
+
+function rebuildContent(original: string, blocks: ConflictBlock[]): string {
+  if (blocks.length === 0) return original;
+  // Reconstrói o arquivo substituindo cada bloco de conflito pela escolha
+  let content = original;
+  // Substitui de trás para frente para manter índices de linha
+  const lines = content.split("\n");
+  const positions: { start: number; end: number; replacement: string }[] = [];
+  let scanIdx = 0;
+  for (const b of blocks) {
+    const startLine = lines.findIndex((l, j) => j >= scanIdx && l.startsWith("<<<<<<<"));
+    if (startLine === -1) continue;
+    const sepLine = lines.findIndex((l, j) => j > startLine && l.startsWith("======="));
+    const endLine = lines.findIndex((l, j) => j > sepLine && l.startsWith(">>>>>>>"));
+    if (sepLine === -1 || endLine === -1) continue;
+    let replacement: string;
+    if (b.choice === "ours") replacement = b.ours;
+    else if (b.choice === "theirs") replacement = b.theirs;
+    else replacement = b.manual || b.ours;
+    positions.push({ start: startLine, end: endLine, replacement });
+    scanIdx = endLine + 1;
+  }
+  // Aplica de trás para frente
+  for (let i = positions.length - 1; i >= 0; i--) {
+    const { start, end, replacement } = positions[i];
+    lines.splice(start, end - start + 1, ...replacement.split("\n"));
+  }
+  return lines.join("\n");
+}
+
+interface ConflictResolverModalProps {
+  repoId: string;
+  files: string[];
+  onClose: () => void;
+  onDone: () => void;
+  onAbort: () => void;
+}
+
+function ConflictResolverModal({ repoId, files, onClose, onDone, onAbort }: ConflictResolverModalProps) {
+  const [selectedFile, setSelectedFile] = useState(files[0] ?? "");
+  const [fileContent, setFileContent] = useState("");
+  const [blocks, setBlocks] = useState<ConflictBlock[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [resolvedFiles, setResolvedFiles] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [aborting, setAborting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!selectedFile) return;
+    setLoading(true);
+    apiClient.codeEditorReadFile(repoId, selectedFile)
+      .then(r => {
+        setFileContent(r.content);
+        const { blocks: parsed } = parseConflicts(r.content);
+        setBlocks(parsed);
+      })
+      .catch(() => setBlocks([]))
+      .finally(() => setLoading(false));
+  }, [repoId, selectedFile]);
+
+  function setChoice(index: number, choice: "ours" | "theirs") {
+    setBlocks(prev => prev.map(b => b.index === index ? { ...b, choice, manual: choice === "ours" ? b.ours : b.theirs } : b));
+  }
+
+  function setManual(index: number, text: string) {
+    setBlocks(prev => prev.map(b => b.index === index ? { ...b, choice: "manual", manual: text } : b));
+  }
+
+  const allResolved = blocks.length > 0 && blocks.every(b => b.choice !== null);
+
+  async function saveFile() {
+    setSaving(true); setError("");
+    try {
+      const resolved = rebuildContent(fileContent, blocks);
+      await apiClient.codeEditorResolveConflict(repoId, selectedFile, resolved);
+      setResolvedFiles(prev => new Set([...prev, selectedFile]));
+      // Avança para o próximo arquivo com conflito
+      const next = files.find(f => f !== selectedFile && !resolvedFiles.has(f));
+      if (next) setSelectedFile(next);
+    } catch (e: any) {
+      setError(e.message || "Erro ao salvar");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function commitMerge() {
+    setCommitting(true); setError("");
+    try {
+      await apiClient.codeEditorCommitMerge(repoId);
+      onDone();
+    } catch (e: any) {
+      setError(e.message || "Erro ao fazer commit");
+    } finally {
+      setCommitting(false);
+    }
+  }
+
+  async function abortMerge() {
+    setAborting(true);
+    try {
+      await apiClient.codeEditorAbortMerge(repoId);
+      onAbort();
+    } catch (e: any) {
+      setError(e.message || "Erro ao abortar");
+    } finally {
+      setAborting(false);
+    }
+  }
+
+  const allFilesResolved = files.every(f => resolvedFiles.has(f));
+
+  return (
+    <div className="fixed inset-0 z-50 bg-background flex flex-col">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-border/50 flex-shrink-0 bg-card/20">
+        <ShieldAlert className="w-4 h-4 text-yellow-400 flex-shrink-0" />
+        <span className="text-sm font-medium">Resolver Conflitos de Merge</span>
+        <span className="text-xs text-muted-foreground">({resolvedFiles.size}/{files.length} arquivos resolvidos)</span>
+        <div className="flex-1" />
+        {error && <span className="text-xs text-red-400">{error}</span>}
+        <Button variant="ghost" size="sm" className="h-6 text-xs text-red-400 hover:text-red-300"
+          onClick={abortMerge} disabled={aborting || committing}>
+          {aborting ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
+          Abortar Merge
+        </Button>
+        {allFilesResolved && (
+          <Button size="sm" className="h-6 text-xs bg-green-700 hover:bg-green-600"
+            onClick={commitMerge} disabled={committing}>
+            {committing ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCommit className="w-3 h-3 mr-1" />}
+            Commit do Merge
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={onClose}>
+          <X className="w-3.5 h-3.5" />
+        </Button>
+      </div>
+
+      <div className="flex flex-1 min-h-0">
+        {/* Lista de arquivos */}
+        <div className="w-56 flex-shrink-0 border-r border-border/50 flex flex-col">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide px-3 py-2 border-b border-border/30">Arquivos com conflito</p>
+          <ScrollArea className="flex-1">
+            {files.map(f => {
+              const done = resolvedFiles.has(f);
+              return (
+                <button key={f} onClick={() => setSelectedFile(f)}
+                  className={`w-full text-left px-3 py-2 text-xs flex items-center gap-2 hover:bg-muted/50 transition-colors ${selectedFile === f ? "bg-muted/80 text-foreground" : "text-muted-foreground"}`}>
+                  {done
+                    ? <CheckCircle2 className="w-3 h-3 text-green-400 flex-shrink-0" />
+                    : <AlertCircle className="w-3 h-3 text-yellow-400 flex-shrink-0" />}
+                  <span className="truncate font-mono">{f}</span>
+                </button>
+              );
+            })}
+          </ScrollArea>
+        </div>
+
+        {/* Editor de conflitos */}
+        <div className="flex-1 flex flex-col min-h-0">
+          {loading ? (
+            <div className="flex-1 flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : blocks.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+              Nenhum marcador de conflito encontrado neste arquivo.
+            </div>
+          ) : (
+            <>
+              <ScrollArea className="flex-1">
+                <div className="p-4 space-y-4">
+                  {blocks.map(b => (
+                    <div key={b.index} className="border border-border/50 rounded overflow-hidden">
+                      <div className="flex items-center justify-between bg-muted/30 px-3 py-1.5 border-b border-border/30">
+                        <span className="text-xs font-medium">Conflito #{b.index + 1}</span>
+                        <div className="flex gap-1">
+                          <Button size="sm" variant={b.choice === "ours" ? "default" : "outline"}
+                            className="h-5 text-[10px] px-2"
+                            onClick={() => setChoice(b.index, "ours")}>
+                            Aceitar Atual (HEAD)
+                          </Button>
+                          <Button size="sm" variant={b.choice === "theirs" ? "default" : "outline"}
+                            className="h-5 text-[10px] px-2"
+                            onClick={() => setChoice(b.index, "theirs")}>
+                            Aceitar Vindo ({b.label || "branch"})
+                          </Button>
+                        </div>
+                      </div>
+                      {/* Ours */}
+                      <div className="bg-blue-950/20 border-b border-border/20 p-3">
+                        <p className="text-[10px] text-blue-400 font-medium mb-1">HEAD (atual)</p>
+                        <pre className="font-mono text-xs text-blue-200/80 whitespace-pre-wrap">{b.ours || <em className="text-muted-foreground">vazio</em>}</pre>
+                      </div>
+                      {/* Theirs */}
+                      <div className="bg-orange-950/20 p-3">
+                        <p className="text-[10px] text-orange-400 font-medium mb-1">{b.label || "Vindo"}</p>
+                        <pre className="font-mono text-xs text-orange-200/80 whitespace-pre-wrap">{b.theirs || <em className="text-muted-foreground">vazio</em>}</pre>
+                      </div>
+                      {/* Edição manual */}
+                      {b.choice !== null && (
+                        <div className="bg-muted/10 border-t border-border/20 p-3">
+                          <p className="text-[10px] text-muted-foreground mb-1">Resultado (editável)</p>
+                          <textarea
+                            className="w-full font-mono text-xs bg-background border border-border/40 rounded p-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary/50"
+                            rows={Math.max(3, (b.manual || "").split("\n").length + 1)}
+                            value={b.manual}
+                            onChange={e => setManual(b.index, e.target.value)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+              <div className="flex items-center justify-between px-4 py-2 border-t border-border/30 flex-shrink-0">
+                <span className="text-xs text-muted-foreground">
+                  {blocks.filter(b => b.choice !== null).length}/{blocks.length} blocos resolvidos
+                </span>
+                <Button size="sm" className="h-6 text-xs" onClick={saveFile}
+                  disabled={!allResolved || saving || resolvedFiles.has(selectedFile)}>
+                  {saving ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <CheckCircle2 className="w-3 h-3 mr-1" />}
+                  {resolvedFiles.has(selectedFile) ? "Salvo" : "Salvar e Marcar Resolvido"}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── BranchDiffModal (Fase 5) ─────────────────────────────────────────────────
+
+interface BranchDiffModalProps {
+  repoId: string;
+  branches: CodeEditorBranches | null;
+  onClose: () => void;
+}
+
+function BranchDiffModal({ repoId, branches, onClose }: BranchDiffModalProps) {
+  const allBranches = useMemo(() => {
+    const local = branches?.local ?? [];
+    const remote = (branches?.remote ?? []).filter(r => !r.includes("->"));
+    return [...new Set([...(branches?.current ? [branches.current] : []), ...local, ...remote])];
+  }, [branches]);
+
+  const [from, setFrom] = useState(branches?.current ?? "");
+  const [to, setTo] = useState("");
+  const [diff, setDiff] = useState("");
+  const [filesSummary, setFilesSummary] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function compare() {
+    if (!from || !to) { setError("Selecione os dois branches"); return; }
+    setLoading(true); setError(""); setDiff(""); setFilesSummary("");
+    try {
+      const r = await apiClient.codeEditorGetBranchDiff(repoId, from, to);
+      setDiff(r.diff);
+      setFilesSummary(r.files);
+    } catch (e: any) {
+      setError(e.message || "Erro ao comparar");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Colore linhas do diff unificado
+  function renderDiffLine(line: string, idx: number) {
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      return <div key={idx} className="text-muted-foreground font-mono text-xs whitespace-pre">{line}</div>;
+    }
+    if (line.startsWith("@@")) {
+      return <div key={idx} className="text-blue-400 font-mono text-xs whitespace-pre bg-blue-950/20 px-1">{line}</div>;
+    }
+    if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file")) {
+      return <div key={idx} className="text-primary font-mono text-xs whitespace-pre font-medium border-t border-border/20 mt-2 pt-2">{line}</div>;
+    }
+    if (line.startsWith("+")) {
+      return <div key={idx} className="text-green-400 font-mono text-xs whitespace-pre bg-green-950/20">{line}</div>;
+    }
+    if (line.startsWith("-")) {
+      return <div key={idx} className="text-red-400 font-mono text-xs whitespace-pre bg-red-950/20">{line}</div>;
+    }
+    return <div key={idx} className="text-foreground/70 font-mono text-xs whitespace-pre">{line}</div>;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-background flex flex-col">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-border/50 flex-shrink-0 bg-card/20">
+        <Columns2 className="w-4 h-4 text-primary flex-shrink-0" />
+        <span className="text-sm font-medium">Comparar Branches</span>
+        <div className="flex-1" />
+        <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={onClose}>
+          <X className="w-3.5 h-3.5" />
+        </Button>
+      </div>
+
+      {/* Seletores */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border/30 flex-shrink-0 bg-card/10">
+        <select className="text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground"
+          value={from} onChange={e => setFrom(e.target.value)}>
+          <option value="">De (base)...</option>
+          {allBranches.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <ArrowRightLeft className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+        <select className="text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground"
+          value={to} onChange={e => setTo(e.target.value)}>
+          <option value="">Para (comparar)...</option>
+          {allBranches.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <Button size="sm" className="h-6 text-xs" onClick={compare} disabled={loading || !from || !to}>
+          {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <GitCompare className="w-3 h-3 mr-1" />}
+          Comparar
+        </Button>
+        {error && <span className="text-xs text-red-400">{error}</span>}
+        {filesSummary && !loading && (
+          <span className="text-xs text-muted-foreground ml-2">
+            {filesSummary.split("\n").filter(Boolean).length} arquivo(s) alterado(s)
+          </span>
+        )}
+      </div>
+
+      {/* Diff */}
+      <div className="flex flex-1 min-h-0">
+        {/* Lista de arquivos */}
+        {filesSummary && (
+          <div className="w-56 flex-shrink-0 border-r border-border/50">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wide px-3 py-2 border-b border-border/30">Arquivos</p>
+            <ScrollArea className="h-full">
+              {filesSummary.split("\n").filter(Boolean).map((line, i) => {
+                const [status, ...rest] = line.split("\t");
+                const fname = rest.join("\t");
+                const color = status === "A" ? "text-green-400" : status === "D" ? "text-red-400" : status === "M" ? "text-yellow-400" : "text-muted-foreground";
+                return (
+                  <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-xs border-b border-border/10">
+                    <span className={`font-bold flex-shrink-0 ${color}`}>{status}</span>
+                    <span className="font-mono truncate text-foreground/70">{fname}</span>
+                  </div>
+                );
+              })}
+            </ScrollArea>
+          </div>
+        )}
+
+        {/* Diff colorizado */}
+        <ScrollArea className="flex-1 bg-[#1e1e1e]">
+          {loading ? (
+            <div className="flex items-center justify-center h-32">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : diff ? (
+            <div className="p-4">
+              {diff.split("\n").map((line, i) => renderDiffLine(line, i))}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+              {from && to ? "Clique em Comparar para ver o diff" : "Selecione dois branches para comparar"}
+            </div>
+          )}
+        </ScrollArea>
+      </div>
+    </div>
   );
 }
