@@ -221,6 +221,7 @@ const Index = ({ onLogout }: IndexProps) => {
     containers: false,
     ingresses: false,
     healthcheck: false,
+    codeEditor: false,
   });
 
   // Listener de eventos de aplicação de node pools — atualiza spinner/resultado na lista
@@ -252,9 +253,10 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // 🔄 Marcar componente como montado quando usuário acessa a aba
   useEffect(() => {
-    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck"];
-    if (workloadTabs.includes(activeTab as any)) {
-      hasBeenMounted.current[activeTab as keyof typeof hasBeenMounted.current] = true;
+    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck", "codeEditor"];
+    const tabKey = activeTab === "code-editor" ? "codeEditor" : activeTab;
+    if (workloadTabs.includes(tabKey as any)) {
+      hasBeenMounted.current[tabKey as keyof typeof hasBeenMounted.current] = true;
     }
   }, [activeTab]);
 
@@ -1272,12 +1274,6 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
-      case "code-editor":
-        return (
-          <ErrorBoundary componentName="Code Editor Tab">
-            <CodeEditorTab />
-          </ErrorBoundary>
-        );
 
       case "explorer":
         return (
@@ -1563,8 +1559,17 @@ const Index = ({ onLogout }: IndexProps) => {
           )}
         </div>
 
+        {/* Code Editor - sempre montado */}
+        <div style={{ display: activeTab === "code-editor" ? "flex" : "none", height: "100%", flexDirection: "column" }}>
+          {(activeTab === "code-editor" || hasBeenMounted.current.codeEditor) && (
+            <ErrorBoundary componentName="Code Editor Tab">
+              <CodeEditorTab />
+            </ErrorBoundary>
+          )}
+        </div>
+
         {/* Outras abas - renderização condicional normal (switch/case) */}
-        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck"].includes(activeTab) && renderTabContent()}
+        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck", "code-editor"].includes(activeTab) && renderTabContent()}
       </div>
 
       {/* Modal de Confirmação - HPAs */}
