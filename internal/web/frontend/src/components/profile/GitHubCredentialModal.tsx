@@ -140,8 +140,8 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
-        <DialogHeader>
+      <DialogContent className="max-w-lg flex flex-col max-h-[90vh]" onInteractOutside={(e) => e.preventDefault()}>
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Github className="h-5 w-5" />
             GitHub Token (SSO/SAML)
@@ -151,6 +151,7 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
           </DialogDescription>
         </DialogHeader>
 
+        <div className="overflow-y-auto flex-1 min-h-0 pr-1">
         <div className="space-y-4 py-2">
           {/* Identidade vinculada (RBAC) */}
           <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/50 border text-sm">
@@ -359,8 +360,9 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
             </div>
           )}
         </div>
+        </div>
 
-        <DialogFooter className="flex justify-between sm:justify-between">
+        <DialogFooter className="flex justify-between sm:justify-between flex-shrink-0">
           <div>
             {tokenStatus?.configured && (
               <Button
