@@ -73,6 +73,7 @@ import {
   type CodeEditorFileLogEntry,
   type CodeEditorReplaceRequest,
   type CodeEditorReplaceMatch,
+  type GitHubEditorProfile,
 } from "@/lib/api/client";
 
 const API_BASE = "/api/v1";
@@ -584,7 +585,7 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
 
 // ─── Token store (localStorage) ──────────────────────────────────────────────
 
-interface GitHubProfile { id: string; name: string; token: string }
+interface GitHubProfile { id: string; name: string; token: string; active?: boolean }
 
 const PROFILES_KEY = "ce_github_profiles";
 const REPO_PROFILE_KEY = "ce_repo_profile";
@@ -806,37 +807,83 @@ function ProfileSwitcher({ repoId, repoProfileMap, onSwitch }: ProfileSwitcherPr
 
 function GitHubTokenDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [profiles, setProfiles] = useState<GitHubProfile[]>([]);
+  const [activeId, setActiveId] = useState("");
   const [newName, setNewName] = useState("");
   const [newToken, setNewToken] = useState("");
+  const [showNewToken, setShowNewToken] = useState(false);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) { setProfiles(loadProfiles()); setNewName(""); setNewToken(""); setError(""); }
+    if (!open) return;
+    setNewName(""); setNewToken(""); setError(""); setShowNewToken(false);
+    // Carregar do servidor para garantir sincronização entre abas/sessões
+    apiClient.codeEditorGetGitHubProfiles().then(r => {
+      const srv = r.profiles;
+      if (srv.length > 0) {
+        const local: GitHubProfile[] = srv.map(p => ({ id: p.id, name: p.name, token: p.token, active: p.active }));
+        setProfiles(local);
+        saveProfiles(local);
+        const aid = srv.find(p => p.active)?.id ?? localStorage.getItem("ce_default_profile") ?? "";
+        setActiveId(aid);
+        if (aid) localStorage.setItem("ce_default_profile", aid);
+      } else {
+        const local = loadProfiles();
+        setProfiles(local);
+        setActiveId(localStorage.getItem("ce_default_profile") ?? "");
+      }
+    }).catch(() => {
+      const local = loadProfiles();
+      setProfiles(local);
+      setActiveId(localStorage.getItem("ce_default_profile") ?? "");
+    });
   }, [open]);
 
-  function handleAdd() {
+  async function persistProfiles(updated: GitHubProfile[], newActiveId: string) {
+    const toSave: GitHubEditorProfile[] = updated.map(p => ({
+      id: p.id, name: p.name, token: p.token, active: p.id === newActiveId,
+    }));
+    saveProfiles(updated);
+    if (newActiveId) localStorage.setItem("ce_default_profile", newActiveId);
+    else localStorage.removeItem("ce_default_profile");
+    try { await apiClient.codeEditorSaveGitHubProfiles(toSave); } catch (_) { /* silencioso */ }
+  }
+
+  async function handleAdd() {
     if (!newName.trim()) { setError("Nome é obrigatório"); return; }
     if (!newToken.trim()) { setError("Token é obrigatório"); return; }
     if (profiles.some(p => p.name === newName.trim())) { setError("Já existe um perfil com esse nome"); return; }
-    const updated = [...profiles, { id: crypto.randomUUID(), name: newName.trim(), token: newToken.trim() }];
-    saveProfiles(updated);
+    setSaving(true);
+    const newProfile: GitHubProfile = { id: crypto.randomUUID(), name: newName.trim(), token: newToken.trim() };
+    const updated = [...profiles, newProfile];
+    // Auto-seleciona se for o primeiro perfil ou se não há padrão definido
+    const newActiveId = activeId || newProfile.id;
+    await persistProfiles(updated, newActiveId);
     setProfiles(updated);
-    setNewName(""); setNewToken(""); setError("");
+    setActiveId(newActiveId);
+    setNewName(""); setNewToken(""); setError(""); setShowNewToken(false);
+    setSaving(false);
   }
 
-  function handleDelete(id: string) {
+  async function handleSetDefault(id: string) {
+    setActiveId(id);
+    await persistProfiles(profiles, id);
+  }
+
+  async function handleDelete(id: string) {
     const updated = profiles.filter(p => p.id !== id);
-    saveProfiles(updated);
-    // remove refs de repos que usavam este perfil
+    const newActiveId = id === activeId ? (updated[0]?.id ?? "") : activeId;
     const map = loadRepoProfile();
     Object.keys(map).forEach(k => { if (map[k] === id) delete map[k]; });
     saveRepoProfile(map);
+    await persistProfiles(updated, newActiveId);
     setProfiles(updated);
+    setActiveId(newActiveId);
   }
 
   function maskedToken(t: string) {
-    if (t.length <= 8) return "****";
-    return t.slice(0, 4) + "..." + t.slice(-4);
+    if (t.length <= 8) return "••••••••";
+    return t.slice(0, 4) + "••••" + t.slice(-4);
   }
 
   return (
@@ -851,14 +898,26 @@ function GitHubTokenDialog({ open, onClose }: { open: boolean; onClose: () => vo
           {/* Lista de perfis existentes */}
           {profiles.length > 0 ? (
             <div className="space-y-1.5">
-              <p className="text-xs text-muted-foreground font-medium">Perfis salvos</p>
+              <p className="text-xs text-muted-foreground font-medium">
+                Clique em <CheckCircle2 className="inline w-3 h-3 mx-0.5" /> para definir o perfil padrão (usado em pull/push)
+              </p>
               {profiles.map(p => (
-                <div key={p.id} className="flex items-center justify-between rounded border border-border/50 bg-muted/30 px-3 py-2">
-                  <div>
+                <div key={p.id} className={`flex items-center gap-2 rounded border px-3 py-2 transition-colors ${
+                  p.id === activeId ? "border-primary/50 bg-primary/5" : "border-border/50 bg-muted/30"
+                }`}>
+                  <button
+                    onClick={() => p.id !== activeId && handleSetDefault(p.id)}
+                    title={p.id === activeId ? "Perfil padrão" : "Definir como padrão"}
+                    className={`flex-shrink-0 transition-colors ${p.id === activeId ? "text-primary cursor-default" : "text-muted-foreground hover:text-primary cursor-pointer"}`}
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                  </button>
+                  <div className="flex-1 min-w-0">
                     <span className="text-sm font-medium">{p.name}</span>
+                    {p.id === activeId && <span className="ml-2 text-[10px] text-primary font-semibold uppercase tracking-wide">padrão</span>}
                     <span className="ml-2 text-xs text-muted-foreground font-mono">{maskedToken(p.token)}</span>
                   </div>
-                  <button onClick={() => handleDelete(p.id)} className="text-muted-foreground hover:text-red-400 transition-colors">
+                  <button onClick={() => handleDelete(p.id)} className="flex-shrink-0 text-muted-foreground hover:text-red-400 transition-colors">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -871,13 +930,22 @@ function GitHubTokenDialog({ open, onClose }: { open: boolean; onClose: () => vo
           {/* Adicionar novo */}
           <div className="border border-border/50 rounded p-3 space-y-2">
             <p className="text-xs text-muted-foreground font-medium">Adicionar perfil</p>
-            <Input placeholder="Nome (ex: Pessoal, Profissional)" value={newName} onChange={e => setNewName(e.target.value)} className="h-7 text-xs" />
-            <Input type="password" placeholder="ghp_... ou github_pat_..." value={newToken} onChange={e => setNewToken(e.target.value)} className="h-7 text-xs"
-              onKeyDown={e => e.key === "Enter" && handleAdd()} />
+            <Input placeholder="Nome (ex: Pessoal, Trabalho)" value={newName} onChange={e => setNewName(e.target.value)} className="h-7 text-xs"
+              onKeyDown={e => e.key === "Enter" && document.getElementById("ghd-token-input")?.focus()} />
+            <div className="relative">
+              <Input id="ghd-token-input" type={showNewToken ? "text" : "password"} placeholder="ghp_... ou github_pat_..."
+                value={newToken} onChange={e => setNewToken(e.target.value)} className="h-7 text-xs pr-8"
+                onKeyDown={e => e.key === "Enter" && handleAdd()} />
+              <button type="button" onClick={() => setShowNewToken(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                <Eye className="w-3.5 h-3.5" />
+              </button>
+            </div>
             <p className="text-[10px] text-muted-foreground">GitHub → Settings → Developer settings → Personal access tokens → Scope: <code>repo</code></p>
             {error && <p className="text-xs text-red-400">{error}</p>}
-            <Button size="sm" onClick={handleAdd} disabled={!newName.trim() || !newToken.trim()} className="w-full h-7 text-xs">
-              <Plus className="w-3 h-3 mr-1" />Adicionar Perfil
+            <Button size="sm" onClick={handleAdd} disabled={!newName.trim() || !newToken.trim() || saving} className="w-full h-7 text-xs">
+              {saving ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Plus className="w-3 h-3 mr-1" />}
+              Adicionar Perfil
             </Button>
           </div>
         </div>
@@ -1506,13 +1574,14 @@ export function CodeEditorTab() {
   const [showClone, setShowClone] = useState(false);
   const [showGitHubToken, setShowGitHubToken] = useState(false);
   // Retorna o token da conta GitHub ativa.
-  // Usa localStorage como cache (populado pelo UserProfileMenu ao abrir).
+  // Fallback em cascata: perfil padrão → perfil com active=true → único perfil existente.
   function activeToken(): string | undefined {
-    const pid = localStorage.getItem("ce_default_profile") ?? "";
-    if (!pid) return undefined;
     const profiles = loadProfiles();
+    if (profiles.length === 0) return undefined;
+    const pid = localStorage.getItem("ce_default_profile") ?? "";
     return profiles.find(p => p.id === pid)?.token
-      ?? profiles.find(p => (p as { active?: boolean }).active)?.token;
+      ?? profiles.find(p => p.active)?.token
+      ?? (profiles.length === 1 ? profiles[0].token : undefined);
   }
 
   const [showCommit, setShowCommit] = useState(false);

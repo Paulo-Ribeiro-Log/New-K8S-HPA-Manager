@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -695,7 +696,11 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 		return
 	}
 
+	var wgPull sync.WaitGroup
+	wgPull.Add(1)
 	go func() {
+		defer wgPull.Done()
+		defer func() { recover() }() //nolint:errcheck
 		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -707,8 +712,11 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 		}
 	}()
 
-	if err := cmd.Wait(); err != nil {
-		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
+	pullErr := cmd.Wait()
+	wgPull.Wait() // garante que toda saída foi enviada antes do "done"
+
+	if pullErr != nil {
+		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pullErr.Error())
 	} else {
 		sendSSE("Pull concluído com sucesso.")
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
@@ -858,7 +866,11 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		return
 	}
 
+	var wgPush sync.WaitGroup
+	wgPush.Add(1)
 	go func() {
+		defer wgPush.Done()
+		defer func() { recover() }() //nolint:errcheck
 		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -869,8 +881,11 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		}
 	}()
 
-	if err := cmd.Wait(); err != nil {
-		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
+	pushErr := cmd.Wait()
+	wgPush.Wait() // garante que toda saída foi enviada antes do "done"
+
+	if pushErr != nil {
+		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pushErr.Error())
 	} else {
 		sendSSE("Push concluído com sucesso.")
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
