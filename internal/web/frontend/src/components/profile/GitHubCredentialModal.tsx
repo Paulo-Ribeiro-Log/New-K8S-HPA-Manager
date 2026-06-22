@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -24,6 +24,10 @@ import {
   EyeOff,
   ShieldCheck,
   User,
+  KeyRound,
+  Plus,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -35,10 +39,33 @@ import { useUserPermissions } from '@/hooks/useUserPermissions';
 import { apiClient } from '@/lib/api/client';
 import type { CredentialModalProps } from '@/types/profile';
 
+// ── Perfis do Editor de Código (localStorage) ──────────────────────────────
+interface GitHubProfile { id: string; name: string; token: string }
+const CE_PROFILES_KEY = 'ce_github_profiles';
+const CE_REPO_PROFILE_KEY = 'ce_repo_profile';
+function ceLoadProfiles(): GitHubProfile[] {
+  try { return JSON.parse(localStorage.getItem(CE_PROFILES_KEY) || '[]'); } catch { return []; }
+}
+function ceSaveProfiles(p: GitHubProfile[]) { localStorage.setItem(CE_PROFILES_KEY, JSON.stringify(p)); }
+function ceDeleteProfile(id: string) {
+  ceSaveProfiles(ceLoadProfiles().filter(p => p.id !== id));
+  const map: Record<string, string> = JSON.parse(localStorage.getItem(CE_REPO_PROFILE_KEY) || '{}');
+  Object.keys(map).forEach(k => { if (map[k] === id) delete map[k]; });
+  localStorage.setItem(CE_REPO_PROFILE_KEY, JSON.stringify(map));
+}
+
 export function GitHubCredentialModal({ open, onOpenChange, onSaved }: CredentialModalProps) {
   const [token, setToken] = useState('');
   const [org, setOrg] = useState(() => apiClient.getGitHubOrg());
   const [showToken, setShowToken] = useState(false);
+
+  // Perfis do Editor de Código
+  const [ceProfiles, setCeProfiles] = useState<GitHubProfile[]>([]);
+  const [ceNewName, setCeNewName] = useState('');
+  const [ceNewToken, setCeNewToken] = useState('');
+  const [ceShowSection, setCeShowSection] = useState(false);
+
+  const refreshCeProfiles = useCallback(() => setCeProfiles(ceLoadProfiles()), []);
 
   // Email vem do contexto RBAC (Azure AD) — não é digitado manualmente
   const { data: userPerms } = useUserPermissions();
@@ -55,8 +82,10 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
       setOrg(apiClient.getGitHubOrg());
       setShowToken(false);
       refetchStatus();
+      refreshCeProfiles();
+      setCeNewName(''); setCeNewToken('');
     }
-  }, [open, refetchStatus]);
+  }, [open, refetchStatus, refreshCeProfiles]);
 
   const handleSave = async () => {
     if (!token.trim()) {
@@ -252,6 +281,83 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
               Fine-grained Tokens
             </a>
           </div>
+        </div>
+
+        {/* ── Perfis do Editor de Código ── */}
+        <div className="border-t pt-3">
+          <button
+            className="flex items-center gap-2 text-sm font-medium w-full text-left hover:text-foreground text-muted-foreground transition-colors"
+            onClick={() => setCeShowSection(v => !v)}
+          >
+            {ceShowSection ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            <KeyRound className="h-4 w-4" />
+            Perfis do Editor de Código
+            {ceProfiles.length > 0 && (
+              <span className="ml-auto text-xs bg-muted rounded-full px-2 py-0.5">{ceProfiles.length}</span>
+            )}
+          </button>
+
+          {ceShowSection && (
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Perfis nomeados para push/pull no Editor de Código — cada repositório pode usar um perfil diferente (pessoal, profissional, etc.).
+              </p>
+
+              {ceProfiles.length > 0 && (
+                <div className="space-y-1.5">
+                  {ceProfiles.map(p => (
+                    <div key={p.id} className="flex items-center justify-between rounded border border-border/50 bg-muted/30 px-3 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{p.name}</span>
+                        <span className="text-xs text-muted-foreground font-mono">
+                          {p.token.length > 8 ? p.token.slice(0, 4) + '...' + p.token.slice(-4) : '****'}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => { ceDeleteProfile(p.id); refreshCeProfiles(); }}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground placeholder:text-muted-foreground"
+                  placeholder="Nome (ex: Pessoal)"
+                  value={ceNewName}
+                  onChange={e => setCeNewName(e.target.value)}
+                />
+                <input
+                  type="password"
+                  className="flex-[2] text-xs bg-muted border border-border/50 rounded px-2 py-1.5 font-mono text-foreground placeholder:text-muted-foreground"
+                  placeholder="ghp_... ou github_pat_..."
+                  value={ceNewToken}
+                  onChange={e => setCeNewToken(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && ceNewName.trim() && ceNewToken.trim()) {
+                      ceSaveProfiles([...ceLoadProfiles(), { id: crypto.randomUUID(), name: ceNewName.trim(), token: ceNewToken.trim() }]);
+                      refreshCeProfiles(); setCeNewName(''); setCeNewToken('');
+                    }
+                  }}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!ceNewName.trim() || !ceNewToken.trim()}
+                  onClick={() => {
+                    ceSaveProfiles([...ceLoadProfiles(), { id: crypto.randomUUID(), name: ceNewName.trim(), token: ceNewToken.trim() }]);
+                    refreshCeProfiles(); setCeNewName(''); setCeNewToken('');
+                  }}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         <DialogFooter className="flex justify-between sm:justify-between">

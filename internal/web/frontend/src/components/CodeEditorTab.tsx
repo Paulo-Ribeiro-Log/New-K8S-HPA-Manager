@@ -1332,6 +1332,7 @@ export function CodeEditorTab() {
   } | null>(null);
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
+  const saveFileRef = useRef<() => void>(() => {});
   const { toasts, addToast } = useToasts();
 
   // showConfirm — substitui window.confirm() por dialog React
@@ -1737,9 +1738,12 @@ export function CodeEditorTab() {
     }
   }
 
+  // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
+  useEffect(() => { saveFileRef.current = saveFile; });
+
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
-    editor.addCommand(2048 | 49, () => saveFile()); // Ctrl+S
+    editor.addCommand(2048 | 49, () => saveFileRef.current()); // Ctrl+S
     editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
   };
 
@@ -1831,9 +1835,6 @@ export function CodeEditorTab() {
             <Terminal className="w-3 h-3" />Terminal
           </Button>
         )}
-        <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setShowGitHubToken(true)} title="Configurar token GitHub para push/pull">
-          <Key className="w-3 h-3" />Token
-        </Button>
         <Button size="sm" className="h-6 text-xs gap-1" onClick={() => setShowClone(true)}>
           <GitPullRequest className="w-3 h-3" />Clonar
         </Button>
