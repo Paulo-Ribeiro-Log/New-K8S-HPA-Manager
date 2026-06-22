@@ -227,7 +227,7 @@ function HResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
 
   return (
     <div
-      className="h-1 flex-shrink-0 bg-border/40 hover:bg-primary/60 active:bg-primary cursor-row-resize transition-colors"
+      className="h-2 flex-shrink-0 bg-border/60 hover:bg-primary/70 active:bg-primary cursor-row-resize transition-colors flex items-center justify-center group"
       onMouseDown={(e) => {
         dragging.current = true;
         lastY.current = e.clientY;
@@ -235,7 +235,13 @@ function HResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
         document.body.style.userSelect = "none";
         e.preventDefault();
       }}
-    />
+    >
+      <div className="flex gap-0.5 opacity-50 group-hover:opacity-100 transition-opacity">
+        <span className="w-4 h-0.5 rounded-full bg-current" />
+        <span className="w-4 h-0.5 rounded-full bg-current" />
+        <span className="w-4 h-0.5 rounded-full bg-current" />
+      </div>
+    </div>
   );
 }
 

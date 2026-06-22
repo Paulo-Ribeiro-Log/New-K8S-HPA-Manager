@@ -85,6 +85,7 @@ import {
   FileCode,
   Link2,
   Shield,
+  Code2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -1433,6 +1434,18 @@ const Index = ({ onLogout }: IndexProps) => {
         <WorkloadMenu activeTab={activeTab} onTabChange={handleTabChange} />
         {/* Menu dropdown Tools */}
         <ToolsMenu activeTab={activeTab} onTabChange={handleTabChange} />
+        {/* Code Editor inline */}
+        <button
+          onClick={() => handleTabChange("code-editor")}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium text-sm transition-all duration-200 ${
+            activeTab === "code-editor"
+              ? "bg-gradient-primary text-white shadow-md"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          }`}
+        >
+          <Code2 className="w-4 h-4" />
+          Code Editor
+        </button>
         {/* Tab Explorer inline */}
         <button
           onClick={() => handleTabChange("explorer")}
