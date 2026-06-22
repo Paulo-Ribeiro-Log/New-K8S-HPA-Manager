@@ -2040,7 +2040,7 @@ class APIClient {
         body: JSON.stringify({ cluster, namespace, yaml: yamlContent, dry_run: dryRun }),
       }
     );
-    if (!response.success) throw new Error((response as unknown as { error: string }).error || "Erro ao criar Job");
+    if (response.error) throw new Error(response.error || "Erro ao criar Job");
     return response.data!;
   }
 
@@ -2052,7 +2052,7 @@ class APIClient {
         body: JSON.stringify({ cluster, namespace, yaml: yamlContent, dry_run: dryRun }),
       }
     );
-    if (!response.success) throw new Error((response as unknown as { error: string }).error || "Erro ao criar CronJob");
+    if (response.error) throw new Error(response.error || "Erro ao criar CronJob");
     return response.data!;
   }
 

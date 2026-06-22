@@ -2756,7 +2756,7 @@ export function CodeEditorTab() {
           onAbort={async () => {
             setShowConflictResolver(false);
             await Promise.all([loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
-            addToast("info", "Merge abortado");
+            addToast("success", "Merge abortado");
           }}
         />
       )}
