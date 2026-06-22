@@ -542,14 +542,6 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 
-	token := h.getToken(c)
-	if token != "" {
-		// Atualiza URL remota com o token
-		owner, repo := ownerRepo(dir)
-		newURL := fmt.Sprintf("https://%s@github.com/%s/%s.git", token, owner, repo)
-		runGit(dir, "remote", "set-url", "origin", newURL) //nolint:errcheck
-	}
-
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -583,11 +575,7 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	go func() {
 		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 		for scanner.Scan() {
-			line := scanner.Text()
-			if token != "" {
-				line = strings.ReplaceAll(line, token, "***")
-			}
-			sendSSE(line)
+			sendSSE(scanner.Text())
 		}
 	}()
 
@@ -667,13 +655,6 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req) //nolint:errcheck
 
-	token := h.getToken(c)
-	if token != "" {
-		owner, repo := ownerRepo(dir)
-		newURL := fmt.Sprintf("https://%s@github.com/%s/%s.git", token, owner, repo)
-		runGit(dir, "remote", "set-url", "origin", newURL) //nolint:errcheck
-	}
-
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -712,23 +693,13 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	go func() {
 		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 		for scanner.Scan() {
-			line := scanner.Text()
-			if token != "" {
-				line = strings.ReplaceAll(line, token, "***")
-			}
-			sendSSE(line)
+			sendSSE(scanner.Text())
 		}
 	}()
 
 	if err := cmd.Wait(); err != nil {
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
 	} else {
-		// Remove token da URL remota após push bem-sucedido (segurança)
-		if token != "" {
-			owner, repo := ownerRepo(dir)
-			cleanURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
-			runGit(dir, "remote", "set-url", "origin", cleanURL) //nolint:errcheck
-		}
 		sendSSE("Push concluído com sucesso.")
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 	}
