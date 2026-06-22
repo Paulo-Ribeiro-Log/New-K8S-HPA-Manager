@@ -40,6 +40,9 @@ import {
   Terminal,
   Cherry,
   Type,
+  History,
+  Replace,
+  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,6 +62,10 @@ import {
   type CodeEditorBranches,
   type CodeEditorLogEntry,
   type CodeEditorGrepMatch,
+  type CodeEditorBlameLine,
+  type CodeEditorFileLogEntry,
+  type CodeEditorReplaceRequest,
+  type CodeEditorReplaceMatch,
 } from "@/lib/api/client";
 
 const API_BASE = "/api/v1";
@@ -249,10 +256,13 @@ interface FileTreeNodeProps {
   level: number;
   onDelete: (node: CodeEditorFileNode) => void;
   onRename: (node: CodeEditorFileNode) => void;
+  onHistory?: (node: CodeEditorFileNode) => void;
+  onUpload?: (dirPath: string, files: FileList) => void;
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
   const isModified = modifiedPaths.has(node.path);
 
@@ -260,9 +270,18 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
     return (
       <div>
         <div
-          className="w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer"
+          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer transition-colors ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
           style={{ paddingLeft: `${level * 12 + 4}px` }}
           onClick={() => setOpen(o => !o)}
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => {
+            e.preventDefault();
+            setDragOver(false);
+            if (e.dataTransfer.files.length > 0 && onUpload) {
+              onUpload(node.path, e.dataTransfer.files);
+            }
+          }}
         >
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
           {open ? <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" /> : <Folder className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" />}
@@ -270,7 +289,8 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
         </div>
         {open && node.children?.map(child => (
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
-            modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename} />
+            modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename}
+            onHistory={onHistory} onUpload={onUpload} />
         ))}
       </div>
     );
@@ -288,6 +308,11 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
         {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
       </button>
       <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+        {onHistory && (
+          <button onClick={e => { e.stopPropagation(); onHistory(node); }} className="p-0.5 rounded hover:bg-muted" title="Histórico do arquivo">
+            <History className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
+          </button>
+        )}
         <button onClick={e => { e.stopPropagation(); onRename(node); }} className="p-0.5 rounded hover:bg-muted" title="Renomear">
           <Pencil className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
         </button>
@@ -1094,7 +1119,7 @@ export function CodeEditorTab() {
   const [grepResults, setGrepResults] = useState<CodeEditorGrepMatch[]>([]);
 
   // Sidebar
-  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log">("files");
+  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log" | "replace">("files");
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem("ce_sidebar_width");
     return saved ? parseInt(saved) : 224;
@@ -1130,6 +1155,25 @@ export function CodeEditorTab() {
   const [terminalFont, setTerminalFont] = useState(
     () => localStorage.getItem("ce_terminal_font") ?? ""
   );
+
+  // Fase 4: Blame
+  const [showBlame, setShowBlame] = useState(false);
+  const [blameLines, setBlameLines] = useState<CodeEditorBlameLine[]>([]);
+  const blameDecorationsRef = useRef<MonacoEditorNS.editor.IEditorDecorationsCollection | null>(null);
+
+  // Fase 4: Histórico de arquivo
+  const [fileHistoryNode, setFileHistoryNode] = useState<CodeEditorFileNode | null>(null);
+
+  // Fase 4: Replace
+  const [replaceQuery, setReplaceQuery] = useState("");
+  const [replaceWith, setReplaceWith] = useState("");
+  const [replaceRegex, setReplaceRegex] = useState(false);
+  const [replaceGlob, setReplaceGlob] = useState("");
+  const [replaceLoading, setReplaceLoading] = useState(false);
+  const [replaceMatches, setReplaceMatches] = useState<CodeEditorReplaceMatch[]>([]);
+  const [replaceModified, setReplaceModified] = useState(0);
+  const [replaceApplied, setReplaceApplied] = useState(false);
+  const [replaceError, setReplaceError] = useState("");
 
   // Confirm dialog (substitui confirm() nativo)
   const [confirmState, setConfirmState] = useState<{
@@ -1430,6 +1474,99 @@ export function CodeEditorTab() {
     }
   }
 
+  // ── Blame: injeta decorações Monaco ──
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    // Limpar decorações anteriores
+    if (blameDecorationsRef.current) {
+      blameDecorationsRef.current.clear();
+      blameDecorationsRef.current = null;
+    }
+    if (!showBlame || blameLines.length === 0) return;
+
+    // Injetar CSS para after-content
+    const styleId = "blame-inline-style";
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.textContent = `.blame-inline::after { color: #6b7280; font-size: 11px; font-style: italic; margin-left: 16px; }`;
+      document.head.appendChild(style);
+    }
+
+    const decorations: MonacoEditorNS.editor.IModelDeltaDecoration[] = blameLines.map(b => ({
+      range: { startLineNumber: b.line, startColumn: 1, endLineNumber: b.line, endColumn: 1 },
+      options: {
+        after: {
+          content: ` ${b.author} · ${b.date} · ${b.short}`,
+          inlineClassName: "blame-inline",
+        },
+        isWholeLine: false,
+      },
+    }));
+
+    blameDecorationsRef.current = editor.createDecorationsCollection(decorations);
+  }, [showBlame, blameLines]);
+
+  async function loadBlame() {
+    if (!selectedRepo || !activeTab) return;
+    if (showBlame) {
+      // Desativar blame
+      setShowBlame(false);
+      setBlameLines([]);
+      return;
+    }
+    // Ativar blame
+    setShowBlame(true);
+    try {
+      const r = await apiClient.codeEditorGetBlame(selectedRepo.id, activeTab.node.path);
+      setBlameLines(r.lines ?? []);
+    } catch (_) {
+      setBlameLines([]);
+    }
+  }
+
+  async function handleUpload(dirPath: string, files: FileList) {
+    if (!selectedRepo) return;
+    try {
+      const r = await apiClient.codeEditorUploadFiles(selectedRepo.id, dirPath, files);
+      if (r.created?.length > 0) {
+        addToast("success", `${r.created.length} arquivo(s) enviado(s)`);
+        await loadTree(selectedRepo.id);
+        await loadStatus(selectedRepo.id);
+      }
+    } catch (e: any) {
+      addToast("error", e.message || "Erro no upload");
+    }
+  }
+
+  async function handleReplace(dryRun: boolean) {
+    if (!selectedRepo || !replaceQuery.trim()) return;
+    setReplaceLoading(true);
+    setReplaceError("");
+    try {
+      const req: CodeEditorReplaceRequest = {
+        query: replaceQuery,
+        replacement: replaceWith,
+        is_regex: replaceRegex,
+        glob: replaceGlob,
+        dry_run: dryRun,
+      };
+      const r = await apiClient.codeEditorReplaceInFiles(selectedRepo.id, req);
+      setReplaceMatches(r.matches ?? []);
+      setReplaceModified(r.modified_files);
+      setReplaceApplied(r.applied);
+      if (!dryRun && r.applied) {
+        addToast("success", `Substituição aplicada em ${r.modified_files} arquivo(s)`);
+        await loadStatus(selectedRepo.id);
+      }
+    } catch (e: any) {
+      setReplaceError(e.message || "Erro na substituição");
+    } finally {
+      setReplaceLoading(false);
+    }
+  }
+
   const [formatting, setFormatting] = useState(false);
 
   async function formatFile() {
@@ -1461,6 +1598,7 @@ export function CodeEditorTab() {
     { id: "branches" as const, label: `Branches${branches ? ` (${branches.local.length})` : ""}` },
     { id: "git" as const, label: `Git${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}` },
     { id: "log" as const, label: "Log" },
+    { id: "replace" as const, label: "Replace" },
   ];
 
   return (
@@ -1656,11 +1794,22 @@ export function CodeEditorTab() {
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}><X className="w-3 h-3" /></Button>
                         </div>
                       </div>
-                      {tree.map(node => (
-                        <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
-                          onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
-                          onDelete={handleDeleteFile} onRename={n => setRenameNode(n)} />
-                      ))}
+                      <div
+                        className="min-h-8"
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={e => {
+                          e.preventDefault();
+                          if (e.dataTransfer.files.length > 0) handleUpload("", e.dataTransfer.files);
+                        }}
+                      >
+                        {tree.map(node => (
+                          <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
+                            onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
+                            onDelete={handleDeleteFile} onRename={n => setRenameNode(n)}
+                            onHistory={n => setFileHistoryNode(n)}
+                            onUpload={handleUpload} />
+                        ))}
+                      </div>
                     </div>
                   )}
                 </ScrollArea>
@@ -1825,6 +1974,83 @@ export function CodeEditorTab() {
                   </ScrollArea>
               </div>
             )}
+
+            {/* ── Painel: Replace ── */}
+            {sidePanel === "replace" && (
+              <div className="flex flex-col h-full">
+                <ScrollArea className="flex-1">
+                  <div className="p-2 space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">Find & Replace Global</p>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Buscar</label>
+                      <Input className="h-6 text-xs mt-0.5 font-mono" placeholder="texto ou regex..."
+                        value={replaceQuery} onChange={e => setReplaceQuery(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && handleReplace(true)} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Substituir por</label>
+                      <Input className="h-6 text-xs mt-0.5 font-mono" placeholder="substituição..."
+                        value={replaceWith} onChange={e => setReplaceWith(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Glob (ex: *.go)</label>
+                      <Input className="h-6 text-xs mt-0.5 font-mono" placeholder="*.go, *.ts..."
+                        value={replaceGlob} onChange={e => setReplaceGlob(e.target.value)} />
+                    </div>
+                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                      <input type="checkbox" checked={replaceRegex} onChange={e => setReplaceRegex(e.target.checked)} className="w-3 h-3" />
+                      Regex
+                    </label>
+                    {replaceError && <p className="text-xs text-red-400">{replaceError}</p>}
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="outline" className="flex-1 h-6 text-xs"
+                        onClick={() => { setReplaceMatches([]); handleReplace(true); }}
+                        disabled={replaceLoading || !replaceQuery.trim() || !selectedRepo}>
+                        {replaceLoading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Search className="w-3 h-3 mr-1" />}
+                        Buscar
+                      </Button>
+                    </div>
+                    {replaceMatches.length > 0 && !replaceApplied && (
+                      <Button size="sm" className="w-full h-6 text-xs"
+                        onClick={() => handleReplace(false)}
+                        disabled={replaceLoading}>
+                        <Replace className="w-3 h-3 mr-1" />
+                        Substituir tudo ({replaceModified} arquivo{replaceModified !== 1 ? "s" : ""})
+                      </Button>
+                    )}
+                    {replaceApplied && (
+                      <p className="text-xs text-green-400">✓ Aplicado em {replaceModified} arquivo(s)</p>
+                    )}
+                    {replaceMatches.length > 0 && (
+                      <div className="space-y-1 mt-1">
+                        <p className="text-[10px] text-muted-foreground">{replaceMatches.length} ocorrência(s)</p>
+                        {Object.entries(
+                          replaceMatches.reduce((acc, m) => {
+                            (acc[m.file] = acc[m.file] || []).push(m);
+                            return acc;
+                          }, {} as Record<string, typeof replaceMatches>)
+                        ).map(([file, fileMatches]) => (
+                          <div key={file} className="border border-border/30 rounded p-1">
+                            <p className="text-[10px] font-mono text-primary truncate mb-1">{file}</p>
+                            {fileMatches.map((m, i) => (
+                              <div key={i} className="text-[10px] font-mono border-b border-border/20 pb-0.5 mb-0.5">
+                                <span className="text-muted-foreground mr-1">L{m.line}</span>
+                                <span className="text-red-400/70 line-through">{m.before.trim()}</span>
+                                <span className="mx-1 text-muted-foreground">→</span>
+                                <span className="text-green-400">{m.after.trim()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {replaceMatches.length === 0 && !replaceLoading && replaceQuery && (
+                      <p className="text-xs text-muted-foreground italic text-center py-2">Nenhuma ocorrência</p>
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1866,6 +2092,10 @@ export function CodeEditorTab() {
                 <span className="text-xs font-mono text-muted-foreground truncate flex-1">{activeTab.node.path}</span>
                 {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" title="Não salvo" />}
                 <div className="flex gap-1 flex-shrink-0">
+                  <Button variant={showBlame ? "default" : "ghost"} size="sm" className="h-5 w-5 p-0" title="Git Blame inline"
+                    onClick={loadBlame}>
+                    <User className="w-3 h-3" />
+                  </Button>
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title={showMinimap ? "Ocultar minimap" : "Mostrar minimap"}
                     onClick={() => setShowMinimap(m => !m)}>
                     <Map className="w-3 h-3" />
@@ -2081,8 +2311,160 @@ export function CodeEditorTab() {
         </>
       )}
 
+      {/* ── Fase 4: Histórico de arquivo ── */}
+      {fileHistoryNode && selectedRepo && (
+        <FileHistoryModal
+          repoId={selectedRepo.id}
+          node={fileHistoryNode}
+          onClose={() => setFileHistoryNode(null)}
+        />
+      )}
+
       <ToastContainer toasts={toasts} />
     </div>
+  );
+}
+
+// ─── FileHistoryModal ────────────────────────────────────────────────────────
+
+interface FileHistoryModalProps {
+  repoId: string;
+  node: CodeEditorFileNode;
+  onClose: () => void;
+}
+
+function FileHistoryModal({ repoId, node, onClose }: FileHistoryModalProps) {
+  const [entries, setEntries] = useState<CodeEditorFileLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [diffCommit, setDiffCommit] = useState<CodeEditorFileLogEntry | null>(null);
+
+  useEffect(() => {
+    apiClient.codeEditorGetFileLog(repoId, node.path)
+      .then(r => setEntries(r.entries ?? []))
+      .catch(() => setEntries([]))
+      .finally(() => setLoading(false));
+  }, [repoId, node.path]);
+
+  return (
+    <>
+      <Dialog open onOpenChange={onClose}>
+        <DialogContent className="max-w-lg max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <History className="w-4 h-4" />
+              Histórico: {node.name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+              </div>
+            ) : entries.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-8">Sem histórico</p>
+            ) : (
+              <div className="space-y-1 p-2">
+                {entries.map(e => (
+                  <div key={e.hash} className="group flex items-start gap-2 border-b border-border/20 pb-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-foreground/90 leading-tight truncate">{e.message}</p>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <span className="font-mono text-[10px] text-muted-foreground/60">{e.hash.slice(0, 7)}</span>
+                        <span className="text-[10px] text-muted-foreground">· {e.author} · {e.date}</span>
+                      </div>
+                    </div>
+                    <button
+                      className="flex-shrink-0 text-[10px] text-primary hover:underline opacity-0 group-hover:opacity-100 flex items-center gap-0.5"
+                      onClick={() => setDiffCommit(e)}
+                      title="Ver diff neste commit"
+                    >
+                      <Eye className="w-2.5 h-2.5" />diff
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {diffCommit && (
+        <CommitDiffModal
+          repoId={repoId}
+          filePath={node.path}
+          commit={diffCommit}
+          onClose={() => setDiffCommit(null)}
+        />
+      )}
+    </>
+  );
+}
+
+// ─── CommitDiffModal ─────────────────────────────────────────────────────────
+
+interface CommitDiffModalProps {
+  repoId: string;
+  filePath: string;
+  commit: CodeEditorFileLogEntry;
+  onClose: () => void;
+}
+
+function CommitDiffModal({ repoId, filePath, commit, onClose }: CommitDiffModalProps) {
+  const [original, setOriginal] = useState("");
+  const [modified, setModified] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const [cur, prev] = await Promise.all([
+          apiClient.codeEditorGetFileAtCommit(repoId, commit.hash, filePath),
+          apiClient.codeEditorGetFileAtCommit(repoId, commit.hash + "^", filePath).catch(() => ({ content: "" })),
+        ]);
+        setModified(cur.content);
+        setOriginal(prev.content);
+      } catch (_) {
+        setOriginal("");
+        setModified("");
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [repoId, commit.hash, filePath]);
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-5xl h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="text-sm font-mono flex items-center gap-2">
+            <GitCommit className="w-4 h-4 flex-shrink-0" />
+            {commit.hash.slice(0, 7)} · {commit.message}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 min-h-0">
+          {loading ? (
+            <div className="flex items-center justify-center h-full">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <DiffEditor
+              height="100%"
+              original={original}
+              modified={modified}
+              theme="vs-dark"
+              options={{ readOnly: true, automaticLayout: true, minimap: { enabled: false } }}
+            />
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

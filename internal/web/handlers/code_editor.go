@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1302,4 +1304,343 @@ func (h *CodeEditorHandler) ListFonts(c *gin.Context) {
 	}
 	sort.Strings(fonts)
 	c.JSON(http.StatusOK, gin.H{"fonts": fonts})
+}
+
+// ─── Fase 4: Git Blame ──────────────────────────────────────────────────────
+
+// BlameLineInfo representa uma linha do git blame.
+type BlameLineInfo struct {
+	Hash    string `json:"hash"`
+	Short   string `json:"short"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+	Summary string `json:"summary"`
+	Line    int    `json:"line"`
+}
+
+func isHexStr(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func parseBlame(raw string) []BlameLineInfo {
+	cache := map[string]BlameLineInfo{}
+	var result []BlameLineInfo
+	var cur BlameLineInfo
+
+	for _, line := range strings.Split(raw, "\n") {
+		if len(line) == 0 {
+			continue
+		}
+		if line[0] == '\t' {
+			if cur.Line > 0 {
+				if cached, ok := cache[cur.Hash]; ok {
+					cur.Author = cached.Author
+					cur.Date = cached.Date
+					cur.Summary = cached.Summary
+				}
+				result = append(result, cur)
+				cur = BlameLineInfo{}
+			}
+			continue
+		}
+		if len(line) >= 40 && isHexStr(line[:40]) {
+			parts := strings.Fields(line)
+			hash := parts[0]
+			cur.Hash = hash
+			cur.Short = hash[:7]
+			if len(parts) >= 3 {
+				if n, err := strconv.Atoi(parts[2]); err == nil {
+					cur.Line = n
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "author ") && !strings.HasPrefix(line, "author-") {
+			cur.Author = strings.TrimPrefix(line, "author ")
+		} else if strings.HasPrefix(line, "author-time ") {
+			if ts, err := strconv.ParseInt(strings.TrimPrefix(line, "author-time "), 10, 64); err == nil {
+				cur.Date = time.Unix(ts, 0).Format("2006-01-02")
+			}
+		} else if strings.HasPrefix(line, "summary ") {
+			cur.Summary = strings.TrimPrefix(line, "summary ")
+		}
+		if cur.Hash != "" && cur.Author != "" {
+			cache[cur.Hash] = cur
+		}
+	}
+	return result
+}
+
+// GetBlame retorna anotações de blame para um arquivo.
+func (h *CodeEditorHandler) GetBlame(c *gin.Context) {
+	id := c.Param("id")
+	path := c.Query("path")
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path obrigatório"})
+		return
+	}
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+	out, err := runGit(dir, "blame", "--porcelain", path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	lines := parseBlame(out)
+	c.JSON(http.StatusOK, gin.H{"lines": lines})
+}
+
+// ─── Fase 4: Histórico de arquivo ──────────────────────────────────────────
+
+// FileLogEntry representa uma entrada no histórico de um arquivo.
+type FileLogEntry struct {
+	Hash    string `json:"hash"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+	Message string `json:"message"`
+}
+
+// GetFileLog retorna o histórico de commits de um arquivo específico.
+func (h *CodeEditorHandler) GetFileLog(c *gin.Context) {
+	id := c.Param("id")
+	path := c.Query("path")
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path obrigatório"})
+		return
+	}
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+	out, err := runGit(dir, "log", "--follow", "--pretty=format:%H|%an|%ad|%s", "--date=short", "--", path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	var entries []FileLogEntry
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		entries = append(entries, FileLogEntry{
+			Hash:    parts[0],
+			Author:  parts[1],
+			Date:    parts[2],
+			Message: parts[3],
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": entries})
+}
+
+// GetFileAtCommit retorna o conteúdo de um arquivo em um commit específico.
+func (h *CodeEditorHandler) GetFileAtCommit(c *gin.Context) {
+	id := c.Param("id")
+	hash := c.Query("hash")
+	path := c.Query("path")
+	if hash == "" || path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hash e path obrigatórios"})
+		return
+	}
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+	out, err := runGit(dir, "show", hash+":"+path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"content": out})
+}
+
+// ─── Fase 4: Upload de arquivos ────────────────────────────────────────────
+
+// UploadFiles aceita múltiplos arquivos via multipart form e os salva no repo.
+func (h *CodeEditorHandler) UploadFiles(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+
+	targetDir := c.PostForm("dir")
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "form inválido: " + err.Error()})
+		return
+	}
+
+	files := form.File["files"]
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nenhum arquivo enviado"})
+		return
+	}
+
+	var created []string
+	for _, fh := range files {
+		rel := filepath.Join(targetDir, filepath.Base(fh.Filename))
+		full := filepath.Join(dir, rel)
+		// Validar path traversal
+		if !strings.HasPrefix(filepath.Clean(full)+string(os.PathSeparator), filepath.Clean(dir)+string(os.PathSeparator)) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			continue
+		}
+		if err := c.SaveUploadedFile(fh, full); err != nil {
+			continue
+		}
+		created = append(created, rel)
+	}
+	c.JSON(http.StatusOK, gin.H{"created": created})
+}
+
+// ─── Fase 4: Find & Replace global ────────────────────────────────────────
+
+// ReplaceMatch representa um match de substituição.
+type ReplaceMatch struct {
+	File   string `json:"file"`
+	Line   int    `json:"line"`
+	Before string `json:"before"`
+	After  string `json:"after"`
+}
+
+// ReplaceRequest é o body do endpoint de replace.
+type ReplaceRequest struct {
+	Query       string `json:"query"`
+	Replacement string `json:"replacement"`
+	IsRegex     bool   `json:"is_regex"`
+	Glob        string `json:"glob"`    // ex: "*.go" — filtra por extensão
+	DryRun      bool   `json:"dry_run"` // se true, apenas pré-visualiza
+}
+
+var ignoredReplDirs = map[string]bool{
+	".git": true, "node_modules": true, "vendor": true, "build": true, "dist": true,
+}
+
+// ReplaceInFiles realiza find & replace em todos os arquivos do repo.
+func (h *CodeEditorHandler) ReplaceInFiles(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo não encontrado"})
+		return
+	}
+
+	var req ReplaceRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "query obrigatória"})
+		return
+	}
+
+	// Construir regexp
+	var re *regexp.Regexp
+	if req.IsRegex {
+		var err error
+		re, err = regexp.Compile(req.Query)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "regex inválida: " + err.Error()})
+			return
+		}
+	}
+
+	// Calcular extensão-alvo do glob (ex: "*.go" → ".go")
+	var extFilter string
+	if req.Glob != "" {
+		extFilter = strings.TrimPrefix(req.Glob, "*")
+	}
+
+	var matches []ReplaceMatch
+	modifiedFiles := 0
+
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		// Ignorar diretórios proibidos
+		parts := strings.SplitN(rel, string(os.PathSeparator), 2)
+		if d.IsDir() {
+			if ignoredReplDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Filtro de extensão
+		if extFilter != "" && !strings.HasSuffix(d.Name(), extFilter) {
+			return nil
+		}
+		_ = parts
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		// Ignorar binários (heurística: byte nulo nos primeiros 512 bytes)
+		check := data
+		if len(check) > 512 {
+			check = check[:512]
+		}
+		for _, b := range check {
+			if b == 0 {
+				return nil
+			}
+		}
+
+		lines := strings.Split(string(data), "\n")
+		changed := false
+		for i, line := range lines {
+			var newLine string
+			if req.IsRegex {
+				newLine = re.ReplaceAllString(line, req.Replacement)
+			} else {
+				newLine = strings.ReplaceAll(line, req.Query, req.Replacement)
+			}
+			if newLine != line {
+				matches = append(matches, ReplaceMatch{
+					File:   rel,
+					Line:   i + 1,
+					Before: line,
+					After:  newLine,
+				})
+				lines[i] = newLine
+				changed = true
+			}
+		}
+		if changed && !req.DryRun {
+			newContent := strings.Join(lines, "\n")
+			if err := os.WriteFile(path, []byte(newContent), 0644); err == nil {
+				modifiedFiles++
+			}
+		} else if changed {
+			modifiedFiles++
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"matches":        matches,
+		"modified_files": modifiedFiles,
+		"applied":        !req.DryRun,
+	})
 }
