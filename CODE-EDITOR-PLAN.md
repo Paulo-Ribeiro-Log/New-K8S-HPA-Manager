@@ -5,7 +5,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Estado Atual (branch `editor-github`, último commit `e09a749d`)
+## Estado Atual (branch `editor-github`, último commit `eb4278ff`)
 
 ### ✅ Concluído — Fase 1 (MVP)
 
@@ -158,6 +158,13 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 - [x] **Barra de status** — barra azul fixa abaixo do Monaco (altura 20px, estilo VS Code `#007acc`): posição do cursor `Ln X, Col Y`, linguagem detectada, `UTF-8`; toggles de auto-save e format on save embutidos
 - [x] **Auto-save** — debounce 1,5s após cada keystroke quando ativado; usa `saveFileRef` para evitar stale closure; toggle na barra de status; estado em `localStorage["ce_autosave"]`
 - [x] **Format on save** — ao salvar (Ctrl+S) com toggle ativo, formata antes de gravar em disco (Go/TS/JS/Python/JSON); preserva posição do cursor com `model.setValue` + `setPosition`; atualiza `currentContent` e `savedContent` juntos evitando re-save; toast "Salvo e formatado"; estado em `localStorage["ce_format_on_save"]`
+- [x] **Font size** — controles −/NNpx/+ na barra de status (intervalo 10–24px); persiste em `localStorage["ce_font_size"]`; `lineHeight` proporcional (`fontSize × 1.55`); sync via `updateOptions` sem recriar o editor
+- [x] **Word wrap toggle** — botão "Wrap" na barra de status; persiste em `localStorage["ce_word_wrap"]`; sync via `updateOptions`
+- [x] **Breadcrumb** — substitui o path truncado na barra do arquivo ativo; cada segmento de diretório é clicável (switch para aba Arquivos + revela o arquivo na tree)
+- [x] **Copiar caminho** — botão `Copy` na barra do arquivo ativo; `navigator.clipboard.writeText` + toast "Caminho copiado"
+- [x] **Revelar na tree** — botão `Locate` na barra do arquivo ativo; também acessível pelos segmentos do breadcrumb e pelo context menu; o arquivo revelado fica com ring amarelo 1,5s e scroll automático (`data-reveal-path` + `scrollIntoView`)
+- [x] **Context menu (botão direito) na tree** — `onContextMenu` em todos os nós file e dir; estado `{ x, y, node }` com fechamento via `document.mousedown`; itens por tipo: **arquivo** → Abrir / Renomear / Deletar / Copiar caminho / Revelar na tree / Histórico; **pasta** → Novo arquivo aqui / Nova pasta aqui / Renomear / Deletar / Copiar caminho
+- [x] **Botão PR** — aparece no header quando o branch atual não é `main`/`master`; abre `github.com/owner/repo/compare/branch` em nova aba
 
 ### Autocomplete / LSP (complexo — não implementado)
 - [ ] **Go** — `gopls` via processo filho + proxy WebSocket (`POST /repos/:id/lsp/start`); Monaco `MonacoLanguageClient`; requer `monaco-languageclient` no frontend

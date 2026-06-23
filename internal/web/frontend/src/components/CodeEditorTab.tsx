@@ -51,6 +51,10 @@ import {
   GitCompare,
   Columns2,
   ShieldAlert,
+  Copy,
+  ExternalLink,
+  WrapText,
+  Locate,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -361,6 +365,8 @@ interface FileTreeNodeProps {
   onClipboardOp?: (path: string, op: "cut" | "copy") => void;
   onPaste?: (toDir: string) => void;
   cutPath?: string;
+  onContextMenu?: (e: React.MouseEvent, node: CodeEditorFileNode) => void;
+  revealPath?: string | null;
 }
 
 function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void) {
@@ -380,7 +386,7 @@ function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void
   }
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
@@ -395,6 +401,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
           className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer transition-colors focus:outline-none focus:ring-1 focus:ring-primary/40 ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
           style={{ paddingLeft: `${level * 12 + 4}px` }}
           onClick={() => { setOpen(o => !o); onDirFocus?.(node.path); }}
+          onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(e, node); }}
           onKeyDown={e => {
             if ((e.ctrlKey || e.metaKey) && e.key === "v") { e.preventDefault(); onPaste?.(node.path); }
             else if (e.key === "ArrowRight") { e.preventDefault(); if (!open) { setOpen(true); onDirFocus?.(node.path); } }
@@ -434,24 +441,28 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
             modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename}
             onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate}
-            onMove={onMove} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath} />
+            onMove={onMove} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath}
+            onContextMenu={onContextMenu} revealPath={revealPath} />
         ))}
       </div>
     );
   }
 
   const isCut = cutPath === node.path;
+  const isRevealed = revealPath === node.path;
   return (
     <div
       data-tree-item="true"
+      {...(isRevealed ? { "data-reveal-path": "true" } : {})}
       tabIndex={0}
       draggable
       onDragStart={e => {
         e.dataTransfer.setData("application/x-tree-node", node.path);
         e.dataTransfer.effectAllowed = "move";
       }}
-      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""}`}
+      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""} ${isRevealed ? "ring-2 ring-yellow-400/70 bg-yellow-400/10" : ""}`}
       style={{ paddingLeft: `${level * 12 + 4}px` }}
+      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(e, node); }}
       onKeyDown={e => {
         if ((e.ctrlKey || e.metaKey) && e.key === "c") { e.preventDefault(); onClipboardOp?.(node.path, "copy"); }
         else if ((e.ctrlKey || e.metaKey) && e.key === "x") { e.preventDefault(); onClipboardOp?.(node.path, "cut"); }
@@ -1805,6 +1816,10 @@ export function CodeEditorTab() {
   const [showQuickOpen, setShowQuickOpen] = useState(false);
   const [quickOpenQuery, setQuickOpenQuery] = useState("");
   const [quickOpenIdx, setQuickOpenIdx] = useState(0);
+  const [fontSize, setFontSize] = useState(() => parseInt(localStorage.getItem("ce_font_size") ?? "13", 10));
+  const [wordWrap, setWordWrap] = useState(() => localStorage.getItem("ce_word_wrap") !== "off");
+  const [revealPath, setRevealPath] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: CodeEditorFileNode } | null>(null);
   const blameDecorationsRef = useRef<MonacoEditorNS.editor.IEditorDecorationsCollection | null>(null);
   const blameMap = useMemo(() => {
     const m = new Map<number, CodeEditorBlameLine>();
@@ -2357,6 +2372,28 @@ export function CodeEditorTab() {
   // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
   useEffect(() => { saveFileRef.current = saveFile; });
 
+  // Sincroniza fontSize/wordWrap com Monaco sem recriar o editor
+  useEffect(() => {
+    editorRef.current?.updateOptions({ fontSize, wordWrap: wordWrap ? "on" : "off" });
+  }, [fontSize, wordWrap]);
+
+  // Fecha context menu ao clicar fora
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [contextMenu]);
+
+  // Scroll para o arquivo revelado na tree
+  useEffect(() => {
+    if (!revealPath) return;
+    const el = document.querySelector("[data-reveal-path]");
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    const t = setTimeout(() => setRevealPath(null), 1500);
+    return () => clearTimeout(t);
+  }, [revealPath]);
+
   // Ctrl+P global (quando o Monaco não está focado)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -2443,6 +2480,13 @@ export function CodeEditorTab() {
               onClick={() => { setSidePanel("branches"); setShowBranch(true); }}>
               <Plus className="w-3 h-3" />Branch
             </Button>
+            {branches?.current && branches.current !== "main" && branches.current !== "master" && (
+              <Button variant="ghost" size="sm" className="h-6 text-xs gap-1"
+                title={`Abrir Pull Request: ${selectedRepo.owner}/${selectedRepo.repo}`}
+                onClick={() => window.open(`https://github.com/${selectedRepo.owner}/${selectedRepo.repo}/compare/${branches.current}`, "_blank")}>
+                <ExternalLink className="w-3 h-3" />PR
+              </Button>
+            )}
           </>
         )}
 
@@ -2635,7 +2679,9 @@ export function CodeEditorTab() {
                             onMove={handleMoveFile}
                             onClipboardOp={(path, op) => setClipboard({ path, op })}
                             onPaste={handleClipboardPaste}
-                            cutPath={clipboard?.op === "cut" ? clipboard.path : undefined} />
+                            cutPath={clipboard?.op === "cut" ? clipboard.path : undefined}
+                            onContextMenu={(e, n) => setContextMenu({ x: e.clientX, y: e.clientY, node: n })}
+                            revealPath={revealPath} />
                         ))}
                       </div>
                     </div>
@@ -2918,9 +2964,36 @@ export function CodeEditorTab() {
             <>
               {/* Barra do arquivo ativo */}
               <div className="flex items-center gap-2 px-3 py-1 border-b border-border/50 flex-shrink-0 bg-card/20">
-                <span className="text-xs font-mono text-muted-foreground truncate flex-1">{activeTab.node.path}</span>
+                {/* Breadcrumb */}
+                <div className="flex items-center flex-1 min-w-0 overflow-hidden text-xs font-mono text-muted-foreground">
+                  {activeTab.node.path.split("/").map((seg, i, arr) => {
+                    const isLast = i === arr.length - 1;
+                    return (
+                      <span key={i} className="flex items-center flex-shrink-0">
+                        {i > 0 && <span className="opacity-30 mx-0.5 select-none">/</span>}
+                        {isLast ? (
+                          <span className="text-foreground/80 truncate max-w-[200px]">{seg}</span>
+                        ) : (
+                          <button
+                            className="hover:text-foreground hover:underline underline-offset-2 truncate max-w-[120px]"
+                            onClick={() => { setSidePanel("files"); setRevealPath(activeTab.node.path); }}
+                            title={arr.slice(0, i + 1).join("/")}
+                          >{seg}</button>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
                 {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" title="Não salvo" />}
                 <div className="flex gap-1 flex-shrink-0">
+                  <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Copiar caminho"
+                    onClick={() => navigator.clipboard.writeText(activeTab.node.path).then(() => addToast("success", "Caminho copiado"))}>
+                    <Copy className="w-3 h-3" />
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Revelar na tree"
+                    onClick={() => { setSidePanel("files"); setRevealPath(activeTab.node.path); }}>
+                    <Locate className="w-3 h-3" />
+                  </Button>
                   {activeTab.node.name.endsWith(".md") && (
                     <Button variant={showMarkdownPreview ? "default" : "ghost"} size="sm" className="h-5 w-5 p-0"
                       title={showMarkdownPreview ? "Ocultar preview Markdown" : "Preview Markdown"}
@@ -2960,11 +3033,11 @@ export function CodeEditorTab() {
                     options={{
                       automaticLayout: true,
                       minimap: { enabled: showMinimap },
-                      fontSize: 13,
-                      lineHeight: 20,
+                      fontSize: fontSize,
+                      lineHeight: Math.round(fontSize * 1.55),
                       fontFamily: "'Cascadia Code','Fira Code','Consolas','Courier New',monospace",
                       fontLigatures: true,
-                      wordWrap: "on",
+                      wordWrap: wordWrap ? "on" : "off",
                       tabSize: 2,
                       scrollBeyondLastLine: false,
                       smoothScrolling: true,
@@ -2999,6 +3072,20 @@ export function CodeEditorTab() {
                 <span className="opacity-40">|</span>
                 <span>UTF-8</span>
                 <div className="flex-1" />
+                {/* Font size */}
+                <button onClick={() => { const n = Math.max(10, fontSize - 1); setFontSize(n); localStorage.setItem("ce_font_size", String(n)); }}
+                  className="px-1 rounded hover:bg-white/20 leading-none" title="Diminuir fonte">−</button>
+                <span className="font-mono w-7 text-center">{fontSize}px</span>
+                <button onClick={() => { const n = Math.min(24, fontSize + 1); setFontSize(n); localStorage.setItem("ce_font_size", String(n)); }}
+                  className="px-1 rounded hover:bg-white/20 leading-none" title="Aumentar fonte">+</button>
+                {/* Word wrap */}
+                <button
+                  onClick={() => { const n = !wordWrap; setWordWrap(n); localStorage.setItem("ce_word_wrap", n ? "on" : "off"); }}
+                  className={`flex items-center gap-1 px-1.5 rounded hover:bg-white/20 transition-colors ${wordWrap ? "" : "opacity-50"}`}
+                  title={wordWrap ? "Word wrap ativado — clique para desativar" : "Word wrap desativado — clique para ativar"}
+                >
+                  <WrapText className="w-3 h-3" />Wrap
+                </button>
                 <button
                   onClick={() => { const n = !autoSave; setAutoSave(n); localStorage.setItem("ce_autosave", String(n)); }}
                   className={`flex items-center gap-1 px-1.5 rounded hover:bg-white/20 transition-colors ${autoSave ? "" : "opacity-50"}`}
@@ -3098,6 +3185,71 @@ export function CodeEditorTab() {
                 ))}
               </div>
             </>
+          )}
+
+          {/* ── Context menu da tree ── */}
+          {contextMenu && (
+            <div
+              className="fixed z-[200] bg-popover border border-border rounded-md shadow-lg py-1 min-w-[168px]"
+              style={{ top: contextMenu.y, left: contextMenu.x }}
+              onMouseDown={e => e.stopPropagation()}
+            >
+              {contextMenu.node.type === "file" ? (
+                <>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { openFile(contextMenu.node); setContextMenu(null); }}>
+                    <File className="w-3 h-3" />Abrir
+                  </button>
+                  <div className="border-t border-border/40 my-1" />
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { setRenameNode(contextMenu.node); setContextMenu(null); }}>
+                    <Pencil className="w-3 h-3" />Renomear
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2 text-red-400"
+                    onClick={() => { handleDeleteFile(contextMenu.node); setContextMenu(null); }}>
+                    <Trash2 className="w-3 h-3" />Deletar
+                  </button>
+                  <div className="border-t border-border/40 my-1" />
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { navigator.clipboard.writeText(contextMenu.node.path).then(() => addToast("success", "Caminho copiado")); setContextMenu(null); }}>
+                    <Copy className="w-3 h-3" />Copiar caminho
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { setSidePanel("files"); setRevealPath(contextMenu.node.path); setContextMenu(null); }}>
+                    <Locate className="w-3 h-3" />Revelar na tree
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { setFileHistoryNode(contextMenu.node); setContextMenu(null); }}>
+                    <History className="w-3 h-3" />Histórico
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { setFocusedDirPath(contextMenu.node.path); setCreateDialog({ mode: "file", basePath: contextMenu.node.path }); setContextMenu(null); }}>
+                    <FilePlus className="w-3 h-3" />Novo arquivo aqui
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { setFocusedDirPath(contextMenu.node.path); setCreateDialog({ mode: "dir", basePath: contextMenu.node.path }); setContextMenu(null); }}>
+                    <FolderPlus className="w-3 h-3" />Nova pasta aqui
+                  </button>
+                  <div className="border-t border-border/40 my-1" />
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { setRenameNode(contextMenu.node); setContextMenu(null); }}>
+                    <Pencil className="w-3 h-3" />Renomear
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2 text-red-400"
+                    onClick={() => { handleDeleteFile(contextMenu.node); setContextMenu(null); }}>
+                    <Trash2 className="w-3 h-3" />Deletar
+                  </button>
+                  <div className="border-t border-border/40 my-1" />
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { navigator.clipboard.writeText(contextMenu.node.path).then(() => addToast("success", "Caminho copiado")); setContextMenu(null); }}>
+                    <Copy className="w-3 h-3" />Copiar caminho
+                  </button>
+                </>
+              )}
+            </div>
           )}
 
           {/* ── Quick Open (Ctrl+P) ── */}
