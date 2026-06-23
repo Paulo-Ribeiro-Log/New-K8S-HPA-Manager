@@ -1798,6 +1798,13 @@ export function CodeEditorTab() {
   const [showBlame, setShowBlame] = useState(false);
   const [blameLines, setBlameLines] = useState<CodeEditorBlameLine[]>([]);
   const [cursorLine, setCursorLine] = useState(1);
+  const [cursorCol, setCursorCol] = useState(1);
+  const [autoSave, setAutoSave] = useState(() => localStorage.getItem("ce_autosave") === "true");
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [formatOnSave, setFormatOnSave] = useState(() => localStorage.getItem("ce_format_on_save") === "true");
+  const [showQuickOpen, setShowQuickOpen] = useState(false);
+  const [quickOpenQuery, setQuickOpenQuery] = useState("");
+  const [quickOpenIdx, setQuickOpenIdx] = useState(0);
   const blameDecorationsRef = useRef<MonacoEditorNS.editor.IEditorDecorationsCollection | null>(null);
   const blameMap = useMemo(() => {
     const m = new Map<number, CodeEditorBlameLine>();
@@ -1964,15 +1971,48 @@ export function CodeEditorTab() {
   function updateTabContent(value: string | undefined) {
     if (value === undefined) return;
     setOpenTabs(prev => prev.map((t, i) => i === activeTabIdx ? { ...t, currentContent: value } : t));
+    if (autoSave) {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = setTimeout(() => saveFileRef.current(), 1500);
+    }
   }
 
   async function saveFile() {
     if (!activeTab || !isModified) return;
+    const tabRepoId = activeTab.repoId;
+    const tabPath = activeTab.node.path;
+    const tabName = activeTab.node.name;
+    const contentSnapshot = activeTab.currentContent;
+    const tabIdx = activeTabIdx;
     try {
-      await apiClient.codeEditorWriteFile(activeTab.repoId, activeTab.node.path, activeTab.currentContent);
-      setOpenTabs(prev => prev.map((t, i) => i === activeTabIdx ? { ...t, savedContent: t.currentContent } : t));
-      await loadStatus(activeTab.repoId);
-      addToast("success", `Salvo: ${activeTab.node.name}`);
+      let contentToSave = contentSnapshot;
+      let didFormat = false;
+      if (formatOnSave) {
+        const lang = extToLanguage(tabName);
+        if (["go", "typescript", "javascript", "python", "json"].includes(lang)) {
+          try {
+            const r = await apiClient.codeEditorFormatFile(tabRepoId, tabPath, contentSnapshot);
+            contentToSave = r.content;
+            didFormat = true;
+          } catch { /* format falhou — salva como está */ }
+        }
+      }
+      await apiClient.codeEditorWriteFile(tabRepoId, tabPath, contentToSave);
+      if (didFormat) {
+        const model = editorRef.current?.getModel();
+        if (model && model.getValue() === contentSnapshot) {
+          const pos = editorRef.current?.getPosition();
+          model.setValue(contentToSave);
+          if (pos) editorRef.current?.setPosition(pos);
+        }
+      }
+      setOpenTabs(prev => prev.map((t, i) =>
+        i === tabIdx && t.node.path === tabPath
+          ? { ...t, currentContent: contentToSave, savedContent: contentToSave }
+          : t
+      ));
+      await loadStatus(tabRepoId);
+      addToast("success", `Salvo${didFormat ? " e formatado" : ""}: ${tabName}`);
     } catch (e: any) {
       addToast("error", "Erro ao salvar: " + e.message);
     }
@@ -2004,6 +2044,16 @@ export function CodeEditorTab() {
   const fileMatches: CodeEditorFileNode[] = selectedRepo && q && !grepMode
     ? flattenTree(tree).filter(f => f.path.toLowerCase().includes(q))
     : [];
+
+  // Ctrl+P Quick Open — lista de arquivos filtrada
+  const quickOpenFiles = useMemo(() => {
+    const allFiles = flattenTree(tree);
+    if (!quickOpenQuery.trim()) return allFiles;
+    const qk = quickOpenQuery.toLowerCase();
+    return allFiles.filter(f =>
+      f.name.toLowerCase().includes(qk) || f.path.toLowerCase().includes(qk)
+    );
+  }, [tree, quickOpenQuery]);
 
   // Busca por conteúdo (grep): requer Enter
   async function handleGrepSearch() {
@@ -2307,11 +2357,29 @@ export function CodeEditorTab() {
   // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
   useEffect(() => { saveFileRef.current = saveFile; });
 
+  // Ctrl+P global (quando o Monaco não está focado)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === "p" && selectedRepo) {
+        e.preventDefault();
+        setShowQuickOpen(true);
+        setQuickOpenQuery("");
+        setQuickOpenIdx(0);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [selectedRepo]);
+
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
     editor.addCommand(2048 | 49, () => saveFileRef.current()); // Ctrl+S
     editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
-    editor.onDidChangeCursorPosition(e => setCursorLine(e.position.lineNumber));
+    editor.addCommand(2048 | 46, () => { setShowQuickOpen(true); setQuickOpenQuery(""); setQuickOpenIdx(0); }); // Ctrl+P
+    editor.onDidChangeCursorPosition(e => {
+      setCursorLine(e.position.lineNumber);
+      setCursorCol(e.position.column);
+    });
   };
 
   const sidePanels = [
@@ -2818,7 +2886,7 @@ export function CodeEditorTab() {
         <ResizeDivider onDrag={d => setSidebarWidth(w => Math.max(160, Math.min(520, w + d)))} />
 
         {/* ── Área do editor ── */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
           {/* Barra de abas */}
           {openTabs.length > 0 && (
             <div className="flex items-center border-b border-border/50 flex-shrink-0 bg-card/10 overflow-x-auto">
@@ -2923,6 +2991,31 @@ export function CodeEditorTab() {
                   </>
                 )}
               </div>
+              {/* ── Status Bar ── */}
+              <div className="flex items-center gap-3 px-3 h-5 bg-[#007acc] text-white text-[10px] flex-shrink-0 select-none">
+                <span className="font-mono">Ln {cursorLine}, Col {cursorCol}</span>
+                <span className="opacity-40">|</span>
+                <span>{extToLanguage(activeTab.node.name)}</span>
+                <span className="opacity-40">|</span>
+                <span>UTF-8</span>
+                <div className="flex-1" />
+                <button
+                  onClick={() => { const n = !autoSave; setAutoSave(n); localStorage.setItem("ce_autosave", String(n)); }}
+                  className={`flex items-center gap-1 px-1.5 rounded hover:bg-white/20 transition-colors ${autoSave ? "" : "opacity-50"}`}
+                  title={autoSave ? "Auto-save ativado — clique para desativar" : "Auto-save desativado — clique para ativar"}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${autoSave ? "bg-green-300" : "bg-white/30"}`} />
+                  Auto-save
+                </button>
+                <button
+                  onClick={() => { const n = !formatOnSave; setFormatOnSave(n); localStorage.setItem("ce_format_on_save", String(n)); }}
+                  className={`flex items-center gap-1 px-1.5 rounded hover:bg-white/20 transition-colors ${formatOnSave ? "" : "opacity-50"}`}
+                  title={formatOnSave ? "Formatar ao salvar ativado — clique para desativar" : "Formatar ao salvar desativado — clique para ativar"}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${formatOnSave ? "bg-green-300" : "bg-white/30"}`} />
+                  Fmt ao salvar
+                </button>
+              </div>
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -3005,6 +3098,58 @@ export function CodeEditorTab() {
                 ))}
               </div>
             </>
+          )}
+
+          {/* ── Quick Open (Ctrl+P) ── */}
+          {showQuickOpen && selectedRepo && (
+            <div
+              className="absolute inset-0 z-50 flex flex-col items-center pt-14"
+              style={{ background: "rgba(0,0,0,0.55)" }}
+              onClick={e => { if (e.target === e.currentTarget) setShowQuickOpen(false); }}
+            >
+              <div className="w-[560px] max-w-[90%] bg-[#1e1e1e] border border-[#454545] rounded-md shadow-2xl overflow-hidden">
+                <div className="relative border-b border-[#454545]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#aaa]" />
+                  <input
+                    autoFocus
+                    className="w-full bg-transparent text-[13px] text-white py-2 pl-9 pr-3 outline-none placeholder:text-[#666]"
+                    placeholder="Abrir arquivo... (Esc para fechar)"
+                    value={quickOpenQuery}
+                    onChange={e => { setQuickOpenQuery(e.target.value); setQuickOpenIdx(0); }}
+                    onKeyDown={e => {
+                      if (e.key === "Escape") setShowQuickOpen(false);
+                      else if (e.key === "ArrowDown") { e.preventDefault(); setQuickOpenIdx(i => Math.min(i + 1, quickOpenFiles.length - 1)); }
+                      else if (e.key === "ArrowUp") { e.preventDefault(); setQuickOpenIdx(i => Math.max(0, i - 1)); }
+                      else if (e.key === "Enter") {
+                        const f = quickOpenFiles[quickOpenIdx];
+                        if (f) { openFile(f); setShowQuickOpen(false); }
+                      }
+                    }}
+                  />
+                </div>
+                <div className="max-h-[320px] overflow-y-auto">
+                  {quickOpenFiles.slice(0, 50).map((f, i) => (
+                    <div
+                      key={f.path}
+                      className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer ${
+                        i === quickOpenIdx ? "bg-[#094771] text-white" : "text-[#ccc] hover:bg-[#2a2d2e]"
+                      }`}
+                      onClick={() => { openFile(f); setShowQuickOpen(false); }}
+                      onMouseEnter={() => setQuickOpenIdx(i)}
+                    >
+                      <File className="w-3.5 h-3.5 flex-shrink-0 opacity-60" />
+                      <span className="text-[12px] truncate">{f.name}</span>
+                      <span className="ml-auto text-[10px] text-[#888] truncate max-w-[200px]">
+                        {f.path.includes("/") ? f.path.substring(0, f.path.lastIndexOf("/")) : ""}
+                      </span>
+                    </div>
+                  ))}
+                  {quickOpenFiles.length === 0 && (
+                    <p className="text-center text-[#888] text-[12px] py-4">Nenhum arquivo encontrado</p>
+                  )}
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </div>
