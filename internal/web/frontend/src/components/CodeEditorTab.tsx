@@ -2064,20 +2064,21 @@ export function CodeEditorTab() {
     }
     if (!showBlame || blameLines.length === 0) return;
 
-    // Injetar CSS para after-content
+    // Injeta CSS para estilizar o span do blame (inlineClassName aplicado ao span, não ::after)
     const styleId = "blame-inline-style";
     if (!document.getElementById(styleId)) {
       const style = document.createElement("style");
       style.id = styleId;
-      style.textContent = `.blame-inline::after { color: #6b7280; font-size: 11px; font-style: italic; margin-left: 16px; }`;
+      style.textContent = `.blame-inline { color: #6b7280; font-size: 11px; font-style: italic; pointer-events: none; }`;
       document.head.appendChild(style);
     }
 
     const decorations: MonacoEditorNS.editor.IModelDeltaDecoration[] = blameLines.map(b => ({
-      range: { startLineNumber: b.line, startColumn: 1, endLineNumber: b.line, endColumn: 1 },
+      // endColumn grande → Monaco posiciona o texto injetado no fim da linha
+      range: { startLineNumber: b.line, startColumn: 1, endLineNumber: b.line, endColumn: 999999 },
       options: {
         after: {
-          content: ` ${b.author} · ${b.date} · ${b.short}`,
+          content: `    ${b.author} · ${b.date} · ${b.short}`,
           inlineClassName: "blame-inline",
         },
         isWholeLine: false,
