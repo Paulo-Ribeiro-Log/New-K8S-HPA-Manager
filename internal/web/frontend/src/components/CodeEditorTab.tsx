@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Editor, { DiffEditor, OnMount } from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Terminal as XTerm } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
@@ -77,6 +78,88 @@ import {
 } from "@/lib/api/client";
 
 const API_BASE = "/api/v1";
+
+// ─── Markdown components ──────────────────────────────────────────────────────
+
+const MD_COMPONENTS: Components = {
+  h1: ({ children }) => (
+    <h1 className="text-2xl font-black text-slate-100 mt-6 mb-3 pb-1 border-b border-slate-700 leading-tight first:mt-0">
+      {children}
+    </h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="text-xl font-bold text-blue-300 mt-5 mb-2 leading-tight">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="text-base font-semibold text-emerald-300 mt-4 mb-1.5 leading-tight">{children}</h3>
+  ),
+  h4: ({ children }) => (
+    <h4 className="text-sm font-semibold text-amber-300 mt-3 mb-1 leading-tight">{children}</h4>
+  ),
+  h5: ({ children }) => (
+    <h5 className="text-sm font-medium text-pink-300 mt-2 mb-1 leading-tight">{children}</h5>
+  ),
+  h6: ({ children }) => (
+    <h6 className="text-xs font-medium text-pink-300 mt-2 mb-1 leading-tight">{children}</h6>
+  ),
+  p: ({ children }) => (
+    <p className="text-sm text-slate-300 mb-3 leading-relaxed">{children}</p>
+  ),
+  strong: ({ children }) => <strong className="font-bold text-slate-100">{children}</strong>,
+  em: ({ children }) => <em className="italic text-slate-200">{children}</em>,
+  del: ({ children }) => <del className="line-through text-slate-400">{children}</del>,
+  a: ({ href, children }) => (
+    <a href={href} className="text-sky-400 underline hover:text-sky-300" target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="pl-4 border-l-2 border-slate-600 text-slate-400 italic my-3">
+      {children}
+    </blockquote>
+  ),
+  ul: ({ children }) => (
+    <ul className="list-disc list-inside text-sm text-slate-300 mb-3 space-y-1 pl-2">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="list-decimal list-inside text-sm text-slate-300 mb-3 space-y-1 pl-2">{children}</ol>
+  ),
+  li: ({ children }) => <li className="text-slate-300">{children}</li>,
+  code: ({ className, children, ...rest }) => {
+    if (className) {
+      return (
+        <pre className="bg-slate-900 border border-slate-700 rounded-md p-3 overflow-x-auto my-3">
+          <code className="text-xs text-green-300 font-mono">{children}</code>
+        </pre>
+      );
+    }
+    return (
+      <code className="bg-slate-800 text-green-300 text-xs font-mono px-1 py-0.5 rounded" {...rest}>
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }) => <>{children}</>,
+  hr: () => <hr className="border-slate-700 my-4" />,
+  table: ({ children }) => (
+    <div className="overflow-x-auto my-3">
+      <table className="w-full border-collapse text-xs">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-slate-800">{children}</thead>,
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => (
+    <tr className="border-b border-slate-700 even:bg-slate-900/30">{children}</tr>
+  ),
+  th: ({ children }) => (
+    <th className="border border-slate-700 px-3 py-1.5 text-left text-slate-200 font-semibold">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border border-slate-700 px-3 py-1.5 text-slate-300">{children}</td>
+  ),
+};
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
@@ -2644,12 +2727,10 @@ export function CodeEditorTab() {
                   />
                 </div>
                 {showMarkdownPreview && activeTab.node.name.endsWith(".md") && (
-                  <div className="w-1/2 border-l border-border/50 overflow-y-auto bg-background p-4">
-                    <div className="prose prose-sm prose-invert max-w-none text-foreground">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {activeTab.currentContent}
-                      </ReactMarkdown>
-                    </div>
+                  <div className="w-1/2 border-l border-border/50 overflow-y-auto bg-slate-950 p-5">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                      {activeTab.currentContent}
+                    </ReactMarkdown>
                   </div>
                 )}
               </div>
