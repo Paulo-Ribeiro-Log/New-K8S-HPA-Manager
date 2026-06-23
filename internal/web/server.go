@@ -1148,6 +1148,7 @@ func (s *Server) setupRoutes() {
 		codeEditor.POST("/repos/:id/file/create", codeEditorHandler.CreateFile)
 		codeEditor.POST("/repos/:id/mkdir", codeEditorHandler.CreateDir)
 		codeEditor.POST("/repos/:id/rename", codeEditorHandler.RenameFile)
+		codeEditor.POST("/repos/:id/copy", codeEditorHandler.CopyFile)
 		codeEditor.POST("/repos/:id/reset-file", codeEditorHandler.ResetFile)
 		codeEditor.POST("/repos/:id/stash", codeEditorHandler.Stash)
 		codeEditor.POST("/repos/:id/stash/pop", codeEditorHandler.StashPop)

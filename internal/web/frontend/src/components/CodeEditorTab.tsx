@@ -35,7 +35,7 @@ import {
   GitMerge,
   RotateCcw,
   Eye,
-  Map,
+  Map as MapIcon,
   PackageMinus,
   PackagePlus,
   Tag,
@@ -355,9 +355,32 @@ interface FileTreeNodeProps {
   onRename: (node: CodeEditorFileNode) => void;
   onHistory?: (node: CodeEditorFileNode) => void;
   onUpload?: (dirPath: string, files: FileList) => void;
+  onDirFocus?: (path: string) => void;
+  onCreate?: (parentPath: string, mode: "file" | "dir") => void;
+  onMove?: (from: string, toDir: string) => void;
+  onClipboardOp?: (path: string, op: "cut" | "copy") => void;
+  onPaste?: (toDir: string) => void;
+  cutPath?: string;
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload }: FileTreeNodeProps) {
+function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void) {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    const items = Array.from(document.querySelectorAll<HTMLElement>("[data-tree-item]"));
+    const idx = items.indexOf(e.currentTarget);
+    items[idx + 1]?.focus();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    const items = Array.from(document.querySelectorAll<HTMLElement>("[data-tree-item]"));
+    const idx = items.indexOf(e.currentTarget);
+    items[idx - 1]?.focus();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    onEnter();
+  }
+}
+
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
@@ -367,15 +390,26 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
     return (
       <div>
         <div
-          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer transition-colors ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
+          data-tree-item="true"
+          tabIndex={0}
+          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer transition-colors focus:outline-none focus:ring-1 focus:ring-primary/40 ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
           style={{ paddingLeft: `${level * 12 + 4}px` }}
-          onClick={() => setOpen(o => !o)}
+          onClick={() => { setOpen(o => !o); onDirFocus?.(node.path); }}
+          onKeyDown={e => {
+            if ((e.ctrlKey || e.metaKey) && e.key === "v") { e.preventDefault(); onPaste?.(node.path); }
+            else if (e.key === "ArrowRight") { e.preventDefault(); if (!open) { setOpen(true); onDirFocus?.(node.path); } }
+            else if (e.key === "ArrowLeft") { e.preventDefault(); if (open) setOpen(false); }
+            else treeNavKeyDown(e, () => { setOpen(o => !o); onDirFocus?.(node.path); });
+          }}
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={e => {
             e.preventDefault();
             setDragOver(false);
-            if (e.dataTransfer.files.length > 0 && onUpload) {
+            const moveFrom = e.dataTransfer.getData("application/x-tree-node");
+            if (moveFrom) {
+              onMove?.(moveFrom, node.path);
+            } else if (e.dataTransfer.files.length > 0 && onUpload) {
               onUpload(node.path, e.dataTransfer.files);
             }
           }}
@@ -383,20 +417,46 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
           {open ? <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" /> : <Folder className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" />}
           <span className="truncate text-foreground/80 flex-1">{node.name}</span>
+          {onCreate && (
+            <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+              <button onClick={e => { e.stopPropagation(); onDirFocus?.(node.path); onCreate(node.path, "file"); }}
+                className="p-0.5 rounded hover:bg-muted" title="Novo arquivo aqui">
+                <FilePlus className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
+              </button>
+              <button onClick={e => { e.stopPropagation(); onDirFocus?.(node.path); onCreate(node.path, "dir"); }}
+                className="p-0.5 rounded hover:bg-muted" title="Nova pasta aqui">
+                <FolderPlus className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
+              </button>
+            </div>
+          )}
         </div>
         {open && node.children?.map(child => (
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
             modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename}
-            onHistory={onHistory} onUpload={onUpload} />
+            onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate}
+            onMove={onMove} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath} />
         ))}
       </div>
     );
   }
 
+  const isCut = cutPath === node.path;
   return (
     <div
-      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group ${isSelected ? "bg-accent text-accent-foreground" : ""}`}
+      data-tree-item="true"
+      tabIndex={0}
+      draggable
+      onDragStart={e => {
+        e.dataTransfer.setData("application/x-tree-node", node.path);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""}`}
       style={{ paddingLeft: `${level * 12 + 4}px` }}
+      onKeyDown={e => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "c") { e.preventDefault(); onClipboardOp?.(node.path, "copy"); }
+        else if ((e.ctrlKey || e.metaKey) && e.key === "x") { e.preventDefault(); onClipboardOp?.(node.path, "cut"); }
+        else treeNavKeyDown(e, () => onSelect(node));
+      }}
     >
       <button className="flex items-center gap-1 flex-1 min-w-0" onClick={() => onSelect(node)}>
         <span className="w-3 h-3 flex-shrink-0" />
@@ -1238,16 +1298,22 @@ interface CreateFileDialogProps {
   open: boolean;
   mode: "file" | "dir";
   repoId: string;
+  basePath?: string;
   onClose: () => void;
   onDone: (path: string) => void;
 }
 
-function CreateFileDialog({ open, mode, repoId, onClose, onDone }: CreateFileDialogProps) {
+function CreateFileDialog({ open, mode, repoId, basePath, onClose, onDone }: CreateFileDialogProps) {
   const [path, setPath] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => { if (open) { setPath(""); setError(""); } }, [open]);
+  useEffect(() => {
+    if (open) {
+      setPath(basePath ? basePath + "/" : "");
+      setError("");
+    }
+  }, [open, basePath]);
 
   async function doCreate() {
     if (!path.trim()) { setError("Caminho é obrigatório"); return; }
@@ -1654,6 +1720,9 @@ export function CodeEditorTab() {
   // Stash state (feedback)
   const [stashLoading, setStashLoading] = useState<"push" | "pop" | null>(null);
 
+  // Clipboard (Ctrl+C/X/V na tree)
+  const [clipboard, setClipboard] = useState<{ path: string; op: "cut" | "copy" } | null>(null);
+
   // Dialogs
   const [showClone, setShowClone] = useState(false);
   const [showGitHubToken, setShowGitHubToken] = useState(false);
@@ -1672,7 +1741,18 @@ export function CodeEditorTab() {
   const [showBranch, setShowBranch] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
   const [sseDialog, setSseDialog] = useState<{ title: string; endpoint: string; body?: object } | null>(null);
-  const [createDialog, setCreateDialog] = useState<{ mode: "file" | "dir" } | null>(null);
+  const [focusedDirPath, setFocusedDirPath] = useState("");
+  const [createDialog, setCreateDialog] = useState<{ mode: "file" | "dir"; basePath: string } | null>(null);
+
+  function getCreateBasePath(): string {
+    if (focusedDirPath) return focusedDirPath;
+    if (activeTab) {
+      const parts = activeTab.node.path.split("/");
+      parts.pop();
+      return parts.join("/");
+    }
+    return "";
+  }
   const [renameNode, setRenameNode] = useState<CodeEditorFileNode | null>(null);
   const [diffFile, setDiffFile] = useState<string | null>(null);
 
@@ -1717,7 +1797,13 @@ export function CodeEditorTab() {
   // Fase 4: Blame
   const [showBlame, setShowBlame] = useState(false);
   const [blameLines, setBlameLines] = useState<CodeEditorBlameLine[]>([]);
+  const [cursorLine, setCursorLine] = useState(1);
   const blameDecorationsRef = useRef<MonacoEditorNS.editor.IEditorDecorationsCollection | null>(null);
+  const blameMap = useMemo(() => {
+    const m = new Map<number, CodeEditorBlameLine>();
+    blameLines.forEach(b => m.set(b.line, b));
+    return m;
+  }, [blameLines]);
 
   // Fase 4: Histórico de arquivo
   const [fileHistoryNode, setFileHistoryNode] = useState<CodeEditorFileNode | null>(null);
@@ -1747,6 +1833,7 @@ export function CodeEditorTab() {
   const [confirmState, setConfirmState] = useState<{
     message: string;
     onConfirm: () => void;
+    onCancel: () => void;
   } | null>(null);
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
@@ -1759,8 +1846,8 @@ export function CodeEditorTab() {
       setConfirmState({
         message,
         onConfirm: () => { setConfirmState(null); resolve(true); },
+        onCancel:  () => { setConfirmState(null); resolve(false); },
       });
-      // Adiciona handler de cancelar via setter
     });
   }
 
@@ -1836,6 +1923,9 @@ export function CodeEditorTab() {
   async function openFile(node: CodeEditorFileNode) {
     if (!selectedRepo) return;
     const repoId = selectedRepo.id;
+    // Atualiza diretório em foco para o pai do arquivo aberto
+    const parentDir = node.path.includes("/") ? node.path.split("/").slice(0, -1).join("/") : "";
+    setFocusedDirPath(parentDir);
     // Já aberto? Ativar a aba existente
     const existingIdx = openTabs.findIndex(t => t.repoId === repoId && t.node.path === node.path);
     if (existingIdx >= 0) {
@@ -1955,6 +2045,55 @@ export function CodeEditorTab() {
     addToast("success", `Renomeado: ${to}`);
   }
 
+  async function handleClipboardPaste(toDir: string) {
+    if (!clipboard || !selectedRepo) return;
+    const filename = clipboard.path.split("/").pop()!;
+    const to = toDir ? toDir + "/" + filename : filename;
+    if (clipboard.path === to) return;
+    const verb = clipboard.op === "cut" ? "Mover" : "Copiar";
+    if (!await showConfirm(`${verb}\n"${clipboard.path}"\n→ "${to}"?`)) return;
+    try {
+      if (clipboard.op === "cut") {
+        await apiClient.codeEditorRenameFile(selectedRepo.id, clipboard.path, to);
+        setOpenTabs(prev => prev.map(t =>
+          t.node.path === clipboard.path
+            ? { ...t, node: { ...t.node, path: to, name: filename } }
+            : t
+        ));
+        setClipboard(null);
+      } else {
+        await apiClient.codeEditorCopyFile(selectedRepo.id, clipboard.path, to);
+        // mantém clipboard para permitir colar múltiplas cópias
+      }
+      await loadTree(selectedRepo.id);
+      await loadStatus(selectedRepo.id);
+      addToast("success", `${clipboard.op === "cut" ? "Movido" : "Copiado"}: ${filename}`);
+    } catch (e: any) {
+      addToast("error", e.message || `Erro ao ${clipboard.op === "cut" ? "mover" : "copiar"}`);
+    }
+  }
+
+  async function handleMoveFile(from: string, toDir: string) {
+    if (!selectedRepo) return;
+    const filename = from.split("/").pop()!;
+    const to = toDir ? toDir + "/" + filename : filename;
+    if (from === to) return;
+    if (!await showConfirm(`Mover\n"${from}"\n→ "${to}"?`)) return;
+    try {
+      await apiClient.codeEditorRenameFile(selectedRepo.id, from, to);
+      setOpenTabs(prev => prev.map(t =>
+        t.node.path === from
+          ? { ...t, node: { ...t.node, path: to, name: filename } }
+          : t
+      ));
+      await loadTree(selectedRepo.id);
+      await loadStatus(selectedRepo.id);
+      addToast("success", `Movido: ${filename}`);
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao mover");
+    }
+  }
+
   async function handleResetFile(filePath: string) {
     if (!selectedRepo) return;
     if (!await showConfirm(`Descartar mudanças em "${filePath}"?`)) return;
@@ -2053,39 +2192,38 @@ export function CodeEditorTab() {
     }
   }
 
-  // ── Blame: injeta decorações Monaco ──
+  // ── Blame: mostra anotação apenas na linha do cursor ──
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    // Limpar decorações anteriores
     if (blameDecorationsRef.current) {
       blameDecorationsRef.current.clear();
       blameDecorationsRef.current = null;
     }
-    if (!showBlame || blameLines.length === 0) return;
+    if (!showBlame || blameMap.size === 0) return;
 
-    // Injetar CSS para after-content
+    const b = blameMap.get(cursorLine);
+    if (!b) return;
+
     const styleId = "blame-inline-style";
     if (!document.getElementById(styleId)) {
       const style = document.createElement("style");
       style.id = styleId;
-      style.textContent = `.blame-inline::after { color: #6b7280; font-size: 11px; font-style: italic; margin-left: 16px; }`;
+      style.textContent = `.blame-inline { color: #6b7280; font-size: 11px; font-style: italic; pointer-events: none; }`;
       document.head.appendChild(style);
     }
 
-    const decorations: MonacoEditorNS.editor.IModelDeltaDecoration[] = blameLines.map(b => ({
-      range: { startLineNumber: b.line, startColumn: 1, endLineNumber: b.line, endColumn: 1 },
+    blameDecorationsRef.current = editor.createDecorationsCollection([{
+      range: { startLineNumber: b.line, startColumn: 1, endLineNumber: b.line, endColumn: 999999 },
       options: {
         after: {
-          content: ` ${b.author} · ${b.date} · ${b.short}`,
+          content: `    ${b.author} · ${b.date} · ${b.short}`,
           inlineClassName: "blame-inline",
         },
         isWholeLine: false,
       },
-    }));
-
-    blameDecorationsRef.current = editor.createDecorationsCollection(decorations);
-  }, [showBlame, blameLines]);
+    }]);
+  }, [showBlame, blameMap, cursorLine]);
 
   async function loadBlame() {
     if (!selectedRepo || !activeTab) return;
@@ -2173,6 +2311,7 @@ export function CodeEditorTab() {
     editorRef.current = editor;
     editor.addCommand(2048 | 49, () => saveFileRef.current()); // Ctrl+S
     editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
+    editor.onDidChangeCursorPosition(e => setCursorLine(e.position.lineNumber));
   };
 
   const sidePanels = [
@@ -2255,13 +2394,36 @@ export function CodeEditorTab() {
         {/* Sidebar */}
         <div className="flex-shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: sidebarWidth }}>
           {/* Tabs da sidebar */}
-          <div className="flex border-b border-border/50 flex-shrink-0 overflow-x-auto">
-            {sidePanels.map(p => (
-              <button key={p.id} onClick={() => setSidePanel(p.id)}
-                className={`flex-shrink-0 px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap ${sidePanel === p.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                {p.label}
-              </button>
-            ))}
+          <div className="flex items-center border-b border-border/50 flex-shrink-0">
+            <div className="flex overflow-x-auto flex-1 min-w-0">
+              {sidePanels.map(p => (
+                <button key={p.id} onClick={() => setSidePanel(p.id)}
+                  className={`flex-shrink-0 px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap ${sidePanel === p.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {/* Botões de ação da tree — visíveis apenas no painel Arquivos com repo aberto */}
+            {sidePanel === "files" && selectedRepo && !grepMode && (
+              <div className="flex gap-0.5 px-1 flex-shrink-0">
+                <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Novo arquivo"
+                  onClick={() => setCreateDialog({ mode: "file", basePath: getCreateBasePath() })}>
+                  <FilePlus className="w-3 h-3" />
+                </Button>
+                <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Nova pasta"
+                  onClick={() => setCreateDialog({ mode: "dir", basePath: getCreateBasePath() })}>
+                  <FolderPlus className="w-3 h-3" />
+                </Button>
+                <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Atualizar árvore"
+                  onClick={() => { loadTree(selectedRepo.id); loadStatus(selectedRepo.id); }}>
+                  <RefreshCw className={`w-3 h-3 ${treeLoading ? "animate-spin" : ""}`} />
+                </Button>
+                <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Fechar repositório"
+                  onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}>
+                  <X className="w-3 h-3" />
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* Conteúdo da sidebar */}
@@ -2370,32 +2532,42 @@ export function CodeEditorTab() {
                   {/* Árvore de arquivos — sempre visível quando não há filtro de nome ativo */}
                   {selectedRepo && !grepMode && (
                     <div className="p-1" style={{ display: q ? "none" : undefined }}>
-                      <div className="flex items-center justify-between px-1 mb-1">
-                        <span className="text-xs text-muted-foreground font-medium truncate">{selectedRepo.owner}/{selectedRepo.repo}</span>
-                        <div className="flex gap-1 flex-shrink-0">
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "file" })} title="Novo arquivo"><FilePlus className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "dir" })} title="Nova pasta"><FolderPlus className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Atualizar árvore"
-                            onClick={() => { loadTree(selectedRepo.id); loadStatus(selectedRepo.id); }}>
-                            <RefreshCw className={`w-3 h-3 ${treeLoading ? "animate-spin" : ""}`} />
-                          </Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}><X className="w-3 h-3" /></Button>
-                        </div>
-                      </div>
                       <div
                         className="min-h-8"
                         onDragOver={e => e.preventDefault()}
                         onDrop={e => {
                           e.preventDefault();
-                          if (e.dataTransfer.files.length > 0) handleUpload("", e.dataTransfer.files);
+                          const moveFrom = e.dataTransfer.getData("application/x-tree-node");
+                          if (moveFrom) {
+                            handleMoveFile(moveFrom, "");
+                          } else if (e.dataTransfer.files.length > 0) {
+                            handleUpload("", e.dataTransfer.files);
+                          }
+                        }}
+                        onKeyDown={e => {
+                          if ((e.ctrlKey || e.metaKey) && e.key === "v") { e.preventDefault(); handleClipboardPaste(""); }
+                          else if (e.key === "Escape") { setClipboard(null); }
                         }}
                       >
+                        {clipboard && (
+                          <div className="mx-1 mb-1 px-2 py-1 rounded bg-muted/40 border border-dashed border-muted-foreground/30 flex items-center gap-1.5">
+                            <span className="text-[10px] text-muted-foreground">{clipboard.op === "cut" ? "✂" : "⎘"}</span>
+                            <span className="text-[10px] text-foreground/60 truncate flex-1">{clipboard.path.split("/").pop()}</span>
+                            <button onClick={() => setClipboard(null)} className="text-[10px] text-muted-foreground hover:text-foreground">✕</button>
+                          </div>
+                        )}
                         {tree.map(node => (
                           <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
                             onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
                             onDelete={handleDeleteFile} onRename={n => setRenameNode(n)}
                             onHistory={n => setFileHistoryNode(n)}
-                            onUpload={handleUpload} />
+                            onUpload={handleUpload}
+                            onDirFocus={setFocusedDirPath}
+                            onCreate={(parentPath, mode) => setCreateDialog({ mode, basePath: parentPath })}
+                            onMove={handleMoveFile}
+                            onClipboardOp={(path, op) => setClipboard({ path, op })}
+                            onPaste={handleClipboardPaste}
+                            cutPath={clipboard?.op === "cut" ? clipboard.path : undefined} />
                         ))}
                       </div>
                     </div>
@@ -2694,7 +2866,7 @@ export function CodeEditorTab() {
                   </Button>
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title={showMinimap ? "Ocultar minimap" : "Mostrar minimap"}
                     onClick={() => setShowMinimap(m => !m)}>
-                    <Map className="w-3 h-3" />
+                    <MapIcon className="w-3 h-3" />
                   </Button>
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Ver diff"
                     onClick={() => setDiffFile(activeTab.node.path)}>
@@ -2848,14 +3020,14 @@ export function CodeEditorTab() {
 
       {/* ── Confirm dialog ── */}
       {confirmState && (
-        <Dialog open onOpenChange={() => setConfirmState(null)}>
+        <Dialog open onOpenChange={v => { if (!v) confirmState.onCancel(); }}>
           <DialogContent className="max-w-sm">
             <DialogHeader>
               <DialogTitle>Confirmar</DialogTitle>
             </DialogHeader>
-            <p className="text-sm text-muted-foreground">{confirmState.message}</p>
+            <p className="text-sm text-muted-foreground whitespace-pre-line">{confirmState.message}</p>
             <DialogFooter>
-              <Button variant="ghost" size="sm" onClick={() => setConfirmState(null)}>Cancelar</Button>
+              <Button variant="ghost" size="sm" onClick={confirmState.onCancel}>Cancelar</Button>
               <Button variant="destructive" size="sm" onClick={confirmState.onConfirm}>Confirmar</Button>
             </DialogFooter>
           </DialogContent>
@@ -2928,6 +3100,7 @@ export function CodeEditorTab() {
             open={!!createDialog}
             mode={createDialog?.mode ?? "file"}
             repoId={selectedRepo.id}
+            basePath={createDialog?.basePath}
             onClose={() => setCreateDialog(null)}
             onDone={async (path) => {
               await loadTree(selectedRepo.id);
