@@ -357,6 +357,7 @@ interface FileTreeNodeProps {
   onUpload?: (dirPath: string, files: FileList) => void;
   onDirFocus?: (path: string) => void;
   onCreate?: (parentPath: string, mode: "file" | "dir") => void;
+  onMove?: (from: string, toDir: string) => void;
 }
 
 function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void) {
@@ -376,7 +377,7 @@ function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void
   }
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
@@ -401,7 +402,12 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
           onDrop={e => {
             e.preventDefault();
             setDragOver(false);
-            if (e.dataTransfer.files.length > 0 && onUpload) onUpload(node.path, e.dataTransfer.files);
+            const moveFrom = e.dataTransfer.getData("application/x-tree-node");
+            if (moveFrom) {
+              onMove?.(moveFrom, node.path);
+            } else if (e.dataTransfer.files.length > 0 && onUpload) {
+              onUpload(node.path, e.dataTransfer.files);
+            }
           }}
         >
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
@@ -423,7 +429,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
         {open && node.children?.map(child => (
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
             modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename}
-            onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate} />
+            onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate} onMove={onMove} />
         ))}
       </div>
     );
@@ -433,7 +439,12 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
     <div
       data-tree-item="true"
       tabIndex={0}
-      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 ${isSelected ? "bg-accent text-accent-foreground" : ""}`}
+      draggable
+      onDragStart={e => {
+        e.dataTransfer.setData("application/x-tree-node", node.path);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isSelected ? "bg-accent text-accent-foreground" : ""}`}
       style={{ paddingLeft: `${level * 12 + 4}px` }}
       onKeyDown={e => treeNavKeyDown(e, () => onSelect(node))}
     >
@@ -1809,6 +1820,7 @@ export function CodeEditorTab() {
   const [confirmState, setConfirmState] = useState<{
     message: string;
     onConfirm: () => void;
+    onCancel: () => void;
   } | null>(null);
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
@@ -1821,8 +1833,8 @@ export function CodeEditorTab() {
       setConfirmState({
         message,
         onConfirm: () => { setConfirmState(null); resolve(true); },
+        onCancel:  () => { setConfirmState(null); resolve(false); },
       });
-      // Adiciona handler de cancelar via setter
     });
   }
 
@@ -1898,6 +1910,9 @@ export function CodeEditorTab() {
   async function openFile(node: CodeEditorFileNode) {
     if (!selectedRepo) return;
     const repoId = selectedRepo.id;
+    // Atualiza diretório em foco para o pai do arquivo aberto
+    const parentDir = node.path.includes("/") ? node.path.split("/").slice(0, -1).join("/") : "";
+    setFocusedDirPath(parentDir);
     // Já aberto? Ativar a aba existente
     const existingIdx = openTabs.findIndex(t => t.repoId === repoId && t.node.path === node.path);
     if (existingIdx >= 0) {
@@ -2015,6 +2030,27 @@ export function CodeEditorTab() {
     await loadTree(selectedRepo.id);
     await loadStatus(selectedRepo.id);
     addToast("success", `Renomeado: ${to}`);
+  }
+
+  async function handleMoveFile(from: string, toDir: string) {
+    if (!selectedRepo) return;
+    const filename = from.split("/").pop()!;
+    const to = toDir ? toDir + "/" + filename : filename;
+    if (from === to) return;
+    if (!await showConfirm(`Mover\n"${from}"\n→ "${to}"?`)) return;
+    try {
+      await apiClient.codeEditorRenameFile(selectedRepo.id, from, to);
+      setOpenTabs(prev => prev.map(t =>
+        t.node.path === from
+          ? { ...t, node: { ...t.node, path: to, name: filename } }
+          : t
+      ));
+      await loadTree(selectedRepo.id);
+      await loadStatus(selectedRepo.id);
+      addToast("success", `Movido: ${filename}`);
+    } catch (e: any) {
+      addToast("error", e.message || "Erro ao mover");
+    }
   }
 
   async function handleResetFile(filePath: string) {
@@ -2449,7 +2485,12 @@ export function CodeEditorTab() {
                         onDragOver={e => e.preventDefault()}
                         onDrop={e => {
                           e.preventDefault();
-                          if (e.dataTransfer.files.length > 0) handleUpload("", e.dataTransfer.files);
+                          const moveFrom = e.dataTransfer.getData("application/x-tree-node");
+                          if (moveFrom) {
+                            handleMoveFile(moveFrom, "");
+                          } else if (e.dataTransfer.files.length > 0) {
+                            handleUpload("", e.dataTransfer.files);
+                          }
                         }}
                       >
                         {tree.map(node => (
@@ -2459,7 +2500,8 @@ export function CodeEditorTab() {
                             onHistory={n => setFileHistoryNode(n)}
                             onUpload={handleUpload}
                             onDirFocus={setFocusedDirPath}
-                            onCreate={(parentPath, mode) => setCreateDialog({ mode, basePath: parentPath })} />
+                            onCreate={(parentPath, mode) => setCreateDialog({ mode, basePath: parentPath })}
+                            onMove={handleMoveFile} />
                         ))}
                       </div>
                     </div>
@@ -2912,14 +2954,14 @@ export function CodeEditorTab() {
 
       {/* ── Confirm dialog ── */}
       {confirmState && (
-        <Dialog open onOpenChange={() => setConfirmState(null)}>
+        <Dialog open onOpenChange={v => { if (!v) confirmState.onCancel(); }}>
           <DialogContent className="max-w-sm">
             <DialogHeader>
               <DialogTitle>Confirmar</DialogTitle>
             </DialogHeader>
-            <p className="text-sm text-muted-foreground">{confirmState.message}</p>
+            <p className="text-sm text-muted-foreground whitespace-pre-line">{confirmState.message}</p>
             <DialogFooter>
-              <Button variant="ghost" size="sm" onClick={() => setConfirmState(null)}>Cancelar</Button>
+              <Button variant="ghost" size="sm" onClick={confirmState.onCancel}>Cancelar</Button>
               <Button variant="destructive" size="sm" onClick={confirmState.onConfirm}>Confirmar</Button>
             </DialogFooter>
           </DialogContent>
