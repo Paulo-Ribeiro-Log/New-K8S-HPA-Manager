@@ -35,7 +35,7 @@ import {
   GitMerge,
   RotateCcw,
   Eye,
-  Map,
+  Map as MapIcon,
   PackageMinus,
   PackagePlus,
   Tag,
@@ -2758,7 +2758,7 @@ export function CodeEditorTab() {
                   </Button>
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title={showMinimap ? "Ocultar minimap" : "Mostrar minimap"}
                     onClick={() => setShowMinimap(m => !m)}>
-                    <Map className="w-3 h-3" />
+                    <MapIcon className="w-3 h-3" />
                   </Button>
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Ver diff"
                     onClick={() => setDiffFile(activeTab.node.path)}>
