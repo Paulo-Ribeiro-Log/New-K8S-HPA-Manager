@@ -1727,6 +1727,10 @@ export function CodeEditorTab() {
   const [conflictFiles, setConflictFiles] = useState<string[]>([]);
   const [showBranchDiff, setShowBranchDiff] = useState(false);
   const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
+  const [markdownPreviewWidth, setMarkdownPreviewWidth] = useState(() => {
+    const saved = localStorage.getItem("ce_md_preview_width");
+    return saved ? Math.max(200, Math.min(900, parseInt(saved, 10))) : 480;
+  });
 
   // Fase 4: Replace
   const [replaceQuery, setReplaceQuery] = useState("");
@@ -2705,7 +2709,7 @@ export function CodeEditorTab() {
                 </div>
               </div>
               <div className="flex-1 min-h-0 flex flex-row">
-                <div className={showMarkdownPreview && activeTab.node.name.endsWith(".md") ? "w-1/2 min-h-0" : "flex-1 min-h-0"}>
+                <div className="flex-1 min-h-0 min-w-0">
                   <Editor
                     height="100%"
                     language={extToLanguage(activeTab.node.name)}
@@ -2733,11 +2737,18 @@ export function CodeEditorTab() {
                   />
                 </div>
                 {showMarkdownPreview && activeTab.node.name.endsWith(".md") && (
-                  <div className="w-1/2 border-l border-border/50 overflow-y-auto bg-slate-950 p-5">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
-                      {activeTab.currentContent}
-                    </ReactMarkdown>
-                  </div>
+                  <>
+                    <ResizeDivider onDrag={d => setMarkdownPreviewWidth(w => {
+                      const next = Math.max(200, Math.min(900, w - d));
+                      localStorage.setItem("ce_md_preview_width", String(next));
+                      return next;
+                    })} />
+                    <div className="flex-shrink-0 overflow-y-auto bg-slate-950 p-5" style={{ width: markdownPreviewWidth }}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                        {activeTab.currentContent}
+                      </ReactMarkdown>
+                    </div>
+                  </>
                 )}
               </div>
             </>
