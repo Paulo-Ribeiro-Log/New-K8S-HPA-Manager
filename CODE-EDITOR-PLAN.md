@@ -5,7 +5,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Estado Atual (branch `editor-github`, último commit `2b69dfd9`)
+## Estado Atual (branch `editor-github`, último commit `e09a749d`)
 
 ### ✅ Concluído — Fase 1 (MVP)
 
@@ -146,6 +146,18 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 ### Qualidade / Infra
 - [x] **Quota de disco** — `availableDiskMB()` via `syscall.Statfs` verifica espaço livre antes de clonar; erro HTTP 400 se < 500 MB; `repoSize()` via `du -sh` exibido em cada repo na lista lateral
 - [x] **Audit log** — `Commit` registra no `HistoryTracker` com email, repo, remote URL, branch, mensagem e output; `CodeEditorHandler` recebe `*history.HistoryTracker` via construtor
+
+### Gestão de Arquivos (Tree)
+- [x] **Drag & drop para mover arquivos** — arrastar nó de arquivo sobre outro diretório; MIME type `application/x-tree-node` diferencia drag interno de upload externo; confirmação antes de executar; atualiza abas abertas se arquivo movido
+- [x] **Ctrl+C / Ctrl+X / Ctrl+V na tree** — clipboard React (`{ path, op: "cut"|"copy" }`); Ctrl+V cola no diretório focado com confirmação; corte limpa clipboard após mover; badge indicador no topo da tree; `CopyFile` backend via `io.Copy` + `POST /repos/:id/copy`
+- [x] **Foco de diretório atualizado ao abrir arquivo** — `setFocusedDirPath(parentDir)` em `openFile()` garante que criação de arquivo/pasta vai para o diretório correto mesmo quando o foco vem de uma aba aberta
+- [x] **Botões de ação na barra de tabs** — `FilePlus`, `FolderPlus`, `RefreshCw` e `X` (fechar repo) movidos para a mesma linha das tabs do painel lateral; removido o sub-header redundante dentro do ScrollArea
+
+### UX / Produtividade
+- [x] **Ctrl+P Quick Open** — paleta de arquivos estilo VS Code; filtro em tempo real por nome e caminho (`flattenTree`); navegação com ↑↓, Enter abre, Esc fecha; overlay escuro sobre a área do editor; registrado no Monaco (`addCommand 2048|46`) e via `document.addEventListener` global para quando o editor não está focado
+- [x] **Barra de status** — barra azul fixa abaixo do Monaco (altura 20px, estilo VS Code `#007acc`): posição do cursor `Ln X, Col Y`, linguagem detectada, `UTF-8`; toggles de auto-save e format on save embutidos
+- [x] **Auto-save** — debounce 1,5s após cada keystroke quando ativado; usa `saveFileRef` para evitar stale closure; toggle na barra de status; estado em `localStorage["ce_autosave"]`
+- [x] **Format on save** — ao salvar (Ctrl+S) com toggle ativo, formata antes de gravar em disco (Go/TS/JS/Python/JSON); preserva posição do cursor com `model.setValue` + `setPosition`; atualiza `currentContent` e `savedContent` juntos evitando re-save; toast "Salvo e formatado"; estado em `localStorage["ce_format_on_save"]`
 
 ### Autocomplete / LSP (complexo — não implementado)
 - [ ] **Go** — `gopls` via processo filho + proxy WebSocket (`POST /repos/:id/lsp/start`); Monaco `MonacoLanguageClient`; requer `monaco-languageclient` no frontend
