@@ -672,19 +672,18 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if token != "" {
-		// Injeta token na URL remota — ignora credential helper do sistema
-		originURL, _ := runGit(dir, "remote", "get-url", "origin")
-		authedURL := injectTokenURL(cleanRemoteURL(originURL), token)
-		gitArgs := []string{"-c", "credential.helper=", "pull", "--progress", authedURL}
-		cmd = exec.CommandContext(ctx, "git", gitArgs...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	} else {
-		cmd = exec.CommandContext(ctx, "git", "pull", "--progress")
-		cmd.Dir = dir
+	// Usa ASKPASS (mesmo mecanismo do clone) para autenticar.
+	// git pull --progress origin <branch> é explícito sobre qual branch puxar,
+	// evitando o comportamento errado de "git pull <url>" que mescla FETCH_HEAD
+	// (branch padrão do remoto) em vez do branch rastreado atual.
+	branch := currentBranch(dir)
+	pullArgs := []string{"pull", "--progress", "origin"}
+	if branch != "" {
+		pullArgs = append(pullArgs, branch)
 	}
+
+	cmd, cleanup := gitCmdWithToken(ctx, dir, token, pullArgs...)
+	defer cleanup()
 
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
@@ -704,7 +703,6 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 		for scanner.Scan() {
 			line := scanner.Text()
-			// Não expõe o token no SSE
 			if token != "" {
 				line = strings.ReplaceAll(line, token, "***")
 			}

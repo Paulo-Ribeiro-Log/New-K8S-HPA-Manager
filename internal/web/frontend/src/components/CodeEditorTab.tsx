@@ -1626,6 +1626,7 @@ export function CodeEditorTab() {
   const [repos, setRepos] = useState<CodeEditorRepo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<CodeEditorRepo | null>(null);
   const [tree, setTree] = useState<CodeEditorFileNode[]>([]);
+  const [treeLoading, setTreeLoading] = useState(false);
 
   // Multi-tab state
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
@@ -1811,7 +1812,9 @@ export function CodeEditorTab() {
   }
 
   async function loadTree(id: string) {
+    setTreeLoading(true);
     try { setTree(await apiClient.codeEditorGetFileTree(id)); } catch (_) {}
+    setTreeLoading(false);
   }
 
   async function loadStatus(id: string) {
@@ -2368,7 +2371,10 @@ export function CodeEditorTab() {
                         <div className="flex gap-1 flex-shrink-0">
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "file" })} title="Novo arquivo"><FilePlus className="w-3 h-3" /></Button>
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "dir" })} title="Nova pasta"><FolderPlus className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => loadTree(selectedRepo.id)}><RefreshCw className="w-3 h-3" /></Button>
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Atualizar árvore"
+                            onClick={() => { loadTree(selectedRepo.id); loadStatus(selectedRepo.id); }}>
+                            <RefreshCw className={`w-3 h-3 ${treeLoading ? "animate-spin" : ""}`} />
+                          </Button>
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}><X className="w-3 h-3" /></Button>
                         </div>
                       </div>
