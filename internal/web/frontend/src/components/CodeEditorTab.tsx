@@ -2394,13 +2394,36 @@ export function CodeEditorTab() {
         {/* Sidebar */}
         <div className="flex-shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: sidebarWidth }}>
           {/* Tabs da sidebar */}
-          <div className="flex border-b border-border/50 flex-shrink-0 overflow-x-auto">
-            {sidePanels.map(p => (
-              <button key={p.id} onClick={() => setSidePanel(p.id)}
-                className={`flex-shrink-0 px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap ${sidePanel === p.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                {p.label}
-              </button>
-            ))}
+          <div className="flex items-center border-b border-border/50 flex-shrink-0">
+            <div className="flex overflow-x-auto flex-1 min-w-0">
+              {sidePanels.map(p => (
+                <button key={p.id} onClick={() => setSidePanel(p.id)}
+                  className={`flex-shrink-0 px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap ${sidePanel === p.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {/* Botões de ação da tree — visíveis apenas no painel Arquivos com repo aberto */}
+            {sidePanel === "files" && selectedRepo && !grepMode && (
+              <div className="flex gap-0.5 px-1 flex-shrink-0">
+                <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Novo arquivo"
+                  onClick={() => setCreateDialog({ mode: "file", basePath: getCreateBasePath() })}>
+                  <FilePlus className="w-3 h-3" />
+                </Button>
+                <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Nova pasta"
+                  onClick={() => setCreateDialog({ mode: "dir", basePath: getCreateBasePath() })}>
+                  <FolderPlus className="w-3 h-3" />
+                </Button>
+                <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Atualizar árvore"
+                  onClick={() => { loadTree(selectedRepo.id); loadStatus(selectedRepo.id); }}>
+                  <RefreshCw className={`w-3 h-3 ${treeLoading ? "animate-spin" : ""}`} />
+                </Button>
+                <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Fechar repositório"
+                  onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}>
+                  <X className="w-3 h-3" />
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* Conteúdo da sidebar */}
@@ -2509,18 +2532,6 @@ export function CodeEditorTab() {
                   {/* Árvore de arquivos — sempre visível quando não há filtro de nome ativo */}
                   {selectedRepo && !grepMode && (
                     <div className="p-1" style={{ display: q ? "none" : undefined }}>
-                      <div className="flex items-center justify-between px-1 mb-1">
-                        <span className="text-xs text-muted-foreground font-medium truncate">{selectedRepo.owner}/{selectedRepo.repo}</span>
-                        <div className="flex gap-1 flex-shrink-0">
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "file", basePath: getCreateBasePath() })} title="Novo arquivo"><FilePlus className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "dir", basePath: getCreateBasePath() })} title="Nova pasta"><FolderPlus className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Atualizar árvore"
-                            onClick={() => { loadTree(selectedRepo.id); loadStatus(selectedRepo.id); }}>
-                            <RefreshCw className={`w-3 h-3 ${treeLoading ? "animate-spin" : ""}`} />
-                          </Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}><X className="w-3 h-3" /></Button>
-                        </div>
-                      </div>
                       <div
                         className="min-h-8"
                         onDragOver={e => e.preventDefault()}
