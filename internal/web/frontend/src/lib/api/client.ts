@@ -3772,6 +3772,13 @@ class APIClient {
     });
   }
 
+  async codeEditorCopyFile(id: string, from: string, to: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/copy`, {
+      method: "POST",
+      body: JSON.stringify({ from, to }),
+    });
+  }
+
   async codeEditorResetFile(id: string, path: string): Promise<{ message: string; path: string }> {
     return this.request(`/code-editor/repos/${id}/reset-file`, {
       method: "POST",

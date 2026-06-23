@@ -1174,6 +1174,48 @@ func (h *CodeEditorHandler) RenameFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"from": req.From, "to": req.To})
 }
 
+// CopyFile — POST /api/v1/code-editor/repos/:id/copy
+// Body: { "from": "...", "to": "..." }
+func (h *CodeEditorHandler) CopyFile(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.From == "" || req.To == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from e to são obrigatórios"})
+		return
+	}
+	dir := h.repoDir(id)
+	fromPath := filepath.Join(dir, filepath.Clean(req.From))
+	toPath := filepath.Join(dir, filepath.Clean(req.To))
+	if !strings.HasPrefix(fromPath, dir) || !strings.HasPrefix(toPath, dir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "caminho inválido"})
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	src, err := os.Open(fromPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer src.Close()
+	dst, err := os.Create(toPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"from": req.From, "to": req.To})
+}
+
 // ResetFile — POST /api/v1/code-editor/repos/:id/reset-file
 // Body: { "path": "..." }
 // Descarta mudanças em um arquivo (git checkout HEAD -- <path>).

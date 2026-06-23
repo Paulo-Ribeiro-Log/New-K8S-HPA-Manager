@@ -358,6 +358,9 @@ interface FileTreeNodeProps {
   onDirFocus?: (path: string) => void;
   onCreate?: (parentPath: string, mode: "file" | "dir") => void;
   onMove?: (from: string, toDir: string) => void;
+  onClipboardOp?: (path: string, op: "cut" | "copy") => void;
+  onPaste?: (toDir: string) => void;
+  cutPath?: string;
 }
 
 function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void) {
@@ -377,7 +380,7 @@ function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void
   }
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
@@ -393,7 +396,8 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
           style={{ paddingLeft: `${level * 12 + 4}px` }}
           onClick={() => { setOpen(o => !o); onDirFocus?.(node.path); }}
           onKeyDown={e => {
-            if (e.key === "ArrowRight") { e.preventDefault(); if (!open) { setOpen(true); onDirFocus?.(node.path); } }
+            if ((e.ctrlKey || e.metaKey) && e.key === "v") { e.preventDefault(); onPaste?.(node.path); }
+            else if (e.key === "ArrowRight") { e.preventDefault(); if (!open) { setOpen(true); onDirFocus?.(node.path); } }
             else if (e.key === "ArrowLeft") { e.preventDefault(); if (open) setOpen(false); }
             else treeNavKeyDown(e, () => { setOpen(o => !o); onDirFocus?.(node.path); });
           }}
@@ -429,12 +433,14 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
         {open && node.children?.map(child => (
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
             modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename}
-            onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate} onMove={onMove} />
+            onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate}
+            onMove={onMove} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath} />
         ))}
       </div>
     );
   }
 
+  const isCut = cutPath === node.path;
   return (
     <div
       data-tree-item="true"
@@ -444,9 +450,13 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
         e.dataTransfer.setData("application/x-tree-node", node.path);
         e.dataTransfer.effectAllowed = "move";
       }}
-      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isSelected ? "bg-accent text-accent-foreground" : ""}`}
+      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""}`}
       style={{ paddingLeft: `${level * 12 + 4}px` }}
-      onKeyDown={e => treeNavKeyDown(e, () => onSelect(node))}
+      onKeyDown={e => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "c") { e.preventDefault(); onClipboardOp?.(node.path, "copy"); }
+        else if ((e.ctrlKey || e.metaKey) && e.key === "x") { e.preventDefault(); onClipboardOp?.(node.path, "cut"); }
+        else treeNavKeyDown(e, () => onSelect(node));
+      }}
     >
       <button className="flex items-center gap-1 flex-1 min-w-0" onClick={() => onSelect(node)}>
         <span className="w-3 h-3 flex-shrink-0" />
@@ -1710,6 +1720,9 @@ export function CodeEditorTab() {
   // Stash state (feedback)
   const [stashLoading, setStashLoading] = useState<"push" | "pop" | null>(null);
 
+  // Clipboard (Ctrl+C/X/V na tree)
+  const [clipboard, setClipboard] = useState<{ path: string; op: "cut" | "copy" } | null>(null);
+
   // Dialogs
   const [showClone, setShowClone] = useState(false);
   const [showGitHubToken, setShowGitHubToken] = useState(false);
@@ -2030,6 +2043,34 @@ export function CodeEditorTab() {
     await loadTree(selectedRepo.id);
     await loadStatus(selectedRepo.id);
     addToast("success", `Renomeado: ${to}`);
+  }
+
+  async function handleClipboardPaste(toDir: string) {
+    if (!clipboard || !selectedRepo) return;
+    const filename = clipboard.path.split("/").pop()!;
+    const to = toDir ? toDir + "/" + filename : filename;
+    if (clipboard.path === to) return;
+    const verb = clipboard.op === "cut" ? "Mover" : "Copiar";
+    if (!await showConfirm(`${verb}\n"${clipboard.path}"\n→ "${to}"?`)) return;
+    try {
+      if (clipboard.op === "cut") {
+        await apiClient.codeEditorRenameFile(selectedRepo.id, clipboard.path, to);
+        setOpenTabs(prev => prev.map(t =>
+          t.node.path === clipboard.path
+            ? { ...t, node: { ...t.node, path: to, name: filename } }
+            : t
+        ));
+        setClipboard(null);
+      } else {
+        await apiClient.codeEditorCopyFile(selectedRepo.id, clipboard.path, to);
+        // mantém clipboard para permitir colar múltiplas cópias
+      }
+      await loadTree(selectedRepo.id);
+      await loadStatus(selectedRepo.id);
+      addToast("success", `${clipboard.op === "cut" ? "Movido" : "Copiado"}: ${filename}`);
+    } catch (e: any) {
+      addToast("error", e.message || `Erro ao ${clipboard.op === "cut" ? "mover" : "copiar"}`);
+    }
   }
 
   async function handleMoveFile(from: string, toDir: string) {
@@ -2492,7 +2533,18 @@ export function CodeEditorTab() {
                             handleUpload("", e.dataTransfer.files);
                           }
                         }}
+                        onKeyDown={e => {
+                          if ((e.ctrlKey || e.metaKey) && e.key === "v") { e.preventDefault(); handleClipboardPaste(""); }
+                          else if (e.key === "Escape") { setClipboard(null); }
+                        }}
                       >
+                        {clipboard && (
+                          <div className="mx-1 mb-1 px-2 py-1 rounded bg-muted/40 border border-dashed border-muted-foreground/30 flex items-center gap-1.5">
+                            <span className="text-[10px] text-muted-foreground">{clipboard.op === "cut" ? "✂" : "⎘"}</span>
+                            <span className="text-[10px] text-foreground/60 truncate flex-1">{clipboard.path.split("/").pop()}</span>
+                            <button onClick={() => setClipboard(null)} className="text-[10px] text-muted-foreground hover:text-foreground">✕</button>
+                          </div>
+                        )}
                         {tree.map(node => (
                           <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
                             onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
@@ -2501,7 +2553,10 @@ export function CodeEditorTab() {
                             onUpload={handleUpload}
                             onDirFocus={setFocusedDirPath}
                             onCreate={(parentPath, mode) => setCreateDialog({ mode, basePath: parentPath })}
-                            onMove={handleMoveFile} />
+                            onMove={handleMoveFile}
+                            onClipboardOp={(path, op) => setClipboard({ path, op })}
+                            onPaste={handleClipboardPaste}
+                            cutPath={clipboard?.op === "cut" ? clipboard.path : undefined} />
                         ))}
                       </div>
                     </div>
