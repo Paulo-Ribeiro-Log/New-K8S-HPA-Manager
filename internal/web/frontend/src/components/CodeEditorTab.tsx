@@ -355,9 +355,28 @@ interface FileTreeNodeProps {
   onRename: (node: CodeEditorFileNode) => void;
   onHistory?: (node: CodeEditorFileNode) => void;
   onUpload?: (dirPath: string, files: FileList) => void;
+  onDirFocus?: (path: string) => void;
+  onCreate?: (parentPath: string, mode: "file" | "dir") => void;
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload }: FileTreeNodeProps) {
+function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void) {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    const items = Array.from(document.querySelectorAll<HTMLElement>("[data-tree-item]"));
+    const idx = items.indexOf(e.currentTarget);
+    items[idx + 1]?.focus();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    const items = Array.from(document.querySelectorAll<HTMLElement>("[data-tree-item]"));
+    const idx = items.indexOf(e.currentTarget);
+    items[idx - 1]?.focus();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    onEnter();
+  }
+}
+
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
@@ -367,27 +386,44 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
     return (
       <div>
         <div
-          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer transition-colors ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
+          data-tree-item="true"
+          tabIndex={0}
+          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer transition-colors focus:outline-none focus:ring-1 focus:ring-primary/40 ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
           style={{ paddingLeft: `${level * 12 + 4}px` }}
-          onClick={() => setOpen(o => !o)}
+          onClick={() => { setOpen(o => !o); onDirFocus?.(node.path); }}
+          onKeyDown={e => {
+            if (e.key === "ArrowRight") { e.preventDefault(); if (!open) { setOpen(true); onDirFocus?.(node.path); } }
+            else if (e.key === "ArrowLeft") { e.preventDefault(); if (open) setOpen(false); }
+            else treeNavKeyDown(e, () => { setOpen(o => !o); onDirFocus?.(node.path); });
+          }}
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={e => {
             e.preventDefault();
             setDragOver(false);
-            if (e.dataTransfer.files.length > 0 && onUpload) {
-              onUpload(node.path, e.dataTransfer.files);
-            }
+            if (e.dataTransfer.files.length > 0 && onUpload) onUpload(node.path, e.dataTransfer.files);
           }}
         >
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
           {open ? <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" /> : <Folder className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" />}
           <span className="truncate text-foreground/80 flex-1">{node.name}</span>
+          {onCreate && (
+            <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+              <button onClick={e => { e.stopPropagation(); onDirFocus?.(node.path); onCreate(node.path, "file"); }}
+                className="p-0.5 rounded hover:bg-muted" title="Novo arquivo aqui">
+                <FilePlus className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
+              </button>
+              <button onClick={e => { e.stopPropagation(); onDirFocus?.(node.path); onCreate(node.path, "dir"); }}
+                className="p-0.5 rounded hover:bg-muted" title="Nova pasta aqui">
+                <FolderPlus className="w-2.5 h-2.5 text-muted-foreground hover:text-foreground" />
+              </button>
+            </div>
+          )}
         </div>
         {open && node.children?.map(child => (
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
             modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename}
-            onHistory={onHistory} onUpload={onUpload} />
+            onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate} />
         ))}
       </div>
     );
@@ -395,8 +431,11 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
 
   return (
     <div
-      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group ${isSelected ? "bg-accent text-accent-foreground" : ""}`}
+      data-tree-item="true"
+      tabIndex={0}
+      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 ${isSelected ? "bg-accent text-accent-foreground" : ""}`}
       style={{ paddingLeft: `${level * 12 + 4}px` }}
+      onKeyDown={e => treeNavKeyDown(e, () => onSelect(node))}
     >
       <button className="flex items-center gap-1 flex-1 min-w-0" onClick={() => onSelect(node)}>
         <span className="w-3 h-3 flex-shrink-0" />
@@ -1238,16 +1277,22 @@ interface CreateFileDialogProps {
   open: boolean;
   mode: "file" | "dir";
   repoId: string;
+  basePath?: string;
   onClose: () => void;
   onDone: (path: string) => void;
 }
 
-function CreateFileDialog({ open, mode, repoId, onClose, onDone }: CreateFileDialogProps) {
+function CreateFileDialog({ open, mode, repoId, basePath, onClose, onDone }: CreateFileDialogProps) {
   const [path, setPath] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => { if (open) { setPath(""); setError(""); } }, [open]);
+  useEffect(() => {
+    if (open) {
+      setPath(basePath ? basePath + "/" : "");
+      setError("");
+    }
+  }, [open, basePath]);
 
   async function doCreate() {
     if (!path.trim()) { setError("Caminho é obrigatório"); return; }
@@ -1672,7 +1717,18 @@ export function CodeEditorTab() {
   const [showBranch, setShowBranch] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
   const [sseDialog, setSseDialog] = useState<{ title: string; endpoint: string; body?: object } | null>(null);
-  const [createDialog, setCreateDialog] = useState<{ mode: "file" | "dir" } | null>(null);
+  const [focusedDirPath, setFocusedDirPath] = useState("");
+  const [createDialog, setCreateDialog] = useState<{ mode: "file" | "dir"; basePath: string } | null>(null);
+
+  function getCreateBasePath(): string {
+    if (focusedDirPath) return focusedDirPath;
+    if (activeTab) {
+      const parts = activeTab.node.path.split("/");
+      parts.pop();
+      return parts.join("/");
+    }
+    return "";
+  }
   const [renameNode, setRenameNode] = useState<CodeEditorFileNode | null>(null);
   const [diffFile, setDiffFile] = useState<string | null>(null);
 
@@ -1717,7 +1773,13 @@ export function CodeEditorTab() {
   // Fase 4: Blame
   const [showBlame, setShowBlame] = useState(false);
   const [blameLines, setBlameLines] = useState<CodeEditorBlameLine[]>([]);
+  const [cursorLine, setCursorLine] = useState(1);
   const blameDecorationsRef = useRef<MonacoEditorNS.editor.IEditorDecorationsCollection | null>(null);
+  const blameMap = useMemo(() => {
+    const m = new Map<number, CodeEditorBlameLine>();
+    blameLines.forEach(b => m.set(b.line, b));
+    return m;
+  }, [blameLines]);
 
   // Fase 4: Histórico de arquivo
   const [fileHistoryNode, setFileHistoryNode] = useState<CodeEditorFileNode | null>(null);
@@ -2053,18 +2115,19 @@ export function CodeEditorTab() {
     }
   }
 
-  // ── Blame: injeta decorações Monaco ──
+  // ── Blame: mostra anotação apenas na linha do cursor ──
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    // Limpar decorações anteriores
     if (blameDecorationsRef.current) {
       blameDecorationsRef.current.clear();
       blameDecorationsRef.current = null;
     }
-    if (!showBlame || blameLines.length === 0) return;
+    if (!showBlame || blameMap.size === 0) return;
 
-    // Injeta CSS para estilizar o span do blame (inlineClassName aplicado ao span, não ::after)
+    const b = blameMap.get(cursorLine);
+    if (!b) return;
+
     const styleId = "blame-inline-style";
     if (!document.getElementById(styleId)) {
       const style = document.createElement("style");
@@ -2073,8 +2136,7 @@ export function CodeEditorTab() {
       document.head.appendChild(style);
     }
 
-    const decorations: MonacoEditorNS.editor.IModelDeltaDecoration[] = blameLines.map(b => ({
-      // endColumn grande → Monaco posiciona o texto injetado no fim da linha
+    blameDecorationsRef.current = editor.createDecorationsCollection([{
       range: { startLineNumber: b.line, startColumn: 1, endLineNumber: b.line, endColumn: 999999 },
       options: {
         after: {
@@ -2083,10 +2145,8 @@ export function CodeEditorTab() {
         },
         isWholeLine: false,
       },
-    }));
-
-    blameDecorationsRef.current = editor.createDecorationsCollection(decorations);
-  }, [showBlame, blameLines]);
+    }]);
+  }, [showBlame, blameMap, cursorLine]);
 
   async function loadBlame() {
     if (!selectedRepo || !activeTab) return;
@@ -2174,6 +2234,7 @@ export function CodeEditorTab() {
     editorRef.current = editor;
     editor.addCommand(2048 | 49, () => saveFileRef.current()); // Ctrl+S
     editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
+    editor.onDidChangeCursorPosition(e => setCursorLine(e.position.lineNumber));
   };
 
   const sidePanels = [
@@ -2374,8 +2435,8 @@ export function CodeEditorTab() {
                       <div className="flex items-center justify-between px-1 mb-1">
                         <span className="text-xs text-muted-foreground font-medium truncate">{selectedRepo.owner}/{selectedRepo.repo}</span>
                         <div className="flex gap-1 flex-shrink-0">
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "file" })} title="Novo arquivo"><FilePlus className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "dir" })} title="Nova pasta"><FolderPlus className="w-3 h-3" /></Button>
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "file", basePath: getCreateBasePath() })} title="Novo arquivo"><FilePlus className="w-3 h-3" /></Button>
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setCreateDialog({ mode: "dir", basePath: getCreateBasePath() })} title="Nova pasta"><FolderPlus className="w-3 h-3" /></Button>
                           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Atualizar árvore"
                             onClick={() => { loadTree(selectedRepo.id); loadStatus(selectedRepo.id); }}>
                             <RefreshCw className={`w-3 h-3 ${treeLoading ? "animate-spin" : ""}`} />
@@ -2396,7 +2457,9 @@ export function CodeEditorTab() {
                             onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
                             onDelete={handleDeleteFile} onRename={n => setRenameNode(n)}
                             onHistory={n => setFileHistoryNode(n)}
-                            onUpload={handleUpload} />
+                            onUpload={handleUpload}
+                            onDirFocus={setFocusedDirPath}
+                            onCreate={(parentPath, mode) => setCreateDialog({ mode, basePath: parentPath })} />
                         ))}
                       </div>
                     </div>
@@ -2929,6 +2992,7 @@ export function CodeEditorTab() {
             open={!!createDialog}
             mode={createDialog?.mode ?? "file"}
             repoId={selectedRepo.id}
+            basePath={createDialog?.basePath}
             onClose={() => setCreateDialog(null)}
             onDone={async (path) => {
               await loadTree(selectedRepo.id);
