@@ -5,7 +5,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Estado Atual (branch `editor-github`, último commit `eb4278ff`)
+## Estado Atual (branch `editor-github`, último commit `a4320ae8`)
 
 ### ✅ Concluído — Fase 1 (MVP)
 
@@ -167,9 +167,36 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 - [x] **Botão PR** — aparece no header quando o branch atual não é `main`/`master`; abre `github.com/owner/repo/compare/branch` em nova aba
 
 ### Autocomplete / LSP (complexo — não implementado)
-- [ ] **Go** — `gopls` via processo filho + proxy WebSocket (`POST /repos/:id/lsp/start`); Monaco `MonacoLanguageClient`; requer `monaco-languageclient` no frontend
-- [ ] **Python** — `pyright` ou `pylsp`; mesma arquitetura do gopls
-- [ ] **TypeScript/JavaScript** — Monaco já tem suporte nativo; habilitar via `tsconfig` do repo
+- [x] **TypeScript/JavaScript** — worker built-in do Monaco configurado em `handleEditorMount` (flag `__monacoTSConfigured`); completions, erros inline, hover, go-to-definition sem instalar nada
+- [x] **Go via gopls** — `code_editor_lsp.go`: processos gopls por repositório, sessões persistentes (10min timeout), JSON-RPC via stdin/stdout; providers Monaco globais (flag `__monacoGoLSPRegistered`); polling de diagnósticos 2,5s; endpoints `/lsp/open|change|complete|hover|definition|diagnostics|status`
+- [ ] **Python via pyright** — mesma arquitetura do gopls; `isSupportedLang("python")` já suportado no backend; falta registrar `registerCompletionItemProvider("python", ...)` no frontend
+
+---
+
+## ✅ Concluído — Fase 7 (LSP)
+
+### Backend (`internal/web/handlers/code_editor_lsp.go`)
+- [x] `POST /api/v1/code-editor/repos/:id/lsp/open` — `textDocument/didOpen` (inicia sessão gopls se necessário)
+- [x] `POST /api/v1/code-editor/repos/:id/lsp/change` — `textDocument/didChange` (sincroniza conteúdo)
+- [x] `POST /api/v1/code-editor/repos/:id/lsp/complete` — `textDocument/completion` → retorna `[]{label,kind,detail,documentation,insertText}`
+- [x] `POST /api/v1/code-editor/repos/:id/lsp/hover` — `textDocument/hover` → retorna `{contents, range}`
+- [x] `POST /api/v1/code-editor/repos/:id/lsp/definition` — `textDocument/definition` → retorna `{locations:[{path,range}]}`
+- [x] `GET  /api/v1/code-editor/repos/:id/lsp/diagnostics?lang=go&path=...` — diagnósticos acumulados (push do gopls via `publishDiagnostics`)
+- [x] `GET  /api/v1/code-editor/repos/:id/lsp/status?lang=go` — `{available, running, lang}`
+- [x] `DELETE /api/v1/code-editor/repos/:id/lsp?lang=go` — shutdown + kill do processo
+- [x] Sessões gerenciadas por `sync.Map` (key: `repoId/lang`); cleanup a cada 5min; inatividade > 10min mata o processo
+- [x] `gopls serve` detectado em `~/go/bin/gopls` ou PATH; `pyright`/`pylsp` no PATH para Python
+- [x] Diagnósticos armazenados em memória por URI (`diags map[string][]lspDiagnostic`)
+
+### Frontend (`CodeEditorTab.tsx`)
+- [x] Fase 1 TS/JS: `handleEditorMount` configura `typescriptDefaults`/`javascriptDefaults` uma única vez
+- [x] Fase 2 Go: providers globais registrados uma vez via `__monacoGoLSPRegistered`; usam `window.__lspActiveRepoId` e `window.__lspActiveFilePath` (atualizados em `openFile` e `useEffect` de troca de aba)
+- [x] `lspVersionRef` incrementado em cada `updateTabContent` e troca de aba; enviado no body de `change`/`complete`/`hover`
+- [x] `useEffect([activeTabIdx, activeTab.node.path])`: ativa LSP vars + polling diagnósticos 2,5s para Go/Python
+- [x] `__lspApplyDiagnostics` helper global aplica `setModelMarkers(model, "gopls", markers)`
+- [x] Conversão: LSP `CompletionItemKind` → Monaco, LSP `DiagnosticSeverity` → `MarkerSeverity`, posição 0-indexed → 1-indexed
+- [x] `apiClient.lspOpen/Change/Complete/Hover/Definition/Diagnostics/Shutdown/Status` em `client.ts`
+- [x] Tipos exportados: `LspCompletionItem`, `LspRange`, `LspDiagnostic`, `LspDefinitionLocation`
 
 ---
 
