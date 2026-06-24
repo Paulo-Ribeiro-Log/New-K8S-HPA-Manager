@@ -1173,6 +1173,7 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/branch-diff", codeEditorHandler.GetBranchDiff)
 		codeEditor.GET("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetGitHubProfiles)
 		codeEditor.PUT("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.SaveGitHubProfiles)
+		codeEditor.POST("/repos/:id/pr/create", rbacMiddleware.InjectUserEmail(), codeEditorHandler.CreatePR)
 		// LSP
 		lspHandler := handlers.NewCodeEditorLSPHandler(codeEditorHandler.ReposBase())
 		codeEditor.POST("/repos/:id/lsp/open", lspHandler.Open)
