@@ -219,10 +219,15 @@ func (h *CodeEditorHandler) ListRepos(c *gin.Context) {
 			continue
 		}
 		info, _ := e.Info()
-		parts := strings.SplitN(id, "-", 2)
-		owner, repo := id, ""
-		if len(parts) == 2 {
-			owner, repo = parts[0], parts[1]
+		owner, repo := ownerRepo(dir)
+		if owner == "" {
+			// fallback: split ID pelo primeiro hífen
+			parts := strings.SplitN(id, "-", 2)
+			if len(parts) == 2 {
+				owner, repo = parts[0], parts[1]
+			} else {
+				owner = id
+			}
 		}
 		repos = append(repos, RepoInfo{
 			ID:            id,

@@ -3019,7 +3019,7 @@ export function CodeEditorTab() {
             {branches?.current && branches.current !== "main" && branches.current !== "master" && (
               <Button variant="ghost" size="sm" className="h-6 text-xs gap-1"
                 title={`Abrir Pull Request: ${selectedRepo.owner}/${selectedRepo.repo}`}
-                onClick={() => window.open(`https://github.com/${selectedRepo.owner}/${selectedRepo.repo}/compare/${branches.current}`, "_blank")}>
+                onClick={() => window.open(`https://github.com/${selectedRepo.owner}/${selectedRepo.repo}/compare/${encodeURIComponent(branches.current)}`, "_blank")}>
                 <ExternalLink className="w-3 h-3" />PR
               </Button>
             )}
