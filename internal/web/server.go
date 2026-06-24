@@ -1173,6 +1173,16 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/branch-diff", codeEditorHandler.GetBranchDiff)
 		codeEditor.GET("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetGitHubProfiles)
 		codeEditor.PUT("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.SaveGitHubProfiles)
+		// LSP
+		lspHandler := handlers.NewCodeEditorLSPHandler(codeEditorHandler.ReposBase())
+		codeEditor.POST("/repos/:id/lsp/open", lspHandler.Open)
+		codeEditor.POST("/repos/:id/lsp/change", lspHandler.Change)
+		codeEditor.POST("/repos/:id/lsp/complete", lspHandler.Complete)
+		codeEditor.POST("/repos/:id/lsp/hover", lspHandler.Hover)
+		codeEditor.POST("/repos/:id/lsp/definition", lspHandler.Definition)
+		codeEditor.GET("/repos/:id/lsp/diagnostics", lspHandler.Diagnostics)
+		codeEditor.DELETE("/repos/:id/lsp", lspHandler.Shutdown)
+		codeEditor.GET("/repos/:id/lsp/status", lspHandler.Status)
 	}
 	fmt.Println("✅ Code Editor routes registradas")
 
