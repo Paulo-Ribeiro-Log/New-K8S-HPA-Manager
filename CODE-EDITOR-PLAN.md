@@ -200,6 +200,47 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
+## ✅ Concluído — Fase 8 (Go-to-Definition cross-file + Python LSP)
+
+### LSP — Python (`pyright`)
+- [x] **Python via pyright** — providers Monaco registrados com flag `__monacoPyLSPRegistered`; pyright iniciado com `--stdio`; `PYTHONPATH=repoDir`; owner `"pyright"` no `setModelMarkers` para não sobrescrever markers de gopls
+
+### LSP — Go-to-Definition cross-file
+- [x] **Override `_codeEditorService.openCodeEditor`** — Monaco standalone ignora navegação para URIs externos; solução: intercepta chamadas com flag `__lspDefHandlerRegistered` (registrado uma vez por sessão em `handleEditorMount`)
+- [x] **Esquema `lspdef://`** — provider de definition retorna `lspdef://<repoId>/<filePath>#L<line>,<col>` para arquivos externos ao arquivo atual; URIs no mesmo arquivo usam navegação direta via `editorRef`
+- [x] **`pendingNavigationRef`** — armazena `{ line, col }` antes de chamar `openFileRef.current()`; `useEffect` em `activeTab?.node.path` aplica `revealLineInCenter + setPosition + focus` após a aba do arquivo de destino ser montada (via `requestAnimationFrame`)
+
+---
+
+---
+
+## ✅ Concluído — Fase 9 (Integração K8s)
+
+### Backend (`internal/web/handlers/code_editor_k8s.go`)
+- [x] `GET  /api/v1/code-editor/k8s/contexts` — lista contexts do kubeconfig (`kubectl config get-contexts -o=name`)
+- [x] `POST /api/v1/code-editor/repos/:id/k8s/diff` — `kubectl diff -f -` via SSE (body: `{ cluster, content }`)
+- [x] `POST /api/v1/code-editor/repos/:id/k8s/dry-run` — `kubectl apply --dry-run=server -f -` via SSE
+- [x] `POST /api/v1/code-editor/repos/:id/k8s/apply` — `kubectl apply -f -` via SSE
+- [x] `GET  /api/v1/code-editor/repos/:id/k8s/resource?cluster=&kind=&name=&namespace=` — `kubectl get <kind> <name> -o yaml` (sync)
+- [x] `streamKubectl(c, cluster, stdin, args...)` — helper SSE: combina stdout+stderr via `os.Pipe`, goroutine para leitura linha a linha, timeout por ação
+- [x] Timeout: 30s para diff/dry-run, 120s para apply; usa `--context=<cluster>` no kubectl
+
+### Frontend (`CodeEditorTab.tsx`)
+- [x] **6ª aba "K8s"** no sidebar (após Replace) — ícone `Layers`
+- [x] **Cluster selector** — dropdown populado por `GET /code-editor/k8s/contexts`; persiste em `localStorage["ce_k8s_cluster"]`; auto-seleciona o primeiro context disponível
+- [x] **Detecção de manifest** — `useMemo` analisa `activeTab.currentContent` em busca de `apiVersion:` + `kind:`; extrai `kind`, `metadata.name`, `metadata.namespace`; exibe badge info quando detectado, mensagem "Nenhum manifest K8s detectado" quando não
+- [x] **Ações** (aplicam ao conteúdo atual do editor, não ao arquivo salvo em disco):
+  - [Diff] → `POST /k8s/diff` (SSE)
+  - [Dry Run] → `POST /k8s/dry-run` (SSE)
+  - [Apply] → confirmação via `showConfirm` → `POST /k8s/apply` (SSE)
+  - [Get recurso atual] → `GET /k8s/resource` → abre YAML do cluster em nova aba virtual (`__k8s_virtual__/`)
+- [x] **Painel de output** — `<div ref={k8sOutputRef}>` com auto-scroll; cor por linha: `err`=vermelho, `ok`=verde, `warn`=amarelo, `info`=branco; botão "Limpar output"
+- [x] **Loading state** — spinner no botão ativo; demais botões desabilitados enquanto `k8sRunning !== null`
+- [x] **Guard em `saveFile()`** — caminho `__k8s_virtual__/*` ignorado para não tentar gravar em disco
+- [x] **`apiClient.k8sListContexts`, `apiClient.k8sGetResource`** em `client.ts`
+
+---
+
 ## Arquitetura
 
 ```

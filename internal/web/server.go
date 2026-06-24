@@ -1183,6 +1183,14 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/lsp/diagnostics", lspHandler.Diagnostics)
 		codeEditor.DELETE("/repos/:id/lsp", lspHandler.Shutdown)
 		codeEditor.GET("/repos/:id/lsp/status", lspHandler.Status)
+		// Fase 9 — Integração K8s
+		k8sEditorLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "code-editor-k8s").Logger()
+		k8sHandler := handlers.NewCodeEditorK8sHandler(codeEditorHandler.ReposBase(), &k8sEditorLogger)
+		codeEditor.GET("/k8s/contexts", k8sHandler.ListContexts)
+		codeEditor.POST("/repos/:id/k8s/diff", k8sHandler.Diff)
+		codeEditor.POST("/repos/:id/k8s/dry-run", k8sHandler.DryRun)
+		codeEditor.POST("/repos/:id/k8s/apply", k8sHandler.Apply)
+		codeEditor.GET("/repos/:id/k8s/resource", k8sHandler.GetResource)
 	}
 	fmt.Println("✅ Code Editor routes registradas")
 
