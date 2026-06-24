@@ -1860,7 +1860,9 @@ export function CodeEditorTab() {
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const saveFileRef = useRef<() => void>(() => {});
-  const lspVersionRef = useRef<number>(0); // versão do documento atual para LSP
+  const openFileRef = useRef<(node: CodeEditorFileNode) => Promise<void>>(async () => {});
+  const pendingNavigationRef = useRef<{ line: number; col: number } | null>(null);
+  const lspVersionRef = useRef<number>(0);
   const lspProviderDisposables = useRef<MonacoEditorNS.IDisposable[]>([]);
   const { toasts, addToast } = useToasts();
 
@@ -1883,6 +1885,20 @@ export function CodeEditorTab() {
   useEffect(() => {
     localStorage.setItem("ce_sidebar_width", String(sidebarWidth));
   }, [sidebarWidth]);
+
+  // ── LSP: aplica navegação pendente após troca de aba (go-to-definition cross-file) ──
+  useEffect(() => {
+    if (!pendingNavigationRef.current || !activeTab) return;
+    const { line, col } = pendingNavigationRef.current;
+    pendingNavigationRef.current = null;
+    // requestAnimationFrame garante que Monaco já atualizou o modelo com o novo conteúdo
+    requestAnimationFrame(() => {
+      editorRef.current?.revealLineInCenter(line);
+      editorRef.current?.setPosition({ lineNumber: line, column: col });
+      editorRef.current?.focus();
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab?.node.path]);
 
   // ── LSP: atualiza vars globais e faz polling de diagnósticos ──
   useEffect(() => {
@@ -2426,6 +2442,7 @@ export function CodeEditorTab() {
 
   // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
   useEffect(() => { saveFileRef.current = saveFile; });
+  useEffect(() => { openFileRef.current = openFile; });
 
   // Sincroniza fontSize/wordWrap com Monaco sem recriar o editor
   useEffect(() => {
@@ -2500,6 +2517,40 @@ export function CodeEditorTab() {
       ts.typescriptDefaults.setDiagnosticsOptions(diagOpts);
       ts.javascriptDefaults.setCompilerOptions({ ...compilerOpts, checkJs: false });
       ts.javascriptDefaults.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: false });
+    }
+
+    // ── Go-to-definition cross-file: intercepta abertura de URIs lspdef:// ──
+    // Monaco standalone não sabe abrir arquivos externos; substituímos o
+    // openCodeEditor do serviço interno para usar nosso sistema de abas.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const editorSvc = (editor as any)._codeEditorService;
+    if (editorSvc && typeof editorSvc.openCodeEditor === 'function' && !(window as any).__lspDefHandlerRegistered) {
+      (window as any).__lspDefHandlerRegistered = true;
+      editorSvc.openCodeEditor = async (input: any) => {
+        const uri = input?.resource;
+        if (!uri || uri.scheme !== 'lspdef') return null;
+
+        // uri.path = "/<repoId>/<relative/path/to/file>"
+        const parts = (uri.path as string).replace(/^\//, '').split('/');
+        const [repoId, ...fileParts] = parts;
+        const filePath = fileParts.join('/');
+        const line: number = input.options?.selection?.startLineNumber ?? 1;
+        const col: number  = input.options?.selection?.startColumn  ?? 1;
+
+        const activeFilePath = (window as any).__lspActiveFilePath as string | undefined;
+        if (filePath === activeFilePath) {
+          // Mesmo arquivo — navega direto
+          editorRef.current?.revealLineInCenter(line);
+          editorRef.current?.setPosition({ lineNumber: line, column: col });
+          editorRef.current?.focus();
+        } else {
+          // Arquivo diferente — abre em nova aba e navega após mount
+          pendingNavigationRef.current = { line, col };
+          const fileName = filePath.split('/').pop() ?? filePath;
+          await openFileRef.current({ path: filePath, name: fileName, type: 'file', children: [] });
+        }
+        return null;
+      };
     }
 
     // ── Go via gopls — providers registrados uma vez por sessão ──────────────
@@ -2595,7 +2646,7 @@ export function CodeEditorTab() {
             );
             if (!result?.locations?.length) return null;
             return result.locations.map(loc => ({
-              uri: monacoInstance.Uri.parse(`inmemory://lsp/${loc.path}`),
+              uri: monacoInstance.Uri.from({ scheme: 'lspdef', path: `/${repoId}/${loc.path}` }),
               range: {
                 startLineNumber: loc.range.start.line + 1,
                 startColumn: loc.range.start.character + 1,
@@ -2711,7 +2762,7 @@ export function CodeEditorTab() {
             );
             if (!result?.locations?.length) return null;
             return result.locations.map(loc => ({
-              uri: monacoInstance.Uri.parse(`inmemory://lsp/${loc.path}`),
+              uri: monacoInstance.Uri.from({ scheme: 'lspdef', path: `/${repoId}/${loc.path}` }),
               range: {
                 startLineNumber: loc.range.start.line + 1,
                 startColumn: loc.range.start.character + 1,
