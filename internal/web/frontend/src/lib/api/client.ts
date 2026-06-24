@@ -3968,6 +3968,19 @@ class APIClient {
   async lspShutdown(id: string, lang: string): Promise<void> {
     return this.request(`/code-editor/repos/${id}/lsp?lang=${lang}`, { method: "DELETE" });
   }
+
+  // ── Fase 9: Integração K8s ──────────────────────────────────────────────
+
+  async k8sListContexts(): Promise<{ contexts: string[] }> {
+    return this.request("/code-editor/k8s/contexts");
+  }
+
+  async k8sGetResource(id: string, cluster: string, kind: string, name: string, namespace: string): Promise<{ content: string }> {
+    const ns = namespace ? `&namespace=${encodeURIComponent(namespace)}` : "";
+    return this.request(
+      `/code-editor/repos/${id}/k8s/resource?cluster=${encodeURIComponent(cluster)}&kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}${ns}`
+    );
+  }
 }
 
 // Code Editor types

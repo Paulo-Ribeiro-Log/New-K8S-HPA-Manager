@@ -36,6 +36,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build
 make build                    # Compilar backend Go (BUILD_PARALLEL=2 por padrão — WSL2 RAM)
 ./rebuild-web.sh -b           # Build frontend + backend + reinicia servidor em background (RECOMENDADO após mudanças React)
+./rebuild-web.sh -n -b        # Reinicia servidor em background SEM rebuild (apenas restart)
+./rebuild-web.sh -k           # Apenas mata o processo na porta 8080
+./rebuild-web.sh -s           # Verifica se o servidor está rodando
 ./rebuild-web.sh -b --ai-provider ollama --ollama-model llama3.2:3b  # Com AI provider
 make build-web                # Build completo (frontend + backend)
 
@@ -52,9 +55,10 @@ make web-dev                  # Frontend dev server (Vite HMR - porta 5173)
 make run-dev                  # TUI com debug
 
 # Tests
-go test -v ./internal/... -race   # Todos os testes com race detector
-go test -run TestGetClient        # Teste específico
-./testes/test-rbac.sh             # Suite completa RBAC (40+ cenários)
+go test -v ./internal/... -race              # Todos os testes com race detector
+go test -v ./internal/healthcheck/... -race  # Pacote específico
+go test -run TestGetClient ./internal/...    # Função específica em todos os pacotes
+./testes/test-rbac.sh                        # Suite completa RBAC (40+ cenários)
 
 # Debug
 tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor
@@ -465,6 +469,8 @@ history.Log(entry)
 **Monaco no CodeEditorTab**: usa `@monaco-editor/react` direto (sem `MonacoYamlEditor`), detecta linguagem pela extensão do arquivo. **Não chama `configureMonacoYaml`** — evita conflito com o singleton em `MonacoYamlEditor.tsx`. Sidebar arrastável via `ResizeDivider` (mín 160px, máx 520px); largura e último repo persistidos em `localStorage`.
 
 **LSP (Language Server Protocol)**: `code_editor_lsp.go` gerencia processos `gopls`/`pyright` por repositório via `sync.Map` (key: `repoId/lang`). Sessões inativas > 10min são encerradas; cleanup a cada 5min. JSON-RPC via stdin/stdout com header `Content-Length`. Frontend registra providers nativos do Monaco **uma única vez** por sessão (flags `__monacoTSConfigured`, `__monacoGoLSPRegistered`, `__monacoPyLSPRegistered`) usando variáveis globais `window.__lspActiveRepoId` e `window.__lspActiveFilePath` para comunicar o arquivo ativo. Polling de diagnósticos a cada 2,5s via `setModelMarkers`. `gopls` esperado em `~/go/bin/gopls` ou PATH; `pyright`/`pylsp` no PATH (instalar com `npm i -g pyright` ou `pipx install pyright`); `lspVersionRef` incrementado a cada `updateTabContent` e troca de aba. **Nunca registrar `registerCompletionItemProvider("go"|"python", ...)` mais de uma vez** — flag global previne duplicação. `__lspApplyDiagnostics(model, diags, owner)` aceita owner genérico (`"gopls"` ou `"pyright"`) para não sobrescrever markers entre linguagens.
+
+**Por que não usar `monaco-languageclient`**: a v8+ exige `@codingame/monaco-vscode-editor-api` como peer dependency — uma fork do Monaco que substituiria o `monaco-editor` padrão, quebrando `monaco-yaml`, os workers de YAML e toda a configuração atual. A solução adotada usa providers nativos do Monaco (`registerCompletionItemProvider`, `registerHoverProvider`, `registerDefinitionProvider`, `setModelMarkers`) com chamadas HTTP ao backend Go que faz proxy JSON-RPC para o processo do language server.
 
 **Path traversal**: `ReadFile`/`WriteFile` verificam `strings.HasPrefix(fullPath, repoDir)` antes de operar.
 

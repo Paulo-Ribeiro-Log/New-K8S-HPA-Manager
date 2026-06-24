@@ -55,6 +55,10 @@ import {
   ExternalLink,
   WrapText,
   Locate,
+  Layers,
+  Play,
+  FlaskConical,
+  ServerCrash,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -508,6 +512,8 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   const [logs, setLogs] = useState<string[]>([]);
   const [cloning, setCloning] = useState(false);
   const [error, setError] = useState("");
+  const [existingId, setExistingId] = useState("");
+  const [success, setSuccess] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -516,7 +522,7 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
       setProfiles(fresh);
       const defaultId = localStorage.getItem("ce_default_profile") ?? "";
       setSelectedProfileId(defaultId);
-      setUrl(""); setBranch(""); setLogs([]); setError("");
+      setUrl(""); setBranch(""); setLogs([]); setError(""); setExistingId(""); setSuccess(false);
     }
   }, [open]);
 
@@ -531,15 +537,42 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   async function doClone() {
     const parsed = parseGitHubUrl(url);
     if (!parsed) { setError("URL inválida. Use https://github.com/owner/repo"); return; }
-    setError(""); setLogs([]); setCloning(true);
+    setError(""); setExistingId(""); setSuccess(false); setLogs([]); setCloning(true);
     const authToken = localStorage.getItem("auth_token") || "";
     const profileToken = profiles.find(p => p.id === selectedProfileId)?.token;
-    const res = await fetch(`${API_BASE}/code-editor/clone`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
-      body: JSON.stringify({ ...parsed, branch, ...(profileToken ? { token: profileToken } : {}) }),
-    });
-    if (!res.body) { setError("Sem resposta SSE"); setCloning(false); return; }
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/code-editor/clone`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+        body: JSON.stringify({ ...parsed, branch, ...(profileToken ? { token: profileToken } : {}) }),
+      });
+    } catch (e) {
+      setError("Falha de conexão com o servidor.");
+      setCloning(false);
+      return;
+    }
+
+    // Trata respostas de erro pré-clone (não são SSE)
+    if (!res.ok) {
+      setCloning(false);
+      try {
+        const data = await res.json();
+        if (res.status === 409) {
+          setExistingId(data.id ?? "");
+          setError("Repositório já clonado localmente.");
+        } else if (res.status === 400) {
+          setError(data.error || "Requisição inválida.");
+        } else {
+          setError(data.error || `Erro ao clonar (HTTP ${res.status}).`);
+        }
+      } catch {
+        setError(`Erro ao clonar (HTTP ${res.status}).`);
+      }
+      return;
+    }
+
+    if (!res.body) { setError("Sem resposta do servidor."); setCloning(false); return; }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -556,12 +589,15 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
         try {
           const d = JSON.parse(dl.slice(5));
           if (d.message) setLogs(l => [...l, d.message]);
-          if (d.done) { if (d.error) setError(d.error); else doneId = d.id; }
+          if (d.done) {
+            if (d.error) setError(d.error);
+            else { doneId = d.id; setSuccess(true); setLogs(l => [...l, "✅ Clone concluído com sucesso!"]); }
+          }
         } catch (_) {}
       }
     }
     setCloning(false);
-    if (doneId) { setTimeout(() => { onDone(doneId); onClose(); }, 800); }
+    if (doneId) { setTimeout(() => { onDone(doneId); onClose(); }, 1200); }
   }
 
   useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight; }, [logs]);
@@ -595,14 +631,34 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
           )}
           {logs.length > 0 && (
             <div ref={logsRef} className="bg-black/50 rounded p-2 h-32 overflow-y-auto font-mono text-xs space-y-0.5">
-              {logs.map((l, i) => <div key={i} className="text-green-300/80">{l}</div>)}
+              {logs.map((l, i) => (
+                <div key={i} className={l.startsWith("✅") ? "text-emerald-400" : "text-green-300/80"}>{l}</div>
+              ))}
             </div>
           )}
-          {error && <div className="flex items-center gap-2 text-red-400 text-xs"><AlertCircle className="w-3 h-3" />{error}</div>}
+          {success && !cloning && (
+            <div className="flex items-center gap-2 text-emerald-400 text-xs">
+              <CheckCircle2 className="w-3 h-3 flex-shrink-0" />
+              Repositório clonado com sucesso! Abrindo...
+            </div>
+          )}
+          {error && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-red-400 text-xs">
+                <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+              </div>
+              {existingId && (
+                <Button size="sm" variant="outline" className="text-xs h-7 w-full"
+                  onClick={() => { onDone(existingId); onClose(); }}>
+                  Abrir repositório existente
+                </Button>
+              )}
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={cloning}>Cancelar</Button>
-          <Button onClick={doClone} disabled={cloning || !url}>
+          <Button onClick={doClone} disabled={cloning || !url || success}>
             {cloning ? <><Loader2 className="w-3 h-3 animate-spin mr-1" />Clonando...</> : "Clonar"}
           </Button>
         </DialogFooter>
@@ -1719,7 +1775,7 @@ export function CodeEditorTab() {
   const [grepResults, setGrepResults] = useState<CodeEditorGrepMatch[]>([]);
 
   // Sidebar
-  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log" | "replace">("files");
+  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log" | "replace" | "k8s">("files");
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem("ce_sidebar_width");
     return saved ? parseInt(saved) : 224;
@@ -1850,6 +1906,13 @@ export function CodeEditorTab() {
   const [replaceModified, setReplaceModified] = useState(0);
   const [replaceApplied, setReplaceApplied] = useState(false);
   const [replaceError, setReplaceError] = useState("");
+
+  // K8s integration (Fase 9)
+  const [k8sContexts, setK8sContexts] = useState<string[]>([]);
+  const [k8sCluster, setK8sCluster] = useState(() => localStorage.getItem("ce_k8s_cluster") ?? "");
+  const [k8sOutput, setK8sOutput] = useState<{ text: string; kind: "info" | "ok" | "err" | "warn" }[]>([]);
+  const [k8sRunning, setK8sRunning] = useState<"diff" | "dry-run" | "apply" | "get" | null>(null);
+  const k8sOutputRef = useRef<HTMLDivElement>(null);
 
   // Confirm dialog (substitui confirm() nativo)
   const [confirmState, setConfirmState] = useState<{
@@ -2065,6 +2128,7 @@ export function CodeEditorTab() {
 
   async function saveFile() {
     if (!activeTab || !isModified) return;
+    if (activeTab.node.path.startsWith("__k8s_virtual__/")) return; // recurso virtual — não salva em disco
     const tabRepoId = activeTab.repoId;
     const tabPath = activeTab.node.path;
     const tabName = activeTab.node.name;
@@ -2440,6 +2504,120 @@ export function CodeEditorTab() {
     }
   }
 
+  // ── K8s integration (Fase 9) ──────────────────────────────────────────────
+
+  // Detecta manifests K8s no arquivo ativo
+  const k8sManifest = useMemo(() => {
+    const content = activeTab?.currentContent ?? "";
+    if (!content.includes("apiVersion:") || !content.includes("kind:")) return null;
+    const kind = content.match(/^kind:\s*(\S+)/m)?.[1] ?? "";
+    const name = content.match(/^  name:\s*(\S+)/m)?.[1] ?? content.match(/^name:\s*(\S+)/m)?.[1] ?? "";
+    const ns = content.match(/^  namespace:\s*(\S+)/m)?.[1] ?? content.match(/^namespace:\s*(\S+)/m)?.[1] ?? "";
+    if (!kind) return null;
+    return { kind, name, namespace: ns };
+  }, [activeTab?.currentContent]);
+
+  // Carrega contexts quando o painel K8s é aberto
+  useEffect(() => {
+    if (sidePanel !== "k8s" || k8sContexts.length > 0) return;
+    apiClient.k8sListContexts()
+      .then(r => {
+        setK8sContexts(r.contexts ?? []);
+        if (!k8sCluster && r.contexts?.length) {
+          const saved = localStorage.getItem("ce_k8s_cluster") ?? "";
+          setK8sCluster(saved && r.contexts.includes(saved) ? saved : r.contexts[0]);
+        }
+      })
+      .catch(() => {});
+  }, [sidePanel]);
+
+  // Auto-scroll ao adicionar linhas de output
+  useEffect(() => {
+    if (k8sOutputRef.current) k8sOutputRef.current.scrollTop = k8sOutputRef.current.scrollHeight;
+  }, [k8sOutput]);
+
+  function classifyK8sLine(line: string): "ok" | "err" | "warn" | "info" {
+    const low = line.toLowerCase();
+    if (low.includes("error") || low.includes("failed") || low.includes("invalid")) return "err";
+    if (low.includes("warning") || low.includes("warn")) return "warn";
+    if (low.includes("created") || low.includes("configured") || low.includes("unchanged") || low.includes("applied") || low.includes("serverdryr")) return "ok";
+    return "info";
+  }
+
+  async function runK8sSSE(action: "diff" | "dry-run" | "apply") {
+    if (!selectedRepo || !k8sCluster || k8sRunning) return;
+    const content = activeTab?.currentContent ?? "";
+    if (!content.trim()) return;
+    setK8sRunning(action);
+    setK8sOutput([]);
+    const token = localStorage.getItem("auth_token") || "";
+    const endpoint = `${API_BASE}/code-editor/repos/${selectedRepo.id}/k8s/${action}`;
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ cluster: k8sCluster, content }),
+      });
+      if (!res.body) { setK8sOutput([{ text: "Sem resposta do servidor", kind: "err" }]); return; }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const events = buf.split("\n\n");
+        buf = events.pop() ?? "";
+        for (const evt of events) {
+          const dl = evt.split("\n").find(l => l.startsWith("data:"));
+          if (!dl) continue;
+          try {
+            const d = JSON.parse(dl.slice(5));
+            if (d.line !== undefined) setK8sOutput(o => [...o, { text: d.line, kind: classifyK8sLine(d.line) }]);
+            if (d.done && d.error) setK8sOutput(o => [...o, { text: `Erro: ${d.error}`, kind: "err" }]);
+          } catch (_) {}
+        }
+      }
+    } catch (e: any) {
+      setK8sOutput(o => [...o, { text: `Erro: ${e.message}`, kind: "err" }]);
+    } finally {
+      setK8sRunning(null);
+    }
+  }
+
+  async function runK8sGet() {
+    if (!selectedRepo || !k8sCluster || k8sRunning || !k8sManifest?.kind || !k8sManifest?.name) return;
+    setK8sRunning("get");
+    setK8sOutput([]);
+    try {
+      const r = await apiClient.k8sGetResource(
+        selectedRepo.id, k8sCluster, k8sManifest.kind, k8sManifest.name, k8sManifest.namespace,
+      );
+      // Abre o conteúdo em nova aba no editor como arquivo virtual
+      const virtualNode: CodeEditorFileNode = {
+        name: `${k8sManifest.kind}-${k8sManifest.name}-cluster.yaml`,
+        path: `__k8s_virtual__/${k8sManifest.kind}-${k8sManifest.name}.yaml`,
+        type: "file",
+      };
+      const existingIdx = openTabs.findIndex(t => t.node.path === virtualNode.path);
+      if (existingIdx >= 0) {
+        setOpenTabs(prev => prev.map((t, i) => i === existingIdx
+          ? { ...t, currentContent: r.content, savedContent: r.content, initialContent: r.content }
+          : t));
+        setActiveTabIdx(existingIdx);
+      } else {
+        const newTab: OpenTab = { node: virtualNode, initialContent: r.content, currentContent: r.content, savedContent: r.content, repoId: selectedRepo.id };
+        setOpenTabs(prev => [...prev, newTab]);
+        setActiveTabIdx(openTabs.length);
+      }
+      addToast("success", `${k8sManifest.kind}/${k8sManifest.name} carregado`);
+    } catch (e: any) {
+      setK8sOutput([{ text: `Erro: ${e.message}`, kind: "err" }]);
+    } finally {
+      setK8sRunning(null);
+    }
+  }
+
   // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
   useEffect(() => { saveFileRef.current = saveFile; });
   useEffect(() => { openFileRef.current = openFile; });
@@ -2782,6 +2960,7 @@ export function CodeEditorTab() {
     { id: "git" as const, label: `Git${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}` },
     { id: "log" as const, label: "Log" },
     { id: "replace" as const, label: "Replace" },
+    { id: "k8s" as const, label: "K8s" },
   ];
 
   return (
@@ -3281,6 +3460,110 @@ export function CodeEditorTab() {
                     )}
                   </div>
                 </ScrollArea>
+              </div>
+            )}
+
+            {/* ── Painel K8s (Fase 9) ── */}
+            {sidePanel === "k8s" && (
+              <div className="flex flex-col h-full min-h-0">
+                <div className="p-2 space-y-2 flex-shrink-0">
+                  <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                    <Layers className="w-3 h-3" /> Integração Kubernetes
+                  </p>
+
+                  {/* Cluster selector */}
+                  <div>
+                    <label className="text-[10px] text-muted-foreground">Cluster (context)</label>
+                    <select
+                      className="w-full mt-0.5 text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground"
+                      value={k8sCluster}
+                      onChange={e => { setK8sCluster(e.target.value); localStorage.setItem("ce_k8s_cluster", e.target.value); }}
+                    >
+                      {k8sContexts.length === 0 && <option value="">Carregando...</option>}
+                      {k8sContexts.map(ctx => <option key={ctx} value={ctx}>{ctx}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Manifest detectado */}
+                  {k8sManifest ? (
+                    <div className="bg-muted/40 border border-border/30 rounded p-1.5 text-[10px] font-mono text-foreground/80">
+                      <span className="text-primary font-semibold">{k8sManifest.kind}</span>
+                      {k8sManifest.name && <span> / {k8sManifest.name}</span>}
+                      {k8sManifest.namespace && <span className="text-muted-foreground"> ({k8sManifest.namespace})</span>}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground italic">Nenhum manifest K8s detectado no arquivo ativo</p>
+                  )}
+
+                  {/* Ações */}
+                  <div className="grid grid-cols-2 gap-1">
+                    <Button
+                      size="sm" variant="outline" className="h-7 text-xs gap-1"
+                      disabled={!k8sCluster || !selectedRepo || !!k8sRunning}
+                      onClick={() => runK8sSSE("diff")}
+                    >
+                      {k8sRunning === "diff" ? <Loader2 className="w-3 h-3 animate-spin" /> : <GitCompare className="w-3 h-3" />}
+                      Diff
+                    </Button>
+                    <Button
+                      size="sm" variant="outline" className="h-7 text-xs gap-1"
+                      disabled={!k8sCluster || !selectedRepo || !!k8sRunning}
+                      onClick={() => runK8sSSE("dry-run")}
+                    >
+                      {k8sRunning === "dry-run" ? <Loader2 className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
+                      Dry Run
+                    </Button>
+                    <Button
+                      size="sm" variant="default" className="h-7 text-xs gap-1 col-span-2"
+                      disabled={!k8sCluster || !selectedRepo || !!k8sRunning}
+                      onClick={async () => { if (await showConfirm(`Aplicar o manifest no cluster "${k8sCluster}"?`)) runK8sSSE("apply"); }}
+                    >
+                      {k8sRunning === "apply" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                      Apply
+                    </Button>
+                    <Button
+                      size="sm" variant="outline" className="h-7 text-xs gap-1 col-span-2"
+                      disabled={!k8sCluster || !selectedRepo || !!k8sRunning || !k8sManifest?.name}
+                      onClick={() => runK8sGet()}
+                    >
+                      {k8sRunning === "get" ? <Loader2 className="w-3 h-3 animate-spin" /> : <ServerCrash className="w-3 h-3" />}
+                      Get recurso atual
+                    </Button>
+                  </div>
+
+                  {/* Botão limpar output */}
+                  {k8sOutput.length > 0 && (
+                    <button
+                      onClick={() => setK8sOutput([])}
+                      className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1"
+                    >
+                      <X className="w-2.5 h-2.5" /> Limpar output
+                    </button>
+                  )}
+                </div>
+
+                {/* Output panel */}
+                <div
+                  ref={k8sOutputRef}
+                  className="flex-1 min-h-0 overflow-y-auto border-t border-border/30 bg-black/20 p-2"
+                >
+                  {k8sOutput.length === 0 && !k8sRunning && (
+                    <p className="text-[10px] text-muted-foreground italic text-center mt-4">Output aparecerá aqui</p>
+                  )}
+                  {k8sRunning && k8sOutput.length === 0 && (
+                    <p className="text-[10px] text-muted-foreground italic text-center mt-4 flex items-center justify-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Executando...
+                    </p>
+                  )}
+                  {k8sOutput.map((line, i) => (
+                    <div key={i} className={`text-[11px] font-mono leading-5 whitespace-pre-wrap break-all ${
+                      line.kind === "err" ? "text-red-400" :
+                      line.kind === "ok"  ? "text-green-400" :
+                      line.kind === "warn" ? "text-yellow-400" :
+                      "text-foreground/80"
+                    }`}>{line.text || " "}</div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
