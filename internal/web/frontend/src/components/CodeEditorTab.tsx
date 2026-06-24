@@ -512,6 +512,8 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   const [logs, setLogs] = useState<string[]>([]);
   const [cloning, setCloning] = useState(false);
   const [error, setError] = useState("");
+  const [existingId, setExistingId] = useState("");
+  const [success, setSuccess] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -520,7 +522,7 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
       setProfiles(fresh);
       const defaultId = localStorage.getItem("ce_default_profile") ?? "";
       setSelectedProfileId(defaultId);
-      setUrl(""); setBranch(""); setLogs([]); setError("");
+      setUrl(""); setBranch(""); setLogs([]); setError(""); setExistingId(""); setSuccess(false);
     }
   }, [open]);
 
@@ -535,15 +537,42 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   async function doClone() {
     const parsed = parseGitHubUrl(url);
     if (!parsed) { setError("URL inválida. Use https://github.com/owner/repo"); return; }
-    setError(""); setLogs([]); setCloning(true);
+    setError(""); setExistingId(""); setSuccess(false); setLogs([]); setCloning(true);
     const authToken = localStorage.getItem("auth_token") || "";
     const profileToken = profiles.find(p => p.id === selectedProfileId)?.token;
-    const res = await fetch(`${API_BASE}/code-editor/clone`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
-      body: JSON.stringify({ ...parsed, branch, ...(profileToken ? { token: profileToken } : {}) }),
-    });
-    if (!res.body) { setError("Sem resposta SSE"); setCloning(false); return; }
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/code-editor/clone`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+        body: JSON.stringify({ ...parsed, branch, ...(profileToken ? { token: profileToken } : {}) }),
+      });
+    } catch (e) {
+      setError("Falha de conexão com o servidor.");
+      setCloning(false);
+      return;
+    }
+
+    // Trata respostas de erro pré-clone (não são SSE)
+    if (!res.ok) {
+      setCloning(false);
+      try {
+        const data = await res.json();
+        if (res.status === 409) {
+          setExistingId(data.id ?? "");
+          setError("Repositório já clonado localmente.");
+        } else if (res.status === 400) {
+          setError(data.error || "Requisição inválida.");
+        } else {
+          setError(data.error || `Erro ao clonar (HTTP ${res.status}).`);
+        }
+      } catch {
+        setError(`Erro ao clonar (HTTP ${res.status}).`);
+      }
+      return;
+    }
+
+    if (!res.body) { setError("Sem resposta do servidor."); setCloning(false); return; }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -560,12 +589,15 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
         try {
           const d = JSON.parse(dl.slice(5));
           if (d.message) setLogs(l => [...l, d.message]);
-          if (d.done) { if (d.error) setError(d.error); else doneId = d.id; }
+          if (d.done) {
+            if (d.error) setError(d.error);
+            else { doneId = d.id; setSuccess(true); setLogs(l => [...l, "✅ Clone concluído com sucesso!"]); }
+          }
         } catch (_) {}
       }
     }
     setCloning(false);
-    if (doneId) { setTimeout(() => { onDone(doneId); onClose(); }, 800); }
+    if (doneId) { setTimeout(() => { onDone(doneId); onClose(); }, 1200); }
   }
 
   useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight; }, [logs]);
@@ -599,14 +631,34 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
           )}
           {logs.length > 0 && (
             <div ref={logsRef} className="bg-black/50 rounded p-2 h-32 overflow-y-auto font-mono text-xs space-y-0.5">
-              {logs.map((l, i) => <div key={i} className="text-green-300/80">{l}</div>)}
+              {logs.map((l, i) => (
+                <div key={i} className={l.startsWith("✅") ? "text-emerald-400" : "text-green-300/80"}>{l}</div>
+              ))}
             </div>
           )}
-          {error && <div className="flex items-center gap-2 text-red-400 text-xs"><AlertCircle className="w-3 h-3" />{error}</div>}
+          {success && !cloning && (
+            <div className="flex items-center gap-2 text-emerald-400 text-xs">
+              <CheckCircle2 className="w-3 h-3 flex-shrink-0" />
+              Repositório clonado com sucesso! Abrindo...
+            </div>
+          )}
+          {error && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-red-400 text-xs">
+                <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+              </div>
+              {existingId && (
+                <Button size="sm" variant="outline" className="text-xs h-7 w-full"
+                  onClick={() => { onDone(existingId); onClose(); }}>
+                  Abrir repositório existente
+                </Button>
+              )}
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={cloning}>Cancelar</Button>
-          <Button onClick={doClone} disabled={cloning || !url}>
+          <Button onClick={doClone} disabled={cloning || !url || success}>
             {cloning ? <><Loader2 className="w-3 h-3 animate-spin mr-1" />Clonando...</> : "Clonar"}
           </Button>
         </DialogFooter>
