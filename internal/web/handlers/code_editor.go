@@ -108,6 +108,11 @@ func (h *CodeEditorHandler) repoDir(id string) string {
 	return filepath.Join(h.reposBase, id)
 }
 
+// ReposBase expõe o caminho base dos repositórios (usado pelo LSP handler).
+func (h *CodeEditorHandler) ReposBase() string {
+	return h.reposBase
+}
+
 // repoID converte owner/repo para o ID local.
 func repoID(owner, repo string) string {
 	return owner + "-" + repo

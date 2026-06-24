@@ -3911,6 +3911,63 @@ class APIClient {
       body: JSON.stringify({ profiles }),
     });
   }
+
+  // ── LSP ──────────────────────────────────────────────────────────────────
+  async lspStatus(id: string, lang: string): Promise<{ available: boolean; running: boolean; lang: string }> {
+    return this.request(`/code-editor/repos/${id}/lsp/status?lang=${lang}`);
+  }
+
+  async lspOpen(id: string, lang: string, path: string, content: string): Promise<{ started: boolean }> {
+    return this.request(`/code-editor/repos/${id}/lsp/open`, {
+      method: "POST",
+      body: JSON.stringify({ lang, path, content }),
+    });
+  }
+
+  async lspChange(id: string, lang: string, path: string, content: string, version: number): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/lsp/change`, {
+      method: "POST",
+      body: JSON.stringify({ lang, path, content, version }),
+    });
+  }
+
+  async lspComplete(
+    id: string, lang: string, path: string, content: string,
+    line: number, character: number, version: number
+  ): Promise<{ items: LspCompletionItem[] }> {
+    return this.request(`/code-editor/repos/${id}/lsp/complete`, {
+      method: "POST",
+      body: JSON.stringify({ lang, path, content, line, character, version }),
+    });
+  }
+
+  async lspHover(
+    id: string, lang: string, path: string, content: string,
+    line: number, character: number, version: number
+  ): Promise<{ contents: string; range?: LspRange } | null> {
+    return this.request(`/code-editor/repos/${id}/lsp/hover`, {
+      method: "POST",
+      body: JSON.stringify({ lang, path, content, line, character, version }),
+    });
+  }
+
+  async lspDefinition(
+    id: string, lang: string, path: string,
+    line: number, character: number
+  ): Promise<{ locations: LspDefinitionLocation[] }> {
+    return this.request(`/code-editor/repos/${id}/lsp/definition`, {
+      method: "POST",
+      body: JSON.stringify({ lang, path, line, character }),
+    });
+  }
+
+  async lspDiagnostics(id: string, lang: string, path: string): Promise<{ diagnostics: LspDiagnostic[] }> {
+    return this.request(`/code-editor/repos/${id}/lsp/diagnostics?lang=${encodeURIComponent(lang)}&path=${encodeURIComponent(path)}`);
+  }
+
+  async lspShutdown(id: string, lang: string): Promise<void> {
+    return this.request(`/code-editor/repos/${id}/lsp?lang=${lang}`, { method: "DELETE" });
+  }
 }
 
 // Code Editor types
@@ -4009,6 +4066,32 @@ export interface CodeEditorConflictBlock {
   ours: string;       // conteúdo do HEAD
   theirs: string;     // conteúdo do branch vindo
   label: string;      // nome do branch/ref vindo
+}
+
+// LSP types
+export interface LspCompletionItem {
+  label: string;
+  kind: number;
+  detail?: string;
+  documentation?: string;
+  insertText?: string;
+}
+
+export interface LspRange {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+}
+
+export interface LspDiagnostic {
+  range: LspRange;
+  severity: number; // 1=Error 2=Warning 3=Info 4=Hint
+  message: string;
+  source?: string;
+}
+
+export interface LspDefinitionLocation {
+  path: string;
+  range: LspRange;
 }
 
 // Singleton instance
