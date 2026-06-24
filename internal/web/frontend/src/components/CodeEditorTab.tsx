@@ -1860,7 +1860,9 @@ export function CodeEditorTab() {
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const saveFileRef = useRef<() => void>(() => {});
-  const lspVersionRef = useRef<number>(0); // versão do documento atual para LSP
+  const openFileRef = useRef<(node: CodeEditorFileNode) => Promise<void>>(async () => {});
+  const pendingNavigationRef = useRef<{ line: number; col: number } | null>(null);
+  const lspVersionRef = useRef<number>(0);
   const lspProviderDisposables = useRef<MonacoEditorNS.IDisposable[]>([]);
   const { toasts, addToast } = useToasts();
 
@@ -1884,6 +1886,20 @@ export function CodeEditorTab() {
     localStorage.setItem("ce_sidebar_width", String(sidebarWidth));
   }, [sidebarWidth]);
 
+  // ── LSP: aplica navegação pendente após troca de aba (go-to-definition cross-file) ──
+  useEffect(() => {
+    if (!pendingNavigationRef.current || !activeTab) return;
+    const { line, col } = pendingNavigationRef.current;
+    pendingNavigationRef.current = null;
+    // requestAnimationFrame garante que Monaco já atualizou o modelo com o novo conteúdo
+    requestAnimationFrame(() => {
+      editorRef.current?.revealLineInCenter(line);
+      editorRef.current?.setPosition({ lineNumber: line, column: col });
+      editorRef.current?.focus();
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab?.node.path]);
+
   // ── LSP: atualiza vars globais e faz polling de diagnósticos ──
   useEffect(() => {
     if (!activeTab) return;
@@ -1904,7 +1920,8 @@ export function CodeEditorTab() {
         const applyFn = (window as any).__lspApplyDiagnostics;
         if (applyFn && editorRef.current) {
           const model = editorRef.current.getModel();
-          if (model) applyFn(model, result.diagnostics ?? []);
+          const owner = lang === "python" ? "pyright" : "gopls";
+          if (model) applyFn(model, result.diagnostics ?? [], owner);
         }
       } catch { /* silencioso */ }
     };
@@ -2425,6 +2442,7 @@ export function CodeEditorTab() {
 
   // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
   useEffect(() => { saveFileRef.current = saveFile; });
+  useEffect(() => { openFileRef.current = openFile; });
 
   // Sincroniza fontSize/wordWrap com Monaco sem recriar o editor
   useEffect(() => {
@@ -2499,6 +2517,40 @@ export function CodeEditorTab() {
       ts.typescriptDefaults.setDiagnosticsOptions(diagOpts);
       ts.javascriptDefaults.setCompilerOptions({ ...compilerOpts, checkJs: false });
       ts.javascriptDefaults.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: false });
+    }
+
+    // ── Go-to-definition cross-file: intercepta abertura de URIs lspdef:// ──
+    // Monaco standalone não sabe abrir arquivos externos; substituímos o
+    // openCodeEditor do serviço interno para usar nosso sistema de abas.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const editorSvc = (editor as any)._codeEditorService;
+    if (editorSvc && typeof editorSvc.openCodeEditor === 'function' && !(window as any).__lspDefHandlerRegistered) {
+      (window as any).__lspDefHandlerRegistered = true;
+      editorSvc.openCodeEditor = async (input: any) => {
+        const uri = input?.resource;
+        if (!uri || uri.scheme !== 'lspdef') return null;
+
+        // uri.path = "/<repoId>/<relative/path/to/file>"
+        const parts = (uri.path as string).replace(/^\//, '').split('/');
+        const [repoId, ...fileParts] = parts;
+        const filePath = fileParts.join('/');
+        const line: number = input.options?.selection?.startLineNumber ?? 1;
+        const col: number  = input.options?.selection?.startColumn  ?? 1;
+
+        const activeFilePath = (window as any).__lspActiveFilePath as string | undefined;
+        if (filePath === activeFilePath) {
+          // Mesmo arquivo — navega direto
+          editorRef.current?.revealLineInCenter(line);
+          editorRef.current?.setPosition({ lineNumber: line, column: col });
+          editorRef.current?.focus();
+        } else {
+          // Arquivo diferente — abre em nova aba e navega após mount
+          pendingNavigationRef.current = { line, col };
+          const fileName = filePath.split('/').pop() ?? filePath;
+          await openFileRef.current({ path: filePath, name: fileName, type: 'file', children: [] });
+        }
+        return null;
+      };
     }
 
     // ── Go via gopls — providers registrados uma vez por sessão ──────────────
@@ -2594,7 +2646,7 @@ export function CodeEditorTab() {
             );
             if (!result?.locations?.length) return null;
             return result.locations.map(loc => ({
-              uri: monacoInstance.Uri.parse(`inmemory://lsp/${loc.path}`),
+              uri: monacoInstance.Uri.from({ scheme: 'lspdef', path: `/${repoId}/${loc.path}` }),
               range: {
                 startLineNumber: loc.range.start.line + 1,
                 startColumn: loc.range.start.character + 1,
@@ -2609,10 +2661,11 @@ export function CodeEditorTab() {
       // guarda disposables para limpar se necessário
       lspProviderDisposables.current = [compDisp, hoverDisp, defDisp];
 
-      // expõe helper de diagnósticos globalmente
+      // expõe helper de diagnósticos globalmente (genérico por owner/source)
       (window as any).__lspApplyDiagnostics = (
         model: MonacoEditorNS.editor.ITextModel,
-        diagnostics: Array<{ range: { start: { line: number; character: number }; end: { line: number; character: number } }; severity: number; message: string; source?: string }>
+        diagnostics: Array<{ range: { start: { line: number; character: number }; end: { line: number; character: number } }; severity: number; message: string; source?: string }>,
+        owner = "lsp"
       ) => {
         const markers = diagnostics.map(d => ({
           startLineNumber: d.range.start.line + 1,
@@ -2621,10 +2674,105 @@ export function CodeEditorTab() {
           endColumn: d.range.end.character + 1,
           severity: lspSevToMonaco(d.severity),
           message: d.message,
-          source: d.source ?? "gopls",
+          source: d.source ?? owner,
         } as MonacoEditorNS.editor.IMarkerData));
-        monacoInstance.editor.setModelMarkers(model, "gopls", markers);
+        monacoInstance.editor.setModelMarkers(model, owner, markers);
       };
+    }
+
+    // ── Python via pyright — providers registrados uma vez por sessão ────────
+    if (!(window as any).__monacoPyLSPRegistered) {
+      (window as any).__monacoPyLSPRegistered = true;
+
+      const lspKindToMonaco = (k: number): MonacoEditorNS.languages.CompletionItemKind => {
+        const m = monacoInstance.languages.CompletionItemKind;
+        const map: Record<number, MonacoEditorNS.languages.CompletionItemKind> = {
+          1: m.Text, 2: m.Method, 3: m.Function, 4: m.Constructor, 5: m.Field,
+          6: m.Variable, 7: m.Class, 8: m.Interface, 9: m.Module, 10: m.Property,
+          12: m.Value, 13: m.Enum, 14: m.Keyword, 15: m.Snippet,
+          16: m.Color, 17: m.File, 18: m.Reference, 22: m.TypeParameter,
+        };
+        return map[k] ?? m.Text;
+      };
+
+      monacoInstance.languages.registerCompletionItemProvider("python", {
+        triggerCharacters: [".", "(", " ", "\t", "["],
+        provideCompletionItems: async (model, position) => {
+          const repoId = (window as any).__lspActiveRepoId as string | undefined;
+          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          if (!repoId || !filePath) return { suggestions: [] };
+          try {
+            const result = await apiClient.lspComplete(
+              repoId, "python", filePath, model.getValue(),
+              position.lineNumber - 1, position.column - 1,
+              lspVersionRef.current
+            );
+            const suggestions = (result.items ?? []).map(item => ({
+              label: item.label,
+              kind: lspKindToMonaco(item.kind),
+              detail: item.detail,
+              documentation: item.documentation ? { value: item.documentation } : undefined,
+              insertText: item.insertText ?? item.label,
+              range: {
+                startLineNumber: position.lineNumber,
+                endLineNumber: position.lineNumber,
+                startColumn: position.column,
+                endColumn: position.column,
+              },
+            } as MonacoEditorNS.languages.CompletionItem));
+            return { suggestions };
+          } catch { return { suggestions: [] }; }
+        },
+      });
+
+      monacoInstance.languages.registerHoverProvider("python", {
+        provideHover: async (model, position) => {
+          const repoId = (window as any).__lspActiveRepoId as string | undefined;
+          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          if (!repoId || !filePath) return null;
+          try {
+            const result = await apiClient.lspHover(
+              repoId, "python", filePath, model.getValue(),
+              position.lineNumber - 1, position.column - 1,
+              lspVersionRef.current
+            );
+            if (!result?.contents) return null;
+            return {
+              contents: [{ value: result.contents }],
+              range: result.range ? {
+                startLineNumber: result.range.start.line + 1,
+                startColumn: result.range.start.character + 1,
+                endLineNumber: result.range.end.line + 1,
+                endColumn: result.range.end.character + 1,
+              } : undefined,
+            };
+          } catch { return null; }
+        },
+      });
+
+      monacoInstance.languages.registerDefinitionProvider("python", {
+        provideDefinition: async (_model, position) => {
+          const repoId = (window as any).__lspActiveRepoId as string | undefined;
+          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          if (!repoId || !filePath) return null;
+          try {
+            const result = await apiClient.lspDefinition(
+              repoId, "python", filePath,
+              position.lineNumber - 1, position.column - 1
+            );
+            if (!result?.locations?.length) return null;
+            return result.locations.map(loc => ({
+              uri: monacoInstance.Uri.from({ scheme: 'lspdef', path: `/${repoId}/${loc.path}` }),
+              range: {
+                startLineNumber: loc.range.start.line + 1,
+                startColumn: loc.range.start.character + 1,
+                endLineNumber: loc.range.end.line + 1,
+                endColumn: loc.range.end.character + 1,
+              },
+            }));
+          } catch { return null; }
+        },
+      });
     }
   };
 

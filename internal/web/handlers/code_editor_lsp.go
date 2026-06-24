@@ -268,12 +268,22 @@ func getOrCreateSession(repoId, lang, repoDir string) (*lspSession, error) {
 	}
 
 	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, bin)
-	if lang == "go" {
+	var cmd *exec.Cmd
+	switch lang {
+	case "go":
 		cmd = exec.CommandContext(ctx, bin, "serve")
+	case "python":
+		cmd = exec.CommandContext(ctx, bin, "--stdio")
+	default:
+		cmd = exec.CommandContext(ctx, bin)
 	}
 	cmd.Dir = repoDir
-	cmd.Env = append(os.Environ(), "GOPATH="+filepath.Join(os.Getenv("HOME"), "go"))
+	env := append(os.Environ(), "GOPATH="+filepath.Join(os.Getenv("HOME"), "go"))
+	if lang == "python" {
+		// pyright precisa do PATH para encontrar o interpretador python
+		env = append(env, "PYTHONPATH="+repoDir)
+	}
+	cmd.Env = env
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

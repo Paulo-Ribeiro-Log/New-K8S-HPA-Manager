@@ -169,7 +169,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 ### Autocomplete / LSP (complexo — não implementado)
 - [x] **TypeScript/JavaScript** — worker built-in do Monaco configurado em `handleEditorMount` (flag `__monacoTSConfigured`); completions, erros inline, hover, go-to-definition sem instalar nada
 - [x] **Go via gopls** — `code_editor_lsp.go`: processos gopls por repositório, sessões persistentes (10min timeout), JSON-RPC via stdin/stdout; providers Monaco globais (flag `__monacoGoLSPRegistered`); polling de diagnósticos 2,5s; endpoints `/lsp/open|change|complete|hover|definition|diagnostics|status`
-- [ ] **Python via pyright** — mesma arquitetura do gopls; `isSupportedLang("python")` já suportado no backend; falta registrar `registerCompletionItemProvider("python", ...)` no frontend
+- [x] **Python via pyright** — providers Monaco registrados com flag `__monacoPyLSPRegistered`; pyright iniciado com `--stdio`; PYTHONPATH=repoDir; owner `"pyright"` no `setModelMarkers`
 
 ---
 
