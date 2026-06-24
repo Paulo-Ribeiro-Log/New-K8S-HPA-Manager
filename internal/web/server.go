@@ -472,19 +472,18 @@ func (s *Server) setupRoutes() {
 		s.heartbeatMutex.Unlock()
 
 		// Resetar timer de shutdown (thread-safe)
-		// Usar 25 minutos (margem de 5 minutos sobre os 20 configurados)
-		// Isso garante que heartbeats atrasados não causem shutdown prematuro
+		// Usar 45 minutos (margem de 5 minutos sobre os 40 configurados)
 		s.timerMutex.Lock()
 		if s.shutdownTimer != nil {
 			s.shutdownTimer.Stop()
 		}
-		s.shutdownTimer = time.AfterFunc(25*time.Minute, s.autoShutdown)
+		s.shutdownTimer = time.AfterFunc(45*time.Minute, s.autoShutdown)
 		s.timerMutex.Unlock()
 
 		// Log para debugging
 		fmt.Printf("💓 Heartbeat recebido: %s | Próximo shutdown em: %s\n",
 			now.Format("15:04:05"),
-			now.Add(25*time.Minute).Format("15:04:05"))
+			now.Add(45*time.Minute).Format("15:04:05"))
 
 		c.JSON(200, gin.H{
 			"status":         "alive",
@@ -1552,16 +1551,15 @@ func (s *Server) setupStatic() {
 
 // startInactivityMonitor inicia o monitoramento de inatividade
 func (s *Server) startInactivityMonitor() {
-	// Timer inicial de 30 minutos (mais tempo que o normal para dar tempo do primeiro heartbeat)
-	// O primeiro heartbeat do frontend vai resetar para 25 minutos (margem de 5min)
+	// Timer inicial de 45 minutos (aguardando primeiro heartbeat do frontend)
 	s.timerMutex.Lock()
-	s.shutdownTimer = time.AfterFunc(30*time.Minute, s.autoShutdown)
+	s.shutdownTimer = time.AfterFunc(45*time.Minute, s.autoShutdown)
 	s.timerMutex.Unlock()
 
 	fmt.Println("⏰ Monitor de inatividade ativado:")
 	fmt.Println("   - Frontend deve enviar heartbeat a cada 5 minutos")
-	fmt.Println("   - Servidor desligará após 25 minutos sem heartbeat (margem de segurança)")
-	fmt.Println("   - Timer inicial: 30 minutos (aguardando primeiro heartbeat)")
+	fmt.Println("   - Servidor desligará após 40 minutos sem heartbeat")
+	fmt.Println("   - Timer inicial: 45 minutos (aguardando primeiro heartbeat)")
 }
 
 // autoShutdown desliga o servidor automaticamente por inatividade
@@ -1576,7 +1574,7 @@ func (s *Server) autoShutdown() {
 	// Margem de segurança: timer está configurado para 25 minutos,
 	// mas verificamos se passou o mínimo de 20 minutos antes de desligar
 	// Isso protege contra race conditions, atrasos de rede, etc.
-	if timeSinceLastHeartbeat < 20*time.Minute {
+	if timeSinceLastHeartbeat < 40*time.Minute {
 		fmt.Printf("⚠️  Timer de shutdown disparou prematuramente (apenas %.1f minutos)\n", timeSinceLastHeartbeat.Minutes())
 		fmt.Println("✅ Heartbeat ainda ativo, shutdown cancelado")
 
@@ -1585,10 +1583,9 @@ func (s *Server) autoShutdown() {
 		if s.shutdownTimer != nil {
 			s.shutdownTimer.Stop()
 		}
-		// Esperar o tempo restante até completar os 20 minutos + margem
-		remaining := (20 * time.Minute) - timeSinceLastHeartbeat + (5 * time.Minute)
+		remaining := (40 * time.Minute) - timeSinceLastHeartbeat + (5 * time.Minute)
 		if remaining < 1*time.Minute {
-			remaining = 1 * time.Minute // Mínimo de 1 minuto
+			remaining = 1 * time.Minute
 		}
 		s.shutdownTimer = time.AfterFunc(remaining, s.autoShutdown)
 		s.timerMutex.Unlock()
@@ -1603,7 +1600,7 @@ func (s *Server) autoShutdown() {
 	fmt.Printf("⏰ Último heartbeat: %s (há %.0f minutos)\n",
 		lastHeartbeat.Format("15:04:05"),
 		timeSinceLastHeartbeat.Minutes())
-	fmt.Println("🛑 Nenhuma página web conectada por mais de 20 minutos")
+	fmt.Println("🛑 Nenhuma página web conectada por mais de 40 minutos")
 	fmt.Println("✅ Servidor sendo encerrado...")
 
 	os.Exit(0)
