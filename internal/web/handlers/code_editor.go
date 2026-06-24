@@ -2015,3 +2015,97 @@ func (h *CodeEditorHandler) SaveGitHubProfiles(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
+
+// CreatePR — POST /api/v1/code-editor/repos/:id/pr/create
+// Cria um Pull Request via GitHub API usando o PAT do usuário.
+// Body: { "title", "body", "head", "base" }
+func (h *CodeEditorHandler) CreatePR(c *gin.Context) {
+	id := c.Param("id")
+	dir := filepath.Join(h.reposBase, id)
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repositório não encontrado"})
+		return
+	}
+
+	var req struct {
+		Title string `json:"title" binding:"required"`
+		Body  string `json:"body"`
+		Head  string `json:"head" binding:"required"`
+		Base  string `json:"base" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	owner, repo := ownerRepo(dir)
+	if owner == "" || repo == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "não foi possível determinar owner/repo do repositório"})
+		return
+	}
+
+	token := h.getToken(c)
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "PAT GitHub não configurado — configure em GitHub Releases → perfil"})
+		return
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"title": req.Title,
+		"body":  req.Body,
+		"head":  req.Head,
+		"base":  req.Base,
+	})
+
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls", owner, repo)
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, apiURL, strings.NewReader(string(payload)))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Accept", "application/vnd.github+json")
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "falha ao contatar GitHub API: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated {
+		var ghErr struct {
+			Message string `json:"message"`
+			Errors  []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		_ = json.Unmarshal(respBody, &ghErr)
+		msg := ghErr.Message
+		if len(ghErr.Errors) > 0 {
+			msg += ": " + ghErr.Errors[0].Message
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("GitHub API retornou %d", resp.StatusCode)
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+
+	var pr struct {
+		Number  int    `json:"number"`
+		HTMLURL string `json:"html_url"`
+		Title   string `json:"title"`
+		State   string `json:"state"`
+	}
+	_ = json.Unmarshal(respBody, &pr)
+	c.JSON(http.StatusCreated, gin.H{
+		"number": pr.Number,
+		"url":    pr.HTMLURL,
+		"title":  pr.Title,
+	})
+}

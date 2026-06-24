@@ -667,6 +667,129 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   );
 }
 
+// ─── CreatePRModal ──────────────────────────────────────────────────────────
+
+interface CreatePRModalProps {
+  open: boolean;
+  onClose: () => void;
+  repoId: string;
+  head: string;        // branch atual (source)
+  branches: string[];  // branches disponíveis para base
+}
+
+function CreatePRModal({ open, onClose, repoId, head, branches }: CreatePRModalProps) {
+  const defaultBase = branches.includes("main") ? "main" : branches.includes("master") ? "master" : branches[0] ?? "main";
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [base, setBase] = useState(defaultBase);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<{ number: number; url: string } | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setTitle(head.replace(/[-_/]/g, " ").replace(/\b\w/g, c => c.toUpperCase()));
+      setBody("");
+      setBase(branches.includes("main") ? "main" : branches.includes("master") ? "master" : branches[0] ?? "main");
+      setError("");
+      setResult(null);
+    }
+  }, [open, head, branches]);
+
+  async function submit() {
+    if (!title.trim()) { setError("Título obrigatório"); return; }
+    setLoading(true); setError("");
+    try {
+      const pr = await apiClient.codeEditorCreatePR(repoId, title, body, head, base);
+      setResult({ number: pr.number, url: pr.url });
+    } catch (e: any) {
+      setError(e?.message || "Erro ao criar Pull Request");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <GitPullRequest className="w-4 h-4" />Criar Pull Request
+          </DialogTitle>
+        </DialogHeader>
+
+        {result ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-emerald-400 text-sm">
+              <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              PR #{result.number} criado com sucesso!
+            </div>
+            <Button className="w-full" onClick={() => window.open(result.url, "_blank")}>
+              <ExternalLink className="w-3 h-3 mr-2" />Abrir no GitHub
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Branch origem → destino</label>
+              <div className="flex items-center gap-2 text-xs bg-muted rounded px-2 py-1.5 font-mono">
+                <span className="text-blue-400">{head}</span>
+                <span className="text-muted-foreground">→</span>
+                <select
+                  className="bg-transparent border-none outline-none text-foreground flex-1"
+                  value={base}
+                  onChange={e => setBase(e.target.value)}
+                  disabled={loading}
+                >
+                  {branches.filter(b => b !== head).map(b => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Título *</label>
+              <Input
+                placeholder="Descreva a mudança em uma linha"
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                disabled={loading}
+                onKeyDown={e => e.key === "Enter" && submit()}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Descrição (opcional)</label>
+              <textarea
+                className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground resize-none h-24 outline-none focus:ring-1 focus:ring-ring"
+                placeholder="O que essa mudança faz? Por quê? Como testar?"
+                value={body}
+                onChange={e => setBody(e.target.value)}
+                disabled={loading}
+              />
+            </div>
+            {error && (
+              <div className="flex items-center gap-2 text-red-400 text-xs">
+                <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+              </div>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={loading}>
+            {result ? "Fechar" : "Cancelar"}
+          </Button>
+          {!result && (
+            <Button onClick={submit} disabled={loading || !title.trim()}>
+              {loading ? <><Loader2 className="w-3 h-3 animate-spin mr-1" />Criando...</> : "Criar PR"}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── CommitDialog ───────────────────────────────────────────────────────────
 
 interface CommitDialogProps {
@@ -1890,6 +2013,7 @@ export function CodeEditorTab() {
   const [showConflictResolver, setShowConflictResolver] = useState(false);
   const [conflictFiles, setConflictFiles] = useState<string[]>([]);
   const [showBranchDiff, setShowBranchDiff] = useState(false);
+  const [showCreatePR, setShowCreatePR] = useState(false);
   const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
   const [markdownPreviewWidth, setMarkdownPreviewWidth] = useState(() => {
     const saved = localStorage.getItem("ce_md_preview_width");
@@ -3018,9 +3142,9 @@ export function CodeEditorTab() {
             </Button>
             {branches?.current && branches.current !== "main" && branches.current !== "master" && (
               <Button variant="ghost" size="sm" className="h-6 text-xs gap-1"
-                title={`Abrir Pull Request: ${selectedRepo.owner}/${selectedRepo.repo}`}
-                onClick={() => window.open(`https://github.com/${selectedRepo.owner}/${selectedRepo.repo}/compare/${encodeURIComponent(branches.current)}`, "_blank")}>
-                <ExternalLink className="w-3 h-3" />PR
+                title={`Criar Pull Request: ${selectedRepo.owner}/${selectedRepo.repo}`}
+                onClick={() => setShowCreatePR(true)}>
+                <GitPullRequest className="w-3 h-3" />PR
               </Button>
             )}
           </>
@@ -4118,6 +4242,20 @@ export function CodeEditorTab() {
           repoId={selectedRepo.id}
           branches={branches}
           onClose={() => setShowBranchDiff(false)}
+        />
+      )}
+
+      {/* ── Criar Pull Request ── */}
+      {showCreatePR && selectedRepo && branches?.current && (
+        <CreatePRModal
+          open={showCreatePR}
+          onClose={() => setShowCreatePR(false)}
+          repoId={selectedRepo.id}
+          head={branches.current}
+          branches={[
+            ...(branches.local ?? []),
+            ...(branches.remote ?? []).map((r: string) => r.replace(/^origin\//, "")),
+          ].filter((b, i, a) => b !== branches.current && a.indexOf(b) === i)}
         />
       )}
 

@@ -5,7 +5,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 
 ---
 
-## Estado Atual (branch `editor-github`, último commit `a4320ae8`)
+## Estado Atual (branch `editor-github`, último commit `c06c34f4`)
 
 ### ✅ Concluído — Fase 1 (MVP)
 
@@ -164,7 +164,7 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 - [x] **Copiar caminho** — botão `Copy` na barra do arquivo ativo; `navigator.clipboard.writeText` + toast "Caminho copiado"
 - [x] **Revelar na tree** — botão `Locate` na barra do arquivo ativo; também acessível pelos segmentos do breadcrumb e pelo context menu; o arquivo revelado fica com ring amarelo 1,5s e scroll automático (`data-reveal-path` + `scrollIntoView`)
 - [x] **Context menu (botão direito) na tree** — `onContextMenu` em todos os nós file e dir; estado `{ x, y, node }` com fechamento via `document.mousedown`; itens por tipo: **arquivo** → Abrir / Renomear / Deletar / Copiar caminho / Revelar na tree / Histórico; **pasta** → Novo arquivo aqui / Nova pasta aqui / Renomear / Deletar / Copiar caminho
-- [x] **Botão PR** — aparece no header quando o branch atual não é `main`/`master`; abre `github.com/owner/repo/compare/branch` em nova aba
+- [x] **Botão PR** — aparece no header quando o branch atual não é `main`/`master`; abre `github.com/owner/repo/compare/<branch>` em nova aba. `owner`/`repo` extraídos via `ownerRepo(dir)` (URL remota git), não do ID local — evita quebra com owners com hífen (ex: `casas-bahia`). Branch com `encodeURIComponent` para suportar `/` no nome.
 
 ### Autocomplete / LSP (complexo — não implementado)
 - [x] **TypeScript/JavaScript** — worker built-in do Monaco configurado em `handleEditorMount` (flag `__monacoTSConfigured`); completions, erros inline, hover, go-to-definition sem instalar nada
@@ -318,3 +318,22 @@ var ignoredDirs = map[string]bool{
 - **`git fetch --prune`** é chamado automaticamente ao listar branches — pode demorar se VPN lenta.
 - **Toast** usa `setTimeout` de 4s + remoção por ID — não usa biblioteca externa.
 - **Tipos de retorno** dos métodos commit/branch/checkout retornam `{ message }` contendo o output real do git (não apenas `void`). Usar isso para exibir feedback ao usuário.
+
+---
+
+## Bugs Corrigidos
+
+### CloneDialog sem feedback (commit `624bbec2`)
+O `CloneDialog` ia direto para leitura de SSE sem verificar `res.ok`, então erros pré-clone retornados como JSON (não SSE) eram silenciosos.
+
+| Status | Causa | Mensagem exibida |
+|--------|-------|-----------------|
+| 409 Conflict | Repo já clonado | "Repositório já clonado localmente." + botão "Abrir repositório existente" (usa o `id` do JSON 409) |
+| 400 Bad Request | Limite de 10 repos ou disco insuficiente | Mensagem de erro do JSON |
+| Erro de rede | `fetch` lançou exceção | "Falha de conexão com o servidor." |
+| Sucesso SSE | Clone concluído | "✅ Clone concluído com sucesso!" em verde + fecha em 1,2s |
+
+### Botão PR com URL errada para owners com hífen (commit `c06c34f4`)
+`ListRepos` derivava `owner` e `repo` do ID local (`owner-repo`) com `strings.SplitN(id, "-", 2)` — para `casas-bahia-my-repo` resultava em `owner="casas"`, `repo="bahia-my-repo"`. URL do PR ficava `github.com/casas/bahia-my-repo/compare/branch` (404).
+
+**Correção**: `ListRepos` agora chama `ownerRepo(dir)` que lê a URL remota via `git remote get-url origin` e parseia os dois últimos segmentos do path. Fallback para split por hífen apenas se o remote estiver vazio. Também adicionado `encodeURIComponent` no nome do branch para suportar `/` (ex: `feature/foo`).
