@@ -1349,6 +1349,29 @@ func (h *CodeEditorHandler) ResetFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": out, "path": req.Path})
 }
 
+// Stage — POST /api/v1/code-editor/repos/:id/stage
+// Body: { "files": ["path1", "path2"] } — vazio = git add .
+func (h *CodeEditorHandler) Stage(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Files []string `json:"files"`
+	}
+	c.ShouldBindJSON(&req) //nolint:errcheck
+	var args []string
+	if len(req.Files) == 0 {
+		args = []string{"add", "."}
+	} else {
+		args = append([]string{"add", "--"}, req.Files...)
+	}
+	out, err := runGit(dir, args...)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
 // Unstage — POST /api/v1/code-editor/repos/:id/unstage
 // Body: { "files": ["path1", "path2"] }
 func (h *CodeEditorHandler) Unstage(c *gin.Context) {
