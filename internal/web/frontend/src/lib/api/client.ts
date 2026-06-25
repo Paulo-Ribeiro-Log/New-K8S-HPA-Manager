@@ -3786,6 +3786,20 @@ class APIClient {
     });
   }
 
+  async codeEditorStageFiles(id: string, files: string[]): Promise<{ message: string }> {
+    return this.request(`/code-editor/repos/${id}/stage`, {
+      method: "POST",
+      body: JSON.stringify({ files }),
+    });
+  }
+
+  async codeEditorUnstage(id: string, files: string[]): Promise<{ message: string }> {
+    return this.request(`/code-editor/repos/${id}/unstage`, {
+      method: "POST",
+      body: JSON.stringify({ files }),
+    });
+  }
+
   async codeEditorStash(id: string, message?: string): Promise<{ message: string }> {
     return this.request(`/code-editor/repos/${id}/stash`, {
       method: "POST",

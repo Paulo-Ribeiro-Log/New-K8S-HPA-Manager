@@ -481,20 +481,28 @@ func (h *CodeEditorHandler) GetGitStatus(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 
-	out, err := runGit(dir, "status", "--porcelain")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": out})
+	// Executar git diretamente sem TrimSpace global — o runGit padrão remove espaços
+	// iniciais do output, corrompendo o XY code em linhas como " M arquivo.txt"
+	// (o espaço inicial significa X=vazio, Y=modificado). Sem ele, line[3:] = "rquivo.txt".
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd.Dir = dir
+	rawOut, cmdErr := cmd.CombinedOutput()
+	if cmdErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": string(rawOut)})
 		return
 	}
 
 	files := []GitStatusFile{}
-	for _, line := range strings.Split(out, "\n") {
+	for _, line := range strings.Split(string(rawOut), "\n") {
 		if len(line) < 4 {
 			continue
 		}
-		xy := strings.TrimSpace(line[:2])
+		// XY é sempre 2 chars; preservar espaços (semanticamente importantes)
+		xy := line[:2]
 		path := strings.TrimSpace(line[3:])
-		if xy == "" || path == "" {
+		if strings.TrimSpace(xy) == "" || path == "" {
 			continue
 		}
 		// Renomeado: "old -> new"
@@ -875,6 +883,7 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	}
 
 	var wgPush sync.WaitGroup
+	var rejected bool
 	wgPush.Add(1)
 	go func() {
 		defer wgPush.Done()
@@ -885,12 +894,108 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 			if token != "" {
 				line = strings.ReplaceAll(line, token, "***")
 			}
+			if strings.Contains(line, "[rejected]") || strings.Contains(line, "rejected)") ||
+				(strings.Contains(line, "rejected") && strings.Contains(line, "fetch first")) {
+				rejected = true
+			}
 			sendSSE(line)
 		}
 	}()
 
 	pushErr := cmd.Wait()
-	wgPush.Wait() // garante que toda saída foi enviada antes do "done"
+	wgPush.Wait()
+
+	// Se o push foi rejeitado por divergência, faz pull --rebase e tenta novamente.
+	if pushErr != nil && rejected {
+		sendSSE("")
+		sendSSE("⚠️  Push rejeitado — o remote tem commits novos.")
+		sendSSE("🔄 Fazendo git pull --rebase automaticamente...")
+
+		pullCtx, pullCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		pullCmd, pullCleanup := gitCmdWithToken(pullCtx, dir, token, "pull", "--rebase", "--progress", "origin", branch)
+		defer pullCancel()
+		defer pullCleanup()
+
+		pullStderr, _ := pullCmd.StderrPipe()
+		pullStdout, _ := pullCmd.StdoutPipe()
+		var pullWg sync.WaitGroup
+		pullWg.Add(1)
+		go func() {
+			defer pullWg.Done()
+			scanner := bufio.NewScanner(io.MultiReader(pullStdout, pullStderr))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if token != "" {
+					line = strings.ReplaceAll(line, token, "***")
+				}
+				sendSSE(line)
+			}
+		}()
+		pullErr := pullCmd.Start()
+		if pullErr == nil {
+			pullErr = pullCmd.Wait()
+		}
+		pullWg.Wait()
+
+		if pullErr != nil {
+			sendSSE("❌ Pull --rebase falhou. Resolva os conflitos e tente novamente.")
+			fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pullErr.Error())
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+		}
+
+		// Retry push após pull bem-sucedido
+		sendSSE("")
+		sendSSE("✅ Pull concluído. Repetindo git push...")
+
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer retryCancel()
+		var retryCmd *exec.Cmd
+		if token != "" {
+			originURL, _ := runGit(dir, "remote", "get-url", "origin")
+			authedURL := injectTokenURL(cleanRemoteURL(originURL), token)
+			args := []string{"-c", "credential.helper=", "push", "--progress", authedURL, "HEAD:" + branch}
+			retryCmd = exec.CommandContext(retryCtx, "git", args...)
+			retryCmd.Dir = dir
+			retryCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		} else {
+			retryCmd = exec.CommandContext(retryCtx, "git", "push", "--progress", "origin", branch)
+			retryCmd.Dir = dir
+		}
+		retryStderr, _ := retryCmd.StderrPipe()
+		retryStdout, _ := retryCmd.StdoutPipe()
+		var retryWg sync.WaitGroup
+		retryWg.Add(1)
+		go func() {
+			defer retryWg.Done()
+			scanner := bufio.NewScanner(io.MultiReader(retryStdout, retryStderr))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if token != "" {
+					line = strings.ReplaceAll(line, token, "***")
+				}
+				sendSSE(line)
+			}
+		}()
+		retryErr := retryCmd.Start()
+		if retryErr == nil {
+			retryErr = retryCmd.Wait()
+		}
+		retryWg.Wait()
+
+		if retryErr != nil {
+			fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", retryErr.Error())
+		} else {
+			sendSSE("✅ Push concluído com sucesso.")
+			fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return
+	}
 
 	if pushErr != nil {
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pushErr.Error())
@@ -1250,6 +1355,50 @@ func (h *CodeEditorHandler) ResetFile(c *gin.Context) {
 		out = out2
 	}
 	c.JSON(http.StatusOK, gin.H{"message": out, "path": req.Path})
+}
+
+// Stage — POST /api/v1/code-editor/repos/:id/stage
+// Body: { "files": ["path1", "path2"] } — vazio = git add .
+func (h *CodeEditorHandler) Stage(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Files []string `json:"files"`
+	}
+	c.ShouldBindJSON(&req) //nolint:errcheck
+	var args []string
+	if len(req.Files) == 0 {
+		args = []string{"add", "."}
+	} else {
+		args = append([]string{"add", "--"}, req.Files...)
+	}
+	out, err := runGit(dir, args...)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
+// Unstage — POST /api/v1/code-editor/repos/:id/unstage
+// Body: { "files": ["path1", "path2"] }
+func (h *CodeEditorHandler) Unstage(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Files []string `json:"files"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "files é obrigatório"})
+		return
+	}
+	args := append([]string{"restore", "--staged", "--"}, req.Files...)
+	out, err := runGit(dir, args...)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
 }
 
 // Stash — POST /api/v1/code-editor/repos/:id/stash

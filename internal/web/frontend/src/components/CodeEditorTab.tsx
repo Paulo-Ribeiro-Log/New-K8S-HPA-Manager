@@ -199,9 +199,28 @@ function statusLabel(s: string): string {
   if (s === "M " || s === " M" || s === "MM") return "M";
   if (s === "A " || s === "AM") return "A";
   if (s === "D " || s === " D") return "D";
-  if (s === "??" || s === "? ") return "?";
+  if (s === "??" || s === "? ") return "U";
   if (s.startsWith("R")) return "R";
   return s.trim()[0] ?? "~";
+}
+
+// VSCode-like: badge letter shown in the file tree
+function scmBadge(xy: string): string {
+  if (xy === "??" || xy.startsWith("?")) return "U";
+  const x = xy[0], y = xy[1];
+  if (x === "A") return "A";
+  if (x === "D" || y === "D") return "D";
+  if (x === "R") return "R";
+  if (x === "C") return "C";
+  return "M";
+}
+
+function scmColor(xy: string): string {
+  if (xy === "??" || xy.startsWith("?")) return "text-green-400"; // untracked
+  if (xy.includes("A")) return "text-green-400";                   // added
+  if (xy.includes("D")) return "text-red-400";                     // deleted
+  if (xy.startsWith("R")) return "text-orange-400";                // renamed
+  return "text-yellow-400";                                        // modified
 }
 
 // ─── Multi-tab state ────────────────────────────────────────────────────────
@@ -358,6 +377,7 @@ interface FileTreeNodeProps {
   selectedPath: string;
   onSelect: (node: CodeEditorFileNode) => void;
   modifiedPaths: Set<string>;
+  gitFileStatus?: Map<string, string>;
   level: number;
   onDelete: (node: CodeEditorFileNode) => void;
   onRename: (node: CodeEditorFileNode) => void;
@@ -390,11 +410,12 @@ function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void
   }
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStatus, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
   const isModified = modifiedPaths.has(node.path);
+  const fileXY = gitFileStatus?.get(node.path);
 
   if (node.type === "dir") {
     return (
@@ -428,6 +449,8 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
           {open ? <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" /> : <Folder className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" />}
           <span className="truncate text-foreground/80 flex-1">{node.name}</span>
+          {/* dir change indicator */}
+          {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400/60 flex-shrink-0" />}
           {onCreate && (
             <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
               <button onClick={e => { e.stopPropagation(); onDirFocus?.(node.path); onCreate(node.path, "file"); }}
@@ -443,7 +466,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
         </div>
         {open && node.children?.map(child => (
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
-            modifiedPaths={modifiedPaths} level={level + 1} onDelete={onDelete} onRename={onRename}
+            modifiedPaths={modifiedPaths} gitFileStatus={gitFileStatus} level={level + 1} onDelete={onDelete} onRename={onRename}
             onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate}
             onMove={onMove} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath}
             onContextMenu={onContextMenu} revealPath={revealPath} />
@@ -476,8 +499,10 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, level, onDe
       <button className="flex items-center gap-1 flex-1 min-w-0" onClick={() => onSelect(node)}>
         <span className="w-3 h-3 flex-shrink-0" />
         <File className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" />
-        <span className={`truncate flex-1 ${isModified ? "text-yellow-400" : "text-foreground/80"}`}>{node.name}</span>
-        {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
+        <span className={`truncate flex-1 ${fileXY ? scmColor(fileXY) : "text-foreground/80"}`}>{node.name}</span>
+        {fileXY && (
+          <span className={`text-[10px] font-bold leading-none flex-shrink-0 ${scmColor(fileXY)}`}>{scmBadge(fileXY)}</span>
+        )}
       </button>
       <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
         {onHistory && (
@@ -799,12 +824,14 @@ interface CommitDialogProps {
   onClose: () => void;
   onDone: () => void;
   onPush?: () => void;
+  onRefresh?: () => void;
 }
 
-function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitDialogProps) {
+function CommitDialog({ open, repoId, status, onClose, onDone, onPush, onRefresh }: CommitDialogProps) {
   const [message, setMessage] = useState("");
   const [amend, setAmend] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [unstaging, setUnstaging] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [gitOutput, setGitOutput] = useState("");
 
@@ -829,6 +856,18 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
     }
   }
 
+  async function doUnstage(path: string) {
+    setUnstaging(path);
+    try {
+      await apiClient.codeEditorUnstage(repoId, [path]);
+      onRefresh?.();
+    } catch (e: any) {
+      setError(e.message || "Erro ao remover arquivo");
+    } finally {
+      setUnstaging(null);
+    }
+  }
+
   const changedFiles = status?.files ?? [];
 
   return (
@@ -839,59 +878,72 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
             <GitCommit className="w-4 h-4" />{amend ? "Emendar Último Commit" : "Novo Commit"}
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-3">
-          {changedFiles.length > 0 && !gitOutput && (
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Arquivos ({changedFiles.length}):</p>
-              <ScrollArea className="h-24 border border-border/40 rounded p-2">
+
+        {/* File list — único elemento com scroll, altura fixa */}
+        {changedFiles.length > 0 && !gitOutput && (
+          <div>
+            <p className="text-xs text-muted-foreground mb-1">
+              Arquivos em staging ({changedFiles.length}) — passe o mouse para remover:
+            </p>
+            <ScrollArea className="h-28 border border-border/40 rounded">
+              <div className="p-2 space-y-0.5">
                 {changedFiles.map(f => (
-                  <div key={f.path} className="flex items-center gap-2 text-xs py-0.5">
-                    <span className={`font-bold w-4 text-center ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
-                    <span className="font-mono text-foreground/80 truncate">{f.path}</span>
+                  <div key={f.path} className="flex items-center gap-2 text-xs py-0.5 group">
+                    <span className={`font-bold w-4 text-center flex-shrink-0 ${scmColor(f.status)}`}>{scmBadge(f.status)}</span>
+                    <span className="font-mono text-foreground/80 truncate flex-1">{f.path}</span>
+                    <button
+                      onClick={() => doUnstage(f.path)}
+                      disabled={!!unstaging || loading}
+                      title="Remover do staging (git restore --staged)"
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-400 transition-opacity flex-shrink-0 w-4 h-4 flex items-center justify-center rounded"
+                    >
+                      {unstaging === f.path ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                    </button>
                   </div>
                 ))}
-              </ScrollArea>
-            </div>
-          )}
-
-          {!gitOutput && (
-            <>
-              <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Mensagem do commit</label>
-                <Input
-                  placeholder={amend ? "Deixe vazio para manter a mensagem atual" : "feat: descrição da mudança"}
-                  value={message}
-                  onChange={e => setMessage(e.target.value)}
-                  disabled={loading}
-                  onKeyDown={e => e.key === "Enter" && !e.shiftKey && doCommit()}
-                  autoFocus
-                />
-                <p className="text-[10px] text-muted-foreground mt-1">Sugestões: feat: · fix: · docs: · refactor: · chore:</p>
               </div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={amend} onChange={e => setAmend(e.target.checked)} className="rounded" />
-                <span className="text-xs text-muted-foreground">Emendar último commit (--amend)</span>
-              </label>
-            </>
-          )}
+            </ScrollArea>
+          </div>
+        )}
 
-          {gitOutput && (
-            <div className="bg-black/40 border border-green-800/50 rounded p-3">
-              <div className="flex items-center gap-2 mb-2">
-                <CheckCircle2 className="w-4 h-4 text-green-400" />
-                <span className="text-xs font-medium text-green-400">Commit realizado!</span>
-              </div>
-              <pre className="font-mono text-xs text-green-300/80 whitespace-pre-wrap">{gitOutput}</pre>
+        {!gitOutput && (
+          <>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Mensagem do commit</label>
+              <Input
+                placeholder={amend ? "Deixe vazio para manter a mensagem atual" : "feat: descrição da mudança"}
+                value={message}
+                onChange={e => setMessage(e.target.value)}
+                disabled={loading}
+                onKeyDown={e => e.key === "Enter" && !e.shiftKey && doCommit()}
+                autoFocus
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">Sugestões: feat: · fix: · docs: · refactor: · chore:</p>
             </div>
-          )}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={amend} onChange={e => setAmend(e.target.checked)} className="rounded" />
+              <span className="text-xs text-muted-foreground">Emendar último commit (--amend)</span>
+            </label>
+          </>
+        )}
 
-          {error && (
-            <div className="bg-red-950/30 border border-red-800/50 rounded p-2 flex items-start gap-2">
-              <AlertCircle className="w-3.5 h-3.5 text-red-400 mt-0.5 flex-shrink-0" />
-              <pre className="text-xs text-red-300 whitespace-pre-wrap">{error}</pre>
+        {gitOutput && (
+          <div className="bg-black/40 border border-green-800/50 rounded p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <CheckCircle2 className="w-4 h-4 text-green-400" />
+              <span className="text-xs font-medium text-green-400">Commit realizado!</span>
             </div>
-          )}
-        </div>
+            <pre className="font-mono text-xs text-green-300/80 whitespace-pre-wrap">{gitOutput}</pre>
+          </div>
+        )}
+
+        {error && (
+          <div className="bg-red-950/30 border border-red-800/50 rounded p-2 flex items-start gap-2">
+            <AlertCircle className="w-3.5 h-3.5 text-red-400 mt-0.5 flex-shrink-0" />
+            <pre className="text-xs text-red-300 whitespace-pre-wrap">{error}</pre>
+          </div>
+        )}
+
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={loading}>
             {gitOutput ? "Fechar" : "Cancelar"}
@@ -1898,7 +1950,7 @@ export function CodeEditorTab() {
   const [grepResults, setGrepResults] = useState<CodeEditorGrepMatch[]>([]);
 
   // Sidebar
-  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log" | "replace" | "k8s">("files");
+  const [sidePanel, setSidePanel] = useState<"files" | "branches" | "git" | "log" | "replace" | "k8s" | "source-control">("files");
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem("ce_sidebar_width");
     return saved ? parseInt(saved) : 224;
@@ -1909,6 +1961,10 @@ export function CodeEditorTab() {
 
   // Stash state (feedback)
   const [stashLoading, setStashLoading] = useState<"push" | "pop" | null>(null);
+
+  // Source Control panel state
+  const [scmCommitMsg, setScmCommitMsg] = useState("");
+  const [scmLoading, setScmLoading] = useState(false);
 
   // Clipboard (Ctrl+C/X/V na tree)
   const [clipboard, setClipboard] = useState<{ path: string; op: "cut" | "copy" } | null>(null);
@@ -2068,6 +2124,7 @@ export function CodeEditorTab() {
   const activeTab = openTabs[activeTabIdx] ?? null;
   const isModified = activeTab ? activeTab.currentContent !== activeTab.savedContent : false;
   const modifiedPaths = new Set((status?.files ?? []).map(f => f.path));
+  const gitFileStatusMap = new Map((status?.files ?? []).map(f => [f.path, f.status]));
 
   // ── persist sidebar width ──
   useEffect(() => {
@@ -2458,6 +2515,36 @@ export function CodeEditorTab() {
     } finally {
       setStashLoading(null);
     }
+  }
+
+  // ── Source Control helpers ──────────────────────────────────────────────────
+  const scmStagedFiles   = (status?.files ?? []).filter(f => f.status[0] !== ' ' && f.status[0] !== '?');
+  const scmUnstagedFiles = (status?.files ?? []).filter(f => f.status !== '??' && f.status[1] !== ' ' && f.status[1] !== '?');
+  const scmUntrackedFiles = (status?.files ?? []).filter(f => f.status === '??' || f.status === '? ');
+
+  async function handleScmStage(paths: string[]) {
+    if (!selectedRepo) return;
+    try { await apiClient.codeEditorStageFiles(selectedRepo.id, paths); }
+    catch (e: any) { addToast("error", e.message || "Erro ao adicionar ao staging"); }
+    await loadStatus(selectedRepo.id);
+  }
+  async function handleScmUnstage(paths: string[]) {
+    if (!selectedRepo) return;
+    try { await apiClient.codeEditorUnstage(selectedRepo.id, paths); }
+    catch (e: any) { addToast("error", e.message || "Erro ao remover do staging"); }
+    await loadStatus(selectedRepo.id);
+  }
+  async function handleScmCommit(andPush: boolean) {
+    if (!selectedRepo || !scmCommitMsg.trim()) return;
+    setScmLoading(true);
+    try {
+      await apiClient.codeEditorCommit(selectedRepo.id, scmCommitMsg.trim());
+      setScmCommitMsg("");
+      addToast("success", "Commit criado com sucesso");
+      await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
+      if (andPush) setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined });
+    } catch (e: any) { addToast("error", e.message || "Erro ao commitar"); }
+    setScmLoading(false);
   }
 
   async function deleteRepo(id: string) {
@@ -3081,8 +3168,9 @@ export function CodeEditorTab() {
 
   const sidePanels = [
     { id: "files" as const, label: "Arquivos" },
+    { id: "source-control" as const, label: `Source Control${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}` },
     { id: "branches" as const, label: `Branches${branches ? ` (${branches.local.length})` : ""}` },
-    { id: "git" as const, label: `Git${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}` },
+    { id: "git" as const, label: `Git` },
     { id: "log" as const, label: "Log" },
     { id: "replace" as const, label: "Replace" },
     { id: "k8s" as const, label: "K8s" },
@@ -3331,7 +3419,7 @@ export function CodeEditorTab() {
                         )}
                         {tree.map(node => (
                           <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
-                            onSelect={openFile} modifiedPaths={modifiedPaths} level={0}
+                            onSelect={openFile} modifiedPaths={modifiedPaths} gitFileStatus={gitFileStatusMap} level={0}
                             onDelete={handleDeleteFile} onRename={n => setRenameNode(n)}
                             onHistory={n => setFileHistoryNode(n)}
                             onUpload={handleUpload}
@@ -3428,6 +3516,166 @@ export function CodeEditorTab() {
                     <Button size="sm" className="flex-1 h-6 text-xs" onClick={() => setShowCommit(true)} disabled={modifiedPaths.size === 0}>
                       <GitCommit className="w-3 h-3 mr-1" />Commit
                     </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Painel: Source Control ── */}
+            {sidePanel === "source-control" && (
+              <div className="flex flex-col h-full">
+                {/* Commit input + actions */}
+                <div className="p-2 border-b border-border/30 flex-shrink-0 space-y-1.5">
+                  <Input
+                    className="h-7 text-xs"
+                    placeholder={scmStagedFiles.length > 0 ? "Mensagem de commit..." : "Faça staging de arquivos primeiro"}
+                    value={scmCommitMsg}
+                    onChange={e => setScmCommitMsg(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && scmCommitMsg.trim() && scmStagedFiles.length > 0 && handleScmCommit(false)}
+                    disabled={scmStagedFiles.length === 0}
+                  />
+                  {scmStagedFiles.length > 0 && (
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="outline" className="flex-1 h-6 text-[11px]"
+                        onClick={() => handleScmCommit(false)} disabled={!scmCommitMsg.trim() || scmLoading}>
+                        <GitCommit className="w-3 h-3 mr-1" />Commit
+                      </Button>
+                      <Button size="sm" className="flex-1 h-6 text-[11px]"
+                        onClick={() => handleScmCommit(true)} disabled={!scmCommitMsg.trim() || scmLoading}>
+                        <Upload className="w-3 h-3 mr-1" />+ Push
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                <ScrollArea className="flex-1">
+                  <div className="p-1">
+
+                    {/* Staged Changes */}
+                    {scmStagedFiles.length > 0 && (
+                      <div className="mb-1">
+                        <div className="flex items-center justify-between px-1 py-1">
+                          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                            Staged Changes ({scmStagedFiles.length})
+                          </span>
+                          <button onClick={() => handleScmUnstage(scmStagedFiles.map(f => f.path))}
+                            title="Remover todos do staging"
+                            className="text-[10px] text-muted-foreground hover:text-foreground px-1 rounded hover:bg-muted">
+                            − tudo
+                          </button>
+                        </div>
+                        {scmStagedFiles.map(f => (
+                          <div key={`s-${f.path}`} className="flex items-center gap-1 px-1 py-0.5 rounded hover:bg-muted/40 group text-xs">
+                            <span className={`font-bold w-4 text-center flex-shrink-0 ${scmColor(f.status)}`}>{scmBadge(f.status)}</span>
+                            <button className="font-mono truncate flex-1 text-left text-foreground/70 hover:text-foreground min-w-0"
+                              title={f.path}
+                              onClick={() => openFile({ name: f.path.split("/").pop()!, path: f.path, type: "file" })}>
+                              {f.path.split("/").pop()}
+                            </button>
+                            <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+                              <button onClick={() => setDiffFile(f.path)} title="Ver diff" className="p-0.5 rounded hover:bg-muted">
+                                <Eye className="w-2.5 h-2.5 text-muted-foreground" />
+                              </button>
+                              <button onClick={() => handleScmUnstage([f.path])} title="Remover do staging" className="p-0.5 rounded hover:bg-muted">
+                                <X className="w-2.5 h-2.5 text-muted-foreground hover:text-red-400" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Changes (unstaged) */}
+                    {scmUnstagedFiles.length > 0 && (
+                      <div className="mb-1">
+                        <div className="flex items-center justify-between px-1 py-1">
+                          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                            Changes ({scmUnstagedFiles.length})
+                          </span>
+                          <button onClick={() => handleScmStage(scmUnstagedFiles.map(f => f.path))}
+                            title="Adicionar todos ao staging"
+                            className="text-[10px] text-muted-foreground hover:text-foreground px-1 rounded hover:bg-muted">
+                            + tudo
+                          </button>
+                        </div>
+                        {scmUnstagedFiles.map(f => (
+                          <div key={`u-${f.path}`} className="flex items-center gap-1 px-1 py-0.5 rounded hover:bg-muted/40 group text-xs">
+                            <span className={`font-bold w-4 text-center flex-shrink-0 ${scmColor(f.status)}`}>
+                              {f.status[1] === "M" ? "M" : f.status[1] === "D" ? "D" : scmBadge(f.status)}
+                            </span>
+                            <button className="font-mono truncate flex-1 text-left text-foreground/70 hover:text-foreground min-w-0"
+                              title={f.path}
+                              onClick={() => openFile({ name: f.path.split("/").pop()!, path: f.path, type: "file" })}>
+                              {f.path.split("/").pop()}
+                            </button>
+                            <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+                              <button onClick={() => setDiffFile(f.path)} title="Ver diff" className="p-0.5 rounded hover:bg-muted">
+                                <Eye className="w-2.5 h-2.5 text-muted-foreground" />
+                              </button>
+                              <button onClick={() => handleScmStage([f.path])} title="Adicionar ao staging" className="p-0.5 rounded hover:bg-muted">
+                                <Plus className="w-2.5 h-2.5 text-muted-foreground hover:text-green-400" />
+                              </button>
+                              <button onClick={() => handleResetFile(f.path)} title="Descartar mudanças" className="p-0.5 rounded hover:bg-muted">
+                                <RotateCcw className="w-2.5 h-2.5 text-red-400/70 hover:text-red-400" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Untracked */}
+                    {scmUntrackedFiles.length > 0 && (
+                      <div className="mb-1">
+                        <div className="flex items-center justify-between px-1 py-1">
+                          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                            Untracked ({scmUntrackedFiles.length})
+                          </span>
+                          <button onClick={() => handleScmStage(scmUntrackedFiles.map(f => f.path))}
+                            title="Adicionar todos ao staging"
+                            className="text-[10px] text-muted-foreground hover:text-foreground px-1 rounded hover:bg-muted">
+                            + tudo
+                          </button>
+                        </div>
+                        {scmUntrackedFiles.map(f => (
+                          <div key={`t-${f.path}`} className="flex items-center gap-1 px-1 py-0.5 rounded hover:bg-muted/40 group text-xs">
+                            <span className="font-bold w-4 text-center flex-shrink-0 text-green-400">U</span>
+                            <span className="font-mono truncate flex-1 text-foreground/70 min-w-0" title={f.path}>
+                              {f.path.split("/").pop()}
+                            </span>
+                            <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
+                              <button onClick={() => handleScmStage([f.path])} title="Adicionar ao staging" className="p-0.5 rounded hover:bg-muted">
+                                <Plus className="w-2.5 h-2.5 text-muted-foreground hover:text-green-400" />
+                              </button>
+                              <button onClick={() => handleResetFile(f.path)} title="Deletar arquivo" className="p-0.5 rounded hover:bg-muted">
+                                <Trash2 className="w-2.5 h-2.5 text-red-400/70 hover:text-red-400" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Empty states */}
+                    {!selectedRepo && <p className="text-xs text-muted-foreground text-center py-6">Selecione um repositório</p>}
+                    {selectedRepo && status && status.files.length === 0 && (
+                      <p className="text-xs text-muted-foreground text-center py-6">✓ Árvore limpa</p>
+                    )}
+                  </div>
+                </ScrollArea>
+
+                {selectedRepo && (
+                  <div className="flex gap-1 p-2 border-t border-border/30 flex-shrink-0">
+                    <Button variant="outline" size="sm" className="flex-1 h-6 text-xs"
+                      onClick={() => loadStatus(selectedRepo.id)}>
+                      <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                    </Button>
+                    {(scmUnstagedFiles.length > 0 || scmUntrackedFiles.length > 0) && (
+                      <Button size="sm" className="h-6 text-xs px-2"
+                        onClick={() => handleScmStage([...scmUnstagedFiles, ...scmUntrackedFiles].map(f => f.path))}>
+                        <Plus className="w-3 h-3 mr-1" />Stage All
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>
@@ -4124,6 +4372,7 @@ export function CodeEditorTab() {
               addToast("success", "Commit criado com sucesso");
             }}
             onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}
+            onRefresh={() => loadStatus(selectedRepo.id)}
           />
 
           <BranchDialog
