@@ -833,13 +833,13 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
 
   return (
     <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
+      <DialogContent className="max-w-md flex flex-col max-h-[90vh]">
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <GitCommit className="w-4 h-4" />{amend ? "Emendar Último Commit" : "Novo Commit"}
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-3">
+        <div className="space-y-3 overflow-y-auto flex-1 min-h-0 pr-1">
           {changedFiles.length > 0 && !gitOutput && (
             <div>
               <p className="text-xs text-muted-foreground mb-1">Arquivos ({changedFiles.length}):</p>
@@ -892,7 +892,7 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
             </div>
           )}
         </div>
-        <DialogFooter>
+        <DialogFooter className="flex-shrink-0">
           <Button variant="outline" onClick={onClose} disabled={loading}>
             {gitOutput ? "Fechar" : "Cancelar"}
           </Button>

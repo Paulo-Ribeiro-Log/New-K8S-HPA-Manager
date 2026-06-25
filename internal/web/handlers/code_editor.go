@@ -875,6 +875,7 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	}
 
 	var wgPush sync.WaitGroup
+	var rejected bool
 	wgPush.Add(1)
 	go func() {
 		defer wgPush.Done()
@@ -885,12 +886,108 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 			if token != "" {
 				line = strings.ReplaceAll(line, token, "***")
 			}
+			if strings.Contains(line, "[rejected]") || strings.Contains(line, "rejected)") ||
+				(strings.Contains(line, "rejected") && strings.Contains(line, "fetch first")) {
+				rejected = true
+			}
 			sendSSE(line)
 		}
 	}()
 
 	pushErr := cmd.Wait()
-	wgPush.Wait() // garante que toda saída foi enviada antes do "done"
+	wgPush.Wait()
+
+	// Se o push foi rejeitado por divergência, faz pull --rebase e tenta novamente.
+	if pushErr != nil && rejected {
+		sendSSE("")
+		sendSSE("⚠️  Push rejeitado — o remote tem commits novos.")
+		sendSSE("🔄 Fazendo git pull --rebase automaticamente...")
+
+		pullCtx, pullCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		pullCmd, pullCleanup := gitCmdWithToken(pullCtx, dir, token, "pull", "--rebase", "--progress", "origin", branch)
+		defer pullCancel()
+		defer pullCleanup()
+
+		pullStderr, _ := pullCmd.StderrPipe()
+		pullStdout, _ := pullCmd.StdoutPipe()
+		var pullWg sync.WaitGroup
+		pullWg.Add(1)
+		go func() {
+			defer pullWg.Done()
+			scanner := bufio.NewScanner(io.MultiReader(pullStdout, pullStderr))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if token != "" {
+					line = strings.ReplaceAll(line, token, "***")
+				}
+				sendSSE(line)
+			}
+		}()
+		pullErr := pullCmd.Start()
+		if pullErr == nil {
+			pullErr = pullCmd.Wait()
+		}
+		pullWg.Wait()
+
+		if pullErr != nil {
+			sendSSE("❌ Pull --rebase falhou. Resolva os conflitos e tente novamente.")
+			fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pullErr.Error())
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+		}
+
+		// Retry push após pull bem-sucedido
+		sendSSE("")
+		sendSSE("✅ Pull concluído. Repetindo git push...")
+
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer retryCancel()
+		var retryCmd *exec.Cmd
+		if token != "" {
+			originURL, _ := runGit(dir, "remote", "get-url", "origin")
+			authedURL := injectTokenURL(cleanRemoteURL(originURL), token)
+			args := []string{"-c", "credential.helper=", "push", "--progress", authedURL, "HEAD:" + branch}
+			retryCmd = exec.CommandContext(retryCtx, "git", args...)
+			retryCmd.Dir = dir
+			retryCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		} else {
+			retryCmd = exec.CommandContext(retryCtx, "git", "push", "--progress", "origin", branch)
+			retryCmd.Dir = dir
+		}
+		retryStderr, _ := retryCmd.StderrPipe()
+		retryStdout, _ := retryCmd.StdoutPipe()
+		var retryWg sync.WaitGroup
+		retryWg.Add(1)
+		go func() {
+			defer retryWg.Done()
+			scanner := bufio.NewScanner(io.MultiReader(retryStdout, retryStderr))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if token != "" {
+					line = strings.ReplaceAll(line, token, "***")
+				}
+				sendSSE(line)
+			}
+		}()
+		retryErr := retryCmd.Start()
+		if retryErr == nil {
+			retryErr = retryCmd.Wait()
+		}
+		retryWg.Wait()
+
+		if retryErr != nil {
+			fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", retryErr.Error())
+		} else {
+			sendSSE("✅ Push concluído com sucesso.")
+			fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return
+	}
 
 	if pushErr != nil {
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pushErr.Error())
