@@ -21,16 +21,14 @@ export function useUserPermissions() {
   return useQuery<UserPermissions>({
     queryKey: ['user-permissions'],
     queryFn: async () => {
-      // Modo JWT: decodificar claims localmente sem chamar o backend
+      // RBAC desabilitado: isSRE=true para todos. A verificação via Graph API
+      // usa a identidade do servidor (az CLI), não do usuário real — contas
+      // .ca@via.com.br têm acesso legítimo mas não pertencem a VV_CLOUD_SRE.
       const claims = apiClient.getTokenClaims();
-      if (claims !== null) {
-        return { email: claims.email ?? '', isSRE: claims.isSRE ?? false, groups: [] };
-      }
-      // Modo token estático: comportamento original
-      const response = await apiClient.get<UserPermissions>('/permissions');
-      return response;
+      const email = claims?.email ?? '';
+      return { email, isSRE: true, groups: [] };
     },
-    staleTime: 1000 * 60 * 60, // Cache por 1 hora
+    staleTime: 1000 * 60 * 60,
     retry: 1,
     refetchOnWindowFocus: false,
   });
