@@ -164,7 +164,8 @@ Permite clonar repositórios GitHub, editar arquivos com Monaco e versionar via 
 - [x] **Copiar caminho** — botão `Copy` na barra do arquivo ativo; `navigator.clipboard.writeText` + toast "Caminho copiado"
 - [x] **Revelar na tree** — botão `Locate` na barra do arquivo ativo; também acessível pelos segmentos do breadcrumb e pelo context menu; o arquivo revelado fica com ring amarelo 1,5s e scroll automático (`data-reveal-path` + `scrollIntoView`)
 - [x] **Context menu (botão direito) na tree** — `onContextMenu` em todos os nós file e dir; estado `{ x, y, node }` com fechamento via `document.mousedown`; itens por tipo: **arquivo** → Abrir / Renomear / Deletar / Copiar caminho / Revelar na tree / Histórico; **pasta** → Novo arquivo aqui / Nova pasta aqui / Renomear / Deletar / Copiar caminho
-- [x] **Botão PR** — aparece no header quando o branch atual não é `main`/`master`; abre `github.com/owner/repo/compare/<branch>` em nova aba. `owner`/`repo` extraídos via `ownerRepo(dir)` (URL remota git), não do ID local — evita quebra com owners com hífen (ex: `casas-bahia`). Branch com `encodeURIComponent` para suportar `/` no nome.
+- [x] **Botão PR** — aparece no header quando o branch atual não é `main`/`master`; abre `CreatePRModal` (não navega direto para o GitHub). `owner`/`repo` extraídos via `ownerRepo(dir)`. Branch com `encodeURIComponent`.
+- [x] **`CreatePRModal`** — modal de criação de Pull Request via GitHub REST API (`POST /repos/:id/pr/create`). Campos: branch origem (read-only) → branch destino (dropdown filtrando branches exceto o atual), título (auto-preenchido a partir do nome do branch), descrição opcional. Usa o PAT do `tokenStore`. Após sucesso: exibe `PR #N criado!` + botão "Abrir no GitHub". Trata erros da API (campo `errors[0].message`). `apiClient.codeEditorCreatePR(id, title, body, head, base)`.
 
 ### Autocomplete / LSP (complexo — não implementado)
 - [x] **TypeScript/JavaScript** — worker built-in do Monaco configurado em `handleEditorMount` (flag `__monacoTSConfigured`); completions, erros inline, hover, go-to-definition sem instalar nada
@@ -337,3 +338,17 @@ O `CloneDialog` ia direto para leitura de SSE sem verificar `res.ok`, então err
 `ListRepos` derivava `owner` e `repo` do ID local (`owner-repo`) com `strings.SplitN(id, "-", 2)` — para `casas-bahia-my-repo` resultava em `owner="casas"`, `repo="bahia-my-repo"`. URL do PR ficava `github.com/casas/bahia-my-repo/compare/branch` (404).
 
 **Correção**: `ListRepos` agora chama `ownerRepo(dir)` que lê a URL remota via `git remote get-url origin` e parseia os dois últimos segmentos do path. Fallback para split por hífen apenas se o remote estiver vazio. Também adicionado `encodeURIComponent` no nome do branch para suportar `/` (ex: `feature/foo`).
+
+### Criação de Pull Request (commit `d0bff642`)
+Botão PR agora abre `CreatePRModal` em vez de navegar direto para o compare do GitHub — permite criar o PR sem sair da aplicação usando o PAT já configurado.
+
+- `POST /api/v1/code-editor/repos/:id/pr/create` → GitHub REST API `POST /repos/{owner}/{repo}/pulls`
+- Campos: título (auto do branch), branch destino (dropdown), descrição opcional
+- Retorna `{ number, url, title }`; erros da API expostos com `errors[0].message`
+
+### Auto-shutdown: timeout aumentado para 40 minutos (commit `4a6ded68`, branch `main`)
+Browsers throttleiam `setInterval` em abas em segundo plano — o heartbeat de 5min pode demorar muito mais que o esperado, causando shutdown prematuro.
+
+- Timer pós-heartbeat: 25min → **45min**
+- Timer inicial: 30min → **45min**
+- Threshold de verificação: 20min → **40min**
