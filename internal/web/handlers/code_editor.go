@@ -1349,6 +1349,27 @@ func (h *CodeEditorHandler) ResetFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": out, "path": req.Path})
 }
 
+// Unstage — POST /api/v1/code-editor/repos/:id/unstage
+// Body: { "files": ["path1", "path2"] }
+func (h *CodeEditorHandler) Unstage(c *gin.Context) {
+	id := c.Param("id")
+	dir := h.repoDir(id)
+	var req struct {
+		Files []string `json:"files"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "files é obrigatório"})
+		return
+	}
+	args := append([]string{"restore", "--staged", "--"}, req.Files...)
+	out, err := runGit(dir, args...)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": out})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out})
+}
+
 // Stash — POST /api/v1/code-editor/repos/:id/stash
 // Body: { "message": "..." (opcional) }
 func (h *CodeEditorHandler) Stash(c *gin.Context) {

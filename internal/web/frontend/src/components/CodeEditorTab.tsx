@@ -799,12 +799,14 @@ interface CommitDialogProps {
   onClose: () => void;
   onDone: () => void;
   onPush?: () => void;
+  onRefresh?: () => void;
 }
 
-function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitDialogProps) {
+function CommitDialog({ open, repoId, status, onClose, onDone, onPush, onRefresh }: CommitDialogProps) {
   const [message, setMessage] = useState("");
   const [amend, setAmend] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [unstaging, setUnstaging] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [gitOutput, setGitOutput] = useState("");
 
@@ -829,28 +831,48 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
     }
   }
 
+  async function doUnstage(path: string) {
+    setUnstaging(path);
+    try {
+      await apiClient.codeEditorUnstage(repoId, [path]);
+      onRefresh?.();
+    } catch (e: any) {
+      setError(e.message || "Erro ao remover arquivo");
+    } finally {
+      setUnstaging(null);
+    }
+  }
+
   const changedFiles = status?.files ?? [];
 
   return (
     <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
-      <DialogContent className="max-w-md flex flex-col max-h-[90vh]">
-        <DialogHeader className="flex-shrink-0">
+      <DialogContent className="max-w-md">
+        <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <GitCommit className="w-4 h-4" />{amend ? "Emendar Último Commit" : "Novo Commit"}
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-3 overflow-y-auto flex-1 min-h-0 pr-1">
+        <div className="space-y-3 max-h-[55vh] overflow-y-auto pr-1">
           {changedFiles.length > 0 && !gitOutput && (
             <div>
-              <p className="text-xs text-muted-foreground mb-1">Arquivos ({changedFiles.length}):</p>
-              <ScrollArea className="h-24 border border-border/40 rounded p-2">
+              <p className="text-xs text-muted-foreground mb-1">Arquivos em staging ({changedFiles.length}) — clique em × para remover:</p>
+              <div className="border border-border/40 rounded p-2 space-y-0.5 max-h-32 overflow-y-auto">
                 {changedFiles.map(f => (
-                  <div key={f.path} className="flex items-center gap-2 text-xs py-0.5">
-                    <span className={`font-bold w-4 text-center ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
-                    <span className="font-mono text-foreground/80 truncate">{f.path}</span>
+                  <div key={f.path} className="flex items-center gap-2 text-xs py-0.5 group">
+                    <span className={`font-bold w-4 text-center flex-shrink-0 ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
+                    <span className="font-mono text-foreground/80 truncate flex-1">{f.path}</span>
+                    <button
+                      onClick={() => doUnstage(f.path)}
+                      disabled={!!unstaging || loading}
+                      title="Remover do staging"
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-400 transition-opacity flex-shrink-0 w-4 h-4 flex items-center justify-center rounded"
+                    >
+                      {unstaging === f.path ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                    </button>
                   </div>
                 ))}
-              </ScrollArea>
+              </div>
             </div>
           )}
 
@@ -892,7 +914,7 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush }: CommitD
             </div>
           )}
         </div>
-        <DialogFooter className="flex-shrink-0">
+        <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={loading}>
             {gitOutput ? "Fechar" : "Cancelar"}
           </Button>
@@ -4124,6 +4146,7 @@ export function CodeEditorTab() {
               addToast("success", "Commit criado com sucesso");
             }}
             onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}
+            onRefresh={() => loadStatus(selectedRepo.id)}
           />
 
           <BranchDialog
