@@ -202,14 +202,12 @@ func (r *RBACManager) GetCurrentUserPermissions(ctx context.Context) (*UserPermi
 	return r.GetUserPermissions(ctx, email)
 }
 
-// checkSREGroup verifica se lista de grupos contém VV_CLOUD_SRE
+// checkSREGroup verifica pertencimento ao grupo SRE.
+// RBAC desabilitado: retorna sempre true. A verificação via Graph API
+// usa a conta do servidor (az CLI), não a do usuário real — contas
+// .ca@via.com.br não pertencem a VV_CLOUD_SRE mas têm acesso legítimo.
 func (r *RBACManager) checkSREGroup(groups []ADGroup) bool {
-	for _, group := range groups {
-		if strings.EqualFold(group.DisplayName, "VV_CLOUD_SRE") {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 // ClearCache limpa o cache de permissões

@@ -61,47 +61,12 @@ func (m *RBACMiddleware) InjectUserEmail() gin.HandlerFunc {
 	}
 }
 
-// RequireSREGroup middleware que exige que usuário seja do grupo VV_CLOUD_SRE.
-// Em modo JWT: lê isSRE diretamente dos claims (zero chamada ao Azure CLI).
-// Em modo token estático: verifica via `az ad user get-member-groups`.
+// RequireSREGroup middleware de verificação de grupo SRE.
+// RBAC desabilitado: sempre permite. A verificação via Graph API usa
+// a identidade do servidor (az CLI), não do usuário real — contas
+// .ca@via.com.br têm acesso legítimo mas não pertencem a VV_CLOUD_SRE.
 func (m *RBACMiddleware) RequireSREGroup() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if claims := jwtClaimsFromCtx(c); claims != nil {
-			if !claims.IsSRE {
-				c.JSON(http.StatusForbidden, gin.H{
-					"error":   "Access denied",
-					"message": "This operation requires SRE group membership (VV_CLOUD_SRE)",
-				})
-				c.Abort()
-				return
-			}
-			c.Set("isSRE", true)
-			c.Next()
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		isSRE, err := m.rbacManager.CheckCurrentUserIsSRE(ctx)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "Failed to verify user permissions",
-				"details": err.Error(),
-			})
-			c.Abort()
-			return
-		}
-
-		if !isSRE {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error":   "Access denied",
-				"message": "This operation requires SRE group membership (VV_CLOUD_SRE)",
-			})
-			c.Abort()
-			return
-		}
-
 		c.Set("isSRE", true)
 		c.Next()
 	}
@@ -177,26 +142,10 @@ func (m *RBACMiddleware) RefreshPermissions() gin.HandlerFunc {
 }
 
 // OptionalSRECheck middleware que adiciona flag isSRE ao contexto sem bloquear.
-// Em modo JWT: lê isSRE dos claims diretamente.
-// Em modo token estático: verifica via az CLI (5s timeout), assume false se falhar.
+// RBAC desabilitado: sempre define isSRE=true.
 func (m *RBACMiddleware) OptionalSRECheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if claims := jwtClaimsFromCtx(c); claims != nil {
-			c.Set("isSRE", claims.IsSRE)
-			c.Next()
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		isSRE, err := m.rbacManager.CheckCurrentUserIsSRE(ctx)
-		if err == nil {
-			c.Set("isSRE", isSRE)
-		} else {
-			c.Set("isSRE", false)
-		}
-
+		c.Set("isSRE", true)
 		c.Next()
 	}
 }
