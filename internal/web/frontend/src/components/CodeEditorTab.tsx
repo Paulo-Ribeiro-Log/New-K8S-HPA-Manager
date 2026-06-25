@@ -2017,7 +2017,7 @@ export function CodeEditorTab() {
   const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
   const [markdownPreviewWidth, setMarkdownPreviewWidth] = useState(() => {
     const saved = localStorage.getItem("ce_md_preview_width");
-    return saved ? Math.max(200, Math.min(900, parseInt(saved, 10))) : 480;
+    return saved ? Math.max(200, parseInt(saved, 10)) : 480;
   });
 
   // Fase 4: Replace
@@ -2049,6 +2049,7 @@ export function CodeEditorTab() {
   const saveFileRef = useRef<() => void>(() => {});
   const openFileRef = useRef<(node: CodeEditorFileNode) => Promise<void>>(async () => {});
   const pendingNavigationRef = useRef<{ line: number; col: number } | null>(null);
+  const editorRowRef = useRef<HTMLDivElement>(null);
   const lspVersionRef = useRef<number>(0);
   const lspProviderDisposables = useRef<MonacoEditorNS.IDisposable[]>([]);
   const { toasts, addToast } = useToasts();
@@ -3785,7 +3786,7 @@ export function CodeEditorTab() {
                   </Button>
                 </div>
               </div>
-              <div className="flex-1 min-h-0 flex flex-row">
+              <div ref={editorRowRef} className="flex-1 min-h-0 flex flex-row">
                 <div className="flex-1 min-h-0 min-w-0">
                   <Editor
                     height="100%"
@@ -3816,7 +3817,8 @@ export function CodeEditorTab() {
                 {showMarkdownPreview && activeTab.node.name.endsWith(".md") && (
                   <>
                     <ResizeDivider onDrag={d => setMarkdownPreviewWidth(w => {
-                      const next = Math.max(200, Math.min(900, w - d));
+                      const maxW = Math.floor((editorRowRef.current?.offsetWidth ?? 1400) * 0.70);
+                      const next = Math.max(200, Math.min(maxW, w - d));
                       localStorage.setItem("ce_md_preview_width", String(next));
                       return next;
                     })} />
