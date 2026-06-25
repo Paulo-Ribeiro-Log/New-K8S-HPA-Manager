@@ -761,13 +761,14 @@ function CreatePRModal({ open, onClose, repoId, head, branches }: CreatePRModalP
                 <span className="text-blue-400">{head}</span>
                 <span className="text-muted-foreground">→</span>
                 <select
-                  className="bg-transparent border-none outline-none text-foreground flex-1"
+                  className="border-none outline-none flex-1 text-xs"
+                  style={{ background: "var(--muted)", color: "var(--foreground)" }}
                   value={base}
                   onChange={e => setBase(e.target.value)}
                   disabled={loading}
                 >
                   {branches.filter(b => b !== head).map(b => (
-                    <option key={b} value={b}>{b}</option>
+                    <option key={b} value={b} style={{ background: "#1e1e2e", color: "#cdd6f4" }}>{b}</option>
                   ))}
                 </select>
               </div>
