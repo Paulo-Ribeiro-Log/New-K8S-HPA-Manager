@@ -391,9 +391,11 @@ interface FileTreeNodeProps {
   cutPath?: string;
   onContextMenu?: (e: React.MouseEvent, node: CodeEditorFileNode) => void;
   revealPath?: string | null;
+  selectedPaths?: Set<string>;
+  onMultiToggle?: (path: string) => void;
 }
 
-function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void) {
+function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void, onSpace?: () => void) {
   if (e.key === "ArrowDown") {
     e.preventDefault();
     const items = Array.from(document.querySelectorAll<HTMLElement>("[data-tree-item]"));
@@ -407,15 +409,19 @@ function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void
   } else if (e.key === "Enter") {
     e.preventDefault();
     onEnter();
+  } else if (e.key === " " && onSpace) {
+    e.preventDefault();
+    onSpace();
   }
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStatus, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStatus, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath, selectedPaths, onMultiToggle }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
   const isModified = modifiedPaths.has(node.path);
   const fileXY = gitFileStatus?.get(node.path);
+  const isMultiSelected = selectedPaths?.has(node.path) ?? false;
 
   if (node.type === "dir") {
     return (
@@ -469,7 +475,8 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
             modifiedPaths={modifiedPaths} gitFileStatus={gitFileStatus} level={level + 1} onDelete={onDelete} onRename={onRename}
             onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate}
             onMove={onMove} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath}
-            onContextMenu={onContextMenu} revealPath={revealPath} />
+            onContextMenu={onContextMenu} revealPath={revealPath}
+            selectedPaths={selectedPaths} onMultiToggle={onMultiToggle} />
         ))}
       </div>
     );
@@ -487,16 +494,19 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
         e.dataTransfer.setData("application/x-tree-node", node.path);
         e.dataTransfer.effectAllowed = "move";
       }}
-      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""} ${isRevealed ? "ring-2 ring-yellow-400/70 bg-yellow-400/10" : ""}`}
+      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isMultiSelected ? "bg-primary/20 ring-1 ring-primary/50" : isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""} ${isRevealed ? "ring-2 ring-yellow-400/70 bg-yellow-400/10" : ""}`}
       style={{ paddingLeft: `${level * 12 + 4}px` }}
       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(e, node); }}
       onKeyDown={e => {
         if ((e.ctrlKey || e.metaKey) && e.key === "c") { e.preventDefault(); onClipboardOp?.(node.path, "copy"); }
         else if ((e.ctrlKey || e.metaKey) && e.key === "x") { e.preventDefault(); onClipboardOp?.(node.path, "cut"); }
-        else treeNavKeyDown(e, () => onSelect(node));
+        else treeNavKeyDown(e, () => { onSelect(node); }, () => onMultiToggle?.(node.path));
       }}
     >
-      <button className="flex items-center gap-1 flex-1 min-w-0" onClick={() => onSelect(node)}>
+      <button className="flex items-center gap-1 flex-1 min-w-0" onClick={e => {
+        if (e.ctrlKey || e.metaKey) { e.preventDefault(); onMultiToggle?.(node.path); }
+        else { onSelect(node); }
+      }}>
         <span className="w-3 h-3 flex-shrink-0" />
         <File className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" />
         <span className={`truncate flex-1 ${fileXY ? scmColor(fileXY) : "text-foreground/80"}`}>{node.name}</span>
@@ -517,6 +527,32 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
           <Trash2 className="w-2.5 h-2.5 text-red-400/70 hover:text-red-400" />
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── MoveToDialog ───────────────────────────────────────────────────────────
+
+function MoveToDialog({ dirs, onMove, onClose }: { dirs: string[]; onMove: (toDir: string) => void; onClose: () => void }) {
+  const [selected, setSelected] = useState(dirs[0] ?? "");
+  return (
+    <div className="space-y-3">
+      <select
+        className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground"
+        value={selected}
+        onChange={e => setSelected(e.target.value)}
+        size={Math.min(10, dirs.length)}
+      >
+        {dirs.map(d => (
+          <option key={d} value={d} style={{ background: "#1e1e2e", color: "#cdd6f4" }}>
+            {d === "" ? "(raiz do repositório)" : d}
+          </option>
+        ))}
+      </select>
+      <DialogFooter>
+        <Button variant="outline" size="sm" onClick={onClose}>Cancelar</Button>
+        <Button size="sm" onClick={() => onMove(selected)}>Mover</Button>
+      </DialogFooter>
     </div>
   );
 }
@@ -2095,6 +2131,17 @@ export function CodeEditorTab() {
   const [k8sRunning, setK8sRunning] = useState<"diff" | "dry-run" | "apply" | "get" | null>(null);
   const k8sOutputRef = useRef<HTMLDivElement>(null);
 
+  // Multi-select de arquivos na tree
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [moveSelectedDialog, setMoveSelectedDialog] = useState(false);
+
+  // Split editor
+  const [splitActive, setSplitActive] = useState(false);
+  const [rightTabIdx, setRightTabIdx] = useState(0);
+  const [focusedPane, setFocusedPane] = useState<"left" | "right">("left");
+  const splitEditorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
+  const [splitWidthPct, setSplitWidthPct] = useState(50);
+
   // Confirm dialog (substitui confirm() nativo)
   const [confirmState, setConfirmState] = useState<{
     message: string;
@@ -2246,7 +2293,8 @@ export function CodeEditorTab() {
     // Já aberto? Ativar a aba existente
     const existingIdx = openTabs.findIndex(t => t.repoId === repoId && t.node.path === node.path);
     if (existingIdx >= 0) {
-      setActiveTabIdx(existingIdx);
+      if (splitActive && focusedPane === "right") setRightTabIdx(existingIdx);
+      else setActiveTabIdx(existingIdx);
       lspActivate(repoId, node.path);
       return;
     }
@@ -2255,7 +2303,8 @@ export function CodeEditorTab() {
       const newTab: OpenTab = { node, initialContent: content, currentContent: content, savedContent: content, repoId };
       setOpenTabs(prev => {
         const updated = [...prev, newTab];
-        setActiveTabIdx(updated.length - 1);
+        if (splitActive && focusedPane === "right") setRightTabIdx(updated.length - 1);
+        else setActiveTabIdx(updated.length - 1);
         return updated;
       });
       // Inicia LSP para arquivos Go e Python
@@ -2281,6 +2330,9 @@ export function CodeEditorTab() {
     if (tab && tab.currentContent !== tab.savedContent) {
       if (!await showConfirm(`"${tab.node.name}" tem mudanças não salvas. Fechar mesmo assim?`)) return;
     }
+    const newLen = openTabs.length - 1;
+    if (rightTabIdx >= newLen) setRightTabIdx(Math.max(0, newLen - 1));
+    else if (idx < rightTabIdx) setRightTabIdx(rightTabIdx - 1);
     setOpenTabs(prev => {
       const updated = prev.filter((_, i) => i !== idx);
       if (activeTabIdx >= updated.length) {
@@ -2475,6 +2527,100 @@ export function CodeEditorTab() {
     } catch (e: any) {
       addToast("error", e.message || "Erro ao mover");
     }
+  }
+
+  function handleMultiToggle(path: string) {
+    setSelectedPaths(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  }
+
+  async function handleDeleteSelected() {
+    if (!selectedRepo || selectedPaths.size === 0) return;
+    const paths = [...selectedPaths];
+    const preview = paths.slice(0, 5).join("\n") + (paths.length > 5 ? `\n...e mais ${paths.length - 5}` : "");
+    if (!await showConfirm(`Deletar ${paths.length} arquivo(s)?\n\n${preview}`)) return;
+    for (const p of paths) {
+      try {
+        await apiClient.codeEditorDeleteFile(selectedRepo.id, p);
+        const tabIdx = openTabs.findIndex(t => t.node.path === p);
+        if (tabIdx >= 0) {
+          setOpenTabs(prev => prev.filter((_, i) => i !== tabIdx));
+          if (activeTabIdx >= openTabs.length - 1) setActiveTabIdx(Math.max(0, openTabs.length - 2));
+        }
+      } catch { /* continua */ }
+    }
+    setSelectedPaths(new Set());
+    await loadTree(selectedRepo.id);
+    await loadStatus(selectedRepo.id);
+    addToast("success", `${paths.length} arquivo(s) deletado(s)`);
+  }
+
+  async function handleMoveSelected(toDir: string) {
+    if (!selectedRepo || selectedPaths.size === 0) return;
+    const paths = [...selectedPaths];
+    for (const p of paths) {
+      const filename = p.split("/").pop()!;
+      const to = toDir ? `${toDir}/${filename}` : filename;
+      if (p === to) continue;
+      try {
+        await apiClient.codeEditorRenameFile(selectedRepo.id, p, to);
+        setOpenTabs(prev => prev.map(t =>
+          t.node.path === p ? { ...t, node: { ...t.node, path: to, name: filename } } : t
+        ));
+      } catch { /* continua */ }
+    }
+    setSelectedPaths(new Set());
+    setMoveSelectedDialog(false);
+    await loadTree(selectedRepo.id);
+    await loadStatus(selectedRepo.id);
+    addToast("success", `${paths.length} arquivo(s) movido(s) para ${toDir || "raiz"}`);
+  }
+
+  function flattenDirs(nodes: CodeEditorFileNode[], result: string[] = []): string[] {
+    for (const n of nodes) {
+      if (n.type === "dir") {
+        result.push(n.path);
+        if (n.children) flattenDirs(n.children, result);
+      }
+    }
+    return result;
+  }
+
+  // ── Split editor ──
+  function updateRightTabContent(value: string | undefined) {
+    if (value === undefined) return;
+    setOpenTabs(prev => prev.map((t, i) => i === rightTabIdx ? { ...t, currentContent: value } : t));
+  }
+
+  async function saveRightFile() {
+    const tab = openTabs[rightTabIdx];
+    if (!tab || tab.currentContent === tab.savedContent) return;
+    if (tab.node.path.startsWith("__k8s_virtual__/")) return;
+    try {
+      await apiClient.codeEditorWriteFile(tab.repoId, tab.node.path, tab.currentContent);
+      setOpenTabs(prev => prev.map((t, i) =>
+        i === rightTabIdx ? { ...t, savedContent: t.currentContent } : t
+      ));
+      await loadStatus(tab.repoId);
+      addToast("success", `Salvo: ${tab.node.name}`);
+    } catch (e: any) {
+      addToast("error", "Erro ao salvar: " + e.message);
+    }
+  }
+
+  function handleSplitEditorMount(editor: MonacoEditorNS.editor.IStandaloneCodeEditor) {
+    splitEditorRef.current = editor;
+    editor.addCommand(2048 | 49, () => saveRightFile());
+    editor.onDidChangeCursorPosition(e => {
+      if (focusedPane === "right") {
+        setCursorLine(e.position.lineNumber);
+        setCursorCol(e.position.column);
+      }
+    });
+    editor.onDidFocusEditorWidget(() => setFocusedPane("right"));
   }
 
   async function handleResetFile(filePath: string) {
@@ -2880,6 +3026,7 @@ export function CodeEditorTab() {
       setCursorLine(e.position.lineNumber);
       setCursorCol(e.position.column);
     });
+    editor.onDidFocusEditorWidget(() => setFocusedPane("left"));
 
     // ── TypeScript/JavaScript — worker built-in do Monaco ──────────────────
     // Configura uma única vez (flag global para evitar reconfiguração)
@@ -3240,6 +3387,12 @@ export function CodeEditorTab() {
           </>
         )}
 
+        {selectedRepo && openTabs.length > 0 && (
+          <Button variant={splitActive ? "default" : "ghost"} size="sm" className="h-6 text-xs gap-1"
+            title="Dividir editor" onClick={() => setSplitActive(v => !v)}>
+            <Columns2 className="w-3 h-3" />
+          </Button>
+        )}
         {selectedRepo && (
           <Button variant={showTerminal ? "default" : "ghost"} size="sm" className="h-6 text-xs gap-1"
             title="Terminal integrado" onClick={() => setShowTerminal(v => !v)}>
@@ -3408,9 +3561,24 @@ export function CodeEditorTab() {
                         }}
                         onKeyDown={e => {
                           if ((e.ctrlKey || e.metaKey) && e.key === "v") { e.preventDefault(); handleClipboardPaste(""); }
-                          else if (e.key === "Escape") { setClipboard(null); }
+                          else if (e.key === "Escape") { setClipboard(null); setSelectedPaths(new Set()); }
                         }}
                       >
+                        {/* Action bar multi-select */}
+                        {selectedPaths.size > 0 && (
+                          <div className="flex items-center gap-1 px-2 py-1 mb-1 rounded bg-primary/10 border border-primary/20 flex-shrink-0">
+                            <span className="text-[11px] text-primary flex-1">{selectedPaths.size} selecionado{selectedPaths.size > 1 ? "s" : ""}</span>
+                            <button onClick={handleDeleteSelected} className="p-0.5 rounded hover:bg-red-500/20 text-red-400" title="Deletar selecionados">
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                            <button onClick={() => setMoveSelectedDialog(true)} className="p-0.5 rounded hover:bg-muted text-muted-foreground" title="Mover para...">
+                              <ArrowRightLeft className="w-3 h-3" />
+                            </button>
+                            <button onClick={() => setSelectedPaths(new Set())} className="p-0.5 rounded hover:bg-muted text-muted-foreground" title="Limpar seleção">
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
                         {clipboard && (
                           <div className="mx-1 mb-1 px-2 py-1 rounded bg-muted/40 border border-dashed border-muted-foreground/30 flex items-center gap-1.5">
                             <span className="text-[10px] text-muted-foreground">{clipboard.op === "cut" ? "✂" : "⎘"}</span>
@@ -3431,7 +3599,9 @@ export function CodeEditorTab() {
                             onPaste={handleClipboardPaste}
                             cutPath={clipboard?.op === "cut" ? clipboard.path : undefined}
                             onContextMenu={(e, n) => setContextMenu({ x: e.clientX, y: e.clientY, node: n })}
-                            revealPath={revealPath} />
+                            revealPath={revealPath}
+                            selectedPaths={selectedPaths}
+                            onMultiToggle={handleMultiToggle} />
                         ))}
                       </div>
                     </div>
@@ -4036,7 +4206,12 @@ export function CodeEditorTab() {
                 </div>
               </div>
               <div ref={editorRowRef} className="flex-1 min-h-0 flex flex-row">
-                <div className="flex-1 min-h-0 min-w-0">
+                {/* Pane esquerdo (principal) */}
+                <div
+                  className="min-h-0 min-w-0 flex flex-col"
+                  style={splitActive ? { width: `${splitWidthPct}%`, flexShrink: 0 } : { flex: 1 }}
+                  onClick={() => setFocusedPane("left")}
+                >
                   <Editor
                     height="100%"
                     language={extToLanguage(activeTab.node.name)}
@@ -4046,7 +4221,7 @@ export function CodeEditorTab() {
                     onChange={updateTabContent}
                     options={{
                       automaticLayout: true,
-                      minimap: { enabled: showMinimap },
+                      minimap: { enabled: showMinimap && !splitActive },
                       fontSize: fontSize,
                       lineHeight: Math.round(fontSize * 1.55),
                       fontFamily: "'Cascadia Code','Fira Code','Consolas','Courier New',monospace",
@@ -4063,7 +4238,8 @@ export function CodeEditorTab() {
                     }}
                   />
                 </div>
-                {showMarkdownPreview && activeTab.node.name.endsWith(".md") && (
+                {/* Markdown preview (somente quando sem split) */}
+                {!splitActive && showMarkdownPreview && activeTab.node.name.endsWith(".md") && (
                   <>
                     <ResizeDivider onDrag={d => setMarkdownPreviewWidth(w => {
                       const maxW = Math.floor((editorRowRef.current?.offsetWidth ?? 1400) * 0.70);
@@ -4075,6 +4251,66 @@ export function CodeEditorTab() {
                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
                         {activeTab.currentContent}
                       </ReactMarkdown>
+                    </div>
+                  </>
+                )}
+                {/* Pane direito (split editor) */}
+                {splitActive && openTabs.length > 0 && (
+                  <>
+                    <ResizeDivider onDrag={d => {
+                      const totalW = editorRowRef.current?.offsetWidth ?? 800;
+                      setSplitWidthPct(p => Math.max(20, Math.min(80, p + (d / totalW) * 100)));
+                    }} />
+                    <div
+                      className={`flex-1 min-h-0 flex flex-col border-l ${focusedPane === "right" ? "border-primary/40" : "border-border/50"}`}
+                      onClick={() => setFocusedPane("right")}
+                    >
+                      {/* Barra de abas do pane direito */}
+                      <div className="flex items-center border-b border-border/50 flex-shrink-0 bg-card/10 overflow-x-auto">
+                        {openTabs.map((tab, idx) => {
+                          const unsaved = tab.currentContent !== tab.savedContent;
+                          return (
+                            <div
+                              key={`split-${tab.repoId}/${tab.node.path}`}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-border/30 cursor-pointer flex-shrink-0 group ${idx === rightTabIdx ? "bg-background border-b-2 border-b-primary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted/30"}`}
+                              style={{ borderBottom: idx === rightTabIdx ? "2px solid hsl(var(--primary))" : undefined }}
+                              onClick={e => { e.stopPropagation(); setRightTabIdx(idx); setFocusedPane("right"); }}
+                            >
+                              <File className="w-3 h-3 flex-shrink-0" />
+                              <span className="truncate max-w-32">{tab.node.name}</span>
+                              {unsaved && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {/* Editor do pane direito */}
+                      {openTabs[rightTabIdx] && (
+                        <Editor
+                          height="100%"
+                          language={extToLanguage(openTabs[rightTabIdx].node.name)}
+                          value={openTabs[rightTabIdx].currentContent}
+                          theme="vs-dark"
+                          onMount={handleSplitEditorMount}
+                          onChange={updateRightTabContent}
+                          options={{
+                            automaticLayout: true,
+                            minimap: { enabled: false },
+                            fontSize: fontSize,
+                            lineHeight: Math.round(fontSize * 1.55),
+                            fontFamily: "'Cascadia Code','Fira Code','Consolas','Courier New',monospace",
+                            fontLigatures: true,
+                            wordWrap: wordWrap ? "on" : "off",
+                            tabSize: 2,
+                            scrollBeyondLastLine: false,
+                            smoothScrolling: true,
+                            cursorSmoothCaretAnimation: "on",
+                            renderLineHighlight: "all",
+                            scrollbar: { vertical: "visible", horizontal: "visible", verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+                            suggest: { showIcons: true, showSnippets: true },
+                            quickSuggestions: true,
+                          }}
+                        />
+                      )}
                     </div>
                   </>
                 )}
@@ -4465,6 +4701,22 @@ export function CodeEditorTab() {
           node={fileHistoryNode}
           onClose={() => setFileHistoryNode(null)}
         />
+      )}
+
+      {/* ── Mover selecionados ── */}
+      {moveSelectedDialog && selectedRepo && (
+        <Dialog open onOpenChange={open => { if (!open) setMoveSelectedDialog(false); }}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Mover {selectedPaths.size} arquivo(s) para...</DialogTitle>
+            </DialogHeader>
+            <MoveToDialog
+              dirs={["", ...flattenDirs(tree)]}
+              onMove={handleMoveSelected}
+              onClose={() => setMoveSelectedDialog(false)}
+            />
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* ── Fase 5: Resolver conflitos ── */}
