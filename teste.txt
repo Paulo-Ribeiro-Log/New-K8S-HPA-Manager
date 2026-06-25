@@ -15,3 +15,6 @@
    curl -s -H "Authorization: Bearer poc-token-123" "http://localhost:8080/api/v1/ai/tokens?ai_email=paulo.ribeiro.1168@gmail.com" 2>&1                       
    Verificar estado completo das configurações                                                                                                                
                                                
+
+
+  teste
