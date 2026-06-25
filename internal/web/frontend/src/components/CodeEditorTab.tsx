@@ -2526,13 +2526,13 @@ export function CodeEditorTab() {
     if (!selectedRepo) return;
     try { await apiClient.codeEditorStageFiles(selectedRepo.id, paths); }
     catch (e: any) { addToast("error", e.message || "Erro ao adicionar ao staging"); }
-    loadStatus(selectedRepo.id);
+    await loadStatus(selectedRepo.id);
   }
   async function handleScmUnstage(paths: string[]) {
     if (!selectedRepo) return;
     try { await apiClient.codeEditorUnstage(selectedRepo.id, paths); }
     catch (e: any) { addToast("error", e.message || "Erro ao remover do staging"); }
-    loadStatus(selectedRepo.id);
+    await loadStatus(selectedRepo.id);
   }
   async function handleScmCommit(andPush: boolean) {
     if (!selectedRepo || !scmCommitMsg.trim()) return;

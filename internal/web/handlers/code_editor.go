@@ -481,20 +481,28 @@ func (h *CodeEditorHandler) GetGitStatus(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 
-	out, err := runGit(dir, "status", "--porcelain")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": out})
+	// Executar git diretamente sem TrimSpace global — o runGit padrão remove espaços
+	// iniciais do output, corrompendo o XY code em linhas como " M arquivo.txt"
+	// (o espaço inicial significa X=vazio, Y=modificado). Sem ele, line[3:] = "rquivo.txt".
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd.Dir = dir
+	rawOut, cmdErr := cmd.CombinedOutput()
+	if cmdErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": string(rawOut)})
 		return
 	}
 
 	files := []GitStatusFile{}
-	for _, line := range strings.Split(out, "\n") {
+	for _, line := range strings.Split(string(rawOut), "\n") {
 		if len(line) < 4 {
 			continue
 		}
-		xy := strings.TrimSpace(line[:2])
+		// XY é sempre 2 chars; preservar espaços (semanticamente importantes)
+		xy := line[:2]
 		path := strings.TrimSpace(line[3:])
-		if xy == "" || path == "" {
+		if strings.TrimSpace(xy) == "" || path == "" {
 			continue
 		}
 		// Renomeado: "old -> new"
