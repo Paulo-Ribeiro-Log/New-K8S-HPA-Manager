@@ -59,6 +59,7 @@ import {
   Play,
   FlaskConical,
   ServerCrash,
+  Files,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -70,6 +71,12 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   apiClient,
   type CodeEditorRepo,
@@ -3315,13 +3322,13 @@ export function CodeEditorTab() {
   };
 
   const sidePanels = [
-    { id: "files" as const, label: "Arquivos" },
-    { id: "source-control" as const, label: `Source Control${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}` },
-    { id: "branches" as const, label: `Branches${branches ? ` (${branches.local.length})` : ""}` },
-    { id: "git" as const, label: `Git` },
-    { id: "log" as const, label: "Log" },
-    { id: "replace" as const, label: "Replace" },
-    { id: "k8s" as const, label: "K8s" },
+    { id: "files" as const,          label: "Arquivos",                                                                         icon: Files,       badge: 0 },
+    { id: "source-control" as const, label: `Source Control${modifiedPaths.size > 0 ? ` (${modifiedPaths.size})` : ""}`,       icon: GitCompare,  badge: modifiedPaths.size },
+    { id: "branches" as const,       label: `Branches${branches ? ` (${branches.local.length})` : ""}`,                        icon: GitBranch,   badge: branches?.local.length ?? 0 },
+    { id: "git" as const,            label: "Git",                                                                              icon: GitCommit,   badge: 0 },
+    { id: "log" as const,            label: "Log",                                                                              icon: History,     badge: 0 },
+    { id: "replace" as const,        label: "Replace",                                                                          icon: Replace,     badge: 0 },
+    { id: "k8s" as const,            label: "K8s",                                                                              icon: Layers,      badge: 0 },
   ];
 
   return (
@@ -3410,14 +3417,28 @@ export function CodeEditorTab() {
         <div className="flex-shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: sidebarWidth }}>
           {/* Tabs da sidebar */}
           <div className="flex items-center border-b border-border/50 flex-shrink-0">
-            <div className="flex overflow-x-auto flex-1 min-w-0">
-              {sidePanels.map(p => (
-                <button key={p.id} onClick={() => setSidePanel(p.id)}
-                  className={`flex-shrink-0 px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap ${sidePanel === p.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
+            <TooltipProvider delayDuration={400}>
+              <div className="flex flex-1 min-w-0">
+                {sidePanels.map(p => (
+                  <Tooltip key={p.id}>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => setSidePanel(p.id)}
+                        className={`relative flex-shrink-0 p-2 transition-colors ${sidePanel === p.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}
+                      >
+                        <p.icon className="w-4 h-4" />
+                        {p.badge > 0 && (
+                          <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary" />
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      {p.label}
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
+            </TooltipProvider>
             {/* Botões de ação da tree — visíveis apenas no painel Arquivos com repo aberto */}
             {sidePanel === "files" && selectedRepo && !grepMode && (
               <div className="flex gap-0.5 px-1 flex-shrink-0">
