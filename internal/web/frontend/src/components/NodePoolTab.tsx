@@ -194,22 +194,25 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   return (
     <div className="flex flex-col h-full">
       {/* Controles específicos da aba Node Pools */}
-      <div className="flex items-center gap-4 p-4 border-b bg-muted/20">
-        <div className="flex items-center gap-2">
-          <label className="text-sm font-medium">Cluster:</label>
-          <Select value={selectedCluster} onValueChange={handleClusterChange} disabled={isSwitchingContext}>
-            <SelectTrigger className="w-[280px]">
-              <SelectValue placeholder={isSwitchingContext ? "Alternando..." : "Selecionar cluster..."} />
-            </SelectTrigger>
-            <SelectContent>
-              {clusters.map((cluster) => (
-                <SelectItem key={cluster.context} value={cluster.context}>
-                  {cluster.context}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      <div className="flex flex-col gap-2 p-4 border-b bg-muted/20">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium">Cluster:</label>
+            <Select value={selectedCluster} onValueChange={handleClusterChange} disabled={isSwitchingContext}>
+              <SelectTrigger className="w-[280px]">
+                <SelectValue placeholder={isSwitchingContext ? "Alternando..." : "Selecionar cluster..."} />
+              </SelectTrigger>
+              <SelectContent>
+                {clusters.map((cluster) => (
+                  <SelectItem key={cluster.context} value={cluster.context}>
+                    {cluster.context}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
+        {selectedCluster && <SNATPortWidget cluster={selectedCluster} />}
       </div>
 
       {/* Conteúdo da aba */}
@@ -240,7 +243,6 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
               </div>
             ) : (
               <div className="space-y-2">
-                <SNATPortWidget cluster={selectedCluster} />
                 {nodePools.map((nodePool) => (
                   <NodePoolListItem
                     key={`${nodePool.cluster_name}-${nodePool.name}`}
