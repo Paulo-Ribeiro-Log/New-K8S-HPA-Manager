@@ -342,6 +342,24 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
     }
   };
 
+  // Staging direto — sem exigir modificações
+  const isInStaging = staging.stagedHPAs.some(
+    h => h.cluster === hpa.cluster && h.namespace === hpa.namespace && h.name === hpa.name
+  );
+
+  const handleToggleStaging = (checked: boolean) => {
+    if (checked) {
+      staging.addHPAToStaging(hpa);
+      const total = staging.getChangesCount().total + 1;
+      toast.success(`${hpa.name} incluído no staging`, {
+        description: `${total} HPA${total !== 1 ? "s" : ""} no staging`,
+      });
+    } else {
+      staging.removeHPAFromStaging(hpa.cluster, hpa.namespace, hpa.name);
+      toast.info(`${hpa.name} removido do staging`);
+    }
+  };
+
   return (
     <div className="space-y-4 animate-fade-in" onKeyDown={handleKeyDown} tabIndex={-1}>
       {/* Header */}
@@ -358,6 +376,25 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
             </>
           )}
         </div>
+
+        {/* Checkbox: inclui no staging sem alterar valores */}
+        <div className="flex items-center gap-2 pt-1">
+          <Checkbox
+            id={`staging-${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
+            checked={isInStaging}
+            onCheckedChange={handleToggleStaging}
+          />
+          <label
+            htmlFor={`staging-${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
+            className="text-xs cursor-pointer select-none text-muted-foreground"
+          >
+            Incluir no staging com valores atuais
+          </label>
+          {isInStaging && (
+            <span className="text-xs font-medium text-emerald-500">● no staging</span>
+          )}
+        </div>
+
         {isModified && (
           <p className="text-xs text-warning">⚠️ Modificado (não aplicado)</p>
         )}
