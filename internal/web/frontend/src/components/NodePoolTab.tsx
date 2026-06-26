@@ -18,6 +18,7 @@ import { RefreshCcw, Loader2, CheckCircle2, XCircle, RotateCw, Ban } from "lucid
 import { SplitView } from "@/components/SplitView";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
+import { SNATPortWidget } from "@/components/SNATPortWidget";
 import { useClusters, useNodePools } from "@/hooks/useAPI";
 import type { NodePool } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
@@ -239,6 +240,7 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
               </div>
             ) : (
               <div className="space-y-2">
+                <SNATPortWidget cluster={selectedCluster} />
                 {nodePools.map((nodePool) => (
                   <NodePoolListItem
                     key={`${nodePool.cluster_name}-${nodePool.name}`}

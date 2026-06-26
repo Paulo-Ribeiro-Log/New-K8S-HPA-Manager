@@ -614,6 +614,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/node-resources", nodePoolHandler.GetNodeResources)               // Utilização CPU/Memory por node (K8s API)
 	api.GET("/nodepools/autoscaler-status", nodePoolHandler.GetAutoscalerStatus)         // Decisões recentes do cluster-autoscaler
 	api.GET("/nodepools/node-disk-stats", nodePoolHandler.GetNodeDiskStats)              // DiskPressure K8s + inodes + I/O via Prometheus
+	api.GET("/nodepools/snat", nodePoolHandler.GetSNATProfile)                           // Orçamento SNAT do LB (portas × nós × IPs)
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
