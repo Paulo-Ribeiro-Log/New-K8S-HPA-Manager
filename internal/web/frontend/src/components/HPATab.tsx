@@ -201,6 +201,7 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
                     key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
                     name={hpa.name}
                     namespace={hpa.namespace}
+                    cluster={hpa.cluster}
                     currentReplicas={hpa.current_replicas ?? 0}
                     minReplicas={hpa.min_replicas ?? 0}
                     maxReplicas={hpa.max_replicas ?? 1}
@@ -208,6 +209,9 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
                       selectedHPA?.name === hpa.name &&
                       selectedHPA?.namespace === hpa.namespace
                     }
+                    isInStaging={staging.stagedHPAs.some(
+                      s => s.cluster === hpa.cluster && s.namespace === hpa.namespace && s.name === hpa.name
+                    )}
                     onClick={() => setSelectedHPA(hpa)}
                   />
                 ))}

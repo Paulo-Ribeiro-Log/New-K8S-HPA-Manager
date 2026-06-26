@@ -2,7 +2,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AlertHealthBadge } from "@/components/AlertHealthBadge";
-import { BarChart3 } from "lucide-react";
+import { BarChart3, BookmarkCheck } from "lucide-react";
 
 interface HPAListItemProps {
   name: string;
@@ -14,6 +14,7 @@ interface HPAListItemProps {
   isSelected: boolean;
   isModified?: boolean;
   isMonitored?: boolean;
+  isInStaging?: boolean;
   onClick: () => void;
   onMonitor?: () => void;
 }
@@ -28,6 +29,7 @@ export const HPAListItem = ({
   isSelected,
   isModified,
   isMonitored,
+  isInStaging,
   onClick,
   onMonitor,
 }: HPAListItemProps) => {
@@ -50,6 +52,9 @@ export const HPAListItem = ({
           <p className="text-xs text-muted-foreground">{namespace}</p>
         </div>
         <div className="flex items-center gap-2">
+          {isInStaging && (
+            <BookmarkCheck className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" title="No staging" />
+          )}
           {isModified && (
             <Badge variant="secondary" className="bg-warning/20 text-warning border-warning/30 text-xs py-0">
               Modified
