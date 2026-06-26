@@ -79,12 +79,27 @@ export function SNATPortWidget({ cluster }: Props) {
           <>
             <StatusIcon className={`w-3.5 h-3.5 ${colors.text} ml-1`} />
             <span className={`font-semibold ${colors.text}`}>{colors.label}</span>
-            <span className="text-muted-foreground ml-auto mr-1">
-              {fmt(data.total_required_ports)} / {fmt(data.total_available_ports)} portas
-              {" · "}
-              <span className={data.usage_percent >= 100 ? "text-red-400 font-bold" : data.usage_percent >= 85 ? "text-amber-400 font-bold" : "text-foreground"}>
-                {data.usage_percent.toFixed(1)}%
+            <span className="text-muted-foreground ml-auto mr-1 flex items-center gap-2">
+              <span>
+                {fmt(data.total_required_ports)} / {fmt(data.total_available_ports)} portas
+                {" · "}
+                <span className={data.usage_percent >= 100 ? "text-red-400 font-bold" : data.usage_percent >= 85 ? "text-amber-400 font-bold" : "text-foreground"}>
+                  {data.usage_percent.toFixed(1)}%
+                </span>
               </span>
+              {data.allocated_outbound_ports > 0 && (
+                <span className={`font-semibold px-1.5 py-0.5 rounded text-[11px] ${
+                  data.nodes_until_limit <= 0
+                    ? "bg-red-500/20 text-red-400"
+                    : data.nodes_until_limit <= 10
+                    ? "bg-amber-500/20 text-amber-400"
+                    : "bg-emerald-500/20 text-emerald-400"
+                }`}>
+                  {data.nodes_until_limit <= 0
+                    ? "0 nós disponíveis"
+                    : `+${fmt(data.nodes_until_limit)} nós`}
+                </span>
+              )}
             </span>
           </>
         ) : error ? (
