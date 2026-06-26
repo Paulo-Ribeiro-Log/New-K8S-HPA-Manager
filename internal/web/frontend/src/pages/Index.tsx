@@ -22,6 +22,7 @@ import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
+import { SNATPortWidget } from "@/components/SNATPortWidget";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { IngressTab } from "@/components/IngressTab";
@@ -940,6 +941,13 @@ const Index = ({ onLogout }: IndexProps) => {
         ) || [];
 
         return (
+          <div className="flex flex-col h-full">
+            {selectedCluster && (
+              <div className="px-4 pt-3 pb-2 border-b border-border/50">
+                <SNATPortWidget cluster={selectedCluster} />
+              </div>
+            )}
+            <div className="flex-1 min-h-0">
           <SplitView
             leftPanel={{
               title: `Available ${nodeResourceLabel}`,
@@ -1074,8 +1082,10 @@ const Index = ({ onLogout }: IndexProps) => {
               />,
             }}
           />
+            </div>
+          </div>
         );
-      
+
       case "staging":
         return <StagingPanel />;
 
