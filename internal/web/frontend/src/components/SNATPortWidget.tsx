@@ -153,6 +153,23 @@ export function SNATPortWidget({ cluster }: Props) {
                     style={{ width: `${Math.min(data.usage_percent, 100)}%` }}
                   />
                 </div>
+                <div className="flex justify-between text-muted-foreground pt-0.5">
+                  <span>
+                    Restam <span className="text-foreground font-medium">{fmt(data.total_available_ports - data.total_required_ports)}</span> portas livres
+                  </span>
+                  {data.allocated_outbound_ports > 0 && (
+                    <span>
+                      Cabem mais{" "}
+                      <span className={`font-semibold ${
+                        data.nodes_until_limit <= 0  ? "text-red-400" :
+                        data.nodes_until_limit <= 10 ? "text-amber-400" :
+                        "text-emerald-400"
+                      }`}>
+                        {data.nodes_until_limit <= 0 ? "0" : `+${fmt(data.nodes_until_limit)}`} nós
+                      </span>
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Cards de métricas */}
