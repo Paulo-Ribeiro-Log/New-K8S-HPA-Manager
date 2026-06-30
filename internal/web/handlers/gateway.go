@@ -69,13 +69,15 @@ func (h *GatewayHandler) List(c *gin.Context) {
 
 	items, err := kubeclient.ListGenericResources(cluster, namespace, resourceName, gatewayGroup)
 	if err != nil {
-		// recurso não instalado ou sem suporte — lista vazia em vez de erro HTTP
-		if strings.Contains(err.Error(), "no matches") || strings.Contains(err.Error(), "not found") ||
-			strings.Contains(err.Error(), "couldn't find") || strings.Contains(err.Error(), "unknown") {
-			c.JSON(http.StatusOK, gin.H{"success": true, "data": []models.GatewaySummary{}, "count": 0})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, errorResponse("LIST_ERROR", err.Error()))
+		// Gateway API é opcional — qualquer erro de kubectl (CRD não instalado, sem suporte, etc.)
+		// resulta em lista vazia ao invés de HTTP 500
+		c.JSON(http.StatusOK, gin.H{
+			"success":        true,
+			"data":           []models.GatewaySummary{},
+			"count":          0,
+			"not_installed":  true,
+			"install_reason": err.Error(),
+		})
 		return
 	}
 

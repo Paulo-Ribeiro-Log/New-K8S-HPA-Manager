@@ -542,8 +542,16 @@ export const GatewayTab = ({
         </div>
       )}
       {!loading && !error && filteredGateways.length === 0 && (
-        <div className="py-8 text-center text-xs text-muted-foreground">
-          Nenhum {kindLabel} encontrado
+        <div className="py-8 px-4 text-center space-y-2">
+          <Route className="h-6 w-6 text-muted-foreground/40 mx-auto" />
+          <p className="text-xs text-muted-foreground">
+            Nenhum {kindLabel} encontrado
+          </p>
+          <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
+            Gateway API (<code>gateway.networking.k8s.io</code>) pode não estar instalada
+            neste cluster. Verifique com:{" "}
+            <code className="text-[10px]">kubectl get crd gateways.gateway.networking.k8s.io</code>
+          </p>
         </div>
       )}
       {filteredGateways.map((gw) => {
@@ -679,11 +687,19 @@ export const GatewayTab = ({
     </div>
   ) : null;
 
+  // apply bar height in px (shown only when hasChanges)
+  const applyBarHeight = 38;
+
   const rightContent = selectedGateway ? (
-    <div className="flex flex-col h-full min-h-0">
-      {/* Apply bar */}
+    // Usamos position:relative + absolute inset-0 para que Monaco
+    // receba altura real independente do overflow-auto do SplitView
+    <div className="relative w-full h-full">
+      {/* Apply bar — posicionado no topo, empurra o editor para baixo */}
       {hasChanges && (
-        <div className="flex items-center gap-2 px-2 py-1.5 mb-2 rounded bg-amber-500/10 border border-amber-500/30 flex-shrink-0">
+        <div
+          className="absolute top-0 left-0 right-0 z-10 flex items-center gap-2 px-2 rounded bg-amber-500/10 border-b border-amber-500/30"
+          style={{ height: applyBarHeight }}
+        >
           <TriangleAlert className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
           <span className="text-xs text-amber-300 flex-1">Alterações pendentes</span>
           <ProtectedAction>
@@ -716,26 +732,37 @@ export const GatewayTab = ({
         </div>
       )}
 
-      {/* Editor */}
-      <div
-        className={`flex-1 min-h-0 ${
-          editorFullScreen ? "fixed inset-0 z-50 bg-background" : ""
-        }`}
-      >
-        {manifestLoading ? (
-          <div className="flex items-center justify-center h-full gap-2 text-muted-foreground text-xs">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Carregando...
-          </div>
-        ) : (
+      {/* Editor — ocupa o espaço restante abaixo da apply bar */}
+      {editorFullScreen ? (
+        <div className="fixed inset-0 z-50 bg-background">
           <MonacoYamlEditor
             value={editorValue}
             onChange={handleEditorChange}
             height="100%"
             readOnly={false}
           />
-        )}
-      </div>
+        </div>
+      ) : manifestLoading ? (
+        <div
+          className="absolute inset-0 flex items-center justify-center gap-2 text-muted-foreground text-xs"
+          style={{ top: hasChanges ? applyBarHeight : 0 }}
+        >
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Carregando...
+        </div>
+      ) : (
+        <div
+          className="absolute left-0 right-0 bottom-0"
+          style={{ top: hasChanges ? applyBarHeight : 0 }}
+        >
+          <MonacoYamlEditor
+            value={editorValue}
+            onChange={handleEditorChange}
+            height="100%"
+            readOnly={false}
+          />
+        </div>
+      )}
     </div>
   ) : (
     <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
