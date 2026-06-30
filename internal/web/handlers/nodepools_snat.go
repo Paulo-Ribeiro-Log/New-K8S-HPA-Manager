@@ -9,7 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"k8s-hpa-manager/internal/storage"
+
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -191,5 +194,51 @@ func (h *NodePoolHandler) GetSNATProfile(c *gin.Context) {
 		Error:                    errorMsg,
 	}
 
+	// Salvar snapshot no histórico (assíncrono, erros ignorados)
+	if h.snatStore != nil && allocatedPorts > 0 {
+		go func() {
+			if err := h.snatStore.Save(storage.SNATHistoryRecord{
+				Cluster:                clusterCtx,
+				TotalNodeCount:         totalNodes,
+				UsagePercent:           usagePct,
+				NodesUntilLimit:        nodesUntilLimit,
+				AllocatedOutboundPorts: allocatedPorts,
+				OutboundIPCount:        ipCount,
+				RecordedAt:             profile.FetchedAt,
+			}); err != nil {
+				log.Warn().Err(err).Str("cluster", clusterCtx).Msg("snat_history: falha ao salvar snapshot")
+			}
+		}()
+	}
+
 	c.JSON(http.StatusOK, profile)
+}
+
+// GetSNATProjection retorna o histórico e a projeção de crescimento de nós vs. limite SNAT.
+// GET /api/v1/nodepools/snat/projection?cluster=<context>
+func (h *NodePoolHandler) GetSNATProjection(c *gin.Context) {
+	clusterCtx := c.Query("cluster")
+	if clusterCtx == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro cluster é obrigatório"})
+		return
+	}
+	if h.snatStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "histórico SNAT não disponível"})
+		return
+	}
+
+	records, err := h.snatStore.GetRecent(clusterCtx, 30)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("erro ao ler histórico: %v", err)})
+		return
+	}
+
+	// nodesUntilLimit atual: precisamos do último snapshot
+	nodesUntilLimit := 0
+	if len(records) > 0 {
+		nodesUntilLimit = records[len(records)-1].NodesUntilLimit
+	}
+
+	proj := storage.ComputeSNATProjection(records, nodesUntilLimit)
+	c.JSON(http.StatusOK, proj)
 }

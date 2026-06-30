@@ -100,6 +100,9 @@ type Server struct {
 
 	// FinOps Timeline Store (snapshots históricos de HPA para comparação)
 	finopsTimelineStore *storage.FinOpsTimelineStore
+
+	// SNAT History Store (histórico de snapshots SNAT para projeção de crescimento)
+	snatHistoryStore *storage.SNATHistoryStore
 }
 
 // ensureJWTSecret retorna o secret JWT a usar, em ordem de prioridade:
@@ -345,6 +348,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ FinOps Timeline Store inicializado (snapshots históricos HPA)")
 	}
 
+	// SNAT History Store (histórico de snapshots para projeção de crescimento)
+	var snatHistoryStore *storage.SNATHistoryStore
+	snatHistoryDBPath := filepath.Join(baseDir, "snat_history.db")
+	if store, err := storage.NewSNATHistoryStore(snatHistoryDBPath); err != nil {
+		fmt.Printf("⚠️  SNAT History Store: falha ao criar store: %v\n", err)
+	} else {
+		snatHistoryStore = store
+		fmt.Println("✅ SNAT History Store inicializado (projeção de crescimento SNAT)")
+	}
+
 	server := &Server{
 		router:              router,
 		kubeManager:         kubeManager,
@@ -374,6 +387,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		nodepoolRegistryHandler: nodepoolRegistryHandler, // Catálogo de node pools Dynatrace
 		npRegistryStore:         npRegistryStore,         // Usado pelo healthcheck orchestrator
 		finopsTimelineStore:     finopsTimelineStore,     // Snapshots históricos HPA para comparação
+		snatHistoryStore:        snatHistoryStore,        // Histórico SNAT para projeção de crescimento
 	}
 
 	server.setupMiddleware()
@@ -601,7 +615,7 @@ func (s *Server) setupRoutes() {
 	api.PUT("/hpas/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), hpaHandler.Update)
 
 	// Node Pools
-	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker, s.aiTokensStore)
+	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker, s.aiTokensStore, s.snatHistoryStore)
 	api.GET("/nodepools", nodePoolHandler.List)
 	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // Métricas de disco
 	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview) // Visão geral de storage
@@ -614,7 +628,8 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/node-resources", nodePoolHandler.GetNodeResources)               // Utilização CPU/Memory por node (K8s API)
 	api.GET("/nodepools/autoscaler-status", nodePoolHandler.GetAutoscalerStatus)         // Decisões recentes do cluster-autoscaler
 	api.GET("/nodepools/node-disk-stats", nodePoolHandler.GetNodeDiskStats)              // DiskPressure K8s + inodes + I/O via Prometheus
-	api.GET("/nodepools/snat", nodePoolHandler.GetSNATProfile)                           // Orçamento SNAT do LB (portas × nós × IPs)
+	api.GET("/nodepools/snat", nodePoolHandler.GetSNATProfile)                           // Diagnóstico SNAT do LB (portas × nós × IPs)
+	api.GET("/nodepools/snat/projection", nodePoolHandler.GetSNATProjection)               // Projeção de crescimento SNAT (histórico + regressão linear)
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)

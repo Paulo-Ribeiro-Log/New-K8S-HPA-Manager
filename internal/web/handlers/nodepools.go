@@ -37,16 +37,18 @@ type NodePoolHandler struct {
 	promClients     map[string]*promclient.PrometheusClient
 	promClientsMu   sync.RWMutex
 	tokensStore     *storage.UserTokensStore
+	snatStore       *storage.SNATHistoryStore
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools
-func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker, tokensStore *storage.UserTokensStore) *NodePoolHandler {
+func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker, tokensStore *storage.UserTokensStore, snatStore *storage.SNATHistoryStore) *NodePoolHandler {
 	return &NodePoolHandler{
 		kubeManager:     km,
 		progressManager: NewSequenceProgressManager(),
 		historyTracker:  ht,
 		promClients:     make(map[string]*promclient.PrometheusClient),
 		tokensStore:     tokensStore,
+		snatStore:       snatStore,
 	}
 }
 

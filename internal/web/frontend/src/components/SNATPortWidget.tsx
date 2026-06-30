@@ -1,9 +1,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote, TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
+} from "recharts";
 
 interface SNATNodePoolInfo {
   name: string;
@@ -30,6 +33,25 @@ interface SNATProfile {
   error?: string;
 }
 
+interface SNATHistoryRecord {
+  cluster: string;
+  total_node_count: number;
+  usage_percent: number;
+  nodes_until_limit: number;
+  allocated_outbound_ports: number;
+  outbound_ip_count: number;
+  recorded_at: string;
+}
+
+interface SNATProjection {
+  records: SNATHistoryRecord[];
+  growth_per_day: number;
+  days_until_limit: number;   // -1 = indeterminado
+  estimated_date: string | null;
+  confidence: "high" | "medium" | "low" | "none";
+  data_points: number;
+}
+
 // Preço de referência IP público Standard no Azure Brasil Sul (R$/mês)
 const IP_PRICE_BRL = 20;
 
@@ -47,7 +69,14 @@ const statusColors = {
   critical: { bar: "bg-red-500",     text: "text-red-400",     icon: XCircle,       label: "Crítico" },
 };
 
-type Tab = "diagnostico" | "financeiro" | "formula";
+const confidenceLabel: Record<string, { label: string; cls: string }> = {
+  high:   { label: "Alta confiança",  cls: "bg-emerald-500/20 text-emerald-400" },
+  medium: { label: "Média confiança", cls: "bg-amber-500/20 text-amber-400" },
+  low:    { label: "Baixa confiança", cls: "bg-muted text-muted-foreground" },
+  none:   { label: "Sem dados",       cls: "bg-muted text-muted-foreground" },
+};
+
+type Tab = "diagnostico" | "financeiro" | "formula" | "projecao";
 
 interface Props {
   cluster: string;
@@ -65,12 +94,30 @@ export function SNATPortWidget({ cluster }: Props) {
     retry: 1,
   });
 
+  const { data: proj, isLoading: projLoading, refetch: refetchProj } = useQuery<SNATProjection>({
+    queryKey: ["snat-projection", cluster],
+    queryFn: () => apiClient.get<SNATProjection>(`/nodepools/snat/projection?cluster=${encodeURIComponent(cluster)}`),
+    enabled: !!cluster && open && activeTab === "projecao",
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+
   if (!cluster) return null;
 
   const colors = data ? statusColors[data.status] : statusColors.ok;
   const StatusIcon = colors.icon;
 
   const ipsToAdd = data ? Math.max(0, data.ips_needed_for_current_nodes - data.outbound_ip_count) : 0;
+
+  // Prepara dados para o gráfico de projeção
+  const chartData = (proj?.records ?? []).map(r => ({
+    date: new Date(r.recorded_at).toLocaleDateString("pt-BR", { month: "2-digit", day: "2-digit" }),
+    nós: r.total_node_count,
+  }));
+
+  const growthPerWeek = proj ? proj.growth_per_day * 7 : 0;
+  const GrowthIcon = growthPerWeek > 0.1 ? TrendingUp : growthPerWeek < -0.1 ? TrendingDown : Minus;
+  const growthColor = growthPerWeek > 0.1 ? "text-amber-400" : growthPerWeek < -0.1 ? "text-emerald-400" : "text-muted-foreground";
 
   return (
     <>
@@ -139,8 +186,12 @@ export function SNATPortWidget({ cluster }: Props) {
                 </>
               )}
               <div className="ml-auto mr-8">
-                <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={() => refetch()} disabled={isFetching}>
-                  <RefreshCw className={`w-3 h-3 mr-1 ${isFetching ? "animate-spin" : ""}`} />
+                <Button
+                  size="sm" variant="ghost" className="h-6 text-[11px]"
+                  onClick={() => { refetch(); if (activeTab === "projecao") refetchProj(); }}
+                  disabled={isFetching || projLoading}
+                >
+                  <RefreshCw className={`w-3 h-3 mr-1 ${isFetching || projLoading ? "animate-spin" : ""}`} />
                   Atualizar
                 </Button>
               </div>
@@ -150,7 +201,7 @@ export function SNATPortWidget({ cluster }: Props) {
           {/* Abas */}
           {data && (
             <div className="flex border-b border-border/50 px-5 gap-1 flex-shrink-0 bg-background">
-              {(["diagnostico", "financeiro", "formula"] as const).map(tab => (
+              {(["diagnostico", "financeiro", "formula", "projecao"] as const).map(tab => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -160,7 +211,10 @@ export function SNATPortWidget({ cluster }: Props) {
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {tab === "diagnostico" ? "Diagnóstico" : tab === "financeiro" ? "Financeiro" : "Fórmula"}
+                  {tab === "diagnostico" ? "Diagnóstico" :
+                   tab === "financeiro"  ? "Financeiro" :
+                   tab === "formula"     ? "Fórmula" :
+                   "Projeção"}
                 </button>
               ))}
             </div>
@@ -416,6 +470,149 @@ export function SNATPortWidget({ cluster }: Props) {
                     <Row label="Atenção" value="80% – 94%" valueClass="text-amber-400" />
                     <Row label="Crítico" value="≥ 95%"     valueClass="text-red-400" />
                   </div>
+                </div>
+              )}
+
+              {/* ── ABA: PROJEÇÃO ── */}
+              {activeTab === "projecao" && (
+                <div className="space-y-4">
+                  {projLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-10 text-muted-foreground">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Carregando histórico...
+                    </div>
+                  ) : !proj || proj.data_points < 2 ? (
+                    <div className="rounded border border-border/40 bg-muted/10 p-4 text-center space-y-2">
+                      <TrendingUp className="w-8 h-8 text-muted-foreground mx-auto" />
+                      <p className="text-muted-foreground">
+                        Dados insuficientes para projeção.
+                      </p>
+                      <p className="text-muted-foreground text-[11px]">
+                        A projeção é calculada após pelo menos 2 snapshots históricos.
+                        Os dados são coletados automaticamente toda vez que este painel é aberto (1 snapshot/hora por cluster).
+                        Pontos coletados até agora: <span className="text-foreground">{proj?.data_points ?? 0}</span>.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Resumo da projeção */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="rounded border border-border/40 bg-muted/10 p-3">
+                          <p className="text-muted-foreground">Taxa de crescimento</p>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <GrowthIcon className={`w-4 h-4 ${growthColor}`} />
+                            <span className={`font-semibold text-sm ${growthColor}`}>
+                              {growthPerWeek >= 0 ? "+" : ""}{growthPerWeek.toFixed(1)} nós/semana
+                            </span>
+                          </div>
+                          <p className="text-muted-foreground text-[10px] mt-0.5">
+                            ({proj.growth_per_day >= 0 ? "+" : ""}{proj.growth_per_day.toFixed(2)} nós/dia — regressão linear)
+                          </p>
+                        </div>
+
+                        <div className="rounded border border-border/40 bg-muted/10 p-3">
+                          <p className="text-muted-foreground">Confiança da estimativa</p>
+                          <div className="mt-0.5">
+                            <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium ${confidenceLabel[proj.confidence]?.cls ?? ""}`}>
+                              {confidenceLabel[proj.confidence]?.label ?? proj.confidence}
+                            </span>
+                          </div>
+                          <p className="text-muted-foreground text-[10px] mt-0.5">
+                            {proj.data_points} pontos · span {
+                              proj.records.length >= 2
+                                ? Math.round((new Date(proj.records[proj.records.length - 1].recorded_at).getTime() - new Date(proj.records[0].recorded_at).getTime()) / 86400000)
+                                : 0
+                            } dias
+                          </p>
+                        </div>
+
+                        {proj.days_until_limit > 0 ? (
+                          <>
+                            <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3">
+                              <p className="text-muted-foreground">Estimativa de limite</p>
+                              <p className="font-semibold text-sm text-amber-400 mt-0.5">
+                                em ~{fmt(proj.days_until_limit)} dias
+                              </p>
+                              <p className="text-muted-foreground text-[10px] mt-0.5">
+                                com o ritmo de crescimento atual
+                              </p>
+                            </div>
+                            <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3">
+                              <p className="text-muted-foreground">Data estimada</p>
+                              <p className="font-semibold text-sm text-foreground mt-0.5">
+                                {proj.estimated_date
+                                  ? new Date(proj.estimated_date).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" })
+                                  : "—"}
+                              </p>
+                              <p className="text-muted-foreground text-[10px] mt-0.5">
+                                data em que o limite SNAT será atingido
+                              </p>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="col-span-2 rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
+                            <p className="text-emerald-400 font-medium">
+                              {proj.growth_per_day <= 0
+                                ? "Frota estável ou em redução — sem projeção de limite"
+                                : "Ritmo de crescimento dentro da margem disponível"}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Gráfico histórico */}
+                      {chartData.length >= 2 && (
+                        <div className="space-y-1.5">
+                          <p className="font-medium text-foreground">Histórico de nós (últimos 30 dias)</p>
+                          <div className="h-44 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.4} />
+                                <XAxis
+                                  dataKey="date"
+                                  tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                                  interval="preserveStartEnd"
+                                />
+                                <YAxis
+                                  tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                                  allowDecimals={false}
+                                />
+                                <Tooltip
+                                  contentStyle={{
+                                    background: "hsl(var(--background))",
+                                    border: "1px solid hsl(var(--border))",
+                                    borderRadius: 6,
+                                    fontSize: 11,
+                                  }}
+                                  formatter={(v: number) => [`${v} nós`, "Total de nós"]}
+                                />
+                                {data.max_nodes_allowed > 0 && (
+                                  <ReferenceLine
+                                    y={data.max_nodes_allowed}
+                                    stroke="hsl(var(--destructive))"
+                                    strokeDasharray="4 2"
+                                    label={{ value: `Limite (${data.max_nodes_allowed})`, fill: "hsl(var(--destructive))", fontSize: 10, position: "insideTopRight" }}
+                                  />
+                                )}
+                                <Line
+                                  type="monotone"
+                                  dataKey="nós"
+                                  stroke="hsl(var(--primary))"
+                                  strokeWidth={2}
+                                  dot={{ r: 3, fill: "hsl(var(--primary))" }}
+                                  activeDot={{ r: 5 }}
+                                />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                          <p className="text-muted-foreground text-[10px]">
+                            Linha vermelha tracejada = limite máximo de nós com a configuração SNAT atual.
+                            Dados coletados automaticamente (1 snapshot/hora).
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
             </div>
