@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	gcpprovider "k8s-hpa-manager/internal/cloudprovider/gcp"
 	"k8s-hpa-manager/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -51,6 +52,7 @@ type SNATProfile struct {
 	NodePools                []SNATNodePoolInfo `json:"node_pools"`
 	FetchedAt                time.Time          `json:"fetched_at"`
 	Error                    string             `json:"error,omitempty"`
+	RequiresGCPAuth          bool               `json:"requires_gcp_auth,omitempty"`
 }
 
 // detectSNATProvider retorna "gke", "eks" ou "aks" com base no prefixo do context.
@@ -154,6 +156,22 @@ type gkeRouterNat struct {
 }
 
 func (h *NodePoolHandler) buildSNATProfileGKE(ctx context.Context, clusterCtx string, totalNodes int, pools []SNATNodePoolInfo) (SNATProfile, error) {
+	// Verificar autenticação GCP antes de chamar gcloud
+	gcpAuth := gcpprovider.NewGCPAuthManager()
+	authStatus := gcpAuth.CheckStatus(ctx)
+	if authStatus.HasGcloud && !authStatus.Authenticated && !authStatus.HasADC {
+		return SNATProfile{
+			Cluster:         clusterCtx,
+			CloudProvider:   "gke",
+			TotalNodeCount:  totalNodes,
+			NodePools:       pools,
+			Status:          "ok",
+			FetchedAt:       time.Now(),
+			RequiresGCPAuth: true,
+			Error:           "gcloud não autenticado — faça login para obter dados SNAT do Cloud NAT",
+		}, nil
+	}
+
 	gkeCfg := h.kubeManager.GetGKEClusterConfig(clusterCtx)
 	if gkeCfg == nil {
 		return SNATProfile{}, fmt.Errorf("cluster GKE não encontrado na config: %s", clusterCtx)

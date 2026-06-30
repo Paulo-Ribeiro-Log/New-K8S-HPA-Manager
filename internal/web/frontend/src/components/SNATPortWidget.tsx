@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote, TrendingUp, TrendingDown, Minus, Server } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote, TrendingUp, TrendingDown, Minus, Server, KeyRound, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { toast } from "sonner";
 import {
   LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
@@ -32,6 +33,7 @@ interface SNATProfile {
   node_pools: SNATNodePoolInfo[];
   fetched_at: string;
   error?: string;
+  requires_gcp_auth?: boolean;
 }
 
 interface SNATNodeStat {
@@ -89,6 +91,21 @@ interface SNATProjection {
   data_points: number;
 }
 
+interface GCPAuthStatus {
+  authenticated: boolean;
+  account?: string;
+  has_gcloud: boolean;
+  has_adc: boolean;
+}
+
+interface GCPLoginSession {
+  session_id: string;
+  user_code: string;
+  verify_url: string;
+  expires_at: string;
+  interval_sec: number;
+}
+
 // Preço de referência IP público Standard no Azure Brasil Sul (R$/mês)
 const IP_PRICE_BRL = 20;
 
@@ -142,6 +159,12 @@ export function SNATPortWidget({ cluster }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("diagnostico");
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
+  // GCP auth state (usado quando cluster é GKE e gcloud não está autenticado)
+  const [gcpStatus, setGcpStatus] = useState<GCPAuthStatus | null>(null);
+  const [gcpLoginSession, setGcpLoginSession] = useState<GCPLoginSession | null>(null);
+  const [gcpPolling, setGcpPolling] = useState(false);
+  const gcpPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const { data, isLoading, error, refetch, isFetching } = useQuery<SNATProfile>({
     queryKey: ["snat-profile", cluster],
     queryFn: () => apiClient.get<SNATProfile>(`/nodepools/snat?cluster=${encodeURIComponent(cluster)}`),
@@ -176,7 +199,88 @@ export function SNATPortWidget({ cluster }: Props) {
     retry: 1,
   });
 
+  // Verificar auth GCP quando modal abre (apenas para GKE)
+  useEffect(() => {
+    if (open && data?.requires_gcp_auth) {
+      checkGCPAuth();
+    }
+    if (!open) {
+      stopGCPPoll();
+    }
+  }, [open, data?.requires_gcp_auth]);
+
+  useEffect(() => () => stopGCPPoll(), []);
+
+  const stopGCPPoll = () => {
+    if (gcpPollRef.current) {
+      clearInterval(gcpPollRef.current);
+      gcpPollRef.current = null;
+    }
+  };
+
+  const checkGCPAuth = async () => {
+    try {
+      const resp = await fetch("/api/v1/gcp/auth/status", {
+        headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+      });
+      if (resp.ok) {
+        const s: GCPAuthStatus = await resp.json();
+        setGcpStatus(s);
+      }
+    } catch {
+      // opcional
+    }
+  };
+
+  const startGCPLogin = async () => {
+    try {
+      const resp = await fetch("/api/v1/gcp/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+        },
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const session: GCPLoginSession = await resp.json();
+      setGcpLoginSession(session);
+      setGcpPolling(true);
+      const interval = Math.max((session.interval_sec || 5), 5) * 1000;
+      gcpPollRef.current = setInterval(() => pollGCPLogin(session.session_id), interval);
+    } catch (err) {
+      toast.error("Erro ao iniciar autenticação GCP", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const pollGCPLogin = async (sessionID: string) => {
+    try {
+      const resp = await fetch(`/api/v1/gcp/auth/poll?session_id=${sessionID}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+      });
+      if (!resp.ok) return;
+      const result = await resp.json();
+      if (result.done) {
+        stopGCPPoll();
+        setGcpPolling(false);
+        setGcpLoginSession(null);
+        if (result.success) {
+          toast.success("GCP autenticado com sucesso!");
+          setGcpStatus(null);
+          refetch();
+        } else {
+          toast.error("Autenticação GCP falhou ou expirou");
+        }
+      }
+    } catch {
+      // ignorar erros de polling
+    }
+  };
+
   if (!cluster) return null;
+
+  const gcpNeedsAuth = data?.requires_gcp_auth && data?.cloud_provider === "gke";
 
   const colors = data ? statusColors[data.status] : statusColors.ok;
   const StatusIcon = colors.icon;
@@ -209,6 +313,14 @@ export function SNATPortWidget({ cluster }: Props) {
 
         {isLoading || isFetching ? (
           <RefreshCw className="w-3 h-3 animate-spin text-muted-foreground ml-1" />
+        ) : gcpNeedsAuth ? (
+          <>
+            <KeyRound className="w-3.5 h-3.5 text-amber-400 ml-1" />
+            <span className="font-semibold text-amber-400">Login GCP necessário</span>
+            <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted/40 border border-border/40 ml-1">
+              Cloud NAT
+            </span>
+          </>
         ) : data ? (
           <>
             <StatusIcon className={`w-3.5 h-3.5 ${colors.text} ml-1`} />
@@ -287,8 +399,64 @@ export function SNATPortWidget({ cluster }: Props) {
             </DialogTitle>
           </DialogHeader>
 
+          {/* GCP Auth necessária */}
+          {gcpNeedsAuth && (
+            <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8">
+              <KeyRound className="w-10 h-10 text-amber-400" />
+              <div className="text-center">
+                <p className="font-semibold text-foreground">Autenticação GCP necessária</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  O gcloud não está autenticado. Faça login para obter dados do Cloud NAT.
+                </p>
+              </div>
+
+              {!gcpLoginSession && !gcpPolling && (
+                <Button size="sm" onClick={startGCPLogin}>
+                  <KeyRound className="w-3.5 h-3.5 mr-1.5" />
+                  Autenticar com Google
+                </Button>
+              )}
+
+              {gcpLoginSession && (
+                <div className="w-full max-w-sm space-y-3 p-4 rounded-lg border border-amber-500/30 bg-amber-500/5">
+                  <p className="text-xs text-muted-foreground text-center">
+                    Acesse o link e insira o código:
+                  </p>
+                  <a
+                    href={gcpLoginSession.verify_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block text-xs text-blue-400 underline text-center break-all"
+                  >
+                    {gcpLoginSession.verify_url}
+                  </a>
+                  <div className="flex items-center justify-center gap-2">
+                    <span className="font-mono text-lg font-bold tracking-widest text-foreground">
+                      {gcpLoginSession.user_code}
+                    </span>
+                    <button
+                      className="text-muted-foreground hover:text-foreground"
+                      onClick={() => {
+                        navigator.clipboard.writeText(gcpLoginSession.user_code);
+                        toast.success("Código copiado!");
+                      }}
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  {gcpPolling && (
+                    <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      Aguardando confirmação...
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Abas */}
-          {data && (
+          {data && !gcpNeedsAuth && (
             <div className="flex border-b border-border/50 px-5 gap-1 flex-shrink-0 bg-background">
               {(["diagnostico", "financeiro", "formula", "projecao", "nos"] as const).map(tab => (
                 <button
@@ -311,7 +479,7 @@ export function SNATPortWidget({ cluster }: Props) {
           )}
 
           {/* Conteúdo com scroll */}
-          {data && (
+          {data && !gcpNeedsAuth && (
             <div className="overflow-y-auto flex-1 px-5 py-4 text-xs">
               {data.error && <p className="text-amber-400 italic mb-3">{data.error}</p>}
 
