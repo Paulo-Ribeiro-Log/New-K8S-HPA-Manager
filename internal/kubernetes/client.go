@@ -3487,13 +3487,15 @@ func (c *Client) GetNodesInNodePool(ctx context.Context, nodePoolName string) ([
 	}
 
 	// Filtrar nodes pelo label do node pool/group.
-	// AKS usa "agentpool=<nome>"; EKS usa "eks.amazonaws.com/nodegroup=<nome>".
+	// AKS usa "agentpool=<nome>"; EKS usa "eks.amazonaws.com/nodegroup=<nome>"; GKE usa "cloud.google.com/gke-nodepool=<nome>".
 	var nodeNames []string
 	for _, node := range nodes.Items {
 		labels := node.Labels
 		if v, ok := labels["agentpool"]; ok && v == nodePoolName {
 			nodeNames = append(nodeNames, node.Name)
 		} else if v, ok := labels["eks.amazonaws.com/nodegroup"]; ok && v == nodePoolName {
+			nodeNames = append(nodeNames, node.Name)
+		} else if v, ok := labels["cloud.google.com/gke-nodepool"]; ok && v == nodePoolName {
 			nodeNames = append(nodeNames, node.Name)
 		}
 	}

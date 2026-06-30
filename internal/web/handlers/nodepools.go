@@ -1546,9 +1546,16 @@ func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 	poolMetrics := make(map[string]*NodePoolDiskMetrics)
 
 	for _, node := range nodes.Items {
-		// Extrair nome do node pool das labels
-		nodePool, ok := node.Labels["agentpool"]
-		if !ok {
+		// Extrair nome do node pool das labels (AKS, EKS e GKE)
+		nodePool := ""
+		if v, ok := node.Labels["agentpool"]; ok && v != "" {
+			nodePool = v
+		} else if v, ok := node.Labels["cloud.google.com/gke-nodepool"]; ok && v != "" {
+			nodePool = v
+		} else if v, ok := node.Labels["eks.amazonaws.com/nodegroup"]; ok && v != "" {
+			nodePool = v
+		}
+		if nodePool == "" {
 			continue
 		}
 
@@ -1557,9 +1564,10 @@ func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 			continue
 		}
 
-		// Determinar tipo de disco (efêmero ou persistente)
+		// Determinar tipo de disco
 		isEphemeral := false
 		diskType := "Managed Disk"
+		// AKS — labels específicas de disco
 		if storageProfile, ok := node.Labels["storageprofile"]; ok {
 			if storageProfile == "ephemeral" {
 				isEphemeral = true
@@ -1568,6 +1576,10 @@ func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 		} else if node.Labels["kubernetes.azure.com/ephemeral-os"] == "true" {
 			isEphemeral = true
 			diskType = "Ephemeral OS Disk"
+		}
+		// GKE — disco por padrão é Persistent Disk (pd-standard/pd-ssd)
+		if _, isGKE := node.Labels["cloud.google.com/gke-nodepool"]; isGKE && diskType == "Managed Disk" {
+			diskType = "Persistent Disk"
 		}
 
 		var totalBytes, usedBytes, availableBytes float64

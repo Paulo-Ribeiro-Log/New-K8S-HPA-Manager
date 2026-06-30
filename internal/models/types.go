@@ -116,6 +116,40 @@ type IngressManifest struct {
 	Metadata  IngressMetadata `json:"metadata"`
 }
 
+// GatewaySummary descreve informações resumidas de um Gateway API resource
+type GatewaySummary struct {
+	Cluster         string            `json:"cluster"`
+	Namespace       string            `json:"namespace"`
+	Name            string            `json:"name"`
+	Kind            string            `json:"kind"`            // Gateway, HTTPRoute, GRPCRoute, TCPRoute, GatewayClass
+	GatewayClass    string            `json:"gatewayClass,omitempty"`
+	Addresses       []string          `json:"addresses,omitempty"`
+	Listeners       int               `json:"listeners,omitempty"`
+	ParentRefs      []string          `json:"parentRefs,omitempty"`  // para routes
+	Hostnames       []string          `json:"hostnames,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	UpdatedAt       time.Time         `json:"updatedAt"`
+}
+
+// GatewayMetadata consolida metadados relevantes de um Gateway API resource
+type GatewayMetadata struct {
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+}
+
+// GatewayManifest contém o YAML bruto e metadados para edição
+type GatewayManifest struct {
+	Cluster   string          `json:"cluster"`
+	Namespace string          `json:"namespace"`
+	Name      string          `json:"name"`
+	Kind      string          `json:"kind"`
+	YAML      string          `json:"yaml"`
+	Metadata  GatewayMetadata `json:"metadata"`
+}
+
 // DeploymentSummary descreve informações resumidas de um Deployment
 type DeploymentSummary struct {
 	Cluster             string            `json:"cluster"`

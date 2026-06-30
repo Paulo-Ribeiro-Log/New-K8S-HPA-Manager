@@ -726,6 +726,22 @@ func (s *Server) setupRoutes() {
 		ingresses.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), ingressHandler.Delete)
 	}
 
+	// Gateway API (gateway.networking.k8s.io)
+	gatewayHandler := handlers.NewGatewayHandler(s.kubeManager, s.historyTracker)
+	gateways := api.Group("/gateways")
+	{
+		gateways.GET("", gatewayHandler.List)
+		gateways.GET("/:cluster/:namespace/:kind/:name", gatewayHandler.Get)
+		gateways.GET("/:cluster/:namespace/:kind/:name/describe", gatewayHandler.Describe)
+		gateways.POST("/diff", gatewayHandler.Diff)
+		gateways.POST("/validate", gatewayHandler.Validate)
+
+		// Gateway - Write Operations (SRE-only)
+		gateways.POST("/:cluster/:namespace/:kind", rbacMiddleware.RequireSREGroup(), gatewayHandler.Create)
+		gateways.PUT("/:cluster/:namespace/:kind/:name", rbacMiddleware.RequireSREGroup(), gatewayHandler.Apply)
+		gateways.DELETE("/:cluster/:namespace/:kind/:name", rbacMiddleware.RequireSREGroup(), gatewayHandler.Delete)
+	}
+
 	// Deployments
 	deploymentHandler := handlers.NewDeploymentHandler(s.kubeManager, s.historyTracker)
 	deployments := api.Group("/deployments")

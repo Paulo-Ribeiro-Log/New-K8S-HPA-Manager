@@ -36,6 +36,10 @@ import type {
   IngressDiffResult,
   IngressValidateResult,
   IngressApplyResult,
+  GatewaySummary,
+  GatewayManifest,
+  GatewayDiffResult,
+  GatewayApplyResult,
   DeploymentSummary,
   DeploymentManifest,
   DeploymentDiffResult,
@@ -1094,6 +1098,91 @@ class APIClient {
       `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
     );
     return response;
+  }
+
+  // Gateway API Methods (gateway.networking.k8s.io)
+  async getGateways(
+    cluster?: string,
+    namespace?: string,
+    kind: string = "gateway",
+    bypassCache: boolean = false
+  ): Promise<GatewaySummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespace) params.append("namespace", namespace);
+    params.append("kind", kind);
+    if (bypassCache) params.append("_t", Date.now().toString());
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<GatewaySummary[]>>(`/gateways${query}`);
+    return response.data || [];
+  }
+
+  async getGateway(cluster: string, namespace: string, kind: string, name: string): Promise<GatewayManifest> {
+    const response = await this.request<APIResponse<GatewayManifest>>(
+      `/gateways/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) throw new Error("Gateway resource not found");
+    return response.data;
+  }
+
+  async describeGateway(cluster: string, namespace: string, kind: string, name: string): Promise<{ describe: string }> {
+    return this.request<{ describe: string }>(
+      `/gateways/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/describe`
+    );
+  }
+
+  async diffGateway(originalYaml: string, updatedYaml: string, fileName?: string): Promise<GatewayDiffResult> {
+    const response = await this.request<APIResponse<GatewayDiffResult>>(
+      `/gateways/diff`,
+      { method: "POST", body: JSON.stringify({ originalYaml, updatedYaml, fileName }) }
+    );
+    if (!response.data) throw new Error("Diff response inválida");
+    return response.data;
+  }
+
+  async validateGateway(payload: { cluster: string; namespace: string; yaml: string; kind: string }): Promise<{ message: string }> {
+    const response = await this.request<APIResponse<{ message: string }>>(
+      `/gateways/validate`,
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+    if (!response.data) throw new Error("Validação sem retorno");
+    return response.data;
+  }
+
+  async applyGateway(
+    cluster: string,
+    namespace: string,
+    kind: string,
+    name: string,
+    body: { yaml: string; dryRun?: boolean; force?: boolean }
+  ): Promise<GatewayApplyResult> {
+    const response = await this.request<APIResponse<GatewayApplyResult>>(
+      `/gateways/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
+      { method: "PUT", body: JSON.stringify(body) }
+    );
+    if (!response.data) throw new Error("Aplicação sem retorno");
+    return response.data;
+  }
+
+  async createGateway(
+    cluster: string,
+    namespace: string,
+    kind: string,
+    body: { yaml: string; dryRun?: boolean }
+  ): Promise<GatewayApplyResult> {
+    const response = await this.request<APIResponse<GatewayApplyResult>>(
+      `/gateways/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(kind)}`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+    if (!response.data) throw new Error("Criação sem retorno");
+    return response.data;
+  }
+
+  async deleteGateway(cluster: string, namespace: string, kind: string, name: string): Promise<void> {
+    await this.request(
+      `/gateways/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
   }
 
   // StatefulSets API Methods

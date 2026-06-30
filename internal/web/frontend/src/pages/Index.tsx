@@ -26,6 +26,7 @@ import { SNATPortWidget } from "@/components/SNATPortWidget";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { IngressTab } from "@/components/IngressTab";
+import { GatewayTab } from "@/components/GatewayTab";
 import { NamespacesTab } from "@/components/NamespacesTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
@@ -1247,6 +1248,20 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Services Tab">
             <ServicesTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
+      case "gateways":
+        return (
+          <ErrorBoundary componentName="Gateway Tab">
+            <GatewayTab
               cluster={selectedCluster}
               namespaces={namespaces}
               selectedNamespace={selectedNamespace}

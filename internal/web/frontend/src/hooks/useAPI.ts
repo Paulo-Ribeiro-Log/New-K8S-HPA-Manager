@@ -13,6 +13,7 @@ import type {
   DaemonSetSummary,
   StatefulSetSummary,
   IngressSummary,
+  GatewaySummary,
   PodSummary,
   ServiceSummary,
   VPASummary,
@@ -579,6 +580,36 @@ export function useIngresses(cluster?: string, namespaces?: string[], showSystem
   };
 
   return { ingresses, loading, error, refetch, silentRefetch };
+}
+
+export function useGateways(cluster?: string, namespace?: string, kind: string = "gateway") {
+  const [gateways, setGateways] = useState<GatewaySummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchGateways = async (bypassCache: boolean = false) => {
+    if (!cluster) {
+      setGateways([]);
+      return;
+    }
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.getGateways(cluster, namespace, kind, bypassCache);
+      setGateways(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch gateways");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchGateways();
+  }, [cluster, namespace, kind]);
+
+  const refetch = () => fetchGateways(true);
+  return { gateways, loading, error, refetch };
 }
 
 export function usePods(cluster?: string, namespaces?: string[], showSystem: boolean = false) {

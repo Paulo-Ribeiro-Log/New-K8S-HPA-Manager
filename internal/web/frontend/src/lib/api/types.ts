@@ -360,6 +360,51 @@ export interface IngressApplyResult {
   appliedAt?: string;
 }
 
+// Gateway API Types (gateway.networking.k8s.io)
+export interface GatewaySummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  kind: string;
+  gatewayClass?: string;
+  addresses?: string[];
+  listeners?: number;
+  parentRefs?: string[];
+  hostnames?: string[];
+  labels?: Record<string, string>;
+  updatedAt: string;
+}
+
+export interface GatewayMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface GatewayManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  kind: string;
+  yaml: string;
+  metadata: GatewayMetadata;
+}
+
+export interface GatewayDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface GatewayApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  kind: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
 // Pod/Container Types
 export interface ContainerStatus {
   name: string;

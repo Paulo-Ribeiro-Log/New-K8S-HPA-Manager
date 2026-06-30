@@ -20,6 +20,7 @@ import {
   Database,
   TrendingUp,
   Globe,
+  Route,
 } from "lucide-react";
 
 interface WorkloadMenuProps {
@@ -36,6 +37,7 @@ interface WorkloadTab {
 const workloadTabs: WorkloadTab[] = [
   { id: "configmaps", label: "ConfigMaps", icon: FileCode },
   { id: "ingresses", label: "Ingresses", icon: Network },
+  { id: "gateways", label: "Gateways", icon: Route },
   { id: "secrets", label: "Secrets", icon: Key },
   { id: "deployments", label: "Deployments", icon: Package },
   { id: "daemonsets", label: "DaemonSets", icon: Server },
