@@ -630,6 +630,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/node-disk-stats", nodePoolHandler.GetNodeDiskStats)              // DiskPressure K8s + inodes + I/O via Prometheus
 	api.GET("/nodepools/snat", nodePoolHandler.GetSNATProfile)                           // Diagnóstico SNAT do LB (portas × nós × IPs)
 	api.GET("/nodepools/snat/projection", nodePoolHandler.GetSNATProjection)               // Projeção de crescimento SNAT (histórico + regressão linear)
+	api.GET("/nodepools/snat/nodes", nodePoolHandler.GetSNATNodes)                         // Breakdown por nó: conntrack como proxy SNAT
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)

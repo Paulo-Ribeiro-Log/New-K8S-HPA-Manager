@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote, TrendingUp, TrendingDown, Minus, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
+  LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 
 interface SNATNodePoolInfo {
@@ -30,6 +30,41 @@ interface SNATProfile {
   status: "ok" | "warning" | "critical";
   node_pools: SNATNodePoolInfo[];
   fetched_at: string;
+  error?: string;
+}
+
+interface SNATNodeStat {
+  name: string;
+  pool: string;
+  internal_ip: string;
+  conntrack_entries: number;
+  conntrack_max: number;
+  allocated_ports: number;
+  snat_usage_pct: number;
+  conntrack_usage_pct: number;
+  status: "ok" | "warning" | "critical" | "unknown";
+}
+
+interface SNATNodesResponse {
+  cluster: string;
+  allocated_outbound_ports: number;
+  nodes: SNATNodeStat[];
+  prometheus_available: boolean;
+  fetched_at: string;
+}
+
+// Reusa ConntrackHistoryPoint do endpoint existente /nodepools/conntrack/history
+interface ConntrackPoint {
+  ts: number;
+  count: number;
+  max: number;
+  usage_pct: number;
+}
+
+interface ConntrackHistoryResponse {
+  node_name: string;
+  points: ConntrackPoint[];
+  prometheus_available: boolean;
   error?: string;
 }
 
@@ -76,7 +111,7 @@ const confidenceLabel: Record<string, { label: string; cls: string }> = {
   none:   { label: "Sem dados",       cls: "bg-muted text-muted-foreground" },
 };
 
-type Tab = "diagnostico" | "financeiro" | "formula" | "projecao";
+type Tab = "diagnostico" | "financeiro" | "formula" | "projecao" | "nos";
 
 interface Props {
   cluster: string;
@@ -85,6 +120,7 @@ interface Props {
 export function SNATPortWidget({ cluster }: Props) {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("diagnostico");
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
   const { data, isLoading, error, refetch, isFetching } = useQuery<SNATProfile>({
     queryKey: ["snat-profile", cluster],
@@ -99,6 +135,24 @@ export function SNATPortWidget({ cluster }: Props) {
     queryFn: () => apiClient.get<SNATProjection>(`/nodepools/snat/projection?cluster=${encodeURIComponent(cluster)}`),
     enabled: !!cluster && open && activeTab === "projecao",
     staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+
+  const { data: nodesData, isLoading: nodesLoading, refetch: refetchNodes } = useQuery<SNATNodesResponse>({
+    queryKey: ["snat-nodes", cluster],
+    queryFn: () => apiClient.get<SNATNodesResponse>(`/nodepools/snat/nodes?cluster=${encodeURIComponent(cluster)}`),
+    enabled: !!cluster && open && activeTab === "nos",
+    staleTime: 2 * 60 * 1000,
+    retry: 1,
+  });
+
+  const { data: nodeHistory, isLoading: histLoading } = useQuery<ConntrackHistoryResponse>({
+    queryKey: ["snat-node-history", cluster, selectedNode],
+    queryFn: () => apiClient.get<ConntrackHistoryResponse>(
+      `/nodepools/conntrack/history?cluster=${encodeURIComponent(cluster)}&node=${encodeURIComponent(selectedNode!)}&hours=6`
+    ),
+    enabled: !!cluster && !!selectedNode && activeTab === "nos",
+    staleTime: 3 * 60 * 1000,
     retry: 1,
   });
 
@@ -188,10 +242,14 @@ export function SNATPortWidget({ cluster }: Props) {
               <div className="ml-auto mr-8">
                 <Button
                   size="sm" variant="ghost" className="h-6 text-[11px]"
-                  onClick={() => { refetch(); if (activeTab === "projecao") refetchProj(); }}
-                  disabled={isFetching || projLoading}
+                  onClick={() => {
+                    refetch();
+                    if (activeTab === "projecao") refetchProj();
+                    if (activeTab === "nos") refetchNodes();
+                  }}
+                  disabled={isFetching || projLoading || nodesLoading}
                 >
-                  <RefreshCw className={`w-3 h-3 mr-1 ${isFetching || projLoading ? "animate-spin" : ""}`} />
+                  <RefreshCw className={`w-3 h-3 mr-1 ${(isFetching || projLoading || nodesLoading) ? "animate-spin" : ""}`} />
                   Atualizar
                 </Button>
               </div>
@@ -201,7 +259,7 @@ export function SNATPortWidget({ cluster }: Props) {
           {/* Abas */}
           {data && (
             <div className="flex border-b border-border/50 px-5 gap-1 flex-shrink-0 bg-background">
-              {(["diagnostico", "financeiro", "formula", "projecao"] as const).map(tab => (
+              {(["diagnostico", "financeiro", "formula", "projecao", "nos"] as const).map(tab => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -214,7 +272,8 @@ export function SNATPortWidget({ cluster }: Props) {
                   {tab === "diagnostico" ? "Diagnóstico" :
                    tab === "financeiro"  ? "Financeiro" :
                    tab === "formula"     ? "Fórmula" :
-                   "Projeção"}
+                   tab === "projecao"    ? "Projeção" :
+                   "Nós"}
                 </button>
               ))}
             </div>
@@ -609,6 +668,149 @@ export function SNATPortWidget({ cluster }: Props) {
                             Linha vermelha tracejada = limite máximo de nós com a configuração SNAT atual.
                             Dados coletados automaticamente (1 snapshot/hora).
                           </p>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+              {/* ── ABA: NÓS ── */}
+              {activeTab === "nos" && (
+                <div className="space-y-3">
+                  {nodesLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-10 text-muted-foreground">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Carregando dados dos nós...
+                    </div>
+                  ) : !nodesData ? null : (
+                    <>
+                      {!nodesData.prometheus_available && (
+                        <div className="rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-400 text-[11px]">
+                          Prometheus indisponível — exibindo lista de nós sem dados de conntrack.
+                        </div>
+                      )}
+
+                      {/* Tabela de nós */}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <Server className="w-3.5 h-3.5 text-muted-foreground" />
+                          <p className="font-medium text-foreground">
+                            {nodesData.nodes?.length ?? 0} nós · portas alocadas por nó: {nodesData.allocated_outbound_ports > 0 ? fmt(nodesData.allocated_outbound_ports) : "N/D"}
+                          </p>
+                        </div>
+                        <div className="rounded border border-border/50 overflow-hidden">
+                          <table className="w-full text-[11px]">
+                            <thead>
+                              <tr className="bg-muted/30 text-muted-foreground">
+                                <th className="text-left px-3 py-1.5">Nó</th>
+                                <th className="text-left px-3 py-1.5">Pool</th>
+                                <th className="text-right px-3 py-1.5">Conntrack</th>
+                                <th className="text-left px-3 py-1.5 w-28">Uso SNAT est.</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(nodesData.nodes ?? []).map((n, i) => {
+                                const isSelected = selectedNode === n.name;
+                                const barColor =
+                                  n.status === "critical" ? "bg-red-500" :
+                                  n.status === "warning"  ? "bg-amber-500" :
+                                  n.status === "unknown"  ? "bg-muted" :
+                                  "bg-emerald-500";
+                                return (
+                                  <tr
+                                    key={n.name}
+                                    className={`cursor-pointer transition-colors ${
+                                      isSelected ? "bg-primary/10 border-l-2 border-primary" :
+                                      i % 2 === 0 ? "bg-background/30 hover:bg-muted/20" : "hover:bg-muted/20"
+                                    }`}
+                                    onClick={() => setSelectedNode(isSelected ? null : n.name)}
+                                  >
+                                    <td className="px-3 py-1.5 font-mono max-w-[140px]">
+                                      <span className="truncate block" title={n.name}>
+                                        {n.name.length > 26 ? `…${n.name.slice(-24)}` : n.name}
+                                      </span>
+                                    </td>
+                                    <td className="px-3 py-1.5 text-muted-foreground">{n.pool || "—"}</td>
+                                    <td className="px-3 py-1.5 text-right">
+                                      {n.conntrack_entries > 0 ? fmt(n.conntrack_entries) : "—"}
+                                    </td>
+                                    <td className="px-3 py-1.5">
+                                      {n.status === "unknown" || n.allocated_ports === 0 ? (
+                                        <span className="text-muted-foreground">N/D</span>
+                                      ) : (
+                                        <div className="flex items-center gap-1.5">
+                                          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                                            <div
+                                              className={`h-full rounded-full ${barColor}`}
+                                              style={{ width: `${Math.min(n.snat_usage_pct, 100)}%` }}
+                                            />
+                                          </div>
+                                          <span className={`w-8 text-right ${
+                                            n.status === "critical" ? "text-red-400 font-semibold" :
+                                            n.status === "warning"  ? "text-amber-400" : "text-foreground"
+                                          }`}>
+                                            {n.snat_usage_pct.toFixed(0)}%
+                                          </span>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-muted-foreground text-[10px]">
+                          Clique em um nó para ver o histórico de 6h · Estimativa SNAT = conntrack ÷ portas alocadas (conntrack inclui tráfego de entrada e local — valor é limite superior)
+                        </p>
+                      </div>
+
+                      {/* Gráfico histórico do nó selecionado */}
+                      {selectedNode && (
+                        <div className="rounded border border-border/40 bg-muted/10 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="font-medium text-foreground text-[11px] font-mono truncate max-w-[300px]" title={selectedNode}>
+                              {selectedNode.length > 32 ? `…${selectedNode.slice(-30)}` : selectedNode} · últimas 6h
+                            </p>
+                            {histLoading && <RefreshCw className="w-3 h-3 animate-spin text-muted-foreground flex-shrink-0" />}
+                          </div>
+
+                          {nodeHistory && !nodeHistory.prometheus_available ? (
+                            <p className="text-amber-400 text-[11px]">Prometheus indisponível para histórico.</p>
+                          ) : nodeHistory?.error ? (
+                            <p className="text-muted-foreground text-[11px]">{nodeHistory.error}</p>
+                          ) : nodeHistory && nodeHistory.points?.length > 0 ? (
+                            <div className="h-32">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart
+                                  data={nodeHistory.points.map(p => ({
+                                    time: new Date(p.ts * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+                                    conntrack: p.count,
+                                  }))}
+                                  margin={{ top: 2, right: 8, left: -20, bottom: 0 }}
+                                >
+                                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.3} />
+                                  <XAxis dataKey="time" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} interval="preserveStartEnd" />
+                                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} allowDecimals={false} />
+                                  <Tooltip
+                                    contentStyle={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: 6, fontSize: 10 }}
+                                    formatter={(v: number) => [`${fmt(v)}`, "Conntrack"]}
+                                  />
+                                  {nodesData.allocated_outbound_ports > 0 && (
+                                    <ReferenceLine
+                                      y={nodesData.allocated_outbound_ports}
+                                      stroke="hsl(var(--destructive))"
+                                      strokeDasharray="3 2"
+                                      label={{ value: `Limite SNAT (${fmt(nodesData.allocated_outbound_ports)})`, fill: "hsl(var(--destructive))", fontSize: 9, position: "insideTopRight" }}
+                                    />
+                                  )}
+                                  <Area type="monotone" dataKey="conntrack" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.15} strokeWidth={1.5} dot={false} />
+                                </AreaChart>
+                              </ResponsiveContainer>
+                            </div>
+                          ) : !histLoading ? (
+                            <p className="text-muted-foreground text-[11px]">Sem dados históricos para este nó.</p>
+                          ) : null}
                         </div>
                       )}
                     </>

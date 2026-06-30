@@ -150,6 +150,33 @@ func (s *SNATHistoryStore) GetRecent(cluster string, days int) ([]SNATHistoryRec
 	return records, nil
 }
 
+// GetLatest retorna o registro mais recente de um cluster, ou nil se não houver histórico
+func (s *SNATHistoryStore) GetLatest(cluster string) (*SNATHistoryRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var r SNATHistoryRecord
+	var recAt string
+	err := s.db.QueryRow(`
+		SELECT cluster, total_node_count, usage_percent, nodes_until_limit,
+		       allocated_outbound_ports, outbound_ip_count, recorded_at
+		FROM snat_history WHERE cluster=? ORDER BY recorded_at DESC LIMIT 1`,
+		cluster,
+	).Scan(&r.Cluster, &r.TotalNodeCount, &r.UsagePercent, &r.NodesUntilLimit,
+		&r.AllocatedOutboundPorts, &r.OutboundIPCount, &recAt)
+	if err != nil {
+		return nil, err // inclui sql.ErrNoRows
+	}
+	if t, e := time.Parse("2006-01-02T15:04:05Z", recAt); e == nil {
+		r.RecordedAt = t
+	} else if t, e := time.Parse("2006-01-02 15:04:05", recAt); e == nil {
+		r.RecordedAt = t
+	} else {
+		r.RecordedAt, _ = time.Parse(time.RFC3339, recAt)
+	}
+	return &r, nil
+}
+
 // ComputeSNATProjection calcula taxa de crescimento linear e estima quando o limite será atingido
 func ComputeSNATProjection(records []SNATHistoryRecord, nodesUntilLimit int) SNATProjection {
 	proj := SNATProjection{
