@@ -156,6 +156,7 @@ type NodePoolPredictionsHandler struct {
 	tokensStore   *storage.UserTokensStore
 	store         *storage.NodePoolPredictionsStore
 	defaultConfig *ai.Config
+	snatStore     *storage.SNATHistoryStore
 }
 
 // NewNodePoolPredictionsHandler cria novo handler
@@ -166,6 +167,7 @@ func NewNodePoolPredictionsHandler(
 	tokensStore *storage.UserTokensStore,
 	store *storage.NodePoolPredictionsStore,
 	defaultConfig *ai.Config,
+	snatStore *storage.SNATHistoryStore,
 ) *NodePoolPredictionsHandler {
 	return &NodePoolPredictionsHandler{
 		kubeManager:   kubeManager,
@@ -174,6 +176,7 @@ func NewNodePoolPredictionsHandler(
 		tokensStore:   tokensStore,
 		store:         store,
 		defaultConfig: defaultConfig,
+		snatStore:     snatStore,
 	}
 }
 
@@ -259,6 +262,58 @@ func (h *NodePoolPredictionsHandler) AnalyzeNodePool(c *gin.Context) {
 	} else {
 		log.Warn().Err(cfgErr).Str("cluster", req.Cluster).
 			Msg("Cluster não encontrado no clusters-config.json — Azure min/max pode não ser coletado")
+	}
+
+	// 4b. Injetar contexto SNAT do histórico (se disponível)
+	if h.snatStore != nil {
+		if latest, err := h.snatStore.GetLatest(req.Cluster); err == nil && latest != nil && latest.AllocatedOutboundPorts > 0 {
+			proj := storage.ComputeSNATProjection(nil, latest.NodesUntilLimit) // projeção sem histórico — só para MaxNodes
+			// Obter histórico completo para projeção real
+			if records, rErr := h.snatStore.GetRecent(req.Cluster, 30); rErr == nil && len(records) > 0 {
+				proj = storage.ComputeSNATProjection(records, latest.NodesUntilLimit)
+			}
+
+			status := "ok"
+			if latest.UsagePercent >= 95 {
+				status = "critical"
+			} else if latest.UsagePercent >= 80 {
+				status = "warning"
+			}
+
+			totalAvailable := latest.OutboundIPCount * 64000
+			maxNodes := 0
+			if latest.AllocatedOutboundPorts > 0 {
+				maxNodes = totalAvailable / latest.AllocatedOutboundPorts
+			}
+			ipsNeeded := 0
+			if latest.AllocatedOutboundPorts > 0 && latest.TotalNodeCount > 0 {
+				ipsNeeded = (latest.TotalNodeCount*latest.AllocatedOutboundPorts + 64000 - 1) / 64000
+			}
+
+			snatCtx := &np.SNATContextData{
+				AllocatedOutboundPorts:   latest.AllocatedOutboundPorts,
+				OutboundIPCount:          latest.OutboundIPCount,
+				TotalNodeCount:           latest.TotalNodeCount,
+				UsagePercent:             latest.UsagePercent,
+				NodesUntilLimit:          latest.NodesUntilLimit,
+				MaxNodesAllowed:          maxNodes,
+				IPsNeededForCurrentNodes: ipsNeeded,
+				Status:                   status,
+				RecordedAt:               latest.RecordedAt,
+			}
+			if proj.GrowthPerDay > 0 {
+				snatCtx.GrowthPerDay = proj.GrowthPerDay
+				snatCtx.DaysUntilSNATLimit = proj.DaysUntilLimit
+			}
+			req.SNATContext = snatCtx
+
+			log.Info().
+				Str("cluster", req.Cluster).
+				Float64("snat_usage_pct", latest.UsagePercent).
+				Int("nodes_until_limit", latest.NodesUntilLimit).
+				Str("snat_status", status).
+				Msg("Contexto SNAT injetado na análise preditiva")
+		}
 	}
 
 	// 5. Executar análise preditiva
