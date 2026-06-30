@@ -16,6 +16,7 @@ interface SNATNodePoolInfo {
 
 interface SNATProfile {
   cluster: string;
+  cloud_provider: "aks" | "eks" | "gke";
   allocated_outbound_ports: number;
   outbound_ip_count: number;
   max_ports_per_ip: number;
@@ -47,6 +48,7 @@ interface SNATNodeStat {
 
 interface SNATNodesResponse {
   cluster: string;
+  cloud_provider: "aks" | "eks" | "gke";
   allocated_outbound_ports: number;
   nodes: SNATNodeStat[];
   prometheus_available: boolean;
@@ -89,6 +91,24 @@ interface SNATProjection {
 
 // Preço de referência IP público Standard no Azure Brasil Sul (R$/mês)
 const IP_PRICE_BRL = 20;
+
+const providerLabel: Record<string, string> = {
+  aks: "Azure LB",
+  gke: "Cloud NAT",
+  eks: "NAT Gateway",
+};
+
+const providerIPLabel: Record<string, string> = {
+  aks: "IPs públicos no LB",
+  gke: "IPs no Cloud NAT",
+  eks: "EIPs nos NAT Gateways",
+};
+
+const providerPortsLabel: Record<string, string> = {
+  aks: "Portas por nó (alocadas)",
+  gke: "Portas por VM (minPortsPerVm)",
+  eks: "Conexões máx. por EIP/destino",
+};
 
 function fmt(n: number) {
   return n.toLocaleString("pt-BR");
@@ -193,17 +213,28 @@ export function SNATPortWidget({ cluster }: Props) {
           <>
             <StatusIcon className={`w-3.5 h-3.5 ${colors.text} ml-1`} />
             <span className={`font-semibold ${colors.text}`}>{colors.label}</span>
+            {data.cloud_provider && data.cloud_provider !== "aks" && (
+              <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted/40 border border-border/40">
+                {providerLabel[data.cloud_provider]}
+              </span>
+            )}
             <span className="text-muted-foreground ml-auto flex items-center gap-2">
               <span>
-                {fmt(data.total_required_ports)} / {fmt(data.total_available_ports)} portas
-                {" · "}
-                <span className={
-                  data.usage_percent >= 100 ? "text-red-400 font-bold" :
-                  data.usage_percent >= 85  ? "text-amber-400 font-bold" :
-                  "text-foreground"
-                }>
-                  {data.usage_percent.toFixed(1)}%
-                </span>
+                {data.allocated_outbound_ports > 0 ? (
+                  <>
+                    {fmt(data.total_required_ports)} / {fmt(data.total_available_ports)} portas
+                    {" · "}
+                    <span className={
+                      data.usage_percent >= 100 ? "text-red-400 font-bold" :
+                      data.usage_percent >= 85  ? "text-amber-400 font-bold" :
+                      "text-foreground"
+                    }>
+                      {data.usage_percent.toFixed(1)}%
+                    </span>
+                  </>
+                ) : (
+                  <>{fmt(data.outbound_ip_count)} EIP{data.outbound_ip_count !== 1 ? "s" : ""} · {fmt(data.total_node_count)} nós</>
+                )}
               </span>
               {data.allocated_outbound_ports > 0 && (
                 <span className={`font-semibold px-1.5 py-0.5 rounded text-[11px] ${
@@ -287,109 +318,153 @@ export function SNATPortWidget({ cluster }: Props) {
               {/* ── ABA: DIAGNÓSTICO ── */}
               {activeTab === "diagnostico" && (
                 <div className="space-y-4">
-                  {/* Barra de uso */}
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>Uso de portas SNAT</span>
-                      <span className={`${colors.text} font-semibold`}>{data.usage_percent.toFixed(1)}%</span>
-                    </div>
-                    <div className="h-2.5 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${colors.bar}`}
-                        style={{ width: `${Math.min(data.usage_percent, 100)}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-muted-foreground pt-0.5">
-                      <span>
-                        Restam{" "}
-                        <span className="text-foreground font-medium">
-                          {fmt(data.total_available_ports - data.total_required_ports)}
-                        </span>{" "}
-                        portas livres
-                      </span>
-                      {data.allocated_outbound_ports > 0 && (
-                        <span>
-                          Cabem mais{" "}
-                          <span className={`font-semibold ${
-                            data.nodes_until_limit <= 0  ? "text-red-400" :
-                            data.nodes_until_limit <= 10 ? "text-amber-400" :
-                            "text-emerald-400"
-                          }`}>
-                            {data.nodes_until_limit <= 0 ? "0" : `+${fmt(data.nodes_until_limit)}`} nós
-                          </span>
-                        </span>
-                      )}
-                    </div>
-                  </div>
 
-                  {/* Cards de métricas */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <MetricCard label="Portas por nó (alocadas)"  value={fmt(data.allocated_outbound_ports)} />
-                    <MetricCard label="IPs públicos no LB"        value={fmt(data.outbound_ip_count)} sub={`${fmt(data.outbound_ip_count * data.max_ports_per_ip)} portas totais`} />
-                    <MetricCard label="Total de nós"              value={fmt(data.total_node_count)} />
-                    <MetricCard label="Portas necessárias"        value={fmt(data.total_required_ports)} highlight={data.total_required_ports > data.total_available_ports} />
-                    <MetricCard label="Portas disponíveis"        value={fmt(data.total_available_ports)} />
-                    <MetricCard
-                      label={data.port_deficit > 0 ? "Déficit de portas" : "Margem de portas"}
-                      value={data.port_deficit > 0 ? `−${fmt(data.port_deficit)}` : `+${fmt(-data.port_deficit)}`}
-                      highlight={data.port_deficit > 0}
-                      highlightGreen={data.port_deficit <= 0}
-                    />
-                  </div>
-
-                  {/* Capacidade */}
-                  {data.allocated_outbound_ports > 0 && (
-                    <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
-                      <p className="font-medium text-foreground">Capacidade</p>
-                      <Row label="Máx. nós com config atual" value={fmt(data.max_nodes_allowed)} />
-                      <Row
-                        label="Nós que ainda cabem"
-                        value={data.nodes_until_limit > 0 ? `+${fmt(data.nodes_until_limit)}` : "0 (limite atingido)"}
-                        valueClass={
-                          data.nodes_until_limit <= 0  ? "text-red-400 font-bold" :
-                          data.nodes_until_limit <= 10 ? "text-amber-400 font-bold" :
-                          "text-emerald-400 font-semibold"
-                        }
-                      />
-                      <Row
-                        label="IPs necessários (nós atuais)"
-                        value={`${fmt(data.ips_needed_for_current_nodes)} IPs`}
-                        valueClass={data.ips_needed_for_current_nodes > data.outbound_ip_count ? "text-red-400 font-bold" : ""}
-                      />
-                    </div>
-                  )}
-
-                  {/* Breakdown por node pool */}
-                  {data.node_pools && data.node_pools.length > 0 && (
-                    <div className="space-y-1.5">
-                      <p className="font-medium text-foreground">Por Node Pool</p>
-                      <div className="rounded border border-border/50 overflow-hidden">
-                        <table className="w-full text-[11px]">
-                          <thead>
-                            <tr className="bg-muted/30 text-muted-foreground">
-                              <th className="text-left px-3 py-1.5">Pool</th>
-                              <th className="text-right px-3 py-1.5">Nós</th>
-                              <th className="text-right px-3 py-1.5">Portas</th>
-                              <th className="text-right px-3 py-1.5">% do total</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {data.node_pools.map((p, i) => (
-                              <tr key={p.name} className={i % 2 === 0 ? "bg-background/30" : ""}>
-                                <td className="px-3 py-1.5 font-mono">{p.name}</td>
-                                <td className="px-3 py-1.5 text-right">{fmt(p.node_count)}</td>
-                                <td className="px-3 py-1.5 text-right">{fmt(p.required_ports)}</td>
-                                <td className="px-3 py-1.5 text-right text-muted-foreground">
-                                  {data.total_required_ports > 0
-                                    ? ((p.required_ports / data.total_required_ports) * 100).toFixed(1) + "%"
-                                    : "—"}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                  {/* EKS: modelo NAT Gateway (sem alocação de portas por nó) */}
+                  {data.cloud_provider === "eks" ? (
+                    <>
+                      <div className="rounded border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-[11px] text-blue-300">
+                        <strong>Modelo EKS (NAT Gateway):</strong> diferente do Azure LB, o NAT Gateway AWS não aloca portas por nó.
+                        O limite é de 55.000 conexões simultâneas por EIP por destino único (IP+porta).
+                        O número de nós não limita diretamente o SNAT — o gargalo é a saturação de conexões por destino.
                       </div>
-                    </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <MetricCard label="NAT Gateways / EIPs"   value={fmt(data.outbound_ip_count)} sub="EIPs ativos na VPC" />
+                        <MetricCard label="Cap. por EIP/destino"  value={fmt(data.max_ports_per_ip)} sub="conn. simultâneas (AWS)" />
+                        <MetricCard label="Total de nós"          value={fmt(data.total_node_count)} />
+                        <MetricCard label="Cap. total (estimada)" value={fmt(data.total_available_ports)} sub="por destino único" />
+                      </div>
+                      {data.node_pools && data.node_pools.length > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="font-medium text-foreground">Node Groups</p>
+                          <div className="rounded border border-border/50 overflow-hidden">
+                            <table className="w-full text-[11px]">
+                              <thead>
+                                <tr className="bg-muted/30 text-muted-foreground">
+                                  <th className="text-left px-3 py-1.5">Group</th>
+                                  <th className="text-right px-3 py-1.5">Nós</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {data.node_pools.map((p, i) => (
+                                  <tr key={p.name} className={i % 2 === 0 ? "bg-background/30" : ""}>
+                                    <td className="px-3 py-1.5 font-mono">{p.name}</td>
+                                    <td className="px-3 py-1.5 text-right">{fmt(p.node_count)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    /* AKS + GKE: fórmula de portas por nó */
+                    <>
+                      {/* Barra de uso */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>Uso de portas {data.cloud_provider === "gke" ? "Cloud NAT" : "SNAT"}</span>
+                          <span className={`${colors.text} font-semibold`}>{data.usage_percent.toFixed(1)}%</span>
+                        </div>
+                        <div className="h-2.5 rounded-full bg-muted overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${colors.bar}`}
+                            style={{ width: `${Math.min(data.usage_percent, 100)}%` }}
+                          />
+                        </div>
+                        <div className="flex justify-between text-muted-foreground pt-0.5">
+                          <span>
+                            Restam{" "}
+                            <span className="text-foreground font-medium">
+                              {fmt(data.total_available_ports - data.total_required_ports)}
+                            </span>{" "}
+                            portas livres
+                          </span>
+                          {data.allocated_outbound_ports > 0 && (
+                            <span>
+                              Cabem mais{" "}
+                              <span className={`font-semibold ${
+                                data.nodes_until_limit <= 0  ? "text-red-400" :
+                                data.nodes_until_limit <= 10 ? "text-amber-400" :
+                                "text-emerald-400"
+                              }`}>
+                                {data.nodes_until_limit <= 0 ? "0" : `+${fmt(data.nodes_until_limit)}`} nós
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Cards de métricas */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <MetricCard label={providerPortsLabel[data.cloud_provider] ?? "Portas por nó"} value={fmt(data.allocated_outbound_ports)} />
+                        <MetricCard label={providerIPLabel[data.cloud_provider] ?? "IPs públicos"}     value={fmt(data.outbound_ip_count)} sub={`${fmt(data.outbound_ip_count * data.max_ports_per_ip)} portas totais`} />
+                        <MetricCard label="Total de nós"              value={fmt(data.total_node_count)} />
+                        <MetricCard label="Portas necessárias"        value={fmt(data.total_required_ports)} highlight={data.total_required_ports > data.total_available_ports} />
+                        <MetricCard label="Portas disponíveis"        value={fmt(data.total_available_ports)} />
+                        <MetricCard
+                          label={data.port_deficit > 0 ? "Déficit de portas" : "Margem de portas"}
+                          value={data.port_deficit > 0 ? `−${fmt(data.port_deficit)}` : `+${fmt(-data.port_deficit)}`}
+                          highlight={data.port_deficit > 0}
+                          highlightGreen={data.port_deficit <= 0}
+                        />
+                      </div>
+
+                      {/* Capacidade */}
+                      {data.allocated_outbound_ports > 0 && (
+                        <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
+                          <p className="font-medium text-foreground">Capacidade</p>
+                          <Row label="Máx. nós com config atual" value={fmt(data.max_nodes_allowed)} />
+                          <Row
+                            label="Nós que ainda cabem"
+                            value={data.nodes_until_limit > 0 ? `+${fmt(data.nodes_until_limit)}` : "0 (limite atingido)"}
+                            valueClass={
+                              data.nodes_until_limit <= 0  ? "text-red-400 font-bold" :
+                              data.nodes_until_limit <= 10 ? "text-amber-400 font-bold" :
+                              "text-emerald-400 font-semibold"
+                            }
+                          />
+                          <Row
+                            label="IPs necessários (nós atuais)"
+                            value={`${fmt(data.ips_needed_for_current_nodes)} IPs`}
+                            valueClass={data.ips_needed_for_current_nodes > data.outbound_ip_count ? "text-red-400 font-bold" : ""}
+                          />
+                        </div>
+                      )}
+
+                      {/* Breakdown por node pool */}
+                      {data.node_pools && data.node_pools.length > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="font-medium text-foreground">Por Node Pool</p>
+                          <div className="rounded border border-border/50 overflow-hidden">
+                            <table className="w-full text-[11px]">
+                              <thead>
+                                <tr className="bg-muted/30 text-muted-foreground">
+                                  <th className="text-left px-3 py-1.5">Pool</th>
+                                  <th className="text-right px-3 py-1.5">Nós</th>
+                                  <th className="text-right px-3 py-1.5">Portas</th>
+                                  <th className="text-right px-3 py-1.5">% do total</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {data.node_pools.map((p, i) => (
+                                  <tr key={p.name} className={i % 2 === 0 ? "bg-background/30" : ""}>
+                                    <td className="px-3 py-1.5 font-mono">{p.name}</td>
+                                    <td className="px-3 py-1.5 text-right">{fmt(p.node_count)}</td>
+                                    <td className="px-3 py-1.5 text-right">{fmt(p.required_ports)}</td>
+                                    <td className="px-3 py-1.5 text-right text-muted-foreground">
+                                      {data.total_required_ports > 0
+                                        ? ((p.required_ports / data.total_required_ports) * 100).toFixed(1) + "%"
+                                        : "—"}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
@@ -397,138 +472,187 @@ export function SNATPortWidget({ cluster }: Props) {
               {/* ── ABA: FINANCEIRO ── */}
               {activeTab === "financeiro" && (
                 <div className="space-y-4">
-                  <div className="flex items-center gap-1.5 text-muted-foreground mb-1">
-                    <Banknote className="w-3.5 h-3.5" />
-                    <span>Referência: IP público Standard — Azure Brasil Sul (~{fmtBRL(IP_PRICE_BRL)}/IP/mês)</span>
-                  </div>
-
-                  {/* Custo atual */}
-                  <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
-                    <p className="font-medium text-foreground">Custo atual</p>
-                    <Row label="IPs no Load Balancer" value={`${fmt(data.outbound_ip_count)} IPs`} />
-                    <Row label="Custo mensal" value={fmtBRL(data.outbound_ip_count * IP_PRICE_BRL)} />
-                    <Row label="Custo anual" value={fmtBRL(data.outbound_ip_count * IP_PRICE_BRL * 12)} />
-                  </div>
-
-                  {/* Custo para resolver o déficit */}
-                  {ipsToAdd > 0 ? (
-                    <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-1.5">
-                      <p className="font-medium text-red-400">Ajuste necessário (déficit atual)</p>
-                      <Row label="IPs adicionais necessários" value={`+${fmt(ipsToAdd)} IPs`} valueClass="text-red-400 font-semibold" />
-                      <Row label="Custo adicional/mês" value={`+${fmtBRL(ipsToAdd * IP_PRICE_BRL)}`} valueClass="text-red-400 font-semibold" />
-                      <div className="border-t border-border/30 pt-1.5 mt-1.5">
-                        <Row label="Total após ajuste (mensal)" value={fmtBRL(data.ips_needed_for_current_nodes * IP_PRICE_BRL)} valueClass="text-foreground font-semibold" />
-                        <Row label="Total após ajuste (anual)"  value={fmtBRL(data.ips_needed_for_current_nodes * IP_PRICE_BRL * 12)} />
+                  {data.cloud_provider === "eks" ? (
+                    <div className="rounded border border-border/40 bg-muted/10 p-4 space-y-2 text-xs">
+                      <div className="flex items-center gap-1.5 text-muted-foreground">
+                        <Banknote className="w-3.5 h-3.5" />
+                        <span className="font-medium text-foreground">Modelo de custo EKS (NAT Gateway)</span>
                       </div>
+                      <p className="text-muted-foreground">
+                        O custo de saída no EKS é cobrado pelo NAT Gateway por GB processado (~$0,045/GB na us-east-1),
+                        não por IP alocado fixo. O número de EIPs impacta a disponibilidade de destino, não o custo direto de SNAT.
+                      </p>
+                      <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5 mt-2">
+                        <Row label="NAT Gateways / EIPs ativos" value={`${fmt(data.outbound_ip_count)} EIPs`} />
+                        <Row label="Custo NAT Gateway (fixo/hora)" value="~$0,045/h por NAT GW (referência us-east-1)" />
+                        <Row label="Custo de dados processados"    value="~$0,045/GB (saída VPC → Internet)" />
+                      </div>
+                      <p className="text-muted-foreground text-[10px]">
+                        * Preços AWS sujeitos a variação por região. Consulte a calculadora AWS para valores exatos.
+                      </p>
                     </div>
                   ) : (
-                    <div className="rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
-                      <p className="text-emerald-400 font-medium">Configuração atual cobre os nós presentes</p>
-                      <p className="text-muted-foreground mt-1">Nenhum IP adicional necessário para a carga atual.</p>
-                    </div>
-                  )}
+                    <>
+                      <div className="flex items-center gap-1.5 text-muted-foreground mb-1">
+                        <Banknote className="w-3.5 h-3.5" />
+                        {data.cloud_provider === "gke"
+                          ? <span>Referência: IP externo estático — Google Cloud Brasil (~{fmtBRL(IP_PRICE_BRL)}/IP/mês)</span>
+                          : <span>Referência: IP público Standard — Azure Brasil Sul (~{fmtBRL(IP_PRICE_BRL)}/IP/mês)</span>
+                        }
+                      </div>
 
-                  {/* Custo por nó (referência de planejamento) */}
-                  {data.allocated_outbound_ports > 0 && data.max_ports_per_ip > 0 && (
-                    <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
-                      <p className="font-medium text-foreground">Planejamento de capacidade</p>
-                      <Row
-                        label="Nós por IP (config atual)"
-                        value={`${fmt(Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))} nós/IP`}
-                      />
-                      <Row
-                        label="Custo por nó adicional"
-                        value={`~${fmtBRL(IP_PRICE_BRL / Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))}/mês`}
-                      />
-                      <Row
-                        label="1 IP suporta até"
-                        value={`${fmt(Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))} nós`}
-                      />
-                    </div>
-                  )}
+                      {/* Custo atual */}
+                      <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
+                        <p className="font-medium text-foreground">Custo atual</p>
+                        <Row label={providerIPLabel[data.cloud_provider] ?? "IPs"} value={`${fmt(data.outbound_ip_count)} IPs`} />
+                        <Row label="Custo mensal" value={fmtBRL(data.outbound_ip_count * IP_PRICE_BRL)} />
+                        <Row label="Custo anual"  value={fmtBRL(data.outbound_ip_count * IP_PRICE_BRL * 12)} />
+                      </div>
 
-                  <p className="text-muted-foreground text-[10px]">
-                    * Preços aproximados. Consulte a calculadora Azure para valores exatos por região e tipo de IP.
-                  </p>
+                      {/* Custo para resolver o déficit */}
+                      {ipsToAdd > 0 ? (
+                        <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-1.5">
+                          <p className="font-medium text-red-400">Ajuste necessário (déficit atual)</p>
+                          <Row label="IPs adicionais necessários" value={`+${fmt(ipsToAdd)} IPs`} valueClass="text-red-400 font-semibold" />
+                          <Row label="Custo adicional/mês" value={`+${fmtBRL(ipsToAdd * IP_PRICE_BRL)}`} valueClass="text-red-400 font-semibold" />
+                          <div className="border-t border-border/30 pt-1.5 mt-1.5">
+                            <Row label="Total após ajuste (mensal)" value={fmtBRL(data.ips_needed_for_current_nodes * IP_PRICE_BRL)} valueClass="text-foreground font-semibold" />
+                            <Row label="Total após ajuste (anual)"  value={fmtBRL(data.ips_needed_for_current_nodes * IP_PRICE_BRL * 12)} />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
+                          <p className="text-emerald-400 font-medium">Configuração atual cobre os nós presentes</p>
+                          <p className="text-muted-foreground mt-1">Nenhum IP adicional necessário para a carga atual.</p>
+                        </div>
+                      )}
+
+                      {/* Planejamento de capacidade */}
+                      {data.allocated_outbound_ports > 0 && data.max_ports_per_ip > 0 && (
+                        <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
+                          <p className="font-medium text-foreground">Planejamento de capacidade</p>
+                          <Row label="Nós por IP (config atual)" value={`${fmt(Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))} nós/IP`} />
+                          <Row label="Custo por nó adicional"    value={`~${fmtBRL(IP_PRICE_BRL / Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))}/mês`} />
+                          <Row label="1 IP suporta até"          value={`${fmt(Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))} nós`} />
+                        </div>
+                      )}
+
+                      <p className="text-muted-foreground text-[10px]">
+                        * Preços aproximados. Consulte a calculadora {data.cloud_provider === "gke" ? "Google Cloud" : "Azure"} para valores exatos por região e tipo de IP.
+                      </p>
+                    </>
+                  )}
                 </div>
               )}
 
               {/* ── ABA: FÓRMULA ── */}
               {activeTab === "formula" && (
                 <div className="space-y-3">
-                  <div className="rounded border border-border/40 bg-muted/10 p-3 text-muted-foreground space-y-1.5">
-                    <p className="font-medium text-foreground">Como o orçamento é calculado</p>
-                    <p>
-                      <span className="text-foreground font-medium">Portas disponíveis</span>{" "}
-                      = IPs no LB × portas por IP
-                    </p>
-                    <p className="pl-3 font-mono">
-                      = {fmt(data.outbound_ip_count)} × {fmt(data.max_ports_per_ip)}{" "}
-                      = <span className="text-foreground">{fmt(data.total_available_ports)}</span>
-                    </p>
-
-                    {data.allocated_outbound_ports > 0 && (
-                      <>
+                  {data.cloud_provider === "eks" ? (
+                    /* EKS: modelo diferente */
+                    <>
+                      <div className="rounded border border-border/40 bg-muted/10 p-3 text-muted-foreground space-y-1.5">
+                        <p className="font-medium text-foreground">Modelo NAT Gateway (EKS / AWS)</p>
+                        <p>O NAT Gateway <strong className="text-foreground">não aloca portas por nó</strong>. O limite é de conexões simultâneas por par <em>(EIP, IP destino + porta destino)</em>.</p>
                         <p className="pt-1">
-                          <span className="text-foreground font-medium">Portas necessárias</span>{" "}
-                          = total de nós × portas alocadas por nó
+                          <span className="text-foreground font-medium">Cap. total (por destino)</span>{" "}
+                          = EIPs × 55.000
                         </p>
                         <p className="pl-3 font-mono">
-                          = {fmt(data.total_node_count)} × {fmt(data.allocated_outbound_ports)}{" "}
-                          = <span className={data.port_deficit > 0 ? "text-red-400 font-bold" : "text-foreground"}>
-                            {fmt(data.total_required_ports)}
-                          </span>
+                          = {fmt(data.outbound_ip_count)} × 55.000 = <span className="text-foreground">{fmt(data.total_available_ports)}</span>
                         </p>
-                      </>
-                    )}
+                        <p className="pt-1 text-[11px]">
+                          Se dois pods diferentes no mesmo cluster se conectarem ao mesmo destino (IP+porta),
+                          eles compartilham o budget de 55k do mesmo EIP — a saturação por destino é o risco real no EKS.
+                        </p>
+                      </div>
+                      <div className="rounded border border-border/40 bg-muted/10 p-3 text-muted-foreground space-y-1">
+                        <p className="font-medium text-foreground">Thresholds</p>
+                        <p className="text-[11px]">No EKS o widget usa <strong className="text-foreground">conntrack %</strong> (via Prometheus) como proxy de uso — o status na aba Nós reflete saturação de conntrack, não de portas SNAT diretamente.</p>
+                      </div>
+                    </>
+                  ) : (
+                    /* AKS + GKE: fórmula ports-per-node */
+                    <>
+                      <div className="rounded border border-border/40 bg-muted/10 p-3 text-muted-foreground space-y-1.5">
+                        <p className="font-medium text-foreground">
+                          Como o orçamento é calculado ({data.cloud_provider === "gke" ? "Cloud NAT" : "Azure LB"})
+                        </p>
+                        <p>
+                          <span className="text-foreground font-medium">Portas disponíveis</span>{" "}
+                          = {data.cloud_provider === "gke" ? "IPs no Cloud NAT" : "IPs no LB"} × portas por IP
+                        </p>
+                        <p className="pl-3 font-mono">
+                          = {fmt(data.outbound_ip_count)} × {fmt(data.max_ports_per_ip)}{" "}
+                          = <span className="text-foreground">{fmt(data.total_available_ports)}</span>
+                        </p>
 
-                    <p className="pt-1">
-                      <span className="text-foreground font-medium">Uso</span>{" "}
-                      = necessárias / disponíveis × 100
-                    </p>
-                    <p className="pl-3 font-mono">
-                      = {fmt(data.total_required_ports)} / {fmt(data.total_available_ports)} × 100{" "}
-                      = <span className={colors.text + " font-bold"}>{data.usage_percent.toFixed(2)}%</span>
-                    </p>
-                  </div>
+                        {data.allocated_outbound_ports > 0 && (
+                          <>
+                            <p className="pt-1">
+                              <span className="text-foreground font-medium">Portas necessárias</span>{" "}
+                              = total de nós × {data.cloud_provider === "gke" ? "minPortsPerVm" : "portas alocadas por nó"}
+                            </p>
+                            <p className="pl-3 font-mono">
+                              = {fmt(data.total_node_count)} × {fmt(data.allocated_outbound_ports)}{" "}
+                              = <span className={data.port_deficit > 0 ? "text-red-400 font-bold" : "text-foreground"}>
+                                {fmt(data.total_required_ports)}
+                              </span>
+                            </p>
+                          </>
+                        )}
 
-                  <div className="rounded border border-border/40 bg-muted/10 p-3 text-muted-foreground space-y-1.5">
-                    <p className="font-medium text-foreground">Capacidade máxima</p>
-                    <p>
-                      <span className="text-foreground font-medium">Máx. nós suportados</span>{" "}
-                      = portas disponíveis / portas por nó
-                    </p>
-                    {data.allocated_outbound_ports > 0 && (
-                      <p className="pl-3 font-mono">
-                        = {fmt(data.total_available_ports)} / {fmt(data.allocated_outbound_ports)}{" "}
-                        = <span className="text-foreground">{fmt(data.max_nodes_allowed)}</span>
-                      </p>
-                    )}
-                  </div>
+                        <p className="pt-1">
+                          <span className="text-foreground font-medium">Uso</span>{" "}
+                          = necessárias / disponíveis × 100
+                        </p>
+                        <p className="pl-3 font-mono">
+                          = {fmt(data.total_required_ports)} / {fmt(data.total_available_ports)} × 100{" "}
+                          = <span className={colors.text + " font-bold"}>{data.usage_percent.toFixed(2)}%</span>
+                        </p>
+                      </div>
 
-                  {data.port_deficit > 0 && (
-                    <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-1">
-                      <p className="text-red-400 font-semibold">
-                        ⚠ Déficit: {fmt(data.port_deficit)} portas faltando
-                      </p>
-                      <p className="text-muted-foreground">
-                        O Azure LB bloqueia a escala de novos nós quando não há portas SNAT suficientes.
-                        Conexões de saída falham com erro de esgotamento SNAT.
-                      </p>
-                      <p className="text-amber-400 pt-0.5">
-                        Solução: adicionar {fmt(ipsToAdd)} IP(s) ao LB
-                        {data.allocated_outbound_ports > 0 &&
-                          ` ou reduzir allocatedOutboundPorts para ≤ ${fmt(Math.floor(data.total_available_ports / data.total_node_count))}`}
-                      </p>
-                    </div>
+                      <div className="rounded border border-border/40 bg-muted/10 p-3 text-muted-foreground space-y-1.5">
+                        <p className="font-medium text-foreground">Capacidade máxima</p>
+                        <p>
+                          <span className="text-foreground font-medium">Máx. nós suportados</span>{" "}
+                          = portas disponíveis / portas por nó
+                        </p>
+                        {data.allocated_outbound_ports > 0 && (
+                          <p className="pl-3 font-mono">
+                            = {fmt(data.total_available_ports)} / {fmt(data.allocated_outbound_ports)}{" "}
+                            = <span className="text-foreground">{fmt(data.max_nodes_allowed)}</span>
+                          </p>
+                        )}
+                      </div>
+
+                      {data.port_deficit > 0 && (
+                        <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-1">
+                          <p className="text-red-400 font-semibold">
+                            Déficit: {fmt(data.port_deficit)} portas faltando
+                          </p>
+                          <p className="text-muted-foreground">
+                            {data.cloud_provider === "gke"
+                              ? "O Cloud NAT pode começar a descartar conexões de saída silenciosamente quando as portas se esgotam."
+                              : "O Azure LB bloqueia a escala de novos nós quando não há portas SNAT suficientes. Conexões de saída falham com erro de esgotamento SNAT."
+                            }
+                          </p>
+                          <p className="text-amber-400 pt-0.5">
+                            Solução: adicionar {fmt(ipsToAdd)} IP(s) {data.cloud_provider === "gke" ? "ao Cloud NAT" : "ao LB"}
+                            {data.allocated_outbound_ports > 0 &&
+                              ` ou reduzir ${data.cloud_provider === "gke" ? "minPortsPerVm" : "allocatedOutboundPorts"} para ≤ ${fmt(Math.floor(data.total_available_ports / data.total_node_count))}`}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="rounded border border-border/40 bg-muted/10 p-3 text-muted-foreground space-y-1">
+                        <p className="font-medium text-foreground">Thresholds de status</p>
+                        <Row label="OK"      value="< 80% de uso" />
+                        <Row label="Atenção" value="80% – 94%" valueClass="text-amber-400" />
+                        <Row label="Crítico" value="≥ 95%"     valueClass="text-red-400" />
+                      </div>
+                    </>
                   )}
-
-                  <div className="rounded border border-border/40 bg-muted/10 p-3 text-muted-foreground space-y-1">
-                    <p className="font-medium text-foreground">Thresholds de status</p>
-                    <Row label="OK"      value="< 80% de uso" />
-                    <Row label="Atenção" value="80% – 94%" valueClass="text-amber-400" />
-                    <Row label="Crítico" value="≥ 95%"     valueClass="text-red-400" />
-                  </div>
                 </div>
               )}
 
@@ -695,7 +819,12 @@ export function SNATPortWidget({ cluster }: Props) {
                         <div className="flex items-center gap-1.5">
                           <Server className="w-3.5 h-3.5 text-muted-foreground" />
                           <p className="font-medium text-foreground">
-                            {nodesData.nodes?.length ?? 0} nós · portas alocadas por nó: {nodesData.allocated_outbound_ports > 0 ? fmt(nodesData.allocated_outbound_ports) : "N/D"}
+                            {nodesData.nodes?.length ?? 0} nós
+                            {nodesData.allocated_outbound_ports > 0
+                              ? ` · portas alocadas por nó: ${fmt(nodesData.allocated_outbound_ports)}`
+                              : nodesData.cloud_provider === "eks"
+                              ? " · NAT Gateway (sem alocação por nó)"
+                              : ""}
                           </p>
                         </div>
                         <div className="rounded border border-border/50 overflow-hidden">
@@ -705,7 +834,7 @@ export function SNATPortWidget({ cluster }: Props) {
                                 <th className="text-left px-3 py-1.5">Nó</th>
                                 <th className="text-left px-3 py-1.5">Pool</th>
                                 <th className="text-right px-3 py-1.5">Conntrack</th>
-                                <th className="text-left px-3 py-1.5 w-28">Uso SNAT est.</th>
+                                <th className="text-left px-3 py-1.5 w-28">{nodesData.allocated_outbound_ports > 0 ? "Uso SNAT est." : "Conntrack %"}</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -735,21 +864,21 @@ export function SNATPortWidget({ cluster }: Props) {
                                       {n.conntrack_entries > 0 ? fmt(n.conntrack_entries) : "—"}
                                     </td>
                                     <td className="px-3 py-1.5">
-                                      {n.status === "unknown" || n.allocated_ports === 0 ? (
+                                      {n.status === "unknown" || (n.allocated_ports === 0 && n.conntrack_usage_pct === 0) ? (
                                         <span className="text-muted-foreground">N/D</span>
                                       ) : (
                                         <div className="flex items-center gap-1.5">
                                           <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
                                             <div
                                               className={`h-full rounded-full ${barColor}`}
-                                              style={{ width: `${Math.min(n.snat_usage_pct, 100)}%` }}
+                                              style={{ width: `${Math.min(n.allocated_ports > 0 ? n.snat_usage_pct : n.conntrack_usage_pct, 100)}%` }}
                                             />
                                           </div>
                                           <span className={`w-8 text-right ${
                                             n.status === "critical" ? "text-red-400 font-semibold" :
                                             n.status === "warning"  ? "text-amber-400" : "text-foreground"
                                           }`}>
-                                            {n.snat_usage_pct.toFixed(0)}%
+                                            {(n.allocated_ports > 0 ? n.snat_usage_pct : n.conntrack_usage_pct).toFixed(0)}%
                                           </span>
                                         </div>
                                       )}
@@ -761,7 +890,10 @@ export function SNATPortWidget({ cluster }: Props) {
                           </table>
                         </div>
                         <p className="text-muted-foreground text-[10px]">
-                          Clique em um nó para ver o histórico de 6h · Estimativa SNAT = conntrack ÷ portas alocadas (conntrack inclui tráfego de entrada e local — valor é limite superior)
+                          Clique em um nó para ver o histórico de 6h ·{" "}
+                          {nodesData.allocated_outbound_ports > 0
+                            ? "Estimativa SNAT = conntrack ÷ portas alocadas (conntrack inclui tráfego de entrada e local — valor é limite superior)"
+                            : "Uso = conntrack ÷ limite do kernel — SNAT por nó não aplicável neste provider (EKS)"}
                         </p>
                       </div>
 

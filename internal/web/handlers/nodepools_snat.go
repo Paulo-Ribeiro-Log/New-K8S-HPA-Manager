@@ -20,7 +20,9 @@ import (
 )
 
 const (
-	snatPortsPerIP = 64000 // Azure: portas SNAT disponíveis por IP público
+	snatPortsPerIPAzure = 64000 // Azure LB: portas SNAT por IP público
+	snatPortsPerIPGCP   = 64512 // Cloud NAT: faixa de portas 0-64511
+	snatPortsPerIPAWS   = 55000 // AWS NAT Gateway: conexões simultâneas por destino único por EIP
 )
 
 // SNATNodePoolInfo representa a contribuição de um node pool ao orçamento SNAT
@@ -32,23 +34,37 @@ type SNATNodePoolInfo struct {
 
 // SNATProfile resultado do cálculo do orçamento de portas SNAT
 type SNATProfile struct {
-	Cluster                string             `json:"cluster"`
-	AllocatedOutboundPorts int                `json:"allocated_outbound_ports"`
-	OutboundIPCount        int                `json:"outbound_ip_count"`
-	MaxPortsPerIP          int                `json:"max_ports_per_ip"`
-	TotalNodeCount         int                `json:"total_node_count"`
-	TotalAvailablePorts    int                `json:"total_available_ports"`
-	TotalRequiredPorts     int                `json:"total_required_ports"`
-	PortDeficit            int                `json:"port_deficit"` // positivo = falta portas
-	UsagePercent           float64            `json:"usage_percent"`
-	MaxNodesAllowed        int                `json:"max_nodes_allowed"`
-	NodesUntilLimit        int                `json:"nodes_until_limit"` // quantos nós ainda cabem
-	IPsNeededForCurrentNodes int              `json:"ips_needed_for_current_nodes"`
-	Status                 string             `json:"status"` // ok / warning / critical
-	NodePools              []SNATNodePoolInfo `json:"node_pools"`
-	FetchedAt              time.Time          `json:"fetched_at"`
-	Error                  string             `json:"error,omitempty"`
+	Cluster                  string             `json:"cluster"`
+	CloudProvider            string             `json:"cloud_provider"`            // "aks" | "eks" | "gke"
+	AllocatedOutboundPorts   int                `json:"allocated_outbound_ports"`  // 0 = N/A (EKS)
+	OutboundIPCount          int                `json:"outbound_ip_count"`
+	MaxPortsPerIP            int                `json:"max_ports_per_ip"`
+	TotalNodeCount           int                `json:"total_node_count"`
+	TotalAvailablePorts      int                `json:"total_available_ports"`
+	TotalRequiredPorts       int                `json:"total_required_ports"`
+	PortDeficit              int                `json:"port_deficit"`
+	UsagePercent             float64            `json:"usage_percent"`
+	MaxNodesAllowed          int                `json:"max_nodes_allowed"`          // 0 = N/A
+	NodesUntilLimit          int                `json:"nodes_until_limit"`
+	IPsNeededForCurrentNodes int                `json:"ips_needed_for_current_nodes"`
+	Status                   string             `json:"status"` // ok / warning / critical
+	NodePools                []SNATNodePoolInfo `json:"node_pools"`
+	FetchedAt                time.Time          `json:"fetched_at"`
+	Error                    string             `json:"error,omitempty"`
 }
+
+// detectSNATProvider retorna "gke", "eks" ou "aks" com base no prefixo do context.
+func detectSNATProvider(clusterCtx string) string {
+	if strings.HasPrefix(clusterCtx, "gke_") {
+		return "gke"
+	}
+	if strings.HasPrefix(clusterCtx, "arn:aws:eks:") {
+		return "eks"
+	}
+	return "aks"
+}
+
+// ─── AKS ──────────────────────────────────────────────────────────────────────
 
 // lbProfileResponse estrutura parcial do az aks show para o LB profile
 type lbProfileResponse struct {
@@ -63,9 +79,6 @@ type lbProfileResponse struct {
 					ID string `json:"id"`
 				} `json:"publicIPs"`
 			} `json:"outboundIPs"`
-			OutboundIPPrefixes struct {
-				PublicIPPrefixes []interface{} `json:"publicIPPrefixes"`
-			} `json:"outboundIPPrefixes"`
 		} `json:"loadBalancerProfile"`
 	} `json:"networkProfile"`
 	AgentPoolProfiles []struct {
@@ -74,25 +87,12 @@ type lbProfileResponse struct {
 	} `json:"agentPoolProfiles"`
 }
 
-// GetSNATProfile calcula o orçamento de portas SNAT do cluster AKS.
-// GET /api/v1/nodepools/snat?cluster=<context>
-func (h *NodePoolHandler) GetSNATProfile(c *gin.Context) {
-	clusterCtx := c.Query("cluster")
-	if clusterCtx == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro cluster é obrigatório"})
-		return
-	}
-
+func (h *NodePoolHandler) buildSNATProfileAKS(ctx context.Context, clusterCtx string, totalNodes int, pools []SNATNodePoolInfo) (SNATProfile, error) {
 	cfg, err := findClusterInConfig(clusterCtx)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("cluster não encontrado na config: %v", err)})
-		return
+		return SNATProfile{}, fmt.Errorf("cluster não encontrado na config AKS: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Consulta az aks show para obter LB profile + node pools
 	args := []string{
 		"aks", "show",
 		"--name", strings.TrimSuffix(cfg.ClusterName, "-admin"),
@@ -101,52 +101,256 @@ func (h *NodePoolHandler) GetSNATProfile(c *gin.Context) {
 		"--query", "{networkProfile: networkProfile, agentPoolProfiles: agentPoolProfiles}",
 		"-o", "json",
 	}
-	cmd := exec.CommandContext(ctx, "az", args...)
-	out, err := cmd.Output()
+	out, err := exec.CommandContext(ctx, "az", args...).Output()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("az aks show falhou: %v", err)})
-		return
+		return SNATProfile{}, fmt.Errorf("az aks show falhou: %w", err)
 	}
 
 	var azResp lbProfileResponse
 	if err := json.Unmarshal(out, &azResp); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("falha ao parsear resposta: %v", err)})
-		return
+		return SNATProfile{}, fmt.Errorf("falha ao parsear resposta az: %w", err)
 	}
 
 	lbProfile := azResp.NetworkProfile.LoadBalancerProfile
 	allocatedPorts := lbProfile.AllocatedOutboundPorts
-	if allocatedPorts == 0 {
-		allocatedPorts = 0 // Azure default = auto (calculado pelo Azure, não por nós)
-	}
 
-	// Contar IPs: managedOutboundIPs tem precedência; fallback para outboundIPs.publicIPs
 	ipCount := lbProfile.ManagedOutboundIPs.Count
 	if ipCount == 0 {
 		ipCount = len(lbProfile.OutboundIPs.PublicIPs)
 	}
 	if ipCount == 0 {
-		ipCount = 1 // mínimo default Azure
+		ipCount = 1
 	}
 
-	// Agregar node pools
-	var pools []SNATNodePoolInfo
-	totalNodes := 0
+	// Agregar node pools do az aks show (mais preciso que K8s API para pools em scaling)
+	var aksPoolsFromAz []SNATNodePoolInfo
+	aksTotal := 0
 	for _, ap := range azResp.AgentPoolProfiles {
 		required := ap.Count * allocatedPorts
-		pools = append(pools, SNATNodePoolInfo{
+		aksPoolsFromAz = append(aksPoolsFromAz, SNATNodePoolInfo{
 			Name:          ap.Name,
 			NodeCount:     ap.Count,
 			RequiredPorts: required,
 		})
-		totalNodes += ap.Count
+		aksTotal += ap.Count
+	}
+	if len(aksPoolsFromAz) > 0 {
+		pools = aksPoolsFromAz
+		totalNodes = aksTotal
 	}
 
-	totalAvailable := ipCount * snatPortsPerIP
+	return buildSNATProfileFromValues(clusterCtx, "aks", allocatedPorts, ipCount, snatPortsPerIPAzure, totalNodes, pools,
+		"allocatedOutboundPorts=0 (gerenciado automaticamente pelo Azure — sem cálculo de déficit)"), nil
+}
+
+// ─── GKE ──────────────────────────────────────────────────────────────────────
+
+// gkeRouterNat resposta parcial de gcloud compute routers nats describe
+type gkeRouterNat struct {
+	Name                string   `json:"name"`
+	MinPortsPerVm       int      `json:"minPortsPerVm"`
+	NatIpAllocateOption string   `json:"natIpAllocateOption"` // MANUAL_ONLY | AUTO_ONLY
+	NatIps              []string `json:"natIps"`              // só se MANUAL_ONLY
+}
+
+func (h *NodePoolHandler) buildSNATProfileGKE(ctx context.Context, clusterCtx string, totalNodes int, pools []SNATNodePoolInfo) (SNATProfile, error) {
+	gkeCfg := h.kubeManager.GetGKEClusterConfig(clusterCtx)
+	if gkeCfg == nil {
+		return SNATProfile{}, fmt.Errorf("cluster GKE não encontrado na config: %s", clusterCtx)
+	}
+
+	// Região: strip de zona (us-central1-a → us-central1)
+	region := gkeCfg.Region
+	if parts := strings.Split(region, "-"); len(parts) == 3 {
+		// Se última parte é letra única (a, b, c) é zona — remover
+		if len(parts[2]) == 1 {
+			region = strings.Join(parts[:2], "-")
+		}
+	}
+
+	// 1. Listar routers na região
+	listArgs := []string{
+		"compute", "routers", "list",
+		"--project", gkeCfg.ProjectID,
+		"--regions", region,
+		"--format", "json(name,nats)",
+	}
+	out, err := exec.CommandContext(ctx, "gcloud", listArgs...).Output()
+	if err != nil {
+		return SNATProfile{}, fmt.Errorf("gcloud compute routers list falhou: %w", err)
+	}
+
+	// Resposta: array de routers com campo nats[]
+	var routers []struct {
+		Name string `json:"name"`
+		Nats []struct {
+			Name                string   `json:"name"`
+			MinPortsPerVm       int      `json:"minPortsPerVm"`
+			NatIpAllocateOption string   `json:"natIpAllocateOption"`
+			NatIps              []string `json:"natIps"`
+		} `json:"nats"`
+	}
+	if err := json.Unmarshal(out, &routers); err != nil {
+		return SNATProfile{}, fmt.Errorf("falha ao parsear routers GKE: %w", err)
+	}
+
+	// Agregar todos os Cloud NATs encontrados
+	allocatedPorts := 0
+	ipCount := 0
+	autoAllocated := false
+
+	for _, router := range routers {
+		for _, nat := range router.Nats {
+			if nat.MinPortsPerVm > allocatedPorts {
+				allocatedPorts = nat.MinPortsPerVm // pega o mais restritivo
+			}
+			if nat.NatIpAllocateOption == "AUTO_ONLY" {
+				autoAllocated = true
+				ipCount++ // não conhecemos o número exato — contamos 1 por NAT como base
+			} else {
+				ipCount += len(nat.NatIps)
+			}
+		}
+	}
+
+	// Default do Cloud NAT quando minPortsPerVm não está configurado explicitamente
+	if allocatedPorts == 0 {
+		allocatedPorts = 64 // default GKE Cloud NAT
+	}
+	if ipCount == 0 {
+		ipCount = 1
+	}
+
+	errMsg := ""
+	if autoAllocated {
+		errMsg = "Cloud NAT com IPs auto-alocados — contagem de IPs pode estar subestimada"
+	}
+	if len(routers) == 0 {
+		errMsg = "nenhum Cloud NAT encontrado nesta região — cluster pode usar rota de saída diferente"
+		return SNATProfile{
+			Cluster:       clusterCtx,
+			CloudProvider: "gke",
+			TotalNodeCount: totalNodes,
+			NodePools:     pools,
+			Status:        "ok",
+			FetchedAt:     time.Now(),
+			Error:         errMsg,
+		}, nil
+	}
+
+	return buildSNATProfileFromValues(clusterCtx, "gke", allocatedPorts, ipCount, snatPortsPerIPGCP, totalNodes, pools, errMsg), nil
+}
+
+// ─── EKS ──────────────────────────────────────────────────────────────────────
+
+// natGatewayResponse resposta parcial do aws ec2 describe-nat-gateways
+type natGatewayResponse struct {
+	NatGateways []struct {
+		NatGatewayId      string `json:"NatGatewayId"`
+		NatGatewayAddresses []struct {
+			PublicIp string `json:"PublicIp"`
+		} `json:"NatGatewayAddresses"`
+	} `json:"NatGateways"`
+}
+
+func (h *NodePoolHandler) buildSNATProfileEKS(ctx context.Context, clusterCtx string, totalNodes int, pools []SNATNodePoolInfo) (SNATProfile, error) {
+	eksCfg := h.kubeManager.GetEKSClusterConfig(clusterCtx)
+	if eksCfg == nil {
+		return SNATProfile{}, fmt.Errorf("cluster EKS não encontrado na config: %s", clusterCtx)
+	}
+
+	// Obter VPC ID: usar o que está na config ou buscar via aws eks
+	vpcID := eksCfg.VpcID
+	if vpcID == "" {
+		vpcArgs := []string{"eks", "describe-cluster", "--name", eksCfg.Name, "--region", eksCfg.AwsRegion, "--query", "cluster.resourcesVpcConfig.vpcId", "--output", "text"}
+		if eksCfg.AwsProfile != "" {
+			vpcArgs = append(vpcArgs, "--profile", eksCfg.AwsProfile)
+		}
+		out, err := exec.CommandContext(ctx, "aws", vpcArgs...).Output()
+		if err != nil {
+			return SNATProfile{}, fmt.Errorf("aws eks describe-cluster falhou: %w", err)
+		}
+		vpcID = strings.TrimSpace(string(out))
+	}
+
+	// Listar NAT Gateways disponíveis na VPC
+	natArgs := []string{
+		"ec2", "describe-nat-gateways",
+		"--region", eksCfg.AwsRegion,
+		"--filter", fmt.Sprintf("Name=vpc-id,Values=%s", vpcID), "Name=state,Values=available",
+		"--output", "json",
+	}
+	if eksCfg.AwsProfile != "" {
+		natArgs = append(natArgs, "--profile", eksCfg.AwsProfile)
+	}
+	out, err := exec.CommandContext(ctx, "aws", natArgs...).Output()
+	if err != nil {
+		return SNATProfile{}, fmt.Errorf("aws ec2 describe-nat-gateways falhou: %w", err)
+	}
+
+	var natResp natGatewayResponse
+	if err := json.Unmarshal(out, &natResp); err != nil {
+		return SNATProfile{}, fmt.Errorf("falha ao parsear NAT Gateways: %w", err)
+	}
+
+	// Contar EIPs totais em todos os NAT Gateways
+	natGWCount := len(natResp.NatGateways)
+	eipCount := 0
+	for _, gw := range natResp.NatGateways {
+		eipCount += len(gw.NatGatewayAddresses)
+	}
+	if eipCount == 0 && natGWCount > 0 {
+		eipCount = natGWCount // fallback: 1 EIP por NAT GW
+	}
+	if eipCount == 0 {
+		eipCount = 1
+	}
+
+	// EKS: sem "portas por nó" — modelo baseado em conexões simultâneas por NAT GW EIP/destino.
+	// AllocatedOutboundPorts = 0 indica ao frontend que a fórmula AKS não se aplica.
+	// Usamos snatPortsPerIPAWS (55000) como capacidade por EIP para dar uma referência de escala.
+	totalAvailable := eipCount * snatPortsPerIPAWS
+
+	errMsg := ""
+	if natGWCount == 0 {
+		errMsg = "nenhum NAT Gateway ativo na VPC — pods podem usar Internet Gateway direto (IP público por nó) ou outro mecanismo de saída"
+	} else {
+		errMsg = fmt.Sprintf("EKS: %d NAT Gateway(s) com %d EIP(s) — limite de 55k conexões simultâneas por EIP por destino único (modelo diferente de AKS)", natGWCount, eipCount)
+	}
+
+	profile := SNATProfile{
+		Cluster:              clusterCtx,
+		CloudProvider:        "eks",
+		AllocatedOutboundPorts: 0, // N/A para EKS
+		OutboundIPCount:      eipCount,
+		MaxPortsPerIP:        snatPortsPerIPAWS,
+		TotalNodeCount:       totalNodes,
+		TotalAvailablePorts:  totalAvailable,
+		TotalRequiredPorts:   0, // não calculável sem dados de tráfego
+		PortDeficit:          0,
+		UsagePercent:         0, // preenchido via conntrack se disponível
+		MaxNodesAllowed:      0, // N/A: NAT GW não limita por nó
+		NodesUntilLimit:      0,
+		IPsNeededForCurrentNodes: 0,
+		Status:               "ok",
+		NodePools:            pools,
+		FetchedAt:            time.Now(),
+		Error:                errMsg,
+	}
+	return profile, nil
+}
+
+// ─── Formula compartilhada (AKS + GKE) ───────────────────────────────────────
+
+// buildSNATProfileFromValues calcula SNATProfile para providers que usam a fórmula
+// ports-per-node (AKS = Azure LB, GKE = Cloud NAT).
+func buildSNATProfileFromValues(clusterCtx, provider string, allocatedPorts, ipCount, portsPerIP, totalNodes int, pools []SNATNodePoolInfo, autoMsg string) SNATProfile {
+	totalAvailable := ipCount * portsPerIP
 	totalRequired := totalNodes * allocatedPorts
 	deficit := totalRequired - totalAvailable
+
 	usagePct := 0.0
-	if totalAvailable > 0 {
+	if totalAvailable > 0 && allocatedPorts > 0 {
 		usagePct = float64(totalRequired) / float64(totalAvailable) * 100
 	}
 
@@ -162,28 +366,25 @@ func (h *NodePoolHandler) GetSNATProfile(c *gin.Context) {
 
 	ipsNeeded := 0
 	if allocatedPorts > 0 && totalNodes > 0 {
-		ipsNeeded = (totalNodes*allocatedPorts + snatPortsPerIP - 1) / snatPortsPerIP
+		ipsNeeded = (totalNodes*allocatedPorts + portsPerIP - 1) / portsPerIP
 	}
 
 	status := "ok"
-	if usagePct >= 100 {
+	errMsg := ""
+	if allocatedPorts == 0 {
+		errMsg = autoMsg
+	} else if usagePct >= 95 {
 		status = "critical"
-	} else if usagePct >= 85 {
+	} else if usagePct >= 80 {
 		status = "warning"
 	}
 
-	// allocatedPorts=0 significa "auto" pelo Azure — não calculamos deficit
-	errorMsg := ""
-	if allocatedPorts == 0 {
-		errorMsg = "allocatedOutboundPorts=0 (gerenciado automaticamente pelo Azure — sem cálculo de déficit)"
-		status = "ok"
-	}
-
-	profile := SNATProfile{
+	return SNATProfile{
 		Cluster:                  clusterCtx,
+		CloudProvider:            provider,
 		AllocatedOutboundPorts:   allocatedPorts,
 		OutboundIPCount:          ipCount,
-		MaxPortsPerIP:            snatPortsPerIP,
+		MaxPortsPerIP:            portsPerIP,
 		TotalNodeCount:           totalNodes,
 		TotalAvailablePorts:      totalAvailable,
 		TotalRequiredPorts:       totalRequired,
@@ -195,27 +396,112 @@ func (h *NodePoolHandler) GetSNATProfile(c *gin.Context) {
 		Status:                   status,
 		NodePools:                pools,
 		FetchedAt:                time.Now(),
-		Error:                    errorMsg,
+		Error:                    errMsg,
+	}
+}
+
+// ─── Handler principal ────────────────────────────────────────────────────────
+
+// GetSNATProfile calcula o orçamento de portas SNAT/NAT do cluster (AKS, GKE ou EKS).
+// GET /api/v1/nodepools/snat?cluster=<context>
+func (h *NodePoolHandler) GetSNATProfile(c *gin.Context) {
+	clusterCtx := c.Query("cluster")
+	if clusterCtx == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro cluster é obrigatório"})
+		return
 	}
 
-	// Salvar snapshot no histórico (assíncrono, erros ignorados)
-	if h.snatStore != nil && allocatedPorts > 0 {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	// Coletar nós via K8s API (comum a todos os providers)
+	totalNodes, pools := h.collectNodePoolsFromK8s(ctx, clusterCtx)
+
+	provider := detectSNATProvider(clusterCtx)
+
+	var profile SNATProfile
+	var err error
+	switch provider {
+	case "gke":
+		profile, err = h.buildSNATProfileGKE(ctx, clusterCtx, totalNodes, pools)
+	case "eks":
+		profile, err = h.buildSNATProfileEKS(ctx, clusterCtx, totalNodes, pools)
+	default:
+		profile, err = h.buildSNATProfileAKS(ctx, clusterCtx, totalNodes, pools)
+	}
+
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", clusterCtx).Str("provider", provider).Msg("snat: falha ao obter perfil")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Salvar snapshot no histórico (assíncrono)
+	if h.snatStore != nil && profile.AllocatedOutboundPorts > 0 {
+		snap := profile
 		go func() {
 			if err := h.snatStore.Save(storage.SNATHistoryRecord{
-				Cluster:                clusterCtx,
-				TotalNodeCount:         totalNodes,
-				UsagePercent:           usagePct,
-				NodesUntilLimit:        nodesUntilLimit,
-				AllocatedOutboundPorts: allocatedPorts,
-				OutboundIPCount:        ipCount,
-				RecordedAt:             profile.FetchedAt,
+				Cluster:                snap.Cluster,
+				TotalNodeCount:         snap.TotalNodeCount,
+				UsagePercent:           snap.UsagePercent,
+				NodesUntilLimit:        snap.NodesUntilLimit,
+				AllocatedOutboundPorts: snap.AllocatedOutboundPorts,
+				OutboundIPCount:        snap.OutboundIPCount,
+				RecordedAt:             snap.FetchedAt,
 			}); err != nil {
-				log.Warn().Err(err).Str("cluster", clusterCtx).Msg("snat_history: falha ao salvar snapshot")
+				log.Warn().Err(err).Str("cluster", snap.Cluster).Msg("snat_history: falha ao salvar snapshot")
 			}
 		}()
 	}
 
 	c.JSON(http.StatusOK, profile)
+}
+
+// collectNodePoolsFromK8s lista nós do cluster via K8s API e agrupa por node pool.
+// Funciona para todos os cloud providers. Retorna totalNodes e []SNATNodePoolInfo.
+func (h *NodePoolHandler) collectNodePoolsFromK8s(ctx context.Context, clusterCtx string) (int, []SNATNodePoolInfo) {
+	clientset, err := h.kubeManager.GetClient(clusterCtx)
+	if err != nil {
+		return 0, nil
+	}
+	nodeList, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, nil
+	}
+
+	poolCounts := map[string]int{}
+	for _, n := range nodeList.Items {
+		pool := nodePoolLabel(n.Labels)
+		poolCounts[pool]++
+	}
+
+	var pools []SNATNodePoolInfo
+	total := 0
+	for name, count := range poolCounts {
+		pools = append(pools, SNATNodePoolInfo{Name: name, NodeCount: count})
+		total += count
+	}
+	return total, pools
+}
+
+// nodePoolLabel retorna o nome do node pool a partir dos labels do nó (multi-cloud).
+func nodePoolLabel(labels map[string]string) string {
+	// AKS
+	if v := labels["kubernetes.azure.com/agentpool"]; v != "" {
+		return v
+	}
+	if v := labels["agentpool"]; v != "" {
+		return v
+	}
+	// EKS
+	if v := labels["eks.amazonaws.com/nodegroup"]; v != "" {
+		return v
+	}
+	// GKE
+	if v := labels["cloud.google.com/gke-nodepool"]; v != "" {
+		return v
+	}
+	return "default"
 }
 
 // GetSNATProjection retorna o histórico e a projeção de crescimento de nós vs. limite SNAT.
@@ -237,7 +523,6 @@ func (h *NodePoolHandler) GetSNATProjection(c *gin.Context) {
 		return
 	}
 
-	// nodesUntilLimit atual: precisamos do último snapshot
 	nodesUntilLimit := 0
 	if len(records) > 0 {
 		nodesUntilLimit = records[len(records)-1].NodesUntilLimit
@@ -257,14 +542,15 @@ type SNATNodeStat struct {
 	ConntrackEntries  int64   `json:"conntrack_entries"`
 	ConntrackMax      int64   `json:"conntrack_max"`
 	AllocatedPorts    int     `json:"allocated_ports"`
-	SNATUsagePct      float64 `json:"snat_usage_pct"`       // conntrack/allocated (estimativa)
-	ConntrackUsagePct float64 `json:"conntrack_usage_pct"`  // conntrack/max
-	Status            string  `json:"status"`               // ok/warning/critical/unknown
+	SNATUsagePct      float64 `json:"snat_usage_pct"`      // conntrack/allocated (estimativa)
+	ConntrackUsagePct float64 `json:"conntrack_usage_pct"` // conntrack/max
+	Status            string  `json:"status"`              // ok/warning/critical/unknown
 }
 
 // SNATNodesResponse resposta do endpoint de breakdown por nó
 type SNATNodesResponse struct {
 	Cluster             string         `json:"cluster"`
+	CloudProvider       string         `json:"cloud_provider"`
 	AllocatedPorts      int            `json:"allocated_outbound_ports"`
 	Nodes               []SNATNodeStat `json:"nodes"`
 	PrometheusAvailable bool           `json:"prometheus_available"`
@@ -272,6 +558,7 @@ type SNATNodesResponse struct {
 }
 
 // GetSNATNodes retorna breakdown de uso SNAT estimado por nó via Prometheus (conntrack como proxy).
+// Funciona para AKS, EKS e GKE — conntrack é métrica kernel independente do cloud provider.
 // GET /api/v1/nodepools/snat/nodes?cluster=<context>
 func (h *NodePoolHandler) GetSNATNodes(c *gin.Context) {
 	clusterCtx := c.Query("cluster")
@@ -284,73 +571,53 @@ func (h *NodePoolHandler) GetSNATNodes(c *gin.Context) {
 	defer cancel()
 
 	resp := SNATNodesResponse{
-		Cluster:   clusterCtx,
-		FetchedAt: time.Now(),
+		Cluster:       clusterCtx,
+		CloudProvider: detectSNATProvider(clusterCtx),
+		FetchedAt:     time.Now(),
 	}
 
-	// 1. Obter allocatedOutboundPorts do histórico SQLite (evita az aks show)
+	// Obter allocatedOutboundPorts do histórico SQLite (evita chamada cloud)
 	if h.snatStore != nil {
 		if latest, err := h.snatStore.GetLatest(clusterCtx); err == nil && latest != nil {
 			resp.AllocatedPorts = latest.AllocatedOutboundPorts
 		}
 	}
 
-	// 2. Listar nós K8s (nome, pool, IP interno)
+	// Listar nós K8s
 	clientset, err := h.kubeManager.GetClient(clusterCtx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("erro ao conectar ao cluster: %v", err)})
 		return
 	}
-
 	nodeList, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("erro ao listar nós: %v", err)})
 		return
 	}
 
-	// Mapa IP → node stat base
-	ipToStat := map[string]*SNATNodeStat{}
-	for _, n := range nodeList.Items {
-		pool := n.Labels["kubernetes.azure.com/agentpool"]
-		if pool == "" {
-			pool = n.Labels["agentpool"]
-		}
-		var ip string
-		for _, addr := range n.Status.Addresses {
-			if addr.Type == corev1.NodeInternalIP {
-				ip = addr.Address
-				break
-			}
-		}
-		stat := &SNATNodeStat{
-			Name:           n.Name,
-			Pool:           pool,
-			InternalIP:     ip,
-			AllocatedPorts: resp.AllocatedPorts,
-			Status:         "unknown",
-		}
-		if ip != "" {
-			ipToStat[ip] = stat
-		}
-		resp.Nodes = append(resp.Nodes, *stat)
-	}
-
-	// 3. Consultar Prometheus (instant query — todos os nós de uma vez)
+	// Consultar Prometheus (instant query — todos os nós de uma vez)
 	prom, promErr := h.getPromClient(clusterCtx)
 	if promErr != nil {
+		// Sem Prometheus: retornar nós sem dados de conntrack
+		for _, n := range nodeList.Items {
+			resp.Nodes = append(resp.Nodes, SNATNodeStat{
+				Name:   n.Name,
+				Pool:   nodePoolLabel(n.Labels),
+				Status: "unknown",
+			})
+		}
 		resp.PrometheusAvailable = false
 		c.JSON(http.StatusOK, resp)
 		return
 	}
 	resp.PrometheusAvailable = true
 
-	entriesResult, err := prom.Query(ctx, "node_nf_conntrack_entries")
+	entriesResult, _ := prom.Query(ctx, "node_nf_conntrack_entries")
 	limitResult, _ := prom.Query(ctx, "node_nf_conntrack_entries_limit")
 
-	// Mapear IP → entries/limit
 	entriesByIP := map[string]float64{}
 	limitByIP := map[string]float64{}
-	if err == nil {
+	if entriesResult != nil {
 		for _, series := range entriesResult.Data.Result {
 			ip := strings.Split(series.Metric["instance"], ":")[0]
 			if v, ok := parseSNATInstantValue(series.Value); ok {
@@ -367,13 +634,7 @@ func (h *NodePoolHandler) GetSNATNodes(c *gin.Context) {
 		}
 	}
 
-	// 4. Montar resposta final com conntrack + SNAT estimate
-	resp.Nodes = nil
 	for _, n := range nodeList.Items {
-		pool := n.Labels["kubernetes.azure.com/agentpool"]
-		if pool == "" {
-			pool = n.Labels["agentpool"]
-		}
 		var ip string
 		for _, addr := range n.Status.Addresses {
 			if addr.Type == corev1.NodeInternalIP {
@@ -384,7 +645,7 @@ func (h *NodePoolHandler) GetSNATNodes(c *gin.Context) {
 
 		stat := SNATNodeStat{
 			Name:           n.Name,
-			Pool:           pool,
+			Pool:           nodePoolLabel(n.Labels),
 			InternalIP:     ip,
 			AllocatedPorts: resp.AllocatedPorts,
 			Status:         "ok",
@@ -407,14 +668,19 @@ func (h *NodePoolHandler) GetSNATNodes(c *gin.Context) {
 				stat.SNATUsagePct = pct
 			}
 		} else if ip != "" {
-			stat.Status = "unknown" // sem dados de conntrack
+			stat.Status = "unknown"
 		}
 
-		if resp.AllocatedPorts > 0 && stat.ConntrackEntries > 0 {
+		// Status por conntrack: para EKS (AllocatedPorts=0) usa ConntrackUsagePct
+		if stat.ConntrackEntries > 0 {
+			usagePct := stat.SNATUsagePct
+			if resp.AllocatedPorts == 0 {
+				usagePct = stat.ConntrackUsagePct
+			}
 			switch {
-			case stat.SNATUsagePct >= 90:
+			case usagePct >= 90:
 				stat.Status = "critical"
-			case stat.SNATUsagePct >= 70:
+			case usagePct >= 70:
 				stat.Status = "warning"
 			default:
 				stat.Status = "ok"
@@ -424,9 +690,14 @@ func (h *NodePoolHandler) GetSNATNodes(c *gin.Context) {
 		resp.Nodes = append(resp.Nodes, stat)
 	}
 
-	// Ordenar por SNATUsagePct decrescente (nós mais críticos primeiro)
 	sort.Slice(resp.Nodes, func(i, j int) bool {
-		return resp.Nodes[i].SNATUsagePct > resp.Nodes[j].SNATUsagePct
+		pi := resp.Nodes[i].SNATUsagePct
+		pj := resp.Nodes[j].SNATUsagePct
+		if resp.AllocatedPorts == 0 {
+			pi = resp.Nodes[i].ConntrackUsagePct
+			pj = resp.Nodes[j].ConntrackUsagePct
+		}
+		return pi > pj
 	})
 
 	c.JSON(http.StatusOK, resp)
