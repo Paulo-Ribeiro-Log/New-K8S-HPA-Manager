@@ -91,6 +91,19 @@ interface SNATProjection {
   data_points: number;
 }
 
+interface SNATCostInfo {
+  cluster: string;
+  cloud_provider: string;
+  ip_price_monthly: number;  // AKS/GKE: custo por IP/mês
+  gw_hourly_price: number;   // GKE/EKS: custo por hora do NAT gateway
+  data_price_per_gb: number; // GKE/EKS: custo por GB processado
+  currency: string;           // "BRL" ou "USD"
+  pricing_region: string;
+  source: string;             // "azure-retail-api", "gcp-billing-api", "aws-pricing-api", "reference"
+  fetched_at: string;
+  error?: string;
+}
+
 interface GCPAuthStatus {
   authenticated: boolean;
   account?: string;
@@ -106,8 +119,12 @@ interface GCPLoginSession {
   interval_sec: number;
 }
 
-// Preço de referência IP público Standard no Azure Brasil Sul (R$/mês)
-const IP_PRICE_BRL = 20;
+// Fallbacks documentais por provider (usados quando a API de pricing falha)
+const FALLBACK_COSTS: Record<string, Partial<SNATCostInfo>> = {
+  aks: { ip_price_monthly: 20,   currency: "BRL", pricing_region: "brazilsouth" },
+  gke: { ip_price_monthly: 2.92, gw_hourly_price: 0.044, data_price_per_gb: 0.045, currency: "USD", pricing_region: "southamerica-east1" },
+  eks: { ip_price_monthly: 0,    gw_hourly_price: 0.044, data_price_per_gb: 0.044, currency: "USD", pricing_region: "us-east-1" },
+};
 
 const providerLabel: Record<string, string> = {
   aks: "Azure LB",
@@ -131,9 +148,6 @@ function fmt(n: number) {
   return n.toLocaleString("pt-BR");
 }
 
-function fmtBRL(n: number) {
-  return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
-}
 
 const statusColors = {
   ok:       { bar: "bg-emerald-500", text: "text-emerald-400", icon: CheckCircle2, label: "OK" },
@@ -196,6 +210,15 @@ export function SNATPortWidget({ cluster }: Props) {
     ),
     enabled: !!cluster && !!selectedNode && activeTab === "nos",
     staleTime: 3 * 60 * 1000,
+    retry: 1,
+  });
+
+  // Preços nativos por cloud provider via API de pricing de cada provider
+  const { data: costsData } = useQuery<SNATCostInfo>({
+    queryKey: ["snat-costs", cluster],
+    queryFn: () => apiClient.get<SNATCostInfo>(`/nodepools/snat/costs?cluster=${encodeURIComponent(cluster)}`),
+    enabled: !!cluster && open && activeTab === "financeiro",
+    staleTime: 60 * 60 * 1000, // preços mudam pouco: cache 1h
     retry: 1,
   });
 
@@ -281,6 +304,27 @@ export function SNATPortWidget({ cluster }: Props) {
   if (!cluster) return null;
 
   const gcpNeedsAuth = data?.requires_gcp_auth && data?.cloud_provider === "gke";
+
+  // Preços efetivos: API de pricing nativa ou fallback documental
+  const provider = data?.cloud_provider ?? "aks";
+  const fallback = FALLBACK_COSTS[provider] ?? FALLBACK_COSTS.aks;
+  const costs: SNATCostInfo = costsData ?? {
+    cluster,
+    cloud_provider: provider,
+    ip_price_monthly:  fallback.ip_price_monthly  ?? 0,
+    gw_hourly_price:   fallback.gw_hourly_price   ?? 0,
+    data_price_per_gb: fallback.data_price_per_gb ?? 0,
+    currency:          fallback.currency           ?? "USD",
+    pricing_region:    fallback.pricing_region     ?? "",
+    source:            "reference",
+    fetched_at:        "",
+  };
+
+  // Formatadores monetários por moeda
+  const fmtCost = (n: number) =>
+    costs.currency === "BRL"
+      ? n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 2 })
+      : `$${n.toFixed(3)}`;
 
   const colors = data ? statusColors[data.status] : statusColors.ok;
   const StatusIcon = colors.icon;
@@ -640,52 +684,56 @@ export function SNATPortWidget({ cluster }: Props) {
               {/* ── ABA: FINANCEIRO ── */}
               {activeTab === "financeiro" && (
                 <div className="space-y-4">
+                  {/* Badge de fonte dos preços */}
+                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <Banknote className="w-3 h-3" />
+                    {costs.source === "azure-retail-api"  && <span>Preços via <strong className="text-foreground">Azure Retail Prices API</strong> ({costs.pricing_region})</span>}
+                    {costs.source === "gcp-billing-api"   && <span>Preços via <strong className="text-foreground">GCP Cloud Billing Catalog API</strong> ({costs.pricing_region})</span>}
+                    {costs.source === "aws-pricing-api"   && <span>Preços via <strong className="text-foreground">AWS Pricing API</strong> ({costs.pricing_region})</span>}
+                    {costs.source === "reference"         && <span>Preços de referência documental ({costs.pricing_region}){costs.error ? ` — ${costs.error}` : ""}</span>}
+                    <span className="ml-auto">{costs.currency}</span>
+                  </div>
+
                   {data.cloud_provider === "eks" ? (
+                    /* ── EKS: modelo por hora de gateway + GB processado ── */
                     <div className="rounded border border-border/40 bg-muted/10 p-4 space-y-2 text-xs">
-                      <div className="flex items-center gap-1.5 text-muted-foreground">
-                        <Banknote className="w-3.5 h-3.5" />
-                        <span className="font-medium text-foreground">Modelo de custo EKS (NAT Gateway)</span>
-                      </div>
+                      <p className="font-medium text-foreground">Modelo de custo EKS (NAT Gateway)</p>
                       <p className="text-muted-foreground">
-                        O custo de saída no EKS é cobrado pelo NAT Gateway por GB processado (~$0,045/GB na us-east-1),
-                        não por IP alocado fixo. O número de EIPs impacta a disponibilidade de destino, não o custo direto de SNAT.
+                        O custo de saída no EKS é cobrado por hora de NAT Gateway + por GB processado,
+                        não por IP alocado fixo. O número de EIPs impacta a disponibilidade, não o custo direto de SNAT.
                       </p>
                       <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5 mt-2">
-                        <Row label="NAT Gateways / EIPs ativos" value={`${fmt(data.outbound_ip_count)} EIPs`} />
-                        <Row label="Custo NAT Gateway (fixo/hora)" value="~$0,045/h por NAT GW (referência us-east-1)" />
-                        <Row label="Custo de dados processados"    value="~$0,045/GB (saída VPC → Internet)" />
+                        <Row label="NAT Gateways / EIPs ativos"       value={`${fmt(data.outbound_ip_count)} EIPs`} />
+                        <Row label="Custo NAT Gateway (fixo/hora)"     value={`~${fmtCost(costs.gw_hourly_price)}/h por NAT GW`} />
+                        <Row label="Custo mensal por NAT GW (730h)"    value={`~${fmtCost(costs.gw_hourly_price * 730)}/mês`} />
+                        <Row label="Custo de dados processados"        value={`~${fmtCost(costs.data_price_per_gb)}/GB (saída VPC → Internet)`} />
+                        <Row label="Custo total NAT GWs (mensal est.)" value={`~${fmtCost(costs.gw_hourly_price * 730 * data.outbound_ip_count)}/mês`} />
                       </div>
                       <p className="text-muted-foreground text-[10px]">
                         * Preços AWS sujeitos a variação por região. Consulte a calculadora AWS para valores exatos.
                       </p>
                     </div>
-                  ) : (
+
+                  ) : data.cloud_provider === "gke" ? (
+                    /* ── GKE: Cloud NAT por gateway + IP externo ── */
                     <>
-                      <div className="flex items-center gap-1.5 text-muted-foreground mb-1">
-                        <Banknote className="w-3.5 h-3.5" />
-                        {data.cloud_provider === "gke"
-                          ? <span>Referência: IP externo estático — Google Cloud Brasil (~{fmtBRL(IP_PRICE_BRL)}/IP/mês)</span>
-                          : <span>Referência: IP público Standard — Azure Brasil Sul (~{fmtBRL(IP_PRICE_BRL)}/IP/mês)</span>
-                        }
-                      </div>
-
-                      {/* Custo atual */}
                       <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
-                        <p className="font-medium text-foreground">Custo atual</p>
-                        <Row label={providerIPLabel[data.cloud_provider] ?? "IPs"} value={`${fmt(data.outbound_ip_count)} IPs`} />
-                        <Row label="Custo mensal" value={fmtBRL(data.outbound_ip_count * IP_PRICE_BRL)} />
-                        <Row label="Custo anual"  value={fmtBRL(data.outbound_ip_count * IP_PRICE_BRL * 12)} />
+                        <p className="font-medium text-foreground">Custo Cloud NAT</p>
+                        <Row label={providerIPLabel["gke"]} value={`${fmt(data.outbound_ip_count)} IPs/NATs`} />
+                        <Row label="Custo por NAT Gateway/hora"  value={`~${fmtCost(costs.gw_hourly_price)}/h`} />
+                        <Row label="Custo gateways/mês (730h)"   value={fmtCost(costs.gw_hourly_price * 730 * data.outbound_ip_count)} />
+                        <Row label="IP externo estático/mês"     value={`~${fmtCost(costs.ip_price_monthly)}/IP`} />
+                        <Row label="Custo IPs/mês"               value={fmtCost(data.outbound_ip_count * costs.ip_price_monthly)} />
+                        <Row label="Custo dados processados/GB"  value={`~${fmtCost(costs.data_price_per_gb)}/GB`} />
                       </div>
 
-                      {/* Custo para resolver o déficit */}
                       {ipsToAdd > 0 ? (
                         <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-1.5">
                           <p className="font-medium text-red-400">Ajuste necessário (déficit atual)</p>
                           <Row label="IPs adicionais necessários" value={`+${fmt(ipsToAdd)} IPs`} valueClass="text-red-400 font-semibold" />
-                          <Row label="Custo adicional/mês" value={`+${fmtBRL(ipsToAdd * IP_PRICE_BRL)}`} valueClass="text-red-400 font-semibold" />
+                          <Row label="Custo adicional IPs/mês"   value={`+${fmtCost(ipsToAdd * costs.ip_price_monthly)}`} valueClass="text-red-400 font-semibold" />
                           <div className="border-t border-border/30 pt-1.5 mt-1.5">
-                            <Row label="Total após ajuste (mensal)" value={fmtBRL(data.ips_needed_for_current_nodes * IP_PRICE_BRL)} valueClass="text-foreground font-semibold" />
-                            <Row label="Total após ajuste (anual)"  value={fmtBRL(data.ips_needed_for_current_nodes * IP_PRICE_BRL * 12)} />
+                            <Row label="Total IPs após ajuste (mensal)" value={fmtCost(data.ips_needed_for_current_nodes * costs.ip_price_monthly)} valueClass="text-foreground font-semibold" />
                           </div>
                         </div>
                       ) : (
@@ -695,18 +743,56 @@ export function SNATPortWidget({ cluster }: Props) {
                         </div>
                       )}
 
-                      {/* Planejamento de capacidade */}
+                      {data.allocated_outbound_ports > 0 && data.max_ports_per_ip > 0 && (
+                        <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
+                          <p className="font-medium text-foreground">Planejamento de capacidade</p>
+                          <Row label="Nós por IP (config atual)"  value={`${fmt(Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))} nós/IP`} />
+                          <Row label="Custo por nó adicional"     value={`~${fmtCost(costs.ip_price_monthly / Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))}/mês`} />
+                        </div>
+                      )}
+                      <p className="text-muted-foreground text-[10px]">
+                        * Preços aproximados. Consulte a calculadora Google Cloud para valores exatos por região.
+                      </p>
+                    </>
+
+                  ) : (
+                    /* ── AKS: IP público Standard no Load Balancer ── */
+                    <>
+                      <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
+                        <p className="font-medium text-foreground">Custo atual</p>
+                        <Row label={providerIPLabel["aks"]} value={`${fmt(data.outbound_ip_count)} IPs`} />
+                        <Row label="Custo mensal" value={fmtCost(data.outbound_ip_count * costs.ip_price_monthly)} />
+                        <Row label="Custo anual"  value={fmtCost(data.outbound_ip_count * costs.ip_price_monthly * 12)} />
+                      </div>
+
+                      {ipsToAdd > 0 ? (
+                        <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-1.5">
+                          <p className="font-medium text-red-400">Ajuste necessário (déficit atual)</p>
+                          <Row label="IPs adicionais necessários" value={`+${fmt(ipsToAdd)} IPs`} valueClass="text-red-400 font-semibold" />
+                          <Row label="Custo adicional/mês" value={`+${fmtCost(ipsToAdd * costs.ip_price_monthly)}`} valueClass="text-red-400 font-semibold" />
+                          <div className="border-t border-border/30 pt-1.5 mt-1.5">
+                            <Row label="Total após ajuste (mensal)" value={fmtCost(data.ips_needed_for_current_nodes * costs.ip_price_monthly)} valueClass="text-foreground font-semibold" />
+                            <Row label="Total após ajuste (anual)"  value={fmtCost(data.ips_needed_for_current_nodes * costs.ip_price_monthly * 12)} />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
+                          <p className="text-emerald-400 font-medium">Configuração atual cobre os nós presentes</p>
+                          <p className="text-muted-foreground mt-1">Nenhum IP adicional necessário para a carga atual.</p>
+                        </div>
+                      )}
+
                       {data.allocated_outbound_ports > 0 && data.max_ports_per_ip > 0 && (
                         <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
                           <p className="font-medium text-foreground">Planejamento de capacidade</p>
                           <Row label="Nós por IP (config atual)" value={`${fmt(Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))} nós/IP`} />
-                          <Row label="Custo por nó adicional"    value={`~${fmtBRL(IP_PRICE_BRL / Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))}/mês`} />
+                          <Row label="Custo por nó adicional"    value={`~${fmtCost(costs.ip_price_monthly / Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))}/mês`} />
                           <Row label="1 IP suporta até"          value={`${fmt(Math.floor(data.max_ports_per_ip / data.allocated_outbound_ports))} nós`} />
                         </div>
                       )}
 
                       <p className="text-muted-foreground text-[10px]">
-                        * Preços aproximados. Consulte a calculadora {data.cloud_provider === "gke" ? "Google Cloud" : "Azure"} para valores exatos por região e tipo de IP.
+                        * Preços aproximados. Consulte a calculadora Azure para valores exatos por região e tipo de IP.
                       </p>
                     </>
                   )}
