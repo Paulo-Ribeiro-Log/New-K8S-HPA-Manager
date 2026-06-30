@@ -717,30 +717,50 @@ export function SNATPortWidget({ cluster }: Props) {
                   ) : data.cloud_provider === "gke" ? (
                     /* ── GKE: Cloud NAT por gateway + IP externo ── */
                     <>
-                      <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
-                        <p className="font-medium text-foreground">Custo Cloud NAT</p>
-                        <Row label={providerIPLabel["gke"]} value={`${fmt(data.outbound_ip_count)} IPs/NATs`} />
-                        <Row label="Custo por NAT Gateway/hora"  value={`~${fmtCost(costs.gw_hourly_price)}/h`} />
-                        <Row label="Custo gateways/mês (730h)"   value={fmtCost(costs.gw_hourly_price * 730 * data.outbound_ip_count)} />
-                        <Row label="IP externo estático/mês"     value={`~${fmtCost(costs.ip_price_monthly)}/IP`} />
-                        <Row label="Custo IPs/mês"               value={fmtCost(data.outbound_ip_count * costs.ip_price_monthly)} />
-                        <Row label="Custo dados processados/GB"  value={`~${fmtCost(costs.data_price_per_gb)}/GB`} />
-                      </div>
-
-                      {ipsToAdd > 0 ? (
-                        <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-1.5">
-                          <p className="font-medium text-red-400">Ajuste necessário (déficit atual)</p>
-                          <Row label="IPs adicionais necessários" value={`+${fmt(ipsToAdd)} IPs`} valueClass="text-red-400 font-semibold" />
-                          <Row label="Custo adicional IPs/mês"   value={`+${fmtCost(ipsToAdd * costs.ip_price_monthly)}`} valueClass="text-red-400 font-semibold" />
-                          <div className="border-t border-border/30 pt-1.5 mt-1.5">
-                            <Row label="Total IPs após ajuste (mensal)" value={fmtCost(data.ips_needed_for_current_nodes * costs.ip_price_monthly)} valueClass="text-foreground font-semibold" />
-                          </div>
+                      {data.outbound_ip_count === 0 ? (
+                        /* Sem Cloud NAT configurado nesta região */
+                        <div className="rounded border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
+                          <p className="font-medium text-amber-400">Nenhum Cloud NAT encontrado</p>
+                          <p className="text-muted-foreground text-[11px]">
+                            Este cluster não tem Cloud NAT configurado na região detectada.
+                            O tráfego de saída pode estar usando rota alternativa (VPN, Shared VPC, NAT customizado)
+                            ou os IPs são gerenciados externamente.
+                          </p>
+                          <p className="text-muted-foreground text-[11px] pt-1">
+                            Preços de referência GCP Cloud NAT:
+                            <span className="text-foreground ml-1">{`~${fmtCost(costs.gw_hourly_price)}/h por NAT GW`}</span>
+                            {" · "}
+                            <span className="text-foreground">{`~${fmtCost(costs.data_price_per_gb)}/GB processado`}</span>
+                          </p>
                         </div>
                       ) : (
-                        <div className="rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
-                          <p className="text-emerald-400 font-medium">Configuração atual cobre os nós presentes</p>
-                          <p className="text-muted-foreground mt-1">Nenhum IP adicional necessário para a carga atual.</p>
-                        </div>
+                        <>
+                          <div className="rounded border border-border/50 bg-muted/20 p-3 space-y-1.5">
+                            <p className="font-medium text-foreground">Custo Cloud NAT</p>
+                            <Row label={providerIPLabel["gke"]} value={`${fmt(data.outbound_ip_count)} IPs/NATs`} />
+                            <Row label="Custo por NAT Gateway/hora"  value={`~${fmtCost(costs.gw_hourly_price)}/h`} />
+                            <Row label="Custo gateways/mês (730h)"   value={fmtCost(costs.gw_hourly_price * 730 * data.outbound_ip_count)} />
+                            <Row label="IP externo estático/mês"     value={`~${fmtCost(costs.ip_price_monthly)}/IP`} />
+                            <Row label="Custo IPs/mês"               value={fmtCost(data.outbound_ip_count * costs.ip_price_monthly)} />
+                            <Row label="Custo dados processados/GB"  value={`~${fmtCost(costs.data_price_per_gb)}/GB`} />
+                          </div>
+
+                          {ipsToAdd > 0 ? (
+                            <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-1.5">
+                              <p className="font-medium text-red-400">Ajuste necessário (déficit atual)</p>
+                              <Row label="IPs adicionais necessários" value={`+${fmt(ipsToAdd)} IPs`} valueClass="text-red-400 font-semibold" />
+                              <Row label="Custo adicional IPs/mês"   value={`+${fmtCost(ipsToAdd * costs.ip_price_monthly)}`} valueClass="text-red-400 font-semibold" />
+                              <div className="border-t border-border/30 pt-1.5 mt-1.5">
+                                <Row label="Total IPs após ajuste (mensal)" value={fmtCost(data.ips_needed_for_current_nodes * costs.ip_price_monthly)} valueClass="text-foreground font-semibold" />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
+                              <p className="text-emerald-400 font-medium">Configuração atual cobre os nós presentes</p>
+                              <p className="text-muted-foreground mt-1">Nenhum IP adicional necessário para a carga atual.</p>
+                            </div>
+                          )}
+                        </>
                       )}
 
                       {data.allocated_outbound_ports > 0 && data.max_ports_per_ip > 0 && (
