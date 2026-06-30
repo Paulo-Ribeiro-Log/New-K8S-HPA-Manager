@@ -205,6 +205,50 @@ type ExampleHandler struct {
 
 Rotas registradas em `internal/web/server.go`. RBAC via middleware em rotas POST/PUT/DELETE.
 
+### Frontend — Roteamento SPA (App.tsx)
+
+A SPA usa `react-router-dom`. Rotas definidas em `internal/web/frontend/src/App.tsx`:
+
+| Rota | Componente | Uso |
+|------|------------|-----|
+| `/login` | `Login.tsx` | Autenticação (JWT ou token estático) |
+| `/` | `Index.tsx` | App principal — toda a navegação por tabs |
+| `/alerts/:cluster` | `AlertsPage.tsx` | Alertas do cluster |
+| `/alerts/:cluster/:namespace/:hpaName` | `AlertsPage.tsx` | Alertas de HPA específico |
+| `/ai-analysis/:id` | `AIAnalysisPage.tsx` | Relatório de análise AI salvo |
+
+Todo o estado da aplicação vive em `Index.tsx` (`activeTab` string). Não há rotas para as tabs individuais — a navegação entre tabs é puro estado React.
+
+### Frontend — Sistema de Tabs (Index.tsx)
+
+`activeTab` é uma string que determina o conteúdo renderizado. Dois menus alimentam mudanças de tab:
+
+**`WorkloadMenu`** (Workloads dropdown): `configmaps`, `ingresses`, `secrets`, `deployments`, `daemonsets`, `statefulsets`, `vpas`, `services`, `containers`, `pods`, `events`, `cronjobs`, `namespaces`, `helm`, `prometheus`
+
+**`ToolsMenu`** (Tools dropdown): `monitoring`, `servicemesh`, `healthcheck`, `nexus-values`, `ai-diagnostics`, `github-releases`, `dependencies`, `certificates`, `resource-compare`, `command-runner`, `dynatrace`, `finops`, `teams-broadcast`
+
+**Tabs principais** (TabNavigation): `dashboard`, `hpa`, `nodepools`, `explorer`, `code-editor`
+
+**Dois padrões de renderização** em `Index.tsx`:
+```tsx
+// Padrão 1 — display:none (tabs pesadas que ficam montadas em background):
+// pods, configmaps, deployments, secrets, containers, ingresses, healthcheck, code-editor
+<div style={{ display: activeTab === "pods" ? "block" : "none" }}>
+  {(activeTab === "pods" || hasBeenMounted.current.pods) && <PodsPanel />}
+</div>
+
+// Padrão 2 — renderização condicional via renderTabContent() switch/case:
+// Todas as outras tabs — são desmontadas quando inativas
+```
+
+O `hasBeenMounted` ref garante que tabs pesadas só sejam montadas na primeira visita, mas permanecem no DOM depois (evita perda de estado local e re-fetches).
+
+### Frontend — Contexts
+
+**`StagingContext`** (`src/contexts/StagingContext.tsx`): gerencia o "staging" de mudanças pendentes em HPAs e Node Pools antes do apply em lote. Expõe `addToStaging()`, `removeFromStaging()`, `applyAll()`. O contador de mudanças pendentes é exibido no header. Acessível via `useStagingContext()`.
+
+**`TabContext`** (`src/contexts/TabContext.tsx`): gerencia o sistema multi-cluster (abas de browser `ClusterTabs`). Cada aba tem seu próprio `pageState` com `selectedCluster`, `selectedNamespace`, `activeTab`, `pendingChanges`, etc. Permite abrir o mesmo cluster em múltiplas abas com estados independentes. Acessível via `useTabContext()`.
+
 ### Frontend — API Client
 
 Todas as chamadas HTTP centralizadas em `internal/web/frontend/src/lib/api/client.ts`. Nunca fazer `fetch` direto em componentes.
@@ -897,6 +941,7 @@ Os problemas mais críticos/surpreendentes:
 | JWT: frontend em loop de login | Limpar `localStorage` manualmente |
 | Monaco: Ctrl+Shift+D/E sumiu do contexto | `configureMonacoYaml` chamado múltiplas vezes — verificar flag `_yamlConfigured` em `MonacoYamlEditor.tsx` |
 | SNAT widget não aparece na aba Node Pools | Widget fica em `Index.tsx` case `"nodepools"` — `NodePoolTab.tsx` é componente **órfão** (nunca importado) |
+| Arquivo em `pages/` não tem efeito | Vários arquivos em `src/pages/` são **mortos**: `Index.backup.tsx`, `Index.broken.tsx`, `Index.tsx.broken`, `SimpleIndex.tsx`, `MinimalIndex.tsx`, `TestIndex.tsx` — nunca importados. Editar apenas `Index.tsx` |
 | Tab de modal não preenche a altura | shadcn `<Tabs>` usa `display:block` que quebra `flex-1 min-h-0` — usar implementação manual (ver `PodQuickViewModal.tsx`) |
 | GKE: workloads não carregam | `GetFreshGKEToken()` sem credenciais — verificar `~/.k8s-hpa-manager/gcp-adc.json` ou autenticar via AutoDiscover |
 | K8s RBAC: botão disabled mesmo sendo SRE | `useK8sPermissions` ainda carregando ou RBAC real do cluster prevalece — verificar se `allowed` prop está sendo passada |
