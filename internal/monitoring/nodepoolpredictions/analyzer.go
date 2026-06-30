@@ -74,6 +74,12 @@ func (a *NodePoolAnalyzer) Analyze(ctx context.Context, req NodePoolPredictionRe
 	if err != nil {
 		return nil, fmt.Errorf("falha ao coletar métricas do pool: %w", err)
 	}
+
+	// Injetar contexto SNAT do cluster se disponível no request
+	if req.SNATContext != nil {
+		metrics.SNATContext = req.SNATContext
+	}
+
 	result.RawMetrics = *metrics
 
 	// 2. Calcular trends
@@ -545,6 +551,37 @@ func (a *NodePoolAnalyzer) buildAIPrompt(metrics *NodePoolMetrics, trends NodePo
 		sb.WriteString("\n")
 	}
 
+	// --- SNAT do Load Balancer ---
+	if metrics.SNATContext != nil {
+		snat := metrics.SNATContext
+		sb.WriteString("# SNAT DO LOAD BALANCER AKS (BLOQUEIO SILENCIOSO DE SCALE-UP)\n\n")
+		sb.WriteString(fmt.Sprintf("- Status: %s (%.1f%% do orçamento de portas em uso)\n",
+			strings.ToUpper(snat.Status), snat.UsagePercent))
+		sb.WriteString(fmt.Sprintf("- Config: %d portas/nó | %d IP(s) no LB | %d nós totais no cluster\n",
+			snat.AllocatedOutboundPorts, snat.OutboundIPCount, snat.TotalNodeCount))
+		sb.WriteString(fmt.Sprintf("- Capacidade máxima: %d nós | Margem restante: %d nós\n",
+			snat.MaxNodesAllowed, snat.NodesUntilLimit))
+		if snat.GrowthPerDay > 0.01 && snat.DaysUntilSNATLimit > 0 {
+			sb.WriteString(fmt.Sprintf("- Projeção: +%.2f nós/dia → orçamento SNAT esgotado em ~%d dias\n",
+				snat.GrowthPerDay, snat.DaysUntilSNATLimit))
+		}
+		if snat.Status == "critical" || snat.NodesUntilLimit <= 3 {
+			ipsToAdd := snat.IPsNeededForCurrentNodes - snat.OutboundIPCount
+			if ipsToAdd < 1 {
+				ipsToAdd = 1
+			}
+			sb.WriteString(fmt.Sprintf("\n[CRITICO] SNAT NO LIMITE — próximo scale-up deste pool pode ser SILENCIOSAMENTE BLOQUEADO pelo Azure LB.\n"))
+			sb.WriteString(fmt.Sprintf("- IPs necessários para cobrir a carga atual: %d (atualmente: %d) → adicionar %d IP(s)\n",
+				snat.IPsNeededForCurrentNodes, snat.OutboundIPCount, ipsToAdd))
+			sb.WriteString(fmt.Sprintf("- Comando: az aks update --name %s --load-balancer-managed-outbound-ip-count %d (+ --resource-group + --subscription)\n",
+				azureCluster, snat.IPsNeededForCurrentNodes))
+		} else if snat.Status == "warning" || snat.NodesUntilLimit <= 10 {
+			sb.WriteString(fmt.Sprintf("\n[ATENCAO] Margem SNAT reduzida (%d nós disponíveis) — planejar aumento de IPs antes do próximo ciclo de scale-up.\n",
+				snat.NodesUntilLimit))
+		}
+		sb.WriteString("\n")
+	}
+
 	// --- Bin packing ---
 	bp := metrics.BinPacking
 	if bp.CPUEfficiency > 0 || bp.MemEfficiency > 0 {
@@ -582,7 +619,11 @@ func (a *NodePoolAnalyzer) buildAIPrompt(metrics *NodePoolMetrics, trends NodePo
 	sb.WriteString("2. conntrack vai esgotar antes da memória/CPU? Em que prazo?\n")
 	sb.WriteString("3. O autoscaler consegue reagir antes da saturação (lead time ~10min para VMs Azure)?\n")
 	sb.WriteString("4. Há fragmentação que permite scale-in seguro sem risco de saturação?\n")
-	sb.WriteString("5. O VM SKU está adequado para o perfil de workload atual?\n\n")
+	sb.WriteString("5. O VM SKU está adequado para o perfil de workload atual?\n")
+	if metrics.SNATContext != nil {
+		sb.WriteString("6. O orçamento SNAT do LB comporta o crescimento de nós previsto? Há risco de bloqueio silencioso de scale-up?\n")
+	}
+	sb.WriteString("\n")
 
 	// --- Esquema de resposta esperado ---
 	sb.WriteString("# RESPOSTA ESPERADA (JSON)\n\n")
@@ -645,8 +686,8 @@ REGRAS:
 - TUDO em Português Brasileiro
 - SEM emojis, SEM ícones Unicode
 - Severity: "low", "medium", "high", "critical"
-- Category (root_cause): "capacity", "config", "workload", "conntrack", "autoscaler", "network"
-- Category (recommendations): "scaling", "conntrack", "config", "cost", "monitoring", "reliability"
+- Category (root_cause): "capacity", "config", "workload", "conntrack", "autoscaler", "network", "snat"
+- Category (recommendations): "scaling", "conntrack", "config", "cost", "monitoring", "reliability", "snat"
 - Risk_level: "low", "medium", "high", "critical"
 - Complexity: "low", "medium", "high"
 - Considere o lead time de 10-15min para provisionar VMs AKS ao avaliar urgência

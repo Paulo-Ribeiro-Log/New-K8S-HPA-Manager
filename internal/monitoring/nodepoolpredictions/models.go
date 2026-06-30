@@ -17,6 +17,25 @@ type NodePoolPredictionRequest struct {
 	ResourceGroup string `json:"resource_group,omitempty"` // RG real do cluster AKS (não o MC_* de infra)
 	Subscription  string `json:"subscription,omitempty"`   // Subscription ID do cluster AKS
 	AzureCluster  string `json:"azure_cluster,omitempty"`  // Nome do cluster sem sufixo -admin
+
+	// SNATContext contexto SNAT do cluster (injetado pelo handler do histórico SQLite)
+	SNATContext *SNATContextData `json:"snat_context,omitempty"`
+}
+
+// SNATContextData contexto SNAT do Load Balancer AKS para uso na análise preditiva.
+// Injetado pelo handler a partir do histórico SQLite (snat_history.db) — sem chamada extra ao Azure.
+type SNATContextData struct {
+	AllocatedOutboundPorts   int       `json:"allocated_outbound_ports"`
+	OutboundIPCount          int       `json:"outbound_ip_count"`
+	TotalNodeCount           int       `json:"total_node_count"`    // total de nós no cluster (não apenas no pool)
+	UsagePercent             float64   `json:"usage_percent"`       // porcentagem do orçamento SNAT em uso
+	NodesUntilLimit          int       `json:"nodes_until_limit"`   // quantos nós ainda cabem
+	MaxNodesAllowed          int       `json:"max_nodes_allowed"`   // capacidade máxima com a config atual
+	IPsNeededForCurrentNodes int       `json:"ips_needed_for_current_nodes"` // IPs necessários para cobrir todos os nós
+	Status                   string    `json:"status"`              // "ok" / "warning" / "critical"
+	GrowthPerDay             float64   `json:"growth_per_day,omitempty"`       // nós/dia (regressão linear, 0 se indisponível)
+	DaysUntilSNATLimit       int       `json:"days_until_snat_limit,omitempty"` // -1 = indeterminado
+	RecordedAt               time.Time `json:"recorded_at"`
 }
 
 // NodePoolPredictionResult é o resultado completo da análise
@@ -130,6 +149,9 @@ type NodePoolMetrics struct {
 
 	// Fonte de dados (para indicar limitações no frontend)
 	DataSources DataSourceInfo `json:"data_sources"`
+
+	// Contexto SNAT do cluster (nível de cluster — injetado do request pelo handler)
+	SNATContext *SNATContextData `json:"snat_context,omitempty"`
 }
 
 // NodePoolNodeSnapshot representa o estado atual de um node no pool

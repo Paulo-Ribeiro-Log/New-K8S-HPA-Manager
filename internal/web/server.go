@@ -1388,9 +1388,10 @@ func (s *Server) setupRoutes() {
 			s.aiHandler.GetTokensStore(),
 			nodepoolPredictionsStore,
 			s.aiHandler.GetDefaultConfig(),
+			s.snatHistoryStore,
 		)
 	} else {
-		nodepoolPredictionsHandler = handlers.NewNodePoolPredictionsHandler(s.kubeManager, nil, nil, nil, nodepoolPredictionsStore, nil)
+		nodepoolPredictionsHandler = handlers.NewNodePoolPredictionsHandler(s.kubeManager, nil, nil, nil, nodepoolPredictionsStore, nil, s.snatHistoryStore)
 		fmt.Println("⚠️  NodePool Predictions sem AI (AI Diagnostics desabilitado)")
 	}
 
