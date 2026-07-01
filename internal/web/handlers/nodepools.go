@@ -29,6 +29,17 @@ import (
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
+// nodePoolCacheEntry é uma entrada de cache de node pools para um cluster.
+type nodePoolCacheEntry struct {
+	pools []models.NodePool
+	exp   time.Time
+}
+
+// nodePoolCacheTTL define o tempo de validade do cache de node pools.
+// Node pools raramente mudam — 2min é suficiente para evitar as múltiplas
+// chamadas az CLI a cada refresh do React Query (que roda a cada ~30s).
+const nodePoolCacheTTL = 2 * time.Minute
+
 // NodePoolHandler gerencia requisições relacionadas a Node Pools
 type NodePoolHandler struct {
 	kubeManager     *config.KubeConfigManager
@@ -38,6 +49,9 @@ type NodePoolHandler struct {
 	promClientsMu   sync.RWMutex
 	tokensStore     *storage.UserTokensStore
 	snatStore       *storage.SNATHistoryStore
+	// Cache de ListNodeGroups por cluster (evita 5-6s de az CLI a cada refresh)
+	nodePoolCache   map[string]*nodePoolCacheEntry
+	nodePoolCacheMu sync.RWMutex
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools
@@ -49,7 +63,41 @@ func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker
 		promClients:     make(map[string]*promclient.PrometheusClient),
 		tokensStore:     tokensStore,
 		snatStore:       snatStore,
+		nodePoolCache:   make(map[string]*nodePoolCacheEntry),
 	}
+}
+
+// getNodePoolsCached retorna node pools do cache se válido, ou busca via provider.
+func (h *NodePoolHandler) getNodePoolsCached(ctx context.Context, cluster string, forceRefresh bool) ([]models.NodePool, error) {
+	if !forceRefresh {
+		h.nodePoolCacheMu.RLock()
+		if entry, ok := h.nodePoolCache[cluster]; ok && time.Now().Before(entry.exp) {
+			pools := entry.pools
+			h.nodePoolCacheMu.RUnlock()
+			return pools, nil
+		}
+		h.nodePoolCacheMu.RUnlock()
+	}
+
+	provider := h.kubeManager.GetNodeGroupProvider(cluster)
+	pools, err := provider.ListNodeGroups(ctx, cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	h.nodePoolCacheMu.Lock()
+	h.nodePoolCache[cluster] = &nodePoolCacheEntry{pools: pools, exp: time.Now().Add(nodePoolCacheTTL)}
+	h.nodePoolCacheMu.Unlock()
+
+	return pools, nil
+}
+
+// invalidateNodePoolCache remove a entrada de cache para um cluster específico.
+// Deve ser chamado após operações de escala/update para forçar re-fetch na próxima leitura.
+func (h *NodePoolHandler) invalidateNodePoolCache(cluster string) {
+	h.nodePoolCacheMu.Lock()
+	delete(h.nodePoolCache, cluster)
+	h.nodePoolCacheMu.Unlock()
 }
 
 // getPromClient retorna PrometheusClient cacheado por cluster (cria na primeira chamada).
@@ -195,8 +243,19 @@ func (h *NodePoolHandler) List(c *gin.Context) {
 		return
 	}
 
+	// Cache hit: retorna imediatamente sem az CLI (node pools raramente mudam)
+	h.nodePoolCacheMu.RLock()
+	if entry, ok := h.nodePoolCache[cluster]; ok && time.Now().Before(entry.exp) {
+		pools := entry.pools
+		h.nodePoolCacheMu.RUnlock()
+		log.Debug().Str("cluster", cluster).Int("count", len(pools)).Msg("[NodePool.List] cache hit")
+		c.JSON(200, gin.H{"success": true, "data": pools, "count": len(pools), "cached": true})
+		return
+	}
+	h.nodePoolCacheMu.RUnlock()
+
 	provider := h.kubeManager.GetNodeGroupProvider(cluster)
-	log.Debug().Str("cluster", cluster).Msgf("[NodePool.List] provider type: %T", provider)
+	log.Debug().Str("cluster", cluster).Msgf("[NodePool.List] cache miss, provider: %T", provider)
 
 	// ValidateAuth: ignorar ErrNotSupported (EKS usa exec plugin transparente, não precisa de az/aws CLI auth)
 	if err := provider.ValidateAuth(c.Request.Context()); err != nil && !errors.Is(err, cloudprovider.ErrNotSupported) {
@@ -233,7 +292,12 @@ func (h *NodePoolHandler) List(c *gin.Context) {
 		})
 		return
 	}
-	log.Debug().Str("cluster", cluster).Int("count", len(nodePools)).Msgf("[NodePool.List] OK (provider: %T)", provider)
+
+	// Salvar no cache para os próximos 2 minutos
+	h.nodePoolCacheMu.Lock()
+	h.nodePoolCache[cluster] = &nodePoolCacheEntry{pools: nodePools, exp: time.Now().Add(nodePoolCacheTTL)}
+	h.nodePoolCacheMu.Unlock()
+	log.Debug().Str("cluster", cluster).Int("count", len(nodePools)).Msgf("[NodePool.List] OK, cacheado por %v", nodePoolCacheTTL)
 
 	c.JSON(200, gin.H{
 		"success": true,
@@ -610,6 +674,9 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	if reporter != nil {
 		reporter.SendAzureCompleted()
 	}
+
+	// Invalidar cache após operação de escala/update
+	h.invalidateNodePoolCache(cluster)
 
 	// Recarregar node pools para retornar o estado atualizado
 	nodePools, err := provider.ListNodeGroups(c.Request.Context(), cluster)
