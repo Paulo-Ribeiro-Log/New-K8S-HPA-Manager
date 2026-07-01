@@ -45,7 +45,8 @@ export type ResourceType =
   | "statefulset"
   | "ingress"
   | "namespace"
-  | "pod";
+  | "pod"
+  | "gateway";
 
 export interface CompareInitial {
   type: ResourceType;
@@ -72,6 +73,7 @@ const RESOURCE_LABELS: Record<ResourceType, string> = {
   ingress:     "Ingress",
   namespace:   "Namespace",
   pod:         "Pod",
+  gateway:     "Gateway",
 };
 
 const RESOURCE_TYPES = Object.entries(RESOURCE_LABELS) as [ResourceType, string][];
@@ -90,6 +92,7 @@ async function fetchYaml(type: ResourceType, cluster: string, namespace: string,
     case "ingress":     return (await apiClient.getIngress(cluster, namespace, name)).yaml;
     case "namespace":   return (await apiClient.getNamespace(cluster, name)).yaml;
     case "pod":         return (await apiClient.getPod(cluster, namespace, name)).yaml;
+    case "gateway":     return (await apiClient.getGateway(cluster, namespace, "gateway", name)).yaml;
   }
 }
 
@@ -103,6 +106,7 @@ async function fetchList(type: ResourceType, cluster: string, namespace: string)
     case "ingress":     return (await apiClient.getIngresses(cluster, namespace ? [namespace] : [], "", true)).map(i => i.name);
     case "namespace":   return (await apiClient.getNamespaces(cluster)).map(n => n.name);
     case "pod":         return (await apiClient.getPods(cluster, namespace ? [namespace] : [], "", true)).map(p => p.name);
+    case "gateway":     return (await apiClient.getGateways(cluster, namespace, "gateway", true)).map(g => g.name);
     default: return [];
   }
 }
@@ -121,6 +125,7 @@ async function diffResource(
     case "ingress":     resp = await apiClient.diffIngress(originalYaml, updatedYaml, name); break;
     case "daemonset":   resp = await apiClient.diffDaemonSet({ originalYaml, updatedYaml, fileName: name }); break;
     case "statefulset": resp = await apiClient.diffStatefulSet({ originalYaml, updatedYaml, fileName: name }); break;
+    case "gateway":     resp = await apiClient.diffGateway(originalYaml, updatedYaml, name); break;
     default: return "";
   }
   return resp?.unifiedDiff ?? "";
@@ -139,6 +144,7 @@ async function validateResource(
     case "ingress":     await apiClient.validateIngress(payload); break;
     case "daemonset":   await apiClient.validateDaemonSet(payload); break;
     case "statefulset": await apiClient.validateStatefulSet(payload); break;
+    case "gateway":     await apiClient.validateGateway({ cluster, namespace, yaml: yamlContent, kind: "gateway" }); break;
     default:
       throw new Error(`Dry-run não disponível para ${RESOURCE_LABELS[type]}`);
   }
@@ -162,6 +168,7 @@ async function applyResource(
     case "statefulset": await apiClient.applyStatefulSet(cluster, namespace, name, body); break;
     case "namespace":   await apiClient.applyNamespace(cluster, name, { yaml: yamlContent, fieldManager: FIELD_MANAGER, dryRun: false, force }); break;
     case "pod":         await apiClient.applyPod(cluster, namespace, name, { yaml: yamlContent, fieldManager: FIELD_MANAGER, dryRun: false, force }); break;
+    case "gateway":     await apiClient.applyGateway(cluster, namespace, "gateway", name, body); break;
   }
 }
 
