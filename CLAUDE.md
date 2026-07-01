@@ -177,6 +177,8 @@ k8s-hpa-manager/
 
 **K8s client cache TTL**: `clientTTL = 30min`, `clientCleanupInterval = 15min`. Valores intencionalmente baixos para liberar clients inativos — não aumentar sem motivo (cada client K8s ocupa ~5-10MB).
 
+**Padrão: cache de chamadas de CLI externa (az/gcloud/aws)**: qualquer wrapper de CLI cloud chamado no hot path de uma requisição deve ser cacheado em memória com mutex + TTL curto — subprocessos custam 1-3s e são invocados por requisição sem isso. Exemplos existentes: `restConfigEntry` (`kubeconfig.go`, 40min GKE/30min outros), `IsGcloudAuthActive` (`internal/cloudprovider/gcp/auth.go`, 5min), cache de `ListNodeGroups` (2min), `checkReachability` — probe TCP de 3s cacheado por 15s para detectar VPN/rede fora do ar sem pagar o timeout completo de 30s do client K8s. Seguir esse padrão (não chamar CLI direto a cada request) ao adicionar novas integrações cloud.
+
 **Bubble Tea — NUNCA usar goroutines diretas:**
 ```go
 // ❌ ERRADO - Race condition
@@ -223,7 +225,7 @@ Todo o estado da aplicação vive em `Index.tsx` (`activeTab` string). Não há 
 
 `activeTab` é uma string que determina o conteúdo renderizado. Dois menus alimentam mudanças de tab:
 
-**`WorkloadMenu`** (Workloads dropdown): `configmaps`, `ingresses`, `secrets`, `deployments`, `daemonsets`, `statefulsets`, `vpas`, `services`, `containers`, `pods`, `events`, `cronjobs`, `namespaces`, `helm`, `prometheus`
+**`WorkloadMenu`** (Workloads dropdown): `configmaps`, `ingresses`, `gateways`, `secrets`, `deployments`, `daemonsets`, `statefulsets`, `vpas`, `services`, `containers`, `pods`, `events`, `cronjobs`, `namespaces`, `helm`, `prometheus`
 
 **`ToolsMenu`** (Tools dropdown): `monitoring`, `servicemesh`, `healthcheck`, `nexus-values`, `ai-diagnostics`, `github-releases`, `dependencies`, `certificates`, `resource-compare`, `command-runner`, `dynatrace`, `finops`, `teams-broadcast`
 
@@ -232,7 +234,7 @@ Todo o estado da aplicação vive em `Index.tsx` (`activeTab` string). Não há 
 **Dois padrões de renderização** em `Index.tsx`:
 ```tsx
 // Padrão 1 — display:none (tabs pesadas que ficam montadas em background):
-// pods, configmaps, deployments, secrets, containers, ingresses, healthcheck, code-editor
+// pods, configmaps, deployments, secrets, containers, ingresses, gateways, healthcheck, code-editor
 <div style={{ display: activeTab === "pods" ? "block" : "none" }}>
   {(activeTab === "pods" || hasBeenMounted.current.pods) && <PodsPanel />}
 </div>

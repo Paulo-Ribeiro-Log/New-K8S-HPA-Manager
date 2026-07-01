@@ -67,7 +67,20 @@ func (h *GatewayHandler) List(c *gin.Context) {
 		namespace = ""
 	}
 
-	items, err := kubeclient.ListGenericResources(cluster, namespace, resourceName, gatewayGroup)
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success":        true,
+			"data":           []models.GatewaySummary{},
+			"count":          0,
+			"not_installed":  true,
+			"install_reason": authErr.Error(),
+		})
+		return
+	}
+	defer cleanup()
+
+	items, err := kubeclient.ListGenericResources(cluster, namespace, resourceName, gatewayGroup, authArgs)
 	if err != nil {
 		// Gateway API é opcional — qualquer erro de kubectl (CRD não instalado, sem suporte, etc.)
 		// resulta em lista vazia ao invés de HTTP 500
@@ -114,7 +127,14 @@ func (h *GatewayHandler) Get(c *gin.Context) {
 		ns = ""
 	}
 
-	manifest, err := kubeclient.GetGenericResourceYAML(cluster, ns, resourceName, gatewayGroup, name)
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("GET_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	manifest, err := kubeclient.GetGenericResourceYAML(cluster, ns, resourceName, gatewayGroup, name, authArgs)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("GET_ERROR", err.Error()))
 		return
@@ -141,7 +161,15 @@ func (h *GatewayHandler) Describe(c *gin.Context) {
 
 	resourceName, clusterWide := kindToResourceName(kind)
 	selector := fmt.Sprintf("%s.%s", resourceName, gatewayGroup)
-	args := []string{"describe", selector, name, "--context", cluster}
+
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("DESCRIBE_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	args := append([]string{"describe", selector, name}, authArgs...)
 	if !clusterWide && namespace != "" && namespace != "_" {
 		args = append(args, "-n", namespace)
 	}
@@ -215,7 +243,14 @@ func (h *GatewayHandler) Validate(c *gin.Context) {
 		return
 	}
 
-	if err := kubeclient.ApplyGenericResource(req.Cluster, req.Namespace, req.YAML, true, false); err != nil {
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(req.Cluster)
+	if authErr != nil {
+		c.JSON(http.StatusUnprocessableEntity, errorResponse("VALIDATION_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	if err := kubeclient.ApplyGenericResource(req.Cluster, req.Namespace, req.YAML, true, false, authArgs); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, errorResponse("VALIDATION_ERROR", err.Error()))
 		return
 	}
@@ -248,7 +283,14 @@ func (h *GatewayHandler) Create(c *gin.Context) {
 		ns = ""
 	}
 
-	if err := kubeclient.ApplyGenericResource(cluster, ns, req.YAML, req.DryRun, req.Force); err != nil {
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CREATE_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	if err := kubeclient.ApplyGenericResource(cluster, ns, req.YAML, req.DryRun, req.Force, authArgs); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("CREATE_ERROR", err.Error()))
 		return
 	}
@@ -291,7 +333,14 @@ func (h *GatewayHandler) Apply(c *gin.Context) {
 		ns = ""
 	}
 
-	if err := kubeclient.ApplyGenericResource(cluster, ns, req.YAML, req.DryRun, req.Force); err != nil {
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	if err := kubeclient.ApplyGenericResource(cluster, ns, req.YAML, req.DryRun, req.Force, authArgs); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
 		return
 	}
@@ -328,7 +377,14 @@ func (h *GatewayHandler) Delete(c *gin.Context) {
 		ns = ""
 	}
 
-	if err := kubeclient.DeleteGenericResource(cluster, ns, resourceName, gatewayGroup, name); err != nil {
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("DELETE_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	if err := kubeclient.DeleteGenericResource(cluster, ns, resourceName, gatewayGroup, name, authArgs); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("DELETE_ERROR", err.Error()))
 		return
 	}

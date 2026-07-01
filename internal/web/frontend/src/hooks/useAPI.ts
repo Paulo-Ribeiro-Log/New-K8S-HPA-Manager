@@ -595,8 +595,11 @@ export function useGateways(cluster?: string, namespace?: string, kind: string =
     try {
       setLoading(true);
       setError(null);
-      const data = await apiClient.getGateways(cluster, namespace, kind, bypassCache);
+      const { data, installReason } = await apiClient.getGateways(cluster, namespace, kind, bypassCache);
       setGateways(data);
+      if (installReason) {
+        setError(installReason);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch gateways");
     } finally {

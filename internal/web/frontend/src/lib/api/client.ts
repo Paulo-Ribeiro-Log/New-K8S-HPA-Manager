@@ -1115,15 +1115,18 @@ class APIClient {
     namespace?: string,
     kind: string = "gateway",
     bypassCache: boolean = false
-  ): Promise<GatewaySummary[]> {
+  ): Promise<{ data: GatewaySummary[]; installReason?: string }> {
     const params = new URLSearchParams();
     if (cluster) params.append("cluster", cluster);
     if (namespace) params.append("namespace", namespace);
     params.append("kind", kind);
     if (bypassCache) params.append("_t", Date.now().toString());
     const query = params.toString() ? `?${params.toString()}` : "";
-    const response = await this.request<APIResponse<GatewaySummary[]>>(`/gateways${query}`);
-    return response.data || [];
+    const response = await this.request<APIResponse<GatewaySummary[]> & { not_installed?: boolean; install_reason?: string }>(`/gateways${query}`);
+    return {
+      data: response.data || [],
+      installReason: response.not_installed ? response.install_reason : undefined,
+    };
   }
 
   async getGateway(cluster: string, namespace: string, kind: string, name: string): Promise<GatewayManifest> {

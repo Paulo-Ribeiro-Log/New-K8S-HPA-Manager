@@ -474,9 +474,11 @@ func (k *KubeConfigManager) TestClusterTCPConnection(clusterName string, timeout
 
 // resolveContext encontra o nome real do contexto no kubeconfig a partir de um nome informado.
 // Tenta: (1) nome exato, (2) sem sufixo -admin, (3) com sufixo -admin,
-// (4) busca reversa por ARN EKS terminando em "/<name>" (suporta nome curto do cluster).
-// Isso permite que o sistema funcione com AKS (com/sem -admin) e EKS
-// (ARN completo ou nome curto), sem exigir normalização no frontend ou nos handlers.
+// (4) busca reversa por ARN EKS terminando em "/<name>" (suporta nome curto do cluster),
+// (5) busca reversa por context GKE terminando em "_<name>" (suporta nome curto do cluster).
+// Isso permite que o sistema funcione com AKS (com/sem -admin), EKS (ARN completo ou nome
+// curto) e GKE (context "gke_<project>_<region>_<cluster>" ou nome curto), sem exigir
+// normalização no frontend ou nos handlers.
 func (k *KubeConfigManager) resolveContext(name string) string {
 	if _, ok := k.config.Contexts[name]; ok {
 		return name
@@ -500,6 +502,18 @@ func (k *KubeConfigManager) resolveContext(name string) string {
 		if c, ok := k.config.Clusters[ctx.Cluster]; ok {
 			if strings.HasSuffix(c.Server, ".eks.amazonaws.com") &&
 				strings.HasSuffix(ctx.Cluster, suffix) {
+				return contextName
+			}
+		}
+	}
+	// Busca reversa para GKE: nome curto "gke-higgs-hlg" → contexto "gke_<project>_<region>_gke-higgs-hlg".
+	// Necessário porque models.NodePool.ClusterName (GCPNodeGroupProvider) usa o nome curto do
+	// cluster, não o context completo — ex: a aba "Nodes" do NodePoolEditor chama
+	// GET /nodes/:cluster/:nodepool com esse nome curto.
+	if name != "" && !strings.HasPrefix(name, "gke_") {
+		gkeSuffix := "_" + name
+		for contextName := range k.config.Contexts {
+			if strings.HasPrefix(contextName, "gke_") && strings.HasSuffix(contextName, gkeSuffix) {
 				return contextName
 			}
 		}
@@ -550,8 +564,14 @@ func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclients
 // client K8s (restConfig.Timeout = 30s) em toda chamada. Sem isso, quando a VPN cai,
 // cada requisição de HPAs/deployments/pods/etc trava 30s antes de falhar.
 func (k *KubeConfigManager) checkReachability(clusterName string) error {
+	// Resolver o contexto real primeiro — sem isso, nomes curtos de cluster (ex: GKE
+	// "gke-higgs-hlg" vindo de models.NodePool.ClusterName, que não é o context completo
+	// "gke_<project>_<region>_<cluster>") não batem com nenhum cluster no kubeconfig e o probe
+	// de rede sempre falha, mesmo com o cluster acessível.
+	resolved := k.resolveContext(clusterName)
+
 	k.reachabilityMu.RLock()
-	if entry, ok := k.reachability[clusterName]; ok && time.Now().Before(entry.exp) {
+	if entry, ok := k.reachability[resolved]; ok && time.Now().Before(entry.exp) {
 		k.reachabilityMu.RUnlock()
 		if !entry.reachable {
 			return fmt.Errorf("cluster %s inacessível — verifique a VPN/conectividade de rede", clusterName)
@@ -560,10 +580,10 @@ func (k *KubeConfigManager) checkReachability(clusterName string) error {
 	}
 	k.reachabilityMu.RUnlock()
 
-	reachable := k.TestClusterTCPConnection(clusterName, reachabilityProbeTimeout)
+	reachable := k.TestClusterTCPConnection(resolved, reachabilityProbeTimeout)
 
 	k.reachabilityMu.Lock()
-	k.reachability[clusterName] = &reachabilityEntry{reachable: reachable, exp: time.Now().Add(reachabilityCacheTTL)}
+	k.reachability[resolved] = &reachabilityEntry{reachable: reachable, exp: time.Now().Add(reachabilityCacheTTL)}
 	k.reachabilityMu.Unlock()
 
 	if !reachable {
@@ -679,6 +699,64 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 	k.restConfigsMu.Unlock()
 
 	return restConfig, nil
+}
+
+// KubectlAuthArgs retorna os argumentos que subprocessos `kubectl` (usados para CRDs sem
+// dynamic client — Gateway API, Resource Explorer) devem receber para se autenticar.
+//
+// Para clusters GKE, `kubectl --context <ctx>` lê o kubeconfig do sistema, cujo ExecProvider
+// normalmente é o `gke-gcloud-auth-plugin`, que por sua vez invoca a sessão `gcloud auth login`
+// local — uma credencial independente do ADC próprio da aplicação (gcp-adc.json). Se a sessão
+// gcloud local expirar ("Reauthentication failed"), todo `kubectl` para GKE falha mesmo que o
+// ADC da app esteja válido. Para evitar essa dependência, geramos um kubeconfig temporário com
+// o Host/BearerToken já resolvidos por GetRestConfig() (mesmo caminho usado pelo client-go em
+// memória) e apontamos o kubectl para ele via `--kubeconfig`.
+//
+// O caller DEVE chamar cleanup() (mesmo em caso de erro) para remover o arquivo temporário.
+func (k *KubeConfigManager) KubectlAuthArgs(cluster string) (args []string, cleanup func(), err error) {
+	noop := func() {}
+	if !strings.HasPrefix(cluster, "gke_") {
+		return []string{"--context", cluster}, noop, nil
+	}
+
+	restConfig, rcErr := k.GetRestConfig(cluster)
+	if rcErr != nil || restConfig.BearerToken == "" {
+		// Sem token resolvido via ADC/gcloud — cai para o comportamento antigo (kubectl usa o
+		// kubeconfig do sistema como está, incluindo o exec-plugin se houver).
+		return []string{"--context", cluster}, noop, nil
+	}
+
+	tmpKubeconfig := api.NewConfig()
+
+	clusterEntry := api.NewCluster()
+	clusterEntry.Server = restConfig.Host
+	clusterEntry.CertificateAuthorityData = restConfig.CAData
+	clusterEntry.InsecureSkipTLSVerify = restConfig.Insecure || len(restConfig.CAData) == 0
+	tmpKubeconfig.Clusters["gke-target"] = clusterEntry
+
+	authInfo := api.NewAuthInfo()
+	authInfo.Token = restConfig.BearerToken
+	tmpKubeconfig.AuthInfos["gke-user"] = authInfo
+
+	ctxEntry := api.NewContext()
+	ctxEntry.Cluster = "gke-target"
+	ctxEntry.AuthInfo = "gke-user"
+	tmpKubeconfig.Contexts["gke-context"] = ctxEntry
+	tmpKubeconfig.CurrentContext = "gke-context"
+
+	tmpFile, err := os.CreateTemp("", "kubeconfig-gke-*.yaml")
+	if err != nil {
+		return nil, noop, fmt.Errorf("failed to create temp kubeconfig: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+
+	if err := clientcmd.WriteToFile(*tmpKubeconfig, tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return nil, noop, fmt.Errorf("failed to write temp kubeconfig: %w", err)
+	}
+
+	return []string{"--kubeconfig", tmpPath}, func() { os.Remove(tmpPath) }, nil
 }
 
 // buildEKSExecProvider constrói um ExecConfig para `aws eks get-token` a partir
@@ -1460,6 +1538,14 @@ func (k *KubeConfigManager) SwitchContext(context string) error {
 
 // SwitchAzureContext muda o contexto do Azure CLI para corresponder ao cluster Kubernetes
 func (k *KubeConfigManager) SwitchAzureContext(contextName string) error {
+	// Contextos GKE ("gke_...") e EKS ("arn:aws:eks:...") nunca têm configuração Azure.
+	// Sem esse early-exit, o fallback de auto-descoberta abaixo lista todas as subscriptions
+	// e escaneia "az aks list" em cada uma (via buildAKSClusterIndex) só para falhar no final —
+	// isso é o que fazia a troca para um cluster GKE levar ~1min no ClusterHandler.SwitchContext.
+	if strings.HasPrefix(contextName, "gke_") || strings.HasPrefix(contextName, "arn:aws:eks:") {
+		return nil
+	}
+
 	// Tentar primeiro na config salva (mais rápido que redescobrir)
 	var clusterConfig *ClusterConfig
 	configs := k.loadClustersFromConfig()
