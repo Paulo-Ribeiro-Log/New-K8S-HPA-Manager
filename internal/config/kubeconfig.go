@@ -474,9 +474,11 @@ func (k *KubeConfigManager) TestClusterTCPConnection(clusterName string, timeout
 
 // resolveContext encontra o nome real do contexto no kubeconfig a partir de um nome informado.
 // Tenta: (1) nome exato, (2) sem sufixo -admin, (3) com sufixo -admin,
-// (4) busca reversa por ARN EKS terminando em "/<name>" (suporta nome curto do cluster).
-// Isso permite que o sistema funcione com AKS (com/sem -admin) e EKS
-// (ARN completo ou nome curto), sem exigir normalização no frontend ou nos handlers.
+// (4) busca reversa por ARN EKS terminando em "/<name>" (suporta nome curto do cluster),
+// (5) busca reversa por context GKE terminando em "_<name>" (suporta nome curto do cluster).
+// Isso permite que o sistema funcione com AKS (com/sem -admin), EKS (ARN completo ou nome
+// curto) e GKE (context "gke_<project>_<region>_<cluster>" ou nome curto), sem exigir
+// normalização no frontend ou nos handlers.
 func (k *KubeConfigManager) resolveContext(name string) string {
 	if _, ok := k.config.Contexts[name]; ok {
 		return name
@@ -500,6 +502,18 @@ func (k *KubeConfigManager) resolveContext(name string) string {
 		if c, ok := k.config.Clusters[ctx.Cluster]; ok {
 			if strings.HasSuffix(c.Server, ".eks.amazonaws.com") &&
 				strings.HasSuffix(ctx.Cluster, suffix) {
+				return contextName
+			}
+		}
+	}
+	// Busca reversa para GKE: nome curto "gke-higgs-hlg" → contexto "gke_<project>_<region>_gke-higgs-hlg".
+	// Necessário porque models.NodePool.ClusterName (GCPNodeGroupProvider) usa o nome curto do
+	// cluster, não o context completo — ex: a aba "Nodes" do NodePoolEditor chama
+	// GET /nodes/:cluster/:nodepool com esse nome curto.
+	if name != "" && !strings.HasPrefix(name, "gke_") {
+		gkeSuffix := "_" + name
+		for contextName := range k.config.Contexts {
+			if strings.HasPrefix(contextName, "gke_") && strings.HasSuffix(contextName, gkeSuffix) {
 				return contextName
 			}
 		}
@@ -550,8 +564,14 @@ func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclients
 // client K8s (restConfig.Timeout = 30s) em toda chamada. Sem isso, quando a VPN cai,
 // cada requisição de HPAs/deployments/pods/etc trava 30s antes de falhar.
 func (k *KubeConfigManager) checkReachability(clusterName string) error {
+	// Resolver o contexto real primeiro — sem isso, nomes curtos de cluster (ex: GKE
+	// "gke-higgs-hlg" vindo de models.NodePool.ClusterName, que não é o context completo
+	// "gke_<project>_<region>_<cluster>") não batem com nenhum cluster no kubeconfig e o probe
+	// de rede sempre falha, mesmo com o cluster acessível.
+	resolved := k.resolveContext(clusterName)
+
 	k.reachabilityMu.RLock()
-	if entry, ok := k.reachability[clusterName]; ok && time.Now().Before(entry.exp) {
+	if entry, ok := k.reachability[resolved]; ok && time.Now().Before(entry.exp) {
 		k.reachabilityMu.RUnlock()
 		if !entry.reachable {
 			return fmt.Errorf("cluster %s inacessível — verifique a VPN/conectividade de rede", clusterName)
@@ -560,10 +580,10 @@ func (k *KubeConfigManager) checkReachability(clusterName string) error {
 	}
 	k.reachabilityMu.RUnlock()
 
-	reachable := k.TestClusterTCPConnection(clusterName, reachabilityProbeTimeout)
+	reachable := k.TestClusterTCPConnection(resolved, reachabilityProbeTimeout)
 
 	k.reachabilityMu.Lock()
-	k.reachability[clusterName] = &reachabilityEntry{reachable: reachable, exp: time.Now().Add(reachabilityCacheTTL)}
+	k.reachability[resolved] = &reachabilityEntry{reachable: reachable, exp: time.Now().Add(reachabilityCacheTTL)}
 	k.reachabilityMu.Unlock()
 
 	if !reachable {
