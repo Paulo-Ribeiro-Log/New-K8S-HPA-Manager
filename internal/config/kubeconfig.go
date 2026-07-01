@@ -50,6 +50,11 @@ const clientTTL = 30 * time.Minute
 // clientCleanupInterval define com qual frequência o cleanup roda
 const clientCleanupInterval = 15 * time.Minute
 
+type restConfigEntry struct {
+	config *rest.Config
+	exp    time.Time
+}
+
 // KubeConfigManager gerencia a configuração do Kubernetes
 type KubeConfigManager struct {
 	configPath      string
@@ -58,6 +63,8 @@ type KubeConfigManager struct {
 	clientMutex     sync.RWMutex // Protege acesso concorrente aos clients
 	metricsClients  map[string]*metricsclientset.Clientset
 	metricsMutex    sync.RWMutex
+	restConfigs     map[string]*restConfigEntry // Cache de *rest.Config por cluster
+	restConfigsMu   sync.RWMutex
 	lastUsed        map[string]time.Time // Último acesso por cluster (clients + metricsClients)
 	lastUsedMutex   sync.Mutex
 	historyTracker  *history.HistoryTracker
@@ -75,6 +82,7 @@ func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
 		config:         config,
 		clients:        make(map[string]kubernetes.Interface),
 		metricsClients: make(map[string]*metricsclientset.Clientset),
+		restConfigs:    make(map[string]*restConfigEntry),
 		lastUsed:       make(map[string]time.Time),
 		historyTracker: nil, // Será configurado via SetHistoryTracker
 	}
@@ -132,6 +140,12 @@ func (k *KubeConfigManager) evictStaleClients() {
 		delete(k.metricsClients, cluster)
 	}
 	k.metricsMutex.Unlock()
+
+	k.restConfigsMu.Lock()
+	for _, cluster := range stale {
+		delete(k.restConfigs, cluster)
+	}
+	k.restConfigsMu.Unlock()
 
 	log.Info().
 		Strs("clusters", stale).
@@ -506,8 +520,19 @@ func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclients
 	return metricsClient, nil
 }
 
-// GetRestConfig retorna a configuração REST para o cluster especificado
+// GetRestConfig retorna a configuração REST para o cluster especificado.
+// O resultado é cacheado (40min para GKE, 30min para outros) para evitar
+// token fetches repetidos em chamadas concorrentes.
 func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, error) {
+	// Fast path: cache hit
+	k.restConfigsMu.RLock()
+	if entry, ok := k.restConfigs[clusterName]; ok && time.Now().Before(entry.exp) {
+		cfg := rest.CopyConfig(entry.config)
+		k.restConfigsMu.RUnlock()
+		return cfg, nil
+	}
+	k.restConfigsMu.RUnlock()
+
 	resolved := k.resolveContext(clusterName)
 
 	// Verificar se o arquivo kubeconfig existe e é válido
@@ -586,6 +611,16 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 			restConfig.BearerToken = token
 		}
 	}
+
+	// Cachear o rest config: 40min para GKE (token expira em 45min — buffer de 5min),
+	// 30min para outros providers (igual ao client TTL).
+	ttl := 30 * time.Minute
+	if cloudProvider == CloudProviderGKE {
+		ttl = 40 * time.Minute
+	}
+	k.restConfigsMu.Lock()
+	k.restConfigs[clusterName] = &restConfigEntry{config: rest.CopyConfig(restConfig), exp: time.Now().Add(ttl)}
+	k.restConfigsMu.Unlock()
 
 	return restConfig, nil
 }
