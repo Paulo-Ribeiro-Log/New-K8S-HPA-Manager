@@ -1586,6 +1586,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 onNamespaceChange={setSelectedNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onOpenCompare={handleOpenCompare}
               />
             </ErrorBoundary>
           )}

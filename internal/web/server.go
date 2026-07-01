@@ -978,6 +978,7 @@ func (s *Server) setupRoutes() {
 		secrets.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), secretHandler.Create)
 		secrets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Apply)
 		secrets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.OptionalSRECheck(), secretHandler.Delete)
+		secrets.POST("/:cluster/:namespace/resync-akv", rbacMiddleware.RequireSREGroup(), secretHandler.ResyncAKV)
 	}
 
 	// Certificates TLS

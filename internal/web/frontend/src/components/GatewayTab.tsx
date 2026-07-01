@@ -31,6 +31,7 @@ import {
   ChevronLeft,
   MoreVertical,
   X,
+  SplitSquareHorizontal,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -140,6 +141,7 @@ interface GatewayTabProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  onOpenCompare?: (initial: { type: "gateway"; namespace: string; name: string }) => void;
 }
 
 export const GatewayTab = ({
@@ -149,6 +151,7 @@ export const GatewayTab = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  onOpenCompare,
 }: GatewayTabProps) => {
   const [selectedKind, setSelectedKind] = useState<string>("gateway");
   const [searchQuery, setSearchQuery] = useState("");
@@ -608,6 +611,16 @@ export const GatewayTab = ({
 
   const rightTitleAction = (
     <div className="flex items-center gap-2">
+      {selectedGateway && onOpenCompare && selectedGateway.kind?.toLowerCase() === "gateway" && (
+        <Button
+          variant="ghost"
+          size="sm"
+          title="Abrir em Edição Lado a Lado"
+          onClick={() => onOpenCompare({ type: "gateway", namespace: selectedGateway.namespace, name: selectedGateway.name })}
+        >
+          <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
       <ProtectedAction>
         <Button
           variant="outline"

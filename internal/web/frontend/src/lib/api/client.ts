@@ -31,6 +31,7 @@ import type {
   SecretDiffResult,
   SecretValidateResult,
   SecretApplyResult,
+  AkvResyncResult,
   IngressSummary,
   IngressManifest,
   IngressDiffResult,
@@ -809,6 +810,14 @@ class APIClient {
   async describeSecret(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
     const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
       `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
+  async resyncAkv(cluster: string, namespace: string): Promise<AkvResyncResult> {
+    const response = await this.request<AkvResyncResult>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/resync-akv`,
+      { method: "POST" }
     );
     return response;
   }

@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -707,5 +709,81 @@ func (h *SecretHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": fmt.Sprintf("Secret %s/%s deleted successfully", namespace, name),
+	})
+}
+
+// akvExternalSecretName monta o nome do ExternalSecret padrão usado pelo SRE Tools
+// para sincronização com Azure Key Vault: sempre "sre-tools-external-secrets-<namespace>".
+func akvExternalSecretName(namespace string) string {
+	return fmt.Sprintf("sre-tools-external-secrets-%s", namespace)
+}
+
+// ResyncAKV força o external-secrets operator a ressincronizar imediatamente com o
+// Azure Key Vault, anotando o ExternalSecret com force-sync=<unix timestamp> --overwrite.
+// Aproveita o cluster/namespace já selecionados na UI — não precisa do nome do Secret,
+// apenas do namespace (o nome do ExternalSecret é fixo por convenção do SRE Tools).
+func (h *SecretHandler) ResyncAKV(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	if cluster == "" || namespace == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster e namespace são obrigatórios"))
+		return
+	}
+
+	resourceName := akvExternalSecretName(namespace)
+	timestamp := time.Now().Unix()
+	annotation := fmt.Sprintf("force-sync=%d", timestamp)
+
+	args := []string{
+		"annotate", "externalsecret", resourceName,
+		annotation,
+		"-n", namespace,
+		"--context", cluster,
+		"--overwrite",
+	}
+	command := "kubectl " + strings.Join(args, " ")
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
+
+	status := "success"
+	if err != nil {
+		status = "error"
+	}
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "resync_akv",
+			Resource: fmt.Sprintf("%s/%s", namespace, resourceName),
+			Cluster:  cluster,
+			After:    map[string]interface{}{"annotation": annotation, "command": command},
+			Status:   status,
+		}
+		if logErr := h.historyTracker.Log(entry); logErr != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", logErr)
+		}
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"command": command,
+			"output":  strings.TrimSpace(string(output)),
+			"error": gin.H{
+				"code":    "ANNOTATE_ERROR",
+				"message": fmt.Sprintf("%v - %s", err, strings.TrimSpace(string(output))),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"command":      command,
+		"output":       strings.TrimSpace(string(output)),
+		"resourceName": resourceName,
+		"namespace":    namespace,
+		"cluster":      cluster,
+		"timestamp":    timestamp,
 	})
 }
