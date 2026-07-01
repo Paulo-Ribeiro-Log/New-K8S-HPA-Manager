@@ -679,7 +679,7 @@ export const GatewayTab = ({
     </div>
   );
 
-  const renderManifestPanel = () => {
+  const renderOverviewTable = () => {
     if (!cluster) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
@@ -687,19 +687,85 @@ export const GatewayTab = ({
         </div>
       );
     }
-
-    if (!selectedGateway) {
+    if (loading) {
       return (
-        <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-2">
-          <Route className="h-10 w-10 opacity-20" />
-          <p className="text-sm">Selecione um {kindLabel} para editar o manifesto</p>
-          {(gateways ?? []).length === 0 && !loading && (
-            <p className="text-xs text-muted-foreground/60 text-center max-w-xs leading-relaxed">
-              Gateway API (<code>gateway.networking.k8s.io</code>) pode não estar instalada neste cluster.
-            </p>
-          )}
+        <div className="flex items-center justify-center h-64 gap-2 text-muted-foreground text-sm">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Carregando {kindLabel}s...
         </div>
       );
+    }
+    if (filteredGateways.length === 0) {
+      return (
+        <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-3">
+          <Route className="h-10 w-10 opacity-20" />
+          <p className="text-sm">Nenhum {kindLabel} encontrado</p>
+          <p className="text-xs text-muted-foreground/60 text-center max-w-xs leading-relaxed">
+            Gateway API (<code>gateway.networking.k8s.io</code>) pode não estar instalada neste cluster.
+            Verifique com: <code>kubectl get crd gateways.gateway.networking.k8s.io</code>
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        {/* header row */}
+        <div className="flex items-center gap-2 text-xs text-muted-foreground pb-1 border-b border-border/50">
+          <span className="font-medium">{filteredGateways.length} {kindLabel}(s)</span>
+        </div>
+
+        {/* table */}
+        <div className="w-full overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="text-left text-muted-foreground uppercase text-[10px] tracking-wide">
+                <th className="pb-2 pr-4 font-medium">Nome</th>
+                {!isClusterScoped && <th className="pb-2 pr-4 font-medium">Namespace</th>}
+                <th className="pb-2 pr-4 font-medium">Endereços</th>
+                <th className="pb-2 w-8" />
+              </tr>
+            </thead>
+            <tbody>
+              {filteredGateways.map((gw) => (
+                <tr
+                  key={`${gw.cluster}-${gw.namespace}-${gw.name}`}
+                  className="border-t border-border/30 hover:bg-accent/40 cursor-pointer transition-colors group"
+                  onClick={() => loadManifest(gw)}
+                >
+                  <td className="py-2 pr-4">
+                    <div className="flex items-center gap-1.5 font-medium">
+                      <Route className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                      {gw.name}
+                    </div>
+                  </td>
+                  {!isClusterScoped && (
+                    <td className="py-2 pr-4 text-muted-foreground">{gw.namespace || "—"}</td>
+                  )}
+                  <td className="py-2 pr-4 text-muted-foreground">
+                    {gw.addresses && gw.addresses.length > 0 ? gw.addresses.join(", ") : "—"}
+                  </td>
+                  <td className="py-2 text-right">
+                    <button
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-accent transition-all"
+                      title={`Editar ${gw.name}`}
+                      onClick={(e) => { e.stopPropagation(); loadManifest(gw); }}
+                    >
+                      <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  const renderManifestPanel = () => {
+    if (!selectedGateway) {
+      return renderOverviewTable();
     }
 
     return (
