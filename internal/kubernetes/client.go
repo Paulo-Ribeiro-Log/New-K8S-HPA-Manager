@@ -5342,9 +5342,15 @@ func buildResourceSelector(name, group string) string {
 // name é o nome plural do recurso (e.g. "pods", "externalsecrets").
 // group é o API group (e.g. "external-secrets.io"; vazio para recursos core).
 // Se namespace == "", busca em todos os namespaces (--all-namespaces).
-func ListGenericResources(cluster, namespace, name, group string) ([]models.GenericResourceSummary, error) {
+// authArgs substitui a autenticação padrão do kubectl (ex: "--context", cluster) — ver
+// KubeConfigManager.KubectlAuthArgs. Se nil, usa "--context", cluster (comportamento antigo).
+func ListGenericResources(cluster, namespace, name, group string, authArgs []string) ([]models.GenericResourceSummary, error) {
 	selector := buildResourceSelector(name, group)
-	args := []string{"get", selector, "--context", cluster, "-o", "json"}
+	if authArgs == nil {
+		authArgs = []string{"--context", cluster}
+	}
+	args := append([]string{"get", selector}, authArgs...)
+	args = append(args, "-o", "json")
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	} else {
@@ -5411,9 +5417,14 @@ func ListGenericResources(cluster, namespace, name, group string) ([]models.Gene
 
 // GetGenericResourceYAML retorna o manifesto YAML de qualquer recurso Kubernetes.
 // name é o nome plural do recurso; group é o API group (vazio para core).
-func GetGenericResourceYAML(cluster, namespace, resourceName, group, name string) (*models.GenericResourceManifest, error) {
+// authArgs — ver ListGenericResources.
+func GetGenericResourceYAML(cluster, namespace, resourceName, group, name string, authArgs []string) (*models.GenericResourceManifest, error) {
 	selector := buildResourceSelector(resourceName, group)
-	args := []string{"get", selector, name, "--context", cluster, "-o", "yaml"}
+	if authArgs == nil {
+		authArgs = []string{"--context", cluster}
+	}
+	args := append([]string{"get", selector, name}, authArgs...)
+	args = append(args, "-o", "yaml")
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
@@ -5468,14 +5479,18 @@ func sanitizeGenericYAML(yamlContent string) (string, error) {
 // ApplyGenericResource aplica qualquer manifesto YAML.
 // Estratégia (mesma do k9s): tenta kubectl replace primeiro (PUT completo, sem annotation de apply),
 // fallback para kubectl apply se o recurso não existir ainda.
-func ApplyGenericResource(cluster, namespace, yamlContent string, dryRun, force bool) error {
+// authArgs — ver ListGenericResources.
+func ApplyGenericResource(cluster, namespace, yamlContent string, dryRun, force bool, authArgs []string) error {
 	sanitized, err := sanitizeGenericYAML(yamlContent)
 	if err != nil {
 		return err
 	}
+	if authArgs == nil {
+		authArgs = []string{"--context", cluster}
+	}
 
 	buildArgs := func(verb string, extra ...string) []string {
-		args := []string{verb, "-f", "-", "--context", cluster}
+		args := append([]string{verb, "-f", "-"}, authArgs...)
 		if namespace != "" {
 			args = append(args, "-n", namespace)
 		}
@@ -5521,9 +5536,13 @@ func ApplyGenericResource(cluster, namespace, yamlContent string, dryRun, force 
 
 // DeleteGenericResource deleta qualquer recurso via kubectl delete.
 // resourceName é o nome plural do recurso; group é o API group (vazio para core).
-func DeleteGenericResource(cluster, namespace, resourceName, group, name string) error {
+// authArgs — ver ListGenericResources.
+func DeleteGenericResource(cluster, namespace, resourceName, group, name string, authArgs []string) error {
 	selector := buildResourceSelector(resourceName, group)
-	args := []string{"delete", selector, name, "--context", cluster}
+	if authArgs == nil {
+		authArgs = []string{"--context", cluster}
+	}
+	args := append([]string{"delete", selector, name}, authArgs...)
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}

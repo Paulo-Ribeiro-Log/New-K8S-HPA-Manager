@@ -68,7 +68,14 @@ func (h *ExplorerHandler) ListByKind(c *gin.Context) {
 		return
 	}
 
-	items, err := kubeclient.ListGenericResources(cluster, namespace, resource, group)
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("LIST_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	items, err := kubeclient.ListGenericResources(cluster, namespace, resource, group, authArgs)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("LIST_ERROR", err.Error()))
 		return
@@ -95,7 +102,14 @@ func (h *ExplorerHandler) GetYAML(c *gin.Context) {
 		return
 	}
 
-	manifest, err := kubeclient.GetGenericResourceYAML(cluster, namespace, resource, group, name)
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("GET_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	manifest, err := kubeclient.GetGenericResourceYAML(cluster, namespace, resource, group, name, authArgs)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("GET_ERROR", err.Error()))
 		return
@@ -202,7 +216,14 @@ func (h *ExplorerHandler) Validate(c *gin.Context) {
 		ns = "default"
 	}
 
-	if err := kubeclient.ApplyGenericResource(req.Cluster, ns, req.YAML, true, false); err != nil {
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(req.Cluster)
+	if authErr != nil {
+		c.JSON(http.StatusUnprocessableEntity, errorResponse("VALIDATION_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	if err := kubeclient.ApplyGenericResource(req.Cluster, ns, req.YAML, true, false, authArgs); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, errorResponse("VALIDATION_ERROR", err.Error()))
 		return
 	}
@@ -240,7 +261,14 @@ func (h *ExplorerHandler) Apply(c *gin.Context) {
 		return
 	}
 
-	if err := kubeclient.ApplyGenericResource(cluster, namespace, req.YAML, req.DryRun, req.Force); err != nil {
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	if err := kubeclient.ApplyGenericResource(cluster, namespace, req.YAML, req.DryRun, req.Force, authArgs); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
 		return
 	}
@@ -271,7 +299,14 @@ func (h *ExplorerHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if err := kubeclient.DeleteGenericResource(cluster, namespace, resource, group, name); err != nil {
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("DELETE_ERROR", authErr.Error()))
+		return
+	}
+	defer cleanup()
+
+	if err := kubeclient.DeleteGenericResource(cluster, namespace, resource, group, name, authArgs); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("DELETE_ERROR", err.Error()))
 		return
 	}
