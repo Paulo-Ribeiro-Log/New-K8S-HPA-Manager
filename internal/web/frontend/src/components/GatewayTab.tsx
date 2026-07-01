@@ -1027,11 +1027,11 @@ export const GatewayTab = ({
               <strong>{cluster}</strong>.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex-1 min-h-0 h-96">
+          <div className="flex-1 min-h-0">
             <MonacoYamlEditor
               value={createYaml}
               onChange={setCreateYaml}
-              height="100%"
+              height={400}
               readOnly={false}
             />
           </div>

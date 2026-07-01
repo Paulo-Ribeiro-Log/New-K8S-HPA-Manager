@@ -223,6 +223,7 @@ const Index = ({ onLogout }: IndexProps) => {
     secrets: false,
     containers: false,
     ingresses: false,
+    gateways: false,
     healthcheck: false,
     codeEditor: false,
   });
@@ -256,7 +257,7 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // 🔄 Marcar componente como montado quando usuário acessa a aba
   useEffect(() => {
-    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck", "codeEditor"];
+    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "gateways", "healthcheck", "codeEditor"];
     const tabKey = activeTab === "code-editor" ? "codeEditor" : activeTab;
     if (workloadTabs.includes(tabKey as any)) {
       hasBeenMounted.current[tabKey as keyof typeof hasBeenMounted.current] = true;
@@ -1258,20 +1259,6 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
-      case "gateways":
-        return (
-          <ErrorBoundary componentName="Gateway Tab">
-            <GatewayTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
       case "command-runner":
         return (
           <ErrorBoundary componentName="Command Runner">
@@ -1588,6 +1575,22 @@ const Index = ({ onLogout }: IndexProps) => {
           )}
         </div>
 
+        {/* Gateways - sempre montado (SplitView exige h-full com container height:100%) */}
+        <div style={{ display: activeTab === "gateways" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "gateways" || hasBeenMounted.current.gateways) && (
+            <ErrorBoundary componentName="Gateway Tab">
+              <GatewayTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={selectedNamespace}
+                onNamespaceChange={setSelectedNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
         {/* Health Checking - sempre montado */}
         <div style={{ display: activeTab === "healthcheck" ? "block" : "none", height: "100%" }}>
           {(activeTab === "healthcheck" || hasBeenMounted.current.healthcheck) && (
@@ -1607,7 +1610,7 @@ const Index = ({ onLogout }: IndexProps) => {
         </div>
 
         {/* Outras abas - renderização condicional normal (switch/case) */}
-        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck", "code-editor"].includes(activeTab) && renderTabContent()}
+        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "gateways", "healthcheck", "code-editor"].includes(activeTab) && renderTabContent()}
       </div>
 
       {/* Modal de Confirmação - HPAs */}
