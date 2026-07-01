@@ -671,35 +671,14 @@ export const GatewayTab = ({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6"
-        onClick={() => setEditorFullScreen((v) => !v)}
-        title={editorFullScreen ? "Sair da tela cheia" : "Tela cheia"}
-      >
-        {editorFullScreen ? (
-          <Minimize2 className="h-3 w-3" />
-        ) : (
-          <Maximize2 className="h-3 w-3" />
-        )}
-      </Button>
     </div>
   ) : null;
 
-  // apply bar height in px (shown only when hasChanges)
-  const applyBarHeight = 38;
-
   const rightContent = selectedGateway ? (
-    // Usamos position:relative + absolute inset-0 para que Monaco
-    // receba altura real independente do overflow-auto do SplitView
-    <div className="relative w-full h-full">
-      {/* Apply bar — posicionado no topo, empurra o editor para baixo */}
+    <div className="flex flex-col gap-2">
+      {/* Apply bar */}
       {hasChanges && (
-        <div
-          className="absolute top-0 left-0 right-0 z-10 flex items-center gap-2 px-2 rounded bg-amber-500/10 border-b border-amber-500/30"
-          style={{ height: applyBarHeight }}
-        >
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-amber-500/10 border border-amber-500/30 flex-shrink-0">
           <TriangleAlert className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
           <span className="text-xs text-amber-300 flex-1">Alterações pendentes</span>
           <ProtectedAction>
@@ -732,40 +711,23 @@ export const GatewayTab = ({
         </div>
       )}
 
-      {/* Editor — ocupa o espaço restante abaixo da apply bar */}
-      {editorFullScreen ? (
-        <div className="fixed inset-0 z-50 bg-background">
-          <MonacoYamlEditor
-            value={editorValue}
-            onChange={handleEditorChange}
-            height="100%"
-            readOnly={false}
-          />
-        </div>
-      ) : manifestLoading ? (
-        <div
-          className="absolute inset-0 flex items-center justify-center gap-2 text-muted-foreground text-xs"
-          style={{ top: hasChanges ? applyBarHeight : 0 }}
-        >
+      {/* Editor com altura fixa em pixels — mesmo padrão do IngressTab */}
+      {manifestLoading ? (
+        <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs" style={{ height: 520 }}>
           <Loader2 className="h-4 w-4 animate-spin" />
           Carregando...
         </div>
       ) : (
-        <div
-          className="absolute left-0 right-0 bottom-0"
-          style={{ top: hasChanges ? applyBarHeight : 0 }}
-        >
-          <MonacoYamlEditor
-            value={editorValue}
-            onChange={handleEditorChange}
-            height="100%"
-            readOnly={false}
-          />
-        </div>
+        <MonacoYamlEditor
+          value={editorValue}
+          onChange={handleEditorChange}
+          height={520}
+          readOnly={false}
+        />
       )}
     </div>
   ) : (
-    <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
+    <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
       <Route className="h-8 w-8 opacity-30" />
       <span className="text-xs">Selecione um {kindLabel} para editar</span>
     </div>
