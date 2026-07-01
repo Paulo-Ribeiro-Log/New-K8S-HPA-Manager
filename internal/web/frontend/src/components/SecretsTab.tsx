@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy, Shield } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy, Shield, KeyRound } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -39,6 +39,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
 import { CreateSecretModal } from "@/components/CreateSecretModal";
+import { ResyncAkvModal } from "@/components/ResyncAkvModal";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
@@ -100,6 +101,7 @@ export const SecretsTab = ({
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [resyncAkvModalOpen, setResyncAkvModalOpen] = useState(false);
 
   // Visualização do certificado TLS (quando type === "kubernetes.io/tls")
   const [tlsCertModalOpen, setTlsCertModalOpen] = useState(false);
@@ -863,6 +865,20 @@ export const SecretsTab = ({
         <Plus className="w-4 h-4 mr-2" />
         Criar Secret
       </Button>
+      {selectedSecret && selectedSecret.name.toLowerCase().includes("akv") && (
+        <ProtectedAction allowed={canWriteSecrets}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 border-blue-500/40 text-blue-500 hover:bg-blue-500/10 hover:text-blue-400"
+            onClick={() => setResyncAkvModalOpen(true)}
+            title="Força o external-secrets a ressincronizar com o Azure Key Vault"
+          >
+            <KeyRound className="w-4 h-4" />
+            Resync AKV
+          </Button>
+        </ProtectedAction>
+      )}
       <Button
         variant="outline"
         size="sm"
@@ -1823,6 +1839,17 @@ export const SecretsTab = ({
           refetch();
         }}
       />
+
+      {/* Modal Resync AKV */}
+      {selectedSecret && (
+        <ResyncAkvModal
+          open={resyncAkvModalOpen}
+          onOpenChange={setResyncAkvModalOpen}
+          cluster={selectedSecret.cluster}
+          namespace={selectedSecret.namespace}
+          secretName={selectedSecret.name}
+        />
+      )}
 
       {/* Modal de visualização do certificado TLS */}
       <CertificateDetailModal

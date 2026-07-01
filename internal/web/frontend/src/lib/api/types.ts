@@ -152,6 +152,16 @@ export interface SecretApplyResult {
   appliedAt?: string;
 }
 
+export interface AkvResyncResult {
+  success: boolean;
+  command: string;
+  output: string;
+  resourceName?: string;
+  namespace?: string;
+  cluster?: string;
+  timestamp?: number;
+}
+
 // Deployment Types
 export interface DeploymentSummary {
   cluster: string;
