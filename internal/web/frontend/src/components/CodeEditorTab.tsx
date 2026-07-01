@@ -2238,6 +2238,32 @@ export function CodeEditorTab() {
     }
   }, [selectedRepo?.id]);
 
+  // ── Refresh silencioso de status/tree: cobre mudanças feitas fora do save do editor
+  // (terminal integrado, git via CLI, arquivos criados/editados externamente) que não
+  // disparam loadStatus/loadTree diretamente — sem isso, a tab Arquivos e a Source Control
+  // só atualizam com F5. Poll leve em background (sem spinner) + refresh imediato ao
+  // recuperar foco da janela (ex: usuário volta do terminal ou de outro app).
+  useEffect(() => {
+    if (!selectedRepo) return;
+    const id = selectedRepo.id;
+    let alive = true;
+    const refresh = () => {
+      if (!alive) return;
+      loadStatus(id);
+      loadTreeSilent(id);
+    };
+    const interval = setInterval(refresh, 5000);
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [selectedRepo?.id]);
+
   // ── carregamento inicial ──
   useEffect(() => {
     loadRepos();
@@ -2277,6 +2303,12 @@ export function CodeEditorTab() {
     setTreeLoading(true);
     try { setTree(await apiClient.codeEditorGetFileTree(id)); } catch (_) {}
     setTreeLoading(false);
+  }
+
+  // Igual a loadTree, mas sem alternar treeLoading — usado no poll silencioso em
+  // background para não piscar um spinner sobre a árvore a cada ciclo.
+  async function loadTreeSilent(id: string) {
+    try { setTree(await apiClient.codeEditorGetFileTree(id)); } catch (_) {}
   }
 
   async function loadStatus(id: string) {
