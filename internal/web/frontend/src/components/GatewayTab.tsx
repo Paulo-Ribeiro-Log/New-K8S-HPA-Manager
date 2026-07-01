@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,9 @@ import {
   AlertCircle,
   Copy,
   Plus,
+  ChevronLeft,
+  MoreVertical,
+  X,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -154,6 +157,7 @@ export const GatewayTab = ({
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
+  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [diffModalOpen, setDiffModalOpen] = useState(false);
@@ -161,7 +165,6 @@ export const GatewayTab = ({
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
-  const [editorFullScreen, setEditorFullScreen] = useState(false);
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
@@ -178,7 +181,6 @@ export const GatewayTab = ({
   const [editHistory, setEditHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
-  // GatewayClass é cluster-scoped — sem namespace
   const isClusterScoped = selectedKind === "gatewayclass";
   const effectiveNamespace = isClusterScoped ? "" : selectedNamespace;
 
@@ -203,72 +205,98 @@ export const GatewayTab = ({
     );
   }, [gateways, searchQuery]);
 
-  const kindLabel =
-    GATEWAY_KINDS.find((k) => k.value === selectedKind)?.label ?? selectedKind;
+  const kindLabel = GATEWAY_KINDS.find((k) => k.value === selectedKind)?.label ?? selectedKind;
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < editHistory.length - 1;
+  const hasChanges = editorValue !== originalYaml && !!manifest;
 
   useEffect(() => {
     setSelectedGateway(null);
     setManifest(null);
     setEditorValue("");
     setOriginalYaml("");
+    setViewMode("editor");
+    setEditHistory([]);
+    setHistoryIndex(-1);
   }, [cluster, selectedKind, selectedNamespace]);
 
   const loadManifest = async (gw: GatewaySummary) => {
+    if (selectedGateway && editHistory.length > 0) {
+      const cacheKey = `${cluster}/${selectedGateway.namespace}/${selectedGateway.name}`;
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...editHistory], index: historyIndex });
+    }
     setSelectedGateway(gw);
     setManifestLoading(true);
+    setManifest(null);
     try {
-      const m = await apiClient.getGateway(
-        cluster,
-        gw.namespace,
-        gw.kind || selectedKind,
-        gw.name
-      );
+      const m = await apiClient.getGateway(cluster, gw.namespace, gw.kind || selectedKind, gw.name);
       setManifest(m);
-      setEditorValue(m.yaml);
-      setOriginalYaml(m.yaml);
+      const initialYaml = m.yaml || "";
+      setOriginalYaml(initialYaml);
+      setViewMode("editor");
 
       const cacheKey = `${cluster}/${gw.namespace}/${gw.name}`;
       const cached = historyCache.current.get(cacheKey);
       if (cached) {
         setEditHistory(cached.history);
         setHistoryIndex(cached.index);
+        if (cached.index >= 0 && cached.index < cached.history.length) {
+          setEditorValue(cached.history[cached.index]);
+        }
       } else {
-        setEditHistory([m.yaml]);
+        setEditHistory([initialYaml]);
         setHistoryIndex(0);
+        setEditorValue(initialYaml);
       }
     } catch (err) {
-      toast.error(
-        "Erro ao carregar manifesto: " +
-          (err instanceof Error ? err.message : String(err))
-      );
+      toast.error("Erro ao carregar manifesto", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
     } finally {
       setManifestLoading(false);
     }
   };
 
-  const handleEditorChange = (value: string) => {
+  const handleEditorChange = useCallback((value: string) => {
     setEditorValue(value);
-    if (!selectedGateway) return;
-    const cacheKey = `${cluster}/${selectedGateway.namespace}/${selectedGateway.name}`;
-    const newHistory = [...editHistory.slice(0, historyIndex + 1), value].slice(-50);
-    const newIndex = newHistory.length - 1;
-    setEditHistory(newHistory);
-    setHistoryIndex(newIndex);
-    setHistoryCacheEntry(historyCache.current, cacheKey, { history: newHistory, index: newIndex });
-  };
+  }, []);
 
   const handleUndo = () => {
-    if (historyIndex <= 0) return;
+    if (!canUndo) return;
     const idx = historyIndex - 1;
     setHistoryIndex(idx);
     setEditorValue(editHistory[idx]);
   };
 
   const handleRedo = () => {
-    if (historyIndex >= editHistory.length - 1) return;
+    if (!canRedo) return;
     const idx = historyIndex + 1;
     setHistoryIndex(idx);
     setEditorValue(editHistory[idx]);
+  };
+
+  const handleCancel = () => {
+    if (!selectedGateway) return;
+    setEditorValue(originalYaml);
+    setEditHistory([originalYaml]);
+    setHistoryIndex(0);
+    const cacheKey = `${cluster}/${selectedGateway.namespace}/${selectedGateway.name}`;
+    historyCache.current.delete(cacheKey);
+  };
+
+  const handleClearSelection = () => {
+    setSelectedGateway(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setViewMode("editor");
+    setEditHistory([]);
+    setHistoryIndex(-1);
+  };
+
+  const refreshManifest = async () => {
+    if (!selectedGateway) return;
+    await loadManifest(selectedGateway);
   };
 
   const showError = (title: string, message: string) => {
@@ -289,10 +317,7 @@ export const GatewayTab = ({
       });
       toast.success("Manifesto válido (dry-run OK)");
     } catch (err) {
-      showError(
-        "Erro de Validação",
-        err instanceof Error ? err.message : String(err)
-      );
+      showError("Erro de Validação", err instanceof Error ? err.message : String(err));
     } finally {
       setIsValidating(false);
     }
@@ -320,10 +345,7 @@ export const GatewayTab = ({
       );
       setDiffModalOpen(true);
     } catch (err) {
-      toast.error(
-        "Erro ao calcular diff: " +
-          (err instanceof Error ? err.message : String(err))
-      );
+      toast.error("Erro ao calcular diff: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsDiffLoading(false);
     }
@@ -340,17 +362,12 @@ export const GatewayTab = ({
         selectedGateway.name,
         { yaml: editorValue }
       );
-      toast.success(
-        `${selectedGateway.kind || selectedKind}/${selectedGateway.name} aplicado`
-      );
+      toast.success(`${selectedGateway.kind || selectedKind}/${selectedGateway.name} aplicado`);
       setOriginalYaml(editorValue);
       setApplyConfirmOpen(false);
       refetch();
     } catch (err) {
-      showError(
-        "Erro ao Aplicar",
-        err instanceof Error ? err.message : String(err)
-      );
+      showError("Erro ao Aplicar", err instanceof Error ? err.message : String(err));
       setApplyConfirmOpen(false);
     } finally {
       setIsApplying(false);
@@ -370,9 +387,7 @@ export const GatewayTab = ({
       );
       setDescribeContent(result.describe);
     } catch (err) {
-      setDescribeContent(
-        "Erro: " + (err instanceof Error ? err.message : String(err))
-      );
+      setDescribeContent("Erro: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setDescribeLoading(false);
     }
@@ -390,15 +405,10 @@ export const GatewayTab = ({
       );
       toast.success(`${selectedGateway.name} deletado`);
       setDeleteConfirmOpen(false);
-      setSelectedGateway(null);
-      setManifest(null);
-      setEditorValue("");
+      handleClearSelection();
       refetch();
     } catch (err) {
-      showError(
-        "Erro ao Deletar",
-        err instanceof Error ? err.message : String(err)
-      );
+      showError("Erro ao Deletar", err instanceof Error ? err.message : String(err));
       setDeleteConfirmOpen(false);
     } finally {
       setIsDeleting(false);
@@ -414,10 +424,7 @@ export const GatewayTab = ({
         ((parsed?.metadata as Record<string, unknown>)?.namespace as string) ||
         effectiveNamespace ||
         "default";
-      await apiClient.createGateway(cluster, ns, kind, {
-        yaml: createYaml,
-        dryRun,
-      });
+      await apiClient.createGateway(cluster, ns, kind, { yaml: createYaml, dryRun });
       if (dryRun) {
         toast.success("Dry-run OK — manifesto válido");
       } else {
@@ -436,148 +443,149 @@ export const GatewayTab = ({
     }
   };
 
-  const hasChanges = editorValue !== originalYaml && !!manifest;
+  // ── Painel esquerdo ──────────────────────────────────────────────────────
 
-  // ── Left panel: toolbar + list ──────────────────────────────────────────
+  const namespaceSelector = (
+    <Select
+      value={selectedNamespace || "__all__"}
+      onValueChange={(value) => onNamespaceChange(value === "__all__" ? "" : value)}
+      disabled={!cluster || filteredNamespaces.length === 0 || isClusterScoped}
+    >
+      <SelectTrigger className="w-[140px]">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__all__">Todos</SelectItem>
+        {filteredNamespaces.map((ns) => (
+          <SelectItem key={ns.name} value={ns.name}>
+            {ns.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+
   const leftTitleAction = (
-    <div className="flex items-center gap-1 flex-wrap">
+    <div className="flex items-center gap-2 flex-wrap">
+      {namespaceSelector}
+      <Button
+        variant={showSystemNamespaces ? "secondary" : "outline"}
+        size="sm"
+        onClick={onToggleSystemNamespaces}
+        title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+        disabled={isClusterScoped}
+      >
+        {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => refetch()}
+        disabled={!cluster || loading}
+        title="Atualizar lista"
+      >
+        <RefreshCcw className="w-4 h-4" />
+      </Button>
+    </div>
+  );
+
+  const leftContent = (
+    <div className="space-y-3">
+      {selectedGateway && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
+          <Route className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate flex-1">
+            {selectedGateway.namespace ? `${selectedGateway.namespace}/` : ""}{selectedGateway.name}
+          </span>
+          <button
+            onClick={handleClearSelection}
+            className="flex-shrink-0 hover:text-foreground transition-colors"
+            title="Voltar para lista"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Kind selector */}
       <Select value={selectedKind} onValueChange={(v) => setSelectedKind(v)}>
-        <SelectTrigger className="h-6 w-32 text-xs">
+        <SelectTrigger className="w-full">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           {GATEWAY_KINDS.map((k) => (
-            <SelectItem key={k.value} value={k.value} className="text-xs">
+            <SelectItem key={k.value} value={k.value}>
               {k.label}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
 
-      {!isClusterScoped && (
-        <Select
-          value={selectedNamespace || "__all__"}
-          onValueChange={(v) => onNamespaceChange(v === "__all__" ? "" : v)}
-        >
-          <SelectTrigger className="h-6 w-36 text-xs">
-            <SelectValue placeholder="Namespace" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__" className="text-xs">Todos</SelectItem>
-            {filteredNamespaces.map((ns) => (
-              <SelectItem key={ns.name} value={ns.name} className="text-xs">
-                {ns.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
-
+      {/* Search */}
       <div className="relative">
-        <Search className="absolute left-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        {searchQuery && (
+          <button
+            type="button"
+            onClick={() => setSearchQuery("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            aria-label="Limpar busca"
+          >
+            ×
+          </button>
+        )}
         <Input
-          className="h-6 pl-6 text-xs w-36"
-          placeholder="Filtrar..."
+          placeholder={`Buscar ${kindLabel}...`}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
+          className="pl-10 pr-8"
         />
       </div>
 
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6"
-        onClick={() => refetch()}
-        title="Atualizar"
-      >
-        <RefreshCcw className="h-3 w-3" />
-      </Button>
-
-      {!isClusterScoped && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          onClick={onToggleSystemNamespaces}
-          title={showSystemNamespaces ? "Ocultar system" : "Mostrar system"}
-        >
-          {showSystemNamespaces ? (
-            <EyeOff className="h-3 w-3" />
-          ) : (
-            <Eye className="h-3 w-3" />
-          )}
-        </Button>
-      )}
-
-      <ProtectedAction>
-        <Button
-          size="sm"
-          className="h-6 text-xs gap-1"
-          onClick={() => {
-            setCreateYaml(
-              GATEWAY_TEMPLATES[selectedKind] || GATEWAY_TEMPLATES.gateway
-            );
-            setCreateModalOpen(true);
-          }}
-        >
-          <Plus className="h-3 w-3" />
-          Novo
-        </Button>
-      </ProtectedAction>
-    </div>
-  );
-
-  const leftContent = (
-    <div className="space-y-0">
+      {/* List */}
       {loading && (
-        <div className="flex items-center justify-center py-8 text-muted-foreground text-xs gap-2">
+        <div className="flex items-center justify-center py-8 text-muted-foreground text-sm gap-2">
           <Loader2 className="h-4 w-4 animate-spin" />
           Carregando...
         </div>
       )}
-      {error && (
+      {!loading && error && (
         <div className="p-4 text-xs text-amber-400 flex items-start gap-2">
           <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
           <span>{error}</span>
         </div>
       )}
       {!loading && !error && filteredGateways.length === 0 && (
-        <div className="py-8 px-4 text-center space-y-2">
-          <Route className="h-6 w-6 text-muted-foreground/40 mx-auto" />
-          <p className="text-xs text-muted-foreground">
-            Nenhum {kindLabel} encontrado
-          </p>
-          <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
-            Gateway API (<code>gateway.networking.k8s.io</code>) pode não estar instalada
-            neste cluster. Verifique com:{" "}
-            <code className="text-[10px]">kubectl get crd gateways.gateway.networking.k8s.io</code>
-          </p>
+        <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
+          {(gateways ?? []).length === 0
+            ? `Nenhum ${kindLabel} encontrado`
+            : `Nenhum ${kindLabel} corresponde à busca`}
         </div>
       )}
-      {filteredGateways.map((gw) => {
+      {!loading && !error && filteredGateways.map((gw) => {
         const isSelected =
           selectedGateway?.name === gw.name &&
           selectedGateway?.namespace === gw.namespace;
         return (
           <button
-            key={`${gw.namespace}/${gw.name}`}
-            className={`w-full text-left px-2 py-2 rounded hover:bg-accent/50 transition-colors ${
-              isSelected ? "bg-accent" : ""
-            }`}
+            key={`${gw.cluster}-${gw.namespace}-${gw.name}`}
             onClick={() => loadManifest(gw)}
+            className={`w-full text-left p-3 rounded-lg border transition-colors ${
+              isSelected
+                ? "border-primary bg-primary/10 text-primary-foreground"
+                : "border-border/60 hover:border-primary/40"
+            }`}
           >
-            <div className="flex items-center gap-2 min-w-0">
-              <Route className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-              <span className="text-xs font-medium truncate">{gw.name}</span>
+            <div className="font-semibold text-sm flex items-center gap-2">
+              <Route className="w-4 h-4" />
+              {gw.name}
             </div>
             {gw.namespace && !isClusterScoped && (
-              <div className="text-[10px] text-muted-foreground mt-0.5 ml-5">
-                {gw.namespace}
-              </div>
+              <div className="text-xs text-muted-foreground">{gw.namespace}</div>
             )}
             {gw.addresses && gw.addresses.length > 0 && (
-              <div className="text-[10px] text-blue-400 mt-0.5 ml-5 truncate">
-                {gw.addresses.join(", ")}
+              <div className="text-[11px] text-muted-foreground mt-1">
+                <span className="font-semibold">Endereços:</span> {gw.addresses.join(", ")}
               </div>
             )}
           </button>
@@ -586,152 +594,278 @@ export const GatewayTab = ({
     </div>
   );
 
-  // ── Right panel: editor ──────────────────────────────────────────────────
-  const rightTitleSuffix = selectedGateway ? (
-    <span className="text-xs text-muted-foreground font-normal">
-      {selectedGateway.namespace && !isClusterScoped
-        ? `(${selectedGateway.namespace})`
-        : ""}
-      {hasChanges && (
-        <span
-          className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-amber-400"
-          title="Alterações não aplicadas"
-        />
-      )}
-    </span>
-  ) : null;
+  // ── Painel direito ───────────────────────────────────────────────────────
 
-  const rightTitleAction = selectedGateway ? (
-    <div className="flex items-center gap-1">
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6"
-        onClick={handleUndo}
-        disabled={historyIndex <= 0}
-        title="Desfazer"
-      >
-        <Undo2 className="h-3 w-3" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6"
-        onClick={handleRedo}
-        disabled={historyIndex >= editHistory.length - 1}
-        title="Refazer"
-      >
-        <Redo2 className="h-3 w-3" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6"
-        onClick={handleShowDiff}
-        disabled={!hasChanges || isDiffLoading}
-        title="Ver diff"
-      >
-        {isDiffLoading ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
-        ) : (
-          <FileDiff className="h-3 w-3" />
-        )}
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6"
-        onClick={handleDescribe}
-        title="kubectl describe"
-      >
-        <FileText className="h-3 w-3" />
-      </Button>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-6 w-6" title="Mais ações">
-            <Copy className="h-3 w-3" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            onClick={() => {
-              navigator.clipboard.writeText(editorValue);
-              toast.success("YAML copiado");
-            }}
-          >
-            <Copy className="h-3.5 w-3.5 mr-2" />
-            Copiar YAML
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            className="text-destructive"
-            onClick={() => setDeleteConfirmOpen(true)}
-          >
-            <Trash2 className="h-3.5 w-3.5 mr-2" />
-            Deletar
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
-  ) : null;
+  const rightTitlePrefix = selectedGateway ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
 
-  const rightContent = selectedGateway ? (
-    <div className="flex flex-col gap-2">
-      {/* Apply bar */}
-      {hasChanges && (
-        <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-amber-500/10 border border-amber-500/30 flex-shrink-0">
-          <TriangleAlert className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
-          <span className="text-xs text-amber-300 flex-1">Alterações pendentes</span>
-          <ProtectedAction>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 text-xs border-amber-500/50 text-amber-300 hover:bg-amber-500/20"
-              onClick={handleValidate}
-              disabled={isValidating}
-            >
-              {isValidating ? (
-                <Loader2 className="h-3 w-3 animate-spin mr-1" />
-              ) : (
-                <CheckCircle2 className="h-3 w-3 mr-1" />
-              )}
-              Validar
-            </Button>
-          </ProtectedAction>
-          <ProtectedAction>
-            <Button
-              size="sm"
-              className="h-6 text-xs bg-amber-600 hover:bg-amber-700"
-              onClick={() => setApplyConfirmOpen(true)}
-              disabled={isApplying}
-            >
-              {isApplying && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-              Aplicar
-            </Button>
-          </ProtectedAction>
-        </div>
+  const rightTitleAction = (
+    <div className="flex items-center gap-2">
+      <ProtectedAction>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setCreateYaml(GATEWAY_TEMPLATES[selectedKind] || GATEWAY_TEMPLATES.gateway);
+            setCreateModalOpen(true);
+          }}
+          disabled={!cluster}
+          title={`Criar novo ${kindLabel}`}
+        >
+          <Plus className="w-4 h-4 mr-2" /> Criar
+        </Button>
+      </ProtectedAction>
+      {selectedGateway && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleDescribe}
+          disabled={describeLoading}
+        >
+          {describeLoading ? (
+            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+          ) : (
+            <FileText className="w-4 h-4 mr-1" />
+          )}
+          Describe
+        </Button>
       )}
-
-      {/* Editor com altura fixa em pixels — mesmo padrão do IngressTab */}
-      {manifestLoading ? (
-        <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs" style={{ height: 520 }}>
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Carregando...
-        </div>
-      ) : (
-        <MonacoYamlEditor
-          value={editorValue}
-          onChange={handleEditorChange}
-          height={520}
-          readOnly={false}
-        />
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={refreshManifest}
+        disabled={!selectedGateway || manifestLoading}
+      >
+        <RefreshCcw className="w-4 h-4 mr-2" />
+        Recarregar YAML
+      </Button>
+      {selectedGateway && (
+        <ProtectedAction>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" disabled={manifestLoading}>
+                <MoreVertical className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => {
+                  navigator.clipboard.writeText(editorValue);
+                  toast.success("YAML copiado");
+                }}
+              >
+                <Copy className="w-4 h-4 mr-2" />
+                Copiar YAML
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setDeleteConfirmOpen(true)}
+                disabled={isDeleting}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Deletar {kindLabel}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </ProtectedAction>
       )}
-    </div>
-  ) : (
-    <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
-      <Route className="h-8 w-8 opacity-30" />
-      <span className="text-xs">Selecione um {kindLabel} para editar</span>
     </div>
   );
+
+  const renderManifestPanel = () => {
+    if (!cluster) {
+      return (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          Selecione um cluster para visualizar recursos Gateway API
+        </div>
+      );
+    }
+
+    if (!selectedGateway) {
+      return (
+        <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-2">
+          <Route className="h-10 w-10 opacity-20" />
+          <p className="text-sm">Selecione um {kindLabel} para editar o manifesto</p>
+          {(gateways ?? []).length === 0 && !loading && (
+            <p className="text-xs text-muted-foreground/60 text-center max-w-xs leading-relaxed">
+              Gateway API (<code>gateway.networking.k8s.io</code>) pode não estar instalada neste cluster.
+            </p>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-3">
+        {/* Metadata header */}
+        <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Cluster</span>
+            <span className="font-medium">{selectedGateway.cluster || cluster}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Kind</span>
+            <span className="font-mono text-primary">{selectedGateway.kind || kindLabel}</span>
+          </div>
+          {!isClusterScoped && selectedGateway.namespace && (
+            <div className="flex flex-col">
+              <span className="text-muted-foreground uppercase mb-0.5">Namespace</span>
+              <span className="font-medium">{selectedGateway.namespace}</span>
+            </div>
+          )}
+          {selectedGateway.addresses && selectedGateway.addresses.length > 0 && (
+            <div className="flex flex-col">
+              <span className="text-muted-foreground uppercase mb-0.5">Endereços</span>
+              <span className="font-medium">{selectedGateway.addresses.join(", ")}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Editor section */}
+        <div className="space-y-3">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">Manifesto YAML</p>
+              <div className="flex items-center gap-2">
+                {manifestLoading && (
+                  <span className="text-xs text-muted-foreground">Carregando...</span>
+                )}
+                {/* Undo/Redo */}
+                <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={handleUndo}
+                    disabled={!canUndo}
+                    className={`px-2 py-1 text-xs font-medium ${
+                      canUndo
+                        ? "bg-background text-muted-foreground hover:bg-secondary"
+                        : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                    }`}
+                    title="Desfazer (Ctrl+Z)"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRedo}
+                    disabled={!canRedo}
+                    className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                      canRedo
+                        ? "bg-background text-muted-foreground hover:bg-secondary"
+                        : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                    }`}
+                    title="Refazer (Ctrl+Y)"
+                  >
+                    <Redo2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {/* Editor/Diff toggle */}
+                <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("editor")}
+                    className={`px-3 py-1 text-xs font-medium ${
+                      viewMode === "editor"
+                        ? "bg-primary text-white"
+                        : "bg-background text-muted-foreground"
+                    }`}
+                  >
+                    Editor
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("diff")}
+                    disabled={!hasChanges}
+                    className={`px-3 py-1 text-xs font-medium border-l border-border/50 ${
+                      viewMode === "diff"
+                        ? "bg-primary text-white"
+                        : "bg-background text-muted-foreground"
+                    } ${!hasChanges ? "opacity-50 cursor-not-allowed" : ""}`}
+                  >
+                    Diff
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {viewMode === "editor" && (
+              <MonacoYamlEditor
+                value={editorValue}
+                onChange={handleEditorChange}
+                height={520}
+              />
+            )}
+            {viewMode === "diff" && (
+              <MonacoYamlEditor
+                mode="diff"
+                originalValue={originalYaml}
+                value={editorValue}
+                height={520}
+                readOnly
+              />
+            )}
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleShowDiff}
+              disabled={!hasChanges || isDiffLoading}
+            >
+              {isDiffLoading ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <FileDiff className="w-4 h-4 mr-2" />
+              )}
+              Visualizar diff
+            </Button>
+            <ProtectedAction>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleValidate}
+                disabled={isValidating}
+              >
+                {isValidating ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 mr-2" />
+                )}
+                Validar (Dry-run)
+              </Button>
+            </ProtectedAction>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancel}
+              disabled={!hasChanges}
+            >
+              <X className="w-4 h-4 mr-2" /> Cancelar
+            </Button>
+            <ProtectedAction>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => setApplyConfirmOpen(true)}
+                disabled={isApplying || !hasChanges}
+              >
+                <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
+              </Button>
+            </ProtectedAction>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -743,9 +877,9 @@ export const GatewayTab = ({
         }}
         rightPanel={{
           title: selectedGateway ? selectedGateway.name : "Editor",
-          titleSuffix: rightTitleSuffix,
+          titlePrefix: rightTitlePrefix,
           titleAction: rightTitleAction,
-          content: rightContent,
+          content: renderManifestPanel(),
         }}
       />
 
@@ -767,9 +901,7 @@ export const GatewayTab = ({
               Cancelar
             </Button>
             <Button onClick={handleApply} disabled={isApplying}>
-              {isApplying && (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              )}
+              {isApplying && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
               Aplicar
             </Button>
           </DialogFooter>
@@ -791,14 +923,8 @@ export const GatewayTab = ({
             <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>
               Cancelar
             </Button>
-            <Button
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={isDeleting}
-            >
-              {isDeleting && (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              )}
+            <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+              {isDeleting && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
               Deletar
             </Button>
           </DialogFooter>
@@ -818,9 +944,7 @@ export const GatewayTab = ({
                 Carregando...
               </div>
             ) : (
-              <pre className="text-xs font-mono whitespace-pre-wrap p-4">
-                {describeContent}
-              </pre>
+              <pre className="text-xs font-mono whitespace-pre-wrap p-4">{describeContent}</pre>
             )}
           </ScrollArea>
           <DialogFooter>
@@ -835,11 +959,7 @@ export const GatewayTab = ({
               <Copy className="h-3.5 w-3.5 mr-1.5" />
               Copiar
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setDescribeModalOpen(false)}
-            >
+            <Button variant="outline" size="sm" onClick={() => setDescribeModalOpen(false)}>
               Fechar
             </Button>
           </DialogFooter>
@@ -856,32 +976,41 @@ export const GatewayTab = ({
           }
         >
           <DialogHeader className="flex-shrink-0 flex flex-row items-center justify-between">
-            <DialogTitle>Diff — {selectedGateway?.name}</DialogTitle>
+            <div>
+              <DialogTitle>Diff Visual</DialogTitle>
+              <DialogDescription>
+                Comparação lado a lado — {selectedGateway?.namespace}/{selectedGateway?.name}
+              </DialogDescription>
+            </div>
             <Button
-              variant="ghost"
-              size="icon"
+              variant="outline"
+              size="sm"
               onClick={() => setDiffFullScreen((v) => !v)}
-              className="h-7 w-7"
+              className="gap-2"
             >
               {diffFullScreen ? (
-                <Minimize2 className="h-4 w-4" />
+                <>
+                  <Minimize2 className="h-4 w-4" />
+                  Sair de tela cheia
+                </>
               ) : (
-                <Maximize2 className="h-4 w-4" />
+                <>
+                  <Maximize2 className="h-4 w-4" />
+                  Tela cheia
+                </>
               )}
             </Button>
           </DialogHeader>
           <ScrollArea className="flex-1 min-h-0">
-            <div
-              className="text-xs [&_.d2h-wrapper]:text-xs"
-              dangerouslySetInnerHTML={{ __html: diffHtml }}
-            />
+            <div className="p-4">
+              <div
+                className="diff2html-dark text-xs [&_.d2h-wrapper]:text-xs"
+                dangerouslySetInnerHTML={{ __html: diffHtml }}
+              />
+            </div>
           </ScrollArea>
           <DialogFooter>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setDiffModalOpen(false)}
-            >
+            <Button variant="outline" size="sm" onClick={() => setDiffModalOpen(false)}>
               Fechar
             </Button>
           </DialogFooter>
@@ -924,9 +1053,7 @@ export const GatewayTab = ({
             </Button>
             <ProtectedAction>
               <Button onClick={() => handleCreate(false)} disabled={isCreating}>
-                {isCreating && (
-                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                )}
+                {isCreating && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
                 Criar
               </Button>
             </ProtectedAction>
@@ -960,11 +1087,7 @@ export const GatewayTab = ({
               <Copy className="h-3.5 w-3.5 mr-1.5" />
               Copiar
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setErrorDialogOpen(false)}
-            >
+            <Button variant="outline" size="sm" onClick={() => setErrorDialogOpen(false)}>
               Fechar
             </Button>
           </DialogFooter>
