@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"k8s-hpa-manager/internal/ai"
 )
 
@@ -287,6 +289,7 @@ var (
 	gkeTokenCache    string
 	gkeTokenCacheExp time.Time
 	gkeTokenMu       sync.Mutex
+	gkeTokenSF       singleflight.Group // coalesce concurrent refreshes
 )
 
 // GetFreshGKEToken retorna um access token OAuth2 válido para autenticação GKE.
@@ -298,6 +301,7 @@ var (
 //
 // Retorna "" se nenhum método funcionar (o chamador usa a auth do kubeconfig como fallback).
 func GetFreshGKEToken(ctx context.Context) string {
+	// Fast path: cache hit (sem lock de escrita)
 	gkeTokenMu.Lock()
 	if gkeTokenCache != "" && time.Now().Before(gkeTokenCacheExp) {
 		tok := gkeTokenCache
@@ -306,17 +310,35 @@ func GetFreshGKEToken(ctx context.Context) string {
 	}
 	gkeTokenMu.Unlock()
 
-	var tok string
-	if tok = tokenFromADC(ctx); tok == "" {
-		tok = tokenFromGcloud(ctx)
-	}
-	if tok != "" {
+	// singleflight: apenas uma goroutine faz o fetch HTTP; as demais esperam e reutilizam o resultado.
+	// Elimina o thundering herd quando N requisições chegam simultâneas com cache frio.
+	v, _, _ := gkeTokenSF.Do("gke-token", func() (interface{}, error) {
+		// Double-check: outra goroutine pode ter populado o cache enquanto esperávamos.
 		gkeTokenMu.Lock()
-		gkeTokenCache = tok
-		gkeTokenCacheExp = time.Now().Add(45 * time.Minute)
+		if gkeTokenCache != "" && time.Now().Before(gkeTokenCacheExp) {
+			tok := gkeTokenCache
+			gkeTokenMu.Unlock()
+			return tok, nil
+		}
 		gkeTokenMu.Unlock()
+
+		var tok string
+		if tok = tokenFromADC(ctx); tok == "" {
+			tok = tokenFromGcloud(ctx)
+		}
+		if tok != "" {
+			gkeTokenMu.Lock()
+			gkeTokenCache = tok
+			gkeTokenCacheExp = time.Now().Add(45 * time.Minute)
+			gkeTokenMu.Unlock()
+		}
+		return tok, nil
+	})
+
+	if tok, ok := v.(string); ok {
+		return tok
 	}
-	return tok
+	return ""
 }
 
 // tokenFromADC usa o refresh_token do ADC para obter um novo access_token.
