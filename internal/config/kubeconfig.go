@@ -285,6 +285,9 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 		// Carregar ADC salvo pela app (gcp-adc.json) para que gke-gcloud-auth-plugin
 		// encontre as credenciais sem depender de gcloud auth login explícito.
 		gcpprovider.LoadSavedGCPADC()
+		// Pré-aquecer o cache de token GKE em background: quando o usuário selecionar
+		// um cluster GKE, o token já estará pronto (evita 15s de espera na primeira requisição).
+		go func() { gcpprovider.GetFreshGKEToken(context.Background()) }()
 	}
 
 	var clusterNames []string
