@@ -27,8 +27,8 @@ import (
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"k8s-hpa-manager/internal/cloudprovider"
-	azureprovider "k8s-hpa-manager/internal/cloudprovider/azure"
 	awsprovider "k8s-hpa-manager/internal/cloudprovider/aws"
+	azureprovider "k8s-hpa-manager/internal/cloudprovider/azure"
 	gcpprovider "k8s-hpa-manager/internal/cloudprovider/gcp"
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
@@ -50,24 +50,39 @@ const clientTTL = 30 * time.Minute
 // clientCleanupInterval define com qual frequência o cleanup roda
 const clientCleanupInterval = 15 * time.Minute
 
+// reachabilityCacheTTL define por quanto tempo o resultado do probe TCP é reaproveitado.
+// Evita dialar a cada requisição, mas garante detecção rápida de VPN/rede fora do ar.
+const reachabilityCacheTTL = 15 * time.Second
+
+// reachabilityProbeTimeout é o timeout do dial TCP usado para o probe de conectividade.
+// Bem menor que restConfig.Timeout (30s) para que a falha apareça rápido ao usuário.
+const reachabilityProbeTimeout = 3 * time.Second
+
 type restConfigEntry struct {
 	config *rest.Config
 	exp    time.Time
 }
 
+type reachabilityEntry struct {
+	reachable bool
+	exp       time.Time
+}
+
 // KubeConfigManager gerencia a configuração do Kubernetes
 type KubeConfigManager struct {
-	configPath      string
-	config          *api.Config
-	clients         map[string]kubernetes.Interface
-	clientMutex     sync.RWMutex // Protege acesso concorrente aos clients
-	metricsClients  map[string]*metricsclientset.Clientset
-	metricsMutex    sync.RWMutex
-	restConfigs     map[string]*restConfigEntry // Cache de *rest.Config por cluster
-	restConfigsMu   sync.RWMutex
-	lastUsed        map[string]time.Time // Último acesso por cluster (clients + metricsClients)
-	lastUsedMutex   sync.Mutex
-	historyTracker  *history.HistoryTracker
+	configPath     string
+	config         *api.Config
+	clients        map[string]kubernetes.Interface
+	clientMutex    sync.RWMutex // Protege acesso concorrente aos clients
+	metricsClients map[string]*metricsclientset.Clientset
+	metricsMutex   sync.RWMutex
+	restConfigs    map[string]*restConfigEntry // Cache de *rest.Config por cluster
+	restConfigsMu  sync.RWMutex
+	reachability   map[string]*reachabilityEntry // Cache curto de probe TCP por cluster
+	reachabilityMu sync.RWMutex
+	lastUsed       map[string]time.Time // Último acesso por cluster (clients + metricsClients)
+	lastUsedMutex  sync.Mutex
+	historyTracker *history.HistoryTracker
 }
 
 // NewKubeConfigManager cria um novo gerenciador de kubeconfig
@@ -83,6 +98,7 @@ func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
 		clients:        make(map[string]kubernetes.Interface),
 		metricsClients: make(map[string]*metricsclientset.Clientset),
 		restConfigs:    make(map[string]*restConfigEntry),
+		reachability:   make(map[string]*reachabilityEntry),
 		lastUsed:       make(map[string]time.Time),
 		historyTracker: nil, // Será configurado via SetHistoryTracker
 	}
@@ -146,6 +162,12 @@ func (k *KubeConfigManager) evictStaleClients() {
 		delete(k.restConfigs, cluster)
 	}
 	k.restConfigsMu.Unlock()
+
+	k.reachabilityMu.Lock()
+	for _, cluster := range stale {
+		delete(k.reachability, cluster)
+	}
+	k.reachabilityMu.Unlock()
 
 	log.Info().
 		Strs("clusters", stale).
@@ -523,10 +545,41 @@ func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclients
 	return metricsClient, nil
 }
 
+// checkReachability faz um probe TCP rápido (cacheado por reachabilityCacheTTL) para
+// detectar cluster inacessível (VPN/rede fora do ar) sem pagar o timeout completo do
+// client K8s (restConfig.Timeout = 30s) em toda chamada. Sem isso, quando a VPN cai,
+// cada requisição de HPAs/deployments/pods/etc trava 30s antes de falhar.
+func (k *KubeConfigManager) checkReachability(clusterName string) error {
+	k.reachabilityMu.RLock()
+	if entry, ok := k.reachability[clusterName]; ok && time.Now().Before(entry.exp) {
+		k.reachabilityMu.RUnlock()
+		if !entry.reachable {
+			return fmt.Errorf("cluster %s inacessível — verifique a VPN/conectividade de rede", clusterName)
+		}
+		return nil
+	}
+	k.reachabilityMu.RUnlock()
+
+	reachable := k.TestClusterTCPConnection(clusterName, reachabilityProbeTimeout)
+
+	k.reachabilityMu.Lock()
+	k.reachability[clusterName] = &reachabilityEntry{reachable: reachable, exp: time.Now().Add(reachabilityCacheTTL)}
+	k.reachabilityMu.Unlock()
+
+	if !reachable {
+		return fmt.Errorf("cluster %s inacessível — verifique a VPN/conectividade de rede", clusterName)
+	}
+	return nil
+}
+
 // GetRestConfig retorna a configuração REST para o cluster especificado.
 // O resultado é cacheado (40min para GKE, 30min para outros) para evitar
 // token fetches repetidos em chamadas concorrentes.
 func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, error) {
+	if err := k.checkReachability(clusterName); err != nil {
+		return nil, err
+	}
+
 	// Fast path: cache hit
 	k.restConfigsMu.RLock()
 	if entry, ok := k.restConfigs[clusterName]; ok && time.Now().Before(entry.exp) {
@@ -674,6 +727,13 @@ func (k *KubeConfigManager) buildEKSExecProvider(resolved, serverURL, clusterNam
 
 // getClient cria ou retorna um cliente existente para o cluster
 func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface, error) {
+	// Checar reachability mesmo quando o client já está cacheado — sem isso, uma VPN caída
+	// não é detectada aqui e cada chamada K8s feita com o client cacheado trava até o
+	// restConfig.Timeout (30s) antes de falhar.
+	if err := k.checkReachability(clusterName); err != nil {
+		return nil, err
+	}
+
 	// Resolver o contexto real (suporta kubeconfigs com e sem sufixo -admin)
 	resolved := k.resolveContext(clusterName)
 

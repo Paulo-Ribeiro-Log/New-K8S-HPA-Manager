@@ -40,19 +40,7 @@ func (p *GCPNodeGroupProvider) ValidateAuth(ctx context.Context) error {
 		return err
 	}
 
-	out, err := p.run(ctx, 10*time.Second,
-		"gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=json")
-	if err != nil {
-		return fmt.Errorf("gcloud auth list: %w", err)
-	}
-
-	var accounts []struct {
-		Account string `json:"account"`
-	}
-	if json.Unmarshal(out, &accounts) != nil || len(accounts) == 0 {
-		return fmt.Errorf("nenhuma conta GCP ativa — execute: gcloud auth login")
-	}
-	return nil
+	return IsGcloudAuthActive(ctx)
 }
 
 // ListNodeGroups lista os node pools do cluster via gcloud CLI.

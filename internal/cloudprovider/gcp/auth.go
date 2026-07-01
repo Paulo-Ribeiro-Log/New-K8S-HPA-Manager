@@ -341,6 +341,51 @@ func GetFreshGKEToken(ctx context.Context) string {
 	return ""
 }
 
+// Cache do resultado de `gcloud auth list` — evita pagar ~1-3s de subprocesso gcloud
+// a cada cache-miss de ListNodeGroups (ValidateAuth era chamado toda vez).
+var (
+	gcloudAuthCacheErr error
+	gcloudAuthCacheExp time.Time
+	gcloudAuthMu       sync.Mutex
+)
+
+// IsGcloudAuthActive verifica (com cache de 5min) se há conta GCP ativa via `gcloud auth list`.
+// Autenticação raramente muda durante a sessão — não há necessidade de checar a cada request.
+func IsGcloudAuthActive(ctx context.Context) error {
+	gcloudAuthMu.Lock()
+	if time.Now().Before(gcloudAuthCacheExp) {
+		err := gcloudAuthCacheErr
+		gcloudAuthMu.Unlock()
+		return err
+	}
+	gcloudAuthMu.Unlock()
+
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(cmdCtx, "gcloud", "auth", "list",
+		"--filter=status:ACTIVE", "--format=json").Output()
+
+	var result error
+	if err != nil {
+		result = fmt.Errorf("gcloud auth list: %w", err)
+	} else {
+		var accounts []struct {
+			Account string `json:"account"`
+		}
+		if json.Unmarshal(out, &accounts) != nil || len(accounts) == 0 {
+			result = fmt.Errorf("nenhuma conta GCP ativa — execute: gcloud auth login")
+		}
+	}
+
+	gcloudAuthMu.Lock()
+	gcloudAuthCacheErr = result
+	gcloudAuthCacheExp = time.Now().Add(5 * time.Minute)
+	gcloudAuthMu.Unlock()
+
+	return result
+}
+
 // tokenFromADC usa o refresh_token do ADC para obter um novo access_token.
 func tokenFromADC(ctx context.Context) string {
 	data, err := os.ReadFile(gcpADCPath())
