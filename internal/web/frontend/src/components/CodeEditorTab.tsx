@@ -4966,6 +4966,34 @@ function CommitDiffModal({ repoId, filePath, commit, onClose }: CommitDiffModalP
 
 // ─── RepoTerminal ────────────────────────────────────────────────────────────
 
+// Cache de FontFace já registradas no browser (evita refetch ao reabrir terminal
+// ou trocar entre abas). A lista de nomes vem de `fc-list` no SERVIDOR — se o
+// browser roda em outra máquina (ex: WSL2 servidor + browser Windows), o nome
+// não corresponde a nada instalado localmente e o CSS font-family simplesmente
+// ignora a escolha. Por isso buscamos os bytes reais da fonte via
+// /code-editor/fonts/:name/file e registramos como FontFace no documento.
+const loadedTerminalFonts = new Set<string>();
+
+async function ensureTerminalFontLoaded(name: string): Promise<boolean> {
+  if (!name) return true;
+  if (loadedTerminalFonts.has(name)) return true;
+  try {
+    const token = localStorage.getItem("auth_token") ?? "";
+    const resp = await fetch(`/api/v1/code-editor/fonts/${encodeURIComponent(name)}/file`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!resp.ok) return false;
+    const buffer = await resp.arrayBuffer();
+    const face = new FontFace(name, buffer);
+    await face.load();
+    (document.fonts as FontFaceSet).add(face);
+    loadedTerminalFonts.add(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 interface RepoTerminalProps {
   repoId: string;
   repoName: string;
@@ -5081,22 +5109,31 @@ function RepoTerminal({ repoId, repoName, height, font, visible, onFontChange, o
     return () => cancelAnimationFrame(id);
   }, [visible]);
 
-  // Atualiza fonte do xterm dinamicamente sem recriar o terminal
+  // Atualiza fonte do xterm dinamicamente sem recriar o terminal.
+  // Antes de aplicar via CSS, garante que a FontFace real foi carregada no
+  // browser (ver ensureTerminalFontLoaded) — senão a troca não tem efeito
+  // visual quando servidor e browser não compartilham as fontes do SO.
   useEffect(() => {
-    const term = xtermRef.current;
-    const fit = fitRef.current;
-    if (!term) return;
-    const fontFamily = font
-      ? `'${font}','Cascadia Code','Fira Code','Consolas',monospace`
-      : "'Cascadia Code','Fira Code','Consolas',monospace";
-    term.options.fontFamily = fontFamily;
-    requestAnimationFrame(() => {
-      fit?.fit();
-      const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-      }
-    });
+    let cancelled = false;
+    (async () => {
+      await ensureTerminalFontLoaded(font);
+      if (cancelled) return;
+      const term = xtermRef.current;
+      const fit = fitRef.current;
+      if (!term) return;
+      const fontFamily = font
+        ? `'${font}','Cascadia Code','Fira Code','Consolas',monospace`
+        : "'Cascadia Code','Fira Code','Consolas',monospace";
+      term.options.fontFamily = fontFamily;
+      requestAnimationFrame(() => {
+        fit?.fit();
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      });
+    })();
+    return () => { cancelled = true; };
   }, [font]);
 
   // Carrega lista de fontes ao abrir o picker

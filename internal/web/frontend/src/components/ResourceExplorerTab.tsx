@@ -937,7 +937,7 @@ export const ResourceExplorerTab = ({
             onChange={handleEditorChange}
             originalValue={originalYaml}
             mode={viewMode}
-            height={470}
+            height="calc(100vh - 350px)"
           />
         </TabsContent>
 
