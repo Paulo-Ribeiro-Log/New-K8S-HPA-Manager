@@ -1195,6 +1195,7 @@ func (s *Server) setupRoutes() {
 		codeEditor.POST("/repos/:id/tags", codeEditorHandler.CreateTag)
 		codeEditor.DELETE("/repos/:id/tags/:name", codeEditorHandler.DeleteTag)
 		codeEditor.GET("/fonts", codeEditorHandler.ListFonts)
+		codeEditor.GET("/fonts/:name/file", codeEditorHandler.GetFontFile)
 		// Fase 4
 		codeEditor.GET("/repos/:id/blame", codeEditorHandler.GetBlame)
 		codeEditor.GET("/repos/:id/file-log", codeEditorHandler.GetFileLog)
