@@ -1634,3 +1634,40 @@ export interface K8sNamespacePermissions {
   canWritePods: boolean;
   incomplete: boolean;
 }
+
+// Verificar Acesso — checa se um analista (e-mail) tem acesso a um cluster/namespace via
+// impersonation K8s (SelfSubjectRulesReview/SelfSubjectAccessReview) + grupos AAD VV_CLOUD_*.
+export interface AccessCheckMatchedGroup {
+  id: string;
+  displayName: string;
+}
+
+export interface AccessCheckResourceRule {
+  verbs: string[];
+  apiGroups?: string[];
+  resources?: string[];
+  resourceNames?: string[];
+}
+
+export interface AccessCheckNonResourceRule {
+  verbs: string[];
+  nonResourceURLs?: string[];
+}
+
+export interface AccessCheckRulesResult {
+  resourceRules: AccessCheckResourceRule[];
+  nonResourceRules: AccessCheckNonResourceRule[];
+  incomplete: boolean;
+  matchedGroups: AccessCheckMatchedGroup[];
+  allGroups: AccessCheckMatchedGroup[];
+  groupsResolutionError?: string;
+}
+
+export interface AccessCheckCanIResult {
+  allowed: boolean;
+  denied: boolean;
+  reason?: string;
+  matchedGroups: AccessCheckMatchedGroup[];
+  allGroups: AccessCheckMatchedGroup[];
+  groupsResolutionError?: string;
+}

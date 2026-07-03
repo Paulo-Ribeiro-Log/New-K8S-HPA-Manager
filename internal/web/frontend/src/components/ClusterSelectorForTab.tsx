@@ -1,14 +1,20 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
-import { Loader2, Search, X } from "lucide-react";
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Loader2, ChevronsUpDown, Check } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { cloudProviderBadge } from "@/hooks/useCloudProvider";
 
 interface ClusterSelectorForTabProps {
@@ -21,6 +27,8 @@ interface ClusterSelectorForTabProps {
   clusterProviders?: Record<string, string>;
 }
 
+// Combobox com busca embutida no mesmo popover (padrão já usado em Header.tsx) —
+// evita o bug do <Select> do Radix fechar o dropdown ao focar um campo de busca externo.
 export const ClusterSelectorForTab = ({
   selectedCluster,
   onClusterChange,
@@ -29,22 +37,7 @@ export const ClusterSelectorForTab = ({
   isLoading = false,
   clusterProviders,
 }: ClusterSelectorForTabProps) => {
-  const [searchTerm, setSearchTerm] = useState("");
-
-  // Filtra clusters baseado no termo de busca
-  const filteredClusters = useMemo(() => {
-    if (!searchTerm) return clusters;
-
-    const term = searchTerm.toLowerCase();
-    return clusters.filter(cluster =>
-      cluster.toLowerCase().includes(term)
-    );
-  }, [clusters, searchTerm]);
-
-  // Limpa a busca
-  const clearSearch = () => {
-    setSearchTerm("");
-  };
+  const [open, setOpen] = useState(false);
 
   return (
     <div className="px-6 py-3 bg-muted/30 border-b">
@@ -58,65 +51,58 @@ export const ClusterSelectorForTab = ({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Campo de busca */}
-          <div className="relative w-[200px]">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="Buscar cluster..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-8 pr-8 h-9"
-            />
-            {searchTerm && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearSearch}
-                className="absolute right-0 top-1/2 -translate-y-1/2 h-7 w-7 p-0 hover:bg-transparent"
-              >
-                <X className="w-4 h-4 text-muted-foreground hover:text-foreground" />
-              </Button>
-            )}
-          </div>
-
-          {/* Select de cluster */}
-          <Select
-            value={selectedCluster}
-            onValueChange={onClusterChange}
-            disabled={isLoading}
-          >
-            <SelectTrigger className="w-[280px]">
-              <SelectValue placeholder="Selecione um cluster..." />
-            </SelectTrigger>
-            <SelectContent>
-              {filteredClusters.length > 0 ? (
-                filteredClusters.map((cluster) => {
-                  const badge = clusterProviders
-                    ? cloudProviderBadge(clusterProviders[cluster])
-                    : null;
-                  return (
-                    <SelectItem key={cluster} value={cluster}>
-                      <span className="flex items-center gap-2">
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              role="combobox"
+              aria-expanded={open}
+              disabled={isLoading}
+              className="w-[280px] justify-between"
+            >
+              {selectedCluster || "Selecione ou busque um cluster..."}
+              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[280px] p-0">
+            <Command>
+              <CommandInput placeholder="Buscar cluster..." />
+              <CommandList>
+                <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
+                <CommandGroup>
+                  {clusters.map((cluster) => {
+                    const badge = clusterProviders
+                      ? cloudProviderBadge(clusterProviders[cluster])
+                      : null;
+                    return (
+                      <CommandItem
+                        key={cluster}
+                        value={cluster}
+                        onSelect={() => {
+                          onClusterChange(cluster === selectedCluster ? "" : cluster);
+                          setOpen(false);
+                        }}
+                      >
+                        <Check
+                          className={cn(
+                            "mr-2 h-4 w-4",
+                            selectedCluster === cluster ? "opacity-100" : "opacity-0"
+                          )}
+                        />
                         {badge && (
-                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${badge.className}`}>
+                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded mr-1.5 ${badge.className}`}>
                             {badge.label}
                           </span>
                         )}
                         {cluster}
-                      </span>
-                    </SelectItem>
-                  );
-                })
-              ) : (
-                <div className="px-2 py-6 text-center text-sm text-muted-foreground">
-                  Nenhum cluster encontrado com "{searchTerm}"
-                </div>
-              )}
-            </SelectContent>
-          </Select>
-        </div>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
       </div>
     </div>
   );

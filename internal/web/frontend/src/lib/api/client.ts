@@ -106,6 +106,8 @@ import type {
   ConntrackResponse,
   ConntrackNodeHistoryResponse,
   K8sNamespacePermissions,
+  AccessCheckRulesResult,
+  AccessCheckCanIResult,
 } from "./types";
 
 import type {
@@ -441,6 +443,29 @@ class APIClient {
       `/namespaces${query}`
     );
     return response.data || [];
+  }
+
+  // Verificar Acesso — checa se um analista tem acesso a um cluster/namespace via
+  // impersonation K8s + grupos AAD VV_CLOUD_PR_*
+  async getAccessCheckRules(cluster: string, namespace: string, email: string): Promise<AccessCheckRulesResult> {
+    const params = new URLSearchParams({ cluster, namespace, email });
+    return this.request<AccessCheckRulesResult>(`/access-check/rules?${params.toString()}`);
+  }
+
+  async getAccessCheckCanI(params: {
+    cluster: string;
+    namespace: string;
+    email: string;
+    verb: string;
+    resource: string;
+    group?: string;
+    subresource?: string;
+    name?: string;
+  }): Promise<AccessCheckCanIResult> {
+    const query = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => !!v) as [string, string][]
+    );
+    return this.request<AccessCheckCanIResult>(`/access-check/can-i?${query.toString()}`);
   }
 
   async getNamespaceMetrics(cluster: string, limit: number = 5): Promise<TopNamespacesResponse> {

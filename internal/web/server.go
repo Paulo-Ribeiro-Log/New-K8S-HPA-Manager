@@ -51,7 +51,7 @@ type Server struct {
 	port           int
 	token          string
 	jwtManager     *auth.JWTManager // nil quando K8S_HPA_JWT_SECRET não configurado
-	disableADAuth  bool // Flag para desabilitar verificação RBAC (emergências)
+	disableADAuth  bool             // Flag para desabilitar verificação RBAC (emergências)
 	lastHeartbeat  time.Time
 	heartbeatMutex sync.RWMutex
 	shutdownTimer  *time.Timer
@@ -376,12 +376,12 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		// stressResultChan:   stressResultChan,
 		// monitoringCtx:      monitoringCtx,
 		// monitoringCancel:   monitoringCancel,
-		monitoringEngineV2: monitoringEngineV2,
-		aiHandler:          aiHandler,          // Pode ser nil se AI estiver desabilitado
-		aiTokensHandler:    aiTokensHandler,    // Gerencia tokens AI dos usuários
-		aiTokensStore:      aiTokensStore,      // Compartilhado com Dynatrace handler
-		aiHistoryStore:     aiHistoryStore,     // Compartilhado com Dynatrace handler
-		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
+		monitoringEngineV2:      monitoringEngineV2,
+		aiHandler:               aiHandler,               // Pode ser nil se AI estiver desabilitado
+		aiTokensHandler:         aiTokensHandler,         // Gerencia tokens AI dos usuários
+		aiTokensStore:           aiTokensStore,           // Compartilhado com Dynatrace handler
+		aiHistoryStore:          aiHistoryStore,          // Compartilhado com Dynatrace handler
+		kubeManagerWrapper:      kubeManagerWrapper,      // Para predictions RBAC
 		awxHandler:              awxHandler,              // AWX Integration (certificados TLS)
 		ssoProfileHandler:       ssoProfileHandler,       // Perfil SSO corporativo
 		nodepoolRegistryHandler: nodepoolRegistryHandler, // Catálogo de node pools Dynatrace
@@ -558,6 +558,12 @@ func (s *Server) setupRoutes() {
 	k8sPermHandler := handlers.NewK8sPermissionsHandler(s.kubeManager)
 	api.GET("/permissions/k8s", k8sPermHandler.GetNamespacePermissions)
 
+	// Verificar Acesso — checa se um analista (e-mail) tem acesso a um cluster/namespace via
+	// impersonation K8s + grupos AAD VV_CLOUD_PR_*. Expõe dados de acesso de terceiros — SRE only.
+	accessCheckHandler := handlers.NewAccessCheckHandler(s.kubeManager, s.historyTracker)
+	api.GET("/access-check/rules", rbacMiddleware.RequireSREGroup(), accessCheckHandler.GetRules)
+	api.GET("/access-check/can-i", rbacMiddleware.RequireSREGroup(), accessCheckHandler.CanI)
+
 	// Clusters
 	clusterHandler := handlers.NewClusterHandler(s.kubeManager)
 	api.GET("/clusters", clusterHandler.List)
@@ -617,21 +623,21 @@ func (s *Server) setupRoutes() {
 	// Node Pools
 	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker, s.aiTokensStore, s.snatHistoryStore)
 	api.GET("/nodepools", nodePoolHandler.List)
-	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // Métricas de disco
-	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview) // Visão geral de storage
-	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress)  // SSE progress tracking
-	api.GET("/nodepools/conntrack", nodePoolHandler.GetConntrackStats)                 // Conntrack stats por node
+	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics)       // Métricas de disco
+	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview)       // Visão geral de storage
+	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress)        // SSE progress tracking
+	api.GET("/nodepools/conntrack", nodePoolHandler.GetConntrackStats)               // Conntrack stats por node
 	api.GET("/nodepools/conntrack/history", nodePoolHandler.GetConntrackNodeHistory) // Histórico via Prometheus
 	api.GET("/nodepools/removed-nodes", nodePoolHandler.GetRemovedNodes)             // Nodes removidos (CA logs + K8s events)
-	api.GET("/nodepools/node-events", nodePoolHandler.GetNodeEvents)                     // Eventos K8s filtrados por node específico
-	api.GET("/nodepools/pending-workloads", nodePoolHandler.GetPendingWorkloads)          // Workloads com pods não prontos (DT → K8s fallback)
-	api.GET("/nodepools/node-resources", nodePoolHandler.GetNodeResources)               // Utilização CPU/Memory por node (K8s API)
-	api.GET("/nodepools/autoscaler-status", nodePoolHandler.GetAutoscalerStatus)         // Decisões recentes do cluster-autoscaler
-	api.GET("/nodepools/node-disk-stats", nodePoolHandler.GetNodeDiskStats)              // DiskPressure K8s + inodes + I/O via Prometheus
-	api.GET("/nodepools/snat", nodePoolHandler.GetSNATProfile)                           // Diagnóstico SNAT do LB (portas × nós × IPs)
-	api.GET("/nodepools/snat/projection", nodePoolHandler.GetSNATProjection)               // Projeção de crescimento SNAT (histórico + regressão linear)
-	api.GET("/nodepools/snat/nodes", nodePoolHandler.GetSNATNodes)                         // Breakdown por nó: conntrack como proxy SNAT
-	api.GET("/nodepools/snat/costs", nodePoolHandler.GetSNATCosts)                         // Preços de referência por cloud provider (Azure/GCP/AWS native pricing APIs)
+	api.GET("/nodepools/node-events", nodePoolHandler.GetNodeEvents)                 // Eventos K8s filtrados por node específico
+	api.GET("/nodepools/pending-workloads", nodePoolHandler.GetPendingWorkloads)     // Workloads com pods não prontos (DT → K8s fallback)
+	api.GET("/nodepools/node-resources", nodePoolHandler.GetNodeResources)           // Utilização CPU/Memory por node (K8s API)
+	api.GET("/nodepools/autoscaler-status", nodePoolHandler.GetAutoscalerStatus)     // Decisões recentes do cluster-autoscaler
+	api.GET("/nodepools/node-disk-stats", nodePoolHandler.GetNodeDiskStats)          // DiskPressure K8s + inodes + I/O via Prometheus
+	api.GET("/nodepools/snat", nodePoolHandler.GetSNATProfile)                       // Diagnóstico SNAT do LB (portas × nós × IPs)
+	api.GET("/nodepools/snat/projection", nodePoolHandler.GetSNATProjection)         // Projeção de crescimento SNAT (histórico + regressão linear)
+	api.GET("/nodepools/snat/nodes", nodePoolHandler.GetSNATNodes)                   // Breakdown por nó: conntrack como proxy SNAT
+	api.GET("/nodepools/snat/costs", nodePoolHandler.GetSNATCosts)                   // Preços de referência por cloud provider (Azure/GCP/AWS native pricing APIs)
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
@@ -640,9 +646,9 @@ func (s *Server) setupRoutes() {
 	api.POST("/nodepools/sequence/execute", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExecuteSequence) // NOVO: Cordon/Drain sequencing
 
 	// Node Pools - Node Details
-	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)                  // Lista nodes do node pool
-	api.GET("/nodes/:cluster/:nodepool/azure-info", nodePoolHandler.GetNodePoolAzureInfo)      // Info Azure async (tags, subscription)
-	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)                 // Detalhes de um node específico
+	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)             // Lista nodes do node pool
+	api.GET("/nodes/:cluster/:nodepool/azure-info", nodePoolHandler.GetNodePoolAzureInfo) // Info Azure async (tags, subscription)
+	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)            // Detalhes de um node específico
 
 	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
 	if s.nodepoolRegistryHandler != nil {
@@ -886,7 +892,7 @@ func (s *Server) setupRoutes() {
 	cmdRunner := api.Group("/command-runner")
 	{
 		cmdRunner.POST("/execute", rbacMiddleware.RequireSREGroup(), commandRunnerHandler.Execute)
-		cmdRunner.POST("/generate", commandRunnerHandler.GenerateCommand)                             // AI: sem RBAC extra
+		cmdRunner.POST("/generate", commandRunnerHandler.GenerateCommand)    // AI: sem RBAC extra
 		cmdRunner.DELETE("/session/:sessionId", commandRunnerHandler.Cancel) // Forçar parada — sem RBAC extra (quem executa pode parar)
 	}
 
@@ -996,23 +1002,23 @@ func (s *Server) setupRoutes() {
 	// Perfil SSO corporativo (email + matrícula + senha compartilhada entre serviços)
 	ssoRoutes := api.Group("/sso")
 	{
-		ssoRoutes.GET("/profile",    s.ssoProfileHandler.GetProfile)
-		ssoRoutes.PUT("/profile",    s.ssoProfileHandler.SaveProfile)
+		ssoRoutes.GET("/profile", s.ssoProfileHandler.GetProfile)
+		ssoRoutes.PUT("/profile", s.ssoProfileHandler.SaveProfile)
 		ssoRoutes.DELETE("/profile", s.ssoProfileHandler.DeleteProfile)
 	}
 
 	// AWX Integration (gerenciamento de certificados TLS via Ansible AWX/Tower)
 	awxRoutes := api.Group("/awx")
 	{
-		awxRoutes.GET("/status",                 s.awxHandler.Status)
-		awxRoutes.GET("/certificates",           s.awxHandler.ListCerts)
-		awxRoutes.GET("/cluster-info",           s.awxHandler.GetClusterInfo)
-		awxRoutes.GET("/templates/:id/survey",   s.awxHandler.GetTemplateSurvey)
-		awxRoutes.POST("/jobs/launch",           rbacMiddleware.RequireSREGroup(), s.awxHandler.LaunchJob)
+		awxRoutes.GET("/status", s.awxHandler.Status)
+		awxRoutes.GET("/certificates", s.awxHandler.ListCerts)
+		awxRoutes.GET("/cluster-info", s.awxHandler.GetClusterInfo)
+		awxRoutes.GET("/templates/:id/survey", s.awxHandler.GetTemplateSurvey)
+		awxRoutes.POST("/jobs/launch", rbacMiddleware.RequireSREGroup(), s.awxHandler.LaunchJob)
 		// Credenciais por usuário (usuário/senha do SSO)
-		awxRoutes.GET("/credentials/status",   s.awxHandler.GetCredentialsStatus)
-		awxRoutes.POST("/credentials",         s.awxHandler.SaveCredentials)
-		awxRoutes.DELETE("/credentials",       s.awxHandler.DeleteCredentials)
+		awxRoutes.GET("/credentials/status", s.awxHandler.GetCredentialsStatus)
+		awxRoutes.POST("/credentials", s.awxHandler.SaveCredentials)
+		awxRoutes.DELETE("/credentials", s.awxHandler.DeleteCredentials)
 	}
 	// SSE de logs do job: EventSource não suporta headers customizados, sem auth
 	s.router.GET("/api/v1/awx/jobs/:id/stream", s.awxHandler.StreamJobLogs)
@@ -1141,7 +1147,6 @@ func (s *Server) setupRoutes() {
 			broadcastHandler.StreamSend)
 	}
 	fmt.Println("✅ Teams Integration routes registradas")
-
 
 	// SRE Approval Integration (aprovação de deployments)
 	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
@@ -1448,7 +1453,7 @@ func (s *Server) setupRoutes() {
 			// Rotas públicas (GET)
 			healthCheckGroup.GET("/history", healthCheckHandler.History)
 			healthCheckGroup.GET("/stats", healthCheckHandler.Stats)
-			healthCheckGroup.GET("/dashboard", healthCheckHandler.DashboardMetrics) // 🆕 Métricas para dashboard visual
+			healthCheckGroup.GET("/dashboard", healthCheckHandler.DashboardMetrics)  // 🆕 Métricas para dashboard visual
 			healthCheckGroup.GET("/events/:sessionId", healthCheckHandler.GetEvents) // 🆕 Buscar eventos persistidos
 			healthCheckGroup.GET("/:id", healthCheckHandler.Get)
 
@@ -1512,9 +1517,9 @@ func (s *Server) setupRoutes() {
 			dependenciesGroup.GET("/service/:serviceName", dependenciesHandler.GetServiceUsage) // Uso de serviço específico
 
 			// Rotas de escrita (POST) - Escaneiam K8s e persistem no SQLite
-			dependenciesGroup.POST("/scan", dependenciesHandler.Scan)                        // Scan múltiplos clusters (sem RBAC: leitura K8s)
-			dependenciesGroup.POST("/scan/:cluster", dependenciesHandler.ScanCluster)          // Scan cluster único (sem RBAC: auto-scan)
-			dependenciesGroup.POST("/cache/clear", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearCache)      // Limpar cache em memória
+			dependenciesGroup.POST("/scan", dependenciesHandler.Scan)                                                // Scan múltiplos clusters (sem RBAC: leitura K8s)
+			dependenciesGroup.POST("/scan/:cluster", dependenciesHandler.ScanCluster)                                // Scan cluster único (sem RBAC: auto-scan)
+			dependenciesGroup.POST("/cache/clear", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearCache) // Limpar cache em memória
 		}
 
 		fmt.Println("✅ Dependency Scanner routes registradas (com SQLite)")

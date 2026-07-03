@@ -57,6 +57,7 @@ import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
 import { NexusValuesDiffPanel } from "@/components/NexusValuesDiffPanel";
 import { DependenciesTab } from "@/components/DependenciesTab";
 import CertificatesTab from "@/components/CertificatesTab";
+import AccessCheckTab from "@/components/AccessCheckTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
 import { FinOpsTab } from "@/components/FinOpsTab";
@@ -1198,6 +1199,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Certificates Tab">
             <CertificatesTab selectedCluster={selectedCluster} />
+          </ErrorBoundary>
+        );
+
+      case "access-check":
+        return (
+          <ErrorBoundary componentName="Access Check Tab">
+            <AccessCheckTab />
           </ErrorBoundary>
         );
 
