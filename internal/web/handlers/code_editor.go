@@ -1668,6 +1668,55 @@ func (h *CodeEditorHandler) ListFonts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"fonts": fonts})
 }
 
+var fontNameSafeRe = regexp.MustCompile(`^[A-Za-z0-9 _\-]+$`)
+
+var fontExtContentType = map[string]string{
+	".ttf":   "font/ttf",
+	".otf":   "font/otf",
+	".woff":  "font/woff",
+	".woff2": "font/woff2",
+	".ttc":   "font/collection",
+}
+
+// GetFontFile — GET /api/v1/code-editor/fonts/:name/file
+// Serve os bytes reais da fonte (via fc-match) para o browser carregar como
+// FontFace. Necessário porque `fc-list` (ListFonts) lista as fontes instaladas
+// no SERVIDOR — se o browser roda em outra máquina (ex: WSL2 servidor + browser
+// Windows), o nome da fonte não corresponde a nada instalado localmente e o
+// CSS font-family simplesmente ignora a escolha, caindo no fallback. Servindo o
+// arquivo da fonte, o browser registra a FontFace independente do SO do cliente.
+func (h *CodeEditorHandler) GetFontFile(c *gin.Context) {
+	name := strings.TrimSpace(c.Param("name"))
+	if name == "" || !fontNameSafeRe.MatchString(name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nome de fonte inválido"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "fc-match", name+":spacing=mono", "--format=%{file}").Output()
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "fonte não encontrada"})
+		return
+	}
+	path := strings.TrimSpace(string(out))
+	ext := strings.ToLower(filepath.Ext(path))
+	contentType, ok := fontExtContentType[ext]
+	if path == "" || !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "arquivo de fonte não encontrado"})
+		return
+	}
+	if info, statErr := os.Stat(path); statErr != nil || !info.Mode().IsRegular() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "arquivo de fonte inválido"})
+		return
+	}
+
+	c.Header("Cache-Control", "public, max-age=604800")
+	c.Header("Content-Type", contentType)
+	c.File(path)
+}
+
 // ─── Fase 4: Git Blame ──────────────────────────────────────────────────────
 
 // BlameLineInfo representa uma linha do git blame.
