@@ -10,10 +10,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, AlertTriangle } from "lucide-react";
+import { Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, AlertTriangle, Copy } from "lucide-react";
 import { useClusters } from "@/hooks/useAPI";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
+import { toast } from "sonner";
 import type {
   AccessCheckRulesResult,
   AccessCheckCanIResult,
@@ -505,34 +506,52 @@ export default function AccessCheckTab() {
                 Selecione cluster, namespace e e-mail, depois clique em "Verificar".
               </div>
             )}
-            {allGroups && (
-              <>
-                <div className="flex items-center justify-between mb-3 gap-3">
-                  <p className="text-sm text-muted-foreground">
-                    Todos os {allGroups.length} grupos AAD de <span className="font-medium text-foreground">{email}</span>.
-                    Os marcados com <Badge variant="outline" className="border-primary/50 text-primary mx-1">usado</Badge>
-                    começam com <code className="text-xs bg-muted px-1 py-0.5 rounded">VV_CLOUD_</code> e foram usados na impersonation acima.
-                  </p>
-                  <Input
-                    className="w-[240px] shrink-0"
-                    placeholder="Filtrar por nome..."
-                    value={groupsSearch}
-                    onChange={(e) => setGroupsSearch(e.target.value)}
-                  />
-                </div>
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b border-border text-xs text-muted-foreground">
-                      <th className="pb-2 font-medium">Nome do grupo</th>
-                      <th className="pb-2 font-medium">Object ID</th>
-                      <th className="pb-2 font-medium">Usado na verificação</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {allGroups
-                      .filter((g) => g.displayName.toLowerCase().includes(groupsSearch.toLowerCase()))
-                      .sort((a, b) => a.displayName.localeCompare(b.displayName))
-                      .map((g) => (
+            {allGroups && (() => {
+              const filteredGroups = allGroups
+                .filter((g) => g.displayName.toLowerCase().includes(groupsSearch.toLowerCase()))
+                .sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+              const copyGroups = async () => {
+                const text = filteredGroups.map((g) => `${g.displayName}\t${g.id}`).join("\n");
+                try {
+                  await navigator.clipboard.writeText(text);
+                  toast.success(`${filteredGroups.length} grupo(s) copiado(s) para a área de transferência`);
+                } catch {
+                  toast.error("Falha ao copiar — verifique permissões do navegador");
+                }
+              };
+
+              return (
+                <>
+                  <div className="flex items-center justify-between mb-3 gap-3">
+                    <p className="text-sm text-muted-foreground">
+                      Todos os {allGroups.length} grupos AAD de <span className="font-medium text-foreground">{email}</span>.
+                      Os marcados com <Badge variant="outline" className="border-primary/50 text-primary mx-1">usado</Badge>
+                      começam com <code className="text-xs bg-muted px-1 py-0.5 rounded">VV_CLOUD</code> e foram usados na impersonation acima.
+                    </p>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Input
+                        className="w-[240px]"
+                        placeholder="Filtrar por nome..."
+                        value={groupsSearch}
+                        onChange={(e) => setGroupsSearch(e.target.value)}
+                      />
+                      <Button variant="outline" size="sm" onClick={copyGroups} disabled={filteredGroups.length === 0}>
+                        <Copy className="w-3.5 h-3.5 mr-1.5" />
+                        Copiar lista
+                      </Button>
+                    </div>
+                  </div>
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-border text-xs text-muted-foreground">
+                        <th className="pb-2 font-medium">Nome do grupo</th>
+                        <th className="pb-2 font-medium">Object ID</th>
+                        <th className="pb-2 font-medium">Usado na verificação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredGroups.map((g) => (
                         <tr key={g.id} className="border-b border-border last:border-0">
                           <td className="py-1.5 pr-4 text-sm">{g.displayName}</td>
                           <td className="py-1.5 pr-4 text-xs font-mono text-muted-foreground">{g.id}</td>
@@ -545,10 +564,11 @@ export default function AccessCheckTab() {
                           </td>
                         </tr>
                       ))}
-                  </tbody>
-                </table>
-              </>
-            )}
+                    </tbody>
+                  </table>
+                </>
+              );
+            })()}
           </>
         )}
       </div>
