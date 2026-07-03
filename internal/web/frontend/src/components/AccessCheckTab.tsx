@@ -177,6 +177,7 @@ export default function AccessCheckTab() {
 
   const matchedGroups = rulesResult?.matchedGroups ?? canIResult?.matchedGroups;
   const allGroups = rulesResult?.allGroups ?? canIResult?.allGroups;
+  const iamAdminAccess = rulesResult?.iamAdminAccess ?? canIResult?.iamAdminAccess;
   const groupsResolutionError = rulesResult?.groupsResolutionError || canIResult?.groupsResolutionError;
   const matchedGroupIds = new Set((matchedGroups ?? []).map((g) => g.id));
   const isImpersonationBlocked = (msg: string | null) =>
@@ -227,6 +228,29 @@ export default function AccessCheckTab() {
           Verificar
         </Button>
       </div>
+
+      {iamAdminAccess !== undefined && iamAdminAccess.length > 0 && (
+        <div className="px-6 py-3 border-b border-border bg-red-500/10">
+          <div className="flex items-start gap-2">
+            <ShieldAlert className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-semibold text-red-500">
+                ⚠ {email} tem ACESSO ADMIN TOTAL a este cluster via IAM do Azure — fora do alcance desta ferramenta
+              </div>
+              <div className="text-sm text-muted-foreground mt-1">
+                {iamAdminAccess.map((m) => (
+                  <div key={m.groupName}>
+                    Grupo <span className="font-medium text-foreground">{m.groupName}</span> tem a role{" "}
+                    <span className="font-mono text-xs bg-muted px-1 py-0.5 rounded">{m.role}</span> no IAM do recurso AKS —
+                    permite buscar o kubeconfig admin (certificado <code>system:masters</code>), que ignora completamente
+                    o RBAC do Kubernetes. A Visão Geral e a Verificação Pontual abaixo <strong>não refletem</strong> esse acesso.
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {matchedGroups !== undefined && (
         <div className="px-6 py-3 border-b border-border">

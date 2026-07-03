@@ -293,16 +293,87 @@ Grupos AAD (N)" — com busca por nome e badge "usado" nos grupos que entraram n
 (prefixo `VV_CLOUD_`). Dá visibilidade total dos grupos do analista, não só o subconjunto usado
 pela ferramenta.
 
+## Revisão 5: falso negativo com acesso elevado — descoberta da camada IAM do Azure
+
+Relato: e-mails reconhecidamente com "permissões elevadas para todos os clusters que
+gerenciamos" apareciam como **sem nenhum acesso** na Visão Geral. A princípio pareceu ser o
+mesmo tipo de bug do prefixo (grupo `VV_CLOUD-ADM` usa **hífen**, não `_`, então nunca batia com
+o filtro `"VV_CLOUD_"` — bug real, corrigido: prefixo agora é `strings.HasPrefix(displayName, "VV_CLOUD")`
+sem o separador final). Mas o usuário confirmou que a pessoa testada **também está no
+`VV_CLOUD_SRE`** (que já batia com o prefixo antigo) — então o hífen não explicava tudo.
+
+Investigação (com reautenticação do `az cli` para uma conta corporativa completa, já que a
+sessão original era uma conta terceirizada `.ca@via.com.br` — hipótese de permissão restrita
+descartada: `az ad user get-member-groups` funcionou igual para ambas as contas, inclusive
+consultando terceiros):
+
+```bash
+# Confirma se o cluster usa Azure RBAC para autorização K8s (webhook pro ARM) ou só RBAC nativo
+az aks show --name akspriv-oferta-prd --resource-group rg-oferta-app-prd \
+  --subscription <sub-id> --query "{enableRBAC:enableRbac, aadProfile:aadProfile}" -o json
+# → "enableAzureRbac": null — NÃO usa Azure RBAC para K8s, só RBAC nativo (RoleBinding/ClusterRoleBinding)
+
+# IAM (Role Assignments) do recurso AKS no Azure — camada de autorização SEPARADA do RBAC do K8s
+RESOURCE_ID=$(az aks show --name akspriv-oferta-prd --resource-group rg-oferta-app-prd \
+  --subscription <sub-id> --query id -o tsv)
+az role assignment list --scope "$RESOURCE_ID" \
+  --query "[].{principal:principalName, role:roleDefinitionName, principalType:principalType}" -o table
+# → VV_CLOUD_CARGADIRETA  Azure Kubernetes Service Cluster Admin Role   Group
+```
+
+**Achado decisivo**: `VV_CLOUD_CARGADIRETA` tem a role nativa do Azure **"Azure Kubernetes
+Service Cluster Admin Role"** atribuída via IAM no recurso AKS — essa role concede a ação
+`listClusterAdminCredential`, ou seja, permite **buscar o kubeconfig ADMIN** (o certificado
+`system:masters`, o mesmo usado nos contexts `-admin` testados o tempo todo neste documento).
+`system:masters` é hardcoded no `kube-apiserver` como bypass total de qualquer autorização —
+nativa ou via impersonation. **Esse tipo de acesso é estruturalmente invisível a qualquer
+checagem via `SelfSubjectRulesReview`/`SelfSubjectAccessReview`** — inclusive o próprio `kubectl
+auth can-i --as` sofre da mesma limitação, porque a decisão de conceder acesso acontece **antes**
+de qualquer request chegar no K8s (é o Azure Resource Manager decidindo se entrega ou não o
+certificado, não uma autorização avaliada pelo `kube-apiserver`).
+
+Diferença importante entre as duas roles nativas do AKS encontradas no IAM:
+- **"Azure Kubernetes Service Cluster User Role"** → só permite buscar o kubeconfig *normal*
+  (`listClusterUserCredential`); o que a pessoa pode fazer depois ainda passa pelo RBAC nativo
+  do K8s — **coberto corretamente** pela ferramenta.
+- **"Azure Kubernetes Service Cluster Admin Role"** → permite buscar o kubeconfig *admin*
+  (bypass total) — **não é possível replicar via impersonation**, só detectar que ela existe.
+
+**Correção implementada** — não tenta simular o bypass (impossível), só **detecta e avisa**:
+`internal/web/handlers/access_check_iam.go` (novo arquivo):
+- `getAKSResourceRoleAssignments(ctx, cluster)`: resolve o resource ID do AKS via
+  `findClusterInConfig` (já usado em `nodepools_snat.go`) + `az aks show --query id`, depois
+  `az role assignment list --scope <resourceID> --query "[?principalType=='Group']..."`.
+  Só roda pra AKS (`detectSNATProvider(cluster) == "aks"` — GKE/EKS retornam `nil, nil`, sem
+  erro). Cache 45min por cluster (não depende do e-mail — é config de infra, estável).
+- `findIAMAdminBypass(ctx, cluster, allGroups)`: cruza os grupos do e-mail (já resolvidos via
+  `GetAllGroups`, sem chamada `az` extra) com os Role Assignments, filtrando por
+  `iamAdminRoles = {"Azure Kubernetes Service Cluster Admin Role", "Azure Kubernetes Service RBAC Cluster Admin"}`.
+- Novo campo `iamAdminAccess: [{groupName, role}]` nas respostas de `/rules` e `/can-i` —
+  falha nessa checagem é best-effort (não derruba a resposta principal, `iamMatches, _ := ...`).
+- `AccessCheckTab.tsx`: banner vermelho sempre visível (independente da aba ativa) quando
+  `iamAdminAccess` não é vazio — deixa explícito que esse acesso **não** está refletido no
+  restante da ferramenta (Visão Geral/Verificação Pontual).
+
+Validado ponta a ponta: `otavio.ramos@viavarejo.com.br` (membro confirmado do
+`VV_CLOUD_CARGADIRETA` via `az ad group member list`) contra `akspriv-oferta-prd` → API retornou
+`iamAdminAccess: [{"groupName":"VV_CLOUD_CARGADIRETA","role":"Azure Kubernetes Service Cluster Admin Role"}]`.
+
 ---
 
 ## Status e próximos passos
 
 ✅ Implementado, buildado (`go build ./...`, `npm run build`, `./rebuild-web.sh -b`) e validado
-ponta a ponta contra clusters reais (seções "Validação final" e "Revisão 3" acima).
+ponta a ponta contra clusters reais (seções "Validação final", "Revisão 3" e "Revisão 5" acima).
 
 Pontos que podem ser revisitados no futuro (não bloqueantes):
 - Cache de grupos AAD é por processo (memória) — reinicia a cada restart do servidor.
 - Não há fallback de input manual de GUID de grupo caso a resolução via `az cli` falhe — hoje
   degrada mostrando aviso e resultado só com `system:authenticated`.
-- O prefixo `VV_CLOUD_` está hardcoded (`vvCloudGroupPrefix` em `access_check.go`) — se surgir
+- O prefixo `VV_CLOUD` está hardcoded (`vvCloudGroupPrefix` em `access_check.go`) — se surgir
   necessidade de outro prefixo/convenção, generalizar para parâmetro de query.
+- A checagem de IAM (Revisão 5) só cobre AKS — GKE (IAM do GCP) e EKS (IAM do AWS) têm
+  equivalentes conceituais mas não implementados (escopo não pedido ainda).
+- Não checamos `enableAzureRbac=true` (Azure RBAC para autorização K8s) em nenhum cluster real
+  até agora — se algum cluster usar esse modo, a authorização passa por um webhook pro ARM e o
+  comportamento da impersonation nesse cenário específico não foi validado.

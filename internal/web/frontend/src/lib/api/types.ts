@@ -1654,6 +1654,11 @@ export interface AccessCheckNonResourceRule {
   nonResourceURLs?: string[];
 }
 
+export interface AccessCheckIAMAdminMatch {
+  groupName: string;
+  role: string;
+}
+
 export interface AccessCheckRulesResult {
   resourceRules: AccessCheckResourceRule[];
   nonResourceRules: AccessCheckNonResourceRule[];
@@ -1661,6 +1666,7 @@ export interface AccessCheckRulesResult {
   matchedGroups: AccessCheckMatchedGroup[];
   allGroups: AccessCheckMatchedGroup[];
   groupsResolutionError?: string;
+  iamAdminAccess?: AccessCheckIAMAdminMatch[];
 }
 
 export interface AccessCheckCanIResult {
@@ -1670,4 +1676,5 @@ export interface AccessCheckCanIResult {
   matchedGroups: AccessCheckMatchedGroup[];
   allGroups: AccessCheckMatchedGroup[];
   groupsResolutionError?: string;
+  iamAdminAccess?: AccessCheckIAMAdminMatch[];
 }
