@@ -563,6 +563,7 @@ func (s *Server) setupRoutes() {
 	accessCheckHandler := handlers.NewAccessCheckHandler(s.kubeManager, s.historyTracker)
 	api.GET("/access-check/rules", rbacMiddleware.RequireSREGroup(), accessCheckHandler.GetRules)
 	api.GET("/access-check/can-i", rbacMiddleware.RequireSREGroup(), accessCheckHandler.CanI)
+	api.GET("/access-check/scan-fleet", rbacMiddleware.RequireSREGroup(), accessCheckHandler.ScanFleet)
 
 	// Clusters
 	clusterHandler := handlers.NewClusterHandler(s.kubeManager)

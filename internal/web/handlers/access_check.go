@@ -58,10 +58,13 @@ type groupResolution struct {
 func (h *AccessCheckHandler) buildImpersonatedClient(ctx context.Context, cluster, email string) (kubernetes.Interface, groupResolution) {
 	cfg, err := h.kubeManager.GetRestConfig(cluster)
 	if err != nil {
-		return nil, groupResolution{}
+		return nil, groupResolution{matched: []matchedGroupDTO{}, all: []matchedGroupDTO{}}
 	}
 
-	var resolution groupResolution
+	// Inicializar como slice vazio (não nil) — um slice nil vira `null` no JSON, e o frontend
+	// só trata "campo ausente" (undefined em JS), não "campo null"; deixar nil aqui já causou
+	// um crash real (`Cannot read properties of null`) quando a resolução de grupos falhava.
+	resolution := groupResolution{matched: []matchedGroupDTO{}, all: []matchedGroupDTO{}}
 
 	allGroups, err := h.aadLookup.GetAllGroups(ctx, email)
 	if err != nil {
