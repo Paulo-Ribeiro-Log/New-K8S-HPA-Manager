@@ -19,7 +19,19 @@ import type {
   AccessCheckRulesResult,
   AccessCheckCanIResult,
   AccessCheckResourceRule,
+  AccessCheckFleetScanResult,
 } from "@/lib/api/types";
+
+// Entrada de histórico relevante para "access_check" — só os campos usados aqui
+// (o tipo completo é privado a HistoryViewer.tsx, não reexportado).
+interface AccessCheckHistoryEntry {
+  id: string;
+  timestamp: string;
+  user_email?: string;
+  cluster: string;
+  status: string;
+  after?: { email_analisado?: string; verb?: string; resource?: string };
+}
 
 const VERBS = ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"];
 
@@ -114,8 +126,12 @@ export default function AccessCheckTab() {
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
   const [email, setEmail] = useState("");
-  const [section, setSection] = useState<"overview" | "pointcheck" | "allgroups">("overview");
+  const [section, setSection] = useState<"overview" | "pointcheck" | "allgroups" | "fleet" | "history">("overview");
   const [groupsSearch, setGroupsSearch] = useState("");
+
+  const [fleetResult, setFleetResult] = useState<AccessCheckFleetScanResult | null>(null);
+  const [fleetError, setFleetError] = useState<string | null>(null);
+  const [fleetLoading, setFleetLoading] = useState(false);
 
   const [rulesResult, setRulesResult] = useState<AccessCheckRulesResult | null>(null);
   const [rulesError, setRulesError] = useState<string | null>(null);
@@ -176,6 +192,28 @@ export default function AccessCheckTab() {
     else runCanICheck();
   };
 
+  const runFleetScan = async () => {
+    setFleetLoading(true);
+    setFleetError(null);
+    setFleetResult(null);
+    setSection("fleet");
+    try {
+      const result = await apiClient.getAccessCheckFleetScan(email.trim(), namespace || undefined);
+      setFleetResult(result);
+    } catch (err) {
+      setFleetError(err instanceof Error ? err.message : "Falha ao varrer os clusters");
+    } finally {
+      setFleetLoading(false);
+    }
+  };
+
+  const { data: historyEntries = [], isFetching: historyLoading } = useQuery({
+    queryKey: ["access-check-history"],
+    queryFn: () => apiClient.get<{ entries: AccessCheckHistoryEntry[] }>("/history?action=access_check"),
+    select: (data) => data.entries, // GetAll() no backend já retorna mais recente primeiro
+    enabled: section === "history",
+  });
+
   const matchedGroups = rulesResult?.matchedGroups ?? canIResult?.matchedGroups;
   const allGroups = rulesResult?.allGroups ?? canIResult?.allGroups;
   const iamAdminAccess = rulesResult?.iamAdminAccess ?? canIResult?.iamAdminAccess;
@@ -228,9 +266,13 @@ export default function AccessCheckTab() {
           {(rulesLoading || canILoading) && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
           Verificar
         </Button>
+        <Button variant="outline" onClick={runFleetScan} disabled={!email.trim() || fleetLoading}>
+          {fleetLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+          Verificar em todos os clusters
+        </Button>
       </div>
 
-      {iamAdminAccess !== undefined && iamAdminAccess.length > 0 && (
+      {iamAdminAccess && iamAdminAccess.length > 0 && (
         <div className="px-6 py-3 border-b border-border bg-red-500/10">
           <div className="flex items-start gap-2">
             <ShieldAlert className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
@@ -253,7 +295,7 @@ export default function AccessCheckTab() {
         </div>
       )}
 
-      {matchedGroups !== undefined && (
+      {matchedGroups && (
         <div className="px-6 py-3 border-b border-border">
           <div className="text-xs font-medium text-muted-foreground mb-1.5">Grupos AAD (VV_CLOUD_*) usados na verificação</div>
           {groupsResolutionError ? (
@@ -281,6 +323,8 @@ export default function AccessCheckTab() {
           { id: "overview", label: "Visão Geral" },
           { id: "pointcheck", label: "Verificação Pontual" },
           { id: "allgroups", label: `Todos os Grupos AAD${allGroups ? ` (${allGroups.length})` : ""}` },
+          { id: "fleet", label: `Todos os Clusters${fleetResult ? ` (${fleetResult.results.length})` : ""}` },
+          { id: "history", label: "Histórico" },
         ] as const).map((tab) => (
           <button
             key={tab.id}
@@ -569,6 +613,152 @@ export default function AccessCheckTab() {
                 </>
               );
             })()}
+          </>
+        )}
+
+        {section === "fleet" && (
+          <>
+            {fleetError && (
+              <div className="rounded-md border p-3 mb-4 text-sm flex items-center gap-2 border-red-500/40 bg-red-500/10 text-red-500">
+                <ShieldAlert className="w-4 h-4 shrink-0" />
+                {fleetError}
+              </div>
+            )}
+            {!fleetResult && !fleetError && !fleetLoading && (
+              <div className="text-sm text-muted-foreground flex items-center gap-2">
+                <ShieldQuestion className="w-4 h-4" />
+                Preencha o e-mail e clique em "Verificar em todos os clusters" — varre acesso admin
+                via IAM (sempre) e RBAC no namespace informado (se preenchido) em todos os clusters AKS.
+                Pode levar de dezenas de segundos a poucos minutos.
+              </div>
+            )}
+            {fleetResult && (() => {
+              const withIAM = fleetResult.results.filter((r) => (r.iamAdminAccess?.length ?? 0) > 0);
+              const reachableCount = fleetResult.results.filter((r) => r.reachable).length;
+              return (
+                <>
+                  <div className="text-sm text-muted-foreground mb-3">
+                    {fleetResult.results.length} clusters verificados, {reachableCount} alcançáveis.
+                    {withIAM.length > 0 && (
+                      <span className="text-red-500 font-medium"> {withIAM.length} com acesso admin via IAM.</span>
+                    )}
+                  </div>
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-border text-xs text-muted-foreground">
+                        <th className="pb-2 font-medium">Cluster</th>
+                        <th className="pb-2 font-medium">Alcançável</th>
+                        <th className="pb-2 font-medium">Acesso Admin (IAM)</th>
+                        {namespace && <th className="pb-2 font-medium">Acesso RBAC em "{namespace}"</th>}
+                        <th className="pb-2 font-medium">Obs.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fleetResult.results
+                        .slice()
+                        .sort((a, b) => a.cluster.localeCompare(b.cluster))
+                        .map((r) => (
+                          <tr
+                            key={r.cluster}
+                            className={`border-b border-border last:border-0 ${(r.iamAdminAccess?.length ?? 0) > 0 ? "bg-red-500/10" : ""}`}
+                          >
+                            <td className="py-1.5 pr-4 text-sm font-mono">{r.cluster}</td>
+                            <td className="py-1.5 pr-4">
+                              {r.reachable ? (
+                                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/30">Sim</Badge>
+                              ) : (
+                                <Badge variant="outline" className="bg-muted text-muted-foreground border-border">Não</Badge>
+                              )}
+                            </td>
+                            <td className="py-1.5 pr-4">
+                              {r.iamAdminAccess && r.iamAdminAccess.length > 0 ? (
+                                <div className="flex flex-col gap-1">
+                                  {r.iamAdminAccess.map((m) => (
+                                    <Badge key={m.groupName} variant="outline" className="bg-red-500/10 text-red-500 border-red-500/30 w-fit">
+                                      {m.groupName}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">—</span>
+                              )}
+                            </td>
+                            {namespace && (
+                              <td className="py-1.5 pr-4">
+                                {!r.reachable ? (
+                                  <span className="text-xs text-muted-foreground">—</span>
+                                ) : r.namespaceAccess?.anyAccess ? (
+                                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/30">Sim</Badge>
+                                ) : (
+                                  <Badge variant="outline" className="bg-muted text-muted-foreground border-border">Não</Badge>
+                                )}
+                              </td>
+                            )}
+                            <td className="py-1.5 text-xs text-muted-foreground">{r.error ?? ""}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </>
+              );
+            })()}
+          </>
+        )}
+
+        {section === "history" && (
+          <>
+            {historyLoading && (
+              <div className="text-sm text-muted-foreground flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Carregando histórico...
+              </div>
+            )}
+            {!historyLoading && historyEntries.length === 0 && (
+              <div className="text-sm text-muted-foreground">Nenhuma consulta registrada ainda.</div>
+            )}
+            {!historyLoading && historyEntries.length > 0 && (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-border text-xs text-muted-foreground">
+                    <th className="pb-2 font-medium">Data/hora</th>
+                    <th className="pb-2 font-medium">Quem consultou</th>
+                    <th className="pb-2 font-medium">Cluster</th>
+                    <th className="pb-2 font-medium">Namespace</th>
+                    <th className="pb-2 font-medium">E-mail analisado</th>
+                    <th className="pb-2 font-medium">Verbo/Recurso</th>
+                    <th className="pb-2 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyEntries.map((entry) => (
+                    <tr key={entry.id} className="border-b border-border last:border-0">
+                      <td className="py-1.5 pr-4 text-xs text-muted-foreground whitespace-nowrap">
+                        {new Date(entry.timestamp).toLocaleString("pt-BR")}
+                      </td>
+                      <td className="py-1.5 pr-4 text-sm">{entry.user_email ?? "—"}</td>
+                      <td className="py-1.5 pr-4 text-sm font-mono">{entry.cluster}</td>
+                      <td className="py-1.5 pr-4 text-sm">{entry.resource}</td>
+                      <td className="py-1.5 pr-4 text-sm">{entry.after?.email_analisado ?? "—"}</td>
+                      <td className="py-1.5 pr-4 text-xs font-mono text-muted-foreground">
+                        {entry.after?.verb && entry.after?.resource ? `${entry.after.verb} ${entry.after.resource}` : "—"}
+                      </td>
+                      <td className="py-1.5">
+                        <Badge
+                          variant="outline"
+                          className={
+                            entry.status === "success"
+                              ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/30"
+                              : "bg-red-500/10 text-red-500 border-red-500/30"
+                          }
+                        >
+                          {entry.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </>
         )}
       </div>

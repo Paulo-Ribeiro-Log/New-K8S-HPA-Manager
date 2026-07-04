@@ -359,6 +359,49 @@ Validado ponta a ponta: `otavio.ramos@viavarejo.com.br` (membro confirmado do
 `VV_CLOUD_CARGADIRETA` via `az ad group member list`) contra `akspriv-oferta-prd` → API retornou
 `iamAdminAccess: [{"groupName":"VV_CLOUD_CARGADIRETA","role":"Azure Kubernetes Service Cluster Admin Role"}]`.
 
+## Revisão 6: Fase A (scan em todos os clusters) + Fase B (histórico) + fix de crash null/undefined
+
+Duas fases pedidas para responder "esse analista tem acesso elevado em algum lugar da nossa
+frota?" sem testar cluster por cluster manualmente, e para dar visibilidade de quem consultou o
+quê.
+
+**Fase A — `GET /api/v1/access-check/scan-fleet?email=&namespace=`**
+(`internal/web/handlers/access_check_scan.go`, novo):
+- Resolve os grupos do e-mail **uma única vez** (`aadLookup.GetAllGroups`, já cacheado 10min) e
+  reaproveita em todos os clusters — nenhuma chamada `az` repetida por cluster para isso.
+- Itera `loadClusterConfig()` (já usado por `findClusterInConfig`) com semáforo de 8 clusters
+  concorrentes. Por cluster: `findIAMAdminBypass` (sempre — é uma chamada Azure ARM, independe de
+  VPN) + `SelfSubjectRulesReview` impersonado (só se `namespace` foi informado), classificando um
+  `anyAccess bool` simplificado via `hasNonGenericAccess()` (ignora o baseline
+  NetworkPolicies/self-review, mesma lógica de "categorias" do frontend, mas resumida a sim/não).
+- Timeout por cluster **30s** (não 10s como planejado originalmente) — 2 chamadas `az cli`
+  sequenciais (aks show + role assignment list) com cache frio, competindo por 8 slots do
+  semáforo, estouravam 10s facilmente. Timeout geral do request: **150s** (não 60s) — testado com
+  24 clusters reais, levou ~19s no total.
+- Frontend: botão "Verificar em todos os clusters" no header (só exige e-mail — ignora o cluster
+  selecionado no topo), nova aba "Todos os Clusters" com tabela Cluster/Alcançável/Acesso Admin
+  (IAM)/Acesso RBAC no namespace (coluna condicional)/Obs., linha em vermelho quando tem
+  `iamAdminAccess`.
+
+**Fase B — aba Histórico**: `GET /api/v1/history?action=access_check` **já existia e já filtrava
+por `action`** (`HistoryHandler.GetHistory`) — zero mudança de backend. Só uma nova aba no
+frontend chamando `apiClient.get()` genérico. `HistoryTracker.GetAll()`/`GetFiltered()` **já
+retornam mais recente primeiro** (`sort.Slice` por timestamp descendente) — não reordenar de novo
+no frontend (um `.reverse()` inicial invertia pra mais antigo primeiro, corrigido).
+
+**Bug real encontrado durante a validação**: `Cannot read properties of null (reading 'length')`
+— crash de verdade, não só na Fase A. Causa: um slice `nil` em Go serializa para `null` no JSON
+(não `[]`), e o frontend tinha dois lugares checando `campo !== undefined` como guarda antes de
+acessar `.length` — mas `null !== undefined` é `true` em JS, então o guard deixava passar e
+quebrava em `null.length`. Afetava `iamAdminAccess` (novo, Revisão 5) **e também `matchedGroups`**
+(já existia desde a implementação original — só não tinha sido acionado ainda, porque exige
+`GetAllGroups` retornar vazio/erro para o slice ficar nil). Corrigido nos dois lados:
+- Frontend: os dois guards viraram `campo && (...)` (truthy — cobre `null` e `undefined` igual).
+- Backend (defesa em profundidade, não só o frontend): `resolution.matched`/`resolution.all` em
+  `access_check.go`, `matches` em `findIAMAdminBypass` (`access_check_iam.go`), e os equivalentes
+  em `access_check_scan.go` agora inicializam como slice vazio (`[]T{}`) em vez de `var s []T` —
+  nunca mais serializam `null` para esses campos.
+
 ---
 
 ## Status e próximos passos

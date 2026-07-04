@@ -1678,3 +1678,18 @@ export interface AccessCheckCanIResult {
   groupsResolutionError?: string;
   iamAdminAccess?: AccessCheckIAMAdminMatch[];
 }
+
+export interface AccessCheckFleetClusterResult {
+  cluster: string;
+  reachable: boolean;
+  iamAdminAccess?: AccessCheckIAMAdminMatch[];
+  namespaceAccess?: { anyAccess: boolean };
+  error?: string;
+}
+
+export interface AccessCheckFleetScanResult {
+  email: string;
+  matchedGroups: AccessCheckMatchedGroup[];
+  groupsResolutionError?: string;
+  results: AccessCheckFleetClusterResult[];
+}

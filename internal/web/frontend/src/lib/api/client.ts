@@ -108,6 +108,7 @@ import type {
   K8sNamespacePermissions,
   AccessCheckRulesResult,
   AccessCheckCanIResult,
+  AccessCheckFleetScanResult,
 } from "./types";
 
 import type {
@@ -466,6 +467,14 @@ class APIClient {
       Object.entries(params).filter(([, v]) => !!v) as [string, string][]
     );
     return this.request<AccessCheckCanIResult>(`/access-check/can-i?${query.toString()}`);
+  }
+
+  // Varre todos os clusters AKS cadastrados — acesso admin via IAM (sempre) + RBAC no
+  // namespace informado (opcional). Pode levar dezenas de segundos (dezenas de clusters).
+  async getAccessCheckFleetScan(email: string, namespace?: string): Promise<AccessCheckFleetScanResult> {
+    const params = new URLSearchParams({ email });
+    if (namespace) params.append("namespace", namespace);
+    return this.request<AccessCheckFleetScanResult>(`/access-check/scan-fleet?${params.toString()}`);
   }
 
   async getNamespaceMetrics(cluster: string, limit: number = 5): Promise<TopNamespacesResponse> {

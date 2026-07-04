@@ -108,9 +108,14 @@ type iamAdminMatchDTO struct {
 // findIAMAdminBypass cruza os grupos do analista com os Role Assignments do recurso AKS,
 // retornando os que concedem acesso admin via IAM (fora do alcance do impersonation/RBAC).
 func findIAMAdminBypass(ctx context.Context, clusterCtx string, groups []matchedGroupDTO) ([]iamAdminMatchDTO, error) {
+	// Nunca retornar nil aqui — um slice nil vira `null` no JSON, e um `null` engana checks
+	// como `campo && campo.length` no frontend (null é falsy, mas `!== undefined` não pega
+	// null — já causou crash real quando esse campo vinha vazio).
+	matches := []iamAdminMatchDTO{}
+
 	assignments, err := getAKSResourceRoleAssignments(ctx, clusterCtx)
 	if err != nil || len(assignments) == 0 {
-		return nil, err
+		return matches, err
 	}
 
 	groupNames := make(map[string]bool, len(groups))
@@ -118,7 +123,6 @@ func findIAMAdminBypass(ctx context.Context, clusterCtx string, groups []matched
 		groupNames[g.DisplayName] = true
 	}
 
-	var matches []iamAdminMatchDTO
 	for _, ra := range assignments {
 		if iamAdminRoles[ra.RoleDefinitionName] && groupNames[ra.PrincipalName] {
 			matches = append(matches, iamAdminMatchDTO{GroupName: ra.PrincipalName, Role: ra.RoleDefinitionName})
