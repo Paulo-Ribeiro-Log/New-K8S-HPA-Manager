@@ -75,6 +75,9 @@ make build-all                # Build multi-plataforma → build/ (sem subpasta 
 make test-coverage            # Testes com cobertura HTML
 make web-install              # npm install no frontend
 make web-clean                # Limpa arquivos de build frontend
+
+# Lint frontend
+cd internal/web/frontend && npm run lint   # eslint .
 ```
 
 ### Notas de Build
