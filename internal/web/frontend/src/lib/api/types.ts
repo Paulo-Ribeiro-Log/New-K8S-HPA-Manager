@@ -1594,6 +1594,7 @@ export interface ConntrackNodeHistoryResponse {
   node_name: string;
   hours: number;
   step_minutes: number;
+  offset_days: number;
   points: ConntrackHistoryPoint[];
   prometheus_available: boolean;
   error?: string;

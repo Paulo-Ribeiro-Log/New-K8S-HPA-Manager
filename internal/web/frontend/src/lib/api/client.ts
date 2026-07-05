@@ -1989,9 +1989,10 @@ class APIClient {
     node: string,
     hours = 6,
     step = 5,
+    offsetDays = 0,
   ): Promise<ConntrackNodeHistoryResponse> {
     return this.request<ConntrackNodeHistoryResponse>(
-      `/nodepools/conntrack/history?cluster=${encodeURIComponent(cluster)}&node=${encodeURIComponent(node)}&hours=${hours}&step=${step}`
+      `/nodepools/conntrack/history?cluster=${encodeURIComponent(cluster)}&node=${encodeURIComponent(node)}&hours=${hours}&step=${step}&offset_days=${offsetDays}`
     );
   }
 

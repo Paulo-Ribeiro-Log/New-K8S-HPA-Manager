@@ -278,13 +278,16 @@ type ConntrackNodeHistoryResponse struct {
 	NodeName            string                  `json:"node_name"`
 	Hours               int                     `json:"hours"`
 	StepMinutes         int                     `json:"step_minutes"`
+	OffsetDays          int                     `json:"offset_days"`
 	Points              []ConntrackHistoryPoint `json:"points"`
 	PrometheusAvailable bool                    `json:"prometheus_available"`
 	Error               string                  `json:"error,omitempty"`
 }
 
 // GetConntrackNodeHistory retorna série histórica de conntrack de um nó via Prometheus.
-// GET /api/v1/nodepools/conntrack/history?cluster=X&node=Y&hours=6&step=5
+// GET /api/v1/nodepools/conntrack/history?cluster=X&node=Y&hours=6&step=5&offset_days=0
+// offset_days desloca a janela inteira N dias para trás (mesmo horário do dia), permitindo
+// comparar o mesmo período de hoje com D-1/D-2/D-3.
 // Se Prometheus não estiver disponível, retorna prometheus_available=false sem dados.
 func (h *NodePoolHandler) GetConntrackNodeHistory(c *gin.Context) {
 	cluster := c.Query("cluster")
@@ -306,11 +309,18 @@ func (h *NodePoolHandler) GetConntrackNodeHistory(c *gin.Context) {
 			stepMinutes = n
 		}
 	}
+	offsetDays := 0
+	if v := c.Query("offset_days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 7 {
+			offsetDays = n
+		}
+	}
 
 	resp := ConntrackNodeHistoryResponse{
 		NodeName:    nodeName,
 		Hours:       hours,
 		StepMinutes: stepMinutes,
+		OffsetDays:  offsetDays,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -345,7 +355,7 @@ func (h *NodePoolHandler) GetConntrackNodeHistory(c *gin.Context) {
 	// Dots escapados para PromQL regex: "10.0.0.1:9100" → "10\\.0\\.0\\.1:9100"
 	instanceLabel := strings.ReplaceAll(nodeIP+":9100", ".", `\\.`)
 
-	end := time.Now()
+	end := time.Now().Add(-time.Duration(offsetDays) * 24 * time.Hour)
 	start := end.Add(-time.Duration(hours) * time.Hour)
 	step := time.Duration(stepMinutes) * time.Minute
 
