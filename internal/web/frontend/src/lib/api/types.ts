@@ -1600,6 +1600,11 @@ export interface ConntrackNodeHistoryResponse {
   error?: string;
 }
 
+export interface CloudAccountHints {
+  gcp_email?: string;
+  aws_email?: string;
+}
+
 export interface CommandRunnerSSEEvent {
   id: string;
   type: 'init' | 'output' | 'output_error' | 'cluster_done' | 'complete' | 'error';

@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
+import { CloudAccountHintField } from "@/components/CloudAccountHintField";
 
 interface AutoDiscoverProgress {
   phase: string;       // discovering, processing, saving, completed, error
@@ -86,6 +87,7 @@ export function AutoDiscoverDialog({
   const [gcpStatus, setGcpStatus] = useState<GCPAuthStatus | null>(null);
   const [gcpLoginSession, setGcpLoginSession] = useState<GCPLoginSession | null>(null);
   const [gcpPolling, setGcpPolling] = useState(false);
+  const [hasGKEClusters, setHasGKEClusters] = useState(false);
   const gcpPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -99,6 +101,7 @@ export function AutoDiscoverDialog({
       setGcpLoginSession(null);
       setGcpPolling(false);
       checkGCPAuth();
+      checkGKEClustersInKubeconfig();
     } else {
       stopGCPPoll();
     }
@@ -129,6 +132,24 @@ export function AutoDiscoverDialog({
       }
     } catch {
       // Ignorar — GCP auth é opcional
+    }
+  };
+
+  // Detecta se já existem clusters GKE no kubeconfig local (contexts "gke_*") —
+  // usado para pedir autenticação GCP mesmo quando `gcloud` não está instalado,
+  // já que o fluxo de Device Auth Grant da app não depende do gcloud CLI.
+  const checkGKEClustersInKubeconfig = async () => {
+    try {
+      const resp = await fetch("/api/v1/clusters", {
+        headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+      });
+      if (resp.ok) {
+        const body = await resp.json();
+        const clusters: Array<{ cloud_provider?: string }> = body?.data || [];
+        setHasGKEClusters(clusters.some((c) => c.cloud_provider === "gke"));
+      }
+    } catch {
+      // Ignorar — detecção é apenas um gatilho extra para o aviso de auth
     }
   };
 
@@ -339,7 +360,10 @@ export function AutoDiscoverDialog({
   const totalErrors = aksStats.errors + eksStats.errors + gkeStats.errors;
 
   // Só mostrar aviso de auth GCP se gcloud estiver instalado mas não autenticado
-  const gcpNeedsAuth = gcpStatus && gcpStatus.has_gcloud && !gcpStatus.authenticated;
+  // Pede autenticação GCP quando o gcloud está instalado (fluxo antigo) OU quando
+  // já existem clusters GKE no kubeconfig local — nesse segundo caso o Device Auth
+  // Grant da app resolve sem precisar do gcloud CLI instalado.
+  const gcpNeedsAuth = gcpStatus && !gcpStatus.authenticated && (gcpStatus.has_gcloud || hasGKEClusters);
   const gcpLoginInProgress = gcpPolling && gcpLoginSession;
 
   return (
@@ -393,6 +417,7 @@ export function AutoDiscoverDialog({
                       </Button>
                       <Loader2 className="h-4 w-4 animate-spin text-yellow-600" />
                     </div>
+                    <CloudAccountHintField provider="gcp" />
                   </div>
                 ) : (
                   <div className="flex items-center justify-between gap-3 flex-wrap">
