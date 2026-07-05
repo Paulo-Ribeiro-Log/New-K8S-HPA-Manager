@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
+import { CloudAccountHintField } from "@/components/CloudAccountHintField";
 import type { AwsSsoState } from "@/hooks/useAwsSsoAuth";
 
 interface Props {
@@ -170,6 +171,8 @@ export function AwsSsoLoginDialog({ state, onRetryAfterConfig, onClose }: Props)
                 </p>
               </div>
             )}
+
+            <CloudAccountHintField provider="aws" />
 
             {state.polling && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">

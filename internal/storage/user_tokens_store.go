@@ -19,30 +19,30 @@ func NewUserTokensStore(client *SQLiteClient) *UserTokensStore {
 
 // UserTokens representa tokens de um usuário
 type UserTokens struct {
-	UserEmail            string            `json:"user_email"`
-	GeminiAPIKey         string            `json:"gemini_api_key,omitempty"`
-	GeminiModel          string            `json:"gemini_model,omitempty"`
-	GeminiAuthMode       string            `json:"gemini_auth_mode,omitempty"`       // "apikey" ou "vertex"
-	GeminiVertexProject  string            `json:"gemini_vertex_project,omitempty"`  // projeto GCP para Vertex AI
+	UserEmail                string            `json:"user_email"`
+	GeminiAPIKey             string            `json:"gemini_api_key,omitempty"`
+	GeminiModel              string            `json:"gemini_model,omitempty"`
+	GeminiAuthMode           string            `json:"gemini_auth_mode,omitempty"`            // "apikey" ou "vertex"
+	GeminiVertexProject      string            `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
 	GeminiVertexLocation     string            `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
 	GeminiServiceAccountJSON string            `json:"gemini_service_account_json,omitempty"` // JSON do service account (sem gcloud)
-	GeminiRefreshToken       string            `json:"gemini_refresh_token,omitempty"`         // OAuth refresh token (Device Auth flow)
-	GeminiWifLoginURL        string            `json:"gemini_wif_login_url,omitempty"`         // URL de login SSO corporativo (WIF)
+	GeminiRefreshToken       string            `json:"gemini_refresh_token,omitempty"`        // OAuth refresh token (Device Auth flow)
+	GeminiWifLoginURL        string            `json:"gemini_wif_login_url,omitempty"`        // URL de login SSO corporativo (WIF)
 	OpenAIAPIKey             string            `json:"openai_api_key,omitempty"`
-	OpenAIModel         string            `json:"openai_model,omitempty"`
-	ClaudeAPIKey        string            `json:"claude_api_key,omitempty"`
-	ClaudeModel         string            `json:"claude_model,omitempty"`
-	CopilotAPIKey       string            `json:"copilot_api_key,omitempty"`
-	CopilotEndpoint     string            `json:"copilot_endpoint,omitempty"`
-	CopilotDeployment   string            `json:"copilot_deployment,omitempty"`
-	OllamaModel         string            `json:"ollama_model,omitempty"`
-	PreferredProvider   string            `json:"preferred_provider"`
-	DynatraceURL        string            `json:"dynatrace_url,omitempty"`
-	DynatraceToken      string            `json:"dynatrace_token,omitempty"`
-	DynatraceTagFilter  string            `json:"dynatrace_tag_filter,omitempty"` // filtro de tag: mostrar apenas problems com essa tag
-	Metadata            map[string]string `json:"metadata,omitempty"`
-	UpdatedAt           time.Time         `json:"updated_at"`
-	CreatedAt           time.Time         `json:"created_at"`
+	OpenAIModel              string            `json:"openai_model,omitempty"`
+	ClaudeAPIKey             string            `json:"claude_api_key,omitempty"`
+	ClaudeModel              string            `json:"claude_model,omitempty"`
+	CopilotAPIKey            string            `json:"copilot_api_key,omitempty"`
+	CopilotEndpoint          string            `json:"copilot_endpoint,omitempty"`
+	CopilotDeployment        string            `json:"copilot_deployment,omitempty"`
+	OllamaModel              string            `json:"ollama_model,omitempty"`
+	PreferredProvider        string            `json:"preferred_provider"`
+	DynatraceURL             string            `json:"dynatrace_url,omitempty"`
+	DynatraceToken           string            `json:"dynatrace_token,omitempty"`
+	DynatraceTagFilter       string            `json:"dynatrace_tag_filter,omitempty"` // filtro de tag: mostrar apenas problems com essa tag
+	Metadata                 map[string]string `json:"metadata,omitempty"`
+	UpdatedAt                time.Time         `json:"updated_at"`
+	CreatedAt                time.Time         `json:"created_at"`
 }
 
 // CreateTable cria tabela de tokens de usuários
@@ -356,6 +356,59 @@ func (s *UserTokensStore) SaveGitHubEditorProfiles(email string, profiles []GitH
 func (s *UserTokensStore) ensureGitHubEditorProfilesColumn() error {
 	_, err := s.client.db.Exec(
 		`ALTER TABLE user_ai_tokens ADD COLUMN github_editor_profiles TEXT`)
+	// "duplicate column name" é esperado se coluna já existe — ignorar
+	return err
+}
+
+// ── Cloud Account Hints ───────────────────────────────────────────────────────
+
+// CloudAccountHints guarda, por usuário, qual e-mail lembrar de usar ao autenticar
+// em cada provider via Device Auth Grant (GCP/AWS). Puramente informativo — o app
+// não tem como forçar qual conta é escolhida na tela de login externa.
+type CloudAccountHints struct {
+	GCPEmail string `json:"gcp_email,omitempty"`
+	AWSEmail string `json:"aws_email,omitempty"`
+}
+
+// GetCloudAccountHints retorna os hints de conta salvos para o usuário.
+func (s *UserTokensStore) GetCloudAccountHints(email string) (CloudAccountHints, error) {
+	_ = s.ensureCloudAccountHintsColumn()
+	row := s.client.db.QueryRow(
+		`SELECT COALESCE(cloud_account_hints, '{}') FROM user_ai_tokens WHERE user_email = ?`, email)
+	var raw string
+	if err := row.Scan(&raw); err != nil {
+		return CloudAccountHints{}, nil // usuário ainda não tem linha
+	}
+	var hints CloudAccountHints
+	if err := json.Unmarshal([]byte(raw), &hints); err != nil {
+		return CloudAccountHints{}, nil
+	}
+	return hints, nil
+}
+
+// SaveCloudAccountHints persiste os hints de conta (upsert por email).
+func (s *UserTokensStore) SaveCloudAccountHints(email string, hints CloudAccountHints) error {
+	if email == "" {
+		return fmt.Errorf("email é obrigatório")
+	}
+	_ = s.ensureCloudAccountHintsColumn()
+	raw, err := json.Marshal(hints)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.db.Exec(`
+		INSERT INTO user_ai_tokens (user_email, cloud_account_hints, preferred_provider, updated_at)
+		VALUES (?, ?, 'ollama', CURRENT_TIMESTAMP)
+		ON CONFLICT(user_email) DO UPDATE SET
+			cloud_account_hints = excluded.cloud_account_hints,
+			updated_at = excluded.updated_at
+	`, email, string(raw))
+	return err
+}
+
+func (s *UserTokensStore) ensureCloudAccountHintsColumn() error {
+	_, err := s.client.db.Exec(
+		`ALTER TABLE user_ai_tokens ADD COLUMN cloud_account_hints TEXT`)
 	// "duplicate column name" é esperado se coluna já existe — ignorar
 	return err
 }

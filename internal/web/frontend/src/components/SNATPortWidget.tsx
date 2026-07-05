@@ -5,6 +5,7 @@ import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote, Tre
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { CloudAccountHintField } from "@/components/CloudAccountHintField";
 import {
   LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
@@ -494,6 +495,9 @@ export function SNATPortWidget({ cluster }: Props) {
                       Aguardando confirmação...
                     </div>
                   )}
+                  <div className="flex justify-center">
+                    <CloudAccountHintField provider="gcp" />
+                  </div>
                 </div>
               )}
             </div>
