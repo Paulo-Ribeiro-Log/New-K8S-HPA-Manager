@@ -1625,6 +1625,7 @@ export interface RunLatencyTestRequest {
   url: string;
   requests?: number;   // default 20, teto 200 (aplicado no backend)
   timeout_ms?: number; // default 3000, teto 10000 (aplicado no backend)
+  protocol?: 'http' | 'https' | 'icmp'; // default "http" (aplicado no backend), Fase 6.1
 }
 
 export interface RunLatencyTestResponse {

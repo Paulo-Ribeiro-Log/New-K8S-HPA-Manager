@@ -6,6 +6,8 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,8 +29,13 @@ import (
 )
 
 const (
-	// latencyTestPodImage é pequena e já traz curl — evita instalar nada no pod efêmero.
-	latencyTestPodImage = "curlimages/curl:8.10.1"
+	// latencyTestPodImage precisa de ping+curl (netshoot é a imagem padrão de troubleshooting
+	// de rede em K8s — traz ping/curl/dig/tcpdump). Tag FIXADA de propósito (nunca `latest`) —
+	// validar se ainda é a mais recente/disponível no registry antes de confiar em produção; não
+	// foi possível confirmar isso deste ambiente (sem acesso à internet/registry ao implementar).
+	latencyTestPodImage = "nicolaka/netshoot:v0.12"
+	// latencyTestPodContainer é o nome do container dentro do pod (usado nas chamadas de exec).
+	latencyTestPodContainer = "netshoot"
 	// latencyTestPodActiveDeadlineSec é o cinto de segurança: o K8s mata o pod sozinho mesmo se
 	// o processo do servidor morrer no meio do teste, sem depender só do cleanup() explícito.
 	latencyTestPodActiveDeadlineSec int64 = 300
@@ -42,6 +49,19 @@ const (
 	latencyTestMaxTimeoutMs     = 10000
 	latencyTestDefaultTimeoutMs = 3000
 )
+
+// Protocolos suportados pelo probe (Fase 6.1). "http"/"https" usam curl; "icmp" usa ping.
+const (
+	latencyProtocolHTTP  = "http"
+	latencyProtocolHTTPS = "https"
+	latencyProtocolICMP  = "icmp"
+)
+
+var latencyValidProtocols = map[string]bool{
+	latencyProtocolHTTP:  true,
+	latencyProtocolHTTPS: true,
+	latencyProtocolICMP:  true,
+}
 
 // LatencyTestStats agrega estatísticas sobre as amostras de latência coletadas num teste.
 type LatencyTestStats struct {
@@ -86,7 +106,7 @@ func createTestPod(ctx context.Context, clientset kubernetes.Interface, namespac
 			ActiveDeadlineSeconds: &activeDeadline,
 			Containers: []corev1.Container{
 				{
-					Name:    "curl",
+					Name:    latencyTestPodContainer,
 					Image:   latencyTestPodImage,
 					Command: []string{"sleep", "300"},
 					Resources: corev1.ResourceRequirements{
@@ -143,11 +163,22 @@ func waitPodRunning(ctx context.Context, clientset kubernetes.Interface, namespa
 	return fmt.Errorf("timeout esperando pod de teste ficar pronto (%s)", timeout)
 }
 
-// runLatencyProbe roda `count` requisições HTTP via curl dentro do pod de teste num ÚNICO exec
-// (não um exec por requisição — custaria uma chamada SPDY por amostra) e retorna as latências
-// medidas em milissegundos, na ordem em que completaram. Linhas que o curl não conseguiu medir
-// (timeout/erro de conexão) contam pra `errorCount` e não entram em `samples`.
+// runLatencyProbe roda `count` amostras dentro do pod de teste num ÚNICO exec (não um exec por
+// amostra — custaria uma chamada SPDY cada) e retorna as latências medidas em milissegundos.
+// Protocol-aware (Fase 6.1): "http"/"https" usam curl (`target` é a URL completa com schema);
+// "icmp" usa ping (`target` é um host puro, sem schema/path).
 func runLatencyProbe(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
+	namespace, podName, protocol, target string, count, timeoutMs int) (samples []float64, errorCount int, err error) {
+
+	if protocol == latencyProtocolICMP {
+		return runICMPProbe(ctx, clientset, restConfig, namespace, podName, target, count, timeoutMs)
+	}
+	return runHTTPProbe(ctx, clientset, restConfig, namespace, podName, target, count, timeoutMs)
+}
+
+// runHTTPProbe mede `count` requisições HTTP/HTTPS via curl. Linhas que o curl não conseguiu
+// medir (timeout/erro de conexão) contam pra `errorCount` e não entram em `samples`.
+func runHTTPProbe(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
 	namespace, podName, url string, count, timeoutMs int) (samples []float64, errorCount int, err error) {
 
 	timeoutSec := float64(timeoutMs) / 1000.0
@@ -156,7 +187,7 @@ func runLatencyProbe(ctx context.Context, clientset kubernetes.Interface, restCo
 		count, timeoutSec, url,
 	)
 
-	stdout, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, "curl", []string{"sh", "-c", script})
+	stdout, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, latencyTestPodContainer, []string{"sh", "-c", script})
 	if err != nil {
 		return nil, 0, fmt.Errorf("falha ao executar probe de latência: %w", err)
 	}
@@ -175,6 +206,71 @@ func runLatencyProbe(ctx context.Context, clientset kubernetes.Interface, restCo
 	}
 
 	return samples, errorCount, nil
+}
+
+// icmpTimeRegex extrai o valor de "time=X ms" (ou "time=X.Y ms") de cada linha de resposta do
+// ping — formato comum a iputils e BusyBox ping.
+var icmpTimeRegex = regexp.MustCompile(`time=([0-9.]+)\s*ms`)
+
+// runICMPProbe mede `count` pacotes ICMP via ping — UMA única invocação (`-c count`), o próprio
+// ping já dispara todos os pacotes sozinho, ao contrário do curl que precisa do for-loop do shell.
+//
+// `-i 0.2` (200ms entre pacotes) acelera o teste sem exigir privilégio — intervalos menores que
+// 200ms são restritos a root em iputils/BusyBox ping, 200ms exatos não são.
+//
+// `; true` no fim força o shell a sempre sair 0: `ping` sozinho sai com código 1 quando TODOS os
+// pacotes se perdem, o que faria o exec inteiro falhar e descartar o stdout — igual ao motivo do
+// `|| echo ERR` no probe HTTP, aqui só descrito uma vez pra não repetir em outro protocolo depois.
+//
+// Risco conhecido, não contornável de forma genérica (ver LATENCY-METRICS-PLAN.md Fase 6.1):
+// pod sem CAP_NET_RAW pode não conseguir abrir socket ICMP raw, dependendo do sysctl
+// `net.ipv4.ping_group_range` do NÓ (não pedimos a capability aqui de propósito — clusters com
+// Pod Security "restricted" rejeitam qualquer capability adicionada, e preferimos falhar com uma
+// mensagem clara a arriscar quebrar a criação do pod). Se o ping falhar por permissão, o stderr
+// real (capturado por `execCmdInPod`) aparece na mensagem de erro devolvida ao usuário.
+func runICMPProbe(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
+	namespace, podName, host string, count, timeoutMs int) (samples []float64, errorCount int, err error) {
+
+	timeoutSec := int(math.Ceil(float64(timeoutMs) / 1000.0))
+	if timeoutSec < 1 {
+		timeoutSec = 1
+	}
+	script := fmt.Sprintf(`ping -c %d -W %d -i 0.2 %q; true`, count, timeoutSec, host)
+
+	stdout, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, latencyTestPodContainer, []string{"sh", "-c", script})
+	if err != nil {
+		return nil, 0, fmt.Errorf("falha ao executar ping: %w", err)
+	}
+
+	for _, m := range icmpTimeRegex.FindAllStringSubmatch(stdout, -1) {
+		v, parseErr := strconv.ParseFloat(m[1], 64)
+		if parseErr != nil {
+			continue
+		}
+		samples = append(samples, v)
+	}
+	errorCount = count - len(samples)
+	if errorCount < 0 {
+		errorCount = 0
+	}
+
+	return samples, errorCount, nil
+}
+
+// normalizeICMPTarget aceita tanto um host puro quanto uma URL completa (ex: usuário trocou de
+// HTTP pra ICMP sem limpar o campo) e devolve só o host, sem schema/path — defesa em
+// profundidade, o frontend já deveria mandar limpo. Se não parsear como URL com schema, assume
+// que já é um host puro e devolve como veio (só trim).
+func normalizeICMPTarget(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return raw
+	}
+	return u.Hostname()
 }
 
 // computeLatencyStats calcula min/avg/mediana/p95/p99/max sobre as amostras (ms). Amostras vazias
@@ -309,6 +405,10 @@ type RunLatencyTestRequest struct {
 	URL       string `json:"url"`
 	Requests  int    `json:"requests"`
 	TimeoutMs int    `json:"timeout_ms"`
+	// Protocol: "http" | "https" | "icmp" (default "http", Fase 6.1). Pra "icmp", URL deve ser um
+	// host puro (sem schema/path) — normalizado em normalizeICMPTarget se vier com schema mesmo
+	// assim (defesa em profundidade, o frontend já deveria enviar limpo).
+	Protocol string `json:"protocol"`
 }
 
 // Run inicia o teste de latência e retorna um session_id para streaming SSE.
@@ -326,6 +426,18 @@ func (h *LatencyTestHandler) Run(c *gin.Context) {
 	if req.Cluster == "" || req.Namespace == "" || req.URL == "" {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace e url são obrigatórios"))
 		return
+	}
+
+	req.Protocol = strings.ToLower(strings.TrimSpace(req.Protocol))
+	if req.Protocol == "" {
+		req.Protocol = latencyProtocolHTTP
+	}
+	if !latencyValidProtocols[req.Protocol] {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_PROTOCOL", "protocol deve ser 'http', 'https' ou 'icmp'"))
+		return
+	}
+	if req.Protocol == latencyProtocolICMP {
+		req.URL = normalizeICMPTarget(req.URL)
 	}
 
 	if req.Requests <= 0 {
@@ -494,8 +606,12 @@ func (h *LatencyTestHandler) runTest(ctx context.Context, sessionID string, req 
 		return
 	}
 
-	send("probe_run", "in_progress", fmt.Sprintf("Executando %d requisições...", req.Requests), 0.5)
-	samples, errorCount, err := runLatencyProbe(ctx, clientset, restConfig, req.Namespace, podName, req.URL, req.Requests, req.TimeoutMs)
+	probeNoun := "requisições"
+	if req.Protocol == latencyProtocolICMP {
+		probeNoun = "pacotes ICMP"
+	}
+	send("probe_run", "in_progress", fmt.Sprintf("Executando %d %s...", req.Requests, probeNoun), 0.5)
+	samples, errorCount, err := runLatencyProbe(ctx, clientset, restConfig, req.Namespace, podName, req.Protocol, req.URL, req.Requests, req.TimeoutMs)
 	if err != nil {
 		fail("falha ao executar probe de latência", err)
 		return
@@ -521,7 +637,7 @@ func (h *LatencyTestHandler) runTest(ctx context.Context, sessionID string, req 
 		ID:        sessionID,
 		Type:      "complete",
 		Phase:     "completed",
-		Message:   fmt.Sprintf("Teste concluído: %d/%d requisições bem-sucedidas", len(samples), req.Requests),
+		Message:   fmt.Sprintf("Teste concluído: %d de %d %s com sucesso", len(samples), req.Requests, probeNoun),
 		Progress:  1.0,
 		Timestamp: time.Now(),
 		Cluster:   req.Cluster,

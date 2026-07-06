@@ -245,20 +245,119 @@ Não testado contra Prometheus/Dynatrace reais (sem VPN/credenciais neste ambien
 
 ---
 
-## Fase 6 (opcional/depois) — Aba fleet-wide / SLO tracking
+## Fase 6 (opcional/depois) — Multi-protocolo (ICMP/HTTP/HTTPS), alvos multi-cloud e topologia visual
 
-Só entrar nessa fase depois das Fases 1-5 validadas em produção — é a parte "descoberta de
-problema" (visão agregada "pior P95 de toda a frota"), não "confirmação pontual" (que já é resolvida
-pelo teste ativo das Fases 1-4).
+Só entrar nessa fase depois das Fases 1-5 validadas em produção. Reescrita depois de discutir com o
+usuário duas ideias novas: (1) suportar ping ICMP além de HTTP/HTTPS, com alvos multi-região tipo
+`gcping.com` (GCP) e equivalentes de Azure/AWS; (2) desenhar o resultado como um grafo de topologia,
+igual ao já existente na aba Service Mesh (Cytoscape.js, cor por severidade) — em vez da tabela
+simples "pior P95 da frota" que estava planejada antes. A tabela por si só não respondia à pergunta
+"qual é o caminho de rede e onde ele está lento", só "quais workloads estão lentos".
 
-- [ ] `internal/web/frontend/src/components/LatencyTab.tsx` ← CRIAR
-- [ ] Entry em `ToolsMenu.tsx` (`toolsTabs` array, mesmo padrão de `dynatrace`/`finops`)
-- [ ] Case em `Index.tsx` `renderTabContent()` (import + `ErrorBoundary` wrapper, mesmo padrão)
-- [ ] Backend: `GET /api/v1/latency/fleet-scan?namespace=&threshold_ms=` — varre workloads
-  (paralelo, semáforo, como `access_check_scan.go` faz para clusters) retornando os que ultrapassam
-  o threshold de P95/P99 configurado, usando os dados históricos DT/Prometheus da Fase 5 (não dispara
-  testes ativos em massa — isso seria abusivo, é leitura de série histórica)
-- [ ] Atualizar `CLAUDE.md` (linha do `ToolsMenu`) e este arquivo com o resultado
+### 6.1 — Protocolo selecionável no probe (ICMP/HTTP/HTTPS) ✅ CONCLUÍDA (ICMP não validado)
+
+**Arquivo:** `internal/web/handlers/latency_test_tool.go` ← MODIFICADO
+
+- [x] Imagem do pod efêmero trocada de `curlimages/curl` para `nicolaka/netshoot:v0.12` (tag
+  fixada de propósito, não `latest`) — **tag não confirmada contra o registry real** neste
+  ambiente (sem acesso à internet), validar/atualizar antes de confiar em produção
+- [x] `RunLatencyTestRequest.Protocol string` (`"http"` | `"https"` | `"icmp"`, default `"http"`),
+  validado em `Run` (`latencyValidProtocols`, 400 se valor desconhecido)
+- [x] `runLatencyProbe` virou dispatcher protocol-aware, dividido em `runHTTPProbe` (lógica
+  antiga, sem mudança) e `runICMPProbe` (novo):
+  - ICMP: `ping -c <count> -W <timeoutSec> -i 0.2 <host>; true` — **uma única invocação** (o
+    `ping` já faz N pings sozinho); `-i 0.2` (200ms entre pacotes, o mínimo permitido sem
+    privilégio) acelera o teste; `; true` força o shell a sair 0 mesmo com 100% de perda, senão
+    `execCmdInPod` descartaria o stdout inteiro (mesmo motivo do `|| echo ERR` no probe HTTP)
+  - Regex `time=([0-9.]+)\s*ms` extrai cada amostra da saída do ping
+  - `normalizeICMPTarget()` — defesa em profundidade: se vier uma URL completa mesmo em modo
+    ICMP, extrai só o host
+- [x] **Risco real, documentado no código e não contornável de forma genérica**: pod sem
+  privilégios não abre socket ICMP raw sem `CAP_NET_RAW`, e clusters com Pod Security
+  `restricted` proíbem explicitamente qualquer capability adicionada. Decisão: **não pedir a
+  capability** (evita quebrar a criação do pod em clusters restritos) — se o `ping` falhar por
+  permissão, o stderr real (via `execCmdInPod`) aparece na mensagem de erro devolvida ao usuário,
+  nunca cai silenciosamente pra outro protocolo
+- [x] Frontend (`LatencyTestTab.tsx`): `Select` de Protocolo (HTTP/HTTPS/ICMP); campo de alvo troca
+  label ("URL alvo" ↔ "Host alvo") e placeholder conforme o protocolo; troca de protocolo ajusta o
+  valor já digitado (`handleProtocolChange` — soma/remove schema); atalho de Service respeita o
+  protocolo atual ao pré-preencher; mensagens de progresso, resultado e eixo do gráfico usam
+  "pacotes"/"pacote" em vez de "requisições"/"requisição" quando o protocolo é ICMP; nova coluna
+  "Protocolo" na tabela de histórico da sessão
+
+`go build ./...`, `go vet ./...`, `gofmt -l` e `tsc --noEmit` limpos. `./rebuild-web.sh -b` ok,
+servidor sobe e responde 200.
+
+**Não testado contra cluster real** (sem VPN/cluster neste ambiente) — dois pontos específicos
+merecem atenção na primeira execução real: (1) se a tag `netshoot:v0.12` existe e faz pull sem
+erro; (2) se o `ping` funciona sem `CAP_NET_RAW` no(s) cluster(s) da organização (depende do
+sysctl `net.ipv4.ping_group_range` de cada nó — comum em GKE/EKS/AKS permitir por padrão, mas não
+confirmado aqui).
+
+### 6.2 — Alvos multi-cloud (GCP/AWS/Azure), estilo `gcping.com`
+
+**Arquivo:** `internal/web/handlers/latency_cloud_targets.go` ← CRIAR
+
+- [ ] Lista curada e pequena de endpoints por provider/região — **só as regiões onde a
+  organização realmente tem cluster** (derivar de `loadClusterConfig()`/EKS/GKE configs, não uma
+  lista mundial exaustiva de manter)
+- [ ] **Hostnames reais precisam ser validados antes de codar** — não confirmamos nenhum a partir
+  deste ambiente (sem acesso à internet aqui). Candidatos a pesquisar/validar quando for
+  implementar:
+  - GCP: `gcping.com` é open-source (github.com/GoogleCloudPlatform/gcping) — os endpoints reais
+    por região estão no próprio repo, não inventar
+  - AWS: não existe site oficial equivalente; técnica comum da comunidade é usar
+    `s3.<região>.amazonaws.com` (ou `dynamodb.<região>.amazonaws.com`) como alvo HTTP, já que todo
+    account tem acesso de leitura anônima a esses endpoints
+  - Azure: `azurespeed.com` é uma ferramenta de terceiro (não oficial da Microsoft) — confirmar se
+    ainda está no ar e se o endpoint por região é público/estável antes de depender dele
+- [ ] Endpoint: `GET /api/v1/latency-test/cloud-targets` — retorna a lista curada (provider,
+  região, host, protocolo sugerido) pro frontend popular um seletor "Alvo rápido: região de
+  nuvem" (mesmo padrão do seletor de Service já existente, só que fixo em vez de vir de uma API do
+  cluster)
+
+### 6.3 — Persistência leve dos resultados (necessária pro grafo ter o que mostrar)
+
+**Arquivo:** `internal/storage/latency_test_history_store.go` ← CRIAR
+
+- [ ] SQLite (`~/.k8s-hpa-manager/latency_test_history.db`), mesmo padrão de
+  `snat_history_store.go`: tabela com `cluster, namespace, target, protocol, p95_ms, p99_ms,
+  error_count, total_requests, tested_at, tested_by`
+- [ ] Retenção mais curta que o SNAT (30 dias, não 90 — dado mais efêmero/diagnóstico, não
+  histórico de capacidade)
+- [ ] `LatencyTestHandler.logHistory` grava aqui TAMBÉM (dual-write) — `HistoryTracker` continua
+  sendo o audit trail genérico (JSON não-estruturado), esta tabela nova é a fonte estruturada e
+  consultável que alimenta o grafo da 6.4
+- [ ] `GetRecent(limit int) ([]LatencyTestRecord, error)` — usado pelo endpoint de topologia
+
+### 6.4 — Grafo de topologia (reaproveitando o motor do Service Mesh)
+
+**Arquivo:** `internal/web/frontend/src/components/LatencyTopologyGraph.tsx` ← CRIAR
+**Arquivo:** `internal/web/handlers/latency_test_tool.go` ← MODIFICAR (novo endpoint)
+
+- [ ] `GET /api/v1/latency-test/topology` — monta nós (clusters + alvos de nuvem já testados) e
+  arestas (resultado mais recente de cada par cluster→alvo, via `latency_test_history_store.go`)
+- [ ] Frontend: **reaproveitar o Cytoscape.js já configurado em `ServiceMeshGraph.tsx`** — mesma
+  lib, mesmo padrão de `style` function pra cor da aresta por severidade (troca só o critério:
+  `errorRate` vira faixas de latência em ms, thresholds configuráveis — sugestão inicial: verde
+  <100ms, amarelo 100-300ms, vermelho >300ms, sujeito a ajuste depois de ver dado real)
+  - Nós: cluster (ícone por cloud provider — já existe o badge AKS/EKS/GKE em outro lugar da UI,
+    reaproveitar o mesmo mapeamento de ícone/cor) e alvos de nuvem testados (ícone de "região",
+    agrupados por provider)
+  - Arestas: espessura ou cor pelo P95 mais recente; tooltip com P95/P99/protocolo/quando foi
+    testado
+  - Sem teste rodado ainda pra um par cluster→alvo = sem aresta (não desenhar aresta cinza
+    "desconhecido" por padrão — polui o grafo; oferecer toggle "mostrar não testados" se fizer
+    sentido depois de ver o grafo real)
+- [ ] Nova aba/seção dentro de `LatencyTestTab.tsx` (não uma ferramenta separada no `ToolsMenu`) —
+  toggle entre "Teste" (formulário atual, Fases 1-5) e "Topologia" (grafo agregado desta fase)
+
+### Ordem de implementação sugerida
+
+6.1 (protocolo) é independente e menor — dá pra fazer sozinha. 6.2 (alvos cloud) depende de 6.1
+(sem protocolo ICMP, teste multi-cloud ainda funciona só em HTTP/HTTPS, então não é bloqueante,
+mas fica mais completo junto). 6.3 e 6.4 são inseparáveis (o grafo não existe sem os dados
+persistidos). Pode-se implementar 6.1+6.2 numa sessão e 6.3+6.4 em outra.
 
 ---
 

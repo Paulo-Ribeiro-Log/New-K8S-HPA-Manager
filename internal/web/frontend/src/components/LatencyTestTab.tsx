@@ -32,6 +32,7 @@ interface HistoryEntry {
   cluster: string;
   namespace: string;
   url: string;
+  protocol: "http" | "https" | "icmp";
   stats: LatencyTestStats;
   errorCount: number;
   totalRequests: number;
@@ -58,6 +59,7 @@ export default function LatencyTestTab() {
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
   const [selectedService, setSelectedService] = useState("");
+  const [protocol, setProtocol] = useState<"http" | "https" | "icmp">("http");
   const [url, setUrl] = useState("");
   const [requests, setRequests] = useState(20);
   const [timeoutMs, setTimeoutMs] = useState(3000);
@@ -69,6 +71,7 @@ export default function LatencyTestTab() {
   const [result, setResult] = useState<LatencyTestResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [testedProtocol, setTestedProtocol] = useState<"http" | "https" | "icmp">("http");
   const esRef = useRef<EventSource | null>(null);
 
   const { data: namespaces = [] } = useQuery({
@@ -88,10 +91,33 @@ export default function LatencyTestTab() {
   const handleServiceChange = (name: string) => {
     setSelectedService(name);
     const svc = services.find((s) => s.name === name);
-    if (svc) {
-      const port = firstServicePort(svc.ports);
-      const portSuffix = port ? `:${port}` : "";
-      setUrl(`http://${svc.name}.${svc.namespace}.svc.cluster.local${portSuffix}`);
+    if (!svc) return;
+    const host = `${svc.name}.${svc.namespace}.svc.cluster.local`;
+    if (protocol === "icmp") {
+      setUrl(host);
+      return;
+    }
+    const port = firstServicePort(svc.ports);
+    const portSuffix = port ? `:${port}` : "";
+    setUrl(`${protocol}://${host}${portSuffix}`);
+  };
+
+  // Trocar de protocolo ajusta o campo de alvo pra não deixar schema sobrando quando muda pra
+  // ICMP (host puro) nem faltando quando volta pra HTTP/HTTPS.
+  const handleProtocolChange = (next: "http" | "https" | "icmp") => {
+    setProtocol(next);
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    if (next === "icmp") {
+      try {
+        setUrl(new URL(trimmed).hostname || trimmed);
+      } catch {
+        /* já é host puro, mantém como está */
+      }
+      return;
+    }
+    if (!/^https?:\/\//i.test(trimmed)) {
+      setUrl(`${next}://${trimmed}`);
     }
   };
 
@@ -101,6 +127,7 @@ export default function LatencyTestTab() {
     setProgress(0);
     setPhaseMessage("Iniciando teste de latência...");
     setIsRunning(true);
+    setTestedProtocol(protocol);
     try {
       const { session_id } = await apiClient.runLatencyTest({
         cluster,
@@ -108,6 +135,7 @@ export default function LatencyTestTab() {
         url: url.trim(),
         requests,
         timeout_ms: timeoutMs,
+        protocol,
       });
       setSessionId(session_id);
     } catch (err) {
@@ -149,6 +177,7 @@ export default function LatencyTestTab() {
               cluster,
               namespace,
               url: url.trim(),
+              protocol: testedProtocol,
               stats: event.result!.stats,
               errorCount: event.result!.error_count,
               totalRequests: event.result!.total_requests,
@@ -237,10 +266,30 @@ export default function LatencyTestTab() {
           </Select>
         </div>
 
+        <div className="w-32">
+          <label className="text-xs text-muted-foreground block mb-1">Protocolo</label>
+          <Select value={protocol} onValueChange={handleProtocolChange}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="http">HTTP</SelectItem>
+              <SelectItem value="https">HTTPS</SelectItem>
+              <SelectItem value="icmp">ICMP (ping)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         <div className="min-w-[280px] flex-1">
-          <label className="text-xs text-muted-foreground block mb-1">URL alvo</label>
+          <label className="text-xs text-muted-foreground block mb-1">
+            {protocol === "icmp" ? "Host alvo" : "URL alvo"}
+          </label>
           <Input
-            placeholder="http://meu-service.meu-namespace.svc.cluster.local:8080/health"
+            placeholder={
+              protocol === "icmp"
+                ? "meu-service.meu-namespace.svc.cluster.local"
+                : "http://meu-service.meu-namespace.svc.cluster.local:8080/health"
+            }
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
@@ -327,8 +376,8 @@ export default function LatencyTestTab() {
             </div>
 
             <div className="text-sm text-muted-foreground">
-              {result.total_requests - result.error_count}/{result.total_requests} requisições
-              bem-sucedidas
+              {result.total_requests - result.error_count}/{result.total_requests}{" "}
+              {testedProtocol === "icmp" ? "pacotes" : "requisições"} com sucesso
               {result.error_count > 0 && (
                 <Badge variant="outline" className="ml-2 bg-red-500/10 text-red-500 border-red-500/30">
                   {result.error_count} erro(s)/timeout
@@ -361,9 +410,9 @@ export default function LatencyTestTab() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                    <XAxis dataKey="n" tick={{ fontSize: 11 }} label={{ value: "requisição", position: "insideBottom", offset: -2, fontSize: 11 }} />
+                    <XAxis dataKey="n" tick={{ fontSize: 11 }} label={{ value: testedProtocol === "icmp" ? "pacote" : "requisição", position: "insideBottom", offset: -2, fontSize: 11 }} />
                     <YAxis tick={{ fontSize: 11 }} label={{ value: "ms", angle: -90, position: "insideLeft", fontSize: 11 }} />
-                    <Tooltip formatter={(v: number) => [`${v}ms`, "latência"]} labelFormatter={(n) => `requisição ${n}`} />
+                    <Tooltip formatter={(v: number) => [`${v}ms`, "latência"]} labelFormatter={(n) => `${testedProtocol === "icmp" ? "pacote" : "requisição"} ${n}`} />
                     <Bar dataKey="ms" fill="hsl(var(--primary))" radius={[2, 2, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -381,8 +430,9 @@ export default function LatencyTestTab() {
               <thead>
                 <tr className="border-b border-border text-xs text-muted-foreground">
                   <th className="pb-2 font-medium">Hora</th>
+                  <th className="pb-2 font-medium">Protocolo</th>
                   <th className="pb-2 font-medium">Cluster/Namespace</th>
-                  <th className="pb-2 font-medium">URL</th>
+                  <th className="pb-2 font-medium">Alvo</th>
                   <th className="pb-2 font-medium">P95</th>
                   <th className="pb-2 font-medium">P99</th>
                   <th className="pb-2 font-medium">Erros</th>
@@ -394,6 +444,7 @@ export default function LatencyTestTab() {
                     <td className="py-1.5 pr-4 text-xs text-muted-foreground whitespace-nowrap">
                       {new Date(h.timestamp).toLocaleTimeString("pt-BR")}
                     </td>
+                    <td className="py-1.5 pr-4 text-xs uppercase">{h.protocol}</td>
                     <td className="py-1.5 pr-4 font-mono text-xs">{h.cluster}/{h.namespace}</td>
                     <td className="py-1.5 pr-4 font-mono text-xs truncate max-w-xs">{h.url}</td>
                     <td className="py-1.5 pr-4 font-mono text-xs">{h.stats.p95_ms.toFixed(1)}ms</td>
