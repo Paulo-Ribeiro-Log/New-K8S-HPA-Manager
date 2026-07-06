@@ -193,30 +193,55 @@ aqui e passou limpo.
 
 ---
 
-## Fase 5 (complementar) — Contexto histórico via Prometheus/Dynatrace
+## Fase 5 (complementar) — Contexto histórico via Prometheus/Dynatrace ✅ CONCLUÍDA (não validada)
 
-Mantido do plano original — mostrado **ao lado** do resultado do teste ativo (Fases 1-4), não
-substitui. Só implementar depois das Fases 1-4 estarem validadas.
+Mostrado **ao lado** do resultado do teste ativo (Fases 1-4), não substitui.
 
-**Descoberta da pesquisa anterior (ainda vale)**: já existe código de latência via Prometheus pronto
-e não utilizado — `internal/monitoring/prometheus/client.go` tem `GetP95Latency`/`GetP99Latency`/
-`GetRequestRate`/`GetErrorRate` (+ variantes `*History`) via `histogram_quantile`, só chamado por um
-coletor confirmadamente morto (`internal/monitoring/monitor.legacy`, não importado por nada fora de
-si mesmo). Do lado Dynatrace, `internal/dynatrace/metrics.go` já define os 4 percentis de latência
-(`builtin:service.response.time:percentile(50/90/95/99)`) em `serviceMetricDefs`, hoje só buscados
-no contexto de investigação de Problem (`GetEntityMetricsForProblem`).
+**Desvio consciente do que estava escrito aqui antes**: o item original dizia "portar
+`GetP95Latency`/... pro client ativo (`internal/monitoring/client/prometheus_client.go`)" —
+isso fazia sentido quando a feature ainda seria parte do dashboard do Monitoring V2. Depois do
+pivô pro teste ativo sob demanda, essa costura deixou de fazer sentido: o contexto histórico só
+precisa ser consultado UMA VEZ, junto do teste, não integrado ao motor de monitoramento contínuo.
+Em vez de portar o código, `internal/web/handlers/latency_history.go` (novo) importa
+`internal/monitoring/prometheus` **diretamente como biblioteca** (o pacote já compila e já é usado
+por `internal/monitoring/predictions`/`nodepoolpredictions` — não está morto, só não tinha nenhum
+consumidor de latência ativo) e chama `NewClient`/`GetP95Latency`/`GetP99Latency` como estão, sem
+copiar nada.
 
-- [ ] Portar `GetP95Latency`/`GetP99Latency`/`GetRequestRate`/`GetErrorRate` de
-  `internal/monitoring/prometheus/client.go` pro client ativo (`internal/monitoring/client/prometheus_client.go`)
-  — validar nome real da métrica Istio (`istio_request_duration_milliseconds_bucket`?) antes de
-  assumir, cluster já roda Istio/Kiali
-- [ ] `internal/dynatrace/latency_metrics.go` ← CRIAR — `GetWorkloadLatency(ctx, windowDays)`
-  reaproveitando `serviceMetricDefs`; validar se `response_p50..p99` (entidades `SERVICE`) aceita
-  `splitBy` direto por `k8s.workload.name` ou precisa de `ExtractK8sCorrelation` primeiro
-- [ ] No resultado do teste ativo (Fase 3), buscar em paralelo (best-effort, não bloqueia o teste)
-  o histórico P95/P99 do mesmo alvo via DT (primário) ou Prometheus (fallback) e exibir como
-  badge/linha de comparação — mesmo padrão `MetricsSource` (`"dynatrace"`/`"prometheus"`/`""`) já
-  validado no FinOps
+- [x] `internal/dynatrace/latency_metrics.go` ← CRIADO — `GetWorkloadLatency(ctx, windowDays)` e
+  `GetSingleWorkloadLatency(ctx, namespace, workload, windowDays)`, reaproveitando
+  `queryWorkloadBatch` (o mesmo helper privado que `GetAllWorkloadMetrics` do FinOps já usa) com
+  `builtin:service.response.time` (percentile 95/99) em vez de CPU/mem; conversão µs→ms via
+  `responseTimeUsToMs = 0.001` (mesmo fator de `serviceMetricDefs`)
+- [x] `internal/web/handlers/latency_history.go` ← CRIADO — `fetchHistoricalLatencyContext`
+  (DT primeiro, Prometheus como fallback, `discovery.GetPrometheusURL(cluster)` +
+  `promclient.NewClient` do pacote citado acima) e `guessServiceNameFromURL` (heurística: primeiro
+  label DNS do host da URL — ex: `http://minha-app.ns.svc.cluster.local:8080` → `minha-app`)
+- [x] `runTest` (`latency_test_tool.go`) dispara a busca histórica em goroutine própria logo no
+  início (contexto/timeout PRÓPRIOS de 15s, independentes do `ctx` cancelável do teste), e espera
+  no máximo 2s por ela antes de montar o resultado final — nunca atrasa o teste ativo além disso.
+  `LatencyTestResult.Historical LatencyHistoricalContext` (campo novo) carrega o resultado (ou
+  `MetricsSource: ""` se nada respondeu a tempo/existir dado)
+- [x] Frontend (`LatencyTestTab.tsx`) exibe uma linha "Contexto histórico" com badge DT (azul)
+  ou Prom (âmbar) + P95/P99 históricos, só quando `metrics_source` não é vazio — mesmo padrão de
+  cor já usado no FinOps
+
+**⚠️ Duas suposições NÃO validadas contra ambiente real (documentado no código também)**:
+1. `builtin:service.response.time` (DT) vive em entidades `SERVICE` — `GetWorkloadLatency` faz o
+   mesmo `splitBy("k8s.namespace.name","k8s.workload.name")` que já funciona pra CPU/mem
+   (entidades `CLOUD_APPLICATION`). Não confirmamos se `SERVICE` expõe essas dimensões da mesma
+   forma — se não expuser, a query simplesmente não acha nada (mapa vazio, sem erro), cai pro
+   fallback Prometheus.
+2. `guessServiceNameFromURL` é uma heurística (primeiro label DNS do host), não uma resolução real
+   contra o cluster — se o nome do Service K8s não bater com o primeiro label do host da URL (ex:
+   usuário testou via Ingress externo, não via DNS interno do Service), o contexto histórico
+   simplesmente não aparece (não é possível mostrar dado errado, só "sem dado").
+
+Em ambos os casos o design é seguro por construção (nunca mostra valor incorreto, só omite o
+badge) — mas o valor real da feature depende de validar isso contra Prometheus/DT de verdade.
+
+`go build ./...`, `go vet ./...`, `gofmt -l` e `tsc --noEmit` limpos. `./rebuild-web.sh -b` ok.
+Não testado contra Prometheus/Dynatrace reais (sem VPN/credenciais neste ambiente).
 
 ---
 

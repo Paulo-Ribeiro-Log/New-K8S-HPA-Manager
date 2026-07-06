@@ -336,6 +336,26 @@ export default function LatencyTestTab() {
               )}
             </div>
 
+            {result.historical.metrics_source && (
+              <div className="text-sm text-muted-foreground flex items-center gap-2 flex-wrap">
+                <span>Contexto histórico (últimos dias):</span>
+                <Badge
+                  variant="outline"
+                  className={
+                    result.historical.metrics_source === "dynatrace"
+                      ? "bg-blue-500/10 text-blue-500 border-blue-500/30"
+                      : "bg-amber-500/10 text-amber-500 border-amber-500/30"
+                  }
+                >
+                  {result.historical.metrics_source === "dynatrace" ? "DT" : "Prom"}
+                </Badge>
+                <span className="font-mono text-xs">
+                  P95 {result.historical.p95_ms?.toFixed(1) ?? "—"}ms · P99{" "}
+                  {result.historical.p99_ms?.toFixed(1) ?? "—"}ms
+                </span>
+              </div>
+            )}
+
             {chartData.length > 0 && (
               <div className="h-56 border border-border rounded-md p-2">
                 <ResponsiveContainer width="100%" height="100%">

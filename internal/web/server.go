@@ -906,7 +906,7 @@ func (s *Server) setupRoutes() {
 
 	// Teste de Latência sob demanda — cria pod efêmero + curl via exec pra medir latência real
 	// de uma aplicação no momento do teste (ver LATENCY-METRICS-PLAN.md)
-	latencyTestHandler := handlers.NewLatencyTestHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker)
+	latencyTestHandler := handlers.NewLatencyTestHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.aiTokensStore)
 	s.router.GET("/api/v1/latency-test/stream/:sessionId",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		latencyTestHandler.Stream)

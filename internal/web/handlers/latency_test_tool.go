@@ -22,6 +22,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
+	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/web/sse"
 )
 
@@ -58,6 +59,9 @@ type LatencyTestResult struct {
 	Stats         LatencyTestStats `json:"stats"`
 	ErrorCount    int              `json:"error_count"`
 	TotalRequests int              `json:"total_requests"`
+	// Historical é o contexto complementar via DT/Prometheus (Fase 5) — best-effort, nunca
+	// bloqueia o teste ativo. MetricsSource vazio quando nenhuma fonte teve dado.
+	Historical LatencyHistoricalContext `json:"historical"`
 }
 
 // createTestPod cria um pod efêmero de curta duração no namespace alvo pra rodar o probe de
@@ -225,15 +229,18 @@ type LatencyTestHandler struct {
 	kubeManager    *config.KubeConfigManager
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
-	cancelFuncs    sync.Map // sessionID -> context.CancelFunc
-	runningUsers   sync.Map // userEmail -> struct{} — "um teste por vez por usuário"
-	seenClusters   sync.Map // cluster -> struct{} — só varre órfãos onde este handler já rodou algo
+	dtTokenStore   *storage.UserTokensStore // contexto histórico complementar (Fase 5) — pode ser nil
+	cancelFuncs    sync.Map                 // sessionID -> context.CancelFunc
+	runningUsers   sync.Map                 // userEmail -> struct{} — "um teste por vez por usuário"
+	seenClusters   sync.Map                 // cluster -> struct{} — só varre órfãos onde este handler já rodou algo
 }
 
 // NewLatencyTestHandler cria o handler do teste de latência e inicia a varredura periódica de
-// pods órfãos em background (ver sweepOrphanPods).
-func NewLatencyTestHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker) *LatencyTestHandler {
-	h := &LatencyTestHandler{kubeManager: km, tracker: tracker, historyTracker: ht}
+// pods órfãos em background (ver sweepOrphanPods). `dtTokens` pode ser nil — nesse caso o
+// contexto histórico da Fase 5 cai direto pro fallback Prometheus (ou fica vazio, se nem
+// Prometheus responder).
+func NewLatencyTestHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker, dtTokens *storage.UserTokensStore) *LatencyTestHandler {
+	h := &LatencyTestHandler{kubeManager: km, tracker: tracker, historyTracker: ht, dtTokenStore: dtTokens}
 	go h.sweepOrphanPods()
 	return h
 }
@@ -451,6 +458,17 @@ func (h *LatencyTestHandler) runTest(ctx context.Context, sessionID string, req 
 
 	send("init", "started", "Iniciando teste de latência...", 0.05)
 
+	// Contexto histórico (Fase 5) roda em paralelo com o teste ativo inteiro — nunca deve
+	// atrasar o resultado principal. Contexto/timeout PRÓPRIOS (não o `ctx` do teste): mesmo se
+	// o usuário cancelar o teste ativo, deixamos essa busca best-effort terminar sozinha até o
+	// timeout dela (ou simplesmente descartamos o resultado, se o `runTest` já tiver retornado).
+	histCh := make(chan LatencyHistoricalContext, 1)
+	go func() {
+		histCtx, histCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer histCancel()
+		histCh <- h.fetchHistoricalLatencyContext(histCtx, req.Cluster, req.Namespace, req.URL)
+	}()
+
 	clientset, err := h.kubeManager.GetClient(req.Cluster)
 	if err != nil {
 		fail("falha ao conectar no cluster", err)
@@ -483,10 +501,19 @@ func (h *LatencyTestHandler) runTest(ctx context.Context, sessionID string, req 
 		return
 	}
 
+	// Espera o contexto histórico só até um teto curto — se ainda não voltou, segue sem ele
+	// (best-effort de verdade: o resultado do teste ativo nunca fica refém disso).
+	var historical LatencyHistoricalContext
+	select {
+	case historical = <-histCh:
+	case <-time.After(2 * time.Second):
+	}
+
 	result := LatencyTestResult{
 		Samples:       samples,
 		Stats:         computeLatencyStats(samples),
 		ErrorCount:    errorCount,
+		Historical:    historical,
 		TotalRequests: req.Requests,
 	}
 

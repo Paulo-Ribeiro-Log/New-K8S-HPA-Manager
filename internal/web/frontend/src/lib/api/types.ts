@@ -1640,11 +1640,20 @@ export interface LatencyTestStats {
   max_ms: number;
 }
 
+// Contexto histórico complementar (Fase 5) — nunca bloqueia o teste ativo. metrics_source vazio
+// quando nenhuma fonte (Dynatrace primário, Prometheus fallback) teve dado pro alvo.
+export interface LatencyHistoricalContext {
+  p95_ms?: number;
+  p99_ms?: number;
+  metrics_source: 'dynatrace' | 'prometheus' | '';
+}
+
 export interface LatencyTestResult {
   samples: number[]; // ms, na ordem em que as requisições rodaram
   stats: LatencyTestStats;
   error_count: number;
   total_requests: number;
+  historical: LatencyHistoricalContext;
 }
 
 export interface LatencyTestSSEEvent {
