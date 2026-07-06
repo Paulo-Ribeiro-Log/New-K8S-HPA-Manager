@@ -477,7 +477,18 @@ export default function LatencyTestTab() {
                     <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
                     <XAxis dataKey="n" tick={{ fontSize: 11 }} label={{ value: testedProtocol === "icmp" ? "pacote" : "requisição", position: "insideBottom", offset: -2, fontSize: 11 }} />
                     <YAxis tick={{ fontSize: 11 }} label={{ value: "ms", angle: -90, position: "insideLeft", fontSize: 11 }} />
-                    <Tooltip formatter={(v: number) => [`${v}ms`, "latência"]} labelFormatter={(n) => `${testedProtocol === "icmp" ? "pacote" : "requisição"} ${n}`} />
+                    <Tooltip
+                      formatter={(v: number) => [`${v}ms`, "latência"]}
+                      labelFormatter={(n) => `${testedProtocol === "icmp" ? "pacote" : "requisição"} ${n}`}
+                      contentStyle={{
+                        backgroundColor: "hsl(var(--popover))",
+                        border: "1px solid hsl(var(--border))",
+                        borderRadius: "8px",
+                      }}
+                      itemStyle={{ color: "hsl(var(--popover-foreground))" }}
+                      labelStyle={{ color: "hsl(var(--popover-foreground))" }}
+                      cursor={{ fill: "transparent" }}
+                    />
                     <Bar dataKey="ms" fill="hsl(var(--primary))" radius={[2, 2, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
