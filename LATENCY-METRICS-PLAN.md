@@ -327,19 +327,33 @@ dependência de terceiro, por isso só essa lista foi populada com confiança.
 servidor sobe e responde 200; endpoint `/latency-test/cloud-targets` registrado e acessível
 (não testado com auth válida neste ambiente — sem token JWT real pra exercitar via curl).
 
-### 6.3 — Persistência leve dos resultados (necessária pro grafo ter o que mostrar)
+### 6.3 — Persistência leve dos resultados (necessária pro grafo ter o que mostrar) ✅ CONCLUÍDA
 
-**Arquivo:** `internal/storage/latency_test_history_store.go` ← CRIAR
+**Arquivo:** `internal/storage/latency_test_history_store.go` ← CRIADO
+**Arquivo:** `internal/web/server.go` ← MODIFICADO (init do store + campo no `Server`)
+**Arquivo:** `internal/web/handlers/latency_test_tool.go` ← MODIFICADO (`LatencyTestHandler.testHistory` + dual-write em `logHistory`)
 
-- [ ] SQLite (`~/.k8s-hpa-manager/latency_test_history.db`), mesmo padrão de
-  `snat_history_store.go`: tabela com `cluster, namespace, target, protocol, p95_ms, p99_ms,
-  error_count, total_requests, tested_at, tested_by`
-- [ ] Retenção mais curta que o SNAT (30 dias, não 90 — dado mais efêmero/diagnóstico, não
-  histórico de capacidade)
-- [ ] `LatencyTestHandler.logHistory` grava aqui TAMBÉM (dual-write) — `HistoryTracker` continua
-  sendo o audit trail genérico (JSON não-estruturado), esta tabela nova é a fonte estruturada e
-  consultável que alimenta o grafo da 6.4
-- [ ] `GetRecent(limit int) ([]LatencyTestRecord, error)` — usado pelo endpoint de topologia
+- [x] SQLite (`~/.k8s-hpa-manager/latency_test_history.db`), mesmo padrão de
+  `snat_history_store.go` (WAL mode, `_busy_timeout=5000`, `MaxOpenConns(3)`): tabela com
+  `cluster, namespace, target, protocol, p95_ms, p99_ms, error_count, total_requests, tested_at,
+  tested_by`
+- [x] Retenção de 30 dias (não 90 como o SNAT — dado mais efêmero/diagnóstico). Diferença
+  proposital do padrão SNAT: `Save` aqui NUNCA deduplica por janela de tempo — cada teste é uma
+  ação explícita do usuário (botão "Executar Teste"), não um snapshot periódico automático, então
+  todo teste concluído vira um registro
+- [x] `LatencyTestHandler.logHistory` grava aqui TAMBÉM (dual-write, best-effort — erro de
+  persistência nunca afeta a resposta já enviada ao usuário) — só quando `result != nil` (teste
+  rodou até o fim; uma falha antes de gerar amostra nenhuma não tem P95/P99 pra registrar, o
+  `HistoryTracker` já cobre isso como auditoria). Os dois writes (`HistoryTracker` e
+  `LatencyTestHistoryStore`) agora são independentes um do outro — antes, `logHistory` inteiro
+  retornava cedo se `historyTracker` fosse nil, o que teria pulado o novo store também
+- [x] `GetRecent(limit int) ([]LatencyTestRecord, error)` — todos os clusters/alvos, mais
+  recentes primeiro; usado pelo endpoint de topologia da 6.4
+
+`go build ./...`, `go vet ./...`, `gofmt -l` limpos. `go test ./internal/storage/...` passa.
+Testado de verdade nesta sessão (não só compilação): subi o servidor
+(`./build/new-k8s-hpa web -f`) e confirmei `~/.k8s-hpa-manager/latency_test_history.db` sendo
+criado com sucesso, log "✅ Latency Test History Store inicializado", sem erros.
 
 ### 6.4 — Grafo de topologia (reaproveitando o motor do Service Mesh)
 

@@ -325,18 +325,19 @@ type LatencyTestHandler struct {
 	kubeManager    *config.KubeConfigManager
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
-	dtTokenStore   *storage.UserTokensStore // contexto histórico complementar (Fase 5) — pode ser nil
-	cancelFuncs    sync.Map                 // sessionID -> context.CancelFunc
-	runningUsers   sync.Map                 // userEmail -> struct{} — "um teste por vez por usuário"
-	seenClusters   sync.Map                 // cluster -> struct{} — só varre órfãos onde este handler já rodou algo
+	dtTokenStore   *storage.UserTokensStore         // contexto histórico complementar (Fase 5) — pode ser nil
+	testHistory    *storage.LatencyTestHistoryStore // fonte estruturada pro grafo de topologia (Fase 6.4) — pode ser nil
+	cancelFuncs    sync.Map                         // sessionID -> context.CancelFunc
+	runningUsers   sync.Map                         // userEmail -> struct{} — "um teste por vez por usuário"
+	seenClusters   sync.Map                         // cluster -> struct{} — só varre órfãos onde este handler já rodou algo
 }
 
 // NewLatencyTestHandler cria o handler do teste de latência e inicia a varredura periódica de
-// pods órfãos em background (ver sweepOrphanPods). `dtTokens` pode ser nil — nesse caso o
-// contexto histórico da Fase 5 cai direto pro fallback Prometheus (ou fica vazio, se nem
-// Prometheus responder).
-func NewLatencyTestHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker, dtTokens *storage.UserTokensStore) *LatencyTestHandler {
-	h := &LatencyTestHandler{kubeManager: km, tracker: tracker, historyTracker: ht, dtTokenStore: dtTokens}
+// pods órfãos em background (ver sweepOrphanPods). `dtTokens` e `testHistory` podem ser nil —
+// nesse caso o contexto histórico da Fase 5 cai direto pro fallback Prometheus (ou fica vazio) e
+// os resultados simplesmente não são persistidos pro grafo da Fase 6.4, respectivamente.
+func NewLatencyTestHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker, dtTokens *storage.UserTokensStore, testHistory *storage.LatencyTestHistoryStore) *LatencyTestHandler {
+	h := &LatencyTestHandler{kubeManager: km, tracker: tracker, historyTracker: ht, dtTokenStore: dtTokens, testHistory: testHistory}
 	go h.sweepOrphanPods()
 	return h
 }
@@ -649,10 +650,6 @@ func (h *LatencyTestHandler) runTest(ctx context.Context, sessionID string, req 
 // logHistory registra a execução no HistoryTracker — gera carga real no cluster alvo, vale
 // trilha de auditoria como outras operações sensíveis.
 func (h *LatencyTestHandler) logHistory(req RunLatencyTestRequest, userInfo history.UserInfo, start time.Time, result *LatencyTestResult, opErr error) {
-	if h.historyTracker == nil {
-		return
-	}
-
 	status := "success"
 	errMsg := ""
 	if opErr != nil {
@@ -660,25 +657,46 @@ func (h *LatencyTestHandler) logHistory(req RunLatencyTestRequest, userInfo hist
 		errMsg = opErr.Error()
 	}
 
-	after := map[string]interface{}{
-		"namespace": req.Namespace,
-		"url":       req.URL,
-		"requests":  req.Requests,
-	}
-	if result != nil {
-		after["stats"] = result.Stats
-		after["error_count"] = result.ErrorCount
+	if h.historyTracker != nil {
+		after := map[string]interface{}{
+			"namespace": req.Namespace,
+			"url":       req.URL,
+			"requests":  req.Requests,
+		}
+		if result != nil {
+			after["stats"] = result.Stats
+			after["error_count"] = result.ErrorCount
+		}
+
+		h.historyTracker.Log(history.HistoryEntry{
+			UserEmail: userInfo.Email,
+			UserName:  userInfo.Name,
+			Action:    "latency_test",
+			Resource:  req.URL,
+			Cluster:   req.Cluster,
+			Status:    status,
+			After:     after,
+			Duration:  time.Since(start).Milliseconds(),
+			ErrorMsg:  errMsg,
+		})
 	}
 
-	h.historyTracker.Log(history.HistoryEntry{
-		UserEmail: userInfo.Email,
-		UserName:  userInfo.Name,
-		Action:    "latency_test",
-		Resource:  req.URL,
-		Cluster:   req.Cluster,
-		Status:    status,
-		After:     after,
-		Duration:  time.Since(start).Milliseconds(),
-		ErrorMsg:  errMsg,
-	})
+	// Dual-write (Fase 6.4): a fonte estruturada só recebe testes que de fato rodaram até o fim
+	// (result != nil) — um teste que falhou antes de gerar amostra nenhuma não tem P95/P99
+	// significativo pra registrar aqui (o HistoryTracker acima já cobre a falha como auditoria).
+	// Best-effort: erro de persistência aqui nunca deve afetar a resposta já enviada ao usuário.
+	if h.testHistory != nil && result != nil {
+		_ = h.testHistory.Save(storage.LatencyTestRecord{
+			Cluster:       req.Cluster,
+			Namespace:     req.Namespace,
+			Target:        req.URL,
+			Protocol:      req.Protocol,
+			P95Ms:         result.Stats.P95Ms,
+			P99Ms:         result.Stats.P99Ms,
+			ErrorCount:    result.ErrorCount,
+			TotalRequests: result.TotalRequests,
+			TestedAt:      time.Now(),
+			TestedBy:      userInfo.Email,
+		})
+	}
 }

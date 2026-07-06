@@ -106,6 +106,9 @@ type Server struct {
 
 	// SNAT History Store (histórico de snapshots SNAT para projeção de crescimento)
 	snatHistoryStore *storage.SNATHistoryStore
+
+	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
+	latencyTestHistoryStore *storage.LatencyTestHistoryStore
 }
 
 // ensureJWTSecret retorna o secret JWT a usar, em ordem de prioridade:
@@ -364,6 +367,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ SNAT History Store inicializado (projeção de crescimento SNAT)")
 	}
 
+	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
+	var latencyTestHistoryStore *storage.LatencyTestHistoryStore
+	latencyTestHistoryDBPath := filepath.Join(baseDir, "latency_test_history.db")
+	if store, err := storage.NewLatencyTestHistoryStore(latencyTestHistoryDBPath); err != nil {
+		fmt.Printf("⚠️  Latency Test History Store: falha ao criar store: %v\n", err)
+	} else {
+		latencyTestHistoryStore = store
+		fmt.Println("✅ Latency Test History Store inicializado (histórico de testes de latência)")
+	}
+
 	server := &Server{
 		router:              router,
 		kubeManager:         kubeManager,
@@ -395,6 +408,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		npRegistryStore:          npRegistryStore,          // Usado pelo healthcheck orchestrator
 		finopsTimelineStore:      finopsTimelineStore,      // Snapshots históricos HPA para comparação
 		snatHistoryStore:         snatHistoryStore,         // Histórico SNAT para projeção de crescimento
+		latencyTestHistoryStore:  latencyTestHistoryStore,  // Histórico de testes de latência (grafo Fase 6.4)
 	}
 
 	server.setupMiddleware()
@@ -906,7 +920,7 @@ func (s *Server) setupRoutes() {
 
 	// Teste de Latência sob demanda — cria pod efêmero + curl via exec pra medir latência real
 	// de uma aplicação no momento do teste (ver LATENCY-METRICS-PLAN.md)
-	latencyTestHandler := handlers.NewLatencyTestHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.aiTokensStore)
+	latencyTestHandler := handlers.NewLatencyTestHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.aiTokensStore, s.latencyTestHistoryStore)
 	s.router.GET("/api/v1/latency-test/stream/:sessionId",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		latencyTestHandler.Stream)
