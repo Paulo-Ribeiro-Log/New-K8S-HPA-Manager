@@ -62,31 +62,43 @@ criado", "aguardando pod ready", "executando N requisições...", resultado fina
 
 ---
 
-## Fase 1 — Backend: runner do teste (pod efêmero + exec + parsing)
+## Fase 1 — Backend: runner do teste (pod efêmero + exec + parsing) ✅ CONCLUÍDA
 
-**Arquivo:** `internal/web/handlers/latency_test.go` ← CRIAR
+**Arquivo:** `internal/web/handlers/latency_test_tool.go` ← CRIADO
 
-- [ ] `createTestPod(ctx, clientset, namespace) (podName string, cleanup func(), error)` —
+> **Nota (bug real pego durante a implementação)**: o nome original planejado era
+> `latency_test.go` — Go trata QUALQUER arquivo terminado em `_test.go` como arquivo de teste
+> (excluído do build normal, só compilado via `go test`). `go build` não acusa erro nenhum, o
+> arquivo simplesmente não entra no binário — silencioso e fácil de não perceber. Renomeado pra
+> `latency_test_tool.go`. Confirmar com `go list -f '{{.GoFiles}}' ./pacote/` (deve aparecer ali,
+> não em `{{.TestGoFiles}}`) sempre que um nome de arquivo novo tiver "test" no meio.
+
+- [x] `createTestPod(ctx, clientset, namespace) (podName string, cleanup func(), error)` —
   gera nome único (`latency-test-<random>`), labels (`app=latency-test-tool`,
   `created-by=k8s-hpa-manager`), `ActiveDeadlineSeconds: 300`, requests/limits pequenos; `cleanup()`
   deleta o pod (chamar sempre via `defer`)
-- [ ] `waitPodRunning(ctx, clientset, namespace, podName, timeout)` — poll simples até `Status.Phase == Running`
-- [ ] `runLatencyProbe(ctx, clientset, restConfig, namespace, podName, url string, count int, timeoutMs int) ([]float64, error)`
-  — monta o script bash com `count` chamadas de `curl -o /dev/null -s -w "%{time_total}\n" --max-time <timeoutMs/1000>s <url>`,
-  roda via `execCmdInPod` (reaproveitado, mover pra um helper compartilhado se for usado fora de
-  `nodepools_conntrack.go` — avaliar extrair pra `internal/web/handlers/pod_exec_helpers.go` se
-  outros arquivos também passarem a precisar), parseia stdout linha a linha (`strconv.ParseFloat`),
-  linhas que não parseiam (timeout/erro do curl) contam como falha
-- [ ] `computeLatencyStats(samples []float64) LatencyTestStats` — min/avg/median/p95/p99/max
-  (mesma lógica de percentil já usada em algum lugar do FinOps/predictions — reaproveitar se
-  existir função de percentil genérica, senão implementar `sort.Float64s` + índice)
-- [ ] `LatencyTestResult{Samples []float64, Stats LatencyTestStats, ErrorCount int, TotalRequests int}`
+- [x] `waitPodRunning(ctx, clientset, namespace, podName, timeout)` — poll simples até `Status.Phase == Running`
+- [x] `runLatencyProbe(ctx, clientset, restConfig, namespace, podName, url string, count, timeoutMs int) (samples []float64, errorCount int, err error)`
+  — monta o script bash com `count` chamadas de `curl -o /dev/null -s -w "%{time_total}\n" --max-time <timeoutMs/1000>s <url>`
+  (um único `sh -c`, não N execs), roda via `execCmdInPod` (reaproveitado de
+  `nodepools_conntrack.go` sem mudanças — ainda não precisou extrair pra helper compartilhado,
+  reavaliar se um 3º arquivo passar a precisar), parseia stdout linha a linha
+  (`strconv.ParseFloat`), linhas que não parseiam (`ERR` do curl em timeout/erro de conexão) contam
+  em `errorCount` e não entram em `samples`
+- [x] `computeLatencyStats(samples []float64) LatencyTestStats` — min/avg/median/p95/p99/max via
+  `latencyPercentile` (nearest-rank, generaliza o `percentile95` hardcoded de
+  `internal/monitoring/nodepoolpredictions/cost_analyzer.go` pra qualquer p — aquele é privado ao
+  pacote e não dava pra importar direto)
+- [x] `LatencyTestResult{Samples []float64, Stats LatencyTestStats, ErrorCount int, TotalRequests int}`
+
+`go build ./internal/web/handlers/...` limpo. Nada ainda chama essas funções (isso é a Fase 2) —
+por design, é só o runner isolado.
 
 ---
 
 ## Fase 2 — Backend: endpoint SSE + rotas
 
-**Arquivo:** `internal/web/handlers/latency_test.go` ← MODIFICAR (mesmo arquivo da Fase 1)
+**Arquivo:** `internal/web/handlers/latency_test_tool.go` ← MODIFICAR (mesmo arquivo da Fase 1)
 **Arquivo:** `internal/web/server.go` ← MODIFICAR
 
 - [ ] `POST /api/v1/latency-test/run` — recebe `{cluster, namespace, url, requests, timeout_ms}`,
