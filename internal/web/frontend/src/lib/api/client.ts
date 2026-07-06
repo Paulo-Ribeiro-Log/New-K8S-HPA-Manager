@@ -3559,6 +3559,14 @@ class APIClient {
     });
   }
 
+  /** Lista curada de alvos de nuvem (AWS/GCP/Azure) pro seletor "Alvo rápido" (Fase 6.2) */
+  async getLatencyCloudTargets(): Promise<import("./types").CloudRegionTarget[]> {
+    const response = await this.request<{ targets: import("./types").CloudRegionTarget[] }>(
+      "/latency-test/cloud-targets"
+    );
+    return response.targets || [];
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{

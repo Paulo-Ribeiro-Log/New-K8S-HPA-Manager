@@ -59,6 +59,7 @@ export default function LatencyTestTab() {
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
   const [selectedService, setSelectedService] = useState("");
+  const [selectedCloudTarget, setSelectedCloudTarget] = useState("");
   const [protocol, setProtocol] = useState<"http" | "https" | "icmp">("http");
   const [url, setUrl] = useState("");
   const [requests, setRequests] = useState(20);
@@ -86,10 +87,28 @@ export default function LatencyTestTab() {
     enabled: !!cluster && !!namespace,
   });
 
+  // Lista estática (AWS/GCP/Azure) — não depende de cluster/namespace selecionado, só do
+  // servidor estar de pé. Testa "de dentro do cluster escolhido PARA fora, região de nuvem X".
+  const { data: cloudTargets = [] } = useQuery({
+    queryKey: ["latency-cloud-targets"],
+    queryFn: () => apiClient.getLatencyCloudTargets(),
+    staleTime: Infinity, // lista curada estática no backend, não muda em runtime
+  });
+
   const canRun = !!cluster && !!namespace && !!url.trim() && !isRunning;
+
+  const handleCloudTargetChange = (host: string) => {
+    const target = cloudTargets.find((t) => t.host === host);
+    if (!target) return;
+    setSelectedCloudTarget(host);
+    setSelectedService(""); // limpa o outro atalho, são mutuamente exclusivos
+    setProtocol(target.protocol);
+    setUrl(target.protocol === "icmp" ? target.host : `${target.protocol}://${target.host}`);
+  };
 
   const handleServiceChange = (name: string) => {
     setSelectedService(name);
+    setSelectedCloudTarget(""); // limpa o outro atalho, são mutuamente exclusivos
     const svc = services.find((s) => s.name === name);
     if (!svc) return;
     const host = `${svc.name}.${svc.namespace}.svc.cluster.local`;
@@ -266,6 +285,24 @@ export default function LatencyTestTab() {
           </Select>
         </div>
 
+        <div className="min-w-[220px]">
+          <label className="text-xs text-muted-foreground block mb-1">
+            Alvo rápido: região de nuvem (atalho, opcional)
+          </label>
+          <Select value={selectedCloudTarget} onValueChange={handleCloudTargetChange}>
+            <SelectTrigger>
+              <SelectValue placeholder="AWS/GCP/Azure — testar região externa" />
+            </SelectTrigger>
+            <SelectContent>
+              {cloudTargets.map((t) => (
+                <SelectItem key={t.host} value={t.host}>
+                  {t.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
         <div className="w-32">
           <label className="text-xs text-muted-foreground block mb-1">Protocolo</label>
           <Select value={protocol} onValueChange={handleProtocolChange}>
@@ -358,8 +395,9 @@ export default function LatencyTestTab() {
         {!isRunning && !result && !runError && (
           <div className="text-sm text-muted-foreground flex items-center gap-2">
             <Gauge className="w-4 h-4" />
-            Selecione cluster, namespace e a URL alvo (ou escolha um Service pra pré-preencher) e
-            clique em "Executar Teste" — mede a latência real agora, a partir de um pod efêmero
+            Selecione cluster, namespace e a URL/host alvo (ou escolha um Service ou uma região de
+            nuvem pra pré-preencher) e clique em "Executar Teste" — mede a latência real agora,
+            a partir de um pod efêmero
             dentro do próprio namespace.
           </div>
         )}

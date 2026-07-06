@@ -294,27 +294,38 @@ erro; (2) se o `ping` funciona sem `CAP_NET_RAW` no(s) cluster(s) da organizaç�
 sysctl `net.ipv4.ping_group_range` de cada nó — comum em GKE/EKS/AKS permitir por padrão, mas não
 confirmado aqui).
 
-### 6.2 — Alvos multi-cloud (GCP/AWS/Azure), estilo `gcping.com`
+### 6.2 — Alvos multi-cloud (GCP/AWS/Azure), estilo `gcping.com` ✅ CONCLUÍDA (só AWS populado)
 
-**Arquivo:** `internal/web/handlers/latency_cloud_targets.go` ← CRIAR
+**Arquivo:** `internal/web/handlers/latency_cloud_targets.go` ← CRIADO
 
-- [ ] Lista curada e pequena de endpoints por provider/região — **só as regiões onde a
-  organização realmente tem cluster** (derivar de `loadClusterConfig()`/EKS/GKE configs, não uma
-  lista mundial exaustiva de manter)
-- [ ] **Hostnames reais precisam ser validados antes de codar** — não confirmamos nenhum a partir
-  deste ambiente (sem acesso à internet aqui). Candidatos a pesquisar/validar quando for
-  implementar:
-  - GCP: `gcping.com` é open-source (github.com/GoogleCloudPlatform/gcping) — os endpoints reais
-    por região estão no próprio repo, não inventar
-  - AWS: não existe site oficial equivalente; técnica comum da comunidade é usar
-    `s3.<região>.amazonaws.com` (ou `dynamodb.<região>.amazonaws.com`) como alvo HTTP, já que todo
-    account tem acesso de leitura anônima a esses endpoints
-  - Azure: `azurespeed.com` é uma ferramenta de terceiro (não oficial da Microsoft) — confirmar se
-    ainda está no ar e se o endpoint por região é público/estável antes de depender dele
-- [ ] Endpoint: `GET /api/v1/latency-test/cloud-targets` — retorna a lista curada (provider,
-  região, host, protocolo sugerido) pro frontend popular um seletor "Alvo rápido: região de
-  nuvem" (mesmo padrão do seletor de Service já existente, só que fixo em vez de vir de uma API do
-  cluster)
+**Decisão consciente ao implementar**: não populamos GCP nem Azure. Ao revisar a ideia original
+("copiar o método do gcping.com"), ficou claro que o `gcping.com` mede contra **serviços de
+demonstração que o próprio autor deployou** em cada região (Cloud Run/App Engine dele) — não são
+endpoints públicos genéricos do GCP. Gerar tráfego de teste repetido contra infraestrutura de
+terceiros que não é nossa (e sem necessidade real) não é apropriado, então não replicamos isso.
+AWS é diferente: `s3.<região>.amazonaws.com` é convenção **oficial e documentada** da própria AWS
+(todo endpoint regional de S3 responde nesse padrão, autenticado ou não) — não um palpite nem
+dependência de terceiro, por isso só essa lista foi populada com confiança.
+
+- [x] `CloudRegionTarget{Provider, Region, Label, Host, Protocol}` — lista curada e pequena, 5
+  regiões AWS (sa-east-1 São Paulo primeiro, por relevância pra organização brasileira; depois
+  us-east-1, us-west-2, eu-west-1, ap-southeast-1)
+- [x] GCP e Azure **deliberadamente vazios**, com o motivo documentado em comentário no código
+  (ver acima) — preencher exige decisão consciente depois (provisionar recurso "canário" próprio
+  por região, ou usar um recurso de teste já existente da organização); não é algo pra resolver
+  com um palpite de hostname
+- [x] Não implementamos a derivação dinâmica "só regiões onde a organização tem cluster" via
+  `loadClusterConfig()`/EKS/GKE — lista estática pequena já cobre o caso de uso por ora; fica como
+  possível refinamento futuro, não bloqueante
+- [x] `GET /api/v1/latency-test/cloud-targets` (`LatencyTestHandler.GetCloudTargets`) — sem
+  `RequireSREGroup()` (é config estática, mesmo critério de outros endpoints read-only)
+- [x] Frontend: `Select` "Alvo rápido: região de nuvem" ao lado do seletor de Service —
+  mutuamente exclusivos (escolher um limpa o outro), pré-preenche `url` + `protocol` de acordo
+  com o alvo escolhido
+
+`go build ./...`, `go vet ./...`, `gofmt -l` e `tsc --noEmit` limpos. `./rebuild-web.sh -b` ok,
+servidor sobe e responde 200; endpoint `/latency-test/cloud-targets` registrado e acessível
+(não testado com auth válida neste ambiente — sem token JWT real pra exercitar via curl).
 
 ### 6.3 — Persistência leve dos resultados (necessária pro grafo ter o que mostrar)
 

@@ -1632,6 +1632,15 @@ export interface RunLatencyTestResponse {
   session_id: string;
 }
 
+// Alvo curado de região de nuvem (Fase 6.2) — seletor "Alvo rápido" no LatencyTestTab.
+export interface CloudRegionTarget {
+  provider: 'aws' | 'gcp' | 'azure';
+  region: string;
+  label: string;
+  host: string;
+  protocol: 'http' | 'https' | 'icmp';
+}
+
 export interface LatencyTestStats {
   min_ms: number;
   avg_ms: number;
