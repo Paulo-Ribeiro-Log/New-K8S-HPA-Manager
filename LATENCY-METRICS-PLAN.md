@@ -132,28 +132,37 @@ payload estruturado (só `Details string`), e o resultado final do teste
 
 ---
 
-## Fase 3 — Frontend: nova ferramenta "Teste de Latência"
+## Fase 3 — Frontend: nova ferramenta "Teste de Latência" ✅ CONCLUÍDA
 
-**Arquivo:** `internal/web/frontend/src/components/LatencyTestTab.tsx` ← CRIAR
-**Arquivo:** `internal/web/frontend/src/components/ToolsMenu.tsx` ← MODIFICAR (`toolsTabs` array)
-**Arquivo:** `internal/web/frontend/src/pages/Index.tsx` ← MODIFICAR (import + case em `renderTabContent`)
+**Arquivo:** `internal/web/frontend/src/components/LatencyTestTab.tsx` ← CRIADO
+**Arquivo:** `internal/web/frontend/src/components/ToolsMenu.tsx` ← MODIFICADO (`toolsTabs` array, ícone `Gauge`)
+**Arquivo:** `internal/web/frontend/src/pages/Index.tsx` ← MODIFICADO (import + case `"latency-test"`)
+**Arquivo:** `internal/web/frontend/src/lib/api/types.ts` ← MODIFICADO (`RunLatencyTestRequest`/`Response`, `LatencyTestStats`, `LatencyTestResult`, `LatencyTestSSEEvent`)
+**Arquivo:** `internal/web/frontend/src/lib/api/client.ts` ← MODIFICADO (`runLatencyTest`, `getLatencyTestStreamURL`, `cancelLatencyTest`)
 
-- [ ] Formulário: `ClusterSelectorForTab` (cluster) + seletor de namespace + seletor de Service
-  (opcional, atalho — reaproveita lista já buscada pela aba Services) + campo de URL (editável,
-  pré-preenchido se um Service foi escolhido) + nº de requisições (default 20, máx 200) + timeout
-  por requisição (default 3000ms)
-- [ ] Botão "Executar Teste" — desabilitado enquanto uma execução já está em andamento (lock de "um
-  teste por vez" refletido na UI, não só no backend)
-- [ ] Conexão SSE ao clicar — mesmo padrão de `EventSource`/hook já usado em Cordon/Drain ou Command
-  Runner (`useCommandRunnerStream` ou equivalente — reaproveitar hook se existir um genérico de SSE)
-- [ ] Progresso ao vivo: "Criando pod de teste...", "Aguardando pod ficar pronto...", "Executando
-  requisição N de M..."
-- [ ] Resultado final: cards com min/avg/mediana/p95/p99/max + contagem de erros; mini
-  histograma/sparkline das amostras individuais (Recharts, reaproveitando padrão de chart já usado
-  em outras abas)
-- [ ] Botão "Cancelar" durante a execução → chama `POST /latency-test/cancel/:sessionId`
-- [ ] Histórico de testes anteriores dessa sessão (lista simples na mesma tela, não precisa
-  persistir em banco na v1 — já fica no `HistoryTracker` genérico se quiser consultar depois)
+- [x] Formulário: `ClusterSelectorForTab` + `Select` de namespace (`apiClient.getNamespaces`) +
+  `Select` de Service opcional (`apiClient.getServices`, atalho que preenche a URL como
+  `http://<service>.<namespace>.svc.cluster.local:<porta>` a partir do primeiro item de `ports`) +
+  campo de URL editável + nº de requisições (1-200) + timeout (100-10000ms) — componente
+  autocontido, sem props (mesmo padrão do `AccessCheckTab`, não usa o cluster global do `Index.tsx`)
+- [x] Botão "Executar Teste" vira "Cancelar" (variant destructive) enquanto `isRunning` — troca de
+  botão em vez de só desabilitar, deixa mais óbvio que dá pra cancelar
+- [x] SSE via `EventSource` cru, mesmo padrão exato do `CommandRunnerTab.tsx` (não existe hook
+  genérico de SSE no projeto — cada tab implementa a própria conexão inline)
+- [x] Progresso ao vivo: barra de progresso (`div` com width % baseado em `event.progress`) +
+  mensagem da fase atual (`event.message`, já vem pronta do backend: "Criando pod de
+  teste...", "Aguardando pod ficar pronto...", "Executando N requisições...")
+- [x] Resultado final: 6 `StatCard` (min/avg/mediana/p95/p99/max, p95/p99 com destaque visual) +
+  contagem de sucesso/erro + `BarChart` do Recharts com a latência de cada requisição individual
+- [x] Botão "Cancelar" chama `apiClient.cancelLatencyTest(sessionId)` e fecha o `EventSource` local
+  (o pod é limpo no servidor de qualquer forma, não depende dessa chamada ter sucesso)
+- [x] Histórico da sessão: array em estado local (`useState`, não persiste — reinicia ao dar F5),
+  tabela simples com cluster/namespace/URL/P95/P99/erros de cada teste anterior
+
+`npx tsc --noEmit` (0 erros) e `./rebuild-web.sh -b` (build de produção) limpos. `npm run lint`
+não roda neste ambiente — binário do eslint em `node_modules/.bin/eslint` está zerado/sem permissão
+de execução (problema pré-existente do ambiente, não desta feature); typecheck é o gate que importa
+aqui e passou limpo.
 
 ---
 

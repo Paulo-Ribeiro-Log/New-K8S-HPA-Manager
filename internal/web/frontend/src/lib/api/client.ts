@@ -3534,6 +3534,31 @@ class APIClient {
     });
   }
 
+  // ─── Teste de Latência sob Demanda ─────────────────────────────────────────
+
+  /** Inicia o teste de latência (cria pod efêmero + curl) e retorna session_id para SSE */
+  async runLatencyTest(
+    req: import("./types").RunLatencyTestRequest
+  ): Promise<import("./types").RunLatencyTestResponse> {
+    return this.request<import("./types").RunLatencyTestResponse>("/latency-test/run", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** URL do SSE stream de um teste de latência em andamento */
+  getLatencyTestStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/latency-test/stream/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Cancela um teste de latência em andamento (o pod é limpo de qualquer forma) */
+  async cancelLatencyTest(sessionId: string): Promise<void> {
+    await this.request<void>(`/latency-test/cancel/${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+    });
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{

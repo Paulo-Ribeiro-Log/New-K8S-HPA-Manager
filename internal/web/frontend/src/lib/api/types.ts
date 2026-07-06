@@ -1617,6 +1617,48 @@ export interface CommandRunnerSSEEvent {
   error?: string;
 }
 
+// ─── Teste de Latência sob Demanda ────────────────────────────────────────────
+
+export interface RunLatencyTestRequest {
+  cluster: string;
+  namespace: string;
+  url: string;
+  requests?: number;   // default 20, teto 200 (aplicado no backend)
+  timeout_ms?: number; // default 3000, teto 10000 (aplicado no backend)
+}
+
+export interface RunLatencyTestResponse {
+  session_id: string;
+}
+
+export interface LatencyTestStats {
+  min_ms: number;
+  avg_ms: number;
+  median_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  max_ms: number;
+}
+
+export interface LatencyTestResult {
+  samples: number[]; // ms, na ordem em que as requisições rodaram
+  stats: LatencyTestStats;
+  error_count: number;
+  total_requests: number;
+}
+
+export interface LatencyTestSSEEvent {
+  id: string;
+  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'complete' | 'error';
+  phase: string;
+  message: string;
+  progress: number;
+  cluster?: string;
+  timestamp: string;
+  error?: string;
+  result?: LatencyTestResult; // presente só no evento "complete"
+}
+
 // Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.
 // Refletem o que o RBAC do cluster permite para o usuário atual (não grupos AD).
 export interface K8sNamespacePermissions {

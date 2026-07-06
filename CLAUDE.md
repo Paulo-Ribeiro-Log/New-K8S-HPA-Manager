@@ -34,7 +34,7 @@ Ver `ACCESS-CHECK-PLAN.md` para o histórico completo de decisões e comandos `a
 - [**Plano: FinOps Isenções**](FINOPS-EXEMPTIONS-PLAN.md) ← work in progress — whitelist por workload com threshold de réplicas (nenhuma fase iniciada)
 - [**Plano: Cluster Discovery AKS+EKS**](CLUSTER-DISCOVERY-PLAN.md) ← ✅ Fases 1-5 concluídas — discovery paralelo, config EKS separada, semáforos ampliados, frontend com badges AKS/EKS
 - [**Plano: Verificar Acesso (Access Checker)**](ACCESS-CHECK-PLAN.md) ← ⚠️ Revisão 7 pendente de validação real — checa acesso de analista via impersonation K8s + grupos AAD `VV_CLOUD*` resolvidos por `az ad user get-member-groups` (sem Graph API); detecta também acesso admin via IAM do Azure (bypass de RBAC, invisível à impersonation); scan de frota usa `SelfSubjectAccessReview` varrendo todos os namespaces
-- [**Plano: Teste de Latência sob Demanda**](LATENCY-METRICS-PLAN.md) ← work in progress — ferramenta ativa (botão "Executar Teste"): pod efêmero + `curl` via exec (reaproveita `execCmdInPod` do conntrack) mede latência real na hora, SSE de progresso; contexto histórico via Prometheus/Dynatrace (DT primário + Prom fallback, padrão FinOps) como complemento (nenhuma fase iniciada)
+- [**Plano: Teste de Latência sob Demanda**](LATENCY-METRICS-PLAN.md) ← 🚧 Fases 1-3 concluídas (backend + frontend do teste ativo funcionando ponta a ponta), Fase 4 (guardrails extras) em diante pendente — ferramenta ativa (botão "Executar Teste", aba `latency-test`/`LatencyTestTab.tsx`): pod efêmero + `curl` via exec (reaproveita `execCmdInPod` do conntrack) mede latência real na hora, SSE de progresso; contexto histórico via Prometheus/Dynatrace (DT primário + Prom fallback, padrão FinOps) planejado como complemento, ainda não implementado
 
 ---
 
@@ -237,7 +237,7 @@ Todo o estado da aplicação vive em `Index.tsx` (`activeTab` string). Não há 
 
 **`WorkloadMenu`** (Workloads dropdown): `configmaps`, `ingresses`, `gateways`, `secrets`, `deployments`, `daemonsets`, `statefulsets`, `vpas`, `services`, `containers`, `pods`, `events`, `cronjobs`, `namespaces`, `helm`, `prometheus`
 
-**`ToolsMenu`** (Tools dropdown): `monitoring`, `servicemesh`, `healthcheck`, `nexus-values`, `ai-diagnostics`, `github-releases`, `dependencies`, `certificates`, `resource-compare`, `command-runner`, `dynatrace`, `finops`, `teams-broadcast`
+**`ToolsMenu`** (Tools dropdown): `monitoring`, `servicemesh`, `healthcheck`, `nexus-values`, `ai-diagnostics`, `github-releases`, `dependencies`, `certificates`, `resource-compare`, `command-runner`, `dynatrace`, `finops`, `teams-broadcast`, `access-check`, `latency-test`
 
 **Tabs principais** (TabNavigation): `dashboard`, `hpa`, `nodepools`, `explorer`, `code-editor`
 
