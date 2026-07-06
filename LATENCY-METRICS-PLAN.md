@@ -193,7 +193,7 @@ aqui e passou limpo.
 
 ---
 
-## Fase 5 (complementar) — Contexto histórico via Prometheus/Dynatrace ✅ CONCLUÍDA (não validada)
+## Fase 5 (complementar) — Contexto histórico via Prometheus/Dynatrace ✅ CONCLUÍDA E VALIDADA contra Prometheus/DT reais
 
 Mostrado **ao lado** do resultado do teste ativo (Fases 1-4), não substitui.
 
@@ -226,22 +226,60 @@ copiar nada.
   ou Prom (âmbar) + P95/P99 históricos, só quando `metrics_source` não é vazio — mesmo padrão de
   cor já usado no FinOps
 
-**⚠️ Duas suposições NÃO validadas contra ambiente real (documentado no código também)**:
-1. `builtin:service.response.time` (DT) vive em entidades `SERVICE` — `GetWorkloadLatency` faz o
-   mesmo `splitBy("k8s.namespace.name","k8s.workload.name")` que já funciona pra CPU/mem
-   (entidades `CLOUD_APPLICATION`). Não confirmamos se `SERVICE` expõe essas dimensões da mesma
-   forma — se não expuser, a query simplesmente não acha nada (mapa vazio, sem erro), cai pro
-   fallback Prometheus.
-2. `guessServiceNameFromURL` é uma heurística (primeiro label DNS do host), não uma resolução real
-   contra o cluster — se o nome do Service K8s não bater com o primeiro label do host da URL (ex:
-   usuário testou via Ingress externo, não via DNS interno do Service), o contexto histórico
-   simplesmente não aparece (não é possível mostrar dado errado, só "sem dado").
+**✅ Validado contra Prometheus/DT reais de um cluster AKS (`akspriv-abastecimento-hlg-admin`),
+testando o fluxo completo no navegador — 3 bugs reais encontrados e corrigidos:**
 
-Em ambos os casos o design é seguro por construção (nunca mostra valor incorreto, só omite o
-badge) — mas o valor real da feature depende de validar isso contra Prometheus/DT de verdade.
+1. **Prometheus: métricas erradas.** `GetP95Latency`/`GetP99Latency` usavam
+   `http_request_duration_seconds_bucket` e `nginx_ingress_controller_request_duration_seconds_bucket`
+   — confirmado via `curl` direto no Prometheus real que **nenhuma das duas existe** (zero séries em
+   todo o cluster; o cluster roda Istio, não NGINX puro). Corrigido: adicionada
+   `istio_request_duration_milliseconds_bucket` como primeira tentativa, labels reais confirmados
+   contra a API (`destination_service_name`/`destination_service_namespace`/`reporter="destination"`),
+   mantendo nginx-ingress/genérica como fallback legado (`buildLatencyQueryCandidates` em
+   `internal/monitoring/prometheus/client.go`). Também: janela do `rate()` de 5m → 30m — serviços de
+   baixo tráfego (comum em HLG) têm buracos de vários minutos sem request, 5m caía com frequência
+   numa janela vazia mesmo com o serviço tendo tráfego "seguido" (ex: ~1 req/min já é insuficiente
+   pra garantir amostra em toda janela de 5min).
+2. **Prometheus: "lazy connection" nunca era ativada.** O client em `client.go` exige
+   `TestConnection(ctx)` explícito antes de `Query()`/`QueryRange()` aceitarem rodar
+   (`connected=true`) — `fetchHistoricalLatencyContext` criava o client e chamava
+   `GetP95Latency`/`GetP99Latency` direto, sem nunca chamar `TestConnection()` primeiro. Toda
+   consulta falhava com `"prometheus client not connected"`, mesmo com o Prometheus 100% acessível.
+3. **Zero silencioso tratado como sucesso.** Quando nenhuma query candidata achava valor válido
+   (`histogram_quantile` sobre janela sem amostra recente devolve `NaN`, não erro), a função antiga
+   devolvia `(0, nil)` — o zero virava "sucesso" pro chamador, e o `omitempty` no JSON de
+   `LatencyHistoricalContext` escondia o campo, fazendo o frontend não mostrar nada sem indicar por
+   quê. Corrigido: `queryLatencyPercentile` devolve erro explícito quando nenhuma candidata acha dado
+   (`internal/monitoring/prometheus/client.go`), e `omitempty` removido de `P95Ms`/`P99Ms`
+   (`latency_history.go`) — um zero real de latência agora é distinguível de "sem dado".
 
-`go build ./...`, `go vet ./...`, `gofmt -l` e `tsc --noEmit` limpos. `./rebuild-web.sh -b` ok.
-Não testado contra Prometheus/Dynatrace reais (sem VPN/credenciais neste ambiente).
+Também corrigido `guessServiceNameFromURL` pra aceitar host sem esquema (`"meu-host.com"` sem
+`http://` na frente — `url.Parse` sem esquema trata a string toda como Path, não Host, e
+`u.Hostname()` volta vazio).
+
+**Dynatrace: suposição #1 do parágrafo original estava certa, e a correção FOI implementada** (não
+ficou só como fallback seguro): confirmado direto contra `GET /api/v2/metrics/builtin:service.response.time`
+que a única dimensão real dessa métrica é `dt.entity.service` (tipo `ENTITY`) — `SERVICE` nunca
+carregou `k8s.namespace.name`/`k8s.workload.name`. A query antiga sempre falhava com erro 400
+explícito da API (`"The dimension key k8s.namespace.name has been referenced, but the metric has
+no such key"`). Reescrito `internal/dynatrace/latency_metrics.go`: `findServiceEntityID` busca a
+entidade `SERVICE` por nome (`entityName.contains`, mesma heurística de `guessServiceNameFromURL`)
+e `queryServicePercentile` consulta a métrica filtrada por `entitySelector=entityId(...)` (sem
+`splitBy`, já que filtra por 1 entidade). `GetWorkloadLatency` (batch por `splitBy` k8s) removido —
+sem uso depois da reescrita. Validado com teste manual direto contra a API real: entidade
+`WEB_REQUEST_SERVICE` de aplicação encontrada por nome, latência real retornada
+(P95=715ms/P99=1072ms).
+
+**Achado à parte, não é bug**: os clusters/namespaces do domínio usado pra testar (`abastecimento-hlg`/
+`abastecimento-prd`) não têm **nenhuma** cobertura desse tenant Dynatrace (zero entidades
+`CLOUD_APPLICATION` neles) — o DT configurado neste projeto monitora outros domínios (onboarding,
+categoria, etc.). Não dá pra validar o caminho DT ponta a ponta via navegador nesse domínio por
+faltar workload monitorado, não por falha de código; nesses testes o contexto histórico
+correntemente vem do Prometheus.
+
+`go build ./...`, `go vet ./...`, `gofmt -l` limpos. Testado ponta a ponta no navegador (Playwright)
+contra cluster AKS real: contexto histórico aparece com dado real do Prometheus
+(`P95 91.7ms · P99 98.3ms`) condizente com o teste ativo (66.4ms/66.5ms) no mesmo alvo.
 
 ---
 
