@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -11,11 +12,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	kubeclient "k8s-hpa-manager/internal/kubernetes"
 )
 
 const (
-	scanFleetConcurrency       = 8
-	scanFleetPerClusterTimeout = 30 * time.Second
+	scanFleetConcurrency          = 8
+	scanFleetPerClusterTimeout    = 45 * time.Second
+	scanFleetNamespaceConcurrency = 6
 )
 
 // fleetClusterResult é o resultado do scan de um único cluster dentro do ScanFleet.
@@ -27,31 +31,57 @@ type fleetClusterResult struct {
 	Error           string             `json:"error,omitempty"`
 }
 
+// fleetNamespaceHit é o resultado do acesso RBAC real (não apenas conectividade) do analista
+// num cluster. Quando um namespace específico foi informado, `Namespaces` tem no máximo 1 item
+// (o próprio namespace, se houver acesso). Quando nenhum namespace foi informado, `Namespaces`
+// lista TODOS os namespaces (não-sistema) onde o analista tem acesso real a algum recurso —
+// é isso que responde "onde ele pode de fato manipular aplicações", ao contrário de
+// `Reachable` (que só indica que o SERVIDOR consegue falar com o kube-apiserver do cluster).
 type fleetNamespaceHit struct {
-	AnyAccess bool `json:"anyAccess"`
+	AnyAccess  bool     `json:"anyAccess"`
+	Namespaces []string `json:"namespaces"`
 }
 
-// genericBaselineResources são os recursos que QUALQUER usuário autenticado enxerga por padrão
-// (NetworkPolicies do Calico, self-review) — usados pra distinguir "acesso real" de ruído
-// genérico ao classificar anyAccess no scan de frota (versão simplificada da lógica de
-// categorias já usada na Visão Geral do frontend, aqui só como sim/não por cluster).
-var genericBaselineResources = map[string]bool{
-	"selfsubjectaccessreviews": true,
-	"selfsubjectrulesreviews":  true,
-	"selfsubjectreviews":       true,
-	"networkpolicies":          true,
-	"globalnetworkpolicies":    true,
+// workloadAccessProbes são checados em ordem via SelfSubjectAccessReview até o primeiro
+// "Allowed" — um teste definitivo (equivalente a `kubectl auth can-i list pods -n <ns> --as
+// <email>`), sem a ressalva de incompletude que o SelfSubjectRulesReview tem para políticas
+// RBAC complexas (a API do K8s documenta que pode devolver um subconjunto incompleto de regras
+// nesses casos — usar SelfSubjectRulesReview pra decidir "tem acesso ou não" gerava falso
+// negativo real quando o acesso do analista vinha de bindings que a review não enumerava).
+var workloadAccessProbes = []struct{ group, resource, verb string }{
+	{"", "pods", "list"},
+	{"apps", "deployments", "list"},
+	{"", "secrets", "list"},
+	{"", "configmaps", "list"},
 }
 
-func hasNonGenericAccess(rules []authorizationv1.ResourceRule) bool {
-	for _, r := range rules {
-		for _, res := range r.Resources {
-			if res == "*" || !genericBaselineResources[res] {
-				return true
-			}
+// hasWorkloadAccess testa se o client (já impersonado) consegue manipular algum recurso de
+// workload comum no namespace — para no primeiro "Allowed". Só retorna erro se TODAS as
+// tentativas falharem (nenhuma resposta definitiva do cluster).
+func hasWorkloadAccess(ctx context.Context, clientset kubernetes.Interface, namespace string) (bool, error) {
+	var lastErr error
+	for _, p := range workloadAccessProbes {
+		sar := &authorizationv1.SelfSubjectAccessReview{
+			Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Namespace: namespace,
+					Verb:      p.verb,
+					Group:     p.group,
+					Resource:  p.resource,
+				},
+			},
+		}
+		result, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, sar, metav1.CreateOptions{})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		lastErr = nil
+		if result.Status.Allowed {
+			return true, nil
 		}
 	}
-	return false
+	return false, lastErr
 }
 
 // ScanFleet varre todos os clusters AKS cadastrados verificando acesso admin via IAM (sempre) e,
@@ -126,8 +156,12 @@ func (h *AccessCheckHandler) ScanFleet(c *gin.Context) {
 	})
 }
 
-// scanOneFleetCluster roda a checagem de IAM (sempre) e RBAC (se namespace informado) para um
-// único cluster — isolado numa função própria pra tolerar falha por cluster sem derrubar o scan.
+// scanOneFleetCluster roda a checagem de IAM (sempre) e RBAC real para um único cluster —
+// isolado numa função própria pra tolerar falha por cluster sem derrubar o scan. RBAC é
+// verificado no namespace informado (se houver) ou, na ausência dele, varrendo TODOS os
+// namespaces não-sistema do cluster — sem isso, "Reachable" (mera conectividade de rede do
+// servidor com o kube-apiserver, nada relacionado ao analista) era o único sinal exibido,
+// dando a falsa impressão de que o analista tinha acesso a qualquer cluster alcançável.
 func (h *AccessCheckHandler) scanOneFleetCluster(ctx context.Context, clusterName, namespace, email string, allGroups []matchedGroupDTO, groupIDs []string) fleetClusterResult {
 	result := fleetClusterResult{Cluster: clusterName, IAMAdminAccess: []iamAdminMatchDTO{}}
 
@@ -144,30 +178,83 @@ func (h *AccessCheckHandler) scanOneFleetCluster(ctx context.Context, clusterNam
 	}
 	result.Reachable = true
 
+	// Namespaces a checar: o informado, ou todos os não-sistema do cluster (via client SEM
+	// impersonation — listar namespaces é uma operação do servidor, não do analista).
+	targetNamespaces := []string{namespace}
 	if namespace == "" {
-		return result
+		plainClientset, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			result.Error = "falha ao montar client: " + err.Error()
+			return result
+		}
+		nsList, err := plainClientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			result.Error = "falha ao listar namespaces: " + err.Error()
+			return result
+		}
+		targetNamespaces = targetNamespaces[:0]
+		for _, ns := range nsList.Items {
+			if !kubeclient.IsSystemNamespace(ns.Name) {
+				targetNamespaces = append(targetNamespaces, ns.Name)
+			}
+		}
 	}
 
 	cfg.Impersonate = rest.ImpersonationConfig{UserName: email, Groups: groupIDs}
-	clientset, err := kubernetes.NewForConfig(cfg)
+	impersonated, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		result.Error = "falha ao montar client impersonado: " + err.Error()
 		return result
 	}
 
-	review := &authorizationv1.SelfSubjectRulesReview{
-		Spec: authorizationv1.SelfSubjectRulesReviewSpec{Namespace: namespace},
+	var (
+		mu         sync.Mutex
+		accessible = []string{} // nunca nil — vira `null` no JSON e engana `campo &&` no frontend
+		wg         sync.WaitGroup
+	)
+	sem := make(chan struct{}, scanFleetNamespaceConcurrency)
+	var firstErr error
+
+	for _, ns := range targetNamespaces {
+		if ctx.Err() != nil {
+			break // timeout do cluster estourou — retorna parcial em vez de nada
+		}
+		wg.Add(1)
+		go func(ns string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			allowed, err := hasWorkloadAccess(ctx, impersonated, ns)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			if allowed {
+				mu.Lock()
+				accessible = append(accessible, ns)
+				mu.Unlock()
+			}
+		}(ns)
 	}
-	rulesResult, err := clientset.AuthorizationV1().SelfSubjectRulesReviews().Create(ctx, review, metav1.CreateOptions{})
-	if err != nil {
-		if isImpersonationForbidden(err) {
+	wg.Wait()
+
+	if len(accessible) == 0 && firstErr != nil {
+		// Só reporta erro se NENHUM namespace respondeu — parcial com pelo menos 1 hit já
+		// é um resultado útil (ex: timeout no meio da varredura de uma frota grande).
+		if isImpersonationForbidden(firstErr) {
 			result.Error = "servidor sem permissão de impersonate neste cluster"
 		} else {
-			result.Error = "falha ao consultar RBAC: " + err.Error()
+			result.Error = "falha ao consultar RBAC: " + firstErr.Error()
 		}
 		return result
 	}
 
-	result.NamespaceAccess = &fleetNamespaceHit{AnyAccess: hasNonGenericAccess(rulesResult.Status.ResourceRules)}
+	sort.Strings(accessible)
+	result.NamespaceAccess = &fleetNamespaceHit{AnyAccess: len(accessible) > 0, Namespaces: accessible}
 	return result
 }

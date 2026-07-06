@@ -156,6 +156,7 @@ export default function AccessCheckTab() {
     setRulesLoading(true);
     setRulesError(null);
     setRulesResult(null);
+    setFleetResult(null);
     try {
       const result = await apiClient.getAccessCheckRules(cluster, namespace, email.trim());
       setRulesResult(result);
@@ -170,6 +171,7 @@ export default function AccessCheckTab() {
     setCanILoading(true);
     setCanIError(null);
     setCanIResult(null);
+    setFleetResult(null);
     try {
       const result = await apiClient.getAccessCheckCanI({
         cluster,
@@ -196,6 +198,11 @@ export default function AccessCheckTab() {
     setFleetLoading(true);
     setFleetError(null);
     setFleetResult(null);
+    // Limpa resultado da última Verificação Pontual/Visão Geral — sem isso, os banners de IAM
+    // admin e grupos AAD (renderizados fora do switch de `section`) continuavam exibindo dados
+    // de um e-mail verificado anteriormente, só rotulados com o e-mail atual do input.
+    setRulesResult(null);
+    setCanIResult(null);
     setSection("fleet");
     try {
       const result = await apiClient.getAccessCheckFleetScan(email.trim(), namespace || undefined);
@@ -272,7 +279,7 @@ export default function AccessCheckTab() {
         </Button>
       </div>
 
-      {iamAdminAccess && iamAdminAccess.length > 0 && (
+      {(section === "overview" || section === "pointcheck" || section === "allgroups") && iamAdminAccess && iamAdminAccess.length > 0 && (
         <div className="px-6 py-3 border-b border-border bg-red-500/10">
           <div className="flex items-start gap-2">
             <ShieldAlert className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
@@ -295,7 +302,7 @@ export default function AccessCheckTab() {
         </div>
       )}
 
-      {matchedGroups && (
+      {(section === "overview" || section === "pointcheck" || section === "allgroups") && matchedGroups && (
         <div className="px-6 py-3 border-b border-border">
           <div className="text-xs font-medium text-muted-foreground mb-1.5">Grupos AAD (VV_CLOUD_*) usados na verificação</div>
           {groupsResolutionError ? (
@@ -627,78 +634,143 @@ export default function AccessCheckTab() {
             {!fleetResult && !fleetError && !fleetLoading && (
               <div className="text-sm text-muted-foreground flex items-center gap-2">
                 <ShieldQuestion className="w-4 h-4" />
-                Preencha o e-mail e clique em "Verificar em todos os clusters" — varre acesso admin
-                via IAM (sempre) e RBAC no namespace informado (se preenchido) em todos os clusters AKS.
-                Pode levar de dezenas de segundos a poucos minutos.
+                Preencha o e-mail e clique em "Verificar em todos os clusters" — varre acesso admin via
+                IAM (sempre) e acesso RBAC real em todos os clusters AKS: se um namespace for informado,
+                verifica só nele; se não, verifica em TODOS os namespaces (não-sistema) de cada cluster e
+                lista onde o analista tem acesso de fato. Pode levar de dezenas de segundos a poucos minutos.
               </div>
             )}
             {fleetResult && (() => {
-              const withIAM = fleetResult.results.filter((r) => (r.iamAdminAccess?.length ?? 0) > 0);
-              const reachableCount = fleetResult.results.filter((r) => r.reachable).length;
+              // "Conectividade" (r.reachable) é sobre o SERVIDOR conseguir falar com o
+              // kube-apiserver — não tem nada a ver com o acesso do analista pesquisado.
+              // Por isso ela não aparece mais como coluna do analista: clusters com erro
+              // (inclusive de rede) viram uma lista separada, só relevante pra quem está
+              // rodando a ferramenta (o pesquisador) entender o que NÃO foi verificado.
+              const withAccess = fleetResult.results.filter(
+                (r) => (r.iamAdminAccess?.length ?? 0) > 0 || r.namespaceAccess?.anyAccess
+              );
+              const errored = fleetResult.results.filter((r) => !!r.error);
+              const cleanNoAccess = fleetResult.results.filter(
+                (r) => !r.error && (r.iamAdminAccess?.length ?? 0) === 0 && !r.namespaceAccess?.anyAccess
+              );
+
+              const namespaceCell = (r: (typeof fleetResult.results)[number]) =>
+                namespace ? (
+                  r.namespaceAccess?.anyAccess ? (
+                    <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/30">Sim</Badge>
+                  ) : (
+                    <Badge variant="outline" className="bg-muted text-muted-foreground border-border">Não</Badge>
+                  )
+                ) : r.namespaceAccess?.namespaces && r.namespaceAccess.namespaces.length > 0 ? (
+                  <div className="flex flex-wrap gap-1 max-w-md">
+                    {r.namespaceAccess.namespaces.map((ns) => (
+                      <Badge key={ns} variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/30 font-mono text-xs">
+                        {ns}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-xs text-muted-foreground">—</span>
+                );
+
               return (
                 <>
                   <div className="text-sm text-muted-foreground mb-3">
-                    {fleetResult.results.length} clusters verificados, {reachableCount} alcançáveis.
-                    {withIAM.length > 0 && (
-                      <span className="text-red-500 font-medium"> {withIAM.length} com acesso admin via IAM.</span>
-                    )}
+                    {fleetResult.results.length} clusters verificados —{" "}
+                    <span className="font-medium text-foreground">{withAccess.length} com acesso real do analista</span>
+                    {errored.length > 0 && <span> · {errored.length} não verificados (erro do servidor)</span>}
                   </div>
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="border-b border-border text-xs text-muted-foreground">
-                        <th className="pb-2 font-medium">Cluster</th>
-                        <th className="pb-2 font-medium">Alcançável</th>
-                        <th className="pb-2 font-medium">Acesso Admin (IAM)</th>
-                        {namespace && <th className="pb-2 font-medium">Acesso RBAC em "{namespace}"</th>}
-                        <th className="pb-2 font-medium">Obs.</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {fleetResult.results
+
+                  <div className="text-xs font-medium text-muted-foreground mb-1.5">
+                    Clusters com acesso real de {email}
+                  </div>
+                  {withAccess.length === 0 ? (
+                    <div className="text-sm text-muted-foreground mb-4">Nenhum acesso real encontrado em nenhum cluster verificado.</div>
+                  ) : (
+                    <table className="w-full text-left mb-4">
+                      <thead>
+                        <tr className="border-b border-border text-xs text-muted-foreground">
+                          <th className="pb-2 font-medium">Cluster</th>
+                          <th className="pb-2 font-medium">Acesso Admin (IAM)</th>
+                          <th className="pb-2 font-medium">
+                            {namespace ? `Acesso RBAC em "${namespace}"` : "Namespaces com acesso real"}
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {withAccess
+                          .slice()
+                          .sort((a, b) => a.cluster.localeCompare(b.cluster))
+                          .map((r) => (
+                            <tr
+                              key={r.cluster}
+                              className={`border-b border-border last:border-0 ${
+                                (r.iamAdminAccess?.length ?? 0) > 0 ? "bg-red-500/10" : "bg-emerald-500/5"
+                              }`}
+                            >
+                              <td className="py-1.5 pr-4 text-sm font-mono">{r.cluster}</td>
+                              <td className="py-1.5 pr-4">
+                                {r.iamAdminAccess && r.iamAdminAccess.length > 0 ? (
+                                  <div className="flex flex-col gap-1">
+                                    {r.iamAdminAccess.map((m) => (
+                                      <Badge key={m.groupName} variant="outline" className="bg-red-500/10 text-red-500 border-red-500/30 w-fit">
+                                        {m.groupName}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">—</span>
+                                )}
+                              </td>
+                              <td className="py-1.5 pr-4">{namespaceCell(r)}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {errored.length > 0 && (
+                    <details className="mb-4">
+                      <summary className="text-xs font-medium text-muted-foreground cursor-pointer">
+                        {errored.length} clusters não verificados (problema do servidor, não do analista) — clique para ver
+                      </summary>
+                      <table className="w-full text-left mt-2">
+                        <thead>
+                          <tr className="border-b border-border text-xs text-muted-foreground">
+                            <th className="pb-2 font-medium">Cluster</th>
+                            <th className="pb-2 font-medium">Erro</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {errored
+                            .slice()
+                            .sort((a, b) => a.cluster.localeCompare(b.cluster))
+                            .map((r) => (
+                              <tr key={r.cluster} className="border-b border-border last:border-0">
+                                <td className="py-1.5 pr-4 text-sm font-mono">{r.cluster}</td>
+                                <td className="py-1.5 text-xs text-amber-500">{r.error}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </details>
+                  )}
+
+                  <details>
+                    <summary className="text-xs font-medium text-muted-foreground cursor-pointer">
+                      {cleanNoAccess.length} clusters verificados sem nenhum acesso — clique para ver
+                    </summary>
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {cleanNoAccess
                         .slice()
                         .sort((a, b) => a.cluster.localeCompare(b.cluster))
                         .map((r) => (
-                          <tr
-                            key={r.cluster}
-                            className={`border-b border-border last:border-0 ${(r.iamAdminAccess?.length ?? 0) > 0 ? "bg-red-500/10" : ""}`}
-                          >
-                            <td className="py-1.5 pr-4 text-sm font-mono">{r.cluster}</td>
-                            <td className="py-1.5 pr-4">
-                              {r.reachable ? (
-                                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/30">Sim</Badge>
-                              ) : (
-                                <Badge variant="outline" className="bg-muted text-muted-foreground border-border">Não</Badge>
-                              )}
-                            </td>
-                            <td className="py-1.5 pr-4">
-                              {r.iamAdminAccess && r.iamAdminAccess.length > 0 ? (
-                                <div className="flex flex-col gap-1">
-                                  {r.iamAdminAccess.map((m) => (
-                                    <Badge key={m.groupName} variant="outline" className="bg-red-500/10 text-red-500 border-red-500/30 w-fit">
-                                      {m.groupName}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              ) : (
-                                <span className="text-xs text-muted-foreground">—</span>
-                              )}
-                            </td>
-                            {namespace && (
-                              <td className="py-1.5 pr-4">
-                                {!r.reachable ? (
-                                  <span className="text-xs text-muted-foreground">—</span>
-                                ) : r.namespaceAccess?.anyAccess ? (
-                                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/30">Sim</Badge>
-                                ) : (
-                                  <Badge variant="outline" className="bg-muted text-muted-foreground border-border">Não</Badge>
-                                )}
-                              </td>
-                            )}
-                            <td className="py-1.5 text-xs text-muted-foreground">{r.error ?? ""}</td>
-                          </tr>
+                          <Badge key={r.cluster} variant="outline" className="bg-muted text-muted-foreground border-border font-mono text-xs">
+                            {r.cluster}
+                          </Badge>
                         ))}
-                    </tbody>
-                  </table>
+                    </div>
+                  </details>
                 </>
               );
             })()}

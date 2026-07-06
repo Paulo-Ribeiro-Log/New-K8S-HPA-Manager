@@ -404,10 +404,76 @@ quebrava em `null.length`. Afetava `iamAdminAccess` (novo, Revisão 5) **e tamb�
 
 ---
 
+## Revisão 7: falso "tem acesso" no scan de frota — 4 bugs encadeados
+
+Usuário reportou, testando o scan de frota com analistas reais: (1) o e-mail pesquisado parecia
+trocar pelo do pesquisador entre abas, (2) a coluna "Alcançável" era lida como "tem acesso" mesmo
+sem RBAC real checado, (3) mesmo corrigido, dois namespaces com acesso confirmado do analista não
+apareciam no resultado, e (4) "Conectividade" continuava sendo sobre o servidor, não o analista.
+Quatro causas distintas, corrigidas em sequência:
+
+**Bug 1 — banners com dado do analista errado (stale state, não impersonation)**: os banners de
+"Acesso Admin IAM"/"Grupos AAD" no topo de `AccessCheckTab.tsx` ficam fora do switch de `section`
+(aparecem em qualquer aba) mas só são preenchidos por `rulesResult`/`canIResult` (Visão
+Geral/Verificação Pontual). Fluxo que reproduzia: testar o próprio e-mail na Visão Geral → trocar
+o campo pro e-mail do analista → rodar "Verificar em todos os clusters" → o scan de frota rodava
+certo, mas o banner continuava mostrando o `iamAdminAccess`/`matchedGroups` do teste ANTERIOR
+(pesquisador), só rotulado com o e-mail atual do input. Corrigido: `runFleetScan` limpa
+`rulesResult`/`canIResult` (e vice-versa em `runOverviewCheck`/`runCanICheck` limpando
+`fleetResult`); banners agora só renderizam quando `section` é `overview`/`pointcheck`/`allgroups`.
+Todo o backend (`ScanFleet`, `scanOneFleetCluster`, `AADGroupLookup.GetAllGroups` com `--id
+<email>`) já usava o e-mail correto desde a Revisão 6 — não havia bug de identidade real ali.
+
+**Bug 2 — "Alcançável" sem RBAC real por trás**: com `namespace` vazio no scan de frota (fluxo
+mais comum — "esse analista tem acesso em ALGUM lugar?"), `scanOneFleetCluster` retornava cedo
+sem checar RBAC nenhum (`if namespace == "" { return result }`), deixando só `Reachable`
+(conectividade de rede do SERVIDOR com o kube-apiserver, nada do analista) como sinal — lido,
+razoavelmente, como "tem acesso". Corrigido: sem namespace informado, lista todos os namespaces
+não-sistema do cluster (`kubeclient.IsSystemNamespace`) via client SEM impersonation e testa RBAC
+real em cada um (concorrência 6 por cluster). `fleetNamespaceHit` ganhou `namespaces []string` —
+onde há acesso de fato, não só um booleano.
+
+**Bug 3 — falso negativo mesmo após o Bug 2**: dois problemas junto:
+- `vvCloudGroupPrefix` ainda era `"VV_CLOUD_"` (com underscore) em `access_check.go` — a Revisão 3
+  já tinha ampliado de `VV_CLOUD_PR_` pra isso, mas o CLAUDE.md registrava (incorretamente) que já
+  tinha virado `"VV_CLOUD"` sem separador; o código nunca foi atualizado. Grupos com hífen (ex:
+  `VV_CLOUD-ADM`) ficavam fora do `--as-group` da impersonation. Corrigido: `"VV_CLOUD"` sem
+  separador, cobre `_` e `-`.
+- `SelfSubjectRulesReview` (usado pra decidir `anyAccess`) tem uma ressalva documentada na própria
+  API do K8s: pode devolver um subconjunto **incompleto** de regras pra políticas RBAC complexas
+  (`Status.Incomplete`, nem checado no scan de frota). Trocado por `SelfSubjectAccessReview`
+  definitivo — equivalente a `kubectl auth can-i list pods -n <ns> --as <email>` — testando em
+  ordem até o primeiro "Allowed": `list pods` → `list deployments.apps` → `list secrets` → `list
+  configmaps` (`workloadAccessProbes`/`hasWorkloadAccess` em `access_check_scan.go`). Removida a
+  lógica antiga (`hasNonGenericAccess`/`genericBaselineResources`), sem mais uso.
+
+**Bug 4 — "Conectividade" ainda misturada com o resultado do analista**: mesmo com RBAC real
+implementado, a tabela ainda tinha uma coluna "Alcançável"/"Conectividade" ao lado das colunas do
+analista — informação sobre o SERVIDOR (rede/VPN/credencial do server-side `kubeManager`), não
+sobre quem está sendo pesquisado. Reestruturado em 3 blocos na aba "Todos os Clusters":
+1. **"Clusters com acesso real de `<email>`"** — tabela principal, só clusters com IAM admin ou
+   RBAC real; é a única coisa relevante pro que o analista pesquisado pode de fato fazer.
+2. **"N clusters não verificados (problema do servidor, não do analista)"** — `<details>`
+   recolhível, só erros (`r.error`, que cobre tanto falha de rede quanto falha de RBAC/impersonate)
+   — relevante só pra quem roda a ferramenta (o pesquisador) entender o que ficou inconclusivo.
+3. **"N clusters verificados sem nenhum acesso"** — `<details>` com só os nomes, pra confirmar
+   cobertura sem poluir a tabela principal.
+A coluna "Conectividade" não existe mais na tabela do analista.
+
+Nenhuma dessas correções foi validada contra clusters/analistas reais nesta sessão (sem VPN/az
+login no ambiente onde o código foi editado) — validar como nas Revisões 3/5/6 antes de confiar
+cegamente no resultado em produção.
+
+---
+
 ## Status e próximos passos
 
 ✅ Implementado, buildado (`go build ./...`, `npm run build`, `./rebuild-web.sh -b`) e validado
 ponta a ponta contra clusters reais (seções "Validação final", "Revisão 3" e "Revisão 5" acima).
+
+⚠️ Revisão 7 (scan de frota — namespace sweep, `SelfSubjectAccessReview`, separação
+conectividade/acesso): buildada, mas **ainda não validada contra clusters/analistas reais** —
+próximo passo antes de considerar concluída.
 
 Pontos que podem ser revisitados no futuro (não bloqueantes):
 - Cache de grupos AAD é por processo (memória) — reinicia a cada restart do servidor.
