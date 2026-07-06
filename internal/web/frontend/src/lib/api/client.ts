@@ -105,6 +105,7 @@ import type {
   NodePoolLookupResult,
   ConntrackResponse,
   ConntrackNodeHistoryResponse,
+  CloudAccountHints,
   K8sNamespacePermissions,
   AccessCheckRulesResult,
   AccessCheckCanIResult,
@@ -1989,10 +1990,22 @@ class APIClient {
     node: string,
     hours = 6,
     step = 5,
+    offsetDays = 0,
   ): Promise<ConntrackNodeHistoryResponse> {
     return this.request<ConntrackNodeHistoryResponse>(
-      `/nodepools/conntrack/history?cluster=${encodeURIComponent(cluster)}&node=${encodeURIComponent(node)}&hours=${hours}&step=${step}`
+      `/nodepools/conntrack/history?cluster=${encodeURIComponent(cluster)}&node=${encodeURIComponent(node)}&hours=${hours}&step=${step}&offset_days=${offsetDays}`
     );
+  }
+
+  async getCloudAccountHints(): Promise<CloudAccountHints> {
+    return this.request<CloudAccountHints>("/user/cloud-account-hints");
+  }
+
+  async saveCloudAccountHints(hints: CloudAccountHints): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>("/user/cloud-account-hints", {
+      method: "POST",
+      body: JSON.stringify(hints),
+    });
   }
 
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {

@@ -79,6 +79,9 @@ type Server struct {
 	// AI Tokens Handler (gerencia tokens AI dos usuários)
 	aiTokensHandler *handlers.AITokensHandler
 
+	// Cloud Account Hints Handler (lembrete de conta .ca por provider)
+	cloudAccountHintsHandler *handlers.CloudAccountHintsHandler
+
 	// AI Tokens Store (compartilhado com Dynatrace handler)
 	aiTokensStore *storage.UserTokensStore
 
@@ -244,6 +247,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 	var aiHandler *handlers.AIDiagnosticsHandler
 	var aiTokensStore *storage.UserTokensStore
 	var aiTokensHandler *handlers.AITokensHandler
+	var cloudAccountHintsHandler *handlers.CloudAccountHintsHandler
 	var localSettingsStore *storage.LocalSettingsStore
 	var kubeManagerWrapper *kubernetes.KubeManager
 	var aiConfig *ai.Config
@@ -264,6 +268,8 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		// Criar AI Tokens Handler com LocalSettingsStore para persistência
 		aiTokensHandler = handlers.NewAITokensHandler(aiTokensStore, localSettingsStore)
 		fmt.Println("✅ AI Tokens Handler criado com persistência local")
+
+		cloudAccountHintsHandler = handlers.NewCloudAccountHintsHandler(aiTokensStore)
 
 		// 2. Criar AI config
 		aiConfig = &ai.Config{
@@ -376,18 +382,19 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		// stressResultChan:   stressResultChan,
 		// monitoringCtx:      monitoringCtx,
 		// monitoringCancel:   monitoringCancel,
-		monitoringEngineV2:      monitoringEngineV2,
-		aiHandler:               aiHandler,               // Pode ser nil se AI estiver desabilitado
-		aiTokensHandler:         aiTokensHandler,         // Gerencia tokens AI dos usuários
-		aiTokensStore:           aiTokensStore,           // Compartilhado com Dynatrace handler
-		aiHistoryStore:          aiHistoryStore,          // Compartilhado com Dynatrace handler
-		kubeManagerWrapper:      kubeManagerWrapper,      // Para predictions RBAC
-		awxHandler:              awxHandler,              // AWX Integration (certificados TLS)
-		ssoProfileHandler:       ssoProfileHandler,       // Perfil SSO corporativo
-		nodepoolRegistryHandler: nodepoolRegistryHandler, // Catálogo de node pools Dynatrace
-		npRegistryStore:         npRegistryStore,         // Usado pelo healthcheck orchestrator
-		finopsTimelineStore:     finopsTimelineStore,     // Snapshots históricos HPA para comparação
-		snatHistoryStore:        snatHistoryStore,        // Histórico SNAT para projeção de crescimento
+		monitoringEngineV2:       monitoringEngineV2,
+		aiHandler:                aiHandler,                // Pode ser nil se AI estiver desabilitado
+		aiTokensHandler:          aiTokensHandler,          // Gerencia tokens AI dos usuários
+		cloudAccountHintsHandler: cloudAccountHintsHandler, // Lembrete de conta .ca por provider
+		aiTokensStore:            aiTokensStore,            // Compartilhado com Dynatrace handler
+		aiHistoryStore:           aiHistoryStore,           // Compartilhado com Dynatrace handler
+		kubeManagerWrapper:       kubeManagerWrapper,       // Para predictions RBAC
+		awxHandler:               awxHandler,               // AWX Integration (certificados TLS)
+		ssoProfileHandler:        ssoProfileHandler,        // Perfil SSO corporativo
+		nodepoolRegistryHandler:  nodepoolRegistryHandler,  // Catálogo de node pools Dynatrace
+		npRegistryStore:          npRegistryStore,          // Usado pelo healthcheck orchestrator
+		finopsTimelineStore:      finopsTimelineStore,      // Snapshots históricos HPA para comparação
+		snatHistoryStore:         snatHistoryStore,         // Histórico SNAT para projeção de crescimento
 	}
 
 	server.setupMiddleware()
@@ -1341,6 +1348,12 @@ func (s *Server) setupRoutes() {
 	if s.aiTokensHandler != nil {
 		s.aiTokensHandler.RegisterRoutes(api, rbacMiddleware)
 		fmt.Println("✅ AI Tokens routes registradas")
+	}
+
+	// Cloud Account Hints (lembrete pessoal de conta .ca por provider)
+	if s.cloudAccountHintsHandler != nil {
+		api.GET("/user/cloud-account-hints", rbacMiddleware.InjectUserEmail(), s.cloudAccountHintsHandler.Get)
+		api.POST("/user/cloud-account-hints", rbacMiddleware.InjectUserEmail(), s.cloudAccountHintsHandler.Save)
 	}
 
 	// Predictive Analysis (análise preditiva de deployments)

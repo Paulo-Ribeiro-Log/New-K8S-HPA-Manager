@@ -12,7 +12,7 @@ import {
   LayoutList, LayoutGrid, ArrowUpDown,
 } from 'lucide-react';
 import {
-  BarChart, Bar, XAxis, YAxis, ReferenceLine, Cell,
+  ComposedChart, Bar, Line, XAxis, YAxis, ReferenceLine, Cell,
 } from 'recharts';
 import {
   ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig,
@@ -68,7 +68,42 @@ function barFill(pct: number): string {
 const fmt = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : String(Math.round(n));
 
-const chartConfig = { pct: { label: 'Uso %' } } satisfies ChartConfig;
+// Dias disponíveis para comparação (mesmo horário, N dias atrás)
+const COMPARE_DAYS = [1, 2, 3] as const;
+const COMPARE_COLORS: Record<number, string> = { 1: '#f97316', 2: '#a855f7', 3: '#64748b' };
+const COMPARE_LABELS: Record<number, string> = { 1: 'D-1', 2: 'D-2', 3: 'D-3' };
+
+// Mapa de histórico por offset de dias: compareHistoryMap[offset][nodeName]
+type CompareHistoryMap = Record<number, Record<string, ConntrackNodeHistoryResponse>>;
+
+const chartConfig = {
+  pct: { label: 'Hoje', color: '#3b82f6' },
+  pctD1: { label: COMPARE_LABELS[1], color: COMPARE_COLORS[1] },
+  pctD2: { label: COMPARE_LABELS[2], color: COMPARE_COLORS[2] },
+  pctD3: { label: COMPARE_LABELS[3], color: COMPARE_COLORS[3] },
+} satisfies ChartConfig;
+
+// Cor/label por série do tooltip. Não usar item.payload.fill: no ChartTooltipContent do shadcn,
+// todas as séries de um mesmo ponto compartilham o mesmo objeto `payload` (a linha do chartData),
+// então o campo `fill` (usado pela barra "Hoje") vazava para as linhas de comparação também.
+function seriesColorForKey(dataKey: string, value: number): string {
+  if (dataKey === 'pct') return barFill(value);
+  const offset = Number(dataKey.replace('pctD', ''));
+  return COMPARE_COLORS[offset] ?? '#94a3b8';
+}
+function seriesLabelForKey(dataKey: string): string {
+  if (dataKey === 'pct') return 'Hoje';
+  const offset = Number(dataKey.replace('pctD', ''));
+  return COMPARE_LABELS[offset] ?? dataKey;
+}
+
+// Reduz uma série de pontos a no máximo ~48 amostras (mesma lógica para todas as séries,
+// garante que o índice i de séries diferentes corresponda ao mesmo horário relativo).
+function decimate(points: ConntrackHistoryPoint[]): ConntrackHistoryPoint[] {
+  if (!points.length) return [];
+  const step = Math.ceil(points.length / 48);
+  return points.filter((_, i) => i % step === 0);
+}
 
 // ─── Sub-componentes pequenos ──────────────────────────────────────────────────
 
@@ -117,22 +152,34 @@ function MiniBar({ pct }: { pct: number }) {
 }
 
 function HistoryChart({
-  node, history, histLoading,
+  node, history, histLoading, compareOffsets, compareHistoryMap,
 }: {
   node: ConntrackNodeStats;
   history?: ConntrackNodeHistoryResponse;
   histLoading: boolean;
+  compareOffsets: number[];
+  compareHistoryMap: CompareHistoryMap;
 }) {
   const chartData = useMemo(() => {
     if (!history?.points?.length) return [];
-    const pts = history.points;
-    const step = Math.ceil(pts.length / 48);
-    return pts.filter((_, i) => i % step === 0).map((p) => ({
-      time: new Date(p.ts * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-      pct: parseFloat(p.usage_pct.toFixed(1)),
-      fill: barFill(p.usage_pct),
+    const todayPts = decimate(history.points);
+    const compareSeries = compareOffsets.map((offset) => ({
+      offset,
+      pts: decimate(compareHistoryMap[offset]?.[node.node_name]?.points ?? []),
     }));
-  }, [history]);
+    return todayPts.map((p, idx) => {
+      const row: Record<string, number | string> = {
+        time: new Date(p.ts * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+        pct: parseFloat(p.usage_pct.toFixed(1)),
+        fill: barFill(p.usage_pct),
+      };
+      compareSeries.forEach(({ offset, pts }) => {
+        const cp = pts[idx];
+        if (cp) row[`pctD${offset}`] = parseFloat(cp.usage_pct.toFixed(1));
+      });
+      return row;
+    });
+  }, [history, compareOffsets, compareHistoryMap, node.node_name]);
 
   const xInterval = Math.max(0, Math.floor(chartData.length / 6) - 1);
 
@@ -151,13 +198,32 @@ function HistoryChart({
 
   return (
     <div className="space-y-1">
-      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Uso conntrack — últimas 24h</p>
+      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">
+        Uso conntrack — últimas 24h
+        {compareOffsets.length > 0 && ` · comparando com ${compareOffsets.map((o) => COMPARE_LABELS[o]).join(', ')}`}
+      </p>
       <ChartContainer config={chartConfig} className="h-[140px] w-full">
-        <BarChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barCategoryGap="15%">
+        <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barCategoryGap="15%">
           <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} interval={xInterval} />
           <YAxis tick={{ fontSize: 9 }} tickLine={false} axisLine={false} domain={[0, 100]} unit="%" />
           <ChartTooltip
-            content={<ChartTooltipContent formatter={(v) => [`${v}%`, 'Uso']} labelFormatter={(l) => `Horário: ${l}`} />}
+            content={
+              <ChartTooltipContent
+                labelFormatter={(l) => `Horário: ${l}`}
+                formatter={(value, _name, item) => (
+                  <>
+                    <span
+                      className="h-2.5 w-2.5 rounded-[2px] shrink-0"
+                      style={{ backgroundColor: seriesColorForKey(String(item.dataKey), Number(value)) }}
+                    />
+                    <div className="flex flex-1 justify-between items-center leading-none gap-3">
+                      <span className="text-muted-foreground">{seriesLabelForKey(String(item.dataKey))}</span>
+                      <span className="font-mono font-medium tabular-nums text-foreground">{Number(value).toFixed(1)}%</span>
+                    </div>
+                  </>
+                )}
+              />
+            }
           />
           <ReferenceLine y={90} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1} />
           <ReferenceLine y={70} stroke="#eab308" strokeDasharray="4 3" strokeWidth={1} />
@@ -167,12 +233,22 @@ function HistoryChart({
           <Bar dataKey="pct" radius={[3, 3, 0, 0]}>
             {chartData.map((e, i) => <Cell key={i} fill={e.fill} fillOpacity={0.85} />)}
           </Bar>
-        </BarChart>
+          {compareOffsets.map((offset) => (
+            <Line key={offset} type="monotone" dataKey={`pctD${offset}`} stroke={COMPARE_COLORS[offset]}
+              strokeWidth={1.75} strokeDasharray="5 3" dot={false} connectNulls />
+          ))}
+        </ComposedChart>
       </ChartContainer>
-      <div className="flex items-center gap-3 text-[10px] text-muted-foreground justify-end">
+      <div className="flex items-center gap-3 text-[10px] text-muted-foreground justify-end flex-wrap">
         <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5 bg-yellow-400" />70%</span>
         <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5 bg-red-500" />90%</span>
         <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5 bg-blue-500" />Atual</span>
+        {compareOffsets.map((offset) => (
+          <span key={offset} className="flex items-center gap-1">
+            <span className="inline-block w-3 h-0.5" style={{ backgroundColor: COMPARE_COLORS[offset] }} />
+            {COMPARE_LABELS[offset]}
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -181,7 +257,7 @@ function HistoryChart({
 // ─── NodeCard (view cards) ────────────────────────────────────────────────────
 
 function NodeCard({
-  node, history, histLoading, histStats, trend, capacityRec,
+  node, history, histLoading, histStats, trend, capacityRec, compareOffsets, compareHistoryMap,
 }: {
   node: ConntrackNodeStats;
   history?: ConntrackNodeHistoryResponse;
@@ -189,6 +265,8 @@ function NodeCard({
   histStats: HistStats | null;
   trend: Trend;
   capacityRec: CapRec;
+  compareOffsets: number[];
+  compareHistoryMap: CompareHistoryMap;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -212,7 +290,8 @@ function NodeCard({
           <p className="text-xs text-destructive">{node.error}</p>
         ) : (
           <>
-            <HistoryChart node={node} history={history} histLoading={histLoading} />
+            <HistoryChart node={node} history={history} histLoading={histLoading}
+              compareOffsets={compareOffsets} compareHistoryMap={compareHistoryMap} />
 
             {histStats && (
               <div className="grid grid-cols-4 gap-2 text-xs rounded-md border border-border/60 px-3 py-2 bg-muted/30">
@@ -324,7 +403,7 @@ function SummaryStrip({
 const COL_WIDTHS = [220, 140, 160, 80, 80, 100, 140];
 
 function ConntrackTableRow({
-  node, history, histLoading, histStats, trend, capacityRec, gridTemplate,
+  node, history, histLoading, histStats, trend, capacityRec, gridTemplate, compareOffsets, compareHistoryMap,
 }: {
   node: ConntrackNodeStats;
   history?: ConntrackNodeHistoryResponse;
@@ -333,6 +412,8 @@ function ConntrackTableRow({
   trend: Trend;
   capacityRec: CapRec;
   gridTemplate: string;
+  compareOffsets: number[];
+  compareHistoryMap: CompareHistoryMap;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -373,7 +454,8 @@ function ConntrackTableRow({
       </div>
       {expanded && (
         <div className="border-b border-border/40 bg-muted/20 px-6 py-3 space-y-3">
-          <HistoryChart node={node} history={history} histLoading={histLoading} />
+          <HistoryChart node={node} history={history} histLoading={histLoading}
+            compareOffsets={compareOffsets} compareHistoryMap={compareHistoryMap} />
           {histStats && (
             <div className="grid grid-cols-4 gap-2 text-xs rounded-md border border-border/60 px-3 py-2 bg-background">
               {[
@@ -443,6 +525,9 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
   const [error, setError] = useState<string | null>(null);
   const [historyMap, setHistoryMap] = useState<Record<string, ConntrackNodeHistoryResponse>>({});
   const [histLoading, setHistLoading] = useState(false);
+  const [compareOffsets, setCompareOffsets] = useState<number[]>([]);
+  const [compareHistoryMap, setCompareHistoryMap] = useState<CompareHistoryMap>({});
+  const [compareLoading, setCompareLoading] = useState<Record<number, boolean>>({});
   const [nodeSearch, setNodeSearch] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [sortKey, setSortKey] = useState<SortKey>('usage');
@@ -461,15 +546,37 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
     setHistLoading(false);
   };
 
+  const fetchCompareHistory = async (offset: number, ns: ConntrackNodeStats[]) => {
+    if (!ns.length) return;
+    setCompareLoading((m) => ({ ...m, [offset]: true }));
+    const results = await Promise.allSettled(
+      ns.map((n) => apiClient.getConntrackNodeHistory(cluster, n.node_name, 24, 30, offset)),
+    );
+    const map: Record<string, ConntrackNodeHistoryResponse> = {};
+    results.forEach((r, i) => { if (r.status === 'fulfilled') map[ns[i].node_name] = r.value; });
+    setCompareHistoryMap((prev) => ({ ...prev, [offset]: map }));
+    setCompareLoading((m) => ({ ...m, [offset]: false }));
+  };
+
+  const toggleCompareOffset = (offset: number) => {
+    setCompareOffsets((prev) => {
+      if (prev.includes(offset)) return prev.filter((o) => o !== offset);
+      if (!compareHistoryMap[offset]) fetchCompareHistory(offset, nodes);
+      return [...prev, offset].sort((a, b) => a - b);
+    });
+  };
+
   const fetchStats = async () => {
     setLoading(true);
     setError(null);
     setHistoryMap({});
+    setCompareHistoryMap({});
     try {
       const data = await apiClient.getConntrackStats(cluster, nodepool);
       setNodes(data.nodes);
       setFetchedAt(data.fetched_at);
       fetchHistory(data.nodes);
+      compareOffsets.forEach((offset) => fetchCompareHistory(offset, data.nodes));
     } catch (e: any) {
       setError(e?.message ?? 'Erro ao buscar estatísticas de conntrack');
     } finally {
@@ -522,6 +629,28 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
         <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
           {nodes.length > 0 && (
             <>
+              {/* Comparar com dias anteriores */}
+              <div className="flex items-center gap-1 rounded-md border border-input px-1.5 py-1">
+                <span className="text-[10px] text-muted-foreground pl-0.5 pr-0.5">Comparar:</span>
+                {COMPARE_DAYS.map((d) => {
+                  const active = compareOffsets.includes(d);
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => toggleCompareOffset(d)}
+                      className={`px-2 h-6 rounded text-[11px] font-medium transition-colors flex items-center gap-1 ${
+                        active ? 'text-primary-foreground' : 'bg-transparent text-muted-foreground hover:bg-muted'
+                      }`}
+                      style={active ? { backgroundColor: COMPARE_COLORS[d] } : undefined}
+                      title={`Sobrepor uso do mesmo horário ${d} dia(s) atrás`}
+                    >
+                      {compareLoading[d] && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                      {COMPARE_LABELS[d]}
+                    </button>
+                  );
+                })}
+              </div>
+
               {/* Ordenação */}
               <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={cycleSortKey}>
                 <ArrowUpDown className="h-3.5 w-3.5" />
@@ -626,6 +755,8 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
                       trend={trend}
                       capacityRec={capacityRec}
                       gridTemplate={gridTemplate}
+                      compareOffsets={compareOffsets}
+                      compareHistoryMap={compareHistoryMap}
                     />
                   ))}
                 </div>
@@ -646,6 +777,8 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
                   histStats={histStats}
                   trend={trend}
                   capacityRec={capacityRec}
+                  compareOffsets={compareOffsets}
+                  compareHistoryMap={compareHistoryMap}
                 />
               ))}
             </div>

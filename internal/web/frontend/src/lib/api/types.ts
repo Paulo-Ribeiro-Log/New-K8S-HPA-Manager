@@ -1594,9 +1594,15 @@ export interface ConntrackNodeHistoryResponse {
   node_name: string;
   hours: number;
   step_minutes: number;
+  offset_days: number;
   points: ConntrackHistoryPoint[];
   prometheus_available: boolean;
   error?: string;
+}
+
+export interface CloudAccountHints {
+  gcp_email?: string;
+  aws_email?: string;
 }
 
 export interface CommandRunnerSSEEvent {
