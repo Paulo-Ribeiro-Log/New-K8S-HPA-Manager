@@ -1641,6 +1641,32 @@ export interface CloudRegionTarget {
   protocol: 'http' | 'https' | 'icmp';
 }
 
+// Grafo de topologia (Fase 6.4) — agregado de todos os testes já persistidos, não só os da
+// sessão atual do navegador.
+export interface LatencyTopologyNode {
+  id: string;
+  label: string;
+  kind: 'cluster' | 'cloud_target' | 'service_target';
+  provider: string; // "aks"|"eks"|"gke"|"aws"|"gcp"|"azure"|""
+}
+
+export interface LatencyTopologyEdge {
+  id: string;
+  source: string;
+  target: string;
+  protocol: string;
+  p95_ms: number;
+  p99_ms: number;
+  error_count: number;
+  total_requests: number;
+  tested_at: string;
+}
+
+export interface LatencyTopologyResponse {
+  nodes: LatencyTopologyNode[];
+  edges: LatencyTopologyEdge[];
+}
+
 export interface LatencyTestStats {
   min_ms: number;
   avg_ms: number;

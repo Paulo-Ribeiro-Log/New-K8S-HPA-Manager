@@ -929,6 +929,7 @@ func (s *Server) setupRoutes() {
 		latencyTest.POST("/run", rbacMiddleware.RequireSREGroup(), latencyTestHandler.Run)
 		latencyTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), latencyTestHandler.Cancel)
 		latencyTest.GET("/cloud-targets", latencyTestHandler.GetCloudTargets) // lista estática, sem RBAC extra
+		latencyTest.GET("/topology", latencyTestHandler.GetTopology)          // agregado de histórico, sem RBAC extra
 	}
 
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)

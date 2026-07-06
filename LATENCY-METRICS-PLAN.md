@@ -355,27 +355,43 @@ Testado de verdade nesta sessão (não só compilação): subi o servidor
 (`./build/new-k8s-hpa web -f`) e confirmei `~/.k8s-hpa-manager/latency_test_history.db` sendo
 criado com sucesso, log "✅ Latency Test History Store inicializado", sem erros.
 
-### 6.4 — Grafo de topologia (reaproveitando o motor do Service Mesh)
+### 6.4 — Grafo de topologia (reaproveitando o motor do Service Mesh) ✅ CONCLUÍDA
 
-**Arquivo:** `internal/web/frontend/src/components/LatencyTopologyGraph.tsx` ← CRIAR
-**Arquivo:** `internal/web/handlers/latency_test_tool.go` ← MODIFICAR (novo endpoint)
+**Arquivo:** `internal/web/handlers/latency_topology.go` ← CRIADO
+**Arquivo:** `internal/web/frontend/src/components/LatencyTopologyGraph.tsx` ← CRIADO
+**Arquivo:** `internal/web/frontend/src/components/LatencyTestTab.tsx` ← MODIFICADO (toggle de aba)
 
-- [ ] `GET /api/v1/latency-test/topology` — monta nós (clusters + alvos de nuvem já testados) e
-  arestas (resultado mais recente de cada par cluster→alvo, via `latency_test_history_store.go`)
-- [ ] Frontend: **reaproveitar o Cytoscape.js já configurado em `ServiceMeshGraph.tsx`** — mesma
-  lib, mesmo padrão de `style` function pra cor da aresta por severidade (troca só o critério:
-  `errorRate` vira faixas de latência em ms, thresholds configuráveis — sugestão inicial: verde
-  <100ms, amarelo 100-300ms, vermelho >300ms, sujeito a ajuste depois de ver dado real)
-  - Nós: cluster (ícone por cloud provider — já existe o badge AKS/EKS/GKE em outro lugar da UI,
-    reaproveitar o mesmo mapeamento de ícone/cor) e alvos de nuvem testados (ícone de "região",
-    agrupados por provider)
-  - Arestas: espessura ou cor pelo P95 mais recente; tooltip com P95/P99/protocolo/quando foi
-    testado
-  - Sem teste rodado ainda pra um par cluster→alvo = sem aresta (não desenhar aresta cinza
-    "desconhecido" por padrão — polui o grafo; oferecer toggle "mostrar não testados" se fizer
-    sentido depois de ver o grafo real)
-- [ ] Nova aba/seção dentro de `LatencyTestTab.tsx` (não uma ferramenta separada no `ToolsMenu`) —
-  toggle entre "Teste" (formulário atual, Fases 1-5) e "Topologia" (grafo agregado desta fase)
+- [x] `GET /api/v1/latency-test/topology` (`LatencyTestHandler.GetTopology`) — lê
+  `testHistory.GetRecent(500)`, mantém só a PRIMEIRA ocorrência de cada par cluster→alvo (records
+  já vêm mais-recente-primeiro, então a primeira ocorrência já É a mais recente), monta nós
+  (cluster com provider via `kubeManager.DiscoverClusters()`; alvo com `targetNodeKind()` —
+  `"cloud_target"` se bater com a lista curada da 6.2, senão `"service_target"` genérico) e
+  arestas. `normalizeICMPTarget()` (já existente da 6.1) normaliza o alvo pra host puro — assim
+  `http://x` e `https://x` do mesmo host viram o MESMO nó, não dois
+- [x] Frontend (`LatencyTopologyGraph.tsx`) reaproveita a lib Cytoscape.js já usada em
+  `ServiceMeshGraph.tsx` (mesmo padrão de `style` com função por elemento), mas como componente
+  NOVO e enxuto — o de Service Mesh tem 2400+ linhas com filtros/badges/fullscreen que não fazem
+  sentido pro nosso caso (poucos nós, sem necessidade de filtro)
+  - Cor do nó: mesma família de cor dos badges AKS/EKS/GKE já usados em `useCloudProvider.ts`
+    (azul=Azure/AKS, laranja=AWS/EKS, verde=GCP/GKE) — aplicada tanto a nós de cluster quanto a
+    nós de alvo de nuvem, pra manter a linguagem visual consistente
+  - Forma do nó: círculo (cluster, default), retângulo arredondado (`cloud_target`), losango
+    (`service_target`)
+  - Cor da aresta por P95: verde <100ms, amarelo 100-300ms, vermelho >300ms (thresholds como
+    constantes fáceis de ajustar depois de ver dado real)
+  - Clique na aresta abre painel com P95/P99/protocolo/erros/quando foi testado (mais simples que
+    tooltip — reaproveita padrão de "seleção abre card" já visto em outras telas)
+  - Sem teste ainda pra um par = sem aresta (backend já filtra isso, frontend só desenha o que
+    vier)
+- [x] Toggle "Teste"/"Topologia" dentro do `LatencyTestTab.tsx` — mesmo padrão de abas manuais
+  (`div`+estado, nunca shadcn `<Tabs>`) já documentado no CLAUDE.md pra evitar o bug de
+  `flex-1 min-h-0` quebrado
+
+`go build ./...`, `go vet ./...`, `gofmt -l` e `tsc --noEmit` limpos. `./rebuild-web.sh -b`
+(build de produção via Vite, mais rigoroso que `tsc` pra JSX malformado) passou — servidor sobe e
+responde 200.
+
+Com isso, **toda a Fase 6 está concluída**. Falta só a Fase 7 (opcional/futuro).
 
 ### Ordem de implementação sugerida
 

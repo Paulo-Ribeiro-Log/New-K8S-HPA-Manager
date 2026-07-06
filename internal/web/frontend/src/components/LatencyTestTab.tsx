@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Loader2, Gauge, Play, XCircle, AlertTriangle } from "lucide-react";
 import { ProtectedAction } from "@/components/rbac";
+import LatencyTopologyGraph from "@/components/LatencyTopologyGraph";
 import { useClusters } from "@/hooks/useAPI";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
@@ -73,6 +74,7 @@ export default function LatencyTestTab() {
   const [runError, setRunError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [testedProtocol, setTestedProtocol] = useState<"http" | "https" | "icmp">("http");
+  const [section, setSection] = useState<"test" | "topology">("test");
   const esRef = useRef<EventSource | null>(null);
 
   const { data: namespaces = [] } = useQuery({
@@ -229,6 +231,31 @@ export default function LatencyTestTab() {
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
+      <div className="flex border-b border-border px-6 pt-2 gap-1 flex-shrink-0">
+        {([
+          { id: "test", label: "Teste" },
+          { id: "topology", label: "Topologia" },
+        ] as const).map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setSection(tab.id)}
+            className={`px-3 py-1.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              section === tab.id ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {section === "topology" && (
+        <div className="p-6">
+          <LatencyTopologyGraph />
+        </div>
+      )}
+
+      {section === "test" && (
+      <>
       <div className="px-6 py-3 bg-muted/30 border-b border-border flex flex-wrap items-end gap-3">
         <div className="min-w-[220px]">
           <ClusterSelectorForTab
@@ -495,6 +522,8 @@ export default function LatencyTestTab() {
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

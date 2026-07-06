@@ -3567,6 +3567,11 @@ class APIClient {
     return response.targets || [];
   }
 
+  /** Grafo agregado de topologia (Fase 6.4) — todos os testes já persistidos */
+  async getLatencyTopology(): Promise<import("./types").LatencyTopologyResponse> {
+    return this.request<import("./types").LatencyTopologyResponse>("/latency-test/topology");
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{
