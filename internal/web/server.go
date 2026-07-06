@@ -904,6 +904,18 @@ func (s *Server) setupRoutes() {
 		cmdRunner.DELETE("/session/:sessionId", commandRunnerHandler.Cancel) // Forçar parada — sem RBAC extra (quem executa pode parar)
 	}
 
+	// Teste de Latência sob demanda — cria pod efêmero + curl via exec pra medir latência real
+	// de uma aplicação no momento do teste (ver LATENCY-METRICS-PLAN.md)
+	latencyTestHandler := handlers.NewLatencyTestHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker)
+	s.router.GET("/api/v1/latency-test/stream/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		latencyTestHandler.Stream)
+	latencyTest := api.Group("/latency-test")
+	{
+		latencyTest.POST("/run", rbacMiddleware.RequireSREGroup(), latencyTestHandler.Run)
+		latencyTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), latencyTestHandler.Cancel)
+	}
+
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)
 	explorerHandler := handlers.NewExplorerHandler(s.kubeManager)
 	explorer := api.Group("/explorer")

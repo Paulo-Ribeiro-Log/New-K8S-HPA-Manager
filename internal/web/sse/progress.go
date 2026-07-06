@@ -11,18 +11,19 @@ import (
 
 // ProgressEvent representa um evento de progresso enviado via SSE
 type ProgressEvent struct {
-	ID        string    `json:"id"`         // ID da operação (ex: "nodepool-prod-pool-1234")
-	Type      string    `json:"type"`       // "cordon" | "drain" | "azure" | "complete" | "error" | "init" | "deployments" | "services" | "configs" | "summary"
-	Phase     string    `json:"phase"`      // "started" | "in_progress" | "completed" | "failed"
-	Message   string    `json:"message"`    // Mensagem descritiva
-	Progress  float64   `json:"progress"`   // 0.0 - 1.0
-	Details   string    `json:"details"`    // Detalhes adicionais
-	Status    string    `json:"status"`     // "healthy" | "warning" | "critical" | "unknown" (para health checking)
-	Timestamp time.Time `json:"timestamp"`  // Timestamp do evento
-	NodeName  string    `json:"node_name"`  // Nome do node sendo processado (se aplicável)
-	PodsCount int       `json:"pods_count"` // Quantidade de pods (se aplicável)
-	Error     string    `json:"error"`      // Mensagem de erro (se Type == "error")
-	Cluster   string    `json:"cluster,omitempty"` // Cluster de origem (Command Runner)
+	ID        string      `json:"id"`                // ID da operação (ex: "nodepool-prod-pool-1234")
+	Type      string      `json:"type"`              // "cordon" | "drain" | "azure" | "complete" | "error" | "init" | "deployments" | "services" | "configs" | "summary"
+	Phase     string      `json:"phase"`             // "started" | "in_progress" | "completed" | "failed"
+	Message   string      `json:"message"`           // Mensagem descritiva
+	Progress  float64     `json:"progress"`          // 0.0 - 1.0
+	Details   string      `json:"details"`           // Detalhes adicionais
+	Status    string      `json:"status"`            // "healthy" | "warning" | "critical" | "unknown" (para health checking)
+	Timestamp time.Time   `json:"timestamp"`         // Timestamp do evento
+	NodeName  string      `json:"node_name"`         // Nome do node sendo processado (se aplicável)
+	PodsCount int         `json:"pods_count"`        // Quantidade de pods (se aplicável)
+	Error     string      `json:"error"`             // Mensagem de erro (se Type == "error")
+	Cluster   string      `json:"cluster,omitempty"` // Cluster de origem (Command Runner)
+	Result    interface{} `json:"result,omitempty"`  // Payload estruturado final (ex: LatencyTestResult) — evita serializar dentro de Details como string
 }
 
 // Client representa um cliente SSE conectado

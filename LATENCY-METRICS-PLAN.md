@@ -96,23 +96,39 @@ por design, é só o runner isolado.
 
 ---
 
-## Fase 2 — Backend: endpoint SSE + rotas
+## Fase 2 — Backend: endpoint SSE + rotas ✅ CONCLUÍDA
 
-**Arquivo:** `internal/web/handlers/latency_test_tool.go` ← MODIFICAR (mesmo arquivo da Fase 1)
-**Arquivo:** `internal/web/server.go` ← MODIFICAR
+**Arquivo:** `internal/web/handlers/latency_test_tool.go` ← MODIFICADO (mesmo arquivo da Fase 1)
+**Arquivo:** `internal/web/server.go` ← MODIFICADO
+**Arquivo:** `internal/web/sse/progress.go` ← MODIFICADO (campo novo, ver nota abaixo)
 
-- [ ] `POST /api/v1/latency-test/run` — recebe `{cluster, namespace, url, requests, timeout_ms}`,
-  valida teto de `requests` (ex: máx 200) e `timeout_ms` (ex: máx 10000), retorna `session_id`
-  (mesmo padrão de outras operações SSE: endpoint de start retorna ID, cliente conecta no stream)
-- [ ] `GET /api/v1/latency-test/stream/:sessionId` — SSE, eventos de progresso via
-  `ProgressTracker`/`ProgressReporter` (criar pod → aguardando ready → executando → resultado final
-  ou erro)
-- [ ] `POST /api/v1/latency-test/cancel/:sessionId` — cancela e força cleanup do pod (usuário fecha
-  o modal no meio do teste) — mesmo padrão de cancelamento já usado no Command Runner
-  (`CommandRunnerHandler.Cancel`)
-- [ ] Registrar rotas em `server.go`, atrás de `rbacMiddleware.RequireSREGroup()`
-- [ ] `CreateHistoryEntry(c, "latency_test", url, cluster, status, nil, {namespace, requests, stats}, duration, errMsg)`
-  no fim da execução (sucesso ou falha)
+- [x] `POST /api/v1/latency-test/run` (`LatencyTestHandler.Run`) — recebe
+  `{cluster, namespace, url, requests, timeout_ms}`, aplica default (20 requisições / 3000ms) e
+  teto (200 requisições / 10000ms) quando ausente ou acima do limite, retorna `session_id`
+- [x] `GET /api/v1/latency-test/stream/:sessionId` (`LatencyTestHandler.Stream`) — SSE via
+  `ProgressTracker` já existente (`handlers.GetProgressTracker()`, mesma instância global do
+  Command Runner/Health Check), replay de eventos perdidos na reconexão, mesmo padrão exato de
+  `CommandRunnerHandler.Stream`
+- [x] `POST /api/v1/latency-test/cancel/:sessionId` (`LatencyTestHandler.Cancel`) — cancela o
+  `context.Context` da execução; o cleanup do pod roda de qualquer forma porque `createTestPod`
+  usa `context.Background()` próprio pro delete, não o ctx cancelado
+- [x] Registrado em `server.go` atrás de `rbacMiddleware.RequireSREGroup()`; rota de stream usa
+  `middleware.WebSocketJWTAuthMiddleware` direto no `s.router` (fora do grupo `api`) — mesma razão
+  do Command Runner: `EventSource` do browser não manda header `Authorization`, token vem por
+  query param
+- [x] `LatencyTestHandler.logHistory` grava no `HistoryTracker` (`action: "latency_test"`) no fim
+  da execução (sucesso ou falha) — construído direto como `history.HistoryEntry{}` (não via
+  `CreateHistoryEntry(c, ...)`) porque o log acontece dentro da goroutine em background, depois
+  que o handler HTTP já retornou e `*gin.Context` não está mais disponível; `UserInfo` é capturado
+  ainda de forma síncrona em `Run` (via `GetUserInfoForHistory(c)`) e passado pra goroutine
+
+**Nota**: `ProgressEvent` (`internal/web/sse/progress.go`) ganhou o campo
+`Result interface{} \`json:"result,omitempty"\`` — o struct não tinha um jeito de carregar um
+payload estruturado (só `Details string`), e o resultado final do teste
+(`LatencyTestResult{Samples, Stats, ErrorCount, TotalRequests}`) precisa chegar inteiro no evento
+`"complete"`. Campo genérico, não quebra nenhum uso existente (`omitempty`).
+
+`go build ./...`, `go vet ./...` e `gofmt -l` limpos.
 
 ---
 
