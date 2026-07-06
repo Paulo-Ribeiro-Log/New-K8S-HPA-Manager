@@ -18,7 +18,11 @@ import (
 )
 
 // vvCloudGroupPrefix é o prefixo dos grupos AAD que concedem acesso a workloads dos clusters.
-const vvCloudGroupPrefix = "VV_CLOUD_"
+// Sem separador (nem "_" nem "-") de propósito: grupos como "VV_CLOUD-ADM" usam hífen em vez
+// de underscore, e ficavam de fora do filtro quando o prefixo era "VV_CLOUD_" — causava falso
+// negativo real no scan de frota (analista com RoleBinding via um grupo "VV_CLOUD-X" não tinha
+// esse grupo incluído no --as-group da impersonation, então o RBAC real não era detectado).
+const vvCloudGroupPrefix = "VV_CLOUD"
 
 // AccessCheckHandler verifica, via impersonation nativa do K8s, se um analista (e-mail)
 // tem acesso a um cluster/namespace — reproduz `kubectl auth can-i --as <email>`.

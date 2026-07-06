@@ -1689,7 +1689,10 @@ export interface AccessCheckFleetClusterResult {
   cluster: string;
   reachable: boolean;
   iamAdminAccess?: AccessCheckIAMAdminMatch[];
-  namespaceAccess?: { anyAccess: boolean };
+  // namespaces: com namespace informado no scan, tem no máx. 1 item (o próprio, se houver
+  // acesso); sem namespace informado, lista TODOS os namespaces não-sistema onde o analista
+  // tem acesso RBAC real — é o sinal de "acesso de fato", ao contrário de `reachable`.
+  namespaceAccess?: { anyAccess: boolean; namespaces?: string[] };
   error?: string;
 }
 
