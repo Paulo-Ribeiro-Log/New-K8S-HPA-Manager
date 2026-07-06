@@ -31,6 +31,17 @@ function edgeColor(p95: number): string {
   return "#10b981"; // green-500
 }
 
+// Rótulo abreviado pro nó — o `label` que a API devolve é o context completo do cluster (ex:
+// "akspriv-abastecimento-hlg-admin") ou o host completo do alvo (ex:
+// "supply-api.abastecimento-hlg.svc.cluster.local"), longos demais pra caber legível num nó de
+// grafo. `id` continua sendo o valor completo (usado pras arestas baterem); isso é só exibição.
+function shortNodeLabel(node: { label: string; kind: string }): string {
+  if (node.kind === "cluster") {
+    return node.label.replace(/-admin$/, "");
+  }
+  return node.label.split(".")[0];
+}
+
 export default function LatencyTopologyGraph() {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyInstance = useRef<Core | null>(null);
@@ -46,7 +57,7 @@ export default function LatencyTopologyGraph() {
 
     const elements = [
       ...data.nodes.map((n) => ({
-        data: { id: n.id, label: n.label, kind: n.kind, provider: n.provider },
+        data: { id: n.id, label: shortNodeLabel(n), fullLabel: n.label, kind: n.kind, provider: n.provider },
       })),
       ...data.edges.map((e) => ({
         data: {
@@ -76,11 +87,11 @@ export default function LatencyTopologyGraph() {
             color: "#ffffff",
             "text-valign": "center",
             "text-halign": "center",
-            "font-size": "10px",
+            "font-size": "9px",
             "text-wrap": "wrap",
-            "text-max-width": "90px",
-            width: 70,
-            height: 70,
+            "text-max-width": "80px",
+            width: 90,
+            height: 90,
             "border-width": 2,
             "border-color": "#1e293b",
           },
