@@ -34,14 +34,12 @@ type LatencyHistoricalContext struct {
 
 // fetchHistoricalLatencyContext busca o histórico DT/Prometheus do mesmo alvo do teste ativo.
 //
-// Ressalvas não validadas contra ambiente real (documentadas em LATENCY-METRICS-PLAN.md Fase 5,
-// verificar antes de confiar cegamente no resultado em produção):
-//   - `builtin:service.response.time` (DT) vive em entidades SERVICE; `GetWorkloadLatency`
-//     reaproveita o mesmo `splitBy` por k8s.namespace.name/k8s.workload.name que já funciona pra
-//     CPU/mem (entidades CLOUD_APPLICATION, ver finops_metrics.go) — não confirmamos se SERVICE
-//     expõe essas dimensões da mesma forma.
-//   - O nome do Service K8s usado nas duas fontes é adivinhado a partir do host da URL
-//     (heurística simples), não resolvido de verdade contra o cluster.
+// Ressalva confirmada contra ambiente real (não é mais suposição, ver
+// LATENCY-METRICS-PLAN.md Fase 5): o nome do Service K8s usado nas duas fontes é adivinhado a
+// partir do host da URL (heurística simples em guessServiceNameFromURL), não resolvido de verdade
+// contra o cluster — e o Dynatrace configurado neste projeto não monitora todos os
+// clusters/namespaces (confirmado: zero entidades CLOUD_APPLICATION nos namespaces testados), o
+// que é esperado e tratado como "sem dado" (nunca erro visível pro usuário).
 //
 // Em ambos os casos, se a suposição estiver errada o resultado é só "sem dado" (MetricsSource
 // vazio) — nunca um valor errado sendo exibido como se fosse confiável.
