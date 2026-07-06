@@ -34,6 +34,7 @@ Ver `ACCESS-CHECK-PLAN.md` para o histórico completo de decisões e comandos `a
 - [**Plano: FinOps Isenções**](FINOPS-EXEMPTIONS-PLAN.md) ← work in progress — whitelist por workload com threshold de réplicas (nenhuma fase iniciada)
 - [**Plano: Cluster Discovery AKS+EKS**](CLUSTER-DISCOVERY-PLAN.md) ← ✅ Fases 1-5 concluídas — discovery paralelo, config EKS separada, semáforos ampliados, frontend com badges AKS/EKS
 - [**Plano: Verificar Acesso (Access Checker)**](ACCESS-CHECK-PLAN.md) ← ⚠️ Revisão 7 pendente de validação real — checa acesso de analista via impersonation K8s + grupos AAD `VV_CLOUD*` resolvidos por `az ad user get-member-groups` (sem Graph API); detecta também acesso admin via IAM do Azure (bypass de RBAC, invisível à impersonation); scan de frota usa `SelfSubjectAccessReview` varrendo todos os namespaces
+- [**Plano: Teste de Latência sob Demanda**](LATENCY-METRICS-PLAN.md) ← work in progress — ferramenta ativa (botão "Executar Teste"): pod efêmero + `curl` via exec (reaproveita `execCmdInPod` do conntrack) mede latência real na hora, SSE de progresso; contexto histórico via Prometheus/Dynatrace (DT primário + Prom fallback, padrão FinOps) como complemento (nenhuma fase iniciada)
 
 ---
 
