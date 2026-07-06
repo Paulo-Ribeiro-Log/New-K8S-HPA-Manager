@@ -226,11 +226,73 @@ type LatencyTestHandler struct {
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
 	cancelFuncs    sync.Map // sessionID -> context.CancelFunc
+	runningUsers   sync.Map // userEmail -> struct{} — "um teste por vez por usuário"
+	seenClusters   sync.Map // cluster -> struct{} — só varre órfãos onde este handler já rodou algo
 }
 
-// NewLatencyTestHandler cria o handler do teste de latência.
+// NewLatencyTestHandler cria o handler do teste de latência e inicia a varredura periódica de
+// pods órfãos em background (ver sweepOrphanPods).
 func NewLatencyTestHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker) *LatencyTestHandler {
-	return &LatencyTestHandler{kubeManager: km, tracker: tracker, historyTracker: ht}
+	h := &LatencyTestHandler{kubeManager: km, tracker: tracker, historyTracker: ht}
+	go h.sweepOrphanPods()
+	return h
+}
+
+const (
+	// latencyTestSweepInterval é a frequência da varredura de pods órfãos.
+	latencyTestSweepInterval = 5 * time.Minute
+	// latencyTestOrphanAge é bem acima do ActiveDeadlineSeconds (5min) — se um pod de teste
+	// ainda existe depois disso, o K8s deveria tê-lo matado sozinho e não matou (falha do
+	// próprio K8s) ou o cleanup() explícito falhou por algum motivo; de qualquer forma, é
+	// seguro forçar a remoção.
+	latencyTestOrphanAge = 10 * time.Minute
+)
+
+// sweepOrphanPods varre periodicamente os clusters já usados por este handler (não a frota
+// inteira — um cluster nunca usado nunca vai ter pod de teste) procurando pods
+// `app=latency-test-tool` que sobreviveram além do esperado. Rede de segurança adicional pro
+// caso do cleanup() explícito não ter rodado (ex: processo do servidor morreu no meio do teste,
+// e como o processo caiu, o ActiveDeadlineSeconds do K8s é a defesa que realmente importa nesse
+// cenário — esta varredura cobre o caso mais raro de o próprio K8s não ter aplicado o deadline).
+func (h *LatencyTestHandler) sweepOrphanPods() {
+	ticker := time.NewTicker(latencyTestSweepInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.seenClusters.Range(func(key, _ interface{}) bool {
+			h.sweepClusterOrphans(key.(string))
+			return true
+		})
+	}
+}
+
+// sweepClusterOrphans deleta, num único cluster, os pods de teste mais velhos que
+// latencyTestOrphanAge. Best-effort: qualquer erro (cluster inacessível, etc.) só faz pular
+// esse ciclo — tenta de novo no próximo tick.
+func (h *LatencyTestHandler) sweepClusterOrphans(cluster string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		return
+	}
+
+	pods, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		LabelSelector: "app=latency-test-tool",
+	})
+	if err != nil {
+		return
+	}
+
+	for _, pod := range pods.Items {
+		if time.Since(pod.CreationTimestamp.Time) < latencyTestOrphanAge {
+			continue
+		}
+		delCtx, delCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		gracePeriod := int64(0)
+		_ = clientset.CoreV1().Pods(pod.Namespace).Delete(delCtx, pod.Name, metav1.DeleteOptions{GracePeriodSeconds: &gracePeriod})
+		delCancel()
+	}
 }
 
 // RunLatencyTestRequest é o body do POST /run.
@@ -274,12 +336,27 @@ func (h *LatencyTestHandler) Run(c *gin.Context) {
 
 	userInfo := GetUserInfoForHistory(c)
 
+	// "Um teste por vez por usuário" — evita empilhar pods de teste se o mesmo analista disparar
+	// múltiplos testes em abas/janelas diferentes.
+	lockKey := userInfo.Email
+	if lockKey == "" {
+		lockKey = "unknown"
+	}
+	if _, alreadyRunning := h.runningUsers.LoadOrStore(lockKey, struct{}{}); alreadyRunning {
+		c.JSON(http.StatusConflict, errorResponse("TEST_ALREADY_RUNNING",
+			"você já tem um teste de latência em andamento — aguarde terminar ou cancele antes de iniciar outro"))
+		return
+	}
+
+	h.seenClusters.Store(req.Cluster, struct{}{})
+
 	sessionID := uuid.New().String()
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancelFuncs.Store(sessionID, cancel)
 
 	go func() {
 		defer h.cancelFuncs.Delete(sessionID)
+		defer h.runningUsers.Delete(lockKey)
 		h.runTest(ctx, sessionID, req, userInfo)
 	}()
 

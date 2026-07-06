@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Loader2, Gauge, Play, XCircle, AlertTriangle } from "lucide-react";
+import { ProtectedAction } from "@/components/rbac";
 import { useClusters } from "@/hooks/useAPI";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
@@ -267,17 +268,19 @@ export default function LatencyTestTab() {
           />
         </div>
 
-        {!isRunning ? (
-          <Button onClick={runTest} disabled={!canRun}>
-            <Play className="w-4 h-4 mr-2" />
-            Executar Teste
-          </Button>
-        ) : (
-          <Button variant="destructive" onClick={cancelTest}>
-            <XCircle className="w-4 h-4 mr-2" />
-            Cancelar
-          </Button>
-        )}
+        <ProtectedAction>
+          {!isRunning ? (
+            <Button onClick={runTest} disabled={!canRun}>
+              <Play className="w-4 h-4 mr-2" />
+              Executar Teste
+            </Button>
+          ) : (
+            <Button variant="destructive" onClick={cancelTest}>
+              <XCircle className="w-4 h-4 mr-2" />
+              Cancelar
+            </Button>
+          )}
+        </ProtectedAction>
       </div>
 
       <div className="p-6 flex flex-col gap-4">

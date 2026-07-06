@@ -166,17 +166,30 @@ aqui e passou limpo.
 
 ---
 
-## Fase 4 — Segurança e limites (não pular)
+## Fase 4 — Segurança e limites (não pular) ✅ CONCLUÍDA
 
-- [ ] Teto hardcoded de requisições por teste no backend (não confiar só na validação do frontend)
-- [ ] Lock "um teste por vez por usuário" (mapa em memória `map[userEmail]bool` protegido por mutex,
-  ou reaproveitar algum semáforo já existente se o padrão se repetir em outro lugar)
-- [ ] `ActiveDeadlineSeconds` no pod + `defer cleanup()` + tratamento de erro que **sempre** tenta
-  deletar o pod mesmo se o teste falhar no meio
-- [ ] Varredura periódica de pods órfãos (`app=latency-test-tool` + idade > X min) — proteção contra
-  o caso de o processo do servidor morrer entre a criação do pod e o cleanup
-- [ ] `RequireSREGroup()` no backend + `ProtectedAction` (sem `allowed` — é ação de infraestrutura,
-  não RBAC K8s do analista) no frontend
+- [x] Teto hardcoded de requisições por teste no backend (`latencyTestMaxRequests = 200`,
+  `latencyTestMaxTimeoutMs = 10000` em `Run` — já feito na Fase 2, o frontend não é a única
+  barreira)
+- [x] Lock "um teste por vez por usuário" — `LatencyTestHandler.runningUsers sync.Map`
+  (`userEmail -> struct{}`), `LoadOrStore` em `Run` retorna `409 TEST_ALREADY_RUNNING` se já
+  houver um teste rodando pro mesmo e-mail; liberado via `defer h.runningUsers.Delete(lockKey)`
+  na goroutine que chama `runTest` (cobre sucesso, falha e cancelamento — todos passam por ali)
+- [x] `ActiveDeadlineSeconds` + `defer cleanup()` — já garantido desde a Fase 1/2: `defer cleanup()`
+  roda logo após `createTestPod` retornar com sucesso, antes de qualquer outra chamada bloqueante,
+  então cobre todo erro subsequente (`waitPodRunning`, `runLatencyProbe`) automaticamente
+- [x] Varredura periódica de pods órfãos — `LatencyTestHandler.seenClusters sync.Map` (populado em
+  `Run`, só clusters onde este handler já rodou algo) + `sweepOrphanPods()` (goroutine iniciada em
+  `NewLatencyTestHandler`, tick de 5min) + `sweepClusterOrphans()` (lista pods
+  `app=latency-test-tool` cluster-wide, deleta os com mais de 10min — bem acima do
+  `ActiveDeadlineSeconds` de 5min, então se ainda existe depois disso é porque o K8s não aplicou o
+  deadline, cenário raro mas coberto)
+- [x] `RequireSREGroup()` no backend (já feito na Fase 2) + `ProtectedAction` (sem `allowed`) no
+  frontend envolvendo o botão Executar Teste/Cancelar — mesmo padrão exato do
+  `CommandRunnerTab.tsx` (botão único que alterna entre as duas ações, ambas dentro do mesmo
+  `<ProtectedAction>`)
+
+`go build ./...`, `go vet ./...`, `gofmt -l` e `tsc --noEmit` limpos. `./rebuild-web.sh -b` ok.
 
 ---
 
