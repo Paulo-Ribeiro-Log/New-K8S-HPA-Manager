@@ -1704,6 +1704,83 @@ export interface LatencyTestSSEEvent {
   result?: LatencyTestResult; // presente só no evento "complete"
 }
 
+// ─── Teste de Kafka sob Demanda ───────────────────────────────────────────────
+
+export interface KafkaSecretRef {
+  namespace: string;
+  name: string;
+  username_key: string; // default "username" se vazio
+  password_key: string; // default "password" se vazio
+}
+
+export interface KafkaSASLConfig {
+  mechanism: 'PLAIN' | 'SCRAM-SHA-256' | 'SCRAM-SHA-512';
+  use_tls: boolean;
+  skip_tls_verify: boolean;
+  // uma das duas fontes de credencial, mutuamente exclusivas
+  username?: string;
+  password?: string;
+  secret_ref?: KafkaSecretRef;
+}
+
+export interface RunKafkaTestRequest {
+  cluster: string;
+  namespace: string;
+  // deployment identifica de qual workload o teste deve partir — o backend resolve um pod Running
+  // desse Deployment e anexa um ephemeral container nele, pra refletir a identidade de rede real
+  // (NetworkPolicy/Istio avaliam por label/service account do pod, não por namespace inteiro).
+  deployment: string;
+  broker: string; // "host:porta" — tipicamente um broker EXTERNO ao cluster (Kafka gerenciado, Event Hub, etc.)
+  sasl?: KafkaSASLConfig; // omitido = sem autenticação (PLAINTEXT)
+  produce_consume: boolean;
+  topic?: string; // obrigatório se produce_consume
+  confirm_produce: boolean; // obrigatório=true se produce_consume (guardrail espelhado no backend)
+  timeout_ms?: number; // default 5000, teto 15000 (aplicado no backend)
+}
+
+export interface RunKafkaTestResponse {
+  session_id: string;
+}
+
+export type KafkaStageStatus = 'ok' | 'tcp_failed' | 'auth_failed' | 'tls_failed' | 'unknown_failed' | 'skipped';
+
+export interface KafkaStageResult {
+  status: KafkaStageStatus;
+  message: string;
+  raw_output: string;
+  broker_count?: number;
+  topic_count?: number;
+}
+
+export type KafkaProduceConsumeStatus = 'ok' | 'produce_failed' | 'not_found' | 'skipped';
+
+export interface KafkaProduceConsumeResult {
+  status: KafkaProduceConsumeStatus;
+  message: string;
+  round_trip_ms?: number;
+  raw_output: string;
+}
+
+export interface KafkaTestResult {
+  // target_pod é o pod real (do Deployment escolhido) onde o ephemeral container do teste foi
+  // anexado — transparência de qual carga específica foi tocada.
+  target_pod: string;
+  connectivity: KafkaStageResult;
+  produce_consume: KafkaProduceConsumeResult;
+}
+
+export interface KafkaTestSSEEvent {
+  id: string;
+  type: 'init' | 'resolve_deployment' | 'ephemeral_container' | 'connectivity' | 'produce_consume' | 'complete' | 'error';
+  phase: string;
+  message: string;
+  progress: number;
+  cluster?: string;
+  timestamp: string;
+  error?: string;
+  result?: KafkaTestResult; // presente só no evento "complete"
+}
+
 // Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.
 // Refletem o que o RBAC do cluster permite para o usuário atual (não grupos AD).
 export interface K8sNamespacePermissions {
