@@ -159,21 +159,45 @@ avisar — não fiz isso.
 
 ---
 
-## Fase 2 — Fechar o loop: navegação real das sugestões
+## Fase 2 — Fechar o loop: navegação real das sugestões ✅ CONCLUÍDA (código; validação no navegador pendente)
 
-Só começar depois da Fase 1 confirmada (regras consistentes primeiro, botão depois).
+**Escopo combinado com o usuário antes de codar**: só `app_section` `"HPA"` e `"Deployments"`
+nesta rodada — `"Resource Explorer"` (CPU throttle) e `"Health Check"` ficam texto puro (nenhuma
+aba tem pré-seleção de workload pra elas ainda). As 3 superfícies (ActionPlanCard,
+HealthCheckResultsPanel "Onde atuar", OneAgentSignalCard) entraram todas nesta rodada.
 
-- [ ] Definir o contrato de navegação: o que significa "abrir HPA/Deployment pré-filtrado" — provavelmente
-      reaproveitar `TabContext` (já gerencia estado por aba de cluster) pra: trocar `activeTab` pra
-      `"hpa"`/`"deployments"`, setar `selectedCluster`/`selectedNamespace`, e (se possível) já
-      abrir o painel do workload específico
-- [ ] `ActionPlanCard` (`DynatraceTab.tsx:1762`) — adicionar botão/onClick usando `cluster`,
-      `namespace`, `workload` já presentes em cada `ActionItem`
-- [ ] "Onde atuar no HPA Manager" (`HealthCheckResultsPanel.tsx`, aba K8s↔DT correlacionada) —
-      mesma navegação; hoje `allSuggestions.map(s => <p>{s}</p>)` é texto puro
-- [ ] `OneAgentSignalCard` — mesma navegação, usando `suggested_action` da Fase 1.7
-- [ ] Validar navegação real no navegador (Playwright, mesmo padrão desta sessão) — clicar na
-      sugestão, confirmar que a aba certa abre com cluster/namespace/workload já selecionados
+- [x] Contrato de navegação definido — **`TabContext`/`useTabManager` NÃO é o mecanismo** (achado
+      da pesquisa: é só persistência de sessão por aba-de-cluster tipo browser, Alt+1..9, não
+      dirige o que `Index.tsx` renderiza — `updateActiveTabState` não teria efeito visível
+      nenhum). O mecanismo real é o padrão já usado por `pendingHPANavigation` +
+      `preSelectedHPA`/`MonitoringPage`: estado pendente em `Index.tsx`, resolução contra a lista
+      já carregada localmente pelo componente alvo. `Index.tsx` ganhou `navigateToHPA` (extraído
+      do antigo callback inline `onNavigateToHPA`, sem duplicação), `navigateToDeployment` (novo,
+      com `pendingDeploymentNavigation`) e `navigateToWorkload` (combinador único passado como
+      prop pros consumidores externos)
+- [x] `ActionPlanCard` (`DynatraceTab.tsx`) — botão "Abrir →" usando `cluster`/`namespace`/
+      `workload` de `ActionItem`, threading por 4 componentes (`DynatraceTab` →
+      `ProblemDetailPanel` → `DiagnosticoTab` → `AIAnalysisResult`/`ActionPlanCard`)
+- [x] "Onde atuar no HPA Manager" (`HealthCheckResultsPanel.tsx`, K8s↔DT correlacionado) — zero
+      mudança de backend: `CorrelatedK8sIssue.resource_kind` já indica a aba do lado K8s, e
+      `DynatraceHealth.suggestions` do lado DT já vem prefixado `"Aba HPA/Deployments → ..."`
+      (`buildDTSuggestions` no backend) — extraído via regex `^Aba (HPA|Deployments)\b`
+- [x] `OneAgentSignalCard` — `suggested_actions` é um `[]string` solto vindo de
+      `internal/actionrules/rules.go` (10 strings fixas, 5 sinais × warn/crit); mapeado via
+      tabela exata `ONE_AGENT_ACTION_APP_SECTION` no frontend (sem heurística de keyword,
+      sem mudança de backend) — precisa ficar em sincronia manual se as strings do Go mudarem
+- [x] `DeploymentsTab` ganhou `preSelectedDeployment`/`onDeploymentSelected`, espelhando
+      `preSelectedHPA`/`MonitoringPage` (resolução local contra a lista `deployments` já
+      buscada pelo componente, não uma lista lifted pra `Index.tsx`)
+- [x] `tsc --noEmit` limpo, `go build ./...` ok (nenhuma mudança de backend), `./rebuild-web.sh -b`
+      ok, servidor sobe e responde 200
+- [ ] **Validar navegação real no navegador** — não foi possível nesta sessão (exige cluster com
+      Health Check/DT rodado, com um problem `app_section: "HPA"` e outro `"Deployments"`
+      simultâneos, e um item correlacionado K8s↔DT com sugestões navegáveis) — validar os 3
+      fluxos (ActionPlanCard, "Onde atuar", OneAgent Signals) contra dado real antes de considerar
+      a fase 100% fechada
+
+Commit: `feat(dynatrace): Fase 2 - navegação real das sugestões de ação`.
 
 ---
 
@@ -208,9 +232,13 @@ clássico) — e as APIs Grail/Platform tipicamente exigem um client OAuth2 regi
 
 ### 3.3 Antes de desenhar qualquer waterfall — decisões e validações necessárias
 
-- [ ] **Decisão do usuário**: vale a pena investir num client OAuth2 dedicado só pra Dynatrace
-      Platform APIs (nova infraestrutura de auth, separada da já existente pra Gemini/GitHub),
-      ou o escopo desta fase deve ficar menor por ora?
+- [x] **Decisão do usuário**: no uso normal, o login é pessoal (usuário/senha) — as operações
+      automatizadas do app sempre usaram `Api-Token` clássico, nunca OAuth2. Criar um client
+      OAuth2 pras APIs Platform exige acesso admin no tenant Dynatrace (Dynatrace ID Settings),
+      separado do login pessoal. **Decisão**: usuário vai verificar primeiro se tem (ou consegue)
+      esse acesso admin antes de qualquer código de Fase 3 — nenhuma implementação começa até essa
+      confirmação. Se não houver acesso admin viável, cai automaticamente na alternativa de escopo
+      menor (mensagem de erro honesta, ver abaixo) sem waterfall de spans.
 - [ ] Se seguir adiante: descobrir o endpoint Grail correto pra distributed tracing (a query DQL
       `fetch spans` pode não ser a sintaxe certa — precisa de acesso a um tenant/documentação
       Dynatrace atualizada, ou testar com um token que tenha permissão pra `/platform/`)
