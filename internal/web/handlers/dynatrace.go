@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s-hpa-manager/internal/actionrules"
 	dtclient "k8s-hpa-manager/internal/dynatrace"
 	"k8s-hpa-manager/internal/healthcheck"
 	"k8s-hpa-manager/internal/sanitizer"
@@ -551,7 +552,7 @@ func (h *DynatraceHandler) GetHistory(c *gin.Context) {
 
 // InvestigationReport é o resultado estruturado de uma investigação profunda.
 type InvestigationReport struct {
-	ProblemID   string `json:"problem_id"`
+	ProblemID    string `json:"problem_id"`
 	ProblemTitle string `json:"problem_title"`
 
 	// Entidades identificadas no alerta DT
@@ -559,7 +560,7 @@ type InvestigationReport struct {
 	RootCauseEntityType string `json:"root_cause_entity_type,omitempty"`
 
 	// Cluster identificado via Node Pool Registry (de entidades HOST)
-	IdentifiedCluster string `json:"identified_cluster,omitempty"`
+	IdentifiedCluster  string `json:"identified_cluster,omitempty"`
 	IdentifiedNodePool string `json:"identified_node_pool,omitempty"`
 
 	// Namespace e workload identificados (via K8s tags do PROCESS_GROUP/rootCause)
@@ -571,7 +572,7 @@ type InvestigationReport struct {
 
 	// Health check K8s direcionado (nil se cluster/namespace não identificados)
 	HealthCheckResult *healthcheck.HealthCheckResult `json:"health_check_result,omitempty"`
-	HealthCheckError  string `json:"health_check_error,omitempty"`
+	HealthCheckError  string                         `json:"health_check_error,omitempty"`
 
 	// Dependências do workload (nil se não encontrado)
 	Dependencies []storage.DependencyRecord `json:"dependencies,omitempty"`
@@ -629,9 +630,9 @@ func (h *DynatraceHandler) InvestigateProblem(c *gin.Context) {
 	dtMetrics := dtClient.GetEntityMetricsForProblem(ctx, problem)
 
 	report := &InvestigationReport{
-		ProblemID:    problemID,
-		ProblemTitle: problem.Title,
-		DTMetrics:    dtMetrics,
+		ProblemID:      problemID,
+		ProblemTitle:   problem.Title,
+		DTMetrics:      dtMetrics,
 		InvestigatedAt: time.Now(),
 	}
 
@@ -1183,46 +1184,37 @@ func pointStats(points []dtclient.MetricPoint) (min, avg, max, last float64, ok 
 	return min, sum / float64(len(valid)), max, valid[len(valid)-1], true
 }
 
-// severity avalia o nível de alerta de uma métrica pelo valor máximo
+// severityLabel rotula um valor de métrica pra exibição (painel de Métricas e prompt de IA) — via
+// internal/actionrules, mesma fonte única de verdade usada em generateActionItems (ver
+// DYNATRACE-DIAGNOSTICS-PLAN.md Fase 1). "response_p90"/"response_p99" reaproveitam o threshold de
+// P95 (rotulagem visual aproximada — a decisão de convergir pra P95 como percentil "oficial" de
+// julgamento vale só pra generateActionItems/OneAgent Signals, que geram ação; aqui é só cor).
+//
+// Limitação pré-existente (não introduzida por esta refatoração): este único chamador só tem o
+// valor MÁXIMO da janela, então "pods_ready_pct" é rotulado pelo maxVal (melhor momento), não o
+// mínimo (pior momento) — mesmo comportamento de antes desta unificação.
 func severityLabel(key string, maxVal float64) string {
-	switch key {
-	case "error_rate":
-		if maxVal > 20 {
-			return "🔴 CRÍTICO"
-		} else if maxVal > 5 {
-			return "🟡 ATENÇÃO"
-		}
-		return "🟢 normal"
-	case "response_p90", "response_p95", "response_p99":
-		if maxVal > 5000 {
-			return "🔴 CRÍTICO"
-		} else if maxVal > 1000 {
-			return "🟡 ATENÇÃO"
-		}
-		return "🟢 normal"
-	case "pod_restarts":
-		if maxVal > 5 {
-			return "🔴 CRÍTICO"
-		} else if maxVal > 1 {
-			return "🟡 ATENÇÃO"
-		}
-		return "🟢 normal"
-	case "pods_ready_pct":
-		if maxVal < 80 {
-			return "🔴 CRÍTICO"
-		} else if maxVal < 95 {
-			return "🟡 ATENÇÃO"
-		}
-		return "🟢 normal"
-	case "cpu_throttle":
-		if maxVal > 500 {
-			return "🔴 CRÍTICO"
-		} else if maxVal > 100 {
-			return "🟡 ATENÇÃO"
-		}
+	signal, _, ok := actionRulesSignalForMetric(normalizeLatencyKeyForActionRules(key))
+	if !ok {
+		return ""
+	}
+	eval := actionrules.Evaluate(signal, maxVal, actionrules.DefaultThresholds())
+	if eval == nil {
 		return "🟢 normal"
 	}
-	return ""
+	if eval.Level == actionrules.LevelCritical {
+		return "🔴 CRÍTICO"
+	}
+	return "🟡 ATENÇÃO"
+}
+
+// normalizeLatencyKeyForActionRules trata p90/p99 como p95 pra fins de rotulagem visual (só
+// severityLabel faz isso — generateActionItems/evaluateRisk usam estritamente P95).
+func normalizeLatencyKeyForActionRules(key string) string {
+	if key == "response_p90" || key == "response_p99" {
+		return "response_p95"
+	}
+	return key
 }
 
 // ActionItem ação corretiva determinística gerada por threshold de métricas do Dynatrace.
@@ -1237,11 +1229,45 @@ type ActionItem struct {
 	Reason     string `json:"reason"`
 }
 
-// generateActionItems gera ações corretivas determinísticas baseadas em thresholds de métricas.
-// Não usa IA — lê os valores reais das métricas e decide qual seção do HPA Manager o usuário deve acessar.
+// actionRulesSignalForMetric mapeia a chave de métrica (mr.Entities[].Metrics[].Key, vem de
+// serviceMetricDefs/k8sWorkloadMetricDefs em internal/dynatrace/metrics.go) pro Signal
+// correspondente do pacote actionrules, e diz se o julgamento usa o valor MÁXIMO ou MÍNIMO da
+// janela (pods_ready_pct piora quando MENOR, os outros pioram quando MAIOR).
+func actionRulesSignalForMetric(key string) (signal actionrules.Signal, useMin bool, ok bool) {
+	switch key {
+	case "error_rate":
+		return actionrules.SignalErrorRate, false, true
+	case "response_p95":
+		return actionrules.SignalLatencyP95, false, true
+	case "pod_restarts":
+		return actionrules.SignalPodRestarts, false, true
+	case "pods_ready_pct":
+		return actionrules.SignalPodsReadyPct, true, true
+	case "cpu_throttle_millicores":
+		return actionrules.SignalCPUThrottleMilliCores, false, true
+	default:
+		return "", false, false
+	}
+}
+
+// actionRulesLevelToUrgency traduz o nível neutro do actionrules pro vocabulário já usado pelo
+// frontend (ActionPlanCard espera "IMEDIATA"/"ALTA"/"MONITORAR" — ver DynatraceTab.tsx).
+func actionRulesLevelToUrgency(level actionrules.Level) string {
+	if level == actionrules.LevelCritical {
+		return "IMEDIATA"
+	}
+	return "ALTA"
+}
+
+// generateActionItems gera ações corretivas determinísticas baseadas em thresholds de métricas —
+// via internal/actionrules (fonte única de verdade, ver DYNATRACE-DIAGNOSTICS-PLAN.md Fase 1;
+// antes desta unificação, os thresholds eram hardcoded aqui e divergiam de evaluateRisk/OneAgent
+// Signals e de EnrichWithLatencyBreach/Health Check). Não usa IA — lê os valores reais das
+// métricas e decide qual seção do HPA Manager o usuário deve acessar.
 func generateActionItems(problem *dtclient.Problem, mr *dtclient.ProblemMetricsResponse) []ActionItem {
 	items := []ActionItem{}
 	seen := map[string]struct{}{}
+	thresholds := actionrules.DefaultThresholds()
 
 	add := func(item ActionItem) {
 		key := item.AppSection + "|" + item.Namespace + "/" + item.Workload + "|" + item.Urgency + "|" + item.Action
@@ -1271,93 +1297,27 @@ func generateActionItems(problem *dtclient.Problem, mr *dtclient.ProblemMetricsR
 		}
 
 		for _, m := range ed.Metrics {
-			mn, avg, mx, _, ok := pointStats(m.Points)
+			mn, _, mx, _, ok := pointStats(m.Points)
 			if !ok {
 				continue
 			}
-
-			switch m.Key {
-			case "error_rate":
-				if mx > 20 {
-					add(ActionItem{
-						Urgency: "IMEDIATA", AppSection: "Deployments",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Verificar crash loops e considerar rollback para versão anterior",
-						Reason: fmt.Sprintf("Taxa de erro crítica: máx=%.1f%% avg=%.1f%%", mx, avg),
-					})
-				} else if mx > 5 {
-					add(ActionItem{
-						Urgency: "ALTA", AppSection: "Deployments",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Verificar logs dos pods para identificar causa dos erros",
-						Reason: fmt.Sprintf("Taxa de erro elevada: máx=%.1f%% avg=%.1f%%", mx, avg),
-					})
-				}
-			case "response_p95":
-				if mx > 5000 {
-					add(ActionItem{
-						Urgency: "IMEDIATA", AppSection: "HPA",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Aumentar maxReplicas — latência P95 indica sobrecarga",
-						Reason: fmt.Sprintf("Latência P95 crítica: máx=%.0fms avg=%.0fms", mx, avg),
-					})
-				} else if mx > 1000 {
-					add(ActionItem{
-						Urgency: "ALTA", AppSection: "HPA",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Revisar minReplicas do HPA — latência elevada",
-						Reason: fmt.Sprintf("Latência P95 alta: máx=%.0fms avg=%.0fms", mx, avg),
-					})
-				}
-			case "pod_restarts":
-				if mx > 5 {
-					add(ActionItem{
-						Urgency: "IMEDIATA", AppSection: "Resource Explorer",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Aumentar memory limit do container — provável OOMKill",
-						Reason: fmt.Sprintf("Pods reiniciando: máx=%.0f avg=%.1f restarts", mx, avg),
-					})
-				} else if mx > 1 {
-					add(ActionItem{
-						Urgency: "ALTA", AppSection: "Deployments",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Verificar logs de crash — possível OOMKill ou falha na inicialização",
-						Reason: fmt.Sprintf("Pods com restarts: máx=%.0f avg=%.1f", mx, avg),
-					})
-				}
-			case "pods_ready_pct":
-				if mn < 80 {
-					add(ActionItem{
-						Urgency: "IMEDIATA", AppSection: "HPA",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Escalar HPA — pods insuficientes servindo tráfego",
-						Reason: fmt.Sprintf("Mínimo de %.0f%% pods prontos (saudável: ≥95%%)", mn),
-					})
-				} else if mn < 95 {
-					add(ActionItem{
-						Urgency: "ALTA", AppSection: "Deployments",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Verificar saúde dos pods — alguns não respondem ao readiness probe",
-						Reason: fmt.Sprintf("Mínimo de %.0f%% pods prontos (ideal: 100%%)", mn),
-					})
-				}
-			case "cpu_throttle":
-				if mx > 500 {
-					add(ActionItem{
-						Urgency: "IMEDIATA", AppSection: "Resource Explorer",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Aumentar CPU limit/request — throttling severo está causando lentidão",
-						Reason: fmt.Sprintf("CPU throttling crítico: máx=%.0f%% avg=%.0f%%", mx, avg),
-					})
-				} else if mx > 100 {
-					add(ActionItem{
-						Urgency: "ALTA", AppSection: "Resource Explorer",
-						Workload: workload, Namespace: ns, Cluster: cluster,
-						Action: "Revisar CPU requests — container subdimensionado",
-						Reason: fmt.Sprintf("CPU throttling elevado: máx=%.0f%% avg=%.0f%%", mx, avg),
-					})
-				}
+			signal, useMin, known := actionRulesSignalForMetric(m.Key)
+			if !known {
+				continue
 			}
+			value := mx
+			if useMin {
+				value = mn
+			}
+			eval := actionrules.Evaluate(signal, value, thresholds)
+			if eval == nil {
+				continue
+			}
+			add(ActionItem{
+				Urgency: actionRulesLevelToUrgency(eval.Level), AppSection: eval.AppSection,
+				Workload: workload, Namespace: ns, Cluster: cluster,
+				Action: eval.Action, Reason: eval.Reason,
+			})
 		}
 	}
 

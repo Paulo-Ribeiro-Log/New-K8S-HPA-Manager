@@ -2,13 +2,13 @@ package healthcheck
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"k8s-hpa-manager/internal/actionrules"
 	dtclient "k8s-hpa-manager/internal/dynatrace"
 	"k8s-hpa-manager/internal/storage"
 )
@@ -19,12 +19,12 @@ var aksNodeNameRe = regexp.MustCompile(`^aks-(.+?)-\d{5,8}-vmss[0-9a-f]+`)
 // dtInternalPrefixes lista prefixos de nomes que identificam componentes internos do Dynatrace.
 // Entidades com esses nomes não são aplicações do usuário e devem ser ignoradas nos sinais.
 var dtInternalPrefixes = []string{
-	"ace-op",           // Dynatrace ActiveGate Operator
+	"ace-op", // Dynatrace ActiveGate Operator
 	"dynatrace-operator",
 	"dynatrace-webhook",
 	"oneagent",
 	"activegate",
-	"easytravel",       // app de demo do DT
+	"easytravel", // app de demo do DT
 }
 
 // isDynatraceInternal retorna true se o nome da entidade for um componente interno do Dynatrace.
@@ -64,7 +64,7 @@ func (c *OneAgentSignalsChecker) CheckAll(
 	timeoutSec int,
 ) []OneAgentSignal {
 
-	thresholds = thresholds.resolve()
+	thresholds = thresholds.Resolve()
 
 	client, err := dtclient.NewClient(dtURL, dtToken)
 	if err != nil {
@@ -165,9 +165,9 @@ func (c *OneAgentSignalsChecker) CheckAll(
 				metrics := metricsP1[stub.EntityID.ID]
 				if len(metrics) > 0 {
 					signal.ErrorRate = metrics["error_rate"]
-					signal.ResponseP90Ms = metrics["response_p90"]
+					signal.ResponseP95Ms = metrics["response_p95"]
 					signal.PodRestarts = metrics["pod_restarts"]
-					signal.CPUThrottlePct = metrics["cpu_throttle"]
+					signal.CPUThrottleMilliCores = metrics["cpu_throttle_millicores"]
 					if v, ok := metrics["pods_ready_pct"]; ok {
 						signal.PodsReadyPct = v * 100
 					}
@@ -175,7 +175,7 @@ func (c *OneAgentSignalsChecker) CheckAll(
 			}
 
 			// Avaliar risco via threshold; se sem métricas DT, usar severidade K8s
-			signal.RiskLevel, signal.RiskReasons = evaluateRisk(signal, thresholds)
+			signal.RiskLevel, signal.RiskReasons, signal.SuggestedActions = evaluateRisk(signal, thresholds)
 			if len(signal.RiskReasons) == 0 {
 				signal.RiskLevel = tw.Severity
 				signal.RiskReasons = tw.Issues
@@ -283,14 +283,14 @@ func (c *OneAgentSignalsChecker) CheckAll(
 			}
 
 			signal.ErrorRate = metrics["error_rate"]
-			signal.ResponseP90Ms = metrics["response_p90"]
+			signal.ResponseP95Ms = metrics["response_p95"]
 			signal.PodRestarts = metrics["pod_restarts"]
-			signal.CPUThrottlePct = metrics["cpu_throttle"]
+			signal.CPUThrottleMilliCores = metrics["cpu_throttle_millicores"]
 			if v, ok := metrics["pods_ready_pct"]; ok {
 				signal.PodsReadyPct = v * 100
 			}
 
-			signal.RiskLevel, signal.RiskReasons = evaluateRisk(signal, thresholds)
+			signal.RiskLevel, signal.RiskReasons, signal.SuggestedActions = evaluateRisk(signal, thresholds)
 
 			key := strings.ToLower(signal.Namespace) + "/" + strings.ToLower(signal.WorkloadName)
 			if _, covered := existingDTWorkloads[key]; covered {
@@ -326,60 +326,59 @@ func (c *OneAgentSignalsChecker) CheckAll(
 	return signals
 }
 
-// evaluateRisk aplica os thresholds e retorna RiskLevel + lista de razões.
-func evaluateRisk(s OneAgentSignal, t OneAgentThresholds) (Severity, []string) {
-	var reasons []string
+// oneAgentSeverityCeiling mapeia o Level neutro do actionrules pra healthcheck.Severity — cada
+// sinal tem seu próprio teto de severidade (preservado do comportamento original: error_rate/
+// pod_restarts/pods_ready_pct podem escalar até Critical, mas latência/CPU throttle — sinais de
+// degradação de performance, não de indisponibilidade — ficam no teto High). Isso é uma decisão de
+// vocabulário específica do OneAgent Signals, por isso fica aqui e não em internal/actionrules
+// (que só devolve o nível neutro Warn/Critical, ver rules.go).
+var oneAgentSeverityCeiling = map[actionrules.Signal]struct{ warn, crit Severity }{
+	actionrules.SignalErrorRate:             {SeverityMedium, SeverityCritical},
+	actionrules.SignalLatencyP95:            {SeverityMedium, SeverityHigh},
+	actionrules.SignalPodRestarts:           {SeverityMedium, SeverityCritical},
+	actionrules.SignalCPUThrottleMilliCores: {SeverityMedium, SeverityHigh},
+	actionrules.SignalPodsReadyPct:          {SeverityMedium, SeverityCritical},
+}
+
+// evaluateRisk aplica os thresholds compartilhados (internal/actionrules, ver
+// DYNATRACE-DIAGNOSTICS-PLAN.md Fase 1) e retorna RiskLevel + razões + ações sugeridas.
+func evaluateRisk(s OneAgentSignal, t OneAgentThresholds) (Severity, []string, []string) {
+	var reasons, actions []string
 	level := SeverityInfo
 
-	upgrade := func(candidate Severity, reason string) {
-		reasons = append(reasons, reason)
+	upgrade := func(eval *actionrules.Evaluation) {
+		if eval == nil {
+			return
+		}
+		ceiling := oneAgentSeverityCeiling[eval.Signal]
+		candidate := ceiling.warn
+		if eval.Level == actionrules.LevelCritical {
+			candidate = ceiling.crit
+		}
+		reasons = append(reasons, eval.Reason)
+		actions = append(actions, eval.Action)
 		if candidate.Weight() > level.Weight() {
 			level = candidate
 		}
 	}
 
 	if s.ErrorRate > 0 {
-		if s.ErrorRate >= t.ErrorRateCriticalPct {
-			upgrade(SeverityCritical, fmt.Sprintf("Error rate %.1f%% ≥ %.0f%%", s.ErrorRate, t.ErrorRateCriticalPct))
-		} else if s.ErrorRate >= t.ErrorRateWarnPct {
-			upgrade(SeverityMedium, fmt.Sprintf("Error rate %.1f%% ≥ %.0f%%", s.ErrorRate, t.ErrorRateWarnPct))
-		}
+		upgrade(actionrules.Evaluate(actionrules.SignalErrorRate, s.ErrorRate, t))
 	}
-
-	if s.ResponseP90Ms > 0 {
-		if s.ResponseP90Ms >= t.ResponseP90CritMs {
-			upgrade(SeverityHigh, fmt.Sprintf("P90 %.0fms ≥ %.0fms", s.ResponseP90Ms, t.ResponseP90CritMs))
-		} else if s.ResponseP90Ms >= t.ResponseP90WarnMs {
-			upgrade(SeverityMedium, fmt.Sprintf("P90 %.0fms ≥ %.0fms", s.ResponseP90Ms, t.ResponseP90WarnMs))
-		}
+	if s.ResponseP95Ms > 0 {
+		upgrade(actionrules.Evaluate(actionrules.SignalLatencyP95, s.ResponseP95Ms, t))
 	}
-
 	if s.PodRestarts > 0 {
-		restarts := int(s.PodRestarts)
-		if restarts >= t.PodRestartsCrit {
-			upgrade(SeverityCritical, fmt.Sprintf("Pod restarts %d ≥ %d (1h)", restarts, t.PodRestartsCrit))
-		} else if restarts >= t.PodRestartsWarn {
-			upgrade(SeverityMedium, fmt.Sprintf("Pod restarts %d ≥ %d (1h)", restarts, t.PodRestartsWarn))
-		}
+		upgrade(actionrules.Evaluate(actionrules.SignalPodRestarts, s.PodRestarts, t))
 	}
-
-	if s.CPUThrottlePct > 0 {
-		if s.CPUThrottlePct >= t.CPUThrottleCritPct {
-			upgrade(SeverityHigh, fmt.Sprintf("CPU throttle %.1f%% ≥ %.0f%%", s.CPUThrottlePct, t.CPUThrottleCritPct))
-		} else if s.CPUThrottlePct >= t.CPUThrottleWarnPct {
-			upgrade(SeverityMedium, fmt.Sprintf("CPU throttle %.1f%% ≥ %.0f%%", s.CPUThrottlePct, t.CPUThrottleWarnPct))
-		}
+	if s.CPUThrottleMilliCores > 0 {
+		upgrade(actionrules.Evaluate(actionrules.SignalCPUThrottleMilliCores, s.CPUThrottleMilliCores, t))
 	}
-
 	if s.PodsReadyPct > 0 {
-		if s.PodsReadyPct <= t.PodsReadyCritPct {
-			upgrade(SeverityCritical, fmt.Sprintf("Pods prontos %.1f%% ≤ %.0f%%", s.PodsReadyPct, t.PodsReadyCritPct))
-		} else if s.PodsReadyPct <= t.PodsReadyWarnPct {
-			upgrade(SeverityMedium, fmt.Sprintf("Pods prontos %.1f%% ≤ %.0f%%", s.PodsReadyPct, t.PodsReadyWarnPct))
-		}
+		upgrade(actionrules.Evaluate(actionrules.SignalPodsReadyPct, s.PodsReadyPct, t))
 	}
 
-	return level, reasons
+	return level, reasons, actions
 }
 
 // resolveDepLinks consulta o DependencyRegistry para encontrar quem depende deste workload

@@ -68,12 +68,22 @@ var serviceMetricDefs = []metricDef{
 }
 
 // CLOUD_APPLICATION / CLOUD_APPLICATION_INSTANCE — K8s pods + containers
+//
+// cpu_throttle_millicores: metric ID corrigido (ver DYNATRACE-DIAGNOSTICS-PLAN.md Fase 1) — o
+// antigo "builtin:containers.cpu.throttlingTime" não existe mais no Dynatrace (testado ao vivo:
+// 404 "No metric found"). O substituto óbvio por nome, "builtin:containers.cpu.throttledMilliCores",
+// TAMBÉM não funciona aqui: sua entidade primária é CONTAINER_GROUP_INSTANCE, não CLOUD_APPLICATION
+// (confirmado ao vivo: warning "Entity type mismatch... Possible primary entity types:
+// [CONTAINER_GROUP_INSTANCE]"). A métrica certa pra entidades CLOUD_APPLICATION (workload) é
+// "builtin:kubernetes.workload.cpu_throttled" — validado com dado real (7 dias, valores de
+// 1.3 a 13.9 mCores num workload de produção real). Chave renomeada de "cpu_throttle" (%, nunca
+// funcionou de verdade) pra "cpu_throttle_millicores" (mCores, unidade real da métrica).
 var k8sWorkloadMetricDefs = []metricDef{
 	{"pods_running", "builtin:kubernetes.workload.pods.running", "Pods Rodando", "pods", 1},
 	{"pods_ready_pct", "builtin:kubernetes.workload.pods.readyFraction", "Pods Prontos", "%", 100},
 	{"pod_restarts", "builtin:kubernetes.workload.pods.restarts", "Restarts", "count", 1},
 	{"cpu_milli", "builtin:containers.cpu.usageMilliCores", "CPU Uso", "mCPU", 1},
-	{"cpu_throttle", "builtin:containers.cpu.throttlingTime", "CPU Throttling", "ms", 1},
+	{"cpu_throttle_millicores", "builtin:kubernetes.workload.cpu_throttled", "CPU Throttling", "mCores", 1},
 	{"memory_mb", "builtin:containers.memory.workingSet", "Memória", "MB", 1.0 / (1024 * 1024)},
 }
 

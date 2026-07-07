@@ -705,15 +705,16 @@ export interface OneAgentSignal {
   squad?: string;
 
   // Métricas (máximo da última hora; podem ser zero se não encontrado no DT)
-  error_rate?: number;       // %
-  response_p90_ms?: number;  // ms
-  pod_restarts?: number;     // count/hora
-  cpu_throttle_pct?: number; // %
-  pods_ready_pct?: number;   // % (0-100)
+  error_rate?: number;             // %
+  response_p95_ms?: number;        // ms — era P90, unificado pra P95 (DYNATRACE-DIAGNOSTICS-PLAN.md Fase 1)
+  pod_restarts?: number;           // count/hora
+  cpu_throttle_millicores?: number; // mCores — era cpu_throttle_pct (métrica quebrada, nunca foi %)
+  pods_ready_pct?: number;         // % (0-100)
 
   // Avaliação de risco
   risk_level: Severity;
   risk_reasons: string[];
+  suggested_actions?: string[]; // paridade com ActionItem.action, adicionado na unificação de regras
 
   // Flags
   has_dt_problem: boolean;   // true = workload já coberto por Problem DT ativo

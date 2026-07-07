@@ -1,6 +1,10 @@
 package healthcheck
 
-import "time"
+import (
+	"time"
+
+	"k8s-hpa-manager/internal/actionrules"
+)
 
 // ResourceType tipos de recursos Kubernetes suportados
 type ResourceType string
@@ -112,13 +116,13 @@ type HealthCheckRequest struct {
 	Namespaces []string `json:"namespaces"` // Vazio = todos
 
 	// Opções de verificação
-	CheckDeployments bool `json:"check_deployments"`
-	CheckServices    bool `json:"check_services"`
-	CheckConfigs     bool `json:"check_configs"`
-	CheckEvents      bool `json:"check_events"`    // Verificar eventos do Kubernetes (FailedScheduling, etc.)
-	CheckHPAs        bool `json:"check_hpas"`      // Verificar HPAs (min=max, métricas, scaling)
-	CheckPVCs        bool `json:"check_pvcs"`      // Verificar PersistentVolumeClaims (status, storage class)
-	CheckDynatrace      bool `json:"check_dynatrace"`       // Verificar problems OPEN no Dynatrace
+	CheckDeployments     bool `json:"check_deployments"`
+	CheckServices        bool `json:"check_services"`
+	CheckConfigs         bool `json:"check_configs"`
+	CheckEvents          bool `json:"check_events"`           // Verificar eventos do Kubernetes (FailedScheduling, etc.)
+	CheckHPAs            bool `json:"check_hpas"`             // Verificar HPAs (min=max, métricas, scaling)
+	CheckPVCs            bool `json:"check_pvcs"`             // Verificar PersistentVolumeClaims (status, storage class)
+	CheckDynatrace       bool `json:"check_dynatrace"`        // Verificar problems OPEN no Dynatrace
 	CheckOneAgentSignals bool `json:"check_oneagent_signals"` // Varrer entidades OneAgent por threshold (sem problem ativo)
 
 	// Thresholds para OneAgent Signals (zero = usar defaults)
@@ -236,7 +240,7 @@ type CorrelatedHealthItem struct {
 	Cluster      string `json:"cluster"`
 
 	// K8s side (pode existir sem match DT)
-	K8sIssues  []CorrelatedK8sIssue `json:"k8s_issues,omitempty"`
+	K8sIssues   []CorrelatedK8sIssue `json:"k8s_issues,omitempty"`
 	K8sSeverity Severity             `json:"k8s_severity"`
 
 	// DT side (pode existir sem match K8s)
@@ -656,71 +660,16 @@ type NodePoolSummary struct {
 	NodeCount int    `json:"node_count"`
 }
 
-// OneAgentThresholds define os limiares de métricas para classificar risco.
-// Campos zero usam os defaults via DefaultOneAgentThresholds().
-type OneAgentThresholds struct {
-	ErrorRateWarnPct     float64 `json:"error_rate_warn_pct,omitempty"`     // default 5
-	ErrorRateCriticalPct float64 `json:"error_rate_critical_pct,omitempty"` // default 10
-	ResponseP90WarnMs    float64 `json:"response_p90_warn_ms,omitempty"`    // default 2000
-	ResponseP90CritMs    float64 `json:"response_p90_crit_ms,omitempty"`    // default 5000
-	PodRestartsWarn      int     `json:"pod_restarts_warn,omitempty"`       // default 3
-	PodRestartsCrit      int     `json:"pod_restarts_crit,omitempty"`       // default 10
-	CPUThrottleWarnPct   float64 `json:"cpu_throttle_warn_pct,omitempty"`   // default 20
-	CPUThrottleCritPct   float64 `json:"cpu_throttle_crit_pct,omitempty"`   // default 50
-	PodsReadyWarnPct     float64 `json:"pods_ready_warn_pct,omitempty"`     // default 90
-	PodsReadyCritPct     float64 `json:"pods_ready_crit_pct,omitempty"`     // default 70
-}
+// OneAgentThresholds é alias de actionrules.Thresholds — mantido como nome próprio no request
+// HTTP (HealthCheckRequest.OneAgentThresholds) por estabilidade de campo, mas sem duplicar a
+// definição de limiares (fonte única: internal/actionrules). Ver DYNATRACE-DIAGNOSTICS-PLAN.md
+// Fase 1: antes desta unificação, este struct tinha seus próprios números (e um percentil de
+// latência diferente, P90) que divergiam de generateActionItems/EnrichWithLatencyBreach.
+type OneAgentThresholds = actionrules.Thresholds
 
 // DefaultOneAgentThresholds retorna os thresholds padrão para OneAgent Signals.
 func DefaultOneAgentThresholds() OneAgentThresholds {
-	return OneAgentThresholds{
-		ErrorRateWarnPct:     5,
-		ErrorRateCriticalPct: 10,
-		ResponseP90WarnMs:    2000,
-		ResponseP90CritMs:    5000,
-		PodRestartsWarn:      3,
-		PodRestartsCrit:      10,
-		CPUThrottleWarnPct:   20,
-		CPUThrottleCritPct:   50,
-		PodsReadyWarnPct:     90,
-		PodsReadyCritPct:     70,
-	}
-}
-
-// resolve substitui campos zero pelos defaults.
-func (t OneAgentThresholds) resolve() OneAgentThresholds {
-	d := DefaultOneAgentThresholds()
-	if t.ErrorRateWarnPct == 0 {
-		t.ErrorRateWarnPct = d.ErrorRateWarnPct
-	}
-	if t.ErrorRateCriticalPct == 0 {
-		t.ErrorRateCriticalPct = d.ErrorRateCriticalPct
-	}
-	if t.ResponseP90WarnMs == 0 {
-		t.ResponseP90WarnMs = d.ResponseP90WarnMs
-	}
-	if t.ResponseP90CritMs == 0 {
-		t.ResponseP90CritMs = d.ResponseP90CritMs
-	}
-	if t.PodRestartsWarn == 0 {
-		t.PodRestartsWarn = d.PodRestartsWarn
-	}
-	if t.PodRestartsCrit == 0 {
-		t.PodRestartsCrit = d.PodRestartsCrit
-	}
-	if t.CPUThrottleWarnPct == 0 {
-		t.CPUThrottleWarnPct = d.CPUThrottleWarnPct
-	}
-	if t.CPUThrottleCritPct == 0 {
-		t.CPUThrottleCritPct = d.CPUThrottleCritPct
-	}
-	if t.PodsReadyWarnPct == 0 {
-		t.PodsReadyWarnPct = d.PodsReadyWarnPct
-	}
-	if t.PodsReadyCritPct == 0 {
-		t.PodsReadyCritPct = d.PodsReadyCritPct
-	}
-	return t
+	return actionrules.DefaultThresholds()
 }
 
 // TroubledWorkloadInfo resume um workload K8s com problema, usado como entrada para o scan OneAgent (Fase 1).
@@ -742,15 +691,21 @@ type OneAgentSignal struct {
 	EntityType   string `json:"entity_type,omitempty"` // CLOUD_APPLICATION | SERVICE
 
 	// Métricas coletadas (valor máximo na janela, default 60min)
-	ErrorRate      float64 `json:"error_rate,omitempty"`       // %
-	ResponseP90Ms  float64 `json:"response_p90_ms,omitempty"`  // ms
-	PodRestarts    float64 `json:"pod_restarts,omitempty"`     // contagem
-	CPUThrottlePct float64 `json:"cpu_throttle_pct,omitempty"` // %
-	PodsReadyPct   float64 `json:"pods_ready_pct,omitempty"`   // %
+	ErrorRate     float64 `json:"error_rate,omitempty"`      // %
+	ResponseP95Ms float64 `json:"response_p95_ms,omitempty"` // ms — era P90 antes da unificação (Fase 1)
+	PodRestarts   float64 `json:"pod_restarts,omitempty"`    // contagem
+	// CPUThrottleMilliCores — era CPUThrottlePct antes da unificação (Fase 1): a métrica usada
+	// nunca foi de fato uma porcentagem (metric ID quebrado no Dynatrace, ver
+	// DYNATRACE-DIAGNOSTICS-PLAN.md), corrigida pra mCores (unidade real).
+	CPUThrottleMilliCores float64 `json:"cpu_throttle_millicores,omitempty"`
+	PodsReadyPct          float64 `json:"pods_ready_pct,omitempty"` // %
 
 	// Avaliação de risco
 	RiskLevel   Severity `json:"risk_level"`
 	RiskReasons []string `json:"risk_reasons,omitempty"`
+	// SuggestedActions — paridade com ActionItem.Action (dynatrace.go), adicionada na Fase 1 da
+	// unificação: antes só existia o "por quê" (RiskReasons), sem o "o que fazer".
+	SuggestedActions []string `json:"suggested_actions,omitempty"`
 
 	// true = workload já coberto por um DT problem ativo (evita duplicidade com aba K8s↔DT)
 	HasDTProblem bool `json:"has_dt_problem"`

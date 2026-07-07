@@ -13,6 +13,14 @@ import (
 // de latência pra fins de escalada de severidade — constante fácil de ajustar depois de ver dado
 // real (mesmo padrão de thresholds fixos já usado em outras partes do projeto, ex: cor de aresta
 // do grafo de topologia do Teste de Latência).
+//
+// Deliberadamente DIFERENTE de actionrules.DefaultThresholds().LatencyP95CritMs (5000ms) — não é
+// duplicação a corrigir (ver DYNATRACE-DIAGNOSTICS-PLAN.md Fase 1, item 1.5). Este threshold
+// responde "isso CORROBORA um DT Problem que já está aberto?" (barra mais sensível, porque já há
+// outro sinal independente apontando problema); o threshold do actionrules responde "isso SOZINHO
+// já é motivo de alerta?" (barra mais alta, é o único sinal). Não trocar por
+// actionrules.DefaultThresholds() sem reconfirmar com o usuário — já foi decidido explicitamente
+// que 500ms é o valor certo pra esse caso de uso específico.
 const latencyBreachThresholdMs = 500.0
 
 // latencyBreachConcurrency limita quantos lookups de latência rodam em paralelo — mesmo espírito

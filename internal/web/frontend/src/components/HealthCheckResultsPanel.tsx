@@ -342,6 +342,16 @@ const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEma
         </div>
       )}
 
+      {signal.suggested_actions && signal.suggested_actions.length > 0 && (
+        <div className="space-y-0.5">
+          {signal.suggested_actions.map((a, i) => (
+            <div key={i} className="flex items-start gap-1 text-[10px] text-emerald-700 dark:text-emerald-400">
+              <ArrowRight className="h-3 w-3 shrink-0 mt-0.5" /> {a}
+            </div>
+          ))}
+        </div>
+      )}
+
       {signal.k8s_issues && signal.k8s_issues.length > 0 && (
         <div className="text-[10px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1 space-y-0.5">
           <span className="font-semibold text-amber-700 dark:text-amber-400">Issues K8s detectados:</span>
@@ -353,9 +363,9 @@ const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEma
 
       <div className="grid grid-cols-3 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
         {(signal.error_rate ?? 0) > 0 && <span>Erro: <strong className="text-foreground">{signal.error_rate!.toFixed(1)}%</strong></span>}
-        {(signal.response_p90_ms ?? 0) > 0 && <span>P90: <strong className="text-foreground">{signal.response_p90_ms!.toFixed(0)}ms</strong></span>}
+        {(signal.response_p95_ms ?? 0) > 0 && <span>P95: <strong className="text-foreground">{signal.response_p95_ms!.toFixed(0)}ms</strong></span>}
         {(signal.pod_restarts ?? 0) > 0 && <span>Restarts: <strong className="text-foreground">{signal.pod_restarts!.toFixed(0)}</strong></span>}
-        {(signal.cpu_throttle_pct ?? 0) > 0 && <span>CPU throttle: <strong className="text-foreground">{signal.cpu_throttle_pct!.toFixed(1)}%</strong></span>}
+        {(signal.cpu_throttle_millicores ?? 0) > 0 && <span>CPU throttling: <strong className="text-foreground">{signal.cpu_throttle_millicores!.toFixed(0)} mCores</strong></span>}
         {(signal.pods_ready_pct ?? 0) > 0 && <span>Pods prontos: <strong className="text-foreground">{signal.pods_ready_pct!.toFixed(1)}%</strong></span>}
       </div>
 
