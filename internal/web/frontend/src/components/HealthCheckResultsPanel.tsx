@@ -48,12 +48,17 @@ import { HealthCheckDTTab } from "@/components/HealthCheckDTTab";
 import { apiClient } from "@/lib/api/client";
 import { useToast } from "@/components/ui/use-toast";
 
+// Navegação clicável pras sugestões (Fase 2 do DYNATRACE-DIAGNOSTICS-PLAN.md) — só cobre
+// "HPA" e "Deployments" nesta rodada, as únicas abas com mecanismo de pré-seleção de workload.
+type NavigableAppSection = "HPA" | "Deployments";
+
 interface HealthCheckResultsPanelProps {
   results: HealthCheckResult[];
   isRunning?: boolean;
   runningClusters?: string[];
   onShowProgress?: (cluster: string, result: HealthCheckResult) => void;
   onAddToWhitelist?: (alerts: SelectedAlert[]) => void;
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
 }
 
 // Tipo para alerta selecionado
@@ -92,7 +97,36 @@ const CorrelationSourceBadge = ({ item }: { item: CorrelatedHealthItem }) => {
 };
 
 // Card de item correlacionado K8s ↔ Dynatrace
-const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
+// Extrai o app_section de uma sugestão DT (`buildDTSuggestions` no backend sempre prefixa
+// "Aba <Section> → ..."). Só reconhece HPA/Deployments — as demais seções ficam sem navegação.
+const dtSuggestionAppSection = (text: string): NavigableAppSection | undefined => {
+  const match = /^Aba (HPA|Deployments)\b/.exec(text);
+  return match ? (match[1] as NavigableAppSection) : undefined;
+};
+
+// Mapa exato das 10 strings de ação geradas por `internal/actionrules/rules.go` (warnAction/
+// critAction de cada Signal) — usado pra tornar `OneAgentSignal.suggested_actions` clicável sem
+// precisar de campo estruturado no backend. Manter em sincronia manual com esse arquivo Go;
+// `SignalCPUThrottleMilliCores` (app_section "Resource Explorer") fica de fora de propósito —
+// fora de escopo desta rodada de navegação.
+const ONE_AGENT_ACTION_APP_SECTION: Record<string, NavigableAppSection> = {
+  "Verificar logs dos pods para identificar causa dos erros": "Deployments",
+  "Verificar crash loops e considerar rollback para versão anterior": "Deployments",
+  "Revisar minReplicas do HPA — latência elevada": "HPA",
+  "Aumentar maxReplicas — latência P95 indica sobrecarga": "HPA",
+  "Verificar logs de crash — possível OOMKill ou falha na inicialização": "Deployments",
+  "Aumentar memory limit do container — provável OOMKill": "Deployments",
+  "Verificar saúde dos pods — alguns não respondem ao readiness probe": "Deployments",
+  "Escalar HPA — pods insuficientes servindo tráfego": "Deployments",
+};
+
+const CorrelatedItemCard = ({
+  item,
+  onNavigateToWorkload,
+}: {
+  item: CorrelatedHealthItem;
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
+}) => {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -218,10 +252,15 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
 
           {/* Onde atuar: sugestões de navegação do HPA Manager */}
           {(() => {
-            const allSuggestions = [
-              ...k8sIssues.flatMap(i => i.suggestions ?? []),
-              ...dtProblems.flatMap(p => p.suggestions ?? []),
-            ].filter(Boolean);
+            const allSuggestions: { text: string; appSection?: NavigableAppSection }[] = [
+              ...k8sIssues.flatMap(i => (i.suggestions ?? []).map(text => ({
+                text,
+                appSection: i.resource_kind === "Deployment" ? "Deployments" as const
+                  : i.resource_kind === "HPA" ? "HPA" as const
+                  : undefined,
+              }))),
+              ...dtProblems.flatMap(p => (p.suggestions ?? []).map(text => ({ text, appSection: dtSuggestionAppSection(text) }))),
+            ].filter(s => s.text);
             if (allSuggestions.length === 0) return null;
             return (
               <div className="space-y-1">
@@ -229,11 +268,28 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
                   <ArrowRight className="h-3 w-3" /> Onde atuar no HPA Manager
                 </p>
                 <div className="space-y-0.5">
-                  {allSuggestions.map((s, i) => (
-                    <p key={i} className="text-[10px] bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900 rounded px-2 py-1 text-emerald-800 dark:text-emerald-200">
-                      {s}
-                    </p>
-                  ))}
+                  {allSuggestions.map((s, i) => {
+                    const navigable = s.appSection && onNavigateToWorkload;
+                    const className = "text-[10px] bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900 rounded px-2 py-1 text-emerald-800 dark:text-emerald-200 w-full text-left";
+                    if (navigable) {
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => onNavigateToWorkload!(s.appSection!, item.cluster, item.namespace, item.workload_name)}
+                          className={`${className} hover:bg-emerald-100 dark:hover:bg-emerald-900/30 flex items-center justify-between gap-1`}
+                        >
+                          <span>{s.text}</span>
+                          <ArrowRight className="h-3 w-3 shrink-0" />
+                        </button>
+                      );
+                    }
+                    return (
+                      <p key={i} className={className}>
+                        {s.text}
+                      </p>
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -275,7 +331,15 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
 };
 
 // Card individual para sinal OneAgent
-const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEmail?: string }) => {
+const OneAgentSignalCard = ({
+  signal,
+  aiEmail,
+  onNavigateToWorkload,
+}: {
+  signal: OneAgentSignal;
+  aiEmail?: string;
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
+}) => {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -344,11 +408,26 @@ const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEma
 
       {signal.suggested_actions && signal.suggested_actions.length > 0 && (
         <div className="space-y-0.5">
-          {signal.suggested_actions.map((a, i) => (
-            <div key={i} className="flex items-start gap-1 text-[10px] text-emerald-700 dark:text-emerald-400">
-              <ArrowRight className="h-3 w-3 shrink-0 mt-0.5" /> {a}
-            </div>
-          ))}
+          {signal.suggested_actions.map((a, i) => {
+            const appSection = ONE_AGENT_ACTION_APP_SECTION[a];
+            if (appSection && onNavigateToWorkload) {
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => onNavigateToWorkload(appSection, signal.cluster, signal.namespace, signal.workload_name)}
+                  className="flex items-start gap-1 text-[10px] text-emerald-700 dark:text-emerald-400 hover:underline w-full text-left"
+                >
+                  <ArrowRight className="h-3 w-3 shrink-0 mt-0.5" /> {a}
+                </button>
+              );
+            }
+            return (
+              <div key={i} className="flex items-start gap-1 text-[10px] text-emerald-700 dark:text-emerald-400">
+                <ArrowRight className="h-3 w-3 shrink-0 mt-0.5" /> {a}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -399,7 +478,13 @@ const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEma
 };
 
 // Aba "DT Sinais" com filtro por risco e scan de sinais OneAgent
-const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
+const OneAgentTab = ({
+  signals,
+  onNavigateToWorkload,
+}: {
+  signals: OneAgentSignal[];
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
+}) => {
   const [filter, setFilter] = useState<string>("all");
   const filtered = useMemo(() => {
     if (filter === "all") return signals;
@@ -449,7 +534,7 @@ const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
       </div>
       <div className="space-y-2">
         {filtered.map((signal, idx) => (
-          <OneAgentSignalCard key={signal.entity_id ?? `${signal.namespace}/${signal.workload_name}-${idx}`} signal={signal} />
+          <OneAgentSignalCard key={signal.entity_id ?? `${signal.namespace}/${signal.workload_name}-${idx}`} signal={signal} onNavigateToWorkload={onNavigateToWorkload} />
         ))}
       </div>
     </div>
@@ -457,7 +542,13 @@ const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
 };
 
 // Aba K8s↔DT com suporte a análise AI em batch de todos os itens correlacionados
-const CorrelatedTab = ({ items }: { items: CorrelatedHealthItem[] }) => {
+const CorrelatedTab = ({
+  items,
+  onNavigateToWorkload,
+}: {
+  items: CorrelatedHealthItem[];
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
+}) => {
   const { toast } = useToast();
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
   const [batchResult, setBatchResult] = useState<string | null>(null);
@@ -530,7 +621,7 @@ const CorrelatedTab = ({ items }: { items: CorrelatedHealthItem[] }) => {
 
       {/* Cards individuais */}
       {items.map((item, i) => (
-        <CorrelatedItemCard key={i} item={item} />
+        <CorrelatedItemCard key={i} item={item} onNavigateToWorkload={onNavigateToWorkload} />
       ))}
     </div>
   );
@@ -542,6 +633,7 @@ export const HealthCheckResultsPanel = ({
   runningClusters = [],
   onShowProgress,
   onAddToWhitelist,
+  onNavigateToWorkload,
 }: HealthCheckResultsPanelProps) => {
   const [expandedCluster, setExpandedCluster] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -1162,7 +1254,7 @@ export const HealthCheckResultsPanel = ({
                                   <p className="text-[10px]">Verifique nos logs do servidor: tag <code className="bg-muted px-1 rounded">dt.host_group.id</code> no OneAgent deve conter o nome do cluster sem <code className="bg-muted px-1 rounded">-admin</code>. Token DT precisa da permissão <strong>Read entities</strong>.</p>
                                 </div>
                               ) : (
-                                <OneAgentTab signals={result.oneagent_signals} />
+                                <OneAgentTab signals={result.oneagent_signals} onNavigateToWorkload={onNavigateToWorkload} />
                               )}
                             </TabsContent>
 
@@ -1174,7 +1266,7 @@ export const HealthCheckResultsPanel = ({
                                   <p className="text-[10px]">Ative "Problems Dynatrace" nas opções para cruzar sintomas K8s com problems DT</p>
                                 </div>
                               ) : (
-                                <CorrelatedTab items={result.correlated_items} />
+                                <CorrelatedTab items={result.correlated_items} onNavigateToWorkload={onNavigateToWorkload} />
                               )}
                             </TabsContent>
                           </Tabs>

@@ -76,6 +76,9 @@ interface DeploymentsTabProps {
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
   onOpenCompare?: (initial: { type: "deployment"; namespace: string; name: string }) => void;
+  // Navegação vinda de fora (ex: sugestão clicável no Dynatrace/Health Check)
+  preSelectedDeployment?: { cluster: string; namespace: string; name: string } | null;
+  onDeploymentSelected?: () => void;
 }
 
 export const DeploymentsTab = ({
@@ -86,6 +89,8 @@ export const DeploymentsTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
   onOpenCompare,
+  preSelectedDeployment,
+  onDeploymentSelected,
 }: DeploymentsTabProps) => {
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('deployments', 'searchQuery', "");
@@ -507,6 +512,24 @@ export const DeploymentsTab = ({
       setManifestLoading(false);
     }
   };
+
+  // Resolve navegação pendente vinda de fora (ex: clique numa sugestão do Dynatrace/Health
+  // Check) contra a lista de deployments já carregada localmente — mesmo padrão do
+  // preSelectedHPA/MonitoringPage.
+  useEffect(() => {
+    if (!preSelectedDeployment) return;
+    if (loading || deployments.length === 0) return;
+    if (cluster !== preSelectedDeployment.cluster || selectedNamespace !== preSelectedDeployment.namespace) return;
+
+    const target = deployments.find((d) => d.name === preSelectedDeployment.name);
+    if (target) {
+      handleSelectDeployment(target);
+      toast.success(`Deployment ${target.name} carregado para edição`);
+    } else {
+      toast.error(`Deployment ${preSelectedDeployment.name} não encontrado no namespace ${preSelectedDeployment.namespace}`);
+    }
+    onDeploymentSelected?.();
+  }, [preSelectedDeployment, deployments, loading, cluster, selectedNamespace]);
 
   // Atualizar histórico quando o editor muda (simples, sem adicionar ao histórico automaticamente)
   const handleEditorChange = useCallback((value: string) => {

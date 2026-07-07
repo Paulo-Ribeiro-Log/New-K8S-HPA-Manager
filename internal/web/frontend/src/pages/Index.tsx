@@ -175,39 +175,75 @@ const Index = ({ onLogout }: IndexProps) => {
   // Estado para forçar re-renderização quando HPAs monitorados mudam
   const [monitoringRefreshKey, setMonitoringRefreshKey] = useState(0);
 
-  // Estado para navegação pendente de HPA (usado quando vindo do Monitoramento)
+  // Estado para navegação pendente de HPA (usado quando vindo do Monitoramento ou Dynatrace/Health Check)
   const [pendingHPANavigation, setPendingHPANavigation] = useState<{
     cluster: string;
     namespace: string;
     hpaName: string;
   } | null>(null);
 
-  // Função para navegar diretamente para um HPA no Monitoramento
-  const navigateToHPAInMonitoring = async (cluster: string, namespace: string, hpaName: string) => {
+  // Estado para navegação pendente de Deployment (usado quando vindo de Dynatrace/Health Check)
+  const [pendingDeploymentNavigation, setPendingDeploymentNavigation] = useState<{
+    cluster: string;
+    namespace: string;
+    name: string;
+  } | null>(null);
+
+  // Navega direto para um HPA já selecionado na aba HPAs
+  const navigateToHPA = async (cluster: string, namespace: string, hpaName: string) => {
     try {
       console.log("[NavigateToHPA] Iniciando navegação:", { cluster, namespace, hpaName });
-
-      // 1. Toast informativo antes de iniciar
       toast.info(`Carregando ${hpaName}...`);
-
-      // 2. Configurar navegação pendente PRIMEIRO (antes de qualquer mudança)
-      console.log("[NavigateToHPA] Configurando navegação pendente");
       setPendingHPANavigation({ cluster, namespace, hpaName });
 
-      // 3. Trocar para o cluster correto (se necessário)
       if (cluster !== selectedCluster) {
         console.log("[NavigateToHPA] Trocando cluster de", selectedCluster, "para", cluster);
         await handleClusterChange(cluster);
         await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      // 4. Trocar para aba de monitoramento
-      handleTabChange("monitoring");
-
-      console.log("[NavigateToHPA] Navegação configurada com sucesso");
+      setSelectedNamespace(namespace);
+      handleTabChange("hpas");
     } catch (error) {
       console.error("[NavigateToHPA] Erro ao navegar:", error);
-      toast.error("Erro ao navegar para o HPA");
+      toast.error(`Erro ao navegar para o HPA: ${error instanceof Error ? error.message : "Erro desconhecido"}`);
+      setPendingHPANavigation(null);
+    }
+  };
+
+  // Navega direto para um Deployment já selecionado na aba Deployments
+  const navigateToDeployment = async (cluster: string, namespace: string, name: string) => {
+    try {
+      console.log("[NavigateToDeployment] Iniciando navegação:", { cluster, namespace, name });
+      toast.info(`Carregando ${name}...`);
+      setPendingDeploymentNavigation({ cluster, namespace, name });
+
+      if (cluster !== selectedCluster) {
+        console.log("[NavigateToDeployment] Trocando cluster de", selectedCluster, "para", cluster);
+        await handleClusterChange(cluster);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      setDeploymentsNamespace(namespace);
+      handleTabChange("deployments");
+    } catch (error) {
+      console.error("[NavigateToDeployment] Erro ao navegar:", error);
+      toast.error(`Erro ao navegar para o Deployment: ${error instanceof Error ? error.message : "Erro desconhecido"}`);
+      setPendingDeploymentNavigation(null);
+    }
+  };
+
+  // Ponto único de navegação usado pelas sugestões acionáveis do Dynatrace/Health Check
+  const navigateToWorkload = (
+    appSection: "HPA" | "Deployments",
+    cluster: string,
+    namespace: string,
+    workload: string,
+  ) => {
+    if (appSection === "HPA") {
+      navigateToHPA(cluster, namespace, workload);
+    } else {
+      navigateToDeployment(cluster, namespace, workload);
     }
   };
 
@@ -1123,41 +1159,7 @@ const Index = ({ onLogout }: IndexProps) => {
               console.log("[Index] HPA selecionado, limpando pendingHPANavigation");
               setPendingHPANavigation(null);
             }}
-            onNavigateToHPA={async (cluster, namespace, hpaName) => {
-              try {
-                console.log("[NavigateToHPA] Iniciando navegação:", { cluster, namespace, hpaName });
-
-                // 1. Toast informativo antes de iniciar
-                toast.info(`Carregando ${hpaName}...`);
-
-                // 2. Configurar navegação pendente PRIMEIRO (antes de qualquer mudança)
-                console.log("[NavigateToHPA] Configurando navegação pendente");
-                setPendingHPANavigation({ cluster, namespace, hpaName });
-
-                // 3. Trocar para o cluster correto (se necessário)
-                // Isso disparará o useHPAs automaticamente para buscar novos HPAs
-                if (cluster !== selectedCluster) {
-                  console.log("[NavigateToHPA] Trocando cluster de", selectedCluster, "para", cluster);
-                  await handleClusterChange(cluster);
-                  // Aguardar um pouco para o estado se estabilizar
-                  await new Promise(resolve => setTimeout(resolve, 100));
-                }
-
-                // 4. Selecionar o namespace correto
-                console.log("[NavigateToHPA] Selecionando namespace:", namespace);
-                setSelectedNamespace(namespace);
-
-                // 5. Trocar para a aba HPAs
-                console.log("[NavigateToHPA] Trocando para aba HPAs");
-                handleTabChange("hpas");
-
-                // O useEffect processará quando os HPAs do novo cluster/namespace forem carregados
-              } catch (error) {
-                console.error("[NavigateToHPA] Error:", error);
-                toast.error(`Erro ao navegar para o HPA: ${error instanceof Error ? error.message : "Erro desconhecido"}`);
-                setPendingHPANavigation(null); // Limpar navegação pendente em caso de erro
-              }
-            }}
+            onNavigateToHPA={navigateToHPA}
           />
         );
 
@@ -1285,7 +1287,7 @@ const Index = ({ onLogout }: IndexProps) => {
       case "dynatrace":
         return (
           <ErrorBoundary componentName="Dynatrace Tab">
-            <DynatraceTab selectedCluster={selectedCluster} />
+            <DynatraceTab selectedCluster={selectedCluster} onNavigateToWorkload={navigateToWorkload} />
           </ErrorBoundary>
         );
 
@@ -1536,6 +1538,8 @@ const Index = ({ onLogout }: IndexProps) => {
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
                 onOpenCompare={handleOpenCompare}
+                preSelectedDeployment={pendingDeploymentNavigation}
+                onDeploymentSelected={() => setPendingDeploymentNavigation(null)}
               />
             </ErrorBoundary>
           )}
@@ -1612,7 +1616,7 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "healthcheck" ? "block" : "none", height: "100%" }}>
           {(activeTab === "healthcheck" || hasBeenMounted.current.healthcheck) && (
             <ErrorBoundary componentName="Health Checking Tab">
-              <HealthCheckingTab />
+              <HealthCheckingTab onNavigateToWorkload={navigateToWorkload} />
             </ErrorBoundary>
           )}
         </div>

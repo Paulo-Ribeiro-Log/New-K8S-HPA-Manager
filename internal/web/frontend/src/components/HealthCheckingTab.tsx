@@ -51,9 +51,10 @@ import type { HealthCheckResult } from "@/types/healthcheck";
 
 interface HealthCheckingTabProps {
   // Componente independente - não recebe contexto do Dashboard
+  onNavigateToWorkload?: (appSection: "HPA" | "Deployments", cluster: string, namespace: string, workload: string) => void;
 }
 
-export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
+export const HealthCheckingTab = ({ onNavigateToWorkload }: HealthCheckingTabProps) => {
   // Buscar TODOS os clusters disponíveis (independente do contexto)
   const { clusters: allClusters, loading: clustersLoading } = useClusters();
 
@@ -863,6 +864,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                     runningClusters={selectedClusters}
                     onShowProgress={handleShowProgress}
                     onAddToWhitelist={handleAddToWhitelist}
+                    onNavigateToWorkload={onNavigateToWorkload}
                   />
                 </ScrollArea>
               </TabsContent>

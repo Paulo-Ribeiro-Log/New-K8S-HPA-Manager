@@ -1759,7 +1759,17 @@ interface ActionItem {
   reason: string;
 }
 
-function ActionPlanCard({ items }: { items: ActionItem[] }) {
+type NavigableAppSection = "HPA" | "Deployments";
+
+function ActionPlanCard({
+  items,
+  cluster,
+  onNavigateToWorkload,
+}: {
+  items: ActionItem[];
+  cluster?: string;
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
+}) {
   if (!items || items.length === 0) return null;
 
   const urgencyMeta: Record<string, { color: string; bg: string; border: string; dot: string }> = {
@@ -1807,6 +1817,22 @@ function ActionPlanCard({ items }: { items: ActionItem[] }) {
                   {item.workload && (
                     <span className="text-[10px] bg-muted/60 px-1.5 py-0.5 rounded font-mono">{item.workload}</span>
                   )}
+                  {item.workload && (item.app_section === "HPA" || item.app_section === "Deployments") && onNavigateToWorkload && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onNavigateToWorkload(
+                          item.app_section as NavigableAppSection,
+                          item.cluster ?? cluster ?? "",
+                          item.namespace ?? "",
+                          item.workload!,
+                        )
+                      }
+                      className="text-[10px] inline-flex items-center gap-0.5 text-amber-700 dark:text-amber-400 hover:underline font-medium ml-auto"
+                    >
+                      Abrir <ArrowRight className="h-2.5 w-2.5" />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -1852,14 +1878,24 @@ const SECTION_META: Record<string, SectionMeta> = {
   proximos:    { Icon: ListChecks, color: "text-green-400",  border: "border-green-500/30",  bg: "bg-green-500/5",  label: "Ações Corretivas" },
 };
 
-function AIAnalysisResult({ text, actionItems }: { text: string; actionItems?: ActionItem[] }) {
+function AIAnalysisResult({
+  text,
+  actionItems,
+  cluster,
+  onNavigateToWorkload,
+}: {
+  text: string;
+  actionItems?: ActionItem[];
+  cluster?: string;
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
+}) {
   const { intro, sections } = parseAISections(text);
 
   // Fallback: sem seções parseadas
   if (sections.length === 0) {
     return (
       <div className="space-y-3">
-        <ActionPlanCard items={actionItems ?? []} />
+        <ActionPlanCard items={actionItems ?? []} cluster={cluster} onNavigateToWorkload={onNavigateToWorkload} />
         <Card className="border-violet-500/20 overflow-hidden">
           <CardHeader className="pb-3 pt-4 px-5 bg-gradient-to-r from-violet-500/10 to-blue-500/5 border-b border-violet-500/20">
             <div className="flex items-center gap-2">
@@ -1884,7 +1920,7 @@ function AIAnalysisResult({ text, actionItems }: { text: string; actionItems?: A
   return (
     <div className="space-y-3">
       {/* Plano de ação determinístico */}
-      <ActionPlanCard items={actionItems ?? []} />
+      <ActionPlanCard items={actionItems ?? []} cluster={cluster} onNavigateToWorkload={onNavigateToWorkload} />
 
       {/* Header da análise AI */}
       <div className="flex items-center gap-2 px-1">
@@ -2280,6 +2316,8 @@ function DiagnosticoTab({
   problem,
   aiEmail,
   uiBaseUrl,
+  cluster,
+  onNavigateToWorkload,
   onQuickAnalyze,
   quickAnalyzing,
   quickAnalysisResult,
@@ -2293,6 +2331,8 @@ function DiagnosticoTab({
   problem: DynatraceProblem;
   aiEmail: string;
   uiBaseUrl?: string;
+  cluster?: string;
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
   onQuickAnalyze: () => void;
   quickAnalyzing: boolean;
   quickAnalysisResult: string;
@@ -2591,12 +2631,14 @@ function DiagnosticoTab({
         <AIAnalysisResult
           text={aiText}
           actionItems={investigationResult ? undefined : quickActionItems}
+          cluster={cluster}
+          onNavigateToWorkload={onNavigateToWorkload}
         />
       )}
 
       {/* ActionPlanCard para análise rápida (sem investigação) */}
       {!isWorking && !investigationResult && quickActionItems && quickActionItems.length > 0 && !quickAnalysisResult && (
-        <ActionPlanCard items={quickActionItems} />
+        <ActionPlanCard items={quickActionItems} cluster={cluster} onNavigateToWorkload={onNavigateToWorkload} />
       )}
 
       {investigationResult?.ai_error && !aiText && (
@@ -2616,6 +2658,8 @@ function ProblemDetailPanel({
   problem,
   aiEmail,
   uiBaseUrl,
+  cluster,
+  onNavigateToWorkload,
   onQuickAnalyze,
   quickAnalyzing,
   quickAnalysisResult,
@@ -2629,6 +2673,8 @@ function ProblemDetailPanel({
   problem: DynatraceProblem;
   aiEmail: string;
   uiBaseUrl?: string;
+  cluster?: string;
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
   onQuickAnalyze: () => void;
   quickAnalyzing: boolean;
   quickAnalysisResult: string;
@@ -2696,6 +2742,8 @@ function ProblemDetailPanel({
           problem={problem}
           aiEmail={aiEmail}
           uiBaseUrl={uiBaseUrl}
+          cluster={cluster}
+          onNavigateToWorkload={onNavigateToWorkload}
           onQuickAnalyze={onQuickAnalyze}
           quickAnalyzing={quickAnalyzing}
           quickAnalysisResult={quickAnalysisResult}
@@ -2715,9 +2763,10 @@ function ProblemDetailPanel({
 
 interface DynatraceTabProps {
   selectedCluster?: string;
+  onNavigateToWorkload?: (appSection: NavigableAppSection, cluster: string, namespace: string, workload: string) => void;
 }
 
-export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
+export function DynatraceTab({ selectedCluster, onNavigateToWorkload }: DynatraceTabProps) {
   const aiEmail = localStorage.getItem("ai_email") ?? "";
   const queryClient = useQueryClient();
 
@@ -3091,6 +3140,8 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
         problem={selectedProblem}
         aiEmail={aiEmail}
         uiBaseUrl={uiBaseUrl}
+        cluster={selectedCluster}
+        onNavigateToWorkload={onNavigateToWorkload}
         quickAnalyzing={quickAnalyzingId === selectedProblem.problemId}
         quickAnalysisResult={quickAnalysisResult}
         quickActionItems={quickActionItems}
