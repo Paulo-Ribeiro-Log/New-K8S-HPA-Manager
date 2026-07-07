@@ -39,6 +39,7 @@ import {
   Brain,
   Radio,
   ArrowRight,
+  Gauge,
 } from "lucide-react";
 import type { HealthCheckResult, Severity, CorrelatedHealthItem, OneAgentSignal } from "@/types/healthcheck";
 import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
@@ -138,6 +139,11 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               <CorrelationSourceBadge item={item} />
+              {item.latency_breach && (
+                <Badge variant="outline" className="text-[10px] text-red-600 dark:text-red-400 border-red-300 dark:border-red-800 gap-1">
+                  <Gauge className="h-2.5 w-2.5" /> P95 {item.latency_p95_ms.toFixed(0)}ms
+                </Badge>
+              )}
               <Badge variant="outline" className={`text-[10px] ${severityColor}`}>
                 {severityLabel}
               </Badge>
@@ -187,6 +193,26 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
                   )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Breach de latência (Fase 7) — só verificado quando há DT Problems ativos */}
+          {item.latency_source && (
+            <div className="space-y-1.5">
+              <p className={`text-[10px] font-semibold flex items-center gap-1 ${item.latency_breach ? "text-red-600 dark:text-red-400" : "text-muted-foreground"}`}>
+                <Gauge className="h-3 w-3" /> Latência histórica ({item.latency_source === "dynatrace" ? "DT" : "Prom"})
+              </p>
+              <div className={`rounded border px-2 py-1.5 ${item.latency_breach ? "border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-950/20" : "border-border bg-muted/30"}`}>
+                <p className="text-[10px]">
+                  P95 <span className="font-medium">{item.latency_p95_ms.toFixed(1)}ms</span> · P99{" "}
+                  <span className="font-medium">{item.latency_p99_ms.toFixed(1)}ms</span>
+                </p>
+                {item.latency_breach && (
+                  <p className="text-[10px] text-red-700 dark:text-red-300 mt-0.5">
+                    Acima do threshold (500ms) com problem DT ativo — severidade escalada
+                  </p>
+                )}
+              </div>
             </div>
           )}
 

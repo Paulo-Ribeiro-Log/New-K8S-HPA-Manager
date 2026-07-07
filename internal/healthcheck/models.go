@@ -247,6 +247,15 @@ type CorrelatedHealthItem struct {
 	FinalSeverity Severity `json:"final_severity"` // pior dos dois lados; escalada para Critical se ambos >= High
 	Correlated    bool     `json:"correlated"`     // true = match encontrado dos dois lados
 
+	// Latência (Fase 7, ver LATENCY-METRICS-PLAN.md) — só verificada quando há DTProblems ativos
+	// nesse workload (custo de N lookups extras por scan é proporcional a "workloads com problem
+	// DT", não ao total de workloads do cluster). Sem omitempty em LatencyP95Ms/P99Ms pelo mesmo
+	// motivo documentado em LatencyHistoricalContext (handler): zero é um valor real, não ausência.
+	LatencyP95Ms  float64 `json:"latency_p95_ms"`
+	LatencyP99Ms  float64 `json:"latency_p99_ms"`
+	LatencySource string  `json:"latency_source,omitempty"` // "dynatrace" | "prometheus" | "" (não checado/sem dado)
+	LatencyBreach bool    `json:"latency_breach,omitempty"` // P95 acima do threshold — ver latencyBreachThresholdMs
+
 	// AI Analysis (preenchida sob demanda via POST /healthcheck/correlated/analyze)
 	AIAnalysis   *string    `json:"ai_analysis,omitempty"`
 	AIAnalyzedAt *time.Time `json:"ai_analyzed_at,omitempty"`

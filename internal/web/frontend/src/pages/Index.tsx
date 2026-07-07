@@ -58,6 +58,7 @@ import { NexusValuesDiffPanel } from "@/components/NexusValuesDiffPanel";
 import { DependenciesTab } from "@/components/DependenciesTab";
 import CertificatesTab from "@/components/CertificatesTab";
 import AccessCheckTab from "@/components/AccessCheckTab";
+import LatencyTestTab from "@/components/LatencyTestTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
 import { FinOpsTab } from "@/components/FinOpsTab";
@@ -1206,6 +1207,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Access Check Tab">
             <AccessCheckTab />
+          </ErrorBoundary>
+        );
+
+      case "latency-test":
+        return (
+          <ErrorBoundary componentName="Latency Test Tab">
+            <LatencyTestTab />
           </ErrorBoundary>
         );
 

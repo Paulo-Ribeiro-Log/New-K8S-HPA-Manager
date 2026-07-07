@@ -1617,6 +1617,93 @@ export interface CommandRunnerSSEEvent {
   error?: string;
 }
 
+// ─── Teste de Latência sob Demanda ────────────────────────────────────────────
+
+export interface RunLatencyTestRequest {
+  cluster: string;
+  namespace: string;
+  url: string;
+  requests?: number;   // default 20, teto 200 (aplicado no backend)
+  timeout_ms?: number; // default 3000, teto 10000 (aplicado no backend)
+  protocol?: 'http' | 'https' | 'icmp'; // default "http" (aplicado no backend), Fase 6.1
+}
+
+export interface RunLatencyTestResponse {
+  session_id: string;
+}
+
+// Alvo curado de região de nuvem (Fase 6.2) — seletor "Alvo rápido" no LatencyTestTab.
+export interface CloudRegionTarget {
+  provider: 'aws' | 'gcp' | 'azure';
+  region: string;
+  label: string;
+  host: string;
+  protocol: 'http' | 'https' | 'icmp';
+}
+
+// Grafo de topologia (Fase 6.4) — agregado de todos os testes já persistidos, não só os da
+// sessão atual do navegador.
+export interface LatencyTopologyNode {
+  id: string;
+  label: string;
+  kind: 'cluster' | 'cloud_target' | 'service_target';
+  provider: string; // "aks"|"eks"|"gke"|"aws"|"gcp"|"azure"|""
+}
+
+export interface LatencyTopologyEdge {
+  id: string;
+  source: string;
+  target: string;
+  protocol: string;
+  p95_ms: number;
+  p99_ms: number;
+  error_count: number;
+  total_requests: number;
+  tested_at: string;
+}
+
+export interface LatencyTopologyResponse {
+  nodes: LatencyTopologyNode[];
+  edges: LatencyTopologyEdge[];
+}
+
+export interface LatencyTestStats {
+  min_ms: number;
+  avg_ms: number;
+  median_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  max_ms: number;
+}
+
+// Contexto histórico complementar (Fase 5) — nunca bloqueia o teste ativo. metrics_source vazio
+// quando nenhuma fonte (Dynatrace primário, Prometheus fallback) teve dado pro alvo.
+export interface LatencyHistoricalContext {
+  p95_ms?: number;
+  p99_ms?: number;
+  metrics_source: 'dynatrace' | 'prometheus' | '';
+}
+
+export interface LatencyTestResult {
+  samples: number[]; // ms, na ordem em que as requisições rodaram
+  stats: LatencyTestStats;
+  error_count: number;
+  total_requests: number;
+  historical: LatencyHistoricalContext;
+}
+
+export interface LatencyTestSSEEvent {
+  id: string;
+  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'complete' | 'error';
+  phase: string;
+  message: string;
+  progress: number;
+  cluster?: string;
+  timestamp: string;
+  error?: string;
+  result?: LatencyTestResult; // presente só no evento "complete"
+}
+
 // Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.
 // Refletem o que o RBAC do cluster permite para o usuário atual (não grupos AD).
 export interface K8sNamespacePermissions {

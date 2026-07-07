@@ -3534,6 +3534,44 @@ class APIClient {
     });
   }
 
+  // ─── Teste de Latência sob Demanda ─────────────────────────────────────────
+
+  /** Inicia o teste de latência (cria pod efêmero + curl) e retorna session_id para SSE */
+  async runLatencyTest(
+    req: import("./types").RunLatencyTestRequest
+  ): Promise<import("./types").RunLatencyTestResponse> {
+    return this.request<import("./types").RunLatencyTestResponse>("/latency-test/run", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** URL do SSE stream de um teste de latência em andamento */
+  getLatencyTestStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/latency-test/stream/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Cancela um teste de latência em andamento (o pod é limpo de qualquer forma) */
+  async cancelLatencyTest(sessionId: string): Promise<void> {
+    await this.request<void>(`/latency-test/cancel/${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+    });
+  }
+
+  /** Lista curada de alvos de nuvem (AWS/GCP/Azure) pro seletor "Alvo rápido" (Fase 6.2) */
+  async getLatencyCloudTargets(): Promise<import("./types").CloudRegionTarget[]> {
+    const response = await this.request<{ targets: import("./types").CloudRegionTarget[] }>(
+      "/latency-test/cloud-targets"
+    );
+    return response.targets || [];
+  }
+
+  /** Grafo agregado de topologia (Fase 6.4) — todos os testes já persistidos */
+  async getLatencyTopology(): Promise<import("./types").LatencyTopologyResponse> {
+    return this.request<import("./types").LatencyTopologyResponse>("/latency-test/topology");
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{

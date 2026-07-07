@@ -675,6 +675,12 @@ export interface CorrelatedHealthItem {
   final_severity: Severity; // pior dos dois; escalada para critical se ambos >= high
   correlated: boolean;      // true = match encontrado dos dois lados
 
+  // Latência (Fase 7) — só verificada quando há dt_problems ativos nesse workload
+  latency_p95_ms: number;
+  latency_p99_ms: number;
+  latency_source?: "dynatrace" | "prometheus" | "";
+  latency_breach?: boolean;
+
   // AI Analysis (preenchida sob demanda via POST /healthcheck/correlated/analyze)
   ai_analysis?: string;
   ai_analyzed_at?: string; // ISO timestamp

@@ -20,6 +20,7 @@ import {
   CircleDollarSign,
   MessageSquarePlus,
   UserCheck,
+  Gauge,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -48,6 +49,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "finops", label: "FinOps", icon: CircleDollarSign },
   { id: "teams-broadcast", label: "Teams Broadcast", icon: MessageSquarePlus },
   { id: "access-check", label: "Verificar Acesso", icon: UserCheck },
+  { id: "latency-test", label: "Teste de Latência", icon: Gauge },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {
