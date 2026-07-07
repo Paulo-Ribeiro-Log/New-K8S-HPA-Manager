@@ -3572,6 +3572,31 @@ class APIClient {
     return this.request<import("./types").LatencyTopologyResponse>("/latency-test/topology");
   }
 
+  // ─── Teste de Kafka sob Demanda ────────────────────────────────────────────
+
+  /** Inicia o teste de Kafka (cria pod efêmero kcat) e retorna session_id para SSE */
+  async runKafkaTest(
+    req: import("./types").RunKafkaTestRequest
+  ): Promise<import("./types").RunKafkaTestResponse> {
+    return this.request<import("./types").RunKafkaTestResponse>("/kafka-test/run", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** URL do SSE stream de um teste de Kafka em andamento */
+  getKafkaTestStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/kafka-test/stream/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Cancela um teste de Kafka em andamento (o pod é limpo de qualquer forma) */
+  async cancelKafkaTest(sessionId: string): Promise<void> {
+    await this.request<void>(`/kafka-test/cancel/${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+    });
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{

@@ -21,6 +21,7 @@ import {
   MessageSquarePlus,
   UserCheck,
   Gauge,
+  Waypoints,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -50,6 +51,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "teams-broadcast", label: "Teams Broadcast", icon: MessageSquarePlus },
   { id: "access-check", label: "Verificar Acesso", icon: UserCheck },
   { id: "latency-test", label: "Teste de Latência", icon: Gauge },
+  { id: "kafka-test", label: "Teste Kafka", icon: Waypoints },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {

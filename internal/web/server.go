@@ -932,6 +932,18 @@ func (s *Server) setupRoutes() {
 		latencyTest.GET("/topology", latencyTestHandler.GetTopology)          // agregado de histórico, sem RBAC extra
 	}
 
+	// Teste de Kafka sob demanda — pod efêmero kcat + exec pra testar TCP/protocolo/SASL/
+	// produce-consume contra um broker Kafka a partir de dentro do cluster alvo
+	kafkaTestHandler := handlers.NewKafkaTestHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker)
+	s.router.GET("/api/v1/kafka-test/stream/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		kafkaTestHandler.Stream)
+	kafkaTest := api.Group("/kafka-test")
+	{
+		kafkaTest.POST("/run", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Run)
+		kafkaTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Cancel)
+	}
+
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)
 	explorerHandler := handlers.NewExplorerHandler(s.kubeManager)
 	explorer := api.Group("/explorer")
