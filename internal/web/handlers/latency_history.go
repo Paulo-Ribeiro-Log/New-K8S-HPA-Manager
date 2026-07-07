@@ -5,16 +5,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/rs/zerolog/log"
-
-	"k8s-hpa-manager/internal/dynatrace"
-	"k8s-hpa-manager/internal/monitoring/discovery"
-	promclient "k8s-hpa-manager/internal/monitoring/prometheus"
+	"k8s-hpa-manager/internal/monitoring/latencylookup"
 )
-
-// dtLatencyWindowDays é a janela de latência histórica consultada no DT — 7 dias dá contexto
-// razoável sem ser tão largo quanto as janelas de tendência de custo do FinOps.
-const dtLatencyWindowDays = 7
 
 // LatencyHistoricalContext é o contexto complementar (best-effort, nunca bloqueia nem falha o
 // teste ativo) mostrado ao lado do resultado — latência histórica já observada nesse alvo, via
@@ -32,73 +24,24 @@ type LatencyHistoricalContext struct {
 	MetricsSource string  `json:"metrics_source"` // "dynatrace" | "prometheus" | ""
 }
 
-// fetchHistoricalLatencyContext busca o histórico DT/Prometheus do mesmo alvo do teste ativo.
-//
-// Ressalva confirmada contra ambiente real (não é mais suposição, ver
-// LATENCY-METRICS-PLAN.md Fase 5): o nome do Service K8s usado nas duas fontes é adivinhado a
-// partir do host da URL (heurística simples em guessServiceNameFromURL), não resolvido de verdade
-// contra o cluster — e o Dynatrace configurado neste projeto não monitora todos os
-// clusters/namespaces (confirmado: zero entidades CLOUD_APPLICATION nos namespaces testados), o
-// que é esperado e tratado como "sem dado" (nunca erro visível pro usuário).
-//
-// Em ambos os casos, se a suposição estiver errada o resultado é só "sem dado" (MetricsSource
-// vazio) — nunca um valor errado sendo exibido como se fosse confiável.
+// fetchHistoricalLatencyContext busca o histórico DT/Prometheus do mesmo alvo do teste ativo —
+// wrapper fino sobre latencylookup.Fetch (mesma lógica reaproveitada pela correlação de breach de
+// latência no Health Check, ver LATENCY-METRICS-PLAN.md Fase 7) que só adiciona a heurística de
+// nome de Service a partir da URL, específica desse fluxo (o Health Check já tem o nome real do
+// workload, não precisa adivinhar).
 func (h *LatencyTestHandler) fetchHistoricalLatencyContext(ctx context.Context, cluster, namespace, targetURL string) LatencyHistoricalContext {
-	logger := log.With().Str("component", "latency-historical-context").Logger()
-
 	serviceName := guessServiceNameFromURL(targetURL)
 	if serviceName == "" {
-		logger.Debug().Str("target_url", targetURL).Msg("não foi possível extrair nome de serviço da URL")
 		return LatencyHistoricalContext{}
 	}
-	logger.Debug().Str("service", serviceName).Str("namespace", namespace).Str("cluster", cluster).Msg("iniciando busca de contexto histórico")
 
+	var dtURL, dtToken string
 	if h.dtTokenStore != nil {
-		if dtURL, dtToken, ok := h.dtTokenStore.GetDynatraceConfig(); ok {
-			if dtClient, err := dynatrace.NewClient(dtURL, dtToken); err == nil {
-				wl, err := dtClient.GetSingleWorkloadLatency(ctx, namespace, serviceName, dtLatencyWindowDays)
-				if err != nil {
-					logger.Debug().Err(err).Msg("DT: falha ao consultar latência")
-				} else if wl == nil {
-					logger.Debug().Msg("DT: sem dado pra esse workload")
-				} else {
-					logger.Debug().Float64("p95", wl.P95Ms).Float64("p99", wl.P99Ms).Msg("DT: dado encontrado")
-					return LatencyHistoricalContext{P95Ms: wl.P95Ms, P99Ms: wl.P99Ms, MetricsSource: "dynatrace"}
-				}
-			} else {
-				logger.Debug().Err(err).Msg("DT: falha ao criar client")
-			}
-		} else {
-			logger.Debug().Msg("DT: não configurado (sem token)")
-		}
-	} else {
-		logger.Debug().Msg("DT: dtTokenStore é nil")
+		dtURL, dtToken, _ = h.dtTokenStore.GetDynatraceConfig()
 	}
 
-	promURL := discovery.GetPrometheusURL(cluster)
-	logger.Debug().Str("prometheus_url", promURL).Msg("tentando Prometheus")
-	promC, err := promclient.NewClient(cluster, promURL)
-	if err != nil {
-		logger.Debug().Err(err).Msg("Prometheus: falha ao criar client")
-		return LatencyHistoricalContext{}
-	}
-	// O client usa "lazy connection" (ver client.go) — Query()/QueryRange() recusam rodar
-	//("client not connected") até TestConnection() marcar connected=true explicitamente. Sem
-	// isso aqui, TODA consulta falhava silenciosamente mesmo com o Prometheus acessível.
-	if err := promC.TestConnection(ctx); err != nil {
-		logger.Debug().Err(err).Msg("Prometheus: falha no teste de conexão")
-		return LatencyHistoricalContext{}
-	}
-	p95, err95 := promC.GetP95Latency(ctx, namespace, serviceName)
-	p99, err99 := promC.GetP99Latency(ctx, namespace, serviceName)
-	logger.Debug().
-		Float64("p95", p95).AnErr("err95", err95).
-		Float64("p99", p99).AnErr("err99", err99).
-		Msg("Prometheus: resultado da consulta")
-	if err95 != nil && err99 != nil {
-		return LatencyHistoricalContext{}
-	}
-	return LatencyHistoricalContext{P95Ms: p95, P99Ms: p99, MetricsSource: "prometheus"}
+	result := latencylookup.Fetch(ctx, dtURL, dtToken, cluster, namespace, serviceName)
+	return LatencyHistoricalContext{P95Ms: result.P95Ms, P99Ms: result.P99Ms, MetricsSource: result.Source}
 }
 
 // guessServiceNameFromURL extrai um candidato a nome de Service K8s a partir do host da URL —

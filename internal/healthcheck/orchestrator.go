@@ -729,6 +729,26 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				Int("total_correlated_items", len(result.CorrelatedItems)).
 				Int("bidirectional_matches", correlated).
 				Msg("[Correlator] K8s ↔ Dynatrace correlação concluída")
+
+			// Fase 7 (LATENCY-METRICS-PLAN.md): cruzar breach de latência (Prometheus/DT) com os
+			// DT Problems já encontrados acima — escala severidade quando os dois batem. Só roda
+			// pros workloads com DTProblems não-vazio (custo proporcional a "quantos problems DT
+			// ativos", não ao total de workloads do cluster).
+			if req.DynatraceURL != "" {
+				result.CorrelatedItems = EnrichWithLatencyBreach(ctx, result.CorrelatedItems, cluster, req.DynatraceURL, req.DynatraceToken)
+				breaches := 0
+				for _, ci := range result.CorrelatedItems {
+					if ci.LatencyBreach {
+						breaches++
+					}
+				}
+				if breaches > 0 {
+					log.Info().
+						Str("cluster", cluster).
+						Int("latency_breaches", breaches).
+						Msg("[Correlator] Breach de latência escalado (P95 acima do threshold + DT Problem ativo)")
+				}
+			}
 		}
 	}
 

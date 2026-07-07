@@ -440,13 +440,65 @@ persistidos). Pode-se implementar 6.1+6.2 numa sessão e 6.3+6.4 em outra.
 
 ---
 
-## Fase 7 (opcional/futuro) — Correlação com Health Check
+## Fase 7 — Correlação com Health Check ✅ CONCLUÍDA
 
-- [ ] Reaproveitar o padrão de `internal/healthcheck/correlator.go` (`workloadKey`, dois mapas,
-  união, escalada de severidade): cruzar breach de latência (P95/P99 acima do threshold, via dados
-  históricos da Fase 5) com DT Problems abertos no mesmo workload → severidade escalada quando os
-  dois batem
-- [ ] Nova categoria em `CorrelatedHealthItem` ou aba própria dentro do Health Check
+Decisões tomadas antes de codar (perguntadas ao usuário, plano original não especificava):
+**automático em todo scan** (não sob demanda por workload) com **threshold fixo de 500ms** de P95
+(não configurável no request).
+
+**Arquivo:** `internal/monitoring/latencylookup/lookup.go` ← CRIADO — extrai a lógica
+DT→Prometheus (antes só existia dentro de `fetchHistoricalLatencyContext`, Fase 5) pra um pacote
+compartilhado. `internal/healthcheck` não pode depender de `internal/web/handlers` (camadas
+invertidas), então a lógica de fallback precisou sair do handler pra um pacote neutro que os dois
+lados importam. `Fetch(ctx, dtURL, dtToken, cluster, namespace, workload)` retorna
+`Result{P95Ms, P99Ms, Source}`.
+
+**Arquivo:** `internal/web/handlers/latency_history.go` ← REFATORADO — `fetchHistoricalLatencyContext`
+virou wrapper fino sobre `latencylookup.Fetch`, só mantendo a heurística `guessServiceNameFromURL`
+(específica desse fluxo — o Health Check já tem o nome real do workload, não precisa adivinhar a
+partir de URL).
+
+**Arquivo:** `internal/healthcheck/latency_breach_checker.go` ← CRIADO — `EnrichWithLatencyBreach`
+roda **depois** de `Correlate()`, só pros itens com `len(DTProblems) > 0` (custo de N lookups
+extras por scan proporcional a "workloads com DT Problem ativo", não ao total de workloads do
+cluster — filtro que veio direto da leitura literal do texto original "DT Problems abertos no
+mesmo workload"). Concorrência limitada por semáforo (6, mesmo padrão de scans de frota já usado
+em nodepool/access-check) + timeout de 30s pro enriquecimento inteiro (best-effort, nunca bloqueia
+o Health Check). Escalada: `LatencyBreach && FinalSeverity < Critical` → `FinalSeverity = Critical`
+(mesmo espírito da escalada K8s↔DT já existente em `Correlate`), depois reordena a lista pelo
+mesmo critério de `Correlate`. Lógica de filtro/escalada extraída pra função privada
+`enrichWithLatencyBreach` com a função de fetch injetável (`latencyFetchFunc`) — permite testar a
+lógica sem rede real. 3 testes novos (`latency_breach_checker_test.go`), todos passando com
+`-race`: escalada só quando breach+DTProblem batem, fetch não é chamado quando não há DTProblems
+(confirma o filtro de custo), item sem dado de latência fica intocado.
+
+**Arquivo:** `internal/healthcheck/models.go` ← MODIFICADO — `CorrelatedHealthItem` ganhou
+`LatencyP95Ms`/`LatencyP99Ms` (sem `omitempty`, mesmo motivo do bug corrigido na Fase 5 — zero é
+valor real, não ausência), `LatencySource`, `LatencyBreach`.
+
+**Arquivo:** `internal/healthcheck/orchestrator.go` ← MODIFICADO — chama
+`EnrichWithLatencyBreach(ctx, result.CorrelatedItems, cluster, req.DynatraceURL, req.DynatraceToken)`
+logo após `Correlate(result)`, dentro do mesmo `if req.CheckDynatrace` (nenhum novo campo de
+request necessário — a decisão "automático" reaproveita o gate que já existia). Só roda quando
+`req.DynatraceURL != ""`.
+
+**Frontend:** `HealthCheckResultsPanel.tsx` ← MODIFICADO — badge vermelho "P95 Nms" no cabeçalho do
+card quando `latency_breach`, seção "Latência histórica (DT/Prom)" no conteúdo expandido mostrando
+P95/P99 sempre que `latency_source` vier preenchido (mesmo se não for breach — dado histórico é
+informação útil mesmo sem escalar nada). `types/healthcheck.ts` ganhou os 4 campos novos.
+
+`go build ./...`, `go vet ./...`, `gofmt -l` limpos (arquivos novos/modificados por esta fase —
+`models.go`/`orchestrator.go` já tinham divergência de gofmt pré-existente, não introduzida aqui,
+confirmado via `git stash`). `go test ./internal/... -race` completo passa (toda a suíte, não só
+healthcheck). `tsc --noEmit` limpo. `./rebuild-web.sh -b` ok, servidor sobe e responde 200.
+
+**Não validado end-to-end no navegador**: exigiria um Health Check real com Dynatrace habilitado
+E pelo menos um workload com DT Problem aberto E breach de latência simultâneo — combinação rara
+de reproduzir sob demanda no ambiente de teste disponível (mesmo achado da Fase 5: os
+clusters/namespaces usados nos testes não têm cobertura desse tenant DT). A lógica de
+filtro/escalada foi validada via teste unitário determinístico (fetch fake, sem rede) em vez de
+prova visual — suficiente pra confiar na correção, mas diferente do padrão "testado no navegador
+contra infra real" das fases anteriores.
 
 ---
 
