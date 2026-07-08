@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -392,6 +393,42 @@ func buildKcatCommand(broker string, authFlags []string, extraArgs ...string) st
 	return strings.Join(parts, " ")
 }
 
+// kafkaExitMarker é anexado ao final de todo script kcat rodado pela ferramenta — necessário
+// porque os 3 estágios usam `2>&1` pra juntar stdout+stderr do kcat num único texto (é esse texto
+// combinado que as regexes de classificação de erro precisam inspecionar), mas execCmdInPod
+// DESCARTA o stdout capturado sempre que o comando remoto sai com código != 0 (só devolve o
+// stderr "puro" da própria sessão de exec no erro — que fica vazio aqui, já que tudo foi
+// redirecionado pro stdout do processo pelo `2>&1`). Sem esse wrapper, qualquer falha real do
+// kcat (SASL errado, TLS errado, rede) perdia o texto de diagnóstico e caía sempre no bucket
+// genérico "unknown_failed", sem nunca rodar as regexes de classificação — mesmo bug de classe já
+// contornado em runICMPProbe/runHTTPProbe (latency_test_tool.go, com `; true`), só que lá não há
+// necessidade de saber o código de saída real, e aqui há. A correção: o `sh -c` some sempre sai 0
+// (`; echo "marker$?"`), e o código de saída real vai embutido no fim da saída — permite tanto
+// preservar o texto quanto saber se o comando teve sucesso.
+const kafkaExitMarker = "\n___KAFKA_TEST_EXIT_CODE___:"
+
+// wrapKafkaScript envolve um script pra nunca deixar o `sh -c` sair != 0 (evita que execCmdInPod
+// descarte a saída) e imprime o código de saída real do comando interno numa marca ao final.
+func wrapKafkaScript(script string) string {
+	return fmt.Sprintf(`{ %s; }; __rc=$?; printf '%s%%d' "$__rc"`, script, kafkaExitMarker)
+}
+
+// splitKafkaExitMarker separa o texto de diagnóstico do código de saída real embutido por
+// wrapKafkaScript. Se a marca não for encontrada (não deveria acontecer), trata como falha —
+// mais seguro do que assumir sucesso silenciosamente.
+func splitKafkaExitMarker(output string) (text string, exitCode int, ok bool) {
+	idx := strings.LastIndex(output, kafkaExitMarker)
+	if idx == -1 {
+		return output, -1, false
+	}
+	text = output[:idx]
+	code, err := strconv.Atoi(strings.TrimSpace(output[idx+len(kafkaExitMarker):]))
+	if err != nil {
+		return text, -1, false
+	}
+	return text, code, true
+}
+
 // extractStderr extrai o texto de stderr de um erro devolvido por execCmdInPod (formato
 // "stream: %v (stderr: %s)") — usado só pra classificação/exibição, não muda execCmdInPod.
 func extractStderr(err error) string {
@@ -417,11 +454,15 @@ func runKafkaConnectivityStage(ctx context.Context, clientset kubernetes.Interfa
 		timeoutSec = 1
 	}
 	cmd := buildKcatCommand(broker, authFlags, "-L")
-	script := fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
+	script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
 
-	stdout, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
-	if err != nil {
-		raw := extractStderr(err)
+	output, execErr := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
+	if execErr != nil {
+		return KafkaStageResult{Status: kafkaStageUnknownFailed, Message: "Falha ao executar o teste no pod", RawOutput: extractStderr(execErr)}
+	}
+
+	raw, exitCode, ok := splitKafkaExitMarker(output)
+	if !ok || exitCode != 0 {
 		switch {
 		case kafkaNetworkErrorRegex.MatchString(raw):
 			return KafkaStageResult{Status: kafkaStageTCPFailed, Message: "Não conseguiu conectar no broker (rede/DNS)", RawOutput: raw}
@@ -443,13 +484,11 @@ func runKafkaConnectivityStage(ctx context.Context, clientset kubernetes.Interfa
 		}
 	}
 
-	// Nota: `2>&1` acima junta stdout+stderr no `stdout` de sucesso, já que aqui não há stderr
-	// separado a extrair (execCmdInPod só devolve stdout puro no caso sem erro).
-	result := KafkaStageResult{Status: kafkaStageOK, Message: "Conectividade e protocolo Kafka OK", RawOutput: stdout}
-	if m := kafkaBrokerCountRegex.FindStringSubmatch(stdout); len(m) == 2 {
+	result := KafkaStageResult{Status: kafkaStageOK, Message: "Conectividade e protocolo Kafka OK", RawOutput: raw}
+	if m := kafkaBrokerCountRegex.FindStringSubmatch(raw); len(m) == 2 {
 		fmt.Sscanf(m[1], "%d", &result.BrokerCount)
 	}
-	if m := kafkaTopicCountRegex.FindStringSubmatch(stdout); len(m) == 2 {
+	if m := kafkaTopicCountRegex.FindStringSubmatch(raw); len(m) == 2 {
 		fmt.Sscanf(m[1], "%d", &result.TopicCount)
 	}
 	return result
@@ -470,19 +509,26 @@ func runKafkaProduceConsumeStage(ctx context.Context, clientset kubernetes.Inter
 	start := time.Now()
 
 	produceCmd := buildKcatCommand(broker, authFlags, "-P", "-t", topic)
-	produceScript := fmt.Sprintf("printf '%%s' %s | timeout %ds %s 2>&1", quoteShellArg(marker), timeoutSec, produceCmd)
-	produceOut, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", produceScript})
-	if err != nil {
-		return KafkaProduceConsumeResult{Status: "produce_failed", Message: "Falha ao produzir mensagem de teste", RawOutput: extractStderr(err)}
+	produceScript := wrapKafkaScript(fmt.Sprintf("printf '%%s' %s | timeout %ds %s 2>&1", quoteShellArg(marker), timeoutSec, produceCmd))
+	produceRaw, execErr := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", produceScript})
+	if execErr != nil {
+		return KafkaProduceConsumeResult{Status: "produce_failed", Message: "Falha ao executar o produce no pod", RawOutput: extractStderr(execErr)}
+	}
+	produceOut, produceExit, ok := splitKafkaExitMarker(produceRaw)
+	if !ok || produceExit != 0 {
+		return KafkaProduceConsumeResult{Status: "produce_failed", Message: "Falha ao produzir mensagem de teste", RawOutput: produceOut}
 	}
 
 	consumeCmd := buildKcatCommand(broker, authFlags, "-C", "-t", topic, "-o", "beginning", "-c", fmt.Sprintf("%d", kafkaTestConsumeMaxMessages), "-e")
-	consumeScript := fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, consumeCmd)
-	consumeOut, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", consumeScript})
+	consumeScript := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, consumeCmd))
+	consumeRaw, execErr := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", consumeScript})
 	roundTrip := time.Since(start).Milliseconds()
-	if err != nil {
-		raw := extractStderr(err)
-		return KafkaProduceConsumeResult{Status: "produce_failed", Message: "Mensagem produzida, mas falha ao consumir de volta", RawOutput: produceOut + "\n---\n" + raw}
+	if execErr != nil {
+		return KafkaProduceConsumeResult{Status: "produce_failed", Message: "Mensagem produzida, mas falha ao executar o consume no pod", RawOutput: produceOut + "\n---\n" + extractStderr(execErr)}
+	}
+	consumeOut, consumeExit, ok := splitKafkaExitMarker(consumeRaw)
+	if !ok || consumeExit != 0 {
+		return KafkaProduceConsumeResult{Status: "produce_failed", Message: "Mensagem produzida, mas falha ao consumir de volta", RawOutput: produceOut + "\n---\n" + consumeOut}
 	}
 
 	rawOutput := produceOut + "\n---\n" + consumeOut
@@ -527,11 +573,15 @@ func runKafkaViewTopicStage(ctx context.Context, clientset kubernetes.Interface,
 	}
 
 	cmd := buildKcatCommand(broker, authFlags, "-C", "-t", topic, "-o", fmt.Sprintf("-%d", maxMessages), "-c", fmt.Sprintf("%d", maxMessages), "-e", "-J")
-	script := fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
+	script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
 
-	stdout, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
-	if err != nil {
-		return KafkaTopicViewResult{Status: "failed", Message: "Falha ao ler mensagens do tópico", RawOutput: extractStderr(err)}
+	output, execErr := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
+	if execErr != nil {
+		return KafkaTopicViewResult{Status: "failed", Message: "Falha ao executar a leitura no pod", RawOutput: extractStderr(execErr)}
+	}
+	stdout, exitCode, ok := splitKafkaExitMarker(output)
+	if !ok || exitCode != 0 {
+		return KafkaTopicViewResult{Status: "failed", Message: "Falha ao ler mensagens do tópico", RawOutput: stdout}
 	}
 
 	var messages []KafkaMessage
