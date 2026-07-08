@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -64,36 +65,36 @@ type ContainerStatus struct {
 
 // PodSummary representa um resumo de Pod
 type PodSummary struct {
-	Cluster              string            `json:"cluster"`
-	Namespace            string            `json:"namespace"`
-	Name                 string            `json:"name"`
-	PodIP                string            `json:"podIP,omitempty"`
-	NodeName             string            `json:"nodeName,omitempty"`
-	Phase                string            `json:"phase"`
-	Status               string            `json:"status,omitempty"`
-	StatusReason         string            `json:"statusReason,omitempty"`
-	Labels               map[string]string `json:"labels,omitempty"`
-	Containers           []ContainerStatus `json:"containers"`
-	ReadyContainers      int               `json:"readyContainers"`
-	TotalContainers      int               `json:"totalContainers"`
-	CPURequest           string            `json:"cpuRequest,omitempty"`
-	CPURequestMillicores int64             `json:"cpuRequestMillicores,omitempty"`
-	MemoryRequest        string            `json:"memoryRequest,omitempty"`
-	MemoryRequestBytes   int64             `json:"memoryRequestBytes,omitempty"`
-	CPULimit             string            `json:"cpuLimit,omitempty"`
-	CPULimitMillicores   int64             `json:"cpuLimitMillicores,omitempty"`
-	MemoryLimit          string            `json:"memoryLimit,omitempty"`
-	MemoryLimitBytes     int64             `json:"memoryLimitBytes,omitempty"`
-	CPUUsage             string            `json:"cpuUsage,omitempty"`
-	CPUUsageMillicores   int64             `json:"cpuUsageMillicores,omitempty"`
-	MemoryUsage          string            `json:"memoryUsage,omitempty"`
-	MemoryUsageBytes     int64             `json:"memoryUsageBytes,omitempty"`
-	CPUUsagePercentage   float64           `json:"cpuUsagePercentage"`
+	Cluster               string            `json:"cluster"`
+	Namespace             string            `json:"namespace"`
+	Name                  string            `json:"name"`
+	PodIP                 string            `json:"podIP,omitempty"`
+	NodeName              string            `json:"nodeName,omitempty"`
+	Phase                 string            `json:"phase"`
+	Status                string            `json:"status,omitempty"`
+	StatusReason          string            `json:"statusReason,omitempty"`
+	Labels                map[string]string `json:"labels,omitempty"`
+	Containers            []ContainerStatus `json:"containers"`
+	ReadyContainers       int               `json:"readyContainers"`
+	TotalContainers       int               `json:"totalContainers"`
+	CPURequest            string            `json:"cpuRequest,omitempty"`
+	CPURequestMillicores  int64             `json:"cpuRequestMillicores,omitempty"`
+	MemoryRequest         string            `json:"memoryRequest,omitempty"`
+	MemoryRequestBytes    int64             `json:"memoryRequestBytes,omitempty"`
+	CPULimit              string            `json:"cpuLimit,omitempty"`
+	CPULimitMillicores    int64             `json:"cpuLimitMillicores,omitempty"`
+	MemoryLimit           string            `json:"memoryLimit,omitempty"`
+	MemoryLimitBytes      int64             `json:"memoryLimitBytes,omitempty"`
+	CPUUsage              string            `json:"cpuUsage,omitempty"`
+	CPUUsageMillicores    int64             `json:"cpuUsageMillicores,omitempty"`
+	MemoryUsage           string            `json:"memoryUsage,omitempty"`
+	MemoryUsageBytes      int64             `json:"memoryUsageBytes,omitempty"`
+	CPUUsagePercentage    float64           `json:"cpuUsagePercentage"`
 	MemoryUsagePercentage float64           `json:"memoryUsagePercentage"`
-	ResourceVersion      string            `json:"resourceVersion,omitempty"`
-	CreatedAt            string            `json:"createdAt"`
-	Restarts             int32             `json:"restarts"`
-	Terminating          bool              `json:"terminating"`
+	ResourceVersion       string            `json:"resourceVersion,omitempty"`
+	CreatedAt             string            `json:"createdAt"`
+	Restarts              int32             `json:"restarts"`
+	Terminating           bool              `json:"terminating"`
 }
 
 // PodManifest representa o manifest completo de um Pod
@@ -142,10 +143,17 @@ func (h *PodHandler) List(c *gin.Context) {
 	} else {
 		allPods = &corev1.PodList{}
 		for _, ns := range namespaces {
-			podList, err := clientset.CoreV1().Pods(ns).List(c.Request.Context(), metav1.ListOptions{})
-			if err == nil {
-				allPods.Items = append(allPods.Items, podList.Items...)
+			podList, nsErr := clientset.CoreV1().Pods(ns).List(c.Request.Context(), metav1.ListOptions{})
+			if nsErr != nil {
+				// Best-effort: um namespace sem permissão/indisponível não deve derrubar a
+				// resposta inteira quando outros namespaces pedidos são válidos — mas o erro
+				// precisa aparecer no log, senão vira uma lista vazia sem pista nenhuma do motivo
+				// (bug real: antes essa variável tinha o mesmo nome "err" da de fora, então o
+				// erro daqui nunca era visto por ninguém — nem log, nem resposta).
+				log.Printf("[PodHandler] Warning: falha ao listar pods no namespace %q (cluster %s): %v", ns, cluster, nsErr)
+				continue
 			}
+			allPods.Items = append(allPods.Items, podList.Items...)
 		}
 	}
 	if err != nil {
@@ -676,30 +684,30 @@ func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod, metric
 	status, statusReason := getPodStatus(pod, isTerminating)
 
 	summary := PodSummary{
-		Cluster:         cluster,
-		Namespace:       pod.Namespace,
-		Name:            pod.Name,
-		PodIP:           pod.Status.PodIP,
-		NodeName:        pod.Spec.NodeName,
-		Phase:           string(pod.Status.Phase),
-		Status:          status,
-		StatusReason:    statusReason,
-		Labels:          pod.Labels,
-		Containers:      containers,
-		ReadyContainers: readyCount,
-		TotalContainers: len(pod.Spec.Containers),
-		CPURequest:      totalCPUReq.String(),
-		MemoryRequest:   totalMemReq.String(),
-		CPULimit:        totalCPULim.String(),
-		MemoryLimit:     totalMemLim.String(),
+		Cluster:              cluster,
+		Namespace:            pod.Namespace,
+		Name:                 pod.Name,
+		PodIP:                pod.Status.PodIP,
+		NodeName:             pod.Spec.NodeName,
+		Phase:                string(pod.Status.Phase),
+		Status:               status,
+		StatusReason:         statusReason,
+		Labels:               pod.Labels,
+		Containers:           containers,
+		ReadyContainers:      readyCount,
+		TotalContainers:      len(pod.Spec.Containers),
+		CPURequest:           totalCPUReq.String(),
+		MemoryRequest:        totalMemReq.String(),
+		CPULimit:             totalCPULim.String(),
+		MemoryLimit:          totalMemLim.String(),
 		CPURequestMillicores: totalCPUReq.MilliValue(),
 		MemoryRequestBytes:   totalMemReq.Value(),
 		CPULimitMillicores:   totalCPULim.MilliValue(),
 		MemoryLimitBytes:     totalMemLim.Value(),
-		ResourceVersion: pod.ResourceVersion,
-		CreatedAt:       pod.CreationTimestamp.Format(time.RFC3339),
-		Restarts:        totalRestarts,
-		Terminating:     isTerminating,
+		ResourceVersion:      pod.ResourceVersion,
+		CreatedAt:            pod.CreationTimestamp.Format(time.RFC3339),
+		Restarts:             totalRestarts,
+		Terminating:          isTerminating,
 	}
 
 	if metrics != nil {
@@ -807,16 +815,16 @@ func getPodStatus(pod *corev1.Pod, isTerminating bool) (status, reason string) {
 
 // formatBytes converts bytes to a human-readable string (e.g., Ki, Mi, Gi).
 func formatBytes(b int64) string {
-    const unit = 1024
-    if b < unit {
-        return fmt.Sprintf("%d B", b)
-    }
-    div, exp := int64(unit), 0
-    for n := b / unit; n >= unit; n /= unit {
-        div *= unit
-        exp++
-    }
-    return fmt.Sprintf("%.1f %ci", float64(b)/float64(div), "KMGTPE"[exp])
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ci", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // Describe retorna a saída do kubectl describe para um Pod
