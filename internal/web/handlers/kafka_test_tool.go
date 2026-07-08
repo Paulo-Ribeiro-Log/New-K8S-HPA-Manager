@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -123,6 +124,12 @@ type KafkaSecretRef struct {
 	Name        string `json:"name"`
 	UsernameKey string `json:"username_key"`
 	PasswordKey string `json:"password_key"`
+	// Base64Decode decodifica username/password mais uma vez depois de ler do Secret — necessário
+	// quando o VALOR sincronizado da fonte externa (ex: Azure Key Vault via external-secrets) já é,
+	// ele mesmo, uma string em base64 (prática comum pra evitar caracteres especiais em connection
+	// strings). O client-go já decodifica o base64 "de transporte" do Secret automaticamente — isso
+	// aqui é uma camada A MAIS em cima disso, opcional.
+	Base64Decode bool `json:"base64_decode,omitempty"`
 }
 
 // RunKafkaTestRequest é o body do POST /kafka-test/run.
@@ -379,9 +386,37 @@ func resolveKafkaCredentials(ctx context.Context, clientset kubernetes.Interface
 		if !ok {
 			return "", "", fmt.Errorf("chave %q não encontrada no secret %s/%s", passKey, ref.Namespace, ref.Name)
 		}
-		return string(userBytes), string(passBytes), nil
+		username, password = string(userBytes), string(passBytes)
+		if ref.Base64Decode {
+			username, err = decodeKafkaSecretValue(username)
+			if err != nil {
+				return "", "", fmt.Errorf("valor da chave %q não é base64 válido (Base64Decode marcado): %w", userKey, err)
+			}
+			password, err = decodeKafkaSecretValue(password)
+			if err != nil {
+				return "", "", fmt.Errorf("valor da chave %q não é base64 válido (Base64Decode marcado): %w", passKey, err)
+			}
+		}
+		return username, password, nil
 	}
 	return sasl.Username, sasl.Password, nil
+}
+
+// decodeKafkaSecretValue decodifica uma string em base64 — tenta StdEncoding primeiro (com
+// padding, o formato mais comum) e cai pra RawStdEncoding (sem padding) se falhar, já que fontes
+// externas (ex: AKV) nem sempre preservam o `=` de padding. Faz `TrimSpace` antes: base64 exportado
+// via `echo valor | base64` (sem `-n`) ou copiado manualmente costuma vir com `\n` no final, o que
+// quebra o decode mesmo o conteúdo sendo válido.
+func decodeKafkaSecretValue(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if decoded, err := base64.StdEncoding.DecodeString(v); err == nil {
+		return string(decoded), nil
+	}
+	decoded, err := base64.RawStdEncoding.DecodeString(v)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
 }
 
 // buildKcatAuthFlags monta os `-X key=value` do kcat a partir da config SASL/TLS resolvida.

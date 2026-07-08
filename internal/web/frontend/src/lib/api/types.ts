@@ -1716,6 +1716,11 @@ export interface KafkaSecretRef {
   name: string;
   username_key: string; // default "username" se vazio
   password_key: string; // default "password" se vazio
+  // base64_decode: decodifica username/password mais uma vez depois de ler do Secret — necessário
+  // quando o valor sincronizado da fonte externa (ex: Azure Key Vault via external-secrets) já é,
+  // ele mesmo, uma string em base64 (não confundir com o base64 "de transporte" do próprio Secret
+  // do K8s, que já é decodificado automaticamente antes de chegar aqui).
+  base64_decode?: boolean;
 }
 
 export interface KafkaSASLConfig {

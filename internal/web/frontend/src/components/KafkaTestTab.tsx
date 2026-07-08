@@ -168,6 +168,7 @@ export default function KafkaTestTab() {
   const [secretName, setSecretName] = useState("");
   const [usernameKey, setUsernameKey] = useState("username");
   const [passwordKey, setPasswordKey] = useState("password");
+  const [secretBase64Decode, setSecretBase64Decode] = useState(false);
 
   const [produceConsumeEnabled, setProduceConsumeEnabled] = useState(false);
   const [topic, setTopic] = useState("");
@@ -235,6 +236,7 @@ export default function KafkaTestTab() {
                   name: secretName,
                   username_key: usernameKey || "username",
                   password_key: passwordKey || "password",
+                  base64_decode: secretBase64Decode,
                 },
               }),
         }
@@ -512,6 +514,12 @@ export default function KafkaTestTab() {
                 <div className="w-36">
                   <label className="text-xs text-muted-foreground block mb-1">Chave senha</label>
                   <Input value={passwordKey} onChange={(e) => setPasswordKey(e.target.value)} />
+                </div>
+                <div className="w-full flex items-center gap-2">
+                  <Checkbox checked={secretBase64Decode} onCheckedChange={(v) => setSecretBase64Decode(!!v)} id="secret-b64" />
+                  <label htmlFor="secret-b64" className="text-xs text-muted-foreground cursor-pointer max-w-md">
+                    Valores no Secret estão em Base64 (decodificar antes de autenticar — comum em secrets sincronizados de Azure Key Vault via external-secrets)
+                  </label>
                 </div>
               </>
             )}
