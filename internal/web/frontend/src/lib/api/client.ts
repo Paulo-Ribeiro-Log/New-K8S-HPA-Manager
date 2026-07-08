@@ -3597,6 +3597,16 @@ class APIClient {
     });
   }
 
+  /** Lista os tópicos existentes no broker (campo de busca de tópicos) — síncrono, sem SSE */
+  async listKafkaTopics(
+    req: import("./types").ListKafkaTopicsRequest
+  ): Promise<import("./types").ListKafkaTopicsResponse> {
+    return this.request<import("./types").ListKafkaTopicsResponse>("/kafka-test/topics", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{

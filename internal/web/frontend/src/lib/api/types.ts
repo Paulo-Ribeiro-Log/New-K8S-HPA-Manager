@@ -1716,6 +1716,11 @@ export interface KafkaSecretRef {
   name: string;
   username_key: string; // default "username" se vazio
   password_key: string; // default "password" se vazio
+  // base64_decode: decodifica username/password mais uma vez depois de ler do Secret — necessário
+  // quando o valor sincronizado da fonte externa (ex: Azure Key Vault via external-secrets) já é,
+  // ele mesmo, uma string em base64 (não confundir com o base64 "de transporte" do próprio Secret
+  // do K8s, que já é decodificado automaticamente antes de chegar aqui).
+  base64_decode?: boolean;
 }
 
 export interface KafkaSASLConfig {
@@ -1744,6 +1749,10 @@ export interface RunKafkaTestRequest {
   // existentes no tópico informado em `topic`.
   view_topic: boolean;
   view_max_messages?: number; // default 10, teto 50 (aplicado no backend)
+  // count_offsets lê (só leitura, não precisa de confirm_produce) o offset mais antigo/mais
+  // recente de cada partição do tópico informado em `topic` e deriva a contagem de mensagens
+  // atualmente retidas.
+  count_offsets?: boolean;
   timeout_ms?: number; // default 5000, teto 15000 (aplicado no backend)
 }
 
@@ -1794,6 +1803,26 @@ export interface KafkaTopicViewResult {
   raw_output: string;
 }
 
+export type KafkaOffsetCountStatus = 'ok' | 'not_found' | 'failed' | 'skipped';
+
+// offsets de uma partição — count = latest - earliest, ou seja, mensagens ATUALMENTE retidas
+// nessa partição (não o total histórico já produzido, já que a retenção pode ter apagado
+// mensagens antigas — earliest só reflete o que o broker ainda guarda).
+export interface KafkaOffsetPartition {
+  partition: number;
+  earliest: number;
+  latest: number;
+  count: number;
+}
+
+export interface KafkaOffsetCountResult {
+  status: KafkaOffsetCountStatus;
+  message: string;
+  total_messages?: number;
+  partitions?: KafkaOffsetPartition[];
+  raw_output: string;
+}
+
 export interface KafkaTestResult {
   // target_pod é o pod real (do Deployment escolhido) onde o ephemeral container do teste foi
   // anexado — transparência de qual carga específica foi tocada.
@@ -1805,11 +1834,12 @@ export interface KafkaTestResult {
   connectivity: KafkaStageResult;
   produce_consume: KafkaProduceConsumeResult;
   view_topic: KafkaTopicViewResult;
+  offset_count: KafkaOffsetCountResult;
 }
 
 export interface KafkaTestSSEEvent {
   id: string;
-  type: 'init' | 'resolve_deployment' | 'ephemeral_container' | 'connectivity' | 'produce_consume' | 'view_topic' | 'complete' | 'error';
+  type: 'init' | 'resolve_deployment' | 'ephemeral_container' | 'connectivity' | 'produce_consume' | 'count_offsets' | 'view_topic' | 'complete' | 'error';
   phase: string;
   message: string;
   progress: number;
@@ -1817,6 +1847,22 @@ export interface KafkaTestSSEEvent {
   timestamp: string;
   error?: string;
   result?: KafkaTestResult; // presente só no evento "complete"
+}
+
+// ─── Busca de tópicos (campo de busca na aba Teste Kafka) ─────────────────────
+
+export interface ListKafkaTopicsRequest {
+  cluster: string;
+  namespace: string;
+  deployment: string;
+  broker: string;
+  sasl?: KafkaSASLConfig;
+  timeout_ms?: number;
+}
+
+export interface ListKafkaTopicsResponse {
+  topics: string[];
+  raw_output?: string;
 }
 
 // Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.
