@@ -229,6 +229,7 @@ const Index = ({ onLogout }: IndexProps) => {
     gateways: false,
     healthcheck: false,
     codeEditor: false,
+    accessCheck: false,
   });
 
   // Listener de eventos de aplicação de node pools — atualiza spinner/resultado na lista
@@ -260,8 +261,8 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // 🔄 Marcar componente como montado quando usuário acessa a aba
   useEffect(() => {
-    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "gateways", "healthcheck", "codeEditor"];
-    const tabKey = activeTab === "code-editor" ? "codeEditor" : activeTab;
+    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "gateways", "healthcheck", "codeEditor", "accessCheck"];
+    const tabKey = activeTab === "code-editor" ? "codeEditor" : activeTab === "access-check" ? "accessCheck" : activeTab;
     if (workloadTabs.includes(tabKey as any)) {
       hasBeenMounted.current[tabKey as keyof typeof hasBeenMounted.current] = true;
     }
@@ -1204,13 +1205,6 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
-      case "access-check":
-        return (
-          <ErrorBoundary componentName="Access Check Tab">
-            <AccessCheckTab />
-          </ErrorBoundary>
-        );
-
       case "latency-test":
         return (
           <ErrorBoundary componentName="Latency Test Tab">
@@ -1634,8 +1628,17 @@ const Index = ({ onLogout }: IndexProps) => {
           )}
         </div>
 
+        {/* Verificar Acesso - sempre montado (evita perder o scan ao trocar de aba e voltar) */}
+        <div style={{ display: activeTab === "access-check" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "access-check" || hasBeenMounted.current.accessCheck) && (
+            <ErrorBoundary componentName="Access Check Tab">
+              <AccessCheckTab />
+            </ErrorBoundary>
+          )}
+        </div>
+
         {/* Outras abas - renderização condicional normal (switch/case) */}
-        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "gateways", "healthcheck", "code-editor"].includes(activeTab) && renderTabContent()}
+        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "gateways", "healthcheck", "code-editor", "access-check"].includes(activeTab) && renderTabContent()}
       </div>
 
       {/* Modal de Confirmação - HPAs */}
