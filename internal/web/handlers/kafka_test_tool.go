@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -44,6 +45,10 @@ const (
 	// marcador de teste — não usa offset exato pré-produce (ver kafka_test_tool.go doc), então lê
 	// desde o início do tópico até esse teto como compromisso simplicidade/custo.
 	kafkaTestConsumeMaxMessages = 50
+	// kafkaTestViewDefaultMessages/MaxMessages limitam o estágio de visualização (só leitura) —
+	// lê as últimas N mensagens já existentes no tópico via offset negativo do kcat (-o -N).
+	kafkaTestViewDefaultMessages = 10
+	kafkaTestViewMaxMessages     = 50
 )
 
 const (
@@ -73,6 +78,12 @@ const (
 // resolution failure", "Local: Broker transport failure".
 var kafkaNetworkErrorRegex = regexp.MustCompile(`(?i)(connect to .* failed|failed to resolve|host resolution failure|broker transport failure)`)
 var kafkaAuthErrorRegex = regexp.MustCompile(`(?i)sasl`)
+
+// kafkaMechanismHintRegex tenta extrair, de uma mensagem de erro de handshake SASL, os
+// mecanismos que o BROKER realmente aceita — o Kafka geralmente informa isso quando o client
+// tenta um mecanismo errado (ex: "Unsupported SASL mechanism: PLAIN not in [SCRAM-SHA-512]").
+// Best-effort/heurístico — a saída bruta continua sempre disponível se isso não casar.
+var kafkaMechanismHintRegex = regexp.MustCompile(`(?i)mechanisms?[^A-Za-z0-9]{0,20}((?:PLAIN|SCRAM-SHA-256|SCRAM-SHA-512|GSSAPI|OAUTHBEARER)(?:[,\s]+(?:PLAIN|SCRAM-SHA-256|SCRAM-SHA-512|GSSAPI|OAUTHBEARER))*)`)
 var kafkaTLSErrorRegex = regexp.MustCompile(`(?i)ssl`)
 var kafkaBrokerCountRegex = regexp.MustCompile(`(\d+)\s+brokers?:`)
 var kafkaTopicCountRegex = regexp.MustCompile(`(\d+)\s+topics?:`)
@@ -108,11 +119,15 @@ type RunKafkaTestRequest struct {
 	Broker         string           `json:"broker"` // "host:porta" — tipicamente um broker EXTERNO ao cluster
 	SASL           *KafkaSASLConfig `json:"sasl,omitempty"`
 	ProduceConsume bool             `json:"produce_consume"`
-	Topic          string           `json:"topic,omitempty"`
+	Topic          string           `json:"topic,omitempty"` // usado por ProduceConsume e/ou ViewTopic
 	// ConfirmProduce precisa ser true explicitamente pra rodar o estágio de produce/consume —
 	// diferente de TCP/protocolo (só leitura), produce ESCREVE uma mensagem real no tópico.
 	ConfirmProduce bool `json:"confirm_produce"`
-	TimeoutMs      int  `json:"timeout_ms"`
+	// ViewTopic lê (só leitura, sem escrever nada — não precisa de ConfirmProduce) as últimas
+	// mensagens já existentes no tópico informado em Topic.
+	ViewTopic       bool `json:"view_topic"`
+	ViewMaxMessages int  `json:"view_max_messages,omitempty"` // default 10, teto 50
+	TimeoutMs       int  `json:"timeout_ms"`
 }
 
 // KafkaStageResult é o resultado de um estágio individual do teste.
@@ -122,6 +137,10 @@ type KafkaStageResult struct {
 	RawOutput   string `json:"raw_output"`
 	BrokerCount int    `json:"broker_count,omitempty"`
 	TopicCount  int    `json:"topic_count,omitempty"`
+	// SuggestedMechanism vem de kafkaMechanismHintRegex quando o erro de auth_failed menciona os
+	// mecanismos SASL que o broker realmente aceita — extração best-effort, pode vir vazia mesmo
+	// quando o broker informou isso num formato que a regex não reconhece.
+	SuggestedMechanism string `json:"suggested_mechanism,omitempty"`
 }
 
 // KafkaProduceConsumeResult é o resultado do round-trip de produce/consume.
@@ -132,18 +151,46 @@ type KafkaProduceConsumeResult struct {
 	RawOutput   string `json:"raw_output"`
 }
 
+// KafkaMessage é uma mensagem lida do tópico pelo estágio de visualização (só leitura).
+type KafkaMessage struct {
+	Partition int32 `json:"partition"`
+	Offset    int64 `json:"offset"`
+	// TimestampMs vem do campo "ts" do kcat (epoch ms) — 0 quando o broker não reporta timestamp
+	// de criação da mensagem (versões antigas de protocolo).
+	TimestampMs int64  `json:"timestamp_ms,omitempty"`
+	Key         string `json:"key,omitempty"`
+	Payload     string `json:"payload"`
+	// Binary = true quando Key/Payload contém o caractere de substituição U+FFFD — sinal de que o
+	// kcat já substituiu bytes inválidos de UTF-8 antes de emitir o JSON (payload binário de
+	// verdade, ex: protobuf/Avro, ou uma mensagem de tópico interno do Kafka como
+	// __consumer_offsets). Os bytes originais já se perderam nesse ponto — não é recuperável.
+	Binary bool `json:"binary,omitempty"`
+}
+
+// KafkaTopicViewResult é o resultado do estágio de visualização (só leitura) de um tópico.
+type KafkaTopicViewResult struct {
+	Status    string         `json:"status"` // ok | failed | skipped
+	Message   string         `json:"message"`
+	Messages  []KafkaMessage `json:"messages,omitempty"`
+	RawOutput string         `json:"raw_output"`
+}
+
 // KafkaTestResult é o resultado completo de uma execução do teste de Kafka.
 type KafkaTestResult struct {
 	// TargetPod é o pod real (do Deployment escolhido) onde o ephemeral container do teste foi
 	// anexado — transparência de qual carga específica foi tocada, já que isso é uma mutação
 	// (ainda que pequena) num pod real, não um recurso descartável criado do zero.
-	TargetPod      string                    `json:"target_pod"`
-	Connectivity   KafkaStageResult          `json:"connectivity"`
-	ProduceConsume KafkaProduceConsumeResult `json:"produce_consume"`
+	TargetPod string `json:"target_pod"`
+	// EphemeralContainer é o nome exato do container anexado — ephemeral containers não podem
+	// ser removidos via API do K8s (ficam listados no pod até ele reiniciar); esse nome permite
+	// conferir o estado dele depois via `kubectl get pod <target_pod> -o
+	// jsonpath='{.status.ephemeralContainerStatuses}'`.
+	EphemeralContainer string                    `json:"ephemeral_container"`
+	Connectivity       KafkaStageResult          `json:"connectivity"`
+	ProduceConsume     KafkaProduceConsumeResult `json:"produce_consume"`
+	ViewTopic          KafkaTopicViewResult      `json:"view_topic"`
 }
 
-// createKafkaTestPod cria o pod efêmero kcat no namespace alvo — mesmo padrão de
-// createTestPod (latency_test_tool.go), só trocando imagem/label.
 // resolveRunningPodForDeployment acha um pod Running que pertence ao Deployment informado, via o
 // próprio label selector do Deployment (não heurística de nome/label "app" — o mesmo tipo de
 // atalho frágil já usado no frontend pra outra finalidade, DeploymentsTab.tsx). Devolve também o
@@ -363,7 +410,7 @@ func extractStderr(err error) string {
 // runKafkaConnectivityStage roda `kcat -L` (metadata) — cobre TCP+DNS+protocolo Kafka+SASL num
 // único exec, classificando o resultado por padrões conhecidos de erro do rdkafka.
 func runKafkaConnectivityStage(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
-	namespace, podName, containerName, broker string, authFlags []string, timeoutMs int) KafkaStageResult {
+	namespace, podName, containerName, broker string, authFlags []string, saslConfigured bool, timeoutMs int) KafkaStageResult {
 
 	timeoutSec := (timeoutMs + 999) / 1000
 	if timeoutSec < 1 {
@@ -379,7 +426,16 @@ func runKafkaConnectivityStage(ctx context.Context, clientset kubernetes.Interfa
 		case kafkaNetworkErrorRegex.MatchString(raw):
 			return KafkaStageResult{Status: kafkaStageTCPFailed, Message: "Não conseguiu conectar no broker (rede/DNS)", RawOutput: raw}
 		case kafkaAuthErrorRegex.MatchString(raw):
-			return KafkaStageResult{Status: kafkaStageAuthFailed, Message: "Falha de autenticação SASL", RawOutput: raw}
+			message := "Falha de autenticação SASL"
+			if !saslConfigured {
+				message = "TCP conectou, mas o broker exige autenticação SASL — ligue \"Autenticação SASL\" e informe as credenciais"
+			}
+			result := KafkaStageResult{Status: kafkaStageAuthFailed, Message: message, RawOutput: raw}
+			if m := kafkaMechanismHintRegex.FindStringSubmatch(raw); len(m) == 2 {
+				result.SuggestedMechanism = strings.TrimSpace(m[1])
+				result.Message += fmt.Sprintf(" (o broker indicou aceitar: %s)", result.SuggestedMechanism)
+			}
+			return result
 		case kafkaTLSErrorRegex.MatchString(raw):
 			return KafkaStageResult{Status: kafkaStageTLSFailed, Message: "Falha de handshake TLS/SSL", RawOutput: raw}
 		default:
@@ -440,6 +496,87 @@ func runKafkaProduceConsumeStage(ctx context.Context, clientset kubernetes.Inter
 	}
 }
 
+// kcatJSONMessage é o formato de linha JSON que o kcat emite em modo `-C -J` (uma linha por
+// mensagem consumida, mais linhas de diagnóstico começando com "%" que não são JSON válido e são
+// ignoradas na hora de popular Messages — ainda aparecem em RawOutput).
+type kcatJSONMessage struct {
+	Topic     string `json:"topic"`
+	Partition int32  `json:"partition"`
+	Offset    int64  `json:"offset"`
+	TS        int64  `json:"ts"`
+	Key       string `json:"key"`
+	Payload   string `json:"payload"`
+}
+
+// runKafkaViewTopicStage lê (só leitura, nada é escrito) as últimas `maxMessages` mensagens já
+// existentes no tópico via offset negativo do kcat (-o -N lê as N mensagens antes do fim de cada
+// partição) — não precisa de ConfirmProduce porque não muta nada no broker.
+func runKafkaViewTopicStage(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
+	namespace, podName, containerName, broker, topic string, maxMessages int, authFlags []string, timeoutMs int) KafkaTopicViewResult {
+
+	if maxMessages <= 0 {
+		maxMessages = kafkaTestViewDefaultMessages
+	}
+	if maxMessages > kafkaTestViewMaxMessages {
+		maxMessages = kafkaTestViewMaxMessages
+	}
+
+	timeoutSec := (timeoutMs + 999) / 1000
+	if timeoutSec < 1 {
+		timeoutSec = 1
+	}
+
+	cmd := buildKcatCommand(broker, authFlags, "-C", "-t", topic, "-o", fmt.Sprintf("-%d", maxMessages), "-c", fmt.Sprintf("%d", maxMessages), "-e", "-J")
+	script := fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
+
+	stdout, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
+	if err != nil {
+		return KafkaTopicViewResult{Status: "failed", Message: "Falha ao ler mensagens do tópico", RawOutput: extractStderr(err)}
+	}
+
+	var messages []KafkaMessage
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue // linha de diagnóstico do kcat (ex: "%4|...|..."), não é uma mensagem
+		}
+		var raw kcatJSONMessage
+		if jsonErr := json.Unmarshal([]byte(line), &raw); jsonErr != nil {
+			continue
+		}
+		messages = append(messages, KafkaMessage{
+			Partition:   raw.Partition,
+			Offset:      raw.Offset,
+			TimestampMs: raw.TS,
+			Key:         raw.Key,
+			Payload:     raw.Payload,
+			Binary:      strings.ContainsRune(raw.Key, utf8.RuneError) || strings.ContainsRune(raw.Payload, utf8.RuneError),
+		})
+	}
+
+	if len(messages) == 0 {
+		return KafkaTopicViewResult{Status: "ok", Message: "Nenhuma mensagem encontrada no tópico (ou tópico vazio)", RawOutput: stdout}
+	}
+
+	binaryCount := 0
+	for _, m := range messages {
+		if m.Binary {
+			binaryCount++
+		}
+	}
+	message := fmt.Sprintf("%d mensagem(ns) lida(s)", len(messages))
+	if binaryCount > 0 {
+		message += fmt.Sprintf(" — %d parece(m) conter dados binários (não-UTF8); exibição pode estar incompleta, ver nota na mensagem", binaryCount)
+	}
+
+	return KafkaTopicViewResult{
+		Status:    "ok",
+		Message:   message,
+		Messages:  messages,
+		RawOutput: stdout,
+	}
+}
+
 // ─── Handler: endpoint SSE + rotas ─────────────────────────────────────────────
 
 // KafkaTestHandler orquestra o teste de Kafka sob demanda — mesmo esqueleto do LatencyTestHandler
@@ -493,18 +630,21 @@ func (h *KafkaTestHandler) Run(c *gin.Context) {
 		}
 	}
 
+	req.Topic = strings.TrimSpace(req.Topic)
+	if (req.ProduceConsume || req.ViewTopic) && req.Topic == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_TOPIC", "topic é obrigatório para produzir/consumir ou visualizar mensagens"))
+		return
+	}
 	if req.ProduceConsume {
-		req.Topic = strings.TrimSpace(req.Topic)
-		if req.Topic == "" {
-			c.JSON(http.StatusBadRequest, errorResponse("MISSING_TOPIC", "topic é obrigatório para produzir/consumir"))
-			return
-		}
 		// Guardrail: produce ESCREVE estado real num tópico — exige confirmação explícita,
-		// nunca só a presença do campo topic.
+		// nunca só a presença do campo topic. ViewTopic não precisa disso — é só leitura.
 		if !req.ConfirmProduce {
 			c.JSON(http.StatusBadRequest, errorResponse("PRODUCE_NOT_CONFIRMED", "confirm_produce precisa ser true para publicar uma mensagem de teste real no tópico"))
 			return
 		}
+	}
+	if req.ViewMaxMessages < 0 {
+		req.ViewMaxMessages = 0
 	}
 
 	if req.TimeoutMs <= 0 {
@@ -667,20 +807,31 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 	}
 
 	send("connectivity", "in_progress", "Testando conectividade e protocolo Kafka...", 0.5)
-	connectivity := runKafkaConnectivityStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, authFlags, req.TimeoutMs)
+	connectivity := runKafkaConnectivityStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, authFlags, req.SASL != nil, req.TimeoutMs)
 
 	result := KafkaTestResult{
-		TargetPod:      podName,
-		Connectivity:   connectivity,
-		ProduceConsume: KafkaProduceConsumeResult{Status: "skipped"},
+		TargetPod:          podName,
+		EphemeralContainer: containerName,
+		Connectivity:       connectivity,
+		ProduceConsume:     KafkaProduceConsumeResult{Status: "skipped"},
+		ViewTopic:          KafkaTopicViewResult{Status: "skipped"},
 	}
 
 	if req.ProduceConsume {
 		if connectivity.Status != kafkaStageOK {
 			result.ProduceConsume = KafkaProduceConsumeResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar produzir"}
 		} else {
-			send("produce_consume", "in_progress", fmt.Sprintf("Produzindo e consumindo mensagem de teste no tópico %q...", req.Topic), 0.8)
+			send("produce_consume", "in_progress", fmt.Sprintf("Produzindo e consumindo mensagem de teste no tópico %q...", req.Topic), 0.7)
 			result.ProduceConsume = runKafkaProduceConsumeStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, req.Topic, authFlags, req.TimeoutMs)
+		}
+	}
+
+	if req.ViewTopic {
+		if connectivity.Status != kafkaStageOK {
+			result.ViewTopic = KafkaTopicViewResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar ler o tópico"}
+		} else {
+			send("view_topic", "in_progress", fmt.Sprintf("Lendo mensagens existentes do tópico %q...", req.Topic), 0.85)
+			result.ViewTopic = runKafkaViewTopicStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, req.Topic, req.ViewMaxMessages, authFlags, req.TimeoutMs)
 		}
 	}
 
@@ -726,8 +877,10 @@ func (h *KafkaTestHandler) logHistory(req RunKafkaTestRequest, userInfo history.
 	}
 	if result != nil {
 		after["target_pod"] = result.TargetPod
+		after["ephemeral_container"] = result.EphemeralContainer
 		after["connectivity_status"] = result.Connectivity.Status
 		after["produce_consume_status"] = result.ProduceConsume.Status
+		after["view_topic_status"] = result.ViewTopic.Status
 	}
 
 	h.historyTracker.Log(history.HistoryEntry{
