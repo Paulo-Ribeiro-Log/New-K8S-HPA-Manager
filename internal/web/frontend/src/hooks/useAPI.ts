@@ -622,21 +622,23 @@ export function usePods(cluster?: string, namespaces?: string[], showSystem: boo
 
   const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
 
-  const fetchPods = async (bypassCache: boolean = false) => {
+  // silent=true não mexe em loading/error — usado no poll periódico de fundo (ex:
+  // ContainerMonitorTable) pra não piscar spinner nem esconder a tabela a cada ciclo.
+  const fetchPods = async (bypassCache: boolean = false, silent: boolean = false) => {
     if (!cluster) {
       setPods([]);
       return;
     }
 
     try {
-      setLoading(true);
-      setError(null);
+      if (!silent) setLoading(true);
+      if (!silent) setError(null);
       const data = await apiClient.getPods(cluster, namespaces, undefined, showSystem, bypassCache);
       setPods(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch pods");
+      if (!silent) setError(err instanceof Error ? err.message : "Failed to fetch pods");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -645,8 +647,9 @@ export function usePods(cluster?: string, namespaces?: string[], showSystem: boo
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchPods(true);
+  const silentRefetch = () => fetchPods(true, true);
 
-  return { pods, loading, error, refetch };
+  return { pods, loading, error, refetch, silentRefetch };
 }
 
 // CronJobs hooks

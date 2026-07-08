@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Terminal, Trash2, FileText, AlertCircle, CheckCircle2, XCircle, Loader2, Download, ChevronDown, ChevronRight, Maximize2, X, Braces } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, Terminal, Trash2, FileText, AlertCircle, CheckCircle2, XCircle, Loader2, Download, ChevronDown, ChevronRight, ChevronLeft, Maximize2, X, Braces } from "lucide-react";
 import { useJsonInspector } from "@/hooks/useJsonInspector";
 import { JsonInspectorModal, JsonFloatingButton } from "@/components/JsonInspectorModal";
 import { toast } from "sonner";
@@ -26,6 +26,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
+import { ContainerMonitorTable } from "@/components/ContainerMonitorTable";
 
 interface ContainersTabProps {
   cluster: string;
@@ -47,6 +48,7 @@ export const ContainersTab = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPod, setSelectedPod] = useState<PodSummary | null>(null);
   const [selectedContainer, setSelectedContainer] = useState<string | null>(null);
+  const [rightPanelTab, setRightPanelTab] = useState<"logs" | "details">("logs");
   const [logs, setLogs] = useState<string>("");
   const [logsLoading, setLogsLoading] = useState(false);
   const jsonInspector = useJsonInspector();
@@ -71,7 +73,7 @@ export const ContainersTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { pods, loading, error, refetch } = usePods(
+  const { pods, loading, error, refetch, silentRefetch } = usePods(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -122,18 +124,19 @@ export const ContainersTab = ({
     }
   };
 
-  const handlePodSelect = async (pod: PodSummary) => {
+  const handlePodSelect = async (pod: PodSummary, preferredContainer?: string, tab: "logs" | "details" = "logs") => {
     setSelectedPod(pod);
     setSelectedContainer(null);
     setLogs("");
     setManifestLoading(true);
     setManifest("");
-    
-    // Auto-select first container
-    if (pod.containers.length > 0) {
-      const firstContainer = pod.containers[0].name;
-      setSelectedContainer(firstContainer);
-      fetchLogs(pod, firstContainer);
+    setRightPanelTab(tab);
+
+    // Container preferido (veio de um clique na tabela) ou o primeiro do pod
+    const containerName = preferredContainer ?? pod.containers[0]?.name;
+    if (containerName) {
+      setSelectedContainer(containerName);
+      fetchLogs(pod, containerName);
     }
 
     // Load manifest
@@ -146,6 +149,12 @@ export const ContainersTab = ({
     } finally {
       setManifestLoading(false);
     }
+  };
+
+  // Clique numa linha da tabela de containers — seleciona o pod dono, pré-seleciona o container
+  // clicado e abre direto na aba Details (em vez do default "Logs" do clique na árvore esquerda).
+  const handleContainerRowClick = (pod: PodSummary, containerName: string) => {
+    handlePodSelect(pod, containerName, "details");
   };
 
   const handleContainerSelect = (containerName: string) => {
@@ -353,6 +362,15 @@ export const ContainersTab = ({
     <div className="flex flex-col h-full">
       <div className="flex items-start justify-between mb-4 pb-4 border-b">
         <div className="flex-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 -ml-1.5 mb-1 text-xs text-muted-foreground hover:text-foreground gap-0.5"
+            onClick={() => setSelectedPod(null)}
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            Voltar pra lista de containers
+          </Button>
           <h3 className="text-lg font-semibold">{selectedPod.name}</h3>
           <p className="text-sm text-muted-foreground">{selectedPod.namespace}</p>
           <div className="flex items-center gap-2 mt-2">
@@ -360,7 +378,7 @@ export const ContainersTab = ({
             {selectedPod.podIP && <Badge variant="outline">IP: {selectedPod.podIP}</Badge>}
           </div>
         </div>
-        
+
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleViewManifest}>
             <FileText className="w-4 h-4 mr-1" />
@@ -394,7 +412,7 @@ export const ContainersTab = ({
         </div>
       )}
 
-      <Tabs defaultValue="logs" className="flex-1 flex flex-col">
+      <Tabs value={rightPanelTab} onValueChange={(v) => setRightPanelTab(v as "logs" | "details")} className="flex-1 flex flex-col">
         <TabsList className="w-full justify-start mb-4">
           <TabsTrigger value="logs">Logs</TabsTrigger>
           <TabsTrigger value="details">Details</TabsTrigger>
@@ -542,6 +560,16 @@ export const ContainersTab = ({
                         <div className="flex items-center gap-2">
                           {getContainerStateIcon(container.state)}
                           <span className="font-medium">{container.name}</span>
+                          {container.type === "init" && (
+                            <Badge variant="outline" className="text-xs border-blue-400 text-blue-600 dark:text-blue-400">
+                              init
+                            </Badge>
+                          )}
+                          {container.type === "ephemeral" && (
+                            <Badge variant="outline" className="text-xs border-purple-400 text-purple-600 dark:text-purple-400">
+                              efêmero
+                            </Badge>
+                          )}
                           <Badge variant="outline" className="text-xs">
                             v{extractImageVersion(container.image)}
                           </Badge>
@@ -567,6 +595,12 @@ export const ContainersTab = ({
                           <div>
                             <span className="text-muted-foreground">Reason:</span>
                             <p className="font-medium">{container.stateReason}</p>
+                          </div>
+                        )}
+                        {container.target && (
+                          <div>
+                            <span className="text-muted-foreground">Alvo:</span>
+                            <p className="font-medium">{container.target}</p>
                           </div>
                         )}
                       </div>
@@ -713,12 +747,13 @@ export const ContainersTab = ({
       </Dialog>
     </div>
   ) : (
-    <div className="flex items-center justify-center h-full text-muted-foreground">
-      <div className="text-center">
-        <Terminal className="w-12 h-12 mx-auto mb-2 opacity-50" />
-        <p>Selecione um pod para ver detalhes e logs</p>
-      </div>
-    </div>
+    <ContainerMonitorTable
+      pods={filteredPods}
+      loading={loading}
+      headerLabel={selectedNamespace ? `${selectedNamespace} — containers (${filteredPods.reduce((n, p) => n + p.containers.length, 0)})` : `containers (${filteredPods.reduce((n, p) => n + p.containers.length, 0)})`}
+      onOpenDetail={handleContainerRowClick}
+      onRequestRefresh={silentRefetch}
+    />
   );
 
   const rightTitleAction = undefined;

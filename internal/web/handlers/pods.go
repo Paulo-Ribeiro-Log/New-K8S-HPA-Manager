@@ -61,6 +61,81 @@ type ContainerStatus struct {
 	State        string `json:"state"`
 	StateReason  string `json:"stateReason,omitempty"`
 	Started      *bool  `json:"started,omitempty"`
+	// Type distingue os 3 tipos de container que um Pod pode ter: "container" (main containers —
+	// inclui QUALQUER coisa injetada como container normal, ex: sidecar istio-proxy do Istio),
+	// "init" (inclui istio-init e outros init containers de mesh/CNI) ou "ephemeral" (debug
+	// containers via `kubectl debug`, Debug Container do terminal, ou ferramentas como o Kafka
+	// Test). Sem isso o frontend não tinha como saber que um container não-"normal" existia.
+	Type string `json:"type"`
+	// Target só é preenchido pra containers do tipo "ephemeral" — o container principal que ele
+	// está "mirando" (TargetContainerName), útil pra saber qual debug container pertence a qual
+	// sessão de teste/troubleshooting.
+	Target string `json:"target,omitempty"`
+}
+
+// buildContainerStatuses monta a lista COMPLETA de containers de um pod — cruza pod.Spec
+// (Containers/InitContainers/EphemeralContainers, a fonte de verdade de "o que existe") com
+// pod.Status (ContainerStatuses/InitContainerStatuses/EphemeralContainerStatuses, a fonte de
+// verdade de "em que estado está") por NOME, pras 3 categorias. Cruzar com o Spec (não só o
+// Status) garante que nada suma da lista numa janela em que o container já foi definido mas ainda
+// não ganhou status (comum logo depois de anexar um ephemeral container, por exemplo) — e cobre
+// QUALQUER coisa que rode no pod, não só os casos hardcoded de sidecar/init conhecidos: um
+// istio-proxy aparece aqui porque é um container normal do Spec, um istio-init porque é um init
+// container do Spec — não há lista de nomes especial pra reconhecer, é sempre "o que estiver lá".
+func buildContainerStatuses(pod *corev1.Pod) []ContainerStatus {
+	statusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.ContainerStatuses))
+	for _, cs := range pod.Status.ContainerStatuses {
+		statusByName[cs.Name] = cs
+	}
+	initStatusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.InitContainerStatuses))
+	for _, cs := range pod.Status.InitContainerStatuses {
+		initStatusByName[cs.Name] = cs
+	}
+	ephemeralStatusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.EphemeralContainerStatuses))
+	for _, cs := range pod.Status.EphemeralContainerStatuses {
+		ephemeralStatusByName[cs.Name] = cs
+	}
+
+	// toContainerStatus monta uma entrada a partir do nome/imagem do Spec + status correspondente
+	// (se já existir) — quando o status ainda não chegou, sintetiza um estado "Waiting" razoável
+	// em vez de omitir o container da lista.
+	toContainerStatus := func(name, image, typ string, status corev1.ContainerStatus, hasStatus bool) ContainerStatus {
+		if !hasStatus {
+			return ContainerStatus{Name: name, Image: image, State: "Waiting", StateReason: "PendingStatus", Type: typ}
+		}
+		state, stateReason := getContainerState(status)
+		img := status.Image
+		if img == "" {
+			img = image
+		}
+		return ContainerStatus{
+			Name:         name,
+			Image:        img,
+			Ready:        status.Ready,
+			RestartCount: status.RestartCount,
+			State:        state,
+			StateReason:  stateReason,
+			Started:      status.Started,
+			Type:         typ,
+		}
+	}
+
+	var containers []ContainerStatus
+	for _, c := range pod.Spec.Containers {
+		status, ok := statusByName[c.Name]
+		containers = append(containers, toContainerStatus(c.Name, c.Image, "container", status, ok))
+	}
+	for _, c := range pod.Spec.InitContainers {
+		status, ok := initStatusByName[c.Name]
+		containers = append(containers, toContainerStatus(c.Name, c.Image, "init", status, ok))
+	}
+	for _, c := range pod.Spec.EphemeralContainers {
+		status, ok := ephemeralStatusByName[c.Name]
+		entry := toContainerStatus(c.Name, c.EphemeralContainerCommon.Image, "ephemeral", status, ok)
+		entry.Target = c.TargetContainerName
+		containers = append(containers, entry)
+	}
+	return containers
 }
 
 // PodSummary representa um resumo de Pod
@@ -657,26 +732,20 @@ func (h *PodHandler) GetLogs(c *gin.Context) {
 }
 
 func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod, metrics *kubeclient.BatchPodMetricsSingle) PodSummary {
-	containers := []ContainerStatus{}
-	readyCount := 0
-	totalRestarts := int32(0)
 	isTerminating := pod.DeletionTimestamp != nil
 
+	// Lista completa (container + init + ephemeral) — qualquer coisa rodando no pod, ver doc de
+	// buildContainerStatuses. ReadyContainers/Restarts continuam baseados só nos containers
+	// "normais" (pod.Status.ContainerStatuses) — mesma convenção do próprio K8s pro "N/M Ready" do
+	// pod (init/ephemeral não entram nessa conta).
+	containers := buildContainerStatuses(pod)
+	readyCount := 0
+	totalRestarts := int32(0)
 	for _, cs := range pod.Status.ContainerStatuses {
-		state, stateReason := getContainerState(cs)
 		if cs.Ready {
 			readyCount++
 		}
 		totalRestarts += cs.RestartCount
-		containers = append(containers, ContainerStatus{
-			Name:         cs.Name,
-			Image:        cs.Image,
-			Ready:        cs.Ready,
-			RestartCount: cs.RestartCount,
-			State:        state,
-			StateReason:  stateReason,
-			Started:      cs.Started,
-		})
 	}
 
 	totalCPUReq, totalMemReq, totalCPULim, totalMemLim := getPodResourceTotals(pod)
