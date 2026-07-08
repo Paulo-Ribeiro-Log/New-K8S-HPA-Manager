@@ -55,18 +55,18 @@ func (h *ValidationHandler) Validate(c *gin.Context) {
 	// Retornar status
 	if status.Success {
 		c.JSON(200, gin.H{
-			"success":           true,
-			"vpn_connected":     status.VPNConnected,
+			"success":             true,
+			"vpn_connected":       status.VPNConnected,
 			"azure_authenticated": status.AzureAuth,
-			"message":           "✅ Todas as validações passaram - aplicação pronta para uso",
+			"message":             "✅ Todas as validações passaram - aplicação pronta para uso",
 		})
 	} else {
 		c.JSON(200, gin.H{
-			"success":           false,
-			"vpn_connected":     status.VPNConnected,
+			"success":             false,
+			"vpn_connected":       status.VPNConnected,
 			"azure_authenticated": status.AzureAuth,
-			"errors":            status.Errors,
-			"warnings":          status.Warnings,
+			"errors":              status.Errors,
+			"warnings":            status.Warnings,
 		})
 	}
 }

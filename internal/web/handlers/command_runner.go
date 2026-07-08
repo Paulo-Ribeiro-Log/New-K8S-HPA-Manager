@@ -319,12 +319,12 @@ func (h *CommandRunnerHandler) runParallel(sessionCtx context.Context, sessionID
 			clusterNames = append(clusterNames, t.Cluster)
 		}
 		h.historyTracker.Log(history.HistoryEntry{
-			Action:  "command_runner",
+			Action:   "command_runner",
 			Resource: req.Type + ": " + truncate(req.Command, 60),
-			Cluster: strings.Join(clusterNames, ","),
-			Before:  map[string]interface{}{"targets": req.Targets},
-			After:   map[string]interface{}{"success": !hasError},
-			Status:  map[bool]string{false: "success", true: "failed"}[hasError],
+			Cluster:  strings.Join(clusterNames, ","),
+			Before:   map[string]interface{}{"targets": req.Targets},
+			After:    map[string]interface{}{"success": !hasError},
+			Status:   map[bool]string{false: "success", true: "failed"}[hasError],
 		})
 	}
 }
@@ -716,4 +716,3 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
-

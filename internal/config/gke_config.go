@@ -14,7 +14,7 @@ import (
 type GKEClusterConfig struct {
 	Name      string `json:"clusterName"`
 	ProjectID string `json:"projectId"`
-	Region    string `json:"region"`           // us-central1 ou us-central1-a (zona)
+	Region    string `json:"region"`            // us-central1 ou us-central1-a (zona)
 	Network   string `json:"network,omitempty"` // nome da VPC
 }
 

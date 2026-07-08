@@ -13,9 +13,9 @@ import (
 
 // AuthHandler gerencia os endpoints de autenticação JWT.
 type AuthHandler struct {
-	jwtManager *auth.JWTManager
+	jwtManager  *auth.JWTManager
 	rbacManager *rbac.RBACManager
-	disableAD  bool
+	disableAD   bool
 }
 
 // NewAuthHandler cria um AuthHandler.
@@ -32,10 +32,10 @@ func NewAuthHandler(jwtManager *auth.JWTManager, rbacManager *rbac.RBACManager, 
 // POST /api/v1/auth/login
 //
 // Modos de operação:
-//  - JWT não configurado (K8S_HPA_JWT_SECRET ausente): retorna 501
-//  - Bypass AD (flag --ad): emite JWT com isSRE=true sem consultar Azure AD
-//  - Normal: obtém email via `az account show`, verifica grupo VV_CLOUD_SRE,
-//    emite JWT com os claims reais
+//   - JWT não configurado (K8S_HPA_JWT_SECRET ausente): retorna 501
+//   - Bypass AD (flag --ad): emite JWT com isSRE=true sem consultar Azure AD
+//   - Normal: obtém email via `az account show`, verifica grupo VV_CLOUD_SRE,
+//     emite JWT com os claims reais
 func (h *AuthHandler) Login(c *gin.Context) {
 	if !h.jwtManager.IsConfigured() {
 		c.JSON(http.StatusNotImplemented, gin.H{

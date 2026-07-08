@@ -209,7 +209,7 @@ func (h *ServiceNowHandler) ParseBatch(c *gin.Context) {
 		ShortDescription string                    `json:"short_description,omitempty"`
 		Description      string                    `json:"description,omitempty"`
 		State            string                    `json:"state,omitempty"`
-		ExtractedData    *servicenow.ExtractedData  `json:"extracted_data,omitempty"`
+		ExtractedData    *servicenow.ExtractedData `json:"extracted_data,omitempty"`
 		Error            string                    `json:"error,omitempty"`
 	}
 

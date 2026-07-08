@@ -64,8 +64,8 @@ func NewPodExecHandler(km *config.KubeConfigManager) *PodExecHandler {
 				log.Printf("[SHELL] Rejected WebSocket connection from origin: %s", origin)
 				return false
 			},
-			ReadBufferSize:  8192,  // Aumentado de 1024 para 8KB
-			WriteBufferSize: 8192,  // Aumentado de 1024 para 8KB
+			ReadBufferSize:  8192, // Aumentado de 1024 para 8KB
+			WriteBufferSize: 8192, // Aumentado de 1024 para 8KB
 		},
 	}
 }

@@ -307,7 +307,7 @@ func (h *NamespaceHandler) Describe(c *gin.Context) {
 	}
 
 	// Executar kubectl describe
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "namespace", name, "")
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "namespace", name, "")
 	if err != nil {
 		c.JSON(500, gin.H{
 			"error": fmt.Sprintf("Failed to execute kubectl describe: %v", err),

@@ -79,7 +79,7 @@ func repoSize(dir string) string {
 
 // RepoInfo descreve um repositório clonado.
 type RepoInfo struct {
-	ID            string    `json:"id"`             // owner-repo
+	ID            string    `json:"id"` // owner-repo
 	Owner         string    `json:"owner"`
 	Repo          string    `json:"repo"`
 	LocalPath     string    `json:"local_path"`
@@ -1529,6 +1529,7 @@ func (h *CodeEditorHandler) FormatFile(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"content": string(out)})
 }
+
 // CherryPick — POST /api/v1/code-editor/repos/:id/cherry-pick
 // Body: { "hash": "abc1234" }
 func (h *CodeEditorHandler) CherryPick(c *gin.Context) {

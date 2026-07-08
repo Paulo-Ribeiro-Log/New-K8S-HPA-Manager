@@ -405,7 +405,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 	if cluster == "" || namespace == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "MISSING_PARAMETER", "message": "Cluster and namespace must be provided"},
+			"error":   gin.H{"code": "MISSING_PARAMETER", "message": "Cluster and namespace must be provided"},
 		})
 		return
 	}
@@ -414,7 +414,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "INVALID_REQUEST", "message": fmt.Sprintf("Invalid request body: %v", err)},
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": fmt.Sprintf("Invalid request body: %v", err)},
 		})
 		return
 	}
@@ -424,7 +424,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 	if err := yaml.Unmarshal([]byte(req.YAML), &obj); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "INVALID_YAML", "message": fmt.Sprintf("Invalid YAML: %v", err)},
+			"error":   gin.H{"code": "INVALID_YAML", "message": fmt.Sprintf("Invalid YAML: %v", err)},
 		})
 		return
 	}
@@ -432,7 +432,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 	if metadata == nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "MISSING_METADATA", "message": "Ingress YAML must contain metadata"},
+			"error":   gin.H{"code": "MISSING_METADATA", "message": "Ingress YAML must contain metadata"},
 		})
 		return
 	}
@@ -440,7 +440,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 	if ingressName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "MISSING_NAME", "message": "Ingress YAML must contain metadata.name"},
+			"error":   gin.H{"code": "MISSING_NAME", "message": "Ingress YAML must contain metadata.name"},
 		})
 		return
 	}
@@ -449,7 +449,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error": gin.H{"code": "CLIENT_ERROR", "message": fmt.Sprintf("Failed to get client: %v", err)},
+			"error":   gin.H{"code": "CLIENT_ERROR", "message": fmt.Sprintf("Failed to get client: %v", err)},
 		})
 		return
 	}
@@ -461,7 +461,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "INVALID_YAML", "message": err.Error()},
+			"error":   gin.H{"code": "INVALID_YAML", "message": err.Error()},
 		})
 		return
 	}
@@ -473,7 +473,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error": gin.H{"code": "CREATE_ERROR", "message": err.Error()},
+			"error":   gin.H{"code": "CREATE_ERROR", "message": err.Error()},
 		})
 		return
 	}
@@ -516,7 +516,7 @@ func (h *IngressHandler) Describe(c *gin.Context) {
 	}
 
 	// Executar kubectl describe
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "ingress", name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "ingress", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),

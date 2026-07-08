@@ -134,7 +134,7 @@ func (h *ExplorerHandler) Describe(c *gin.Context) {
 		return
 	}
 
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, resource, name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), resource, name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("DESCRIBE_ERROR", fmt.Sprintf("kubectl describe failed: %v", err)))
 		return

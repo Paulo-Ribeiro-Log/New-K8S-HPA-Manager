@@ -38,7 +38,7 @@ type SaveTokensRequest struct {
 	GeminiVertexProject      string `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
 	GeminiVertexLocation     string `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
 	GeminiServiceAccountJSON string `json:"gemini_service_account_json,omitempty"` // JSON do service account GCP
-	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`         // URL de login SSO corporativo (WIF)
+	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`        // URL de login SSO corporativo (WIF)
 	OpenAIAPIKey             string `json:"openai_api_key,omitempty"`
 	OpenAIModel              string `json:"openai_model,omitempty"`
 	ClaudeAPIKey             string `json:"claude_api_key,omitempty"`
@@ -63,7 +63,7 @@ type TokensResponse struct {
 	GeminiVertexLocation    string `json:"gemini_vertex_location,omitempty"` // região GCP
 	HasGeminiServiceAccount bool   `json:"has_gemini_service_account"`       // true se service account JSON configurado
 	HasGeminiRefreshToken   bool   `json:"has_gemini_refresh_token"`         // true se autenticado via Device Auth Google
-	GeminiWifLoginURL       string `json:"gemini_wif_login_url,omitempty"`  // URL de login SSO corporativo (WIF)
+	GeminiWifLoginURL       string `json:"gemini_wif_login_url,omitempty"`   // URL de login SSO corporativo (WIF)
 	HasOpenAI               bool   `json:"has_openai"`
 	OpenAIModel             string `json:"openai_model,omitempty"`
 	HasClaude               bool   `json:"has_claude"`

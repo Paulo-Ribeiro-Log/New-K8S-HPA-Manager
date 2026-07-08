@@ -551,7 +551,7 @@ func (h *DynatraceHandler) GetHistory(c *gin.Context) {
 
 // InvestigationReport é o resultado estruturado de uma investigação profunda.
 type InvestigationReport struct {
-	ProblemID   string `json:"problem_id"`
+	ProblemID    string `json:"problem_id"`
 	ProblemTitle string `json:"problem_title"`
 
 	// Entidades identificadas no alerta DT
@@ -559,7 +559,7 @@ type InvestigationReport struct {
 	RootCauseEntityType string `json:"root_cause_entity_type,omitempty"`
 
 	// Cluster identificado via Node Pool Registry (de entidades HOST)
-	IdentifiedCluster string `json:"identified_cluster,omitempty"`
+	IdentifiedCluster  string `json:"identified_cluster,omitempty"`
 	IdentifiedNodePool string `json:"identified_node_pool,omitempty"`
 
 	// Namespace e workload identificados (via K8s tags do PROCESS_GROUP/rootCause)
@@ -571,7 +571,7 @@ type InvestigationReport struct {
 
 	// Health check K8s direcionado (nil se cluster/namespace não identificados)
 	HealthCheckResult *healthcheck.HealthCheckResult `json:"health_check_result,omitempty"`
-	HealthCheckError  string `json:"health_check_error,omitempty"`
+	HealthCheckError  string                         `json:"health_check_error,omitempty"`
 
 	// Dependências do workload (nil se não encontrado)
 	Dependencies []storage.DependencyRecord `json:"dependencies,omitempty"`
@@ -629,9 +629,9 @@ func (h *DynatraceHandler) InvestigateProblem(c *gin.Context) {
 	dtMetrics := dtClient.GetEntityMetricsForProblem(ctx, problem)
 
 	report := &InvestigationReport{
-		ProblemID:    problemID,
-		ProblemTitle: problem.Title,
-		DTMetrics:    dtMetrics,
+		ProblemID:      problemID,
+		ProblemTitle:   problem.Title,
+		DTMetrics:      dtMetrics,
 		InvestigatedAt: time.Now(),
 	}
 

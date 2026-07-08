@@ -267,10 +267,10 @@ func parseInt64(s string) int64 {
 
 // ConntrackHistoryPoint representa um ponto no tempo da série histórica de conntrack
 type ConntrackHistoryPoint struct {
-	Timestamp  int64   `json:"ts"`        // Unix timestamp (segundos)
-	Count      float64 `json:"count"`     // nf_conntrack_entries naquele instante
-	Max        float64 `json:"max"`       // nf_conntrack_entries_limit (pode ser 0 se não disponível)
-	UsagePct   float64 `json:"usage_pct"` // count/max*100 (0 se max=0)
+	Timestamp int64   `json:"ts"`        // Unix timestamp (segundos)
+	Count     float64 `json:"count"`     // nf_conntrack_entries naquele instante
+	Max       float64 `json:"max"`       // nf_conntrack_entries_limit (pode ser 0 se não disponível)
+	UsagePct  float64 `json:"usage_pct"` // count/max*100 (0 se max=0)
 }
 
 // ConntrackNodeHistoryResponse resposta do endpoint de histórico por nó

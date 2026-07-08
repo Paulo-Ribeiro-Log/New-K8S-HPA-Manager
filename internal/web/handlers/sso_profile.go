@@ -78,9 +78,9 @@ func (h *SSOProfileHandler) GetProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"configured": p.Email != "" || p.Matricula != "",
-		"email":      p.Email,
-		"matricula":  p.Matricula,
+		"configured":   p.Email != "" || p.Matricula != "",
+		"email":        p.Email,
+		"matricula":    p.Matricula,
 		"has_password": p.EncryptedPassword != "",
 	})
 }

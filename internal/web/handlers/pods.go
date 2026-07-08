@@ -908,7 +908,7 @@ func (h *PodHandler) Describe(c *gin.Context) {
 	}
 
 	// Executar kubectl describe
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "pod", name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "pod", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),

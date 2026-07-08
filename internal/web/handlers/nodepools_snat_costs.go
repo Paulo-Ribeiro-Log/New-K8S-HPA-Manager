@@ -23,7 +23,7 @@ type SNATCostInfo struct {
 	IPPriceMonthly float64   `json:"ip_price_monthly"`  // custo mensal por IP (na moeda informada)
 	GWHourlyPrice  float64   `json:"gw_hourly_price"`   // custo por hora do NAT gateway (GKE/EKS)
 	DataPricePerGB float64   `json:"data_price_per_gb"` // custo por GB processado (GKE/EKS)
-	Currency       string    `json:"currency"`           // "BRL" (AKS) ou "USD" (GKE/EKS)
+	Currency       string    `json:"currency"`          // "BRL" (AKS) ou "USD" (GKE/EKS)
 	PricingRegion  string    `json:"pricing_region"`
 	Source         string    `json:"source"` // "azure-retail-api", "gcp-billing-api", "aws-pricing-api", "reference"
 	FetchedAt      time.Time `json:"fetched_at"`
@@ -68,12 +68,12 @@ func (h *NodePoolHandler) GetSNATCosts(c *gin.Context) {
 // API pública, sem autenticação. Retorna preços em BRL para brazilsouth.
 
 type azureRetailItem struct {
-	RetailPrice    float64 `json:"retailPrice"`
-	UnitOfMeasure  string  `json:"unitOfMeasure"`
-	SkuName        string  `json:"skuName"`
-	ProductName    string  `json:"productName"`
-	ArmRegionName  string  `json:"armRegionName"`
-	CurrencyCode   string  `json:"currencyCode"`
+	RetailPrice   float64 `json:"retailPrice"`
+	UnitOfMeasure string  `json:"unitOfMeasure"`
+	SkuName       string  `json:"skuName"`
+	ProductName   string  `json:"productName"`
+	ArmRegionName string  `json:"armRegionName"`
+	CurrencyCode  string  `json:"currencyCode"`
 }
 
 type azureRetailResponse struct {
@@ -157,9 +157,9 @@ type gcpSkuResponse struct {
 				TieredRates []struct {
 					StartUsageAmount float64 `json:"startUsageAmount"`
 					UnitPrice        struct {
-						CurrencyCode string  `json:"currencyCode"`
-						Units        string  `json:"units"`
-						Nanos        int64   `json:"nanos"`
+						CurrencyCode string `json:"currencyCode"`
+						Units        string `json:"units"`
+						Nanos        int64  `json:"nanos"`
 					} `json:"unitPrice"`
 				} `json:"tieredRates"`
 			} `json:"pricingExpression"`

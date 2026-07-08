@@ -34,15 +34,15 @@ func NewServiceHandlerWithHistory(km *config.KubeConfigManager, ht *history.Hist
 
 // ServiceSummary descreve informações resumidas de um Service
 type ServiceSummary struct {
-	Cluster    string   `json:"cluster"`
-	Namespace  string   `json:"namespace"`
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	ClusterIP  string   `json:"clusterIP"`
-	ExternalIP string   `json:"externalIP,omitempty"`
-	Ports      []string `json:"ports"`
+	Cluster    string            `json:"cluster"`
+	Namespace  string            `json:"namespace"`
+	Name       string            `json:"name"`
+	Type       string            `json:"type"`
+	ClusterIP  string            `json:"clusterIP"`
+	ExternalIP string            `json:"externalIP,omitempty"`
+	Ports      []string          `json:"ports"`
 	Selector   map[string]string `json:"selector,omitempty"`
-	Age        string   `json:"age"`
+	Age        string            `json:"age"`
 }
 
 // List retorna Services filtrados por cluster e namespaces
@@ -428,7 +428,7 @@ func (h *ServiceHandler) Describe(c *gin.Context) {
 		return
 	}
 
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "service", name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "service", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),

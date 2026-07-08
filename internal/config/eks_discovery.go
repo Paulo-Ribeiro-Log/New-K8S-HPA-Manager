@@ -303,7 +303,7 @@ func describeEKSCluster(ctx context.Context, profile, region, name string) (*EKS
 
 	var resp struct {
 		Cluster struct {
-			Arn              string `json:"arn"`
+			Arn                string `json:"arn"`
 			ResourcesVpcConfig struct {
 				VpcId string `json:"vpcId"`
 			} `json:"resourcesVpcConfig"`

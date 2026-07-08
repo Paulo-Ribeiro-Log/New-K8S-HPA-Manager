@@ -4094,11 +4094,27 @@ func parseInt64(s string) int64 {
 	return result
 }
 
-// ExecuteKubectlDescribe executa kubectl describe para um recurso
-func ExecuteKubectlDescribe(cluster, resourceType, name, namespace string) (string, error) {
-	cmd := exec.Command("kubectl", "describe", resourceType, name,
-		"--context", cluster,
-		"--namespace", namespace)
+// ExecuteKubectlDescribe executa kubectl describe para um recurso.
+//
+// kubeconfigPath e context DEVEM vir já resolvidos pelo chamador — via
+// KubeConfigManager.ConfigPath()/ResolveContext(cluster) — porque esta função chama o binário
+// `kubectl` diretamente via subprocess, fora do client-go, então não herda a resolução de nome
+// curto → context real (AKS -admin, ARN do EKS, "gke_<project>_<region>_<cluster>" do GKE) nem o
+// arquivo de kubeconfig explícito que o resto do app usa. Sem isso, `kubectl --context
+// <nome-curto>` falhava (ou, em clusters GKE/EKS onde por coincidência existe um context de mesmo
+// nome curto — bem provável com DaemonSets de nome genérico tipo "kube-proxy"/"calico-node" que
+// existem em vários clusters — apontava silenciosamente pro cluster ERRADO) e sempre usava o
+// kubeconfig padrão do host ($KUBECONFIG/~/.kube/config) em vez do arquivo real da aplicação.
+func ExecuteKubectlDescribe(kubeconfigPath, context, resourceType, name, namespace string) (string, error) {
+	args := []string{"describe", resourceType, name, "--context", context}
+	if kubeconfigPath != "" {
+		args = append(args, "--kubeconfig", kubeconfigPath)
+	}
+	if namespace != "" {
+		args = append(args, "--namespace", namespace)
+	}
+
+	cmd := exec.Command("kubectl", args...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

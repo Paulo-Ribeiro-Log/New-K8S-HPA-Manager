@@ -114,13 +114,13 @@ func (h *AITokensHandler) StartGoogleInstallAuth(c *gin.Context) {
 	}
 
 	session := &gAuthSession{
-		status:       "waiting_browser",
-		authURL:      authURL,
-		expiresAt:    time.Now().Add(15 * time.Minute),
-		pkceVerifier: pkceVerifier,
-		redirectURI:  redirectURI,
-		aiEmail:      req.AIEmail,
-		isWIF:        isWIF,
+		status:          "waiting_browser",
+		authURL:         authURL,
+		expiresAt:       time.Now().Add(15 * time.Minute),
+		pkceVerifier:    pkceVerifier,
+		redirectURI:     redirectURI,
+		aiEmail:         req.AIEmail,
+		isWIF:           isWIF,
 		wifPoolProvider: req.WIFPoolProvider,
 	}
 	gAuthSessions.Store(sessionID, session)

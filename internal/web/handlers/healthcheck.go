@@ -693,8 +693,8 @@ func (h *HealthCheckHandler) AnalyzeCorrelated(c *gin.Context) {
 	}
 
 	var req struct {
-		AIEmail      string                       `json:"ai_email"`
-		Item         healthcheck.CorrelatedHealthItem `json:"item"`
+		AIEmail string                           `json:"ai_email"`
+		Item    healthcheck.CorrelatedHealthItem `json:"item"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email e item são obrigatórios"})
@@ -800,7 +800,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelatedBatch(c *gin.Context) {
 	}
 
 	var req struct {
-		AIEmail string                            `json:"ai_email"`
+		AIEmail string                             `json:"ai_email"`
 		Items   []healthcheck.CorrelatedHealthItem `json:"items"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" || len(req.Items) == 0 {
@@ -920,7 +920,7 @@ func (h *HealthCheckHandler) AnalyzeOneAgentSignal(c *gin.Context) {
 	}
 
 	var req struct {
-		AIEmail string                    `json:"ai_email"`
+		AIEmail string                     `json:"ai_email"`
 		Signal  healthcheck.OneAgentSignal `json:"signal"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {

@@ -52,7 +52,7 @@ type lspCompletionItem struct {
 }
 
 type lspHoverResult struct {
-	Contents string `json:"contents"`
+	Contents string    `json:"contents"`
 	Range    *lspRange `json:"range,omitempty"`
 }
 
@@ -204,7 +204,7 @@ func (s *lspSession) shutdown() {
 // ─── Manager global de sessões ────────────────────────────────────────────────
 
 var (
-	lspSessions   sync.Map // key: "repoId/lang" → *lspSession
+	lspSessions    sync.Map // key: "repoId/lang" → *lspSession
 	lspCleanupOnce sync.Once
 )
 
@@ -314,9 +314,9 @@ func getOrCreateSession(repoId, lang, repoDir string) (*lspSession, error) {
 	// Initialize LSP
 	rootURI := "file://" + repoDir
 	_, err = s.call("initialize", map[string]interface{}{
-		"processId":    os.Getpid(),
-		"rootUri":      rootURI,
-		"capabilities": lspClientCapabilities(),
+		"processId":             os.Getpid(),
+		"rootUri":               rootURI,
+		"capabilities":          lspClientCapabilities(),
 		"initializationOptions": map[string]interface{}{},
 	})
 	if err != nil {
@@ -464,7 +464,9 @@ func (h *CodeEditorLSPHandler) Complete(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	}
-	s.mu.Lock(); s.lastUsed = time.Now(); s.mu.Unlock()
+	s.mu.Lock()
+	s.lastUsed = time.Now()
+	s.mu.Unlock()
 
 	uri := h.fileURI(repoDir, req.Path)
 	// Sincroniza conteúdo antes de completar
@@ -511,7 +513,9 @@ func (h *CodeEditorLSPHandler) Complete(c *gin.Context) {
 		if json.Unmarshal(it.Documentation, &docStr) == nil {
 			doc = docStr
 		} else {
-			var docObj struct{ Value string `json:"value"` }
+			var docObj struct {
+				Value string `json:"value"`
+			}
 			if json.Unmarshal(it.Documentation, &docObj) == nil {
 				doc = docObj.Value
 			}
@@ -553,7 +557,9 @@ func (h *CodeEditorLSPHandler) Hover(c *gin.Context) {
 		return
 	}
 	s := v.(*lspSession)
-	s.mu.Lock(); s.lastUsed = time.Now(); s.mu.Unlock()
+	s.mu.Lock()
+	s.lastUsed = time.Now()
+	s.mu.Unlock()
 
 	uri := h.fileURI(repoDir, req.Path)
 	_ = s.notify("textDocument/didChange", map[string]interface{}{
@@ -606,7 +612,9 @@ func (h *CodeEditorLSPHandler) Definition(c *gin.Context) {
 		return
 	}
 	s := v.(*lspSession)
-	s.mu.Lock(); s.lastUsed = time.Now(); s.mu.Unlock()
+	s.mu.Lock()
+	s.lastUsed = time.Now()
+	s.mu.Unlock()
 
 	uri := h.fileURI(repoDir, req.Path)
 	res, err := s.call("textDocument/definition", map[string]interface{}{
@@ -630,7 +638,7 @@ func (h *CodeEditorLSPHandler) Definition(c *gin.Context) {
 	// Converte URI file:// → caminho relativo ao repo
 	prefix := "file://" + repoDir + "/"
 	type outLoc struct {
-		Path string   `json:"path"`
+		Path  string   `json:"path"`
 		Range lspRange `json:"range"`
 	}
 	out := make([]outLoc, 0, len(locs))

@@ -12,9 +12,9 @@ import (
 
 // VPNStatusResponse representa o status da conexão VPN
 type VPNStatusResponse struct {
-	Connected    bool   `json:"connected"`
-	Message      string `json:"message"`
-	Timestamp    int64  `json:"timestamp"`
+	Connected     bool   `json:"connected"`
+	Message       string `json:"message"`
+	Timestamp     int64  `json:"timestamp"`
 	CloudProvider string `json:"cloud_provider,omitempty"`
 }
 

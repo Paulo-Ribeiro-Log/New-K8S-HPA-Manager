@@ -79,7 +79,7 @@ func (h *NexusHandler) TestConnection(c *gin.Context) {
 
 	// Cria cliente temporário para teste
 	client := nexus.NewHTTPClient(config)
-	
+
 	response, err := client.TestConnection()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{

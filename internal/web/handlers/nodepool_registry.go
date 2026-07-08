@@ -146,9 +146,9 @@ func (h *NodePoolRegistryHandler) Scan(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"results":       results,
+		"results":        results,
 		"total_inserted": totalInserted,
-		"scanned_at":    time.Now().UTC(),
+		"scanned_at":     time.Now().UTC(),
 	})
 }
 

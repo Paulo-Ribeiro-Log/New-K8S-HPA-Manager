@@ -411,7 +411,7 @@ func (h *DeploymentHandler) Describe(c *gin.Context) {
 	}
 
 	// Executar kubectl describe
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "deployment", name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "deployment", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),
@@ -563,7 +563,7 @@ func (h *DeploymentHandler) Scale(c *gin.Context) {
 		Str("name", name).
 		Str("body", string(bodyBytes)).
 		Msg("Scale Deployment request received")
-	
+
 	// Restaurar body para o ShouldBindJSON
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 

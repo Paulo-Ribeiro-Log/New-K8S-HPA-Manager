@@ -416,7 +416,7 @@ func (h *StatefulSetHandler) Describe(c *gin.Context) {
 	}
 
 	// Executar kubectl describe
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "statefulset", name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "statefulset", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),
@@ -574,7 +574,7 @@ func (h *StatefulSetHandler) Scale(c *gin.Context) {
 		Str("name", name).
 		Str("body", string(bodyBytes)).
 		Msg("Scale StatefulSet request received")
-	
+
 	// Restaurar body para o ShouldBindJSON
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 

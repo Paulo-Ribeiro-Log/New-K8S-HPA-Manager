@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"gopkg.in/yaml.v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type AutoscalerStatus struct {

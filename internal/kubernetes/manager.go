@@ -7,7 +7,7 @@ import (
 // KubeManager é um wrapper para gerenciamento de clients Kubernetes
 // (compatível com módulo AI Diagnostics)
 type KubeManager struct {
-	getClientFunc        func(string) (kubernetes.Interface, error)
+	getClientFunc          func(string) (kubernetes.Interface, error)
 	executeKubectlDescribe func(cluster, namespace, resourceType, resourceName string) (string, error)
 }
 
@@ -17,7 +17,7 @@ func NewKubeManager(
 	executeKubectlDescribe func(cluster, namespace, resourceType, resourceName string) (string, error),
 ) *KubeManager {
 	return &KubeManager{
-		getClientFunc:        getClientFunc,
+		getClientFunc:          getClientFunc,
 		executeKubectlDescribe: executeKubectlDescribe,
 	}
 }

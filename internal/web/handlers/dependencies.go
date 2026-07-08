@@ -216,11 +216,11 @@ func (h *DependenciesHandler) ScanCluster(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"cluster":             cluster,
-			"namespaces_scanned":  len(result.Namespaces),
-			"dependencies_found":  len(result.Dependencies),
-			"dependencies_saved":  savedCount,
-			"duration_ms":         durationMs,
+			"cluster":            cluster,
+			"namespaces_scanned": len(result.Namespaces),
+			"dependencies_found": len(result.Dependencies),
+			"dependencies_saved": savedCount,
+			"duration_ms":        durationMs,
 		},
 	})
 }
@@ -293,9 +293,9 @@ func (h *DependenciesHandler) GetRegistry(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"total":       len(deps),
+			"total":        len(deps),
 			"dependencies": deps,
-			"by_service":  grouped,
+			"by_service":   grouped,
 		},
 	})
 }

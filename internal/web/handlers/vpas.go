@@ -40,9 +40,9 @@ func (h *VPAHandler) List(c *gin.Context) {
 	// Verificar se CRD do VPA está instalado
 	if !kubeclient.VPACRDExists(cluster) {
 		c.JSON(http.StatusOK, gin.H{
-			"success":        true,
-			"data":           []interface{}{},
-			"count":          0,
+			"success":         true,
+			"data":            []interface{}{},
+			"count":           0,
 			"crdNotInstalled": true,
 		})
 		return
@@ -302,7 +302,7 @@ func (h *VPAHandler) Describe(c *gin.Context) {
 		return
 	}
 
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "verticalpodautoscaler", name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "verticalpodautoscaler", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),
