@@ -144,6 +144,15 @@ export default function AccessCheckTab() {
   const [canIError, setCanIError] = useState<string | null>(null);
   const [canILoading, setCanILoading] = useState(false);
 
+  // E-mail associado ao rulesResult/canIResult atual — usado só pra decidir se o banner
+  // compartilhado (IAM admin/grupos AAD, fora do switch de `section`) pode ser exibido sem risco
+  // de mostrar dado de um analista antigo rotulado com o e-mail novo digitado no campo (ver
+  // Revisão 7 no ACCESS-CHECK-PLAN.md). NÃO limpa mais rulesResult/canIResult/fleetResult ao
+  // rodar um scan diferente — cada aba (Visão Geral/Verificação Pontual/Todos os Clusters)
+  // mantém seu próprio resultado até você rodar de novo, só o banner compartilhado é que precisa
+  // desse cuidado extra de correspondência de e-mail.
+  const [pointCheckEmail, setPointCheckEmail] = useState<string | null>(null);
+
   const { data: namespaces = [] } = useQuery({
     queryKey: ["namespaces-access-check", cluster],
     queryFn: () => apiClient.getNamespaces(cluster),
@@ -156,10 +165,10 @@ export default function AccessCheckTab() {
     setRulesLoading(true);
     setRulesError(null);
     setRulesResult(null);
-    setFleetResult(null);
     try {
       const result = await apiClient.getAccessCheckRules(cluster, namespace, email.trim());
       setRulesResult(result);
+      setPointCheckEmail(email.trim());
     } catch (err) {
       setRulesError(err instanceof Error ? err.message : "Falha ao verificar acesso");
     } finally {
@@ -171,7 +180,6 @@ export default function AccessCheckTab() {
     setCanILoading(true);
     setCanIError(null);
     setCanIResult(null);
-    setFleetResult(null);
     try {
       const result = await apiClient.getAccessCheckCanI({
         cluster,
@@ -182,6 +190,7 @@ export default function AccessCheckTab() {
         group: apiGroup,
       });
       setCanIResult(result);
+      setPointCheckEmail(email.trim());
     } catch (err) {
       setCanIError(err instanceof Error ? err.message : "Falha ao verificar acesso");
     } finally {
@@ -198,11 +207,6 @@ export default function AccessCheckTab() {
     setFleetLoading(true);
     setFleetError(null);
     setFleetResult(null);
-    // Limpa resultado da última Verificação Pontual/Visão Geral — sem isso, os banners de IAM
-    // admin e grupos AAD (renderizados fora do switch de `section`) continuavam exibindo dados
-    // de um e-mail verificado anteriormente, só rotulados com o e-mail atual do input.
-    setRulesResult(null);
-    setCanIResult(null);
     setSection("fleet");
     try {
       const result = await apiClient.getAccessCheckFleetScan(email.trim(), namespace || undefined);
@@ -221,10 +225,15 @@ export default function AccessCheckTab() {
     enabled: section === "history",
   });
 
-  const matchedGroups = rulesResult?.matchedGroups ?? canIResult?.matchedGroups;
-  const allGroups = rulesResult?.allGroups ?? canIResult?.allGroups;
-  const iamAdminAccess = rulesResult?.iamAdminAccess ?? canIResult?.iamAdminAccess;
-  const groupsResolutionError = rulesResult?.groupsResolutionError || canIResult?.groupsResolutionError;
+  // O banner compartilhado (IAM admin/grupos AAD, renderizado fora do switch de `section`) só
+  // pode usar rulesResult/canIResult quando o e-mail que gerou esse resultado ainda bate com o
+  // que está no campo agora — evita mostrar dado de um analista antigo rotulado com o e-mail novo
+  // se o usuário trocar o e-mail no input sem clicar em "Verificar" de novo (ver Revisão 7).
+  const pointCheckEmailStale = pointCheckEmail !== null && pointCheckEmail !== email.trim();
+  const matchedGroups = pointCheckEmailStale ? undefined : (rulesResult?.matchedGroups ?? canIResult?.matchedGroups);
+  const allGroups = pointCheckEmailStale ? undefined : (rulesResult?.allGroups ?? canIResult?.allGroups);
+  const iamAdminAccess = pointCheckEmailStale ? undefined : (rulesResult?.iamAdminAccess ?? canIResult?.iamAdminAccess);
+  const groupsResolutionError = pointCheckEmailStale ? undefined : (rulesResult?.groupsResolutionError || canIResult?.groupsResolutionError);
   const matchedGroupIds = new Set((matchedGroups ?? []).map((g) => g.id));
   const isImpersonationBlocked = (msg: string | null) =>
     !!msg && msg.toLowerCase().includes("impersonar");
