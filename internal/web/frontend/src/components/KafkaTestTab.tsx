@@ -19,6 +19,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Loader2,
   Waypoints,
   Play,
@@ -26,13 +39,86 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  ChevronsUpDown,
+  Check,
   CheckCircle2,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import { ProtectedAction } from "@/components/rbac";
 import { useClusters } from "@/hooks/useAPI";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import type { KafkaTestResult, KafkaTestSSEEvent, KafkaStageStatus } from "@/lib/api/types";
+import type { KafkaTestResult, KafkaTestSSEEvent, KafkaStageStatus, KafkaMessage } from "@/lib/api/types";
+
+// Combobox com busca embutida no mesmo popover — mesmo padrão de ClusterSelectorForTab.tsx
+// (evita o bug do <Select> do Radix fechar o dropdown ao focar um campo de busca externo).
+// Local a este arquivo porque é usado só aqui (Namespace/Deployment); ver ClusterSelectorForTab
+// pro combobox de cluster equivalente, já usado em várias abas.
+function SearchableSelect({
+  value,
+  onChange,
+  options,
+  placeholder,
+  searchPlaceholder,
+  emptyMessage,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  placeholder: string;
+  searchPlaceholder: string;
+  emptyMessage: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className="w-full justify-between font-normal"
+        >
+          <span className="truncate">{value || placeholder}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+        <Command>
+          <CommandInput placeholder={searchPlaceholder} />
+          <CommandList>
+            <CommandEmpty>{emptyMessage}</CommandEmpty>
+            <CommandGroup>
+              {options.map((opt) => (
+                <CommandItem
+                  key={opt}
+                  value={opt}
+                  onSelect={() => {
+                    onChange(opt === value ? "" : opt);
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4", value === opt ? "opacity-100" : "opacity-0")} />
+                  {opt}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 function StageBadge({ label, status }: { label: string; status: "ok" | "failed" | "skipped" }) {
   const meta = {
@@ -86,6 +172,9 @@ export default function KafkaTestTab() {
   const [topic, setTopic] = useState("");
   const [confirmProduce, setConfirmProduce] = useState(false);
 
+  const [viewTopicEnabled, setViewTopicEnabled] = useState(false);
+  const [viewMaxMessages, setViewMaxMessages] = useState(10);
+
   const [timeoutMs, setTimeoutMs] = useState(5000);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -95,6 +184,7 @@ export default function KafkaTestTab() {
   const [result, setResult] = useState<KafkaTestResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [rawOutputOpen, setRawOutputOpen] = useState(false);
+  const [selectedMessage, setSelectedMessage] = useState<KafkaMessage | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   const { data: namespaces = [] } = useQuery({
@@ -109,13 +199,16 @@ export default function KafkaTestTab() {
     enabled: !!cluster && !!namespace,
   });
 
+  const needsTopic = produceConsumeEnabled || viewTopicEnabled;
+
   const canRun =
     !!cluster &&
     !!namespace &&
     !!deployment &&
     !!broker.trim() &&
     !isRunning &&
-    (!produceConsumeEnabled || (!!topic.trim() && confirmProduce));
+    (!needsTopic || !!topic.trim()) &&
+    (!produceConsumeEnabled || confirmProduce);
 
   const runTest = async () => {
     setResult(null);
@@ -147,8 +240,10 @@ export default function KafkaTestTab() {
             }
           : undefined,
         produce_consume: produceConsumeEnabled,
-        topic: produceConsumeEnabled ? topic.trim() : undefined,
+        topic: needsTopic ? topic.trim() : undefined,
         confirm_produce: produceConsumeEnabled ? confirmProduce : false,
+        view_topic: viewTopicEnabled,
+        view_max_messages: viewTopicEnabled ? viewMaxMessages : undefined,
         timeout_ms: timeoutMs,
       });
       setSessionId(session_id);
@@ -224,36 +319,30 @@ export default function KafkaTestTab() {
           />
         </div>
 
-        <div className="min-w-[180px]">
+        <div className="min-w-[200px]">
           <label className="text-xs text-muted-foreground block mb-1">Namespace</label>
-          <Select value={namespace} onValueChange={(v) => { setNamespace(v); setDeployment(""); }} disabled={!cluster}>
-            <SelectTrigger>
-              <SelectValue placeholder="Selecione o namespace" />
-            </SelectTrigger>
-            <SelectContent>
-              {namespaces.map((ns) => (
-                <SelectItem key={ns.name} value={ns.name}>
-                  {ns.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SearchableSelect
+            value={namespace}
+            onChange={(v) => { setNamespace(v); setDeployment(""); }}
+            options={namespaces.map((ns) => ns.name)}
+            placeholder="Selecione o namespace"
+            searchPlaceholder="Buscar namespace..."
+            emptyMessage="Nenhum namespace encontrado."
+            disabled={!cluster}
+          />
         </div>
 
-        <div className="min-w-[220px]">
+        <div className="min-w-[240px]">
           <label className="text-xs text-muted-foreground block mb-1">Deployment (de onde o teste parte)</label>
-          <Select value={deployment} onValueChange={setDeployment} disabled={!namespace}>
-            <SelectTrigger>
-              <SelectValue placeholder="Selecione o deployment" />
-            </SelectTrigger>
-            <SelectContent>
-              {deployments.map((d) => (
-                <SelectItem key={d.name} value={d.name}>
-                  {d.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SearchableSelect
+            value={deployment}
+            onChange={setDeployment}
+            options={deployments.map((d) => d.name)}
+            placeholder="Selecione o deployment"
+            searchPlaceholder="Buscar deployment..."
+            emptyMessage="Nenhum deployment encontrado."
+            disabled={!namespace}
+          />
         </div>
 
         <div className="min-w-[280px] flex-1">
@@ -380,6 +469,13 @@ export default function KafkaTestTab() {
           </div>
         )}
 
+        {needsTopic && (
+          <div className="w-56">
+            <label className="text-xs text-muted-foreground block mb-1">Tópico</label>
+            <Input placeholder="meu-topico" value={topic} onChange={(e) => setTopic(e.target.value)} />
+          </div>
+        )}
+
         <div className="flex items-center gap-2">
           <Switch checked={produceConsumeEnabled} onCheckedChange={setProduceConsumeEnabled} id="pc-toggle" />
           <label htmlFor="pc-toggle" className="text-sm font-medium cursor-pointer">
@@ -388,16 +484,32 @@ export default function KafkaTestTab() {
         </div>
 
         {produceConsumeEnabled && (
-          <div className="flex flex-wrap items-start gap-3 pl-8">
-            <div className="w-56">
-              <label className="text-xs text-muted-foreground block mb-1">Tópico</label>
-              <Input placeholder="meu-topico-teste" value={topic} onChange={(e) => setTopic(e.target.value)} />
-            </div>
-            <div className="flex items-center gap-2 pt-5">
-              <Checkbox checked={confirmProduce} onCheckedChange={(v) => setConfirmProduce(!!v)} id="confirm-produce" />
-              <label htmlFor="confirm-produce" className="text-sm text-amber-600 dark:text-amber-400 cursor-pointer max-w-md">
-                Entendo que isso publica uma mensagem real neste tópico
-              </label>
+          <div className="flex items-center gap-2 pl-8">
+            <Checkbox checked={confirmProduce} onCheckedChange={(v) => setConfirmProduce(!!v)} id="confirm-produce" />
+            <label htmlFor="confirm-produce" className="text-sm text-amber-600 dark:text-amber-400 cursor-pointer max-w-md">
+              Entendo que isso publica uma mensagem real neste tópico
+            </label>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <Switch checked={viewTopicEnabled} onCheckedChange={setViewTopicEnabled} id="view-toggle" />
+          <label htmlFor="view-toggle" className="text-sm font-medium cursor-pointer">
+            Visualizar mensagens existentes (só leitura)
+          </label>
+        </div>
+
+        {viewTopicEnabled && (
+          <div className="flex items-end gap-3 pl-8">
+            <div className="w-32">
+              <label className="text-xs text-muted-foreground block mb-1">Últimas N mensagens</label>
+              <Input
+                type="number"
+                min={1}
+                max={50}
+                value={viewMaxMessages}
+                onChange={(e) => setViewMaxMessages(Math.min(50, Math.max(1, Number(e.target.value) || 1)))}
+              />
             </div>
           </div>
         )}
@@ -438,8 +550,18 @@ export default function KafkaTestTab() {
 
         {result && (
           <div className="flex flex-col gap-4">
-            <div className="text-xs text-muted-foreground">
-              Testado a partir do pod <span className="font-mono">{result.target_pod}</span>
+            <div className="text-xs text-muted-foreground space-y-0.5">
+              <div>
+                Testado a partir do pod <span className="font-mono">{result.target_pod}</span> — container efêmero{" "}
+                <span className="font-mono">{result.ephemeral_container}</span>
+              </div>
+              <div>
+                Ephemeral containers não podem ser removidos via API do K8s — o processo se encerra sozinho após 5min,
+                mas continua listado no pod até ele reiniciar. Pra conferir o estado dele:{" "}
+                <code className="bg-muted px-1 py-0.5 rounded text-[10px]">
+                  {`kubectl get pod ${result.target_pod} -n ${namespace} -o jsonpath='{.status.ephemeralContainerStatuses}'`}
+                </code>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -458,9 +580,49 @@ export default function KafkaTestTab() {
                   }
                 />
               )}
+              {viewTopicEnabled && (
+                <StageBadge
+                  label="Visualizar"
+                  status={
+                    result.view_topic.status === "ok"
+                      ? "ok"
+                      : result.view_topic.status === "skipped"
+                      ? "skipped"
+                      : "failed"
+                  }
+                />
+              )}
             </div>
 
-            <div className="text-sm text-muted-foreground">{result.connectivity.message}</div>
+            {result.connectivity.status === "auth_failed" ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 flex flex-col gap-2">
+                <div className="text-sm text-amber-700 dark:text-amber-400">{result.connectivity.message}</div>
+                <div className="flex flex-wrap gap-2">
+                  {!saslEnabled && (
+                    <Button size="sm" variant="outline" onClick={() => setSaslEnabled(true)}>
+                      Ligar Autenticação SASL
+                    </Button>
+                  )}
+                  {result.connectivity.suggested_mechanism && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setSaslEnabled(true);
+                        const first = result.connectivity.suggested_mechanism!.split(/[,\s]+/)[0] as typeof mechanism;
+                        if (first === "PLAIN" || first === "SCRAM-SHA-256" || first === "SCRAM-SHA-512") {
+                          setMechanism(first);
+                        }
+                      }}
+                    >
+                      Usar mecanismo sugerido ({result.connectivity.suggested_mechanism})
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">{result.connectivity.message}</div>
+            )}
 
             {(result.connectivity.broker_count || result.connectivity.topic_count) && (
               <div className="flex items-center gap-3 text-sm">
@@ -482,6 +644,44 @@ export default function KafkaTestTab() {
               </div>
             )}
 
+            {viewTopicEnabled && (
+              <div className="flex flex-col gap-2">
+                <div className="text-sm text-muted-foreground">{result.view_topic.message}</div>
+                {result.view_topic.messages && result.view_topic.messages.length > 0 && (
+                  <div className="border border-border rounded-md divide-y divide-border overflow-hidden">
+                    {result.view_topic.messages.map((m, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setSelectedMessage(m)}
+                        className="w-full text-left px-2.5 py-1.5 hover:bg-muted/50 transition-colors flex items-center gap-3"
+                      >
+                        <span className="text-[10px] text-muted-foreground shrink-0">
+                          p{m.partition}@{m.offset}
+                        </span>
+                        {m.binary && (
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 shrink-0 bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30">
+                            binário
+                          </Badge>
+                        )}
+                        {m.timestamp_ms ? (
+                          <span className="text-[10px] text-muted-foreground shrink-0 font-mono">
+                            {new Date(m.timestamp_ms).toLocaleString("pt-BR")}
+                          </span>
+                        ) : null}
+                        {m.key && (
+                          <span className="text-[10px] font-mono text-muted-foreground shrink-0 truncate max-w-[100px]">
+                            key: {m.key}
+                          </span>
+                        )}
+                        <span className="text-xs font-mono truncate flex-1 min-w-0">{m.payload}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             <Collapsible open={rawOutputOpen} onOpenChange={setRawOutputOpen}>
               <CollapsibleTrigger asChild>
                 <Button variant="ghost" size="sm" className="w-fit gap-1 text-xs text-muted-foreground">
@@ -498,12 +698,59 @@ export default function KafkaTestTab() {
                       {result.produce_consume.raw_output}
                     </>
                   )}
+                  {viewTopicEnabled && result.view_topic.raw_output && (
+                    <>
+                      {"\n\n--- visualizar tópico ---\n"}
+                      {result.view_topic.raw_output}
+                    </>
+                  )}
                 </pre>
               </CollapsibleContent>
             </Collapsible>
           </div>
         )}
       </div>
+
+      <Dialog open={!!selectedMessage} onOpenChange={(open) => !open && setSelectedMessage(null)}>
+        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Mensagem do tópico</DialogTitle>
+          </DialogHeader>
+          {selectedMessage && (
+            <div className="flex flex-col gap-3 min-h-0 flex-1">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span>Partição: <span className="font-mono text-foreground">{selectedMessage.partition}</span></span>
+                <span>Offset: <span className="font-mono text-foreground">{selectedMessage.offset}</span></span>
+                {selectedMessage.timestamp_ms ? (
+                  <span>Timestamp: <span className="font-mono text-foreground">{new Date(selectedMessage.timestamp_ms).toLocaleString("pt-BR")}</span></span>
+                ) : null}
+              </div>
+              {selectedMessage.binary && (
+                <div className="text-xs rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400 p-2">
+                  Payload/key contém bytes que não são UTF-8 válido (dados binários — protobuf/Avro,
+                  ou um tópico interno do Kafka como <span className="font-mono">__consumer_offsets</span>).
+                  O kcat já substitui esses bytes por "�" antes de entregar o resultado — o texto abaixo
+                  não reflete os bytes originais com exatidão.
+                </div>
+              )}
+              {selectedMessage.key && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Key</div>
+                  <pre className="text-xs font-mono whitespace-pre-wrap break-all rounded-md border border-border bg-muted/30 p-2">
+                    {selectedMessage.key}
+                  </pre>
+                </div>
+              )}
+              <div className="flex flex-col min-h-0 flex-1">
+                <div className="text-xs text-muted-foreground mb-1">Payload</div>
+                <ScrollArea className="flex-1 min-h-0 rounded-md border border-border bg-muted/30">
+                  <pre className="text-xs font-mono whitespace-pre-wrap break-all p-2">{selectedMessage.payload}</pre>
+                </ScrollArea>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
