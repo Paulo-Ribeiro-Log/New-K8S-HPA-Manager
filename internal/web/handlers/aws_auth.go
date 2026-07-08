@@ -40,8 +40,8 @@ func (h *AWSAuthHandler) CheckStatus(c *gin.Context) {
 	loginInProgress := session != nil
 
 	c.JSON(http.StatusOK, gin.H{
-		"profile":          profile,
-		"valid":            valid,
+		"profile":           profile,
+		"valid":             valid,
 		"login_in_progress": loginInProgress,
 	})
 }
@@ -61,7 +61,7 @@ func (h *AWSAuthHandler) StartLogin(c *gin.Context) {
 	// Se token já válido, não precisa logar.
 	if h.sso.IsTokenValid(c.Request.Context(), req.Profile) {
 		c.JSON(http.StatusOK, gin.H{
-			"profile": req.Profile,
+			"profile":       req.Profile,
 			"already_valid": true,
 		})
 		return
@@ -102,9 +102,9 @@ func (h *AWSAuthHandler) PollLogin(c *gin.Context) {
 			h.kubeManager.EvictClientsByAWSProfile(profile)
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"profile":  profile,
-			"done":     true,
-			"success":  valid,
+			"profile": profile,
+			"done":    true,
+			"success": valid,
 		})
 		return
 	}
@@ -171,9 +171,9 @@ func (h *AWSAuthHandler) GetConfig(c *gin.Context) {
 // Body: {"profile": "asaplog", "sso": {"start_url": "...", "region": "...", "account_id": "...", "role_name": "..."}, "region": "us-east-1"}
 func (h *AWSAuthHandler) SaveConfig(c *gin.Context) {
 	var req struct {
-		Profile string                       `json:"profile" binding:"required"`
-		SSO     awsprovider.AWSSSOConfig     `json:"sso"     binding:"required"`
-		Region  string                       `json:"region"`
+		Profile string                   `json:"profile" binding:"required"`
+		SSO     awsprovider.AWSSSOConfig `json:"sso"     binding:"required"`
+		Region  string                   `json:"region"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

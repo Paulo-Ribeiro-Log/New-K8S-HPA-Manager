@@ -27,7 +27,7 @@ type FinOpsHandler struct {
 	diskPricer      *finops.DiskPricer // nil = análise de storage omitida
 	exchange        *finops.ExchangeRateProvider
 	aiHandler       *AIDiagnosticsHandler // opcional — nil se AI não configurado
-	dtTokenStore    dtTokenReader          // para criar DTEnricher sob demanda
+	dtTokenStore    dtTokenReader         // para criar DTEnricher sob demanda
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -201,12 +201,12 @@ func (h *FinOpsHandler) GetPricing(c *gin.Context) {
 
 	cpuCores, memGB := finops.GetVMSpecs(sku)
 	c.JSON(http.StatusOK, gin.H{
-		"sku":              sku,
-		"price_usd_hour":   price,
-		"price_usd_month":  price * finops.HoursPerMonth,
-		"source":           source,
-		"vm_cpu_cores":     cpuCores,
-		"vm_memory_gb":     memGB,
+		"sku":             sku,
+		"price_usd_hour":  price,
+		"price_usd_month": price * finops.HoursPerMonth,
+		"source":          source,
+		"vm_cpu_cores":    cpuCores,
+		"vm_memory_gb":    memGB,
 	})
 }
 
@@ -274,7 +274,7 @@ func (h *FinOpsHandler) AnalyzeReport(c *gin.Context) {
 	}
 
 	var req struct {
-		AIEmail string          `json:"ai_email"`
+		AIEmail string              `json:"ai_email"`
 		Report  finops.FinOpsReport `json:"report"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" {
@@ -574,14 +574,14 @@ func (h *FinOpsHandler) CompareWithSnapshot(c *gin.Context) {
 		Msg("FinOps: comparação com snapshot específico retornada")
 
 	c.JSON(http.StatusOK, gin.H{
-		"cluster":         cluster,
-		"days":            days,
-		"current":         current,
-		"previous":        snap.Data,
-		"has_previous":    true,
+		"cluster":           cluster,
+		"days":              days,
+		"current":           current,
+		"previous":          snap.Data,
+		"has_previous":      true,
 		"previous_saved_at": snap.SavedAt,
-		"snapshot_id":     snap.ID,
-		"snapshot_period": snap.StartDate + " → " + snap.EndDate,
+		"snapshot_id":       snap.ID,
+		"snapshot_period":   snap.StartDate + " → " + snap.EndDate,
 	})
 }
 
@@ -623,17 +623,17 @@ func (h *FinOpsHandler) CompareSnapshots(c *gin.Context) {
 		Msg("FinOps: comparação entre dois snapshots salvos")
 
 	c.JSON(http.StatusOK, gin.H{
-		"cluster":             cluster,
-		"days":                snap1.Days,
-		"current":             snap1.Data,
-		"previous":            snap2.Data,
-		"has_previous":        true,
-		"current_saved_at":    snap1.SavedAt,
-		"previous_saved_at":   snap2.SavedAt,
-		"current_period":      snap1.StartDate + " → " + snap1.EndDate,
-		"previous_period":     snap2.StartDate + " → " + snap2.EndDate,
-		"snapshot_id":         snap1.ID,
-		"snapshot_period":     snap2.StartDate + " → " + snap2.EndDate,
+		"cluster":           cluster,
+		"days":              snap1.Days,
+		"current":           snap1.Data,
+		"previous":          snap2.Data,
+		"has_previous":      true,
+		"current_saved_at":  snap1.SavedAt,
+		"previous_saved_at": snap2.SavedAt,
+		"current_period":    snap1.StartDate + " → " + snap1.EndDate,
+		"previous_period":   snap2.StartDate + " → " + snap2.EndDate,
+		"snapshot_id":       snap1.ID,
+		"snapshot_period":   snap2.StartDate + " → " + snap2.EndDate,
 	})
 }
 

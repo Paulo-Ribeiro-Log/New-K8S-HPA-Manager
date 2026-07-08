@@ -330,11 +330,15 @@ func fetchNodeEventsV2(ctx context.Context, client kubernetes.Interface, pool st
 // ── Azure Activity Log via az CLI ─────────────────────────────────────────────
 
 type azActivityEntry struct {
-	OperationName  struct{ Value string `json:"value"` } `json:"operationName"`
-	EventTimestamp string                                 `json:"eventTimestamp"`
-	Status         struct{ Value string `json:"value"` } `json:"status"`
-	ResourceID     string                                 `json:"resourceId"`
-	Caller         string                                 `json:"caller"`
+	OperationName struct {
+		Value string `json:"value"`
+	} `json:"operationName"`
+	EventTimestamp string `json:"eventTimestamp"`
+	Status         struct {
+		Value string `json:"value"`
+	} `json:"status"`
+	ResourceID string `json:"resourceId"`
+	Caller     string `json:"caller"`
 }
 
 func fetchAzureActivityLog(ctx context.Context, clusterCfg *config.ClusterConfig, pool string) ([]*RemovedNodeInfo, []string) {
@@ -646,4 +650,3 @@ func (h *NodePoolHandler) GetNodeEvents(c *gin.Context) {
 
 	c.JSON(200, gin.H{"events": events})
 }
-

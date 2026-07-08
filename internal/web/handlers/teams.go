@@ -200,9 +200,9 @@ func (h *TeamsHandler) RefreshApprovals(c *gin.Context) {
 	h.saveCacheToDisk(newCache)
 
 	c.JSON(http.StatusOK, gin.H{
-		"success":      true,
-		"items":        result.Items,
-		"last_updated": result.ExtractedAt,
+		"success":       true,
+		"items":         result.Items,
+		"last_updated":  result.ExtractedAt,
 		"needs_refresh": false,
 	})
 }

@@ -191,12 +191,12 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 
 	if err != nil {
 		log.Error().Err(err).Msg("Prediction analysis failed")
-		
+
 		// Registrar erro globalmente para exibir no painel AI Provider Status
 		providerName := aiProvider.GetName()
 		modelName := aiProvider.GetModel()
 		RecordGlobalAIError(userEmail, providerName, modelName, err)
-		
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Analysis failed: " + err.Error(),
 		})
@@ -208,7 +208,7 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 		// Obter provider e model usado
 		providerName := aiProvider.GetName()
 		modelName := aiProvider.GetModel()
-		
+
 		// Limpar erro global pois análise foi bem-sucedida
 		RecordGlobalAIError(userEmail, providerName, modelName, nil)
 
@@ -1386,4 +1386,3 @@ func parseJSONField(jsonStr string, target interface{}) error {
 	}
 	return json.Unmarshal([]byte(jsonStr), target)
 }
-

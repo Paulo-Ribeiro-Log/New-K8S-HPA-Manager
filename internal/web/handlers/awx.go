@@ -23,10 +23,10 @@ import (
 // Quando UseSSOProfile=true, username/senha vêm do perfil SSO centralizado.
 type awxCredentials struct {
 	BaseURL           string `json:"base_url"`
-	Username          string `json:"username"`            // modo manual
-	EncryptedPassword string `json:"encrypted_password"`  // modo manual
-	UseSSOProfile     bool   `json:"use_sso_profile"`     // usar perfil SSO central
-	LoginIdentifier   string `json:"login_identifier"`    // "email" ou "matricula" (SSO mode)
+	Username          string `json:"username"`           // modo manual
+	EncryptedPassword string `json:"encrypted_password"` // modo manual
+	UseSSOProfile     bool   `json:"use_sso_profile"`    // usar perfil SSO central
+	LoginIdentifier   string `json:"login_identifier"`   // "email" ou "matricula" (SSO mode)
 }
 
 // AWXHandler integra com a API do AWX (Ansible AWX/Tower) para gerenciar certificados TLS.
@@ -184,10 +184,10 @@ func (h *AWXHandler) awxPost(path string, payload interface{}, out interface{}) 
 func (h *AWXHandler) SaveCredentials(c *gin.Context) {
 	var req struct {
 		BaseURL         string `json:"base_url"`
-		Username        string `json:"username"`          // apenas modo manual
-		Password        string `json:"password"`          // apenas modo manual
+		Username        string `json:"username"` // apenas modo manual
+		Password        string `json:"password"` // apenas modo manual
 		UseSSOProfile   bool   `json:"use_sso_profile"`
-		LoginIdentifier string `json:"login_identifier"`  // "email" ou "matricula"
+		LoginIdentifier string `json:"login_identifier"` // "email" ou "matricula"
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.BaseURL == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "base_url é obrigatória"})

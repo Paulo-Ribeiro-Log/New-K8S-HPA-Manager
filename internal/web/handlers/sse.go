@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"k8s-hpa-manager/internal/web/sse"
 	"github.com/gin-gonic/gin"
+	"k8s-hpa-manager/internal/web/sse"
 )
 
 // ProgressStreamHandler - Gerenciador global do ProgressTracker

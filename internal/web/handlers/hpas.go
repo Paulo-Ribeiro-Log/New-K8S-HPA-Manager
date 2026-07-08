@@ -31,7 +31,7 @@ func NewHPAHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *HP
 // List retorna todos os HPAs de um namespace ou de todos os namespaces
 func (h *HPAHandler) List(c *gin.Context) {
 	cluster := c.Query("cluster")
-	namespace := c.Query("namespace") // Opcional
+	namespace := c.Query("namespace")      // Opcional
 	showSystemStr := c.Query("showSystem") // Opcional: "true" para mostrar namespaces de sistema
 
 	if cluster == "" {
@@ -237,14 +237,14 @@ func (h *HPAHandler) Update(c *gin.Context) {
 	var beforeState map[string]interface{}
 	if err == nil {
 		beforeState = map[string]interface{}{
-			"min_replicas":    beforeHPA.MinReplicas,
-			"max_replicas":    beforeHPA.MaxReplicas,
-			"target_cpu":      beforeHPA.TargetCPU,
-			"target_memory":   beforeHPA.TargetMemory,
-			"cpu_request":     beforeHPA.TargetCPURequest,     // Use Target* (configuração do deployment)
-			"memory_request":  beforeHPA.TargetMemoryRequest,  // Use Target* (configuração do deployment)
-			"cpu_limit":       beforeHPA.TargetCPULimit,       // Use Target* (configuração do deployment)
-			"memory_limit":    beforeHPA.TargetMemoryLimit,    // Use Target* (configuração do deployment)
+			"min_replicas":   beforeHPA.MinReplicas,
+			"max_replicas":   beforeHPA.MaxReplicas,
+			"target_cpu":     beforeHPA.TargetCPU,
+			"target_memory":  beforeHPA.TargetMemory,
+			"cpu_request":    beforeHPA.TargetCPURequest,    // Use Target* (configuração do deployment)
+			"memory_request": beforeHPA.TargetMemoryRequest, // Use Target* (configuração do deployment)
+			"cpu_limit":      beforeHPA.TargetCPULimit,      // Use Target* (configuração do deployment)
+			"memory_limit":   beforeHPA.TargetMemoryLimit,   // Use Target* (configuração do deployment)
 		}
 	}
 
@@ -309,10 +309,10 @@ func (h *HPAHandler) Update(c *gin.Context) {
 		"max_replicas":   updatedHPA.MaxReplicas,
 		"target_cpu":     updatedHPA.TargetCPU,
 		"target_memory":  updatedHPA.TargetMemory,
-		"cpu_request":    updatedHPA.TargetCPURequest,     // Use Target* (configuração do deployment)
-		"memory_request": updatedHPA.TargetMemoryRequest,  // Use Target* (configuração do deployment)
-		"cpu_limit":      updatedHPA.TargetCPULimit,       // Use Target* (configuração do deployment)
-		"memory_limit":   updatedHPA.TargetMemoryLimit,    // Use Target* (configuração do deployment)
+		"cpu_request":    updatedHPA.TargetCPURequest,    // Use Target* (configuração do deployment)
+		"memory_request": updatedHPA.TargetMemoryRequest, // Use Target* (configuração do deployment)
+		"cpu_limit":      updatedHPA.TargetCPULimit,      // Use Target* (configuração do deployment)
+		"memory_limit":   updatedHPA.TargetMemoryLimit,   // Use Target* (configuração do deployment)
 	}
 
 	// Log sucesso no history

@@ -206,7 +206,7 @@ func (h *CronJobHandler) Describe(c *gin.Context) {
 		return
 	}
 
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "cronjob", name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "cronjob", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("DESCRIBE_ERROR", err.Error()))
 		return

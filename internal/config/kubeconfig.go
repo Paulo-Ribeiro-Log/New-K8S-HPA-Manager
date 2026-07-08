@@ -521,6 +521,15 @@ func (k *KubeConfigManager) resolveContext(name string) string {
 	return name // retorna original para que o erro eventual seja descritivo
 }
 
+// ResolveContext expõe resolveContext publicamente — usado por operações que chamam o binário
+// `kubectl` diretamente via subprocess (ex: ExecuteKubectlDescribe) em vez do client-go, e por
+// isso não passam pelo GetClient/getClient que já resolvem isso internamente. Sem isso, `kubectl
+// --context <nome-curto>` falha ou (pior, silenciosamente) aponta pro cluster errado em GKE/EKS,
+// onde o nome exibido na UI não é o nome real do context no kubeconfig.
+func (k *KubeConfigManager) ResolveContext(name string) string {
+	return k.resolveContext(name)
+}
+
 // GetClient retorna um cliente Kubernetes para o cluster especificado
 func (k *KubeConfigManager) GetClient(clusterName string) (kubernetes.Interface, error) {
 	return k.getClient(clusterName)

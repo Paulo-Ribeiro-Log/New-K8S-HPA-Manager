@@ -36,10 +36,10 @@ func (h *NotificationHandler) TestNotification(c *gin.Context) {
 // GetStatus retorna o status das notificações
 func (h *NotificationHandler) GetStatus(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"enabled":    h.notificationManager.IsEnabled(),
-		"cacheSize":  h.notificationManager.GetAlertCacheSize(),
-		"platform":   "windows",
-		"mechanism":  "PowerShell Toast Notifications",
+		"enabled":   h.notificationManager.IsEnabled(),
+		"cacheSize": h.notificationManager.GetAlertCacheSize(),
+		"platform":  "windows",
+		"mechanism": "PowerShell Toast Notifications",
 	})
 }
 

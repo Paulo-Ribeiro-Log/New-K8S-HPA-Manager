@@ -36,8 +36,8 @@ type SNATNodePoolInfo struct {
 // SNATProfile resultado do cálculo do orçamento de portas SNAT
 type SNATProfile struct {
 	Cluster                  string             `json:"cluster"`
-	CloudProvider            string             `json:"cloud_provider"`            // "aks" | "eks" | "gke"
-	AllocatedOutboundPorts   int                `json:"allocated_outbound_ports"`  // 0 = N/A (EKS)
+	CloudProvider            string             `json:"cloud_provider"`           // "aks" | "eks" | "gke"
+	AllocatedOutboundPorts   int                `json:"allocated_outbound_ports"` // 0 = N/A (EKS)
 	OutboundIPCount          int                `json:"outbound_ip_count"`
 	MaxPortsPerIP            int                `json:"max_ports_per_ip"`
 	TotalNodeCount           int                `json:"total_node_count"`
@@ -45,7 +45,7 @@ type SNATProfile struct {
 	TotalRequiredPorts       int                `json:"total_required_ports"`
 	PortDeficit              int                `json:"port_deficit"`
 	UsagePercent             float64            `json:"usage_percent"`
-	MaxNodesAllowed          int                `json:"max_nodes_allowed"`          // 0 = N/A
+	MaxNodesAllowed          int                `json:"max_nodes_allowed"` // 0 = N/A
 	NodesUntilLimit          int                `json:"nodes_until_limit"`
 	IPsNeededForCurrentNodes int                `json:"ips_needed_for_current_nodes"`
 	Status                   string             `json:"status"` // ok / warning / critical
@@ -246,13 +246,13 @@ func (h *NodePoolHandler) buildSNATProfileGKE(ctx context.Context, clusterCtx st
 	if len(routers) == 0 {
 		errMsg = "nenhum Cloud NAT encontrado nesta região — cluster pode usar rota de saída diferente"
 		return SNATProfile{
-			Cluster:       clusterCtx,
-			CloudProvider: "gke",
+			Cluster:        clusterCtx,
+			CloudProvider:  "gke",
 			TotalNodeCount: totalNodes,
-			NodePools:     pools,
-			Status:        "ok",
-			FetchedAt:     time.Now(),
-			Error:         errMsg,
+			NodePools:      pools,
+			Status:         "ok",
+			FetchedAt:      time.Now(),
+			Error:          errMsg,
 		}, nil
 	}
 
@@ -264,7 +264,7 @@ func (h *NodePoolHandler) buildSNATProfileGKE(ctx context.Context, clusterCtx st
 // natGatewayResponse resposta parcial do aws ec2 describe-nat-gateways
 type natGatewayResponse struct {
 	NatGateways []struct {
-		NatGatewayId      string `json:"NatGatewayId"`
+		NatGatewayId        string `json:"NatGatewayId"`
 		NatGatewayAddresses []struct {
 			PublicIp string `json:"PublicIp"`
 		} `json:"NatGatewayAddresses"`
@@ -337,23 +337,23 @@ func (h *NodePoolHandler) buildSNATProfileEKS(ctx context.Context, clusterCtx st
 	}
 
 	profile := SNATProfile{
-		Cluster:              clusterCtx,
-		CloudProvider:        "eks",
-		AllocatedOutboundPorts: 0, // N/A para EKS
-		OutboundIPCount:      eipCount,
-		MaxPortsPerIP:        snatPortsPerIPAWS,
-		TotalNodeCount:       totalNodes,
-		TotalAvailablePorts:  totalAvailable,
-		TotalRequiredPorts:   0, // não calculável sem dados de tráfego
-		PortDeficit:          0,
-		UsagePercent:         0, // preenchido via conntrack se disponível
-		MaxNodesAllowed:      0, // N/A: NAT GW não limita por nó
-		NodesUntilLimit:      0,
+		Cluster:                  clusterCtx,
+		CloudProvider:            "eks",
+		AllocatedOutboundPorts:   0, // N/A para EKS
+		OutboundIPCount:          eipCount,
+		MaxPortsPerIP:            snatPortsPerIPAWS,
+		TotalNodeCount:           totalNodes,
+		TotalAvailablePorts:      totalAvailable,
+		TotalRequiredPorts:       0, // não calculável sem dados de tráfego
+		PortDeficit:              0,
+		UsagePercent:             0, // preenchido via conntrack se disponível
+		MaxNodesAllowed:          0, // N/A: NAT GW não limita por nó
+		NodesUntilLimit:          0,
 		IPsNeededForCurrentNodes: 0,
-		Status:               "ok",
-		NodePools:            pools,
-		FetchedAt:            time.Now(),
-		Error:                errMsg,
+		Status:                   "ok",
+		NodePools:                pools,
+		FetchedAt:                time.Now(),
+		Error:                    errMsg,
 	}
 	return profile, nil
 }

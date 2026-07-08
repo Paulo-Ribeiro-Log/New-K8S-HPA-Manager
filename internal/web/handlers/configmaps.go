@@ -268,7 +268,9 @@ func (h *ConfigMapHandler) Apply(c *gin.Context) {
 
 	result, err := kubeClient.ApplyConfigMap(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
-		if checkForbidden(c, err) { return }
+		if checkForbidden(c, err) {
+			return
+		}
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
 		if apierrors.IsConflict(err) {
@@ -434,7 +436,7 @@ func (h *ConfigMapHandler) Describe(c *gin.Context) {
 	}
 
 	// Executar kubectl describe
-	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "configmap", name, namespace)
+	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "configmap", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),
@@ -495,7 +497,7 @@ func (h *ConfigMapHandler) Create(c *gin.Context) {
 	if metadata == nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "MISSING_METADATA", "message": "ConfigMap YAML must contain metadata"},
+			"error":   gin.H{"code": "MISSING_METADATA", "message": "ConfigMap YAML must contain metadata"},
 		})
 		return
 	}
@@ -503,7 +505,7 @@ func (h *ConfigMapHandler) Create(c *gin.Context) {
 	if cmName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "MISSING_NAME", "message": "ConfigMap YAML must contain metadata.name"},
+			"error":   gin.H{"code": "MISSING_NAME", "message": "ConfigMap YAML must contain metadata.name"},
 		})
 		return
 	}
@@ -512,7 +514,7 @@ func (h *ConfigMapHandler) Create(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error": gin.H{"code": "CLIENT_ERROR", "message": fmt.Sprintf("Failed to get client: %v", err)},
+			"error":   gin.H{"code": "CLIENT_ERROR", "message": fmt.Sprintf("Failed to get client: %v", err)},
 		})
 		return
 	}
@@ -524,17 +526,19 @@ func (h *ConfigMapHandler) Create(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"code": "INVALID_YAML", "message": err.Error()},
+			"error":   gin.H{"code": "INVALID_YAML", "message": err.Error()},
 		})
 		return
 	}
 
 	result, err := kubeClient.ApplyConfigMap(c.Request.Context(), sanitizedYAML, req.FieldManager, namespace, cmName, false, false)
 	if err != nil {
-		if checkForbidden(c, err) { return }
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error": gin.H{"code": "CREATE_ERROR", "message": err.Error()},
+			"error":   gin.H{"code": "CREATE_ERROR", "message": err.Error()},
 		})
 		return
 	}
@@ -600,7 +604,9 @@ func (h *ConfigMapHandler) Delete(c *gin.Context) {
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 	err = kubeClient.DeleteConfigMap(c.Request.Context(), namespace, name)
 	if err != nil {
-		if checkForbidden(c, err) { return }
+		if checkForbidden(c, err) {
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,
