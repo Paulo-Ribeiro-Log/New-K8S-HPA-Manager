@@ -424,6 +424,11 @@ export interface ContainerStatus {
   state: string;
   stateReason?: string;
   started?: boolean;
+  // type distingue container "normal" (inclui sidecars como istio-proxy), "init" (inclui
+  // istio-init) e "ephemeral" (debug containers — kubectl debug, Debug Container, Kafka Test).
+  type: 'container' | 'init' | 'ephemeral';
+  // target só vem preenchido pra type "ephemeral" — o container principal que ele está mirando.
+  target?: string;
 }
 
 export interface PodSummary {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -60,40 +61,115 @@ type ContainerStatus struct {
 	State        string `json:"state"`
 	StateReason  string `json:"stateReason,omitempty"`
 	Started      *bool  `json:"started,omitempty"`
+	// Type distingue os 3 tipos de container que um Pod pode ter: "container" (main containers —
+	// inclui QUALQUER coisa injetada como container normal, ex: sidecar istio-proxy do Istio),
+	// "init" (inclui istio-init e outros init containers de mesh/CNI) ou "ephemeral" (debug
+	// containers via `kubectl debug`, Debug Container do terminal, ou ferramentas como o Kafka
+	// Test). Sem isso o frontend não tinha como saber que um container não-"normal" existia.
+	Type string `json:"type"`
+	// Target só é preenchido pra containers do tipo "ephemeral" — o container principal que ele
+	// está "mirando" (TargetContainerName), útil pra saber qual debug container pertence a qual
+	// sessão de teste/troubleshooting.
+	Target string `json:"target,omitempty"`
+}
+
+// buildContainerStatuses monta a lista COMPLETA de containers de um pod — cruza pod.Spec
+// (Containers/InitContainers/EphemeralContainers, a fonte de verdade de "o que existe") com
+// pod.Status (ContainerStatuses/InitContainerStatuses/EphemeralContainerStatuses, a fonte de
+// verdade de "em que estado está") por NOME, pras 3 categorias. Cruzar com o Spec (não só o
+// Status) garante que nada suma da lista numa janela em que o container já foi definido mas ainda
+// não ganhou status (comum logo depois de anexar um ephemeral container, por exemplo) — e cobre
+// QUALQUER coisa que rode no pod, não só os casos hardcoded de sidecar/init conhecidos: um
+// istio-proxy aparece aqui porque é um container normal do Spec, um istio-init porque é um init
+// container do Spec — não há lista de nomes especial pra reconhecer, é sempre "o que estiver lá".
+func buildContainerStatuses(pod *corev1.Pod) []ContainerStatus {
+	statusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.ContainerStatuses))
+	for _, cs := range pod.Status.ContainerStatuses {
+		statusByName[cs.Name] = cs
+	}
+	initStatusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.InitContainerStatuses))
+	for _, cs := range pod.Status.InitContainerStatuses {
+		initStatusByName[cs.Name] = cs
+	}
+	ephemeralStatusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.EphemeralContainerStatuses))
+	for _, cs := range pod.Status.EphemeralContainerStatuses {
+		ephemeralStatusByName[cs.Name] = cs
+	}
+
+	// toContainerStatus monta uma entrada a partir do nome/imagem do Spec + status correspondente
+	// (se já existir) — quando o status ainda não chegou, sintetiza um estado "Waiting" razoável
+	// em vez de omitir o container da lista.
+	toContainerStatus := func(name, image, typ string, status corev1.ContainerStatus, hasStatus bool) ContainerStatus {
+		if !hasStatus {
+			return ContainerStatus{Name: name, Image: image, State: "Waiting", StateReason: "PendingStatus", Type: typ}
+		}
+		state, stateReason := getContainerState(status)
+		img := status.Image
+		if img == "" {
+			img = image
+		}
+		return ContainerStatus{
+			Name:         name,
+			Image:        img,
+			Ready:        status.Ready,
+			RestartCount: status.RestartCount,
+			State:        state,
+			StateReason:  stateReason,
+			Started:      status.Started,
+			Type:         typ,
+		}
+	}
+
+	var containers []ContainerStatus
+	for _, c := range pod.Spec.Containers {
+		status, ok := statusByName[c.Name]
+		containers = append(containers, toContainerStatus(c.Name, c.Image, "container", status, ok))
+	}
+	for _, c := range pod.Spec.InitContainers {
+		status, ok := initStatusByName[c.Name]
+		containers = append(containers, toContainerStatus(c.Name, c.Image, "init", status, ok))
+	}
+	for _, c := range pod.Spec.EphemeralContainers {
+		status, ok := ephemeralStatusByName[c.Name]
+		entry := toContainerStatus(c.Name, c.EphemeralContainerCommon.Image, "ephemeral", status, ok)
+		entry.Target = c.TargetContainerName
+		containers = append(containers, entry)
+	}
+	return containers
 }
 
 // PodSummary representa um resumo de Pod
 type PodSummary struct {
-	Cluster              string            `json:"cluster"`
-	Namespace            string            `json:"namespace"`
-	Name                 string            `json:"name"`
-	PodIP                string            `json:"podIP,omitempty"`
-	NodeName             string            `json:"nodeName,omitempty"`
-	Phase                string            `json:"phase"`
-	Status               string            `json:"status,omitempty"`
-	StatusReason         string            `json:"statusReason,omitempty"`
-	Labels               map[string]string `json:"labels,omitempty"`
-	Containers           []ContainerStatus `json:"containers"`
-	ReadyContainers      int               `json:"readyContainers"`
-	TotalContainers      int               `json:"totalContainers"`
-	CPURequest           string            `json:"cpuRequest,omitempty"`
-	CPURequestMillicores int64             `json:"cpuRequestMillicores,omitempty"`
-	MemoryRequest        string            `json:"memoryRequest,omitempty"`
-	MemoryRequestBytes   int64             `json:"memoryRequestBytes,omitempty"`
-	CPULimit             string            `json:"cpuLimit,omitempty"`
-	CPULimitMillicores   int64             `json:"cpuLimitMillicores,omitempty"`
-	MemoryLimit          string            `json:"memoryLimit,omitempty"`
-	MemoryLimitBytes     int64             `json:"memoryLimitBytes,omitempty"`
-	CPUUsage             string            `json:"cpuUsage,omitempty"`
-	CPUUsageMillicores   int64             `json:"cpuUsageMillicores,omitempty"`
-	MemoryUsage          string            `json:"memoryUsage,omitempty"`
-	MemoryUsageBytes     int64             `json:"memoryUsageBytes,omitempty"`
-	CPUUsagePercentage   float64           `json:"cpuUsagePercentage"`
+	Cluster               string            `json:"cluster"`
+	Namespace             string            `json:"namespace"`
+	Name                  string            `json:"name"`
+	PodIP                 string            `json:"podIP,omitempty"`
+	NodeName              string            `json:"nodeName,omitempty"`
+	Phase                 string            `json:"phase"`
+	Status                string            `json:"status,omitempty"`
+	StatusReason          string            `json:"statusReason,omitempty"`
+	Labels                map[string]string `json:"labels,omitempty"`
+	Containers            []ContainerStatus `json:"containers"`
+	ReadyContainers       int               `json:"readyContainers"`
+	TotalContainers       int               `json:"totalContainers"`
+	CPURequest            string            `json:"cpuRequest,omitempty"`
+	CPURequestMillicores  int64             `json:"cpuRequestMillicores,omitempty"`
+	MemoryRequest         string            `json:"memoryRequest,omitempty"`
+	MemoryRequestBytes    int64             `json:"memoryRequestBytes,omitempty"`
+	CPULimit              string            `json:"cpuLimit,omitempty"`
+	CPULimitMillicores    int64             `json:"cpuLimitMillicores,omitempty"`
+	MemoryLimit           string            `json:"memoryLimit,omitempty"`
+	MemoryLimitBytes      int64             `json:"memoryLimitBytes,omitempty"`
+	CPUUsage              string            `json:"cpuUsage,omitempty"`
+	CPUUsageMillicores    int64             `json:"cpuUsageMillicores,omitempty"`
+	MemoryUsage           string            `json:"memoryUsage,omitempty"`
+	MemoryUsageBytes      int64             `json:"memoryUsageBytes,omitempty"`
+	CPUUsagePercentage    float64           `json:"cpuUsagePercentage"`
 	MemoryUsagePercentage float64           `json:"memoryUsagePercentage"`
-	ResourceVersion      string            `json:"resourceVersion,omitempty"`
-	CreatedAt            string            `json:"createdAt"`
-	Restarts             int32             `json:"restarts"`
-	Terminating          bool              `json:"terminating"`
+	ResourceVersion       string            `json:"resourceVersion,omitempty"`
+	CreatedAt             string            `json:"createdAt"`
+	Restarts              int32             `json:"restarts"`
+	Terminating           bool              `json:"terminating"`
 }
 
 // PodManifest representa o manifest completo de um Pod
@@ -142,10 +218,17 @@ func (h *PodHandler) List(c *gin.Context) {
 	} else {
 		allPods = &corev1.PodList{}
 		for _, ns := range namespaces {
-			podList, err := clientset.CoreV1().Pods(ns).List(c.Request.Context(), metav1.ListOptions{})
-			if err == nil {
-				allPods.Items = append(allPods.Items, podList.Items...)
+			podList, nsErr := clientset.CoreV1().Pods(ns).List(c.Request.Context(), metav1.ListOptions{})
+			if nsErr != nil {
+				// Best-effort: um namespace sem permissão/indisponível não deve derrubar a
+				// resposta inteira quando outros namespaces pedidos são válidos — mas o erro
+				// precisa aparecer no log, senão vira uma lista vazia sem pista nenhuma do motivo
+				// (bug real: antes essa variável tinha o mesmo nome "err" da de fora, então o
+				// erro daqui nunca era visto por ninguém — nem log, nem resposta).
+				log.Printf("[PodHandler] Warning: falha ao listar pods no namespace %q (cluster %s): %v", ns, cluster, nsErr)
+				continue
 			}
+			allPods.Items = append(allPods.Items, podList.Items...)
 		}
 	}
 	if err != nil {
@@ -649,26 +732,20 @@ func (h *PodHandler) GetLogs(c *gin.Context) {
 }
 
 func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod, metrics *kubeclient.BatchPodMetricsSingle) PodSummary {
-	containers := []ContainerStatus{}
-	readyCount := 0
-	totalRestarts := int32(0)
 	isTerminating := pod.DeletionTimestamp != nil
 
+	// Lista completa (container + init + ephemeral) — qualquer coisa rodando no pod, ver doc de
+	// buildContainerStatuses. ReadyContainers/Restarts continuam baseados só nos containers
+	// "normais" (pod.Status.ContainerStatuses) — mesma convenção do próprio K8s pro "N/M Ready" do
+	// pod (init/ephemeral não entram nessa conta).
+	containers := buildContainerStatuses(pod)
+	readyCount := 0
+	totalRestarts := int32(0)
 	for _, cs := range pod.Status.ContainerStatuses {
-		state, stateReason := getContainerState(cs)
 		if cs.Ready {
 			readyCount++
 		}
 		totalRestarts += cs.RestartCount
-		containers = append(containers, ContainerStatus{
-			Name:         cs.Name,
-			Image:        cs.Image,
-			Ready:        cs.Ready,
-			RestartCount: cs.RestartCount,
-			State:        state,
-			StateReason:  stateReason,
-			Started:      cs.Started,
-		})
 	}
 
 	totalCPUReq, totalMemReq, totalCPULim, totalMemLim := getPodResourceTotals(pod)
@@ -676,30 +753,30 @@ func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod, metric
 	status, statusReason := getPodStatus(pod, isTerminating)
 
 	summary := PodSummary{
-		Cluster:         cluster,
-		Namespace:       pod.Namespace,
-		Name:            pod.Name,
-		PodIP:           pod.Status.PodIP,
-		NodeName:        pod.Spec.NodeName,
-		Phase:           string(pod.Status.Phase),
-		Status:          status,
-		StatusReason:    statusReason,
-		Labels:          pod.Labels,
-		Containers:      containers,
-		ReadyContainers: readyCount,
-		TotalContainers: len(pod.Spec.Containers),
-		CPURequest:      totalCPUReq.String(),
-		MemoryRequest:   totalMemReq.String(),
-		CPULimit:        totalCPULim.String(),
-		MemoryLimit:     totalMemLim.String(),
+		Cluster:              cluster,
+		Namespace:            pod.Namespace,
+		Name:                 pod.Name,
+		PodIP:                pod.Status.PodIP,
+		NodeName:             pod.Spec.NodeName,
+		Phase:                string(pod.Status.Phase),
+		Status:               status,
+		StatusReason:         statusReason,
+		Labels:               pod.Labels,
+		Containers:           containers,
+		ReadyContainers:      readyCount,
+		TotalContainers:      len(pod.Spec.Containers),
+		CPURequest:           totalCPUReq.String(),
+		MemoryRequest:        totalMemReq.String(),
+		CPULimit:             totalCPULim.String(),
+		MemoryLimit:          totalMemLim.String(),
 		CPURequestMillicores: totalCPUReq.MilliValue(),
 		MemoryRequestBytes:   totalMemReq.Value(),
 		CPULimitMillicores:   totalCPULim.MilliValue(),
 		MemoryLimitBytes:     totalMemLim.Value(),
-		ResourceVersion: pod.ResourceVersion,
-		CreatedAt:       pod.CreationTimestamp.Format(time.RFC3339),
-		Restarts:        totalRestarts,
-		Terminating:     isTerminating,
+		ResourceVersion:      pod.ResourceVersion,
+		CreatedAt:            pod.CreationTimestamp.Format(time.RFC3339),
+		Restarts:             totalRestarts,
+		Terminating:          isTerminating,
 	}
 
 	if metrics != nil {
@@ -807,16 +884,16 @@ func getPodStatus(pod *corev1.Pod, isTerminating bool) (status, reason string) {
 
 // formatBytes converts bytes to a human-readable string (e.g., Ki, Mi, Gi).
 func formatBytes(b int64) string {
-    const unit = 1024
-    if b < unit {
-        return fmt.Sprintf("%d B", b)
-    }
-    div, exp := int64(unit), 0
-    for n := b / unit; n >= unit; n /= unit {
-        div *= unit
-        exp++
-    }
-    return fmt.Sprintf("%.1f %ci", float64(b)/float64(div), "KMGTPE"[exp])
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ci", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // Describe retorna a saída do kubectl describe para um Pod
