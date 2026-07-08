@@ -1709,6 +1709,116 @@ export interface LatencyTestSSEEvent {
   result?: LatencyTestResult; // presente só no evento "complete"
 }
 
+// ─── Teste de Kafka sob Demanda ───────────────────────────────────────────────
+
+export interface KafkaSecretRef {
+  namespace: string;
+  name: string;
+  username_key: string; // default "username" se vazio
+  password_key: string; // default "password" se vazio
+}
+
+export interface KafkaSASLConfig {
+  mechanism: 'PLAIN' | 'SCRAM-SHA-256' | 'SCRAM-SHA-512';
+  use_tls: boolean;
+  skip_tls_verify: boolean;
+  // uma das duas fontes de credencial, mutuamente exclusivas
+  username?: string;
+  password?: string;
+  secret_ref?: KafkaSecretRef;
+}
+
+export interface RunKafkaTestRequest {
+  cluster: string;
+  namespace: string;
+  // deployment identifica de qual workload o teste deve partir — o backend resolve um pod Running
+  // desse Deployment e anexa um ephemeral container nele, pra refletir a identidade de rede real
+  // (NetworkPolicy/Istio avaliam por label/service account do pod, não por namespace inteiro).
+  deployment: string;
+  broker: string; // "host:porta" — tipicamente um broker EXTERNO ao cluster (Kafka gerenciado, Event Hub, etc.)
+  sasl?: KafkaSASLConfig; // omitido = sem autenticação (PLAINTEXT)
+  produce_consume: boolean;
+  topic?: string; // obrigatório se produce_consume ou view_topic
+  confirm_produce: boolean; // obrigatório=true se produce_consume (guardrail espelhado no backend)
+  // view_topic lê (só leitura, não precisa de confirm_produce) as últimas mensagens já
+  // existentes no tópico informado em `topic`.
+  view_topic: boolean;
+  view_max_messages?: number; // default 10, teto 50 (aplicado no backend)
+  timeout_ms?: number; // default 5000, teto 15000 (aplicado no backend)
+}
+
+export interface RunKafkaTestResponse {
+  session_id: string;
+}
+
+export type KafkaStageStatus = 'ok' | 'tcp_failed' | 'auth_failed' | 'tls_failed' | 'unknown_failed' | 'skipped';
+
+export interface KafkaStageResult {
+  status: KafkaStageStatus;
+  message: string;
+  raw_output: string;
+  broker_count?: number;
+  topic_count?: number;
+  // suggested_mechanism vem do erro de auth_failed quando o broker informa quais mecanismos SASL
+  // ele realmente aceita (extração best-effort — pode vir vazio mesmo em auth_failed).
+  suggested_mechanism?: string;
+}
+
+export type KafkaProduceConsumeStatus = 'ok' | 'produce_failed' | 'not_found' | 'skipped';
+
+export interface KafkaProduceConsumeResult {
+  status: KafkaProduceConsumeStatus;
+  message: string;
+  round_trip_ms?: number;
+  raw_output: string;
+}
+
+export interface KafkaMessage {
+  partition: number;
+  offset: number;
+  timestamp_ms?: number;
+  key?: string;
+  payload: string;
+  // binary = true quando o kcat já substituiu bytes inválidos de UTF-8 por U+FFFD antes de
+  // emitir o JSON (payload binário de verdade — protobuf/Avro, ou tópico interno do Kafka como
+  // __consumer_offsets). Os bytes originais já se perderam nesse ponto, não é recuperável.
+  binary?: boolean;
+}
+
+export type KafkaTopicViewStatus = 'ok' | 'failed' | 'skipped';
+
+export interface KafkaTopicViewResult {
+  status: KafkaTopicViewStatus;
+  message: string;
+  messages?: KafkaMessage[];
+  raw_output: string;
+}
+
+export interface KafkaTestResult {
+  // target_pod é o pod real (do Deployment escolhido) onde o ephemeral container do teste foi
+  // anexado — transparência de qual carga específica foi tocada.
+  target_pod: string;
+  // ephemeral_container é o nome exato do container anexado — não pode ser removido via API do
+  // K8s (fica listado no pod até ele reiniciar); permite conferir o estado dele depois via
+  // `kubectl get pod <target_pod> -o jsonpath='{.status.ephemeralContainerStatuses}'`.
+  ephemeral_container: string;
+  connectivity: KafkaStageResult;
+  produce_consume: KafkaProduceConsumeResult;
+  view_topic: KafkaTopicViewResult;
+}
+
+export interface KafkaTestSSEEvent {
+  id: string;
+  type: 'init' | 'resolve_deployment' | 'ephemeral_container' | 'connectivity' | 'produce_consume' | 'view_topic' | 'complete' | 'error';
+  phase: string;
+  message: string;
+  progress: number;
+  cluster?: string;
+  timestamp: string;
+  error?: string;
+  result?: KafkaTestResult; // presente só no evento "complete"
+}
+
 // Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.
 // Refletem o que o RBAC do cluster permite para o usuário atual (não grupos AD).
 export interface K8sNamespacePermissions {
