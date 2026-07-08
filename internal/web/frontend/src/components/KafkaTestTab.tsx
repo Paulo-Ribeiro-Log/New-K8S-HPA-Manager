@@ -42,6 +42,7 @@ import {
   ChevronsUpDown,
   Check,
   CheckCircle2,
+  Search,
 } from "lucide-react";
 import {
   Dialog,
@@ -175,6 +176,8 @@ export default function KafkaTestTab() {
   const [viewTopicEnabled, setViewTopicEnabled] = useState(false);
   const [viewMaxMessages, setViewMaxMessages] = useState(10);
 
+  const [countOffsetsEnabled, setCountOffsetsEnabled] = useState(false);
+
   const [timeoutMs, setTimeoutMs] = useState(5000);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -186,6 +189,13 @@ export default function KafkaTestTab() {
   const [rawOutputOpen, setRawOutputOpen] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<KafkaMessage | null>(null);
   const esRef = useRef<EventSource | null>(null);
+
+  // Busca de tópicos (popover de seleção) — lista sob demanda via kcat -L, não em toda digitação:
+  // cada busca abre um ephemeral container real no pod, então é uma ação explícita do usuário.
+  const [topicSearchOpen, setTopicSearchOpen] = useState(false);
+  const [topicOptions, setTopicOptions] = useState<string[]>([]);
+  const [topicSearchLoading, setTopicSearchLoading] = useState(false);
+  const [topicSearchError, setTopicSearchError] = useState<string | null>(null);
 
   const { data: namespaces = [] } = useQuery({
     queryKey: ["namespaces-kafka-test", cluster],
@@ -199,7 +209,7 @@ export default function KafkaTestTab() {
     enabled: !!cluster && !!namespace,
   });
 
-  const needsTopic = produceConsumeEnabled || viewTopicEnabled;
+  const needsTopic = produceConsumeEnabled || viewTopicEnabled || countOffsetsEnabled;
 
   const canRun =
     !!cluster &&
@@ -209,6 +219,26 @@ export default function KafkaTestTab() {
     !isRunning &&
     (!needsTopic || !!topic.trim()) &&
     (!produceConsumeEnabled || confirmProduce);
+
+  // Reaproveitado pelo teste completo e pela busca de tópicos — mesma config SASL nos dois casos.
+  const buildSaslPayload = () =>
+    saslEnabled
+      ? {
+          mechanism,
+          use_tls: useTLS,
+          skip_tls_verify: skipTLSVerify,
+          ...(credSource === "manual"
+            ? { username, password }
+            : {
+                secret_ref: {
+                  namespace: secretNamespace || namespace,
+                  name: secretName,
+                  username_key: usernameKey || "username",
+                  password_key: passwordKey || "password",
+                },
+              }),
+        }
+      : undefined;
 
   const runTest = async () => {
     setResult(null);
@@ -222,34 +252,53 @@ export default function KafkaTestTab() {
         namespace,
         deployment,
         broker: broker.trim(),
-        sasl: saslEnabled
-          ? {
-              mechanism,
-              use_tls: useTLS,
-              skip_tls_verify: skipTLSVerify,
-              ...(credSource === "manual"
-                ? { username, password }
-                : {
-                    secret_ref: {
-                      namespace: secretNamespace || namespace,
-                      name: secretName,
-                      username_key: usernameKey || "username",
-                      password_key: passwordKey || "password",
-                    },
-                  }),
-            }
-          : undefined,
+        sasl: buildSaslPayload(),
         produce_consume: produceConsumeEnabled,
         topic: needsTopic ? topic.trim() : undefined,
         confirm_produce: produceConsumeEnabled ? confirmProduce : false,
         view_topic: viewTopicEnabled,
         view_max_messages: viewTopicEnabled ? viewMaxMessages : undefined,
+        count_offsets: countOffsetsEnabled,
         timeout_ms: timeoutMs,
       });
       setSessionId(session_id);
     } catch (err) {
       setIsRunning(false);
       setRunError(err instanceof Error ? err.message : "Falha ao iniciar o teste");
+    }
+  };
+
+  const canSearchTopics = !!cluster && !!namespace && !!deployment && !!broker.trim();
+
+  const searchTopics = async () => {
+    if (!canSearchTopics) return;
+    setTopicSearchLoading(true);
+    setTopicSearchError(null);
+    try {
+      const { topics, raw_output } = await apiClient.listKafkaTopics({
+        cluster,
+        namespace,
+        deployment,
+        broker: broker.trim(),
+        sasl: buildSaslPayload(),
+        timeout_ms: timeoutMs,
+      });
+      setTopicOptions(topics);
+      if (topics.length === 0) {
+        setTopicSearchError(raw_output ? "Nenhum tópico encontrado — ver saída bruta" : "Nenhum tópico encontrado no broker");
+      }
+    } catch (err) {
+      setTopicOptions([]);
+      setTopicSearchError(err instanceof Error ? err.message : "Falha ao buscar tópicos");
+    } finally {
+      setTopicSearchLoading(false);
+    }
+  };
+
+  const openTopicSearch = () => {
+    setTopicSearchOpen(true);
+    if (topicOptions.length === 0 && !topicSearchLoading) {
+      searchTopics();
     }
   };
 
@@ -470,9 +519,65 @@ export default function KafkaTestTab() {
         )}
 
         {needsTopic && (
-          <div className="w-56">
+          <div className="w-72">
             <label className="text-xs text-muted-foreground block mb-1">Tópico</label>
-            <Input placeholder="meu-topico" value={topic} onChange={(e) => setTopic(e.target.value)} />
+            <div className="flex gap-1.5">
+              <Input placeholder="meu-topico" value={topic} onChange={(e) => setTopic(e.target.value)} />
+              <Popover open={topicSearchOpen} onOpenChange={setTopicSearchOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    disabled={!canSearchTopics}
+                    title={canSearchTopics ? "Buscar tópicos no broker" : "Preencha cluster, namespace, deployment e broker primeiro"}
+                    onClick={openTopicSearch}
+                  >
+                    <Search className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-72 p-0" align="end">
+                  <Command shouldFilter={!topicSearchLoading}>
+                    <CommandInput placeholder="Filtrar tópicos..." />
+                    <CommandList>
+                      {topicSearchLoading ? (
+                        <div className="py-6 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Buscando tópicos no broker...
+                        </div>
+                      ) : topicSearchError ? (
+                        <div className="p-3 text-xs text-muted-foreground flex flex-col gap-2">
+                          <span>{topicSearchError}</span>
+                          <Button size="sm" variant="outline" onClick={searchTopics}>Tentar de novo</Button>
+                        </div>
+                      ) : (
+                        <>
+                          <CommandEmpty>Nenhum tópico encontrado.</CommandEmpty>
+                          <CommandGroup>
+                            {topicOptions.map((t) => (
+                              <CommandItem
+                                key={t}
+                                value={t}
+                                onSelect={() => {
+                                  setTopic(t);
+                                  setTopicSearchOpen(false);
+                                }}
+                              >
+                                <Check className={cn("mr-2 h-4 w-4", topic === t ? "opacity-100" : "opacity-0")} />
+                                <span className="truncate">{t}</span>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </>
+                      )}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-1">
+              A busca anexa um container efêmero real no pod pra listar os tópicos visíveis dessa identidade de rede — pode digitar direto se já souber o nome.
+            </div>
           </div>
         )}
 
@@ -513,6 +618,13 @@ export default function KafkaTestTab() {
             </div>
           </div>
         )}
+
+        <div className="flex items-center gap-2">
+          <Switch checked={countOffsetsEnabled} onCheckedChange={setCountOffsetsEnabled} id="count-offsets-toggle" />
+          <label htmlFor="count-offsets-toggle" className="text-sm font-medium cursor-pointer">
+            Contar mensagens por offset (só leitura)
+          </label>
+        </div>
       </div>
 
       <div className="p-6 flex flex-col gap-4">
@@ -575,6 +687,18 @@ export default function KafkaTestTab() {
                     result.produce_consume.status === "ok"
                       ? "ok"
                       : result.produce_consume.status === "skipped"
+                      ? "skipped"
+                      : "failed"
+                  }
+                />
+              )}
+              {countOffsetsEnabled && (
+                <StageBadge
+                  label="Offsets"
+                  status={
+                    result.offset_count.status === "ok"
+                      ? "ok"
+                      : result.offset_count.status === "skipped"
                       ? "skipped"
                       : "failed"
                   }
@@ -644,6 +768,41 @@ export default function KafkaTestTab() {
               </div>
             )}
 
+            {countOffsetsEnabled && (
+              <div className="flex flex-col gap-2">
+                <div className="text-sm text-muted-foreground">
+                  {result.offset_count.message}
+                  {result.offset_count.total_messages !== undefined && result.offset_count.status === "ok" && (
+                    <span className="font-mono ml-2 text-foreground">({result.offset_count.total_messages.toLocaleString("pt-BR")} no total)</span>
+                  )}
+                </div>
+                {result.offset_count.partitions && result.offset_count.partitions.length > 0 && (
+                  <div className="border border-border rounded-md overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/50">
+                        <tr>
+                          <th className="text-left px-2.5 py-1.5 font-medium text-muted-foreground">Partição</th>
+                          <th className="text-right px-2.5 py-1.5 font-medium text-muted-foreground">Offset inicial</th>
+                          <th className="text-right px-2.5 py-1.5 font-medium text-muted-foreground">Offset final</th>
+                          <th className="text-right px-2.5 py-1.5 font-medium text-muted-foreground">Mensagens retidas</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {result.offset_count.partitions.map((p) => (
+                          <tr key={p.partition}>
+                            <td className="px-2.5 py-1.5 font-mono">{p.partition}</td>
+                            <td className="px-2.5 py-1.5 font-mono text-right">{p.earliest.toLocaleString("pt-BR")}</td>
+                            <td className="px-2.5 py-1.5 font-mono text-right">{p.latest.toLocaleString("pt-BR")}</td>
+                            <td className="px-2.5 py-1.5 font-mono text-right">{p.count.toLocaleString("pt-BR")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
             {viewTopicEnabled && (
               <div className="flex flex-col gap-2">
                 <div className="text-sm text-muted-foreground">{result.view_topic.message}</div>
@@ -696,6 +855,12 @@ export default function KafkaTestTab() {
                     <>
                       {"\n\n--- produce/consume ---\n"}
                       {result.produce_consume.raw_output}
+                    </>
+                  )}
+                  {countOffsetsEnabled && result.offset_count.raw_output && (
+                    <>
+                      {"\n\n--- contagem de offsets ---\n"}
+                      {result.offset_count.raw_output}
                     </>
                   )}
                   {viewTopicEnabled && result.view_topic.raw_output && (

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,6 +90,21 @@ var kafkaTLSErrorRegex = regexp.MustCompile(`(?i)ssl`)
 var kafkaBrokerCountRegex = regexp.MustCompile(`(\d+)\s+brokers?:`)
 var kafkaTopicCountRegex = regexp.MustCompile(`(\d+)\s+topics?:`)
 
+// kafkaPartitionCountRegex extrai o número de partições da linha de metadados de UM tópico
+// específico (`kcat -L -t <topico>`) — ex: `topic "meu-topico" with 3 partitions:`. Quando o
+// tópico não existe, o kcat ainda sai com código 0 e imprime "with 0 partitions: Broker: Unknown
+// topic or partition" — daí `partitionCount == 0` ser o sinal de "tópico não encontrado", não um
+// erro de exec.
+var kafkaPartitionCountRegex = regexp.MustCompile(`with (\d+) partitions`)
+
+// kafkaTopicNameRegex extrai nomes de tópicos da listagem de metadados completa (`kcat -L`, sem
+// `-t`) — usado pelo endpoint de busca de tópicos. Formato: `  topic "nome" with N partitions:`.
+var kafkaTopicNameRegex = regexp.MustCompile(`topic\s+"([^"]+)"\s+with\s+(\d+)\s+partitions`)
+
+// kafkaOffsetLineRegex extrai partição+offset da saída do modo `-Q` (query de offset por
+// timestamp) — formato confirmado contra um broker real: `<topico> [<partição>] offset <N>`.
+var kafkaOffsetLineRegex = regexp.MustCompile(`\[(\d+)\]\s+offset\s+(-?\d+)`)
+
 // KafkaSASLConfig descreve autenticação SASL opcional pro teste. Username/Password OU SecretRef
 // (mutuamente exclusivos — SecretRef tem prioridade se ambos vierem preenchidos por engano).
 type KafkaSASLConfig struct {
@@ -128,7 +144,11 @@ type RunKafkaTestRequest struct {
 	// mensagens já existentes no tópico informado em Topic.
 	ViewTopic       bool `json:"view_topic"`
 	ViewMaxMessages int  `json:"view_max_messages,omitempty"` // default 10, teto 50
-	TimeoutMs       int  `json:"timeout_ms"`
+	// CountOffsets lê (só leitura) os offsets mais antigo/mais recente de cada partição do tópico
+	// informado em Topic, e deriva a contagem de mensagens atualmente retidas — não precisa de
+	// ConfirmProduce, não escreve nada no broker.
+	CountOffsets bool `json:"count_offsets"`
+	TimeoutMs    int  `json:"timeout_ms"`
 }
 
 // KafkaStageResult é o resultado de um estágio individual do teste.
@@ -176,6 +196,26 @@ type KafkaTopicViewResult struct {
 	RawOutput string         `json:"raw_output"`
 }
 
+// KafkaOffsetPartition é o par de offsets (mais antigo/mais recente) de uma partição — Count é a
+// diferença entre eles, ou seja, quantas mensagens estão ATUALMENTE retidas nessa partição (não o
+// total histórico já produzido, já que a política de retenção pode ter apagado mensagens antigas
+// — earliest só reflete o que o broker ainda guarda).
+type KafkaOffsetPartition struct {
+	Partition int32 `json:"partition"`
+	Earliest  int64 `json:"earliest"`
+	Latest    int64 `json:"latest"`
+	Count     int64 `json:"count"`
+}
+
+// KafkaOffsetCountResult é o resultado do estágio de contagem de offsets (só leitura) de um tópico.
+type KafkaOffsetCountResult struct {
+	Status        string                 `json:"status"` // ok | not_found | failed | skipped
+	Message       string                 `json:"message"`
+	TotalMessages int64                  `json:"total_messages,omitempty"`
+	Partitions    []KafkaOffsetPartition `json:"partitions,omitempty"`
+	RawOutput     string                 `json:"raw_output"`
+}
+
 // KafkaTestResult é o resultado completo de uma execução do teste de Kafka.
 type KafkaTestResult struct {
 	// TargetPod é o pod real (do Deployment escolhido) onde o ephemeral container do teste foi
@@ -190,6 +230,7 @@ type KafkaTestResult struct {
 	Connectivity       KafkaStageResult          `json:"connectivity"`
 	ProduceConsume     KafkaProduceConsumeResult `json:"produce_consume"`
 	ViewTopic          KafkaTopicViewResult      `json:"view_topic"`
+	OffsetCount        KafkaOffsetCountResult    `json:"offset_count"`
 }
 
 // resolveRunningPodForDeployment acha um pod Running que pertence ao Deployment informado, via o
@@ -627,6 +668,110 @@ func runKafkaViewTopicStage(ctx context.Context, clientset kubernetes.Interface,
 	}
 }
 
+// buildKafkaOffsetQueryArgs monta os argumentos `-Q -t topico:partição:timestamp` pra todas as
+// partições de 0 a partitionCount-1 com o MESMO timestamp especial (-1 = offset mais recente/fim,
+// -2 = offset mais antigo/início — semântica padrão do protocolo Kafka ListOffsets).
+func buildKafkaOffsetQueryArgs(topic string, partitionCount int, timestamp int) []string {
+	args := make([]string, 0, 1+partitionCount*2)
+	args = append(args, "-Q")
+	for p := 0; p < partitionCount; p++ {
+		args = append(args, "-t", fmt.Sprintf("%s:%d:%d", topic, p, timestamp))
+	}
+	return args
+}
+
+// parseKafkaOffsetLines extrai partição→offset da saída do modo `-Q` do kcat.
+func parseKafkaOffsetLines(raw string) map[int32]int64 {
+	result := make(map[int32]int64)
+	for _, m := range kafkaOffsetLineRegex.FindAllStringSubmatch(raw, -1) {
+		p, _ := strconv.Atoi(m[1])
+		offset, _ := strconv.ParseInt(m[2], 10, 64)
+		result[int32(p)] = offset
+	}
+	return result
+}
+
+// runKafkaOffsetCountStage lê (só leitura, nada é escrito) o offset mais antigo e o mais recente
+// de cada partição do tópico e deriva quantas mensagens estão atualmente retidas (latest -
+// earliest, por partição, somado). Precisa de 3 execs: (1) `-L -t topico` pra descobrir o número
+// de partições — também serve pra detectar tópico inexistente, já que o kcat sai com código 0 e
+// imprime "with 0 partitions: Broker: Unknown topic or partition" nesse caso, em vez de um erro
+// de exec; (2) `-Q` com timestamp -1 (fim) pra cada partição; (3) `-Q` com timestamp -2 (início)
+// pra cada partição.
+//
+// Os dois `-Q` são feitos em EXECS SEPARADOS de propósito — testado empiricamente contra um
+// broker real que o kcat 1.7.1 devolve o MESMO valor pras duas consultas quando -1 e -2 da MESMA
+// partição aparecem juntos numa única invocação `-Q` (limitação/bug não documentado da própria
+// ferramenta, provável dedup interno por partição na hora de montar o batch de queries).
+func runKafkaOffsetCountStage(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
+	namespace, podName, containerName, broker, topic string, authFlags []string, timeoutMs int) KafkaOffsetCountResult {
+
+	timeoutSec := (timeoutMs + 999) / 1000
+	if timeoutSec < 1 {
+		timeoutSec = 1
+	}
+
+	runStep := func(extraArgs ...string) (raw string, exitCode int, execErr error) {
+		cmd := buildKcatCommand(broker, authFlags, extraArgs...)
+		script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
+		output, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
+		if err != nil {
+			return extractStderr(err), -1, err
+		}
+		text, code, ok := splitKafkaExitMarker(output)
+		if !ok {
+			return text, -1, nil
+		}
+		return text, code, nil
+	}
+
+	metaRaw, metaExit, execErr := runStep("-L", "-t", topic)
+	if execErr != nil {
+		return KafkaOffsetCountResult{Status: "failed", Message: "Falha ao executar a consulta de metadados no pod", RawOutput: metaRaw}
+	}
+	if metaExit != 0 {
+		return KafkaOffsetCountResult{Status: "failed", Message: "Falha ao consultar metadados do tópico", RawOutput: metaRaw}
+	}
+	m := kafkaPartitionCountRegex.FindStringSubmatch(metaRaw)
+	if m == nil {
+		return KafkaOffsetCountResult{Status: "failed", Message: "Não foi possível determinar o número de partições do tópico — ver saída bruta", RawOutput: metaRaw}
+	}
+	partitionCount, _ := strconv.Atoi(m[1])
+	if partitionCount == 0 {
+		return KafkaOffsetCountResult{Status: "not_found", Message: fmt.Sprintf("Tópico %q não encontrado no broker", topic), RawOutput: metaRaw}
+	}
+
+	latestRaw, latestExit, execErr := runStep(buildKafkaOffsetQueryArgs(topic, partitionCount, -1)...)
+	if execErr != nil || latestExit != 0 {
+		return KafkaOffsetCountResult{Status: "failed", Message: "Falha ao consultar os offsets mais recentes", RawOutput: metaRaw + "\n---\n" + latestRaw}
+	}
+	earliestRaw, earliestExit, execErr := runStep(buildKafkaOffsetQueryArgs(topic, partitionCount, -2)...)
+	if execErr != nil || earliestExit != 0 {
+		return KafkaOffsetCountResult{Status: "failed", Message: "Falha ao consultar os offsets mais antigos", RawOutput: metaRaw + "\n---\n" + latestRaw + "\n---\n" + earliestRaw}
+	}
+
+	latestMap := parseKafkaOffsetLines(latestRaw)
+	earliestMap := parseKafkaOffsetLines(earliestRaw)
+
+	partitions := make([]KafkaOffsetPartition, 0, partitionCount)
+	var total int64
+	for p := 0; p < partitionCount; p++ {
+		latest := latestMap[int32(p)]
+		earliest := earliestMap[int32(p)]
+		count := latest - earliest
+		total += count
+		partitions = append(partitions, KafkaOffsetPartition{Partition: int32(p), Earliest: earliest, Latest: latest, Count: count})
+	}
+
+	return KafkaOffsetCountResult{
+		Status:        "ok",
+		Message:       fmt.Sprintf("%d partição(ões), %d mensagem(ns) retida(s) atualmente no tópico", partitionCount, total),
+		TotalMessages: total,
+		Partitions:    partitions,
+		RawOutput:     metaRaw + "\n---\n" + latestRaw + "\n---\n" + earliestRaw,
+	}
+}
+
 // ─── Handler: endpoint SSE + rotas ─────────────────────────────────────────────
 
 // KafkaTestHandler orquestra o teste de Kafka sob demanda — mesmo esqueleto do LatencyTestHandler
@@ -681,8 +826,8 @@ func (h *KafkaTestHandler) Run(c *gin.Context) {
 	}
 
 	req.Topic = strings.TrimSpace(req.Topic)
-	if (req.ProduceConsume || req.ViewTopic) && req.Topic == "" {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_TOPIC", "topic é obrigatório para produzir/consumir ou visualizar mensagens"))
+	if (req.ProduceConsume || req.ViewTopic || req.CountOffsets) && req.Topic == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_TOPIC", "topic é obrigatório para produzir/consumir, visualizar mensagens ou contar offsets"))
 		return
 	}
 	if req.ProduceConsume {
@@ -792,6 +937,125 @@ func (h *KafkaTestHandler) Cancel(c *gin.Context) {
 	}
 }
 
+// ListTopicsRequest é o body do POST /kafka-test/topics — usado pelo campo de busca de tópicos no
+// frontend, pra listar os tópicos existentes no broker sem precisar rodar o teste completo.
+type ListTopicsRequest struct {
+	Cluster    string           `json:"cluster"`
+	Namespace  string           `json:"namespace"`
+	Deployment string           `json:"deployment"`
+	Broker     string           `json:"broker"`
+	SASL       *KafkaSASLConfig `json:"sasl,omitempty"`
+	TimeoutMs  int              `json:"timeout_ms"`
+}
+
+// ListTopicsResponse é o resultado da listagem de tópicos.
+type ListTopicsResponse struct {
+	Topics    []string `json:"topics"`
+	RawOutput string   `json:"raw_output,omitempty"`
+}
+
+// ListTopics resolve um pod do Deployment, anexa (ou reaproveita) o ephemeral container kcat e
+// lista os tópicos existentes no broker — usado pelo campo de busca de tópicos no frontend, pra
+// não obrigar o usuário a digitar o nome exato de cor. Síncrono (sem SSE): é uma única chamada
+// `kcat -L`, rápida mesmo contando o tempo de subir o ephemeral container. Mesma identidade de
+// rede do Deployment escolhido (NetworkPolicy/Istio) — os tópicos listados refletem exatamente o
+// que aquele workload consegue enxergar, igual ao restante da ferramenta.
+// POST /api/v1/kafka-test/topics
+func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
+	var req ListTopicsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+
+	req.Cluster = strings.TrimSpace(req.Cluster)
+	req.Namespace = strings.TrimSpace(req.Namespace)
+	req.Deployment = strings.TrimSpace(req.Deployment)
+	req.Broker = strings.TrimSpace(req.Broker)
+	if req.Cluster == "" || req.Namespace == "" || req.Deployment == "" || req.Broker == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace, deployment e broker são obrigatórios"))
+		return
+	}
+	if req.SASL != nil {
+		req.SASL.Mechanism = strings.ToUpper(strings.TrimSpace(req.SASL.Mechanism))
+		if req.SASL.Mechanism != "" && !kafkaValidSASLMechanisms[req.SASL.Mechanism] {
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_MECHANISM", "mechanism deve ser PLAIN, SCRAM-SHA-256 ou SCRAM-SHA-512"))
+			return
+		}
+	}
+	if req.TimeoutMs <= 0 {
+		req.TimeoutMs = kafkaTestDefaultTimeoutMs
+	}
+	if req.TimeoutMs > kafkaTestMaxTimeoutMs {
+		req.TimeoutMs = kafkaTestMaxTimeoutMs
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(),
+		kafkaTestEphemeralReadyTimeout+time.Duration(req.TimeoutMs)*time.Millisecond+5*time.Second)
+	defer cancel()
+
+	clientset, err := h.kubeManager.GetClient(req.Cluster)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
+		return
+	}
+	restConfig, err := h.kubeManager.GetRestConfig(req.Cluster)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
+		return
+	}
+
+	var authFlags []string
+	if req.SASL != nil {
+		username, password, credErr := resolveKafkaCredentials(ctx, clientset, req.SASL)
+		if credErr != nil {
+			c.JSON(http.StatusBadRequest, errorResponse("CREDENTIALS_ERROR", credErr.Error()))
+			return
+		}
+		authFlags = buildKcatAuthFlags(req.SASL, username, password)
+	}
+
+	podName, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("POD_NOT_FOUND", err.Error()))
+		return
+	}
+	containerName, err := getOrCreateKafkaEphemeralContainer(ctx, clientset, req.Namespace, podName, targetContainer)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("EPHEMERAL_CONTAINER_ERROR", err.Error()))
+		return
+	}
+	if err := waitKafkaEphemeralContainerRunning(ctx, clientset, req.Namespace, podName, containerName, kafkaTestEphemeralReadyTimeout); err != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("EPHEMERAL_CONTAINER_ERROR", err.Error()))
+		return
+	}
+
+	timeoutSec := (req.TimeoutMs + 999) / 1000
+	if timeoutSec < 1 {
+		timeoutSec = 1
+	}
+	cmd := buildKcatCommand(req.Broker, authFlags, "-L")
+	script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
+	output, execErr := execCmdInPod(ctx, clientset, restConfig, req.Namespace, podName, containerName, []string{"sh", "-c", script})
+	if execErr != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("EXEC_ERROR", extractStderr(execErr)))
+		return
+	}
+	raw, exitCode, ok := splitKafkaExitMarker(output)
+	if !ok || exitCode != 0 {
+		c.JSON(http.StatusOK, ListTopicsResponse{Topics: []string{}, RawOutput: raw})
+		return
+	}
+
+	var topics []string
+	for _, m := range kafkaTopicNameRegex.FindAllStringSubmatch(raw, -1) {
+		topics = append(topics, m[1])
+	}
+	sort.Strings(topics)
+
+	c.JSON(http.StatusOK, ListTopicsResponse{Topics: topics})
+}
+
 // runTest executa o fluxo completo (criar pod → aguardar ready → conectividade →
 // produce/consume opcional), reportando progresso via SSE a cada etapa.
 func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req RunKafkaTestRequest, userInfo history.UserInfo) {
@@ -865,14 +1129,24 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 		Connectivity:       connectivity,
 		ProduceConsume:     KafkaProduceConsumeResult{Status: "skipped"},
 		ViewTopic:          KafkaTopicViewResult{Status: "skipped"},
+		OffsetCount:        KafkaOffsetCountResult{Status: "skipped"},
 	}
 
 	if req.ProduceConsume {
 		if connectivity.Status != kafkaStageOK {
 			result.ProduceConsume = KafkaProduceConsumeResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar produzir"}
 		} else {
-			send("produce_consume", "in_progress", fmt.Sprintf("Produzindo e consumindo mensagem de teste no tópico %q...", req.Topic), 0.7)
+			send("produce_consume", "in_progress", fmt.Sprintf("Produzindo e consumindo mensagem de teste no tópico %q...", req.Topic), 0.65)
 			result.ProduceConsume = runKafkaProduceConsumeStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, req.Topic, authFlags, req.TimeoutMs)
+		}
+	}
+
+	if req.CountOffsets {
+		if connectivity.Status != kafkaStageOK {
+			result.OffsetCount = KafkaOffsetCountResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar contar offsets"}
+		} else {
+			send("count_offsets", "in_progress", fmt.Sprintf("Contando offsets do tópico %q...", req.Topic), 0.78)
+			result.OffsetCount = runKafkaOffsetCountStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, req.Topic, authFlags, req.TimeoutMs)
 		}
 	}
 
@@ -880,7 +1154,7 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 		if connectivity.Status != kafkaStageOK {
 			result.ViewTopic = KafkaTopicViewResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar ler o tópico"}
 		} else {
-			send("view_topic", "in_progress", fmt.Sprintf("Lendo mensagens existentes do tópico %q...", req.Topic), 0.85)
+			send("view_topic", "in_progress", fmt.Sprintf("Lendo mensagens existentes do tópico %q...", req.Topic), 0.9)
 			result.ViewTopic = runKafkaViewTopicStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, req.Topic, req.ViewMaxMessages, authFlags, req.TimeoutMs)
 		}
 	}
@@ -931,6 +1205,7 @@ func (h *KafkaTestHandler) logHistory(req RunKafkaTestRequest, userInfo history.
 		after["connectivity_status"] = result.Connectivity.Status
 		after["produce_consume_status"] = result.ProduceConsume.Status
 		after["view_topic_status"] = result.ViewTopic.Status
+		after["count_offsets_status"] = result.OffsetCount.Status
 	}
 
 	h.historyTracker.Log(history.HistoryEntry{

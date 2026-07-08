@@ -942,6 +942,7 @@ func (s *Server) setupRoutes() {
 	{
 		kafkaTest.POST("/run", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Run)
 		kafkaTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Cancel)
+		kafkaTest.POST("/topics", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.ListTopics)
 	}
 
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)
