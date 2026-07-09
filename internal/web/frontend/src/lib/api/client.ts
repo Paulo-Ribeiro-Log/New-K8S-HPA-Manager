@@ -3607,6 +3607,31 @@ class APIClient {
     });
   }
 
+  // ─── Teste de Banco de Dados sob Demanda ───────────────────────────────────
+
+  /** Inicia o teste de banco de dados (ephemeral container psql/mysql/mongosh/redis-cli) e retorna session_id para SSE */
+  async runDBTest(
+    req: import("./types").RunDBTestRequest
+  ): Promise<import("./types").RunDBTestResponse> {
+    return this.request<import("./types").RunDBTestResponse>("/db-test/run", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** URL do SSE stream de um teste de banco de dados em andamento */
+  getDBTestStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/db-test/stream/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Cancela um teste de banco de dados em andamento */
+  async cancelDBTest(sessionId: string): Promise<void> {
+    await this.request<void>(`/db-test/cancel/${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+    });
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{

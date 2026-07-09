@@ -1865,6 +1865,133 @@ export interface ListKafkaTopicsResponse {
   raw_output?: string;
 }
 
+// ─── Teste de Banco de Dados sob demanda ───────────────────────────────────────
+
+export type DBEngine = 'postgres' | 'mysql' | 'mongodb' | 'redis';
+
+export type DBAuthMode = 'none' | 'userpass' | 'connstring';
+
+export interface DBSecretRef {
+  namespace: string;
+  name: string;
+  username_key: string; // default no backend: "username"
+  password_key: string; // default no backend: "password"
+}
+
+export interface DBConfigMapRef {
+  namespace: string;
+  name: string;
+  host_key: string; // default no backend: "host"
+  port_key: string; // default no backend: "port"
+}
+
+export interface DBConnStringRef {
+  kind: 'configmap' | 'secret';
+  namespace: string;
+  name: string;
+  key: string; // default no backend: "connectionString"
+}
+
+export interface DBAuthConfig {
+  mode: DBAuthMode;
+  // userpass: username/password OU secret_ref (mutuamente exclusivos — secret_ref tem prioridade)
+  username?: string;
+  password?: string;
+  secret_ref?: DBSecretRef;
+  // connstring: connection_string digitada OU connstring_ref lida de Secret/ConfigMap
+  // (mutuamente exclusivos — connstring_ref tem prioridade), com prioridade sobre host/port
+  connection_string?: string;
+  connstring_ref?: DBConnStringRef;
+  database?: string; // opcional — usado pra conectar e/ou escopar o browse
+  use_tls: boolean;
+  skip_tls_verify: boolean;
+}
+
+export type DBExecutionMode = 'pod' | 'local';
+
+export interface RunDBTestRequest {
+  // execution_mode decide onde o teste roda: "pod" (default) — ephemeral container anexado a um
+  // pod real do deployment, reflete NetworkPolicy/Istio — ou "local" — subprocesso direto no host
+  // do servidor, sem tocar o cluster K8s.
+  execution_mode: DBExecutionMode;
+  cluster: string;
+  namespace: string;
+  // deployment identifica de qual workload o teste deve partir — mesmo motivo do teste de Kafka:
+  // o ephemeral container herda a identidade de rede real desse Deployment. Só usado/obrigatório
+  // quando execution_mode="pod".
+  deployment: string;
+  engine: DBEngine;
+  host: string; // ignorado quando auth.mode="connstring" ou host_configmap_ref presente
+  port: number; // ignorado quando auth.mode="connstring" ou host_configmap_ref presente
+  // host_configmap_ref, quando presente, resolve host/port a partir de um ConfigMap em vez dos
+  // campos host/port acima — não se aplica quando auth.mode="connstring".
+  host_configmap_ref?: DBConfigMapRef;
+  auth: DBAuthConfig;
+  // browse lista (só leitura, nada é escrito) databases/tabelas/collections/chaves — diferente do
+  // produce/consume do Kafka, não precisa de confirmação porque nunca muta o banco.
+  browse: boolean;
+  // redis_key_pattern filtra o browse via SCAN...MATCH — só usado quando engine="redis". Vazio =
+  // sem filtro ("*").
+  redis_key_pattern?: string;
+  timeout_ms?: number; // default 5000, teto 15000 (aplicado no backend)
+}
+
+export interface RunDBTestResponse {
+  session_id: string;
+}
+
+export type DBStageStatus = 'ok' | 'tcp_failed' | 'auth_failed' | 'tls_failed' | 'unknown_failed';
+
+export interface DBStageResult {
+  status: DBStageStatus;
+  message: string;
+  raw_output: string;
+}
+
+export type DBBrowseStatus = 'ok' | 'failed' | 'skipped';
+
+export interface DBBrowseObject {
+  name: string;
+  // type: "table" pra tabela; tipo real da chave (string/hash/list/set/zset/stream) pra Redis;
+  // ausente pra database/collection.
+  type?: string;
+  // detail: colunas+tipos resumidos (tabela), contagem de documentos (collection), tamanho em
+  // disco (database) — ausente quando não há nada relevante a mostrar.
+  detail?: string;
+}
+
+export interface DBBrowseResult {
+  status: DBBrowseStatus;
+  message: string;
+  object_type?: 'database' | 'table' | 'collection' | 'key';
+  objects?: DBBrowseObject[];
+  // truncated = true só acontece no Redis (SCAN sobre um keyspace grande) — a lista é uma
+  // AMOSTRA, não uma listagem completa.
+  truncated?: boolean;
+  raw_output: string;
+}
+
+export interface DBTestResult {
+  // target_pod/ephemeral_container: mesma transparência do teste de Kafka — ephemeral containers
+  // não podem ser removidos via API do K8s, ficam listados no pod até ele reiniciar.
+  target_pod: string;
+  ephemeral_container: string;
+  connectivity: DBStageResult;
+  browse: DBBrowseResult;
+}
+
+export interface DBTestSSEEvent {
+  id: string;
+  type: 'init' | 'resolve_deployment' | 'ephemeral_container' | 'local_exec' | 'connectivity' | 'browse' | 'complete' | 'error';
+  phase: string;
+  message: string;
+  progress: number;
+  cluster?: string;
+  timestamp: string;
+  error?: string;
+  result?: DBTestResult; // presente só no evento "complete"
+}
+
 // Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.
 // Refletem o que o RBAC do cluster permite para o usuário atual (não grupos AD).
 export interface K8sNamespacePermissions {

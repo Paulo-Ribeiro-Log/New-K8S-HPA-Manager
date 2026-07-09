@@ -945,6 +945,19 @@ func (s *Server) setupRoutes() {
 		kafkaTest.POST("/topics", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.ListTopics)
 	}
 
+	// Teste de Banco de Dados sob demanda — ephemeral container (psql/mysql/mongosh/redis-cli
+	// conforme o engine) anexado a um pod real do Deployment escolhido, testando conectividade/
+	// autenticação e, opcionalmente, navegação só-leitura (databases/tabelas/collections/chaves)
+	dbTestHandler := handlers.NewDBTestHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker)
+	s.router.GET("/api/v1/db-test/stream/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		dbTestHandler.Stream)
+	dbTest := api.Group("/db-test")
+	{
+		dbTest.POST("/run", rbacMiddleware.RequireSREGroup(), dbTestHandler.Run)
+		dbTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), dbTestHandler.Cancel)
+	}
+
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)
 	explorerHandler := handlers.NewExplorerHandler(s.kubeManager)
 	explorer := api.Group("/explorer")

@@ -22,6 +22,7 @@ import {
   UserCheck,
   Gauge,
   Waypoints,
+  Database,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -52,6 +53,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "access-check", label: "Verificar Acesso", icon: UserCheck },
   { id: "latency-test", label: "Teste de Latência", icon: Gauge },
   { id: "kafka-test", label: "Teste Kafka", icon: Waypoints },
+  { id: "db-test", label: "Teste de Banco de Dados", icon: Database },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {

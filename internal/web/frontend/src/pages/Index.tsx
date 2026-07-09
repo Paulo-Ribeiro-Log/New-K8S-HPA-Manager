@@ -60,6 +60,7 @@ import CertificatesTab from "@/components/CertificatesTab";
 import AccessCheckTab from "@/components/AccessCheckTab";
 import LatencyTestTab from "@/components/LatencyTestTab";
 import KafkaTestTab from "@/components/KafkaTestTab";
+import DatabaseTestTab from "@/components/DatabaseTestTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
 import { FinOpsTab } from "@/components/FinOpsTab";
@@ -1216,6 +1217,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Kafka Test Tab">
             <KafkaTestTab />
+          </ErrorBoundary>
+        );
+
+      case "db-test":
+        return (
+          <ErrorBoundary componentName="Database Test Tab">
+            <DatabaseTestTab />
           </ErrorBoundary>
         );
 
