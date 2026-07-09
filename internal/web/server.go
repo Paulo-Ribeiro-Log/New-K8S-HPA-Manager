@@ -942,6 +942,7 @@ func (s *Server) setupRoutes() {
 	{
 		kafkaTest.POST("/run", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Run)
 		kafkaTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Cancel)
+		kafkaTest.POST("/topics", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.ListTopics)
 	}
 
 	// Teste de Banco de Dados sob demanda — ephemeral container (psql/mysql/mongosh/redis-cli

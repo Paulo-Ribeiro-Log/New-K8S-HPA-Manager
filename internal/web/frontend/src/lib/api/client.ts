@@ -3597,6 +3597,16 @@ class APIClient {
     });
   }
 
+  /** Lista os tópicos existentes no broker (campo de busca de tópicos) — síncrono, sem SSE */
+  async listKafkaTopics(
+    req: import("./types").ListKafkaTopicsRequest
+  ): Promise<import("./types").ListKafkaTopicsResponse> {
+    return this.request<import("./types").ListKafkaTopicsResponse>("/kafka-test/topics", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
   // ─── Teste de Banco de Dados sob Demanda ───────────────────────────────────
 
   /** Inicia o teste de banco de dados (ephemeral container psql/mysql/mongosh/redis-cli) e retorna session_id para SSE */

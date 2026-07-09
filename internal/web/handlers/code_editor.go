@@ -687,6 +687,15 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 		token = h.getToken(c)
 	}
 
+	// Remove token antigo eventualmente gravado na URL do origin (ex: de uma
+	// sessão anterior) — se não limpar, o Git autentica com essa credencial
+	// embutida e nunca chama o GIT_ASKPASS abaixo, ignorando o token atual.
+	if originURL, err := runGit(dir, "remote", "get-url", "origin"); err == nil {
+		if cleaned := cleanRemoteURL(originURL); cleaned != originURL {
+			runGit(dir, "remote", "set-url", "origin", cleaned) //nolint:errcheck
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -910,6 +919,15 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		sendSSE("")
 		sendSSE("⚠️  Push rejeitado — o remote tem commits novos.")
 		sendSSE("🔄 Fazendo git pull --rebase automaticamente...")
+
+		// Mesma limpeza aplicada no endpoint Pull: remove token antigo eventualmente
+		// gravado na URL do origin — sem isso o Git autentica com essa credencial
+		// embutida e nunca chama o GIT_ASKPASS abaixo, ignorando o token atual.
+		if originURL, err := runGit(dir, "remote", "get-url", "origin"); err == nil {
+			if cleaned := cleanRemoteURL(originURL); cleaned != originURL {
+				runGit(dir, "remote", "set-url", "origin", cleaned) //nolint:errcheck
+			}
+		}
 
 		pullCtx, pullCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		pullCmd, pullCleanup := gitCmdWithToken(pullCtx, dir, token, "pull", "--rebase", "--progress", "origin", branch)
