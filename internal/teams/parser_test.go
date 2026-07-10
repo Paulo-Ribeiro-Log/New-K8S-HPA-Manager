@@ -61,6 +61,39 @@ func TestParseDOMMessages_NoURL(t *testing.T) {
 	}
 }
 
+func TestParseRawMessages_PostedAt(t *testing.T) {
+	msgs := []RawMessage{
+		{Text: "CHG0454511", PostedAt: "2026-07-08T14:32:05.123Z"},
+		{Text: "https://devstartcd.via.com.br/sre-approval/form/bc29e187-b998-439c-bd9c-edb64d2f5093"},
+	}
+	items := ParseRawMessages(msgs)
+	if len(items) != 1 {
+		t.Fatalf("esperado 1 item, got %d", len(items))
+	}
+	if items[0].PostedAt == nil {
+		t.Fatal("PostedAt não deveria ser nil")
+	}
+	want := "2026-07-08T14:32:05.123Z"
+	if got := items[0].PostedAt.Format("2006-01-02T15:04:05.000Z"); got != want {
+		t.Errorf("PostedAt = %q, want %q", got, want)
+	}
+}
+
+func TestParseRawMessages_PostedAtMissing(t *testing.T) {
+	// Sem datetime capturado (ex: fallback de leaf-node) — PostedAt deve ficar nil, não travar.
+	msgs := []RawMessage{
+		{Text: "CHG0454511"},
+		{Text: "https://devstartcd.via.com.br/sre-approval/form/bc29e187-b998-439c-bd9c-edb64d2f5093"},
+	}
+	items := ParseRawMessages(msgs)
+	if len(items) != 1 {
+		t.Fatalf("esperado 1 item, got %d", len(items))
+	}
+	if items[0].PostedAt != nil {
+		t.Errorf("PostedAt deveria ser nil, got %v", items[0].PostedAt)
+	}
+}
+
 func TestParseDOMMessages_WithDescription(t *testing.T) {
 	msgs := []string{
 		"SRE Approval - CHG0454511 by Mr. ViaBot",

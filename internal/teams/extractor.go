@@ -51,13 +51,14 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 		return nil, fmt.Errorf("erro na descoberta Teams: %v", err)
 	}
 
-	// Coletar todas as strings de mensagem: DOM (lazy-loaded) + IndexedDB (histórico completo)
-	var allMessages []string
+	// Coletar todas as mensagens (texto + data de postagem): DOM (lazy-loaded) + IndexedDB
+	// (histórico completo)
+	var allMessages []RawMessage
 
 	domFile := filepath.Join(tmpDir, "viabot-dom-messages.json")
 	if data, err := os.ReadFile(domFile); err == nil {
 		var domData struct {
-			Messages []string `json:"messages"`
+			Messages []RawMessage `json:"messages"`
 		}
 		if json.Unmarshal(data, &domData) == nil {
 			allMessages = append(allMessages, domData.Messages...)
@@ -71,7 +72,7 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 	idbFile := filepath.Join(tmpDir, "viabot-indexeddb-messages.json")
 	if data, err := os.ReadFile(idbFile); err == nil {
 		var idbData struct {
-			Messages []string `json:"messages"`
+			Messages []RawMessage `json:"messages"`
 		}
 		if json.Unmarshal(data, &idbData) == nil {
 			allMessages = append(allMessages, idbData.Messages...)
@@ -83,7 +84,7 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 		return nil, fmt.Errorf("nenhuma mensagem encontrada no DOM nem no IndexedDB — conversa não foi carregada")
 	}
 
-	items := ParseDOMMessages(allMessages)
+	items := ParseRawMessages(allMessages)
 	e.Logger.Info().Int("count", len(items)).Msg("[Teams] Aprovações extraídas")
 
 	source := "dom"
