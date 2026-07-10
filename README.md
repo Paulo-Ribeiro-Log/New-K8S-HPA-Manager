@@ -199,7 +199,7 @@ new-k8s-hpa version          # Ver versão e updates disponíveis
 
 | Obrigatório | Opcional |
 |-------------|----------|
-| Go 1.24+ (compilação) | Azure CLI (Node Pools) |
+| Go 1.25+ (compilação) | Azure CLI (Node Pools) |
 | kubectl configurado | Prometheus (métricas + Conntrack histórico) |
 | Git | Ollama ou API key Claude (AI) |
 | | Kiali/Istio (Service Mesh) |
@@ -229,7 +229,7 @@ new-k8s-hpa web
 
 | Categoria | Tecnologia |
 |-----------|------------|
-| **Backend** | Go 1.24.0, Gin 1.11.0, client-go v0.34.1 |
+| **Backend** | Go 1.25.0, Gin 1.11.0, client-go v0.34.1 |
 | **Azure** | azcore v1.19.1, azidentity v1.12.0, Azure CLI |
 | **Frontend** | React 18.3.1, TypeScript 5.8.3, Vite 5.4.21 |
 | **UI** | shadcn/ui (Radix UI), Tailwind CSS 3.4.17, Recharts |

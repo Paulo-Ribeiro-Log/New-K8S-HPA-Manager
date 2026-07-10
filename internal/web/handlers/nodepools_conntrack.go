@@ -252,7 +252,12 @@ func execCmdInPod(ctx context.Context, clientset kubernetes.Interface, restConfi
 		Stderr: &stderr,
 	})
 	if err != nil {
-		return "", fmt.Errorf("stream: %v (stderr: %s)", err, stderr.String())
+		// stdout.String() é devolvido mesmo no erro — os scripts dos test tools (Kafka/DB/Latência)
+		// redirecionam stderr do cliente pra dentro do próprio stdout (`... 2>&1`), então a mensagem
+		// de erro real (ex: "connection refused" do psql) está em stdout, não no stream de stderr
+		// separado do exec (que fica vazio nesse caso). Devolver "" aqui descartava esse texto e
+		// deixava quem chama sem nenhuma saída bruta pra mostrar ao usuário.
+		return stdout.String(), fmt.Errorf("stream: %v (stderr: %s)", err, stderr.String())
 	}
 	return stdout.String(), nil
 }

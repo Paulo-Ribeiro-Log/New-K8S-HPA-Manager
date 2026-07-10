@@ -874,13 +874,28 @@ type dbExecFunc func(ctx context.Context, script string) (string, error)
 //
 // Mesmo formato de erro de execCmdInPod ("... (stderr: ...)") pra reusar extractStderr sem
 // duplicar a classificação de erro entre os dois modos de execução.
-func execLocalDocker(ctx context.Context, image, script string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--network", "host", image, "sh", "-c", script)
+//
+// `name` identifica o container (--name + --label dbTestDockerLabel) pra dar pra limpar depois —
+// tanto na hora (se `ctx` for cancelado no meio do `docker run`) quanto pelo reaper periódico
+// (ver db_test_docker.go). `--rm` já cobre o caso comum (processo termina sozinho, com ou sem o
+// `timeout Ns` interno do script estourar); o gap é só quando o processo `docker` (CLI) é morto
+// via SIGKILL pelo cancelamento do context — sinal que ele não consegue interceptar pra fazer sua
+// própria limpeza, podendo deixar o container órfão rodando no daemon.
+func execLocalDocker(ctx context.Context, image, name, script string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
+		"--name", name, "--label", dbTestDockerLabel,
+		"--network", "host", image, "sh", "-c", script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("exec: %v (stderr: %s)", err, stderr.String())
+		if ctx.Err() != nil {
+			cleanupCancelledDockerContainer(name)
+		}
+		// stdout.String() é devolvido mesmo no erro — mesmo motivo de execCmdInPod: os scripts
+		// dos engines fazem `... 2>&1`, então a mensagem de erro real do cliente (psql/mysql/
+		// mongosh/redis-cli) está em stdout, não no stderr do processo `docker run` em si.
+		return stdout.String(), fmt.Errorf("exec: %v (stderr: %s)", err, stderr.String())
 	}
 	return stdout.String(), nil
 }
@@ -891,7 +906,13 @@ func runDBConnectivityStage(ctx context.Context, run dbExecFunc, engine dbEngine
 	script := engine.buildConnectivity(conn, ceilSeconds(timeoutMs))
 	stdout, err := run(ctx, script)
 	if err != nil {
-		raw := extractStderr(err)
+		// A saída real do cliente (psql/mysql/mongosh/redis-cli) vem em `stdout` — o script roda
+		// com `2>&1`, então stderr do processo já foi mesclado ali. `extractStderr(err)` só serve de
+		// fallback pra falhas que nunca chegaram a rodar o script (ex: erro do SPDY executor).
+		raw := strings.TrimSpace(stdout)
+		if raw == "" {
+			raw = extractStderr(err)
+		}
 		switch {
 		case engine.networkErrorRegex.MatchString(raw):
 			return DBStageResult{Status: dbStageTCPFailed, Message: "Não conseguiu conectar no host (rede/DNS)", RawOutput: raw}
@@ -916,7 +937,11 @@ func runDBBrowseStage(ctx context.Context, run dbExecFunc, engine dbEngine, conn
 	script := engine.buildBrowse(conn, ceilSeconds(timeoutMs))
 	stdout, err := run(ctx, script)
 	if err != nil {
-		return DBBrowseResult{Status: "failed", Message: "Falha ao listar objetos", RawOutput: extractStderr(err)}
+		raw := strings.TrimSpace(stdout)
+		if raw == "" {
+			raw = extractStderr(err)
+		}
+		return DBBrowseResult{Status: "failed", Message: "Falha ao listar objetos", RawOutput: raw}
 	}
 
 	objects, objectType, truncated := engine.parseBrowseOutput(stdout, conn)
@@ -952,6 +977,7 @@ type DBTestHandler struct {
 
 // NewDBTestHandler cria o handler do teste de banco de dados.
 func NewDBTestHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker) *DBTestHandler {
+	go startDBTestContainerReaper()
 	return &DBTestHandler{kubeManager: km, tracker: tracker, historyTracker: ht}
 }
 
@@ -1239,8 +1265,9 @@ func (h *DBTestHandler) runTest(ctx context.Context, sessionID string, req RunDB
 	if req.ExecutionMode == "local" {
 		send("local_exec", "in_progress", fmt.Sprintf("Executando localmente via Docker (%s)...", engine.image), 0.3)
 		image := engine.image
+		containerName := "k8s-hpa-dbtest-" + sessionID
 		run = func(ctx context.Context, script string) (string, error) {
-			return execLocalDocker(ctx, image, script)
+			return execLocalDocker(ctx, image, containerName, script)
 		}
 	} else {
 		restConfig, err := h.kubeManager.GetRestConfig(req.Cluster)

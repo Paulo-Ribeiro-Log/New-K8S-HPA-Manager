@@ -42,14 +42,32 @@ import {
   ChevronsUpDown,
   Check,
   CheckCircle2,
+  Copy,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { ProtectedAction } from "@/components/rbac";
 import { useClusters } from "@/hooks/useAPI";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
+import { toast } from "sonner";
 import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode } from "@/lib/api/types";
+
+// Passo a passo de instalação do Docker Engine — cobre Ubuntu e WSL2 (ambiente alvo principal
+// desta app, ver CLAUDE.md). Script oficial da Docker (get.docker.com) funciona nos dois; o passo
+// 3 é o que mais varia — WSL2 normalmente não sobe serviços sozinho no boot (sem systemd por
+// padrão), por isso o `service docker start` como primeira opção + systemctl como alternativa.
+const DOCKER_INSTALL_SNIPPET = `# 1. Instala o Docker Engine (script oficial — cobre Ubuntu e WSL2)
+curl -fsSL https://get.docker.com | sudo sh
+
+# 2. Permite rodar docker sem sudo (evita pedir senha em cada teste)
+sudo usermod -aG docker $USER
+newgrp docker   # ou feche e reabra o terminal/WSL
+
+# 3. Inicia o serviço — WSL2 normalmente não sobe serviços sozinho no boot
+sudo service docker start
+# alternativa em distros com systemd habilitado no WSL2:
+# sudo systemctl enable --now docker`;
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de KafkaTestTab.tsx/
 // ClusterSelectorForTab.tsx (evita o bug do <Select> do Radix fechar o dropdown ao focar um
@@ -129,19 +147,34 @@ function StageBadge({ label, status }: { label: string; status: "ok" | "failed" 
 
 // Deriva os badges de TCP/DNS, Autenticação (só se mode !== "none") e TLS (só se useTLS) a partir
 // da classificação única do estágio de conectividade (ver db_test_tool.go).
+//
+// "unknown_failed" (regex de erro do engine não reconheceu a saída — ex: docker não instalado no
+// servidor, connection string malformada, erro de infra antes do cliente rodar) não permite saber
+// em qual sub-estágio a falha ocorreu. Sem esse `known` guard, qualquer status diferente de
+// "tcp_failed"/"auth_failed" caía no `: "ok"` do fallback — TCP/DNS e Autenticação apareciam com
+// check verde mesmo quando o teste falhou de forma não classificada, contradizendo a mensagem de
+// erro ao lado. Aqui, todos os sub-estágios viram "skipped" (cinza/desconhecido) nesse caso.
 function deriveConnectivityBadges(status: DBStageStatus, authMode: DBAuthMode, useTLS: boolean) {
   const badges: { label: string; status: "ok" | "failed" | "skipped" }[] = [];
-  badges.push({ label: "TCP/DNS", status: status === "tcp_failed" ? "failed" : "ok" });
+  const known = status === "ok" || status === "tcp_failed" || status === "auth_failed" || status === "tls_failed";
+
+  badges.push({ label: "TCP/DNS", status: !known ? "skipped" : status === "tcp_failed" ? "failed" : "ok" });
   if (authMode !== "none") {
     badges.push({
       label: "Autenticação",
-      status: status === "tcp_failed" ? "skipped" : status === "auth_failed" ? "failed" : "ok",
+      status: !known ? "skipped" : status === "tcp_failed" ? "skipped" : status === "auth_failed" ? "failed" : "ok",
     });
   }
   if (useTLS) {
     badges.push({
       label: "TLS",
-      status: status === "tcp_failed" || status === "auth_failed" ? "skipped" : status === "tls_failed" ? "failed" : "ok",
+      status: !known
+        ? "skipped"
+        : status === "tcp_failed" || status === "auth_failed"
+        ? "skipped"
+        : status === "tls_failed"
+        ? "failed"
+        : "ok",
     });
   }
   return badges;
@@ -156,11 +189,13 @@ const ENGINE_OPTIONS: { value: DBEngine; label: string; defaultPort: number }[] 
 
 export default function DatabaseTestTab() {
   const { clusters } = useClusters();
+  const queryClient = useQueryClient();
   // executionMode="pod" (default): ephemeral container anexado a um pod real do Deployment,
   // reflete NetworkPolicy/Istio. "local": roda direto no host do servidor, sem tocar o cluster —
   // útil quando o banco é alcançável direto da rede do servidor (VPN, endpoint público) e não faz
-  // sentido simular a identidade de rede de um workload específico. Requer os clientes de banco
-  // (psql/mysql/mongosh/redis-cli) instalados no servidor.
+  // sentido simular a identidade de rede de um workload específico. Roda a mesma imagem do engine
+  // via Docker local (docker run --rm) — requer Docker instalado no servidor, não os clientes
+  // nativos (ver DOCKER_INSTALL_SNIPPET / painel de pré-checagem abaixo).
   const [executionMode, setExecutionMode] = useState<DBExecutionMode>("pod");
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
@@ -212,6 +247,16 @@ export default function DatabaseTestTab() {
     queryFn: () => apiClient.getNamespaces(cluster),
     enabled: !!cluster,
   });
+
+  // Pré-checagem de Docker — só relevante no modo "local" (Direto do servidor). staleTime curto:
+  // usuário pode instalar o Docker e clicar em "Verificar novamente" segundos depois.
+  const { data: dockerStatus } = useQuery({
+    queryKey: ["db-test-docker-status"],
+    queryFn: () => apiClient.getDBTestDockerStatus(),
+    enabled: executionMode === "local",
+    staleTime: 15_000,
+  });
+  const dockerReady = executionMode !== "local" || !!(dockerStatus?.installed && dockerStatus?.daemon_running);
 
   const { data: deployments = [] } = useQuery({
     queryKey: ["deployments-db-test", cluster, namespace],
@@ -273,6 +318,7 @@ export default function DatabaseTestTab() {
   const canRun =
     (!needsCluster || !!cluster) &&
     (executionMode !== "pod" || (!!namespace && !!deployment)) &&
+    dockerReady &&
     !isRunning &&
     (authMode === "connstring"
       ? csSource === "manual"
@@ -374,6 +420,11 @@ export default function DatabaseTestTab() {
         if (event.type === "complete" && event.result) {
           setResult(event.result);
           setIsRunning(false);
+          // Falha de conectividade: abre a "Saída bruta" automaticamente — do contrário o painel
+          // fica colapsado e o usuário não vê o motivo real sem saber que precisa clicar nele.
+          if (event.result.connectivity.status !== "ok") {
+            setRawOutputOpen(true);
+          }
         }
         if (event.type === "error") {
           setRunError(event.error || event.message);
@@ -432,21 +483,56 @@ export default function DatabaseTestTab() {
           )}
         </div>
 
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[220px]">
-            <ClusterSelectorForTab
-              selectedCluster={cluster}
-              onClusterChange={(v) => {
-                setCluster(v);
-                setNamespace("");
-                setDeployment("");
-                setResult(null);
-              }}
-              clusters={clusters.map((c) => c.context)}
-              tabLabel="Teste de Banco de Dados"
-              clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
-            />
+        {executionMode === "local" && dockerStatus && !dockerReady && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 flex flex-col gap-2">
+            <div className="text-sm text-amber-700 dark:text-amber-400">
+              <span className="font-semibold">Docker não está pronto neste servidor</span>
+              {dockerStatus.error && <span> — {dockerStatus.error}</span>}
+            </div>
+            <div className="relative">
+              <pre className="rounded-md border border-border bg-muted/30 p-3 pr-10 text-[11px] font-mono whitespace-pre-wrap overflow-x-auto">
+                {DOCKER_INSTALL_SNIPPET}
+              </pre>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-1.5 right-1.5 h-6 w-6"
+                onClick={() => {
+                  navigator.clipboard.writeText(DOCKER_INSTALL_SNIPPET);
+                  toast.success("Comando copiado!");
+                }}
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              onClick={() => queryClient.invalidateQueries({ queryKey: ["db-test-docker-status"] })}
+            >
+              Verificar novamente
+            </Button>
           </div>
+        )}
+
+        <div className="flex flex-wrap items-end gap-3">
+          {needsCluster && (
+            <div className="min-w-[220px]">
+              <ClusterSelectorForTab
+                selectedCluster={cluster}
+                onClusterChange={(v) => {
+                  setCluster(v);
+                  setNamespace("");
+                  setDeployment("");
+                  setResult(null);
+                }}
+                clusters={clusters.map((c) => c.context)}
+                tabLabel="Teste de Banco de Dados"
+                clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
+              />
+            </div>
+          )}
 
           {executionMode === "pod" && (
             <>

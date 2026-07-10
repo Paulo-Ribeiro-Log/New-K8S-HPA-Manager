@@ -3,6 +3,123 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Consolidação: features mescladas na `main` via ~14 branches (Julho 2026) ✅
+
+**Contexto:** este bloco reúne, por branch, tudo que estava documentado como "branch X ainda não mesclada" num único parágrafo corrido em `CLAUDE.md`. Verificado via `git merge-base --is-ancestor origin/<branch> origin/main`: todas as branches abaixo **já estão mescladas na `main`** (a mais recente, `db-test-tool`, entrou via PR #244). O texto foi movido para cá — reformatado em lista, sem cortar nenhum detalhe técnico — e o `CLAUDE.md` ficou só com o que é conhecimento de arquitetura atual (nas seções `###` correspondentes) ou um pointer para este histórico.
+
+#### Já em `main` antes deste corte (sem branch dedicada listada)
+
+- **JSON Inspector inline** em todos os visualizadores de log (ver seção `### JSON Inspector (Logs)` no CLAUDE.md).
+- **WIF SSO + OAuth2 app-callback** para Gemini Vertex AI (ver seção `### AI Providers` no CLAUDE.md).
+- **Modelos Agentspace**: `gemini-3.5-flash`, `gemini-3.1-pro-001`, `gemini-2.5-pro-preview-05-06`.
+- **RBAC K8s via `SelfSubjectRulesReview`** (ver seção `## RBAC K8s via SelfSubjectRulesReview` no CLAUDE.md).
+- **Editor de Código Web** Fases 1-9 concluídas (ver `### Editor de Código (Code Editor)` no CLAUDE.md e `CODE-EDITOR-PLAN.md`).
+- **Diagnóstico SNAT multi-cloud** completo (ver `### Diagnóstico SNAT (Node Pools)` no CLAUDE.md).
+- **HPAEditor** standalone (ver `### HPAEditor (HPA Tab)` no CLAUDE.md).
+- **RBAC simplificado**: `OptionalSRECheck` sempre retorna `isSRE=true` (ver seção `## RBAC Azure AD` no CLAUDE.md).
+- **Code Editor Fase 10 — Source Control VSCode-like**: painel `source-control` com badges M/A/D/U/R na tree, `CommitDialog` com unstage, pull `--rebase` automático quando o push é rejeitado por non-fast-forward, multi-select na tree + split editor lado a lado, sidebar convertida para ícones com tooltip, preview Markdown pode cobrir até 70% da área do editor.
+
+#### Branch `criar-jobs-cronjobs` (PR #155)
+
+Criação de Jobs/CronJobs via modal unificado, conversão cron↔texto no Monaco, versionamento YAML no GitHub via URL de pasta. Detalhe completo já vive em `### CronJobs — Criação de Jobs e CronJobs` no CLAUDE.md.
+
+#### Branch `integracao-dyna`
+
+Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Detalhe completo em `### Dynatrace (Integração de Problems + Correlação K8s)` no CLAUDE.md.
+
+#### Branch `migracao-jwt`
+
+Autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Detalhe completo em `### Autenticação JWT` no CLAUDE.md e `JWT-MIGRATION.md`.
+
+#### Branch `finops-dynatrace` (baseado em `migracao-jwt`)
+
+Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — `DTEnricher` batch (4 queries `splitBy`), `PrometheusEnricher` parcial, campo `MetricsSource`, badge DT/Prom na UI (Fases 1-4 concluídas, checklist em `FINOPS-DT-METRICS.md`). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), checklist em `FINOPS-NR-METRICS.md` — `internal/newrelic/` ainda não criado.
+
+#### Branch `fix-auto-discovery` (baseado em `finops-dynatrace`)
+
+Auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de `CLUSTER-DISCOVERY-PLAN.md`) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com implementação Azure e AWS.
+
+#### Branch `integracao-teams`
+
+Automação de browser para extração de CHGs do Mr.ViaBot no Teams via go-rod (DOM + IndexedDB, sem HTTP direto — MCAS bloqueia) e aprovação inline via SRE Approval system (`devstartcd.via.com.br`) com `SreApprovalButton` inline e `ServiceNowImportModal` com aba "Teams" como padrão; busca em lote de CHGs via ServiceNow após seleção. Detalhe completo em `### Teams Mr.ViaBot + SRE Approval` no CLAUDE.md.
+
+#### Branch `editor-github` (baseado em `integracao-teams`)
+
+Editor de Código Web — Fases 1-9 concluídas:
+- **Fase 1**: clone/pull/push via SSE, árvore de arquivos, Monaco, git status/commit/branch, múltiplas abas.
+- **Fase 2**: diff visual (Monaco DiffEditor), grep em conteúdo, rename/delete/criar arquivo e pasta, stash, merge, amend, reset de arquivo, sidebar arrastável.
+- **Fase 3**: cherry-pick, tags, terminal PTY integrado via xterm.js + `creack/pty` + WebSocket, confirm dialog React, limite de 10 repos.
+- **Fase 4**: find & replace global, histórico de arquivo, upload drag & drop, blame inline com Monaco decorations.
+- **Fase 5**: resolução visual de conflitos de merge (`ConflictResolverModal` tela cheia — parse `<<<<<<<`/`=======`/`>>>>>>>`, aceitar HEAD/vindo por bloco, commit/abort), diff entre branches (`BranchDiffModal` com diff colorizado e lista A/M/D), preview Markdown split 50/50 com react-markdown+remark-gfm. Perfis GitHub persistidos no SQLite (`user_ai_tokens.github_editor_profiles`), switcher no `UserProfileMenu`; push/pull via URL injection (`https://x-token-auth:TOKEN@github.com/...`) com `-c credential.helper=`.
+- **Fase 6**: terminal múltiplo (barra de abas, PTY por aba), quota de disco (`syscall.Statfs`), audit log no `HistoryTracker`, drag & drop para mover arquivos na tree, Ctrl+C/X/V clipboard na tree (`CopyFile` backend via `io.Copy` + `POST /repos/:id/copy`), Ctrl+P Quick Open (paleta estilo VSCode com filtro em tempo real), barra de status azul (Ln/Col, linguagem, UTF-8, font size −/+, word wrap toggle, auto-save toggle, format on save toggle), breadcrumb clicável no header do editor, botões "Copiar caminho" e "Revelar na tree" (ring amarelo 1,5s + scroll), context menu (botão direito) na tree com ações por tipo, botão PR no header (abre compare do GitHub quando branch ≠ main/master).
+- **Fase 7**: LSP — TS/JS via worker built-in Monaco (flag `__monacoTSConfigured`), Go via `gopls` (`code_editor_lsp.go`, sessões persistentes por repo/lang, JSON-RPC stdin/stdout, providers nativos Monaco com flag `__monacoGoLSPRegistered`, polling diagnósticos 2,5s via `setModelMarkers`), endpoints `/lsp/open|change|complete|hover|definition|diagnostics|status`.
+- **Fase 8**: Python LSP via pyright (`__monacoPyLSPRegistered`; owner `"pyright"` em `setModelMarkers`), go-to-definition cross-file via override de `_codeEditorService.openCodeEditor` (flag `__lspDefHandlerRegistered`, esquema `lspdef://`, `pendingNavigationRef`).
+- **Fase 9**: integração K8s — aba "K8s" no sidebar (`code_editor_k8s.go`), kubectl diff/dry-run/apply/get via SSE, cluster selector (contexts do kubeconfig), detecção automática de manifests (`apiVersion:` + `kind:` no conteúdo ativo), output colorizado por tipo de linha, abas virtuais `__k8s_virtual__/` (read-only, guard em `saveFile`).
+
+Bugs corrigidos: `CloneDialog` exibe feedback para 409/400/erro de rede/sucesso; botão PR usa `ownerRepo(dir)` para extrair owner/repo da URL remota (não do ID local); botão PR abre `CreatePRModal` (título auto-preenchido, branch destino dropdown, descrição) que cria o PR via GitHub REST API com o PAT do usuário — `POST /repos/:id/pr/create`. Detalhe completo em `CODE-EDITOR-PLAN.md`.
+
+#### Branch `disparo-sync-akv` (baseado em `main`)
+
+Botão **Resync AKV** na aba Secrets — exibido no painel direito logo após "Criar Secret", apenas quando o Secret selecionado tem `"akv"` no nome (case-insensitive; casa com o padrão gerado pelo `external-secrets` para AKV, ex: `akv-<namespace>`); dispara `POST /api/v1/secrets/:cluster/:namespace/resync-akv` (`SecretHandler.ResyncAKV` em `secrets.go`), que executa `kubectl annotate externalsecret sre-tools-external-secrets-<namespace> force-sync=<unix-ts> -n <namespace> --context <cluster> --overwrite` — o nome do ExternalSecret é fixo por convenção do SRE Tools e resolvido a partir do namespace já selecionado (não precisa do nome do Secret); protegido por `rbacMiddleware.RequireSREGroup()` no backend e `ProtectedAction allowed={canWriteSecrets}` no frontend; `ResyncAkvModal.tsx` dispara a chamada automaticamente ao abrir e exibe status (executando/sucesso/erro), o comando exato executado e a saída do kubectl, com botão "Executar novamente"; operação registrada no `HistoryTracker` (`action: "resync_akv"`).
+
+`ResourceCompareModal.tsx` (Edição Lado a Lado) ganhou o tipo `"gateway"` em `ResourceType` — reaproveita `apiClient.getGateway/getGateways/diffGateway/validateGateway/applyGateway` já existentes, fixo no kind `"gateway"` (não cobre HTTPRoute/GRPCRoute/TCPRoute/GatewayClass); `GatewayTab.tsx` ganhou o botão "Abrir em Edição Lado a Lado" (`SplitSquareHorizontal`) no painel direito, só visível quando `selectedGateway.kind` (case-insensitive) é `"gateway"`, seguindo o mesmo padrão de `onOpenCompare` já usado em Secrets/ConfigMaps/Deployments/etc.
+
+#### Branch `ajuste-tree-code-editor` (baseado em `main`)
+
+Code Editor — refresh silencioso de status/tree na tab Arquivos e Source Control (`CodeEditorTab.tsx`). `saveFile`/`saveRightFile` já chamavam `loadStatus` ao salvar pelo próprio editor, mas mudanças feitas fora desse fluxo (terminal integrado, `git` via CLI, edição externa) não disparavam refresh algum, exigindo F5. Novo `useEffect` faz poll silencioso (`loadStatus` + `loadTreeSilent`, sem spinner) a cada 5s enquanto há repo selecionado, mais refresh imediato em `focus`/`visibilitychange` da janela (cobre o caso comum de voltar do terminal); `loadTreeSilent` é igual a `loadTree` mas sem alternar `treeLoading`, para não piscar o spinner da árvore a cada ciclo do poll.
+
+#### Branch `ajustes-aba-explorer` (baseado em `main`)
+
+Fix no seletor de fonte do terminal integrado do Code Editor (`RepoTerminal` em `CodeEditorTab.tsx`) — antes, a lista de fontes vinha de `fc-list` no SERVIDOR e a seleção só setava `font-family` via CSS, então se o browser rodasse em outra máquina (ex: WSL2 servidor + browser Windows) a fonte escolhida não tinha efeito visual algum (nome não corresponde a nada instalado no cliente). Corrigido servindo os bytes reais do arquivo de fonte: novo endpoint `GET /api/v1/code-editor/fonts/:name/file` (`GetFontFile` em `code_editor.go`, resolve via `fc-match "<name>:spacing=mono" --format=%{file}`, valida nome com regex e extensão, `Cache-Control` 7 dias); frontend busca os bytes com o token de auth (`FontFace` não aceita headers customizados via `url()`, por isso fetch manual + `new FontFace(name, arrayBuffer)`), registra em `document.fonts` e só então aplica ao xterm — `ensureTerminalFontLoaded()` com cache em `Set` module-level compartilhado entre abas de terminal. Seleção validada ponta a ponta (MesloLGS NF: ícones do prompt powerline passam de tofu/caixas para os glifos corretos).
+
+Também: `ResourceExplorerTab.tsx` — Monaco da aba YAML no painel direito trocado de altura fixa `470` para `calc(100vh - 350px)` (mesmo valor já usado no painel de Logs ao lado, workaround para o `shadcn <Tabs>` quebrar a cadeia `flex-1 min-h-0` documentado na seção `### shadcn Tabs em Modais com Altura Fixa` do CLAUDE.md).
+
+#### Branch `access-checker` (baseado em `main`)
+
+Nova ferramenta **Verificar Acesso** no Tools menu (`AccessCheckTab.tsx`) — checa se um analista (e-mail) tem acesso a um cluster/namespace via impersonation nativa do K8s (`rest.ImpersonationConfig`), sem depender de `kubectl` no servidor.
+
+Backend: `internal/web/handlers/access_check.go` (`AccessCheckHandler.GetRules`/`CanI`, endpoints `GET /api/v1/access-check/rules|can-i` atrás de `RequireSREGroup()`) monta `rest.Config` impersonado via `kubeManager.GetRestConfig` (que já herda auth AKS/EKS/GKE) + grupos AAD resolvidos por `internal/rbac/aad_group_lookup.go` (`AADGroupLookup.GetAllGroups`/`ResolveVVCloudGroups`) — resolução via `az ad user get-member-groups --id <email>` (uma única chamada, sem Graph API, retorna todos os grupos do usuário; cache 10min), filtrando localmente por prefixo `VV_CLOUD` (sem separador — cobre `_` e `-`) para os GUIDs usados em `--as-group`. Erro `Forbidden ... impersonate` mapeado para `IMPERSONATION_NOT_ALLOWED`. Toda consulta logada no `HistoryTracker` (`action: "access_check"`).
+
+Frontend: `ClusterSelectorForTab.tsx` reescrito de `<Select>`+busca externa para `Popover`+`Command`/`CommandInput` (corrige fechamento prematuro do popover ao focar o input de busca). `AccessCheckTab.tsx` tem 3 abas manuais (nunca shadcn `<Tabs>`): "Visão Geral" (veredito SIM/NÃO por categoria de recurso), "Verificação Pontual" (frase explícita "SIM/NÃO — `email` PODE/NÃO PODE executar `verbo recurso`" + motivo do RBAC) e "Todos os Grupos AAD (N)".
+
+**Limitação estrutural** (`internal/web/handlers/access_check_iam.go`): acesso concedido via **IAM do Azure** no recurso AKS (Role Assignments, ex: "Azure Kubernetes Service Cluster Admin Role") é invisível a qualquer checagem via impersonation/`SelfSubjectRulesReview` — essa role permite buscar o kubeconfig ADMIN (`system:masters`, bypass total de RBAC), decidido pelo Azure Resource Manager antes de qualquer request chegar no `kube-apiserver`. `getAKSResourceRoleAssignments()` consulta `az role assignment list --scope <resource-id-do-aks>` (cache 45min por cluster) e `findIAMAdminBypass()` cruza com os grupos já resolvidos do e-mail; campo `iamAdminAccess` + banner vermelho sempre visível no `AccessCheckTab.tsx` quando detectado. Só implementado para AKS.
+
+**Fase A**: `GET /api/v1/access-check/scan-fleet?email=&namespace=` (`access_check_scan.go`) — varre todos os clusters AKS em paralelo (semáforo 8, timeout 45s/cluster, 150s total) checando `iamAdminAccess` sempre e RBAC real.
+
+**Fase B**: aba "Histórico" reaproveitando `GET /api/v1/history?action=access_check`.
+
+**Bug real corrigido**: slice `nil` em Go vira `null` no JSON (não `[]`), e checks `campo !== undefined` no frontend não cobrem `null` — corrigido nos dois lados (frontend usa `campo && (...)`, backend nunca inicializa slices com `var s []T`).
+
+**Revisão 7 do scan de frota** (4 bugs encadeados corrigidos, ver `ACCESS-CHECK-PLAN.md` seção "Revisão 7" para o relato completo com comandos de validação):
+1. Banners de IAM/Grupos AAD no topo de `AccessCheckTab.tsx` ficavam com dado stale entre seções — corrigido limpando `rulesResult`/`canIResult` ao trocar de seção.
+2. Sem `namespace` informado (fluxo mais comum), o scan de frota não checava RBAC nenhum, só conectividade do servidor — corrigido varrendo todos os namespaces não-sistema por cluster antes do RBAC real.
+3. `vvCloudGroupPrefix` ainda estava `"VV_CLOUD_"` no código (correção documentada nunca tinha sido aplicada de fato) e `SelfSubjectRulesReview` pode devolver regras incompletas — trocado por `SelfSubjectAccessReview` testando em ordem até o primeiro "Allowed".
+4. "Conectividade" (rede do servidor) misturada com colunas do analista — aba "Todos os Clusters" separada em 3 blocos (acesso real / não verificados / sem acesso).
+
+⚠️ Não validado contra clusters/analistas reais nesta revisão — validar antes de confiar em produção.
+
+#### Branch `ajustes-tab-conntrack` (baseado em `main`)
+
+Comparação D-1/D-2/D-3 no `ConntrackTab.tsx` (Node Pools → Conntrack Viewer) — grupo de botões multi-seleção "Comparar: D-1 D-2 D-3" no header sobrepõe, no gráfico de cada nó, o uso histórico do mesmo horário N dias atrás em cima da série de hoje.
+
+Backend: `GetConntrackNodeHistory` (`nodepools_conntrack.go`) ganhou parâmetro `offset_days` (0-7) que desloca a janela inteira (`end := time.Now().Add(-offsetDays*24h)`, mesmo `hours`/`step`) — mantém o mesmo horário do dia para comparação ponto-a-ponto; campo `OffsetDays` ecoado na resposta.
+
+Frontend: `HistoryChart` virou `ComposedChart` (era `BarChart`) — barras verde/amarelo/vermelho por threshold continuam representando "hoje", cada dia de comparação selecionado vira uma `Line` tracejada (D-1 laranja `#f97316`, D-2 roxo `#a855f7`, D-3 cinza `#64748b`) alinhada por índice relativo do array decimado (`decimate()`, não por timestamp absoluto). Estado `compareHistoryMap: Record<offset, Record<nodeName, ConntrackNodeHistoryResponse>>` cacheia por offset+nó.
+
+**Bug de cor no tooltip corrigido**: `ChartTooltipContent` do shadcn resolve a cor do indicador via `item.payload.fill`, mas todas as séries de um `ComposedChart` compartilham o mesmo `payload` — o `fill` da barra "Hoje" vazava para as linhas D-1/D-2/D-3. Corrigido com `formatter` custom no `ChartTooltip` que resolve cor/label explicitamente por `item.dataKey` — vale como padrão para qualquer novo overlay multi-série em `ChartContainer` do shadcn.
+
+#### Branch `ajustes-sso-auth` (baseado em `main`)
+
+**Lembrete pessoal de conta `.ca`** nos painéis de Device Auth Grant (GCP/AWS) — na organização, alguns providers (GCP, AWS) só são acessíveis com uma conta secundária `*.ca@via.com.br`, diferente da conta normal, mesmo todos sendo federados via Azure AD; como a escolha da conta acontece 100% na tela externa do Google/AWS/Microsoft (fora do controle do backend), a solução é puramente um lembrete visual pessoal, não uma troca de sessão.
+
+Backend: `CloudAccountHints{GCPEmail, AWSEmail}` (`internal/storage/user_tokens_store.go`) — mesmo padrão de `GitHubEditorProfiles` (coluna JSON `cloud_account_hints` em `user_ai_tokens`, chaveada por `user_email`); handler `internal/web/handlers/cloud_account_hints.go` (`Get`/`Save`), rotas `GET/POST /api/v1/user/cloud-account-hints` atrás de `rbacMiddleware.InjectUserEmail()`.
+
+Frontend: componente compartilhado `CloudAccountHintField.tsx` (prop `provider: "gcp"|"aws"`, `useQuery`/`useMutation` com queryKey `["cloud-account-hints"]` compartilhada entre instâncias) inserido nos 3 painéis de Device Auth Grant existentes — `AutoDiscoverDialog.tsx` e `SNATPortWidget.tsx` (GCP, cada um com sua própria cópia duplicada da UI — não unificados) e `AwsSsoLoginDialog.tsx` (AWS); presença de e-mail não-vazio = "uso essa conta aqui".
+
+Correção adicional no mesmo branch: `gcpNeedsAuth` em `AutoDiscoverDialog.tsx` antes só disparava quando `has_gcloud=true && !authenticated` — isso deixava o autodiscovery nunca pedir login GCP quando `gcloud` não está instalado localmente, mesmo havendo clusters GKE no kubeconfig. Corrigido para `gcpNeedsAuth = !authenticated && (has_gcloud || hasGKEClusters)`, onde `hasGKEClusters` é detectado via `checkGKEClustersInKubeconfig()` (reaproveita `GET /api/v1/clusters`, checando `cloud_provider === "gke"`).
+
+---
+
 ### Interface Aprimorada para CronJob Schedule Editor (Novembro 2025) ✅
 
 **Data:** 19 de novembro de 2025
