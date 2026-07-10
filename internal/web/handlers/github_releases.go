@@ -580,6 +580,7 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 		"behind_by":          comparison.GetBehindBy(),
 		"base_release_notes": baseReleaseNotes,
 		"head_release_notes": headReleaseNotes,
+		"compare_url":        githubWebURL,
 	})
 }
 

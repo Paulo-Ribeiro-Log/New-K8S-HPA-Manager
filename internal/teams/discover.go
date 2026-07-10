@@ -526,6 +526,19 @@ teamsLoaded:
 			});
 			return hrefs.join('\n');
 		};
+		// Teams v2 renderiza a hora de cada mensagem num <time datetime="ISO8601">, geralmente
+		// como irmão/tio do container de texto (cabeçalho da mensagem). Sobe até 10 ancestrais
+		// procurando esse elemento — mesma estratégia de robustez do fallback de CHG abaixo,
+		// já que a profundidade exata varia com o layout (mensagem própria vs. de terceiros).
+		const findTimestamp = (el) => {
+			let node = el;
+			for (let d = 0; d < 10 && node; d++) {
+				const t = node.querySelector ? node.querySelector('time[datetime]') : null;
+				if (t) { const dt = t.getAttribute('datetime'); if (dt) return dt; }
+				node = node.parentElement;
+			}
+			return '';
+		};
 		const messages = [];
 		for (const sel of selectors) {
 			const els = document.querySelectorAll(sel);
@@ -534,7 +547,7 @@ teamsLoaded:
 					const text = (el.innerText || el.textContent || '').trim();
 					const hrefs = collectHrefs(el);
 					const combined = hrefs ? text + '\n' + hrefs : text;
-					if (combined.length > 5) messages.push(combined);
+					if (combined.length > 5) messages.push({ text: combined, postedAt: findTimestamp(el) });
 				});
 				if (messages.length > 0) break;
 			}
@@ -555,7 +568,7 @@ teamsLoaded:
 					const ahrefs = collectHrefs(ancestor);
 					const combined = ahrefs ? at + '\n' + ahrefs : at;
 					if ((combined.includes('sre-approval') || combined.includes('devstartcd')) && combined.length < 3000) {
-						if (!added.has(combined)) { added.add(combined); messages.push(combined); }
+						if (!added.has(combined)) { added.add(combined); messages.push({ text: combined, postedAt: findTimestamp(ancestor) }); }
 						break;
 					}
 					ancestor = ancestor.parentElement;
@@ -564,8 +577,8 @@ teamsLoaded:
 			// Remover substrings: manter apenas o maior container por mensagem
 			const deduped = [];
 			for (const m of messages) {
-				const supIdx = deduped.findIndex(d => d.includes(m));
-				const subIdx = deduped.findIndex(d => m.includes(d));
+				const supIdx = deduped.findIndex(d => d.text.includes(m.text));
+				const subIdx = deduped.findIndex(d => m.text.includes(d.text));
 				if (supIdx >= 0) { /* já coberto pelo maior */ }
 				else if (subIdx >= 0) { deduped[subIdx] = m; }
 				else { deduped.push(m); }
@@ -591,11 +604,13 @@ teamsLoaded:
 					if i >= 5 {
 						break
 					}
-					text, _ := m.(string)
+					obj, _ := m.(map[string]interface{})
+					text, _ := obj["text"].(string)
 					if len(text) > 300 {
 						text = text[:300]
 					}
-					logger.Info().Int("msg_n", i+1).Str("text", text).Msg("[Teams] Mensagem DOM")
+					postedAt, _ := obj["postedAt"].(string)
+					logger.Info().Int("msg_n", i+1).Str("text", text).Str("posted_at", postedAt).Msg("[Teams] Mensagem DOM")
 				}
 			}
 		}
@@ -768,13 +783,16 @@ teamsLoaded:
 						const rawLow = raw.toLowerCase();
 						if (!hasKw(rawLow)) continue;
 						results.viabot = { id: row.id || row.threadId, source: 'skypexspaces/' + sn, snippet: rawLow.substring(0, 400) };
+						// composetime/originalarrivaltime: campos padrão do schema Skype/Teams pra
+						// hora de envio da mensagem (ISO8601). createdTime como último fallback.
+						const postedAt = row.composetime || row.originalarrivaltime || row.createdTime || '';
 						// Extrair conteúdo de todos os campos textuais conhecidos
 						const content = row.content || row.body || row.text || row.message || '';
 						if (typeof content === 'string' && content.length > 0) {
-							idbMessages.push(content); // HTML ou texto — parser e regex vão extrair
+							idbMessages.push({ text: content, postedAt }); // HTML ou texto — parser e regex vão extrair
 						}
 						// Também empurrar o JSON bruto (truncado): URLs aparecem verbatim no JSON
-						idbMessages.push(raw.substring(0, 8000));
+						idbMessages.push({ text: raw.substring(0, 8000), postedAt });
 					}
 				}
 				db.close();
@@ -784,8 +802,9 @@ teamsLoaded:
 		// Também extrair messages[] do conversation-manager (se disponível para o ViaBot)
 		if (results.viabot && Array.isArray(results.viabot.messages)) {
 			for (const msg of results.viabot.messages) {
+				const postedAt = (msg && typeof msg === 'object') ? (msg.composetime || msg.originalarrivaltime || msg.createdTime || '') : '';
 				const s = typeof msg === 'string' ? msg : JSON.stringify(msg);
-				if (s.length > 5) idbMessages.push(s.substring(0, 8000));
+				if (s.length > 5) idbMessages.push({ text: s.substring(0, 8000), postedAt });
 			}
 		}
 
@@ -809,19 +828,28 @@ teamsLoaded:
 				Int("total_convs", int(totalConvs)).
 				Msg("[Teams] IndexedDB escaneado")
 
-			// Salvar mensagens do IndexedDB para processamento pelo extractor
+			// Salvar mensagens do IndexedDB para processamento pelo extractor. Cada entrada vem
+			// como {text, postedAt} do fetchJS — postedAt vazio quando o row não tinha
+			// composetime/originalarrivaltime/createdTime.
 			if idbMsgs, ok := convResults["idb_messages"].([]interface{}); ok && len(idbMsgs) > 0 {
-				var msgStrings []string
+				var rawMsgs []RawMessage
 				for _, m := range idbMsgs {
-					if s, ok := m.(string); ok && s != "" {
-						msgStrings = append(msgStrings, s)
+					obj, ok := m.(map[string]interface{})
+					if !ok {
+						continue
 					}
+					text, _ := obj["text"].(string)
+					if text == "" {
+						continue
+					}
+					postedAt, _ := obj["postedAt"].(string)
+					rawMsgs = append(rawMsgs, RawMessage{Text: text, PostedAt: postedAt})
 				}
-				if len(msgStrings) > 0 {
-					idbData, _ := json.Marshal(map[string]interface{}{"messages": msgStrings})
+				if len(rawMsgs) > 0 {
+					idbData, _ := json.Marshal(map[string]interface{}{"messages": rawMsgs})
 					idbPath := filepath.Join(outputDir, "viabot-indexeddb-messages.json")
 					os.WriteFile(idbPath, idbData, 0600) //nolint:errcheck
-					logger.Info().Int("count", len(msgStrings)).Str("file", idbPath).Msg("[Teams] Mensagens IndexedDB salvas para processamento")
+					logger.Info().Int("count", len(rawMsgs)).Str("file", idbPath).Msg("[Teams] Mensagens IndexedDB salvas para processamento")
 				}
 			}
 

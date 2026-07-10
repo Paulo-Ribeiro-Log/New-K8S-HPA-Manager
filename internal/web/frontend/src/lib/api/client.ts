@@ -3803,7 +3803,7 @@ class APIClient {
 
   async getTeamsApprovalsToday(): Promise<{
     success: boolean;
-    items: Array<{ chg: string; approval_url: string; extracted_at: string }>;
+    items: Array<{ chg: string; approval_url: string; extracted_at: string; posted_at?: string; description?: string; servicenow_url?: string }>;
     last_updated: string | null;
     needs_refresh: boolean;
     refreshing: boolean;
@@ -3813,7 +3813,7 @@ class APIClient {
 
   async refreshTeamsApprovals(): Promise<{
     success: boolean;
-    items: Array<{ chg: string; approval_url: string; extracted_at: string }>;
+    items: Array<{ chg: string; approval_url: string; extracted_at: string; posted_at?: string; description?: string; servicenow_url?: string }>;
     last_updated: string | null;
     error?: string;
   }> {
@@ -3822,7 +3822,7 @@ class APIClient {
 
   async searchTeamsCHG(chg: string): Promise<{
     found: boolean;
-    item?: { chg: string; servicenow_url?: string; approval_url: string; description?: string; extracted_at: string };
+    item?: { chg: string; servicenow_url?: string; approval_url: string; description?: string; extracted_at: string; posted_at?: string };
   }> {
     return this.request(`/teams/approvals/search?chg=${encodeURIComponent(chg.toUpperCase())}`);
   }
@@ -3830,7 +3830,7 @@ class APIClient {
   async searchTeamsByName(q: string): Promise<{
     found: boolean;
     count: number;
-    items?: { chg: string; servicenow_url?: string; approval_url: string; description?: string; extracted_at: string }[];
+    items?: { chg: string; servicenow_url?: string; approval_url: string; description?: string; extracted_at: string; posted_at?: string }[];
   }> {
     return this.request(`/teams/approvals/search?q=${encodeURIComponent(q)}`);
   }

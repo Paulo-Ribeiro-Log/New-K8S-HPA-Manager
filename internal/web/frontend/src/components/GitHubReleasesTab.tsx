@@ -35,7 +35,8 @@ import {
   ShieldCheck,
   Download,
   Pencil,
-  Check
+  Check,
+  User
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CredentialRedirectDialog } from "./profile/CredentialRedirectDialog";
@@ -43,6 +44,7 @@ import { DeploymentScanModal } from "./DeploymentScanModal";
 import { ServiceNowImportModal } from "./ServiceNowImportModal";
 import { SreApprovalButton } from "./SreApprovalButton";
 import { useClusters } from "@/hooks/useAPI";
+import { useGitHubTokenStatus } from "@/hooks/useGitHubReleases";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 
@@ -107,6 +109,7 @@ interface ComparisonItem {
   productionTag: string;
   newTag: string;
   chgNumber?: string;  // Número da mudança ServiceNow
+  chgPostedAt?: string; // Data em que a CHG foi postada no Teams (não a data de importação)
   approvalUrl?: string; // URL de aprovação SRE (capturada do Teams/Mr.ViaBot)
   approvalStatus?: 'checking' | 'pending' | 'approved' | 'finalized' | 'error'; // status pré-verificado no devstartcd
   approverEmail?: string; // email do aprovador (preenchido após pré-verificação)
@@ -114,6 +117,15 @@ interface ComparisonItem {
   result?: ComparisonResult;
   error?: string;
   errorType?: 'saml_authorization_required' | 'not_found' | 'unknown';
+}
+
+// Data em que a CHG foi postada no Teams (não a data de importação) — cobre histórico de
+// vários dias, por isso mostra dia+mês além da hora. Mesmo formato do ServiceNowImportModal.
+function formatChgPostedAt(ts?: string): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 // Interface para erros SAML
@@ -129,6 +141,12 @@ interface SAMLError {
 export const GitHubReleasesTab = () => {
   const queryClient = useQueryClient();
   const { clusters: availableClusters } = useClusters();
+  // Conta GitHub dona do token configurado — a API funciona com ela, mas a sessão do
+  // navegador (cookie web do GitHub) pode estar logada numa conta diferente. Como a escolha
+  // de conta acontece 100% na tela externa do GitHub (fora do controle do backend), isso é só
+  // um lembrete visual pro usuário saber com qual conta precisa estar logado ao abrir links
+  // "Ver no GitHub" — mesmo padrão do CloudAccountHintField para GCP/AWS.
+  const { data: githubTokenStatus } = useGitHubTokenStatus();
 
   const [deploymentName, setDeploymentName] = useState("");  // Nome do deployment na base
   const [githubRepo, setGithubRepo] = useState("");           // Nome do repositório no GitHub
@@ -166,6 +184,8 @@ export const GitHubReleasesTab = () => {
     return localStorage.getItem('github-selected-comparison') || null;
   });
   const [serviceNowCHG, setServiceNowCHG] = useState<string | null>(null); // CHG do ServiceNow
+  const [serviceNowCHGPostedAt, setServiceNowCHGPostedAt] = useState<string | undefined>(undefined); // Data de postagem no Teams da CHG capturada
+  const [batchSearch, setBatchSearch] = useState(""); // Busca no lote de comparações (CHG, nome, repo, tags...)
   const [editingProductionTag, setEditingProductionTag] = useState<Record<string, string>>({}); // Edição inline da productionTag
   const [approvalUrlInput, setApprovalUrlInput] = useState(""); // Input manual de URL devstartcd
   const [showApprovalInput, setShowApprovalInput] = useState(false); // Exibir campo de input manual
@@ -183,6 +203,38 @@ export const GitHubReleasesTab = () => {
       localStorage.removeItem('github-selected-comparison');
     }
   }, [selectedComparison]);
+
+  // Backfill de chgPostedAt: itens do lote persistidos no localStorage antes dessa
+  // funcionalidade existir (ou importados por um fluxo que não capturou a data) nunca teriam
+  // esse campo preenchido, mesmo depois de um rebuild — o valor só é setado no momento da
+  // importação. Busca no cache do Teams (responde em ms) pra qualquer CHG do lote sem data,
+  // uma única vez por CHG (backfillAttempted evita retry infinito quando o cache genuinamente
+  // não tem — CHG >48h — ou quando o backfill roda mas não altera o estado).
+  const backfillAttempted = React.useRef<Set<string>>(new Set());
+  React.useEffect(() => {
+    const missing = comparisonBatch.filter(
+      i => i.chgNumber && !i.chgPostedAt && !backfillAttempted.current.has(i.chgNumber)
+    );
+    if (missing.length === 0) return;
+    missing.forEach(i => backfillAttempted.current.add(i.chgNumber as string));
+
+    (async () => {
+      const results = await Promise.all(missing.map(async i => {
+        try {
+          const res = await apiClient.searchTeamsCHG(i.chgNumber as string);
+          return { id: i.id, postedAt: res.found ? res.item?.posted_at : undefined };
+        } catch {
+          return { id: i.id, postedAt: undefined as string | undefined };
+        }
+      }));
+      const found = results.filter(r => r.postedAt);
+      if (found.length === 0) return;
+      setComparisonBatch(prev => prev.map(item => {
+        const match = found.find(f => f.id === item.id);
+        return match ? { ...item, chgPostedAt: match.postedAt } : item;
+      }));
+    })();
+  }, [comparisonBatch]);
 
   // ✅ Identificar todos os clusters disponíveis (utilizados no scan automático)
   const scanClusters = React.useMemo(() => {
@@ -402,6 +454,7 @@ export const GitHubReleasesTab = () => {
       productionTag,
       newTag,
       chgNumber: chgNumber,  // CHG coletado de fonte dual
+      chgPostedAt: chgNumber === serviceNowCHG ? serviceNowCHGPostedAt : undefined,
       status: 'pending',
     };
 
@@ -631,6 +684,7 @@ export const GitHubReleasesTab = () => {
     xlReleaseUrl?: string;
     changeNumber?: string;
     approvalUrl?: string;
+    chgPostedAt?: string;
   }) => {
     // Buscar tag de produção via API
     let prodTag = '';
@@ -656,6 +710,7 @@ export const GitHubReleasesTab = () => {
     // ✨ Capturar CHG do ServiceNow para uso posterior
     if (data.changeNumber) {
       setServiceNowCHG(data.changeNumber);
+      setServiceNowCHGPostedAt(data.chgPostedAt);
       console.log('[GitHubReleasesTab] CHG capturado do ServiceNow:', data.changeNumber);
     }
 
@@ -669,6 +724,7 @@ export const GitHubReleasesTab = () => {
       productionTag: prodTag,
       newTag: data.newVersion,
       chgNumber: data.changeNumber || undefined,
+      chgPostedAt: data.chgPostedAt,
       approvalUrl: data.approvalUrl || undefined,
       approvalStatus: data.approvalUrl ? 'checking' : undefined,
       status: 'pending',
@@ -774,6 +830,26 @@ export const GitHubReleasesTab = () => {
     }
     return comparisonData || null;
   }, [selectedComparison, comparisonBatch, comparisonData]);
+
+  // Busca no lote de comparações — casa contra qualquer campo textual/numérico visível no
+  // card (CHG, nome do deployment, repo, tags de produção/nova). Não filtra a lista real
+  // (comparisonBatch) — só a exibição, pra "Executar Todas"/"Limpar" continuarem operando
+  // no lote inteiro independente do filtro visual.
+  const filteredComparisonBatch = React.useMemo(() => {
+    const term = batchSearch.trim().toLowerCase();
+    if (!term) return comparisonBatch;
+    return comparisonBatch.filter(item => {
+      const haystack = [
+        item.chgNumber,
+        item.deploymentName,
+        item.githubRepo,
+        item.productionTag,
+        item.newTag,
+        item.approverEmail,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(term);
+    });
+  }, [comparisonBatch, batchSearch]);
 
   // ✨ NOVO: Item selecionado do lote (para verificar erros)
   const selectedBatchItem = React.useMemo(() => {
@@ -1166,7 +1242,7 @@ export const GitHubReleasesTab = () => {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <Label className="text-sm font-semibold">
-                        Lote de Comparações ({comparisonBatch.length})
+                        Lote de Comparações ({batchSearch.trim() ? `${filteredComparisonBatch.length} de ${comparisonBatch.length}` : comparisonBatch.length})
                       </Label>
                       <div className="flex gap-2">
                         <Button
@@ -1189,10 +1265,24 @@ export const GitHubReleasesTab = () => {
                       </div>
                     </div>
 
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                      <Input
+                        value={batchSearch}
+                        onChange={(e) => setBatchSearch(e.target.value)}
+                        placeholder="Buscar por CHG, nome, repo ou tag..."
+                        className="h-8 pl-7 text-xs"
+                      />
+                    </div>
+
                     <ScrollArea className="h-[300px]">
                       <div className="space-y-2">
-                        {comparisonBatch.map((item) => {
-                          console.log('[GitHubReleasesTab] Rendering item:', { id: item.id, chgNumber: item.chgNumber });
+                        {filteredComparisonBatch.length === 0 && (
+                          <p className="text-xs text-muted-foreground text-center py-4">
+                            Nenhuma comparação corresponde a "{batchSearch}"
+                          </p>
+                        )}
+                        {filteredComparisonBatch.map((item) => {
                           return (
                           <Card
                             key={item.id}
@@ -1219,6 +1309,14 @@ export const GitHubReleasesTab = () => {
                                           <span className="text-[10px] font-mono text-white bg-blue-600 dark:bg-blue-700 px-2 py-1 rounded-md border border-blue-700 dark:border-blue-600">
                                             CHG: {item.chgNumber}
                                           </span>
+                                          {formatChgPostedAt(item.chgPostedAt) && (
+                                            <span
+                                              className="text-[10px] text-muted-foreground"
+                                              title={`Postado no Teams em ${new Date(item.chgPostedAt as string).toLocaleString('pt-BR')}`}
+                                            >
+                                              {formatChgPostedAt(item.chgPostedAt)}
+                                            </span>
+                                          )}
                                           {item.approvalUrl && (
                                             <>
                                               {item.approvalStatus === 'checking' && (
@@ -1615,6 +1713,14 @@ export const GitHubReleasesTab = () => {
                         {selectedBatchItem.chgNumber}
                       </Badge>
                     )}
+                    {formatChgPostedAt(selectedBatchItem?.chgPostedAt) && (
+                      <span
+                        className="text-[10px] text-muted-foreground flex-shrink-0"
+                        title={`Postado no Teams em ${new Date(selectedBatchItem?.chgPostedAt as string).toLocaleString('pt-BR')}`}
+                      >
+                        {formatChgPostedAt(selectedBatchItem?.chgPostedAt)}
+                      </span>
+                    )}
                     <Separator orientation="vertical" className="h-4 flex-shrink-0" />
                     <div className="flex items-center gap-3 text-[11px] flex-shrink-0">
                       <span className="text-muted-foreground">
@@ -1630,11 +1736,21 @@ export const GitHubReleasesTab = () => {
                         -{(displayedComparison?.files_changed || []).reduce((sum, f) => sum + f.deletions, 0)}
                       </span>
                     </div>
+                    {githubTokenStatus?.valid && (githubTokenStatus.username || githubTokenStatus.email) && (
+                      <span
+                        title={`O link "Ver no GitHub" abre no navegador com a SUA sessão web — não com a conta do token. Se essa conta não tiver acesso SSO ao repositório, faça login no GitHub como: ${githubTokenStatus.username || ''}${githubTokenStatus.email ? ` (${githubTokenStatus.email})` : ''}`}
+                        className="ml-auto text-[10px] text-muted-foreground flex items-center gap-0.5 flex-shrink-0 cursor-help"
+                      >
+                        <User className="h-3 w-3" />
+                        {githubTokenStatus.username}
+                      </span>
+                    )}
                     <a
                       href={displayedComparison.compare_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="ml-auto text-[10px] text-blue-600 hover:underline flex items-center gap-0.5 flex-shrink-0"
+                      title="Abre no navegador com sua sessão web do GitHub — pode ser uma conta diferente da conta do token"
+                      className={`${githubTokenStatus?.valid ? "" : "ml-auto"} text-[10px] text-blue-600 hover:underline flex items-center gap-0.5 flex-shrink-0`}
                     >
                       <GitCompare className="h-3 w-3" />
                       Ver no GitHub

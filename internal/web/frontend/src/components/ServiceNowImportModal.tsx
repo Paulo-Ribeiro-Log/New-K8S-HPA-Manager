@@ -70,6 +70,9 @@ interface TeamsApprovalItem {
   approval_url: string;
   description?: string;
   extracted_at: string;
+  // Quando a mensagem foi de fato postada no Teams (não quando nós extraímos) — ausente/null
+  // quando não foi possível capturar (ex: mensagem só existe no fallback de leaf-node regex).
+  posted_at?: string;
 }
 
 interface ServiceNowImportModalProps {
@@ -82,6 +85,7 @@ interface ServiceNowImportModalProps {
     xlReleaseUrl?: string;
     changeNumber?: string;
     approvalUrl?: string;
+    chgPostedAt?: string;
   }) => void;
 }
 
@@ -217,13 +221,25 @@ export function ServiceNowImportModal({
   const chgSearchNorm = chgSearch.trim().toUpperCase();
   const isValidChgInput = /^CHG\d{5,}$/.test(chgSearchNorm);
   const isNameSearch = chgSearch.trim().length >= 3 && !isValidChgInput;
-  const filteredTeamsItems = chgSearch
+  const filteredTeamsItems = (chgSearch
     ? teamsItems.filter(i =>
         i.chg.includes(chgSearchNorm) ||
         (i.description || "").toLowerCase().includes(chgSearch.toLowerCase())
       )
-    : teamsItems;
+    : teamsItems
+  ).slice().sort((a, b) => {
+    // Mais recentes primeiro — prioridade natural pra revisão. Itens sem posted_at (não
+    // capturado) vão pro fim, não pro topo, pra não disfarçar de "mais recente".
+    if (!a.posted_at && !b.posted_at) return 0;
+    if (!a.posted_at) return 1;
+    if (!b.posted_at) return -1;
+    return new Date(b.posted_at).getTime() - new Date(a.posted_at).getTime();
+  });
   const chgInList = filteredTeamsItems.some(i => i.chg === chgSearchNorm);
+  // CHG já aprovada/finalizada no devstartcd — checkbox fica desabilitado, não faz sentido
+  // reimportar pra comparação algo que já passou pela aprovação SRE.
+  const isChgApproved = (chg: string) => approvalStatuses.get(chg)?.approved === true;
+  const selectableTeamsItems = filteredTeamsItems.filter(i => !isChgApproved(i.chg));
 
   const handleExtractDirectChg = async () => {
     const chg = chgSearchNorm;
@@ -231,23 +247,27 @@ export function ServiceNowImportModal({
 
     // 1. Verificar cache local (últimos 2 dias) — evita re-scan do Teams
     let snUrl = `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${chg}`;
-    // Promise que resolve com a approval URL — do cache ou de um refresh disparado agora
-    let approvalUrlPromise: Promise<string>;
+    // Promise que resolve com a approval URL + data de postagem — do cache ou de um refresh
+    // disparado agora
+    let teamsInfoPromise: Promise<{ approvalUrl: string; postedAt?: string }>;
 
     try {
       const cached = await apiClient.searchTeamsCHG(chg);
       if (cached.found && cached.item) {
         if (cached.item.servicenow_url) snUrl = cached.item.servicenow_url;
-        approvalUrlPromise = Promise.resolve(cached.item.approval_url || "");
+        teamsInfoPromise = Promise.resolve({
+          approvalUrl: cached.item.approval_url || "",
+          postedAt: cached.item.posted_at,
+        });
       } else {
         toast.info("Buscando no Teams para capturar link de aprovação...", {
           id: "teams-bg-refresh",
           duration: 150000,
         });
-        approvalUrlPromise = apiClient.refreshTeamsApprovals()
+        teamsInfoPromise = apiClient.refreshTeamsApprovals()
           .then(async res => {
             toast.dismiss("teams-bg-refresh");
-            if (!res.success) return "";
+            if (!res.success) return { approvalUrl: "" };
             // Buscar no cache completo (48h) após o merge — não só nos itens de hoje
             const afterRefresh = await apiClient.searchTeamsCHG(chg);
             if (afterRefresh.found && afterRefresh.item?.approval_url) {
@@ -256,24 +276,24 @@ export function ServiceNowImportModal({
                 const exists = prev.some(p => p.chg === found.chg);
                 return exists ? prev : [...prev, found];
               });
-              return found.approval_url;
+              return { approvalUrl: found.approval_url, postedAt: found.posted_at };
             }
-            return "";
+            return { approvalUrl: "" };
           })
           .catch(() => {
             toast.dismiss("teams-bg-refresh");
-            return "";
+            return { approvalUrl: "" };
           });
       }
     } catch {
-      approvalUrlPromise = Promise.resolve("");
+      teamsInfoPromise = Promise.resolve({ approvalUrl: "" });
     }
 
     // 2. Extrair ServiceNow e aguardar Teams em paralelo
     try {
-      const [response, approvalUrl] = await Promise.all([
+      const [response, teamsInfo] = await Promise.all([
         apiClient.extractServiceNowWithPlaywright(snUrl),
-        approvalUrlPromise,
+        teamsInfoPromise,
       ]);
       if (response.success && response.extracted_data) {
         const d = response.extracted_data as ExtractedData;
@@ -283,7 +303,8 @@ export function ServiceNowImportModal({
           newVersion: d.version || "",
           xlReleaseUrl: d.xlrelease_url,
           changeNumber: response.change_number || chg,
-          approvalUrl,
+          approvalUrl: teamsInfo.approvalUrl,
+          chgPostedAt: teamsInfo.postedAt,
         });
         setAddedCount(c => c + 1);
         toast.success(`${chg} adicionada a comparações`);
@@ -351,6 +372,7 @@ export function ServiceNowImportModal({
               xlReleaseUrl: d.xlrelease_url,
               changeNumber: response.change_number || item.chg,
               approvalUrl: item.approval_url,
+              chgPostedAt: item.posted_at,
             });
             successCount++;
           } else {
@@ -376,7 +398,9 @@ export function ServiceNowImportModal({
 
   // Extrai cada CHG selecionada usando o mesmo mecanismo da aba "Via Browser"
   const handleImportSelectedTeams = async () => {
-    const selected = teamsItems.filter(i => selectedTeamsChgs.has(i.chg));
+    // Defesa extra: exclui CHGs que foram marcadas antes do status de aprovação chegar
+    // (checagem é assíncrona) e viraram aprovadas nesse meio-tempo.
+    const selected = teamsItems.filter(i => selectedTeamsChgs.has(i.chg) && !isChgApproved(i.chg));
     if (selected.length === 0) return;
 
     const successChgs: string[] = [];
@@ -406,6 +430,7 @@ export function ServiceNowImportModal({
             xlReleaseUrl: d.xlrelease_url,
             changeNumber: response.change_number || item.chg,
             approvalUrl,
+            chgPostedAt: item.posted_at,
           });
           successChgs.push(item.chg);
         } else {
@@ -627,6 +652,15 @@ export function ServiceNowImportModal({
     return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
   };
 
+  // Data de postagem no Teams (não a data em que a extração rodou) — cobre histórico de
+  // vários dias (IndexedDB), por isso mostra dia+mês além da hora.
+  const formatPostedAt = (ts?: string) => {
+    if (!ts) return null;
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  };
+
   // ── Tab bar manual (evita problema do shadcn Tabs com flex) ─────────
   const tabs: { id: ActiveTab; label: string; icon: React.ReactNode }[] = [
     { id: "teams", label: "Teams (Mr.ViaBot)", icon: <MessageSquare className="h-3.5 w-3.5" /> },
@@ -636,7 +670,8 @@ export function ServiceNowImportModal({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
+      {/* max-w-3xl (48rem) + 15% = 55.2rem */}
+      <DialogContent className="max-w-[55.2rem] max-h-[90vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Download className="h-5 w-5" />
@@ -769,9 +804,9 @@ export function ServiceNowImportModal({
                       ? `${selectedTeamsChgs.size} selecionada${selectedTeamsChgs.size > 1 ? "s" : ""}`
                       : "Selecione uma ou mais CHGs"}
                   </span>
-                  {selectedTeamsChgs.size < filteredTeamsItems.length ? (
+                  {selectedTeamsChgs.size < selectableTeamsItems.length ? (
                     <button
-                      onClick={() => setSelectedTeamsChgs(new Set(filteredTeamsItems.map(i => i.chg)))}
+                      onClick={() => setSelectedTeamsChgs(new Set(selectableTeamsItems.map(i => i.chg)))}
                       className="text-xs text-primary hover:underline"
                     >
                       Selecionar todas
@@ -788,12 +823,16 @@ export function ServiceNowImportModal({
                 <div className="space-y-1.5 max-h-64 overflow-y-auto overflow-x-hidden pr-1">
                   {filteredTeamsItems.map((item) => {
                     const checked = selectedTeamsChgs.has(item.chg);
+                    const approved = isChgApproved(item.chg);
                     return (
                       <div
                         key={item.chg}
-                        onClick={() => toggleTeamsChg(item.chg)}
-                        className={`flex items-center gap-2.5 p-2.5 rounded-md border cursor-pointer transition-colors
-                          ${checked ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50"}`}
+                        onClick={() => !approved && toggleTeamsChg(item.chg)}
+                        title={approved ? "Já aprovada no devstartcd — não é possível reimportar" : undefined}
+                        className={`flex items-center gap-2.5 p-2.5 rounded-md border transition-colors
+                          ${approved ? "cursor-not-allowed opacity-60 border-border" : "cursor-pointer"}
+                          ${!approved && checked ? "border-primary bg-primary/5" : ""}
+                          ${!approved && !checked ? "border-border hover:bg-muted/50" : ""}`}
                       >
                         {/* Checkbox */}
                         <div className={`h-4 w-4 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors
@@ -803,7 +842,17 @@ export function ServiceNowImportModal({
                         </div>
                         {/* Conteúdo */}
                         <div className="min-w-0 flex-1">
-                          <span className="font-mono text-xs text-muted-foreground">{item.chg}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-xs text-muted-foreground">{item.chg}</span>
+                            {formatPostedAt(item.posted_at) && (
+                              <span
+                                className="text-[10px] text-muted-foreground/80 flex-shrink-0"
+                                title={`Postado no Teams em ${new Date(item.posted_at as string).toLocaleString("pt-BR")}`}
+                              >
+                                · {formatPostedAt(item.posted_at)}
+                              </span>
+                            )}
+                          </div>
                           {item.description ? (
                             <p className="text-sm font-medium truncate" title={item.description}>{item.description}</p>
                           ) : (
