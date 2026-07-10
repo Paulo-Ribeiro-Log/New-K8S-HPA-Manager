@@ -880,7 +880,10 @@ func execLocalDocker(ctx context.Context, image, script string) (string, error) 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("exec: %v (stderr: %s)", err, stderr.String())
+		// stdout.String() é devolvido mesmo no erro — mesmo motivo de execCmdInPod: os scripts
+		// dos engines fazem `... 2>&1`, então a mensagem de erro real do cliente (psql/mysql/
+		// mongosh/redis-cli) está em stdout, não no stderr do processo `docker run` em si.
+		return stdout.String(), fmt.Errorf("exec: %v (stderr: %s)", err, stderr.String())
 	}
 	return stdout.String(), nil
 }
@@ -891,7 +894,13 @@ func runDBConnectivityStage(ctx context.Context, run dbExecFunc, engine dbEngine
 	script := engine.buildConnectivity(conn, ceilSeconds(timeoutMs))
 	stdout, err := run(ctx, script)
 	if err != nil {
-		raw := extractStderr(err)
+		// A saída real do cliente (psql/mysql/mongosh/redis-cli) vem em `stdout` — o script roda
+		// com `2>&1`, então stderr do processo já foi mesclado ali. `extractStderr(err)` só serve de
+		// fallback pra falhas que nunca chegaram a rodar o script (ex: erro do SPDY executor).
+		raw := strings.TrimSpace(stdout)
+		if raw == "" {
+			raw = extractStderr(err)
+		}
 		switch {
 		case engine.networkErrorRegex.MatchString(raw):
 			return DBStageResult{Status: dbStageTCPFailed, Message: "Não conseguiu conectar no host (rede/DNS)", RawOutput: raw}
@@ -916,7 +925,11 @@ func runDBBrowseStage(ctx context.Context, run dbExecFunc, engine dbEngine, conn
 	script := engine.buildBrowse(conn, ceilSeconds(timeoutMs))
 	stdout, err := run(ctx, script)
 	if err != nil {
-		return DBBrowseResult{Status: "failed", Message: "Falha ao listar objetos", RawOutput: extractStderr(err)}
+		raw := strings.TrimSpace(stdout)
+		if raw == "" {
+			raw = extractStderr(err)
+		}
+		return DBBrowseResult{Status: "failed", Message: "Falha ao listar objetos", RawOutput: raw}
 	}
 
 	objects, objectType, truncated := engine.parseBrowseOutput(stdout, conn)

@@ -374,6 +374,11 @@ export default function DatabaseTestTab() {
         if (event.type === "complete" && event.result) {
           setResult(event.result);
           setIsRunning(false);
+          // Falha de conectividade: abre a "Saída bruta" automaticamente — do contrário o painel
+          // fica colapsado e o usuário não vê o motivo real sem saber que precisa clicar nele.
+          if (event.result.connectivity.status !== "ok") {
+            setRawOutputOpen(true);
+          }
         }
         if (event.type === "error") {
           setRunError(event.error || event.message);
