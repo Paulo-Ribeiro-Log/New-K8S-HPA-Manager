@@ -97,17 +97,37 @@ Dois problemas de UX ficaram claros corrigindo os bugs acima (justo testando num
    Teste". Agora `GET /api/v1/db-test/docker-status` (`db_test_docker.go`) checa
    `exec.LookPath("docker")` e, se instalado, `docker info --format '{{.ServerVersion}}'` (timeout
    5s) — cacheado por 20s (mesmo padrão de `IsGcloudAuthActive`,
-   `internal/cloudprovider/gcp/auth.go`). Classifica `permission denied` separado de "daemon não
-   respondeu" (causa comum: usuário fora do grupo `docker`). Sem `RequireSREGroup()` — é leitura
-   informacional sobre o próprio servidor, não sobre um recurso do usuário.
+   `internal/cloudprovider/gcp/auth.go`). Sem `RequireSREGroup()` — é leitura informacional sobre o
+   próprio servidor, não sobre um recurso do usuário.
+
+   A resposta traz um campo `reason` (`not_installed` / `permission_denied` /
+   `address_pool_exhausted` / `daemon_unreachable`) — cada causa tem um fix completamente
+   diferente, então o frontend não podia só mostrar sempre "instale o Docker". Três casos reais
+   encontrados e classificados:
+   - `not_installed` — binário ausente do PATH.
+   - `permission_denied` — usuário do servidor fora do grupo `docker` (detectado direto na saída
+     de `docker info`).
+   - `address_pool_exhausted` — caso mais sutil: `docker info` só devolve "Cannot connect to the
+     Docker daemon..." (genérico) quando o dockerd crashou na subida, porque o daemon sai do
+     processo inteiro antes do socket existir — a causa real (`all predefined address pools have
+     been fully subnetted`) só aparece no `journalctl -u docker.service`, nunca na resposta do
+     cliente `docker`. `diagnoseDockerServiceFailure` consulta o journal (funciona sem sudo no
+     Ubuntu/WSL2 pro usuário no grupo `adm`) como segundo passo, best-effort — se não achar nada
+     reconhecido (sem systemd, sem permissão, serviço com outro nome), cai pro `daemon_unreachable`
+     genérico sem quebrar a checagem. **Causa real encontrada testando neste ambiente**: VPN
+     corporativa com split-tunnel "route everything" anuncia rota pra `10.0.0.0/8` +
+     `172.16.0.0/12` + `192.168.0.0/16` inteiras via `tun0` — cobre exatamente as faixas de onde o
+     Docker tenta alocar sua rede bridge padrão, então nenhum pool sobra livre. Fix: apontar o
+     Docker pra `100.64.0.0/10` (RFC 6598, Shared Address Space/CGNAT), faixa que a VPN não cobre —
+     `/etc/docker/daemon.json` com `default-address-pools` + `systemctl restart docker`.
 
    Frontend: `DatabaseTestTab.tsx` consulta esse endpoint só quando `execution_mode === "local"`
-   (`staleTime` 15s); se não estiver pronto, mostra painel âmbar com o passo a passo de instalação
-   (Ubuntu/WSL2 — `curl -fsSL https://get.docker.com | sudo sh` + `usermod -aG docker $USER` +
-   `service docker start`, já que WSL2 normalmente não sobe serviços sozinho no boot) e botão
-   "Verificar novamente". `canRun` passa a exigir `dockerReady` — **decisão deliberada**: bloquear
-   o botão em vez de só avisar e deixar tentar, consistente com outros fluxos de "auth necessária"
-   já existentes na app (ex: `SNATPortWidget.tsx`).
+   (`staleTime` 15s); se não estiver pronto, mostra painel âmbar com o passo a passo específico do
+   `reason` (`DOCKER_FIX_BY_REASON`, título + snippet por causa — instalação Ubuntu/WSL2 para
+   `not_installed`/`permission_denied`/`daemon_unreachable`; o fix de `daemon.json` acima para
+   `address_pool_exhausted`) e botão "Verificar novamente". `canRun` passa a exigir `dockerReady` —
+   **decisão deliberada**: bloquear o botão em vez de só avisar e deixar tentar, consistente com
+   outros fluxos de "auth necessária" já existentes na app (ex: `SNATPortWidget.tsx`).
 
 2. **Risco de container órfão**: `docker run --rm` já remove o container quando o processo termina
    sozinho (inclusive quando o `timeout Ns` interno do script expira — o container ainda sai
@@ -452,9 +472,15 @@ kubectl describe pod <target_pod> -n <namespace>
 - Validado nesta rodada só por `go build`/`tsc --noEmit`/`rebuild-web.sh` — sem banco real disponível
   no ambiente de desenvolvimento para validar ponta a ponta contra os 4 engines; a imagem `mongo:7`
   em particular precisa de confirmação em produção de que `mongosh` vem embutido nessa tag.
-- Pré-checagem de Docker e correção de saída bruta vazia validadas de verdade neste ambiente (que
-  não tem `docker` instalado — reproduz o cenário real). O reaper de containers órfãos foi validado
-  só por teste unitário da função pura de decisão de idade (`filterStaleContainers`,
-  `db_test_docker_test.go`) — a limpeza imediata no cancelamento e o reaper periódico rodando de
-  fato contra um daemon Docker real, cancelando um teste no meio, não foram exercitados ponta a
-  ponta (sem Docker disponível aqui pra reproduzir).
+- Pré-checagem de Docker e correção de saída bruta vazia validadas de verdade neste ambiente,
+  que originalmente não tinha `docker` instalado (reproduziu o cenário real do zero). A
+  classificação `address_pool_exhausted` (VPN cobrindo as faixas privadas) também foi validada
+  contra uma ocorrência real, não simulada — o próprio `docker.service` deste ambiente falhou
+  exatamente com "fully subnetted" ao tentar instalar, e o fix documentado acima
+  (`default-address-pools: 100.64.0.0/10`) resolveu de fato, confirmado com `docker run` real
+  (pull + execução de `alpine:3`). Docker segue instalado e funcional neste ambiente desde então.
+  O reaper de containers órfãos segue validado só por teste unitário da função pura de decisão de
+  idade (`filterStaleContainers`/`dockerReasonMessage`, `db_test_docker_test.go`) — a limpeza
+  imediata no cancelamento e o reaper periódico rodando contra um daemon Docker real, cancelando um
+  teste local no meio, ainda não foram exercitados ponta a ponta (exigiria disparar um teste local
+  de verdade contra um banco alcançável e cancelar no meio — não reproduzido nesta rodada).
