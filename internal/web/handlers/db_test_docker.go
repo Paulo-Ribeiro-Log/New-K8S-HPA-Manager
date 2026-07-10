@@ -30,7 +30,21 @@ type DBDockerStatusResult struct {
 	Installed     bool   `json:"installed"`
 	DaemonRunning bool   `json:"daemon_running"`
 	Error         string `json:"error,omitempty"`
+	// Reason classifica a falha pra o frontend escolher qual bloco de instruções mostrar — cada
+	// causa tem um fix completamente diferente (instalar vs. permissão vs. reconfigurar rede do
+	// daemon), mostrar sempre o mesmo "instale o Docker" quando ele já está instalado e rodando
+	// seria confuso. Vazio quando Ready().
+	Reason string `json:"reason,omitempty"`
 }
+
+// Valores possíveis de DBDockerStatusResult.Reason — espelhados no frontend (DatabaseTestTab.tsx)
+// pra escolher o snippet de instruções certo.
+const (
+	dbDockerReasonNotInstalled         = "not_installed"
+	dbDockerReasonPermissionDenied     = "permission_denied"
+	dbDockerReasonAddressPoolExhausted = "address_pool_exhausted"
+	dbDockerReasonDaemonUnreachable    = "daemon_unreachable"
+)
 
 // Ready — atalho usado pelo frontend pra decidir se libera o botão "Executar Teste" no modo local.
 func (r DBDockerStatusResult) Ready() bool { return r.Installed && r.DaemonRunning }
@@ -60,33 +74,85 @@ func checkDockerStatus(ctx context.Context) DBDockerStatusResult {
 
 func computeDockerStatus(ctx context.Context) DBDockerStatusResult {
 	if _, err := exec.LookPath("docker"); err != nil {
-		return DBDockerStatusResult{Installed: false, Error: "comando \"docker\" não encontrado no PATH do servidor"}
+		return DBDockerStatusResult{
+			Installed: false,
+			Error:     "comando \"docker\" não encontrado no PATH do servidor",
+			Reason:    dbDockerReasonNotInstalled,
+		}
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	out, err := exec.CommandContext(cmdCtx, "docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
-		}
-		if strings.Contains(strings.ToLower(msg), "permission denied") {
-			return DBDockerStatusResult{
-				Installed:     true,
-				DaemonRunning: false,
-				Error:         "usuário do servidor sem permissão pro socket do Docker — rode: sudo usermod -aG docker $USER (e reabra o terminal)",
-			}
-		}
+	if err == nil {
+		return DBDockerStatusResult{Installed: true, DaemonRunning: true}
+	}
+
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = err.Error()
+	}
+	if strings.Contains(strings.ToLower(msg), "permission denied") {
 		return DBDockerStatusResult{
 			Installed:     true,
 			DaemonRunning: false,
-			Error:         "daemon do Docker não respondeu: " + msg,
+			Error:         "usuário do servidor sem permissão pro socket do Docker — rode: sudo usermod -aG docker $USER (e reabra o terminal)",
+			Reason:        dbDockerReasonPermissionDenied,
 		}
 	}
 
-	return DBDockerStatusResult{Installed: true, DaemonRunning: true}
+	// "docker info" falhou por não conseguir alcançar o socket ("Cannot connect to the Docker
+	// daemon...") — mensagem genérica demais pra saber POR QUE o daemon está fora do ar. Quando o
+	// dockerd crasha na subida (ex: erro de rede), ele sai do processo inteiro antes de deixar o
+	// socket disponível — a causa real só aparece no journal do systemd, nunca na resposta do
+	// cliente `docker`. Melhor esforço: consulta journalctl (funciona sem sudo no Ubuntu/WSL2 pro
+	// usuário no grupo `adm`); se não der (sem systemd, sem permissão, serviço com outro nome),
+	// cai pro erro genérico sem quebrar a checagem.
+	if reason := diagnoseDockerServiceFailure(ctx); reason != "" {
+		return DBDockerStatusResult{
+			Installed:     true,
+			DaemonRunning: false,
+			Error:         dockerReasonMessage(reason),
+			Reason:        reason,
+		}
+	}
+
+	return DBDockerStatusResult{
+		Installed:     true,
+		DaemonRunning: false,
+		Error:         "daemon do Docker não respondeu: " + msg,
+		Reason:        dbDockerReasonDaemonUnreachable,
+	}
+}
+
+// diagnoseDockerServiceFailure procura no journal do systemd (unidade docker.service) por um
+// motivo específico e já conhecido de falha na subida do daemon. Devolve "" se não achar nada
+// (journalctl indisponível, sem permissão, ou nenhum padrão reconhecido) — best-effort, nunca
+// bloqueia a checagem principal.
+func diagnoseDockerServiceFailure(ctx context.Context) string {
+	jCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(jCtx, "journalctl", "-u", "docker.service", "--no-pager", "-n", "50").Output()
+	if err != nil {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(string(out)), "fully subnetted") {
+		return dbDockerReasonAddressPoolExhausted
+	}
+	return ""
+}
+
+// dockerReasonMessage traduz um Reason (achado por diagnoseDockerServiceFailure) na mensagem
+// exibida em DBDockerStatusResult.Error.
+func dockerReasonMessage(reason string) string {
+	switch reason {
+	case dbDockerReasonAddressPoolExhausted:
+		return "Docker não conseguiu criar a rede padrão — provável conflito com rotas da VPN corporativa cobrindo as faixas de IP privadas"
+	default:
+		return "daemon do Docker não respondeu"
+	}
 }
 
 // DockerStatus — GET /api/v1/db-test/docker-status. Leitura informacional sobre o próprio

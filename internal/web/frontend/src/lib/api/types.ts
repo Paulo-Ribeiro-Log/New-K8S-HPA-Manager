@@ -1993,10 +1993,15 @@ export interface DBTestSSEEvent {
 }
 
 // Pré-checagem de Docker pro modo "local" (Direto do servidor) — GET /db-test/docker-status.
+// reason classifica a causa da falha — cada uma tem um fix diferente (ver DOCKER_FIX_SNIPPETS em
+// DatabaseTestTab.tsx), por isso o backend não manda só uma mensagem de texto solta.
+export type DBDockerStatusReason = "not_installed" | "permission_denied" | "address_pool_exhausted" | "daemon_unreachable";
+
 export interface DBDockerStatus {
   installed: boolean;
   daemon_running: boolean;
   error?: string;
+  reason?: DBDockerStatusReason;
 }
 
 // Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.

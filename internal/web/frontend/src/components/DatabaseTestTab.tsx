@@ -69,6 +69,36 @@ sudo service docker start
 # alternativa em distros com systemd habilitado no WSL2:
 # sudo systemctl enable --now docker`;
 
+// "address_pool_exhausted": dockerd chega a tentar subir mas crasha ao criar a rede bridge padrão
+// com "all predefined address pools have been fully subnetted" — causa mais comum é VPN
+// corporativa com split-tunnel "route everything", que anuncia rota pras faixas 10.0.0.0/8 +
+// 172.16.0.0/12 + 192.168.0.0/16 inteiras (exatamente onde o Docker tenta alocar por padrão).
+// Fix: apontar o Docker pra uma faixa fora do que a VPN cobre — 100.64.0.0/10 (RFC 6598, CGNAT,
+// raramente roteada por VPN corporativa).
+const DOCKER_ADDRESS_POOL_FIX_SNIPPET = `# O Docker não conseguiu criar a rede padrão porque a VPN corporativa está
+# roteando toda a faixa 10.0.0.0/8 + 172.16.0.0/12 + 192.168.0.0/16 — não
+# sobra bloco livre nessas faixas privadas clássicas. Fix: usar uma faixa
+# fora do que a VPN cobre.
+sudo tee /etc/docker/daemon.json > /dev/null <<'JSON'
+{
+  "default-address-pools": [
+    { "base": "100.64.0.0/10", "size": 24 }
+  ]
+}
+JSON
+sudo systemctl reset-failed docker.service
+sudo systemctl restart docker`;
+
+// Escolhe título + snippet conforme DBDockerStatus.reason — cada causa tem um fix diferente,
+// mostrar sempre "instale o Docker" quando ele já está instalado/rodando seria confuso (ver
+// db_test_docker.go no backend, mesma classificação).
+const DOCKER_FIX_BY_REASON: Record<string, { title: string; snippet: string }> = {
+  not_installed: { title: "Docker não está instalado neste servidor", snippet: DOCKER_INSTALL_SNIPPET },
+  permission_denied: { title: "Usuário do servidor sem permissão para o Docker", snippet: DOCKER_INSTALL_SNIPPET },
+  address_pool_exhausted: { title: "Docker não conseguiu criar a rede padrão (conflito com VPN)", snippet: DOCKER_ADDRESS_POOL_FIX_SNIPPET },
+  daemon_unreachable: { title: "Docker instalado, mas o daemon não respondeu", snippet: DOCKER_INSTALL_SNIPPET },
+};
+
 // Combobox com busca embutida no mesmo popover — mesmo padrão de KafkaTestTab.tsx/
 // ClusterSelectorForTab.tsx (evita o bug do <Select> do Radix fechar o dropdown ao focar um
 // campo de busca externo). Local a este arquivo porque é usado só aqui (Namespace/Deployment).
@@ -483,22 +513,24 @@ export default function DatabaseTestTab() {
           )}
         </div>
 
-        {executionMode === "local" && dockerStatus && !dockerReady && (
+        {executionMode === "local" && dockerStatus && !dockerReady && (() => {
+          const fix = DOCKER_FIX_BY_REASON[dockerStatus.reason ?? "daemon_unreachable"] ?? DOCKER_FIX_BY_REASON.daemon_unreachable;
+          return (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 flex flex-col gap-2">
             <div className="text-sm text-amber-700 dark:text-amber-400">
-              <span className="font-semibold">Docker não está pronto neste servidor</span>
+              <span className="font-semibold">{fix.title}</span>
               {dockerStatus.error && <span> — {dockerStatus.error}</span>}
             </div>
             <div className="relative">
               <pre className="rounded-md border border-border bg-muted/30 p-3 pr-10 text-[11px] font-mono whitespace-pre-wrap overflow-x-auto">
-                {DOCKER_INSTALL_SNIPPET}
+                {fix.snippet}
               </pre>
               <Button
                 variant="ghost"
                 size="icon"
                 className="absolute top-1.5 right-1.5 h-6 w-6"
                 onClick={() => {
-                  navigator.clipboard.writeText(DOCKER_INSTALL_SNIPPET);
+                  navigator.clipboard.writeText(fix.snippet);
                   toast.success("Comando copiado!");
                 }}
               >
@@ -514,7 +546,8 @@ export default function DatabaseTestTab() {
               Verificar novamente
             </Button>
           </div>
-        )}
+          );
+        })()}
 
         <div className="flex flex-wrap items-end gap-3">
           {needsCluster && (

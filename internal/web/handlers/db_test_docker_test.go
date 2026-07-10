@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,5 +42,19 @@ func TestFilterStaleContainersEmptyAndInvalidInput(t *testing.T) {
 	}
 	if got := filterStaleContainers("id|data-invalida\n", now, dbTestContainerMaxAge); got != nil {
 		t.Errorf("timestamp inválido deveria ser ignorado (não removido por segurança), veio %v", got)
+	}
+}
+
+func TestDockerReasonMessage(t *testing.T) {
+	cases := map[string]string{
+		dbDockerReasonAddressPoolExhausted: "rede padrão",
+		"algo-desconhecido":                "daemon do Docker não respondeu",
+		"":                                 "daemon do Docker não respondeu",
+	}
+	for reason, wantSubstr := range cases {
+		got := dockerReasonMessage(reason)
+		if !strings.Contains(got, wantSubstr) {
+			t.Errorf("reason=%q: esperava conter %q, veio %q", reason, wantSubstr, got)
+		}
 	}
 }

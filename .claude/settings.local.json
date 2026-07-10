@@ -32,7 +32,9 @@
       "Bash(git tag:*)",
       "Bash(git push:*)",
       "Bash(find:*)",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(ls internal/web/handlers/db_test_tool*test*)",
+      "Bash(ls internal/web/handlers/kafka_test_tool*test*)"
     ],
     "deny": [],
     "ask": []
