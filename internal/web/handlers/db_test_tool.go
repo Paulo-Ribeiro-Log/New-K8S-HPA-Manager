@@ -481,7 +481,11 @@ var dbEngines = map[string]dbEngine{
 		},
 		networkErrorRegex: regexp.MustCompile(`(?i)(could not connect to server|connection refused|could not translate host name|timeout expired)`),
 		authErrorRegex:    regexp.MustCompile(`(?i)(password authentication failed|role .* does not exist|no pg_hba\.conf entry)`),
-		tlsErrorRegex:     regexp.MustCompile(`(?i)(ssl error|server does not support ssl|certificate verify failed)`),
+		// "no pg_hba.conf entry ... no encryption" é o Postgres recusando a conexão porque ela
+		// chegou sem SSL e o servidor só tem regras `hostssl` (ex: Azure Database for PostgreSQL,
+		// que exige TLS por padrão) — não é senha/usuário errado, é o toggle TLS desligado no teste.
+		// Checado antes de authErrorRegex (ver ordem do switch em runDBConnectivityStage).
+		tlsErrorRegex: regexp.MustCompile(`(?i)(ssl error|server does not support ssl|certificate verify failed|no pg_hba\.conf entry.*no encryption)`),
 	},
 	"mysql": {
 		label: "MySQL/MariaDB",
@@ -916,10 +920,14 @@ func runDBConnectivityStage(ctx context.Context, run dbExecFunc, engine dbEngine
 		switch {
 		case engine.networkErrorRegex.MatchString(raw):
 			return DBStageResult{Status: dbStageTCPFailed, Message: "Não conseguiu conectar no host (rede/DNS)", RawOutput: raw}
+		// tlsErrorRegex checado antes de authErrorRegex: no Postgres, "no pg_hba.conf entry ...
+		// no encryption" bate também na regra genérica de auth, mas é o servidor exigindo TLS
+		// (ex: Azure Database for PostgreSQL), não credencial errada — checar TLS primeiro evita
+		// que esse caso seja mascarado como falha de autenticação.
+		case engine.tlsErrorRegex.MatchString(raw):
+			return DBStageResult{Status: dbStageTLSFailed, Message: "Falha de handshake TLS/SSL — servidor pode exigir conexão criptografada (habilite o TLS neste teste)", RawOutput: raw}
 		case engine.authErrorRegex.MatchString(raw):
 			return DBStageResult{Status: dbStageAuthFailed, Message: "Falha de autenticação", RawOutput: raw}
-		case engine.tlsErrorRegex.MatchString(raw):
-			return DBStageResult{Status: dbStageTLSFailed, Message: "Falha de handshake TLS/SSL", RawOutput: raw}
 		default:
 			return DBStageResult{Status: dbStageUnknownFailed, Message: "Falha não classificada — ver saída bruta", RawOutput: raw}
 		}
