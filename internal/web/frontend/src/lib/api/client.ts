@@ -3632,6 +3632,11 @@ class APIClient {
     });
   }
 
+  /** Pré-checagem de Docker no servidor — só relevante pro modo "local" (Direto do servidor) */
+  async getDBTestDockerStatus(): Promise<import("./types").DBDockerStatus> {
+    return this.request<import("./types").DBDockerStatus>("/db-test/docker-status");
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{

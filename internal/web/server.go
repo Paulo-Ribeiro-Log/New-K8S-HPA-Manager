@@ -954,6 +954,7 @@ func (s *Server) setupRoutes() {
 		dbTestHandler.Stream)
 	dbTest := api.Group("/db-test")
 	{
+		dbTest.GET("/docker-status", dbTestHandler.DockerStatus)
 		dbTest.POST("/run", rbacMiddleware.RequireSREGroup(), dbTestHandler.Run)
 		dbTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), dbTestHandler.Cancel)
 	}

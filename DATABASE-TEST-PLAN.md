@@ -50,10 +50,8 @@ faz sentido nem é possível simular a identidade de rede de um workload especí
 servidor — não os clientes (`psql`/`mysql`/`mongosh`/`redis-cli`) instalados nativamente, a imagem
 já traz tudo. `--network host` dá ao container a mesma visibilidade de rede que o processo do
 servidor teria — funciona em Linux/WSL2 (ambiente alvo desta app), mas Docker Desktop no
-Mac/Windows tem semântica de host networking diferente e não foi validado. Se o `docker` não
-existir no PATH, o erro aparece cru na saída bruta (ex: `exec: "docker": executable file not found
-in $PATH`), classificado como `unknown_failed` por não casar nenhuma regex de rede/auth/TLS —
-suficiente pra diagnosticar, sem tratamento especial no backend.
+Mac/Windows tem semântica de host networking diferente e não foi validado. Pré-checagem e limpeza
+de containers órfãos: ver seção dedicada abaixo.
 
 **`--network host` não cria acesso novo, só reflete o que o host já tem**: pra testar um banco
 **on-premise**, quem precisa ter rota até ele é o **servidor da aplicação** (VPN ativa, mesma rede
@@ -68,6 +66,77 @@ recebem um `dbExecFunc` (`func(ctx, script string) (string, error)`), resolvido 
 `execCmdInPod` (modo `pod`) ou `execLocalDocker` (modo `local`, `db_test_tool.go`). Mesmo formato
 de erro (`"... (stderr: ...)"`) nos dois — a classificação de erro (`extractStderr` + regexes por
 engine) não muda entre modos, só a função que efetivamente executa o comando.
+
+**Correção de um bug real** (achado testando neste próprio ambiente de dev, que não tem `docker`
+instalado): tanto `execCmdInPod` quanto `execLocalDocker` descartavam todo o `stdout` capturado
+sempre que o comando saía com erro (`return "", err`) — mas os scripts de cada engine rodam com
+`... 2>&1`, então a mensagem real de erro do cliente (`psql`/`mysql`/`mongosh`/`redis-cli`) vem em
+`stdout`, não no `stderr` separado do exec do K8s/Docker (que fica vazio nesse caso). Resultado:
+`raw_output` chegava sempre `""` no frontend (mostrado como "(sem saída)") em qualquer falha de
+conectividade — não só com Docker ausente. Corrigido devolvendo o `stdout` capturado mesmo no erro,
+usado como saída bruta primária em `runDBConnectivityStage`/`runDBBrowseStage` (cai pro `stderr` do
+exec só se `stdout` vier vazio). `extractStderr` (compartilhada com Kafka/Latência,
+`kafka_test_tool.go`) também jogava fora a mensagem de erro real quando o trecho `(stderr: ...)`
+embutido vinha vazio — caso clássico de falha antes do processo sequer rodar (`docker` não
+instalado: `exec.LookPath` falha sem gerar stdout/stderr nenhum, a causa real fica ANTES dos
+parênteses). Agora cai pra mensagem completa do erro nesse caso.
+
+**Bug de UI relacionado**: `deriveConnectivityBadges` (`DatabaseTestTab.tsx`) marcava TCP/DNS e
+Autenticação como "ok" (verde) por padrão pra qualquer status que não fosse `tcp_failed`/
+`auth_failed` — incluindo `unknown_failed` (falha não classificada pelas regexes do engine).
+Resultado visual contraditório: badges verdes ao lado de "Falha não classificada". Corrigido pra
+marcar todos os sub-estágios como "skipped" (desconhecido) nesse caso, já que não dá pra saber em
+qual etapa falhou.
+
+## Pré-checagem de Docker + reaper de containers órfãos (modo `local`)
+
+Dois problemas de UX ficaram claros corrigindo os bugs acima (justo testando num ambiente sem
+`docker` instalado):
+
+1. **Sem pré-checagem**: o usuário só descobria que faltava Docker depois de clicar em "Executar
+   Teste". Agora `GET /api/v1/db-test/docker-status` (`db_test_docker.go`) checa
+   `exec.LookPath("docker")` e, se instalado, `docker info --format '{{.ServerVersion}}'` (timeout
+   5s) — cacheado por 20s (mesmo padrão de `IsGcloudAuthActive`,
+   `internal/cloudprovider/gcp/auth.go`). Classifica `permission denied` separado de "daemon não
+   respondeu" (causa comum: usuário fora do grupo `docker`). Sem `RequireSREGroup()` — é leitura
+   informacional sobre o próprio servidor, não sobre um recurso do usuário.
+
+   Frontend: `DatabaseTestTab.tsx` consulta esse endpoint só quando `execution_mode === "local"`
+   (`staleTime` 15s); se não estiver pronto, mostra painel âmbar com o passo a passo de instalação
+   (Ubuntu/WSL2 — `curl -fsSL https://get.docker.com | sudo sh` + `usermod -aG docker $USER` +
+   `service docker start`, já que WSL2 normalmente não sobe serviços sozinho no boot) e botão
+   "Verificar novamente". `canRun` passa a exigir `dockerReady` — **decisão deliberada**: bloquear
+   o botão em vez de só avisar e deixar tentar, consistente com outros fluxos de "auth necessária"
+   já existentes na app (ex: `SNATPortWidget.tsx`).
+
+2. **Risco de container órfão**: `docker run --rm` já remove o container quando o processo termina
+   sozinho (inclusive quando o `timeout Ns` interno do script expira — o container ainda sai
+   normalmente depois, `--rm` cobre esse caso). O que **não** é coberto: se o usuário cancela um
+   teste local em andamento, o Go cancela o `context.Context` e mata o processo `docker` (CLI) via
+   SIGKILL — sinal que não pode ser interceptado, então o CLI nunca chega a rodar sua própria
+   lógica de `--rm`. O container pode continuar rodando no daemon, órfão.
+
+   **Decisão deliberada**: o reaper limpa só **containers**, nunca as imagens base
+   (`postgres:16-alpine`/`mariadb:11`/`mongo:7`/`redis:7-alpine`) — elas ficam paradas em disco sem
+   consumir CPU/RAM, e apagá-las forçaria um `pull` novo (rede + tempo) no próximo teste.
+
+   `execLocalDocker` passou a receber um `name` (`k8s-hpa-dbtest-<sessionID>`, sessionID já é único
+   por execução) — `docker run` ganhou `--name <name>` e `--label app=k8s-hpa-manager-db-test`
+   (`dbTestDockerLabel`, `db_test_docker.go`). Duas camadas de limpeza:
+   - **Imediata**: se `cmd.Run()` falhar E `ctx.Err() != nil` (veio de cancelamento, não de exit
+     code normal), dispara em goroutine própria (contexto novo, 10s, best-effort, só loga se
+     falhar) `docker rm -f <name>`.
+   - **Reaper periódico** (rede de segurança pro que escapar da limpeza imediata — crash do
+     servidor, SIGKILL do SO): `startDBTestContainerReaper()`, ticker de 5min (mesmo padrão do
+     `cleanupLoop` em `internal/web/sse/progress.go`), iniciado uma vez em `NewDBTestHandler`. A
+     cada tick: `docker ps -a --filter "label=..."  -q` → se vier algum ID, `docker inspect -f
+     '{{.Id}}|{{.Created}}' <ids...>` (uma chamada só, batched) → parseia `Created`
+     (`time.RFC3339Nano`) → qualquer container com mais de 10min (`dbTestContainerMaxAge`) leva
+     `docker rm -f` (generoso: o timeout máximo de um estágio é 15s, `dbTestMaxTimeoutMs`, então
+     nada legítimo passa de ~1min rodando). Se `docker` não estiver instalado, vira no-op silencioso
+     (sem spam de log). Lógica de "quais containers estão velhos" isolada em função pura
+     (`filterStaleContainers`) — testável com timestamps fake sem precisar de um daemon Docker real
+     (`db_test_docker_test.go`).
 
 ## Diferente do Kafka: teste **nunca escreve** no banco
 
@@ -363,7 +432,8 @@ kubectl describe pod <target_pod> -n <namespace>
 | Arquivo | O quê |
 |---|---|
 | `internal/web/handlers/db_test_tool.go` | Registry de engines (imagem, comandos, regexes de erro) + handler: resolução de pod/deployment, ephemeral container, os 2 estágios, SSE, guardrails |
-| `internal/web/frontend/src/components/DatabaseTestTab.tsx` | UI: seletores cluster/namespace/deployment/engine, modo de autenticação, toggle de explorar dados, resultado com badges/lista de objetos |
+| `internal/web/handlers/db_test_docker.go` | Pré-checagem de Docker (`GET /docker-status`, cache 20s) + reaper de containers órfãos (imediato no cancelamento + ticker periódico de 5min) |
+| `internal/web/frontend/src/components/DatabaseTestTab.tsx` | UI: seletores cluster/namespace/deployment/engine, modo de autenticação, toggle de explorar dados, resultado com badges/lista de objetos, painel de pré-checagem de Docker no modo local |
 | `internal/web/frontend/src/lib/api/types.ts` | Tipos `RunDBTestRequest`, `DBAuthConfig`, `DBTestResult`, etc. |
 | `internal/web/frontend/src/lib/api/client.ts` | `runDBTest`/`getDBTestStreamURL`/`cancelDBTest` |
 | `internal/web/server.go` | Registro das rotas `/api/v1/db-test/*` |
@@ -382,3 +452,9 @@ kubectl describe pod <target_pod> -n <namespace>
 - Validado nesta rodada só por `go build`/`tsc --noEmit`/`rebuild-web.sh` — sem banco real disponível
   no ambiente de desenvolvimento para validar ponta a ponta contra os 4 engines; a imagem `mongo:7`
   em particular precisa de confirmação em produção de que `mongosh` vem embutido nessa tag.
+- Pré-checagem de Docker e correção de saída bruta vazia validadas de verdade neste ambiente (que
+  não tem `docker` instalado — reproduz o cenário real). O reaper de containers órfãos foi validado
+  só por teste unitário da função pura de decisão de idade (`filterStaleContainers`,
+  `db_test_docker_test.go`) — a limpeza imediata no cancelamento e o reaper periódico rodando de
+  fato contra um daemon Docker real, cancelando um teste no meio, não foram exercitados ponta a
+  ponta (sem Docker disponível aqui pra reproduzir).

@@ -1992,6 +1992,13 @@ export interface DBTestSSEEvent {
   result?: DBTestResult; // presente só no evento "complete"
 }
 
+// Pré-checagem de Docker pro modo "local" (Direto do servidor) — GET /db-test/docker-status.
+export interface DBDockerStatus {
+  installed: boolean;
+  daemon_running: boolean;
+  error?: string;
+}
+
 // Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.
 // Refletem o que o RBAC do cluster permite para o usuário atual (não grupos AD).
 export interface K8sNamespacePermissions {
