@@ -505,8 +505,17 @@ func splitKafkaExitMarker(output string) (text string, exitCode int, ok bool) {
 	return text, code, true
 }
 
-// extractStderr extrai o texto de stderr de um erro devolvido por execCmdInPod (formato
-// "stream: %v (stderr: %s)") — usado só pra classificação/exibição, não muda execCmdInPod.
+// extractStderr extrai o texto de stderr de um erro devolvido por execCmdInPod/execLocalDocker
+// (formato "stream: %v (stderr: %s)" / "exec: %v (stderr: %s)") — usado só como fallback quando o
+// stdout do próprio comando (que já vem com "2>&1", ver buildConnectivity/buildBrowse em
+// db_test_tool.go) veio vazio, ou seja, quando o comando nunca chegou a rodar de fato.
+//
+// Nesse caso o stderr embutido no erro TAMBÉM costuma vir vazio (ex: "docker" não instalado no
+// servidor — cmd.Run() falha em exec.LookPath antes de qualquer processo existir, sem stdout nem
+// stderr) — o texto útil está no "%v" antes de "(stderr: ", não dentro dos parênteses. Devolver só
+// o conteúdo dos parênteses nesse caso jogava fora a única informação disponível, resultando em
+// "" (frontend mostra "(sem saída)"). Aqui, se o conteúdo extraído vier vazio, cai pra mensagem
+// completa do erro.
 func extractStderr(err error) string {
 	if err == nil {
 		return ""
@@ -516,8 +525,11 @@ func extractStderr(err error) string {
 	if idx == -1 {
 		return msg
 	}
-	rest := msg[idx+len("(stderr: "):]
-	return strings.TrimSuffix(rest, ")")
+	rest := strings.TrimSuffix(msg[idx+len("(stderr: "):], ")")
+	if strings.TrimSpace(rest) == "" {
+		return msg
+	}
+	return rest
 }
 
 // runKafkaConnectivityStage roda `kcat -L` (metadata) — cobre TCP+DNS+protocolo Kafka+SASL num

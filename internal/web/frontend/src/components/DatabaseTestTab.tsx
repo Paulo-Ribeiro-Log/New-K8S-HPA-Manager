@@ -129,19 +129,34 @@ function StageBadge({ label, status }: { label: string; status: "ok" | "failed" 
 
 // Deriva os badges de TCP/DNS, Autenticação (só se mode !== "none") e TLS (só se useTLS) a partir
 // da classificação única do estágio de conectividade (ver db_test_tool.go).
+//
+// "unknown_failed" (regex de erro do engine não reconheceu a saída — ex: docker não instalado no
+// servidor, connection string malformada, erro de infra antes do cliente rodar) não permite saber
+// em qual sub-estágio a falha ocorreu. Sem esse `known` guard, qualquer status diferente de
+// "tcp_failed"/"auth_failed" caía no `: "ok"` do fallback — TCP/DNS e Autenticação apareciam com
+// check verde mesmo quando o teste falhou de forma não classificada, contradizendo a mensagem de
+// erro ao lado. Aqui, todos os sub-estágios viram "skipped" (cinza/desconhecido) nesse caso.
 function deriveConnectivityBadges(status: DBStageStatus, authMode: DBAuthMode, useTLS: boolean) {
   const badges: { label: string; status: "ok" | "failed" | "skipped" }[] = [];
-  badges.push({ label: "TCP/DNS", status: status === "tcp_failed" ? "failed" : "ok" });
+  const known = status === "ok" || status === "tcp_failed" || status === "auth_failed" || status === "tls_failed";
+
+  badges.push({ label: "TCP/DNS", status: !known ? "skipped" : status === "tcp_failed" ? "failed" : "ok" });
   if (authMode !== "none") {
     badges.push({
       label: "Autenticação",
-      status: status === "tcp_failed" ? "skipped" : status === "auth_failed" ? "failed" : "ok",
+      status: !known ? "skipped" : status === "tcp_failed" ? "skipped" : status === "auth_failed" ? "failed" : "ok",
     });
   }
   if (useTLS) {
     badges.push({
       label: "TLS",
-      status: status === "tcp_failed" || status === "auth_failed" ? "skipped" : status === "tls_failed" ? "failed" : "ok",
+      status: !known
+        ? "skipped"
+        : status === "tcp_failed" || status === "auth_failed"
+        ? "skipped"
+        : status === "tls_failed"
+        ? "failed"
+        : "ok",
     });
   }
   return badges;
@@ -438,20 +453,22 @@ export default function DatabaseTestTab() {
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[220px]">
-            <ClusterSelectorForTab
-              selectedCluster={cluster}
-              onClusterChange={(v) => {
-                setCluster(v);
-                setNamespace("");
-                setDeployment("");
-                setResult(null);
-              }}
-              clusters={clusters.map((c) => c.context)}
-              tabLabel="Teste de Banco de Dados"
-              clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
-            />
-          </div>
+          {needsCluster && (
+            <div className="min-w-[220px]">
+              <ClusterSelectorForTab
+                selectedCluster={cluster}
+                onClusterChange={(v) => {
+                  setCluster(v);
+                  setNamespace("");
+                  setDeployment("");
+                  setResult(null);
+                }}
+                clusters={clusters.map((c) => c.context)}
+                tabLabel="Teste de Banco de Dados"
+                clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
+              />
+            </div>
+          )}
 
           {executionMode === "pod" && (
             <>
