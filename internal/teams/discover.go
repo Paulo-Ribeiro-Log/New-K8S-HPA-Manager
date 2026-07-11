@@ -397,7 +397,13 @@ teamsLoaded:
 	// ThreadId do Mr.ViaBot (descoberto na Fase 0)
 	const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"
 
-	// Aguardar SkypeToken ser capturado (indica sessão ativa). Máximo 90s.
+	// Aguardar SkypeToken ser capturado. Máximo 90s.
+	//
+	// Testado ao vivo removendo essa espera (achando que era só usada no fetch() diagnóstico
+	// pro chatsvcagg, que o MCAS sempre bloqueia): quebrou a extração de verdade (0 mensagens
+	// no DOM). Na prática o SkypeToken funciona como sinal indireto de "o Teams terminou de
+	// sincronizar dados o suficiente pra aceitar interação" — sem esperar por ele, o
+	// hash-nav/click/scroll rodam cedo demais, antes da conversa estar pronta. Mantido.
 	for i := 0; i < 18; i++ {
 		time.Sleep(5 * time.Second)
 		mu.Lock()
@@ -421,7 +427,11 @@ teamsLoaded:
 	} else {
 		logger.Warn().Err(navErr).Msg("[Teams] Falha ao navegar via hash")
 	}
-	time.Sleep(15 * time.Second)
+	// Testado ao vivo: esperar por [data-tid="messageBody"] aqui não adianta — o Teams só
+	// renderiza esses elementos DEPOIS do scroll (lista virtualizada, ver mais abaixo), então
+	// um polling por esse seletor sempre bate no teto do timeout, sem ganhar nada sobre um
+	// sleep fixo. 3s é suficiente pra rota SPA via hash processar.
+	time.Sleep(3 * time.Second)
 
 	// Se o hash não abriu a conversa, tentar clicar no item da lista de chats
 	clickJS := `() => {
@@ -453,10 +463,18 @@ teamsLoaded:
 		return { clicked: false };
 	}`
 	clickRes, clickErr := page.Eval(clickJS)
+	clicked := false
 	if clickErr == nil && !clickRes.Value.Nil() {
 		logger.Info().Str("result", clickRes.Value.String()).Msg("[Teams] Tentativa de click na conversa Mr.ViaBot")
+		clicked = clickRes.Value.Get("clicked").Bool()
 	}
-	time.Sleep(10 * time.Second)
+	// Só vale esperar aqui se o click realmente aconteceu — se nada foi clicado, a navegação
+	// via hash acima provavelmente já resolveu (ou nada vai mudar esperando às cegas). Mesmo
+	// raciocínio do sleep acima: o conteúdo só aparece depois do scroll, então 3s (só pra
+	// deixar o click processar) é tão eficaz quanto os 10s fixos anteriores.
+	if clicked {
+		time.Sleep(3 * time.Second)
+	}
 
 	// Rolar para o topo da conversa para forçar carregamento lazy de mensagens antigas.
 	// O Teams só renderiza mensagens próximas ao viewport — sem scroll, CHGs de horas
