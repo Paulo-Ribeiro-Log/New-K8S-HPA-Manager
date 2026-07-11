@@ -630,8 +630,9 @@ func (h *GitHubReleasesHandler) GetProductionDeployment(c *gin.Context) {
 
 	record, err := h.deploymentRegistry.GetProductionVersion(appName)
 	if err != nil {
-		// Não encontrado não é erro 500, é 404
-		if strings.Contains(err.Error(), "deployment não encontrado") {
+		// Não encontrado não é erro 500, é 404 — cobre tanto "não encontrado em clusters de
+		// produção" quanto "encontrado apenas em ambiente não-produtivo" (GetProductionVersion).
+		if strings.Contains(err.Error(), "não encontrado") {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
@@ -655,6 +656,7 @@ func (h *GitHubReleasesHandler) GetProductionDeployment(c *gin.Context) {
 		"last_seen":       record.LastSeen,  // Data do último scan
 		"squad":           record.Squad,
 		"servicenow_task": record.ServiceNowTask,
+		"github_repo":     record.GithubRepo,
 	})
 }
 
@@ -1294,6 +1296,14 @@ func (h *GitHubReleasesHandler) extractDeploymentRecord(deployment *appsv1.Deplo
 		servicenowTask = "CHG" + servicenowTask
 	}
 
+	// Extrair repositório GitHub — annotation fica no Pod Template (spec.template.metadata.
+	// annotations), não no metadata do Deployment; fallback pro metadata do próprio Deployment
+	// pra cobrir manifests que colocam a annotation lá (mesmo padrão de squad/servicenow-task).
+	githubRepo := deployment.Spec.Template.Annotations["devops.k8s.io/repository"]
+	if githubRepo == "" && deployment.Annotations != nil {
+		githubRepo = deployment.Annotations["devops.k8s.io/repository"]
+	}
+
 	// Extrair imagem e tag do primeiro container
 	var fullImage, imageTag string
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
@@ -1335,13 +1345,17 @@ func (h *GitHubReleasesHandler) extractDeploymentRecord(deployment *appsv1.Deplo
 		Status:          status,
 		Squad:           squad,
 		ServiceNowTask:  servicenowTask,
+		GithubRepo:      githubRepo,
 		ResourceKind:    "Deployment",
 		CreatedAt:       deployment.CreationTimestamp.Time,
 	}
 }
 
-// extractLabelsMetadata extrai squad, servicenow task e app name de labels/annotations
-func extractLabelsMetadata(labels, annotations map[string]string, fallbackName string) (appName, squad, servicenowTask string) {
+// extractLabelsMetadata extrai squad, servicenow task, repo GitHub e app name de labels/
+// annotations. podTemplateAnnotations é o spec.template.metadata.annotations (ou o equivalente
+// aninhado do CronJob, spec.jobTemplate.spec.template.metadata.annotations) — a annotation
+// devops.k8s.io/repository normalmente fica lá, não no metadata do objeto top-level.
+func extractLabelsMetadata(labels, annotations, podTemplateAnnotations map[string]string, fallbackName string) (appName, squad, servicenowTask, githubRepo string) {
 	appName = labels["app.kubernetes.io/name"]
 	if appName == "" {
 		appName = labels["app"]
@@ -1361,6 +1375,11 @@ func extractLabelsMetadata(labels, annotations map[string]string, fallbackName s
 	}
 	if servicenowTask != "" && !strings.HasPrefix(servicenowTask, "CHG") {
 		servicenowTask = "CHG" + servicenowTask
+	}
+
+	githubRepo = podTemplateAnnotations["devops.k8s.io/repository"]
+	if githubRepo == "" {
+		githubRepo = annotations["devops.k8s.io/repository"]
 	}
 	return
 }
@@ -1386,7 +1405,8 @@ func (h *GitHubReleasesHandler) extractCronJobRecord(cj *batchv1.CronJob, cluste
 	}
 
 	version := labels["app.kubernetes.io/version"]
-	appName, squad, servicenowTask := extractLabelsMetadata(labels, annotations, cj.Name)
+	appName, squad, servicenowTask, githubRepo := extractLabelsMetadata(
+		labels, annotations, cj.Spec.JobTemplate.Spec.Template.Annotations, cj.Name)
 	fullImage, imageTag := extractFirstContainerImage(cj.Spec.JobTemplate.Spec.Template.Spec.Containers)
 	if version == "" {
 		version = imageTag
@@ -1403,6 +1423,7 @@ func (h *GitHubReleasesHandler) extractCronJobRecord(cj *batchv1.CronJob, cluste
 		Status:         "healthy",
 		Squad:          squad,
 		ServiceNowTask: servicenowTask,
+		GithubRepo:     githubRepo,
 		ResourceKind:   "CronJob",
 		CreatedAt:      cj.CreationTimestamp.Time,
 	}
@@ -1420,7 +1441,8 @@ func (h *GitHubReleasesHandler) extractStatefulSetRecord(ss *appsv1.StatefulSet,
 	}
 
 	version := labels["app.kubernetes.io/version"]
-	appName, squad, servicenowTask := extractLabelsMetadata(labels, annotations, ss.Name)
+	appName, squad, servicenowTask, githubRepo := extractLabelsMetadata(
+		labels, annotations, ss.Spec.Template.Annotations, ss.Name)
 	fullImage, imageTag := extractFirstContainerImage(ss.Spec.Template.Spec.Containers)
 	if version == "" {
 		version = imageTag
@@ -1452,6 +1474,7 @@ func (h *GitHubReleasesHandler) extractStatefulSetRecord(ss *appsv1.StatefulSet,
 		Status:          status,
 		Squad:           squad,
 		ServiceNowTask:  servicenowTask,
+		GithubRepo:      githubRepo,
 		ResourceKind:    "StatefulSet",
 		CreatedAt:       ss.CreationTimestamp.Time,
 	}
@@ -1469,7 +1492,8 @@ func (h *GitHubReleasesHandler) extractDaemonSetRecord(ds *appsv1.DaemonSet, clu
 	}
 
 	version := labels["app.kubernetes.io/version"]
-	appName, squad, servicenowTask := extractLabelsMetadata(labels, annotations, ds.Name)
+	appName, squad, servicenowTask, githubRepo := extractLabelsMetadata(
+		labels, annotations, ds.Spec.Template.Annotations, ds.Name)
 	fullImage, imageTag := extractFirstContainerImage(ds.Spec.Template.Spec.Containers)
 	if version == "" {
 		version = imageTag
@@ -1498,6 +1522,7 @@ func (h *GitHubReleasesHandler) extractDaemonSetRecord(ds *appsv1.DaemonSet, clu
 		Status:          status,
 		Squad:           squad,
 		ServiceNowTask:  servicenowTask,
+		GithubRepo:      githubRepo,
 		ResourceKind:    "DaemonSet",
 		CreatedAt:       ds.CreationTimestamp.Time,
 	}
