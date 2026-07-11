@@ -12,6 +12,15 @@ import (
 
 const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"
 
+// MaxMessageAge limita quão antiga uma mensagem pode ser pra entrar no resultado da extração.
+// O IndexedDB (skypexspaces) guarda o histórico COMPLETO do Mr.ViaBot sem paginação — sem esse
+// corte, cada refresh reprocessa meses de mensagens antigas (visto em produção: 321 CHGs
+// coletadas contra uma média real de ~30/dia no canal). Como o filtro é por PostedAt (data real
+// da mensagem, não da extração), itens genuinamente antigos somem de vez, em vez de reaparecer
+// a cada refresh com um novo ExtractedAt. 7 dias cobre uma semana de CHGs pendentes de
+// aprovação/importação sem deixar o cache crescer sem limite.
+const MaxMessageAge = 7 * 24 * time.Hour
+
 // Extractor extrai aprovações SRE do Mr.ViaBot no Microsoft Teams via automação de browser.
 type Extractor struct {
 	SessionDir string
@@ -85,7 +94,10 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 	}
 
 	items := ParseRawMessages(allMessages)
-	e.Logger.Info().Int("count", len(items)).Msg("[Teams] Aprovações extraídas")
+	e.Logger.Info().Int("count", len(items)).Msg("[Teams] Aprovações extraídas (antes do filtro de idade)")
+
+	items = filterByAge(items, MaxMessageAge, time.Now())
+	e.Logger.Info().Int("count", len(items)).Dur("max_age", MaxMessageAge).Msg("[Teams] Aprovações após filtro de idade")
 
 	source := "dom"
 	if _, err := os.Stat(idbFile); err == nil {
@@ -97,4 +109,21 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 		ExtractedAt: time.Now(),
 		Source:      source,
 	}, nil
+}
+
+// filterByAge descarta itens cuja mensagem foi postada há mais de maxAge — sem isso o histórico
+// completo do IndexedDB inunda o resultado com mensagens de meses atrás a cada refresh. Itens
+// sem PostedAt (timestamp não capturado) são mantidos: vêm de caminhos inerentemente limitados
+// ao conteúdo já carregado (DOM visível, messages[] do conversation-manager), não do histórico
+// irrestrito do IndexedDB — não há como confirmar que são antigos.
+func filterByAge(items []ApprovalItem, maxAge time.Duration, now time.Time) []ApprovalItem {
+	cutoff := now.Add(-maxAge)
+	filtered := items[:0]
+	for _, item := range items {
+		if item.PostedAt != nil && item.PostedAt.Before(cutoff) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }

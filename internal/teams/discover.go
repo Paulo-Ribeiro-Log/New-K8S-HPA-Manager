@@ -397,7 +397,13 @@ teamsLoaded:
 	// ThreadId do Mr.ViaBot (descoberto na Fase 0)
 	const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"
 
-	// Aguardar SkypeToken ser capturado (indica sessão ativa). Máximo 90s.
+	// Aguardar SkypeToken ser capturado. Máximo 90s.
+	//
+	// Testado ao vivo removendo essa espera (achando que era só usada no fetch() diagnóstico
+	// pro chatsvcagg, que o MCAS sempre bloqueia): quebrou a extração de verdade (0 mensagens
+	// no DOM). Na prática o SkypeToken funciona como sinal indireto de "o Teams terminou de
+	// sincronizar dados o suficiente pra aceitar interação" — sem esperar por ele, o
+	// hash-nav/click/scroll rodam cedo demais, antes da conversa estar pronta. Mantido.
 	for i := 0; i < 18; i++ {
 		time.Sleep(5 * time.Second)
 		mu.Lock()
@@ -421,7 +427,11 @@ teamsLoaded:
 	} else {
 		logger.Warn().Err(navErr).Msg("[Teams] Falha ao navegar via hash")
 	}
-	time.Sleep(15 * time.Second)
+	// Testado ao vivo: esperar por [data-tid="messageBody"] aqui não adianta — o Teams só
+	// renderiza esses elementos DEPOIS do scroll (lista virtualizada, ver mais abaixo), então
+	// um polling por esse seletor sempre bate no teto do timeout, sem ganhar nada sobre um
+	// sleep fixo. 3s é suficiente pra rota SPA via hash processar.
+	time.Sleep(3 * time.Second)
 
 	// Se o hash não abriu a conversa, tentar clicar no item da lista de chats
 	clickJS := `() => {
@@ -453,10 +463,18 @@ teamsLoaded:
 		return { clicked: false };
 	}`
 	clickRes, clickErr := page.Eval(clickJS)
+	clicked := false
 	if clickErr == nil && !clickRes.Value.Nil() {
 		logger.Info().Str("result", clickRes.Value.String()).Msg("[Teams] Tentativa de click na conversa Mr.ViaBot")
+		clicked = clickRes.Value.Get("clicked").Bool()
 	}
-	time.Sleep(10 * time.Second)
+	// Só vale esperar aqui se o click realmente aconteceu — se nada foi clicado, a navegação
+	// via hash acima provavelmente já resolveu (ou nada vai mudar esperando às cegas). Mesmo
+	// raciocínio do sleep acima: o conteúdo só aparece depois do scroll, então 3s (só pra
+	// deixar o click processar) é tão eficaz quanto os 10s fixos anteriores.
+	if clicked {
+		time.Sleep(3 * time.Second)
+	}
 
 	// Rolar para o topo da conversa para forçar carregamento lazy de mensagens antigas.
 	// O Teams só renderiza mensagens próximas ao viewport — sem scroll, CHGs de horas
@@ -696,6 +714,32 @@ teamsLoaded:
 		const hasKw = (s) => keywords.some(k => s.includes(k)) || /chg\d{5,}/i.test(s);
 		const results = { total_dbs: dbs.length, viabot: null, all_matches: [], conv_topics: [], skypexspaces_stores: [], error: null };
 
+		// O schema exato de timestamp no IndexedDB do Teams varia entre versões/stores — tenta
+		// os nomes de campo conhecidos do Skype/Teams primeiro (mais confiável), com fallback
+		// genérico por qualquer chave própria de "row" cujo nome contenha "time" e o valor pareça
+		// timestamp (string ISO ou epoch ms plausível). Normaliza epoch ms pra ISO string, já que
+		// o parser Go só entende formatos RFC3339.
+		const findRowTimestamp = (row) => {
+			if (!row || typeof row !== 'object') return '';
+			const candidates = [
+				'composetime', 'composeTime', 'originalarrivaltime', 'originalArrivalTime',
+				'clientArrivalTime', 'clientarrivaltime', 'arrivalTime', 'arrivaltime',
+				'serverArrivalTime', 'createdTime', 'createdtime', 'timestamp', 'time',
+			];
+			for (const key of candidates) {
+				const v = row[key];
+				if (typeof v === 'string' && v.length >= 8) return v;
+				if (typeof v === 'number' && v > 1000000000000) return new Date(v).toISOString();
+			}
+			for (const key of Object.keys(row)) {
+				if (!/time/i.test(key)) continue;
+				const v = row[key];
+				if (typeof v === 'string' && v.length >= 8) return v;
+				if (typeof v === 'number' && v > 1000000000000) return new Date(v).toISOString();
+			}
+			return '';
+		};
+
 		// 1. conversation-manager: buscar nos campos botMembers, threadProperties, lastMessage
 		for (const {name} of dbs) {
 			if (!name || !name.includes('conversation-manager:react-web-client')) continue;
@@ -783,9 +827,7 @@ teamsLoaded:
 						const rawLow = raw.toLowerCase();
 						if (!hasKw(rawLow)) continue;
 						results.viabot = { id: row.id || row.threadId, source: 'skypexspaces/' + sn, snippet: rawLow.substring(0, 400) };
-						// composetime/originalarrivaltime: campos padrão do schema Skype/Teams pra
-						// hora de envio da mensagem (ISO8601). createdTime como último fallback.
-						const postedAt = row.composetime || row.originalarrivaltime || row.createdTime || '';
+						const postedAt = findRowTimestamp(row);
 						// Extrair conteúdo de todos os campos textuais conhecidos
 						const content = row.content || row.body || row.text || row.message || '';
 						if (typeof content === 'string' && content.length > 0) {
@@ -802,7 +844,7 @@ teamsLoaded:
 		// Também extrair messages[] do conversation-manager (se disponível para o ViaBot)
 		if (results.viabot && Array.isArray(results.viabot.messages)) {
 			for (const msg of results.viabot.messages) {
-				const postedAt = (msg && typeof msg === 'object') ? (msg.composetime || msg.originalarrivaltime || msg.createdTime || '') : '';
+				const postedAt = findRowTimestamp(msg);
 				const s = typeof msg === 'string' ? msg : JSON.stringify(msg);
 				if (s.length > 5) idbMessages.push({ text: s.substring(0, 8000), postedAt });
 			}
@@ -829,8 +871,8 @@ teamsLoaded:
 				Msg("[Teams] IndexedDB escaneado")
 
 			// Salvar mensagens do IndexedDB para processamento pelo extractor. Cada entrada vem
-			// como {text, postedAt} do fetchJS — postedAt vazio quando o row não tinha
-			// composetime/originalarrivaltime/createdTime.
+			// como {text, postedAt} do fetchJS — postedAt vazio quando findRowTimestamp não achou
+			// nenhum campo de horário reconhecível no row.
 			if idbMsgs, ok := convResults["idb_messages"].([]interface{}); ok && len(idbMsgs) > 0 {
 				var rawMsgs []RawMessage
 				for _, m := range idbMsgs {
