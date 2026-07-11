@@ -26,6 +26,7 @@ type DeploymentRecord struct {
 	Status          string    `json:"status"`           // healthy, warning, critical
 	Squad           string    `json:"squad"`            // devops.k8s.io/squad
 	ServiceNowTask  string    `json:"servicenow_task"`  // devops.k8s.io/servicenow-task-number (CHG prefix)
+	GithubRepo      string    `json:"github_repo"`      // spec.template.metadata.annotations devops.k8s.io/repository
 	ResourceKind    string    `json:"resource_kind"`    // Deployment, CronJob, StatefulSet, DaemonSet
 	CreatedAt       time.Time `json:"created_at"`       // Data de criação real do workload (metadata.creationTimestamp)
 	FirstSeen       time.Time `json:"first_seen"`
@@ -86,6 +87,7 @@ func (r *DeploymentRegistry) createSchema() error {
 		status TEXT,
 		squad TEXT,
 		servicenow_task TEXT,
+		github_repo TEXT,
 		resource_kind TEXT DEFAULT 'Deployment',
 		created_at TIMESTAMP,
 		first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -119,6 +121,7 @@ func (r *DeploymentRegistry) createSchema() error {
 	// Migrações: adicionar colunas novas em bancos existentes (erros ignorados se já existirem)
 	r.db.Exec(`ALTER TABLE deployments ADD COLUMN created_at TIMESTAMP;`)
 	r.db.Exec(`ALTER TABLE deployments ADD COLUMN resource_kind TEXT DEFAULT 'Deployment';`)
+	r.db.Exec(`ALTER TABLE deployments ADD COLUMN github_repo TEXT;`)
 
 	return nil
 }
@@ -144,8 +147,8 @@ func (r *DeploymentRegistry) UpsertDeployment(record DeploymentRecord) error {
 	INSERT INTO deployments (
 		deployment_name, namespace, cluster, version, image_tag, full_image,
 		replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-		resource_kind, created_at, last_seen, last_health_check
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		github_repo, resource_kind, created_at, last_seen, last_health_check
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(cluster, namespace, deployment_name) DO UPDATE SET
 		version = excluded.version,
 		image_tag = excluded.image_tag,
@@ -156,6 +159,7 @@ func (r *DeploymentRegistry) UpsertDeployment(record DeploymentRecord) error {
 		status = excluded.status,
 		squad = excluded.squad,
 		servicenow_task = excluded.servicenow_task,
+		github_repo = excluded.github_repo,
 		resource_kind = excluded.resource_kind,
 		last_seen = excluded.last_seen,
 		last_health_check = excluded.last_health_check
@@ -167,7 +171,7 @@ func (r *DeploymentRegistry) UpsertDeployment(record DeploymentRecord) error {
 		record.Version, record.ImageTag, record.FullImage,
 		record.ReplicasCurrent, record.ReplicasDesired, record.AppName,
 		record.Status, record.Squad, record.ServiceNowTask,
-		resourceKind, record.CreatedAt, now, now,
+		record.GithubRepo, resourceKind, record.CreatedAt, now, now,
 	)
 
 	if err != nil {
@@ -194,7 +198,7 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 	query := `
 	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
 	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-	       resource_kind, created_at, first_seen, last_seen, last_health_check
+	       github_repo, resource_kind, created_at, first_seen, last_seen, last_health_check
 	FROM deployments
 	WHERE app_name = ? OR deployment_name LIKE ? OR deployment_name = ?
 	ORDER BY last_seen DESC
@@ -209,7 +213,7 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 	var records []DeploymentRecord
 	for rows.Next() {
 		var r DeploymentRecord
-		var resourceKind sql.NullString
+		var githubRepo, resourceKind sql.NullString
 		var createdAt, firstSeen, lastSeen, lastHealthCheck sql.NullTime
 
 		err := rows.Scan(
@@ -217,13 +221,14 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 			&r.Version, &r.ImageTag, &r.FullImage,
 			&r.ReplicasCurrent, &r.ReplicasDesired, &r.AppName,
 			&r.Status, &r.Squad, &r.ServiceNowTask,
-			&resourceKind, &createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
+			&githubRepo, &resourceKind, &createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
 		)
 
 		if err != nil {
 			continue
 		}
 
+		r.GithubRepo = githubRepo.String
 		if resourceKind.Valid {
 			r.ResourceKind = resourceKind.String
 		} else {
@@ -248,47 +253,99 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 	return records, nil
 }
 
-// GetProductionVersion busca a versão mais provável em produção
-// Prioriza: 1) Match exato de deployment_name/app_name, 2) LIKE como fallback
-// Prioriza clusters com nome contendo "prod"
+// nonProdClusterTokens são os marcadores de ambiente não-produtivo reconhecidos por token
+// (não por substring bruta) — mesmo conjunto usado em extractEnvHint (internal/web/handlers/
+// dynatrace.go), mais "preprod"/"pre-prod": esse é o caso real que motivou a reescrita de
+// isProdCluster, já que "asaplog-preprod-admin" (homologação) batia no antigo filtro SQL
+// `cluster LIKE '%prod%'` — "preprod" contém "prod" como substring, mas não é produção.
+var nonProdClusterTokens = []string{"hlg", "sit", "stg", "hml", "uat", "dev", "preprod", "homolog", "staging", "sandbox", "qa", "test"}
+
+// isProdCluster classifica um nome de cluster/context como produção por TOKEN (segmento entre
+// delimitadores), não por substring — decide se contém um token "prod"/"prd" E nenhum token
+// da lista nonProdClusterTokens. Substring simples (LIKE '%prod%') classificava erroneamente
+// "asaplog-preprod-admin" como produção só porque "preprod" contém "prod".
+func isProdCluster(cluster string) bool {
+	tokens := strings.FieldsFunc(strings.ToLower(cluster), func(r rune) bool {
+		return r == '-' || r == '_' || r == '/' || r == '.' || r == ':'
+	})
+	hasProdToken := false
+	for _, tok := range tokens {
+		for _, marker := range nonProdClusterTokens {
+			if tok == marker {
+				return false
+			}
+		}
+		if tok == "prod" || tok == "prd" || tok == "production" {
+			hasProdToken = true
+		}
+	}
+	return hasProdToken
+}
+
+// GetProductionVersion busca a versão mais provável em produção.
+// Prioriza: 1) Match exato de deployment_name/app_name, 2) LIKE como fallback.
+// A classificação de "é produção?" acontece em Go (isProdCluster), não em SQL — LIKE bruto
+// não distingue "asaplog-prod" de "asaplog-preprod" (ver isProdCluster).
 func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRecord, error) {
 	query := `
 	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
 	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-	       resource_kind, created_at, first_seen, last_seen, last_health_check
+	       github_repo, resource_kind, created_at, first_seen, last_seen, last_health_check
 	FROM deployments
 	WHERE (app_name = ? OR deployment_name LIKE ? OR deployment_name = ?)
-	  AND (cluster LIKE '%prod%' OR cluster LIKE '%prd%')
 	ORDER BY
 	  CASE
 	    WHEN deployment_name = ? OR app_name = ? THEN 0
 	    ELSE 1
 	  END,
 	  last_seen DESC
-	LIMIT 1
 	`
 
-	var record DeploymentRecord
-	var resourceKind sql.NullString
-	var createdAt, firstSeen, lastSeen, lastHealthCheck sql.NullTime
-
-	// Parâmetros: WHERE(app_name=, LIKE, deployment_name=), ORDER BY CASE(deployment_name=, app_name=)
-	err := r.db.QueryRow(query, appName, "%"+appName+"%", appName, appName, appName).Scan(
-		&record.ID, &record.DeploymentName, &record.Namespace, &record.Cluster,
-		&record.Version, &record.ImageTag, &record.FullImage,
-		&record.ReplicasCurrent, &record.ReplicasDesired, &record.AppName,
-		&record.Status, &record.Squad, &record.ServiceNowTask,
-		&resourceKind, &createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("deployment não encontrado em clusters de produção")
-	}
-
+	rows, err := r.db.Query(query, appName, "%"+appName+"%", appName, appName, appName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get production version: %w", err)
 	}
+	defer rows.Close()
 
+	var record DeploymentRecord
+	var githubRepo, resourceKind sql.NullString
+	var createdAt, firstSeen, lastSeen, lastHealthCheck sql.NullTime
+	found := false
+	var nonProdClusterSeen string
+
+	for rows.Next() {
+		var rec DeploymentRecord
+		var gr, rk sql.NullString
+		var ca, fs, ls, lhc sql.NullTime
+		if err := rows.Scan(
+			&rec.ID, &rec.DeploymentName, &rec.Namespace, &rec.Cluster,
+			&rec.Version, &rec.ImageTag, &rec.FullImage,
+			&rec.ReplicasCurrent, &rec.ReplicasDesired, &rec.AppName,
+			&rec.Status, &rec.Squad, &rec.ServiceNowTask,
+			&gr, &rk, &ca, &fs, &ls, &lhc,
+		); err != nil {
+			continue
+		}
+		if !isProdCluster(rec.Cluster) {
+			if nonProdClusterSeen == "" {
+				nonProdClusterSeen = rec.Cluster
+			}
+			continue
+		}
+		// Primeira linha de produção já é a de melhor rank (ORDER BY do SQL já ordenou).
+		record, githubRepo, resourceKind, createdAt, firstSeen, lastSeen, lastHealthCheck = rec, gr, rk, ca, fs, ls, lhc
+		found = true
+		break
+	}
+
+	if !found {
+		if nonProdClusterSeen != "" {
+			return nil, fmt.Errorf("deployment encontrado apenas em ambiente não-produtivo (cluster %q) — não encontrado em produção", nonProdClusterSeen)
+		}
+		return nil, fmt.Errorf("deployment não encontrado em clusters de produção")
+	}
+
+	record.GithubRepo = githubRepo.String
 	if resourceKind.Valid {
 		record.ResourceKind = resourceKind.String
 	} else {
@@ -383,7 +440,7 @@ func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions
 	query := `
 	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
 	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-	       resource_kind, first_seen, last_seen, last_health_check
+	       github_repo, resource_kind, first_seen, last_seen, last_health_check
 	FROM deployments
 	WHERE 1=1
 	`
@@ -422,7 +479,7 @@ func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions
 	var records []DeploymentRecord
 	for rows.Next() {
 		var r DeploymentRecord
-		var resourceKind sql.NullString
+		var githubRepo, resourceKind sql.NullString
 		var firstSeen, lastSeen, lastHealthCheck sql.NullTime
 
 		err := rows.Scan(
@@ -430,13 +487,14 @@ func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions
 			&r.Version, &r.ImageTag, &r.FullImage,
 			&r.ReplicasCurrent, &r.ReplicasDesired, &r.AppName,
 			&r.Status, &r.Squad, &r.ServiceNowTask,
-			&resourceKind, &firstSeen, &lastSeen, &lastHealthCheck,
+			&githubRepo, &resourceKind, &firstSeen, &lastSeen, &lastHealthCheck,
 		)
 
 		if err != nil {
 			continue
 		}
 
+		r.GithubRepo = githubRepo.String
 		if resourceKind.Valid {
 			r.ResourceKind = resourceKind.String
 		} else {

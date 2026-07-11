@@ -97,6 +97,7 @@ interface DeploymentRecord {
   version: string;
   squad: string;
   servicenow_task: string;
+  github_repo?: string; // spec.template.metadata.annotations devops.k8s.io/repository
   last_seen: string;
   age: string;
   resource_kind?: string;
@@ -330,6 +331,7 @@ export const GitHubReleasesTab = () => {
     last_seen: string;       // Data do último scan
     squad: string;
     servicenow_task: string;
+    github_repo?: string;    // spec.template.metadata.annotations devops.k8s.io/repository
   }>({
     queryKey: ['github-production-version', deploymentName],
     queryFn: async () => {
@@ -343,7 +345,11 @@ export const GitHubReleasesTab = () => {
       );
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        // Repassa o motivo real do backend (ex: "encontrado apenas em ambiente
+        // não-produtivo (cluster X)") em vez de um "HTTP 404" genérico — o backend agora
+        // distingue "nunca escaneado" de "só existe em homologação/preprod".
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `HTTP ${response.status}`);
       }
 
       return response.json();
@@ -771,7 +777,13 @@ export const GitHubReleasesTab = () => {
     if (productionData?.version && !productionTag) {
       setProductionTag(productionData.version);
     }
-  }, [productionData, productionTag]);
+    // Fallback pro repo GitHub: cobre o caso de a sugestão do dropdown não ter o dado (ex:
+    // usuário digitou o nome manualmente sem clicar numa sugestão) mas a busca de produção
+    // achar o registro com a annotation.
+    if (productionData?.github_repo && !githubRepo) {
+      setGithubRepo(productionData.github_repo);
+    }
+  }, [productionData, productionTag, githubRepo]);
 
   // Re-verificar aprovação para itens já no batch com approvalUrl mas sem status definitivo.
   // Cobre itens persistidos no localStorage antes desta funcionalidade existir.
@@ -1018,6 +1030,12 @@ export const GitHubReleasesTab = () => {
                               setShowSuggestions(false);
                               // ✅ Marca que deployment foi selecionado explicitamente
                               setDeploymentSelected(true);
+                              // Autofill do repo GitHub (annotation devops.k8s.io/repository do
+                              // Pod Template, coletada no scan) — só sobrescreve se o scan achou
+                              // um valor; não apaga o que o usuário já tiver digitado à mão.
+                              if (suggestion.github_repo) {
+                                setGithubRepo(suggestion.github_repo);
+                              }
                             }}
                           >
                             <div className="flex-1 min-w-0">
@@ -1056,10 +1074,11 @@ export const GitHubReleasesTab = () => {
                 {productionError && deploymentName.length >= 3 && deploymentSelected && (
                   <Alert variant="destructive" className="py-2">
                     <AlertCircle className="h-4 w-4" />
-                    <AlertTitle className="text-sm">Deployment não encontrado</AlertTitle>
+                    <AlertTitle className="text-sm">Deployment não encontrado em produção</AlertTitle>
                     <AlertDescription className="text-xs">
-                      Não foi encontrado deployment "{deploymentName}" em produção.
-                      Execute o Scan primeiro.
+                      {productionError instanceof Error && productionError.message
+                        ? productionError.message
+                        : `Não foi encontrado deployment "${deploymentName}" em produção. Execute o Scan primeiro.`}
                     </AlertDescription>
                   </Alert>
                 )}
@@ -1116,6 +1135,12 @@ export const GitHubReleasesTab = () => {
                         <div>
                           <span className="text-muted-foreground">ServiceNow CHG:</span>
                           <p className="font-mono mt-0.5 text-foreground">{productionData.servicenow_task || '-'}</p>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Repositório GitHub:</span>
+                          <p className="font-mono mt-0.5 text-foreground truncate" title={productionData.github_repo || undefined}>
+                            {productionData.github_repo || '-'}
+                          </p>
                         </div>
                         <div>
                           <span className="text-muted-foreground">Criado em:</span>
