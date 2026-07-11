@@ -830,7 +830,7 @@ export function ServiceNowImportModal({
                         onClick={() => !approved && toggleTeamsChg(item.chg)}
                         title={approved ? "Já aprovada no devstartcd — não é possível reimportar" : undefined}
                         className={`flex items-center gap-2.5 p-2.5 rounded-md border transition-colors
-                          ${approved ? "cursor-not-allowed opacity-60 border-border" : "cursor-pointer"}
+                          ${approved ? "cursor-not-allowed bg-muted/70 border-dashed border-border/60 opacity-50 saturate-50" : "cursor-pointer"}
                           ${!approved && checked ? "border-primary bg-primary/5" : ""}
                           ${!approved && !checked ? "border-border hover:bg-muted/50" : ""}`}
                       >
