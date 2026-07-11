@@ -36,7 +36,9 @@ import {
   Download,
   Pencil,
   Check,
-  User
+  User,
+  ChevronDown,
+  ChevronRight
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CredentialRedirectDialog } from "./profile/CredentialRedirectDialog";
@@ -187,6 +189,7 @@ export const GitHubReleasesTab = () => {
   const [serviceNowCHG, setServiceNowCHG] = useState<string | null>(null); // CHG do ServiceNow
   const [serviceNowCHGPostedAt, setServiceNowCHGPostedAt] = useState<string | undefined>(undefined); // Data de postagem no Teams da CHG capturada
   const [batchSearch, setBatchSearch] = useState(""); // Busca no lote de comparações (CHG, nome, repo, tags...)
+  const [showHowToUse, setShowHowToUse] = useState(false); // Card "Como usar" — recolhido por padrão
   const [editingProductionTag, setEditingProductionTag] = useState<Record<string, string>>({}); // Edição inline da productionTag
   const [approvalUrlInput, setApprovalUrlInput] = useState(""); // Input manual de URL devstartcd
   const [showApprovalInput, setShowApprovalInput] = useState(false); // Exibir campo de input manual
@@ -1244,20 +1247,29 @@ export const GitHubReleasesTab = () => {
                 </Button>
               </div>
 
-              {/* Alerta informativo */}
+              {/* Alerta informativo — recolhível, recolhido por padrão */}
               <Alert>
-                <Info className="h-4 w-4" />
-                <AlertTitle>Como usar</AlertTitle>
-                <AlertDescription className="text-xs space-y-2">
-                  <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
-                    <li>Configure seu token GitHub (botão Token)</li>
-                    <li>Execute Scan dos clusters (botão Scan)</li>
-                    <li>Digite o nome do deployment (ex: vv-geolocalizacao-api)</li>
-                    <li>Digite o nome do repositório GitHub (ex: vv-retira-geolocalizacao)</li>
-                    <li>Confirme/ajuste a tag em produção</li>
-                    <li>Digite a nova tag e clique em <strong>Comparar Agora</strong> ou <strong>+ (Adicionar ao Lote)</strong></li>
-                  </ol>
-                </AlertDescription>
+                <button
+                  type="button"
+                  onClick={() => setShowHowToUse(v => !v)}
+                  className="flex items-center gap-2 w-full text-left"
+                >
+                  <Info className="h-4 w-4 flex-shrink-0" />
+                  <AlertTitle className="flex-1 mb-0">Como usar</AlertTitle>
+                  {showHowToUse ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                </button>
+                {showHowToUse && (
+                  <AlertDescription className="text-xs space-y-2 mt-2">
+                    <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                      <li>Configure seu token GitHub (botão Token)</li>
+                      <li>Execute Scan dos clusters (botão Scan)</li>
+                      <li>Digite o nome do deployment (ex: vv-geolocalizacao-api)</li>
+                      <li>Digite o nome do repositório GitHub (ex: vv-retira-geolocalizacao)</li>
+                      <li>Confirme/ajuste a tag em produção</li>
+                      <li>Digite a nova tag e clique em <strong>Comparar Agora</strong> ou <strong>+ (Adicionar ao Lote)</strong></li>
+                    </ol>
+                  </AlertDescription>
+                )}
               </Alert>
 
               {/* ✨ NOVO: Lote de Comparações */}
