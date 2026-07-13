@@ -170,17 +170,11 @@ export const PodTerminal = ({
           return false; // Bloqueia xterm de processar
         }
 
-        // CTRL+V = Colar
-        if (event.ctrlKey && event.key === "v") {
-          event.preventDefault();
-          navigator.clipboard.readText().then((text) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "input", data: text }));
-              console.log("[Terminal] Colado:", text.substring(0, 50) + "...");
-            }
-          });
-          return false; // Bloqueia xterm de processar
-        }
+        // CTRL+V = Colar — deixa o xterm processar nativamente (evento DOM "paste" na
+        // textarea oculta, capturado por terminal.onData abaixo). Não interceptar aqui:
+        // navigator.clipboard.readText() exige contexto seguro (HTTPS/localhost) e
+        // permissão explícita, falhando silenciosamente em acesso via IP/hostname HTTP
+        // e ao colar texto copiado de fora do navegador.
 
         // Mapeamento ABNT2 customizado por KeyCode
         // O navegador detecta o layout físico do teclado, não o layout lógico
