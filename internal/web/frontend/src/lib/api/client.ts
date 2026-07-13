@@ -379,7 +379,11 @@ class APIClient {
         throw Object.assign(new Error(message || friendly), { status: 403, code: "K8S_FORBIDDEN" });
       }
 
-      throw new Error(message || `Request failed: ${response.status}`);
+      const code = rawError?.error?.code ?? rawError?.code;
+      throw Object.assign(new Error(message || `Request failed: ${response.status}`), {
+        status: response.status,
+        code,
+      });
     }
 
     return response.json();
@@ -1626,11 +1630,13 @@ class APIClient {
     namespace: string,
     podName: string,
     containerName?: string,
-    tailLines?: number
+    tailLines?: number,
+    previous?: boolean
   ): Promise<{ logs: string }> {
     const params = new URLSearchParams();
     if (containerName) params.append("container", containerName);
     if (tailLines) params.append("tail", tailLines.toString());
+    if (previous) params.append("previous", "true");
 
     const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<{ logs: string }>>(
