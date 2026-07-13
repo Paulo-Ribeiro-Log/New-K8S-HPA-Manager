@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -53,6 +53,8 @@ import {
   Clock,
   AlertCircle,
   Download,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
@@ -138,6 +140,67 @@ export const DependenciesTab = () => {
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<"pdf" | "md" | "csv">("pdf");
   const [isExporting, setIsExporting] = useState(false);
+
+  // Cards de serviço (aba Registry) — recolhidos por padrão; Set vazio = todos recolhidos
+  const [expandedServices, setExpandedServices] = useState<Set<string>>(new Set());
+  const toggleServiceExpanded = (serviceName: string) => {
+    setExpandedServices((prev) => {
+      const next = new Set(prev);
+      if (next.has(serviceName)) next.delete(serviceName);
+      else next.add(serviceName);
+      return next;
+    });
+  };
+
+  // Refs para navegação por teclado (Home/End/PageUp/PageDown/setas) nas listas
+  const serviceButtonRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const searchRowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
+
+  const handleListKeyDown = <T extends HTMLElement>(
+    e: React.KeyboardEvent,
+    refs: React.MutableRefObject<(T | null)[]>,
+    index: number,
+    pageSize = 5
+  ) => {
+    const items = refs.current;
+    if (items.length === 0) return;
+
+    const focusIndex = (i: number) => {
+      const clamped = Math.max(0, Math.min(items.length - 1, i));
+      const el = items[clamped];
+      el?.focus();
+      el?.scrollIntoView({ block: "nearest" });
+    };
+
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        focusIndex(index + 1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        focusIndex(index - 1);
+        break;
+      case "Home":
+        e.preventDefault();
+        focusIndex(0);
+        break;
+      case "End":
+        e.preventDefault();
+        focusIndex(items.length - 1);
+        break;
+      case "PageDown":
+        e.preventDefault();
+        focusIndex(index + pageSize);
+        break;
+      case "PageUp":
+        e.preventDefault();
+        focusIndex(index - pageSize);
+        break;
+      default:
+        break;
+    }
+  };
 
   // Buscar clusters disponíveis no registry
   const { data: registryClusters } = useQuery({
@@ -758,6 +821,10 @@ export const DependenciesTab = () => {
     }
   };
 
+  // Limpar refs de navegação a cada render — repopuladas pelos callback refs abaixo
+  serviceButtonRefs.current = [];
+  searchRowRefs.current = [];
+
   return (
     <>
     <SplitView
@@ -1052,78 +1119,91 @@ export const DependenciesTab = () => {
                   <div className="p-4">
                     {/* Tabela agrupada por serviço */}
                     <div className="space-y-4">
-                      {Object.entries(groupedByService).map(([serviceName, deps]) => (
-                        <Card key={serviceName}>
-                          <CardHeader className="pb-2">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <Database className="h-4 w-4 text-muted-foreground" />
-                                <CardTitle className="text-sm font-mono">
-                                  {serviceName}
-                                </CardTitle>
-                                <Badge
-                                  variant="outline"
-                                  className={`text-[10px] ${SERVICE_TYPE_COLORS[deps[0].service_type] || SERVICE_TYPE_COLORS.other}`}
-                                >
-                                  {SERVICE_TYPE_LABELS[deps[0].service_type] || deps[0].service_type}
-                                </Badge>
-                              </div>
-                              <Badge variant="secondary" className="text-xs">
-                                {deps.length} uso(s)
-                              </Badge>
+                      {Object.entries(groupedByService).map(([serviceName, deps], index) => {
+                        const isExpanded = expandedServices.has(serviceName);
+                        return (
+                          <Card key={serviceName}>
+                            <div
+                              ref={(el) => (serviceButtonRefs.current[index] = el)}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => toggleServiceExpanded(serviceName)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  toggleServiceExpanded(serviceName);
+                                  return;
+                                }
+                                handleListKeyDown(e, serviceButtonRefs, index);
+                              }}
+                              aria-expanded={isExpanded}
+                              className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-lg"
+                            >
+                              <CardHeader className="pb-2 hover:bg-muted/50 transition-colors rounded-t-lg">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    {isExpanded ? (
+                                      <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                                    ) : (
+                                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                                    )}
+                                    <Database className="h-4 w-4 text-muted-foreground" />
+                                    <CardTitle className="text-sm font-mono">
+                                      {serviceName}
+                                    </CardTitle>
+                                    <Badge
+                                      variant="outline"
+                                      className={`text-[10px] ${SERVICE_TYPE_COLORS[deps[0].service_type] || SERVICE_TYPE_COLORS.other}`}
+                                    >
+                                      {SERVICE_TYPE_LABELS[deps[0].service_type] || deps[0].service_type}
+                                    </Badge>
+                                  </div>
+                                  <Badge variant="secondary" className="text-xs">
+                                    {deps.length} uso(s)
+                                  </Badge>
+                                </div>
+                              </CardHeader>
                             </div>
-                          </CardHeader>
-                          <CardContent>
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead className="text-xs">Cluster</TableHead>
-                                  <TableHead className="text-xs">Namespace</TableHead>
-                                  <TableHead className="text-xs">Deployment</TableHead>
-                                  <TableHead className="text-xs">Tópico/Fila</TableHead>
-                                  <TableHead className="text-xs">Fonte</TableHead>
-                                  <TableHead className="text-xs">Visto</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {deps.map((dep) => (
-                                  <TableRow key={`${dep.cluster}-${dep.namespace}-${dep.source_name}-${dep.id}`}>
-                                    <TableCell className="text-xs font-mono">
-                                      {dep.cluster.replace(/-admin$/, "")}
-                                    </TableCell>
-                                    <TableCell className="text-xs">{dep.namespace}</TableCell>
-                                    <TableCell className="text-xs">
-                                      {dep.deployment || "-"}
-                                    </TableCell>
-                                    <TableCell className="text-xs">
-                                      {dep.topic_name ? (
-                                        <Badge variant="secondary" className="font-mono text-[10px]">
-                                          {dep.topic_name}
-                                        </Badge>
-                                      ) : (
-                                        <span className="text-muted-foreground">-</span>
-                                      )}
-                                    </TableCell>
-                                    <TableCell className="text-xs">
-                                      <span className="text-muted-foreground">
-                                        {dep.source_type}: {dep.source_name}
-                                      </span>
-                                      {dep.source_key && (
-                                        <span className="text-muted-foreground ml-1">
-                                          [{dep.source_key}]
-                                        </span>
-                                      )}
-                                    </TableCell>
-                                    <TableCell className="text-xs text-muted-foreground">
-                                      {formatRelativeDate(dep.last_seen)}
-                                    </TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </CardContent>
-                        </Card>
-                      ))}
+                            {isExpanded && (
+                              <CardContent>
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead className="text-xs">Cluster</TableHead>
+                                      <TableHead className="text-xs">Namespace</TableHead>
+                                      <TableHead className="text-xs">Fonte</TableHead>
+                                      <TableHead className="text-xs">Visto</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {deps.map((dep) => (
+                                      <TableRow key={`${dep.cluster}-${dep.namespace}-${dep.source_name}-${dep.id}`}>
+                                        <TableCell className="text-xs font-mono">
+                                          {dep.cluster.replace(/-admin$/, "")}
+                                        </TableCell>
+                                        <TableCell className="text-xs">{dep.namespace}</TableCell>
+                                        <TableCell className="text-xs">
+                                          <span className="text-muted-foreground">
+                                            {dep.source_type}: {dep.source_name}
+                                          </span>
+                                          {dep.source_key && (
+                                            <span className="text-muted-foreground ml-1">
+                                              [{dep.source_key}]
+                                            </span>
+                                          )}
+                                        </TableCell>
+                                        <TableCell className="text-xs text-muted-foreground">
+                                          {formatRelativeDate(dep.last_seen)}
+                                        </TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </CardContent>
+                            )}
+                          </Card>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1204,16 +1284,20 @@ export const DependenciesTab = () => {
                         <TableHeader>
                           <TableRow>
                             <TableHead className="text-xs">Serviço</TableHead>
-                            <TableHead className="text-xs">Tópico/Fila</TableHead>
                             <TableHead className="text-xs">Cluster</TableHead>
                             <TableHead className="text-xs">Namespace</TableHead>
-                            <TableHead className="text-xs">Deployment</TableHead>
                             <TableHead className="text-xs">Fonte</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {filteredSearchResults.map((dep) => (
-                            <TableRow key={`${dep.cluster}-${dep.namespace}-${dep.source_name}-${dep.id}`}>
+                          {filteredSearchResults.map((dep, index) => (
+                            <TableRow
+                              key={`${dep.cluster}-${dep.namespace}-${dep.source_name}-${dep.id}`}
+                              ref={(el) => (searchRowRefs.current[index] = el)}
+                              tabIndex={0}
+                              onKeyDown={(e) => handleListKeyDown(e, searchRowRefs, index)}
+                              className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:bg-muted/50"
+                            >
                               <TableCell className="text-xs font-mono">
                                 <div className="flex items-center gap-1">
                                   <Badge
@@ -1226,19 +1310,9 @@ export const DependenciesTab = () => {
                                 </div>
                               </TableCell>
                               <TableCell className="text-xs">
-                                {dep.topic_name ? (
-                                  <Badge variant="secondary" className="font-mono text-[10px]">
-                                    {dep.topic_name}
-                                  </Badge>
-                                ) : (
-                                  <span className="text-muted-foreground">-</span>
-                                )}
-                              </TableCell>
-                              <TableCell className="text-xs">
                                 {dep.cluster.replace(/-admin$/, "")}
                               </TableCell>
                               <TableCell className="text-xs">{dep.namespace}</TableCell>
-                              <TableCell className="text-xs">{dep.deployment || "-"}</TableCell>
                               <TableCell className="text-xs text-muted-foreground">
                                 {dep.source_type}: {dep.source_name}
                               </TableCell>
