@@ -673,6 +673,7 @@ func (h *PodHandler) GetLogs(c *gin.Context) {
 	podName := strings.TrimSpace(c.Param("name"))
 	containerName := c.Query("container")
 	tailStr := c.Query("tail")
+	previous := c.Query("previous") == "true"
 
 	if cluster == "" || namespace == "" || podName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -703,6 +704,10 @@ func (h *PodHandler) GetLogs(c *gin.Context) {
 		opts.Container = containerName
 	}
 
+	if previous {
+		opts.Previous = true
+	}
+
 	if tailStr != "" {
 		tailLines, err := strconv.ParseInt(tailStr, 10, 64)
 		if err == nil && tailLines > 0 {
@@ -713,6 +718,16 @@ func (h *PodHandler) GetLogs(c *gin.Context) {
 	req := clientset.CoreV1().Pods(namespace).GetLogs(podName, opts)
 	logs, err := req.DoRaw(c.Request.Context())
 	if err != nil {
+		if previous && strings.Contains(err.Error(), "not found") {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "PREVIOUS_LOGS_NOT_FOUND",
+					"message": "Não há logs de uma execução anterior deste container (ele ainda não reiniciou ou os logs anteriores já foram descartados).",
+				},
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{

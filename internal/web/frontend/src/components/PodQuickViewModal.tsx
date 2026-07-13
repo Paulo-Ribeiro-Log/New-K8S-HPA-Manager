@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon, Braces } from "lucide-react";
+import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon, Braces, AlertTriangle, Bell } from "lucide-react";
 import type { PodSummary, PodMetricsSingle } from "@/lib/api/types";
 import { formatAge, formatMillicores, formatBytes, formatPercent } from "@/lib/monitorUtils";
 import { apiClient } from "@/lib/api/client";
@@ -94,6 +94,238 @@ const LOG_LEVEL_CONFIG: Record<LogLevel, { label: string; active: string; inacti
   debug: { label: "DEBUG", active: "bg-purple-500/20 text-purple-400 border-purple-500/50", inactive: "text-muted-foreground border-border hover:border-purple-500/40 hover:text-purple-400" },
 };
 
+interface DescribeBlock {
+  start: number;
+  end: number;
+}
+
+// Localiza os blocos "Last State:" no texto do `kubectl describe pod` — cada um
+// mostra a causa do reinício anterior de um container (Reason/Exit Code/Started/Finished).
+// O bloco termina quando a indentação volta ao nível da própria linha "Last State:".
+function findLastStateBlocks(lines: string[]): DescribeBlock[] {
+  const getIndent = (line: string) => line.length - line.trimStart().length;
+  const blocks: DescribeBlock[] = [];
+  lines.forEach((line, i) => {
+    if (!/Last State:/.test(line)) return;
+    const baseIndent = getIndent(line);
+    let end = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() === "") break;
+      if (getIndent(lines[j]) <= baseIndent) break;
+      end = j;
+    }
+    blocks.push({ start: i, end });
+  });
+  return blocks;
+}
+
+// Localiza a seção "Events:" (tabela de eventos recentes do pod) no texto do describe.
+// Retorna null se a seção não existe ou está vazia ("Events:  <none>").
+function findEventsBlock(lines: string[]): DescribeBlock | null {
+  const getIndent = (line: string) => line.length - line.trimStart().length;
+  const idx = lines.findIndex(line => /^Events:/.test(line));
+  if (idx === -1) return null;
+  if (/<none>/i.test(lines[idx])) return null;
+  let end = idx;
+  for (let j = idx + 1; j < lines.length; j++) {
+    if (lines[j].trim() === "") break;
+    if (getIndent(lines[j]) <= 0) break;
+    end = j;
+  }
+  return { start: idx, end };
+}
+
+function filterLogLines(rawLogs: string, levelFilter: Set<LogLevel>, search: string): string[] {
+  const lines = (rawLogs || "").split("\n");
+  let result = lines;
+  if (levelFilter.size > 0) {
+    result = result.filter(line => {
+      const level = getLogLevel(line);
+      return level !== null && levelFilter.has(level);
+    });
+  }
+  if (search.trim()) {
+    const q = search.toLowerCase();
+    result = result.filter(line => line.toLowerCase().includes(q));
+  }
+  return result;
+}
+
+interface LogsViewerProps {
+  loading: boolean;
+  logs: string;
+  errorMessage?: string | null;
+  emptyMessage: string;
+  filteredLines: string[];
+  containerNames: string[];
+  selectedContainer: string;
+  onContainerChange: (v: string) => void;
+  tailLines: string;
+  onTailLinesChange: (v: string) => void;
+  showAutoRefresh?: boolean;
+  autoRefresh?: boolean;
+  onToggleAutoRefresh?: () => void;
+  onManualRefresh: () => void;
+  logLevelFilter: Set<LogLevel>;
+  onToggleLevelFilter: (level: LogLevel) => void;
+  logSearch: string;
+  onLogSearchChange: (v: string) => void;
+  onCopy: () => void;
+  copied: boolean;
+  onOpenJsonInspector: () => void;
+  onJsonMouseUp: () => void;
+  logsEndRef: React.RefObject<HTMLDivElement>;
+  onClearFilters: () => void;
+}
+
+function LogsViewer({
+  loading, logs, errorMessage, emptyMessage, filteredLines,
+  containerNames, selectedContainer, onContainerChange, tailLines, onTailLinesChange,
+  showAutoRefresh, autoRefresh, onToggleAutoRefresh, onManualRefresh,
+  logLevelFilter, onToggleLevelFilter, logSearch, onLogSearchChange,
+  onCopy, copied, onOpenJsonInspector, onJsonMouseUp, logsEndRef, onClearFilters,
+}: LogsViewerProps) {
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border flex-shrink-0">
+        <Select value={selectedContainer} onValueChange={onContainerChange}>
+          <SelectTrigger className="h-7 text-xs w-44">
+            <SelectValue placeholder="Container" />
+          </SelectTrigger>
+          <SelectContent>
+            {containerNames.map(c => (
+              <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select value={tailLines} onValueChange={onTailLinesChange}>
+          <SelectTrigger className="h-7 text-xs w-24">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {["100", "500", "1000", "5000"].map(n => (
+              <SelectItem key={n} value={n} className="text-xs">{n} linhas</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {showAutoRefresh && (
+          <Button
+            size="sm" variant={autoRefresh ? "default" : "outline"}
+            className="h-7 text-xs gap-1"
+            onClick={onToggleAutoRefresh}
+          >
+            <RefreshCw className={`w-3 h-3 ${autoRefresh ? "animate-spin" : ""}`} />
+            Auto
+          </Button>
+        )}
+
+        <Button
+          size="sm" variant="outline" className="h-7 text-xs"
+          onClick={onManualRefresh} disabled={loading}
+        >
+          {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+        </Button>
+
+        <div className="flex-1" />
+
+        <Button
+          size="sm" variant="ghost" className="h-7 text-xs gap-1"
+          onClick={onCopy} disabled={!logs}
+        >
+          {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+          {copied ? "Copiado" : "Copiar"}
+        </Button>
+        <Button
+          size="sm" variant="ghost"
+          className="h-7 text-xs gap-1 text-blue-400 hover:bg-blue-400/10"
+          onClick={onOpenJsonInspector}
+          title="Selecione texto no log para inspecionar JSON"
+        >
+          <Braces className="w-3 h-3" />
+          JSON
+        </Button>
+      </div>
+
+      {/* Barra de filtros de nível + busca */}
+      <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/50 flex-shrink-0 bg-muted/10">
+        {(["error", "warn", "info", "debug"] as LogLevel[]).map(level => {
+          const cfg = LOG_LEVEL_CONFIG[level];
+          const active = logLevelFilter.has(level);
+          return (
+            <button
+              key={level}
+              onClick={() => onToggleLevelFilter(level)}
+              className={`h-6 px-2 rounded text-[10px] font-mono font-medium border transition-colors ${active ? cfg.active : cfg.inactive}`}
+            >
+              {cfg.label}
+            </button>
+          );
+        })}
+        <div className="w-px h-4 bg-border/50 mx-0.5" />
+        <div className="relative flex-1 max-w-56">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            value={logSearch}
+            onChange={e => onLogSearchChange(e.target.value)}
+            placeholder="Buscar nos logs..."
+            className="w-full h-6 pl-6 pr-6 text-[11px] bg-background border border-border rounded focus:outline-none focus:border-primary font-mono"
+          />
+          {logSearch && (
+            <button
+              onClick={() => onLogSearchChange("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <XIcon className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+        {(logLevelFilter.size > 0 || logSearch.trim()) && (
+          <span className="text-[10px] text-muted-foreground ml-auto font-mono">
+            {filteredLines.length} linha{filteredLines.length !== 1 ? "s" : ""}
+          </span>
+        )}
+        {(logLevelFilter.size > 0 || logSearch.trim()) && (
+          <button
+            onClick={onClearFilters}
+            className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-0.5"
+          >
+            <XIcon className="w-3 h-3" /> Limpar
+          </button>
+        )}
+      </div>
+
+      {/* Área de scroll de logs */}
+      <div className="flex-1 min-h-0 overflow-auto bg-black/50" onMouseUp={onJsonMouseUp}>
+        <div className="p-3 font-mono text-xs leading-5">
+          {loading && !logs ? (
+            <div className="text-muted-foreground flex items-center gap-2">
+              <Loader2 className="w-3 h-3 animate-spin" /> Carregando logs...
+            </div>
+          ) : errorMessage ? (
+            <span className="text-muted-foreground">{errorMessage}</span>
+          ) : logs ? (
+            filteredLines.length > 0 ? (
+              filteredLines.map((line, i) => (
+                <div key={i} className={`whitespace-pre-wrap break-all ${logLineColor(line)}`}>
+                  {line || " "}
+                </div>
+              ))
+            ) : (
+              <span className="text-muted-foreground">Nenhuma linha corresponde ao filtro.</span>
+            )
+          ) : (
+            <span className="text-muted-foreground">{emptyMessage}</span>
+          )}
+          <div ref={logsEndRef} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type PendingAction = "restart" | "kill" | "delete" | null;
 
 interface Props {
@@ -116,10 +348,19 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [copied, setCopied] = useState(false);
 
+  // Logs anteriores (--previous, do container que reiniciou)
+  const [previousLogs, setPreviousLogs] = useState("");
+  const [previousLogsLoading, setPreviousLogsLoading] = useState(false);
+  const [previousLogsError, setPreviousLogsError] = useState<string | null>(null);
+  const [previousCopied, setPreviousCopied] = useState(false);
+
   // Describe state
   const [describe, setDescribe] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
   const [showDescribe, setShowDescribe] = useState(false);
+  const [lastStateCursor, setLastStateCursor] = useState(-1);
+  const [eventsHighlighted, setEventsHighlighted] = useState(false);
+  const describeLineRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   // Log filter state
   const [logLevelFilter, setLogLevelFilter] = useState<Set<LogLevel>>(new Set());
@@ -130,6 +371,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const [actionLoading, setActionLoading] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const previousLogsEndRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jsonInspector = useJsonInspector();
 
@@ -162,6 +404,8 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   }, []);
 
   const containerNames = pod?.containers?.map(c => c.name) ?? [];
+  const selectedContainerRestartCount =
+    pod?.containers?.find(c => c.name === selectedContainer)?.restartCount ?? 0;
 
   useEffect(() => {
     if (!pod) return;
@@ -174,6 +418,8 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     setShowDescribe(false);
     setLogLevelFilter(new Set());
     setLogSearch("");
+    setPreviousLogs("");
+    setPreviousLogsError(null);
   }, [pod?.namespace, pod?.name]);
 
   const fetchLogs = useCallback(async () => {
@@ -207,21 +453,10 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [activeTab, autoRefresh, fetchLogs]);
 
-  const filteredLines = useMemo(() => {
-    const lines = (logs || "").split("\n");
-    let result = lines;
-    if (logLevelFilter.size > 0) {
-      result = result.filter(line => {
-        const level = getLogLevel(line);
-        return level !== null && logLevelFilter.has(level);
-      });
-    }
-    if (logSearch.trim()) {
-      const q = logSearch.toLowerCase();
-      result = result.filter(line => line.toLowerCase().includes(q));
-    }
-    return result;
-  }, [logs, logLevelFilter, logSearch]);
+  const filteredLines = useMemo(
+    () => filterLogLines(logs, logLevelFilter, logSearch),
+    [logs, logLevelFilter, logSearch]
+  );
 
   const toggleLevelFilter = (level: LogLevel) => {
     setLogLevelFilter(prev => {
@@ -230,6 +465,11 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
       else next.add(level);
       return next;
     });
+  };
+
+  const clearLogFilters = () => {
+    setLogLevelFilter(new Set());
+    setLogSearch("");
   };
 
   const copyLogs = () => {
@@ -241,9 +481,62 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Logs da execução anterior do container (kubectl logs --previous)
+  const fetchPreviousLogs = useCallback(async () => {
+    if (!pod || !cluster) return;
+    setPreviousLogsLoading(true);
+    setPreviousLogsError(null);
+    try {
+      const res = await apiClient.getPodLogs(
+        cluster, pod.namespace, pod.name,
+        selectedContainer || pod.containers?.[0]?.name,
+        parseInt(tailLines),
+        true
+      );
+      setPreviousLogs(res.logs ?? "");
+      setTimeout(() => previousLogsEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+    } catch (err: unknown) {
+      setPreviousLogs("");
+      const code = (err as { code?: string })?.code;
+      setPreviousLogsError(
+        code === "PREVIOUS_LOGS_NOT_FOUND"
+          ? "Não há logs de uma execução anterior — este container ainda não reiniciou ou os logs já foram descartados."
+          : "Erro ao carregar logs anteriores."
+      );
+    } finally {
+      setPreviousLogsLoading(false);
+    }
+  }, [pod, cluster, selectedContainer, tailLines]);
+
+  useEffect(() => {
+    if (activeTab !== "previous-logs") return;
+    if (selectedContainerRestartCount === 0) {
+      setPreviousLogs("");
+      setPreviousLogsError("Este container ainda não reiniciou — não há logs de uma execução anterior.");
+      return;
+    }
+    fetchPreviousLogs();
+  }, [activeTab, selectedContainer, tailLines, selectedContainerRestartCount, fetchPreviousLogs]);
+
+  const filteredPreviousLines = useMemo(
+    () => filterLogLines(previousLogs, logLevelFilter, logSearch),
+    [previousLogs, logLevelFilter, logSearch]
+  );
+
+  const copyPreviousLogs = () => {
+    const content = (logLevelFilter.size > 0 || logSearch.trim())
+      ? filteredPreviousLines.join("\n")
+      : previousLogs;
+    navigator.clipboard.writeText(content);
+    setPreviousCopied(true);
+    setTimeout(() => setPreviousCopied(false), 2000);
+  };
+
   const fetchDescribe = useCallback(async () => {
     if (!pod || !cluster) return;
     setDescribeLoading(true);
+    setLastStateCursor(-1);
+    setEventsHighlighted(false);
     try {
       const res = await apiClient.describePod(cluster, pod.namespace, pod.name);
       setDescribe(res.describe || "");
@@ -259,6 +552,26 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
       fetchDescribe();
     }
     setShowDescribe(!showDescribe);
+  };
+
+  const describeLines = useMemo(() => describe.split("\n"), [describe]);
+  const lastStateBlocks = useMemo(() => findLastStateBlocks(describeLines), [describeLines]);
+  const eventsBlock = useMemo(() => findEventsBlock(describeLines), [describeLines]);
+
+  const jumpToLastState = () => {
+    if (lastStateBlocks.length === 0) return;
+    setEventsHighlighted(false);
+    const nextCursor = (lastStateCursor + 1) % lastStateBlocks.length;
+    setLastStateCursor(nextCursor);
+    const target = lastStateBlocks[nextCursor];
+    describeLineRefs.current[target.start]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  const jumpToEvents = () => {
+    if (!eventsBlock) return;
+    setLastStateCursor(-1);
+    setEventsHighlighted(true);
+    describeLineRefs.current[eventsBlock.start]?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const executeAction = async () => {
@@ -357,7 +670,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
         <div className="flex-1 flex flex-col min-h-0">
           {/* Tab bar manual */}
           <div className="flex border-b border-border px-4 pt-3 gap-1 flex-shrink-0">
-            {(["details", "logs"] as const).map(tab => (
+            {(["details", "logs", "previous-logs"] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -367,7 +680,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                     : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {tab === "details" ? "Detalhes" : "Logs"}
+                {tab === "details" ? "Detalhes" : tab === "logs" ? "Logs" : "Logs Anteriores"}
               </button>
             ))}
           </div>
@@ -543,139 +856,58 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
           {/* ── LOGS ── */}
           {activeTab === "logs" && (
-          <div className="flex-1 flex flex-col min-h-0">
-            <div className="flex items-center gap-2 px-4 py-2 border-b border-border flex-shrink-0">
-              <Select value={selectedContainer} onValueChange={setSelectedContainer}>
-                <SelectTrigger className="h-7 text-xs w-44">
-                  <SelectValue placeholder="Container" />
-                </SelectTrigger>
-                <SelectContent>
-                  {containerNames.map(c => (
-                    <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <LogsViewer
+              loading={logsLoading}
+              logs={logs}
+              emptyMessage="Nenhum log disponível."
+              filteredLines={filteredLines}
+              containerNames={containerNames}
+              selectedContainer={selectedContainer}
+              onContainerChange={setSelectedContainer}
+              tailLines={tailLines}
+              onTailLinesChange={setTailLines}
+              showAutoRefresh
+              autoRefresh={autoRefresh}
+              onToggleAutoRefresh={() => setAutoRefresh(v => !v)}
+              onManualRefresh={fetchLogs}
+              logLevelFilter={logLevelFilter}
+              onToggleLevelFilter={toggleLevelFilter}
+              logSearch={logSearch}
+              onLogSearchChange={setLogSearch}
+              onCopy={copyLogs}
+              copied={copied}
+              onOpenJsonInspector={() => jsonInspector.setOpen(true)}
+              onJsonMouseUp={jsonInspector.handleMouseUp}
+              logsEndRef={logsEndRef}
+              onClearFilters={clearLogFilters}
+            />
+          )}
 
-              <Select value={tailLines} onValueChange={setTailLines}>
-                <SelectTrigger className="h-7 text-xs w-24">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["100", "500", "1000", "5000"].map(n => (
-                    <SelectItem key={n} value={n} className="text-xs">{n} linhas</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <Button
-                size="sm" variant={autoRefresh ? "default" : "outline"}
-                className="h-7 text-xs gap-1"
-                onClick={() => setAutoRefresh(v => !v)}
-              >
-                <RefreshCw className={`w-3 h-3 ${autoRefresh ? "animate-spin" : ""}`} />
-                Auto
-              </Button>
-
-              <Button
-                size="sm" variant="outline" className="h-7 text-xs"
-                onClick={fetchLogs} disabled={logsLoading}
-              >
-                {logsLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-              </Button>
-
-              <div className="flex-1" />
-
-              <Button
-                size="sm" variant="ghost" className="h-7 text-xs gap-1"
-                onClick={copyLogs} disabled={!logs}
-              >
-                {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
-                {copied ? "Copiado" : "Copiar"}
-              </Button>
-              <Button
-                size="sm" variant="ghost"
-                className="h-7 text-xs gap-1 text-blue-400 hover:bg-blue-400/10"
-                onClick={() => jsonInspector.setOpen(true)}
-                title="Selecione texto no log para inspecionar JSON"
-              >
-                <Braces className="w-3 h-3" />
-                JSON
-              </Button>
-            </div>
-
-            {/* Barra de filtros de nível + busca */}
-            <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/50 flex-shrink-0 bg-muted/10">
-              {(["error", "warn", "info", "debug"] as LogLevel[]).map(level => {
-                const cfg = LOG_LEVEL_CONFIG[level];
-                const active = logLevelFilter.has(level);
-                return (
-                  <button
-                    key={level}
-                    onClick={() => toggleLevelFilter(level)}
-                    className={`h-6 px-2 rounded text-[10px] font-mono font-medium border transition-colors ${active ? cfg.active : cfg.inactive}`}
-                  >
-                    {cfg.label}
-                  </button>
-                );
-              })}
-              <div className="w-px h-4 bg-border/50 mx-0.5" />
-              <div className="relative flex-1 max-w-56">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
-                <input
-                  type="text"
-                  value={logSearch}
-                  onChange={e => setLogSearch(e.target.value)}
-                  placeholder="Buscar nos logs..."
-                  className="w-full h-6 pl-6 pr-6 text-[11px] bg-background border border-border rounded focus:outline-none focus:border-primary font-mono"
-                />
-                {logSearch && (
-                  <button
-                    onClick={() => setLogSearch("")}
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    <XIcon className="w-3 h-3" />
-                  </button>
-                )}
-              </div>
-              {(logLevelFilter.size > 0 || logSearch.trim()) && (
-                <span className="text-[10px] text-muted-foreground ml-auto font-mono">
-                  {filteredLines.length} linha{filteredLines.length !== 1 ? "s" : ""}
-                </span>
-              )}
-              {(logLevelFilter.size > 0 || logSearch.trim()) && (
-                <button
-                  onClick={() => { setLogLevelFilter(new Set()); setLogSearch(""); }}
-                  className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-0.5"
-                >
-                  <XIcon className="w-3 h-3" /> Limpar
-                </button>
-              )}
-            </div>
-
-            {/* Área de scroll de logs */}
-            <div className="flex-1 min-h-0 overflow-auto bg-black/50" onMouseUp={jsonInspector.handleMouseUp}>
-              <div className="p-3 font-mono text-xs leading-5">
-                {logsLoading && !logs ? (
-                  <div className="text-muted-foreground flex items-center gap-2">
-                    <Loader2 className="w-3 h-3 animate-spin" /> Carregando logs...
-                  </div>
-                ) : logs ? (
-                  filteredLines.length > 0 ? (
-                    filteredLines.map((line, i) => (
-                      <div key={i} className={`whitespace-pre-wrap break-all ${logLineColor(line)}`}>
-                        {line || " "}
-                      </div>
-                    ))
-                  ) : (
-                    <span className="text-muted-foreground">Nenhuma linha corresponde ao filtro.</span>
-                  )
-                ) : (
-                  <span className="text-muted-foreground">Nenhum log disponível.</span>
-                )}
-                <div ref={logsEndRef} />
-              </div>
-            </div>
-          </div>
+          {/* ── LOGS ANTERIORES (--previous) ── */}
+          {activeTab === "previous-logs" && (
+            <LogsViewer
+              loading={previousLogsLoading}
+              logs={previousLogs}
+              errorMessage={previousLogsError}
+              emptyMessage="Nenhum log anterior disponível."
+              filteredLines={filteredPreviousLines}
+              containerNames={containerNames}
+              selectedContainer={selectedContainer}
+              onContainerChange={setSelectedContainer}
+              tailLines={tailLines}
+              onTailLinesChange={setTailLines}
+              onManualRefresh={fetchPreviousLogs}
+              logLevelFilter={logLevelFilter}
+              onToggleLevelFilter={toggleLevelFilter}
+              logSearch={logSearch}
+              onLogSearchChange={setLogSearch}
+              onCopy={copyPreviousLogs}
+              copied={previousCopied}
+              onOpenJsonInspector={() => jsonInspector.setOpen(true)}
+              onJsonMouseUp={jsonInspector.handleMouseUp}
+              logsEndRef={previousLogsEndRef}
+              onClearFilters={clearLogFilters}
+            />
           )}
         </div>
 
@@ -753,9 +985,27 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                   <span className="text-sm text-muted-foreground">Carregando describe...</span>
                 </div>
               ) : describe ? (
-                <pre className="text-xs font-mono whitespace-pre-wrap leading-relaxed">
-                  {describe}
-                </pre>
+                <div className="text-xs font-mono whitespace-pre-wrap leading-relaxed">
+                  {describeLines.map((line, i) => {
+                    const activeBlock = lastStateCursor >= 0 ? lastStateBlocks[lastStateCursor] : null;
+                    const inLastState = !!activeBlock && i >= activeBlock.start && i <= activeBlock.end;
+                    const inEvents = eventsHighlighted && !!eventsBlock && i >= eventsBlock.start && i <= eventsBlock.end;
+                    const highlightClass = inLastState
+                      ? "bg-yellow-500/20 -mx-1 px-1 rounded"
+                      : inEvents
+                      ? "bg-blue-500/20 -mx-1 px-1 rounded"
+                      : undefined;
+                    return (
+                      <div
+                        key={i}
+                        ref={(el) => (describeLineRefs.current[i] = el)}
+                        className={highlightClass}
+                      >
+                        {line || " "}
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
                 <div className="text-center py-8 text-muted-foreground text-sm">
                   Nenhuma informação de describe disponível.
@@ -765,20 +1015,51 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
           </ScrollArea>
 
           <div className="flex justify-between items-center pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={fetchDescribe}
-              disabled={describeLoading}
-              className="text-xs"
-            >
-              {describeLoading ? (
-                <Loader2 className="w-3 h-3 animate-spin mr-1" />
-              ) : (
-                <RefreshCw className="w-3 h-3 mr-1" />
-              )}
-              Atualizar
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchDescribe}
+                disabled={describeLoading}
+                className="text-xs"
+              >
+                {describeLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                ) : (
+                  <RefreshCw className="w-3 h-3 mr-1" />
+                )}
+                Atualizar
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={jumpToLastState}
+                disabled={lastStateBlocks.length === 0}
+                title={lastStateBlocks.length === 0 ? "Nenhum reinício registrado neste pod" : "Ir para a causa do reinício anterior"}
+                className="text-xs gap-1 text-orange-400 border-orange-400/30 hover:bg-orange-400/10 disabled:text-muted-foreground disabled:border-border"
+              >
+                <AlertTriangle className="w-3 h-3" />
+                Causa do reinício
+                {lastStateBlocks.length > 1 && (
+                  <Badge variant="secondary" className="text-[10px] h-4 px-1 ml-0.5">
+                    {(lastStateCursor < 0 ? 0 : lastStateCursor + 1)}/{lastStateBlocks.length}
+                  </Badge>
+                )}
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={jumpToEvents}
+                disabled={!eventsBlock}
+                title={!eventsBlock ? "Nenhum evento registrado neste pod" : "Ir para a seção de Eventos"}
+                className="text-xs gap-1 text-blue-400 border-blue-400/30 hover:bg-blue-400/10 disabled:text-muted-foreground disabled:border-border"
+              >
+                <Bell className="w-3 h-3" />
+                Eventos
+              </Button>
+            </div>
 
             <Button
               variant="outline"
