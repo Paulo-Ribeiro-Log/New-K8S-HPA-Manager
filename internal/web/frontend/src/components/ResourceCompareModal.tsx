@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
 import { apiClient } from "@/lib/api/client";
+import { isPodImmutableFieldsError, POD_IMMUTABLE_FIELDS_HINT } from "@/lib/podErrors";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
@@ -859,6 +860,20 @@ function ResourceEditPanel({ label, cluster, initial, editorHeight }: ResourceEd
                     <strong>Ação recomendada:</strong> O backend já utiliza <code className="bg-muted px-1 rounded">--force=true</code>.
                     Se o erro persistir, verifique se há anotações <code className="bg-muted px-1 rounded">kubectl.kubernetes.io/*</code>
                     que precisam ser removidas manualmente do YAML antes de aplicar.
+                  </p>
+                </div>
+              )}
+
+              {isPodImmutableFieldsError(errorMessage) && (
+                <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertCircle className="w-4 h-4 text-blue-400" />
+                    <span className="text-sm font-semibold text-blue-400">Sugestão de Resolução</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Isso não é um conflito de field manager — é uma regra do próprio Kubernetes:
+                    um Pod já criado só permite alterar a imagem do container (e poucos outros campos).
+                    {" "}{POD_IMMUTABLE_FIELDS_HINT}
                   </p>
                 </div>
               )}

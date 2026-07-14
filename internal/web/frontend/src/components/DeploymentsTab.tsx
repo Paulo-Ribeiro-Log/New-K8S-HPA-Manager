@@ -2639,30 +2639,43 @@ export const DeploymentsTab = ({
     }
 
     if (!selectedDeployment) {
-      // Live monitoring views
-      if (rightView.kind === "pod-table") {
+      if (!cluster) {
         return (
-          <div className="flex flex-col h-full p-2">
-            <PodMonitorTable
-              cluster={cluster}
-              pods={monitorPods}
-              loading={monitorPodsLoading}
-              metrics={batchMetrics}
-              metricsLoading={false}
-              onOpenDetail={(pod) => setQuickViewPod(pod)}
-              headerLabel={`${rightView.deployment.name} — pods (${monitorPods.length})`}
-              onRequestRefresh={refreshMonitorPods}
-              onBack={() => setRightView({ kind: "deployment-table" })}
-              backLabel="Deployments"
-            />
+          <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+            Escolha um Deployment para visualizar o manifesto
           </div>
         );
       }
 
-      // Default: deployment monitor table
-      if (cluster) {
-        return (
-          <div className="flex flex-col h-full p-2">
+      // As duas tabelas ficam sempre montadas (alternando display) para que a tabela de
+      // deployments preserve busca/filtros/ordenação ao voltar da lista de pods — trocar
+      // via renderização condicional destruiria esse estado interno a cada ida e volta.
+      const backToDeployments = () => setRightView({ kind: "deployment-table" });
+      return (
+        <>
+          <div className="flex flex-col h-full p-2" style={{ display: rightView.kind === "pod-table" ? "flex" : "none" }}>
+            {rightView.kind === "pod-table" && (
+              <PodMonitorTable
+                cluster={cluster}
+                pods={monitorPods}
+                loading={monitorPodsLoading}
+                metrics={batchMetrics}
+                metricsLoading={false}
+                onOpenDetail={(pod) => setQuickViewPod(pod)}
+                headerLabel={`${rightView.deployment.name} — pods (${monitorPods.length})`}
+                breadcrumb={[
+                  { label: cluster },
+                  { label: rightView.deployment.namespace },
+                  { label: rightView.deployment.name, onClick: backToDeployments },
+                  { label: `Pods (${monitorPods.length})` },
+                ]}
+                onRequestRefresh={refreshMonitorPods}
+                onBack={backToDeployments}
+                backLabel="Deployments"
+              />
+            )}
+          </div>
+          <div className="flex flex-col h-full p-2" style={{ display: rightView.kind === "deployment-table" ? "flex" : "none" }}>
             <DeploymentMonitorTable
               deployments={filteredDeployments}
               loading={loading}
@@ -2672,13 +2685,7 @@ export const DeploymentsTab = ({
               onRequestRefresh={silentRefetch}
             />
           </div>
-        );
-      }
-
-      return (
-        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Escolha um Deployment para visualizar o manifesto
-        </div>
+        </>
       );
     }
 

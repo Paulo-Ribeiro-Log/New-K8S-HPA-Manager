@@ -38,6 +38,7 @@ import * as yaml from "js-yaml";
 
 import type { Namespace, PodSummary, BatchPodMetrics } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
+import { isPodImmutableFieldsError, POD_IMMUTABLE_FIELDS_HINT } from "@/lib/podErrors";
 import { PodMonitorTable } from "@/components/PodMonitorTable";
 import { PodLogsPanel } from "@/components/PodLogsPanel";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
@@ -327,9 +328,15 @@ export const PodsPanel = ({
         await loadPodYaml(selectedPod);
       }
     } catch (err) {
-      toast.error("Erro ao aplicar mudanças", {
-        description: err instanceof Error ? err.message : "Erro desconhecido",
-      });
+      const rawMsg = err instanceof Error ? err.message : "Erro desconhecido";
+      if (isPodImmutableFieldsError(rawMsg)) {
+        toast.error("Campo não pode ser alterado num Pod já criado", {
+          description: POD_IMMUTABLE_FIELDS_HINT,
+          duration: 12000,
+        });
+      } else {
+        toast.error("Erro ao aplicar mudanças", { description: rawMsg });
+      }
     } finally {
       setIsApplying(false);
     }
@@ -1272,6 +1279,11 @@ export const PodsPanel = ({
             headerLabel={selectedNamespace && selectedNamespace !== "__all__"
               ? `${selectedNamespace} — pods (${filteredPods.length})`
               : `todos os namespaces — pods (${filteredPods.length})`}
+            breadcrumb={[
+              { label: cluster },
+              { label: selectedNamespace && selectedNamespace !== "__all__" ? selectedNamespace : "Todos os namespaces" },
+              { label: `Pods (${filteredPods.length})` },
+            ]}
             onRequestRefresh={() => fetchPods(true)}
           />
         </div>
