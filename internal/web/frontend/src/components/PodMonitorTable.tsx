@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { PodSummary, BatchPodMetrics } from "@/lib/api/types";
 import { formatAge, formatBytes, formatMillicores, parseCpuToMillicores, parseMemoryToBytes, podRowColor, podDotColor } from "@/lib/monitorUtils";
-import { Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
+import { Loader2, ChevronLeft, ChevronRight, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -15,6 +15,11 @@ import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
 
 const REFRESH_INTERVAL_MS = 5000;
 
+export interface BreadcrumbSegment {
+  label: string;
+  onClick?: () => void;
+}
+
 interface PodMonitorTableProps {
   cluster: string;
   pods: PodSummary[];
@@ -23,6 +28,7 @@ interface PodMonitorTableProps {
   metricsLoading: boolean;
   onOpenDetail: (pod: PodSummary) => void;
   headerLabel: string;
+  breadcrumb?: BreadcrumbSegment[];
   onRequestRefresh: () => void;
   onBack?: () => void;
   backLabel?: string;
@@ -179,6 +185,7 @@ export const PodMonitorTable = ({
   metrics,
   onOpenDetail,
   headerLabel,
+  breadcrumb,
   onRequestRefresh,
   onBack,
   backLabel,
@@ -450,14 +457,45 @@ export const PodMonitorTable = ({
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/30 flex-shrink-0">
         {onBack && (
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={onBack}>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1" onClick={onBack}>
+            <ChevronLeft className="w-3 h-3" />
             {backLabel ?? "Voltar"}
           </Button>
         )}
-        <span className="text-xs font-medium text-muted-foreground truncate">
-          {headerLabel}
-          {(searchQuery || hasFilters) && ` — ${filtered.length} resultado(s)`}
-        </span>
+        {breadcrumb && breadcrumb.length > 0 ? (
+          <div className="flex items-center gap-1 min-w-0 truncate">
+            {breadcrumb.map((seg, i) => {
+              const isLast = i === breadcrumb.length - 1;
+              return (
+                <span key={i} className="flex items-center gap-1 min-w-0">
+                  {i > 0 && <ChevronRight className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />}
+                  {seg.onClick ? (
+                    <button
+                      onClick={seg.onClick}
+                      className="text-xs font-medium text-muted-foreground hover:text-foreground hover:underline truncate transition-colors"
+                    >
+                      {seg.label}
+                    </button>
+                  ) : (
+                    <span className={`text-xs font-medium truncate ${isLast ? "text-foreground" : "text-muted-foreground"}`}>
+                      {seg.label}
+                    </span>
+                  )}
+                </span>
+              );
+            })}
+            {(searchQuery || hasFilters) && (
+              <span className="text-xs font-medium text-muted-foreground flex-shrink-0">
+                {" "}— {filtered.length} resultado(s)
+              </span>
+            )}
+          </div>
+        ) : (
+          <span className="text-xs font-medium text-muted-foreground truncate">
+            {headerLabel}
+            {(searchQuery || hasFilters) && ` — ${filtered.length} resultado(s)`}
+          </span>
+        )}
         {(loading || refreshing) && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground flex-shrink-0" />}
         <div className="flex-1" />
 
