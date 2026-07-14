@@ -1111,12 +1111,24 @@ func (r *RodExtractor) parseDescription(description string) *ExtractedData {
 		extracted.Application = strings.TrimSpace(match[1])
 	}
 
-	versionRegex := regexp.MustCompile(`\* Versão:\s*([\d]+\.[\d]+\.[\d]+-?[\d]*)\.`)
+	// Captura a linha inteira (não só dígitos/pontos) — cobre tags alfanuméricas reais
+	// (ex: "choic-4437_cnpj_v6-1", usada por outros squads/produtos, sem formato semver).
+	// O "." final do template é removido à parte (TrimSuffix), já que a própria tag pode
+	// conter pontos (ex: "4.0.4-3"), tornando ambíguo tentar excluir isso via regex.
+	versionRegex := regexp.MustCompile(`\* Versão:\s*([^\n]+)`)
 	if match := versionRegex.FindStringSubmatch(description); len(match) > 1 {
-		extracted.Version = strings.TrimSpace(match[1])
+		v := strings.TrimSpace(match[1])
+		v = strings.TrimSuffix(v, ".")
+		extracted.Version = v
 	}
 
-	repoRegex := regexp.MustCompile(`\* Repositório:\s*github\.com/[^/]+/([^.]+)\.git`)
+	// Cobre os dois formatos de template já vistos em CHGs reais:
+	//   "* Repositório: github.com/org/repo.git"        (formato antigo)
+	//   "* URL do Repositório: github.com/org/repo.git" (formato atual — "Nome do
+	//   Repositório:" sozinho não é confiável: já vimos CHG onde o "Projeto"/"Aplicação(ões)"
+	//   tem sufixo extra (ex: "-b2c") que não existe no repo real, então preferimos sempre a
+	//   URL completa, que também evita ambiguidade de owner/org).
+	repoRegex := regexp.MustCompile(`\*\s*(?:URL do )?Repositório:\s*github\.com/[^/]+/([^.]+)\.git`)
 	if match := repoRegex.FindStringSubmatch(description); len(match) > 1 {
 		extracted.GitHubRepo = strings.TrimSpace(match[1])
 	}

@@ -120,6 +120,7 @@ interface ComparisonItem {
   result?: ComparisonResult;
   error?: string;
   errorType?: 'saml_authorization_required' | 'not_found' | 'unknown';
+  samlSettingsUrl?: string; // link direto de reautorização SSO (X-GitHub-SSO), quando disponível
 }
 
 // Data em que a CHG foi postada no Teams (não a data de importação) — cobre histórico de
@@ -130,6 +131,9 @@ function formatChgPostedAt(ts?: string): string | null {
   if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
+
+// Erro de query enriquecido com os dados de SSO (ver queryFn de comparisonData abaixo)
+type CompareQueryError = Error & { errorType?: 'saml_authorization_required'; samlSettingsUrl?: string };
 
 // Interface para erros SAML
 interface SAMLError {
@@ -408,8 +412,14 @@ export const GitHubReleasesTab = () => {
       );
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
+        const errorData = await response.json().catch(() => ({}));
+        if (errorData.error_type === 'saml_authorization_required') {
+          throw Object.assign(
+            new Error(errorData.message || errorData.error || 'Token precisa ser re-autorizado (SAML SSO)'),
+            { errorType: 'saml_authorization_required' as const, samlSettingsUrl: errorData.github_settings_url as string | undefined }
+          );
+        }
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
       const data = await response.json();
@@ -553,7 +563,8 @@ export const GitHubReleasesTab = () => {
               ...i,
               status: 'error',
               error: samlError.message,
-              errorType: 'saml_authorization_required'
+              errorType: 'saml_authorization_required',
+              samlSettingsUrl: samlError.github_settings_url
             } : i
           ));
           return;
@@ -889,22 +900,22 @@ export const GitHubReleasesTab = () => {
     setApprovalUrlInput("");
   };
 
-  // ✨ Normalizar versão de x-x-x-x para x.x.x-x (formato semver)
+  // ✨ Normaliza versão de x-x-x-x para x.x.x-x (formato semver), só quando os segmentos
+  // separados por hífen são todos numéricos — tags alfanuméricas reais (ex:
+  // "choic-4437_cnpj_v6-1") têm 2 hífens mas não são semver; substituir cegamente
+  // corrompia a tag (virava "choic.4437_cnpj_v6.1", que não existe no GitHub).
+  const isNumericSegment = (s: string) => s.length > 0 && /^[0-9]+$/.test(s);
+
   const normalizeVersion = (version: string): string => {
     if (!version) return version;
-    // Remove prefixo "v" se existir
-    let v = version.replace(/^v/, '');
-    // Contar hífens
-    const hyphens = (v.match(/-/g) || []).length;
-    if (hyphens >= 3) {
-      // Formato: x-x-x-x → x.x.x-x
-      const parts = v.split('-');
-      if (parts.length >= 4) {
-        return `${parts[0]}.${parts[1]}.${parts[2]}-${parts.slice(3).join('-')}`;
-      }
-    } else if (hyphens === 2 && !v.includes('.')) {
-      // Formato: x-x-x → x.x.x
-      v = v.replace(/-/g, '.');
+    const v = version.replace(/^v/, '');
+    const parts = v.split('-');
+    const hyphens = parts.length - 1;
+    if (hyphens >= 3 && parts.length >= 4 && isNumericSegment(parts[0]) && isNumericSegment(parts[1]) && isNumericSegment(parts[2])) {
+      return `${parts[0]}.${parts[1]}.${parts[2]}-${parts.slice(3).join('-')}`;
+    }
+    if (hyphens === 2 && isNumericSegment(parts[0]) && isNumericSegment(parts[1]) && isNumericSegment(parts[2])) {
+      return parts.join('.');
     }
     return v;
   };
@@ -1655,7 +1666,7 @@ export const GitHubReleasesTab = () => {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => window.open('https://github.com/settings/tokens', '_blank')}
+                          onClick={() => window.open(selectedBatchItem.samlSettingsUrl || 'https://github.com/settings/tokens', '_blank')}
                           className="flex-1"
                         >
                           <ExternalLink className="h-4 w-4 mr-2" />
@@ -1702,8 +1713,57 @@ export const GitHubReleasesTab = () => {
                 </div>
               )}
 
-              {/* ✅ Erro da comparação direta (não do lote) */}
-              {compareError && !selectedBatchItem && (
+              {/* ✅ Erro SAML da comparação direta (não do lote) */}
+              {compareError && !selectedBatchItem && (compareError as CompareQueryError).errorType === 'saml_authorization_required' && (
+                <div className="flex-1 flex items-center justify-center p-8">
+                  <Card className="max-w-lg border-amber-500/50 bg-amber-50 dark:bg-amber-950/40">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                        <ShieldAlert className="h-5 w-5" />
+                        Token precisa ser re-autorizado (SAML SSO)
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <p className="text-sm text-foreground">
+                        Seu token GitHub está válido, mas precisa ser re-autorizado para a organização <strong>{apiClient.getGitHubOrg()}</strong> que usa SAML SSO.
+                      </p>
+                      <Alert className="border-amber-300 bg-amber-100 dark:bg-amber-900/50">
+                        <Info className="h-4 w-4 text-amber-600" />
+                        <AlertDescription className="text-xs space-y-1">
+                          <p><strong>1.</strong> Acesse as configurações de tokens do GitHub</p>
+                          <p><strong>2.</strong> Encontre seu token e clique em "Configure SSO"</p>
+                          <p><strong>3.</strong> Procure "{apiClient.getGitHubOrg()}" e clique em "Authorize"</p>
+                          <p><strong>4.</strong> Complete a autenticação SSO</p>
+                          <p><strong>5.</strong> Volte aqui e clique em "Tentar Novamente"</p>
+                        </AlertDescription>
+                      </Alert>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => window.open((compareError as CompareQueryError).samlSettingsUrl || 'https://github.com/settings/tokens', '_blank')}
+                          className="flex-1"
+                        >
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          Abrir GitHub Settings
+                        </Button>
+                        <Button
+                          variant="default"
+                          size="sm"
+                          onClick={() => refetchComparison()}
+                          className="flex-1"
+                        >
+                          <RefreshCw className="h-4 w-4 mr-2" />
+                          Tentar Novamente
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+
+              {/* ✅ Erro genérico da comparação direta (não do lote) */}
+              {compareError && !selectedBatchItem && (compareError as CompareQueryError).errorType !== 'saml_authorization_required' && (
                 <div className="flex-1 flex items-center justify-center p-8">
                   <Card className="max-w-lg">
                     <CardContent className="pt-6 space-y-4">
