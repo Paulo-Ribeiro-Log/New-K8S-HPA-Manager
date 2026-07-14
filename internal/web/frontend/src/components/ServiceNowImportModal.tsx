@@ -236,9 +236,10 @@ export function ServiceNowImportModal({
     return new Date(b.posted_at).getTime() - new Date(a.posted_at).getTime();
   });
   const chgInList = filteredTeamsItems.some(i => i.chg === chgSearchNorm);
-  // CHG já aprovada/finalizada no devstartcd — checkbox fica desabilitado, não faz sentido
-  // reimportar pra comparação algo que já passou pela aprovação SRE.
-  const isChgApproved = (chg: string) => approvalStatuses.get(chg)?.approved === true;
+  // Desabilitado propositalmente: CHGs já aprovadas/finalizadas no devstartcd também podem
+  // precisar ser reimportadas (ex: para re-extrair o repo GitHub depois de um fix no parser).
+  // Sempre retorna false — nenhum item fica bloqueado por já ter sido aprovado.
+  const isChgApproved = (_chg: string) => false;
   const selectableTeamsItems = filteredTeamsItems.filter(i => !isChgApproved(i.chg));
 
   const handleExtractDirectChg = async () => {

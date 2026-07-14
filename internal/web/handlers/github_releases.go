@@ -399,13 +399,32 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 			Str("github_web_url", githubWebURL).
 			Msg("Failed to access repository")
 
-		// ✅ Detectar erro SAML específico (403 com mensagem de SAML enforcement)
+		// ✅ Detectar SSO/SAML pendente via header X-GitHub-SSO — sinal oficial do GitHub,
+		// presente tanto em respostas 403 quanto 404. O GitHub costuma devolver 404 (não 403)
+		// quando o token não tem SSO autorizado para a org, propositalmente, para não revelar
+		// a existência de repositórios privados a quem não tem acesso — por isso não dá pra
+		// confiar só no status code + string "SAML" (isso só cobria o caso 403).
+		ssoHeader := resp.Header.Get("X-GitHub-SSO")
 		errorStr := err.Error()
-		if resp.StatusCode == 403 && strings.Contains(errorStr, "SAML") {
+		isSSOError := ssoHeader != "" || (resp.StatusCode == 403 && strings.Contains(errorStr, "SAML"))
+		if isSSOError {
+			ssoURL := "https://github.com/settings/tokens"
+			if idx := strings.Index(ssoHeader, "url="); idx != -1 {
+				candidate := ssoHeader[idx+len("url="):]
+				if semi := strings.Index(candidate, ";"); semi != -1 {
+					candidate = candidate[:semi]
+				}
+				if candidate = strings.TrimSpace(candidate); candidate != "" {
+					ssoURL = candidate
+				}
+			}
+
 			h.logger.Warn().
 				Str("owner", owner).
 				Str("repo", repo).
-				Msg("SAML authorization required for organization")
+				Str("sso_header", ssoHeader).
+				Int("status_code", resp.StatusCode).
+				Msg("SSO authorization required for organization")
 
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":      "Token válido, mas não autorizado para a organização com SAML SSO",
@@ -418,7 +437,7 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 					"4. Complete a autenticação SSO",
 					"5. Tente novamente a comparação",
 				},
-				"github_settings_url": "https://github.com/settings/tokens",
+				"github_settings_url": ssoURL,
 				"github_web_url":      githubWebURL,
 				"status_code":         resp.StatusCode,
 			})
@@ -426,37 +445,25 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 		}
 
 		if resp.StatusCode == 404 {
-			// Tentar buscar repositórios do usuário/organização para ajudar no diagnóstico
-			var repoSuggestions []string
-			listOpts := &github.RepositoryListByOrgOptions{
-				ListOptions: github.ListOptions{PerPage: 100},
-			}
-
-			repos, _, listErr := client.Repositories.ListByOrg(context.Background(), owner, listOpts)
-			if listErr == nil && len(repos) > 0 {
-				h.logger.Info().Int("total_repos", len(repos)).Str("org", owner).Msg("Found accessible repos in org")
-				// Procurar repos com nomes similares
-				for _, r := range repos {
-					repoName := r.GetName()
-					if strings.Contains(strings.ToLower(repoName), strings.ToLower(repo)) ||
-						strings.Contains(strings.ToLower(repo), strings.ToLower(repoName)) {
-						repoSuggestions = append(repoSuggestions, repoName)
-					}
-					if len(repoSuggestions) >= 5 {
-						break
-					}
-				}
-			} else if listErr != nil {
-				h.logger.Error().Err(listErr).Str("org", owner).Msg("Failed to list org repos")
-			}
+			// Tentar buscar repositórios com nome parecido pra ajudar no diagnóstico.
+			// Não dá pra paginar client.Repositories.ListByOrg inteiro (a org tem milhares de
+			// repos — só a primeira página de 100 quase nunca contém o repo certo). Em vez
+			// disso, usamos a Search API do GitHub, que é feita pra isso — mas uma busca com
+			// o nome inteiro errado tende a não achar nada, porque a query da search API trata
+			// os termos como AND (todos precisam bater). Por isso vamos removendo o último
+			// segmento (separado por "-") até achar algo — cobre o caso comum de sufixo/prefixo
+			// incorreto na annotation devops.k8s.io/repository do Deployment (ex: "-b2c" que
+			// não existe, sendo o nome real só "processamento-contrato").
+			repoSuggestions := findSimilarRepos(client, owner, repo)
 
 			errorMsg := fmt.Sprintf("Repositório '%s/%s' não encontrado via API do GitHub.\n", owner, repo)
-			errorMsg += fmt.Sprintf("A URL web funciona: %s\n", githubWebURL)
 			errorMsg += "\nPossíveis causas:\n"
-			errorMsg += "1. Token não tem acesso a este repositório específico\n"
-			errorMsg += "2. Token precisa das permissões: 'repo' (full control) ou 'public_repo'\n"
-			errorMsg += "3. Nome do repositório pode estar ligeiramente diferente\n"
-			errorMsg += fmt.Sprintf("\nVocê pode acessar pelo browser: %s", githubWebURL)
+			errorMsg += "1. Nome do repositório está incorreto (a annotation devops.k8s.io/repository do Deployment pode ter um valor errado)\n"
+			errorMsg += "2. Token não tem acesso a este repositório específico\n"
+			errorMsg += "3. Token precisa das permissões: 'repo' (full control) ou 'public_repo'\n"
+			if len(repoSuggestions) > 0 {
+				errorMsg += fmt.Sprintf("\nRepositórios parecidos encontrados: %s", strings.Join(repoSuggestions, ", "))
+			}
 
 			response := gin.H{
 				"error":      errorMsg,
@@ -582,6 +589,31 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 		"head_release_notes": headReleaseNotes,
 		"compare_url":        githubWebURL,
 	})
+}
+
+// findSimilarRepos busca repositórios com nome parecido usando a Search API do GitHub.
+// A query da Search API trata os termos como AND (todos precisam bater no nome), então uma
+// busca com o nome completo errado ("processamento-contrato-b2c") tende a não achar nada —
+// vamos removendo o último segmento (separado por "-") até encontrar resultados, o que cobre
+// o caso comum de um sufixo/prefixo incorreto na annotation devops.k8s.io/repository.
+func findSimilarRepos(client *github.Client, owner, repo string) []string {
+	segments := strings.Split(repo, "-")
+	for i := len(segments); i >= 1; i-- {
+		candidate := strings.Join(segments[:i], "-")
+		query := fmt.Sprintf("%s in:name org:%s", candidate, owner)
+		result, _, err := client.Search.Repositories(context.Background(), query, &github.SearchOptions{
+			ListOptions: github.ListOptions{PerPage: 5},
+		})
+		if err != nil || result == nil || len(result.Repositories) == 0 {
+			continue
+		}
+		suggestions := make([]string, 0, len(result.Repositories))
+		for _, r := range result.Repositories {
+			suggestions = append(suggestions, r.GetName())
+		}
+		return suggestions
+	}
+	return nil
 }
 
 // SearchDeployments busca deployments na base de conhecimento por app name
@@ -1061,28 +1093,40 @@ func (h *GitHubReleasesHandler) findProductionVersion(releaseName string) (*stor
 	return &records[0], nil
 }
 
-// normalizeVersion converte versões com hífen para o padrão GitHub
-// Exemplo: "2-5-5-2" → "2.5.5-2" (substitui os 2 primeiros hífens por pontos)
-func normalizeVersion(version string) string {
-	// Remove prefixo "v" se existir
-	version = strings.TrimPrefix(version, "v")
-
-	// Contar hífens
-	hyphens := strings.Count(version, "-")
-
-	if hyphens >= 3 {
-		// Formato: x-x-x-x → x.x.x-x
-		// Substituir os 3 primeiros hífens por pontos
-		parts := strings.Split(version, "-")
-		if len(parts) >= 4 {
-			return fmt.Sprintf("%s.%s.%s-%s", parts[0], parts[1], parts[2], strings.Join(parts[3:], "-"))
+// isNumericSegment retorna true se s contém só dígitos (e não é vazio)
+func isNumericSegment(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
 		}
-	} else if hyphens == 2 {
+	}
+	return true
+}
+
+// normalizeVersion converte versões com hífen para o padrão GitHub (ex: "2-5-5-2" →
+// "2.5.5-2"), mas só quando os segmentos separados por hífen são todos numéricos —
+// tags alfanuméricas reais (ex: "choic-4437_cnpj_v6-1", usada por outros squads/produtos)
+// têm 2 hífens mas não são semver, e substituir cegamente corrompia a tag (virava
+// "choic.4437_cnpj_v6.1", que não existe no GitHub). Não-semver é devolvido sem alteração,
+// só com o prefixo "v" removido.
+func normalizeVersion(version string) string {
+	trimmed := strings.TrimPrefix(version, "v")
+	hyphens := strings.Count(trimmed, "-")
+	parts := strings.Split(trimmed, "-")
+
+	if hyphens >= 3 && len(parts) >= 4 && isNumericSegment(parts[0]) && isNumericSegment(parts[1]) && isNumericSegment(parts[2]) {
+		// Formato: x-x-x-x → x.x.x-x
+		return fmt.Sprintf("%s.%s.%s-%s", parts[0], parts[1], parts[2], strings.Join(parts[3:], "-"))
+	}
+	if hyphens == 2 && len(parts) == 3 && isNumericSegment(parts[0]) && isNumericSegment(parts[1]) && isNumericSegment(parts[2]) {
 		// Formato: x-x-x → x.x.x
-		version = strings.ReplaceAll(version, "-", ".")
+		return strings.Join(parts, ".")
 	}
 
-	return version
+	return trimmed
 }
 
 // ScanDeployments escaneia deployments de um cluster e popula a base de dados
@@ -1377,10 +1421,14 @@ func extractLabelsMetadata(labels, annotations, podTemplateAnnotations map[strin
 		servicenowTask = "CHG" + servicenowTask
 	}
 
-	githubRepo = podTemplateAnnotations["devops.k8s.io/repository"]
-	if githubRepo == "" {
-		githubRepo = annotations["devops.k8s.io/repository"]
-	}
+	// Ignorado por ora: a annotation devops.k8s.io/repository não é confiável (já vimos CHG
+	// real onde o "Projeto"/"Aplicação(ões)" tinha sufixo extra, ex: "-b2c", que não existe
+	// no repositório GitHub de verdade — o app comparava contra um repo inexistente). Fonte
+	// de verdade passou a ser o campo "URL do Repositório" extraído da CHG do ServiceNow
+	// (ver ExtractedData.GitHubRepo em internal/servicenow), não o scan de deployments do
+	// cluster. Deixado como "" propositalmente em vez de remover o campo/coluna — reativar
+	// aqui se a annotation um dia for a fonte correta de novo.
+	githubRepo = ""
 	return
 }
 

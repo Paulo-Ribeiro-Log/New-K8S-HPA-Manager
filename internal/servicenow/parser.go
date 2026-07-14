@@ -11,11 +11,14 @@ var extractionPatterns = map[string]*regexp.Regexp{
 	// * Aplicação(ões): tms-sync-1p-order-management-acl.
 	"application": regexp.MustCompile(`\*\s*Aplicação\(ões\):\s*(.+?)\.`),
 
-	// * Versão: 0.0.6-2. (captura versão semver com pontos e hífens)
-	"version": regexp.MustCompile(`\*\s*Versão:\s*([\d]+\.[\d]+\.[\d]+(?:-[\d]+)?)`),
+	// * Versão: 0.0.6-2. Captura a linha inteira (não só dígitos/pontos) — cobre tags
+	// alfanuméricas reais (ex: "choic-4437_cnpj_v6-1"). O "." final do template é
+	// removido à parte no ponto de uso (TrimSuffix), já que a tag pode conter pontos.
+	"version": regexp.MustCompile(`\*\s*Versão:\s*([^\n]+)`),
 
-	// * Repositório: github.com/<org>/tms-sync-1p-order-management-acl.git.
-	"repository": regexp.MustCompile(`\*\s*Repositório:\s*github\.com/[^/]+/(.+?)\.git`),
+	// * Repositório: github.com/<org>/tms-sync-1p-order-management-acl.git. (formato antigo)
+	// * URL do Repositório: github.com/<org>/tms-sync-1p-order-management-acl.git. (formato atual)
+	"repository": regexp.MustCompile(`\*\s*(?:URL do )?Repositório:\s*github\.com/[^/]+/(.+?)\.git`),
 
 	// * Squad(s): Planejamento.
 	"squad": regexp.MustCompile(`\*\s*Squad\(s\):\s*(.+?)\.`),
@@ -60,7 +63,7 @@ func ExtractFromDescription(description string) *ExtractedData {
 
 	// Versão
 	if match := extractionPatterns["version"].FindStringSubmatch(description); len(match) > 1 {
-		data.Version = strings.TrimSpace(match[1])
+		data.Version = strings.TrimSuffix(strings.TrimSpace(match[1]), ".")
 		fieldsFound++
 	}
 
