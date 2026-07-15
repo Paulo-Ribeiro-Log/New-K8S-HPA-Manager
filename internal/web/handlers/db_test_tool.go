@@ -56,6 +56,10 @@ type DBSecretRef struct {
 	Name        string `json:"name"`
 	UsernameKey string `json:"username_key"`
 	PasswordKey string `json:"password_key"`
+	// Base64Decode decodifica username/password mais uma vez depois de ler do Secret — mesmo
+	// campo/motivo de KafkaSecretRef.Base64Decode (valor sincronizado de fonte externa, ex: Azure
+	// Key Vault via external-secrets, que já é ele mesmo uma string em base64).
+	Base64Decode bool `json:"base64_decode,omitempty"`
 }
 
 // DBConfigMapRef aponta pra um ConfigMap K8s de onde ler host/porta — mesmo espírito do
@@ -148,19 +152,6 @@ type DBBrowseObject struct {
 	// Detail: resumo legível — colunas+tipos (tabela), contagem de documentos (collection),
 	// tamanho em disco (database). Vazio quando não há nada relevante a mostrar.
 	Detail string `json:"detail,omitempty"`
-	// Count/SizeBytes/StorageSizeBytes: estatísticas estruturadas no mesmo espírito do "All Stats"
-	// do MongoDB Compass (Collection/Count/Size/StorageSize) — populadas só para tabelas Postgres/
-	// MySQL (reltuples/table_rows + pg_relation_size/data_length, estimativas de catálogo, nunca um
-	// scan) e collections Mongo ($collStats, mesmo princípio de segurança do
-	// estimatedDocumentCount já usado antes). Omitidas (0) para database/key, onde não se aplica.
-	Count int64 `json:"count,omitempty"`
-	// SizeBytes: tamanho "lógico" do dado (heap da tabela no Postgres, data_length no MySQL, size
-	// do $collStats no Mongo — sem contar índices/overhead).
-	SizeBytes int64 `json:"size_bytes,omitempty"`
-	// StorageSizeBytes: tamanho total em disco incluindo índices/overhead (pg_total_relation_size,
-	// data_length+index_length, storageSize do $collStats) — equivalente ao "Storage Size" do
-	// MongoDB Compass.
-	StorageSizeBytes int64 `json:"storage_size_bytes,omitempty"`
 }
 
 // DBBrowseResult é o resultado do estágio de navegação só-leitura. ObjectType varia por engine E
@@ -240,31 +231,19 @@ func namesToObjects(names []string) []DBBrowseObject {
 // resumir em "(+N mais)" — tabelas largas (dezenas de colunas) ficariam ilegíveis sem isso.
 const dbBrowseMaxColumnsShown = 6
 
-// groupColumnsToTablesWithStats agrupa linhas "tabela|coluna|tipo|..." em um DBBrowseObject por
-// tabela, com Detail resumindo as colunas. Espera 6 campos por linha —
-// "tabela|coluna|tipo|size_bytes|storage_size_bytes|row_estimate" — formato comum
-// usado tanto pela query do Postgres (pg_relation_size/pg_total_relation_size/reltuples) quanto
-// pela do MySQL (data_length/data_length+index_length/table_rows), todos estimativas de catálogo
-// (nunca um COUNT(*) ou scan completo — seguro mesmo em tabelas grandes, mesmo espírito do
-// estimatedDocumentCount do Mongo). size_bytes/storage_size_bytes/row_estimate são repetidos em
-// toda linha da mesma tabela (uma por coluna) — só a primeira ocorrência é usada.
-func groupColumnsToTablesWithStats(lines []string) []DBBrowseObject {
+// groupColumnsToTables agrupa linhas "tabela|coluna|tipo" (uma por coluna, na ordem em que vêm da
+// query information_schema) em um DBBrowseObject por tabela, com Detail resumindo as colunas.
+func groupColumnsToTables(lines []string) []DBBrowseObject {
 	var order []string
 	cols := map[string][]string{}
-	sizeBytes := map[string]int64{}
-	storageSizeBytes := map[string]int64{}
-	rowCount := map[string]int64{}
 	for _, l := range lines {
-		parts := strings.SplitN(l, "|", 6)
-		if len(parts) != 6 {
+		parts := strings.SplitN(l, "|", 3)
+		if len(parts) != 3 {
 			continue
 		}
 		table, col, typ := parts[0], parts[1], parts[2]
 		if _, ok := cols[table]; !ok {
 			order = append(order, table)
-			sizeBytes[table], _ = strconv.ParseInt(parts[3], 10, 64)
-			storageSizeBytes[table], _ = strconv.ParseInt(parts[4], 10, 64)
-			rowCount[table], _ = strconv.ParseInt(parts[5], 10, 64)
 		}
 		cols[table] = append(cols[table], col+" "+typ)
 	}
@@ -276,10 +255,7 @@ func groupColumnsToTablesWithStats(lines []string) []DBBrowseObject {
 		if len(colList) > dbBrowseMaxColumnsShown {
 			detail += fmt.Sprintf(" (+%d mais)", len(colList)-dbBrowseMaxColumnsShown)
 		}
-		objects = append(objects, DBBrowseObject{
-			Name: table, Type: "table", Detail: detail,
-			Count: rowCount[table], SizeBytes: sizeBytes[table], StorageSizeBytes: storageSizeBytes[table],
-		})
+		objects = append(objects, DBBrowseObject{Name: table, Type: "table", Detail: detail})
 	}
 	return objects
 }
@@ -448,30 +424,6 @@ func redisCommand(p dbConnParams, extraArgs ...string) string {
 	return strings.Join(parts, " ")
 }
 
-// redisKeyspaceLineRegex casa linhas do "INFO keyspace" no formato
-// "dbN:keys=X,expires=Y,avg_ttl=Z[,subexpiry=W]" — o campo subexpiry (Redis 7.4+) é ignorado, não
-// muda a extração dos 3 campos usados aqui.
-var redisKeyspaceLineRegex = regexp.MustCompile(`(?m)^db(\d+):keys=(\d+),expires=(\d+),avg_ttl=(\d+)`)
-
-// parseRedisKeyspaceInfo extrai um DBBrowseObject por banco lógico não-vazio (0-15) a partir da
-// saída de "INFO keyspace" — bancos sem nenhuma chave simplesmente não aparecem na saída do
-// Redis, não precisam ser filtrados aqui.
-func parseRedisKeyspaceInfo(raw string) []DBBrowseObject {
-	matches := redisKeyspaceLineRegex.FindAllStringSubmatch(raw, -1)
-	objects := make([]DBBrowseObject, 0, len(matches))
-	for _, m := range matches {
-		keys, _ := strconv.ParseInt(m[2], 10, 64)
-		expires, _ := strconv.ParseInt(m[3], 10, 64)
-		avgTTL, _ := strconv.ParseInt(m[4], 10, 64)
-		detail := fmt.Sprintf("%d expirando(s)", expires)
-		if avgTTL > 0 {
-			detail += fmt.Sprintf(", avg TTL %dms", avgTTL)
-		}
-		objects = append(objects, DBBrowseObject{Name: "db" + m[1], Detail: detail, Count: keys})
-	}
-	return objects
-}
-
 // parseLineListOutput é o parser genérico "uma linha = um objeto" usado por Postgres (via `psql
 // -t -A`), MySQL (`SHOW DATABASES` menos o cabeçalho) e Redis (`--scan`).
 func parseLineListOutput(raw string, skipFirstLine bool) []string {
@@ -513,21 +465,13 @@ var dbEngines = map[string]dbEngine{
 			return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
 		},
 		// Sem Database informado: lista databases. Com Database informado: desce um nível e lista
-		// as tabelas do schema public + suas colunas, junto com estatísticas de catálogo por
-		// tabela (nunca um scan/COUNT(*) real): pg_relation_size (heap, "Size"),
-		// pg_total_relation_size (heap+índices+toast, "Storage Size" — equivalente ao Compass) e
-		// reltuples (estimativa de linhas, atualizada por VACUUM/ANALYZE) — repetidos em toda linha
-		// da mesma tabela, agrupados no Go (ver groupColumnsToTablesWithStats).
+		// as tabelas do schema public + suas colunas (ver groupColumnsToTables) — "table|coluna|
+		// tipo" por linha, uma linha por coluna, agrupado no Go.
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
 			target := connTargetOrURI(p, buildPostgresURI)
 			query := "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname;"
 			if strings.TrimSpace(p.Database) != "" {
-				query = "SELECT col.table_name || '|' || col.column_name || '|' || col.data_type || '|' || " +
-					"pg_relation_size(c.oid) || '|' || pg_total_relation_size(c.oid) || '|' || c.reltuples::bigint " +
-					"FROM information_schema.columns col " +
-					"JOIN pg_class c ON c.relname = col.table_name AND c.relkind = 'r' " +
-					"JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = col.table_schema " +
-					"WHERE col.table_schema = 'public' ORDER BY col.table_name, col.ordinal_position;"
+				query = "SELECT table_name || '|' || column_name || '|' || data_type FROM information_schema.columns WHERE table_schema='public' ORDER BY table_name, ordinal_position;"
 			}
 			cmd := fmt.Sprintf("psql %s -t -A -c %s", quoteShellArg(target), quoteShellArg(query))
 			return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
@@ -537,7 +481,7 @@ var dbEngines = map[string]dbEngine{
 			if strings.TrimSpace(p.Database) == "" {
 				return namesToObjects(lines), "database", false
 			}
-			return groupColumnsToTablesWithStats(lines), "table", false
+			return groupColumnsToTables(lines), "table", false
 		},
 		networkErrorRegex: regexp.MustCompile(`(?i)(could not connect to server|connection refused|could not translate host name|timeout expired)`),
 		authErrorRegex:    regexp.MustCompile(`(?i)(password authentication failed|role .* does not exist|no pg_hba\.conf entry)`),
@@ -575,11 +519,9 @@ var dbEngines = map[string]dbEngine{
 			return fmt.Sprintf("timeout %ds %s%s 2>&1", timeoutSec, prefix, strings.Join(args, " "))
 		},
 		// Sem Database informado: lista databases. Com Database informado: desce um nível e lista
-		// as tabelas + colunas (mesmo formato "tabela|coluna|tipo|..." do Postgres) — table_schema
+		// as tabelas + colunas (mesmo formato "tabela|coluna|tipo" do Postgres) — table_schema
 		// resolvido via DATABASE() (a sessão já conecta nesse banco, sem precisar reinterpolar o
-		// nome na query). Estatísticas por tabela via information_schema.tables (catálogo, nunca
-		// um scan): data_length ("Size"), data_length+index_length ("Storage Size" — equivalente
-		// ao Compass) e table_rows (estimativa de linhas, atualizada por ANALYZE TABLE).
+		// nome na query).
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
 			host, port, user, pass, db := mysqlEffectiveParams(p)
 			args := []string{"mysql", "-h", quoteShellArg(host), "-P", strconv.Itoa(port)}
@@ -596,11 +538,7 @@ var dbEngines = map[string]dbEngine{
 			query := "SHOW DATABASES;"
 			if db != "" {
 				args = append(args, quoteShellArg(db))
-				query = "SELECT CONCAT(col.table_name,'|',col.column_name,'|',col.column_type,'|'," +
-					"IFNULL(t.data_length,0),'|',IFNULL(t.data_length,0)+IFNULL(t.index_length,0),'|',IFNULL(t.table_rows,0)) " +
-					"FROM information_schema.columns col " +
-					"JOIN information_schema.tables t ON t.table_name = col.table_name AND t.table_schema = col.table_schema " +
-					"WHERE col.table_schema = DATABASE() ORDER BY col.table_name, col.ordinal_position;"
+				query = "SELECT CONCAT(table_name,'|',column_name,'|',column_type) FROM information_schema.columns WHERE table_schema=DATABASE() ORDER BY table_name, ordinal_position;"
 			}
 			// -N (--skip-column-names) evita ter que descartar a linha de cabeçalho no Go.
 			args = append(args, "-N", "-e", quoteShellArg(query))
@@ -616,7 +554,7 @@ var dbEngines = map[string]dbEngine{
 			if db == "" {
 				return namesToObjects(lines), "database", false
 			}
-			return groupColumnsToTablesWithStats(lines), "table", false
+			return groupColumnsToTables(lines), "table", false
 		},
 		networkErrorRegex: regexp.MustCompile(`(?i)(can't connect to mysql server|connection refused|unknown mysql server host)`),
 		authErrorRegex:    regexp.MustCompile(`(?i)access denied for user`),
@@ -634,28 +572,17 @@ var dbEngines = map[string]dbEngine{
 			return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
 		},
 		// Sem Database informado: lista databases (nome + tamanho em disco). Com Database
-		// informado: desce um nível e lista as collections desse banco + estatísticas via
-		// $collStats (count/size/storageSize — mesmo dado do "All Stats" do MongoDB Compass),
-		// que lê metadata do storage engine sem escanear a collection inteira, seguro mesmo em
-		// collections grandes. try/catch por collection: views e alguns tipos especiais não
-		// suportam $collStats — cai para estimatedDocumentCount (só count, sem size) em vez de
-		// derrubar a listagem inteira por causa de uma collection.
+		// informado: desce um nível e lista as collections desse banco + contagem estimada de
+		// documentos (estimatedDocumentCount — metadata do storage engine, não escaneia a
+		// collection inteira, seguro mesmo em collections grandes).
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
 			uri := connTargetOrURI(p, buildMongoURI)
 			var script string
 			if db := strings.TrimSpace(p.Database); db != "" {
 				dbLit := jsStringLiteral(db)
 				script = fmt.Sprintf(
-					"JSON.stringify(db.getSiblingDB(%s).getCollectionNames().map(function(c){"+
-						"try{"+
-						"var s=db.getSiblingDB(%s).getCollection(c).aggregate([{$collStats:{storageStats:{}}}]).toArray()[0];"+
-						"var ss=(s&&s.storageStats)||{};"+
-						"return {name:c, count:ss.count||0, size:ss.size||0, storageSize:ss.storageSize||0};"+
-						"}catch(e){"+
-						"return {name:c, count:db.getSiblingDB(%s).getCollection(c).estimatedDocumentCount(), size:0, storageSize:0};"+
-						"}"+
-						"}))",
-					dbLit, dbLit, dbLit,
+					"JSON.stringify(db.getSiblingDB(%s).getCollectionNames().map(function(c){return {name:c, count:db.getSiblingDB(%s).getCollection(c).estimatedDocumentCount()};}))",
+					dbLit, dbLit,
 				)
 			} else {
 				script = "JSON.stringify(db.adminCommand({listDatabases:1}).databases.map(function(d){return {name:d.name, sizeOnDisk:d.sizeOnDisk};}))"
@@ -670,24 +597,15 @@ var dbEngines = map[string]dbEngine{
 			}
 			if strings.TrimSpace(p.Database) != "" {
 				var collections []struct {
-					Name        string `json:"name"`
-					Count       int64  `json:"count"`
-					Size        int64  `json:"size"`
-					StorageSize int64  `json:"storageSize"`
+					Name  string `json:"name"`
+					Count int64  `json:"count"`
 				}
 				if err := json.Unmarshal([]byte(jsonArr), &collections); err != nil {
 					return nil, "", false
 				}
 				objects := make([]DBBrowseObject, 0, len(collections))
 				for _, c := range collections {
-					detail := fmt.Sprintf("~%d documento(s)", c.Count)
-					if c.StorageSize > 0 {
-						detail += fmt.Sprintf(", %s (dados) / %s (storage)", formatBytesShort(c.Size), formatBytesShort(c.StorageSize))
-					}
-					objects = append(objects, DBBrowseObject{
-						Name: c.Name, Type: "collection", Detail: detail,
-						Count: c.Count, SizeBytes: c.Size, StorageSizeBytes: c.StorageSize,
-					})
+					objects = append(objects, DBBrowseObject{Name: c.Name, Type: "collection", Detail: fmt.Sprintf("~%d documento(s)", c.Count)})
 				}
 				return objects, "collection", false
 			}
@@ -716,23 +634,13 @@ var dbEngines = map[string]dbEngine{
 			cmd := redisCommand(p, "PING")
 			return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
 		},
-		// Sem Database (índice) informado: visão geral por banco lógico via `INFO keyspace` —
-		// preenche o "nível database" que os outros 3 engines já tinham (Postgres/MySQL/Mongo
-		// listam databases quando nenhum nome é informado; o Redis antes pulava direto pra lista
-		// de chaves, sempre). `INFO keyspace` é um único comando, server-wide — reporta os 16
-		// bancos (0-15) independente de qual `-n` a conexão está usando.
-		//
-		// Com Database informado: mesmo scan de chaves de antes (`--scan` + `head`, nunca `KEYS
-		// *`), mas cada chave agora roda TYPE + MEMORY USAGE num único `redis-cli` (comandos
-		// enviados via stdin, uma conexão só) em vez de dois processos separados — mesmo número
-		// de round-trips de antes (100 no teto), só que cada um faz 2 comandos ao invés de 1.
-		// MEMORY USAGE é O(1)-ish (não escaneia a chave inteira pra tipos simples), mesmo espírito
-		// de segurança do teto de 100 chaves.
+		// `--scan` sem teto próprio — SEMPRE via `head` pra garantir um limite real (ver
+		// dbRedisScanCap). Nunca `KEYS *`. `--pattern` filtra via SCAN...MATCH (mesma sintaxe glob
+		// do Redis, ex: "user:*") — vazio equivale a sem filtro ("*"). Além do nome, busca o TYPE
+		// de cada chave (string/hash/list/set/zset/stream) — um round-trip extra por chave, mas o
+		// teto de 100 mantém isso rápido (TYPE é O(1) no Redis); todo o pipeline (scan + até 100
+		// TYPEs) roda dentro do mesmo timeout via `timeout Ns sh -c '...'` envolvendo tudo.
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
-			if strings.TrimSpace(p.Database) == "" {
-				cmd := redisCommand(p, "INFO", "keyspace")
-				return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
-			}
 			scanArgs := []string{"--scan"}
 			if pattern := strings.TrimSpace(p.RedisKeyPattern); pattern != "" {
 				scanArgs = append(scanArgs, "--pattern", pattern)
@@ -740,32 +648,22 @@ var dbEngines = map[string]dbEngine{
 			scanCmd := redisCommand(p, scanArgs...)
 			baseCmd := redisBaseCommand(p)
 			pipeline := fmt.Sprintf(
-				`%s | head -n %d | while IFS= read -r k; do `+
-					`r=$(printf 'TYPE %%s\nMEMORY USAGE %%s\n' "$k" "$k" | %s 2>/dev/null); `+
-					`t=$(printf '%%s\n' "$r" | head -n1); m=$(printf '%%s\n' "$r" | tail -n1); `+
-					`printf '%%s|%%s|%%s\n' "$k" "$t" "$m"; done`,
+				`%s | head -n %d | while IFS= read -r k; do t=$(%s TYPE "$k" 2>/dev/null); printf '%%s|%%s\n' "$k" "$t"; done`,
 				scanCmd, dbRedisScanCap, baseCmd,
 			)
 			return fmt.Sprintf("timeout %ds sh -c %s 2>&1", timeoutSec, quoteShellArg(pipeline))
 		},
 		parseBrowseOutput: func(raw string, p dbConnParams) ([]DBBrowseObject, string, bool) {
-			if strings.TrimSpace(p.Database) == "" {
-				return parseRedisKeyspaceInfo(raw), "database", false
-			}
 			lines := parseLineListOutput(raw, false)
 			objects := make([]DBBrowseObject, 0, len(lines))
 			for _, l := range lines {
-				parts := strings.SplitN(l, "|", 3)
+				parts := strings.SplitN(l, "|", 2)
 				name := parts[0]
 				typ := "unknown"
-				if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
+				if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
 					typ = strings.TrimSpace(parts[1])
 				}
-				var memBytes int64
-				if len(parts) == 3 {
-					memBytes, _ = strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
-				}
-				objects = append(objects, DBBrowseObject{Name: name, Type: typ, SizeBytes: memBytes})
+				objects = append(objects, DBBrowseObject{Name: name, Type: typ})
 			}
 			truncated := len(objects) >= dbRedisScanCap
 			return objects, "key", truncated
@@ -882,7 +780,18 @@ func resolveDBCredentials(ctx context.Context, clientset kubernetes.Interface, a
 		if !ok {
 			return "", "", fmt.Errorf("chave %q não encontrada no secret %s/%s", passKey, ref.Namespace, ref.Name)
 		}
-		return string(userBytes), string(passBytes), nil
+		username, password = string(userBytes), string(passBytes)
+		if ref.Base64Decode {
+			username, err = decodeSecretValueBase64(username)
+			if err != nil {
+				return "", "", fmt.Errorf("valor da chave %q não é base64 válido (Base64Decode marcado): %w", userKey, err)
+			}
+			password, err = decodeSecretValueBase64(password)
+			if err != nil {
+				return "", "", fmt.Errorf("valor da chave %q não é base64 válido (Base64Decode marcado): %w", passKey, err)
+			}
+		}
+		return username, password, nil
 	}
 	return auth.Username, auth.Password, nil
 }
