@@ -248,13 +248,26 @@ interface Toast {
   message: string;
 }
 
+// Modal de resultado pra operações git (commit/push/pull/checkout/stash/merge/cherry-pick/tag)
+// — diferente do Toast, não some sozinho e suporta botões de opção contextuais (ex: "Fazer
+// stash e tentar de novo" quando o checkout falha por mudanças não commitadas).
+interface GitResultState {
+  type: "success" | "error";
+  title: string;
+  message: string;
+  actions?: { label: string; onClick: () => void; variant?: "default" | "outline" | "destructive" }[];
+}
+
 function useToasts() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const counter = useRef(0);
 
   function addToast(type: Toast["type"], message: string) {
     const id = ++counter.current;
-    setToasts(t => [...t, { id, type, message }]);
+    // Evita empilhar toasts idênticos — ex: cliques repetidos numa ação que falha sempre
+    // com o mesmo erro (git recusando checkout por mudanças não commitadas) geravam um
+    // toast novo por clique. Substitui o toast existente em vez de duplicar.
+    setToasts(t => [...t.filter(x => !(x.type === type && x.message === message)), { id, type, message }]);
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
   }
 
@@ -266,9 +279,9 @@ function ToastContainer({ toasts }: { toasts: Toast[] }) {
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
       {toasts.map(t => (
-        <div key={t.id} className={`flex items-center gap-2 px-3 py-2 rounded shadow-lg text-xs font-medium animate-in slide-in-from-right-4 ${t.type === "success" ? "bg-green-900/90 text-green-200 border border-green-700" : "bg-red-900/90 text-red-200 border border-red-700"}`}>
-          {t.type === "success" ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />}
-          <span className="max-w-xs truncate">{t.message}</span>
+        <div key={t.id} className={`flex items-start gap-2 px-3 py-2 rounded shadow-lg text-xs font-medium animate-in slide-in-from-right-4 max-w-md ${t.type === "success" ? "bg-green-900/90 text-green-200 border border-green-700" : "bg-red-900/90 text-red-200 border border-red-700"}`}>
+          {t.type === "success" ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /> : <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />}
+          <span className="whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{t.message}</span>
         </div>
       ))}
     </div>
@@ -510,7 +523,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
         else treeNavKeyDown(e, () => { onSelect(node); }, () => onMultiToggle?.(node.path));
       }}
     >
-      <button className="flex items-center gap-1 flex-1 min-w-0" onClick={e => {
+      <button className="flex items-center gap-1 flex-1 min-w-0 text-left" onClick={e => {
         if (e.ctrlKey || e.metaKey) { e.preventDefault(); onMultiToggle?.(node.path); }
         else { onSelect(node); }
       }}>
@@ -1868,8 +1881,14 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
   async function handleCheckout(branch: string) {
     if (branches?.current === branch) return;
     setCheckingOut(branch);
-    await onCheckout(branch);
-    setCheckingOut("");
+    try {
+      await onCheckout(branch);
+    } catch {
+      // onCheckout já mostra o toast de erro (ou é um cancelamento do usuário) — só
+      // precisamos garantir que os botões de branch não fiquem desabilitados pra sempre.
+    } finally {
+      setCheckingOut("");
+    }
   }
 
   const q = filter.toLowerCase();
@@ -1929,7 +1948,7 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
               <div className="space-y-0.5">
                 {branches!.local.filter(b => b !== branches?.current).filter(matchBranch).map(b => (
                   <button key={b} onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group">
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
                     <GitBranch className="w-3 h-3 text-muted-foreground flex-shrink-0" />
                     <span className="truncate flex-1 text-foreground/80">{b}</span>
                     {checkingOut === b
@@ -1951,7 +1970,7 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
                   .filter(matchBranch)
                   .map(b => (
                     <button key={b} onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group">
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
                       <GitBranch className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
                       <span className="truncate flex-1 text-muted-foreground">{b}</span>
                       {checkingOut === b
@@ -2030,7 +2049,9 @@ export function CodeEditorTab() {
   const [showCommit, setShowCommit] = useState(false);
   const [showBranch, setShowBranch] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
-  const [sseDialog, setSseDialog] = useState<{ title: string; endpoint: string; body?: object } | null>(null);
+  // chainPush: usado pelo botão "Sync" — depois do Pull terminar com sucesso, encadeia
+  // automaticamente um Push (mesmo padrão VSCode de "Sincronizar Alterações").
+  const [sseDialog, setSseDialog] = useState<{ title: string; endpoint: string; body?: object; chainPush?: boolean } | null>(null);
   const [focusedDirPath, setFocusedDirPath] = useState("");
   const [createDialog, setCreateDialog] = useState<{ mode: "file" | "dir"; basePath: string } | null>(null);
 
@@ -2156,6 +2177,9 @@ export function CodeEditorTab() {
     onCancel: () => void;
   } | null>(null);
 
+  // Modal de resultado de operações git (commit/push/pull/checkout/stash/merge/cherry-pick/tag)
+  const [gitResult, setGitResult] = useState<GitResultState | null>(null);
+
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const saveFileRef = useRef<() => void>(() => {});
   const openFileRef = useRef<(node: CodeEditorFileNode) => Promise<void>>(async () => {});
@@ -2174,6 +2198,14 @@ export function CodeEditorTab() {
         onCancel:  () => { setConfirmState(null); resolve(false); },
       });
     });
+  }
+
+  // showGitResult — modal de info pro retorno de operações git (commit/push/pull/checkout/
+  // stash/merge/cherry-pick/tag), com botões de opção quando faz sentido (ex: "Fazer stash e
+  // tentar de novo"). Substitui os toasts curtos que sumiam sozinhos e cortavam mensagens
+  // longas de erro do git.
+  function showGitResult(type: GitResultState["type"], title: string, message: string, actions?: GitResultState["actions"]) {
+    setGitResult({ type, title, message, actions });
   }
 
   const activeTab = openTabs[activeTabIdx] ?? null;
@@ -2451,14 +2483,37 @@ export function CodeEditorTab() {
     }
     try {
       const result = await apiClient.codeEditorCheckoutBranch(selectedRepo.id, branch);
-      addToast("success", `Alternado para: ${result.branch}`);
+      showGitResult("success", "Branch alternado", `Alternado para: ${result.branch}`);
       setOpenTabs([]);
       setActiveTabIdx(0);
       await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadTree(selectedRepo.id)]);
     } catch (e: any) {
-      if (e.message !== "cancelado") {
-        addToast("error", e.message || "Erro ao alternar branch");
-      }
+      if (e.message === "cancelado") throw e;
+
+      // git recusa o checkout quando há mudanças não commitadas que conflitam com o
+      // branch de destino ("Your local changes ... would be overwritten by checkout").
+      // Em vez de só mostrar o erro, oferece "Fazer stash e tentar de novo" como opção
+      // direto no modal de resultado.
+      const isDirtyCheckoutError = /would be overwritten by checkout|commit your changes or stash them/i.test(e.message || "");
+      const retryWithStash = async () => {
+        try {
+          await apiClient.codeEditorStash(selectedRepo.id);
+          setOpenTabs([]);
+          setActiveTabIdx(0);
+          const result = await apiClient.codeEditorCheckoutBranch(selectedRepo.id, branch);
+          showGitResult("success", "Branch alternado", `Stash feito e alternado para: ${result.branch}`);
+          await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadTree(selectedRepo.id)]);
+        } catch (retryErr: any) {
+          showGitResult("error", "Erro ao trocar de branch", retryErr.message || "Erro ao fazer stash e trocar de branch");
+        }
+      };
+
+      showGitResult(
+        "error",
+        "Não foi possível trocar de branch",
+        e.message || "Erro ao alternar branch",
+        isDirtyCheckoutError ? [{ label: "Fazer stash e tentar de novo", onClick: retryWithStash }] : undefined
+      );
       throw e;
     }
   }
@@ -2690,14 +2745,14 @@ export function CodeEditorTab() {
         const r = await apiClient.codeEditorStash(selectedRepo.id);
         setOpenTabs([]);
         setActiveTabIdx(0);
-        addToast("success", r.message || "Stash criado");
+        showGitResult("success", "Stash", r.message || "Stash criado");
       } else {
         const r = await apiClient.codeEditorStashPop(selectedRepo.id);
-        addToast("success", r.message || "Stash aplicado");
+        showGitResult("success", "Stash", r.message || "Stash aplicado");
       }
       await Promise.all([loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
     } catch (e: any) {
-      addToast("error", e.message || `Erro no stash ${action}`);
+      showGitResult("error", "Erro no stash", e.message || `Erro no stash ${action}`);
     } finally {
       setStashLoading(null);
     }
@@ -2726,10 +2781,13 @@ export function CodeEditorTab() {
     try {
       await apiClient.codeEditorCommit(selectedRepo.id, scmCommitMsg.trim());
       setScmCommitMsg("");
-      addToast("success", "Commit criado com sucesso");
       await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
-      if (andPush) setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined });
-    } catch (e: any) { addToast("error", e.message || "Erro ao commitar"); }
+      if (andPush) {
+        setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined });
+      } else {
+        showGitResult("success", "Commit", "Commit criado com sucesso");
+      }
+    } catch (e: any) { showGitResult("error", "Erro ao commitar", e.message || "Erro ao commitar"); }
     setScmLoading(false);
   }
 
@@ -2752,11 +2810,11 @@ export function CodeEditorTab() {
     if (!await showConfirm(`Aplicar commit ${hash.slice(0, 7)} no branch atual?`)) return;
     try {
       const r = await apiClient.codeEditorCherryPick(selectedRepo.id, hash);
-      addToast("success", "Cherry-pick aplicado");
+      showGitResult("success", "Cherry-pick", "Cherry-pick aplicado");
       await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
       return r.message;
     } catch (e: any) {
-      addToast("error", e.message || "Erro no cherry-pick");
+      showGitResult("error", "Erro no cherry-pick", e.message || "Erro no cherry-pick");
     }
   }
 
@@ -2771,10 +2829,10 @@ export function CodeEditorTab() {
     if (!selectedRepo) return;
     try {
       await apiClient.codeEditorCreateTag(selectedRepo.id, name, hash, message);
-      addToast("success", `Tag ${name} criada`);
+      showGitResult("success", "Tag", `Tag ${name} criada`);
       await loadTags(selectedRepo.id);
     } catch (e: any) {
-      addToast("error", e.message || "Erro ao criar tag");
+      showGitResult("error", "Erro ao criar tag", e.message || "Erro ao criar tag");
     }
   }
 
@@ -2783,10 +2841,10 @@ export function CodeEditorTab() {
     if (!await showConfirm(`Deletar tag "${name}"?`)) return;
     try {
       await apiClient.codeEditorDeleteTag(selectedRepo.id, name);
-      addToast("success", `Tag ${name} removida`);
+      showGitResult("success", "Tag", `Tag ${name} removida`);
       await loadTags(selectedRepo.id);
     } catch (e: any) {
-      addToast("error", e.message || "Erro ao deletar tag");
+      showGitResult("error", "Erro ao deletar tag", e.message || "Erro ao deletar tag");
     }
   }
 
@@ -3397,6 +3455,22 @@ export function CodeEditorTab() {
         {/* Ações Git */}
         {selectedRepo && (
           <>
+            <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
+              title="Sincronizar: Pull e, se der certo, Push em seguida"
+              onClick={() => setSseDialog({
+                title: "Sincronizar (Pull)",
+                endpoint: `/code-editor/repos/${selectedRepo.id}/pull`,
+                body: activeToken() ? { token: activeToken() } : undefined,
+                chainPush: true,
+              })}>
+              <RefreshCw className="w-3 h-3" />Sync
+              {status && (status.ahead !== "0" || status.behind !== "0") && (
+                <span className="text-[10px] flex items-center gap-0.5">
+                  {status.behind !== "0" && <span className="text-yellow-400">↓{status.behind}</span>}
+                  {status.ahead !== "0" && <span className="text-blue-400">↑{status.ahead}</span>}
+                </span>
+              )}
+            </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
               onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull`, body: activeToken() ? { token: activeToken() } : undefined })}>
               <Download className="w-3 h-3" />Pull
@@ -4635,6 +4709,31 @@ export function CodeEditorTab() {
         </Dialog>
       )}
 
+      {/* ── Resultado de operações git (commit/push/pull/checkout/stash/merge/tag/cherry-pick) ── */}
+      {gitResult && (
+        <Dialog open onOpenChange={v => { if (!v) setGitResult(null); }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {gitResult.type === "success"
+                  ? <CheckCircle2 className="w-4 h-4 text-green-400 flex-shrink-0" />
+                  : <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />}
+                {gitResult.title}
+              </DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words max-h-60 overflow-y-auto">{gitResult.message}</p>
+            <DialogFooter className="flex-wrap gap-2">
+              {gitResult.actions?.map((a, i) => (
+                <Button key={i} variant={a.variant ?? "default"} size="sm" onClick={() => { setGitResult(null); a.onClick(); }}>
+                  {a.label}
+                </Button>
+              ))}
+              <Button variant="ghost" size="sm" onClick={() => setGitResult(null)}>Fechar</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
       {/* ── Dialogs ── */}
       <GitHubTokenDialog open={showGitHubToken} onClose={() => setShowGitHubToken(false)} />
 
@@ -4659,7 +4758,7 @@ export function CodeEditorTab() {
             onDone={async () => {
               setShowCommit(false);
               await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
-              addToast("success", "Commit criado com sucesso");
+              showGitResult("success", "Commit", "Commit criado com sucesso");
             }}
             onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}
             onRefresh={() => loadStatus(selectedRepo.id)}
@@ -4675,7 +4774,7 @@ export function CodeEditorTab() {
               setOpenTabs([]);
               setActiveTabIdx(0);
               await Promise.all([loadBranches(selectedRepo.id), loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
-              addToast("success", `Agora em: ${newBranch}`);
+              showGitResult("success", "Branch criado", `Agora em: ${newBranch}`);
             }}
           />
 
@@ -4690,7 +4789,7 @@ export function CodeEditorTab() {
               setOpenTabs([]);
               setActiveTabIdx(0);
               await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadTree(selectedRepo.id)]);
-              addToast("success", "Merge concluído");
+              showGitResult("success", "Merge", "Merge concluído");
             }}
             onConflict={(files) => {
               setConflictFiles(files);
@@ -4739,8 +4838,16 @@ export function CodeEditorTab() {
               body={sseDialog.body}
               onClose={() => setSseDialog(null)}
               onDone={async () => {
+                const shouldChainPush = sseDialog.chainPush;
                 setSseDialog(null);
                 await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadLog(selectedRepo.id)]);
+                if (shouldChainPush) {
+                  setSseDialog({
+                    title: "Sincronizar (Push)",
+                    endpoint: `/code-editor/repos/${selectedRepo.id}/push`,
+                    body: activeToken() ? { token: activeToken() } : undefined,
+                  });
+                }
               }}
             />
           )}
@@ -4783,12 +4890,12 @@ export function CodeEditorTab() {
             setOpenTabs([]);
             setActiveTabIdx(0);
             await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadTree(selectedRepo.id)]);
-            addToast("success", "Merge concluído após resolução de conflitos");
+            showGitResult("success", "Merge", "Merge concluído após resolução de conflitos");
           }}
           onAbort={async () => {
             setShowConflictResolver(false);
             await Promise.all([loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
-            addToast("success", "Merge abortado");
+            showGitResult("success", "Merge", "Merge abortado");
           }}
         />
       )}

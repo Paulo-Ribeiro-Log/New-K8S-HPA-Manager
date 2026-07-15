@@ -536,8 +536,23 @@ func (h *CodeEditorHandler) ListBranches(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 
-	// Fetch para atualizar refs remotas
-	runGit(dir, "fetch", "--prune", "--quiet") //nolint:errcheck
+	// Fetch para atualizar refs remotas — mesmo padrão de autenticação do Pull: limpa token
+	// antigo eventualmente gravado na URL do origin e injeta o token atual via GIT_ASKPASS.
+	// Sem isso, um fetch que falha (repo privado, token expirado) fica sem branches remotos
+	// atualizados — e sem nenhum sinal do motivo, já que o erro era descartado silenciosamente.
+	token := h.getToken(c)
+	if originURL, err := runGit(dir, "remote", "get-url", "origin"); err == nil {
+		if cleaned := cleanRemoteURL(originURL); cleaned != originURL {
+			runGit(dir, "remote", "set-url", "origin", cleaned) //nolint:errcheck
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	fetchCmd, cleanup := gitCmdWithToken(ctx, dir, token, "fetch", "--prune", "--quiet")
+	if out, err := fetchCmd.CombinedOutput(); err != nil {
+		h.logger.Warn().Err(err).Str("repo", id).Str("output", string(out)).Msg("git fetch falhou em ListBranches — lista de branches remotos pode estar desatualizada")
+	}
+	cleanup()
 
 	local, _ := runGit(dir, "branch", "--format=%(refname:short)")
 	remote, _ := runGit(dir, "branch", "-r", "--format=%(refname:short)")
