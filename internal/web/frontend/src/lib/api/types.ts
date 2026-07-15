@@ -1958,6 +1958,12 @@ export interface DBBrowseObject {
   // detail: colunas+tipos resumidos (tabela), contagem de documentos (collection), tamanho em
   // disco (database) — ausente quando não há nada relevante a mostrar.
   detail?: string;
+  // count/size_bytes/storage_size_bytes: estatísticas estruturadas (estimativas de catálogo, nunca
+  // um scan) — populadas só para tabelas Postgres/MySQL e collections Mongo, mesmo dado do "All
+  // Stats" do MongoDB Compass (Collection/Count/Size/StorageSize). Ausentes para database/key.
+  count?: number;
+  size_bytes?: number;
+  storage_size_bytes?: number;
 }
 
 export interface DBBrowseResult {
