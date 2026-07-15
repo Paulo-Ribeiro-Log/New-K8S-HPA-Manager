@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -24,6 +24,7 @@ interface HelmRollbackModalProps {
   cluster: string;
   revisions: RevisionEntry[];
   currentRevision: number;
+  initialRevision?: number;
   onSuccess?: () => void;
 }
 
@@ -35,6 +36,7 @@ export const HelmRollbackModal = ({
   cluster,
   revisions,
   currentRevision,
+  initialRevision,
   onSuccess,
 }: HelmRollbackModalProps) => {
   const [targetRevision, setTargetRevision] = useState<number>(0);
@@ -44,6 +46,10 @@ export const HelmRollbackModal = ({
   const [operationStatus, setOperationStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
 
   const { executeOperation, streamOperation } = useHelmOperation();
+
+  useEffect(() => {
+    if (open) setTargetRevision(initialRevision ?? 0);
+  }, [open, initialRevision]);
 
   const handleRollback = async () => {
     if (!targetRevision || targetRevision === currentRevision) {

@@ -68,6 +68,7 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick, onRefresh
   const [activeTab, setActiveTab] = useState('values');
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [showRollbackModal, setShowRollbackModal] = useState(false);
+  const [rollbackTargetRevision, setRollbackTargetRevision] = useState<number | undefined>(undefined);
   const [showUninstallModal, setShowUninstallModal] = useState(false);
 
   const formatVersion = (version: string | undefined): string => {
@@ -209,8 +210,8 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick, onRefresh
               <Upload className="h-4 w-4 mr-2" />
               Upgrade
             </DropdownMenuItem>
-            <DropdownMenuItem 
-              onClick={() => setShowRollbackModal(true)}
+            <DropdownMenuItem
+              onClick={() => { setRollbackTargetRevision(undefined); setShowRollbackModal(true); }}
               disabled={!revisions || revisions.length <= 1}
             >
               <RotateCcw className="h-4 w-4 mr-2" />
@@ -269,6 +270,7 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick, onRefresh
         cluster={cluster}
         revisions={revisions}
         currentRevision={releaseDetail.revision}
+        initialRevision={rollbackTargetRevision}
         onSuccess={() => {
           // Trigger refresh without reloading page
           onRefreshNeeded?.();
@@ -328,6 +330,10 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick, onRefresh
             release={releaseDetail.name}
             namespace={releaseDetail.namespace}
             currentValuesRendered={releaseDetail.valuesRendered}
+            onRollbackClick={(revision) => {
+              setRollbackTargetRevision(revision);
+              setShowRollbackModal(true);
+            }}
           />
         </TabsContent>
 
@@ -866,6 +872,7 @@ const HistoryTab = ({
   release,
   namespace,
   currentValuesRendered,
+  onRollbackClick,
 }: {
   revisions: any[];
   loading: boolean;
@@ -874,6 +881,7 @@ const HistoryTab = ({
   release: string;
   namespace: string;
   currentValuesRendered: string;
+  onRollbackClick: (revision: number) => void;
 }) => {
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
   const [deletingRevision, setDeletingRevision] = useState<number | null>(null);
@@ -957,7 +965,12 @@ const HistoryTab = ({
                 </Button>
                 {revision.revision !== currentRevision && (
                   <>
-                    <Button size="sm" variant="outline" className="gap-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1"
+                      onClick={() => onRollbackClick(revision.revision)}
+                    >
                       <RotateCcw className="h-3 w-3" />
                       Rollback
                     </Button>
