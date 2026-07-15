@@ -1876,6 +1876,9 @@ export interface DBSecretRef {
   name: string;
   username_key: string; // default no backend: "username"
   password_key: string; // default no backend: "password"
+  // base64_decode: mesmo campo/motivo de KafkaSecretRef.base64_decode — decodifica username/
+  // password mais uma vez depois de ler do Secret (valor sincronizado já em base64, ex: AKV).
+  base64_decode?: boolean;
 }
 
 export interface DBConfigMapRef {
@@ -1958,12 +1961,6 @@ export interface DBBrowseObject {
   // detail: colunas+tipos resumidos (tabela), contagem de documentos (collection), tamanho em
   // disco (database) — ausente quando não há nada relevante a mostrar.
   detail?: string;
-  // count/size_bytes/storage_size_bytes: estatísticas estruturadas (estimativas de catálogo, nunca
-  // um scan) — populadas só para tabelas Postgres/MySQL e collections Mongo, mesmo dado do "All
-  // Stats" do MongoDB Compass (Collection/Count/Size/StorageSize). Ausentes para database/key.
-  count?: number;
-  size_bytes?: number;
-  storage_size_bytes?: number;
 }
 
 export interface DBBrowseResult {

@@ -388,11 +388,11 @@ func resolveKafkaCredentials(ctx context.Context, clientset kubernetes.Interface
 		}
 		username, password = string(userBytes), string(passBytes)
 		if ref.Base64Decode {
-			username, err = decodeKafkaSecretValue(username)
+			username, err = decodeSecretValueBase64(username)
 			if err != nil {
 				return "", "", fmt.Errorf("valor da chave %q não é base64 válido (Base64Decode marcado): %w", userKey, err)
 			}
-			password, err = decodeKafkaSecretValue(password)
+			password, err = decodeSecretValueBase64(password)
 			if err != nil {
 				return "", "", fmt.Errorf("valor da chave %q não é base64 válido (Base64Decode marcado): %w", passKey, err)
 			}
@@ -402,12 +402,13 @@ func resolveKafkaCredentials(ctx context.Context, clientset kubernetes.Interface
 	return sasl.Username, sasl.Password, nil
 }
 
-// decodeKafkaSecretValue decodifica uma string em base64 — tenta StdEncoding primeiro (com
+// decodeSecretValueBase64 decodifica uma string em base64 — tenta StdEncoding primeiro (com
 // padding, o formato mais comum) e cai pra RawStdEncoding (sem padding) se falhar, já que fontes
 // externas (ex: AKV) nem sempre preservam o `=` de padding. Faz `TrimSpace` antes: base64 exportado
 // via `echo valor | base64` (sem `-n`) ou copiado manualmente costuma vir com `\n` no final, o que
-// quebra o decode mesmo o conteúdo sendo válido.
-func decodeKafkaSecretValue(v string) (string, error) {
+// quebra o decode mesmo o conteúdo sendo válido. Compartilhada entre Kafka e Teste de Banco de Dados
+// (mesmo padrão de credencial via Secret K8s nos dois).
+func decodeSecretValueBase64(v string) (string, error) {
 	v = strings.TrimSpace(v)
 	if decoded, err := base64.StdEncoding.DecodeString(v); err == nil {
 		return string(decoded), nil

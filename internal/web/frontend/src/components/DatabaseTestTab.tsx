@@ -40,22 +40,18 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
-  ChevronUp,
-  ArrowUpDown,
   Check,
   CheckCircle2,
   Copy,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { ProtectedAction } from "@/components/rbac";
 import { useClusters } from "@/hooks/useAPI";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { formatBytes } from "@/lib/monitorUtils";
 import { toast } from "sonner";
-import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject } from "@/lib/api/types";
+import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode } from "@/lib/api/types";
 
 // Passo a passo de instalação do Docker Engine — cobre Ubuntu e WSL2 (ambiente alvo principal
 // desta app, ver CLAUDE.md). Script oficial da Docker (get.docker.com) funciona nos dois; o passo
@@ -179,113 +175,6 @@ function StageBadge({ label, status }: { label: string; status: "ok" | "failed" 
   );
 }
 
-type StatsSortKey = "name" | "count" | "size_bytes" | "storage_size_bytes";
-
-// BrowseStatsTable é a tabela de estatísticas ordenável — mesmo espírito do "All Stats" do
-// MongoDB Compass (Collection/Count/Size/Storage Size), reaproveitada por 3 níveis diferentes:
-// tabelas Postgres/MySQL e collections Mongo (Count+Size+StorageSize, via catálogo — ver
-// db_test_tool.go groupColumnsToTablesWithStats), bancos lógicos Redis (só Count, via `INFO
-// keyspace` — Redis não tem conceito de tamanho por banco) e chaves Redis (Tipo+Size via `MEMORY
-// USAGE`, sem Count/StorageSize — uma chave não é um container). As colunas exibidas são
-// controladas pelos `show*` — cada nível passa só o que faz sentido pra ele. Objetos sem o campo
-// numérico correspondente (ex: falha do $collStats numa view específica) mostram "—" em vez de
-// "0 B"/"0".
-function BrowseStatsTable({
-  objects,
-  nameLabel,
-  showType = false,
-  showCount = true,
-  showSize = true,
-  showStorageSize = true,
-  sortKey,
-  sortDir,
-  onSort,
-}: {
-  objects: DBBrowseObject[];
-  nameLabel: string;
-  showType?: boolean;
-  showCount?: boolean;
-  showSize?: boolean;
-  showStorageSize?: boolean;
-  sortKey: StatsSortKey;
-  sortDir: "asc" | "desc";
-  onSort: (key: StatsSortKey) => void;
-}) {
-  const sorted = [...objects].sort((a, b) => {
-    const dir = sortDir === "asc" ? 1 : -1;
-    if (sortKey === "name") return a.name.localeCompare(b.name) * dir;
-    return ((a[sortKey] ?? 0) - (b[sortKey] ?? 0)) * dir;
-  });
-
-  const sortIcon = (key: StatsSortKey) =>
-    sortKey !== key ? (
-      <ArrowUpDown className="w-3 h-3 opacity-40" />
-    ) : sortDir === "asc" ? (
-      <ChevronUp className="w-3 h-3" />
-    ) : (
-      <ChevronDown className="w-3 h-3" />
-    );
-
-  const sortableHeader = (key: StatsSortKey, label: string, align: "left" | "right" = "left") => (
-    <TableHead className={align === "right" ? "text-right" : ""}>
-      <button
-        type="button"
-        onClick={() => onSort(key)}
-        className={cn(
-          "inline-flex items-center gap-1 text-xs font-medium hover:text-foreground",
-          align === "right" && "flex-row-reverse",
-        )}
-      >
-        {label}
-        {sortIcon(key)}
-      </button>
-    </TableHead>
-  );
-
-  return (
-    <div className="max-h-72 overflow-auto border border-border rounded-md">
-      <Table>
-        <TableHeader className="sticky top-0 bg-background">
-          <TableRow>
-            {sortableHeader("name", nameLabel)}
-            {showType && <TableHead>Tipo</TableHead>}
-            {showCount && sortableHeader("count", "Count", "right")}
-            {showSize && sortableHeader("size_bytes", "Size", "right")}
-            {showStorageSize && sortableHeader("storage_size_bytes", "Storage Size", "right")}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {sorted.map((obj, i) => (
-            <TableRow key={i}>
-              <TableCell className="py-1.5 font-mono text-xs">{obj.name}</TableCell>
-              {showType && (
-                <TableCell className="py-1.5">
-                  {obj.type && <Badge variant="outline" className="text-[9px] px-1 py-0">{obj.type}</Badge>}
-                </TableCell>
-              )}
-              {showCount && (
-                <TableCell className="py-1.5 text-right text-xs font-mono">
-                  {obj.count !== undefined ? obj.count.toLocaleString("pt-BR") : "—"}
-                </TableCell>
-              )}
-              {showSize && (
-                <TableCell className="py-1.5 text-right text-xs font-mono">
-                  {obj.size_bytes !== undefined ? formatBytes(obj.size_bytes) : "—"}
-                </TableCell>
-              )}
-              {showStorageSize && (
-                <TableCell className="py-1.5 text-right text-xs font-mono">
-                  {obj.storage_size_bytes !== undefined ? formatBytes(obj.storage_size_bytes) : "—"}
-                </TableCell>
-              )}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
-  );
-}
-
 // Deriva os badges de TCP/DNS, Autenticação (só se mode !== "none") e TLS (só se useTLS) a partir
 // da classificação única do estágio de conectividade (ver db_test_tool.go).
 //
@@ -357,6 +246,7 @@ export default function DatabaseTestTab() {
   const [secretName, setSecretName] = useState("");
   const [usernameKey, setUsernameKey] = useState("username");
   const [passwordKey, setPasswordKey] = useState("password");
+  const [secretBase64Decode, setSecretBase64Decode] = useState(false);
   const [connectionString, setConnectionString] = useState("");
   const [csSource, setCsSource] = useState<"manual" | "configmap" | "secret">("manual");
   const [csRefNamespace, setCsRefNamespace] = useState("");
@@ -381,10 +271,6 @@ export default function DatabaseTestTab() {
   const [result, setResult] = useState<DBTestResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [rawOutputOpen, setRawOutputOpen] = useState(false);
-  // Ordenação da tabela de estatísticas (tabelas Postgres/MySQL, collections Mongo) — mesmo
-  // espírito do "All Stats" do MongoDB Compass (coluna Size ordenável).
-  const [statsSortKey, setStatsSortKey] = useState<"name" | "count" | "size_bytes" | "storage_size_bytes">("storage_size_bytes");
-  const [statsSortDir, setStatsSortDir] = useState<"asc" | "desc">("desc");
   const esRef = useRef<EventSource | null>(null);
 
   const { data: namespaces = [] } = useQuery({
@@ -512,6 +398,7 @@ export default function DatabaseTestTab() {
                     name: secretName,
                     username_key: usernameKey || "username",
                     password_key: passwordKey || "password",
+                    base64_decode: secretBase64Decode,
                   },
                 }
             : {}),
@@ -1043,6 +930,12 @@ export default function DatabaseTestTab() {
                         disabled={!secretName}
                       />
                     </div>
+                    <div className="w-full flex items-center gap-2">
+                      <Checkbox checked={secretBase64Decode} onCheckedChange={(v) => setSecretBase64Decode(!!v)} id="db-secret-b64" />
+                      <label htmlFor="db-secret-b64" className="text-xs text-muted-foreground cursor-pointer max-w-md">
+                        Valores no Secret estão em Base64 (decodificar antes de autenticar — comum em secrets sincronizados de Azure Key Vault via external-secrets)
+                      </label>
+                    </div>
                   </>
                 )}
               </>
@@ -1170,61 +1063,23 @@ export default function DatabaseTestTab() {
                     Amostra limitada — pode haver mais {browseObjectLabel(result.browse.object_type).toLowerCase()} além dos listados.
                   </div>
                 )}
-                {result.browse.objects && result.browse.objects.length > 0 && (() => {
-                  // Tabelas/collections (todo engine) e — só pro Redis, que não tem esses dois
-                  // níveis nos outros 3 engines — bancos lógicos (Count via INFO keyspace) e
-                  // chaves (Tipo+Size via MEMORY USAGE) ganham a tabela ordenável. Postgres/MySQL/
-                  // Mongo sem Database informado continuam na lista simples (sem estatística de
-                  // tamanho por database, exceto o sizeOnDisk do Mongo já embutido no Detail).
-                  const ot = result.browse.object_type;
-                  const statsConfig =
-                    ot === "table"
-                      ? { nameLabel: "Tabela", showType: false, showCount: true, showSize: true, showStorageSize: true }
-                      : ot === "collection"
-                      ? { nameLabel: "Collection", showType: false, showCount: true, showSize: true, showStorageSize: true }
-                      : engine === "redis" && ot === "database"
-                      ? { nameLabel: "Banco", showType: false, showCount: true, showSize: false, showStorageSize: false }
-                      : engine === "redis" && ot === "key"
-                      ? { nameLabel: "Chave", showType: true, showCount: false, showSize: true, showStorageSize: false }
-                      : null;
-
-                  if (statsConfig) {
-                    return (
-                      <BrowseStatsTable
-                        objects={result.browse.objects}
-                        {...statsConfig}
-                        sortKey={statsSortKey}
-                        sortDir={statsSortDir}
-                        onSort={(key) => {
-                          if (key === statsSortKey) {
-                            setStatsSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          } else {
-                            setStatsSortKey(key);
-                            setStatsSortDir("desc");
-                          }
-                        }}
-                      />
-                    );
-                  }
-
-                  return (
-                    <ScrollArea className="max-h-72 border border-border rounded-md">
-                      <div className="divide-y divide-border">
-                        {result.browse.objects.map((obj, i) => (
-                          <div key={i} className="px-2.5 py-1.5 flex items-start gap-2">
-                            <span className="text-xs font-mono shrink-0">{obj.name}</span>
-                            {obj.type && (
-                              <Badge variant="outline" className="text-[9px] px-1 py-0 shrink-0">{obj.type}</Badge>
-                            )}
-                            {obj.detail && (
-                              <span className="text-[10px] font-mono text-muted-foreground truncate min-w-0">{obj.detail}</span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </ScrollArea>
-                  );
-                })()}
+                {result.browse.objects && result.browse.objects.length > 0 && (
+                  <ScrollArea className="max-h-72 border border-border rounded-md">
+                    <div className="divide-y divide-border">
+                      {result.browse.objects.map((obj, i) => (
+                        <div key={i} className="px-2.5 py-1.5 flex items-start gap-2">
+                          <span className="text-xs font-mono shrink-0">{obj.name}</span>
+                          {obj.type && (
+                            <Badge variant="outline" className="text-[9px] px-1 py-0 shrink-0">{obj.type}</Badge>
+                          )}
+                          {obj.detail && (
+                            <span className="text-[10px] font-mono text-muted-foreground truncate min-w-0">{obj.detail}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                )}
               </div>
             )}
 
