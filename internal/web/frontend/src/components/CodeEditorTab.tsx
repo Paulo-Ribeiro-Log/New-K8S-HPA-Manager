@@ -929,7 +929,7 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush, onRefresh
 
   return (
     <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-[33.6rem]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <GitCommit className="w-4 h-4" />{amend ? "Emendar Último Commit" : "Novo Commit"}
@@ -942,7 +942,7 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush, onRefresh
             <p className="text-xs text-muted-foreground mb-1">
               Arquivos em staging ({changedFiles.length}) — passe o mouse para remover:
             </p>
-            <ScrollArea className="h-28 border border-border/40 rounded">
+            <ScrollArea className="h-[134px] border border-border/40 rounded">
               <div className="p-2 space-y-0.5">
                 {changedFiles.map(f => (
                   <div key={f.path} className="flex items-center gap-2 text-xs py-0.5 group">
