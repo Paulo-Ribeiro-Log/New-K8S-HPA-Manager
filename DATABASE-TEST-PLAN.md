@@ -264,8 +264,8 @@ de correção.
 
 O nível listado depende de ter ou não um **Database** informado — sem ele, lista o nível
 "database"; com ele, desce um nível e traz tabelas/collections com informação extra (colunas,
-contagem de documentos). Redis não tem esse conceito de dois níveis — sempre lista chaves, mas
-agora com o `TYPE` de cada uma.
+contagem de documentos). O Redis ganhou o mesmo padrão de 2 níveis (antes sempre pulava direto pra
+lista de chaves, independente do índice do banco informado) — ver seção dedicada abaixo.
 
 **PostgreSQL sem Database** — lista databases (evita parsear a formatação de `\l`):
 
@@ -274,12 +274,13 @@ kubectl exec <pod> -n <namespace> -c <container-efêmero> -- \
   timeout 5s psql "<conn>" -t -A -c "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname;"
 ```
 
-**PostgreSQL com Database** — lista tabelas do schema `public` + colunas/tipos (uma linha por
-coluna, formato `tabela|coluna|tipo`, agrupado pela ferramenta em "tabela: colunas..."):
+**PostgreSQL com Database** — lista tabelas do schema `public` + colunas/tipos + estatísticas de
+catálogo por tabela (formato `tabela|coluna|tipo|size_bytes|storage_size_bytes|row_estimate`,
+repetido em toda linha da mesma tabela, agrupado pela ferramenta):
 
 ```bash
 kubectl exec <pod> -n <namespace> -c <container-efêmero> -- \
-  timeout 5s psql "<conn>" -t -A -c "SELECT table_name || '|' || column_name || '|' || data_type FROM information_schema.columns WHERE table_schema='public' ORDER BY table_name, ordinal_position;"
+  timeout 5s psql "<conn>" -t -A -c "SELECT col.table_name || '|' || col.column_name || '|' || col.data_type || '|' || pg_relation_size(c.oid) || '|' || pg_total_relation_size(c.oid) || '|' || c.reltuples::bigint FROM information_schema.columns col JOIN pg_class c ON c.relname = col.table_name AND c.relkind = 'r' JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = col.table_schema WHERE col.table_schema = 'public' ORDER BY col.table_name, col.ordinal_position;"
 ```
 
 **MySQL/MariaDB sem Database**:
@@ -289,12 +290,13 @@ kubectl exec <pod> -n <namespace> -c <container-efêmero> -- \
   sh -c 'MYSQL_PWD="<senha>" timeout 5s mysql -h <host> -P 3306 -u <user> -N -e "SHOW DATABASES;"'
 ```
 
-**MySQL/MariaDB com Database** — mesmo formato `tabela|coluna|tipo` do Postgres; `DATABASE()`
-resolve pro banco já selecionado na conexão (`-D <db>`), sem precisar reinterpolar o nome na query:
+**MySQL/MariaDB com Database** — mesmo formato `tabela|coluna|tipo|size_bytes|storage_size_bytes|
+row_estimate` do Postgres; `DATABASE()` resolve pro banco já selecionado na conexão, sem precisar
+reinterpolar o nome na query:
 
 ```bash
 kubectl exec <pod> -n <namespace> -c <container-efêmero> -- \
-  sh -c 'MYSQL_PWD="<senha>" timeout 5s mysql -h <host> -P 3306 -u <user> <db> -N -e "SELECT CONCAT(table_name,'"'"'|'"'"',column_name,'"'"'|'"'"',column_type) FROM information_schema.columns WHERE table_schema=DATABASE() ORDER BY table_name, ordinal_position;"'
+  sh -c 'MYSQL_PWD="<senha>" timeout 5s mysql -h <host> -P 3306 -u <user> <db> -N -e "SELECT CONCAT(col.table_name,'"'"'|'"'"',col.column_name,'"'"'|'"'"',col.column_type,'"'"'|'"'"',IFNULL(t.data_length,0),'"'"'|'"'"',IFNULL(t.data_length,0)+IFNULL(t.index_length,0),'"'"'|'"'"',IFNULL(t.table_rows,0)) FROM information_schema.columns col JOIN information_schema.tables t ON t.table_name = col.table_name AND t.table_schema = col.table_schema WHERE col.table_schema = DATABASE() ORDER BY col.table_name, col.ordinal_position;"'
 ```
 
 **MongoDB sem Database** — lista databases + tamanho em disco:
@@ -304,28 +306,90 @@ kubectl exec <pod> -n <namespace> -c <container-efêmero> -- \
   timeout 5s mongosh "<conn>" --quiet --eval "JSON.stringify(db.adminCommand({listDatabases:1}).databases.map(function(d){return {name:d.name, sizeOnDisk:d.sizeOnDisk};}))"
 ```
 
-**MongoDB com Database** — lista collections + contagem estimada de documentos
-(`estimatedDocumentCount()` lê metadata do storage engine, não escaneia a collection inteira —
-seguro mesmo em collections grandes):
+**MongoDB com Database** — lista collections + estatísticas via `$collStats` (count/size/
+storageSize — metadata do storage engine, não escaneia a collection inteira, seguro mesmo em
+collections grandes; `try/catch` por collection cai para `estimatedDocumentCount()` quando o tipo
+não suporta `$collStats`, ex: views):
 
 ```bash
 kubectl exec <pod> -n <namespace> -c <container-efêmero> -- \
-  timeout 5s mongosh "<conn>" --quiet --eval "JSON.stringify(db.getSiblingDB('<db>').getCollectionNames().map(function(c){return {name:c, count:db.getSiblingDB('<db>').getCollection(c).estimatedDocumentCount()};}))"
+  timeout 5s mongosh "<conn>" --quiet --eval "JSON.stringify(db.getSiblingDB('<db>').getCollectionNames().map(function(c){try{var s=db.getSiblingDB('<db>').getCollection(c).aggregate([{\$collStats:{storageStats:{}}}]).toArray()[0];var ss=(s&&s.storageStats)||{};return {name:c, count:ss.count||0, size:ss.size||0, storageSize:ss.storageSize||0};}catch(e){return {name:c, count:db.getSiblingDB('<db>').getCollection(c).estimatedDocumentCount(), size:0, storageSize:0};}}))"
 ```
 
-**Redis** — amostra de até 100 chaves via `SCAN` (nunca `KEYS *`, que bloqueia instâncias grandes;
-`--scan` sozinho não tem teto total — o `head` garante o limite real) + `TYPE` de cada chave (um
-round-trip extra por chave — O(1) no Redis, o teto de 100 mantém isso rápido; todo o pipeline roda
-dentro do mesmo timeout via `timeout Ns sh -c '...'` envolvendo o scan+loop inteiro):
+**Redis sem Database (índice) informado** — visão geral por banco lógico via `INFO keyspace`,
+mesmo nível "database" dos outros 3 engines (antes o Redis não tinha esse nível, sempre pulava
+direto pra lista de chaves independente do índice informado):
 
 ```bash
 kubectl exec <pod> -n <namespace> -c <container-efêmero> -- \
-  timeout 5s sh -c 'redis-cli -h <host> -p 6379 -a <senha> --no-auth-warning --scan | head -n 100 | while IFS= read -r k; do t=$(redis-cli -h <host> -p 6379 -a <senha> --no-auth-warning TYPE "$k" 2>/dev/null); printf "%s|%s\n" "$k" "$t"; done'
+  timeout 5s redis-cli -h <host> -p 6379 -a <senha> --no-auth-warning INFO keyspace
+```
+
+Saída parseada via regex `^db(\d+):keys=(\d+),expires=(\d+),avg_ttl=(\d+)` — um `DBBrowseObject`
+por linha (banco), `count` = `keys`. Bancos sem nenhuma chave simplesmente não aparecem na saída
+do Redis (não precisam ser filtrados).
+
+**Redis com Database (índice) informado** — amostra de até 100 chaves via `SCAN` (nunca `KEYS *`,
+que bloqueia instâncias grandes; `--scan` sozinho não tem teto total — o `head` garante o limite
+real) + `TYPE` **e** `MEMORY USAGE` de cada chave, os 2 comandos enviados via stdin num único
+`redis-cli` por chave (mesmo número de round-trips do `TYPE` isolado — `MEMORY USAGE` não abre uma
+conexão nova, é o segundo comando da mesma sessão); todo o pipeline roda dentro do mesmo timeout
+via `timeout Ns sh -c '...'` envolvendo o scan+loop inteiro:
+
+```bash
+kubectl exec <pod> -n <namespace> -c <container-efêmero> -- \
+  timeout 5s sh -c 'redis-cli -h <host> -p 6379 -a <senha> --no-auth-warning --scan | head -n 100 | while IFS= read -r k; do r=$(printf "TYPE %s\nMEMORY USAGE %s\n" "$k" "$k" | redis-cli -h <host> -p 6379 -a <senha> --no-auth-warning 2>/dev/null); t=$(printf "%s\n" "$r" | head -n1); m=$(printf "%s\n" "$r" | tail -n1); printf "%s|%s|%s\n" "$k" "$t" "$m"; done'
 ```
 
 Quando exatamente 100 chaves voltam (Postgres/MySQL/Mongo não têm esse teto — só Redis), a
 ferramenta marca o resultado como `truncated: true` — é uma **amostra**, não uma listagem
 completa do keyspace.
+
+## Tabela de estatísticas (Collection/Count/Size/Storage Size)
+
+O frontend renderiza uma tabela ordenável — mesmo espírito do painel **"All Stats"** do MongoDB
+Compass (coluna clicável pra inverter a ordenação) — pra 4 níveis diferentes, cada um mostrando só
+as colunas que fazem sentido pra ele (`BrowseStatsTable`, prop `show*` por coluna):
+
+| `object_type` | Engine(s) | Colunas mostradas |
+|---|---|---|
+| `table` | Postgres, MySQL/MariaDB | Tabela, Count, Size, Storage Size |
+| `collection` | MongoDB | Collection, Count, Size, Storage Size |
+| `database` | **só Redis** (`INFO keyspace`) | Banco, Count (keys) |
+| `key` | **só Redis** (`MEMORY USAGE`) | Chave, Tipo, Size |
+
+Para `database`/`key` dos outros 3 engines (Postgres/MySQL/Mongo sem Database informado, listando
+nomes de databases; Redis nunca cai aqui) a lista simples anterior continua sendo usada — não há
+estatística de tamanho por database nesses engines, só o `sizeOnDisk` do Mongo (que já aparece no
+`Detail` da lista simples, sem mudança). A escolha de qual visão usar fica no frontend
+(`DatabaseTestTab.tsx`), cruzando `object_type` + `engine` — o backend não sabe nada sobre como o
+resultado é renderizado.
+
+`DBBrowseObject` ganhou 3 campos estruturados opcionais (`count`, `size_bytes`,
+`storage_size_bytes`, todos `omitempty`) além do `Detail` textual já existente (mantido para
+compatibilidade e pro texto resumido "~N documento(s), X (dados) / Y (storage)" que ainda aparece
+na saída bruta):
+
+| Engine | Size | Storage Size | Count |
+|---|---|---|---|
+| PostgreSQL | `pg_relation_size(oid)` (heap) | `pg_total_relation_size(oid)` (heap+índices+toast) | `reltuples` (estimativa, atualizada por VACUUM/ANALYZE) |
+| MySQL/MariaDB | `data_length` | `data_length + index_length` | `table_rows` (estimativa, atualizada por ANALYZE TABLE) |
+| MongoDB | `storageStats.size` (dado lógico) | `storageStats.storageSize` (com overhead do WiredTiger) | `storageStats.count` |
+| Redis (chave) | `MEMORY USAGE` (bytes reais, com overhead de encoding) | *(não se aplica — Redis não distingue "dado lógico" de "storage")* | *(não se aplica — uma chave não é um container)* |
+| Redis (banco lógico) | *(não se aplica)* | *(não se aplica)* | `INFO keyspace` → `keys=` (contagem real, não estimativa — Redis mantém isso como metadado do próprio banco) |
+
+Postgres/MySQL/Mongo são **estimativas de catálogo** (nenhuma faz `COUNT(*)`/scan real, mesmo
+princípio de segurança do `estimatedDocumentCount()` já usado antes); os dois níveis do Redis são
+valores **exatos** (`MEMORY USAGE` calcula o tamanho real da chave already em memória; `keys=` do
+`INFO keyspace` é o contador interno do banco) — Redis não tem o problema de custo de um `COUNT(*)`
+porque toda essa informação já vive em memória por natureza do próprio engine.
+
+`BrowseStatsTable` (`DatabaseTestTab.tsx`) é um componente pontual — tabela `shadcn/ui` local com
+ordenação client-side (`useState` de `sortKey`/`sortDir`, sem persistência entre execuções), não a
+árvore de navegação completa do Compass (conexões → databases → collections expansível): o fluxo
+desta ferramenta continua sendo "preencher formulário → rodar teste pontual", igual Kafka/Latência
+— navegação em árvore full-Compass ficaria fora do espírito de "teste de conectividade sob
+demanda" e exigiria várias chamadas de ephemeral container por expansão de nó.
 
 ---
 
@@ -398,7 +462,11 @@ pela mesma chamada de listagem — sem round-trip extra).
 
 Redis não tem nomes de banco como os demais engines — só um índice numérico **0-15** (`SELECT n`
 no protocolo, `-n <n>` no `redis-cli`), selecionado no mesmo campo "Database" da UI (rotulado
-"Índice do banco" quando o engine é Redis). Omitido = banco 0 (default do Redis).
+"Índice do banco" quando o engine é Redis). **Omitido** = não passa `-n` na conexão E também muda
+o *nível* do Explorar dados — em vez de listar chaves do banco 0 (comportamento antigo), mostra a
+visão geral de todos os bancos via `INFO keyspace` (ver seção "Tabela de estatísticas" acima),
+mesmo padrão dos outros 3 engines (Database vazio = sobe um nível). Informar um índice (mesmo "0"
+explicitamente) desce pro nível de chaves desse banco.
 
 **Autenticação com usuário (ACL, Redis 6+)**: diferente dos outros engines, Redis tradicionalmente
 autentica só com senha (`AUTH <senha>`) — usuário é opcional, só relevante com ACL configurada
@@ -472,6 +540,20 @@ kubectl describe pod <target_pod> -n <namespace>
 - Validado nesta rodada só por `go build`/`tsc --noEmit`/`rebuild-web.sh` — sem banco real disponível
   no ambiente de desenvolvimento para validar ponta a ponta contra os 4 engines; a imagem `mongo:7`
   em particular precisa de confirmação em produção de que `mongosh` vem embutido nessa tag.
+- Tabela de estatísticas (Size/Storage Size/Count, ver seção acima) validada só por `go build`/
+  `tsc --noEmit` — as 3 queries novas (Postgres via `pg_class`/`pg_namespace`, MySQL via
+  `information_schema.tables`, Mongo via `$collStats`) não foram testadas contra um banco real
+  nesta rodada. Atenção específica ao Postgres: o `JOIN pg_namespace` assume schema único
+  `public` por tabela (mesma limitação que a query de colunas já tinha antes) — nomes de tabela
+  duplicados entre schemas diferentes não são o caso coberto.
+- Extensão do Redis (visão por banco lógico via `INFO keyspace` + `MEMORY USAGE` por chave) também
+  só validada por `go build`/`tsc --noEmit` — não testada contra uma instância Redis real. Ponto
+  de atenção: **mudança de comportamento** — Database (índice) vazio antes listava chaves do banco
+  0, agora mostra a visão geral dos 16 bancos; quem já usava a ferramenta com o campo em branco
+  esperando ver chaves precisa passar `0` explicitamente. O parsing de `INFO keyspace` via regex
+  assume o formato de campos do Redis 7.x (`keys=`,`expires=`,`avg_ttl=`, nessa ordem) — não
+  confirmado contra versões mais antigas (a imagem usada é `redis:7-alpine`, então não deveria
+  divergir, mas não foi exercitado).
 - Pré-checagem de Docker e correção de saída bruta vazia validadas de verdade neste ambiente,
   que originalmente não tinha `docker` instalado (reproduziu o cenário real do zero). A
   classificação `address_pool_exhausted` (VPN cobrindo as faixas privadas) também foi validada
