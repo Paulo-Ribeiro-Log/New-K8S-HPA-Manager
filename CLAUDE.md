@@ -22,6 +22,7 @@ Todas as features abaixo já estão mescladas na `main` (verificado via `git mer
 - [Common Pitfalls](docs/guides/COMMON_PITFALLS.md)
 - [Troubleshooting Completo](docs/guides/TROUBLESHOOTING.md)
 - [RBAC Azure AD](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md)
+- [GitHub Models como alternativa ao Vertex AI](docs/guides/GITHUB_MODELS_SETUP.md) — quando o Vertex AI corporativo não tem permissão IAM liberada, usar o provider OpenAI com Base URL customizada apontando pro GitHub Models (mesmo PAT do `gh` CLI)
 - [Changelog](docs/history/CHANGELOG.md)
 - [**Plano: Dynatrace × Health Check**](docs/planning/DYNATRACE_HEALTHCHECK_INTEGRATION.md) ← work in progress
 - [**Plano: FinOps Storage**](docs/planning/FINOPS_STORAGE_PLAN.md) ← ✅ CONCLUÍDA — PVCs, discos OS dos nodes, Azure Files/Blob, Relatório Executivo integrado

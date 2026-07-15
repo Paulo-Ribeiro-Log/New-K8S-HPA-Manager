@@ -56,6 +56,13 @@ type Config struct {
 	// OpenAIModel modelo do OpenAI (padrão: gpt-4o-mini)
 	OpenAIModel string
 
+	// OpenAIBaseURL endpoint compatível com a API de chat completions da OpenAI (padrão:
+	// https://api.openai.com/v1/chat/completions). Permite apontar pra endpoints alternativos
+	// compatíveis, ex: GitHub Models (https://models.github.ai/inference/chat/completions,
+	// autenticado com um PAT do GitHub) — útil quando a organização não libera acesso a
+	// vendors de IA externos, mas o PAT do GitHub já é aprovado.
+	OpenAIBaseURL string
+
 	// CopilotAPIKey chave de API do Microsoft Copilot (Azure OpenAI)
 	CopilotAPIKey string
 
@@ -229,6 +236,7 @@ func (c *Config) GetProviderConfig() map[string]string {
 	} else if c.Provider == "openai" {
 		config["api_key"] = c.OpenAIAPIKey
 		config["model"] = c.OpenAIModel
+		config["base_url"] = c.OpenAIBaseURL
 	} else if c.Provider == "copilot" {
 		config["api_key"] = c.CopilotAPIKey
 		config["endpoint"] = c.CopilotEndpoint

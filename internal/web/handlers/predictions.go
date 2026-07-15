@@ -359,6 +359,7 @@ func (h *PredictionsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer {
 	case "openai":
 		if tokens.OpenAIAPIKey != "" {
 			config.OpenAIAPIKey = tokens.OpenAIAPIKey
+			config.OpenAIBaseURL = tokens.OpenAIBaseURL
 			if tokens.OpenAIModel != "" {
 				config.OpenAIModel = tokens.OpenAIModel
 			} else {
