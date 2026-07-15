@@ -128,6 +128,26 @@ func runGit(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// runGitAsUser roda git com a identidade (nome/email) do usuário autenticado via
+// "-c user.name=... -c user.email=..." — sobrescreve, só para esta invocação, o
+// identity padrão gravado no clone (k8s-hpa-manager@local). Usar em qualquer
+// comando que cria um commit (commit, merge, cherry-pick, commit --no-edit pós
+// resolução de conflito), para que o autor no GitHub seja o dono real da mudança
+// (ao menos o e-mail SSO), não a aplicação.
+func runGitAsUser(c *gin.Context, dir string, args ...string) (string, error) {
+	userInfo := history.GetCurrentUserInfo(c)
+	name := userInfo.Name
+	email := userInfo.Email
+	if email == "" {
+		return runGit(dir, args...)
+	}
+	if name == "" {
+		name = email
+	}
+	fullArgs := append([]string{"-c", "user.name=" + name, "-c", "user.email=" + email}, args...)
+	return runGit(dir, fullArgs...)
+}
+
 // getToken obtém o PAT do usuário; o email vem do contexto Gin (InjectUserEmail).
 func (h *CodeEditorHandler) getToken(c *gin.Context) string {
 	if h.tokenStore == nil {
@@ -813,7 +833,7 @@ func (h *CodeEditorHandler) Commit(c *gin.Context) {
 		args = []string{"commit", "-m", req.Message}
 	}
 
-	out, err := runGit(dir, args...)
+	out, err := runGitAsUser(c, dir, args...)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return
@@ -1486,7 +1506,7 @@ func (h *CodeEditorHandler) MergeBranch(c *gin.Context) {
 		args = append(args, "--no-ff")
 	}
 	args = append(args, req.Branch)
-	out, err := runGit(dir, args...)
+	out, err := runGitAsUser(c, dir, args...)
 	if err != nil {
 		// Conflitos de merge: git retorna exit 1 mas o merge é iniciado
 		if strings.Contains(out, "CONFLICT") {
@@ -1575,7 +1595,7 @@ func (h *CodeEditorHandler) CherryPick(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "hash é obrigatório"})
 		return
 	}
-	out, err := runGit(dir, "cherry-pick", req.Hash)
+	out, err := runGitAsUser(c, dir, "cherry-pick", req.Hash)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return
@@ -2165,7 +2185,7 @@ func (h *CodeEditorHandler) AbortMerge(c *gin.Context) {
 func (h *CodeEditorHandler) CommitMerge(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
-	out, err := runGit(dir, "commit", "--no-edit")
+	out, err := runGitAsUser(c, dir, "commit", "--no-edit")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return
