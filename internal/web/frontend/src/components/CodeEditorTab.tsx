@@ -268,6 +268,8 @@ function getFileIcon(name: string): { Icon: typeof File; color: string } {
     case "toml": case "ini": case "conf": case "cfg": return { Icon: Settings, color: "text-gray-400" };
     case "lock": return { Icon: Lock, color: "text-gray-500" };
     case "proto": return { Icon: Braces, color: "text-cyan-300" };
+    case "tf": case "tfvars": case "tfstate": return { Icon: Layers, color: "text-violet-400" };
+    case "txt": return { Icon: FileText, color: "text-muted-foreground" };
     default: return { Icon: File, color: "text-muted-foreground" };
   }
 }
