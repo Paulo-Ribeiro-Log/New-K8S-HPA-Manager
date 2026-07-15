@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -236,22 +237,34 @@ const (
 	wifTokenURL = "https://auth.cloud.google/token"
 )
 
+// wifShortFormatRe valida o formato curto "poolID/providerID" — cada lado só aceita
+// caracteres válidos de identificador GCP (letras, dígitos, _, ., -), o que rejeita
+// automaticamente esquemas de URL (://), espaços, "?" e query strings coladas por engano
+// no campo (caso real: usuário colou uma URL do Vertex AI Search/Agentspace).
+var wifShortFormatRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
+
 // ParseWIFPoolProvider extrai poolID e providerID de strings no formato "pool/provider"
 // ou "//iam.googleapis.com/locations/global/workforcePools/pool/providers/provider".
+// Retorna ok=false pra qualquer entrada fora desses dois formatos — inclui URLs completas,
+// que antes eram aceitas incorretamente só por conterem "/".
 func ParseWIFPoolProvider(s string) (poolID, providerID string, ok bool) {
-	// Formato curto: "entraid-agentspace/entraid-federation-agentspace"
-	if strings.Contains(s, "/") && !strings.HasPrefix(s, "//") {
-		parts := strings.SplitN(s, "/", 2)
-		return parts[0], parts[1], true
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", false
 	}
 	// Formato longo: //iam.googleapis.com/.../workforcePools/POOL/providers/PROVIDER
 	if strings.Contains(s, "workforcePools/") {
-		// Extrair após workforcePools/
 		after := s[strings.Index(s, "workforcePools/")+len("workforcePools/"):]
 		parts := strings.SplitN(after, "/providers/", 2)
-		if len(parts) == 2 {
+		if len(parts) == 2 && wifShortFormatRe.MatchString(parts[0]+"/"+parts[1]) {
 			return parts[0], parts[1], true
 		}
+		return "", "", false
+	}
+	// Formato curto: "entraid-agentspace/entraid-federation-agentspace"
+	if wifShortFormatRe.MatchString(s) {
+		parts := strings.SplitN(s, "/", 2)
+		return parts[0], parts[1], true
 	}
 	return "", "", false
 }

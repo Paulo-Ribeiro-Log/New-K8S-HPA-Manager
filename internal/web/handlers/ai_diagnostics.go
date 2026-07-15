@@ -253,6 +253,7 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 			return nil, fmt.Errorf("provider 'openai' selecionado mas API key não configurada - acesse AI Settings e preencha a chave do OpenAI")
 		}
 		config.OpenAIAPIKey = tokens.OpenAIAPIKey
+		config.OpenAIBaseURL = tokens.OpenAIBaseURL
 		if tokens.OpenAIModel != "" {
 			config.OpenAIModel = tokens.OpenAIModel
 		} else {

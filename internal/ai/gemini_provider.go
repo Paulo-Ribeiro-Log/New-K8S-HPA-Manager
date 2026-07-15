@@ -170,6 +170,19 @@ func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (stri
 	return p.doRequest(ctx, aiStudioURL, token, "", prompt)
 }
 
+// BuildVertex403Hint monta a mensagem de diagnóstico para erro 403 do Vertex AI — reutilizada
+// no fluxo real de análise (doRequest) e no botão "Testar Conexão"
+// (internal/web/handlers/ai_tokens.go, validateGeminiVertexConnection), que antes tinham essa
+// dica duplicada em dois lugares (só o botão de teste tinha o texto completo).
+func BuildVertex403Hint(project string, body []byte) string {
+	return fmt.Sprintf(
+		"permissão negada (403) — credenciais sem acesso ao projeto '%s'.\n"+
+			"Para acesso via WIF corporativo, execute no terminal:\n"+
+			"  gcloud auth application-default login --audiences="+
+			"//iam.googleapis.com/locations/global/workforcePools/entraid-agentspace/providers/entraid-federation-agentspace\n"+
+			"Detalhes: %s", project, string(body))
+}
+
 // doRequest executa a requisição HTTP para a API Gemini.
 // userProject, quando não vazio, define o header X-Goog-User-Project (billing/quota).
 func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, userProject, prompt string) (string, error) {
@@ -254,6 +267,9 @@ func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, userPr
 		// Erros definitivos
 		switch resp.StatusCode {
 		case 403:
+			if p.project != "" {
+				return "", fmt.Errorf("%s", BuildVertex403Hint(p.project, body))
+			}
 			return "", fmt.Errorf("permissão negada (403) — URL: %s — body: %s", url, string(body))
 		case 429:
 			return "", fmt.Errorf("cota da API Gemini esgotada (429) após %d tentativas. Detalhes: %s", attempt+1, string(body))
@@ -642,6 +658,20 @@ func GetVertexAccessToken(ctx context.Context, serviceAccountJSON, refreshToken 
 
 	token, err := GetADCAccessToken(ctx)
 	if err != nil {
+		if refreshToken != "" {
+			// Havia refresh token salvo — o usuário já autenticou em algum momento, mas
+			// nenhuma via de renovação funcionou. Dizer "nenhuma credencial configurada" aqui
+			// é enganoso e manda o usuário repetir uma ação que já fez, sem indicar a causa
+			// real (caso comum: campo WIF Pool/Provider com formato inválido).
+			hint := " — o token salvo pode estar expirado ou vinculado a um WIF pool/provider incorreto; clique em 'Re-autenticar com Google'"
+			if len(wifPoolProvider) > 0 && wifPoolProvider[0] != "" {
+				if _, _, ok := ParseWIFPoolProvider(wifPoolProvider[0]); !ok {
+					hint = fmt.Sprintf(" — o campo 'WIF Pool / Provider' está com formato inválido (%q); "+
+						"corrija para 'poolID/providerID' e clique em 'Re-autenticar com Google'", wifPoolProvider[0])
+				}
+			}
+			return "", fmt.Errorf("credencial Vertex AI existente não pôde ser renovada%s", hint)
+		}
 		return "", fmt.Errorf("nenhuma credencial Vertex AI configurada — use o botão 'Autenticar com Google' nas configurações de IA")
 	}
 	return token, nil

@@ -867,6 +867,7 @@ func (h *NodePoolPredictionsHandler) getNodePoolAnalyzerForUser(userEmail string
 		}
 		cfg.OpenAIAPIKey = tokens.OpenAIAPIKey
 		cfg.OpenAIModel = tokens.OpenAIModel
+		cfg.OpenAIBaseURL = tokens.OpenAIBaseURL
 		if cfg.OpenAIModel == "" {
 			cfg.OpenAIModel = "gpt-4o-mini"
 		}

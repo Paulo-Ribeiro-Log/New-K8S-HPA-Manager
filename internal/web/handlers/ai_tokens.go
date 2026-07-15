@@ -41,6 +41,7 @@ type SaveTokensRequest struct {
 	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`        // URL de login SSO corporativo (WIF)
 	OpenAIAPIKey             string `json:"openai_api_key,omitempty"`
 	OpenAIModel              string `json:"openai_model,omitempty"`
+	OpenAIBaseURL            string `json:"openai_base_url,omitempty"` // endpoint compatível (ex: GitHub Models)
 	ClaudeAPIKey             string `json:"claude_api_key,omitempty"`
 	ClaudeModel              string `json:"claude_model,omitempty"`
 	CopilotAPIKey            string `json:"copilot_api_key,omitempty"`
@@ -66,6 +67,7 @@ type TokensResponse struct {
 	GeminiWifLoginURL       string `json:"gemini_wif_login_url,omitempty"`   // URL de login SSO corporativo (WIF)
 	HasOpenAI               bool   `json:"has_openai"`
 	OpenAIModel             string `json:"openai_model,omitempty"`
+	OpenAIBaseURL           string `json:"openai_base_url,omitempty"` // não sensível, endpoint compatível (ex: GitHub Models)
 	HasClaude               bool   `json:"has_claude"`
 	ClaudeModel             string `json:"claude_model,omitempty"`
 	HasCopilot              bool   `json:"has_copilot"`
@@ -239,6 +241,11 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 	} else {
 		tokens.OpenAIModel = existingTokens.OpenAIModel
 	}
+	if req.OpenAIBaseURL != "" {
+		tokens.OpenAIBaseURL = req.OpenAIBaseURL
+	} else {
+		tokens.OpenAIBaseURL = existingTokens.OpenAIBaseURL
+	}
 
 	// Claude
 	if req.ClaudeAPIKey != "" {
@@ -405,6 +412,7 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 		GeminiWifLoginURL:       tokens.GeminiWifLoginURL,
 		HasOpenAI:               tokens.OpenAIAPIKey != "",
 		OpenAIModel:             tokens.OpenAIModel,
+		OpenAIBaseURL:           tokens.OpenAIBaseURL,
 		HasClaude:               tokens.ClaudeAPIKey != "",
 		ClaudeModel:             tokens.ClaudeModel,
 		HasCopilot:              tokens.CopilotAPIKey != "",
@@ -588,12 +596,7 @@ func validateGeminiVertexConnection(project, location, model, serviceAccountJSON
 				"tente: gemini-2.0-flash-001, gemini-1.5-pro-002 ou gemini-1.5-flash-002",
 			vertexModel, project, location)
 	case 403:
-		return fmt.Errorf(
-			"permissão negada (403) — credenciais sem acesso ao projeto '%s'.\n"+
-				"Para acesso via WIF corporativo, execute no terminal:\n"+
-				"  gcloud auth application-default login --audiences="+
-				"//iam.googleapis.com/locations/global/workforcePools/entraid-agentspace/providers/entraid-federation-agentspace\n"+
-				"Detalhes: %s", project, string(body))
+		return fmt.Errorf("%s", ai.BuildVertex403Hint(project, body))
 	case 400:
 		return fmt.Errorf("requisição inválida (400) — modelo '%s' pode não estar disponível em '%s'. Detalhes: %s", vertexModel, location, string(body))
 	default:

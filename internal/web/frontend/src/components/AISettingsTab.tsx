@@ -13,9 +13,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Key, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Shield, Trash2, FileJson, LogIn } from "lucide-react";
+import { Key, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Shield, Trash2, FileJson, LogIn, AlertTriangle, ExternalLink } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { apiClient } from "@/lib/api/client";
+
+// Formato esperado do campo "WIF Pool / Provider": "poolID/providerID" (curto) ou a URL longa
+// "//iam.googleapis.com/.../workforcePools/POOL/providers/PROVIDER". Espelha a regex do backend
+// (internal/ai/google_oauth2_loopback.go, wifShortFormatRe) — evita que uma URL qualquer (ex:
+// um link do Vertex AI Search/Agentspace) seja aceita e gere um refresh token inutilizável.
+const WIF_POOL_PROVIDER_RE = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+function isValidWifPoolProvider(v: string): boolean {
+  const trimmed = v.trim();
+  if (trimmed === "") return true; // vazio = conta pessoal, válido
+  if (trimmed.includes("workforcePools/")) return true; // formato longo, backend valida
+  return WIF_POOL_PROVIDER_RE.test(trimmed);
+}
 
 interface TokenStatus {
   has_gemini: boolean;
@@ -28,6 +40,7 @@ interface TokenStatus {
   gemini_wif_login_url?: string;
   has_openai: boolean;
   openai_model?: string;
+  openai_base_url?: string;
   has_claude: boolean;
   claude_model?: string;
   has_copilot: boolean;
@@ -68,6 +81,12 @@ export function AISettingsTab() {
   const [hasGeminiRefreshToken, setHasGeminiRefreshToken] = useState(false);
 
   const [wifLoginURL, setWifLoginURL] = useState("");
+  // Cobre tanto digitação em tempo real quanto o valor já salvo no banco carregado via
+  // loadTokenStatus — se o valor persistido estiver inválido (caso real do bug), o aviso
+  // aparece automaticamente assim que o state é populado, sem lógica extra.
+  const wifFormatError = wifLoginURL && !isValidWifPoolProvider(wifLoginURL)
+    ? "Formato inválido — esperado poolID/providerID, não uma URL completa"
+    : null;
 
   // App-callback OAuth flow (Google) — redireciona para /oauth/google/callback na porta do próprio app
   // Resolve o WSL2: porta 8080 é forwarded, portas aleatórias não eram.
@@ -81,6 +100,7 @@ export function AISettingsTab() {
   const [vertexTestError, setVertexTestError] = useState<string | null>(null);
   const [openaiKey, setOpenaiKey] = useState("");
   const [openaiModel, setOpenaiModel] = useState("");
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
   const [claudeModel, setClaudeModel] = useState("");
   const [copilotKey, setCopilotKey] = useState("");
@@ -165,6 +185,7 @@ export function AISettingsTab() {
       await loadAvailableModels(savedAuthMode, !!response.gemini_model);
       if (response.claude_model) setClaudeModel(response.claude_model);
       if (response.openai_model) setOpenaiModel(response.openai_model);
+      if (response.openai_base_url) setOpenaiBaseUrl(response.openai_base_url);
       if (response.ollama_model) setOllamaModel(response.ollama_model);
       if (response.copilot_endpoint) setCopilotEndpoint(response.copilot_endpoint);
       if (response.copilot_deployment) setCopilotDeployment(response.copilot_deployment);
@@ -346,6 +367,7 @@ export function AISettingsTab() {
       // Modelos - SEMPRE enviar (permitem trocar modelo sem re-inserir API key)
       if (geminiModel) payload.gemini_model = geminiModel;
       if (openaiModel) payload.openai_model = openaiModel;
+      if (openaiBaseUrl) payload.openai_base_url = openaiBaseUrl;
       if (claudeModel) payload.claude_model = claudeModel;
       if (ollamaModel) payload.ollama_model = ollamaModel;
 
@@ -409,6 +431,14 @@ export function AISettingsTab() {
   const startGoogleAuth = async () => {
     if (!aiEmail) {
       toast({ title: "Preencha o email antes de autenticar", variant: "destructive" });
+      return;
+    }
+    if (wifLoginURL && !isValidWifPoolProvider(wifLoginURL)) {
+      toast({
+        title: "Formato inválido em 'WIF Pool / Provider'",
+        description: "Use o formato poolID/providerID (ex: entraid-agentspace/entraid-federation-agentspace), não uma URL completa.",
+        variant: "destructive",
+      });
       return;
     }
 
@@ -761,6 +791,9 @@ export function AISettingsTab() {
                     <p className="text-xs text-muted-foreground">
                       Deixe em branco para conta Google pessoal. Com SSO corporativo (Azure AD → WIF), preencha o formato <code>poolID/providerID</code>.
                     </p>
+                    {wifFormatError && (
+                      <p className="text-xs text-red-600 dark:text-red-400">{wifFormatError}</p>
+                    )}
                   </div>
 
                   {/* Botão de autenticar + status */}
@@ -770,7 +803,7 @@ export function AISettingsTab() {
                         size="sm"
                         variant={hasGeminiRefreshToken ? "outline" : "default"}
                         onClick={startGoogleAuth}
-                        disabled={!aiEmail}
+                        disabled={!aiEmail || !!wifFormatError}
                         className="gap-1.5"
                       >
                         <LogIn className="h-4 w-4" />
@@ -782,9 +815,15 @@ export function AISettingsTab() {
                       <span className="text-xs text-amber-600 dark:text-amber-400">Preencha o email acima primeiro</span>
                     )}
                     {hasGeminiRefreshToken && googleStatus === "idle" && (
-                      <Badge variant="secondary" className="text-green-700 bg-green-100 border-green-300 text-xs gap-1">
-                        <CheckCircle2 className="h-3 w-3" /> Token salvo
-                      </Badge>
+                      wifFormatError ? (
+                        <Badge variant="secondary" className="text-amber-700 bg-amber-100 border-amber-300 text-xs gap-1">
+                          <AlertTriangle className="h-3 w-3" /> Token salvo, mas WIF Pool/Provider tem formato inválido — provavelmente precisa reautenticar
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="text-green-700 bg-green-100 border-green-300 text-xs gap-1">
+                          <CheckCircle2 className="h-3 w-3" /> Token salvo
+                        </Badge>
+                      )
                     )}
                   </div>
 
@@ -961,21 +1000,64 @@ export function AISettingsTab() {
               </a>
             </p>
 
-            {/* Seleção de Modelo OpenAI */}
+            {/* Base URL opcional — permite apontar pra um endpoint compatível com o formato de
+                chat completions da OpenAI, ex: GitHub Models (útil quando a organização não
+                libera vendors de IA externos, mas o PAT do GitHub já é aprovado). */}
+            <div className="space-y-1">
+              <Label htmlFor="openai-base-url" className="text-xs text-muted-foreground">
+                Base URL (opcional — endpoint compatível com a API da OpenAI)
+              </Label>
+              <Input
+                id="openai-base-url"
+                type="text"
+                placeholder="https://api.openai.com/v1/chat/completions"
+                value={openaiBaseUrl}
+                onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                Deixe em branco para usar a OpenAI oficial. Para GitHub Models (autenticado com um PAT do GitHub em vez de chave OpenAI), use{" "}
+                <code>https://models.github.ai/inference/chat/completions</code> e cole seu PAT do GitHub no campo "OpenAI API Key" acima.
+              </p>
+              <a
+                href="https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/blob/main/docs/guides/GITHUB_MODELS_SETUP.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-blue-500 hover:underline inline-flex items-center gap-1"
+              >
+                <ExternalLink className="h-3 w-3" />
+                Guia completo: usando GitHub Models como alternativa ao Vertex AI
+              </a>
+            </div>
+
+            {/* Seleção de Modelo OpenAI — vira campo livre quando uma Base URL customizada é
+                usada, já que os IDs de modelo variam por endpoint (ex: "openai/gpt-4.1" no
+                GitHub Models, diferente de "gpt-4o-mini" na OpenAI oficial). */}
             <div className="space-y-2">
               <Label htmlFor="openai-model">Modelo OpenAI</Label>
-              <Select value={openaiModel} onValueChange={setOpenaiModel}>
-                <SelectTrigger id="openai-model">
-                  <SelectValue placeholder="Selecione o modelo" />
-                </SelectTrigger>
-                <SelectContent>
-                  {openaiModels.map((model) => (
-                    <SelectItem key={model.id} value={model.id}>
-                      {model.name} {model.is_default && "(Padrão)"} {model.description && `- ${model.description}`}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {openaiBaseUrl.trim() ? (
+                <Input
+                  id="openai-model"
+                  type="text"
+                  placeholder="ex: openai/gpt-4.1 (GitHub Models) ou microsoft/Phi-4"
+                  value={openaiModel}
+                  onChange={(e) => setOpenaiModel(e.target.value)}
+                  className="font-mono text-xs"
+                />
+              ) : (
+                <Select value={openaiModel} onValueChange={setOpenaiModel}>
+                  <SelectTrigger id="openai-model">
+                    <SelectValue placeholder="Selecione o modelo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {openaiModels.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.name} {model.is_default && "(Padrão)"} {model.description && `- ${model.description}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </div>
 

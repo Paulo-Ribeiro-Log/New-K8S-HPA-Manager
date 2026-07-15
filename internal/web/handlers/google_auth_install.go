@@ -90,14 +90,23 @@ func (h *AITokensHandler) StartGoogleInstallAuth(c *gin.Context) {
 	// WIF flow: usa auth.cloud.google quando pool/provider estão configurados
 	if req.WIFPoolProvider != "" {
 		poolID, providerID, ok := ai.ParseWIFPoolProvider(req.WIFPoolProvider)
-		if ok {
-			authURL, pkceVerifier, err = ai.StartWIFAppCallback(redirectURI, sessionID, poolID, providerID)
-			isWIF = true
-			log.Info().
-				Str("pool", poolID).Str("provider", providerID).
-				Str("redirect_uri", redirectURI).
-				Msg("🔗 WIF auth.cloud.google iniciado")
+		if !ok {
+			// Formato inválido (ex: URL colada em vez de "poolID/providerID") — bloquear aqui
+			// em vez de cair silenciosamente no fallback de conta pessoal abaixo, que geraria
+			// um refresh token que "funciona" mas nunca autoriza o Vertex AI corporativo.
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Formato inválido em 'WIF Pool / Provider': esperado 'poolID/providerID' " +
+					"(ex: entraid-agentspace/entraid-federation-agentspace), não uma URL completa. " +
+					"Recebido: " + req.WIFPoolProvider,
+			})
+			return
 		}
+		authURL, pkceVerifier, err = ai.StartWIFAppCallback(redirectURI, sessionID, poolID, providerID)
+		isWIF = true
+		log.Info().
+			Str("pool", poolID).Str("provider", providerID).
+			Str("redirect_uri", redirectURI).
+			Msg("🔗 WIF auth.cloud.google iniciado")
 	}
 
 	// Fallback: OAuth2 padrão (accounts.google.com)
