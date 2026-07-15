@@ -345,7 +345,9 @@ export function useHelmOperation() {
         eventSourceRef.current.close();
       }
 
-      const eventSource = new EventSource(`${API_BASE}/operations/${operationId}/stream`);
+      // EventSource não suporta headers customizados — token via query param
+      const token = localStorage.getItem('auth_token');
+      const eventSource = new EventSource(`${API_BASE}/operations/${operationId}/stream?token=${token}`);
       eventSourceRef.current = eventSource;
 
       eventSource.addEventListener('helm-operation', (e) => {

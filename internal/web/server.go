@@ -1012,7 +1012,13 @@ func (s *Server) setupRoutes() {
 		helmRoutes.PUT("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Upgrade)
 		helmRoutes.POST("/releases/:release/rollback", rbacMiddleware.RequireSREGroup(), helmHandler.Rollback)
 		helmRoutes.DELETE("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Uninstall)
-		helmRoutes.GET("/operations/:operationId/stream", helmHandler.StreamOperation)
+	}
+
+	// SSE stream do Helm - requer token via query param (EventSource não suporta headers)
+	helmSSEGroup := s.router.Group("/api/v1/helm")
+	helmSSEGroup.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
+	{
+		helmSSEGroup.GET("/operations/:operationId/stream", helmHandler.StreamOperation)
 	}
 
 	// Nexus
