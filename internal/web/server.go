@@ -1234,7 +1234,7 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/file", codeEditorHandler.ReadFile)
 		codeEditor.POST("/repos/:id/file", codeEditorHandler.WriteFile)
 		codeEditor.GET("/repos/:id/status", codeEditorHandler.GetGitStatus)
-		codeEditor.GET("/repos/:id/branches", codeEditorHandler.ListBranches)
+		codeEditor.GET("/repos/:id/branches", rbacMiddleware.InjectUserEmail(), codeEditorHandler.ListBranches)
 		codeEditor.POST("/repos/:id/branch", codeEditorHandler.CreateBranch)
 		codeEditor.POST("/repos/:id/checkout", codeEditorHandler.CheckoutBranch)
 		codeEditor.POST("/repos/:id/pull", rbacMiddleware.InjectUserEmail(), codeEditorHandler.Pull)
