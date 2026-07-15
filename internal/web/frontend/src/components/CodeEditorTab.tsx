@@ -36,6 +36,7 @@ import {
   RotateCcw,
   Eye,
   Map as MapIcon,
+  Package,
   PackageMinus,
   PackagePlus,
   Tag,
@@ -60,6 +61,17 @@ import {
   FlaskConical,
   ServerCrash,
   Files,
+  FileJson,
+  FileText,
+  FileCode,
+  FileCode2,
+  Settings,
+  Palette,
+  Database,
+  Image as ImageIcon,
+  Lock,
+  Box,
+  Braces,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -230,6 +242,59 @@ function scmColor(xy: string): string {
   return "text-yellow-400";                                        // modified
 }
 
+// VSCode-like: ícone + cor por extensão/nome de arquivo
+function getFileIcon(name: string): { Icon: typeof File; color: string } {
+  const lower = name.toLowerCase();
+
+  if (lower === "dockerfile" || lower.startsWith("dockerfile.")) return { Icon: Box, color: "text-sky-400" };
+  if (lower.startsWith(".env")) return { Icon: Lock, color: "text-yellow-500" };
+  if (lower === "go.mod" || lower === "go.sum") return { Icon: Package, color: "text-cyan-400" };
+  if (lower === "package.json" || lower === "package-lock.json") return { Icon: Package, color: "text-red-400" };
+
+  const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : "";
+  switch (ext) {
+    case "go": return { Icon: FileCode, color: "text-cyan-400" };
+    case "ts": case "tsx": return { Icon: FileCode, color: "text-blue-400" };
+    case "js": case "jsx": case "mjs": case "cjs": return { Icon: FileCode, color: "text-yellow-400" };
+    case "py": return { Icon: FileCode, color: "text-green-400" };
+    case "json": case "jsonc": return { Icon: FileJson, color: "text-yellow-500" };
+    case "yaml": case "yml": return { Icon: Settings, color: "text-pink-400" };
+    case "md": case "mdx": return { Icon: FileText, color: "text-blue-300" };
+    case "css": case "scss": case "sass": case "less": return { Icon: Palette, color: "text-pink-400" };
+    case "html": case "htm": return { Icon: FileCode2, color: "text-orange-400" };
+    case "sql": return { Icon: Database, color: "text-purple-400" };
+    case "sh": case "bash": case "zsh": return { Icon: Terminal, color: "text-green-400" };
+    case "png": case "jpg": case "jpeg": case "gif": case "svg": case "webp": case "ico": return { Icon: ImageIcon, color: "text-purple-300" };
+    case "toml": case "ini": case "conf": case "cfg": return { Icon: Settings, color: "text-gray-400" };
+    case "lock": return { Icon: Lock, color: "text-gray-500" };
+    case "proto": return { Icon: Braces, color: "text-cyan-300" };
+    default: return { Icon: File, color: "text-muted-foreground" };
+  }
+}
+
+// bolinha de status VSCode-like: vermelho (erro) tem prioridade sobre laranja (modificado)
+function StatusDot({ hasError, hasModified }: { hasError: boolean; hasModified: boolean }) {
+  if (hasError) return <span className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" title="Contém erros" />;
+  if (hasModified) return <span className="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" title="Modificado" />;
+  return null;
+}
+
+// acumula, para cada arquivo em paths, todos os diretórios ancestrais (para propagar
+// o status até pastas colapsadas, como o VSCode faz)
+function collectAncestorDirs(paths: Iterable<string>): Set<string> {
+  const dirs = new Set<string>();
+  for (const p of paths) {
+    const segments = p.split("/");
+    segments.pop(); // remove o nome do arquivo
+    let acc = "";
+    for (const seg of segments) {
+      acc = acc ? `${acc}/${seg}` : seg;
+      dirs.add(acc);
+    }
+  }
+  return dirs;
+}
+
 // ─── Multi-tab state ────────────────────────────────────────────────────────
 
 interface OpenTab {
@@ -398,6 +463,9 @@ interface FileTreeNodeProps {
   onSelect: (node: CodeEditorFileNode) => void;
   modifiedPaths: Set<string>;
   gitFileStatus?: Map<string, string>;
+  modifiedDirs: Set<string>;
+  errorFiles: Set<string>;
+  errorDirs: Set<string>;
   level: number;
   onDelete: (node: CodeEditorFileNode) => void;
   onRename: (node: CodeEditorFileNode) => void;
@@ -435,11 +503,10 @@ function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void
   }
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStatus, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath, selectedPaths, onMultiToggle }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStatus, modifiedDirs, errorFiles, errorDirs, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath, selectedPaths, onMultiToggle }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
-  const isModified = modifiedPaths.has(node.path);
   const fileXY = gitFileStatus?.get(node.path);
   const isMultiSelected = selectedPaths?.has(node.path) ?? false;
 
@@ -475,8 +542,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
           {open ? <ChevronDown className="w-3 h-3 flex-shrink-0 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 flex-shrink-0 text-muted-foreground" />}
           {open ? <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" /> : <Folder className="w-3.5 h-3.5 flex-shrink-0 text-blue-400" />}
           <span className="truncate text-foreground/80 flex-1">{node.name}</span>
-          {/* dir change indicator */}
-          {isModified && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400/60 flex-shrink-0" />}
+          <StatusDot hasError={errorDirs.has(node.path)} hasModified={modifiedDirs.has(node.path)} />
           {onCreate && (
             <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
               <button onClick={e => { e.stopPropagation(); onDirFocus?.(node.path); onCreate(node.path, "file"); }}
@@ -492,7 +558,9 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
         </div>
         {open && node.children?.map(child => (
           <FileTreeNode key={child.path} node={child} selectedPath={selectedPath} onSelect={onSelect}
-            modifiedPaths={modifiedPaths} gitFileStatus={gitFileStatus} level={level + 1} onDelete={onDelete} onRename={onRename}
+            modifiedPaths={modifiedPaths} gitFileStatus={gitFileStatus}
+            modifiedDirs={modifiedDirs} errorFiles={errorFiles} errorDirs={errorDirs}
+            level={level + 1} onDelete={onDelete} onRename={onRename}
             onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate}
             onMove={onMove} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath}
             onContextMenu={onContextMenu} revealPath={revealPath}
@@ -528,11 +596,12 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
         else { onSelect(node); }
       }}>
         <span className="w-3 h-3 flex-shrink-0" />
-        <File className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" />
+        {(() => { const { Icon, color } = getFileIcon(node.name); return <Icon className={`w-3.5 h-3.5 flex-shrink-0 ${color}`} />; })()}
         <span className={`truncate flex-1 ${fileXY ? scmColor(fileXY) : "text-foreground/80"}`}>{node.name}</span>
         {fileXY && (
           <span className={`text-[10px] font-bold leading-none flex-shrink-0 ${scmColor(fileXY)}`}>{scmBadge(fileXY)}</span>
         )}
+        <StatusDot hasError={errorFiles.has(node.path)} hasModified={modifiedPaths.has(node.path)} />
       </button>
       <div className="hidden group-hover:flex gap-0.5 flex-shrink-0">
         {onHistory && (
@@ -2003,6 +2072,10 @@ export function CodeEditorTab() {
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
   const [activeTabIdx, setActiveTabIdx] = useState(0);
 
+  // Caminhos (relativos ao repo) com marcadores de erro no editor — só reflete a aba
+  // atualmente aberta, já que o Monaco reaproveita um único model entre abas
+  const [filesWithErrors, setFilesWithErrors] = useState<Set<string>>(new Set());
+
   const [status, setStatus] = useState<CodeEditorGitStatus | null>(null);
   const [branches, setBranches] = useState<CodeEditorBranches | null>(null);
   const [log, setLog] = useState<CodeEditorLogEntry[]>([]);
@@ -2212,6 +2285,9 @@ export function CodeEditorTab() {
   const isModified = activeTab ? activeTab.currentContent !== activeTab.savedContent : false;
   const modifiedPaths = new Set((status?.files ?? []).map(f => f.path));
   const gitFileStatusMap = new Map((status?.files ?? []).map(f => [f.path, f.status]));
+  // Propaga o status (modificado/erro) até as pastas ancestrais colapsadas, como o VSCode faz
+  const modifiedDirs = useMemo(() => collectAncestorDirs(modifiedPaths), [status]);
+  const errorDirs = useMemo(() => collectAncestorDirs(filesWithErrors), [filesWithErrors]);
 
   // ── persist sidebar width ──
   useEffect(() => {
@@ -3125,6 +3201,27 @@ export function CodeEditorTab() {
     });
     editor.onDidFocusEditorWidget(() => setFocusedPane("left"));
 
+    // ── Bolinha de erro na árvore de arquivos (VSCode-like) ─────────────────
+    // O Monaco reaproveita um único model entre abas (não há prop `path` no <Editor>),
+    // então só é possível saber o status de erro do arquivo atualmente ativo — reflete
+    // isso em filesWithErrors sempre que os markers mudam (LSP go/python ou TS/JS nativo).
+    if (!(window as any).__ceMarkerWatcherRegistered) {
+      (window as any).__ceMarkerWatcherRegistered = true;
+      monacoInstance.editor.onDidChangeMarkers(() => {
+        const filePath = (window as any).__lspActiveFilePath as string | undefined;
+        if (!filePath) return;
+        const markers = monacoInstance.editor.getModelMarkers({});
+        const hasError = markers.some(m => m.severity === monacoInstance.MarkerSeverity.Error);
+        setFilesWithErrors(prev => {
+          const already = prev.has(filePath);
+          if (hasError === already) return prev;
+          const next = new Set(prev);
+          if (hasError) next.add(filePath); else next.delete(filePath);
+          return next;
+        });
+      });
+    }
+
     // ── TypeScript/JavaScript — worker built-in do Monaco ──────────────────
     // Configura uma única vez (flag global para evitar reconfiguração)
     if (!(window as any).__monacoTSConfigured) {
@@ -3715,7 +3812,8 @@ export function CodeEditorTab() {
                         )}
                         {tree.map(node => (
                           <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
-                            onSelect={openFile} modifiedPaths={modifiedPaths} gitFileStatus={gitFileStatusMap} level={0}
+                            onSelect={openFile} modifiedPaths={modifiedPaths} gitFileStatus={gitFileStatusMap}
+                            modifiedDirs={modifiedDirs} errorFiles={filesWithErrors} errorDirs={errorDirs} level={0}
                             onDelete={handleDeleteFile} onRename={n => setRenameNode(n)}
                             onHistory={n => setFileHistoryNode(n)}
                             onUpload={handleUpload}
