@@ -3613,6 +3613,23 @@ class APIClient {
     });
   }
 
+  /** Visão geral dos tópicos do broker (Partições + ~Mensagens, estilo Compass) — síncrono, sem SSE */
+  async kafkaTopicsOverview(
+    req: import("./types").ListKafkaTopicsRequest
+  ): Promise<import("./types").TopicsOverviewResponse> {
+    return this.request<import("./types").TopicsOverviewResponse>("/kafka-test/topics/overview", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** Pré-checagem de Docker no servidor — só relevante pro modo "local" (Direto do servidor) do
+   * Teste de Kafka. Reaproveita o mesmo shape de DBDockerStatus (checkDockerStatus no backend não
+   * tem nada específico de banco de dados, é sobre o Docker do host). */
+  async getKafkaTestDockerStatus(): Promise<import("./types").DBDockerStatus> {
+    return this.request<import("./types").DBDockerStatus>("/kafka-test/docker-status");
+  }
+
   // ─── Teste de Banco de Dados sob Demanda ───────────────────────────────────
 
   /** Inicia o teste de banco de dados (ephemeral container psql/mysql/mongosh/redis-cli) e retorna session_id para SSE */

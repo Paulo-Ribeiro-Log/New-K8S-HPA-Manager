@@ -40,9 +40,13 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
+  ChevronUp,
+  ArrowUpDown,
   Check,
   CheckCircle2,
   Search,
+  Table2,
+  Copy,
 } from "lucide-react";
 import {
   Dialog,
@@ -51,12 +55,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { formatBytes } from "@/lib/monitorUtils";
 import { cn } from "@/lib/utils";
 import { ProtectedAction } from "@/components/rbac";
 import { useClusters } from "@/hooks/useAPI";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import type { KafkaTestResult, KafkaTestSSEEvent, KafkaStageStatus, KafkaMessage } from "@/lib/api/types";
+import { toast } from "sonner";
+import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
+import type { KafkaTestResult, KafkaTestSSEEvent, KafkaStageStatus, KafkaMessage, TopicsOverviewResponse, DBExecutionMode } from "@/lib/api/types";
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de ClusterSelectorForTab.tsx
 // (evita o bug do <Select> do Radix fechar o dropdown ao focar um campo de busca externo).
@@ -151,11 +159,27 @@ function deriveConnectivityBadges(status: KafkaStageStatus, saslEnabled: boolean
 }
 
 export default function KafkaTestTab() {
+  const queryClient = useQueryClient();
   const { clusters } = useClusters();
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
   const [deployment, setDeployment] = useState("");
   const [broker, setBroker] = useState("");
+
+  // executionMode="pod" (default): ephemeral container anexado a um pod real do Deployment,
+  // reflete NetworkPolicy/Istio. "local": container Docker local no servidor da aplicação — útil
+  // quando o broker é alcançável direto da rede do servidor (VPN, endpoint público) e não faz
+  // sentido refletir a identidade de rede de um pod específico. Mesmo campo/padrão do Teste de
+  // Banco de Dados (DatabaseTestTab.tsx) — requer Docker instalado no servidor, não clientes
+  // nativos (ver DOCKER_FIX_BY_REASON / painel de pré-checagem abaixo).
+  const [executionMode, setExecutionMode] = useState<DBExecutionMode>("pod");
+
+  const { data: dockerStatus } = useQuery({
+    queryKey: ["kafka-test-docker-status"],
+    queryFn: () => apiClient.getKafkaTestDockerStatus(),
+    enabled: executionMode === "local",
+  });
+  const dockerReady = executionMode !== "local" || !!(dockerStatus?.installed && dockerStatus?.daemon_running);
 
   const [saslEnabled, setSaslEnabled] = useState(false);
   const [mechanism, setMechanism] = useState<"PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512">("PLAIN");
@@ -212,10 +236,17 @@ export default function KafkaTestTab() {
 
   const needsTopic = produceConsumeEnabled || viewTopicEnabled || countOffsetsEnabled;
 
+  // Cluster só é obrigatório no modo "pod" (resolve o Deployment/pod/ephemeral container) ou
+  // quando a credencial SASL vem de um Secret do K8s (precisa da API do K8s pra ler, mesmo que o
+  // teste em si rode local). Namespace/Deployment só existem no modo "pod". Mesmo raciocínio de
+  // needsCluster/usesK8sRef em DatabaseTestTab.tsx.
+  const usesK8sRef = saslEnabled && credSource === "secret";
+  const needsCluster = executionMode === "pod" || usesK8sRef;
+
   const canRun =
-    !!cluster &&
-    !!namespace &&
-    !!deployment &&
+    (!needsCluster || !!cluster) &&
+    (executionMode !== "pod" || (!!namespace && !!deployment)) &&
+    dockerReady &&
     !!broker.trim() &&
     !isRunning &&
     (!needsTopic || !!topic.trim()) &&
@@ -250,6 +281,7 @@ export default function KafkaTestTab() {
     setIsRunning(true);
     try {
       const { session_id } = await apiClient.runKafkaTest({
+        execution_mode: executionMode,
         cluster,
         namespace,
         deployment,
@@ -270,7 +302,11 @@ export default function KafkaTestTab() {
     }
   };
 
-  const canSearchTopics = !!cluster && !!namespace && !!deployment && !!broker.trim();
+  const canSearchTopics =
+    (!needsCluster || !!cluster) &&
+    (executionMode !== "pod" || (!!namespace && !!deployment)) &&
+    dockerReady &&
+    !!broker.trim();
 
   const searchTopics = async () => {
     if (!canSearchTopics) return;
@@ -278,6 +314,7 @@ export default function KafkaTestTab() {
     setTopicSearchError(null);
     try {
       const { topics, raw_output } = await apiClient.listKafkaTopics({
+        execution_mode: executionMode,
         cluster,
         namespace,
         deployment,
@@ -303,6 +340,81 @@ export default function KafkaTestTab() {
       searchTopics();
     }
   };
+
+  // Visão geral de tópicos (Partições + ~Mensagens) — mesmo espírito do "All Stats" do MongoDB
+  // Compass no Teste de Banco de Dados, adaptado ao que o kcat expõe pro Kafka (sem tamanho em
+  // disco, que exigiria os scripts nativos do Kafka/JMX). Ação síncrona à parte do teste
+  // principal, mesmo padrão da busca de tópicos (searchTopics) — não passa por needsTopic.
+  const [topicsOverviewOpen, setTopicsOverviewOpen] = useState(false);
+  const [topicsOverviewLoading, setTopicsOverviewLoading] = useState(false);
+  const [topicsOverviewError, setTopicsOverviewError] = useState<string | null>(null);
+  const [topicsOverviewData, setTopicsOverviewData] = useState<TopicsOverviewResponse | null>(null);
+  const [overviewSortKey, setOverviewSortKey] = useState<"topic" | "partitions" | "message_count" | "disk_bytes">("message_count");
+  const [overviewSortDir, setOverviewSortDir] = useState<"asc" | "desc">("desc");
+
+  const loadTopicsOverview = async () => {
+    if (!canSearchTopics) return;
+    setTopicsOverviewOpen(true);
+    setTopicsOverviewLoading(true);
+    setTopicsOverviewError(null);
+    try {
+      const data = await apiClient.kafkaTopicsOverview({
+        execution_mode: executionMode,
+        cluster,
+        namespace,
+        deployment,
+        broker: broker.trim(),
+        sasl: buildSaslPayload(),
+        timeout_ms: timeoutMs,
+      });
+      setTopicsOverviewData(data);
+      if (data.topics.length === 0) {
+        setTopicsOverviewError(data.raw_output ? "Nenhum tópico encontrado — ver saída bruta" : "Nenhum tópico encontrado no broker");
+      }
+    } catch (err) {
+      setTopicsOverviewData(null);
+      setTopicsOverviewError(err instanceof Error ? err.message : "Falha ao buscar a visão geral de tópicos");
+    } finally {
+      setTopicsOverviewLoading(false);
+    }
+  };
+
+  const sortedOverviewTopics = [...(topicsOverviewData?.topics ?? [])].sort((a, b) => {
+    const dir = overviewSortDir === "asc" ? 1 : -1;
+    if (overviewSortKey === "topic") return a.topic.localeCompare(b.topic) * dir;
+    return (a[overviewSortKey] - b[overviewSortKey]) * dir;
+  });
+
+  const overviewSortIcon = (key: typeof overviewSortKey) =>
+    overviewSortKey !== key ? (
+      <ArrowUpDown className="w-3 h-3 opacity-40" />
+    ) : overviewSortDir === "asc" ? (
+      <ChevronUp className="w-3 h-3" />
+    ) : (
+      <ChevronDown className="w-3 h-3" />
+    );
+
+  const sortableOverviewHeader = (key: typeof overviewSortKey, label: string, align: "left" | "right" = "left") => (
+    <TableHead className={align === "right" ? "text-right" : ""}>
+      <button
+        type="button"
+        onClick={() => {
+          if (key === overviewSortKey) setOverviewSortDir((d) => (d === "asc" ? "desc" : "asc"));
+          else {
+            setOverviewSortKey(key);
+            setOverviewSortDir("desc");
+          }
+        }}
+        className={cn(
+          "inline-flex items-center gap-1 text-xs font-medium hover:text-foreground",
+          align === "right" && "flex-row-reverse",
+        )}
+      >
+        {label}
+        {overviewSortIcon(key)}
+      </button>
+    </TableHead>
+  );
 
   const cancelTest = async () => {
     if (!sessionId) return;
@@ -354,7 +466,67 @@ export default function KafkaTestTab() {
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      <div className="px-6 py-3 bg-muted/30 border-b border-border flex flex-wrap items-end gap-3">
+      <div className="px-6 py-3 bg-muted/30 border-b border-border flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-4">
+          <RadioGroup
+            value={executionMode}
+            onValueChange={(v) => { setExecutionMode(v as DBExecutionMode); setResult(null); }}
+            className="flex items-center gap-4"
+          >
+            <div className="flex items-center gap-1.5">
+              <RadioGroupItem value="pod" id="kafka-exec-pod" />
+              <label htmlFor="kafka-exec-pod" className="text-sm cursor-pointer">Via Pod do Cluster</label>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <RadioGroupItem value="local" id="kafka-exec-local" />
+              <label htmlFor="kafka-exec-local" className="text-sm cursor-pointer">Direto do servidor (terminal local)</label>
+            </div>
+          </RadioGroup>
+          {executionMode === "local" && (
+            <span className="text-[10px] text-amber-600 dark:text-amber-400">
+              Roda a mesma imagem do modo Pod (kcat) num container Docker local no servidor (`docker run --rm`) — requer Docker instalado lá. Não reflete NetworkPolicy/Istio do cluster.
+            </span>
+          )}
+        </div>
+
+        {executionMode === "local" && dockerStatus && !dockerReady && (() => {
+          const fix = DOCKER_FIX_BY_REASON[dockerStatus.reason ?? "daemon_unreachable"] ?? DOCKER_FIX_BY_REASON.daemon_unreachable;
+          return (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 flex flex-col gap-2">
+            <div className="text-sm text-amber-700 dark:text-amber-400">
+              <span className="font-semibold">{fix.title}</span>
+              {dockerStatus.error && <span> — {dockerStatus.error}</span>}
+            </div>
+            <div className="relative">
+              <pre className="rounded-md border border-border bg-muted/30 p-3 pr-10 text-[11px] font-mono whitespace-pre-wrap overflow-x-auto">
+                {fix.snippet}
+              </pre>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-1.5 right-1.5 h-6 w-6"
+                onClick={() => {
+                  navigator.clipboard.writeText(fix.snippet);
+                  toast.success("Comando copiado!");
+                }}
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              onClick={() => queryClient.invalidateQueries({ queryKey: ["kafka-test-docker-status"] })}
+            >
+              Verificar novamente
+            </Button>
+          </div>
+          );
+        })()}
+
+        <div className="flex flex-wrap items-end gap-3">
+        {needsCluster && (
         <div className="min-w-[220px]">
           <ClusterSelectorForTab
             selectedCluster={cluster}
@@ -369,7 +541,10 @@ export default function KafkaTestTab() {
             clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
           />
         </div>
+        )}
 
+        {executionMode === "pod" && (
+        <>
         <div className="min-w-[200px]">
           <label className="text-xs text-muted-foreground block mb-1">Namespace</label>
           <SearchableSelect
@@ -395,6 +570,8 @@ export default function KafkaTestTab() {
             disabled={!namespace}
           />
         </div>
+        </>
+        )}
 
         <div className="min-w-[280px] flex-1">
           <label className="text-xs text-muted-foreground block mb-1">Broker (host:porta)</label>
@@ -429,6 +606,7 @@ export default function KafkaTestTab() {
             </Button>
           )}
         </ProtectedAction>
+        </div>
       </div>
 
       <div className="px-6 py-3 border-b border-border flex flex-col gap-3">
@@ -525,6 +703,21 @@ export default function KafkaTestTab() {
             )}
           </div>
         )}
+
+        <div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={!canSearchTopics}
+            title={canSearchTopics ? "Lista todos os tópicos do broker com partições e ~mensagens retidas" : "Preencha cluster, namespace, deployment e broker primeiro"}
+            onClick={loadTopicsOverview}
+          >
+            <Table2 className="w-4 h-4" />
+            Visão geral de tópicos
+          </Button>
+        </div>
 
         {needsTopic && (
           <div className="w-72">
@@ -922,6 +1115,76 @@ export default function KafkaTestTab() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={topicsOverviewOpen} onOpenChange={setTopicsOverviewOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Visão geral de tópicos</DialogTitle>
+          </DialogHeader>
+          {topicsOverviewLoading ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground py-10">
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Consultando partições e offsets de todos os tópicos...
+              </div>
+              {executionMode === "local" && (
+                <span className="text-[11px] text-center max-w-sm">
+                  Modo local também calcula o tamanho em disco via imagem completa do Kafka — pode demorar mais na primeira vez (pull da imagem + JVM subindo).
+                </span>
+              )}
+            </div>
+          ) : topicsOverviewError && (!topicsOverviewData || topicsOverviewData.topics.length === 0) ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground py-10">
+              <AlertTriangle className="w-5 h-5" />
+              {topicsOverviewError}
+              <Button size="sm" variant="outline" onClick={loadTopicsOverview}>Tentar de novo</Button>
+            </div>
+          ) : topicsOverviewData ? (
+            <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+              {topicsOverviewData.truncated && (
+                <div className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5 shrink-0">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  Muitos tópicos no broker — a contagem de ~mensagens foi limitada aos primeiros (ordem alfabética); os demais aparecem com "—" nessa coluna.
+                </div>
+              )}
+              {executionMode === "local" && topicsOverviewData.disk_usage_warning && (
+                <div className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5 shrink-0">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  {topicsOverviewData.disk_usage_warning}
+                </div>
+              )}
+              <div className="flex-1 overflow-auto border border-border rounded-md">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-background">
+                    <TableRow>
+                      {sortableOverviewHeader("topic", "Tópico")}
+                      {sortableOverviewHeader("partitions", "Partições", "right")}
+                      {sortableOverviewHeader("message_count", "~Mensagens", "right")}
+                      {executionMode === "local" && sortableOverviewHeader("disk_bytes", "Disco", "right")}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedOverviewTopics.map((t) => (
+                      <TableRow key={t.topic}>
+                        <TableCell className="py-1.5 font-mono text-xs truncate max-w-[280px]" title={t.topic}>{t.topic}</TableCell>
+                        <TableCell className="py-1.5 text-right text-xs font-mono">{t.partitions}</TableCell>
+                        <TableCell className="py-1.5 text-right text-xs font-mono">
+                          {t.message_count < 0 ? "—" : t.message_count.toLocaleString("pt-BR")}
+                        </TableCell>
+                        {executionMode === "local" && (
+                          <TableCell className="py-1.5 text-right text-xs font-mono">
+                            {t.disk_bytes < 0 ? "—" : formatBytes(t.disk_bytes)}
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </div>

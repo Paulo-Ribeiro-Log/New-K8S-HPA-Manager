@@ -20,7 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
@@ -52,6 +51,14 @@ const (
 	// lê as últimas N mensagens já existentes no tópico via offset negativo do kcat (-o -N).
 	kafkaTestViewDefaultMessages = 10
 	kafkaTestViewMaxMessages     = 50
+
+	// kafkaTopicsOverviewCap limita quantos tópicos entram na consulta de offsets em lote da
+	// visão geral (Partições + ~Mensagens, "TopicsOverview") — sem teto, um broker com centenas de
+	// tópicos geraria um comando `-Q` gigante (uma entrada -t por partição de cada tópico) e uma
+	// varredura pesada no lado do broker. Mesmo espírito de segurança do dbRedisScanCap
+	// (db_test_tool.go): corta em vez de tentar tudo de uma vez. Tópicos além do teto ainda
+	// aparecem na lista simples (sem estatística), só não entram na consulta de offsets.
+	kafkaTopicsOverviewCap = 200
 )
 
 const (
@@ -106,6 +113,12 @@ var kafkaTopicNameRegex = regexp.MustCompile(`topic\s+"([^"]+)"\s+with\s+(\d+)\s
 // timestamp) — formato confirmado contra um broker real: `<topico> [<partição>] offset <N>`.
 var kafkaOffsetLineRegex = regexp.MustCompile(`\[(\d+)\]\s+offset\s+(-?\d+)`)
 
+// kafkaOffsetLineWithTopicRegex é a mesma linha de kafkaOffsetLineRegex, mas capturando também o
+// nome do tópico — necessário quando o `-Q` é batelado com partições de VÁRIOS tópicos na mesma
+// invocação (ver buildKafkaOffsetQueryArgsMulti/TopicsOverview), já que o número da partição
+// sozinho não identifica de qual tópico ela é.
+var kafkaOffsetLineWithTopicRegex = regexp.MustCompile(`(\S+)\s+\[(\d+)\]\s+offset\s+(-?\d+)`)
+
 // KafkaSASLConfig descreve autenticação SASL opcional pro teste. Username/Password OU SecretRef
 // (mutuamente exclusivos — SecretRef tem prioridade se ambos vierem preenchidos por engano).
 type KafkaSASLConfig struct {
@@ -134,11 +147,18 @@ type KafkaSecretRef struct {
 
 // RunKafkaTestRequest é o body do POST /kafka-test/run.
 type RunKafkaTestRequest struct {
-	Cluster   string `json:"cluster"`
-	Namespace string `json:"namespace"`
+	// ExecutionMode decide ONDE o teste roda: "pod" (default) — ephemeral container anexado a um
+	// pod real do Deployment, reflete NetworkPolicy/Istio — ou "local" — subprocesso Docker direto
+	// no host do servidor da aplicação, útil quando o broker é alcançável diretamente da rede do
+	// servidor (VPN, endpoint público) e não faz sentido refletir a identidade de rede de um pod
+	// específico. Mesmo campo/semântica de DBTestRequest.ExecutionMode (db_test_tool.go).
+	ExecutionMode string `json:"execution_mode"` // pod | local
+	Cluster       string `json:"cluster"`
+	Namespace     string `json:"namespace"`
 	// Deployment identifica de QUAL workload o teste deve partir — o handler resolve um pod
 	// Running desse Deployment e anexa um ephemeral container nele, pra refletir a identidade de
 	// rede real (NetworkPolicy/Istio) daquele workload específico, não de um pod avulso genérico.
+	// Só usado/obrigatório quando ExecutionMode="pod".
 	Deployment     string           `json:"deployment"`
 	Broker         string           `json:"broker"` // "host:porta" — tipicamente um broker EXTERNO ao cluster
 	SASL           *KafkaSASLConfig `json:"sasl,omitempty"`
@@ -533,11 +553,16 @@ func extractStderr(err error) string {
 	return rest
 }
 
+// kafkaExecFunc abstrai ONDE o script do kcat roda — dentro de um ephemeral container
+// (execCmdInPod, modo "pod") ou dentro de um container Docker local no host do servidor
+// (execLocalDocker, modo "local"). Mesmo padrão de dbExecFunc em db_test_tool.go: as stages não
+// sabem qual dos dois é, só chamam a função — evita duplicar a lógica de cada estágio entre os
+// dois modos de execução.
+type kafkaExecFunc func(ctx context.Context, script string) (string, error)
+
 // runKafkaConnectivityStage roda `kcat -L` (metadata) — cobre TCP+DNS+protocolo Kafka+SASL num
 // único exec, classificando o resultado por padrões conhecidos de erro do rdkafka.
-func runKafkaConnectivityStage(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
-	namespace, podName, containerName, broker string, authFlags []string, saslConfigured bool, timeoutMs int) KafkaStageResult {
-
+func runKafkaConnectivityStage(ctx context.Context, run kafkaExecFunc, broker string, authFlags []string, saslConfigured bool, timeoutMs int) KafkaStageResult {
 	timeoutSec := (timeoutMs + 999) / 1000
 	if timeoutSec < 1 {
 		timeoutSec = 1
@@ -545,7 +570,7 @@ func runKafkaConnectivityStage(ctx context.Context, clientset kubernetes.Interfa
 	cmd := buildKcatCommand(broker, authFlags, "-L")
 	script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
 
-	output, execErr := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
+	output, execErr := run(ctx, script)
 	if execErr != nil {
 		return KafkaStageResult{Status: kafkaStageUnknownFailed, Message: "Falha ao executar o teste no pod", RawOutput: extractStderr(execErr)}
 	}
@@ -586,9 +611,7 @@ func runKafkaConnectivityStage(ctx context.Context, clientset kubernetes.Interfa
 // runKafkaProduceConsumeStage produz uma mensagem com um marcador único e tenta consumi-la de
 // volta — compromisso de simplicidade: lê até kafkaTestConsumeMaxMessages desde o início do
 // tópico em vez de calcular o offset exato pré-produce (ver doc do plano).
-func runKafkaProduceConsumeStage(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
-	namespace, podName, containerName, broker, topic string, authFlags []string, timeoutMs int) KafkaProduceConsumeResult {
-
+func runKafkaProduceConsumeStage(ctx context.Context, run kafkaExecFunc, broker, topic string, authFlags []string, timeoutMs int) KafkaProduceConsumeResult {
 	marker := "k8s-hpa-manager-test-" + uuid.New().String()
 	timeoutSec := (timeoutMs + 999) / 1000
 	if timeoutSec < 1 {
@@ -599,7 +622,7 @@ func runKafkaProduceConsumeStage(ctx context.Context, clientset kubernetes.Inter
 
 	produceCmd := buildKcatCommand(broker, authFlags, "-P", "-t", topic)
 	produceScript := wrapKafkaScript(fmt.Sprintf("printf '%%s' %s | timeout %ds %s 2>&1", quoteShellArg(marker), timeoutSec, produceCmd))
-	produceRaw, execErr := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", produceScript})
+	produceRaw, execErr := run(ctx, produceScript)
 	if execErr != nil {
 		return KafkaProduceConsumeResult{Status: "produce_failed", Message: "Falha ao executar o produce no pod", RawOutput: extractStderr(execErr)}
 	}
@@ -610,7 +633,7 @@ func runKafkaProduceConsumeStage(ctx context.Context, clientset kubernetes.Inter
 
 	consumeCmd := buildKcatCommand(broker, authFlags, "-C", "-t", topic, "-o", "beginning", "-c", fmt.Sprintf("%d", kafkaTestConsumeMaxMessages), "-e")
 	consumeScript := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, consumeCmd))
-	consumeRaw, execErr := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", consumeScript})
+	consumeRaw, execErr := run(ctx, consumeScript)
 	roundTrip := time.Since(start).Milliseconds()
 	if execErr != nil {
 		return KafkaProduceConsumeResult{Status: "produce_failed", Message: "Mensagem produzida, mas falha ao executar o consume no pod", RawOutput: produceOut + "\n---\n" + extractStderr(execErr)}
@@ -646,9 +669,7 @@ type kcatJSONMessage struct {
 // runKafkaViewTopicStage lê (só leitura, nada é escrito) as últimas `maxMessages` mensagens já
 // existentes no tópico via offset negativo do kcat (-o -N lê as N mensagens antes do fim de cada
 // partição) — não precisa de ConfirmProduce porque não muta nada no broker.
-func runKafkaViewTopicStage(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
-	namespace, podName, containerName, broker, topic string, maxMessages int, authFlags []string, timeoutMs int) KafkaTopicViewResult {
-
+func runKafkaViewTopicStage(ctx context.Context, run kafkaExecFunc, broker, topic string, maxMessages int, authFlags []string, timeoutMs int) KafkaTopicViewResult {
 	if maxMessages <= 0 {
 		maxMessages = kafkaTestViewDefaultMessages
 	}
@@ -664,7 +685,7 @@ func runKafkaViewTopicStage(ctx context.Context, clientset kubernetes.Interface,
 	cmd := buildKcatCommand(broker, authFlags, "-C", "-t", topic, "-o", fmt.Sprintf("-%d", maxMessages), "-c", fmt.Sprintf("%d", maxMessages), "-e", "-J")
 	script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
 
-	output, execErr := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
+	output, execErr := run(ctx, script)
 	if execErr != nil {
 		return KafkaTopicViewResult{Status: "failed", Message: "Falha ao executar a leitura no pod", RawOutput: extractStderr(execErr)}
 	}
@@ -728,6 +749,43 @@ func buildKafkaOffsetQueryArgs(topic string, partitionCount int, timestamp int) 
 	return args
 }
 
+// kafkaTopicPartitions é um par tópico+contagem de partições, na ORDEM em que deve aparecer no
+// comando `-Q` batelado (ver buildKafkaOffsetQueryArgsMulti) — slice em vez de map pra manter
+// determinismo (útil pra depurar a saída bruta e pra testes).
+type kafkaTopicPartitions struct {
+	Topic      string
+	Partitions int
+}
+
+// buildKafkaOffsetQueryArgsMulti é a versão em lote de buildKafkaOffsetQueryArgs: monta um único
+// `-Q` cobrindo TODAS as partições de TODOS os tópicos informados, com o MESMO timestamp especial
+// (-1 ou -2) — usado pela visão geral de tópicos (TopicsOverview) pra evitar 2 execs por tópico
+// (o que ficaria caro com muitos tópicos). Continua respeitando a mesma regra de nunca misturar
+// timestamps -1/-2 na mesma chamada (ver comentário de runKafkaOffsetCountStage sobre o bug de
+// dedup do kcat 1.7.1) — aqui só varia o tópico/partição, o timestamp é fixo pra chamada inteira.
+func buildKafkaOffsetQueryArgsMulti(topics []kafkaTopicPartitions, timestamp int) []string {
+	args := []string{"-Q"}
+	for _, t := range topics {
+		for p := 0; p < t.Partitions; p++ {
+			args = append(args, "-t", fmt.Sprintf("%s:%d:%d", t.Topic, p, timestamp))
+		}
+	}
+	return args
+}
+
+// parseKafkaOffsetLinesWithTopic é a versão multi-tópico de parseKafkaOffsetLines — chave
+// "topico\x00partição" evita colisão entre partições de mesmo número em tópicos diferentes (ex:
+// partição 0 existe em praticamente todo tópico).
+func parseKafkaOffsetLinesWithTopic(raw string) map[string]int64 {
+	result := make(map[string]int64)
+	for _, m := range kafkaOffsetLineWithTopicRegex.FindAllStringSubmatch(raw, -1) {
+		p, _ := strconv.Atoi(m[2])
+		offset, _ := strconv.ParseInt(m[3], 10, 64)
+		result[fmt.Sprintf("%s\x00%d", m[1], p)] = offset
+	}
+	return result
+}
+
 // parseKafkaOffsetLines extrai partição→offset da saída do modo `-Q` do kcat.
 func parseKafkaOffsetLines(raw string) map[int32]int64 {
 	result := make(map[int32]int64)
@@ -751,9 +809,7 @@ func parseKafkaOffsetLines(raw string) map[int32]int64 {
 // broker real que o kcat 1.7.1 devolve o MESMO valor pras duas consultas quando -1 e -2 da MESMA
 // partição aparecem juntos numa única invocação `-Q` (limitação/bug não documentado da própria
 // ferramenta, provável dedup interno por partição na hora de montar o batch de queries).
-func runKafkaOffsetCountStage(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
-	namespace, podName, containerName, broker, topic string, authFlags []string, timeoutMs int) KafkaOffsetCountResult {
-
+func runKafkaOffsetCountStage(ctx context.Context, run kafkaExecFunc, broker, topic string, authFlags []string, timeoutMs int) KafkaOffsetCountResult {
 	timeoutSec := (timeoutMs + 999) / 1000
 	if timeoutSec < 1 {
 		timeoutSec = 1
@@ -762,7 +818,7 @@ func runKafkaOffsetCountStage(ctx context.Context, clientset kubernetes.Interfac
 	runStep := func(extraArgs ...string) (raw string, exitCode int, execErr error) {
 		cmd := buildKcatCommand(broker, authFlags, extraArgs...)
 		script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
-		output, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script})
+		output, err := run(ctx, script)
 		if err != nil {
 			return extractStderr(err), -1, err
 		}
@@ -836,6 +892,7 @@ type KafkaTestHandler struct {
 
 // NewKafkaTestHandler cria o handler do teste de Kafka.
 func NewKafkaTestHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker) *KafkaTestHandler {
+	go startKafkaTestContainerReaper()
 	return &KafkaTestHandler{kubeManager: km, tracker: tracker, historyTracker: ht}
 }
 
@@ -848,12 +905,25 @@ func (h *KafkaTestHandler) Run(c *gin.Context) {
 		return
 	}
 
+	req.ExecutionMode = strings.ToLower(strings.TrimSpace(req.ExecutionMode))
+	if req.ExecutionMode == "" {
+		req.ExecutionMode = "pod"
+	}
+	if req.ExecutionMode != "pod" && req.ExecutionMode != "local" {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_EXECUTION_MODE", "execution_mode deve ser pod ou local"))
+		return
+	}
+
 	req.Cluster = strings.TrimSpace(req.Cluster)
 	req.Namespace = strings.TrimSpace(req.Namespace)
 	req.Deployment = strings.TrimSpace(req.Deployment)
 	req.Broker = strings.TrimSpace(req.Broker)
-	if req.Cluster == "" || req.Namespace == "" || req.Deployment == "" || req.Broker == "" {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace, deployment e broker são obrigatórios"))
+	if req.Broker == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "broker é obrigatório"))
+		return
+	}
+	if req.ExecutionMode == "pod" && (req.Cluster == "" || req.Namespace == "" || req.Deployment == "") {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace e deployment são obrigatórios quando execution_mode é pod"))
 		return
 	}
 
@@ -868,6 +938,14 @@ func (h *KafkaTestHandler) Run(c *gin.Context) {
 			req.SASL.SecretRef.Name = strings.TrimSpace(req.SASL.SecretRef.Name)
 			if req.SASL.SecretRef.Namespace == "" || req.SASL.SecretRef.Name == "" {
 				c.JSON(http.StatusBadRequest, errorResponse("MISSING_SECRET_REF", "secret_ref precisa de namespace e name"))
+				return
+			}
+			// No modo "local" cluster/namespace/deployment não são necessários pro teste em si
+			// (roda direto no host do servidor), MAS ler o Secret da credencial SASL ainda precisa
+			// de um cluster pra falar com a API do K8s — mesmo raciocínio de usesK8sRef em
+			// db_test_tool.go.
+			if req.ExecutionMode == "local" && req.Cluster == "" {
+				c.JSON(http.StatusBadRequest, errorResponse("MISSING_CLUSTER", "cluster é obrigatório quando sasl.secret_ref é usado, mesmo em execution_mode local"))
 				return
 			}
 		}
@@ -988,12 +1066,14 @@ func (h *KafkaTestHandler) Cancel(c *gin.Context) {
 // ListTopicsRequest é o body do POST /kafka-test/topics — usado pelo campo de busca de tópicos no
 // frontend, pra listar os tópicos existentes no broker sem precisar rodar o teste completo.
 type ListTopicsRequest struct {
-	Cluster    string           `json:"cluster"`
-	Namespace  string           `json:"namespace"`
-	Deployment string           `json:"deployment"`
-	Broker     string           `json:"broker"`
-	SASL       *KafkaSASLConfig `json:"sasl,omitempty"`
-	TimeoutMs  int              `json:"timeout_ms"`
+	// ExecutionMode — mesmo campo de RunKafkaTestRequest.ExecutionMode (pod|local, default pod).
+	ExecutionMode string           `json:"execution_mode"`
+	Cluster       string           `json:"cluster"`
+	Namespace     string           `json:"namespace"`
+	Deployment    string           `json:"deployment"`
+	Broker        string           `json:"broker"`
+	SASL          *KafkaSASLConfig `json:"sasl,omitempty"`
+	TimeoutMs     int              `json:"timeout_ms"`
 }
 
 // ListTopicsResponse é o resultado da listagem de tópicos.
@@ -1016,12 +1096,25 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 		return
 	}
 
+	req.ExecutionMode = strings.ToLower(strings.TrimSpace(req.ExecutionMode))
+	if req.ExecutionMode == "" {
+		req.ExecutionMode = "pod"
+	}
+	if req.ExecutionMode != "pod" && req.ExecutionMode != "local" {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_EXECUTION_MODE", "execution_mode deve ser pod ou local"))
+		return
+	}
+
 	req.Cluster = strings.TrimSpace(req.Cluster)
 	req.Namespace = strings.TrimSpace(req.Namespace)
 	req.Deployment = strings.TrimSpace(req.Deployment)
 	req.Broker = strings.TrimSpace(req.Broker)
-	if req.Cluster == "" || req.Namespace == "" || req.Deployment == "" || req.Broker == "" {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace, deployment e broker são obrigatórios"))
+	if req.Broker == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "broker é obrigatório"))
+		return
+	}
+	if req.ExecutionMode == "pod" && (req.Cluster == "" || req.Namespace == "" || req.Deployment == "") {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace e deployment são obrigatórios quando execution_mode é pod"))
 		return
 	}
 	if req.SASL != nil {
@@ -1042,15 +1135,14 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 		kafkaTestEphemeralReadyTimeout+time.Duration(req.TimeoutMs)*time.Millisecond+5*time.Second)
 	defer cancel()
 
-	clientset, err := h.kubeManager.GetClient(req.Cluster)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
-		return
-	}
-	restConfig, err := h.kubeManager.GetRestConfig(req.Cluster)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
-		return
+	var clientset kubernetes.Interface
+	if req.Cluster != "" {
+		var err error
+		clientset, err = h.kubeManager.GetClient(req.Cluster)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
+			return
+		}
 	}
 
 	var authFlags []string
@@ -1063,19 +1155,37 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 		authFlags = buildKcatAuthFlags(req.SASL, username, password)
 	}
 
-	podName, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, errorResponse("POD_NOT_FOUND", err.Error()))
-		return
-	}
-	containerName, err := getOrCreateKafkaEphemeralContainer(ctx, clientset, req.Namespace, podName, targetContainer)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, errorResponse("EPHEMERAL_CONTAINER_ERROR", err.Error()))
-		return
-	}
-	if err := waitKafkaEphemeralContainerRunning(ctx, clientset, req.Namespace, podName, containerName, kafkaTestEphemeralReadyTimeout); err != nil {
-		c.JSON(http.StatusBadGateway, errorResponse("EPHEMERAL_CONTAINER_ERROR", err.Error()))
-		return
+	var run kafkaExecFunc
+	if req.ExecutionMode == "local" {
+		image := kafkaTestPodImage
+		localContainerName := "k8s-hpa-kafkatest-" + uuid.New().String()
+		run = func(ctx context.Context, script string) (string, error) {
+			return execLocalDocker(ctx, image, localContainerName, kafkaTestDockerLabel, script)
+		}
+	} else {
+		restConfig, err := h.kubeManager.GetRestConfig(req.Cluster)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
+			return
+		}
+		podName, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("POD_NOT_FOUND", err.Error()))
+			return
+		}
+		containerName, err := getOrCreateKafkaEphemeralContainer(ctx, clientset, req.Namespace, podName, targetContainer)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("EPHEMERAL_CONTAINER_ERROR", err.Error()))
+			return
+		}
+		if err := waitKafkaEphemeralContainerRunning(ctx, clientset, req.Namespace, podName, containerName, kafkaTestEphemeralReadyTimeout); err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("EPHEMERAL_CONTAINER_ERROR", err.Error()))
+			return
+		}
+		ns, pod, container := req.Namespace, podName, containerName
+		run = func(ctx context.Context, script string) (string, error) {
+			return execCmdInPod(ctx, clientset, restConfig, ns, pod, container, []string{"sh", "-c", script})
+		}
 	}
 
 	timeoutSec := (req.TimeoutMs + 999) / 1000
@@ -1084,7 +1194,7 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 	}
 	cmd := buildKcatCommand(req.Broker, authFlags, "-L")
 	script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
-	output, execErr := execCmdInPod(ctx, clientset, restConfig, req.Namespace, podName, containerName, []string{"sh", "-c", script})
+	output, execErr := run(ctx, script)
 	if execErr != nil {
 		c.JSON(http.StatusBadGateway, errorResponse("EXEC_ERROR", extractStderr(execErr)))
 		return
@@ -1102,6 +1212,257 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 	sort.Strings(topics)
 
 	c.JSON(http.StatusOK, ListTopicsResponse{Topics: topics})
+}
+
+// KafkaTopicOverviewEntry é uma linha da visão geral de tópicos — mesmo espírito do "All Stats" do
+// MongoDB Compass usado no Teste de Banco de Dados, mas sem coluna de tamanho em disco: o kcat não
+// expõe isso (exigiria os scripts nativos do Kafka — kafka-log-dirs.sh — ou JMX, fora de escopo).
+// Só Partições (metadata, grátis) e ~Mensagens (latest-earliest por partição, somado).
+type KafkaTopicOverviewEntry struct {
+	Topic      string `json:"topic"`
+	Partitions int    `json:"partitions"`
+	// MessageCount é -1 (nunca omitido, ver json tag) quando o tópico ficou de fora da consulta de
+	// offsets por causa do kafkaTopicsOverviewCap — o frontend distingue de um tópico realmente
+	// vazio (0), que é um valor válido.
+	MessageCount int64 `json:"message_count"`
+	// DiskBytes é -1 quando não calculado — só é preenchido no modo "local" (via kafka-log-dirs
+	// numa imagem completa do Kafka, ver kafka_test_logdirs.go); no modo "pod" fica sempre -1
+	// (o kcat não expõe tamanho em disco). Mesma convenção de sentinel do MessageCount.
+	DiskBytes int64 `json:"disk_bytes"`
+}
+
+// TopicsOverviewResponse é o resultado da visão geral de tópicos.
+type TopicsOverviewResponse struct {
+	Topics []KafkaTopicOverviewEntry `json:"topics"`
+	// Truncated é true quando havia mais tópicos que kafkaTopicsOverviewCap — só os primeiros (em
+	// ordem alfabética) entram na consulta de offsets em lote; os demais aparecem sem contagem.
+	Truncated bool `json:"truncated,omitempty"`
+	// DiskUsageWarning é preenchido só no modo "local" quando a chamada best-effort ao
+	// kafka-log-dirs falha (ver fetchKafkaTopicDiskUsage) — a Visão geral continua útil sem a
+	// coluna de disco, então isso não vira um erro fatal da requisição inteira.
+	DiskUsageWarning string `json:"disk_usage_warning,omitempty"`
+	RawOutput        string `json:"raw_output,omitempty"`
+}
+
+// TopicsOverview lista todos os tópicos do broker com Partições + ~Mensagens (soma de latest-
+// earliest por partição) — visão equivalente ao "All Stats" do MongoDB Compass, adaptada ao que o
+// kcat consegue expor. Mesmo setup de pod/ephemeral container de ListTopics; 3 execs no total: (1)
+// `-L` pra descobrir tópicos+partições, (2) `-Q` em lote pra TODOS os tópicos com timestamp -1
+// (fim), (3) idem com timestamp -2 (início) — nunca -1 e -2 juntos na mesma chamada (bug de dedup
+// do kcat 1.7.1, ver runKafkaOffsetCountStage). Síncrono (sem SSE), mesmo raciocínio de custo de
+// ListTopics: rápido mesmo contando o tempo de subir o ephemeral container.
+// POST /api/v1/kafka-test/topics/overview
+func (h *KafkaTestHandler) TopicsOverview(c *gin.Context) {
+	var req ListTopicsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+
+	req.ExecutionMode = strings.ToLower(strings.TrimSpace(req.ExecutionMode))
+	if req.ExecutionMode == "" {
+		req.ExecutionMode = "pod"
+	}
+	if req.ExecutionMode != "pod" && req.ExecutionMode != "local" {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_EXECUTION_MODE", "execution_mode deve ser pod ou local"))
+		return
+	}
+
+	req.Cluster = strings.TrimSpace(req.Cluster)
+	req.Namespace = strings.TrimSpace(req.Namespace)
+	req.Deployment = strings.TrimSpace(req.Deployment)
+	req.Broker = strings.TrimSpace(req.Broker)
+	if req.Broker == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "broker é obrigatório"))
+		return
+	}
+	if req.ExecutionMode == "pod" && (req.Cluster == "" || req.Namespace == "" || req.Deployment == "") {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace e deployment são obrigatórios quando execution_mode é pod"))
+		return
+	}
+	if req.SASL != nil {
+		req.SASL.Mechanism = strings.ToUpper(strings.TrimSpace(req.SASL.Mechanism))
+		if req.SASL.Mechanism != "" && !kafkaValidSASLMechanisms[req.SASL.Mechanism] {
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_MECHANISM", "mechanism deve ser PLAIN, SCRAM-SHA-256 ou SCRAM-SHA-512"))
+			return
+		}
+	}
+	if req.TimeoutMs <= 0 {
+		req.TimeoutMs = kafkaTestDefaultTimeoutMs
+	}
+	if req.TimeoutMs > kafkaTestMaxTimeoutMs {
+		req.TimeoutMs = kafkaTestMaxTimeoutMs
+	}
+
+	// Até 3 execs no pior caso (metadata + 2 consultas de offset) — timeout total cobre todos.
+	ctx, cancel := context.WithTimeout(c.Request.Context(),
+		kafkaTestEphemeralReadyTimeout+3*time.Duration(req.TimeoutMs)*time.Millisecond+5*time.Second)
+	defer cancel()
+
+	var clientset kubernetes.Interface
+	if req.Cluster != "" {
+		var err error
+		clientset, err = h.kubeManager.GetClient(req.Cluster)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
+			return
+		}
+	}
+
+	var authFlags []string
+	var saslUsername, saslPassword string
+	if req.SASL != nil {
+		var credErr error
+		saslUsername, saslPassword, credErr = resolveKafkaCredentials(ctx, clientset, req.SASL)
+		if credErr != nil {
+			c.JSON(http.StatusBadRequest, errorResponse("CREDENTIALS_ERROR", credErr.Error()))
+			return
+		}
+		authFlags = buildKcatAuthFlags(req.SASL, saslUsername, saslPassword)
+	}
+
+	var run kafkaExecFunc
+	if req.ExecutionMode == "local" {
+		image := kafkaTestPodImage
+		localContainerName := "k8s-hpa-kafkatest-" + uuid.New().String()
+		run = func(ctx context.Context, script string) (string, error) {
+			return execLocalDocker(ctx, image, localContainerName, kafkaTestDockerLabel, script)
+		}
+	} else {
+		restConfig, err := h.kubeManager.GetRestConfig(req.Cluster)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
+			return
+		}
+		podName, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("POD_NOT_FOUND", err.Error()))
+			return
+		}
+		containerName, err := getOrCreateKafkaEphemeralContainer(ctx, clientset, req.Namespace, podName, targetContainer)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("EPHEMERAL_CONTAINER_ERROR", err.Error()))
+			return
+		}
+		if err := waitKafkaEphemeralContainerRunning(ctx, clientset, req.Namespace, podName, containerName, kafkaTestEphemeralReadyTimeout); err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("EPHEMERAL_CONTAINER_ERROR", err.Error()))
+			return
+		}
+		ns, pod, container := req.Namespace, podName, containerName
+		run = func(ctx context.Context, script string) (string, error) {
+			return execCmdInPod(ctx, clientset, restConfig, ns, pod, container, []string{"sh", "-c", script})
+		}
+	}
+
+	timeoutSec := (req.TimeoutMs + 999) / 1000
+	if timeoutSec < 1 {
+		timeoutSec = 1
+	}
+
+	runStep := func(extraArgs ...string) (raw string, exitCode int, execErr error) {
+		cmd := buildKcatCommand(req.Broker, authFlags, extraArgs...)
+		script := wrapKafkaScript(fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd))
+		output, err := run(ctx, script)
+		if err != nil {
+			return extractStderr(err), -1, err
+		}
+		text, code, ok := splitKafkaExitMarker(output)
+		if !ok {
+			return text, -1, nil
+		}
+		return text, code, nil
+	}
+
+	metaRaw, metaExit, execErr := runStep("-L")
+	if execErr != nil || metaExit != 0 {
+		c.JSON(http.StatusBadGateway, errorResponse("EXEC_ERROR", "Falha ao consultar metadados do broker: "+metaRaw))
+		return
+	}
+
+	var allTopics []kafkaTopicPartitions
+	for _, m := range kafkaTopicNameRegex.FindAllStringSubmatch(metaRaw, -1) {
+		partitions, _ := strconv.Atoi(m[2])
+		if partitions == 0 {
+			continue
+		}
+		allTopics = append(allTopics, kafkaTopicPartitions{Topic: m[1], Partitions: partitions})
+	}
+	sort.Slice(allTopics, func(i, j int) bool { return allTopics[i].Topic < allTopics[j].Topic })
+
+	if len(allTopics) == 0 {
+		c.JSON(http.StatusOK, TopicsOverviewResponse{Topics: []KafkaTopicOverviewEntry{}, RawOutput: metaRaw})
+		return
+	}
+
+	truncated := false
+	queryTopics := allTopics
+	if len(queryTopics) > kafkaTopicsOverviewCap {
+		queryTopics = queryTopics[:kafkaTopicsOverviewCap]
+		truncated = true
+	}
+
+	latestRaw, latestExit, execErr := runStep(buildKafkaOffsetQueryArgsMulti(queryTopics, -1)...)
+	if execErr != nil || latestExit != 0 {
+		c.JSON(http.StatusBadGateway, errorResponse("EXEC_ERROR", "Falha ao consultar os offsets mais recentes: "+latestRaw))
+		return
+	}
+	earliestRaw, earliestExit, execErr := runStep(buildKafkaOffsetQueryArgsMulti(queryTopics, -2)...)
+	if execErr != nil || earliestExit != 0 {
+		c.JSON(http.StatusBadGateway, errorResponse("EXEC_ERROR", "Falha ao consultar os offsets mais antigos: "+earliestRaw))
+		return
+	}
+
+	latestMap := parseKafkaOffsetLinesWithTopic(latestRaw)
+	earliestMap := parseKafkaOffsetLinesWithTopic(earliestRaw)
+
+	entries := make([]KafkaTopicOverviewEntry, 0, len(allTopics))
+	queried := make(map[string]bool, len(queryTopics))
+	for _, t := range queryTopics {
+		queried[t.Topic] = true
+		var total int64
+		for p := 0; p < t.Partitions; p++ {
+			key := fmt.Sprintf("%s\x00%d", t.Topic, p)
+			total += latestMap[key] - earliestMap[key]
+		}
+		entries = append(entries, KafkaTopicOverviewEntry{Topic: t.Topic, Partitions: t.Partitions, MessageCount: total, DiskBytes: -1})
+	}
+	for _, t := range allTopics {
+		if queried[t.Topic] {
+			continue
+		}
+		entries = append(entries, KafkaTopicOverviewEntry{Topic: t.Topic, Partitions: t.Partitions, MessageCount: -1, DiskBytes: -1})
+	}
+
+	rawOutput := metaRaw + "\n---\n" + latestRaw + "\n---\n" + earliestRaw
+
+	// Tamanho real em disco (kafka-log-dirs) — só no modo "local" (ver kafka_test_logdirs.go pro
+	// porquê da imagem completa não ser usada no modo "pod"). Best-effort: se falhar, a coluna
+	// fica vazia (DiskBytes=-1) em vez de derrubar a Visão geral inteira, que já tem dado útil sem
+	// isso (Partições + ~Mensagens).
+	var diskUsageWarning string
+	if req.ExecutionMode == "local" {
+		topicNames := make([]string, len(queryTopics))
+		for i, t := range queryTopics {
+			topicNames[i] = t.Topic
+		}
+		diskByTopic, diskErr := fetchKafkaTopicDiskUsage(ctx, req.Broker, req.SASL, saslUsername, saslPassword, topicNames)
+		if diskErr != nil {
+			diskUsageWarning = "Tamanho em disco indisponível: " + diskErr.Error()
+		} else {
+			for i := range entries {
+				if size, ok := diskByTopic[entries[i].Topic]; ok {
+					entries[i].DiskBytes = size
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, TopicsOverviewResponse{
+		Topics:           entries,
+		Truncated:        truncated,
+		DiskUsageWarning: diskUsageWarning,
+		RawOutput:        rawOutput,
+	})
 }
 
 // runTest executa o fluxo completo (criar pod → aguardar ready → conectividade →
@@ -1128,20 +1489,22 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 
 	send("init", "started", "Iniciando teste de Kafka...", 0.05)
 
-	clientset, err := h.kubeManager.GetClient(req.Cluster)
-	if err != nil {
-		fail("falha ao conectar no cluster", err)
-		return
-	}
-	restConfig, err := h.kubeManager.GetRestConfig(req.Cluster)
-	if err != nil {
-		fail("falha ao obter configuração do cluster", err)
-		return
+	// clientset só é resolvido quando necessário — modo "local" sem SASL via Secret não precisa
+	// tocar o cluster K8s em nenhum momento (mesmo raciocínio de db_test_tool.go runTest).
+	var clientset kubernetes.Interface
+	if req.Cluster != "" {
+		var err error
+		clientset, err = h.kubeManager.GetClient(req.Cluster)
+		if err != nil {
+			fail("falha ao conectar no cluster", err)
+			return
+		}
 	}
 
 	var username, password string
 	authFlags := []string(nil)
 	if req.SASL != nil {
+		var err error
 		username, password, err = resolveKafkaCredentials(ctx, clientset, req.SASL)
 		if err != nil {
 			fail("falha ao resolver credenciais", err)
@@ -1150,26 +1513,50 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 		authFlags = buildKcatAuthFlags(req.SASL, username, password)
 	}
 
-	send("resolve_deployment", "in_progress", fmt.Sprintf("Localizando pod Running do deployment %q...", req.Deployment), 0.15)
-	podName, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
-	if err != nil {
-		fail("falha ao localizar pod do deployment", err)
-		return
-	}
+	var run kafkaExecFunc
+	var podName, containerName string
 
-	send("ephemeral_container", "in_progress", fmt.Sprintf("Anexando container de teste no pod %s...", podName), 0.3)
-	containerName, err := getOrCreateKafkaEphemeralContainer(ctx, clientset, req.Namespace, podName, targetContainer)
-	if err != nil {
-		fail("falha ao anexar ephemeral container", err)
-		return
-	}
-	if err := waitKafkaEphemeralContainerRunning(ctx, clientset, req.Namespace, podName, containerName, kafkaTestEphemeralReadyTimeout); err != nil {
-		fail("ephemeral container não ficou pronto", err)
-		return
+	if req.ExecutionMode == "local" {
+		send("local_exec", "in_progress", fmt.Sprintf("Executando localmente via Docker (%s)...", kafkaTestPodImage), 0.3)
+		image := kafkaTestPodImage
+		localContainerName := "k8s-hpa-kafkatest-" + sessionID
+		run = func(ctx context.Context, script string) (string, error) {
+			return execLocalDocker(ctx, image, localContainerName, kafkaTestDockerLabel, script)
+		}
+	} else {
+		restConfig, err := h.kubeManager.GetRestConfig(req.Cluster)
+		if err != nil {
+			fail("falha ao obter configuração do cluster", err)
+			return
+		}
+
+		send("resolve_deployment", "in_progress", fmt.Sprintf("Localizando pod Running do deployment %q...", req.Deployment), 0.15)
+		resolvedPod, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+		if err != nil {
+			fail("falha ao localizar pod do deployment", err)
+			return
+		}
+		podName = resolvedPod
+
+		send("ephemeral_container", "in_progress", fmt.Sprintf("Anexando container de teste no pod %s...", podName), 0.3)
+		containerName, err = getOrCreateKafkaEphemeralContainer(ctx, clientset, req.Namespace, podName, targetContainer)
+		if err != nil {
+			fail("falha ao anexar ephemeral container", err)
+			return
+		}
+		if err := waitKafkaEphemeralContainerRunning(ctx, clientset, req.Namespace, podName, containerName, kafkaTestEphemeralReadyTimeout); err != nil {
+			fail("ephemeral container não ficou pronto", err)
+			return
+		}
+
+		ns, pod, container := req.Namespace, podName, containerName
+		run = func(ctx context.Context, script string) (string, error) {
+			return execCmdInPod(ctx, clientset, restConfig, ns, pod, container, []string{"sh", "-c", script})
+		}
 	}
 
 	send("connectivity", "in_progress", "Testando conectividade e protocolo Kafka...", 0.5)
-	connectivity := runKafkaConnectivityStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, authFlags, req.SASL != nil, req.TimeoutMs)
+	connectivity := runKafkaConnectivityStage(ctx, run, req.Broker, authFlags, req.SASL != nil, req.TimeoutMs)
 
 	result := KafkaTestResult{
 		TargetPod:          podName,
@@ -1185,7 +1572,7 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 			result.ProduceConsume = KafkaProduceConsumeResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar produzir"}
 		} else {
 			send("produce_consume", "in_progress", fmt.Sprintf("Produzindo e consumindo mensagem de teste no tópico %q...", req.Topic), 0.65)
-			result.ProduceConsume = runKafkaProduceConsumeStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, req.Topic, authFlags, req.TimeoutMs)
+			result.ProduceConsume = runKafkaProduceConsumeStage(ctx, run, req.Broker, req.Topic, authFlags, req.TimeoutMs)
 		}
 	}
 
@@ -1194,7 +1581,7 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 			result.OffsetCount = KafkaOffsetCountResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar contar offsets"}
 		} else {
 			send("count_offsets", "in_progress", fmt.Sprintf("Contando offsets do tópico %q...", req.Topic), 0.78)
-			result.OffsetCount = runKafkaOffsetCountStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, req.Topic, authFlags, req.TimeoutMs)
+			result.OffsetCount = runKafkaOffsetCountStage(ctx, run, req.Broker, req.Topic, authFlags, req.TimeoutMs)
 		}
 	}
 
@@ -1203,7 +1590,7 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 			result.ViewTopic = KafkaTopicViewResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar ler o tópico"}
 		} else {
 			send("view_topic", "in_progress", fmt.Sprintf("Lendo mensagens existentes do tópico %q...", req.Topic), 0.9)
-			result.ViewTopic = runKafkaViewTopicStage(ctx, clientset, restConfig, req.Namespace, podName, containerName, req.Broker, req.Topic, req.ViewMaxMessages, authFlags, req.TimeoutMs)
+			result.ViewTopic = runKafkaViewTopicStage(ctx, run, req.Broker, req.Topic, req.ViewMaxMessages, authFlags, req.TimeoutMs)
 		}
 	}
 

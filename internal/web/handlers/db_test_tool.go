@@ -1000,15 +1000,17 @@ type dbExecFunc func(ctx context.Context, script string) (string, error)
 // Mesmo formato de erro de execCmdInPod ("... (stderr: ...)") pra reusar extractStderr sem
 // duplicar a classificação de erro entre os dois modos de execução.
 //
-// `name` identifica o container (--name + --label dbTestDockerLabel) pra dar pra limpar depois —
-// tanto na hora (se `ctx` for cancelado no meio do `docker run`) quanto pelo reaper periódico
-// (ver db_test_docker.go). `--rm` já cobre o caso comum (processo termina sozinho, com ou sem o
-// `timeout Ns` interno do script estourar); o gap é só quando o processo `docker` (CLI) é morto
-// via SIGKILL pelo cancelamento do context — sinal que ele não consegue interceptar pra fazer sua
-// própria limpeza, podendo deixar o container órfão rodando no daemon.
-func execLocalDocker(ctx context.Context, image, name, script string) (string, error) {
+// `name` identifica o container (--name) e `label` marca de qual ferramenta ele é (--label,
+// dbTestDockerLabel ou kafkaTestDockerLabel) pra dar pra limpar depois — tanto na hora (se `ctx`
+// for cancelado no meio do `docker run`) quanto pelo reaper periódico (ver db_test_docker.go /
+// kafka_test_docker.go, mesmo reapOrphanedContainersByLabel compartilhado). `--rm` já cobre o
+// caso comum (processo termina sozinho, com ou sem o `timeout Ns` interno do script estourar); o
+// gap é só quando o processo `docker` (CLI) é morto via SIGKILL pelo cancelamento do context —
+// sinal que ele não consegue interceptar pra fazer sua própria limpeza, podendo deixar o
+// container órfão rodando no daemon.
+func execLocalDocker(ctx context.Context, image, name, label, script string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
-		"--name", name, "--label", dbTestDockerLabel,
+		"--name", name, "--label", label,
 		"--network", "host", image, "sh", "-c", script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1396,7 +1398,7 @@ func (h *DBTestHandler) runTest(ctx context.Context, sessionID string, req RunDB
 		image := engine.image
 		containerName := "k8s-hpa-dbtest-" + sessionID
 		run = func(ctx context.Context, script string) (string, error) {
-			return execLocalDocker(ctx, image, containerName, script)
+			return execLocalDocker(ctx, image, containerName, dbTestDockerLabel, script)
 		}
 	} else {
 		restConfig, err := h.kubeManager.GetRestConfig(req.Cluster)

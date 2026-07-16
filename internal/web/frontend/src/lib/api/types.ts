@@ -1734,11 +1734,16 @@ export interface KafkaSASLConfig {
 }
 
 export interface RunKafkaTestRequest {
+  // execution_mode decide onde o teste roda: "pod" (default) — ephemeral container anexado a um
+  // pod real do deployment, reflete NetworkPolicy/Istio — ou "local" — subprocesso Docker direto
+  // no host do servidor, sem tocar o cluster K8s. Mesmo campo/semântica de RunDBTestRequest.
+  execution_mode?: DBExecutionMode;
   cluster: string;
   namespace: string;
   // deployment identifica de qual workload o teste deve partir — o backend resolve um pod Running
   // desse Deployment e anexa um ephemeral container nele, pra refletir a identidade de rede real
   // (NetworkPolicy/Istio avaliam por label/service account do pod, não por namespace inteiro).
+  // Só usado/obrigatório quando execution_mode="pod".
   deployment: string;
   broker: string; // "host:porta" — tipicamente um broker EXTERNO ao cluster (Kafka gerenciado, Event Hub, etc.)
   sasl?: KafkaSASLConfig; // omitido = sem autenticação (PLAINTEXT)
@@ -1852,6 +1857,8 @@ export interface KafkaTestSSEEvent {
 // ─── Busca de tópicos (campo de busca na aba Teste Kafka) ─────────────────────
 
 export interface ListKafkaTopicsRequest {
+  // execution_mode — mesmo campo de RunKafkaTestRequest.execution_mode (pod|local, default pod).
+  execution_mode?: DBExecutionMode;
   cluster: string;
   namespace: string;
   deployment: string;
@@ -1862,6 +1869,29 @@ export interface ListKafkaTopicsRequest {
 
 export interface ListKafkaTopicsResponse {
   topics: string[];
+  raw_output?: string;
+}
+
+// ─── Visão geral de tópicos (estilo "All Stats" do MongoDB Compass) ───────────
+
+export interface KafkaTopicOverviewEntry {
+  topic: string;
+  partitions: number;
+  // message_count é -1 quando o tópico ficou de fora da consulta em lote (teto de segurança do
+  // backend) — diferente de 0, que é uma contagem real (tópico vazio).
+  message_count: number;
+  // disk_bytes é -1 quando não calculado — só é preenchido no modo "local" (via kafka-log-dirs
+  // numa imagem completa do Kafka). No modo "pod" fica sempre -1 (kcat não expõe tamanho em disco).
+  disk_bytes: number;
+}
+
+export interface TopicsOverviewResponse {
+  topics: KafkaTopicOverviewEntry[];
+  truncated?: boolean;
+  // disk_usage_warning é preenchido só no modo "local" quando a chamada best-effort ao
+  // kafka-log-dirs falha — a visão geral continua útil sem a coluna de disco (Partições +
+  // ~Mensagens já vêm do kcat, sempre disponíveis).
+  disk_usage_warning?: string;
   raw_output?: string;
 }
 
