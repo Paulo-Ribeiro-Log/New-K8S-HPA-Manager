@@ -940,9 +940,11 @@ func (s *Server) setupRoutes() {
 		kafkaTestHandler.Stream)
 	kafkaTest := api.Group("/kafka-test")
 	{
+		kafkaTest.GET("/docker-status", kafkaTestHandler.DockerStatus)
 		kafkaTest.POST("/run", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Run)
 		kafkaTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Cancel)
 		kafkaTest.POST("/topics", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.ListTopics)
+		kafkaTest.POST("/topics/overview", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.TopicsOverview)
 	}
 
 	// Teste de Banco de Dados sob demanda — ephemeral container (psql/mysql/mongosh/redis-cli

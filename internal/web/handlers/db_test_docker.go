@@ -202,14 +202,20 @@ func startDBTestContainerReaper() {
 	ticker := time.NewTicker(dbTestContainerReapInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		reapOrphanedDBTestContainers()
+		reapOrphanedContainersByLabel(dbTestDockerLabel, "DBTest")
 	}
 }
 
-// reapOrphanedDBTestContainers remove containers do Teste de Banco de Dados (modo local) que
-// ficaram rodando além de dbTestContainerMaxAge. Se `docker` não estiver instalado no servidor,
-// vira no-op silencioso (não spamma log a cada tick num ambiente que nunca teve Docker).
-func reapOrphanedDBTestContainers() {
+// reapOrphanedContainersByLabel remove containers `docker run --rm` que ficaram órfãos (o
+// processo `docker` foi morto por SIGKILL antes de conseguir limpar sozinho — ver
+// cleanupCancelledDockerContainer) rodando além de dbTestContainerMaxAge. Compartilhado entre o
+// modo "local" do Teste de Banco de Dados (dbTestDockerLabel) e do Teste de Kafka
+// (kafkaTestDockerLabel, ver kafka_test_docker.go) — o mecanismo de `docker run --network host
+// --rm` + reaper periódico é idêntico nos dois, só muda o label usado pra não misturar containers
+// órfãos de ferramentas diferentes. Se `docker` não estiver instalado no servidor, vira no-op
+// silencioso (não spamma log a cada tick num ambiente que nunca teve Docker). `logPrefix` só
+// identifica a ferramenta nas linhas de log.
+func reapOrphanedContainersByLabel(label, logPrefix string) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return
 	}
@@ -217,35 +223,35 @@ func reapOrphanedDBTestContainers() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ids, err := listDBTestContainerIDs(ctx)
+	ids, err := listContainerIDsByLabel(ctx, label)
 	if err != nil {
-		log.Warn().Err(err).Msg("DBTest reaper: falha ao listar containers")
+		log.Warn().Err(err).Msg(logPrefix + " reaper: falha ao listar containers")
 		return
 	}
 	if len(ids) == 0 {
 		return
 	}
 
-	stale, err := staleDBTestContainerIDs(ctx, ids, time.Now())
+	stale, err := staleContainerIDs(ctx, ids, time.Now())
 	if err != nil {
-		log.Warn().Err(err).Msg("DBTest reaper: falha ao inspecionar containers")
+		log.Warn().Err(err).Msg(logPrefix + " reaper: falha ao inspecionar containers")
 		return
 	}
 
 	for _, id := range stale {
 		rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if out, err := exec.CommandContext(rmCtx, "docker", "rm", "-f", id).CombinedOutput(); err != nil {
-			log.Warn().Str("container", id).Err(err).Str("output", string(out)).Msg("DBTest reaper: falha ao remover container órfão")
+			log.Warn().Str("container", id).Err(err).Str("output", string(out)).Msg(logPrefix + " reaper: falha ao remover container órfão")
 		} else {
-			log.Info().Str("container", id).Msg("DBTest reaper: container órfão removido")
+			log.Info().Str("container", id).Msg(logPrefix + " reaper: container órfão removido")
 		}
 		rmCancel()
 	}
 }
 
-func listDBTestContainerIDs(ctx context.Context) ([]string, error) {
+func listContainerIDsByLabel(ctx context.Context, label string) ([]string, error) {
 	out, err := exec.CommandContext(ctx, "docker", "ps", "-a",
-		"--filter", "label="+dbTestDockerLabel, "-q").Output()
+		"--filter", "label="+label, "-q").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -259,10 +265,12 @@ func listDBTestContainerIDs(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// staleDBTestContainerIDs inspeciona os containers em lote (`docker inspect`, um exec só) e
-// devolve os que passaram de dbTestContainerMaxAge — separado em função pura (recebe `now` e os
-// dados já parseados) pra ser testável sem precisar de um daemon Docker real.
-func staleDBTestContainerIDs(ctx context.Context, ids []string, now time.Time) ([]string, error) {
+// staleContainerIDs inspeciona os containers em lote (`docker inspect`, um exec só) e devolve os
+// que passaram de dbTestContainerMaxAge — separado em função pura (recebe `now` e os dados já
+// parseados) pra ser testável sem precisar de um daemon Docker real. Mesmo teto de idade pro Teste
+// de Kafka: o timeout máximo de um estágio (kafkaTestMaxTimeoutMs) é da mesma ordem de grandeza do
+// dbTestMaxTimeoutMs, então o mesmo raciocínio "nada legítimo passa de ~1min" se aplica.
+func staleContainerIDs(ctx context.Context, ids []string, now time.Time) ([]string, error) {
 	args := append([]string{"inspect", "-f", "{{.Id}}|{{.Created}}"}, ids...)
 	out, err := exec.CommandContext(ctx, "docker", args...).Output()
 	if err != nil {
