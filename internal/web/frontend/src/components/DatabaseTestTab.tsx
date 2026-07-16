@@ -133,12 +133,17 @@ function SearchableSelect({
           aria-expanded={open}
           disabled={disabled}
           className="w-full justify-between font-normal"
+          title={value || undefined}
         >
           <span className="truncate">{value || placeholder}</span>
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+      {/* min-w garante que o dropdown nunca fique mais estreito que o botão, mas w-auto +
+          max-w permite crescer além disso pra caber nomes longos de deployment/namespace/
+          database — sem isso o dropdown ficava preso exatamente na largura (às vezes
+          pequena) do trigger, cortando nomes que o próprio botão já truncava. */}
+      <PopoverContent className="min-w-[--radix-popover-trigger-width] w-auto max-w-[26rem] p-0">
         <Command>
           <CommandInput placeholder={searchPlaceholder} />
           <CommandList>
@@ -148,13 +153,14 @@ function SearchableSelect({
                 <CommandItem
                   key={opt}
                   value={opt}
+                  title={opt}
                   onSelect={() => {
                     onChange(opt === value ? "" : opt);
                     setOpen(false);
                   }}
                 >
-                  <Check className={cn("mr-2 h-4 w-4", value === opt ? "opacity-100" : "opacity-0")} />
-                  {opt}
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", value === opt ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate">{opt}</span>
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -686,7 +692,7 @@ export default function DatabaseTestTab() {
 
           {executionMode === "pod" && (
             <>
-              <div className="min-w-[200px]">
+              <div className="min-w-[260px]">
                 <label className="text-xs text-muted-foreground block mb-1">Namespace</label>
                 <SearchableSelect
                   value={namespace}
@@ -699,7 +705,7 @@ export default function DatabaseTestTab() {
                 />
               </div>
 
-              <div className="min-w-[240px]">
+              <div className="min-w-[320px]">
                 <label className="text-xs text-muted-foreground block mb-1">Deployment (de onde o teste parte)</label>
                 <SearchableSelect
                   value={deployment}
@@ -874,9 +880,9 @@ export default function DatabaseTestTab() {
 
             {hostSource === "manual" ? (
               <>
-                <div className="w-56">
+                <div className="w-72">
                   <label className="text-xs text-muted-foreground block mb-1">Host</label>
-                  <Input placeholder="ex: my-postgres.database.azure.com" value={host} onChange={(e) => setHost(e.target.value)} />
+                  <Input placeholder="ex: my-postgres.database.azure.com" value={host} onChange={(e) => setHost(e.target.value)} title={host || undefined} />
                 </div>
                 <div className="w-28">
                   <label className="text-xs text-muted-foreground block mb-1">Porta</label>
@@ -885,7 +891,7 @@ export default function DatabaseTestTab() {
               </>
             ) : (
               <>
-                <div className="w-44">
+                <div className="min-w-[220px]">
                   <label className="text-xs text-muted-foreground block mb-1">Namespace do ConfigMap</label>
                   <SearchableSelect
                     value={hostConfigMapNamespace}
@@ -896,7 +902,7 @@ export default function DatabaseTestTab() {
                     emptyMessage="Nenhum namespace encontrado."
                   />
                 </div>
-                <div className="w-56">
+                <div className="min-w-[280px]">
                   <label className="text-xs text-muted-foreground block mb-1">Nome do ConfigMap</label>
                   <SearchableSelect
                     value={hostConfigMapName}
@@ -908,7 +914,7 @@ export default function DatabaseTestTab() {
                     disabled={!effectiveConfigMapNamespace}
                   />
                 </div>
-                <div className="w-40">
+                <div className="min-w-[180px]">
                   <label className="text-xs text-muted-foreground block mb-1">Chave host</label>
                   <SearchableSelect
                     value={hostKey}
@@ -920,7 +926,7 @@ export default function DatabaseTestTab() {
                     disabled={!hostConfigMapName}
                   />
                 </div>
-                <div className="w-40">
+                <div className="min-w-[180px]">
                   <label className="text-xs text-muted-foreground block mb-1">Chave porta</label>
                   <SearchableSelect
                     value={portKey}
@@ -935,7 +941,7 @@ export default function DatabaseTestTab() {
               </>
             )}
 
-            <div className="w-56">
+            <div className="w-72">
               <label className="text-xs text-muted-foreground block mb-1">
                 {engine === "redis" ? "Índice do banco (0-15, opcional)" : "Database (opcional)"}
               </label>
@@ -946,6 +952,7 @@ export default function DatabaseTestTab() {
                 placeholder={engine === "redis" ? "0" : undefined}
                 value={database}
                 onChange={(e) => setDatabase(e.target.value)}
+                title={database || undefined}
               />
               {engine !== "redis" && browseEnabled && (
                 <p className="text-[10px] text-muted-foreground mt-1">
