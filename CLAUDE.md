@@ -33,7 +33,7 @@ Todas as features abaixo já estão mescladas na `main` (verificado via `git mer
 - [**Plano: Verificar Acesso (Access Checker)**](ACCESS-CHECK-PLAN.md) ← ⚠️ Revisão 7 pendente de validação real — checa acesso de analista via impersonation K8s + grupos AAD `VV_CLOUD*` resolvidos por `az ad user get-member-groups` (sem Graph API); detecta também acesso admin via IAM do Azure (bypass de RBAC, invisível à impersonation); scan de frota usa `SelfSubjectAccessReview` varrendo todos os namespaces
 - [**Plano: Teste de Latência sob Demanda**](LATENCY-METRICS-PLAN.md) ← ✅ Fases 1-7 concluídas — teste ativo (pod efêmero + curl/ping via exec) com guardrails, contexto histórico DT/Prometheus (P95/P99), grafo de topologia (Cytoscape.js) e correlação de breach de latência no Health Check. Fase 7 validada só por teste unitário, não por navegador
 - [**Plano: Teste de Kafka sob Demanda**](KAFKA-TEST-PLAN.md) ← ✅ implementado — aba "Teste Kafka": TCP/protocolo/SASL/produce-consume/visualizar mensagens contra broker externo via Ephemeral Container (`kcat`) anexado a um pod real do Deployment escolhido
-- [**Plano: Teste de Banco de Dados sob Demanda**](DATABASE-TEST-PLAN.md) ← ✅ implementado — aba "Teste de Banco de Dados": PostgreSQL/MySQL-MariaDB/MongoDB/Redis via registry de engines, conectividade+autenticação (manual ou lida de Secret/ConfigMap) e navegação só-leitura opcional; modos `pod` (Ephemeral Container) ou `local` (Docker no host, com pré-checagem de Docker + reaper de containers órfãos). **Nunca escreve no banco**. Não validado ponta a ponta contra bancos reais nesta rodada
+- [**Plano: Teste de Banco de Dados sob Demanda**](DATABASE-TEST-PLAN.md) ← ✅ implementado — aba "Teste de Banco de Dados": PostgreSQL/MySQL-MariaDB/MongoDB/Redis via registry de engines, conectividade+autenticação (manual ou lida de Secret/ConfigMap) e navegação só-leitura opcional; modos `pod` (Ephemeral Container) ou `local` (Docker no host, com pré-checagem de Docker + reaper de containers órfãos). Checkbox "Valores no Secret estão em Base64" (`DBSecretRef.Base64Decode`) para credenciais sincronizadas via Azure Key Vault/external-secrets já em base64 — mesmo campo/lógica do Kafka (`decodeSecretValueBase64`, compartilhada entre `db_test_tool.go` e `kafka_test_tool.go`). **Nunca escreve no banco**. Não validado ponta a ponta contra bancos reais nesta rodada
 
 ---
 
@@ -67,6 +67,7 @@ go test -v ./internal/... -race              # Todos os testes com race detector
 go test -v ./internal/healthcheck/... -race  # Pacote específico
 go test -run TestGetClient ./internal/...    # Função específica em todos os pacotes
 ./testes/test-rbac.sh                        # Suite completa RBAC (40+ cenários)
+SKIP_AZURE_TESTS=1 go test ./...             # Pula testes de Azure AD (usado no CI, útil sem az CLI autenticado)
 
 # Debug
 tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor
@@ -277,6 +278,8 @@ queryKey: ['resource-type', cluster, namespace],
 Broker em `internal/web/sse/progress.go` gerencia múltiplos clients. Usado em Cordon/Drain, Health Check, Helm Apply, Node Pool operations, **Command Runner**. Cada operação longa publica eventos via SSE para feedback em tempo real.
 
 **Performance SSE**: limpeza de replay buffer pós-conclusão usa `time.AfterFunc` (nunca `go func()+time.Sleep` — goroutine leak). Cleanup de zumbis a cada **5 minutos** (`sseCleanupInterval`). Replay buffers inativos expiram após **1 hora** (`maxReplayBufferAge`).
+
+**Auth em rotas SSE**: `EventSource` (browser) não suporta headers customizados — uma rota SSE protegida só por `Authorization` header no middleware sempre falha com 401 silencioso (a conexão fecha sem erro visível, o frontend fica travado esperando eventos que nunca chegam). Toda rota de stream SSE deve ficar num grupo de rotas com `middleware.WebSocketJWTAuthMiddleware` (aceita token via query param, mesmo mecanismo do WebSocket), nunca atrás do middleware JWT padrão. Ver `helmSSEGroup` em `internal/web/server.go` (rollback do Helm corrigido por esse motivo) e o mesmo padrão já usado no SSE do Health Check.
 
 ### WebSocket (Terminal)
 
@@ -542,6 +545,12 @@ O servidor desliga automaticamente quando nenhuma página web está conectada po
 
 **Context menu da tree** (botão direito): estado `{ x, y, node }` posicionado com `position: fixed`; fecha via `document.addEventListener("mousedown")`; `onMouseDown={e.stopPropagation()}` impede fechamento ao clicar dentro. Arquivo: Abrir / Renomear / Deletar / Copiar caminho / Revelar na tree / Histórico. Pasta: Novo arquivo aqui / Nova pasta aqui / Renomear / Deletar / Copiar caminho.
 
+**Ícones por extensão + bolinha de status na tree** (VSCode-like, `getFileIcon()` em `CodeEditorTab.tsx`): cada arquivo exibe ícone/cor conforme extensão (Go, TS/JS, Python, JSON, YAML, Markdown, CSS, HTML, SQL, shell, imagens, Terraform, Dockerfile, go.mod/package.json, etc.) em vez de um ícone genérico único. Bolinha de status (`StatusDot`) propagada até pastas colapsadas via `collectAncestorDirs()`: laranja = mudança git não commitada (cobre o repo inteiro, vem do `git status`), vermelho = erro (prioridade sobre laranja). **Limitação**: a bolinha de erro só reflete a aba atualmente aberta no editor — o Monaco reaproveita um único model entre abas (não há prop `path` no `<Editor>`), então arquivos nunca abertos na sessão não têm diagnóstico.
+
+**Feedback de operações git via modal, não toast**: commit/push/pull/checkout/stash/tag/merge/cherry-pick usam `showGitResult()` → `GitResultState` (modal com título/mensagem/botões de ação), não mais o `Toast` antigo — toasts empilhavam e truncavam mensagens de erro longas do git. O modal suporta ações contextuais (ex: checkout falha por mudanças locais → botão "Fazer stash e tentar de novo"). Botão "Sync" encadeia Pull e depois Push automaticamente (`chainPush` no estado do `sseDialog`), mesmo padrão do "Sincronizar Alterações" do VSCode. `Toast`/`addToast` continuam existindo só para feedback curto (não-git).
+
+**`ListBranches` também autentica o `git fetch`**: sem o token do usuário (`InjectUserEmail()` na rota + `gitCmdWithToken`), branches remotos de repositórios privados não apareciam e o erro era descartado silenciosamente — nenhum sinal de que o fetch tinha falhado. Mesmo padrão de autenticação do Pull/Push.
+
 **Botão PR**: header, visível quando `branches?.current !== "main" && !== "master"`; abre `CreatePRModal` para criação de PR direto na aplicação. `owner`/`repo` extraídos via `ownerRepo(dir)` em `ListRepos` (lê `git remote get-url origin`) — **não** do ID local por split em `-`, que quebrava com owners com hífen (ex: `casas-bahia`). `CreatePRModal`: título auto-preenchido a partir do branch (ex: `feat/foo` → `Feat Foo`), dropdown de branch destino (exclui o branch atual), descrição opcional; chama `POST /api/v1/code-editor/repos/:id/pr/create` → GitHub REST API com o PAT do `tokenStore`; exibe `PR #N criado!` + botão "Abrir no GitHub" ao concluir.
 
 **Ctrl+P Quick Open**: overlay `absolute inset-0 z-50` (requer `relative` no container pai); `quickOpenFiles = useMemo(() => flattenTree(tree).filter(...))` filtra em tempo real; registrado no Monaco via `addCommand(2048|46)` e via `document.addEventListener("keydown")` global.
@@ -583,6 +592,10 @@ O servidor desliga automaticamente quando nenhuma página web está conectada po
 **Modelos Gemini Vertex AI**: `gemini-3.5-flash`, `gemini-3.1-pro-001`, `gemini-2.5-pro-preview-05-06` (Agentspace). Modo Vertex AI não aceita modelos do AI Studio — IDs diferentes. Ver `internal/ai/gemini_provider.go` para lista de modelos por modo.
 
 **Copilot (Azure OpenAI)**: requer `CopilotAPIKey`, `CopilotEndpoint` (ex: `https://my-resource.openai.azure.com`) e `CopilotDeployment`. Env vars: `COPILOT_API_KEY`, `COPILOT_ENDPOINT`, `COPILOT_DEPLOYMENT`.
+
+**OpenAI — Base URL customizado (`OpenAIBaseURL`)**: aponta o provider OpenAI para qualquer endpoint compatível com a API de chat completions (padrão `https://api.openai.com/v1/chat/completions`), ex: **GitHub Models** (`https://models.github.ai/inference/chat/completions`, autenticado com o mesmo PAT do `gh` CLI) — alternativa quando o Vertex AI corporativo não tem a permissão IAM liberada. Propagado para todos os pontos que instanciam o analyzer com esse provider (AI Diagnostics, Predictions, NodePool Predictions). Persistido em `user_ai_tokens.openai_base_url`. Ver [docs/guides/GITHUB_MODELS_SETUP.md](docs/guides/GITHUB_MODELS_SETUP.md) para o passo a passo. Suporta retry com truncamento de prompt em erro 413 (payload too large).
+
+**Diagnósticos de erro Vertex AI/Gemini**: dica específica quando a API retorna 403 (projeto sem permissão IAM), validação de formato do campo WIF Pool/Provider (`poolID/providerID`) e aviso quando um refresh token salvo não consegue mais ser renovado — evita o usuário reautenticar às cegas sem saber qual das 3 causas é a real.
 
 ### Dynatrace (Integração de Problems + Correlação K8s)
 
