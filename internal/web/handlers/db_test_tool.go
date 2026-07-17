@@ -32,12 +32,60 @@ const (
 	dbTestDefaultTimeoutMs = 5000
 	dbTestMaxTimeoutMs     = 15000
 
+	// dbTestBrowseMinTimeoutMs é o piso de tempo do estágio "Explorar dados" — INDEPENDENTE do
+	// timeout configurado pelo usuário (pensado pra conectividade: um único round-trip rápido).
+	// Explorar dados pode fazer VÁRIOS round-trips (ex: um $collStats por collection no Mongo,
+	// groupColumnsToTablesWithStats no Postgres/MySQL com JOINs) — em bancos reais com collections
+	// grandes/muitas tabelas, isso facilmente estoura os 5s default ou até os 15s do teto de
+	// conectividade, derrubando com "exit status 124" (timeout do `timeout` do Linux) mesmo com a
+	// consulta certa. Vale só pra esse estágio; conectividade continua limitada por timeoutMs.
+	dbTestBrowseMinTimeoutMs = 30000
+
 	// dbRedisScanCap limita quantas chaves o estágio de navegação do Redis retorna — `--scan`
 	// sozinho não tem limite total (só controla o tamanho do lote por iteração do cursor), então
 	// SEMPRE fazemos pipe com `head` pra garantir um teto real. Nunca usar `KEYS *` (bloqueia
 	// instâncias grandes).
 	dbRedisScanCap = 100
+
+	// dbTestPreviewDefaultLimit/MaxLimit limitam quantas linhas/documentos/itens a amostra de
+	// dados (Preview) retorna — nunca um dump completo, mesmo espírito do dbRedisScanCap.
+	dbTestPreviewDefaultLimit = 20
+	dbTestPreviewMaxLimit     = 100
 )
+
+// dbTestObjectNameRegex valida o nome de tabela/collection/chave recebido no Preview antes de
+// interpolar na query — identificadores reais (vindos da própria listagem do Browse) só têm
+// letras, dígitos, `_`, `.` e `-` (hífen aparece com frequência em nomes de collection reais,
+// ex: "permissoes-de-aplicacao-dat"). Qualquer coisa fora disso (aspas, `;`, espaço, backtick) é
+// rejeitada — não é sanitização de SQL, é um allow-list que nunca deixa a query ser quebrada.
+var dbTestObjectNameRegex = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
+
+// quotePostgresIdentifier envolve um identificador (já validado por dbTestObjectNameRegex) em
+// aspas duplas — escapa aspas internas por segurança extra, mesmo que a regex já as rejeite.
+func quotePostgresIdentifier(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+// quoteMySQLIdentifier — mesma ideia de quotePostgresIdentifier, mas com backtick (sintaxe do
+// MySQL/MariaDB pra identificadores).
+func quoteMySQLIdentifier(s string) string {
+	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
+}
+
+// dbPreviewParams agrupa os parâmetros de uma consulta de amostra de dados paginada — evita uma
+// assinatura de função com 5+ parâmetros posicionais repetida entre buildPreview e suas 4
+// implementações (Postgres/MySQL/Mongo/Redis).
+type dbPreviewParams struct {
+	Object string
+	// SortColumn vazio = sem ORDER BY/sort (ordem "natural" do banco, não garantida entre
+	// páginas — só cabe ao chamador decidir se aceita esse risco).
+	SortColumn string
+	// SortDir já normalizado ("asc" ou "desc") antes de chegar aqui — ver validação no handler
+	// Preview.
+	SortDir string
+	Limit   int
+	Offset  int
+}
 
 // Classificação do estágio de conectividade — mesmo vocabulário do Kafka (kafkaStage*), mas
 // namespaced pra DB pra não colidir.
@@ -99,6 +147,11 @@ type DBAuthConfig struct {
 	UseTLS           bool             `json:"use_tls"`
 	SkipTLSVerify    bool             `json:"skip_tls_verify"`
 	SecretRef        *DBSecretRef     `json:"secret_ref,omitempty"`
+	// AuthMechanism só se aplica a Mongo em modo "userpass" (embutido na própria URI como
+	// query param authMechanism) — no modo "connstring" isso já vem na string, se o usuário
+	// precisar. Vazio deixa o mongosh negociar automaticamente (comportamento de sempre).
+	// Valores aceitos: "" | "SCRAM-SHA-1" | "SCRAM-SHA-256" (ver dbValidMongoAuthMechanisms).
+	AuthMechanism string `json:"auth_mechanism,omitempty"`
 }
 
 // RunDBTestRequest é o body do POST /db-test/run.
@@ -131,6 +184,55 @@ type RunDBTestRequest struct {
 	// Vazio/omitido = sem filtro ("*").
 	RedisKeyPattern string `json:"redis_key_pattern,omitempty"`
 	TimeoutMs       int    `json:"timeout_ms"`
+}
+
+// DBPreviewRequest é o body do POST /db-test/preview — mesma conexão/auth de RunDBTestRequest
+// (reaproveitada via embedding, validada pela mesma validateDBTestRequest), mais o objeto
+// específico (tabela/collection/chave) cujo CONTEÚDO real (não só metadados) o usuário quer ver.
+// Síncrono, sem SSE — mesmo padrão de ListTopics/TopicsOverview do Teste de Kafka.
+type DBPreviewRequest struct {
+	RunDBTestRequest
+	// Database é o banco/índice onde Object vive — mesmo campo/fallback de connection string de
+	// Auth.Database (ver effectiveDatabase); pro Redis é o índice 0-15 (vazio = 0).
+	Database string `json:"database"`
+	// Object é o nome da tabela/collection/chave a visualizar — validado contra
+	// dbTestObjectNameRegex (sem aspas/espaços/`;`, protege a query montada por interpolação).
+	Object string `json:"object"`
+	// Limit — linhas/documentos/itens retornados por página. Default dbTestPreviewDefaultLimit,
+	// teto dbTestPreviewMaxLimit.
+	Limit int `json:"limit,omitempty"`
+	// Offset pagina o resultado — LIMIT N OFFSET M (Postgres/MySQL) / .skip(M).limit(N) (Mongo).
+	// Junto com SortColumn, é o que torna a paginação estável entre páginas (sem ordenação
+	// nenhuma, o banco não garante devolver as mesmas linhas na mesma ordem em consultas
+	// diferentes). Não suportado pro Redis fora de list/zset (ver buildPreview de cada engine).
+	Offset int `json:"offset,omitempty"`
+	// SortColumn — nome da coluna/campo pra ordenar antes de paginar. Vazio = sem ORDER BY/sort
+	// (ordem "natural" do banco, não garantida entre páginas). Validado contra
+	// dbTestObjectNameRegex, mesmo allow-list do Object.
+	SortColumn string `json:"sort_column,omitempty"`
+	// SortDir — "asc" (default) ou "desc".
+	SortDir string `json:"sort_dir,omitempty"`
+}
+
+// DBPreviewResponse é o resultado do estágio de amostra de dados.
+type DBPreviewResponse struct {
+	Status  string `json:"status"` // ok | failed
+	Message string `json:"message"`
+	// Rows vem preenchido quando o engine consegue estruturar a saída (Postgres/MySQL/Mongo,
+	// sempre; Redis não — tipos de chave variam demais pra um formato único). Cada mapa é uma
+	// linha/documento, chave = nome da coluna/campo.
+	Rows []map[string]any `json:"rows,omitempty"`
+	// Truncated é true quando Limit cortou o resultado nesta página — nunca dá pra saber com
+	// certeza se existem MAIS linhas sem uma contagem à parte, então é só um aviso, não garantia.
+	Truncated bool `json:"truncated,omitempty"`
+	// HasMore é o mesmo sinal de Truncated, mas pensado pra paginação (nome mais claro do lado do
+	// botão "Próxima página" no frontend): heurística "página cheia" (len(rows) >= Limit) — sem
+	// COUNT(*) à parte (caro, evitado de propósito), não é garantia de que EXISTE próxima página,
+	// só que é possível.
+	HasMore   bool   `json:"has_more,omitempty"`
+	Offset    int    `json:"offset"`
+	Limit     int    `json:"limit"`
+	RawOutput string `json:"raw_output,omitempty"`
 }
 
 // DBStageResult é o resultado do estágio de conectividade/autenticação.
@@ -175,6 +277,13 @@ type DBBrowseResult struct {
 	Message    string           `json:"message"`
 	ObjectType string           `json:"object_type,omitempty"` // database | table | collection | key
 	Objects    []DBBrowseObject `json:"objects,omitempty"`
+	// Database é o banco (ou índice, no Redis) efetivamente usado nesta listagem — resolvido via
+	// dbEngine.resolveDatabaseLabel, cobre o caso do campo "Database" ter ficado vazio e o valor
+	// real ter vindo do fallback de connection string (ver effectiveDatabase). Só preenchido
+	// quando ObjectType != "database" (nesse nível não há um banco "escolhido" ainda, é a própria
+	// lista de bancos). O frontend usa isso pra mostrar a hierarquia banco → tabelas/collections,
+	// já que sem isso a lista de objetos aparecia solta, sem dizer de qual banco eles vêm.
+	Database string `json:"database,omitempty"`
 	// Truncated é true quando o resultado foi cortado por um teto de segurança (só acontece no
 	// Redis — SCAN sobre um keyspace grande) — a lista exibida é uma AMOSTRA, não completa.
 	Truncated bool   `json:"truncated,omitempty"`
@@ -205,6 +314,8 @@ type dbConnParams struct {
 	ConnStr       string
 	UseTLS        bool
 	SkipTLSVerify bool
+	// AuthMechanism — ver DBAuthConfig.AuthMechanism. Só usado por buildMongoURI.
+	AuthMechanism string
 	// RedisKeyPattern filtra o estágio de navegação do Redis via `SCAN ... MATCH <pattern>`
 	// (`redis-cli --scan --pattern <pattern>`) — só usado quando o engine é Redis. Vazio = sem
 	// filtro (equivalente a MATCH "*").
@@ -225,9 +336,24 @@ type dbEngine struct {
 	// parseBrowseOutput devolve os objetos parseados, o ObjectType que rotula o resultado
 	// (varia com p.Database, mesma lógica de buildBrowse) e se o resultado foi truncado.
 	parseBrowseOutput func(raw string, p dbConnParams) (objects []DBBrowseObject, objectType string, truncated bool)
-	networkErrorRegex *regexp.Regexp
-	authErrorRegex    *regexp.Regexp
-	tlsErrorRegex     *regexp.Regexp
+	// resolveDatabaseLabel devolve o banco (ou índice, no Redis) EFETIVAMENTE usado — cobre o
+	// fallback de connection string (effectiveDatabase) e a extração própria do MySQL
+	// (mysqlEffectiveParams) — usado só pra popular DBBrowseResult.Database, exibido no frontend
+	// como contexto de hierarquia acima da lista de tabelas/collections/chaves.
+	resolveDatabaseLabel func(p dbConnParams) string
+	// buildPreview monta o comando pra buscar uma amostra dos dados REAIS de um objeto específico
+	// (tabela/collection/chave) — diferente de buildBrowse (metadados/estatísticas via catálogo),
+	// isso lê o conteúdo de verdade, sempre paginado (LIMIT/OFFSET ou skip/limit — nunca um dump
+	// completo de uma vez).
+	buildPreview func(p dbConnParams, pv dbPreviewParams, timeoutSec int) string
+	// parsePreviewOutput estrutura a saída em linhas/documentos genéricos (chave=nome da coluna/
+	// campo). Nil quando o engine não consegue estruturar de forma confiável (Redis: tipo da
+	// chave só é conhecido em runtime, formatos de saída incompatíveis entre si) — nesse caso o
+	// handler devolve só RawOutput e o frontend cai pra exibição de texto puro.
+	parsePreviewOutput func(raw string) ([]map[string]any, error)
+	networkErrorRegex  *regexp.Regexp
+	authErrorRegex     *regexp.Regexp
+	tlsErrorRegex      *regexp.Regexp
 }
 
 // namesToObjects converte uma lista simples de nomes (sem type/detail) em DBBrowseObject — usado
@@ -321,6 +447,36 @@ func connTargetOrURI(p dbConnParams, build func(dbConnParams) string) string {
 	return build(p)
 }
 
+// connStringDatabase extrai o nome do banco do path de uma connection string genérica
+// (postgresql://.../dbname, mongodb://.../dbname, mongodb+srv://.../dbname) — muitas connection
+// strings JÁ trazem o banco embutido (ex: copiadas direto de um app real), sem exigir que o
+// usuário digite de novo no campo separado "Database". `url.Parse` funciona igual pra qualquer
+// esquema `scheme://...`, incluindo `mongodb+srv://`.
+func connStringDatabase(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(u.Path, "/")
+}
+
+// effectiveDatabase resolve o banco alvo do estágio de navegação (Postgres/Mongo): o campo
+// Database explícito tem prioridade — permite sobrescrever ou navegar num banco diferente do que
+// está na connection string (Mongo: getSiblingDB troca de banco livremente dentro do mesmo
+// cluster/replica set autenticado, então isso é um caso real). Se vazio e Mode=="connstring", cai
+// pro banco embutido no path da própria connection string, se houver (comum quando ela já foi
+// copiada de uma configuração real de app). Fora do modo connstring, não há de onde mais tirar o
+// banco — devolve vazio mesmo (mantém o nível "database" do Explorar dados).
+func effectiveDatabase(p dbConnParams) string {
+	if db := strings.TrimSpace(p.Database); db != "" {
+		return db
+	}
+	if p.Mode == "connstring" {
+		return connStringDatabase(p.ConnStr)
+	}
+	return ""
+}
+
 func buildPostgresURI(p dbConnParams) string {
 	u := url.URL{Scheme: "postgresql", Host: fmt.Sprintf("%s:%d", p.Host, p.Port)}
 	if p.Username != "" {
@@ -368,8 +524,19 @@ func buildMongoURI(p dbConnParams) string {
 			q.Set("tlsAllowInvalidCertificates", "true")
 		}
 	}
+	if p.AuthMechanism != "" {
+		q.Set("authMechanism", p.AuthMechanism)
+	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// dbValidMongoAuthMechanisms — mecanismos aceitos no campo AuthMechanism (modo "userpass" do
+// Mongo). Escopo deliberadamente restrito aos dois mecanismos de usuário/senha comuns — MONGODB-
+// X509/GSSAPI/MONGODB-AWS exigiriam certificado/config adicional que o teste não coleta hoje.
+var dbValidMongoAuthMechanisms = map[string]bool{
+	"SCRAM-SHA-1":   true,
+	"SCRAM-SHA-256": true,
 }
 
 // parseMySQLConnString extrai host/port/user/pass/db de uma connection string estilo
@@ -494,6 +661,89 @@ func parseLineListOutput(raw string, skipFirstLine bool) []string {
 	return out
 }
 
+// parseJSONLinesPreview parseia uma saída onde cada linha é um objeto JSON independente (formato
+// do `row_to_json` do Postgres no Preview: uma linha de saída por linha de tabela). Linhas
+// malformadas são ignoradas (best-effort — uma linha ruim não deve derrubar a amostra inteira).
+func parseJSONLinesPreview(raw string) ([]map[string]any, error) {
+	var rows []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// parseTSVWithHeaderPreview parseia a saída `--batch` do cliente mysql/mariadb: primeira linha =
+// nomes das colunas (separados por tab), linhas seguintes = valores — dá pra montar os mapas
+// coluna→valor sem precisar saber o schema de antemão (equivalente ao row_to_json do Postgres,
+// só que via formato tabular em vez de JSON nativo).
+func parseTSVWithHeaderPreview(raw string) ([]map[string]any, error) {
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	if len(lines) == 0 {
+		return nil, nil
+	}
+	headers := strings.Split(lines[0], "\t")
+	var rows []map[string]any
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		cols := strings.Split(line, "\t")
+		row := make(map[string]any, len(headers))
+		for i, h := range headers {
+			if i < len(cols) {
+				row[h] = cols[i]
+			} else {
+				row[h] = ""
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// redisKeyTypeMarkerRegex casa a linha `__DBTEST_KEYTYPE__:<tipo>` emitida pelo buildPreview do
+// Redis — é um detalhe de implementação (não faz parte da resposta real do redis-cli), removido
+// do RawOutput antes de mostrar pro usuário.
+var redisKeyTypeMarkerRegex = regexp.MustCompile(`^__DBTEST_KEYTYPE__:(\w+)\n?`)
+
+// parseRedisPreviewMeta separa a marca de TYPE (ver redisKeyTypeMarkerRegex) do resto da saída e
+// decide se HasMore se aplica: só list/zset têm paginação real por índice
+// (LRANGE/ZRANGE — ver buildPreview do Redis); os demais tipos (string/hash/set/stream) sempre
+// trazem tudo de uma vez, então HasMore fica sempre false pra eles, mesmo que a saída seja grande.
+// Chamado incondicionalmente pra qualquer engine no handler Preview — pra Postgres/MySQL/Mongo, a
+// regex simplesmente não casa (não emitem essa marca), devolvendo a saída inalterada.
+func parseRedisPreviewMeta(raw string, limit int) (cleaned string, hasMore bool) {
+	m := redisKeyTypeMarkerRegex.FindStringSubmatch(raw)
+	if m == nil {
+		return raw, false
+	}
+	keyType := m[1]
+	cleaned = raw[len(m[0]):]
+
+	lines := 0
+	for _, l := range strings.Split(strings.TrimRight(cleaned, "\n"), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines++
+		}
+	}
+	switch keyType {
+	case "list":
+		hasMore = lines >= limit
+	case "zset":
+		// ZRANGE ... WITHSCORES intercala membro/score — 2 linhas por item.
+		hasMore = lines >= limit*2
+	}
+	return cleaned, hasMore
+}
+
 // extractJSONArray isola o primeiro array JSON `[...]` numa saída que pode ter texto/banner do
 // cliente antes ou depois (ex: avisos de versão do mongosh) — parser tolerante, não exige que a
 // saída inteira seja só o JSON.
@@ -525,7 +775,7 @@ var dbEngines = map[string]dbEngine{
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
 			target := connTargetOrURI(p, buildPostgresURI)
 			query := "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname;"
-			if strings.TrimSpace(p.Database) != "" {
+			if effectiveDatabase(p) != "" {
 				query = "SELECT col.table_name || '|' || col.column_name || '|' || col.data_type || '|' || " +
 					"pg_relation_size(c.oid) || '|' || pg_total_relation_size(c.oid) || '|' || c.reltuples::bigint " +
 					"FROM information_schema.columns col " +
@@ -538,13 +788,29 @@ var dbEngines = map[string]dbEngine{
 		},
 		parseBrowseOutput: func(raw string, p dbConnParams) ([]DBBrowseObject, string, bool) {
 			lines := parseLineListOutput(raw, false)
-			if strings.TrimSpace(p.Database) == "" {
+			if effectiveDatabase(p) == "" {
 				return namesToObjects(lines), "database", false
 			}
 			return groupColumnsToTablesWithStats(lines), "table", false
 		},
-		networkErrorRegex: regexp.MustCompile(`(?i)(could not connect to server|connection refused|could not translate host name|timeout expired)`),
-		authErrorRegex:    regexp.MustCompile(`(?i)(password authentication failed|role .* does not exist|no pg_hba\.conf entry)`),
+		// row_to_json embute cada linha como um objeto JSON (uma linha de saída por linha da
+		// tabela) — auto-descritivo, não precisa saber os nomes das colunas de antemão (diferente
+		// do MySQL, que usa o cabeçalho do --batch pro mesmo efeito).
+		buildPreview: func(p dbConnParams, pv dbPreviewParams, timeoutSec int) string {
+			target := connTargetOrURI(p, buildPostgresURI)
+			orderBy := ""
+			if pv.SortColumn != "" {
+				orderBy = fmt.Sprintf(" ORDER BY %s %s", quotePostgresIdentifier(pv.SortColumn), strings.ToUpper(pv.SortDir))
+			}
+			query := fmt.Sprintf("SELECT row_to_json(t) FROM (SELECT * FROM %s%s LIMIT %d OFFSET %d) t;",
+				quotePostgresIdentifier(pv.Object), orderBy, pv.Limit, pv.Offset)
+			cmd := fmt.Sprintf("psql %s -t -A -c %s", quoteShellArg(target), quoteShellArg(query))
+			return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
+		},
+		parsePreviewOutput:   parseJSONLinesPreview,
+		resolveDatabaseLabel: effectiveDatabase,
+		networkErrorRegex:    regexp.MustCompile(`(?i)(could not connect to server|connection refused|could not translate host name|timeout expired)`),
+		authErrorRegex:       regexp.MustCompile(`(?i)(password authentication failed|role .* does not exist|no pg_hba\.conf entry)`),
 		// "no pg_hba.conf entry ... no encryption" é o Postgres recusando a conexão porque ela
 		// chegou sem SSL e o servidor só tem regras `hostssl` (ex: Azure Database for PostgreSQL,
 		// que exige TLS por padrão) — não é senha/usuário errado, é o toggle TLS desligado no teste.
@@ -622,6 +888,42 @@ var dbEngines = map[string]dbEngine{
 			}
 			return groupColumnsToTablesWithStats(lines), "table", false
 		},
+		// --batch (implícito quando stdout não é um TTY, explícito aqui por clareza) gera saída
+		// separada por tab COM linha de cabeçalho (sem o -N usado em buildBrowse) — dá pra montar
+		// os mapas coluna→valor sem precisar saber o schema de antemão.
+		buildPreview: func(p dbConnParams, pv dbPreviewParams, timeoutSec int) string {
+			host, port, user, pass, db := mysqlEffectiveParams(p)
+			args := []string{"mysql", "-h", quoteShellArg(host), "-P", strconv.Itoa(port)}
+			if user != "" {
+				args = append(args, "-u", quoteShellArg(user))
+			}
+			if p.UseTLS {
+				if p.SkipTLSVerify {
+					args = append(args, "--ssl-mode=REQUIRED")
+				} else {
+					args = append(args, "--ssl-mode=VERIFY_IDENTITY")
+				}
+			}
+			if db != "" {
+				args = append(args, quoteShellArg(db))
+			}
+			orderBy := ""
+			if pv.SortColumn != "" {
+				orderBy = fmt.Sprintf(" ORDER BY %s %s", quoteMySQLIdentifier(pv.SortColumn), strings.ToUpper(pv.SortDir))
+			}
+			query := fmt.Sprintf("SELECT * FROM %s%s LIMIT %d OFFSET %d;", quoteMySQLIdentifier(pv.Object), orderBy, pv.Limit, pv.Offset)
+			args = append(args, "--batch", "-e", quoteShellArg(query))
+			prefix := ""
+			if pass != "" {
+				prefix = "MYSQL_PWD=" + quoteShellArg(pass) + " "
+			}
+			return fmt.Sprintf("timeout %ds %s%s 2>&1", timeoutSec, prefix, strings.Join(args, " "))
+		},
+		parsePreviewOutput: parseTSVWithHeaderPreview,
+		resolveDatabaseLabel: func(p dbConnParams) string {
+			_, _, _, _, db := mysqlEffectiveParams(p)
+			return db
+		},
 		networkErrorRegex: regexp.MustCompile(`(?i)(can't connect to mysql server|connection refused|unknown mysql server host)`),
 		authErrorRegex:    regexp.MustCompile(`(?i)access denied for user`),
 		tlsErrorRegex:     regexp.MustCompile(`(?i)(ssl connection error|tls.*handshake|certificate verify failed)`),
@@ -647,7 +949,7 @@ var dbEngines = map[string]dbEngine{
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
 			uri := connTargetOrURI(p, buildMongoURI)
 			var script string
-			if db := strings.TrimSpace(p.Database); db != "" {
+			if db := effectiveDatabase(p); db != "" {
 				dbLit := jsStringLiteral(db)
 				script = fmt.Sprintf(
 					"JSON.stringify(db.getSiblingDB(%s).getCollectionNames().map(function(c){"+
@@ -672,7 +974,7 @@ var dbEngines = map[string]dbEngine{
 			if jsonArr == "" {
 				return nil, "", false
 			}
-			if strings.TrimSpace(p.Database) != "" {
+			if effectiveDatabase(p) != "" {
 				var collections []struct {
 					Name        string `json:"name"`
 					Count       int64  `json:"count"`
@@ -708,9 +1010,46 @@ var dbEngines = map[string]dbEngine{
 			}
 			return objects, "database", false
 		},
-		networkErrorRegex: regexp.MustCompile(`(?i)(econnrefused|serverselectionerror|getaddrinfo enotfound|connection timed out)`),
-		authErrorRegex:    regexp.MustCompile(`(?i)(authentication failed|auth error|not authorized)`),
-		tlsErrorRegex:     regexp.MustCompile(`(?i)(tls|ssl).*(error|handshake|certificate)`),
+		// EJSON.stringify (não JSON.stringify) — mongosh expõe EJSON globalmente pra serializar
+		// tipos BSON especiais (ObjectId, Date, Long, Binary) de forma legível
+		// ({"$oid":"..."}, etc.), em vez do JSON.stringify simples quebrar silenciosamente esses
+		// campos (mesmo bug já visto no sizeOnDisk do nível "database" — aqui evitado de propósito).
+		buildPreview: func(p dbConnParams, pv dbPreviewParams, timeoutSec int) string {
+			uri := connTargetOrURI(p, buildMongoURI)
+			// sort via Object.fromEntries (não objeto literal {campo: 1}) — nomes de campo podem
+			// ter caracteres inválidos como chave de identificador JS solto (ex: "-" seria lido
+			// como subtração); construir a chave dinamicamente evita esse problema por completo,
+			// sem precisar validar se o nome "parece" um identificador JS válido.
+			sortExpr := ""
+			if pv.SortColumn != "" {
+				dir := 1
+				if pv.SortDir == "desc" {
+					dir = -1
+				}
+				sortExpr = fmt.Sprintf(".sort(Object.fromEntries([[%s,%d]]))", jsStringLiteral(pv.SortColumn), dir)
+			}
+			script := fmt.Sprintf(
+				"EJSON.stringify(db.getSiblingDB(%s).getCollection(%s).find()%s.skip(%d).limit(%d).toArray())",
+				jsStringLiteral(effectiveDatabase(p)), jsStringLiteral(pv.Object), sortExpr, pv.Offset, pv.Limit,
+			)
+			cmd := fmt.Sprintf("mongosh %s --quiet --eval %s", quoteShellArg(uri), quoteShellArg(script))
+			return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
+		},
+		parsePreviewOutput: func(raw string) ([]map[string]any, error) {
+			arr := extractJSONArray(raw)
+			if arr == "" {
+				return nil, fmt.Errorf("saída inesperada do mongosh — ver saída bruta")
+			}
+			var rows []map[string]any
+			if err := json.Unmarshal([]byte(arr), &rows); err != nil {
+				return nil, err
+			}
+			return rows, nil
+		},
+		resolveDatabaseLabel: effectiveDatabase,
+		networkErrorRegex:    regexp.MustCompile(`(?i)(econnrefused|serverselectionerror|getaddrinfo enotfound|connection timed out)`),
+		authErrorRegex:       regexp.MustCompile(`(?i)(authentication failed|auth error|not authorized)`),
+		tlsErrorRegex:        regexp.MustCompile(`(?i)(tls|ssl).*(error|handshake|certificate)`),
 	},
 	"redis": {
 		label: "Redis",
@@ -773,6 +1112,50 @@ var dbEngines = map[string]dbEngine{
 			}
 			truncated := len(objects) >= dbRedisScanCap
 			return objects, "key", truncated
+		},
+		// O comando certo pra ler o VALOR de uma chave depende do TYPE, só conhecido em runtime —
+		// GET (string), HGETALL (hash), LRANGE (list), SRANDMEMBER (set, evita SMEMBERS sem teto
+		// numa chave gigante), ZRANGE ... WITHSCORES (zset), XRANGE (stream). Sem
+		// parsePreviewOutput: os 5 formatos de saída são incompatíveis demais entre si pra
+		// estruturar num único formato de linha/documento — o handler devolve só RawOutput, o
+		// frontend mostra como texto puro (ainda assim é o valor real, só sem tabela).
+		// list/zset têm índice explícito — Offset pagina de verdade (LRANGE/ZRANGE offset
+		// offset+limit-1). string/hash/set/stream não têm noção de "página" (GET/HGETALL sempre
+		// trazem tudo de uma vez; SRANDMEMBER é amostra aleatória, não paginável de forma estável)
+		// — Offset é ignorado nesses casos, mesmo limitação já documentada antes.
+		buildPreview: func(p dbConnParams, pv dbPreviewParams, timeoutSec int) string {
+			base := redisBaseCommand(p)
+			key := quoteShellArg(pv.Object)
+			rangeEnd := pv.Offset + pv.Limit - 1
+			// __DBTEST_KEYTYPE__ é uma marca interna (removida do RawOutput antes de mostrar pro
+			// usuário, ver parseRedisPreviewMeta) — o handler Go não sabe em runtime qual case do
+			// shell rodou, e precisa saber o TYPE pra decidir se HasMore se aplica (só list/zset
+			// têm paginação real por índice).
+			script := fmt.Sprintf(
+				`t=$(%s TYPE %s); printf '__DBTEST_KEYTYPE__:%%s\n' "$t"; case "$t" in `+
+					`string) %s GET %s ;; `+
+					`hash) %s HGETALL %s ;; `+
+					`list) %s LRANGE %s %d %d ;; `+
+					`set) %s SRANDMEMBER %s %d ;; `+
+					`zset) %s ZRANGE %s %d %d WITHSCORES ;; `+
+					`stream) %s XRANGE %s - + COUNT %d ;; `+
+					`*) echo "tipo não suportado ou chave inexistente: $t" ;; esac`,
+				base, key,
+				base, key,
+				base, key,
+				base, key, pv.Offset, rangeEnd,
+				base, key, pv.Limit,
+				base, key, pv.Offset, rangeEnd,
+				base, key, pv.Limit,
+			)
+			return fmt.Sprintf("timeout %ds sh -c %s 2>&1", timeoutSec, quoteShellArg(script))
+		},
+		resolveDatabaseLabel: func(p dbConnParams) string {
+			db := strings.TrimSpace(p.Database)
+			if db == "" {
+				return "0"
+			}
+			return db
 		},
 		networkErrorRegex: regexp.MustCompile(`(?i)(could not connect|connection refused|name or service not known)`),
 		authErrorRegex:    regexp.MustCompile(`(?i)(noauth|wrongpass|invalid username-password)`),
@@ -1065,7 +1448,11 @@ func runDBBrowseStage(ctx context.Context, run dbExecFunc, engine dbEngine, conn
 		return DBBrowseResult{Status: "skipped", Message: "Navegação não suportada para este engine"}
 	}
 
-	script := engine.buildBrowse(conn, ceilSeconds(timeoutMs))
+	browseTimeoutMs := timeoutMs
+	if browseTimeoutMs < dbTestBrowseMinTimeoutMs {
+		browseTimeoutMs = dbTestBrowseMinTimeoutMs
+	}
+	script := engine.buildBrowse(conn, ceilSeconds(browseTimeoutMs))
 	stdout, err := run(ctx, script)
 	if err != nil {
 		raw := strings.TrimSpace(stdout)
@@ -1083,11 +1470,18 @@ func runDBBrowseStage(ctx context.Context, run dbExecFunc, engine dbEngine, conn
 	if len(objects) == 0 {
 		message = "Nenhum objeto encontrado"
 	}
+	// Database só é relevante (e preenchido) quando já descemos um nível — no nível "database" a
+	// lista JÁ É a lista de bancos, não há um banco "escolhido" ainda pra mostrar como contexto.
+	var databaseLabel string
+	if objectType != "database" && engine.resolveDatabaseLabel != nil {
+		databaseLabel = engine.resolveDatabaseLabel(conn)
+	}
 	return DBBrowseResult{
 		Status:     "ok",
 		Message:    message,
 		ObjectType: objectType,
 		Objects:    objects,
+		Database:   databaseLabel,
 		Truncated:  truncated,
 		RawOutput:  stdout,
 	}
@@ -1121,110 +1515,9 @@ func (h *DBTestHandler) Run(c *gin.Context) {
 		return
 	}
 
-	req.ExecutionMode = strings.ToLower(strings.TrimSpace(req.ExecutionMode))
-	if req.ExecutionMode == "" {
-		req.ExecutionMode = "pod"
-	}
-	if req.ExecutionMode != "pod" && req.ExecutionMode != "local" {
-		c.JSON(http.StatusBadRequest, errorResponse("INVALID_EXECUTION_MODE", "execution_mode deve ser pod ou local"))
-		return
-	}
-
-	req.Cluster = strings.TrimSpace(req.Cluster)
-	req.Namespace = strings.TrimSpace(req.Namespace)
-	req.Deployment = strings.TrimSpace(req.Deployment)
-	req.Engine = strings.ToLower(strings.TrimSpace(req.Engine))
-	req.Host = strings.TrimSpace(req.Host)
-	if req.Engine == "" {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "engine é obrigatório"))
-		return
-	}
-	if req.ExecutionMode == "pod" && (req.Cluster == "" || req.Namespace == "" || req.Deployment == "") {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace e deployment são obrigatórios quando execution_mode é pod"))
-		return
-	}
-
-	engine, ok := dbEngines[req.Engine]
+	engine, ok := validateDBTestRequest(c, &req)
 	if !ok {
-		c.JSON(http.StatusBadRequest, errorResponse("INVALID_ENGINE", "engine deve ser postgres, mysql, mongodb ou redis"))
 		return
-	}
-
-	req.Auth.Mode = strings.ToLower(strings.TrimSpace(req.Auth.Mode))
-	if req.Auth.Mode == "" {
-		req.Auth.Mode = "none"
-	}
-	switch req.Auth.Mode {
-	case "none", "userpass", "connstring":
-	default:
-		c.JSON(http.StatusBadRequest, errorResponse("INVALID_AUTH_MODE", "auth.mode deve ser none, userpass ou connstring"))
-		return
-	}
-
-	if req.Auth.Mode == "connstring" {
-		if req.Auth.ConnStringRef != nil {
-			req.Auth.ConnStringRef.Kind = strings.ToLower(strings.TrimSpace(req.Auth.ConnStringRef.Kind))
-			if req.Auth.ConnStringRef.Kind == "" {
-				req.Auth.ConnStringRef.Kind = "configmap"
-			}
-			if req.Auth.ConnStringRef.Kind != "configmap" && req.Auth.ConnStringRef.Kind != "secret" {
-				c.JSON(http.StatusBadRequest, errorResponse("INVALID_CONNSTRING_REF_KIND", "connstring_ref.kind deve ser configmap ou secret"))
-				return
-			}
-			req.Auth.ConnStringRef.Namespace = strings.TrimSpace(req.Auth.ConnStringRef.Namespace)
-			req.Auth.ConnStringRef.Name = strings.TrimSpace(req.Auth.ConnStringRef.Name)
-			if req.Auth.ConnStringRef.Namespace == "" || req.Auth.ConnStringRef.Name == "" {
-				c.JSON(http.StatusBadRequest, errorResponse("MISSING_CONNSTRING_REF", "connstring_ref precisa de namespace e name"))
-				return
-			}
-		} else {
-			req.Auth.ConnectionString = strings.TrimSpace(req.Auth.ConnectionString)
-			if req.Auth.ConnectionString == "" {
-				c.JSON(http.StatusBadRequest, errorResponse("MISSING_CONNSTRING", "auth.connection_string ou auth.connstring_ref é obrigatório quando auth.mode é connstring"))
-				return
-			}
-		}
-		if req.HostConfigMapRef != nil {
-			c.JSON(http.StatusBadRequest, errorResponse("INVALID_HOST_SOURCE", "host_configmap_ref não se aplica quando auth.mode é connstring — a connection string já embute host/porta"))
-			return
-		}
-	} else if req.HostConfigMapRef != nil {
-		req.HostConfigMapRef.Namespace = strings.TrimSpace(req.HostConfigMapRef.Namespace)
-		req.HostConfigMapRef.Name = strings.TrimSpace(req.HostConfigMapRef.Name)
-		if req.HostConfigMapRef.Namespace == "" || req.HostConfigMapRef.Name == "" {
-			c.JSON(http.StatusBadRequest, errorResponse("MISSING_CONFIGMAP_REF", "host_configmap_ref precisa de namespace e name"))
-			return
-		}
-	} else if req.Host == "" || req.Port <= 0 {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_HOST_PORT", "host e port são obrigatórios quando auth.mode não é connstring e host_configmap_ref não foi informado"))
-		return
-	}
-
-	if req.Auth.Mode == "userpass" && req.Auth.SecretRef != nil {
-		req.Auth.SecretRef.Namespace = strings.TrimSpace(req.Auth.SecretRef.Namespace)
-		req.Auth.SecretRef.Name = strings.TrimSpace(req.Auth.SecretRef.Name)
-		if req.Auth.SecretRef.Namespace == "" || req.Auth.SecretRef.Name == "" {
-			c.JSON(http.StatusBadRequest, errorResponse("MISSING_SECRET_REF", "secret_ref precisa de namespace e name"))
-			return
-		}
-	}
-
-	// No modo "local" cluster/namespace/deployment não são necessários pro teste em si (roda
-	// direto no host do servidor), MAS qualquer referência de Secret/ConfigMap ainda precisa de
-	// um cluster pra ser lida via API do K8s.
-	usesK8sRef := (req.Auth.Mode == "userpass" && req.Auth.SecretRef != nil) ||
-		(req.Auth.Mode == "connstring" && req.Auth.ConnStringRef != nil) ||
-		req.HostConfigMapRef != nil
-	if req.Cluster == "" && usesK8sRef {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_CLUSTER", "cluster é obrigatório quando secret_ref/host_configmap_ref/connstring_ref é usado"))
-		return
-	}
-
-	if req.TimeoutMs <= 0 {
-		req.TimeoutMs = dbTestDefaultTimeoutMs
-	}
-	if req.TimeoutMs > dbTestMaxTimeoutMs {
-		req.TimeoutMs = dbTestMaxTimeoutMs
 	}
 
 	userInfo := GetUserInfoForHistory(c)
@@ -1250,6 +1543,132 @@ func (h *DBTestHandler) Run(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"session_id": sessionID})
+}
+
+// validateDBTestRequest valida e normaliza os campos de RunDBTestRequest compartilhados entre
+// Run (assíncrono, via SSE) e Preview (síncrono, amostra de dados de uma tabela/collection/chave
+// específica) — evita duplicar ~100 linhas de validação entre os dois. Escreve a resposta de erro
+// e devolve ok=false na primeira falha; devolve o dbEngine resolvido quando tudo é válido.
+func validateDBTestRequest(c *gin.Context, req *RunDBTestRequest) (dbEngine, bool) {
+	req.ExecutionMode = strings.ToLower(strings.TrimSpace(req.ExecutionMode))
+	if req.ExecutionMode == "" {
+		req.ExecutionMode = "pod"
+	}
+	if req.ExecutionMode != "pod" && req.ExecutionMode != "local" {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_EXECUTION_MODE", "execution_mode deve ser pod ou local"))
+		return dbEngine{}, false
+	}
+
+	req.Cluster = strings.TrimSpace(req.Cluster)
+	req.Namespace = strings.TrimSpace(req.Namespace)
+	req.Deployment = strings.TrimSpace(req.Deployment)
+	req.Engine = strings.ToLower(strings.TrimSpace(req.Engine))
+	req.Host = strings.TrimSpace(req.Host)
+	if req.Engine == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "engine é obrigatório"))
+		return dbEngine{}, false
+	}
+	if req.ExecutionMode == "pod" && (req.Cluster == "" || req.Namespace == "" || req.Deployment == "") {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster, namespace e deployment são obrigatórios quando execution_mode é pod"))
+		return dbEngine{}, false
+	}
+
+	engine, engineOk := dbEngines[req.Engine]
+	if !engineOk {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_ENGINE", "engine deve ser postgres, mysql, mongodb ou redis"))
+		return dbEngine{}, false
+	}
+
+	req.Auth.Mode = strings.ToLower(strings.TrimSpace(req.Auth.Mode))
+	if req.Auth.Mode == "" {
+		req.Auth.Mode = "none"
+	}
+	switch req.Auth.Mode {
+	case "none", "userpass", "connstring":
+	default:
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_AUTH_MODE", "auth.mode deve ser none, userpass ou connstring"))
+		return dbEngine{}, false
+	}
+
+	req.Auth.AuthMechanism = strings.ToUpper(strings.TrimSpace(req.Auth.AuthMechanism))
+	if req.Auth.AuthMechanism != "" {
+		if req.Engine != "mongodb" || req.Auth.Mode != "userpass" {
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_AUTH_MECHANISM", "auth_mechanism só se aplica ao engine mongodb com auth.mode userpass"))
+			return dbEngine{}, false
+		}
+		if !dbValidMongoAuthMechanisms[req.Auth.AuthMechanism] {
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_AUTH_MECHANISM", "auth_mechanism deve ser SCRAM-SHA-1 ou SCRAM-SHA-256"))
+			return dbEngine{}, false
+		}
+	}
+
+	if req.Auth.Mode == "connstring" {
+		if req.Auth.ConnStringRef != nil {
+			req.Auth.ConnStringRef.Kind = strings.ToLower(strings.TrimSpace(req.Auth.ConnStringRef.Kind))
+			if req.Auth.ConnStringRef.Kind == "" {
+				req.Auth.ConnStringRef.Kind = "configmap"
+			}
+			if req.Auth.ConnStringRef.Kind != "configmap" && req.Auth.ConnStringRef.Kind != "secret" {
+				c.JSON(http.StatusBadRequest, errorResponse("INVALID_CONNSTRING_REF_KIND", "connstring_ref.kind deve ser configmap ou secret"))
+				return dbEngine{}, false
+			}
+			req.Auth.ConnStringRef.Namespace = strings.TrimSpace(req.Auth.ConnStringRef.Namespace)
+			req.Auth.ConnStringRef.Name = strings.TrimSpace(req.Auth.ConnStringRef.Name)
+			if req.Auth.ConnStringRef.Namespace == "" || req.Auth.ConnStringRef.Name == "" {
+				c.JSON(http.StatusBadRequest, errorResponse("MISSING_CONNSTRING_REF", "connstring_ref precisa de namespace e name"))
+				return dbEngine{}, false
+			}
+		} else {
+			req.Auth.ConnectionString = strings.TrimSpace(req.Auth.ConnectionString)
+			if req.Auth.ConnectionString == "" {
+				c.JSON(http.StatusBadRequest, errorResponse("MISSING_CONNSTRING", "auth.connection_string ou auth.connstring_ref é obrigatório quando auth.mode é connstring"))
+				return dbEngine{}, false
+			}
+		}
+		if req.HostConfigMapRef != nil {
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_HOST_SOURCE", "host_configmap_ref não se aplica quando auth.mode é connstring — a connection string já embute host/porta"))
+			return dbEngine{}, false
+		}
+	} else if req.HostConfigMapRef != nil {
+		req.HostConfigMapRef.Namespace = strings.TrimSpace(req.HostConfigMapRef.Namespace)
+		req.HostConfigMapRef.Name = strings.TrimSpace(req.HostConfigMapRef.Name)
+		if req.HostConfigMapRef.Namespace == "" || req.HostConfigMapRef.Name == "" {
+			c.JSON(http.StatusBadRequest, errorResponse("MISSING_CONFIGMAP_REF", "host_configmap_ref precisa de namespace e name"))
+			return dbEngine{}, false
+		}
+	} else if req.Host == "" || req.Port <= 0 {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_HOST_PORT", "host e port são obrigatórios quando auth.mode não é connstring e host_configmap_ref não foi informado"))
+		return dbEngine{}, false
+	}
+
+	if req.Auth.Mode == "userpass" && req.Auth.SecretRef != nil {
+		req.Auth.SecretRef.Namespace = strings.TrimSpace(req.Auth.SecretRef.Namespace)
+		req.Auth.SecretRef.Name = strings.TrimSpace(req.Auth.SecretRef.Name)
+		if req.Auth.SecretRef.Namespace == "" || req.Auth.SecretRef.Name == "" {
+			c.JSON(http.StatusBadRequest, errorResponse("MISSING_SECRET_REF", "secret_ref precisa de namespace e name"))
+			return dbEngine{}, false
+		}
+	}
+
+	// No modo "local" cluster/namespace/deployment não são necessários pro teste em si (roda
+	// direto no host do servidor), MAS qualquer referência de Secret/ConfigMap ainda precisa de
+	// um cluster pra ser lida via API do K8s.
+	usesK8sRef := (req.Auth.Mode == "userpass" && req.Auth.SecretRef != nil) ||
+		(req.Auth.Mode == "connstring" && req.Auth.ConnStringRef != nil) ||
+		req.HostConfigMapRef != nil
+	if req.Cluster == "" && usesK8sRef {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_CLUSTER", "cluster é obrigatório quando secret_ref/host_configmap_ref/connstring_ref é usado"))
+		return dbEngine{}, false
+	}
+
+	if req.TimeoutMs <= 0 {
+		req.TimeoutMs = dbTestDefaultTimeoutMs
+	}
+	if req.TimeoutMs > dbTestMaxTimeoutMs {
+		req.TimeoutMs = dbTestMaxTimeoutMs
+	}
+
+	return engine, true
 }
 
 // Stream conecta o cliente ao fluxo SSE de um teste em andamento.
@@ -1359,6 +1778,7 @@ func (h *DBTestHandler) runTest(ctx context.Context, sessionID string, req RunDB
 		ConnStr:         req.Auth.ConnectionString,
 		UseTLS:          req.Auth.UseTLS,
 		SkipTLSVerify:   req.Auth.SkipTLSVerify,
+		AuthMechanism:   req.Auth.AuthMechanism,
 		RedisKeyPattern: req.RedisKeyPattern,
 	}
 	if req.Auth.Mode == "userpass" {

@@ -1938,6 +1938,9 @@ export interface DBAuthConfig {
   database?: string; // opcional — usado pra conectar e/ou escopar o browse
   use_tls: boolean;
   skip_tls_verify: boolean;
+  // auth_mechanism só se aplica ao engine mongodb com mode="userpass" — SCRAM-SHA-1 ou
+  // SCRAM-SHA-256; vazio deixa o mongosh negociar automaticamente.
+  auth_mechanism?: "SCRAM-SHA-1" | "SCRAM-SHA-256";
 }
 
 export type DBExecutionMode = 'pod' | 'local';
@@ -1973,6 +1976,38 @@ export interface RunDBTestResponse {
   session_id: string;
 }
 
+// ─── Amostra de dados (Preview) — POST /db-test/preview, síncrono, sem SSE ─────
+
+export interface DBPreviewRequest extends RunDBTestRequest {
+  // database é o banco/índice onde object vive — mesmo campo/fallback de connstring de
+  // auth.database (ver effectiveDatabase no backend); pro Redis é o índice 0-15.
+  database: string;
+  // object é o nome da tabela/collection/chave a visualizar.
+  object: string;
+  limit?: number; // default 20, teto 100 (aplicado no backend)
+  // offset pagina o resultado (LIMIT/OFFSET ou skip/limit) — 0-based.
+  offset?: number;
+  // sort_column ordena antes de paginar — vazio = ordem "natural" do banco (não garantida entre
+  // páginas). Redis ignora fora de list/zset.
+  sort_column?: string;
+  sort_dir?: 'asc' | 'desc';
+}
+
+export interface DBPreviewResponse {
+  status: 'ok' | 'failed';
+  message: string;
+  // rows vem preenchido quando o engine consegue estruturar a saída (Postgres/MySQL/Mongo,
+  // sempre; Redis não — mostrar raw_output como texto puro nesse caso).
+  rows?: Record<string, unknown>[];
+  truncated?: boolean;
+  // has_more é o mesmo sinal de truncated, mas pra paginação — heurística "página cheia", sem
+  // COUNT(*) à parte, então não é garantia de que existe próxima página.
+  has_more?: boolean;
+  offset: number;
+  limit: number;
+  raw_output?: string;
+}
+
 export type DBStageStatus = 'ok' | 'tcp_failed' | 'auth_failed' | 'tls_failed' | 'unknown_failed';
 
 export interface DBStageResult {
@@ -2004,6 +2039,11 @@ export interface DBBrowseResult {
   message: string;
   object_type?: 'database' | 'table' | 'collection' | 'key';
   objects?: DBBrowseObject[];
+  // database é o banco (ou índice, no Redis) efetivamente usado nessa listagem — só vem quando
+  // object_type != "database" (nesse nível a lista JÁ É a lista de bancos). Cobre o caso do
+  // banco ter vindo do fallback de connection string (campo "Database" vazio) — sem isso não
+  // dava pra saber de qual banco as tabelas/collections abaixo pertencem.
+  database?: string;
   // truncated = true só acontece no Redis (SCAN sobre um keyspace grande) — a lista é uma
   // AMOSTRA, não uma listagem completa.
   truncated?: boolean;
