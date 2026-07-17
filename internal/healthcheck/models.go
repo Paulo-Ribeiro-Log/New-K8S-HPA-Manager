@@ -226,6 +226,11 @@ type CorrelatedK8sIssue struct {
 	Message      string       `json:"message"`
 	Severity     Severity     `json:"severity"`
 	Suggestions  []string     `json:"suggestions,omitempty"`
+	// Preenchidos apenas quando ResourceKind == "Event" — permitem ao prompt de IA citar a
+	// contagem bruta e distinguir problema crônico de agudo (ver EventChronicity).
+	Count          int32            `json:"count,omitempty"`
+	FirstTimestamp time.Time        `json:"first_timestamp,omitempty"`
+	Chronicity     *EventChronicity `json:"chronicity,omitempty"`
 }
 
 // CorrelatedHealthItem une sintomas K8s com problems Dynatrace para o mesmo workload.

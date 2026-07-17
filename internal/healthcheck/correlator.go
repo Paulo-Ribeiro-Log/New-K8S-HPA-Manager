@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"context"
 	"sort"
 	"strings"
 )
@@ -65,7 +66,10 @@ func maxSeverityFromDT(problems []DynatraceHealth) Severity {
 //   - workloads com problems DT sem issue K8s correspondente — Correlated=false, K8sIssues vazio
 //
 // Só é chamado quando DynatraceResults está preenchido (check_dynatrace=true).
-func Correlate(result *HealthCheckResult) []CorrelatedHealthItem {
+//
+// store é usado para consultar o histórico crônico/agudo de cada evento (ver EventChronicity) —
+// pode ser nil (ex: testes), caso em que a classificação simplesmente não é preenchida.
+func Correlate(ctx context.Context, store *HealthCheckStorage, result *HealthCheckResult) []CorrelatedHealthItem {
 	if result == nil || len(result.DynatraceResults) == 0 {
 		return nil
 	}
@@ -129,14 +133,22 @@ func Correlate(result *HealthCheckResult) []CorrelatedHealthItem {
 		if e.Status == StatusHealthy || e.InvolvedKind != "Deployment" {
 			continue
 		}
-		addK8sIssue(e.Namespace, e.InvolvedName, CorrelatedK8sIssue{
-			ResourceKind: "Event",
-			ResourceName: e.InvolvedName,
-			Status:       e.Status,
-			Message:      e.Message,
-			Severity:     e.Severity,
-			Suggestions:  e.Suggestions,
-		})
+		issue := CorrelatedK8sIssue{
+			ResourceKind:   "Event",
+			ResourceName:   e.InvolvedName,
+			Status:         e.Status,
+			Message:        e.Message,
+			Severity:       e.Severity,
+			Suggestions:    e.Suggestions,
+			Count:          e.Count,
+			FirstTimestamp: e.FirstTimestamp,
+		}
+		if store != nil {
+			if chronicity, err := store.GetEventChronicity(ctx, result.Cluster, e.Namespace, e.InvolvedKind, e.InvolvedName, e.Reason); err == nil {
+				issue.Chronicity = chronicity
+			}
+		}
+		addK8sIssue(e.Namespace, e.InvolvedName, issue)
 	}
 
 	// 2. Coletar DT problems por workload ───────────────────────────────────────

@@ -716,7 +716,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 	// Correlacionar K8s ↔ Dynatrace (apenas quando DT está habilitado e retornou dados)
 	if req.CheckDynatrace {
-		result.CorrelatedItems = Correlate(result)
+		result.CorrelatedItems = Correlate(ctx, o.storage, result)
 		if len(result.CorrelatedItems) > 0 {
 			correlated := 0
 			for _, ci := range result.CorrelatedItems {

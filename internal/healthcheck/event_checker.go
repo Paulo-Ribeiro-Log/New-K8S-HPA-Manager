@@ -31,6 +31,16 @@ type EventHealth struct {
 	Status      HealthStatus `json:"status"` // Para compatibilidade com outros checkers
 }
 
+// EventChronicity classifica um evento K8s como crônico ou agudo, a partir do histórico acumulado
+// entre execuções de Health Check persistido em health_check_event_history (ver
+// HealthCheckStorage.GetEventChronicity em storage.go) — o Count/FirstTimestamp de um EventHealth
+// sozinho não é suficiente porque a K8s Events API só retém eventos por poucas horas por padrão.
+type EventChronicity struct {
+	CumulativeCount int64     `json:"cumulative_count"`
+	FirstSeenEver   time.Time `json:"first_seen_ever"`
+	IsChronic       bool      `json:"is_chronic"`
+}
+
 // CriticalEventReasons lista de reasons que são considerados críticos
 var CriticalEventReasons = map[string]bool{
 	// Scheduling

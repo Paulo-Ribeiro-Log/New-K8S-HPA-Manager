@@ -355,14 +355,15 @@ func enrichWithContext(ctx context.Context, client *dtclient.Client, results []D
 
 	wg.Wait()
 
-	// Métricas apenas para AVAILABILITY e ERROR (os mais críticos)
+	// Métricas para AVAILABILITY, ERROR e PERFORMANCE (severidades onde CPU/memória de
+	// node/pod tende a explicar a causa raiz — ex: pressão de recursos gerando degradação)
 	metricsCtx, metricsCancel := context.WithTimeout(ctx, time.Duration(metricsTimeoutSec)*time.Second)
 	defer metricsCancel()
 
 	var mwg sync.WaitGroup
 	for _, idx := range indices {
 		sev := results[idx].DTSeverity
-		if sev != "AVAILABILITY" && sev != "ERROR" {
+		if sev != "AVAILABILITY" && sev != "ERROR" && sev != "PERFORMANCE" {
 			continue
 		}
 		mwg.Add(1)
@@ -402,6 +403,14 @@ func enrichWithContext(ctx context.Context, client *dtclient.Client, results []D
 					case "throughput":
 						if maxVal > summary["throughput_rpm"] {
 							summary["throughput_rpm"] = maxVal
+						}
+					default:
+						// Demais chaves (cpu_milli, memory_mb, node_cpu, node_pods, pod_restarts,
+						// host_cpu, host_mem_avail etc. — ver metricsForEntityType em
+						// internal/dynatrace/metrics.go) eram descartadas aqui antes; agora ficam
+						// disponíveis pro prompt de IA sob a própria chave da métrica.
+						if maxVal > summary[series.Key] {
+							summary[series.Key] = maxVal
 						}
 					}
 				}

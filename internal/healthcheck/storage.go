@@ -106,6 +106,23 @@ func (s *HealthCheckStorage) createTable() error {
 	CREATE INDEX IF NOT EXISTS idx_events_session ON health_check_events(session_id);
 	CREATE INDEX IF NOT EXISTS idx_events_cluster ON health_check_events(cluster);
 	CREATE INDEX IF NOT EXISTS idx_events_timestamp ON health_check_events(timestamp DESC);
+
+	-- Histórico acumulado de eventos K8s entre execuções de Health Check, para distinguir
+	-- problema crônico de agudo (a K8s Events API só retém eventos por poucas horas — ver
+	-- UpsertEventHistory/GetEventChronicity para a lógica de acumulação entre ciclos).
+	CREATE TABLE IF NOT EXISTS health_check_event_history (
+		cluster          TEXT NOT NULL,
+		namespace        TEXT NOT NULL,
+		involved_kind    TEXT NOT NULL,
+		involved_name    TEXT NOT NULL,
+		reason           TEXT NOT NULL,
+		cumulative_count INTEGER NOT NULL,
+		last_known_count INTEGER NOT NULL,
+		first_seen_ever  TIMESTAMP NOT NULL,
+		last_seen        TIMESTAMP NOT NULL,
+		updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (cluster, namespace, involved_kind, involved_name, reason)
+	);
 	`
 
 	_, err := s.db.Exec(query)
@@ -120,6 +137,100 @@ func (s *HealthCheckStorage) createTable() error {
 	}
 
 	return nil
+}
+
+// Thresholds de classificação crônico-vs-agudo (ver EventChronicity, event_checker.go).
+const (
+	eventChronicCountThreshold = 500
+	eventChronicAge            = 30 * 24 * time.Hour
+)
+
+// UpsertEventHistory atualiza o histórico acumulado de um evento K8s entre execuções de Health
+// Check. O Count de um EventHealth é cumulativo só dentro do ciclo de vida do objeto de evento
+// atual no apiserver — quando o objeto expira (retenção padrão de poucas horas) e é recriado, o
+// contador reseta a partir de 1. Por isso não dá pra somar Count ingenuamente a cada execução.
+//
+// Invariante mantida em cumulative_count: "soma de todos os ciclos já FECHADOS + Count do ciclo
+// atual (ainda vivo)". A cada upsert comparamos currentCount com o last_known_count da execução
+// anterior:
+//   - mesmo ciclo (currentCount >= lastKnown): o Count do ciclo atual só cresceu — substitui a
+//     contribuição antiga dele no total (newCumulative = cumulative - lastKnown + currentCount).
+//   - ciclo reciclado (currentCount < lastKnown): o ciclo anterior fechou com lastKnown, valor que
+//     JÁ está contabilizado em cumulative (foi somado quando esse ciclo era o "atual") — só soma a
+//     contribuição do novo ciclo em cima (newCumulative = cumulative + currentCount).
+//
+// Falha aqui nunca deve bloquear o Save do resultado principal — quem chama trata o erro como
+// aviso, não como falha fatal.
+func (s *HealthCheckStorage) UpsertEventHistory(ctx context.Context, cluster, namespace string, event EventHealth) error {
+	var cumulative, lastKnown int64
+	var firstSeenEver time.Time
+	err := s.db.QueryRowContext(ctx, `
+		SELECT cumulative_count, last_known_count, first_seen_ever
+		FROM health_check_event_history
+		WHERE cluster = ? AND namespace = ? AND involved_kind = ? AND involved_name = ? AND reason = ?
+	`, cluster, namespace, event.InvolvedKind, event.InvolvedName, event.Reason).Scan(&cumulative, &lastKnown, &firstSeenEver)
+
+	currentCount := int64(event.Count)
+
+	if err == sql.ErrNoRows {
+		_, execErr := s.db.ExecContext(ctx, `
+			INSERT INTO health_check_event_history
+				(cluster, namespace, involved_kind, involved_name, reason, cumulative_count, last_known_count, first_seen_ever, last_seen)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, cluster, namespace, event.InvolvedKind, event.InvolvedName, event.Reason, currentCount, currentCount, event.FirstTimestamp, event.LastTimestamp)
+		return execErr
+	}
+	if err != nil {
+		return fmt.Errorf("failed to query event history: %w", err)
+	}
+
+	var newCumulative int64
+	if currentCount < lastKnown {
+		// Ciclo reciclado: o lastKnown antigo já está em cumulative — só soma o novo ciclo.
+		newCumulative = cumulative + currentCount
+	} else {
+		// Mesmo ciclo: substitui a contribuição antiga (lastKnown) pela atual (currentCount).
+		newCumulative = cumulative - lastKnown + currentCount
+	}
+	// first_seen_ever nunca regride — mantém o mínimo já observado entre execuções.
+	firstSeen := firstSeenEver
+	if event.FirstTimestamp.Before(firstSeen) {
+		firstSeen = event.FirstTimestamp
+	}
+
+	_, execErr := s.db.ExecContext(ctx, `
+		UPDATE health_check_event_history
+		SET cumulative_count = ?, last_known_count = ?, first_seen_ever = ?, last_seen = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE cluster = ? AND namespace = ? AND involved_kind = ? AND involved_name = ? AND reason = ?
+	`, newCumulative, currentCount, firstSeen, event.LastTimestamp, cluster, namespace, event.InvolvedKind, event.InvolvedName, event.Reason)
+	return execErr
+}
+
+// GetEventChronicity retorna a classificação crônico/agudo de um evento a partir do histórico
+// acumulado entre execuções (ver UpsertEventHistory). Retorna (nil, nil) quando o evento nunca foi
+// visto antes — não é erro, é o caso normal na primeira vez que esse evento aparece.
+func (s *HealthCheckStorage) GetEventChronicity(ctx context.Context, cluster, namespace, involvedKind, involvedName, reason string) (*EventChronicity, error) {
+	var cumulative int64
+	var firstSeenEver time.Time
+	err := s.db.QueryRowContext(ctx, `
+		SELECT cumulative_count, first_seen_ever
+		FROM health_check_event_history
+		WHERE cluster = ? AND namespace = ? AND involved_kind = ? AND involved_name = ? AND reason = ?
+	`, cluster, namespace, involvedKind, involvedName, reason).Scan(&cumulative, &firstSeenEver)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query event chronicity: %w", err)
+	}
+
+	isChronic := cumulative >= eventChronicCountThreshold || time.Since(firstSeenEver) >= eventChronicAge
+	return &EventChronicity{
+		CumulativeCount: cumulative,
+		FirstSeenEver:   firstSeenEver,
+		IsChronic:       isChronic,
+	}, nil
 }
 
 // extraResultFields agrupa campos que não cabem nas colunas individuais.
@@ -200,6 +311,18 @@ func (s *HealthCheckStorage) Save(ctx context.Context, result *HealthCheckResult
 		Str("cluster", result.Cluster).
 		Int("total_checks", result.TotalChecks).
 		Msg("Health check result saved to database")
+
+	// Atualiza o histórico crônico/agudo de cada evento — best-effort, nunca bloqueia o save
+	// principal (o resultado do health check já está salvo mesmo se isso falhar).
+	for _, e := range result.EventResults {
+		if err := s.UpsertEventHistory(ctx, result.Cluster, e.Namespace, e); err != nil {
+			log.Warn().Err(err).
+				Str("cluster", result.Cluster).
+				Str("reason", e.Reason).
+				Str("involved_name", e.InvolvedName).
+				Msg("[HealthCheck] Falha ao atualizar histórico crônico/agudo do evento")
+		}
+	}
 
 	return nil
 }
