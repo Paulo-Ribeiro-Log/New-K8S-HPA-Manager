@@ -4,7 +4,11 @@ import { DiffEditor } from "@monaco-editor/react";
 import type { Monaco } from "@monaco-editor/react";
 import type * as MonacoEditorNS from "monaco-editor";
 import { configureMonacoYaml } from "monaco-yaml";
+import { toast } from "sonner";
 import { explainCronExpression, isValidCronExpression, textToCron } from "@/lib/cronParser";
+import { scanSecretForWhitespaceIssues } from "@/lib/secretWhitespaceCheck";
+
+const SECRET_KIND_REGEX = /^kind:\s*Secret\b/m;
 
 // configureMonacoYaml é global — deve ser chamado UMA vez por sessão.
 // Chamadas repetidas corrompem o worker YAML e podem remover actions do contexto.
@@ -23,6 +27,7 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
   const [mounted, setMounted] = useState(false);
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const diffEditorRef = useRef<MonacoEditorNS.editor.IStandaloneDiffEditor | null>(null);
+  const whitespaceDecorationsRef = useRef<MonacoEditorNS.editor.IEditorDecorationsCollection | null>(null);
 
   const handleBeforeMount: BeforeMount = (monacoInstance: Monaco) => {
     if (_yamlConfigured) return;
@@ -181,6 +186,70 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
         },
       });
     }
+
+    // Verificação de espaços em branco em valores base64 — só faz sentido (e só aparece no menu
+    // de contexto) quando o YAML aberto é um Secret; funciona mesmo em modo readOnly, já que só lê
+    // e decora, nunca edita o conteúdo.
+    const isSecretYamlKey = editor.createContextKey<boolean>("isSecretYaml", SECRET_KIND_REGEX.test(editor.getValue()));
+    editor.onDidChangeModelContent(() => {
+      isSecretYamlKey.set(SECRET_KIND_REGEX.test(editor.getValue()));
+      if (whitespaceDecorationsRef.current) {
+        whitespaceDecorationsRef.current.clear();
+        whitespaceDecorationsRef.current = null;
+      }
+    });
+
+    editor.addAction({
+      id: "check-base64-whitespace-action",
+      label: "Verificar espaços em branco (base64)",
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 5,
+      precondition: "isSecretYaml",
+      run: (ed) => {
+        if (whitespaceDecorationsRef.current) {
+          whitespaceDecorationsRef.current.clear();
+          whitespaceDecorationsRef.current = null;
+        }
+
+        const results = scanSecretForWhitespaceIssues(ed.getValue());
+        if (results.length === 0) {
+          toast.success("Nenhum espaço em branco suspeito encontrado nos valores decodificados");
+          return;
+        }
+
+        const issueLabel = (issues: ("leading" | "trailing")[]) =>
+          issues.map((issue) => (issue === "leading" ? "início" : "fim")).join("/");
+
+        const decorations: MonacoEditorNS.editor.IModelDeltaDecoration[] = results.map((r) => {
+          const message = {
+            value:
+              `Espaço em branco suspeito no **${issueLabel(r.issues)}** do valor decodificado — comum quando ` +
+              `o secret foi criado com \`echo\` sem \`-n\`.\n\nPrévia: \`${r.decodedPreview}\``,
+          };
+          return {
+            range: new monacoInstance.Range(r.lineNumber, 1, r.lineNumber, 1),
+            options: {
+              isWholeLine: true,
+              className: "monaco-whitespace-issue-line",
+              glyphMarginClassName: "monaco-whitespace-issue-glyph",
+              glyphMarginHoverMessage: message,
+              hoverMessage: message,
+            },
+          };
+        });
+        whitespaceDecorationsRef.current = ed.createDecorationsCollection(decorations);
+
+        const MAX_LISTED = 5;
+        const listed = results
+          .slice(0, MAX_LISTED)
+          .map((r) => `${r.key} (${issueLabel(r.issues)})`)
+          .join(", ");
+        const suffix = results.length > MAX_LISTED ? ` e mais ${results.length - MAX_LISTED}` : "";
+        toast.warning(`${results.length} chave(s) com espaço em branco suspeito: ${listed}${suffix}`, {
+          description: "Veja o ícone de aviso na margem esquerda das linhas destacadas.",
+        });
+      },
+    });
 
     setMounted(true);
   };

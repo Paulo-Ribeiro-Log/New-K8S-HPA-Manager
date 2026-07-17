@@ -151,3 +151,15 @@ All colors MUST be HSL.
 .animate-pulse-slow {
   animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+/* Marcação de espaço em branco suspeito em valores base64 (Monaco, aba Secrets) */
+.monaco-whitespace-issue-line {
+  background-color: rgba(245, 158, 11, 0.12);
+}
+
+.monaco-whitespace-issue-glyph::before {
+  content: "\26A0";
+  color: #f59e0b;
+  font-size: 13px;
+  margin-left: 2px;
+}
