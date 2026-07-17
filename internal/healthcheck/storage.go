@@ -238,6 +238,7 @@ type extraResultFields struct {
 	EventResults    []EventHealth         `json:"event_results,omitempty"`
 	HPAResults      []HPAHealth           `json:"hpa_results,omitempty"`
 	PVCResults      []PVCHealth           `json:"pvc_results,omitempty"`
+	NodeResults     []NodeHealth          `json:"node_results,omitempty"`
 	DynatraceResults []DynatraceHealth    `json:"dynatrace_results,omitempty"`
 	CorrelatedItems []CorrelatedHealthItem `json:"correlated_items,omitempty"`
 	OneAgentSignals []OneAgentSignal       `json:"oneagent_signals"` // sem omitempty: [] != null
@@ -266,6 +267,7 @@ func (s *HealthCheckStorage) Save(ctx context.Context, result *HealthCheckResult
 		EventResults:     result.EventResults,
 		HPAResults:       result.HPAResults,
 		PVCResults:       result.PVCResults,
+		NodeResults:      result.NodeResults,
 		DynatraceResults: result.DynatraceResults,
 		CorrelatedItems:  result.CorrelatedItems,
 		OneAgentSignals:  result.OneAgentSignals,
@@ -381,6 +383,7 @@ func (s *HealthCheckStorage) Get(ctx context.Context, id string) (*HealthCheckRe
 		result.EventResults = extra.EventResults
 		result.HPAResults = extra.HPAResults
 		result.PVCResults = extra.PVCResults
+		result.NodeResults = extra.NodeResults
 		result.DynatraceResults = extra.DynatraceResults
 		result.CorrelatedItems = extra.CorrelatedItems
 		result.OneAgentSignals = extra.OneAgentSignals
@@ -465,6 +468,7 @@ func (s *HealthCheckStorage) GetHistory(ctx context.Context, cluster, namespace 
 			result.EventResults = extra.EventResults
 			result.HPAResults = extra.HPAResults
 			result.PVCResults = extra.PVCResults
+			result.NodeResults = extra.NodeResults
 			result.DynatraceResults = extra.DynatraceResults
 			result.CorrelatedItems = extra.CorrelatedItems
 			result.OneAgentSignals = extra.OneAgentSignals

@@ -56,8 +56,33 @@ func realisticCorrelatedItem() healthcheck.CorrelatedHealthItem {
 	}
 }
 
+// realisticNodes replica a tabela de utilização do exemplo de relatório que motivou a Fase 2:
+// baixa ocupação de pods, mas nós menores ("capacidade 17") mais perto do limite.
+func realisticNodes() []healthcheck.NodeHealth {
+	return []healthcheck.NodeHealth{
+		{
+			Name:              "ip-10-0-13-130",
+			Status:            healthcheck.StatusHealthy,
+			Allocated:         healthcheck.NodeResources{Pods: 1},
+			Allocatable:       healthcheck.NodeResources{Pods: 17},
+			PodUtilization:    5.9,
+			CPUUtilization:    92.0,
+			MemoryUtilization: 88.0,
+		},
+		{
+			Name:              "ip-10-0-104-4",
+			Status:            healthcheck.StatusHealthy,
+			Allocated:         healthcheck.NodeResources{Pods: 1},
+			Allocatable:       healthcheck.NodeResources{Pods: 58},
+			PodUtilization:    2.1,
+			CPUUtilization:    15.0,
+			MemoryUtilization: 20.0,
+		},
+	}
+}
+
 func TestBuildCorrelatedItemPrompt_StructuredOutput(t *testing.T) {
-	prompt := buildCorrelatedItemPrompt(realisticCorrelatedItem())
+	prompt := buildCorrelatedItemPrompt(realisticCorrelatedItem(), realisticNodes())
 
 	checks := []struct {
 		name string
@@ -71,6 +96,9 @@ func TestBuildCorrelatedItemPrompt_StructuredOutput(t *testing.T) {
 		{"dias em aberto do problem DT", "dias em aberto"},
 		{"métrica de CPU não descartada", "cpu_milli"},
 		{"métrica de memória não descartada", "memory_mb"},
+		{"tabela de utilização dos nós", "## Utilização dos Nós"},
+		{"nó com baixa capacidade citado", "ip-10-0-13-130"},
+		{"percentual de utilização de pods do nó", "5.9%"},
 		{"instrução de 3 baldes de urgência - imediato", "### Imediato (hoje)"},
 		{"instrução de 3 baldes de urgência - curto prazo", "### Curto prazo (esta semana)"},
 		{"instrução de 3 baldes de urgência - contínuo", "### Monitoramento contínuo"},
@@ -83,9 +111,16 @@ func TestBuildCorrelatedItemPrompt_StructuredOutput(t *testing.T) {
 	}
 }
 
+func TestBuildCorrelatedItemPrompt_NoNodesOmitsSection(t *testing.T) {
+	prompt := buildCorrelatedItemPrompt(realisticCorrelatedItem(), nil)
+	if strings.Contains(prompt, "## Utilização dos Nós") {
+		t.Error("sem dados de nó (CheckNodes desabilitado), a seção não deveria aparecer no prompt")
+	}
+}
+
 func TestBuildBatchCorrelatedPrompt_StructuredOutput(t *testing.T) {
 	items := []healthcheck.CorrelatedHealthItem{realisticCorrelatedItem()}
-	prompt := buildBatchCorrelatedPrompt(items)
+	prompt := buildBatchCorrelatedPrompt(items, realisticNodes())
 
 	checks := []struct {
 		name string
@@ -96,6 +131,7 @@ func TestBuildBatchCorrelatedPrompt_StructuredOutput(t *testing.T) {
 		{"citação verbatim da mensagem do evento", "CRASHLOOP: Pod envvias-hlg/multicd-3p-d6f95bbff-f8zj9"},
 		{"marcação de problema crônico", "Problema crônico"},
 		{"pedido de tabela-resumo", "Tabela-resumo"},
+		{"tabela de utilização dos nós", "## Utilização dos Nós"},
 		{"instrução de 3 baldes de urgência - imediato", "### Imediato (hoje)"},
 	}
 
@@ -103,6 +139,12 @@ func TestBuildBatchCorrelatedPrompt_StructuredOutput(t *testing.T) {
 		if !strings.Contains(prompt, c.want) {
 			t.Errorf("%s: esperava encontrar %q no prompt, não encontrado.\n--- prompt completo ---\n%s", c.name, c.want, prompt)
 		}
+	}
+}
+
+func TestBuildNodeUtilizationSection_Empty(t *testing.T) {
+	if got := buildNodeUtilizationSection(nil); got != "" {
+		t.Errorf("esperava string vazia sem nodes, got %q", got)
 	}
 }
 

@@ -2936,11 +2936,12 @@ class APIClient {
    */
   async analyzeCorrelatedItem(
     item: import("../../types/healthcheck").CorrelatedHealthItem,
-    aiEmail: string
+    aiEmail: string,
+    nodes?: import("../../types/healthcheck").NodeHealth[]
   ): Promise<{ success: boolean; analysis: string; analyzed_at: string }> {
     return this.request("/healthcheck/correlated/analyze", {
       method: "POST",
-      body: JSON.stringify({ ai_email: aiEmail, item }),
+      body: JSON.stringify({ ai_email: aiEmail, item, nodes }),
     });
   }
 
@@ -2950,11 +2951,12 @@ class APIClient {
    */
   async analyzeCorrelatedBatch(
     items: import("../../types/healthcheck").CorrelatedHealthItem[],
-    aiEmail: string
+    aiEmail: string,
+    nodes?: import("../../types/healthcheck").NodeHealth[]
   ): Promise<{ success: boolean; analysis: string; item_count: number; analyzed_at: string }> {
     return this.request("/healthcheck/correlated/analyze-batch", {
       method: "POST",
-      body: JSON.stringify({ ai_email: aiEmail, items }),
+      body: JSON.stringify({ ai_email: aiEmail, items, nodes }),
     });
   }
 

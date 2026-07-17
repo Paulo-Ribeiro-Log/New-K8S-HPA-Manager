@@ -85,6 +85,7 @@ export interface HealthCheckRequest {
   check_events: boolean; // Verificar eventos K8s (FailedScheduling, etc.)
   check_hpas: boolean;       // Verificar HPAs (min=max, métricas, scaling)
   check_pvcs: boolean;       // Verificar PVCs (status, StorageClass, access modes)
+  check_nodes?: boolean;     // Verificar capacidade/utilização dos nós (pods ativos vs. capacidade)
   check_dynatrace?: boolean;        // Verificar problems OPEN no Dynatrace
   check_oneagent_signals?: boolean; // Escanear métricas OneAgent (sem problem ativo)
 
@@ -101,6 +102,7 @@ export interface HealthCheckRequest {
   timeout_events?: number;      // Padrão: 30s
   timeout_hpas?: number;        // Padrão: 45s
   timeout_pvcs?: number;        // Padrão: 30s
+  timeout_nodes?: number;       // Padrão: 30s
 
   // Paralelismo máximo (opcional)
   max_parallel?: number;
@@ -125,6 +127,7 @@ export interface HealthCheckResult {
   event_results: EventHealth[];          // Eventos K8s críticos
   hpa_results: HPAHealth[];              // HPAs com problemas de configuração
   pvc_results: PVCHealth[];              // PVCs com problemas de configuração
+  node_results?: NodeHealth[];           // Capacidade/utilização dos nós (pods ativos vs. capacidade)
   dynatrace_results?: DynatraceHealth[]; // Problems Dynatrace correlacionados
   correlated_items?: CorrelatedHealthItem[]; // Correlação K8s ↔ Dynatrace
   oneagent_signals?: OneAgentSignal[];   // Sinais de risco detectados via OneAgent (sem problem ativo)
@@ -618,6 +621,51 @@ export interface DynatraceHistoryRecord {
   resource_metadata?: string; // JSON: { display_id, severity, impact_level, management_zones, start_time }
 }
 
+// Recursos de um node (capacidade, alocável ou já alocado)
+export interface NodeResources {
+  cpu_millis: number;   // CPU em millicores
+  memory_bytes: number; // Memória em bytes
+  pods: number;         // Número de pods
+  ephemeral_gb: number; // Storage efêmero em GB
+}
+
+// Pod afetado por problemas no node
+export interface AffectedPod {
+  name: string;
+  namespace: string;
+  status: string;
+}
+
+// Saúde/capacidade de um node do cluster
+export interface NodeHealth {
+  name: string;
+  status: HealthStatus;
+
+  ready: boolean;
+  memory_pressure: boolean;
+  disk_pressure: boolean;
+  pid_pressure: boolean;
+  network_unavailable: boolean;
+
+  capacity: NodeResources;
+  allocatable: NodeResources;
+  allocated: NodeResources; // Recursos já alocados por pods
+
+  cpu_utilization_percent: number;
+  memory_utilization_percent: number;
+  pod_utilization_percent: number;
+
+  kubelet_version: string;
+  os_image: string;
+  architecture: string;
+
+  affected_pods?: AffectedPod[];
+
+  message: string;
+  suggestions: string[];
+  checked_at: string; // ISO timestamp
+}
+
 // Problem Dynatrace correlacionado com recursos K8s do cluster
 export interface DynatraceHealth {
   problem_id: string;
@@ -647,6 +695,14 @@ export interface DynatraceHealth {
   context_fetched?: boolean;             // true se GetProblemContext foi chamado com sucesso
 }
 
+// Classificação crônico/agudo de um evento K8s, a partir do histórico acumulado entre execuções de
+// Health Check (a K8s Events API sozinha só retém eventos por poucas horas)
+export interface EventChronicity {
+  cumulative_count: number;
+  first_seen_ever: string; // ISO timestamp
+  is_chronic: boolean;
+}
+
 // Issue K8s de um workload específico para correlação bidirecional K8s ↔ Dynatrace
 export interface CorrelatedK8sIssue {
   resource_kind: string;   // "Deployment" | "HPA" | "Event"
@@ -655,6 +711,10 @@ export interface CorrelatedK8sIssue {
   message: string;
   severity: Severity;
   suggestions?: string[];
+  // Preenchidos apenas quando resource_kind === "Event"
+  count?: number;
+  first_timestamp?: string; // ISO timestamp
+  chronicity?: EventChronicity;
 }
 
 // Item correlacionado: une sintomas K8s com problems Dynatrace do mesmo workload

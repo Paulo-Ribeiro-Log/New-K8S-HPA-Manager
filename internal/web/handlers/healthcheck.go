@@ -695,6 +695,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelated(c *gin.Context) {
 	var req struct {
 		AIEmail string                           `json:"ai_email"`
 		Item    healthcheck.CorrelatedHealthItem `json:"item"`
+		Nodes   []healthcheck.NodeHealth         `json:"nodes,omitempty"` // contexto de capacidade do cluster (opcional — Fase 2)
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email e item são obrigatórios"})
@@ -710,7 +711,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelated(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
 	defer cancel()
 
-	prompt := buildCorrelatedItemPrompt(req.Item)
+	prompt := buildCorrelatedItemPrompt(req.Item, req.Nodes)
 
 	analysis, err := provider.Analyze(ctx, prompt)
 	if err != nil {
@@ -817,6 +818,27 @@ func writeDTProblem(sb *strings.Builder, p healthcheck.DynatraceHealth) {
 	}
 }
 
+// buildNodeUtilizationSection monta a tabela de utilização por nó (pods ativos / capacidade máxima
+// / % de utilização) — contexto de capacidade do CLUSTER, não específico de um workload, no mesmo
+// formato do relatório de incidente que motivou essa estrutura de prompt. Vazio quando não há dados
+// de nó (CheckNodes=false na request do Health Check, ou nenhum node retornado).
+func buildNodeUtilizationSection(nodes []healthcheck.NodeHealth) string {
+	if len(nodes) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Utilização dos Nós\n\n")
+	sb.WriteString("| Nó | Pods Ativos | Capacidade Máx | Utilização |\n")
+	sb.WriteString("|---|---|---|---|\n")
+	for _, n := range nodes {
+		sb.WriteString(fmt.Sprintf("| %s | %d | %d | %.1f%% |\n", n.Name, n.Allocated.Pods, n.Allocatable.Pods, n.PodUtilization))
+	}
+	sb.WriteString("\nSe a utilização de pods for baixa mas os nós tiverem alta utilização de CPU/memória, " +
+		"suspeite de requests/limits mal configurados nos workloads (consumindo mais do que declarado) — " +
+		"não de excesso de pods por nó.\n\n")
+	return sb.String()
+}
+
 // promptOutputInstructions é a instrução final compartilhada pelos dois prompt builders,
 // exigindo a estrutura de relatório de incidente madura: emoji de severidade, citação verbatim,
 // link causal explícito pro sintoma do usuário, e ações divididas em 3 baldes de urgência.
@@ -838,7 +860,7 @@ const promptOutputInstructions = `Estruture a resposta como um relatório de inc
 
 Não invente números ou IDs de problem que não estejam nos dados fornecidos acima.`
 
-func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem) string {
+func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem, nodes []healthcheck.NodeHealth) string {
 	var sb strings.Builder
 
 	sb.WriteString("Você é um especialista em Kubernetes e observabilidade, escrevendo um relatório de incidente para um time de SRE. Analise o item de saúde correlacionado entre K8s e Dynatrace abaixo.\n\n")
@@ -867,6 +889,7 @@ func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem) string {
 		sb.WriteString("\n")
 	}
 
+	sb.WriteString(buildNodeUtilizationSection(nodes))
 	sb.WriteString(promptOutputInstructions)
 
 	return sb.String()
@@ -884,6 +907,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelatedBatch(c *gin.Context) {
 	var req struct {
 		AIEmail string                             `json:"ai_email"`
 		Items   []healthcheck.CorrelatedHealthItem `json:"items"`
+		Nodes   []healthcheck.NodeHealth           `json:"nodes,omitempty"` // contexto de capacidade do cluster (opcional — Fase 2)
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" || len(req.Items) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email e items são obrigatórios"})
@@ -903,7 +927,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelatedBatch(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 120*time.Second)
 	defer cancel()
 
-	prompt := buildBatchCorrelatedPrompt(req.Items)
+	prompt := buildBatchCorrelatedPrompt(req.Items, req.Nodes)
 
 	analysis, err := provider.Analyze(ctx, prompt)
 	if err != nil {
@@ -925,7 +949,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelatedBatch(c *gin.Context) {
 }
 
 // buildBatchCorrelatedPrompt monta prompt consolidado com todos os itens correlacionados para análise em batch
-func buildBatchCorrelatedPrompt(items []healthcheck.CorrelatedHealthItem) string {
+func buildBatchCorrelatedPrompt(items []healthcheck.CorrelatedHealthItem, nodes []healthcheck.NodeHealth) string {
 	var sb strings.Builder
 
 	// Contadores para o sumário
@@ -978,6 +1002,8 @@ func buildBatchCorrelatedPrompt(items []healthcheck.CorrelatedHealthItem) string
 		}
 		sb.WriteString("\n")
 	}
+
+	sb.WriteString(buildNodeUtilizationSection(nodes))
 
 	sb.WriteString("## Forneça\n")
 	sb.WriteString("1. **Panorama geral** — qual é o estado de saúde do ambiente?\n")

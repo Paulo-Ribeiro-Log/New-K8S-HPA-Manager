@@ -1,6 +1,6 @@
 # Plano: Maturidade do Relatório de IA do Health Check
 
-← ✅ Fase 1 concluída — Fases 2-4 ainda não iniciadas
+← ✅ Fases 1-2 concluídas — Fases 3-4 ainda não iniciadas
 
 ## Problema
 
@@ -150,7 +150,42 @@ completa da correlação DT fica pendente de um cluster com Dynatrace configurad
    DATA", DAVIS problem ID + dias em aberto (`time.Since(p.StartTime)`), e ações finais divididas em
    `## Imediato (hoje)` / `## Curto prazo (esta semana)` / `## Monitoramento contínuo`.
 
-### Fase 2 — Wiring do `NodeChecker` órfão
+### Fase 2 — Wiring do `NodeChecker` órfão ✅
+
+**Status: implementado, com duas mudanças em relação ao design original e um bug real pego durante
+a validação contra cluster real.**
+
+- Além dos itens 1-4 do design original, foi necessário adicionar `CheckNodes bool`/`TimeoutNodes
+  int`/`GetTimeoutNodes()` em `HealthCheckRequest` (não estava explícito no design) — sem uma flag
+  de request, o `NodeChecker` nunca seria efetivamente chamado, já que todos os outros checkers são
+  condicionados a uma flag equivalente.
+- **Desvio consciente do "sem UI nova" do design original**: foi adicionado um checkbox "Capacidade
+  dos Nós" em `HealthCheckingTab.tsx` (mesmo padrão dos outros 6 checkboxes de tipo de check). Sem
+  isso, `check_nodes` nunca seria `true` a partir da UI real — o backend ficaria tecnicamente pronto
+  mas inacessível pela aplicação, só testável via API direta. "Sem UI nova" no design original queria
+  dizer "sem uma visualização dedicada da tabela de nós" (isso continua correto — não foi
+  implementada), não "sem nenhum controle para habilitar o check".
+- `buildCorrelatedItemPrompt`/`buildBatchCorrelatedPrompt` e os handlers `AnalyzeCorrelated`/
+  `AnalyzeCorrelatedBatch` ganharam um parâmetro `nodes []healthcheck.NodeHealth` opcional — o
+  frontend (`HealthCheckResultsPanel.tsx`) passa `result.node_results` ao chamar a análise AI.
+- **Bug real encontrado e corrigido durante a validação contra cluster**: `GetHistory()` em
+  `storage.go` não deserializava `NodeResults` do `extra_json` — só `Get()` (busca por ID único)
+  tinha essa linha. A causa: a edição anterior (`replace_all`) buscou o texto
+  `result.PVCResults = extra.PVCResults\n\tresult.DynatraceResults = ...` mas o bloco de `GetHistory()`
+  está uma indentação mais profunda (dentro de um `for rows.Next()`), então o texto não bateu e só um
+  dos dois lugares foi atualizado. Isso passou pelos testes unitários da Fase 1 porque nenhum teste
+  cobria `Save()`+`GetHistory()` ponta a ponta — só foi percebido rodando de verdade contra
+  `akspriv-ofertalogistica-hlg-admin` (`check_nodes=true` retornava `node_results: []` mesmo com os
+  logs de progresso mostrando "6 nó(s) com avisos de capacidade" durante a execução). Corrigido, e
+  adicionado `TestSaveAndGetHistory_RoundTripsAllExtraFields` (`storage_event_history_test.go`) que
+  testa `Save()`+`Get()`+`GetHistory()` juntos especificamente para prevenir essa classe de bug
+  (divergência entre os dois pontos de leitura do `extra_json`) se acontecer de novo com outro campo.
+
+**Validado ponta a ponta contra `akspriv-ofertalogistica-hlg-admin`** (52 namespaces, cluster real,
+`check_nodes=true`): 13 nós retornados, 6 com `status=warning` — CPU entre 90-100% enquanto a
+ocupação de pods está em 15-45% do limite. **Esse é exatamente o padrão do relatório de exemplo que
+motivou a Fase 2** ("baixa ocupação de pods mas CPU/memória já esgotados → requests mal
+configurados"), confirmado com dado real, não sintético.
 
 1. `Orchestrator` (`orchestrator.go:41`) ganha `nodeChecker *NodeChecker`, instanciado em
    `NewOrchestrator` (`NewNodeChecker()`).
@@ -212,8 +247,10 @@ completa da correlação DT fica pendente de um cluster com Dynatrace configurad
 | `internal/healthcheck/orchestrator.go` | `nodeChecker` instanciado e chamado em `executeClusterCheck`; `calculateSummary` conta nós críticos/warning |
 | `internal/healthcheck/prometheus_enricher.go` (novo, Fase 3) | Adaptação do enricher do FinOps pro Health Check |
 | `internal/web/handlers/healthcheck.go` | `buildCorrelatedItemPrompt`/`buildBatchCorrelatedPrompt` reescritos; novo `buildNodeUtilizationSection` |
-| `internal/web/frontend/src/types/healthcheck.ts` | Tipos atualizados (NodeResults, Count/FirstTimestamp/Chronicity) |
-| `internal/web/frontend/src/components/HealthCheckResultsPanel.tsx` | Fase 4 — nova seção/aba de relatório estruturado |
+| `internal/web/frontend/src/types/healthcheck.ts` | `NodeHealth`/`NodeResources`/`AffectedPod`/`EventChronicity` novos; `CorrelatedK8sIssue` ganha `count`/`first_timestamp`/`chronicity`; `HealthCheckRequest`/`HealthCheckResult` ganham `check_nodes`/`node_results` |
+| `internal/web/frontend/src/lib/api/client.ts` | `analyzeCorrelatedItem`/`analyzeCorrelatedBatch` ganham parâmetro `nodes` opcional |
+| `internal/web/frontend/src/components/HealthCheckResultsPanel.tsx` | `nodes` repassado de `result.node_results` até `CorrelatedTab`/`CorrelatedItemCard`/chamadas de análise AI. Sem view dedicada da tabela de nós ainda (fica pra Fase 4) |
+| `internal/web/frontend/src/components/HealthCheckingTab.tsx` | Checkbox "Capacidade dos Nós" (`check_nodes`) — necessário pra tornar a Fase 2 alcançável pela UI, não previsto no design original |
 
 ## Validação planejada
 

@@ -18,6 +18,62 @@ func newTestStorage(t *testing.T) *HealthCheckStorage {
 	return s
 }
 
+// TestSaveAndGetHistory_RoundTripsAllExtraFields garante que Get() e GetHistory() concordam sobre
+// os campos guardados em extra_json — pego um bug real nesta rodada onde NodeResults só era
+// deserializado em Get() porque a indentação do bloco em GetHistory() (dentro de um for rows.Next())
+// não batia com o texto usado para propagar a mudança nos dois lugares de uma vez.
+func TestSaveAndGetHistory_RoundTripsAllExtraFields(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	result := &HealthCheckResult{
+		ID:                "test-result-1",
+		Cluster:            "cluster-a",
+		Namespace:          "ns",
+		StartedAt:          time.Now(),
+		FinishedAt:         time.Now(),
+		DeploymentResults:  []DeploymentHealth{},
+		ServiceResults:     []ServiceHealth{},
+		ConfigResults:      []ConfigHealth{},
+		EventResults:       []EventHealth{{Namespace: "ns", Reason: "BackOff"}},
+		PVCResults:         []PVCHealth{{Name: "pvc-a"}},
+		NodeResults:        []NodeHealth{{Name: "node-a", Status: StatusWarning}},
+		DynatraceResults:   []DynatraceHealth{},
+		OverallStatus:      StatusWarning,
+	}
+	if err := s.Save(ctx, result); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	byID, err := s.Get(ctx, result.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if len(byID.NodeResults) != 1 || byID.NodeResults[0].Name != "node-a" {
+		t.Errorf("Get(): NodeResults não veio corretamente, got %+v", byID.NodeResults)
+	}
+	if len(byID.PVCResults) != 1 {
+		t.Errorf("Get(): PVCResults não veio corretamente, got %+v", byID.PVCResults)
+	}
+
+	history, err := s.GetHistory(ctx, result.Cluster, "", 10)
+	if err != nil {
+		t.Fatalf("GetHistory failed: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("esperava 1 resultado no histórico, got %d", len(history))
+	}
+	if len(history[0].NodeResults) != 1 || history[0].NodeResults[0].Name != "node-a" {
+		t.Errorf("GetHistory(): NodeResults não veio corretamente (esse é o bug real pego nesta rodada), got %+v", history[0].NodeResults)
+	}
+	if len(history[0].PVCResults) != 1 {
+		t.Errorf("GetHistory(): PVCResults não veio corretamente, got %+v", history[0].PVCResults)
+	}
+	if len(history[0].EventResults) != 1 {
+		t.Errorf("GetHistory(): EventResults não veio corretamente, got %+v", history[0].EventResults)
+	}
+}
+
 // TestEventChronicity_FirstSighting cobre o caso mais comum: evento nunca visto antes.
 // GetEventChronicity deve retornar (nil, nil) — não é erro, é o estado esperado.
 func TestEventChronicity_FirstSighting(t *testing.T) {

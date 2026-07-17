@@ -27,6 +27,7 @@ type Orchestrator struct {
 	eventChecker       *EventChecker     // ✅ Verificador de eventos K8s
 	hpaChecker         *HPAChecker       // ✅ Verificador de HPAs
 	pvChecker          *PVChecker        // ✅ Verificador de PVCs
+	nodeChecker           *NodeChecker           // ✅ Verificador de capacidade/utilização dos nós
 	dynatraceChecker      *DynatraceChecker      // ✅ Verificador de problems Dynatrace
 	oneAgentChecker       *OneAgentSignalsChecker // ✅ Varredura OneAgent por threshold
 	nodePoolStore         *storage.NodePoolRegistryStore
@@ -65,6 +66,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		eventChecker:       NewEventChecker(),
 		hpaChecker:         NewHPAChecker(),
 		pvChecker:          NewPVChecker(),
+		nodeChecker:        NewNodeChecker(),
 		dynatraceChecker:   NewDynatraceChecker(),
 		oneAgentChecker:    NewOneAgentSignalsChecker(),
 		storage:            hcStorage,
@@ -256,6 +258,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		ConfigResults:     []ConfigHealth{},
 		EventResults:      []EventHealth{},
 		DynatraceResults:  []DynatraceHealth{},
+		NodeResults:       []NodeHealth{},
 	}
 
 	// Obter cliente Kubernetes
@@ -315,6 +318,9 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		enabledChecks++
 	}
 	if req.CheckPVCs {
+		enabledChecks++
+	}
+	if req.CheckNodes {
 		enabledChecks++
 	}
 	if req.CheckDynatrace && req.DynatraceURL != "" {
@@ -577,6 +583,35 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "pvcs", fmt.Sprintf("%d PVC(s) com avisos encontrado(s)", warningPVCs), pvcsEnd, StatusWarning)
 			} else {
 				o.publishProgress(sessionID, cluster, "pvcs", fmt.Sprintf("%d PVC(s) verificado(s) - todos saudaveis", len(pvcResults)), pvcsEnd, StatusHealthy)
+			}
+		}()
+	}
+
+	// Check Nodes (capacidade/utilização — recurso cluster-scoped, não depende de namespaces)
+	if req.CheckNodes {
+		nodesStart := currentRangeStart
+		nodesEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = nodesEnd
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.publishProgress(sessionID, cluster, "nodes", "Verificando capacidade e utilização dos nós...", nodesStart, StatusHealthy)
+
+			nodeResults := o.nodeChecker.CheckAll(ctx, client, req.GetTimeoutNodes())
+
+			mu.Lock()
+			result.NodeResults = nodeResults
+			mu.Unlock()
+
+			criticalNodes := GetNodeCriticalCount(nodeResults)
+			warningNodes := GetNodeWarningCount(nodeResults)
+			if criticalNodes > 0 {
+				o.publishProgress(sessionID, cluster, "nodes", fmt.Sprintf("%d nó(s) com problemas críticos de capacidade", criticalNodes), nodesEnd, StatusCritical)
+			} else if warningNodes > 0 {
+				o.publishProgress(sessionID, cluster, "nodes", fmt.Sprintf("%d nó(s) com avisos de capacidade", warningNodes), nodesEnd, StatusWarning)
+			} else {
+				o.publishProgress(sessionID, cluster, "nodes", fmt.Sprintf("%d nó(s) verificado(s) - todos saudáveis", len(nodeResults)), nodesEnd, StatusHealthy)
 			}
 		}()
 	}
@@ -1080,7 +1115,12 @@ func (o *Orchestrator) calculateSummary(result *HealthCheckResult) {
 		statusCount[d.Status]++
 	}
 
-	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults) + len(result.PVCResults) + len(result.DynatraceResults)
+	// Contar nodes
+	for _, n := range result.NodeResults {
+		statusCount[n.Status]++
+	}
+
+	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults) + len(result.PVCResults) + len(result.DynatraceResults) + len(result.NodeResults)
 	result.HealthyCount = statusCount[StatusHealthy]
 	result.WarningCount = statusCount[StatusWarning]
 	result.CriticalCount = statusCount[StatusCritical]

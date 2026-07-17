@@ -118,6 +118,7 @@ type HealthCheckRequest struct {
 	CheckEvents      bool `json:"check_events"`    // Verificar eventos do Kubernetes (FailedScheduling, etc.)
 	CheckHPAs        bool `json:"check_hpas"`      // Verificar HPAs (min=max, métricas, scaling)
 	CheckPVCs        bool `json:"check_pvcs"`      // Verificar PersistentVolumeClaims (status, storage class)
+	CheckNodes           bool `json:"check_nodes"`           // Verificar capacidade/utilização dos nós (pods ativos vs. capacidade)
 	CheckDynatrace      bool `json:"check_dynatrace"`       // Verificar problems OPEN no Dynatrace
 	CheckOneAgentSignals bool `json:"check_oneagent_signals"` // Varrer entidades OneAgent por threshold (sem problem ativo)
 
@@ -143,6 +144,7 @@ type HealthCheckRequest struct {
 	TimeoutEvents      int `json:"timeout_events,omitempty"`      // Padrão: 30s (consulta de eventos)
 	TimeoutHPAs        int `json:"timeout_hpas,omitempty"`        // Padrão: 45s (validação de HPAs)
 	TimeoutPVCs        int `json:"timeout_pvcs,omitempty"`        // Padrão: 30s (validação de PVCs)
+	TimeoutNodes       int `json:"timeout_nodes,omitempty"`       // Padrão: 30s (listagem + cálculo de capacidade dos nós)
 
 	// Paralelismo (apenas para múltiplos clusters)
 	// Se Clusters > 1: mínimo 2 workers, máximo = NumCPU ou total de clusters
@@ -168,6 +170,7 @@ type HealthCheckResult struct {
 	EventResults      []EventHealth      `json:"event_results"` // Eventos K8s críticos (FailedScheduling, etc.)
 	HPAResults        []HPAHealth        `json:"hpa_results"`   // HPAs com problemas de configuração
 	PVCResults        []PVCHealth        `json:"pvc_results"`   // PVCs com problemas de storage
+	NodeResults       []NodeHealth       `json:"node_results"`  // Capacidade/utilização dos nós (pods ativos vs. capacidade)
 
 	// Dynatrace problems correlacionados (opcional)
 	DynatraceResults []DynatraceHealth `json:"dynatrace_results"`
@@ -568,6 +571,7 @@ const (
 	DefaultTimeoutEvents      = 30 // segundos (consulta de eventos)
 	DefaultTimeoutHPAs        = 45 // segundos (validação de HPAs + eventos)
 	DefaultTimeoutPVCs        = 30 // segundos (validação de PVCs)
+	DefaultTimeoutNodes       = 30 // segundos (listagem + cálculo de capacidade dos nós)
 	DefaultTimeoutDynatrace   = 45 // segundos (inclui GetProblemContext Top5 + métricas críticas)
 	DefaultTimeoutOneAgent    = 30 // segundos (ListEntitiesByCluster x2 + BatchQueryMetrics)
 )
@@ -636,6 +640,17 @@ func (r *HealthCheckRequest) GetTimeoutPVCs() int {
 		return r.Timeout
 	}
 	return DefaultTimeoutPVCs
+}
+
+// GetTimeoutNodes retorna o timeout para nodes com fallback
+func (r *HealthCheckRequest) GetTimeoutNodes() int {
+	if r.TimeoutNodes > 0 {
+		return r.TimeoutNodes
+	}
+	if r.Timeout > 0 {
+		return r.Timeout
+	}
+	return DefaultTimeoutNodes
 }
 
 // GetTimeoutDynatrace retorna o timeout para Dynatrace com fallback
