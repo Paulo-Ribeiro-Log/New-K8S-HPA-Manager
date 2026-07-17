@@ -32,6 +32,12 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Loader2,
   Database,
   Play,
@@ -55,7 +61,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { formatBytes } from "@/lib/monitorUtils";
 import { toast } from "sonner";
-import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject } from "@/lib/api/types";
+import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse } from "@/lib/api/types";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de KafkaTestTab.tsx/
@@ -161,6 +167,7 @@ function BrowseStatsTable({
   sortKey,
   sortDir,
   onSort,
+  onRowClick,
 }: {
   objects: DBBrowseObject[];
   nameLabel: string;
@@ -171,6 +178,10 @@ function BrowseStatsTable({
   sortKey: StatsSortKey;
   sortDir: "asc" | "desc";
   onSort: (key: StatsSortKey) => void;
+  // onRowClick, quando presente, abre a amostra de dados reais daquele objeto (ver
+  // PreviewModal) — só faz sentido em níveis "folha" (tabela/collection/chave), nunca no nível
+  // "database" (não dá pra rodar SELECT/find num banco inteiro).
+  onRowClick?: (name: string) => void;
 }) {
   const sorted = [...objects].sort((a, b) => {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -217,7 +228,12 @@ function BrowseStatsTable({
         </TableHeader>
         <TableBody>
           {sorted.map((obj, i) => (
-            <TableRow key={i}>
+            <TableRow
+              key={i}
+              className={onRowClick ? "cursor-pointer hover:bg-muted/50" : undefined}
+              onClick={onRowClick ? () => onRowClick(obj.name) : undefined}
+              title={onRowClick ? `Ver amostra de dados de "${obj.name}"` : undefined}
+            >
               <TableCell className="py-1.5 font-mono text-xs">{obj.name}</TableCell>
               {showType && (
                 <TableCell className="py-1.5">
@@ -314,6 +330,10 @@ export default function DatabaseTestTab() {
   const [credSource, setCredSource] = useState<"manual" | "secret">("manual");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  // authMechanism só existe pro Mongo em modo "userpass" — embutido na URI construída pelo
+  // backend (authMechanism=...). Vazio deixa o mongosh negociar automaticamente (padrão de
+  // sempre); alguns MongoDB gerenciados/mais antigos exigem escolher explicitamente.
+  const [authMechanism, setAuthMechanism] = useState<"" | "SCRAM-SHA-1" | "SCRAM-SHA-256">("");
   const [secretNamespace, setSecretNamespace] = useState("");
   const [secretName, setSecretName] = useState("");
   const [usernameKey, setUsernameKey] = useState("username");
@@ -347,6 +367,212 @@ export default function DatabaseTestTab() {
   // espírito do "All Stats" do MongoDB Compass (coluna Size ordenável).
   const [statsSortKey, setStatsSortKey] = useState<"name" | "count" | "size_bytes" | "storage_size_bytes">("storage_size_bytes");
   const [statsSortDir, setStatsSortDir] = useState<"asc" | "desc">("desc");
+
+  // Amostra de dados reais (Preview) — clicar numa linha da tabela de estatísticas (tabela/
+  // collection/chave) abre uma consulta pontual, síncrona, só leitura (SELECT/find/GET com
+  // limite) contra aquele objeto específico. Ação à parte do teste principal, mesmo padrão da
+  // Visão geral de tópicos do Teste de Kafka.
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<DBPreviewResponse | null>(null);
+  const [previewObject, setPreviewObject] = useState("");
+  // previewSelectedIndex controla qual linha/documento está aberto no painel de detalhes
+  // (layout mestre-detalhe: lista compacta à esquerda, conteúdo completo sem scroll horizontal
+  // à direita — evita a tabela larga forçar scroll lateral e quebrar o foco de leitura,
+  // principalmente com documentos Mongo de _id composto/aninhado).
+  const [previewSelectedIndex, setPreviewSelectedIndex] = useState(0);
+  // Paginação + ordenação — offset 0-based (LIMIT/OFFSET ou skip/limit no backend); sortColumn
+  // vazio = ordem "natural" do banco (não garantida entre páginas, mas é o padrão até o usuário
+  // escolher uma coluna). Resetados pra 0/vazio sempre que um objeto NOVO é aberto (paginação de
+  // uma tabela/collection diferente não faz sentido continuar de onde a anterior parou).
+  const [previewOffset, setPreviewOffset] = useState(0);
+  const [previewSortColumn, setPreviewSortColumn] = useState("");
+  const [previewSortDir, setPreviewSortDir] = useState<"asc" | "desc">("asc");
+  const previewPageSize = 20;
+
+  // fetchPreviewPage é a chamada de API compartilhada — abrir um objeto novo (openPreview),
+  // trocar de página e mudar a ordenação todos passam pelos mesmos parâmetros de conexão, só
+  // variando object/offset/sortColumn/sortDir.
+  const fetchPreviewPage = async (objectName: string, offset: number, sortColumn: string, sortDir: "asc" | "desc") => {
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const data = await apiClient.previewDBTestObject({
+        execution_mode: executionMode,
+        cluster,
+        namespace,
+        deployment,
+        engine,
+        host: authMode === "connstring" || usingHostConfigMap ? "" : host.trim(),
+        port: authMode === "connstring" || usingHostConfigMap ? 0 : port,
+        ...(usingHostConfigMap
+          ? {
+              host_configmap_ref: {
+                namespace: hostConfigMapNamespace || namespace,
+                name: hostConfigMapName,
+                host_key: hostKey || "host",
+                port_key: portKey || "port",
+              },
+            }
+          : {}),
+        auth: {
+          mode: authMode,
+          use_tls: authMode === "connstring" ? false : useTLS,
+          skip_tls_verify: authMode === "connstring" ? false : skipTLSVerify,
+          database: database || undefined,
+          ...(engine === "mongodb" && authMode === "userpass" && authMechanism ? { auth_mechanism: authMechanism } : {}),
+          ...(authMode === "userpass"
+            ? credSource === "manual"
+              ? { username, password }
+              : {
+                  secret_ref: {
+                    namespace: secretNamespace || namespace,
+                    name: secretName,
+                    username_key: usernameKey || "username",
+                    password_key: passwordKey || "password",
+                    base64_decode: secretBase64Decode,
+                  },
+                }
+            : {}),
+          ...(authMode === "connstring"
+            ? csSource === "manual"
+              ? { connection_string: connectionString.trim() }
+              : {
+                  connstring_ref: {
+                    kind: csSource,
+                    namespace: csRefNamespace || namespace,
+                    name: csRefName,
+                    key: csRefKey || "connectionString",
+                  },
+                }
+            : {}),
+        },
+        browse: true,
+        database: database || "",
+        object: objectName,
+        limit: previewPageSize,
+        offset,
+        sort_column: sortColumn || undefined,
+        sort_dir: sortDir,
+        timeout_ms: timeoutMs,
+      });
+      setPreviewData(data);
+      setPreviewSelectedIndex(0);
+      if (data.status === "failed") {
+        setPreviewError(data.message || "Falha ao buscar amostra de dados");
+      }
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : "Falha ao buscar amostra de dados");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const openPreview = (objectName: string) => {
+    setPreviewObject(objectName);
+    setPreviewOpen(true);
+    setPreviewOffset(0);
+    setPreviewSortColumn("");
+    setPreviewSortDir("asc");
+    setPreviewData(null);
+    fetchPreviewPage(objectName, 0, "", "asc");
+  };
+
+  const previewCanGoPrev = previewOffset > 0 && !previewLoading;
+  const previewCanGoNext = !!previewData?.has_more && !previewLoading;
+
+  const previewGoToPage = (direction: "prev" | "next") => {
+    const newOffset = direction === "next" ? previewOffset + previewPageSize : Math.max(0, previewOffset - previewPageSize);
+    if (direction === "next" && !previewCanGoNext) return;
+    if (direction === "prev" && !previewCanGoPrev) return;
+    setPreviewOffset(newOffset);
+    fetchPreviewPage(previewObject, newOffset, previewSortColumn, previewSortDir);
+  };
+
+  const previewChangeSort = (column: string) => {
+    setPreviewSortColumn(column);
+    setPreviewOffset(0);
+    fetchPreviewPage(previewObject, 0, column, previewSortDir);
+  };
+
+  const previewToggleSortDir = () => {
+    const newDir = previewSortDir === "asc" ? "desc" : "asc";
+    setPreviewSortDir(newDir);
+    setPreviewOffset(0);
+    fetchPreviewPage(previewObject, 0, previewSortColumn, newDir);
+  };
+
+  // Navegação por teclado dentro do modal de amostra: ↑/↓ trocam o documento/linha selecionado
+  // na lista à esquerda, ←/→ trocam de página. Só ativo com o modal aberto; ignora quando o foco
+  // está num campo de texto/select (evita capturar as setas de um Select nativo aberto, por
+  // exemplo). preventDefault nas 4 teclas evita rolar a página de fundo.
+  useEffect(() => {
+    if (!previewOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) return;
+      switch (e.key) {
+        case "ArrowDown":
+          if (!previewData?.rows || previewData.rows.length === 0) return;
+          e.preventDefault();
+          setPreviewSelectedIndex((i) => Math.min(i + 1, previewData.rows!.length - 1));
+          break;
+        case "ArrowUp":
+          if (!previewData?.rows || previewData.rows.length === 0) return;
+          e.preventDefault();
+          setPreviewSelectedIndex((i) => Math.max(i - 1, 0));
+          break;
+        // ArrowRight/ArrowLeft (paginação) não dependem de `rows` estruturado — funcionam também
+        // no fallback de texto puro do Redis (list/zset paginam de verdade mesmo sem tabela).
+        case "ArrowRight":
+          e.preventDefault();
+          previewGoToPage("next");
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          previewGoToPage("prev");
+          break;
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewOpen, previewData, previewOffset, previewSortColumn, previewSortDir, previewObject]);
+
+  // Colunas da tabela de amostra = união de todas as chaves de todas as linhas, na ordem de
+  // primeira aparição — Mongo pode ter documentos com campos diferentes entre si (schema-less),
+  // Postgres/MySQL sempre têm as mesmas colunas em todas as linhas.
+  const previewColumns = (() => {
+    const cols: string[] = [];
+    const seen = new Set<string>();
+    for (const row of previewData?.rows ?? []) {
+      for (const key of Object.keys(row)) {
+        if (!seen.has(key)) {
+          seen.add(key);
+          cols.push(key);
+        }
+      }
+    }
+    return cols;
+  })();
+
+  const formatPreviewCell = (value: unknown): string => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  };
+
+  // Rótulo compacto da lista à esquerda do painel mestre-detalhe — usa _id quando existe (Mongo),
+  // senão a primeira coluna, senão só o número da linha. Trunca pra nunca forçar quebra/scroll
+  // horizontal na lista (o valor completo aparece sempre no painel de detalhes à direita).
+  const previewRowLabel = (row: Record<string, unknown>, index: number): string => {
+    const raw = "_id" in row ? formatPreviewCell(row["_id"]) : previewColumns[0] ? formatPreviewCell(row[previewColumns[0]]) : "";
+    const trimmed = raw.trim();
+    if (!trimmed) return `Linha ${index + 1}`;
+    return trimmed.length > 48 ? trimmed.slice(0, 48) + "…" : trimmed;
+  };
   const esRef = useRef<EventSource | null>(null);
 
   const { data: namespaces = [] } = useQuery({
@@ -464,7 +690,15 @@ export default function DatabaseTestTab() {
           mode: authMode,
           use_tls: authMode === "connstring" ? false : useTLS,
           skip_tls_verify: authMode === "connstring" ? false : skipTLSVerify,
-          database: authMode === "connstring" ? undefined : database || undefined,
+          // database controla o nível do Explorar dados (lista bancos vs. desce pra tabelas/
+          // collections) independente do modo de auth — inclusive em "connstring": o Mongo, por
+          // exemplo, usa isso via getSiblingDB(nome) pra trocar de banco DENTRO do mesmo cluster/
+          // replica set autenticado pela connection string (comum quando o connstring só tem
+          // authSource=admin, sem apontar pra um banco de trabalho específico).
+          database: database || undefined,
+          ...(engine === "mongodb" && authMode === "userpass" && authMechanism
+            ? { auth_mechanism: authMechanism }
+            : {}),
           ...(authMode === "userpass"
             ? credSource === "manual"
               ? { username, password }
@@ -896,28 +1130,6 @@ export default function DatabaseTestTab() {
               </>
             )}
 
-            <div className="w-72">
-              <label className="text-xs text-muted-foreground block mb-1">
-                {engine === "redis" ? "Índice do banco (0-15, opcional)" : "Database (opcional)"}
-              </label>
-              <Input
-                type={engine === "redis" ? "number" : "text"}
-                min={engine === "redis" ? 0 : undefined}
-                max={engine === "redis" ? 15 : undefined}
-                placeholder={engine === "redis" ? "0" : undefined}
-                value={database}
-                onChange={(e) => setDatabase(e.target.value)}
-                title={database || undefined}
-              />
-              {engine !== "redis" && browseEnabled && (
-                <p className="text-[10px] text-muted-foreground mt-1">
-                  {database.trim()
-                    ? `Explorar dados vai listar ${engine === "mongodb" ? "collections" : "tabelas"} de "${database.trim()}".`
-                    : `Vazio: Explorar dados lista só os databases. Preencha pra descer e listar ${engine === "mongodb" ? "collections" : "tabelas"}.`}
-                </p>
-              )}
-            </div>
-
             <div className="flex items-center gap-2">
               <Switch checked={useTLS} onCheckedChange={setUseTLS} id="tls-toggle" />
               <label htmlFor="tls-toggle" className="text-sm cursor-pointer">Usar TLS</label>
@@ -946,6 +1158,22 @@ export default function DatabaseTestTab() {
                     </div>
                   </RadioGroup>
                 </div>
+
+                {engine === "mongodb" && (
+                  <div className="w-56">
+                    <label className="text-xs text-muted-foreground block mb-1">Mecanismo de autenticação</label>
+                    <Select value={authMechanism || "auto"} onValueChange={(v) => setAuthMechanism(v === "auto" ? "" : (v as "SCRAM-SHA-1" | "SCRAM-SHA-256"))}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Automático (padrão)</SelectItem>
+                        <SelectItem value="SCRAM-SHA-1">SCRAM-SHA-1</SelectItem>
+                        <SelectItem value="SCRAM-SHA-256">SCRAM-SHA-256</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
 
                 {credSource === "manual" ? (
                   <>
@@ -1019,6 +1247,36 @@ export default function DatabaseTestTab() {
             )}
           </div>
         )}
+
+        {/* Fora dos dois branches de auth (connstring vs host/port) de propósito: o nível do
+            Explorar dados depende disso independente de como a conexão é feita. Se a connection
+            string já tiver um banco no path, o backend usa ele automaticamente quando este campo
+            fica vazio (ver resolveDBEffectiveDatabase) — preencher aqui só é necessário pra
+            sobrescrever esse banco ou quando a connection string não tem nenhum (comum em
+            replica sets Mongo autenticados só com authSource=admin). */}
+        <div className="w-72">
+          <label className="text-xs text-muted-foreground block mb-1">
+            {engine === "redis" ? "Índice do banco (0-15, opcional)" : "Database (opcional)"}
+          </label>
+          <Input
+            type={engine === "redis" ? "number" : "text"}
+            min={engine === "redis" ? 0 : undefined}
+            max={engine === "redis" ? 15 : undefined}
+            placeholder={engine === "redis" ? "0" : undefined}
+            value={database}
+            onChange={(e) => setDatabase(e.target.value)}
+            title={database || undefined}
+          />
+          {engine !== "redis" && browseEnabled && (
+            <p className="text-[10px] text-muted-foreground mt-1">
+              {database.trim()
+                ? `Explorar dados vai listar ${engine === "mongodb" ? "collections" : "tabelas"} de "${database.trim()}".`
+                : authMode === "connstring"
+                ? `Vazio: usa o banco já embutido na connection string, se houver. Preencha só se quiser sobrescrever ou a connection string não tiver um banco.`
+                : `Vazio: Explorar dados lista só os databases. Preencha pra descer e listar ${engine === "mongodb" ? "collections" : "tabelas"}.`}
+            </p>
+          )}
+        </div>
 
         <div className="flex items-center gap-2">
           <Switch checked={browseEnabled} onCheckedChange={setBrowseEnabled} id="browse-toggle" />
@@ -1130,6 +1388,14 @@ export default function DatabaseTestTab() {
 
             {browseEnabled && (
               <div className="flex flex-col gap-2">
+                {result.browse.database && (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
+                    <Database className="w-3.5 h-3.5 shrink-0" />
+                    <span>{result.browse.database}</span>
+                    <ChevronRight className="w-3 h-3 shrink-0 opacity-50" />
+                    <span>{browseObjectLabel(result.browse.object_type)}</span>
+                  </div>
+                )}
                 <div className="text-sm text-muted-foreground">
                   {result.browse.message}
                   {result.browse.object_type && ` (${browseObjectLabel(result.browse.object_type)})`}
@@ -1159,6 +1425,10 @@ export default function DatabaseTestTab() {
                       : null;
 
                   if (statsConfig) {
+                    // Preview (amostra de dados reais) só faz sentido em níveis "folha" — uma
+                    // tabela/collection ou, no Redis, uma chave específica. Nunca no nível
+                    // "database" do Redis (INFO keyspace não aponta pra um objeto navegável).
+                    const canPreview = ot === "table" || ot === "collection" || (engine === "redis" && ot === "key");
                     return (
                       <BrowseStatsTable
                         objects={result.browse.objects}
@@ -1173,6 +1443,7 @@ export default function DatabaseTestTab() {
                             setStatsSortDir("desc");
                           }
                         }}
+                        onRowClick={canPreview ? openPreview : undefined}
                       />
                     );
                   }
@@ -1220,6 +1491,183 @@ export default function DatabaseTestTab() {
           </div>
         )}
       </div>
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-[57.6rem] max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="font-mono text-sm flex items-center gap-1.5">
+              {result?.browse.database && (
+                <>
+                  <span className="text-muted-foreground">{result.browse.database}</span>
+                  <ChevronRight className="w-3 h-3 shrink-0 opacity-50" />
+                </>
+              )}
+              {previewObject}
+            </DialogTitle>
+          </DialogHeader>
+          {previewLoading ? (
+            <div className="flex-1 flex items-center justify-center gap-2 text-sm text-muted-foreground py-10">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Buscando amostra de dados...
+            </div>
+          ) : previewError && (!previewData || !previewData.rows?.length) && !previewData?.raw_output ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground py-10">
+              <AlertTriangle className="w-5 h-5" />
+              {previewError}
+              <Button size="sm" variant="outline" onClick={() => openPreview(previewObject)}>Tentar de novo</Button>
+            </div>
+          ) : previewData ? (
+            <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+              <div className="text-xs text-muted-foreground shrink-0">{previewData.message}</div>
+              {previewData.rows !== undefined && (
+                <div className="flex items-center justify-between gap-2 shrink-0 flex-wrap">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Ordenar por</span>
+                    <Select value={previewSortColumn || "__none__"} onValueChange={(v) => previewChangeSort(v === "__none__" ? "" : v)}>
+                      <SelectTrigger className="h-7 w-40 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">(sem ordenação)</SelectItem>
+                        {previewColumns.map((col) => (
+                          <SelectItem key={col} value={col}>{col}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 gap-1 text-xs"
+                      disabled={!previewSortColumn}
+                      onClick={previewToggleSortDir}
+                      title={previewSortDir === "asc" ? "Crescente" : "Decrescente"}
+                    >
+                      {previewSortDir === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                      {previewSortDir === "asc" ? "Asc" : "Desc"}
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Button variant="outline" size="sm" className="h-7 px-2 text-xs gap-1" disabled={!previewCanGoPrev} onClick={() => previewGoToPage("prev")} title="Página anterior (←)">
+                      <ChevronRight className="w-3 h-3 rotate-180" />
+                      Anterior
+                    </Button>
+                    <span className="text-[10px] text-muted-foreground font-mono">Pág. {Math.floor(previewOffset / previewPageSize) + 1}</span>
+                    <Button variant="outline" size="sm" className="h-7 px-2 text-xs gap-1" disabled={!previewCanGoNext} onClick={() => previewGoToPage("next")} title="Próxima página (→)">
+                      Próxima
+                      <ChevronRight className="w-3 h-3" />
+                    </Button>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground w-full text-right">
+                    Navegação: ↑↓ troca de linha, ←→ troca de página
+                  </span>
+                </div>
+              )}
+              {previewData.rows && previewData.rows.length > 0 ? (() => {
+                const selected = previewData.rows[Math.min(previewSelectedIndex, previewData.rows.length - 1)];
+                return (
+                  <div className="flex-1 min-h-0 flex gap-2 overflow-hidden">
+                    {/* Lista à esquerda — compacta, um rótulo por linha/documento, nunca quebra
+                        nem faz scroll horizontal (valores longos são truncados com "…"). */}
+                    <div className="w-48 shrink-0 min-h-0 overflow-y-auto border border-border rounded-md">
+                      {previewData.rows.map((row, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setPreviewSelectedIndex(i)}
+                          className={cn(
+                            "w-full text-left px-2 py-1.5 text-xs font-mono border-b border-border/50 truncate block",
+                            i === previewSelectedIndex ? "bg-primary/10 text-foreground" : "hover:bg-muted/50 text-muted-foreground",
+                          )}
+                          title={previewRowLabel(row, i)}
+                        >
+                          {previewRowLabel(row, i)}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Detalhes à direita — todos os campos da linha/documento selecionado,
+                        empilhados verticalmente com quebra de linha (whitespace-pre-wrap
+                        break-words em rótulo E valor) em vez de colunas lado a lado — elimina o
+                        scroll horizontal que a tabela larga forçava e garante que campos longos
+                        (ex: _class, descricaoLinha) fiquem completamente visíveis. overflow-y-
+                        auto direto (em vez do ScrollArea do shadcn) — mais previsível dentro
+                        dessa cadeia de flex aninhado. */}
+                    <div className="flex-1 min-h-0 flex flex-col border border-border rounded-md overflow-hidden">
+                      <div className="flex items-center justify-between px-2 py-1 border-b border-border shrink-0">
+                        <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Detalhes</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 gap-1 text-xs"
+                          onClick={() => {
+                            navigator.clipboard.writeText(JSON.stringify(selected, null, 2));
+                            toast.success("Dados copiados!");
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                          Copiar
+                        </Button>
+                      </div>
+                      <div className="flex-1 min-h-0 overflow-y-auto">
+                        <div className="p-3 flex flex-col gap-2.5">
+                          {previewColumns.map((col) => (
+                            <div key={col} className="flex flex-col gap-0.5">
+                              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium break-words">{col}</span>
+                              <span className="text-xs font-mono whitespace-pre-wrap break-words">
+                                {formatPreviewCell(selected[col]) || "—"}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : previewData.raw_output ? (
+                <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+                  {/* Redis: sem tabela estruturada (tipos de chave incompatíveis entre si), mas
+                      list/zset têm paginação real por índice (LRANGE/ZRANGE) — mesmos botões
+                      Anterior/Próxima do modo tabela, sem o seletor de ordenação (Redis não tem
+                      conceito de coluna). string/hash/set/stream sempre trazem tudo de uma vez,
+                      então "Próxima" nunca habilita pra esses tipos (has_more calculado no
+                      backend por tipo, ver parseRedisPreviewMeta). */}
+                  <div className="flex items-center justify-between gap-2 shrink-0">
+                    <div className="flex items-center gap-1.5">
+                      <Button variant="outline" size="sm" className="h-7 px-2 text-xs gap-1" disabled={!previewCanGoPrev} onClick={() => previewGoToPage("prev")} title="Página anterior (←)">
+                        <ChevronRight className="w-3 h-3 rotate-180" />
+                        Anterior
+                      </Button>
+                      <span className="text-[10px] text-muted-foreground font-mono">Pág. {Math.floor(previewOffset / previewPageSize) + 1}</span>
+                      <Button variant="outline" size="sm" className="h-7 px-2 text-xs gap-1" disabled={!previewCanGoNext} onClick={() => previewGoToPage("next")} title="Próxima página (→)">
+                        Próxima
+                        <ChevronRight className="w-3 h-3" />
+                      </Button>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 gap-1 text-xs"
+                      onClick={() => {
+                        navigator.clipboard.writeText(previewData.raw_output || "");
+                        toast.success("Dados copiados!");
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                      Copiar
+                    </Button>
+                  </div>
+                  <ScrollArea className="flex-1 min-h-0 rounded-md border border-border bg-muted/30">
+                    <pre className="text-xs font-mono whitespace-pre-wrap break-all p-2">{previewData.raw_output}</pre>
+                  </ScrollArea>
+                </div>
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground py-10">
+                  Nenhum dado encontrado.
+                </div>
+              )}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

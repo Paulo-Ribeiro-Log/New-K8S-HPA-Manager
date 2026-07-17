@@ -267,6 +267,28 @@ O nível listado depende de ter ou não um **Database** informado — sem ele, l
 contagem de documentos). O Redis ganhou o mesmo padrão de 2 níveis (antes sempre pulava direto pra
 lista de chaves, independente do índice do banco informado) — ver seção dedicada abaixo.
 
+**Banco resolvido a partir da connection string (`effectiveDatabase`)**: pra Postgres/Mongo, se o
+campo "Database" ficar vazio E o modo de auth for "Connection string", o backend tenta extrair o
+banco do próprio path da URI (`connStringDatabase`, via `net/url`) antes de decidir o nível —
+resolve o caso comum de colar uma connection string que já tem o banco embutido
+(`mongodb+srv://user:pass@cluster/meubanco`) sem precisar digitar de novo no campo separado. O
+campo "Database" continua tendo prioridade se preenchido (permite sobrescrever ou navegar num
+banco DIFERENTE do da connstring — no Mongo isso é um caso real via `getSiblingDB`, que troca de
+banco livremente dentro do mesmo cluster/replica set autenticado). Não se aplica ao MySQL
+(`mysqlEffectiveParams` já sempre extraía o banco da connstring, sem alternativa de sobrescrita) nem
+ao Redis (índice numérico, não um nome de banco). `DBBrowseResult` ganhou o campo `database` —
+o banco EFETIVAMENTE usado nessa listagem, resolvido via `dbEngine.resolveDatabaseLabel` — exibido
+no frontend como uma linha de hierarquia (🗄 `banco` › `Tabelas`/`Collections`) acima da tabela de
+estatísticas, cobrindo justamente o caso em que o campo ficou vazio e o valor veio do fallback.
+
+**Timeout do Explorar dados tem piso próprio** (`dbTestBrowseMinTimeoutMs = 30000`), independente
+do timeout configurado pelo usuário (pensado pra Conectividade — um único round-trip rápido).
+Explorar dados pode fazer VÁRIOS round-trips (um `$collStats` por collection no Mongo, por
+exemplo) — em bancos reais com collections grandes/muitas tabelas, 5-15s (default/teto da
+Conectividade) não é suficiente e o estágio falhava com `exit status 124` (timeout do próprio
+comando `timeout` do Linux) mesmo com a consulta certa. Validado contra um caso real: um Mongo
+replica set com collections de até 9,5M documentos/317GB só respondeu dentro do piso de 30s.
+
 **PostgreSQL sem Database** — lista databases (evita parsear a formatação de `\l`):
 
 ```bash
@@ -389,7 +411,116 @@ ordenação client-side (`useState` de `sortKey`/`sortDir`, sem persistência en
 árvore de navegação completa do Compass (conexões → databases → collections expansível): o fluxo
 desta ferramenta continua sendo "preencher formulário → rodar teste pontual", igual Kafka/Latência
 — navegação em árvore full-Compass ficaria fora do espírito de "teste de conectividade sob
-demanda" e exigiria várias chamadas de ephemeral container por expansão de nó.
+demanda" e exigiria várias chamadas de ephemeral container por expansão de nó. Dá, porém, pra ver o
+CONTEÚDO real de uma tabela/collection específica — ver "Amostra de dados" abaixo.
+
+---
+
+## Amostra de dados (Preview) — mestre-detalhe, paginação e ordenação
+
+Clicar numa linha da tabela de estatísticas (uma tabela/collection/chave específica) abre um modal
+com uma **amostra real dos dados** — diferente do Browse (metadados/estatísticas via catálogo,
+nunca um scan), isso roda uma consulta de verdade contra o objeto escolhido, sempre paginada
+(nunca um dump completo de uma vez). Endpoint síncrono, sem SSE: `POST /api/v1/db-test/preview`
+(`internal/web/handlers/db_test_preview.go`) — mesmo padrão de `ListTopics`/`TopicsOverview` do
+Teste de Kafka.
+
+### Cobertura por engine
+
+| Recurso | Postgres | MySQL/MariaDB | MongoDB | Redis |
+|---|---|---|---|---|
+| Ver valor real | ✅ | ✅ | ✅ | ✅ (comando certo por `TYPE`) |
+| Tabela estruturada / mestre-detalhe | ✅ | ✅ | ✅ | ❌ — só texto bruto |
+| Ordenação por coluna | ✅ | ✅ | ✅ | ❌ (não existe "coluna") |
+| Paginação (Anterior/Próxima) | ✅ | ✅ | ✅ | ⚠️ só `list`/`zset` (`LRANGE`/`ZRANGE` com offset real) |
+| Botão Copiar | ✅ | ✅ | ✅ | ✅ (copia o texto bruto) |
+| Navegação por teclado | ✅ | ✅ | ✅ | ⚠️ só paginação (←/→); ↑/↓ exige linhas estruturadas |
+
+Postgres/MySQL/Mongo sempre devolvem uma estrutura previsível (colunas ou campos), então dá pra
+montar tabela, ordenar por qualquer coluna e paginar de forma genérica. Redis não tem isso — uma
+chave é `string`/`hash`/`list`/`set`/`zset`/`stream`, cada um com formato de valor totalmente
+diferente (sem "colunas" pra ordenar; `GET`/`HGETALL`/`SRANDMEMBER` não têm noção de página real).
+
+### Consulta por engine
+
+**Postgres** — `row_to_json` embute cada linha como um objeto JSON (uma linha de saída por linha
+da tabela) — auto-descritivo, não precisa saber os nomes das colunas de antemão:
+
+```sql
+SELECT row_to_json(t) FROM (SELECT * FROM "tabela" ORDER BY "coluna" ASC LIMIT 20 OFFSET 40) t;
+```
+
+**MySQL/MariaDB** — `--batch` (sem `-N`, diferente do Browse) gera saída separada por tab **com**
+linha de cabeçalho — dá pra montar os mapas coluna→valor sem saber o schema de antemão:
+
+```sql
+SELECT * FROM `tabela` ORDER BY `coluna` ASC LIMIT 20 OFFSET 40;
+```
+
+**MongoDB** — `EJSON.stringify` (não `JSON.stringify` — mesmo cuidado de sempre com tipos BSON
+especiais). O sort usa `Object.fromEntries([[campo, ±1]])` em vez de objeto literal `{campo: 1}`
+de propósito: nomes de campo podem ter caracteres inválidos como chave de identificador JS solto
+(ex: um campo chamado `"minha-coisa"` quebraria `{minha-coisa: 1}`, lido como subtração) —
+construir a chave dinamicamente evita esse problema por completo:
+
+```js
+db.getSiblingDB("db").getCollection("col").find()
+  .sort(Object.fromEntries([["campo", -1]])).skip(40).limit(20)
+```
+
+**Redis** — o comando certo depende do `TYPE` em runtime; só `list`/`zset` têm índice explícito
+(`LRANGE`/`ZRANGE`, offset pagina de verdade). `string`/`hash` trazem tudo de uma vez; `set` usa
+`SRANDMEMBER` (evita `SMEMBERS` sem teto numa chave gigante — mas é amostra aleatória, não
+paginável de forma estável); `stream` usa `XRANGE ... COUNT N`. O script emite uma marca interna
+`__DBTEST_KEYTYPE__:<tipo>` antes do valor (removida do `raw_output` antes de responder,
+`parseRedisPreviewMeta`) — é como o Go sabe, depois do fato, se `has_more` se aplica: só
+`list`/`zset` (contando linhas — `zset` com `WITHSCORES` intercala membro/score, 2 linhas por
+item); os demais tipos ficam sempre `has_more: false`, mesmo com saída grande.
+
+### Layout mestre-detalhe (por que não uma tabela larga)
+
+Uma tabela com 1 linha por documento e todas as colunas lado a lado força scroll horizontal e
+quebra o foco de leitura — principalmente em documentos Mongo com `_id` composto/aninhado (padrão
+comum em collections de relacionamento/junção, ex: `_id: {codigoEmpresa, codigoFilial, ...}` sem
+mais nenhum campo). O modal usa **lista à esquerda** (rótulo compacto por linha/documento — `_id`
+quando existe, senão a 1ª coluna, truncado com "…") + **detalhes à direita** (todos os campos do
+item selecionado, empilhados verticalmente, rótulo e valor com `whitespace-pre-wrap break-words`
+— nenhum campo fica cortado, mesmo textos longos tipo `_class`/descrições). Modal alargado 20%
+(`max-w-[57.6rem]`) especificamente por causa disso. Botão **Copiar** no painel de detalhes copia
+o item selecionado inteiro como JSON formatado.
+
+**Bug de CSS corrigido durante a implementação**: a lista à esquerda não rolava porque, sendo
+filha de um flex container em LINHA (não coluna), faltava `min-h-0` além do `overflow-y-auto` — só
+`overflow-y-auto` não é suficiente quando o item ainda não tem uma altura definida vinda do pai
+(mesma classe de bug do padrão `flex-1 min-h-0` já documentado no `CLAUDE.md`, mas na direção
+horizontal/cross-axis em vez de vertical/main-axis).
+
+### Paginação + ordenação
+
+`DBPreviewRequest.Offset`/`SortColumn`/`SortDir` — offset 0-based, `SortColumn` vazio = ordem
+"natural" do banco (não garantida entre páginas até o usuário escolher uma coluna). Trocar de
+página ou de ordenação sempre volta pro offset 0 (a "página 3" de uma ordem não corresponde à
+"página 3" de outra). `DBPreviewResponse.HasMore` é uma heurística ("página cheia", `len(rows) >=
+Limit`) sem `COUNT(*)` à parte (caro, evitado de propósito) — não é garantia de que EXISTE próxima
+página, só que é possível. UI: dropdown "Ordenar por" (populado a partir das colunas já
+carregadas — funciona só depois da 1ª página vir, efeito colateral aceito) + toggle asc/desc +
+botões Anterior/Próxima com indicador de página.
+
+**Navegação por teclado**: `↑`/`↓` trocam a linha/documento selecionado no painel de detalhes;
+`←`/`→` trocam de página — ativo só com o modal aberto, ignora quando o foco está num
+input/select/textarea (evita capturar as setas de um `<Select>` nativo aberto). Bug corrigido
+durante a implementação: a guarda de "só funciona se houver `rows` estruturado" originalmente
+cobria as 4 teclas, não só `↑`/`↓` — isso deixava `←`/`→` mortas no fallback de texto puro do
+Redis mesmo depois da paginação existir ali; corrigido pra só `↑`/`↓` dependerem de `rows`.
+
+### Validação de identificadores
+
+`Object`/`SortColumn` (nome de tabela/collection/chave/coluna) validados contra
+`dbTestObjectNameRegex` (`^[A-Za-z0-9_.\-]+$`) antes de entrar na query — allow-list, não
+sanitização: identificadores reais (vindos da própria listagem do Browse) só têm letras, dígitos,
+`_`, `.` e `-` (hífen aparece com frequência em nomes de collection reais, ex:
+`permissoes-de-aplicacao-dat`). `quotePostgresIdentifier`/`quoteMySQLIdentifier` envolvem em
+aspas duplas/backtick com escaping interno por segurança extra, mesmo a regex já rejeitando aspas.
 
 ---
 
@@ -456,6 +587,15 @@ depois de selecionar o recurso, as chaves (`username_key`/`password_key`/`host_k
 também viram um select populado com as chaves reais do Secret/ConfigMap (`dataKeys`, já retornado
 pela mesma chamada de listagem — sem round-trip extra).
 
+**MongoDB — mecanismo de autenticação (SCRAM-SHA-1/256)**: campo extra, só aparece quando
+engine=mongodb e modo="Usuário e senha" — alguns MongoDB gerenciados/mais antigos exigem escolher
+o mecanismo explicitamente em vez de deixar o `mongosh` negociar sozinho. Embutido na URI
+construída pelo backend como query param (`authMechanism=SCRAM-SHA-256`, via `buildMongoURI`).
+Escopo deliberadamente restrito aos 2 mecanismos de usuário/senha comuns
+(`dbValidMongoAuthMechanisms`) — `MONGODB-X509`/`GSSAPI`/`MONGODB-AWS` exigiriam certificado/config
+adicional que o teste não coleta hoje. Não se aplica ao modo "Connection string" — lá o parâmetro
+já vai embutido na própria string, se o usuário precisar.
+
 ---
 
 ## Redis — banco por índice numérico e filtro de chaves
@@ -519,11 +659,12 @@ kubectl describe pod <target_pod> -n <namespace>
 
 | Arquivo | O quê |
 |---|---|
-| `internal/web/handlers/db_test_tool.go` | Registry de engines (imagem, comandos, regexes de erro) + handler: resolução de pod/deployment, ephemeral container, os 2 estágios, SSE, guardrails |
+| `internal/web/handlers/db_test_tool.go` | Registry de engines (imagem, comandos, regexes de erro, `buildPreview`/`resolveDatabaseLabel` por engine) + handler: resolução de pod/deployment, ephemeral container, os 2 estágios do Run, SSE, guardrails, `effectiveDatabase`/`connStringDatabase` |
+| `internal/web/handlers/db_test_preview.go` | Handler `Preview` — amostra de dados (`POST /db-test/preview`), síncrono, paginação/ordenação |
 | `internal/web/handlers/db_test_docker.go` | Pré-checagem de Docker (`GET /docker-status`, cache 20s) + reaper de containers órfãos (imediato no cancelamento + ticker periódico de 5min) |
-| `internal/web/frontend/src/components/DatabaseTestTab.tsx` | UI: seletores cluster/namespace/deployment/engine, modo de autenticação, toggle de explorar dados, resultado com badges/lista de objetos, painel de pré-checagem de Docker no modo local |
-| `internal/web/frontend/src/lib/api/types.ts` | Tipos `RunDBTestRequest`, `DBAuthConfig`, `DBTestResult`, etc. |
-| `internal/web/frontend/src/lib/api/client.ts` | `runDBTest`/`getDBTestStreamURL`/`cancelDBTest` |
+| `internal/web/frontend/src/components/DatabaseTestTab.tsx` | UI: seletores cluster/namespace/deployment/engine, modo de autenticação, toggle de explorar dados, resultado com badges/lista de objetos, modal de amostra de dados (mestre-detalhe, paginação, ordenação, teclado), painel de pré-checagem de Docker no modo local |
+| `internal/web/frontend/src/lib/api/types.ts` | Tipos `RunDBTestRequest`, `DBAuthConfig`, `DBTestResult`, `DBPreviewRequest`, `DBPreviewResponse`, etc. |
+| `internal/web/frontend/src/lib/api/client.ts` | `runDBTest`/`getDBTestStreamURL`/`cancelDBTest`/`previewDBTestObject` |
 | `internal/web/server.go` | Registro das rotas `/api/v1/db-test/*` |
 
 ## Fora de escopo (por enquanto)
@@ -537,15 +678,28 @@ kubectl describe pod <target_pod> -n <namespace>
   que listar databases/tabelas; fora do espírito de "teste de conectividade".
 - Deixar escolher qual pod (quando o Deployment tem várias réplicas) ou qual container (pods
   multi-container) — mesma simplificação do Kafka, sempre o primeiro Running/primeiro container.
-- Validado nesta rodada só por `go build`/`tsc --noEmit`/`rebuild-web.sh` — sem banco real disponível
-  no ambiente de desenvolvimento para validar ponta a ponta contra os 4 engines; a imagem `mongo:7`
-  em particular precisa de confirmação em produção de que `mongosh` vem embutido nessa tag.
-- Tabela de estatísticas (Size/Storage Size/Count, ver seção acima) validada só por `go build`/
-  `tsc --noEmit` — as 3 queries novas (Postgres via `pg_class`/`pg_namespace`, MySQL via
-  `information_schema.tables`, Mongo via `$collStats`) não foram testadas contra um banco real
-  nesta rodada. Atenção específica ao Postgres: o `JOIN pg_namespace` assume schema único
-  `public` por tabela (mesma limitação que a query de colunas já tinha antes) — nomes de tabela
-  duplicados entre schemas diferentes não são o caso coberto.
+- Validado só por `go build`/`tsc --noEmit`/`rebuild-web.sh` para Postgres, MySQL-MariaDB e Redis —
+  sem instância real desses 3 engines disponível no ambiente de desenvolvimento. MongoDB é a
+  exceção: várias rodadas desta sessão foram validadas ponta a ponta contra um MongoDB real do
+  usuário (connection string com replica set, SCRAM-SHA-256, mais de 20 collections), incluindo a
+  imagem `mongo:7` — `mongosh` confirmado embutido nessa tag em uso real, não apenas suposição.
+- Tabela de estatísticas (Size/Storage Size/Count, ver seção acima): a query Mongo via
+  `$collStats` foi validada contra um MongoDB real (replica set, connection string, mais de 20
+  collections reais) nesta rodada — incluindo o fallback `effectiveDatabase`, o piso de timeout
+  do Browse e o mecanismo de autenticação SCRAM, todos exercitados ponta a ponta contra o
+  ambiente real do usuário até o resultado bater com o layout do Compass. As queries Postgres
+  (via `pg_class`/`pg_namespace`) e MySQL (via `information_schema.tables`) seguem validadas só
+  por `go build`/`tsc --noEmit` — sem banco real desses dois engines disponível nesta rodada.
+  Atenção específica ao Postgres: o `JOIN pg_namespace` assume schema único `public` por tabela
+  (mesma limitação que a query de colunas já tinha antes) — nomes de tabela duplicados entre
+  schemas diferentes não são o caso coberto.
+- Amostra de dados (Preview, mestre-detalhe + paginação + ordenação, ver seção dedicada acima):
+  o caminho Mongo (`EJSON.stringify` + `.sort()`/`.skip()`/`.limit()`) foi validado contra o mesmo
+  MongoDB real acima — collections reais, paginação avançando/voltando página, ordenação por
+  coluna nos dois sentidos, navegação por teclado. Postgres (`row_to_json`), MySQL (`--batch`) e
+  a extensão de paginação real do Redis (marca `__DBTEST_KEYTYPE__`, list/zset) seguem validados
+  só por `go build`/`SKIP_AZURE_TESTS=1 go test ./internal/... -race`/`tsc --noEmit` — sem
+  instância real desses 3 casos nesta rodada.
 - Extensão do Redis (visão por banco lógico via `INFO keyspace` + `MEMORY USAGE` por chave) também
   só validada por `go build`/`tsc --noEmit` — não testada contra uma instância Redis real. Ponto
   de atenção: **mudança de comportamento** — Database (índice) vazio antes listava chaves do banco

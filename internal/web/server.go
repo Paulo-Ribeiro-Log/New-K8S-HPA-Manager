@@ -959,6 +959,7 @@ func (s *Server) setupRoutes() {
 		dbTest.GET("/docker-status", dbTestHandler.DockerStatus)
 		dbTest.POST("/run", rbacMiddleware.RequireSREGroup(), dbTestHandler.Run)
 		dbTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), dbTestHandler.Cancel)
+		dbTest.POST("/preview", rbacMiddleware.RequireSREGroup(), dbTestHandler.Preview)
 	}
 
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)

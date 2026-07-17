@@ -3660,6 +3660,16 @@ class APIClient {
     return this.request<import("./types").DBDockerStatus>("/db-test/docker-status");
   }
 
+  /** Amostra de dados reais (linhas/documentos) de uma tabela/collection/chave — síncrono, sem SSE */
+  async previewDBTestObject(
+    req: import("./types").DBPreviewRequest
+  ): Promise<import("./types").DBPreviewResponse> {
+    return this.request<import("./types").DBPreviewResponse>("/db-test/preview", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
   // ===== DYNATRACE =====
 
   async getDynatraceConfig(aiEmail: string): Promise<{
