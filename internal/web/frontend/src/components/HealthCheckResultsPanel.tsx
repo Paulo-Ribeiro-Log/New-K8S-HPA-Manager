@@ -45,6 +45,7 @@ import type { HealthCheckResult, Severity, CorrelatedHealthItem, OneAgentSignal,
 import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
 import { HealthCheckDTTab } from "@/components/HealthCheckDTTab";
+import { HealthReportTab } from "@/components/HealthReportTab";
 import { apiClient } from "@/lib/api/client";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -954,7 +955,7 @@ export const HealthCheckResultsPanel = ({
                       <CollapsibleContent>
                         <CardContent className="pt-0 border-t">
                           <Tabs defaultValue="deployments" className="mt-4">
-                            <TabsList className="grid w-full grid-cols-9">
+                            <TabsList className="grid w-full grid-cols-10">
                               <TabsTrigger value="deployments" className="gap-1 text-xs">
                                 <Server className="h-3 w-3" />
                                 Deploys ({result.deployment_results.length})
@@ -996,6 +997,10 @@ export const HealthCheckResultsPanel = ({
                                 <span className={(result.oneagent_signals?.length ?? 0) > 0 ? "text-emerald-600 dark:text-emerald-400 font-semibold" : ""}>
                                   DT Sinais ({result.oneagent_signals?.length || 0})
                                 </span>
+                              </TabsTrigger>
+                              <TabsTrigger value="report" className="gap-1 text-xs">
+                                <ListChecks className="h-3 w-3" />
+                                Relatório
                               </TabsTrigger>
                             </TabsList>
 
@@ -1166,6 +1171,10 @@ export const HealthCheckResultsPanel = ({
                               ) : (
                                 <CorrelatedTab items={result.correlated_items} nodes={result.node_results} />
                               )}
+                            </TabsContent>
+
+                            <TabsContent value="report" className="mt-3">
+                              <HealthReportTab result={result} />
                             </TabsContent>
                           </Tabs>
                         </CardContent>

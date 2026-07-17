@@ -1,6 +1,6 @@
 # Plano: Maturidade do Relatório de IA do Health Check
 
-← ✅ Fases 1-3 concluídas — Fase 4 ainda não iniciada
+← ✅ CONCLUÍDA — Fases 1-4 implementadas
 
 ## Problema
 
@@ -262,13 +262,36 @@ múltiplos containers, sem resources configurados) sem depender de rede.
    configurados" do exemplo (baixa ocupação de pods + CPU/memória esgotados → requests sem `limits`
    reais, ou request muito abaixo do uso real).
 
-### Fase 4 — Aba "Relatório" dedicada (paridade visual com `RelatorioTab` do FinOps)
+### Fase 4 — Aba "Relatório" dedicada ✅
 
-1. Componente novo (ou seção dentro de `HealthCheckResultsPanel.tsx`) que renderiza a saída
-   estruturada da IA junto com os dados brutos já formatados: tabela-resumo por severidade, tabela de
-   nós, badges de crônico/agudo — em vez do blob de markdown solto atual.
-2. Escopo exato (novo tab vs. seção dentro do painel existente) a decidir na implementação, olhando
-   o layout atual do `HealthCheckResultsPanel.tsx` primeiro.
+**Status: implementado.** Novo componente `internal/web/frontend/src/components/HealthReportTab.tsx`
+(padrão de arquivo separado já usado por `HealthCheckDTTab.tsx`), plugado como 10ª aba
+("Relatório", `ListChecks`) em `HealthCheckResultsPanel.tsx` (`grid-cols-9` → `grid-cols-10`), na
+última posição — mesma convenção do FinOps (`RelatorioTab` também é a última das 7 abas lá).
+
+**Conteúdo**, em ordem:
+1. Cabeçalho: cluster, período (`started_at`–`finished_at`), badges de contagem por severidade.
+2. Tabela-resumo priorizada por severidade (Severidade | Recurso | Mensagem | Contexto), com badge
+   "Crônico desde DATA" (issues de evento com `chronicity.is_chronic`) e badge de veredicto de
+   recursos ("risco OOM/throttling" / "superprovisionado") quando presentes.
+3. Tabela de utilização dos nós (só aparece quando `node_results` não está vazio — depende de
+   `check_nodes` ter sido marcado na Fase 2), com a mesma dica de "baixa utilização de pods + CPU
+   alta → requests mal configurados" do relatório de exemplo original.
+
+**Fonte dos dados da tabela-resumo**: prioriza `result.correlated_items` (já vem com severidade
+final calculada e crônico/agudo) quando não-vazio; sem Dynatrace configurado (`correlated_items`
+sempre vazio, mesma limitação de todas as fases anteriores), cai num fallback client-side que monta
+a lista a partir de `deployment_results`/`event_results`/`hpa_results`/`pvc_results` filtrando só
+os não-healthy — não tem crônico/agudo nesse caminho (só vem de `CorrelatedK8sIssue`), mas tem o
+veredicto de recursos (`resource_verdict` já vive direto em `DeploymentHealth`, Fase 3).
+
+**Validado**: `tsc --noEmit` + `eslint` limpos; sanity-check manual (não visual) contra dois
+resultados reais salvos no SQLite durante as validações das Fases 2/3 — conferido que os campos que
+o componente lê (`node.allocated.pods`, `node.pod_utilization_percent`, `deployment.status`,
+`deployment.resource_verdict` etc.) batem exatamente com o JSON real devolvido pela API (13 nós
+reais, 48 deployments não-healthy num resultado com 180 deployments totais). **Não clicado num
+browser de verdade** — sem ferramenta de automação de browser neste ambiente em nenhuma das 4
+fases desta sessão.
 
 ## Fora de escopo
 
