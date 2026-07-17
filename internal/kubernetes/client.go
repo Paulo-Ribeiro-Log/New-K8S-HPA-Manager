@@ -4105,11 +4105,14 @@ func parseInt64(s string) int64 {
 // nome curto — bem provável com DaemonSets de nome genérico tipo "kube-proxy"/"calico-node" que
 // existem em vários clusters — apontava silenciosamente pro cluster ERRADO) e sempre usava o
 // kubeconfig padrão do host ($KUBECONFIG/~/.kube/config) em vez do arquivo real da aplicação.
-func ExecuteKubectlDescribe(kubeconfigPath, context, resourceType, name, namespace string) (string, error) {
-	args := []string{"describe", resourceType, name, "--context", context}
-	if kubeconfigPath != "" {
-		args = append(args, "--kubeconfig", kubeconfigPath)
-	}
+// ExecuteKubectlDescribe roda `kubectl describe` num subprocesso. authArgs vem de
+// KubeConfigManager.KubectlAuthArgs(cluster) — para AKS é só `--context <cluster>`, mas para
+// GKE/EKS pode ser um `--kubeconfig <tmpfile>` com o Host/BearerToken/ExecProvider já resolvidos
+// (evita depender do gke-gcloud-auth-plugin/perfil AWS local estar configurado e autenticado no
+// kubeconfig em disco do servidor). O caller é responsável por chamar o cleanup() retornado por
+// KubectlAuthArgs após esta função retornar.
+func ExecuteKubectlDescribe(authArgs []string, resourceType, name, namespace string) (string, error) {
+	args := append([]string{"describe", resourceType, name}, authArgs...)
 	if namespace != "" {
 		args = append(args, "--namespace", namespace)
 	}

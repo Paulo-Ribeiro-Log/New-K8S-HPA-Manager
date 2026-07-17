@@ -516,7 +516,16 @@ func (h *IngressHandler) Describe(c *gin.Context) {
 	}
 
 	// Executar kubectl describe
-	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "ingress", name, namespace)
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Erro ao resolver autenticação do cluster: %v", authErr),
+		})
+		return
+	}
+	defer cleanup()
+
+	output, err := kubeclient.ExecuteKubectlDescribe(authArgs, "ingress", name, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),
