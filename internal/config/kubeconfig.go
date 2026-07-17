@@ -711,26 +711,42 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 }
 
 // KubectlAuthArgs retorna os argumentos que subprocessos `kubectl` (usados para CRDs sem
-// dynamic client — Gateway API, Resource Explorer) devem receber para se autenticar.
+// dynamic client — Gateway API, Resource Explorer, Describe) devem receber para se autenticar.
 //
 // Para clusters GKE, `kubectl --context <ctx>` lê o kubeconfig do sistema, cujo ExecProvider
 // normalmente é o `gke-gcloud-auth-plugin`, que por sua vez invoca a sessão `gcloud auth login`
 // local — uma credencial independente do ADC próprio da aplicação (gcp-adc.json). Se a sessão
 // gcloud local expirar ("Reauthentication failed"), todo `kubectl` para GKE falha mesmo que o
-// ADC da app esteja válido. Para evitar essa dependência, geramos um kubeconfig temporário com
-// o Host/BearerToken já resolvidos por GetRestConfig() (mesmo caminho usado pelo client-go em
-// memória) e apontamos o kubectl para ele via `--kubeconfig`.
+// ADC da app esteja válido.
+//
+// Para clusters EKS, o mesmo problema existe em relação ao AWS CLI/perfil configurado no
+// kubeconfig do sistema — sem um exec provider funcional lá (`aws eks update-kubeconfig`
+// nunca rodado, ou token estático de 15min já expirado), o `kubectl --context <arn>` falha.
+//
+// Para evitar essa dependência, para GKE e EKS geramos um kubeconfig temporário com o
+// Host/BearerToken/ExecProvider já resolvidos por GetRestConfig() (mesmo caminho usado pelo
+// client-go em memória para essas duas clouds — ver os ramos CloudProviderGKE/CloudProviderEKS
+// ali) e apontamos o kubectl para ele via `--kubeconfig`. Para AKS (e providers desconhecidos),
+// GetRestConfig não injeta nada — o comportamento permanece `--context <cluster>` como sempre foi.
 //
 // O caller DEVE chamar cleanup() (mesmo em caso de erro) para remover o arquivo temporário.
 func (k *KubeConfigManager) KubectlAuthArgs(cluster string) (args []string, cleanup func(), err error) {
 	noop := func() {}
-	if !strings.HasPrefix(cluster, "gke_") {
+
+	resolved := k.resolveContext(cluster)
+	serverURL := k.getServerURL(resolved)
+	if serverURL == "" {
+		serverURL = k.getServerURL(cluster)
+	}
+	cloudProvider := DetectCloudProvider(serverURL, resolved, cluster)
+
+	if cloudProvider != CloudProviderGKE && cloudProvider != CloudProviderEKS {
 		return []string{"--context", cluster}, noop, nil
 	}
 
 	restConfig, rcErr := k.GetRestConfig(cluster)
-	if rcErr != nil || restConfig.BearerToken == "" {
-		// Sem token resolvido via ADC/gcloud — cai para o comportamento antigo (kubectl usa o
+	if rcErr != nil || (restConfig.BearerToken == "" && restConfig.ExecProvider == nil) {
+		// Sem token/exec provider resolvido — cai para o comportamento antigo (kubectl usa o
 		// kubeconfig do sistema como está, incluindo o exec-plugin se houver).
 		return []string{"--context", cluster}, noop, nil
 	}
@@ -741,19 +757,23 @@ func (k *KubeConfigManager) KubectlAuthArgs(cluster string) (args []string, clea
 	clusterEntry.Server = restConfig.Host
 	clusterEntry.CertificateAuthorityData = restConfig.CAData
 	clusterEntry.InsecureSkipTLSVerify = restConfig.Insecure || len(restConfig.CAData) == 0
-	tmpKubeconfig.Clusters["gke-target"] = clusterEntry
+	tmpKubeconfig.Clusters["target"] = clusterEntry
 
 	authInfo := api.NewAuthInfo()
-	authInfo.Token = restConfig.BearerToken
-	tmpKubeconfig.AuthInfos["gke-user"] = authInfo
+	if restConfig.BearerToken != "" {
+		authInfo.Token = restConfig.BearerToken
+	} else {
+		authInfo.Exec = restConfig.ExecProvider
+	}
+	tmpKubeconfig.AuthInfos["target-user"] = authInfo
 
 	ctxEntry := api.NewContext()
-	ctxEntry.Cluster = "gke-target"
-	ctxEntry.AuthInfo = "gke-user"
-	tmpKubeconfig.Contexts["gke-context"] = ctxEntry
-	tmpKubeconfig.CurrentContext = "gke-context"
+	ctxEntry.Cluster = "target"
+	ctxEntry.AuthInfo = "target-user"
+	tmpKubeconfig.Contexts["target-context"] = ctxEntry
+	tmpKubeconfig.CurrentContext = "target-context"
 
-	tmpFile, err := os.CreateTemp("", "kubeconfig-gke-*.yaml")
+	tmpFile, err := os.CreateTemp("", "kubeconfig-"+cloudProvider+"-*.yaml")
 	if err != nil {
 		return nil, noop, fmt.Errorf("failed to create temp kubeconfig: %w", err)
 	}

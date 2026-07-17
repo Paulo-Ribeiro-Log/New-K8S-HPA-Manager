@@ -307,7 +307,16 @@ func (h *NamespaceHandler) Describe(c *gin.Context) {
 	}
 
 	// Executar kubectl describe
-	output, err := kubeclient.ExecuteKubectlDescribe(h.kubeManager.ConfigPath(), h.kubeManager.ResolveContext(cluster), "namespace", name, "")
+	authArgs, cleanup, authErr := h.kubeManager.KubectlAuthArgs(cluster)
+	if authErr != nil {
+		c.JSON(500, gin.H{
+			"error": fmt.Sprintf("Failed to resolve cluster authentication: %v", authErr),
+		})
+		return
+	}
+	defer cleanup()
+
+	output, err := kubeclient.ExecuteKubectlDescribe(authArgs, "namespace", name, "")
 	if err != nil {
 		c.JSON(500, gin.H{
 			"error": fmt.Sprintf("Failed to execute kubectl describe: %v", err),
