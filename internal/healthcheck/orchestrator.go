@@ -14,6 +14,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/metrics"
+	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/web/sse"
 )
@@ -27,6 +28,7 @@ type Orchestrator struct {
 	eventChecker       *EventChecker     // ✅ Verificador de eventos K8s
 	hpaChecker         *HPAChecker       // ✅ Verificador de HPAs
 	pvChecker          *PVChecker        // ✅ Verificador de PVCs
+	nodeChecker           *NodeChecker           // ✅ Verificador de capacidade/utilização dos nós
 	dynatraceChecker      *DynatraceChecker      // ✅ Verificador de problems Dynatrace
 	oneAgentChecker       *OneAgentSignalsChecker // ✅ Varredura OneAgent por threshold
 	nodePoolStore         *storage.NodePoolRegistryStore
@@ -65,6 +67,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		eventChecker:       NewEventChecker(),
 		hpaChecker:         NewHPAChecker(),
 		pvChecker:          NewPVChecker(),
+		nodeChecker:        NewNodeChecker(),
 		dynatraceChecker:   NewDynatraceChecker(),
 		oneAgentChecker:    NewOneAgentSignalsChecker(),
 		storage:            hcStorage,
@@ -256,6 +259,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		ConfigResults:     []ConfigHealth{},
 		EventResults:      []EventHealth{},
 		DynatraceResults:  []DynatraceHealth{},
+		NodeResults:       []NodeHealth{},
 	}
 
 	// Obter cliente Kubernetes
@@ -284,6 +288,28 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("%d namespace(s) encontrado(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
 	} else {
 		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("Verificando %d namespace(s) especificado(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
+	}
+
+	// Comparação de uso real (P95 histórico) vs. request configurado dos deployments, via
+	// Prometheus — opcional, condicionada a CheckResourceHistory + endpoint alcançável pro
+	// cluster (mesmo padrão de auto-descoberta usado no FinOps). Resolvido uma única vez aqui
+	// (não dentro do goroutine de deployments) porque a checagem de alcançabilidade já é uma
+	// chamada de rede síncrona — evita recriar o client por deployment.
+	var resourceEnricher *ResourceEnricher
+	if req.CheckDeployments && req.CheckResourceHistory {
+		promURL := discovery.GetPrometheusURL(cluster)
+		if promURL != "" && discovery.IsEndpointAvailable(promURL) {
+			enricher, err := NewResourceEnricher(promURL, 48*time.Hour)
+			if err != nil {
+				log.Warn().Err(err).Str("cluster", cluster).Str("prometheus_url", promURL).
+					Msg("[HealthCheck] Falha ao criar ResourceEnricher — seguindo sem comparação de uso real")
+			} else {
+				resourceEnricher = enricher
+			}
+		} else {
+			log.Debug().Str("cluster", cluster).Str("prometheus_url", promURL).
+				Msg("[HealthCheck] Prometheus não alcançável — comparação de uso real desabilitada para este cluster")
+		}
 	}
 
 	// Executar checks em paralelo (dentro do cluster)
@@ -315,6 +341,9 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		enabledChecks++
 	}
 	if req.CheckPVCs {
+		enabledChecks++
+	}
+	if req.CheckNodes {
 		enabledChecks++
 	}
 	if req.CheckDynatrace && req.DynatraceURL != "" {
@@ -352,7 +381,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "deployments", message, deploymentProgress, status)
 			}
 
-			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.GetTimeoutDeployments(), cluster, o.deploymentRegistry, deploymentCallback)
+			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.GetTimeoutDeployments(), cluster, o.deploymentRegistry, resourceEnricher, deploymentCallback)
 
 			// ✅ Aplicar filtros se habilitado
 			if req.ApplyFilters && o.filterManager != nil {
@@ -581,6 +610,35 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		}()
 	}
 
+	// Check Nodes (capacidade/utilização — recurso cluster-scoped, não depende de namespaces)
+	if req.CheckNodes {
+		nodesStart := currentRangeStart
+		nodesEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = nodesEnd
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.publishProgress(sessionID, cluster, "nodes", "Verificando capacidade e utilização dos nós...", nodesStart, StatusHealthy)
+
+			nodeResults := o.nodeChecker.CheckAll(ctx, client, req.GetTimeoutNodes())
+
+			mu.Lock()
+			result.NodeResults = nodeResults
+			mu.Unlock()
+
+			criticalNodes := GetNodeCriticalCount(nodeResults)
+			warningNodes := GetNodeWarningCount(nodeResults)
+			if criticalNodes > 0 {
+				o.publishProgress(sessionID, cluster, "nodes", fmt.Sprintf("%d nó(s) com problemas críticos de capacidade", criticalNodes), nodesEnd, StatusCritical)
+			} else if warningNodes > 0 {
+				o.publishProgress(sessionID, cluster, "nodes", fmt.Sprintf("%d nó(s) com avisos de capacidade", warningNodes), nodesEnd, StatusWarning)
+			} else {
+				o.publishProgress(sessionID, cluster, "nodes", fmt.Sprintf("%d nó(s) verificado(s) - todos saudáveis", len(nodeResults)), nodesEnd, StatusHealthy)
+			}
+		}()
+	}
+
 	// Check Dynatrace Problems
 	if req.CheckDynatrace && req.DynatraceURL != "" {
 		dtStart := currentRangeStart
@@ -716,7 +774,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 	// Correlacionar K8s ↔ Dynatrace (apenas quando DT está habilitado e retornou dados)
 	if req.CheckDynatrace {
-		result.CorrelatedItems = Correlate(result)
+		result.CorrelatedItems = Correlate(ctx, o.storage, result)
 		if len(result.CorrelatedItems) > 0 {
 			correlated := 0
 			for _, ci := range result.CorrelatedItems {
@@ -1080,7 +1138,12 @@ func (o *Orchestrator) calculateSummary(result *HealthCheckResult) {
 		statusCount[d.Status]++
 	}
 
-	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults) + len(result.PVCResults) + len(result.DynatraceResults)
+	// Contar nodes
+	for _, n := range result.NodeResults {
+		statusCount[n.Status]++
+	}
+
+	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults) + len(result.PVCResults) + len(result.DynatraceResults) + len(result.NodeResults)
 	result.HealthyCount = statusCount[StatusHealthy]
 	result.WarningCount = statusCount[StatusWarning]
 	result.CriticalCount = statusCount[StatusCritical]

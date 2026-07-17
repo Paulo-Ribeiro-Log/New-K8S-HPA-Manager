@@ -695,6 +695,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelated(c *gin.Context) {
 	var req struct {
 		AIEmail string                           `json:"ai_email"`
 		Item    healthcheck.CorrelatedHealthItem `json:"item"`
+		Nodes   []healthcheck.NodeHealth         `json:"nodes,omitempty"` // contexto de capacidade do cluster (opcional — Fase 2)
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email e item são obrigatórios"})
@@ -710,7 +711,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelated(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
 	defer cancel()
 
-	prompt := buildCorrelatedItemPrompt(req.Item)
+	prompt := buildCorrelatedItemPrompt(req.Item, req.Nodes)
 
 	analysis, err := provider.Analyze(ctx, prompt)
 	if err != nil {
@@ -734,14 +735,161 @@ func (h *HealthCheckHandler) AnalyzeCorrelated(c *gin.Context) {
 }
 
 // buildCorrelatedItemPrompt monta prompt combinado com contexto K8s + Dynatrace para AI
-func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem) string {
+// severityEmoji retorna o emoji de severidade usado nos relatórios de IA do Health Check —
+// mesma convenção visual de relatórios de incidente (Davis AI e afins): 🔴 crítico, 🟠 alto,
+// 🟡 médio, 🟢 baixo/informativo.
+func severityEmoji(sev healthcheck.Severity) string {
+	switch sev {
+	case healthcheck.SeverityCritical:
+		return "🔴"
+	case healthcheck.SeverityHigh:
+		return "🟠"
+	case healthcheck.SeverityMedium:
+		return "🟡"
+	default:
+		return "🟢"
+	}
+}
+
+// daysOpen formata há quantos dias um problem Dynatrace está aberto, a partir de StartTime.
+func daysOpen(start time.Time) string {
+	if start.IsZero() {
+		return "data de início desconhecida"
+	}
+	days := int(time.Since(start).Hours() / 24)
+	if days <= 0 {
+		return "aberto hoje"
+	}
+	if days == 1 {
+		return "1 dia em aberto"
+	}
+	return fmt.Sprintf("%d dias em aberto (desde %s)", days, start.Format("02/01/2006"))
+}
+
+// chronicityLine formata a linha de crônico/agudo de um issue K8s a partir de Chronicity — vazio
+// quando ainda não há histórico suficiente (evento visto pela primeira vez nesta execução).
+func chronicityLine(issue healthcheck.CorrelatedK8sIssue) string {
+	if issue.Chronicity == nil {
+		return ""
+	}
+	if issue.Chronicity.IsChronic {
+		return fmt.Sprintf("  - ⚠️ **Problema crônico**: %d ocorrência(s) acumulada(s) desde %s — não é um evento pontual, é recorrente.\n",
+			issue.Chronicity.CumulativeCount, issue.Chronicity.FirstSeenEver.Format("02/01/2006"))
+	}
+	return fmt.Sprintf("  - Agudo: %d ocorrência(s) desde %s (dentro da janela de retenção do apiserver).\n",
+		issue.Chronicity.CumulativeCount, issue.Chronicity.FirstSeenEver.Format("02/01/2006"))
+}
+
+// resourceVerdictLine formata a linha de uso real vs. request configurado de um issue de
+// Deployment — ResourceVerdict só vem preenchido quando o histórico via Prometheus rodou
+// (CheckResourceHistory), mas CPUUsagePercent/MemoryUsagePercent (snapshot ao vivo do
+// metrics-server) podem estar disponíveis mesmo sem isso.
+func resourceVerdictLine(issue healthcheck.CorrelatedK8sIssue) string {
+	if issue.ResourceVerdict == "" || issue.ResourceVerdict == "ok" {
+		return ""
+	}
+	usage := fmt.Sprintf("CPU %.0f%% / memória %.0f%% do request (snapshot ao vivo)", issue.CPUUsagePercent, issue.MemoryUsagePercent)
+	switch issue.ResourceVerdict {
+	case "oom_risk":
+		return fmt.Sprintf("  - ⚠️ **Uso real de recursos**: P95 histórico próximo ou acima do request configurado (%s) — risco de OOM/throttling, requests provavelmente subdimensionados.\n", usage)
+	case "superprovisioned":
+		return fmt.Sprintf("  - **Uso real de recursos**: P95 histórico bem abaixo do request configurado (%s) — requests provavelmente superdimensionados.\n", usage)
+	default:
+		return ""
+	}
+}
+
+// writeK8sIssue escreve um issue K8s no formato exigido do prompt: citação verbatim da mensagem
+// bruta do evento/recurso, e as linhas de crônico/agudo e uso real de recursos quando disponíveis.
+func writeK8sIssue(sb *strings.Builder, issue healthcheck.CorrelatedK8sIssue) {
+	sb.WriteString(fmt.Sprintf("- **%s** `%s` [%s]\n", issue.ResourceKind, issue.ResourceName, issue.Severity))
+	sb.WriteString(fmt.Sprintf("  - Mensagem bruta (cite literalmente no relatório): `%s`\n", issue.Message))
+	if issue.Count > 0 {
+		sb.WriteString(fmt.Sprintf("  - Ocorrências nesta execução: %d (desde %s)\n", issue.Count, issue.FirstTimestamp.Format("02/01/2006 15:04")))
+	}
+	if line := chronicityLine(issue); line != "" {
+		sb.WriteString(line)
+	}
+	if line := resourceVerdictLine(issue); line != "" {
+		sb.WriteString(line)
+	}
+}
+
+// writeDTProblem escreve um problem Dynatrace no formato exigido do prompt: ID + dias em aberto,
+// evidências Davis AI e métricas (incluindo CPU/memória de node/pod quando disponíveis).
+func writeDTProblem(sb *strings.Builder, p healthcheck.DynatraceHealth) {
+	sb.WriteString(fmt.Sprintf("- **%s** [%s/%s] — %s\n", p.DisplayID, p.DTSeverity, p.ImpactLevel, daysOpen(p.StartTime)))
+	sb.WriteString(fmt.Sprintf("  - %s\n", p.Title))
+	if len(p.Evidence) > 0 {
+		sb.WriteString("  - Davis AI Evidence:\n")
+		for _, ev := range p.Evidence {
+			sb.WriteString(fmt.Sprintf("    - %s\n", ev))
+		}
+	}
+	if len(p.MetricsSummary) > 0 {
+		sb.WriteString("  - Métricas:\n")
+		for k, v := range p.MetricsSummary {
+			sb.WriteString(fmt.Sprintf("    - %s: %.2f\n", k, v))
+		}
+	}
+	if len(p.RecentEvents) > 0 {
+		sb.WriteString("  - Eventos recentes:\n")
+		for _, ev := range p.RecentEvents {
+			sb.WriteString(fmt.Sprintf("    - %s\n", ev))
+		}
+	}
+}
+
+// buildNodeUtilizationSection monta a tabela de utilização por nó (pods ativos / capacidade máxima
+// / % de utilização) — contexto de capacidade do CLUSTER, não específico de um workload, no mesmo
+// formato do relatório de incidente que motivou essa estrutura de prompt. Vazio quando não há dados
+// de nó (CheckNodes=false na request do Health Check, ou nenhum node retornado).
+func buildNodeUtilizationSection(nodes []healthcheck.NodeHealth) string {
+	if len(nodes) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Utilização dos Nós\n\n")
+	sb.WriteString("| Nó | Pods Ativos | Capacidade Máx | Utilização |\n")
+	sb.WriteString("|---|---|---|---|\n")
+	for _, n := range nodes {
+		sb.WriteString(fmt.Sprintf("| %s | %d | %d | %.1f%% |\n", n.Name, n.Allocated.Pods, n.Allocatable.Pods, n.PodUtilization))
+	}
+	sb.WriteString("\nSe a utilização de pods for baixa mas os nós tiverem alta utilização de CPU/memória, " +
+		"suspeite de requests/limits mal configurados nos workloads (consumindo mais do que declarado) — " +
+		"não de excesso de pods por nó.\n\n")
+	return sb.String()
+}
+
+// promptOutputInstructions é a instrução final compartilhada pelos dois prompt builders,
+// exigindo a estrutura de relatório de incidente madura: emoji de severidade, citação verbatim,
+// link causal explícito pro sintoma do usuário, e ações divididas em 3 baldes de urgência.
+const promptOutputInstructions = `Estruture a resposta como um relatório de incidente, seguindo EXATAMENTE este formato:
+
+1. Para cada problema relevante, use um cabeçalho "EMOJI Problema — título curto", onde EMOJI é
+   🔴 (crítico), 🟠 (alto), 🟡 (médio) ou 🟢 (baixo/informativo) conforme a severidade.
+2. Logo abaixo do cabeçalho, cite a mensagem bruta do evento/problem entre crases (verbatim, sem
+   parafrasear) e explique em linguagem simples o que ela significa tecnicamente.
+3. Diga explicitamente qual sintoma o usuário final provavelmente percebe por causa desse problema
+   (ex: "isso causa lentidão/erro/reset percebido pelo usuário") — não deixe essa conexão implícita.
+4. Quando o item tiver marcação de crônico, deixe claro que não é um problema pontual: cite a
+   contagem acumulada e a data de primeira ocorrência.
+5. Ao final, uma seção "## Ações Recomendadas" dividida em exatamente três subtítulos, cada um com
+   ações concretas (comandos kubectl quando aplicável):
+   - "### Imediato (hoje)"
+   - "### Curto prazo (esta semana)"
+   - "### Monitoramento contínuo"
+
+Não invente números ou IDs de problem que não estejam nos dados fornecidos acima.`
+
+func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem, nodes []healthcheck.NodeHealth) string {
 	var sb strings.Builder
 
-	sb.WriteString("Você é um especialista em Kubernetes e observabilidade. Analise o seguinte item de saúde correlacionado entre K8s e Dynatrace e forneça um diagnóstico conciso com causa raiz e ações recomendadas.\n\n")
+	sb.WriteString("Você é um especialista em Kubernetes e observabilidade, escrevendo um relatório de incidente para um time de SRE. Analise o item de saúde correlacionado entre K8s e Dynatrace abaixo.\n\n")
 	sb.WriteString(fmt.Sprintf("**Workload:** %s\n", item.WorkloadName))
 	sb.WriteString(fmt.Sprintf("**Namespace:** %s\n", item.Namespace))
 	sb.WriteString(fmt.Sprintf("**Cluster:** %s\n", item.Cluster))
-	sb.WriteString(fmt.Sprintf("**Severidade Final:** %s\n", item.FinalSeverity))
+	sb.WriteString(fmt.Sprintf("**Severidade Final:** %s %s\n", severityEmoji(item.FinalSeverity), item.FinalSeverity))
 	if item.Correlated {
 		sb.WriteString("**Correlação:** Confirmada — K8s e Dynatrace detectaram problemas no mesmo workload\n")
 	}
@@ -750,7 +898,7 @@ func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem) string {
 	if len(item.K8sIssues) > 0 {
 		sb.WriteString("## Sintomas Kubernetes\n")
 		for _, issue := range item.K8sIssues {
-			sb.WriteString(fmt.Sprintf("- **%s** `%s` [%s]: %s\n", issue.ResourceKind, issue.ResourceName, issue.Severity, issue.Message))
+			writeK8sIssue(&sb, issue)
 		}
 		sb.WriteString("\n")
 	}
@@ -758,34 +906,13 @@ func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem) string {
 	if len(item.DTProblems) > 0 {
 		sb.WriteString("## Problems Dynatrace\n")
 		for _, p := range item.DTProblems {
-			sb.WriteString(fmt.Sprintf("- **%s** [%s/%s]: %s\n", p.DisplayID, p.DTSeverity, p.ImpactLevel, p.Title))
-			if len(p.Evidence) > 0 {
-				sb.WriteString("  - Davis AI Evidence:\n")
-				for _, ev := range p.Evidence {
-					sb.WriteString(fmt.Sprintf("    - %s\n", ev))
-				}
-			}
-			if len(p.MetricsSummary) > 0 {
-				sb.WriteString("  - Métricas:\n")
-				for k, v := range p.MetricsSummary {
-					sb.WriteString(fmt.Sprintf("    - %s: %.2f\n", k, v))
-				}
-			}
-			if len(p.RecentEvents) > 0 {
-				sb.WriteString("  - Eventos recentes:\n")
-				for _, ev := range p.RecentEvents {
-					sb.WriteString(fmt.Sprintf("    - %s\n", ev))
-				}
-			}
+			writeDTProblem(&sb, p)
 		}
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("Forneça:\n")
-	sb.WriteString("1. Causa raiz mais provável\n")
-	sb.WriteString("2. Impacto no usuário/negócio\n")
-	sb.WriteString("3. Ações imediatas recomendadas (comandos kubectl quando aplicável)\n")
-	sb.WriteString("4. Prevenção futura\n")
+	sb.WriteString(buildNodeUtilizationSection(nodes))
+	sb.WriteString(promptOutputInstructions)
 
 	return sb.String()
 }
@@ -802,6 +929,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelatedBatch(c *gin.Context) {
 	var req struct {
 		AIEmail string                             `json:"ai_email"`
 		Items   []healthcheck.CorrelatedHealthItem `json:"items"`
+		Nodes   []healthcheck.NodeHealth           `json:"nodes,omitempty"` // contexto de capacidade do cluster (opcional — Fase 2)
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" || len(req.Items) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email e items são obrigatórios"})
@@ -821,7 +949,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelatedBatch(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 120*time.Second)
 	defer cancel()
 
-	prompt := buildBatchCorrelatedPrompt(req.Items)
+	prompt := buildBatchCorrelatedPrompt(req.Items, req.Nodes)
 
 	analysis, err := provider.Analyze(ctx, prompt)
 	if err != nil {
@@ -843,7 +971,7 @@ func (h *HealthCheckHandler) AnalyzeCorrelatedBatch(c *gin.Context) {
 }
 
 // buildBatchCorrelatedPrompt monta prompt consolidado com todos os itens correlacionados para análise em batch
-func buildBatchCorrelatedPrompt(items []healthcheck.CorrelatedHealthItem) string {
+func buildBatchCorrelatedPrompt(items []healthcheck.CorrelatedHealthItem, nodes []healthcheck.NodeHealth) string {
 	var sb strings.Builder
 
 	// Contadores para o sumário
@@ -861,52 +989,49 @@ func buildBatchCorrelatedPrompt(items []healthcheck.CorrelatedHealthItem) string
 		clusters[it.Cluster] = struct{}{}
 	}
 
-	sb.WriteString("Você é um especialista em Kubernetes e observabilidade. Analise o estado geral de saúde do ambiente abaixo, identificando padrões, causa raiz comum e prioridade de ação.\n\n")
-	sb.WriteString(fmt.Sprintf("**Resumo:** %d workloads com problemas | %d correlacionados K8s+DT | %d críticos | %d high | %d cluster(s)\n\n",
-		len(items), correlated, critical, high, len(clusters)))
+	// Cabeçalho no mesmo espírito do exemplo de relatório de incidente que motivou esta estrutura
+	// (cluster/período/namespace/nós) — aqui adaptado ao que o batch realmente tem disponível.
+	clusterList := make([]string, 0, len(clusters))
+	for c := range clusters {
+		clusterList = append(clusterList, c)
+	}
+	sb.WriteString("Você é um especialista em Kubernetes e observabilidade, escrevendo um relatório de incidente consolidado para um time de SRE. Analise o estado geral de saúde do ambiente abaixo.\n\n")
+	sb.WriteString(fmt.Sprintf("**Cluster(s):** %s\n", strings.Join(clusterList, ", ")))
+	sb.WriteString(fmt.Sprintf("**Resumo:** %d workloads com problemas | %d correlacionados K8s+DT | %d críticos | %d alto\n\n",
+		len(items), correlated, critical, high))
 
 	// Itens agrupados por severidade (críticos primeiro, já vêm ordenados do correlator)
 	sb.WriteString("## Workloads Afetados\n\n")
 	for i, it := range items {
-		sb.WriteString(fmt.Sprintf("### %d. %s/%s [%s] — Severidade: %s\n",
-			i+1, it.Namespace, it.WorkloadName, it.Cluster, it.FinalSeverity))
+		sb.WriteString(fmt.Sprintf("### %d. %s %s/%s [%s] — Severidade: %s\n",
+			i+1, severityEmoji(it.FinalSeverity), it.Namespace, it.WorkloadName, it.Cluster, it.FinalSeverity))
 		if it.Correlated {
-			sb.WriteString("*(Correlacionado: K8s e Dynatrace confirmam problema)*\n")
+			sb.WriteString("*(Correlacionado: K8s e Dynatrace confirmam problema no mesmo workload)*\n")
 		}
 
 		if len(it.K8sIssues) > 0 {
-			sb.WriteString("**K8s:** ")
-			for j, issue := range it.K8sIssues {
-				if j > 0 {
-					sb.WriteString("; ")
-				}
-				sb.WriteString(fmt.Sprintf("%s `%s` [%s]: %s", issue.ResourceKind, issue.ResourceName, issue.Severity, issue.Message))
+			sb.WriteString("**K8s:**\n")
+			for _, issue := range it.K8sIssues {
+				writeK8sIssue(&sb, issue)
 			}
-			sb.WriteString("\n")
 		}
 
 		if len(it.DTProblems) > 0 {
-			sb.WriteString("**DT:** ")
-			for j, p := range it.DTProblems {
-				if j > 0 {
-					sb.WriteString("; ")
-				}
-				sb.WriteString(fmt.Sprintf("%s [%s/%s]: %s", p.DisplayID, p.DTSeverity, p.ImpactLevel, p.Title))
-				if len(p.Evidence) > 0 {
-					sb.WriteString(fmt.Sprintf(" (Davis: %s)", p.Evidence[0]))
-				}
+			sb.WriteString("**Dynatrace:**\n")
+			for _, p := range it.DTProblems {
+				writeDTProblem(&sb, p)
 			}
-			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
 	}
 
+	sb.WriteString(buildNodeUtilizationSection(nodes))
+
 	sb.WriteString("## Forneça\n")
 	sb.WriteString("1. **Panorama geral** — qual é o estado de saúde do ambiente?\n")
-	sb.WriteString("2. **Padrões identificados** — há causa raiz comum entre múltiplos workloads?\n")
-	sb.WriteString("3. **Prioridade de ação** — quais workloads abordar primeiro e por quê?\n")
-	sb.WriteString("4. **Ações imediatas** — comandos kubectl ou passos concretos para os itens mais críticos\n")
-	sb.WriteString("5. **Atenção especial** — workloads que, sozinhos, representam maior risco ao negócio\n")
+	sb.WriteString("2. **Padrões identificados** — há causa raiz comum entre múltiplos workloads (ex: um nginx ingress ou um node pool afetando várias apps)?\n")
+	sb.WriteString("3. **Tabela-resumo** — uma tabela markdown com colunas Severidade | Problema | Aplicação Afetada | Status, cobrindo os itens mais relevantes.\n\n")
+	sb.WriteString(promptOutputInstructions)
 
 	return sb.String()
 }

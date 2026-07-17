@@ -41,10 +41,11 @@ import {
   ArrowRight,
   Gauge,
 } from "lucide-react";
-import type { HealthCheckResult, Severity, CorrelatedHealthItem, OneAgentSignal } from "@/types/healthcheck";
+import type { HealthCheckResult, Severity, CorrelatedHealthItem, OneAgentSignal, NodeHealth } from "@/types/healthcheck";
 import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
 import { HealthCheckDTTab } from "@/components/HealthCheckDTTab";
+import { HealthReportTab } from "@/components/HealthReportTab";
 import { apiClient } from "@/lib/api/client";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -92,7 +93,7 @@ const CorrelationSourceBadge = ({ item }: { item: CorrelatedHealthItem }) => {
 };
 
 // Card de item correlacionado K8s ↔ Dynatrace
-const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
+const CorrelatedItemCard = ({ item, nodes }: { item: CorrelatedHealthItem; nodes?: NodeHealth[] }) => {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -113,7 +114,7 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
     }
     setAnalyzing(true);
     try {
-      const result = await apiClient.analyzeCorrelatedItem(item, aiEmail);
+      const result = await apiClient.analyzeCorrelatedItem(item, aiEmail, nodes);
       setAnalysisResult(result.analysis);
       setAnalysisOpen(true);
     } catch (err) {
@@ -447,7 +448,7 @@ const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
 };
 
 // Aba K8s↔DT com suporte a análise AI em batch de todos os itens correlacionados
-const CorrelatedTab = ({ items }: { items: CorrelatedHealthItem[] }) => {
+const CorrelatedTab = ({ items, nodes }: { items: CorrelatedHealthItem[]; nodes?: NodeHealth[] }) => {
   const { toast } = useToast();
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
   const [batchResult, setBatchResult] = useState<string | null>(null);
@@ -461,7 +462,7 @@ const CorrelatedTab = ({ items }: { items: CorrelatedHealthItem[] }) => {
     }
     setBatchAnalyzing(true);
     try {
-      const result = await apiClient.analyzeCorrelatedBatch(items, aiEmail);
+      const result = await apiClient.analyzeCorrelatedBatch(items, aiEmail, nodes);
       setBatchResult(result.analysis);
       setBatchOpen(true);
     } catch (err) {
@@ -520,7 +521,7 @@ const CorrelatedTab = ({ items }: { items: CorrelatedHealthItem[] }) => {
 
       {/* Cards individuais */}
       {items.map((item, i) => (
-        <CorrelatedItemCard key={i} item={item} />
+        <CorrelatedItemCard key={i} item={item} nodes={nodes} />
       ))}
     </div>
   );
@@ -954,7 +955,7 @@ export const HealthCheckResultsPanel = ({
                       <CollapsibleContent>
                         <CardContent className="pt-0 border-t">
                           <Tabs defaultValue="deployments" className="mt-4">
-                            <TabsList className="grid w-full grid-cols-9">
+                            <TabsList className="grid w-full grid-cols-10">
                               <TabsTrigger value="deployments" className="gap-1 text-xs">
                                 <Server className="h-3 w-3" />
                                 Deploys ({result.deployment_results.length})
@@ -996,6 +997,10 @@ export const HealthCheckResultsPanel = ({
                                 <span className={(result.oneagent_signals?.length ?? 0) > 0 ? "text-emerald-600 dark:text-emerald-400 font-semibold" : ""}>
                                   DT Sinais ({result.oneagent_signals?.length || 0})
                                 </span>
+                              </TabsTrigger>
+                              <TabsTrigger value="report" className="gap-1 text-xs">
+                                <ListChecks className="h-3 w-3" />
+                                Relatório
                               </TabsTrigger>
                             </TabsList>
 
@@ -1164,8 +1169,12 @@ export const HealthCheckResultsPanel = ({
                                   <p className="text-[10px]">Ative "Problems Dynatrace" nas opções para cruzar sintomas K8s com problems DT</p>
                                 </div>
                               ) : (
-                                <CorrelatedTab items={result.correlated_items} />
+                                <CorrelatedTab items={result.correlated_items} nodes={result.node_results} />
                               )}
+                            </TabsContent>
+
+                            <TabsContent value="report" className="mt-3">
+                              <HealthReportTab result={result} />
                             </TabsContent>
                           </Tabs>
                         </CardContent>

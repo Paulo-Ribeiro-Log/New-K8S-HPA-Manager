@@ -798,3 +798,102 @@ func TestAllRequestsEqualLimits(t *testing.T) {
 		t.Error("Deveria retornar false quando requests != limits")
 	}
 }
+
+// TestDeploymentResourceBaseline_UsesRequestWhenPresent verifica que a soma prioriza requests
+// (fallback para limits só quando request está zerado) e soma corretamente vários containers.
+func TestDeploymentResourceBaseline_UsesRequestWhenPresent(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "app",
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("200m"),
+									corev1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("500m"),
+									corev1.ResourceMemory: resource.MustParse("512Mi"),
+								},
+							},
+						},
+						{
+							Name: "sidecar",
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("64Mi"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	cpuMilli, memBytes := deploymentResourceBaseline(deployment)
+
+	wantCPU := int64(300)                  // 200m + 100m (usa request, não limit, do primeiro container)
+	wantMem := int64(256+64) * 1024 * 1024 // 256Mi + 64Mi
+
+	if cpuMilli != wantCPU {
+		t.Errorf("cpuMilli = %d, want %d", cpuMilli, wantCPU)
+	}
+	if memBytes != wantMem {
+		t.Errorf("memBytes = %d, want %d", memBytes, wantMem)
+	}
+}
+
+// TestDeploymentResourceBaseline_FallsBackToLimit verifica que, sem request, usa o limit.
+func TestDeploymentResourceBaseline_FallsBackToLimit(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "app",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("500m"),
+									corev1.ResourceMemory: resource.MustParse("512Mi"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	cpuMilli, memBytes := deploymentResourceBaseline(deployment)
+
+	if cpuMilli != 500 {
+		t.Errorf("cpuMilli = %d, want 500 (fallback pro limit)", cpuMilli)
+	}
+	if memBytes != 512*1024*1024 {
+		t.Errorf("memBytes = %d, want %d (fallback pro limit)", memBytes, int64(512*1024*1024))
+	}
+}
+
+// TestDeploymentResourceBaseline_NoResourcesConfigured cobre o caso sem requests nem limits.
+func TestDeploymentResourceBaseline_NoResourcesConfigured(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "app"}},
+				},
+			},
+		},
+	}
+
+	cpuMilli, memBytes := deploymentResourceBaseline(deployment)
+	if cpuMilli != 0 || memBytes != 0 {
+		t.Errorf("esperava (0, 0) sem resources configurados, got (%d, %d)", cpuMilli, memBytes)
+	}
+}

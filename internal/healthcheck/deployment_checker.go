@@ -47,7 +47,7 @@ func NewDeploymentChecker() *DeploymentChecker {
 
 // CheckAll verifica todos os deployments nos namespaces especificados
 // clusterName é usado para popular a base de conhecimento de deployments
-func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespaces []string, timeout int, clusterName string, registry *storage.DeploymentRegistry, progressCallback ProgressCallback) []DeploymentHealth {
+func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespaces []string, timeout int, clusterName string, registry *storage.DeploymentRegistry, resourceEnricher *ResourceEnricher, progressCallback ProgressCallback) []DeploymentHealth {
 	results := []DeploymentHealth{}
 
 	type nsDeployments struct {
@@ -100,7 +100,7 @@ func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Inte
 			}
 
 			deploymentCtx, cancel := c.withTimeout(ctx, timeout)
-			health := c.Check(deploymentCtx, client, metricsClient, batch.namespace, deployment.Name, timeout, clusterName, registry)
+			health := c.Check(deploymentCtx, client, metricsClient, batch.namespace, deployment.Name, timeout, clusterName, registry, resourceEnricher)
 			if cancel != nil {
 				cancel()
 			}
@@ -128,7 +128,7 @@ func (c *DeploymentChecker) getHealthSummary(health DeploymentHealth) string {
 
 // Check verifica a saúde de um deployment específico
 // clusterName e registry são usados para popular a base de conhecimento
-func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespace, name string, timeout int, clusterName string, registry *storage.DeploymentRegistry) DeploymentHealth {
+func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespace, name string, timeout int, clusterName string, registry *storage.DeploymentRegistry, resourceEnricher *ResourceEnricher) DeploymentHealth {
 	deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		status := StatusCritical
@@ -266,6 +266,10 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 		c.analyzeResources(deployment, &health)
 
 		c.enrichWithMetrics(ctx, metricsClient, deployment, selector, timeout, &health)
+
+		if resourceEnricher != nil {
+			c.enrichWithResourceHistory(ctx, resourceEnricher, deployment, pods.Items, &health)
+		}
 	}
 
 	// 7. Verificar condições do deployment
@@ -740,40 +744,14 @@ func (c *DeploymentChecker) enrichWithMetrics(ctx context.Context, metricsClient
 		return
 	}
 
-	containerResources := make(map[string]corev1.ResourceRequirements, len(deployment.Spec.Template.Spec.Containers))
-	for _, container := range deployment.Spec.Template.Spec.Containers {
-		containerResources[container.Name] = container.Resources
-	}
+	baseCPUMilli, baseMemoryBytes := deploymentResourceBaseline(deployment)
 
-	var usedCPUMilli, baseCPUMilli int64
-	var usedMemoryBytes, baseMemoryBytes int64
-
+	var usedCPUMilli, usedMemoryBytes int64
 	for _, podMetric := range podMetrics.Items {
 		for _, containerMetric := range podMetric.Containers {
 			usage := containerMetric.Usage
 			usedCPUMilli += usage.Cpu().MilliValue()
 			usedMemoryBytes += usage.Memory().Value()
-
-			if resources, ok := containerResources[containerMetric.Name]; ok {
-				var cpuBase int64
-				var memBase int64
-
-				if resources.Requests != nil {
-					cpuBase = resources.Requests.Cpu().MilliValue()
-					memBase = resources.Requests.Memory().Value()
-				}
-
-				if cpuBase == 0 && resources.Limits != nil {
-					cpuBase = resources.Limits.Cpu().MilliValue()
-				}
-
-				if memBase == 0 && resources.Limits != nil {
-					memBase = resources.Limits.Memory().Value()
-				}
-
-				baseCPUMilli += cpuBase
-				baseMemoryBytes += memBase
-			}
 		}
 	}
 
@@ -790,6 +768,65 @@ func (c *DeploymentChecker) enrichWithMetrics(ctx context.Context, metricsClient
 	} else if usedMemoryBytes > 0 {
 		health.Suggestions = appendSuggestionOnce(health.Suggestions, "Definir requests/limits de memória para visibilidade de uso")
 	}
+}
+
+// enrichWithResourceHistory compara o uso histórico P95 (via Prometheus) contra o request
+// configurado do deployment — complementa enrichWithMetrics (snapshot ao vivo do metrics-server,
+// um único ponto no tempo) com uma visão de janela, capaz de detectar picos transitórios que o
+// snapshot perderia. Best-effort: sem erro pro chamador se não houver dados suficientes.
+func (c *DeploymentChecker) enrichWithResourceHistory(ctx context.Context, enricher *ResourceEnricher, deployment *appsv1.Deployment, pods []corev1.Pod, health *DeploymentHealth) {
+	if len(pods) == 0 {
+		return
+	}
+
+	podNames := make([]string, 0, len(pods))
+	for _, p := range pods {
+		podNames = append(podNames, p.Name)
+	}
+
+	cpuMilli, memBytes := deploymentResourceBaseline(deployment)
+	usage, ok := enricher.EnrichDeployment(ctx, deployment.Namespace, podNames, cpuMilli, memBytes)
+	if !ok {
+		return
+	}
+
+	health.CPUP95Millis = usage.CPUP95Millis
+	health.MemoryP95Bytes = usage.MemP95Bytes
+	health.ResourceVerdict = usage.Verdict
+
+	switch usage.Verdict {
+	case "oom_risk":
+		health.Suggestions = appendSuggestionOnce(health.Suggestions,
+			"Uso real de CPU/memória (P95 histórico) está no limite do request configurado — risco de throttling/OOM, considerar aumentar requests/limits")
+	case "superprovisioned":
+		health.Suggestions = appendSuggestionOnce(health.Suggestions,
+			"Uso real de CPU/memória (P95 histórico) está bem abaixo do request configurado — considerar reduzir requests/limits")
+	}
+}
+
+// deploymentResourceBaseline soma o request (ou limit, como fallback) de CPU/memória de todos os
+// containers do deployment — mesma regra usada tanto pelo comparativo ao vivo (enrichWithMetrics,
+// via metrics-server) quanto pelo histórico via Prometheus (ResourceEnricher, resource_enricher.go).
+func deploymentResourceBaseline(deployment *appsv1.Deployment) (cpuMilli, memBytes int64) {
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		resources := container.Resources
+
+		var cpuBase, memBase int64
+		if resources.Requests != nil {
+			cpuBase = resources.Requests.Cpu().MilliValue()
+			memBase = resources.Requests.Memory().Value()
+		}
+		if cpuBase == 0 && resources.Limits != nil {
+			cpuBase = resources.Limits.Cpu().MilliValue()
+		}
+		if memBase == 0 && resources.Limits != nil {
+			memBase = resources.Limits.Memory().Value()
+		}
+
+		cpuMilli += cpuBase
+		memBytes += memBase
+	}
+	return cpuMilli, memBytes
 }
 
 func appendSuggestionOnce(list []string, suggestion string) []string {
