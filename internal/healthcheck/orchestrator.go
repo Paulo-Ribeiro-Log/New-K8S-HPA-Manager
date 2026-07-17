@@ -14,6 +14,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/metrics"
+	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/web/sse"
 )
@@ -289,6 +290,28 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("Verificando %d namespace(s) especificado(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
 	}
 
+	// Comparação de uso real (P95 histórico) vs. request configurado dos deployments, via
+	// Prometheus — opcional, condicionada a CheckResourceHistory + endpoint alcançável pro
+	// cluster (mesmo padrão de auto-descoberta usado no FinOps). Resolvido uma única vez aqui
+	// (não dentro do goroutine de deployments) porque a checagem de alcançabilidade já é uma
+	// chamada de rede síncrona — evita recriar o client por deployment.
+	var resourceEnricher *ResourceEnricher
+	if req.CheckDeployments && req.CheckResourceHistory {
+		promURL := discovery.GetPrometheusURL(cluster)
+		if promURL != "" && discovery.IsEndpointAvailable(promURL) {
+			enricher, err := NewResourceEnricher(promURL, 48*time.Hour)
+			if err != nil {
+				log.Warn().Err(err).Str("cluster", cluster).Str("prometheus_url", promURL).
+					Msg("[HealthCheck] Falha ao criar ResourceEnricher — seguindo sem comparação de uso real")
+			} else {
+				resourceEnricher = enricher
+			}
+		} else {
+			log.Debug().Str("cluster", cluster).Str("prometheus_url", promURL).
+				Msg("[HealthCheck] Prometheus não alcançável — comparação de uso real desabilitada para este cluster")
+		}
+	}
+
 	// Executar checks em paralelo (dentro do cluster)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -358,7 +381,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "deployments", message, deploymentProgress, status)
 			}
 
-			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.GetTimeoutDeployments(), cluster, o.deploymentRegistry, deploymentCallback)
+			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.GetTimeoutDeployments(), cluster, o.deploymentRegistry, resourceEnricher, deploymentCallback)
 
 			// ✅ Aplicar filtros se habilitado
 			if req.ApplyFilters && o.filterManager != nil {

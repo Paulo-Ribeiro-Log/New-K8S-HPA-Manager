@@ -82,6 +82,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [checkHPAs, setCheckHPAs] = useState(true);      // Verificar HPAs (habilitado por padrão)
   const [checkPVCs, setCheckPVCs] = useState(true);      // Verificar PVCs (habilitado por padrão)
   const [checkNodes, setCheckNodes] = useState(false);   // Verificar capacidade/utilização dos nós (desabilitado por padrão)
+  const [checkResourceHistory, setCheckResourceHistory] = useState(false); // Comparar uso real (P95 Prometheus) vs. request (desabilitado por padrão)
   const [checkDynatrace, setCheckDynatrace] = useState(false); // Verificar problems Dynatrace
   const [checkOneAgentSignals, setCheckOneAgentSignals] = useState(false); // Escanear sinais OneAgent
   const [timeout, setTimeout] = useState(30); // Timeout geral (fallback)
@@ -265,7 +266,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       return;
     }
 
-    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs && !checkNodes && !checkDynatrace && !checkOneAgentSignals) {
+    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs && !checkNodes && !checkResourceHistory && !checkDynatrace && !checkOneAgentSignals) {
       console.error("[HealthCheckingTab] No check types selected");
       toast.error("Selecione pelo menos um tipo de check");
       return;
@@ -287,6 +288,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       check_hpas: checkHPAs,
       check_pvcs: checkPVCs,
       check_nodes: checkNodes,
+      check_resource_history: checkResourceHistory,
       check_dynatrace: checkDynatrace,
       check_oneagent_signals: checkOneAgentSignals,
       ai_email: localStorage.getItem("ai_email") || undefined,
@@ -582,6 +584,19 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                       </Label>
                       <Badge variant="outline" className="text-xs">
                         pods ativos vs. capacidade, alimenta o relatório de IA
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="check-resource-history"
+                        checked={checkResourceHistory}
+                        onCheckedChange={(checked) => setCheckResourceHistory(checked as boolean)}
+                      />
+                      <Label htmlFor="check-resource-history" className="text-sm cursor-pointer">
+                        Uso Real vs. Request (Prometheus)
+                      </Label>
+                      <Badge variant="outline" className="text-xs">
+                        P95 histórico, requer Prometheus alcançável
                       </Badge>
                     </div>
                     <div className="flex items-center gap-2">

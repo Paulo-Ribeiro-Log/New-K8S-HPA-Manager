@@ -86,6 +86,7 @@ export interface HealthCheckRequest {
   check_hpas: boolean;       // Verificar HPAs (min=max, métricas, scaling)
   check_pvcs: boolean;       // Verificar PVCs (status, StorageClass, access modes)
   check_nodes?: boolean;     // Verificar capacidade/utilização dos nós (pods ativos vs. capacidade)
+  check_resource_history?: boolean; // Comparar uso real (P95 via Prometheus) vs. request configurado
   check_dynatrace?: boolean;        // Verificar problems OPEN no Dynatrace
   check_oneagent_signals?: boolean; // Escanear métricas OneAgent (sem problem ativo)
 
@@ -187,9 +188,15 @@ export interface DeploymentHealth {
   containers_crash: number;
   image_pull_errors: number;
 
-  // Recursos - Uso atual
+  // Recursos - Uso atual (snapshot ao vivo via metrics-server)
   cpu_usage_percent: number;    // 0-100
   memory_usage_percent: number; // 0-100
+
+  // Recursos - Histórico via Prometheus (opcional, requer check_resource_history + Prometheus
+  // alcançável pro cluster)
+  cpu_p95_millis?: number;
+  memory_p95_bytes?: number;
+  resource_verdict?: string; // "oom_risk" | "superprovisioned" | "ok"
 
   // Recursos - Configuração
   qos_class?: QoSClass;
@@ -715,6 +722,10 @@ export interface CorrelatedK8sIssue {
   count?: number;
   first_timestamp?: string; // ISO timestamp
   chronicity?: EventChronicity;
+  // Preenchidos apenas quando resource_kind === "Deployment" — uso real vs. request configurado
+  resource_verdict?: string; // "oom_risk" | "superprovisioned" | "ok"
+  cpu_usage_percent?: number;
+  memory_usage_percent?: number;
 }
 
 // Item correlacionado: une sintomas K8s com problems Dynatrace do mesmo workload

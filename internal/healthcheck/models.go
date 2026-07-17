@@ -119,6 +119,7 @@ type HealthCheckRequest struct {
 	CheckHPAs        bool `json:"check_hpas"`      // Verificar HPAs (min=max, métricas, scaling)
 	CheckPVCs        bool `json:"check_pvcs"`      // Verificar PersistentVolumeClaims (status, storage class)
 	CheckNodes           bool `json:"check_nodes"`           // Verificar capacidade/utilização dos nós (pods ativos vs. capacidade)
+	CheckResourceHistory bool `json:"check_resource_history"` // Comparar uso real (P95 via Prometheus) vs. request configurado dos deployments
 	CheckDynatrace      bool `json:"check_dynatrace"`       // Verificar problems OPEN no Dynatrace
 	CheckOneAgentSignals bool `json:"check_oneagent_signals"` // Varrer entidades OneAgent por threshold (sem problem ativo)
 
@@ -234,6 +235,13 @@ type CorrelatedK8sIssue struct {
 	Count          int32            `json:"count,omitempty"`
 	FirstTimestamp time.Time        `json:"first_timestamp,omitempty"`
 	Chronicity     *EventChronicity `json:"chronicity,omitempty"`
+
+	// Preenchidos apenas quando ResourceKind == "Deployment" — uso real vs. request configurado
+	// (CPUUsagePercent/MemoryUsagePercent = snapshot ao vivo; ResourceVerdict só presente quando
+	// o histórico via Prometheus também rodou, ver ResourceEnricher).
+	ResourceVerdict    string  `json:"resource_verdict,omitempty"`
+	CPUUsagePercent    float64 `json:"cpu_usage_percent,omitempty"`
+	MemoryUsagePercent float64 `json:"memory_usage_percent,omitempty"`
 }
 
 // CorrelatedHealthItem une sintomas K8s com problems Dynatrace para o mesmo workload.
@@ -370,9 +378,15 @@ type DeploymentHealth struct {
 	// Problemas de configuração de probes
 	ProbeIssues []ProbeIssue `json:"probe_issues,omitempty"`
 
-	// Recursos - Uso atual
+	// Recursos - Uso atual (snapshot ao vivo via metrics-server)
 	CPUUsagePercent    float64 `json:"cpu_usage_percent"`    // 0-100
 	MemoryUsagePercent float64 `json:"memory_usage_percent"` // 0-100
+
+	// Recursos - Histórico via Prometheus (opcional, requer CheckResourceHistory + Prometheus
+	// alcançável pro cluster). P95 da janela de histórico vs. request configurado.
+	CPUP95Millis    float64 `json:"cpu_p95_millis,omitempty"`
+	MemoryP95Bytes  float64 `json:"memory_p95_bytes,omitempty"`
+	ResourceVerdict string  `json:"resource_verdict,omitempty"` // "oom_risk" | "superprovisioned" | "ok"
 
 	// Recursos - Configuração
 	QoSClass           QoSClass             `json:"qos_class"`                     // Guaranteed, Burstable, BestEffort

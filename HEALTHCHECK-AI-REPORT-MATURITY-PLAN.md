@@ -1,6 +1,6 @@
 # Plano: Maturidade do Relatório de IA do Health Check
 
-← ✅ Fases 1-2 concluídas — Fases 3-4 ainda não iniciadas
+← ✅ Fases 1-3 concluídas — Fase 4 ainda não iniciada
 
 ## Problema
 
@@ -202,7 +202,53 @@ configurados"), confirmado com dado real, não sintético.
 5. Frontend: `NodeHealth` exposto no tipo TS de `HealthCheckResult`; sem UI nova nesta fase (só
    alimenta o prompt) — ver Fase 4 pra exibição visual dedicada.
 
-### Fase 3 — Comparação request vs. uso real via Prometheus
+### Fase 3 — Comparação request vs. uso real via Prometheus ✅
+
+**Status: implementado, com escopo maior que o design original** — a validação descobriu que
+`DeploymentHealth` **já tinha** `CPUUsagePercent`/`MemoryUsagePercent` computados ao vivo via
+metrics-server (`enrichWithMetrics`, `deployment_checker.go`), mas — igual ao `NodeChecker` na Fase
+2 — completamente descartados (não influenciavam `Status`/`Message`, não estavam no tipo TS do
+frontend, não chegavam no correlator nem no prompt). Perguntado ao usuário se a Fase 3 devia só
+conectar esse dado já existente ou também adicionar o histórico via Prometheus — resposta: os dois.
+
+**O que foi feito:**
+- Novo `internal/healthcheck/resource_enricher.go` (`ResourceEnricher`, independente do pacote
+  `finops` — reimplementa os mesmos limiares de `verdictFromPrometheus`, não importa o tipo
+  `FinOpsWorkload`). Diferente do enricher do FinOps (que constrói um mapa pod→workload global pra
+  cobrir o cluster inteiro numa passada só), o Health Check já lista os pods exatos de cada
+  deployment via label selector (`deployment_checker.go`) — a query Prometheus usa esses nomes de
+  pod diretamente (`pod=~"pod1|pod2|..."`), sem precisar de join com `kube_pod_labels` nem
+  heurística de nome.
+- `DeploymentChecker.Check`/`CheckAll` ganham um parâmetro `resourceEnricher *ResourceEnricher`
+  (nilable, único call site em `orchestrator.go`) — chamado logo após `enrichWithMetrics`, dentro de
+  `enrichWithResourceHistory`. Roda pra todos os deployments verificados quando o enricher está
+  disponível (mesmo comportamento incondicional do `enrichWithMetrics` já existente — não gateado
+  por status, pra manter consistência arquitetural com o vizinho).
+- `deploymentResourceBaseline` extraído de dentro de `enrichWithMetrics` pra função compartilhada
+  (soma request, com fallback pra limit, de todos os containers) — usado tanto pelo comparativo ao
+  vivo quanto pelo histórico, evita duplicar a mesma regra.
+- Nova flag `check_resource_history`/`CheckResourceHistory` + checkbox "Uso Real vs. Request
+  (Prometheus)" no `HealthCheckingTab.tsx` — mesma lição da Fase 2: sem controle explícito na UI, o
+  backend fica pronto mas inacessível. `ResourceEnricher` só é criado quando a flag está ligada E
+  `discovery.IsEndpointAvailable(promURL)` confirma que o Prometheus do cluster responde (mesmo
+  padrão de auto-descoberta do FinOps) — se não resolver, segue sem erro, só sem o dado extra.
+- `correlator.go` propaga `ResourceVerdict`/`CPUUsagePercent`/`MemoryUsagePercent` pros issues de
+  `ResourceKind == "Deployment"`; `resourceVerdictLine` nos prompt builders cita o veredicto só
+  quando é `oom_risk` ou `superprovisioned` (nunca `"ok"` ou vazio — não vale a pena gerar ruído no
+  relatório pra um veredicto neutro).
+- Janela de histórico fixa em 48h (matching o "últimas 48h" do relatório de exemplo) — não
+  configurável nesta rodada, mantém o escopo pequeno.
+
+**Validado com dado real** contra `akspriv-ofertalogistica-hlg-admin` (namespaces
+`oferta-estoque-1p-api-externas-hlg`/`oferta-estoque-1p-workers-hlg`/
+`regionalizacao-estoqueregionalizado-api-externas-hlg`, Prometheus confirmado alcançável via probe
+HTTP antes do teste): 17 de 18 deployments retornaram `resource_verdict="superprovisioned"` com CPU
+P95 na casa de frações de millicore e memória real na faixa de dezenas/centenas de MB — consistente
+com um ambiente HLG (staging) praticamente ocioso. Testes unitários cobrem `verdictFromP95` (tabela
+com os mesmos 6 cenários do FinOps) e `deploymentResourceBaseline` (request vs. fallback pra limit,
+múltiplos containers, sem resources configurados) sem depender de rede.
+
+### Fase 3 (texto original do design, mantido como referência)
 
 1. Novo `internal/healthcheck/prometheus_enricher.go`, adaptando o padrão de
    `internal/finops/prometheus_enricher.go` (`queryContainerMetric`/`verdictFromPrometheus`,
@@ -245,12 +291,13 @@ configurados"), confirmado com dado real, não sintético.
 | `internal/healthcheck/correlator.go` | `addK8sIssue` propaga Count/FirstTimestamp/Chronicity pros eventos |
 | `internal/healthcheck/dynatrace_checker.go` | Switch de `MetricsSummary` preserva CPU/memória; filtro de severidade ampliado |
 | `internal/healthcheck/orchestrator.go` | `nodeChecker` instanciado e chamado em `executeClusterCheck`; `calculateSummary` conta nós críticos/warning |
-| `internal/healthcheck/prometheus_enricher.go` (novo, Fase 3) | Adaptação do enricher do FinOps pro Health Check |
-| `internal/web/handlers/healthcheck.go` | `buildCorrelatedItemPrompt`/`buildBatchCorrelatedPrompt` reescritos; novo `buildNodeUtilizationSection` |
-| `internal/web/frontend/src/types/healthcheck.ts` | `NodeHealth`/`NodeResources`/`AffectedPod`/`EventChronicity` novos; `CorrelatedK8sIssue` ganha `count`/`first_timestamp`/`chronicity`; `HealthCheckRequest`/`HealthCheckResult` ganham `check_nodes`/`node_results` |
+| `internal/healthcheck/resource_enricher.go` (novo, Fase 3) | `ResourceEnricher`, `EnrichDeployment`, `verdictFromP95` — comparação P95 vs. request, independente do pacote `finops` |
+| `internal/healthcheck/deployment_checker.go` | `deploymentResourceBaseline` extraído/compartilhado; `enrichWithResourceHistory`; `Check`/`CheckAll` ganham parâmetro `resourceEnricher` |
+| `internal/web/handlers/healthcheck.go` | `buildCorrelatedItemPrompt`/`buildBatchCorrelatedPrompt` reescritos; novo `buildNodeUtilizationSection`; novo `resourceVerdictLine` |
+| `internal/web/frontend/src/types/healthcheck.ts` | `NodeHealth`/`NodeResources`/`AffectedPod`/`EventChronicity` novos; `CorrelatedK8sIssue` ganha `count`/`first_timestamp`/`chronicity`/`resource_verdict`/`cpu_usage_percent`/`memory_usage_percent`; `DeploymentHealth` ganha `cpu_p95_millis`/`memory_p95_bytes`/`resource_verdict`; `HealthCheckRequest`/`HealthCheckResult` ganham `check_nodes`/`node_results`/`check_resource_history` |
 | `internal/web/frontend/src/lib/api/client.ts` | `analyzeCorrelatedItem`/`analyzeCorrelatedBatch` ganham parâmetro `nodes` opcional |
 | `internal/web/frontend/src/components/HealthCheckResultsPanel.tsx` | `nodes` repassado de `result.node_results` até `CorrelatedTab`/`CorrelatedItemCard`/chamadas de análise AI. Sem view dedicada da tabela de nós ainda (fica pra Fase 4) |
-| `internal/web/frontend/src/components/HealthCheckingTab.tsx` | Checkbox "Capacidade dos Nós" (`check_nodes`) — necessário pra tornar a Fase 2 alcançável pela UI, não previsto no design original |
+| `internal/web/frontend/src/components/HealthCheckingTab.tsx` | Checkboxes "Capacidade dos Nós" (`check_nodes`) e "Uso Real vs. Request (Prometheus)" (`check_resource_history`) — necessários pra tornar as Fases 2/3 alcançáveis pela UI, não previstos no design original |
 
 ## Validação planejada
 

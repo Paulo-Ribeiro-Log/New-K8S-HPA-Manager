@@ -36,6 +36,16 @@ func realisticCorrelatedItem() healthcheck.CorrelatedHealthItem {
 					IsChronic:       true,
 				},
 			},
+			{
+				ResourceKind:       "Deployment",
+				ResourceName:       "multicd-3p",
+				Status:             healthcheck.StatusWarning,
+				Message:            "DEGRADADO: Deployment envvias-hlg/multicd-3p com 2 de 3 replicas prontas. Capacidade reduzida.",
+				Severity:           healthcheck.SeverityMedium,
+				ResourceVerdict:    "oom_risk",
+				CPUUsagePercent:    97.8,
+				MemoryUsagePercent: 62.0,
+			},
 		},
 		DTProblems: []healthcheck.DynatraceHealth{
 			{
@@ -92,6 +102,8 @@ func TestBuildCorrelatedItemPrompt_StructuredOutput(t *testing.T) {
 		{"citação verbatim da mensagem do evento", "CRASHLOOP: Pod envvias-hlg/multicd-3p-d6f95bbff-f8zj9 reiniciando em loop"},
 		{"marcação de problema crônico", "Problema crônico"},
 		{"contagem acumulada citada", "747"},
+		{"veredicto de uso real de recursos (oom_risk)", "Uso real de recursos"},
+		{"percentual de CPU citado no veredicto", "CPU 98% / memória 62%"},
 		{"problem Dynatrace com ID", "P-99001"},
 		{"dias em aberto do problem DT", "dias em aberto"},
 		{"métrica de CPU não descartada", "cpu_milli"},
@@ -130,6 +142,7 @@ func TestBuildBatchCorrelatedPrompt_StructuredOutput(t *testing.T) {
 		{"nome do cluster no cabeçalho", "akspriv-envvias-hlg-admin"},
 		{"citação verbatim da mensagem do evento", "CRASHLOOP: Pod envvias-hlg/multicd-3p-d6f95bbff-f8zj9"},
 		{"marcação de problema crônico", "Problema crônico"},
+		{"veredicto de uso real de recursos (oom_risk)", "Uso real de recursos"},
 		{"pedido de tabela-resumo", "Tabela-resumo"},
 		{"tabela de utilização dos nós", "## Utilização dos Nós"},
 		{"instrução de 3 baldes de urgência - imediato", "### Imediato (hoje)"},
@@ -185,5 +198,35 @@ func TestDaysOpen_Formatting(t *testing.T) {
 	}
 	if got := daysOpen(time.Now().Add(-9 * 24 * time.Hour)); !strings.Contains(got, "9 dias em aberto") {
 		t.Errorf("9 dias: got %q", got)
+	}
+}
+
+// TestResourceVerdictLine_OOMRisk garante que o veredicto de risco de OOM/throttling é citado com
+// os percentuais de uso.
+func TestResourceVerdictLine_OOMRisk(t *testing.T) {
+	issue := healthcheck.CorrelatedK8sIssue{ResourceVerdict: "oom_risk", CPUUsagePercent: 97.8, MemoryUsagePercent: 62.0}
+	line := resourceVerdictLine(issue)
+	if !strings.Contains(line, "Uso real de recursos") || !strings.Contains(line, "risco de OOM/throttling") {
+		t.Errorf("esperava linha de risco OOM, got %q", line)
+	}
+}
+
+// TestResourceVerdictLine_Superprovisioned garante o texto de superprovisionamento.
+func TestResourceVerdictLine_Superprovisioned(t *testing.T) {
+	issue := healthcheck.CorrelatedK8sIssue{ResourceVerdict: "superprovisioned", CPUUsagePercent: 8.0, MemoryUsagePercent: 5.0}
+	line := resourceVerdictLine(issue)
+	if !strings.Contains(line, "superdimensionados") {
+		t.Errorf("esperava linha de superprovisionamento, got %q", line)
+	}
+}
+
+// TestResourceVerdictLine_OkOrEmptyOmitsLine garante que veredictos "ok" ou vazios não geram ruído
+// no prompt — só vale a pena citar quando há algo acionável.
+func TestResourceVerdictLine_OkOrEmptyOmitsLine(t *testing.T) {
+	for _, verdict := range []string{"", "ok"} {
+		issue := healthcheck.CorrelatedK8sIssue{ResourceVerdict: verdict}
+		if line := resourceVerdictLine(issue); line != "" {
+			t.Errorf("verdict=%q: esperava linha vazia, got %q", verdict, line)
+		}
 	}
 }

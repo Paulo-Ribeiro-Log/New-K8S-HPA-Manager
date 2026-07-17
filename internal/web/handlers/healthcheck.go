@@ -780,8 +780,27 @@ func chronicityLine(issue healthcheck.CorrelatedK8sIssue) string {
 		issue.Chronicity.CumulativeCount, issue.Chronicity.FirstSeenEver.Format("02/01/2006"))
 }
 
+// resourceVerdictLine formata a linha de uso real vs. request configurado de um issue de
+// Deployment — ResourceVerdict só vem preenchido quando o histórico via Prometheus rodou
+// (CheckResourceHistory), mas CPUUsagePercent/MemoryUsagePercent (snapshot ao vivo do
+// metrics-server) podem estar disponíveis mesmo sem isso.
+func resourceVerdictLine(issue healthcheck.CorrelatedK8sIssue) string {
+	if issue.ResourceVerdict == "" || issue.ResourceVerdict == "ok" {
+		return ""
+	}
+	usage := fmt.Sprintf("CPU %.0f%% / memória %.0f%% do request (snapshot ao vivo)", issue.CPUUsagePercent, issue.MemoryUsagePercent)
+	switch issue.ResourceVerdict {
+	case "oom_risk":
+		return fmt.Sprintf("  - ⚠️ **Uso real de recursos**: P95 histórico próximo ou acima do request configurado (%s) — risco de OOM/throttling, requests provavelmente subdimensionados.\n", usage)
+	case "superprovisioned":
+		return fmt.Sprintf("  - **Uso real de recursos**: P95 histórico bem abaixo do request configurado (%s) — requests provavelmente superdimensionados.\n", usage)
+	default:
+		return ""
+	}
+}
+
 // writeK8sIssue escreve um issue K8s no formato exigido do prompt: citação verbatim da mensagem
-// bruta do evento/recurso, e a linha de crônico/agudo quando disponível (só eventos têm isso).
+// bruta do evento/recurso, e as linhas de crônico/agudo e uso real de recursos quando disponíveis.
 func writeK8sIssue(sb *strings.Builder, issue healthcheck.CorrelatedK8sIssue) {
 	sb.WriteString(fmt.Sprintf("- **%s** `%s` [%s]\n", issue.ResourceKind, issue.ResourceName, issue.Severity))
 	sb.WriteString(fmt.Sprintf("  - Mensagem bruta (cite literalmente no relatório): `%s`\n", issue.Message))
@@ -789,6 +808,9 @@ func writeK8sIssue(sb *strings.Builder, issue healthcheck.CorrelatedK8sIssue) {
 		sb.WriteString(fmt.Sprintf("  - Ocorrências nesta execução: %d (desde %s)\n", issue.Count, issue.FirstTimestamp.Format("02/01/2006 15:04")))
 	}
 	if line := chronicityLine(issue); line != "" {
+		sb.WriteString(line)
+	}
+	if line := resourceVerdictLine(issue); line != "" {
 		sb.WriteString(line)
 	}
 }
