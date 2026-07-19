@@ -8,6 +8,7 @@ import type {
   HPA,
   NodePool,
   ConfigMapSummary,
+  ConfigMapUsage,
   SecretSummary,
   DeploymentSummary,
   DaemonSetSummary,
@@ -349,6 +350,42 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
   };
 
   return { configMaps, loading, error, refetch, silentRefetch };
+}
+
+export function useConfigMapUsage(cluster?: string, namespace?: string) {
+  const [usage, setUsage] = useState<ConfigMapUsage[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchUsage = async () => {
+    if (!cluster) {
+      setUsage([]);
+      return;
+    }
+    try {
+      setLoading(true);
+      const data = await apiClient.getConfigMapUsage(cluster, namespace);
+      setUsage(data);
+    } catch {
+      // degradação graciosa: badges simplesmente não aparecem
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsage();
+    if (!cluster) return;
+    let cancelled = false;
+    const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      apiClient.getConfigMapUsage(cluster, namespace)
+        .then(data => { if (!cancelled) setUsage(data); })
+        .catch(() => {});
+    }, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [cluster, namespace]);
+
+  return { usage, loading, refetch: fetchUsage };
 }
 
 export function useSecrets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
