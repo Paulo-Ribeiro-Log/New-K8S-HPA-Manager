@@ -354,6 +354,12 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const [previousLogsError, setPreviousLogsError] = useState<string | null>(null);
   const [previousCopied, setPreviousCopied] = useState(false);
 
+  // Busca de outras aplicações no cluster que usam a mesma imagem do container selecionado
+  const [sameImagePods, setSameImagePods] = useState<PodSummary[]>([]);
+  const [sameImageLoading, setSameImageLoading] = useState(false);
+  const [sameImageSearched, setSameImageSearched] = useState(false);
+  const sameImageCache = useRef<Map<string, PodSummary[]>>(new Map());
+
   // Describe state
   const [describe, setDescribe] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
@@ -420,7 +426,42 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     setLogSearch("");
     setPreviousLogs("");
     setPreviousLogsError(null);
+    setSameImagePods([]);
+    setSameImageSearched(false);
   }, [pod?.namespace, pod?.name]);
+
+  const selectedContainerImage = pod?.containers?.find(c => c.name === selectedContainer)?.image ?? "";
+
+  const fetchSameImagePods = useCallback(async () => {
+    if (!cluster || !selectedContainerImage) return;
+    const cacheKey = `${cluster}::${selectedContainerImage}`;
+    const cached = sameImageCache.current.get(cacheKey);
+    if (cached) {
+      setSameImagePods(cached);
+      setSameImageSearched(true);
+      return;
+    }
+    setSameImageLoading(true);
+    try {
+      const allPods = await apiClient.getPods(cluster, undefined, undefined, true, true);
+      const matches = allPods.filter(p =>
+        !(p.namespace === pod?.namespace && p.name === pod?.name) &&
+        p.containers?.some(c => c.image === selectedContainerImage)
+      );
+      sameImageCache.current.set(cacheKey, matches);
+      setSameImagePods(matches);
+    } catch {
+      setSameImagePods([]);
+    } finally {
+      setSameImageLoading(false);
+      setSameImageSearched(true);
+    }
+  }, [cluster, selectedContainerImage, pod?.namespace, pod?.name]);
+
+  useEffect(() => {
+    if (activeTab !== "same-image") return;
+    fetchSameImagePods();
+  }, [activeTab, selectedContainerImage, fetchSameImagePods]);
 
   const fetchLogs = useCallback(async () => {
     if (!pod || !cluster) return;
@@ -669,21 +710,109 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
         <div className="flex-1 flex flex-col min-h-0">
           {/* Tab bar manual */}
-          <div className="flex border-b border-border px-4 pt-3 gap-1 flex-shrink-0">
-            {(["details", "logs", "previous-logs"] as const).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px ${
-                  activeTab === tab
-                    ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {tab === "details" ? "Detalhes" : tab === "logs" ? "Logs" : "Logs Anteriores"}
-              </button>
-            ))}
+          <div className="flex items-center justify-between border-b border-border px-4 pt-3 gap-2 flex-shrink-0">
+            <div className="flex gap-1">
+              {(["details", "logs", "previous-logs", "same-image"] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px ${
+                    activeTab === tab
+                      ? "border-primary text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab === "details" ? "Detalhes" : tab === "logs" ? "Logs" : tab === "previous-logs" ? "Logs Anteriores" : "Mesma Imagem"}
+                </button>
+              ))}
+            </div>
+
+            {activeTab === "same-image" && (
+              <div className="flex items-center gap-2 pb-1.5">
+                <Select value={selectedContainer} onValueChange={setSelectedContainer}>
+                  <SelectTrigger className="h-7 text-xs w-40 flex-shrink-0">
+                    <SelectValue placeholder="Container" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {containerNames.map(c => (
+                      <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1 flex-shrink-0"
+                  onClick={fetchSameImagePods}
+                  disabled={sameImageLoading || !selectedContainerImage}
+                >
+                  {sameImageLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
+                  Atualizar
+                </Button>
+              </div>
+            )}
+
+            {activeTab === "details" && (
+              <div className="flex items-center gap-2 pb-1.5 flex-wrap justify-end">
+                <ProtectedAction showWarning={false} allowed={canWritePods}>
+                  <Button
+                    size="sm" variant="outline"
+                    className="h-7 text-xs text-blue-400 border-blue-400/30 hover:bg-blue-400/10"
+                    onClick={() => setPendingAction(pendingAction === "restart" ? null : "restart")}
+                  >
+                    Rollout Restart
+                  </Button>
+                </ProtectedAction>
+                <ProtectedAction showWarning={false} allowed={canWritePods}>
+                  <Button
+                    size="sm" variant="outline"
+                    className="h-7 text-xs text-orange-400 border-orange-400/30 hover:bg-orange-400/10"
+                    onClick={() => setPendingAction(pendingAction === "kill" ? null : "kill")}
+                  >
+                    Kill (Forçar)
+                  </Button>
+                </ProtectedAction>
+                <ProtectedAction showWarning={false} allowed={canWritePods}>
+                  <Button
+                    size="sm" variant="outline"
+                    className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10"
+                    onClick={() => setPendingAction(pendingAction === "delete" ? null : "delete")}
+                  >
+                    Deletar Pod
+                  </Button>
+                </ProtectedAction>
+              </div>
+            )}
           </div>
+
+          {/* Barra de confirmação inline (fixa, fora da área que rola) */}
+          {activeTab === "details" && pendingAction && (
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-muted/30 text-xs flex-shrink-0">
+              <span className="flex-1 text-muted-foreground">
+                <strong className="text-foreground">{actionConfig[pendingAction].label}</strong>
+                {" — "}{actionConfig[pendingAction].desc}
+              </span>
+              <Button
+                size="sm"
+                className={`h-6 text-xs ${actionConfig[pendingAction].color}`}
+                onClick={executeAction}
+                disabled={actionLoading}
+              >
+                {actionLoading
+                  ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                  : null}
+                {actionConfig[pendingAction].confirmLabel}
+              </Button>
+              <Button
+                size="sm" variant="ghost"
+                className="h-6 text-xs"
+                onClick={() => setPendingAction(null)}
+                disabled={actionLoading}
+              >
+                Cancelar
+              </Button>
+            </div>
+          )}
 
           {/* ── DETALHES ── */}
           {activeTab === "details" && (
@@ -788,68 +917,6 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                 </div>
               )}
 
-              {/* Ações */}
-              <div className="pt-2 border-t border-border/50">
-                <div className="text-[10px] font-medium text-muted-foreground uppercase mb-2">Ações</div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <ProtectedAction showWarning={false} allowed={canWritePods}>
-                    <Button
-                      size="sm" variant="outline"
-                      className="h-7 text-xs text-blue-400 border-blue-400/30 hover:bg-blue-400/10"
-                      onClick={() => setPendingAction(pendingAction === "restart" ? null : "restart")}
-                    >
-                      Rollout Restart
-                    </Button>
-                  </ProtectedAction>
-                  <ProtectedAction showWarning={false} allowed={canWritePods}>
-                    <Button
-                      size="sm" variant="outline"
-                      className="h-7 text-xs text-orange-400 border-orange-400/30 hover:bg-orange-400/10"
-                      onClick={() => setPendingAction(pendingAction === "kill" ? null : "kill")}
-                    >
-                      Kill (Forçar)
-                    </Button>
-                  </ProtectedAction>
-                  <ProtectedAction showWarning={false} allowed={canWritePods}>
-                    <Button
-                      size="sm" variant="outline"
-                      className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10"
-                      onClick={() => setPendingAction(pendingAction === "delete" ? null : "delete")}
-                    >
-                      Deletar Pod
-                    </Button>
-                  </ProtectedAction>
-                </div>
-
-                {/* Barra de confirmação inline */}
-                {pendingAction && (
-                  <div className="mt-2 flex items-center gap-2 p-2 rounded border border-border bg-muted/30 text-xs">
-                    <span className="flex-1 text-muted-foreground">
-                      <strong className="text-foreground">{actionConfig[pendingAction].label}</strong>
-                      {" — "}{actionConfig[pendingAction].desc}
-                    </span>
-                    <Button
-                      size="sm"
-                      className={`h-6 text-xs ${actionConfig[pendingAction].color}`}
-                      onClick={executeAction}
-                      disabled={actionLoading}
-                    >
-                      {actionLoading
-                        ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                        : null}
-                      {actionConfig[pendingAction].confirmLabel}
-                    </Button>
-                    <Button
-                      size="sm" variant="ghost"
-                      className="h-6 text-xs"
-                      onClick={() => setPendingAction(null)}
-                      disabled={actionLoading}
-                    >
-                      Cancelar
-                    </Button>
-                  </div>
-                )}
-              </div>
             </div>
             </div>
           )}
@@ -908,6 +975,59 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
               logsEndRef={previousLogsEndRef}
               onClearFilters={clearLogFilters}
             />
+          )}
+
+          {/* ── MESMA IMAGEM (outras aplicações do cluster usando o mesmo container) ── */}
+          {activeTab === "same-image" && (
+            <div className="flex-1 flex flex-col min-h-0">
+              <div className="px-4 py-2 border-b border-border flex-shrink-0">
+                <span className="text-[10px] text-muted-foreground font-mono truncate block" title={selectedContainerImage}>
+                  {selectedContainerImage || "—"}
+                </span>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto p-4">
+                {sameImageLoading ? (
+                  <div className="flex items-center justify-center h-32 text-muted-foreground text-xs gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Buscando em todos os namespaces do cluster...
+                  </div>
+                ) : !sameImageSearched ? (
+                  <div className="flex items-center justify-center h-32 text-muted-foreground text-xs text-center px-8">
+                    Mostra outros pods deste cluster (em qualquer namespace) que usam a mesma imagem do container selecionado.
+                  </div>
+                ) : sameImagePods.length === 0 ? (
+                  <div className="flex items-center justify-center h-32 text-muted-foreground text-xs">
+                    Nenhum outro pod neste cluster usa esta imagem.
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-[10px] font-medium text-muted-foreground uppercase mb-2">
+                      {sameImagePods.length} pod(s) em {new Set(sameImagePods.map(p => p.namespace)).size} namespace(s)
+                    </div>
+                    <div className="space-y-1.5">
+                      {sameImagePods
+                        .slice()
+                        .sort((a, b) => (a.namespace + a.name).localeCompare(b.namespace + b.name))
+                        .map(p => {
+                          const matchedContainer = p.containers?.find(c => c.image === selectedContainerImage);
+                          return (
+                            <div key={`${p.namespace}/${p.name}`} className="flex items-start gap-2 bg-muted/20 rounded px-3 py-2 text-xs font-mono">
+                              <span className={`w-2 h-2 rounded-full mt-0.5 flex-shrink-0 ${matchedContainer?.ready ? "bg-green-500" : "bg-orange-500"}`} />
+                              <div className="min-w-0 flex-1">
+                                <div className="text-muted-foreground text-[10px]">{p.namespace}</div>
+                                <div className="font-medium text-foreground truncate">{p.name}</div>
+                                {matchedContainer && (
+                                  <div className="text-[10px] text-muted-foreground">container: {matchedContainer.name}</div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
           )}
         </div>
 

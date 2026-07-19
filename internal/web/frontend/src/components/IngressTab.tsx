@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -61,6 +62,11 @@ export const IngressTab = ({
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIngress, setSelectedIngress] = useState<IngressSummary | null>(null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedIngress ? `${selectedIngress.cluster}-${selectedIngress.namespace}-${selectedIngress.name}` : null
+  );
   const [manifest, setManifest] = useState<IngressManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
@@ -687,14 +693,16 @@ spec:
     }
 
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" ref={leftListRef}>
         {filteredIngresses.map((ing) => {
           const isSelected =
             selectedIngress?.name === ing.name &&
             selectedIngress?.namespace === ing.namespace;
+          const itemKey = `${ing.cluster}-${ing.namespace}-${ing.name}`;
           return (
             <button
-              key={`${ing.cluster}-${ing.namespace}-${ing.name}`}
+              key={itemKey}
+              data-item-key={itemKey}
               onClick={() => handleSelectIngress(ing)}
               className={`w-full text-left p-3 rounded-lg border transition-colors ${
                 isSelected

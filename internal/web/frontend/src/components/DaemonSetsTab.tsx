@@ -17,11 +17,15 @@ import type {
   Namespace,
   DaemonSetSummary,
   DaemonSetManifest,
+  PodSummary,
+  BatchPodMetrics,
 } from "@/lib/api/types";
 import { useDaemonSets } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
+import { PodMonitorTable } from "@/components/PodMonitorTable";
+import { PodQuickViewModal } from "@/components/PodQuickViewModal";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
@@ -36,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { DaemonSetMonitorTable } from "@/components/DaemonSetMonitorTable";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
@@ -72,6 +77,63 @@ export const DaemonSetsTab = ({
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('daemonsets', 'searchQuery', "");
   const [selectedDaemonSet, setSelectedDaemonSet] = usePersistedTabState<DaemonSetSummary | null>('daemonsets', 'selectedDaemonSet', null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+
+  // Live monitoring state (drill-down de pods do DaemonSet, mesmo padrão do DeploymentsTab)
+  type DaemonSetRightView =
+    | { kind: "daemonset-table" }
+    | { kind: "pod-table"; daemonSet: DaemonSetSummary };
+  const [rightView, setRightView] = useState<DaemonSetRightView>({ kind: "daemonset-table" });
+  const [monitorPods, setMonitorPods] = useState<PodSummary[]>([]);
+  const [monitorPodsLoading, setMonitorPodsLoading] = useState(false);
+  const [batchMetrics, setBatchMetrics] = useState<BatchPodMetrics | null>(null);
+  const [quickViewPod, setQuickViewPod] = useState<PodSummary | null>(null);
+
+  const focusedDaemonSetKey = selectedDaemonSet
+    ? `${selectedDaemonSet.namespace}/${selectedDaemonSet.name}`
+    : rightView.kind === "pod-table"
+    ? `${rightView.daemonSet.namespace}/${rightView.daemonSet.name}`
+    : null;
+  useRevealOnKeyChange(leftListRef, focusedDaemonSetKey);
+
+  const handleMonitorDaemonSet = useCallback(async (ds: DaemonSetSummary) => {
+    setRightView({ kind: "pod-table", daemonSet: ds });
+    setMonitorPodsLoading(true);
+    setMonitorPods([]);
+    setBatchMetrics(null);
+    try {
+      const pods = await apiClient.getPods(ds.cluster, [ds.namespace], ds.name, false, true);
+      const dsPods = pods.filter((p) =>
+        p.labels?.["app"] === ds.labels?.["app"] ||
+        p.name.startsWith(ds.name + "-")
+      );
+      setMonitorPods(dsPods.length > 0 ? dsPods : pods);
+      const m = await apiClient.getBatchPodMetrics(ds.cluster, ds.namespace);
+      setBatchMetrics(m);
+    } catch {
+      // graceful degradation
+    } finally {
+      setMonitorPodsLoading(false);
+    }
+  }, []);
+
+  const refreshMonitorPods = useCallback(async () => {
+    if (rightView.kind !== "pod-table") return;
+    const ds = rightView.daemonSet;
+    try {
+      const pods = await apiClient.getPods(ds.cluster, [ds.namespace], ds.name, false, true);
+      const dsPods = pods.filter((p) =>
+        p.labels?.["app"] === ds.labels?.["app"] ||
+        p.name.startsWith(ds.name + "-")
+      );
+      setMonitorPods(dsPods.length > 0 ? dsPods : pods);
+      const m = await apiClient.getBatchPodMetrics(ds.cluster, ds.namespace);
+      setBatchMetrics(m);
+    } catch {
+      // silently ignore
+    }
+  }, [rightView]);
+
   const [showLabels, setShowLabels] = usePersistedTabState<boolean>('daemonsets', 'showLabels', false);
   const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('daemonsets', 'viewMode', "editor");
 
@@ -165,6 +227,9 @@ export const DaemonSetsTab = ({
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
+    setRightView({ kind: "daemonset-table" });
+    setMonitorPods([]);
+    setBatchMetrics(null);
   }, [cluster, selectedNamespace]);
 
   useEffect(() => {
@@ -552,24 +617,27 @@ export const DaemonSetsTab = ({
           Nenhum DaemonSet encontrado
         </div>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-1.5" ref={leftListRef}>
           {filteredDaemonSets.map((ds) => {
             const isSelected = selectedDaemonSet?.name === ds.name && selectedDaemonSet?.namespace === ds.namespace;
             const isProblematic = isDaemonSetProblematic(ds);
             const version = formatVersion(ds.labels?.["app.kubernetes.io/version"]);
             const statusInfo = getDaemonSetStatusInfo(ds);
             const replicaColor = isProblematic ? "text-red-400" : "text-green-400";
+            const itemKey = `${ds.namespace}/${ds.name}`;
+            const isFocused = !isSelected && focusedDaemonSetKey === itemKey;
 
             return (
               <div
-                key={`${ds.namespace}/${ds.name}`}
+                key={itemKey}
+                data-item-key={itemKey}
                 className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative cursor-pointer ${
                   isSelected
                     ? "border-primary bg-primary/10"
                     : isProblematic
                     ? "border-red-500/40 hover:border-red-500/60 bg-red-500/5"
                     : "border-border/60 hover:border-primary/40"
-                }`}
+                } ${isFocused ? "ring-2 ring-blue-400/60 bg-blue-400/5" : ""}`}
                 onClick={() => handleSelectDaemonSet(ds)}
               >
                 {isProblematic && (
@@ -723,16 +791,45 @@ export const DaemonSetsTab = ({
     }
 
     if (!selectedDaemonSet) {
+      // As duas tabelas ficam sempre montadas (alternando display) para que a tabela de
+      // daemonsets preserve busca/filtros/ordenação ao voltar da lista de pods — trocar
+      // via renderização condicional destruiria esse estado interno a cada ida e volta.
+      const backToDaemonSets = () => setRightView({ kind: "daemonset-table" });
       return (
-        <div className="flex flex-col h-full p-2">
-          <DaemonSetMonitorTable
-            daemonsets={filteredDaemonSets}
-            loading={loading}
-            headerLabel={selectedNamespace ? `${selectedNamespace} — daemonsets (${filteredDaemonSets.length})` : `daemonsets (${filteredDaemonSets.length})`}
-            onOpenEditor={(ds) => handleSelectDaemonSet(ds)}
-            onRequestRefresh={silentRefetch}
-          />
-        </div>
+        <>
+          <div className="flex flex-col h-full p-2" style={{ display: rightView.kind === "pod-table" ? "flex" : "none" }}>
+            {rightView.kind === "pod-table" && (
+              <PodMonitorTable
+                cluster={cluster}
+                pods={monitorPods}
+                loading={monitorPodsLoading}
+                metrics={batchMetrics}
+                metricsLoading={false}
+                onOpenDetail={(pod) => setQuickViewPod(pod)}
+                headerLabel={`${rightView.daemonSet.name} — pods (${monitorPods.length})`}
+                breadcrumb={[
+                  { label: cluster },
+                  { label: rightView.daemonSet.namespace },
+                  { label: rightView.daemonSet.name, onClick: backToDaemonSets },
+                  { label: `Pods (${monitorPods.length})` },
+                ]}
+                onRequestRefresh={refreshMonitorPods}
+                onBack={backToDaemonSets}
+                backLabel="DaemonSets"
+              />
+            )}
+          </div>
+          <div className="flex flex-col h-full p-2" style={{ display: rightView.kind === "daemonset-table" ? "flex" : "none" }}>
+            <DaemonSetMonitorTable
+              daemonsets={filteredDaemonSets}
+              loading={loading}
+              headerLabel={selectedNamespace ? `${selectedNamespace} — daemonsets (${filteredDaemonSets.length})` : `daemonsets (${filteredDaemonSets.length})`}
+              onSelectDaemonSet={handleMonitorDaemonSet}
+              onOpenEditor={(ds) => handleSelectDaemonSet(ds)}
+              onRequestRefresh={silentRefetch}
+            />
+          </div>
+        </>
       );
     }
 
@@ -960,6 +1057,15 @@ export const DaemonSetsTab = ({
           titleAction: rightTitleAction,
           content: renderManifestPanel(),
         }}
+      />
+
+      {/* Modal de detalhes rápidos do pod (click na tabela de pods do DaemonSet) */}
+      <PodQuickViewModal
+        pod={quickViewPod}
+        cluster={cluster}
+        metrics={quickViewPod ? batchMetrics?.pods[quickViewPod.name] : null}
+        onClose={() => setQuickViewPod(null)}
+        onRefresh={refreshMonitorPods}
       />
 
       {/* Diff Modal */}

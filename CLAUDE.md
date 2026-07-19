@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
-Todas as features abaixo já estão mescladas na `main` (verificado via `git merge-base`) e documentadas na seção `##`/`###` correspondente deste arquivo: Code Editor (Fases 1-10, incl. Source Control e integração K8s), Diagnóstico SNAT multi-cloud, Dynatrace + correlação K8s, Access Checker (`AccessCheckTab.tsx`), FinOps Storage, Teams/SRE Approval, JWT, RBAC K8s via `SelfSubjectRulesReview`, HPAEditor, Conntrack Viewer com comparação D-1/D-2/D-3, Resync AKV, CloudAccountHintField. Para o histórico de qual branch trouxe cada uma (com contexto e bugs corrigidos), ver [docs/history/CHANGELOG.md](docs/history/CHANGELOG.md).
+Todas as features abaixo já estão mescladas na `main` (verificado via `git merge-base`) e documentadas na seção `##`/`###` correspondente deste arquivo: Code Editor (Fases 1-10, incl. Source Control e integração K8s), Diagnóstico SNAT multi-cloud, Dynatrace + correlação K8s, Access Checker (`AccessCheckTab.tsx`), FinOps Storage, Teams/SRE Approval, JWT, RBAC K8s via `SelfSubjectRulesReview`, HPAEditor, Conntrack Viewer com comparação D-1/D-2/D-3, Resync AKV, CloudAccountHintField, sincronização de foco entre painel-lista e painel-tabela (`useRevealOnKeyChange`), drill-down de pods no DaemonSetMonitorTable, aba "Mesma Imagem" no `PodQuickViewModal`. Para o histórico de qual branch trouxe cada uma (com contexto e bugs corrigidos), ver [docs/history/CHANGELOG.md](docs/history/CHANGELOG.md).
 
 ---
 
@@ -784,6 +784,36 @@ Cache de 2min via React Query (`staleTime: 2 * 60 * 1000`).
 - `ProtectedAction allowed={permissions.canUpdateHPA}` — usa RBAC K8s, não grupo AD
 
 **Integração**: `HPATab.tsx` renderiza `HPAEditor` em painel lateral quando um HPA é selecionado na lista.
+
+### Sincronização de foco entre painel-lista e painel-tabela (Deployments, Pods, DaemonSets, etc.)
+
+Todas as abas de workload (`DeploymentsTab`, `PodsPanel`, `IngressTab`, `GatewayTab`, `ConfigMapsTab`, `SecretsTab`, `ServicesTab`, `DaemonSetsTab`, `StatefulSetsTab`, `VPAsTab`, `CronJobsTab`, `NamespacesTab`) usam `SplitView`: lista de cards à esquerda + detalhe/editor ou `*MonitorTable` à direita. Quando o item "ativo" no painel direito muda (seleção real ou drill-down), o card correspondente na lista esquerda rola até a área visível via hook `hooks/useRevealOnKeyChange.ts`:
+
+```ts
+useRevealOnKeyChange(containerRef, focusKey); // containerRef aponta pro wrapper da lista, cada card tem data-item-key
+```
+
+Escopado por `containerRef` (nunca `document.querySelector`) porque várias dessas abas ficam montadas em `display:none` em segundo plano — uma busca global casaria com uma instância oculta de outra aba.
+
+**Duas categorias**:
+- **Categoria A — Deployments e DaemonSets** (têm drill-down real de pods): a `*MonitorTable` do painel direito, ao clicar numa linha, chama um handler que muda `rightView` para `{kind:"pod-table", ...}` (mostrando os pods daquele workload via `PodMonitorTable`) **sem** tocar o estado de seleção canônico (`selectedDeployment`/`selectedDaemonSet`). Nesse caso a chave de foco é derivada do `rightView` e o card ganha um anel azul independente (`ring-2 ring-blue-400/60 bg-blue-400/5`, só quando `!isSelected`) — visualmente distinto do destaque roxo de "selecionado/aberto para edição". O ícone de lápis na tabela abre o YAML normalmente (`onOpenEditor`); clicar na linha em si dispara o drill-down (`onSelectDeployment`/`onSelectDaemonSet`).
+- **Categoria B — as demais abas** (só têm uma ação: `onOpenEditor` direto): a chave de foco é a do item selecionado (`selectedX`) — o destaque já existe (`border-primary`), só faltava o auto-scroll.
+
+**Pods** (`PodsPanel.tsx`) é uma variação da Categoria A: clicar numa linha do `PodMonitorTable` do painel direito abre o quick-view modal (`setQuickViewPod`) sem tocar `selectedPod` — o card ganha o mesmo anel azul.
+
+### `*MonitorTable.tsx` — foco de teclado explícito, não `:focus-visible`
+
+Navegação por seta (↑/↓) nessas tabelas usa `data-row-index` + `el.focus()` programático (`focusRow()`). **Não depender de `focus-visible:ring-*` no CSS** para indicar a linha em foco — o heurístico de `:focus-visible` do navegador nem sempre trata `el.focus()` programático como "foco visível" (varia por browser), deixando a navegação por teclado sem indicação visual. Solução: estado explícito `focusedRowIndex` atualizado via `onFocus`/`onBlur` na linha, aplicando uma classe incondicional (`ring-2 ring-inset ring-primary/70`) — não depende de heurística nenhuma. Ver `PodMonitorTable.tsx`.
+
+### PodQuickViewModal — aba "Mesma Imagem" (estilo k9s)
+
+4ª aba do quick-view de pod (`Detalhes | Logs | Logs Anteriores | Mesma Imagem`), ao lado das outras já documentadas na seção de Tabs em Modais. Reaproveita o seletor de container já usado nas abas de Logs (`selectedContainer`) para buscar, em **todos os namespaces do cluster atual**, outros pods que rodam a mesma imagem do container selecionado — útil para analisar o "raio de impacto" de uma imagem compartilhada (ex: antes de atualizar uma imagem base), do jeito que o k9s permite correlacionar por imagem.
+
+- Busca via `apiClient.getPods(cluster, undefined, undefined, true, true)` (sem filtro de namespace = todos; `showSystem=true` inclui `kube-system`), filtrando client-side por `container.image === selectedContainerImage` e excluindo o próprio pod.
+- Resultado cacheado em memória por `cluster::imagem` (`sameImageCache`, `useRef<Map>`) — evita rebuscar ao trocar de aba e voltar.
+- **Escopo intencional: só o cluster atual** (não varre todos os clusters cadastrados) — mesmo escopo do k9s, que opera sempre no contexto de um cluster por vez.
+
+**Botões de ação (Rollout Restart/Kill/Deletar) na linha das abas, não no conteúdo rolável**: esses 3 botões — e a barra de confirmação inline que aparece ao clicar um deles — ficam na mesma linha da tab bar (lado direito, só quando `activeTab === "details"`), não mais dentro da área `overflow-y-auto` da aba Detalhes. Motivo: pods com muitos containers/labels empurravam os botões para fora da tela, exigindo scroll para agir. O seletor de container + botão "Atualizar" da aba "Mesma Imagem" segue o mesmo padrão (lado direito da tab bar, visível só nessa aba) — ambos os grupos de controle coexistem na mesma linha, cada um condicionado ao `activeTab` ativo.
 
 ### shadcn Tabs em Modais com Altura Fixa
 
