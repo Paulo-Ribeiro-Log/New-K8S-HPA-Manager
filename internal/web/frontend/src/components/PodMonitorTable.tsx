@@ -228,6 +228,10 @@ export const PodMonitorTable = ({
 
   const rowsContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // Rastreado explicitamente via onFocus/onBlur — `:focus-visible` não é confiável aqui porque
+  // o foco é setado programaticamente (el.focus()) e alguns navegadores não tratam isso como
+  // "visível" fora do heurístico de Tab/clique real, deixando a navegação por seta sem indicação.
+  const [focusedRowIndex, setFocusedRowIndex] = useState<number | null>(null);
 
   const focusRow = (idx: number) => {
     const el = rowsContainerRef.current?.querySelector<HTMLElement>(`[data-row-index="${idx}"]`);
@@ -642,14 +646,17 @@ export const PodMonitorTable = ({
           const rowColor = podRowColor(pod.phase ?? "", effectiveReason);
           const dotColor = podDotColor(pod.phase ?? "", effectiveReason);
           const isSelected = selectedPods.has(podKey(pod));
+          const isFocusedRow = focusedRowIndex === index;
 
           return (
             <button
               key={`${pod.namespace}/${pod.name}`}
               data-row-index={index}
-              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
+              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer outline-none ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""} ${isFocusedRow ? "ring-2 ring-inset ring-primary/70 bg-muted/30" : ""}`}
               style={{ gridTemplateColumns: gridTemplate }}
               onClick={() => onOpenDetail(pod)}
+              onFocus={() => setFocusedRowIndex(index)}
+              onBlur={() => setFocusedRowIndex((cur) => (cur === index ? null : cur))}
               onKeyDown={(e) => {
                 if (e.key === " ") {
                   e.preventDefault();

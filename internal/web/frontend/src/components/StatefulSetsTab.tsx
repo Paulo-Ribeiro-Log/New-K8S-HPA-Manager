@@ -36,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { StatefulSetMonitorTable } from "@/components/StatefulSetMonitorTable";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
@@ -72,6 +73,11 @@ export const StatefulSetsTab = ({
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('statefulsets', 'searchQuery', "");
   const [selectedStatefulSet, setSelectedStatefulSet] = usePersistedTabState<StatefulSetSummary | null>('statefulsets', 'selectedStatefulSet', null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedStatefulSet ? `${selectedStatefulSet.namespace}/${selectedStatefulSet.name}` : null
+  );
   const [showLabels, setShowLabels] = usePersistedTabState<boolean>('statefulsets', 'showLabels', false);
   const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('statefulsets', 'viewMode', "editor");
 
@@ -628,17 +634,19 @@ export const StatefulSetsTab = ({
           Nenhum StatefulSet encontrado
         </div>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-1.5" ref={leftListRef}>
           {filteredStatefulSets.map((sts) => {
             const isSelected = selectedStatefulSet?.name === sts.name && selectedStatefulSet?.namespace === sts.namespace;
             const isProblematic = isStatefulSetProblematic(sts);
             const version = formatVersion(sts.labels?.["app.kubernetes.io/version"]);
             const statusInfo = getStatefulSetStatusInfo(sts);
             const replicaColor = isProblematic ? "text-red-400" : "text-green-400";
+            const itemKey = `${sts.namespace}/${sts.name}`;
 
             return (
               <div
-                key={`${sts.namespace}/${sts.name}`}
+                key={itemKey}
+                data-item-key={itemKey}
                 className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative cursor-pointer ${
                   isSelected
                     ? "border-primary bg-primary/10"

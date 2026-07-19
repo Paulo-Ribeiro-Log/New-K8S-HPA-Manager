@@ -41,6 +41,7 @@ import { ProtectedAction } from "@/components/rbac";
 import { CreateSecretModal } from "@/components/CreateSecretModal";
 import { ResyncAkvModal } from "@/components/ResyncAkvModal";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 const formatVersion = (version: string | undefined): string => {
@@ -77,6 +78,11 @@ export const SecretsTab = ({
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('secrets', 'searchQuery', "");
   const [selectedSecret, setSelectedSecret] = usePersistedTabState<SecretSummary | null>('secrets', 'selectedSecret', null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedSecret ? `${selectedSecret.cluster}-${selectedSecret.namespace}-${selectedSecret.name}` : null
+  );
   const [showLabels, setShowLabels] = usePersistedTabState<boolean>('secrets', 'showLabels', false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('secrets', 'isSidebarCollapsed', false);
   const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('secrets', 'viewMode', "editor");
@@ -940,14 +946,16 @@ export const SecretsTab = ({
     }
 
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" ref={leftListRef}>
         {filteredSecrets.map((cm) => {
           const isSelected =
             selectedSecret?.name === cm.name &&
             selectedSecret?.namespace === cm.namespace;
+          const itemKey = `${cm.cluster}-${cm.namespace}-${cm.name}`;
           return (
             <button
-              key={`${cm.cluster}-${cm.namespace}-${cm.name}`}
+              key={itemKey}
+              data-item-key={itemKey}
               onClick={() => handleSelectSecret(cm)}
               className={`w-full text-left p-3 rounded-lg border transition-colors ${
                 isSelected

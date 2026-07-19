@@ -32,6 +32,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useAIDiagnostics } from "@/hooks/useAIDiagnostics";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { createTwoFilesPatch } from "diff";
 import { html } from "diff2html";
 import * as yaml from "js-yaml";
@@ -81,6 +82,11 @@ export const PodsPanel = ({
   const [metricsLoading, setMetricsLoading] = useState(false);
   // Modal de detalhes rápido (abre ao clicar na tabela de monitoramento)
   const [quickViewPod, setQuickViewPod] = useState<PodSummary | null>(null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  const focusedPodKey = quickViewPod
+    ? `${quickViewPod.cluster}-${quickViewPod.namespace}-${quickViewPod.name}`
+    : null;
+  useRevealOnKeyChange(leftListRef, focusedPodKey);
   const [podYaml, setPodYaml] = useState("");
   const [yamlLoading, setYamlLoading] = useState(false);
   const [podLogs, setPodLogs] = useState<Record<string, string>>({});
@@ -1118,7 +1124,7 @@ export const PodsPanel = ({
     const someSelected = selectedPods.size > 0 && !allSelected;
 
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" ref={leftListRef}>
         {/* Header com seleção em lote */}
         <div className="flex items-center gap-2 pb-2 border-b border-border/40">
           <Checkbox
@@ -1182,17 +1188,20 @@ export const PodsPanel = ({
             selectedPod?.namespace === pod.namespace;
           const isChecked = selectedPods.has(getPodKey(pod));
           const hasWarning = pod.restarts > 3;
+          const itemKey = `${pod.cluster}-${pod.namespace}-${pod.name}`;
+          const isFocused = !isSelected && focusedPodKey === itemKey;
 
           return (
             <div
-              key={`${pod.cluster}-${pod.namespace}-${pod.name}`}
+              key={itemKey}
+              data-item-key={itemKey}
               className={`flex items-start gap-2 p-3 rounded-lg border transition-colors ${
                 isSelected
                   ? "border-primary bg-primary/10"
                   : isChecked
                   ? "border-primary/50 bg-primary/5"
                   : "border-border/60 hover:border-primary/40"
-              }`}
+              } ${isFocused ? "ring-2 ring-blue-400/60 bg-blue-400/5" : ""}`}
             >
               {/* Checkbox */}
               <Checkbox

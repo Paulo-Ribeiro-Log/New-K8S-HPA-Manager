@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +71,11 @@ export const NamespacesTab = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState<Namespace | null>(null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedNamespace ? `${selectedNamespace.cluster}-${selectedNamespace.name}` : null
+  );
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [metrics, setMetrics] = useState<TopNamespacesResponse | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
@@ -806,12 +812,14 @@ export const NamespacesTab = ({
     }
 
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" ref={leftListRef}>
         {searchedNamespaces.map((ns) => {
           const isSelected = selectedNamespace?.name === ns.name;
+          const itemKey = `${ns.cluster}-${ns.name}`;
           return (
             <button
-              key={`${ns.cluster}-${ns.name}`}
+              key={itemKey}
+              data-item-key={itemKey}
               onClick={() => handleSelectNamespace(ns)}
               className={`w-full text-left p-3 rounded-lg border transition-colors ${
                 isSelected

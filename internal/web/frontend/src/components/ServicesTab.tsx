@@ -40,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 
 const SERVICE_TEMPLATE = `apiVersion: v1
 kind: Service
@@ -91,6 +92,11 @@ export const ServicesTab = ({
 
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>("services", "searchQuery", "");
   const [selectedService, setSelectedService] = usePersistedTabState<ServiceSummary | null>("services", "selectedService", null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedService ? `${selectedService.cluster}/${selectedService.namespace}/${selectedService.name}` : null
+  );
   const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">("services", "viewMode", "editor");
 
   const [manifest, setManifest] = useState<ServiceManifest | null>(null);
@@ -488,15 +494,17 @@ export const ServicesTab = ({
           <p className="text-sm">Nenhum Service encontrado</p>
         </div>
       ) : (
-        <div className="space-y-1">
+        <div className="space-y-1" ref={leftListRef}>
           {filteredServices.map((svc) => {
             const isSelected =
               selectedService?.cluster === svc.cluster &&
               selectedService?.namespace === svc.namespace &&
               selectedService?.name === svc.name;
+            const itemKey = `${svc.cluster}/${svc.namespace}/${svc.name}`;
             return (
               <div
-                key={`${svc.cluster}/${svc.namespace}/${svc.name}`}
+                key={itemKey}
+                data-item-key={itemKey}
                 className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative cursor-pointer ${
                   isSelected
                     ? "border-primary bg-accent shadow-sm"

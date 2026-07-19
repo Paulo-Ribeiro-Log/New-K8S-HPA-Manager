@@ -36,6 +36,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 const formatVersion = (version: string | undefined): string => {
@@ -71,6 +72,11 @@ export const ConfigMapsTab = ({
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('configmaps', 'searchQuery', "");
   const [selectedConfigMap, setSelectedConfigMap] = usePersistedTabState<ConfigMapSummary | null>('configmaps', 'selectedConfigMap', null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedConfigMap ? `${selectedConfigMap.cluster}-${selectedConfigMap.namespace}-${selectedConfigMap.name}` : null
+  );
   const [showLabels, setShowLabels] = usePersistedTabState<boolean>('configmaps', 'showLabels', false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('configmaps', 'isSidebarCollapsed', false);
   const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('configmaps', 'viewMode', "editor");
@@ -712,14 +718,16 @@ data:
     }
 
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" ref={leftListRef}>
         {filteredConfigMaps.map((cm) => {
           const isSelected =
             selectedConfigMap?.name === cm.name &&
             selectedConfigMap?.namespace === cm.namespace;
+          const itemKey = `${cm.cluster}-${cm.namespace}-${cm.name}`;
           return (
             <button
-              key={`${cm.cluster}-${cm.namespace}-${cm.name}`}
+              key={itemKey}
+              data-item-key={itemKey}
               onClick={() => handleSelectConfigMap(cm)}
               className={`w-full text-left p-3 rounded-lg border transition-colors ${
                 isSelected

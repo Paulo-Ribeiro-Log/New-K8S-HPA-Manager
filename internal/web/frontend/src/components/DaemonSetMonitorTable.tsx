@@ -49,6 +49,7 @@ interface DaemonSetMonitorTableProps {
   daemonsets: DaemonSetSummary[];
   loading: boolean;
   headerLabel: string;
+  onSelectDaemonSet: (ds: DaemonSetSummary) => void;
   onOpenEditor: (ds: DaemonSetSummary) => void;
   onRequestRefresh: () => void;
 }
@@ -57,6 +58,7 @@ export const DaemonSetMonitorTable = ({
   daemonsets,
   loading,
   headerLabel,
+  onSelectDaemonSet,
   onOpenEditor,
   onRequestRefresh,
 }: DaemonSetMonitorTableProps) => {
@@ -296,19 +298,18 @@ export const DaemonSetMonitorTable = ({
           const isSelected = selectedKeys.has(dsKey(ds));
 
           return (
-            <div
+            <button
               key={dsKey(ds)}
               data-row-index={index}
-              tabIndex={0}
-              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
+              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
               style={{ gridTemplateColumns: gridTemplate }}
-              onClick={() => onOpenEditor(ds)}
+              onClick={() => onSelectDaemonSet(ds)}
               onKeyDown={(e) => {
                 if (e.key === " ") { e.preventDefault(); toggleDs(ds); }
                 else if (e.key === "ArrowDown") { e.preventDefault(); focusRow(index + 1); }
                 else if (e.key === "ArrowUp") { e.preventDefault(); if (index === 0) searchInputRef.current?.focus(); else focusRow(index - 1); }
               }}
-              title="Enter para detalhes • Espaço para selecionar • ↑↓ para navegar"
+              title="Enter para ver pods • Espaço para selecionar • ↑↓ para navegar"
             >
               <span className="flex items-center" onClick={(e) => { e.stopPropagation(); toggleDs(ds); }}>
                 <Checkbox checked={isSelected} onCheckedChange={() => {}} className="w-3.5 h-3.5 rounded-full pointer-events-none" />
@@ -332,7 +333,7 @@ export const DaemonSetMonitorTable = ({
                   <Pencil className="w-3 h-3" />
                 </span>
               </span>
-            </div>
+            </button>
           );
         })}
       </div>

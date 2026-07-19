@@ -66,6 +66,7 @@ import { apiClient } from "@/lib/api/client";
 import type { CronJob } from "@/lib/api/types";
 import type { Namespace } from "@/lib/api/types";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { CronJobMonitorTable } from "@/components/CronJobMonitorTable";
 
 interface CronJobsTabProps {
@@ -102,6 +103,11 @@ export function CronJobsTab({
   const [searchQuery, setSearchQuery] = useState("");
 
   const [selectedCronJob, setSelectedCronJob] = usePersistedTabState<CronJob | null>("cronjobs", "selected", null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedCronJob ? `${selectedCronJob.namespace}/${selectedCronJob.name}` : null
+  );
   const [originalYaml, setOriginalYaml] = useState("");
   const [editorValue, setEditorValue] = useState("");
   const [manifestLoading, setManifestLoading] = useState(false);
@@ -664,14 +670,16 @@ spec:
             <p className="text-sm">Nenhum CronJob encontrado</p>
           </div>
         ) : (
-          <div className="space-y-1 pr-1">
+          <div className="space-y-1 pr-1" ref={leftListRef}>
             {filteredCronJobs.map((cj) => {
               const isSelected =
                 selectedCronJob?.name === cj.name &&
                 selectedCronJob?.namespace === cj.namespace;
+              const itemKey = `${cj.namespace}/${cj.name}`;
               return (
                 <div
-                  key={`${cj.namespace}/${cj.name}`}
+                  key={itemKey}
+                  data-item-key={itemKey}
                   onClick={() => handleSelectCronJob(cj)}
                   className={`
                     p-2.5 rounded-lg cursor-pointer border transition-all

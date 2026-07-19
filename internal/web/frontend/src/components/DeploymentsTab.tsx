@@ -58,6 +58,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
 const formatVersion = (version: string | undefined): string => {
@@ -172,6 +173,7 @@ export const DeploymentsTab = ({
   const rolloutPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const selectedDeploymentRef = useRef<DeploymentSummary | null>(null);
   const rolloutTargetRef = useRef<DeploymentSummary | null>(null);
+  const leftListRef = useRef<HTMLDivElement>(null);
 
   // Live monitoring state
   type DeploymentRightView =
@@ -179,6 +181,10 @@ export const DeploymentsTab = ({
     | { kind: "pod-table"; deployment: DeploymentSummary }
     | { kind: "pod-logs"; pod: PodSummary; fromDeployment: DeploymentSummary };
   const [rightView, setRightView] = useState<DeploymentRightView>({ kind: "deployment-table" });
+  const focusedDeploymentKey = rightView.kind === "pod-table"
+    ? `${rightView.deployment.cluster}-${rightView.deployment.namespace}-${rightView.deployment.name}`
+    : null;
+  useRevealOnKeyChange(leftListRef, focusedDeploymentKey);
   const [monitorPods, setMonitorPods] = useState<PodSummary[]>([]);
   const [monitorPodsLoading, setMonitorPodsLoading] = useState(false);
   const [batchMetrics, setBatchMetrics] = useState<BatchPodMetrics | null>(null);
@@ -2500,7 +2506,7 @@ export const DeploymentsTab = ({
     const someSelected = filteredDeployments.some(dep => selectedDeployments.has(getDeploymentKey(dep)));
 
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" ref={leftListRef}>
         {/* Header com seleção em lote */}
         <div className="flex items-center gap-2 pb-2 border-b border-border/40">
           <Checkbox
@@ -2556,6 +2562,8 @@ export const DeploymentsTab = ({
           const severity = getDeploymentSeverity(dep);
           const statusColor = severity === "error" ? "text-red-400" : severity === "degraded" ? "text-yellow-400" : "text-green-400";
           const statusInfo = getDeploymentStatusInfo(dep);
+          const itemKey = `${dep.cluster}-${dep.namespace}-${dep.name}`;
+          const isFocused = !isSelected && focusedDeploymentKey === itemKey;
 
           const cardBorder = isSelected
             ? "border-primary bg-primary/10 text-primary-foreground"
@@ -2569,8 +2577,9 @@ export const DeploymentsTab = ({
 
           return (
             <div
-              key={`${dep.cluster}-${dep.namespace}-${dep.name}`}
-              className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative ${cardBorder}`}
+              key={itemKey}
+              data-item-key={itemKey}
+              className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative ${cardBorder} ${isFocused ? "ring-2 ring-blue-400/60 bg-blue-400/5" : ""}`}
             >
               <Checkbox
                 checked={isChecked}

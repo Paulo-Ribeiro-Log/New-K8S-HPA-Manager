@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -156,6 +157,11 @@ export const GatewayTab = ({
   const [selectedKind, setSelectedKind] = useState<string>("gateway");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGateway, setSelectedGateway] = useState<GatewaySummary | null>(null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedGateway ? `${selectedGateway.cluster}-${selectedGateway.namespace}-${selectedGateway.name}` : null
+  );
   const [manifest, setManifest] = useState<GatewayManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
@@ -493,7 +499,7 @@ export const GatewayTab = ({
   );
 
   const leftContent = (
-    <div className="space-y-3">
+    <div className="space-y-3" ref={leftListRef}>
       {selectedGateway && (
         <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
           <Route className="w-3.5 h-3.5 flex-shrink-0" />
@@ -569,9 +575,11 @@ export const GatewayTab = ({
         const isSelected =
           selectedGateway?.name === gw.name &&
           selectedGateway?.namespace === gw.namespace;
+        const itemKey = `${gw.cluster}-${gw.namespace}-${gw.name}`;
         return (
           <button
-            key={`${gw.cluster}-${gw.namespace}-${gw.name}`}
+            key={itemKey}
+            data-item-key={itemKey}
             onClick={() => loadManifest(gw)}
             className={`w-full text-left p-3 rounded-lg border transition-colors ${
               isSelected

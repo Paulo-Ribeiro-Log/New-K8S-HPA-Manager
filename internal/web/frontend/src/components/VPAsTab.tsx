@@ -39,6 +39,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 
 interface VPAsTabProps {
   cluster: string;
@@ -69,6 +70,11 @@ export const VPAsTab = ({
 }: VPAsTabProps) => {
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>("vpas", "searchQuery", "");
   const [selectedVPA, setSelectedVPA] = usePersistedTabState<VPASummary | null>("vpas", "selectedVPA", null);
+  const leftListRef = useRef<HTMLDivElement>(null);
+  useRevealOnKeyChange(
+    leftListRef,
+    selectedVPA ? `${selectedVPA.cluster}/${selectedVPA.namespace}/${selectedVPA.name}` : null
+  );
   const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">("vpas", "viewMode", "editor");
 
   const [manifest, setManifest] = useState<VPAManifest | null>(null);
@@ -432,15 +438,17 @@ export const VPAsTab = ({
           <p className="text-sm">Nenhum VPA encontrado</p>
         </div>
       ) : (
-        <div className="space-y-1">
+        <div className="space-y-1" ref={leftListRef}>
           {filteredVPAs.map((vpa) => {
             const isSelected =
               selectedVPA?.cluster === vpa.cluster &&
               selectedVPA?.namespace === vpa.namespace &&
               selectedVPA?.name === vpa.name;
+            const itemKey = `${vpa.cluster}/${vpa.namespace}/${vpa.name}`;
             return (
               <div
-                key={`${vpa.cluster}/${vpa.namespace}/${vpa.name}`}
+                key={itemKey}
+                data-item-key={itemKey}
                 className={`p-2 rounded-md cursor-pointer transition-colors ${
                   isSelected ? "bg-accent" : "hover:bg-muted"
                 }`}
