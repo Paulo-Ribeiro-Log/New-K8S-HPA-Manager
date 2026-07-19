@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react";
-import type { ConfigMapSummary } from "@/lib/api/types";
+import type { ConfigMapSummary, ConfigMapUsage } from "@/lib/api/types";
 import { Pencil, Loader2, Search, X, RefreshCw, Trash2, ArrowUpDown, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,8 +12,8 @@ import { formatAge } from "@/lib/monitorUtils";
 
 const REFRESH_INTERVAL_MS = 10000;
 
-// SEL(fixed) | NAME/NS | KEYS | AGE | EDIT(fixed)
-const INITIAL_WIDTHS = [28, 400, 130, 70, 28];
+// SEL(fixed) | NAME/NS | KEYS | USO | AGE | EDIT(fixed)
+const INITIAL_WIDTHS = [28, 340, 110, 110, 70, 28];
 
 function useSecondsTick(date: Date | null): string {
   const [, setTick] = useState(0);
@@ -51,6 +51,7 @@ interface ConfigMapMonitorTableProps {
   headerLabel: string;
   onOpenEditor: (item: ConfigMapSummary) => void;
   onRequestRefresh: () => void;
+  usageByKey?: Map<string, ConfigMapUsage>;
 }
 
 export const ConfigMapMonitorTable = ({
@@ -59,6 +60,7 @@ export const ConfigMapMonitorTable = ({
   headerLabel,
   onOpenEditor,
   onRequestRefresh,
+  usageByKey,
 }: ConfigMapMonitorTableProps) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -262,9 +264,13 @@ export const ConfigMapMonitorTable = ({
             KEYS
             <ResizeHandle onResize={(d) => resize(2, d)} />
           </span>
+          <span className="relative uppercase text-muted-foreground overflow-hidden pr-4">
+            USO
+            <ResizeHandle onResize={(d) => resize(3, d)} />
+          </span>
           <span className="relative overflow-hidden pr-4">
             <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-            <ResizeHandle onResize={(d) => resize(3, d)} />
+            <ResizeHandle onResize={(d) => resize(4, d)} />
           </span>
           <span></span>
         </div>
@@ -277,6 +283,7 @@ export const ConfigMapMonitorTable = ({
         {filtered.map((item, index) => {
           const isSelected = selectedKeys.has(itemKey(item));
           const totalKeys = (item.dataKeys?.length ?? 0) + (item.binaryKeys?.length ?? 0);
+          const usage = usageByKey?.get(`${item.namespace}/${item.name}`);
 
           return (
             <div
@@ -305,6 +312,22 @@ export const ConfigMapMonitorTable = ({
               </span>
               <span className="text-muted-foreground">
                 {totalKeys} {totalKeys === 1 ? "chave" : "chaves"}
+              </span>
+              <span className="flex items-center overflow-hidden">
+                {usage && (
+                  usage.isOrphan ? (
+                    <span className="text-[10px] font-medium px-1 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 whitespace-nowrap">
+                      Órfão
+                    </span>
+                  ) : (
+                    <span
+                      className="text-[10px] font-medium px-1 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30 truncate"
+                      title={usage.usedBy.join(", ")}
+                    >
+                      {usage.usedBy.length} app{usage.usedBy.length === 1 ? "" : "s"}
+                    </span>
+                  )
+                )}
               </span>
               <span className="text-muted-foreground">
                 {item.updatedAt ? formatAge(item.updatedAt) : "—"}

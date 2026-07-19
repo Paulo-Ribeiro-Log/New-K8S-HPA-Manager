@@ -22,6 +22,7 @@ import type {
   Anomalies,
   HPAHealth,
   ConfigMapSummary,
+  ConfigMapUsage,
   ConfigMapManifest,
   ConfigMapDiffResult,
   ConfigMapValidateResult,
@@ -685,6 +686,17 @@ class APIClient {
             }
           : {},
       }
+    );
+    return response.data || [];
+  }
+
+  async getConfigMapUsage(cluster: string, namespace?: string): Promise<ConfigMapUsage[]> {
+    const params = new URLSearchParams();
+    params.append("cluster", cluster);
+    if (namespace) params.append("namespace", namespace);
+
+    const response = await this.request<APIResponse<ConfigMapUsage[]>>(
+      `/configmaps/usage?${params.toString()}`
     );
     return response.data || [];
   }

@@ -67,6 +67,13 @@ export interface ConfigMapSummary {
   updatedAt: string;
 }
 
+export interface ConfigMapUsage {
+  namespace: string;
+  name: string;
+  isOrphan: boolean;
+  usedBy: string[];
+}
+
 export interface ConfigMapMetadata {
   uid?: string;
   resourceVersion?: string;

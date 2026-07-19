@@ -24,7 +24,7 @@ import type {
   ConfigMapSummary,
   ConfigMapManifest,
 } from "@/lib/api/types";
-import { useConfigMaps } from "@/hooks/useAPI";
+import { useConfigMaps, useConfigMapUsage } from "@/hooks/useAPI";
 import { ConfigMapMonitorTable } from "@/components/ConfigMapMonitorTable";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
@@ -133,6 +133,11 @@ export const ConfigMapsTab = ({
     cluster,
     namespaceFilter,
     showSystemNamespaces
+  );
+  const { usage: configMapUsage } = useConfigMapUsage(cluster, selectedNamespace || undefined);
+  const usageByKey = useMemo(
+    () => new Map(configMapUsage.map((u) => [`${u.namespace}/${u.name}`, u])),
+    [configMapUsage]
   );
 
   useEffect(() => {
@@ -766,6 +771,7 @@ data:
           headerLabel={`${(configMaps ?? []).length} ConfigMap(s)`}
           onOpenEditor={handleSelectConfigMap}
           onRequestRefresh={silentRefetch}
+          usageByKey={usageByKey}
         />
       );
     }
@@ -834,6 +840,27 @@ data:
             <span className="text-muted-foreground uppercase mb-0.5">Atualizado</span>
             <span className="font-medium">{updatedAt}</span>
           </div>
+          {(() => {
+            const usage = usageByKey.get(`${selectedConfigMap.namespace}/${selectedConfigMap.name}`);
+            if (!usage) return null;
+            return (
+              <div className="flex flex-col">
+                <span className="text-muted-foreground uppercase mb-0.5">Uso</span>
+                {usage.isOrphan ? (
+                  <span className="text-[10px] font-medium px-1 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 w-fit">
+                    Órfão
+                  </span>
+                ) : (
+                  <span
+                    className="text-[10px] font-medium px-1 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30 w-fit"
+                    title={usage.usedBy.join(", ")}
+                  >
+                    Usado por: {usage.usedBy.join(", ")}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
           {selectedConfigMap.labels && Object.keys(selectedConfigMap.labels).length > 0 && (
             <div className="flex flex-col">
               <button

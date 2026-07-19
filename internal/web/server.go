@@ -727,6 +727,7 @@ func (s *Server) setupRoutes() {
 	configMaps := api.Group("/configmaps")
 	{
 		configMaps.GET("", configMapHandler.List)
+		configMaps.GET("/usage", configMapHandler.Usage)
 		configMaps.GET("/:cluster/:namespace/:name", configMapHandler.Get)
 		configMaps.GET("/:cluster/:namespace/:name/describe", configMapHandler.Describe)
 		configMaps.POST("/diff", configMapHandler.Diff)

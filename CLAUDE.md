@@ -976,6 +976,12 @@ Botão **Resync AKV** na aba Secrets — exibido no painel direito logo após "C
 
 `ResourceCompareModal.tsx` (Edição Lado a Lado) também suporta o tipo `"gateway"` em `ResourceType` — reaproveita `apiClient.getGateway/getGateways/diffGateway/validateGateway/applyGateway`, fixo no kind `"gateway"` (não cobre HTTPRoute/GRPCRoute/TCPRoute/GatewayClass). `GatewayTab.tsx` tem o botão "Abrir em Edição Lado a Lado" (`SplitSquareHorizontal`) no painel direito quando `selectedGateway.kind` (case-insensitive) é `"gateway"`.
 
+### ConfigMaps — Badge de Uso (Órfão / Usado por)
+
+Deploys frequentes (Helm/Kustomize com hash no nome) deixam ConfigMaps antigos sem nenhum Pod referenciando. `GET /api/v1/configmaps/usage?cluster=X&namespace=Y` (`ConfigMapHandler.Usage` em `internal/web/handlers/configmaps_usage.go`; `namespace` vazio = todos os namespaces do cluster) faz cross-reference: lista ConfigMaps + Pods do escopo (só essas 2 chamadas, sem custo extra por item) e varre `Volumes[].ConfigMap`/`.Projected.Sources`, `EnvFrom[].ConfigMapRef` e `Env[].ValueFrom.ConfigMapKeyRef` de `InitContainers`+`Containers`. Cada Pod referenciador é resolvido até o **workload dono de verdade** via `OwnerReferences` (`resolveOwnerDisplayName`) — `ReplicaSet` vira `Deployment/<nome>` (`stripReplicaSetHash` remove o sufixo de hash do ReplicaSet, convenção do controller de Deployment), `DaemonSet`/`StatefulSet`/`Job` são donos diretos do Pod. Isso é mais preciso que o cross-referencer que já existia em `internal/healthcheck/config_crossref_checker.go` (que só resolve até o Pod, não o workload, e está morto — não é chamado por nenhum handler/orchestrator hoje); optou-se por escrever uma função nova e independente em vez de estender aquele código já testado/usado alhures.
+
+**Frontend**: badge vermelho "Órfão" ou verde "N app(s)" (tooltip com os workloads via atributo `title`) tanto na `ConfigMapMonitorTable` (nova coluna "USO") quanto no card de detalhes ao abrir um ConfigMap específico (`ConfigMapsTab.tsx`). Hook `useConfigMapUsage` (`hooks/useAPI.ts`) segue a mesma convenção manual (state + polling de 60s) do `useConfigMaps` já existente — este projeto não usa React Query para essas listas.
+
 ### Certificates
 
 `internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.

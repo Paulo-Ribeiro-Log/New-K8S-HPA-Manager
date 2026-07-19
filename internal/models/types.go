@@ -39,6 +39,16 @@ type ConfigMapSummary struct {
 	UpdatedAt       time.Time         `json:"updatedAt"`
 }
 
+// ConfigMapUsage indica se um ConfigMap é referenciado por algum workload do cluster
+// (cross-reference via volumes/envFrom/env dos Pods) e por quais, resolvendo até o
+// workload dono (Deployment/DaemonSet/StatefulSet/Job) via OwnerReferences do Pod.
+type ConfigMapUsage struct {
+	Namespace string   `json:"namespace"`
+	Name      string   `json:"name"`
+	IsOrphan  bool     `json:"isOrphan"`
+	UsedBy    []string `json:"usedBy"`
+}
+
 // ConfigMapMetadata consolida metadados relevantes do ConfigMap
 type ConfigMapMetadata struct {
 	UID             string            `json:"uid,omitempty"`
