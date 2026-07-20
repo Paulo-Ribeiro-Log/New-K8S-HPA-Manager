@@ -1828,7 +1828,7 @@ func (h *DBTestHandler) runTest(ctx context.Context, sessionID string, req RunDB
 		}
 
 		send("resolve_deployment", "in_progress", fmt.Sprintf("Localizando pod Running do deployment %q...", req.Deployment), 0.15)
-		resolvedPod, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+		resolvedPod, targetContainer, err := resolvePodForDeployment(ctx, clientset, req.Namespace, req.Deployment, "", "")
 		if err != nil {
 			fail("falha ao localizar pod do deployment", err)
 			return

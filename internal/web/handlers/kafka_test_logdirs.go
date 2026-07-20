@@ -41,6 +41,15 @@ func escapeJaasPropertyValue(s string) string {
 // Kafka (kafka-log-dirs, kafka-topics, etc) — equivalente ao buildKcatAuthFlags, mas pro
 // vocabulário de propriedade dos clientes Java (`sasl.mechanism` singular, não
 // `sasl.mechanisms` do librdkafka/kcat; JAAS config em vez de username/password soltos).
+//
+// LIMITAÇÃO CONHECIDA: não suporta OAUTHBEARER — com esse mecanismo username/password ficam
+// vazios (autenticação é via client credentials OIDC, ver KafkaSASLConfig.OAuth*), então
+// `hasCreds` fica false e a função pula o bloco de SASL inteiro, gerando um client.properties SEM
+// autenticação nenhuma. Efeito: a coluna de tamanho em disco (kafka-log-dirs, só no modo `local`)
+// falha silenciosamente pra brokers OAUTHBEARER — o resto do teste (kcat, buildKcatAuthFlags) não
+// é afetado. Suporte a OAUTHBEARER aqui exigiria o login module Java
+// (org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule) com sintaxe de JAAS
+// própria — não implementado ainda, ver KAFKA-TEST-PLAN.md.
 func buildKafkaClientPropertiesFile(sasl *KafkaSASLConfig, username, password string) string {
 	if sasl == nil {
 		return ""

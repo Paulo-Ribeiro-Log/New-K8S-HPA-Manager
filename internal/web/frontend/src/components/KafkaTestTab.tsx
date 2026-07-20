@@ -164,6 +164,11 @@ export default function KafkaTestTab() {
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
   const [deployment, setDeployment] = useState("");
+  // podName/containerName são opcionais — vazio = comportamento padrão do backend (primeiro pod
+  // Running do deployment, primeiro container dele). Deixados explícitos quando o deployment tem
+  // múltiplas réplicas e o usuário quer escolher qual pod recebe o teste.
+  const [podName, setPodName] = useState("");
+  const [containerName, setContainerName] = useState("");
   const [broker, setBroker] = useState("");
 
   // executionMode="pod" (default): ephemeral container anexado a um pod real do Deployment,
@@ -182,12 +187,18 @@ export default function KafkaTestTab() {
   const dockerReady = executionMode !== "local" || !!(dockerStatus?.installed && dockerStatus?.daemon_running);
 
   const [saslEnabled, setSaslEnabled] = useState(false);
-  const [mechanism, setMechanism] = useState<"PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512">("PLAIN");
+  const [mechanism, setMechanism] = useState<"PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512" | "OAUTHBEARER">("PLAIN");
   const [useTLS, setUseTLS] = useState(false);
   const [skipTLSVerify, setSkipTLSVerify] = useState(false);
   const [credSource, setCredSource] = useState<"manual" | "secret">("manual");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  // Campos de OAUTHBEARER (Azure AD / Event Hub via service principal) — só usados quando
+  // mechanism === "OAUTHBEARER", em vez de username/password/secret_ref.
+  const [oauthClientId, setOauthClientId] = useState("");
+  const [oauthClientSecret, setOauthClientSecret] = useState("");
+  const [oauthTokenEndpointURL, setOauthTokenEndpointURL] = useState("");
+  const [oauthScope, setOauthScope] = useState("");
   const [secretNamespace, setSecretNamespace] = useState("");
   const [secretName, setSecretName] = useState("");
   const [usernameKey, setUsernameKey] = useState("username");
@@ -234,6 +245,16 @@ export default function KafkaTestTab() {
     enabled: !!cluster && !!namespace,
   });
 
+  const { data: podsResponse } = useQuery({
+    queryKey: ["kafka-test-pods", cluster, namespace, deployment],
+    queryFn: () => apiClient.getKafkaTestPods(cluster, namespace, deployment),
+    enabled: !!cluster && !!namespace && !!deployment,
+  });
+  const podOptions = podsResponse?.pods ?? [];
+  const selectedPodOption = podOptions.find((p) => p.name === podName);
+  // Container só faz sentido escolher se o pod tem mais de um — com só 1, não há nada a decidir.
+  const showContainerSelect = !!selectedPodOption && selectedPodOption.containers.length > 1;
+
   const needsTopic = produceConsumeEnabled || viewTopicEnabled || countOffsetsEnabled;
 
   // Cluster só é obrigatório no modo "pod" (resolve o Deployment/pod/ephemeral container) ou
@@ -250,7 +271,9 @@ export default function KafkaTestTab() {
     !!broker.trim() &&
     !isRunning &&
     (!needsTopic || !!topic.trim()) &&
-    (!produceConsumeEnabled || confirmProduce);
+    (!produceConsumeEnabled || confirmProduce) &&
+    (!saslEnabled || mechanism !== "OAUTHBEARER" ||
+      (!!oauthClientId.trim() && !!oauthClientSecret.trim() && !!oauthTokenEndpointURL.trim()));
 
   // Reaproveitado pelo teste completo e pela busca de tópicos — mesma config SASL nos dois casos.
   const buildSaslPayload = () =>
@@ -259,7 +282,14 @@ export default function KafkaTestTab() {
           mechanism,
           use_tls: useTLS,
           skip_tls_verify: skipTLSVerify,
-          ...(credSource === "manual"
+          ...(mechanism === "OAUTHBEARER"
+            ? {
+                oauth_client_id: oauthClientId,
+                oauth_client_secret: oauthClientSecret,
+                oauth_token_endpoint_url: oauthTokenEndpointURL,
+                ...(oauthScope ? { oauth_scope: oauthScope } : {}),
+              }
+            : credSource === "manual"
             ? { username, password }
             : {
                 secret_ref: {
@@ -285,6 +315,8 @@ export default function KafkaTestTab() {
         cluster,
         namespace,
         deployment,
+        pod_name: podName || undefined,
+        container_name: containerName || undefined,
         broker: broker.trim(),
         sasl: buildSaslPayload(),
         produce_consume: produceConsumeEnabled,
@@ -318,6 +350,8 @@ export default function KafkaTestTab() {
         cluster,
         namespace,
         deployment,
+        pod_name: podName || undefined,
+        container_name: containerName || undefined,
         broker: broker.trim(),
         sasl: buildSaslPayload(),
         timeout_ms: timeoutMs,
@@ -363,6 +397,8 @@ export default function KafkaTestTab() {
         cluster,
         namespace,
         deployment,
+        pod_name: podName || undefined,
+        container_name: containerName || undefined,
         broker: broker.trim(),
         sasl: buildSaslPayload(),
         timeout_ms: timeoutMs,
@@ -534,6 +570,8 @@ export default function KafkaTestTab() {
               setCluster(v);
               setNamespace("");
               setDeployment("");
+              setPodName("");
+              setContainerName("");
               setResult(null);
             }}
             clusters={clusters.map((c) => c.context)}
@@ -549,7 +587,7 @@ export default function KafkaTestTab() {
           <label className="text-xs text-muted-foreground block mb-1">Namespace</label>
           <SearchableSelect
             value={namespace}
-            onChange={(v) => { setNamespace(v); setDeployment(""); }}
+            onChange={(v) => { setNamespace(v); setDeployment(""); setPodName(""); setContainerName(""); }}
             options={namespaces.map((ns) => ns.name)}
             placeholder="Selecione o namespace"
             searchPlaceholder="Buscar namespace..."
@@ -562,7 +600,7 @@ export default function KafkaTestTab() {
           <label className="text-xs text-muted-foreground block mb-1">Deployment (de onde o teste parte)</label>
           <SearchableSelect
             value={deployment}
-            onChange={setDeployment}
+            onChange={(v) => { setDeployment(v); setPodName(""); setContainerName(""); }}
             options={deployments.map((d) => d.name)}
             placeholder="Selecione o deployment"
             searchPlaceholder="Buscar deployment..."
@@ -570,6 +608,35 @@ export default function KafkaTestTab() {
             disabled={!namespace}
           />
         </div>
+
+        <div className="min-w-[220px]">
+          <label className="text-xs text-muted-foreground block mb-1">
+            Pod <span className="text-muted-foreground/70">(opcional — padrão: primeiro Running)</span>
+          </label>
+          <SearchableSelect
+            value={podName}
+            onChange={(v) => { setPodName(v); setContainerName(""); }}
+            options={podOptions.map((p) => p.name)}
+            placeholder="Automático (primeiro Running)"
+            searchPlaceholder="Buscar pod..."
+            emptyMessage="Nenhum pod Running encontrado."
+            disabled={!deployment}
+          />
+        </div>
+
+        {showContainerSelect && (
+          <div className="min-w-[180px]">
+            <label className="text-xs text-muted-foreground block mb-1">Container</label>
+            <SearchableSelect
+              value={containerName}
+              onChange={setContainerName}
+              options={selectedPodOption?.containers ?? []}
+              placeholder="Automático (primeiro)"
+              searchPlaceholder="Buscar container..."
+              emptyMessage="Nenhum container encontrado."
+            />
+          </div>
+        )}
         </>
         )}
 
@@ -621,7 +688,15 @@ export default function KafkaTestTab() {
           <div className="flex flex-wrap items-end gap-3 pl-8">
             <div className="w-44">
               <label className="text-xs text-muted-foreground block mb-1">Mecanismo</label>
-              <Select value={mechanism} onValueChange={(v) => setMechanism(v as typeof mechanism)}>
+              <Select
+                value={mechanism}
+                onValueChange={(v) => {
+                  setMechanism(v as typeof mechanism);
+                  // Event Hub via Azure AD (OAUTHBEARER) sempre exige SASL_SSL — liga TLS de
+                  // cara pra não deixar o usuário esbarrar num erro óbvio de config.
+                  if (v === "OAUTHBEARER") setUseTLS(true);
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -629,6 +704,7 @@ export default function KafkaTestTab() {
                   <SelectItem value="PLAIN">PLAIN</SelectItem>
                   <SelectItem value="SCRAM-SHA-256">SCRAM-SHA-256</SelectItem>
                   <SelectItem value="SCRAM-SHA-512">SCRAM-SHA-512</SelectItem>
+                  <SelectItem value="OAUTHBEARER">OAUTHBEARER (Azure AD)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -647,58 +723,98 @@ export default function KafkaTestTab() {
               </div>
             )}
 
-            <div className="w-full">
-              <RadioGroup value={credSource} onValueChange={(v) => setCredSource(v as typeof credSource)} className="flex items-center gap-4">
-                <div className="flex items-center gap-1.5">
-                  <RadioGroupItem value="manual" id="cred-manual" />
-                  <label htmlFor="cred-manual" className="text-sm cursor-pointer">Digitar manualmente</label>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <RadioGroupItem value="secret" id="cred-secret" />
-                  <label htmlFor="cred-secret" className="text-sm cursor-pointer">Ler de um Secret do K8s</label>
-                </div>
-              </RadioGroup>
-            </div>
-
-            {credSource === "manual" ? (
+            {mechanism === "OAUTHBEARER" ? (
               <>
                 <div className="w-56">
-                  <label className="text-xs text-muted-foreground block mb-1">Usuário</label>
-                  <Input placeholder="ex: $ConnectionString (Azure Event Hub)" value={username} onChange={(e) => setUsername(e.target.value)} />
+                  <label className="text-xs text-muted-foreground block mb-1">Client ID</label>
+                  <Input
+                    placeholder="ex: Client ID do App Registration (service principal)"
+                    value={oauthClientId}
+                    onChange={(e) => setOauthClientId(e.target.value)}
+                  />
                 </div>
                 <div className="w-56">
-                  <label className="text-xs text-muted-foreground block mb-1">Senha</label>
-                  <Input placeholder="ex: connection string completa (Event Hub)" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+                  <label className="text-xs text-muted-foreground block mb-1">Client Secret</label>
+                  <Input
+                    placeholder="ex: Client Secret do App Registration"
+                    type="password"
+                    value={oauthClientSecret}
+                    onChange={(e) => setOauthClientSecret(e.target.value)}
+                  />
+                </div>
+                <div className="w-72">
+                  <label className="text-xs text-muted-foreground block mb-1">Token Endpoint URL</label>
+                  <Input
+                    placeholder="https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
+                    value={oauthTokenEndpointURL}
+                    onChange={(e) => setOauthTokenEndpointURL(e.target.value)}
+                  />
+                </div>
+                <div className="w-72">
+                  <label className="text-xs text-muted-foreground block mb-1">Scope <span className="text-muted-foreground/70">(opcional)</span></label>
+                  <Input
+                    placeholder="https://<namespace>.servicebus.windows.net/.default"
+                    value={oauthScope}
+                    onChange={(e) => setOauthScope(e.target.value)}
+                  />
                 </div>
               </>
             ) : (
               <>
-                <div className="w-44">
-                  <label className="text-xs text-muted-foreground block mb-1">Namespace do Secret</label>
-                  <Input
-                    placeholder={namespace || "(mesmo do teste)"}
-                    value={secretNamespace}
-                    onChange={(e) => setSecretNamespace(e.target.value)}
-                  />
+                <div className="w-full">
+                  <RadioGroup value={credSource} onValueChange={(v) => setCredSource(v as typeof credSource)} className="flex items-center gap-4">
+                    <div className="flex items-center gap-1.5">
+                      <RadioGroupItem value="manual" id="cred-manual" />
+                      <label htmlFor="cred-manual" className="text-sm cursor-pointer">Digitar manualmente</label>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <RadioGroupItem value="secret" id="cred-secret" />
+                      <label htmlFor="cred-secret" className="text-sm cursor-pointer">Ler de um Secret do K8s</label>
+                    </div>
+                  </RadioGroup>
                 </div>
-                <div className="w-48">
-                  <label className="text-xs text-muted-foreground block mb-1">Nome do Secret</label>
-                  <Input value={secretName} onChange={(e) => setSecretName(e.target.value)} />
-                </div>
-                <div className="w-36">
-                  <label className="text-xs text-muted-foreground block mb-1">Chave usuário</label>
-                  <Input value={usernameKey} onChange={(e) => setUsernameKey(e.target.value)} />
-                </div>
-                <div className="w-36">
-                  <label className="text-xs text-muted-foreground block mb-1">Chave senha</label>
-                  <Input value={passwordKey} onChange={(e) => setPasswordKey(e.target.value)} />
-                </div>
-                <div className="w-full flex items-center gap-2">
-                  <Checkbox checked={secretBase64Decode} onCheckedChange={(v) => setSecretBase64Decode(!!v)} id="secret-b64" />
-                  <label htmlFor="secret-b64" className="text-xs text-muted-foreground cursor-pointer max-w-md">
-                    Valores no Secret estão em Base64 (decodificar antes de autenticar — comum em secrets sincronizados de Azure Key Vault via external-secrets)
-                  </label>
-                </div>
+
+                {credSource === "manual" ? (
+                  <>
+                    <div className="w-56">
+                      <label className="text-xs text-muted-foreground block mb-1">Usuário</label>
+                      <Input placeholder="ex: $ConnectionString (Azure Event Hub)" value={username} onChange={(e) => setUsername(e.target.value)} />
+                    </div>
+                    <div className="w-56">
+                      <label className="text-xs text-muted-foreground block mb-1">Senha</label>
+                      <Input placeholder="ex: connection string completa (Event Hub)" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-44">
+                      <label className="text-xs text-muted-foreground block mb-1">Namespace do Secret</label>
+                      <Input
+                        placeholder={namespace || "(mesmo do teste)"}
+                        value={secretNamespace}
+                        onChange={(e) => setSecretNamespace(e.target.value)}
+                      />
+                    </div>
+                    <div className="w-48">
+                      <label className="text-xs text-muted-foreground block mb-1">Nome do Secret</label>
+                      <Input value={secretName} onChange={(e) => setSecretName(e.target.value)} />
+                    </div>
+                    <div className="w-36">
+                      <label className="text-xs text-muted-foreground block mb-1">Chave usuário</label>
+                      <Input value={usernameKey} onChange={(e) => setUsernameKey(e.target.value)} />
+                    </div>
+                    <div className="w-36">
+                      <label className="text-xs text-muted-foreground block mb-1">Chave senha</label>
+                      <Input value={passwordKey} onChange={(e) => setPasswordKey(e.target.value)} />
+                    </div>
+                    <div className="w-full flex items-center gap-2">
+                      <Checkbox checked={secretBase64Decode} onCheckedChange={(v) => setSecretBase64Decode(!!v)} id="secret-b64" />
+                      <label htmlFor="secret-b64" className="text-xs text-muted-foreground cursor-pointer max-w-md">
+                        Valores no Secret estão em Base64 (decodificar antes de autenticar — comum em secrets sincronizados de Azure Key Vault via external-secrets)
+                      </label>
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>

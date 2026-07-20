@@ -151,7 +151,7 @@ func (h *DBTestHandler) Preview(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
 			return
 		}
-		podName, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+		podName, targetContainer, err := resolvePodForDeployment(ctx, clientset, req.Namespace, req.Deployment, "", "")
 		if err != nil {
 			c.JSON(http.StatusBadGateway, errorResponse("POD_NOT_FOUND", err.Error()))
 			return

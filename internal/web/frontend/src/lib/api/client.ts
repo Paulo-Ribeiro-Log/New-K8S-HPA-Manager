@@ -3645,6 +3645,16 @@ class APIClient {
     return this.request<import("./types").DBDockerStatus>("/kafka-test/docker-status");
   }
 
+  /** Lista os pods Running de um Deployment — seletor de pod/container do Teste de Kafka */
+  async getKafkaTestPods(
+    cluster: string,
+    namespace: string,
+    deployment: string
+  ): Promise<import("./types").KafkaTestPodsResponse> {
+    const params = new URLSearchParams({ cluster, namespace, deployment });
+    return this.request<import("./types").KafkaTestPodsResponse>(`/kafka-test/pods?${params.toString()}`);
+  }
+
   // ─── Teste de Banco de Dados sob Demanda ───────────────────────────────────
 
   /** Inicia o teste de banco de dados (ephemeral container psql/mysql/mongosh/redis-cli) e retorna session_id para SSE */
