@@ -18,12 +18,16 @@ import {
   DTProblemMetrics,
   DTMetricSeries,
 } from "@/types/healthcheck";
+import { useState } from "react";
 import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
   CheckCircle2,
   Clock,
+  Copy,
+  Check,
+  ExternalLink,
   GitMerge,
   Info,
   ListChecks,
@@ -49,6 +53,29 @@ function statusColor(code?: number) {
   if (code < 300) return "text-green-400";
   if (code < 400) return "text-yellow-400";
   return "text-red-400";
+}
+
+// Deep-link para o app "Distributed Tracing → Explorer" do Dynatrace (Grail), já
+// filtrado pelo SERVICE e pela janela de tempo do problem — confirmado contra uma URL
+// real do tenant (formato: /ui/apps/dynatrace.distributedtracing/explorer?filter=dt.entity.service+=+SERVICE-...&tf=<from>;<to>).
+// Autenticado pela sessão do usuário no navegador — não passa pelo token de API nem pelo
+// escopo DataExport que bloqueia /api/v2/distributed-tracing/traces.
+// Só SERVICE tem o campo de filtro `dt.entity.service` confirmado; outros tipos de
+// entidade (HOST, PROCESS_GROUP etc.) não têm o filtro DQL equivalente verificado, então
+// o link não é oferecido para eles (evita repetir o link genérico que não mostrava trace).
+function serviceTraceExplorerLink(
+  uiBaseUrl: string | undefined,
+  entityId: string,
+  entityType: string,
+  timeFrom: string,
+  timeTo: string
+): string | null {
+  if (!uiBaseUrl || !entityId || entityType !== "SERVICE") return null;
+  const params = new URLSearchParams({
+    filter: `dt.entity.service = ${entityId}`,
+    tf: `${timeFrom};${timeTo}`,
+  });
+  return `${uiBaseUrl}/ui/apps/dynatrace.distributedtracing/explorer?${params.toString()}`;
 }
 
 function entityTypeShort(t: string) {
@@ -184,10 +211,16 @@ function EvidenceSection({
   items,
   metricsData,
   problemStartMs,
+  uiBaseUrl,
+  timeFrom,
+  timeTo,
 }: {
   items: DTEvidenceItem[];
   metricsData: DTProblemMetrics | undefined;
   problemStartMs: number;
+  uiBaseUrl?: string;
+  timeFrom: string;
+  timeTo: string;
 }) {
   if (!items.length) return <EmptyState icon={<Zap size={16} />} msg="Nenhuma evidência Davis AI" />;
 
@@ -202,7 +235,8 @@ function EvidenceSection({
           <div className="space-y-3">
             {rootCauses.map(e => (
               <EvidenceRow key={e.entityId + e.evidenceType} item={e} isRoot
-                metricsData={metricsData} problemStartMs={problemStartMs} />
+                metricsData={metricsData} problemStartMs={problemStartMs} uiBaseUrl={uiBaseUrl}
+                timeFrom={timeFrom} timeTo={timeTo} />
             ))}
           </div>
         </div>
@@ -213,7 +247,8 @@ function EvidenceSection({
           <div className="space-y-3">
             {others.map(e => (
               <EvidenceRow key={e.entityId + e.evidenceType} item={e} isRoot={false}
-                metricsData={metricsData} problemStartMs={problemStartMs} />
+                metricsData={metricsData} problemStartMs={problemStartMs} uiBaseUrl={uiBaseUrl}
+                timeFrom={timeFrom} timeTo={timeTo} />
             ))}
           </div>
         </div>
@@ -223,14 +258,18 @@ function EvidenceSection({
 }
 
 function EvidenceRow({
-  item, isRoot, metricsData, problemStartMs,
+  item, isRoot, metricsData, problemStartMs, uiBaseUrl, timeFrom, timeTo,
 }: {
   item: DTEvidenceItem;
   isRoot: boolean;
   metricsData: DTProblemMetrics | undefined;
   problemStartMs: number;
+  uiBaseUrl?: string;
+  timeFrom: string;
+  timeTo: string;
 }) {
   const spark = pickPrimarySeriesForEntity(item.entityId, item.entityType, metricsData);
+  const link = serviceTraceExplorerLink(uiBaseUrl, item.entityId, item.entityType, timeFrom, timeTo);
 
   return (
     <div className={`rounded-lg border p-2.5 ${isRoot ? "bg-red-500/8 border-red-500/25" : "bg-white/5 border-white/10"}`}>
@@ -245,6 +284,17 @@ function EvidenceRow({
             <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-gray-600 text-gray-400 shrink-0">
               {entityTypeShort(item.entityType)}
             </Badge>
+            {link && (
+              <a
+                href={link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[9px] text-blue-400 hover:text-blue-300 flex items-center gap-0.5 shrink-0"
+                title="Abrir Distributed Tracing Explorer no Dynatrace, filtrado por este serviço e pela janela do problem"
+              >
+                <Route size={9} /> Ver Trace
+              </a>
+            )}
           </div>
           <div className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
             <span className="text-gray-300">{item.displayName}</span>
@@ -270,7 +320,9 @@ function EvidenceRow({
 
 // ─── Topologia ────────────────────────────────────────────────────────────────
 
-function TopologySection({ items }: { items: DTTopoRelation[] }) {
+function TopologySection({
+  items, uiBaseUrl, timeFrom, timeTo,
+}: { items: DTTopoRelation[]; uiBaseUrl?: string; timeFrom: string; timeTo: string }) {
   if (!items.length) return <EmptyState icon={<Network size={16} />} msg="Sem relações de topologia" />;
 
   const outgoing = items.filter(t => t.direction === "outgoing");
@@ -283,7 +335,7 @@ function TopologySection({ items }: { items: DTTopoRelation[] }) {
           <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 mb-1 flex items-center gap-1">
             <ArrowDown size={11} /> Upstream — chama este serviço ({incoming.length})
           </p>
-          <TopoTable items={incoming} />
+          <TopoTable items={incoming} uiBaseUrl={uiBaseUrl} timeFrom={timeFrom} timeTo={timeTo} />
         </div>
       )}
       {outgoing.length > 0 && (
@@ -291,37 +343,75 @@ function TopologySection({ items }: { items: DTTopoRelation[] }) {
           <p className="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1 flex items-center gap-1">
             <ArrowUp size={11} /> Downstream — chamado por este serviço ({outgoing.length})
           </p>
-          <TopoTable items={outgoing} />
+          <TopoTable items={outgoing} uiBaseUrl={uiBaseUrl} timeFrom={timeFrom} timeTo={timeTo} />
         </div>
       )}
     </div>
   );
 }
 
-function TopoTable({ items }: { items: DTTopoRelation[] }) {
+function TopoTable({
+  items, uiBaseUrl, timeFrom, timeTo,
+}: { items: DTTopoRelation[]; uiBaseUrl?: string; timeFrom: string; timeTo: string }) {
   return (
     <table className="w-full text-xs border-collapse">
       <thead>
         <tr className="text-gray-500 border-b border-white/10">
           <th className="text-left py-1 pr-2 font-normal">Serviço / Entidade</th>
           <th className="text-left py-1 font-normal w-20">Tipo</th>
+          <th className="text-left py-1 font-normal w-8"></th>
         </tr>
       </thead>
       <tbody>
-        {items.map(r => (
-          <tr key={r.entityId} className="border-b border-white/5 hover:bg-white/5">
-            <td className="py-1 pr-2 text-white">
-              <span className="block truncate max-w-[280px]">{r.entityName || r.entityId}</span>
-            </td>
-            <td className="py-1 text-gray-400 shrink-0">{entityTypeShort(r.entityType)}</td>
-          </tr>
-        ))}
+        {items.map(r => {
+          const link = serviceTraceExplorerLink(uiBaseUrl, r.entityId, r.entityType, timeFrom, timeTo);
+          return (
+            <tr key={r.entityId} className="border-b border-white/5 hover:bg-white/5">
+              <td className="py-1 pr-2 text-white">
+                <span className="block truncate max-w-[280px]">{r.entityName || r.entityId}</span>
+              </td>
+              <td className="py-1 text-gray-400 shrink-0">{entityTypeShort(r.entityType)}</td>
+              <td className="py-1 shrink-0">
+                {link && (
+                  <a
+                    href={link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-400 hover:text-blue-300"
+                    title="Abrir Distributed Tracing Explorer no Dynatrace, filtrado por este serviço"
+                  >
+                    <ExternalLink size={11} />
+                  </a>
+                )}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
 }
 
 // ─── Distributed Traces ───────────────────────────────────────────────────────
+
+function CopyTraceIdButton({ traceId }: { traceId: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(traceId);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+      className="text-gray-400 hover:text-gray-200"
+      title={`Copiar Trace ID (${traceId}) para colar na busca de traces do Dynatrace`}
+    >
+      {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
+    </button>
+  );
+}
 
 function TracesSection({ items, tracesError }: { items: DTTraceEntry[]; tracesError?: string }) {
   if (tracesError) {
@@ -338,10 +428,16 @@ function TracesSection({ items, tracesError }: { items: DTTraceEntry[]; tracesEr
           <AlertCircle size={12} className="shrink-0" /> {msg}
         </p>
         {is403 && (
-          <p className="text-gray-500 pl-4">
-            Adicione o escopo <code className="bg-gray-800 px-1 rounded">DataExport</code> ao token em{" "}
-            <span className="text-gray-400">Dynatrace → Access Tokens → Edit</span>
-          </p>
+          <>
+            <p className="text-gray-500 pl-4">
+              Adicione o escopo <code className="bg-gray-800 px-1 rounded">DataExport</code> ao token em{" "}
+              <span className="text-gray-400">Dynatrace → Access Tokens → Edit</span>
+            </p>
+            <p className="text-gray-500 pl-4">
+              Alternativa sem essa permissão: veja a entidade raiz em <strong className="text-gray-400">Evidências Davis AI</strong> acima
+              e clique em "Ver Trace" — abre o Distributed Tracing Explorer do Dynatrace já filtrado por esse serviço e pela janela do problem.
+            </p>
+          </>
         )}
       </div>
     );
@@ -359,7 +455,8 @@ function TracesSection({ items, tracesError }: { items: DTTraceEntry[]; tracesEr
             <th className="text-left py-1 pr-2 font-normal w-14">Método</th>
             <th className="text-left py-1 pr-2 font-normal w-14">Status</th>
             <th className="text-right py-1 pr-2 font-normal w-20">Duração</th>
-            <th className="text-left py-1 font-normal w-20">Início</th>
+            <th className="text-left py-1 pr-2 font-normal w-20">Início</th>
+            <th className="text-left py-1 font-normal w-10">Trace</th>
           </tr>
         </thead>
         <tbody>
@@ -373,7 +470,10 @@ function TracesSection({ items, tracesError }: { items: DTTraceEntry[]; tracesEr
               <td className={`py-1 pr-2 text-right font-mono ${t.durationMs > 1000 ? "text-red-400" : "text-gray-300"}`}>
                 {fmtMs(t.durationMs)}
               </td>
-              <td className="py-1 text-gray-400">{fmtTime(t.startTime)}</td>
+              <td className="py-1 pr-2 text-gray-400">{fmtTime(t.startTime)}</td>
+              <td className="py-1">
+                <CopyTraceIdButton traceId={t.traceId} />
+              </td>
             </tr>
           ))}
         </tbody>
@@ -454,9 +554,10 @@ function Section({
 interface Props {
   problemId: string;
   aiEmail: string;
+  uiBaseUrl?: string;
 }
 
-export function DynatraceContextPanel({ problemId, aiEmail }: Props) {
+export function DynatraceContextPanel({ problemId, aiEmail, uiBaseUrl }: Props) {
   // Contexto: evidências, topologia, traces, eventos
   const { data, isLoading, isError, error } = useQuery<DTProblemContext>({
     queryKey: ["dt-context", problemId, aiEmail],
@@ -501,11 +602,14 @@ export function DynatraceContextPanel({ problemId, aiEmail }: Props) {
           items={data.evidence ?? []}
           metricsData={metricsData}
           problemStartMs={problemStartMs}
+          uiBaseUrl={uiBaseUrl}
+          timeFrom={data.timeFrom}
+          timeTo={data.timeTo}
         />
       </Section>
 
       <Section icon={<GitMerge size={14} />} title="Topologia" count={data.topology?.length ?? 0}>
-        <TopologySection items={data.topology ?? []} />
+        <TopologySection items={data.topology ?? []} uiBaseUrl={uiBaseUrl} timeFrom={data.timeFrom} timeTo={data.timeTo} />
       </Section>
 
       {/* Traces: ocultar se 404 (endpoint não disponível nesta instância) */}
