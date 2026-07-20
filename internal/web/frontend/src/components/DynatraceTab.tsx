@@ -2682,6 +2682,7 @@ function ProblemDetailPanel({
             <DynatraceContextPanel
               problemId={problem.problemId}
               aiEmail={aiEmail}
+              uiBaseUrl={uiBaseUrl}
             />
           </div>
         </div>
