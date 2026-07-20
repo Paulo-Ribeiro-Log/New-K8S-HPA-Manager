@@ -1997,10 +1997,11 @@ class APIClient {
     return this.request(`/nodepools/node-disk-stats?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`);
   }
 
-  async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
-    return this.request<ConntrackResponse>(
-      `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`
-    );
+  // nodepool omitido (ou "") escaneia todos os nós do cluster, sem filtro de pool.
+  async getConntrackStats(cluster: string, nodepool?: string): Promise<ConntrackResponse> {
+    const params = new URLSearchParams({ cluster });
+    if (nodepool) params.append("nodepool", nodepool);
+    return this.request<ConntrackResponse>(`/nodepools/conntrack?${params.toString()}`);
   }
 
   async getConntrackNodeHistory(

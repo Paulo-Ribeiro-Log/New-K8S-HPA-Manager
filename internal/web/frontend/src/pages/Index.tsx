@@ -953,7 +953,7 @@ const Index = ({ onLogout }: IndexProps) => {
             {selectedCluster && (
               <div className="px-4 pt-3 pb-2 border-b border-border/50 space-y-2">
                 <SNATPortWidget cluster={selectedCluster} />
-                <ConntrackAlertWidget cluster={selectedCluster} nodepool={selectedNodePool?.name} />
+                <ConntrackAlertWidget cluster={selectedCluster} />
               </div>
             )}
             <div className="flex-1 min-h-0">
