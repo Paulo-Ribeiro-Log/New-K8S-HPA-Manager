@@ -440,8 +440,8 @@ func (c *NodePoolCollector) collectCurrentSnapshot(
 	var cpuByInstance map[string]float64
 	var memByInstance map[string]float64
 	var diskByInstance map[string]float64
-	var diskGrowthByInstance map[string]float64  // bytes/s (positivo = enchendo)
-	var diskSizeByInstance map[string]float64    // bytes totais
+	var diskGrowthByInstance map[string]float64 // bytes/s (positivo = enchendo)
+	var diskSizeByInstance map[string]float64   // bytes totais
 	var pidByInstance map[string]float64
 	var conntrackPctByInstance map[string]float64
 	var podCountByNode map[string]int
@@ -461,7 +461,11 @@ func (c *NodePoolCollector) collectCurrentSnapshot(
 		for inst, entries := range entriesMap {
 			limit, ok := limitsMap[inst]
 			if !ok || limit == 0 {
-				limit = 131072 // padrão Linux
+				// Sem limite real — não popula este instance no mapa (snap.ConntrackPercent
+				// fica no zero-value, que já é o sentinel de "indisponível" documentado em
+				// models.go). Evita o mesmo fallback fixo que fabricava percentual errado.
+				log.Warn().Str("instance", inst).Msg("conntrack: limite não encontrado para snapshot/tendência — ignorando")
+				continue
 			}
 			conntrackPctByInstance[inst] = entries / limit * 100.0
 		}
@@ -772,9 +776,14 @@ func (c *NodePoolCollector) collectConntrackPool(ctx context.Context, instanceRe
 	for _, s := range entriesVec {
 		inst := string(s.Metric["instance"])
 		current := int64(s.Value)
-		limit := limitMap[inst]
-		if limit == 0 {
-			limit = 131072 // padrão Linux
+		limit, hasLimit := limitMap[inst]
+		if !hasLimit || limit == 0 {
+			// Sem node_nf_conntrack_entries_limit real pra este instance — não fabricar
+			// percentual com um valor chutado (nf_conntrack_max real varia muito por node,
+			// frequentemente 4x+ maior que qualquer chute fixo, o que gerava alertas de
+			// "conntrack crítico" falsos). Pular o node em vez de reportar dado errado.
+			log.Warn().Str("instance", inst).Msg("conntrack: limite não encontrado para este node do pool — ignorando (sem fabricar percentual)")
+			continue
 		}
 
 		pct := float64(current) / float64(limit) * 100.0
@@ -875,14 +884,18 @@ func (c *NodePoolCollector) collectConntrackCluster(ctx context.Context) (Conntr
 	var clusterTotal, clusterMax int64
 	nodesAbove70, nodesAbove85 := 0, 0
 	var maxUsage float64
+	var nodesCounted int
 
 	for _, s := range entriesVec {
 		inst := string(s.Metric["instance"])
 		current := int64(s.Value)
-		limit := limitMap[inst]
-		if limit == 0 {
-			limit = 131072
+		limit, hasLimit := limitMap[inst]
+		if !hasLimit || limit == 0 {
+			// Mesmo motivo do collectConntrackPool: sem limite real, não fabricar percentual.
+			log.Warn().Str("instance", inst).Msg("conntrack: limite não encontrado para este node (cluster-wide) — ignorando")
+			continue
 		}
+		nodesCounted++
 		pct := float64(current) / float64(limit) * 100.0
 		clusterTotal += current
 		clusterMax += limit
@@ -907,7 +920,7 @@ func (c *NodePoolCollector) collectConntrackCluster(ctx context.Context) (Conntr
 		TotalLimit:        clusterMax,
 		AvgUsage:          avgUsage,
 		MaxUsage:          maxUsage,
-		TotalNodes:        len(entriesVec),
+		TotalNodes:        nodesCounted,
 		NodesWarning:      nodesAbove70,
 		NodesCritical:     nodesAbove85,
 		HasSufficientData: true,
@@ -1095,7 +1108,7 @@ func (c *NodePoolCollector) calculateBinPacking(snapshots []NodePoolNodeSnapshot
 		return BinPackingAnalysis{}
 	}
 
-	cpuEff := cpuSum / float64(schedulable)    // uso real médio
+	cpuEff := cpuSum / float64(schedulable) // uso real médio
 	memEff := memSum / float64(schedulable)
 	podEff := podSum / float64(schedulable)
 
@@ -1432,8 +1445,8 @@ func (c *NodePoolCollector) collectHPACorrelation(ctx context.Context, nodeNames
 		Namespace string
 		Name      string
 	}
-	podsOnPool := make(map[workloadKey]int)  // pods deste workload no pool
-	podsTotal := make(map[workloadKey]int)   // pods totais deste workload
+	podsOnPool := make(map[workloadKey]int) // pods deste workload no pool
+	podsTotal := make(map[workloadKey]int)  // pods totais deste workload
 
 	for i := range allPods.Items {
 		pod := &allPods.Items[i]

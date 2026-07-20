@@ -584,6 +584,14 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
     }
   };
 
+  // Scan automático e silencioso: ao abrir a aba Conntrack (mount) e ao trocar de node
+  // pool com a aba já aberta (troca de props sem remount, já que NodePoolEditor não é
+  // remontado na troca de pool). O botão "Atualizar" continua disponível pra re-scan manual.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    fetchStats();
+  }, [cluster, nodepool]);
+
   // Pré-calcula histStats, trend e capacityRec para cada node
   const nodesMeta = useMemo(() => {
     return nodes.map((n) => {
@@ -682,7 +690,7 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
 
           <Button size="sm" variant="outline" onClick={fetchStats} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
-            {nodes.length === 0 && !loading ? 'Carregar' : 'Atualizar'}
+            Atualizar
           </Button>
         </div>
       </div>
@@ -704,7 +712,7 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
       {!loading && nodes.length === 0 && !error && (
         <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
           <Activity className="h-8 w-8 opacity-40" />
-          <p className="text-sm">Clique em "Carregar" para buscar as estatísticas de conntrack.</p>
+          <p className="text-sm">Nenhum nó encontrado neste node pool.</p>
         </div>
       )}
 
