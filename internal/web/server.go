@@ -942,6 +942,7 @@ func (s *Server) setupRoutes() {
 	kafkaTest := api.Group("/kafka-test")
 	{
 		kafkaTest.GET("/docker-status", kafkaTestHandler.DockerStatus)
+		kafkaTest.GET("/pods", kafkaTestHandler.ListPodsForDeployment)
 		kafkaTest.POST("/run", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Run)
 		kafkaTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Cancel)
 		kafkaTest.POST("/topics", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.ListTopics)

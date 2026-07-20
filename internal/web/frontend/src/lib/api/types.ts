@@ -1731,13 +1731,19 @@ export interface KafkaSecretRef {
 }
 
 export interface KafkaSASLConfig {
-  mechanism: 'PLAIN' | 'SCRAM-SHA-256' | 'SCRAM-SHA-512';
+  mechanism: 'PLAIN' | 'SCRAM-SHA-256' | 'SCRAM-SHA-512' | 'OAUTHBEARER';
   use_tls: boolean;
   skip_tls_verify: boolean;
-  // uma das duas fontes de credencial, mutuamente exclusivas
+  // uma das duas fontes de credencial, mutuamente exclusivas — só usadas quando mechanism !== 'OAUTHBEARER'
   username?: string;
   password?: string;
   secret_ref?: KafkaSecretRef;
+  // Campos usados só quando mechanism === 'OAUTHBEARER' (Azure AD / Event Hub via service
+  // principal). oauth_scope é opcional — nem todo tenant/provider exige.
+  oauth_client_id?: string;
+  oauth_client_secret?: string;
+  oauth_token_endpoint_url?: string;
+  oauth_scope?: string;
 }
 
 export interface RunKafkaTestRequest {
@@ -1752,6 +1758,11 @@ export interface RunKafkaTestRequest {
   // (NetworkPolicy/Istio avaliam por label/service account do pod, não por namespace inteiro).
   // Só usado/obrigatório quando execution_mode="pod".
   deployment: string;
+  // pod_name/container_name são opcionais — quando vazios, o backend usa o comportamento padrão
+  // (primeiro pod Running do deployment, primeiro container dele). Preenchidos quando o usuário
+  // escolhe explicitamente um pod/container específico (deployment com múltiplas réplicas).
+  pod_name?: string;
+  container_name?: string;
   broker: string; // "host:porta" — tipicamente um broker EXTERNO ao cluster (Kafka gerenciado, Event Hub, etc.)
   sasl?: KafkaSASLConfig; // omitido = sem autenticação (PLAINTEXT)
   produce_consume: boolean;
@@ -1869,9 +1880,24 @@ export interface ListKafkaTopicsRequest {
   cluster: string;
   namespace: string;
   deployment: string;
+  // pod_name/container_name — mesmo campo/semântica de RunKafkaTestRequest.
+  pod_name?: string;
+  container_name?: string;
   broker: string;
   sasl?: KafkaSASLConfig;
   timeout_ms?: number;
+}
+
+// ─── Seletor de pod/container (aba Teste Kafka) ────────────────────────────────
+
+export interface KafkaTestPodOption {
+  name: string;
+  containers: string[];
+}
+
+export interface KafkaTestPodsResponse {
+  success: boolean;
+  pods: KafkaTestPodOption[];
 }
 
 export interface ListKafkaTopicsResponse {

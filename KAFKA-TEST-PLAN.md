@@ -312,7 +312,8 @@ kubectl describe pod <target_pod> -n <namespace>   # mostra ele na lista de cont
 
 | Arquivo | O quê |
 |---|---|
-| `internal/web/handlers/kafka_test_tool.go` | Handler completo: `kafkaExecFunc` abstrai pod vs. local, resolução de pod/deployment, ephemeral container, os 3 estágios do teste principal (conectividade/produce-consume/view), `ListTopics` (busca), `TopicsOverview` (Partições + ~Mensagens), SSE, guardrails |
+| `internal/web/handlers/kafka_test_tool.go` | Handler completo: `kafkaExecFunc` abstrai pod vs. local, resolução de pod/deployment via `resolvePodForDeployment` (pod/container explícitos opcionais), ephemeral container, os 3 estágios do teste principal (conectividade/produce-consume/view), `ListTopics` (busca), `TopicsOverview` (Partições + ~Mensagens), mecanismo OAUTHBEARER (`buildKcatAuthFlags`), SSE, guardrails |
+| `internal/web/handlers/kafka_test_pods.go` | Endpoint `GET /kafka-test/pods` — lista pods Running de um Deployment (`listRunningPodsForDeployment`) pro seletor de pod/container do frontend |
 | `internal/web/handlers/kafka_test_docker.go` | Modo `local`: label `kafkaTestDockerLabel`, `DockerStatus` (reaproveita `checkDockerStatus`), `startKafkaTestContainerReaper` |
 | `internal/web/handlers/kafka_test_logdirs.go` | Tamanho em disco por tópico no modo `local`: `client.properties` (`buildKafkaClientPropertiesFile`), script `kafka-log-dirs` (`buildKafkaLogDirsScript`), parsing (`parseKafkaLogDirsOutput`) |
 | `internal/web/handlers/kafka_test_logdirs_test.go` | Testes unitários (escaping JAAS, client.properties por cenário de auth/TLS, extração/parsing do JSON do `kafka-log-dirs`) |
@@ -324,6 +325,28 @@ kubectl describe pod <target_pod> -n <namespace>   # mostra ele na lista de cont
 | `internal/web/frontend/src/lib/api/client.ts` | `runKafkaTest`/`getKafkaTestStreamURL`/`cancelKafkaTest`/`listKafkaTopics`/`kafkaTopicsOverview`/`getKafkaTestDockerStatus` |
 | `internal/web/server.go` | Registro das rotas `/api/v1/kafka-test/*` |
 
+## Seleção de pod/container e OAUTHBEARER (Azure AD)
+
+✅ implementados — os dois itens que estavam listados como "fora de escopo" abaixo:
+
+- **Seleção de pod/container**: `resolveRunningPodForDeployment` virou `resolvePodForDeployment`
+  (`kafka_test_tool.go`), aceitando `pod_name`/`container_name` opcionais em `RunKafkaTestRequest`/
+  `ListTopicsRequest` — vazio mantém o comportamento padrão de sempre (primeiro pod Running,
+  primeiro container). Novo endpoint `GET /api/v1/kafka-test/pods?cluster=&namespace=&deployment=`
+  (`kafka_test_pods.go`) lista os pods Running do Deployment pro seletor do frontend
+  (`KafkaTestTab.tsx`, dois `SearchableSelect` novos logo após o de Deployment — o de Container só
+  aparece se o pod tiver mais de 1 container).
+- **OAUTHBEARER (Azure AD / service principal)**: novo mecanismo SASL, além de PLAIN/SCRAM-*.
+  Cobre quem autentica Event Hub via Azure AD em vez de connection string (SAS, já coberto pelo
+  PLAIN com usuário `$ConnectionString`). Exigiu trocar a imagem `kafkaTestPodImage` de
+  `edenhill/kcat:1.7.1` (librdkafka 1.8.2, sem o método `sasl.oauthbearer.method=oidc`, testado
+  empiricamente) pra `ueisele/kcat:1.7.1-librdkafka2.1.1` (mesma versão do kcat, librdkafka 2.1.1,
+  testado e confirmado que aceita os flags de OIDC) — usada tanto no modo `pod` quanto `local`.
+  **Limitação conhecida**: `buildKafkaClientPropertiesFile` (`kafka_test_logdirs.go`, usado só pela
+  coluna de tamanho em disco do modo `local`) não suporta OAUTHBEARER — com esse mecanismo a coluna
+  de disco falha silenciosamente (sem afetar o resto do teste, que usa `buildKcatAuthFlags`); exigiria
+  o login module Java `OAuthBearerLoginModule` com sintaxe JAAS própria, não implementado.
+
 ## Fora de escopo (por enquanto)
 
 - Histórico persistente (SQLite) e visão agregada tipo "topologia" (o Latency Test tem, este não) —
@@ -331,7 +354,11 @@ kubectl describe pod <target_pod> -n <namespace>   # mostra ele na lista de cont
 - Coluna de tamanho em disco no modo `pod` — ✅ implementada no modo `local` (`kafka-log-dirs` via
   imagem completa do Kafka, ver seção acima); no `pod` continua fora de escopo porque puxaria essa
   imagem pro node do cluster a cada Ephemeral Container, inflando armazenamento compartilhado.
-- Deixar escolher qual pod (quando o Deployment tem várias réplicas) ou qual container (pods
-  multi-container) — hoje pega sempre o primeiro Running e o primeiro container.
 - Validação de certificado TLS customizado (`ssl.ca.location` apontando pra uma CA específica) — só
   o toggle simples "usar TLS" + "ignorar verificação".
+- OAUTHBEARER via Managed Identity (sem client secret, via IMDS) — só client credentials (client ID
+  + secret) por enquanto; o teste roda via Ephemeral Container ou Docker local, sem identidade
+  gerenciada do Azure disponível nesses contextos de qualquer forma.
+- Build de imagem própria (Dockerfile custom com kcat 1.7.1 + librdkafka mais nova) em vez do
+  rebuild de terceiro `ueisele/kcat` — decisão consciente por ora (mais rápido, já testado), ver
+  seção OAUTHBEARER acima.

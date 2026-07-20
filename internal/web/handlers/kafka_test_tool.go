@@ -30,11 +30,22 @@ const (
 	// kafkaTestPodImage: kcat (ex-kafkacat) cobre TCP+protocolo+SASL+produce/consume com um único
 	// binário leve. Tag FIXADA de propósito (nunca `latest`). É a imagem do EPHEMERAL CONTAINER
 	// anexado a um pod já rodando do Deployment alvo (não um pod novo) — ver
-	// resolveRunningPodForDeployment/getOrCreateKafkaEphemeralContainer: o teste precisa refletir
+	// resolvePodForDeployment/getOrCreateKafkaEphemeralContainer: o teste precisa refletir
 	// a identidade de rede real do Deployment (NetworkPolicy/Istio avaliam por label/service
 	// account do pod, não por namespace inteiro), então herdar o namespace de rede de um pod real
 	// é o que faz o resultado ser confiável.
-	kafkaTestPodImage = "edenhill/kcat:1.7.1"
+	//
+	// Usa o rebuild de terceiro `ueisele/kcat` (mesma versão 1.7.1 do kcat, mesma sintaxe de
+	// comando) em vez da imagem oficial `edenhill/kcat:1.7.1` porque esta última empacota
+	// librdkafka 1.8.2, que NÃO tem o método `sasl.oauthbearer.method=oidc` (só chegou no
+	// librdkafka ~1.9 via KIP-768) — confirmado empiricamente: `docker run --rm edenhill/kcat:1.7.1
+	// -X sasl.oauthbearer.method=oidc ...` retorna `No such configuration property`. Sem esse
+	// método, OAUTHBEARER exigiria um callback externo de renovação de token que o kcat (CLI, não
+	// biblioteca) nunca implementou (ver https://github.com/edenhill/kcat/issues/172, em aberto
+	// desde 2019). `ueisele/kcat:1.7.1-librdkafka2.1.1` foi testado e aceita os flags de OIDC sem
+	// erro de configuração — necessário pra suportar Azure Event Hub via Azure AD (ver
+	// buildKcatAuthFlags, branch OAUTHBEARER).
+	kafkaTestPodImage = "ueisele/kcat:1.7.1-librdkafka2.1.1"
 	// kafkaTestEphemeralReadyTimeout/PollInterval: mesmo padrão de waitForEphemeralContainer
 	// (podexec.go), usado pela Debug Container já existente no terminal de Pods.
 	kafkaTestEphemeralReadyTimeout = 30 * time.Second
@@ -65,12 +76,17 @@ const (
 	kafkaSASLMechanismPlain       = "PLAIN"
 	kafkaSASLMechanismScramSHA256 = "SCRAM-SHA-256"
 	kafkaSASLMechanismScramSHA512 = "SCRAM-SHA-512"
+	// kafkaSASLMechanismOAuthBearer — Azure AD (service principal) via OIDC client credentials.
+	// Usado principalmente pra Event Hub quando a política de segurança exige AAD em vez de SAS
+	// (connection string, já coberto pelo mecanismo PLAIN com usuário $ConnectionString).
+	kafkaSASLMechanismOAuthBearer = "OAUTHBEARER"
 )
 
 var kafkaValidSASLMechanisms = map[string]bool{
 	kafkaSASLMechanismPlain:       true,
 	kafkaSASLMechanismScramSHA256: true,
 	kafkaSASLMechanismScramSHA512: true,
+	kafkaSASLMechanismOAuthBearer: true,
 }
 
 // Classificação do estágio de conectividade — deriva de UM único `kcat -L` (ver runKafkaConnectivityStage).
@@ -121,13 +137,25 @@ var kafkaOffsetLineWithTopicRegex = regexp.MustCompile(`(\S+)\s+\[(\d+)\]\s+offs
 
 // KafkaSASLConfig descreve autenticação SASL opcional pro teste. Username/Password OU SecretRef
 // (mutuamente exclusivos — SecretRef tem prioridade se ambos vierem preenchidos por engano).
+// Os campos OAuth* só se aplicam quando Mechanism == OAUTHBEARER — nesse caso Username/Password/
+// SecretRef ficam vazios/ignorados (ver buildKcatAuthFlags).
 type KafkaSASLConfig struct {
-	Mechanism     string          `json:"mechanism"` // PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
+	Mechanism     string          `json:"mechanism"` // PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | OAUTHBEARER
 	UseTLS        bool            `json:"use_tls"`
 	SkipTLSVerify bool            `json:"skip_tls_verify"`
 	Username      string          `json:"username,omitempty"`
 	Password      string          `json:"password,omitempty"`
 	SecretRef     *KafkaSecretRef `json:"secret_ref,omitempty"`
+
+	// OAuthClientID/OAuthClientSecret: credenciais do App Registration (service principal) no
+	// Azure AD. OAuthTokenEndpointURL: endpoint de token do tenant, ex:
+	// https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token. OAuthScope: escopo do
+	// recurso, ex: https://<namespace>.servicebus.windows.net/.default (opcional — alguns
+	// tenants/providers não exigem).
+	OAuthClientID         string `json:"oauth_client_id,omitempty"`
+	OAuthClientSecret     string `json:"oauth_client_secret,omitempty"`
+	OAuthTokenEndpointURL string `json:"oauth_token_endpoint_url,omitempty"`
+	OAuthScope            string `json:"oauth_scope,omitempty"`
 }
 
 // KafkaSecretRef aponta pra um Secret K8s de onde ler username/password — nunca trafega de volta
@@ -159,7 +187,13 @@ type RunKafkaTestRequest struct {
 	// Running desse Deployment e anexa um ephemeral container nele, pra refletir a identidade de
 	// rede real (NetworkPolicy/Istio) daquele workload específico, não de um pod avulso genérico.
 	// Só usado/obrigatório quando ExecutionMode="pod".
-	Deployment     string           `json:"deployment"`
+	Deployment string `json:"deployment"`
+	// PodName/ContainerName são opcionais — quando vazios, comportamento padrão de sempre
+	// (primeiro pod Running do Deployment, primeiro container dele). Preenchidos quando o usuário
+	// escolhe explicitamente um pod/container específico (Deployment com múltiplas réplicas, ver
+	// resolvePodForDeployment).
+	PodName        string           `json:"pod_name,omitempty"`
+	ContainerName  string           `json:"container_name,omitempty"`
 	Broker         string           `json:"broker"` // "host:porta" — tipicamente um broker EXTERNO ao cluster
 	SASL           *KafkaSASLConfig `json:"sasl,omitempty"`
 	ProduceConsume bool             `json:"produce_consume"`
@@ -260,40 +294,74 @@ type KafkaTestResult struct {
 	OffsetCount        KafkaOffsetCountResult    `json:"offset_count"`
 }
 
-// resolveRunningPodForDeployment acha um pod Running que pertence ao Deployment informado, via o
-// próprio label selector do Deployment (não heurística de nome/label "app" — o mesmo tipo de
-// atalho frágil já usado no frontend pra outra finalidade, DeploymentsTab.tsx). Devolve também o
-// nome do primeiro container não-init do pod, usado como TargetContainerName do ephemeral
-// container (não afeta o namespace de rede — isso já é compartilhado automaticamente por
-// qualquer ephemeral container do pod — só mantém paridade com o padrão já exigido pela Debug
-// Container existente em podexec.go).
-func resolveRunningPodForDeployment(ctx context.Context, clientset kubernetes.Interface, namespace, deploymentName string) (podName, containerName string, err error) {
+// listRunningPodsForDeployment lista os pods em estado Running que pertencem ao Deployment
+// informado, via o próprio label selector do Deployment (não heurística de nome/label "app" — o
+// mesmo tipo de atalho frágil já usado no frontend pra outra finalidade, DeploymentsTab.tsx).
+// Compartilhada entre resolvePodForDeployment (escolhe um) e o endpoint de listagem pro seletor
+// de pod/container do frontend (mostra todos).
+func listRunningPodsForDeployment(ctx context.Context, clientset kubernetes.Interface, namespace, deploymentName string) ([]corev1.Pod, error) {
 	deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
 	if err != nil {
-		return "", "", fmt.Errorf("falha ao buscar deployment %s: %w", deploymentName, err)
+		return nil, fmt.Errorf("falha ao buscar deployment %s: %w", deploymentName, err)
 	}
 
 	sel, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
 	if err != nil {
-		return "", "", fmt.Errorf("selector inválido no deployment %s: %w", deploymentName, err)
+		return nil, fmt.Errorf("selector inválido no deployment %s: %w", deploymentName, err)
 	}
 
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: sel.String()})
 	if err != nil {
-		return "", "", fmt.Errorf("falha ao listar pods do deployment %s: %w", deploymentName, err)
+		return nil, fmt.Errorf("falha ao listar pods do deployment %s: %w", deploymentName, err)
 	}
 
+	running := make([]corev1.Pod, 0, len(pods.Items))
 	for _, pod := range pods.Items {
-		if pod.Status.Phase != corev1.PodRunning {
-			continue
+		if pod.Status.Phase == corev1.PodRunning && len(pod.Spec.Containers) > 0 {
+			running = append(running, pod)
 		}
-		if len(pod.Spec.Containers) == 0 {
-			continue
-		}
-		return pod.Name, pod.Spec.Containers[0].Name, nil
+	}
+	return running, nil
+}
+
+// resolvePodForDeployment escolhe o pod/container-alvo do teste. Com requestedPod vazio, mantém o
+// comportamento padrão de sempre (primeiro pod Running do Deployment, primeiro container dele —
+// retrocompatível com quem não usa o seletor de pod/container do frontend). Com requestedPod
+// preenchido, valida que aquele pod específico ainda existe, está Running e pertence ao
+// Deployment (via o mesmo label selector), e usa requestedContainer (ou o primeiro container do
+// pod, se vazio). O nome do container devolvido é usado como TargetContainerName do ephemeral
+// container — não afeta o namespace de rede (compartilhado automaticamente por qualquer ephemeral
+// container do pod) — só mantém paridade com o padrão já exigido pela Debug Container existente
+// em podexec.go.
+func resolvePodForDeployment(ctx context.Context, clientset kubernetes.Interface, namespace, deploymentName, requestedPod, requestedContainer string) (podName, containerName string, err error) {
+	running, err := listRunningPodsForDeployment(ctx, clientset, namespace, deploymentName)
+	if err != nil {
+		return "", "", err
 	}
 
-	return "", "", fmt.Errorf("nenhum pod Running encontrado pra o deployment %s/%s", namespace, deploymentName)
+	if requestedPod == "" {
+		if len(running) == 0 {
+			return "", "", fmt.Errorf("nenhum pod Running encontrado pra o deployment %s/%s", namespace, deploymentName)
+		}
+		return running[0].Name, running[0].Spec.Containers[0].Name, nil
+	}
+
+	for _, pod := range running {
+		if pod.Name != requestedPod {
+			continue
+		}
+		if requestedContainer == "" {
+			return pod.Name, pod.Spec.Containers[0].Name, nil
+		}
+		for _, ct := range pod.Spec.Containers {
+			if ct.Name == requestedContainer {
+				return pod.Name, ct.Name, nil
+			}
+		}
+		return "", "", fmt.Errorf("container %q não encontrado no pod %s", requestedContainer, requestedPod)
+	}
+
+	return "", "", fmt.Errorf("pod %q não encontrado, não está Running, ou não pertence mais ao deployment %s/%s — atualize a lista de pods e escolha outro", requestedPod, namespace, deploymentName)
 }
 
 // getOrCreateKafkaEphemeralContainer anexa um ephemeral container kcat no pod real informado —
@@ -440,14 +508,29 @@ func decodeSecretValueBase64(v string) (string, error) {
 	return string(decoded), nil
 }
 
+// kafkaValidateOAuthBearerFields confere os campos obrigatórios pra OAUTHBEARER (client
+// credentials OIDC) — client ID/secret e o endpoint de token do tenant Azure AD. Scope é
+// opcional (nem todo provider/tenant exige). Retorna "" se válido.
+func kafkaValidateOAuthBearerFields(sasl *KafkaSASLConfig) string {
+	if strings.TrimSpace(sasl.OAuthClientID) == "" ||
+		strings.TrimSpace(sasl.OAuthClientSecret) == "" ||
+		strings.TrimSpace(sasl.OAuthTokenEndpointURL) == "" {
+		return "oauth_client_id, oauth_client_secret e oauth_token_endpoint_url são obrigatórios quando mechanism é OAUTHBEARER"
+	}
+	return ""
+}
+
 // buildKcatAuthFlags monta os `-X key=value` do kcat a partir da config SASL/TLS resolvida.
-// Sem `sasl`, ainda cobre o caso "só TLS, sem autenticação" (security.protocol=SSL).
+// Sem `sasl`, ainda cobre o caso "só TLS, sem autenticação" (security.protocol=SSL). Pra
+// OAUTHBEARER, username/password são ignorados (autenticação via client credentials OIDC, ver
+// KafkaSASLConfig.OAuth*) — TLS é sempre exigido (Event Hub via Azure AD nunca aceita texto puro).
 func buildKcatAuthFlags(sasl *KafkaSASLConfig, username, password string) []string {
 	if sasl == nil {
 		return nil
 	}
+	isOAuthBearer := sasl.Mechanism == kafkaSASLMechanismOAuthBearer
 	var flags []string
-	hasCreds := username != "" || password != ""
+	hasCreds := username != "" || password != "" || isOAuthBearer
 	switch {
 	case hasCreds && sasl.UseTLS:
 		flags = append(flags, "-X", "security.protocol=SASL_SSL")
@@ -456,7 +539,17 @@ func buildKcatAuthFlags(sasl *KafkaSASLConfig, username, password string) []stri
 	case sasl.UseTLS:
 		flags = append(flags, "-X", "security.protocol=SSL")
 	}
-	if hasCreds {
+	switch {
+	case isOAuthBearer:
+		flags = append(flags, "-X", "sasl.mechanisms="+kafkaSASLMechanismOAuthBearer)
+		flags = append(flags, "-X", "sasl.oauthbearer.method=oidc")
+		flags = append(flags, "-X", "sasl.oauthbearer.client.id="+sasl.OAuthClientID)
+		flags = append(flags, "-X", "sasl.oauthbearer.client.secret="+sasl.OAuthClientSecret)
+		flags = append(flags, "-X", "sasl.oauthbearer.token.endpoint.url="+sasl.OAuthTokenEndpointURL)
+		if sasl.OAuthScope != "" {
+			flags = append(flags, "-X", "sasl.oauthbearer.scope="+sasl.OAuthScope)
+		}
+	case hasCreds:
 		mechanism := sasl.Mechanism
 		if mechanism == "" {
 			mechanism = kafkaSASLMechanismPlain
@@ -930,8 +1023,14 @@ func (h *KafkaTestHandler) Run(c *gin.Context) {
 	if req.SASL != nil {
 		req.SASL.Mechanism = strings.ToUpper(strings.TrimSpace(req.SASL.Mechanism))
 		if req.SASL.Mechanism != "" && !kafkaValidSASLMechanisms[req.SASL.Mechanism] {
-			c.JSON(http.StatusBadRequest, errorResponse("INVALID_MECHANISM", "mechanism deve ser PLAIN, SCRAM-SHA-256 ou SCRAM-SHA-512"))
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_MECHANISM", "mechanism deve ser PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 ou OAUTHBEARER"))
 			return
+		}
+		if req.SASL.Mechanism == kafkaSASLMechanismOAuthBearer {
+			if msg := kafkaValidateOAuthBearerFields(req.SASL); msg != "" {
+				c.JSON(http.StatusBadRequest, errorResponse("MISSING_OAUTH_FIELDS", msg))
+				return
+			}
 		}
 		if req.SASL.SecretRef != nil {
 			req.SASL.SecretRef.Namespace = strings.TrimSpace(req.SASL.SecretRef.Namespace)
@@ -1067,10 +1166,13 @@ func (h *KafkaTestHandler) Cancel(c *gin.Context) {
 // frontend, pra listar os tópicos existentes no broker sem precisar rodar o teste completo.
 type ListTopicsRequest struct {
 	// ExecutionMode — mesmo campo de RunKafkaTestRequest.ExecutionMode (pod|local, default pod).
-	ExecutionMode string           `json:"execution_mode"`
-	Cluster       string           `json:"cluster"`
-	Namespace     string           `json:"namespace"`
-	Deployment    string           `json:"deployment"`
+	ExecutionMode string `json:"execution_mode"`
+	Cluster       string `json:"cluster"`
+	Namespace     string `json:"namespace"`
+	Deployment    string `json:"deployment"`
+	// PodName/ContainerName — mesmo campo/semântica de RunKafkaTestRequest, ver comentário lá.
+	PodName       string           `json:"pod_name,omitempty"`
+	ContainerName string           `json:"container_name,omitempty"`
 	Broker        string           `json:"broker"`
 	SASL          *KafkaSASLConfig `json:"sasl,omitempty"`
 	TimeoutMs     int              `json:"timeout_ms"`
@@ -1120,8 +1222,14 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 	if req.SASL != nil {
 		req.SASL.Mechanism = strings.ToUpper(strings.TrimSpace(req.SASL.Mechanism))
 		if req.SASL.Mechanism != "" && !kafkaValidSASLMechanisms[req.SASL.Mechanism] {
-			c.JSON(http.StatusBadRequest, errorResponse("INVALID_MECHANISM", "mechanism deve ser PLAIN, SCRAM-SHA-256 ou SCRAM-SHA-512"))
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_MECHANISM", "mechanism deve ser PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 ou OAUTHBEARER"))
 			return
+		}
+		if req.SASL.Mechanism == kafkaSASLMechanismOAuthBearer {
+			if msg := kafkaValidateOAuthBearerFields(req.SASL); msg != "" {
+				c.JSON(http.StatusBadRequest, errorResponse("MISSING_OAUTH_FIELDS", msg))
+				return
+			}
 		}
 	}
 	if req.TimeoutMs <= 0 {
@@ -1168,7 +1276,7 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
 			return
 		}
-		podName, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+		podName, targetContainer, err := resolvePodForDeployment(ctx, clientset, req.Namespace, req.Deployment, req.PodName, req.ContainerName)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, errorResponse("POD_NOT_FOUND", err.Error()))
 			return
@@ -1283,8 +1391,14 @@ func (h *KafkaTestHandler) TopicsOverview(c *gin.Context) {
 	if req.SASL != nil {
 		req.SASL.Mechanism = strings.ToUpper(strings.TrimSpace(req.SASL.Mechanism))
 		if req.SASL.Mechanism != "" && !kafkaValidSASLMechanisms[req.SASL.Mechanism] {
-			c.JSON(http.StatusBadRequest, errorResponse("INVALID_MECHANISM", "mechanism deve ser PLAIN, SCRAM-SHA-256 ou SCRAM-SHA-512"))
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_MECHANISM", "mechanism deve ser PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 ou OAUTHBEARER"))
 			return
+		}
+		if req.SASL.Mechanism == kafkaSASLMechanismOAuthBearer {
+			if msg := kafkaValidateOAuthBearerFields(req.SASL); msg != "" {
+				c.JSON(http.StatusBadRequest, errorResponse("MISSING_OAUTH_FIELDS", msg))
+				return
+			}
 		}
 	}
 	if req.TimeoutMs <= 0 {
@@ -1334,7 +1448,7 @@ func (h *KafkaTestHandler) TopicsOverview(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, errorResponse("CLUSTER_ERROR", err.Error()))
 			return
 		}
-		podName, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+		podName, targetContainer, err := resolvePodForDeployment(ctx, clientset, req.Namespace, req.Deployment, req.PodName, req.ContainerName)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, errorResponse("POD_NOT_FOUND", err.Error()))
 			return
@@ -1531,7 +1645,7 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 		}
 
 		send("resolve_deployment", "in_progress", fmt.Sprintf("Localizando pod Running do deployment %q...", req.Deployment), 0.15)
-		resolvedPod, targetContainer, err := resolveRunningPodForDeployment(ctx, clientset, req.Namespace, req.Deployment)
+		resolvedPod, targetContainer, err := resolvePodForDeployment(ctx, clientset, req.Namespace, req.Deployment, req.PodName, req.ContainerName)
 		if err != nil {
 			fail("falha ao localizar pod do deployment", err)
 			return
