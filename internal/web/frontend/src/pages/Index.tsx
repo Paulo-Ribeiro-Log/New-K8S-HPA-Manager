@@ -23,6 +23,7 @@ import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
 import { SNATPortWidget } from "@/components/SNATPortWidget";
+import { ConntrackAlertWidget } from "@/components/ConntrackAlertWidget";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { IngressTab } from "@/components/IngressTab";
@@ -950,8 +951,9 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <div className="flex flex-col h-full">
             {selectedCluster && (
-              <div className="px-4 pt-3 pb-2 border-b border-border/50">
+              <div className="px-4 pt-3 pb-2 border-b border-border/50 space-y-2">
                 <SNATPortWidget cluster={selectedCluster} />
+                <ConntrackAlertWidget cluster={selectedCluster} nodepool={selectedNodePool?.name} />
               </div>
             )}
             <div className="flex-1 min-h-0">

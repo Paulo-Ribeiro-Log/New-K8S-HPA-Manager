@@ -147,7 +147,7 @@ func (c *MetricsCollector) collectK8sDeploymentInfo(ctx context.Context, req Pre
 
 	metrics.CreationTimestamp = creationTime
 	metrics.AgeInDays = ageInDays
-	metrics.IsNew = ageInDays < 7                 // < 7 dias = deployment novo
+	metrics.IsNew = ageInDays < 7                  // < 7 dias = deployment novo
 	metrics.HasSufficientHistory = ageInDays >= 14 // >= 14 dias = histórico confiável
 
 	// ✅ NOVO: Buscar predecessores (deployments similares que foram substituídos)
@@ -228,16 +228,16 @@ func (c *MetricsCollector) findPredecessorDeployments(ctx context.Context, clust
 func extractBaseName(name string) string {
 	// Padrões comuns de sufixo: -v1, -v2, -prod, -stg, -1.0, -2024
 	patterns := []string{
-		`-v\d+$`,        // -v1, -v2, etc
-		`-\d+\.\d+$`,    // -1.0, -2.3, etc
-		`-\d{4}$`,       // -2024, -2025, etc
-		`-prod$`,        // -prod
-		`-stg$`,         // -stg
-		`-staging$`,     // -staging
-		`-production$`,  // -production
-		`-canary$`,      // -canary
-		`-blue$`,        // -blue
-		`-green$`,       // -green
+		`-v\d+$`,       // -v1, -v2, etc
+		`-\d+\.\d+$`,   // -1.0, -2.3, etc
+		`-\d{4}$`,      // -2024, -2025, etc
+		`-prod$`,       // -prod
+		`-stg$`,        // -stg
+		`-staging$`,    // -staging
+		`-production$`, // -production
+		`-canary$`,     // -canary
+		`-blue$`,       // -blue
+		`-green$`,      // -green
 	}
 
 	baseName := name
@@ -1164,7 +1164,7 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 	threshold80 := hpaTargetCPU // Usar target do HPA como referência de 80%
 	threshold100 := 100.0       // 100% do request = saturação
 
-	daysUntil80 := 365  // Muito longe (tendência estável ou decrescente)
+	daysUntil80 := 365 // Muito longe (tendência estável ou decrescente)
 	daysUntil100 := 365
 
 	cpuGrowthPerDay := metrics.Trends.CPUChange7d / 7.0 // % mudança por dia
@@ -1379,9 +1379,14 @@ func (c *MetricsCollector) collectConntrackAnalysis(ctx context.Context, metrics
 	for _, s := range entriesVec {
 		instance := string(s.Metric["instance"])
 		current := int64(s.Value)
-		maxEntries := limitMap[instance]
-		if maxEntries == 0 {
-			maxEntries = 131072 // padrão Linux quando limite não disponível
+		maxEntries, hasLimit := limitMap[instance]
+		if !hasLimit || maxEntries == 0 {
+			// Sem node_nf_conntrack_entries_limit real para este instance — não fabricar
+			// percentual com um valor chutado (nf_conntrack_max real varia muito por node,
+			// comum ser 4x+ maior que qualquer chute fixo, o que gerava alertas de IA de
+			// "conntrack crítico" falsos). Pular o node em vez de reportar dado errado.
+			log.Warn().Str("instance", instance).Msg("conntrack: limite não encontrado para este node — ignorando (sem fabricar percentual)")
+			continue
 		}
 
 		usagePct := float64(current) / float64(maxEntries) * 100.0
@@ -2422,9 +2427,9 @@ func (c *MetricsCollector) getVMSpecsFromAzureCLI(ctx context.Context, cluster s
 	// 5. Parse do JSON retornado
 	// Azure CLI retorna array de objetos: [{"name": "...", "numberOfCores": X, "memoryInMB": Y, ...}]
 	var azureVMs []struct {
-		Name         string `json:"name"`
+		Name          string `json:"name"`
 		NumberOfCores int    `json:"numberOfCores"`
-		MemoryInMB   int    `json:"memoryInMB"`
+		MemoryInMB    int    `json:"memoryInMB"`
 	}
 
 	if err := json.Unmarshal(output, &azureVMs); err != nil {
@@ -2451,7 +2456,7 @@ func (c *MetricsCollector) getVMSpecsFromAzureCLI(ctx context.Context, cluster s
 		Size:      vm.Name,
 		VCPUs:     vm.NumberOfCores,
 		MemoryGiB: vm.MemoryInMB / 1024, // Converter MB para GB
-		Family:    "", // Azure CLI não retorna family, deixar vazio
+		Family:    "",                   // Azure CLI não retorna family, deixar vazio
 	}
 
 	log.Info().
