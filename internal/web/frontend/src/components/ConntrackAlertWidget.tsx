@@ -21,21 +21,21 @@ function widgetStatus(highestPct: number): "ok" | "warning" | "critical" {
 
 interface Props {
   cluster: string;
-  nodepool?: string | null;
 }
 
-export function ConntrackAlertWidget({ cluster, nodepool }: Props) {
+// Escaneia TODOS os nós do cluster selecionado (nodepool omitido no request) — não depende
+// de nenhum node pool estar selecionado na lista, pra que o alerta de conntrack fique visível
+// assim que o cluster é escolhido, igual ao SNATPortWidget.
+export function ConntrackAlertWidget({ cluster }: Props) {
   const [open, setOpen] = useState(false);
 
   const { data, isLoading, isFetching, error } = useQuery({
-    queryKey: ["conntrack-alert", cluster, nodepool],
-    queryFn: () => apiClient.getConntrackStats(cluster, nodepool as string),
-    enabled: !!cluster && !!nodepool,
-    staleTime: 60 * 1000,
+    queryKey: ["conntrack-alert-cluster", cluster],
+    queryFn: () => apiClient.getConntrackStats(cluster),
+    enabled: !!cluster,
+    staleTime: 2 * 60 * 1000,
     retry: 1,
   });
-
-  if (!nodepool) return null;
 
   const validNodes: ConntrackNodeStats[] = (data?.nodes ?? []).filter((n) => !n.error && n.max > 0);
   const highest = validNodes.reduce<ConntrackNodeStats | null>(
@@ -58,7 +58,7 @@ export function ConntrackAlertWidget({ cluster, nodepool }: Props) {
         onClick={() => setOpen(true)}
       >
         <Activity className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-        <span className="font-medium text-foreground">Conntrack — {nodepool}</span>
+        <span className="font-medium text-foreground">Conntrack — cluster</span>
 
         {isLoading || isFetching ? (
           <RefreshCw className="w-3 h-3 animate-spin text-muted-foreground ml-1" />
@@ -88,7 +88,7 @@ export function ConntrackAlertWidget({ cluster, nodepool }: Props) {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Conntrack — {nodepool}</DialogTitle>
+            <DialogTitle>Conntrack — todos os nós do cluster</DialogTitle>
           </DialogHeader>
           <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
             {validNodes.length === 0 && (

@@ -39,13 +39,16 @@ type ConntrackResponse struct {
 	FetchedAt time.Time            `json:"fetched_at"`
 }
 
-// GetConntrackStats retorna estatísticas de conntrack para todos os nós de um node pool.
-// GET /api/v1/nodepools/conntrack?cluster=X&nodepool=Y
+// GetConntrackStats retorna estatísticas de conntrack para os nós de um node pool
+// (parâmetro nodepool) ou, se nodepool for omitido, para TODOS os nós do cluster —
+// usado pelo ConntrackAlertWidget pra alertar sobre qualquer node saturado sem exigir
+// que um pool específico esteja selecionado.
+// GET /api/v1/nodepools/conntrack?cluster=X[&nodepool=Y]
 func (h *NodePoolHandler) GetConntrackStats(c *gin.Context) {
 	cluster := c.Query("cluster")
 	nodepool := c.Query("nodepool")
-	if cluster == "" || nodepool == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetros cluster e nodepool são obrigatórios"})
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro cluster é obrigatório"})
 		return
 	}
 
@@ -64,7 +67,12 @@ func (h *NodePoolHandler) GetConntrackStats(c *gin.Context) {
 		return
 	}
 
-	nodes, err := resolveNodePoolNodes(ctx, clientset, nodepool)
+	var nodes []string
+	if nodepool == "" {
+		nodes, err = resolveAllClusterNodes(ctx, clientset)
+	} else {
+		nodes, err = resolveNodePoolNodes(ctx, clientset, nodepool)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -124,6 +132,19 @@ func resolveNodePoolNodes(ctx context.Context, clientset kubernetes.Interface, n
 		if strings.Contains(strings.ToLower(n.Name), strings.ToLower(nodepool)) {
 			names = append(names, n.Name)
 		}
+	}
+	return names, nil
+}
+
+// resolveAllClusterNodes retorna os nomes de todos os nós do cluster, sem filtro de pool.
+func resolveAllClusterNodes(ctx context.Context, clientset kubernetes.Interface) ([]string, error) {
+	all, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("erro ao listar nós: %v", err)
+	}
+	names := make([]string, len(all.Items))
+	for i, n := range all.Items {
+		names[i] = n.Name
 	}
 	return names, nil
 }
