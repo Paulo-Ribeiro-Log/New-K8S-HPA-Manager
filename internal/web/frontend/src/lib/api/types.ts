@@ -422,6 +422,17 @@ export interface GatewayApplyResult {
   appliedAt?: string;
 }
 
+// ContainerLastState é a causa do reinício ANTERIOR deste mesmo Pod object (cs.LastTerminationState.Terminated).
+// Só existe enquanto o Pod não for deletado — não sobrevive a um rollout que substitui o Pod por um novo.
+export interface ContainerLastState {
+  exitCode: number;
+  signal?: number;
+  reason?: string;
+  message?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
 // Pod/Container Types
 export interface ContainerStatus {
   name: string;
@@ -436,6 +447,7 @@ export interface ContainerStatus {
   type: 'container' | 'init' | 'ephemeral';
   // target só vem preenchido pra type "ephemeral" — o container principal que ele está mirando.
   target?: string;
+  lastState?: ContainerLastState;
 }
 
 export interface PodSummary {
@@ -458,6 +470,9 @@ export interface PodSummary {
   resourceVersion?: string;
   createdAt: string;
   restarts: number;
+  // ownerWorkload é o workload dono resolvido via OwnerReferences (ex: "Deployment/checkout-api"),
+  // usado pra correlacionar com Events do workload mesmo depois que ESTE pod for substituído por um rollout.
+  ownerWorkload?: string;
 }
 
 export interface PodMetricsSingle {

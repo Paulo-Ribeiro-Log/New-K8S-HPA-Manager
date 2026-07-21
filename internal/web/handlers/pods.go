@@ -71,6 +71,22 @@ type ContainerStatus struct {
 	// está "mirando" (TargetContainerName), útil pra saber qual debug container pertence a qual
 	// sessão de teste/troubleshooting.
 	Target string `json:"target,omitempty"`
+	// LastState captura cs.LastTerminationState.Terminated — a causa do reinício ANTERIOR deste
+	// mesmo Pod object (Exit Code/Reason/Signal/quando). Só existe enquanto o Pod não for deletado
+	// (ex: sobrevive a um restart em CrashLoopBackOff, mas NÃO sobrevive a um rollout que substitui
+	// o Pod inteiro por um novo — nesse caso não há nada que a API do K8s consiga devolver).
+	LastState *ContainerLastState `json:"lastState,omitempty"`
+}
+
+// ContainerLastState é a versão serializável de corev1.ContainerStateTerminated — a causa do
+// reinício anterior de um container (kubectl describe pod chama isso de "Last State").
+type ContainerLastState struct {
+	ExitCode   int32  `json:"exitCode"`
+	Signal     int32  `json:"signal,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Message    string `json:"message,omitempty"`
+	StartedAt  string `json:"startedAt,omitempty"`
+	FinishedAt string `json:"finishedAt,omitempty"`
 }
 
 // buildContainerStatuses monta a lista COMPLETA de containers de um pod — cruza pod.Spec
@@ -117,6 +133,7 @@ func buildContainerStatuses(pod *corev1.Pod) []ContainerStatus {
 			StateReason:  stateReason,
 			Started:      status.Started,
 			Type:         typ,
+			LastState:    buildContainerLastState(status),
 		}
 	}
 
@@ -170,6 +187,11 @@ type PodSummary struct {
 	CreatedAt             string            `json:"createdAt"`
 	Restarts              int32             `json:"restarts"`
 	Terminating           bool              `json:"terminating"`
+	// OwnerWorkload é o workload dono resolvido via OwnerReferences (ex: "Deployment/checkout-api"),
+	// mesmo padrão de resolveOwnerDisplayName usado no badge de uso de ConfigMaps — permite
+	// correlacionar este pod com Events do workload mesmo depois que ESTE pod específico for
+	// substituído por um rollout (Events sobrevivem à deleção do Pod, diferente de logs/describe).
+	OwnerWorkload string `json:"ownerWorkload,omitempty"`
 }
 
 // PodManifest representa o manifest completo de um Pod
@@ -792,6 +814,7 @@ func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod, metric
 		CreatedAt:            pod.CreationTimestamp.Format(time.RFC3339),
 		Restarts:             totalRestarts,
 		Terminating:          isTerminating,
+		OwnerWorkload:        resolveOwnerDisplayName(pod),
 	}
 
 	if metrics != nil {
@@ -828,6 +851,29 @@ func getContainerState(cs corev1.ContainerStatus) (state, reason string) {
 		return "Terminated", cs.State.Terminated.Reason
 	}
 	return "Unknown", ""
+}
+
+// buildContainerLastState extrai cs.LastTerminationState.Terminated — a causa do reinício
+// anterior deste Pod object. Retorna nil quando o container nunca terminou antes (comportamento
+// normal na maioria dos pods saudáveis, e sempre o caso logo após um rollout criar um Pod novo).
+func buildContainerLastState(cs corev1.ContainerStatus) *ContainerLastState {
+	t := cs.LastTerminationState.Terminated
+	if t == nil {
+		return nil
+	}
+	ls := &ContainerLastState{
+		ExitCode: t.ExitCode,
+		Signal:   t.Signal,
+		Reason:   t.Reason,
+		Message:  t.Message,
+	}
+	if !t.StartedAt.IsZero() {
+		ls.StartedAt = t.StartedAt.Format(time.RFC3339)
+	}
+	if !t.FinishedAt.IsZero() {
+		ls.FinishedAt = t.FinishedAt.Format(time.RFC3339)
+	}
+	return ls
 }
 
 // getPodResourceTotals calculates the total resource requests and limits for a pod.
