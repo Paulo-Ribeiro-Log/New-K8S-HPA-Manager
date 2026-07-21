@@ -476,6 +476,7 @@ interface FileTreeNodeProps {
   onDirFocus?: (path: string) => void;
   onCreate?: (parentPath: string, mode: "file" | "dir") => void;
   onMove?: (from: string, toDir: string) => void;
+  onMoveMultiple?: (toDir: string) => void;
   onClipboardOp?: (path: string, op: "cut" | "copy") => void;
   onPaste?: (toDir: string) => void;
   cutPath?: string;
@@ -483,6 +484,7 @@ interface FileTreeNodeProps {
   revealPath?: string | null;
   selectedPaths?: Set<string>;
   onMultiToggle?: (path: string) => void;
+  onSingleSelect?: (path: string) => void;
 }
 
 function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void, onSpace?: () => void) {
@@ -505,7 +507,7 @@ function treeNavKeyDown(e: React.KeyboardEvent<HTMLElement>, onEnter: () => void
   }
 }
 
-function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStatus, modifiedDirs, errorFiles, errorDirs, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath, selectedPaths, onMultiToggle }: FileTreeNodeProps) {
+function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStatus, modifiedDirs, errorFiles, errorDirs, level, onDelete, onRename, onHistory, onUpload, onDirFocus, onCreate, onMove, onMoveMultiple, onClipboardOp, onPaste, cutPath, onContextMenu, revealPath, selectedPaths, onMultiToggle, onSingleSelect }: FileTreeNodeProps) {
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isSelected = selectedPath === node.path;
@@ -518,23 +520,38 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
         <div
           data-tree-item="true"
           tabIndex={0}
-          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-pointer transition-colors focus:outline-none focus:ring-1 focus:ring-primary/40 ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
+          draggable
+          onDragStart={e => {
+            if (isMultiSelected && (selectedPaths?.size ?? 0) > 1) {
+              e.dataTransfer.setData("application/x-tree-node", "__multi__");
+            } else {
+              e.dataTransfer.setData("application/x-tree-node", node.path);
+            }
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-grab active:cursor-grabbing transition-colors focus:outline-none focus:ring-1 focus:ring-primary/40 ${isMultiSelected ? "bg-primary/20 ring-1 ring-primary/50" : ""} ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
           style={{ paddingLeft: `${level * 12 + 4}px` }}
-          onClick={() => { setOpen(o => !o); onDirFocus?.(node.path); }}
+          onClick={e => {
+            if (e.ctrlKey || e.metaKey) { e.preventDefault(); onMultiToggle?.(node.path); }
+            else { setOpen(o => !o); onDirFocus?.(node.path); onSingleSelect?.(node.path); }
+          }}
           onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(e, node); }}
           onKeyDown={e => {
             if ((e.ctrlKey || e.metaKey) && e.key === "v") { e.preventDefault(); onPaste?.(node.path); }
             else if (e.key === "ArrowRight") { e.preventDefault(); if (!open) { setOpen(true); onDirFocus?.(node.path); } }
             else if (e.key === "ArrowLeft") { e.preventDefault(); if (open) setOpen(false); }
-            else treeNavKeyDown(e, () => { setOpen(o => !o); onDirFocus?.(node.path); });
+            else treeNavKeyDown(e, () => { setOpen(o => !o); onDirFocus?.(node.path); }, () => onMultiToggle?.(node.path));
           }}
-          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={e => {
             e.preventDefault();
+            e.stopPropagation();
             setDragOver(false);
             const moveFrom = e.dataTransfer.getData("application/x-tree-node");
-            if (moveFrom) {
+            if (moveFrom === "__multi__") {
+              onMoveMultiple?.(node.path);
+            } else if (moveFrom) {
               onMove?.(moveFrom, node.path);
             } else if (e.dataTransfer.files.length > 0 && onUpload) {
               onUpload(node.path, e.dataTransfer.files);
@@ -564,9 +581,9 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
             modifiedDirs={modifiedDirs} errorFiles={errorFiles} errorDirs={errorDirs}
             level={level + 1} onDelete={onDelete} onRename={onRename}
             onHistory={onHistory} onUpload={onUpload} onDirFocus={onDirFocus} onCreate={onCreate}
-            onMove={onMove} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath}
+            onMove={onMove} onMoveMultiple={onMoveMultiple} onClipboardOp={onClipboardOp} onPaste={onPaste} cutPath={cutPath}
             onContextMenu={onContextMenu} revealPath={revealPath}
-            selectedPaths={selectedPaths} onMultiToggle={onMultiToggle} />
+            selectedPaths={selectedPaths} onMultiToggle={onMultiToggle} onSingleSelect={onSingleSelect} />
         ))}
       </div>
     );
@@ -581,7 +598,11 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
       tabIndex={0}
       draggable
       onDragStart={e => {
-        e.dataTransfer.setData("application/x-tree-node", node.path);
+        if (isMultiSelected && (selectedPaths?.size ?? 0) > 1) {
+          e.dataTransfer.setData("application/x-tree-node", "__multi__");
+        } else {
+          e.dataTransfer.setData("application/x-tree-node", node.path);
+        }
         e.dataTransfer.effectAllowed = "move";
       }}
       className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isMultiSelected ? "bg-primary/20 ring-1 ring-primary/50" : isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""} ${isRevealed ? "ring-2 ring-yellow-400/70 bg-yellow-400/10" : ""}`}
@@ -595,7 +616,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
     >
       <button className="flex items-center gap-1 flex-1 min-w-0 text-left" onClick={e => {
         if (e.ctrlKey || e.metaKey) { e.preventDefault(); onMultiToggle?.(node.path); }
-        else { onSelect(node); }
+        else { onSelect(node); onSingleSelect?.(node.path); }
       }}>
         <span className="w-3 h-3 flex-shrink-0" />
         {(() => { const { Icon, color } = getFileIcon(node.name); return <Icon className={`w-3.5 h-3.5 flex-shrink-0 ${color}`} />; })()}
@@ -2652,11 +2673,42 @@ export function CodeEditorTab() {
     addToast("success", `Renomeado: ${to}`);
   }
 
+  function findDirNode(nodes: CodeEditorFileNode[], path: string): CodeEditorFileNode | null {
+    for (const n of nodes) {
+      if (n.type === "dir" && n.path === path) return n;
+      if (n.children) {
+        const found = findDirNode(n.children, path);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function uniqueCopyName(dirPath: string, filename: string): string {
+    const siblings = dirPath ? (findDirNode(tree, dirPath)?.children ?? []) : tree;
+    const names = new Set(siblings.map(n => n.name));
+    const dot = filename.lastIndexOf(".");
+    const isDot = dot <= 0; // sem extensão (ou dotfile tipo ".env")
+    const base = isDot ? filename : filename.slice(0, dot);
+    const ext = isDot ? "" : filename.slice(dot);
+    let candidate = `${base} copy${ext}`;
+    let n = 2;
+    while (names.has(candidate)) {
+      candidate = `${base} copy ${n}${ext}`;
+      n++;
+    }
+    return candidate;
+  }
+
   async function handleClipboardPaste(toDir: string) {
     if (!clipboard || !selectedRepo) return;
     const filename = clipboard.path.split("/").pop()!;
-    const to = toDir ? toDir + "/" + filename : filename;
-    if (clipboard.path === to) return;
+    let to = toDir ? toDir + "/" + filename : filename;
+    if (clipboard.path === to) {
+      if (clipboard.op === "cut") return; // mover para o próprio lugar não faz sentido
+      const uniqueName = uniqueCopyName(toDir, filename);
+      to = toDir ? `${toDir}/${uniqueName}` : uniqueName;
+    }
     const verb = clipboard.op === "cut" ? "Mover" : "Copiar";
     if (!await showConfirm(`${verb}\n"${clipboard.path}"\n→ "${to}"?`)) return;
     try {
@@ -2674,7 +2726,7 @@ export function CodeEditorTab() {
       }
       await loadTree(selectedRepo.id);
       await loadStatus(selectedRepo.id);
-      addToast("success", `${clipboard.op === "cut" ? "Movido" : "Copiado"}: ${filename}`);
+      addToast("success", `${clipboard.op === "cut" ? "Movido" : "Copiado"}: ${to.split("/").pop()}`);
     } catch (e: any) {
       addToast("error", e.message || `Erro ao ${clipboard.op === "cut" ? "mover" : "copiar"}`);
     }
@@ -2713,7 +2765,7 @@ export function CodeEditorTab() {
     if (!selectedRepo || selectedPaths.size === 0) return;
     const paths = [...selectedPaths];
     const preview = paths.slice(0, 5).join("\n") + (paths.length > 5 ? `\n...e mais ${paths.length - 5}` : "");
-    if (!await showConfirm(`Deletar ${paths.length} arquivo(s)?\n\n${preview}`)) return;
+    if (!await showConfirm(`Deletar ${paths.length} item(ns) selecionado(s) (pastas são removidas com todo o conteúdo)?\n\n${preview}`)) return;
     for (const p of paths) {
       try {
         await apiClient.codeEditorDeleteFile(selectedRepo.id, p);
@@ -2727,7 +2779,7 @@ export function CodeEditorTab() {
     setSelectedPaths(new Set());
     await loadTree(selectedRepo.id);
     await loadStatus(selectedRepo.id);
-    addToast("success", `${paths.length} arquivo(s) deletado(s)`);
+    addToast("success", `${paths.length} item(ns) deletado(s)`);
   }
 
   async function handleMoveSelected(toDir: string) {
@@ -2748,7 +2800,7 @@ export function CodeEditorTab() {
     setMoveSelectedDialog(false);
     await loadTree(selectedRepo.id);
     await loadStatus(selectedRepo.id);
-    addToast("success", `${paths.length} arquivo(s) movido(s) para ${toDir || "raiz"}`);
+    addToast("success", `${paths.length} item(ns) movido(s) para ${toDir || "raiz"}`);
   }
 
   function flattenDirs(nodes: CodeEditorFileNode[], result: string[] = []): string[] {
@@ -3779,7 +3831,9 @@ export function CodeEditorTab() {
                         onDrop={e => {
                           e.preventDefault();
                           const moveFrom = e.dataTransfer.getData("application/x-tree-node");
-                          if (moveFrom) {
+                          if (moveFrom === "__multi__") {
+                            handleMoveSelected("");
+                          } else if (moveFrom) {
                             handleMoveFile(moveFrom, "");
                           } else if (e.dataTransfer.files.length > 0) {
                             handleUpload("", e.dataTransfer.files);
@@ -3822,13 +3876,15 @@ export function CodeEditorTab() {
                             onDirFocus={setFocusedDirPath}
                             onCreate={(parentPath, mode) => setCreateDialog({ mode, basePath: parentPath })}
                             onMove={handleMoveFile}
+                            onMoveMultiple={handleMoveSelected}
                             onClipboardOp={(path, op) => setClipboard({ path, op })}
                             onPaste={handleClipboardPaste}
                             cutPath={clipboard?.op === "cut" ? clipboard.path : undefined}
                             onContextMenu={(e, n) => setContextMenu({ x: e.clientX, y: e.clientY, node: n })}
                             revealPath={revealPath}
                             selectedPaths={selectedPaths}
-                            onMultiToggle={handleMultiToggle} />
+                            onMultiToggle={handleMultiToggle}
+                            onSingleSelect={path => setSelectedPaths(new Set([path]))} />
                         ))}
                       </div>
                     </div>
@@ -4672,6 +4728,19 @@ export function CodeEditorTab() {
               style={{ top: contextMenu.y, left: contextMenu.x }}
               onMouseDown={e => e.stopPropagation()}
             >
+              {selectedPaths.size > 1 && selectedPaths.has(contextMenu.node.path) && (
+                <>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2 text-red-400"
+                    onClick={() => { handleDeleteSelected(); setContextMenu(null); }}>
+                    <Trash2 className="w-3 h-3" />Deletar {selectedPaths.size} selecionados
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
+                    onClick={() => { setMoveSelectedDialog(true); setContextMenu(null); }}>
+                    <ArrowRightLeft className="w-3 h-3" />Mover {selectedPaths.size} selecionados para...
+                  </button>
+                  <div className="border-t border-border/40 my-1" />
+                </>
+              )}
               {contextMenu.node.type === "file" ? (
                 <>
                   <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
