@@ -1248,7 +1248,17 @@ func (h *CodeEditorHandler) DeleteFile(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "caminho inválido"})
 		return
 	}
-	if err := os.Remove(fullPath); err != nil {
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if info.IsDir() {
+		err = os.RemoveAll(fullPath)
+	} else {
+		err = os.Remove(fullPath)
+	}
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
