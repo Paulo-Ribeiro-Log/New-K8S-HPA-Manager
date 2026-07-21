@@ -70,6 +70,7 @@ go test -v ./internal/healthcheck/... -race  # Pacote específico
 go test -run TestGetClient ./internal/...    # Função específica em todos os pacotes
 ./testes/test-rbac.sh                        # Suite completa RBAC (40+ cenários)
 SKIP_AZURE_TESTS=1 go test ./...             # Pula testes de Azure AD (usado no CI, útil sem az CLI autenticado)
+make test                                    # go test -v ./... sem race/filtro (usado pela CI, ver .github/workflows/ci.yml)
 
 # Debug
 tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor
@@ -77,6 +78,7 @@ tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor
 # Release
 make release                  # Build multi-plataforma → build/release/ (linux, darwin Intel, darwin ARM64)
 make build-all                # Build multi-plataforma → build/ (sem subpasta release)
+make version                  # Mostra versão detectada via git describe + commit atual (smoke-test usado pela CI)
 # Publicar release no GitHub (ver seção Release no Fluxo de Desenvolvimento)
 
 # Outros
