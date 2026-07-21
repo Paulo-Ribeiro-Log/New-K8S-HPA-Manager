@@ -151,6 +151,7 @@ func (h *AccessCheckHandler) ScanFleet(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"email":                 email,
 		"matchedGroups":         matched,
+		"allGroups":             allGroupDTOs,
 		"groupsResolutionError": groupsErrStr,
 		"results":               results,
 	})

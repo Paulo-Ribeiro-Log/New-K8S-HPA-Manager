@@ -89,6 +89,7 @@ import type {
   ServiceNowImportResponse,
   ServiceNowParseResponse,
   ServiceNowPlaywrightResponse,
+  ServiceNowUserByEmailResult,
   PlaywrightStatusResponse,
   ServiceNowBrowserConfig,
   ServiceNowBatchItem,
@@ -3193,6 +3194,16 @@ class APIClient {
   async extractServiceNowSysID(url: string): Promise<{ success: boolean; sys_id?: string; error?: string }> {
     const params = new URLSearchParams({ url });
     return this.request(`/servicenow/extract-sysid?${params}`);
+  }
+
+  /**
+   * Busca a matrícula de um usuário no ServiceNow (tabela sys_user) pelo e-mail —
+   * reaproveita a sessão de cookies do Chrome (CDP), sem abrir browser.
+   * GET /api/v1/servicenow/user-by-email
+   */
+  async getServiceNowUserByEmail(email: string): Promise<ServiceNowUserByEmailResult> {
+    const params = new URLSearchParams({ email });
+    return this.request(`/servicenow/user-by-email?${params.toString()}`);
   }
 
   /**

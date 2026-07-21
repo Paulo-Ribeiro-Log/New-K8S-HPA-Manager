@@ -1185,6 +1185,7 @@ func (s *Server) setupRoutes() {
 		servicenow.POST("/import", serviceNowHandler.ImportFromURL)
 		servicenow.POST("/parse", serviceNowHandler.ImportFromDescription)
 		servicenow.GET("/extract-sysid", serviceNowHandler.ExtractSysID)
+		servicenow.GET("/user-by-email", serviceNowHandler.GetUserByEmail)
 		// Playwright (browser automation com Azure AD SSO)
 		servicenow.POST("/extract-playwright", serviceNowHandler.ExtractWithPlaywright)
 		servicenow.POST("/parse-batch", serviceNowHandler.ParseBatch)
