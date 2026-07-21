@@ -2213,6 +2213,7 @@ export interface AccessCheckFleetClusterResult {
 export interface AccessCheckFleetScanResult {
   email: string;
   matchedGroups: AccessCheckMatchedGroup[];
+  allGroups: AccessCheckMatchedGroup[];
   groupsResolutionError?: string;
   results: AccessCheckFleetClusterResult[];
 }

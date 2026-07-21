@@ -211,6 +211,7 @@ export default function AccessCheckTab() {
     try {
       const result = await apiClient.getAccessCheckFleetScan(email.trim(), namespace || undefined);
       setFleetResult(result);
+      setPointCheckEmail(email.trim());
     } catch (err) {
       setFleetError(err instanceof Error ? err.message : "Falha ao varrer os clusters");
     } finally {
@@ -230,8 +231,8 @@ export default function AccessCheckTab() {
   // que está no campo agora — evita mostrar dado de um analista antigo rotulado com o e-mail novo
   // se o usuário trocar o e-mail no input sem clicar em "Verificar" de novo (ver Revisão 7).
   const pointCheckEmailStale = pointCheckEmail !== null && pointCheckEmail !== email.trim();
-  const matchedGroups = pointCheckEmailStale ? undefined : (rulesResult?.matchedGroups ?? canIResult?.matchedGroups);
-  const allGroups = pointCheckEmailStale ? undefined : (rulesResult?.allGroups ?? canIResult?.allGroups);
+  const matchedGroups = pointCheckEmailStale ? undefined : (rulesResult?.matchedGroups ?? canIResult?.matchedGroups ?? fleetResult?.matchedGroups);
+  const allGroups = pointCheckEmailStale ? undefined : (rulesResult?.allGroups ?? canIResult?.allGroups ?? fleetResult?.allGroups);
   const iamAdminAccess = pointCheckEmailStale ? undefined : (rulesResult?.iamAdminAccess ?? canIResult?.iamAdminAccess);
   const groupsResolutionError = pointCheckEmailStale ? undefined : (rulesResult?.groupsResolutionError || canIResult?.groupsResolutionError);
   const matchedGroupIds = new Set((matchedGroups ?? []).map((g) => g.id));
@@ -563,7 +564,7 @@ export default function AccessCheckTab() {
             {!allGroups && (
               <div className="text-sm text-muted-foreground flex items-center gap-2">
                 <ShieldQuestion className="w-4 h-4" />
-                Selecione cluster, namespace e e-mail, depois clique em "Verificar".
+                Informe o e-mail e clique em "Verificar" (com cluster/namespace) ou em "Verificar em todos os clusters".
               </div>
             )}
             {allGroups && (() => {
