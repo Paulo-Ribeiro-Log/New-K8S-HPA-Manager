@@ -5,8 +5,9 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon, Braces, AlertTriangle, Bell } from "lucide-react";
-import type { PodSummary, PodMetricsSingle } from "@/lib/api/types";
+import type { PodSummary, PodMetricsSingle, EventSummary } from "@/lib/api/types";
 import { formatAge, formatMillicores, formatBytes, formatPercent } from "@/lib/monitorUtils";
+import { describeExitCode } from "@/lib/exitCodes";
 import { apiClient } from "@/lib/api/client";
 import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
@@ -149,6 +150,79 @@ function filterLogLines(rawLogs: string, levelFilter: Set<LogLevel>, search: str
     result = result.filter(line => line.toLowerCase().includes(q));
   }
   return result;
+}
+
+// Mostra a causa do reinício ANTERIOR do container selecionado (Exit Code/Reason/Signal/quando),
+// sourced de cs.LastTerminationState — só existe enquanto o Pod object atual não tiver sido
+// deletado (ex: sobrevive a restarts em CrashLoopBackOff, mas não a um rollout que troca o Pod).
+function LastStateBanner({ lastState }: { lastState?: import("@/lib/api/types").ContainerLastState }) {
+  if (!lastState) return null;
+  const { label, severity } = describeExitCode(lastState.exitCode);
+  const colorClass =
+    severity === "critical" ? "border-red-500/30 bg-red-500/10 text-red-300"
+    : severity === "warning" ? "border-orange-500/30 bg-orange-500/10 text-orange-300"
+    : "border-border bg-muted/30 text-muted-foreground";
+  return (
+    <div className={`mx-4 mt-3 px-3 py-2 rounded border text-xs flex items-start gap-2 flex-shrink-0 ${colorClass}`}>
+      <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+      <div>
+        <div className="font-medium">
+          Última finalização — Exit Code {lastState.exitCode} ({label})
+        </div>
+        <div className="text-[11px] opacity-80 mt-0.5 flex flex-wrap gap-x-3">
+          {lastState.reason && <span>Reason: {lastState.reason}</span>}
+          {!!lastState.signal && <span>Signal: {lastState.signal}</span>}
+          {lastState.finishedAt && <span>Em: {formatAge(lastState.finishedAt)} atrás</span>}
+        </div>
+        {lastState.message && (
+          <div className="text-[11px] opacity-70 mt-0.5 break-words">{lastState.message}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Lista compacta de eventos de Warning do workload dono — Events sobrevivem à deleção do Pod
+// (até expirarem pelo TTL do cluster), diferente de logs/describe que só existem enquanto o
+// Pod object atual não for substituído (ex: por um rollout).
+function WorkloadEventsList({ events, loading, workloadLabel }: {
+  events: EventSummary[];
+  loading: boolean;
+  workloadLabel: string;
+}) {
+  return (
+    <div className="mx-4 mt-3 flex-shrink-0">
+      <div className="text-[10px] font-medium text-muted-foreground uppercase mb-1.5 flex items-center gap-1">
+        <Bell className="w-3 h-3" />
+        Eventos de aviso do workload{workloadLabel ? ` (${workloadLabel})` : ""}
+      </div>
+      <div className="text-[10px] text-muted-foreground mb-2">
+        Pode incluir pods anteriores a este (Events sobrevivem à deleção do Pod), sujeito ao TTL de eventos do cluster.
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+          <Loader2 className="w-3 h-3 animate-spin" /> Buscando eventos...
+        </div>
+      ) : events.length === 0 ? (
+        <div className="text-xs text-muted-foreground py-1">Nenhum evento de aviso recente encontrado.</div>
+      ) : (
+        <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+          {events.map((ev, i) => (
+            <div key={`${ev.name}-${i}`} className="bg-muted/20 rounded px-2 py-1.5 text-[11px]">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-[9px] h-4 px-1 text-orange-400 border-orange-400/40">
+                  {ev.reason}
+                </Badge>
+                <span className="text-muted-foreground">{ev.age} atrás</span>
+                {ev.count > 1 && <span className="text-muted-foreground">×{ev.count}</span>}
+              </div>
+              <div className="mt-0.5 break-words">{ev.message}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface LogsViewerProps {
@@ -354,6 +428,10 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const [previousLogsError, setPreviousLogsError] = useState<string | null>(null);
   const [previousCopied, setPreviousCopied] = useState(false);
 
+  // Eventos de Warning do workload dono (sobrevivem à deleção do Pod, ex: antes de um rollout)
+  const [workloadEvents, setWorkloadEvents] = useState<EventSummary[]>([]);
+  const [workloadEventsLoading, setWorkloadEventsLoading] = useState(false);
+
   // Busca de outras aplicações no cluster que usam a mesma imagem do container selecionado
   const [sameImagePods, setSameImagePods] = useState<PodSummary[]>([]);
   const [sameImageLoading, setSameImageLoading] = useState(false);
@@ -412,6 +490,8 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const containerNames = pod?.containers?.map(c => c.name) ?? [];
   const selectedContainerRestartCount =
     pod?.containers?.find(c => c.name === selectedContainer)?.restartCount ?? 0;
+  const selectedContainerLastState =
+    pod?.containers?.find(c => c.name === selectedContainer)?.lastState;
 
   useEffect(() => {
     if (!pod) return;
@@ -426,6 +506,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     setLogSearch("");
     setPreviousLogs("");
     setPreviousLogsError(null);
+    setWorkloadEvents([]);
     setSameImagePods([]);
     setSameImageSearched(false);
   }, [pod?.namespace, pod?.name]);
@@ -552,12 +633,29 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   useEffect(() => {
     if (activeTab !== "previous-logs") return;
     if (selectedContainerRestartCount === 0) {
+      // Este Pod object específico nunca reiniciou — não há log bruto de "--previous" pra buscar
+      // (isso é o comportamento normal logo após um rollout criar um Pod novo). O banner de Last
+      // State e a lista de eventos do workload abaixo continuam tentando mostrar algo útil.
       setPreviousLogs("");
-      setPreviousLogsError("Este container ainda não reiniciou — não há logs de uma execução anterior.");
+      setPreviousLogsError("Este container ainda não reiniciou neste Pod — não há log bruto de uma execução anterior. Veja o resumo e os eventos abaixo.");
       return;
     }
     fetchPreviousLogs();
   }, [activeTab, selectedContainer, tailLines, selectedContainerRestartCount, fetchPreviousLogs]);
+
+  // Eventos de Warning do workload dono — sobrevivem à deleção do Pod (até expirarem pelo TTL do
+  // cluster), então cobrem também pods de ANTES de um rollout que este Pod object não alcança.
+  const workloadSearchTerm = (pod?.ownerWorkload?.split("/")[1] || pod?.name || "").trim();
+  useEffect(() => {
+    if (activeTab !== "previous-logs" || !cluster || !pod || !workloadSearchTerm) return;
+    let cancelled = false;
+    setWorkloadEventsLoading(true);
+    apiClient.getEvents(cluster, [pod.namespace], workloadSearchTerm, "Warning", true)
+      .then(events => { if (!cancelled) setWorkloadEvents(events); })
+      .catch(() => { if (!cancelled) setWorkloadEvents([]); })
+      .finally(() => { if (!cancelled) setWorkloadEventsLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeTab, cluster, pod?.namespace, workloadSearchTerm]);
 
   const filteredPreviousLines = useMemo(
     () => filterLogLines(previousLogs, logLevelFilter, logSearch),
@@ -686,9 +784,16 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
             <span className="text-foreground">{pod.name}</span>
           </DialogTitle>
           <div className="flex items-center justify-between mt-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge variant={statusVariant} className="text-[10px] h-4 px-1.5">
-                {pod.statusReason || pod.phase}
+            <div className="flex items-center gap-2 flex-wrap min-w-0">
+              {/* pod.status é sempre curto (reason/phase, ex: "CrashLoopBackOff") — pod.statusReason
+                  pode ser uma mensagem longa de evento (ex: "back-off 5m0s restarting failed
+                  container=..."), por isso vai só no title/tooltip, nunca dentro do badge. */}
+              <Badge
+                variant={statusVariant}
+                className="text-[10px] h-4 px-1.5 max-w-[320px] truncate"
+                title={pod.statusReason || undefined}
+              >
+                {pod.status || pod.phase}
               </Badge>
             </div>
             <Button
@@ -897,6 +1002,13 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                             <span className="text-orange-400">{c.restartCount} restarts</span>
                           )}
                         </div>
+                        {c.lastState && (
+                          <div className="text-[10px] mt-0.5 text-amber-400/90">
+                            Última finalização: Exit {c.lastState.exitCode} ({describeExitCode(c.lastState.exitCode).label})
+                            {c.lastState.reason ? ` • ${c.lastState.reason}` : ""}
+                            {c.lastState.finishedAt ? ` • ${formatAge(c.lastState.finishedAt)} atrás` : ""}
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -952,29 +1064,39 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
           {/* ── LOGS ANTERIORES (--previous) ── */}
           {activeTab === "previous-logs" && (
-            <LogsViewer
-              loading={previousLogsLoading}
-              logs={previousLogs}
-              errorMessage={previousLogsError}
-              emptyMessage="Nenhum log anterior disponível."
-              filteredLines={filteredPreviousLines}
-              containerNames={containerNames}
-              selectedContainer={selectedContainer}
-              onContainerChange={setSelectedContainer}
-              tailLines={tailLines}
-              onTailLinesChange={setTailLines}
-              onManualRefresh={fetchPreviousLogs}
-              logLevelFilter={logLevelFilter}
-              onToggleLevelFilter={toggleLevelFilter}
-              logSearch={logSearch}
-              onLogSearchChange={setLogSearch}
-              onCopy={copyPreviousLogs}
-              copied={previousCopied}
-              onOpenJsonInspector={() => jsonInspector.setOpen(true)}
-              onJsonMouseUp={jsonInspector.handleMouseUp}
-              logsEndRef={previousLogsEndRef}
-              onClearFilters={clearLogFilters}
-            />
+            <div className="flex-1 flex flex-col min-h-0">
+              <LastStateBanner lastState={selectedContainerLastState} />
+              {selectedContainerRestartCount === 0 && (
+                <WorkloadEventsList
+                  events={workloadEvents}
+                  loading={workloadEventsLoading}
+                  workloadLabel={pod.ownerWorkload ?? ""}
+                />
+              )}
+              <LogsViewer
+                loading={previousLogsLoading}
+                logs={previousLogs}
+                errorMessage={previousLogsError}
+                emptyMessage="Nenhum log anterior disponível."
+                filteredLines={filteredPreviousLines}
+                containerNames={containerNames}
+                selectedContainer={selectedContainer}
+                onContainerChange={setSelectedContainer}
+                tailLines={tailLines}
+                onTailLinesChange={setTailLines}
+                onManualRefresh={fetchPreviousLogs}
+                logLevelFilter={logLevelFilter}
+                onToggleLevelFilter={toggleLevelFilter}
+                logSearch={logSearch}
+                onLogSearchChange={setLogSearch}
+                onCopy={copyPreviousLogs}
+                copied={previousCopied}
+                onOpenJsonInspector={() => jsonInspector.setOpen(true)}
+                onJsonMouseUp={jsonInspector.handleMouseUp}
+                logsEndRef={previousLogsEndRef}
+                onClearFilters={clearLogFilters}
+              />
+            </div>
           )}
 
           {/* ── MESMA IMAGEM (outras aplicações do cluster usando o mesmo container) ── */}
@@ -1086,8 +1208,8 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
       {/* Modal Describe */}
       <Dialog open={showDescribe} onOpenChange={setShowDescribe}>
-        <DialogContent className="max-w-4xl w-[90vw] max-h-[80vh]">
-          <DialogHeader>
+        <DialogContent className="max-w-4xl w-[90vw] h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle className="flex items-center gap-2 text-sm">
               <FileText className="w-4 h-4" />
               kubectl describe pod {pod.name}
@@ -1097,7 +1219,46 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
             </DialogTitle>
           </DialogHeader>
 
-          <ScrollArea className="h-[60vh] w-full border rounded">
+          {pod.containers.some(c => c.lastState) && (
+            <div className="border rounded overflow-hidden flex-shrink-0 max-h-[180px] overflow-y-auto">
+              <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase bg-muted/40 border-b border-border sticky top-0">
+                Códigos de saída encontrados
+              </div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-[10px] text-muted-foreground text-left">
+                    <th className="px-3 py-1.5 font-medium">Container</th>
+                    <th className="px-3 py-1.5 font-medium">Exit Code</th>
+                    <th className="px-3 py-1.5 font-medium">Significado</th>
+                    <th className="px-3 py-1.5 font-medium">Reason</th>
+                    <th className="px-3 py-1.5 font-medium">Quando</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pod.containers.filter(c => c.lastState).map(c => {
+                    const info = describeExitCode(c.lastState!.exitCode);
+                    const colorClass =
+                      info.severity === "critical" ? "text-red-400"
+                      : info.severity === "warning" ? "text-orange-400"
+                      : "text-muted-foreground";
+                    return (
+                      <tr key={c.name} className="border-t border-border/50">
+                        <td className="px-3 py-1.5 font-mono">{c.name}</td>
+                        <td className={`px-3 py-1.5 font-mono font-medium ${colorClass}`}>{c.lastState!.exitCode}</td>
+                        <td className="px-3 py-1.5">{info.label}</td>
+                        <td className="px-3 py-1.5 font-mono">{c.lastState!.reason || "-"}</td>
+                        <td className="px-3 py-1.5 text-muted-foreground">
+                          {c.lastState!.finishedAt ? `${formatAge(c.lastState!.finishedAt)} atrás` : "-"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <ScrollArea className="flex-1 min-h-0 w-full border rounded">
             <div className="p-4">
               {describeLoading ? (
                 <div className="flex items-center justify-center py-8">
@@ -1134,7 +1295,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
             </div>
           </ScrollArea>
 
-          <div className="flex justify-between items-center pt-2">
+          <div className="flex justify-between items-center pt-2 flex-shrink-0">
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
