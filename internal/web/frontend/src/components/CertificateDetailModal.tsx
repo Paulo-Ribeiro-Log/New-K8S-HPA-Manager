@@ -67,7 +67,7 @@ function TimelineBar({ cert }: { cert: CertificateInfo }) {
   );
 }
 
-function getStatusBadge(status: string) {
+export function getStatusBadge(status: string) {
   switch (status) {
     case "valid":
       return <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Valido</Badge>;
