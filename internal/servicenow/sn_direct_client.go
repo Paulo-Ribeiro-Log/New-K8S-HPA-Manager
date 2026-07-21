@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -218,103 +217,6 @@ func snHasTemplate(s string) bool {
 		strings.Contains(s, "* Aplicação") ||
 		strings.Contains(s, "* Versão:") ||
 		strings.Contains(s, "* Repositório:")
-}
-
-// SNUserResult é o retorno de FetchUserByEmail — busca na tabela sys_user (usuário/matrícula),
-// não confundir com PlaywrightResult (CHGs em change_request).
-type SNUserResult struct {
-	Success   bool   `json:"success"`
-	Email     string `json:"email"`
-	Matricula string `json:"matricula"`
-	Name      string `json:"name"`
-	UserName  string `json:"userName"`
-	Error     string `json:"error,omitempty"`
-}
-
-// FetchUserByEmail busca um usuário na tabela sys_user pelo e-mail via REST API do ServiceNow.
-// O nome do campo de matrícula varia por instância — tenta employee_number (nome padrão do
-// ServiceNow) e cai para u_matricula (convenção de campo customizado PT-BR já vista em
-// u_motivo_mudanca/change_request nesta mesma instância) se o primeiro vier vazio.
-func (c *SNDirectClient) FetchUserByEmail(email string) (*SNUserResult, error) {
-	fields := "email,employee_number,u_matricula,name,user_name"
-	apiURL := fmt.Sprintf("%s/api/now/table/sys_user?sysparm_query=email=%s&sysparm_fields=%s&sysparm_display_value=true&sysparm_limit=1",
-		snBaseURL, url.QueryEscape(email), fields)
-
-	body, status, err := c.get(apiURL)
-	if err != nil {
-		return nil, err
-	}
-
-	if status == 401 || status == 403 {
-		return &SNUserResult{
-			Success: false,
-			Error:   "Sessão ServiceNow expirada. Atualize a sessão no menu de perfil.",
-		}, nil
-	}
-	if status != 200 {
-		return nil, fmt.Errorf("ServiceNow API retornou HTTP %d", status)
-	}
-
-	var envelope struct {
-		Result []json.RawMessage `json:"result"`
-		Error  struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("resposta inválida: %v", err)
-	}
-	if envelope.Error.Message != "" {
-		return &SNUserResult{Success: false, Error: envelope.Error.Message}, nil
-	}
-	if len(envelope.Result) == 0 {
-		return &SNUserResult{Success: false, Error: fmt.Sprintf("nenhum usuário encontrado no ServiceNow para %s", email)}, nil
-	}
-
-	var fields2 map[string]interface{}
-	if err := json.Unmarshal(envelope.Result[0], &fields2); err != nil {
-		return nil, fmt.Errorf("erro ao parsear usuário: %v", err)
-	}
-	str := func(key string) string {
-		v, ok := fields2[key]
-		if !ok {
-			return ""
-		}
-		switch val := v.(type) {
-		case string:
-			return val
-		case map[string]interface{}:
-			if dv, ok := val["display_value"].(string); ok {
-				return dv
-			}
-		}
-		return ""
-	}
-
-	matricula := str("employee_number")
-	if matricula == "" {
-		matricula = str("u_matricula")
-	}
-
-	return &SNUserResult{
-		Success:   true,
-		Email:     str("email"),
-		Matricula: matricula,
-		Name:      str("name"),
-		UserName:  str("user_name"),
-	}, nil
-}
-
-// FetchUserByEmailViaCDP resolve os cookies de sessão do Chrome via CDP (mesmo "caminho rápido"
-// usado por RodExtractor.Extract para CHGs) e busca a matrícula do usuário pelo e-mail — sem
-// abrir browser nem PowerShell.
-func FetchUserByEmailViaCDP(email string) (*SNUserResult, error) {
-	cookies, err := ExtractCookiesViaCDP(WindowsCDPPort, snCookieDomain)
-	if err != nil {
-		return nil, fmt.Errorf("não foi possível obter cookies de sessão do ServiceNow via CDP: %w", err)
-	}
-	client := NewSNDirectClient(cookies)
-	return client.FetchUserByEmail(email)
 }
 
 // FetchFromURL extrai sys_id ou número da URL e busca via API.

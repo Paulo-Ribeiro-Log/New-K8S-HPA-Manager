@@ -1419,15 +1419,6 @@ export interface ServiceNowPlaywrightResponse {
   error?: string;
 }
 
-export interface ServiceNowUserByEmailResult {
-  success: boolean;
-  email?: string;
-  matricula?: string;
-  name?: string;
-  userName?: string;
-  error?: string;
-}
-
 export interface PlaywrightStatusResponse {
   playwright_configured: boolean;
   frontend_dir: string;

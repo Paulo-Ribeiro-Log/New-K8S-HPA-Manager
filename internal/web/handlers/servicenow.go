@@ -112,32 +112,6 @@ func (h *ServiceNowHandler) ExtractSysID(c *gin.Context) {
 	})
 }
 
-// GetUserByEmail busca a matrícula (tabela sys_user) de um usuário do ServiceNow pelo e-mail —
-// mesmo "caminho rápido" via cookies CDP usado na importação de CHGs (sem abrir browser).
-// GET /api/v1/servicenow/user-by-email?email=...
-func (h *ServiceNowHandler) GetUserByEmail(c *gin.Context) {
-	email := c.Query("email")
-	if email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Parâmetro 'email' é obrigatório",
-		})
-		return
-	}
-
-	result, err := servicenow.FetchUserByEmailViaCDP(email)
-	if err != nil {
-		h.logger.Warn().Err(err).Str("email", email).Msg("[ServiceNow] Falha ao buscar usuário por e-mail")
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"error":   "Sessão ServiceNow indisponível (Chrome/CDP não acessível). Verifique a sessão no menu de perfil.",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, result)
-}
-
 // ExtractWithPlaywright extrai dados de uma CHG usando Playwright (browser automation)
 // Útil quando Azure AD SSO é necessário - abre browser real para o usuário fazer login
 // POST /api/v1/servicenow/extract-playwright
