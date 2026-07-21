@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, AlertTriangle, Copy } from "lucide-react";
+import { Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, AlertTriangle, Copy, IdCard } from "lucide-react";
 import { useClusters } from "@/hooks/useAPI";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
@@ -20,6 +20,7 @@ import type {
   AccessCheckCanIResult,
   AccessCheckResourceRule,
   AccessCheckFleetScanResult,
+  ServiceNowUserByEmailResult,
 } from "@/lib/api/types";
 
 // Entrada de histórico relevante para "access_check" — só os campos usados aqui
@@ -153,6 +154,22 @@ export default function AccessCheckTab() {
   // desse cuidado extra de correspondência de e-mail.
   const [pointCheckEmail, setPointCheckEmail] = useState<string | null>(null);
 
+  // Matrícula do ServiceNow (tabela sys_user) — busca em paralelo com qualquer uma das 3
+  // verificações abaixo, reaproveitando a sessão de cookies do Chrome (CDP), sem bloquear o
+  // resultado principal de RBAC/IAM caso o ServiceNow esteja indisponível.
+  const [matriculaResult, setMatriculaResult] = useState<ServiceNowUserByEmailResult | null>(null);
+  const [matriculaLoading, setMatriculaLoading] = useState(false);
+
+  const fetchMatricula = (targetEmail: string) => {
+    setMatriculaLoading(true);
+    setMatriculaResult(null);
+    apiClient
+      .getServiceNowUserByEmail(targetEmail)
+      .then(setMatriculaResult)
+      .catch(() => setMatriculaResult({ success: false, error: "Falha ao consultar ServiceNow" }))
+      .finally(() => setMatriculaLoading(false));
+  };
+
   const { data: namespaces = [] } = useQuery({
     queryKey: ["namespaces-access-check", cluster],
     queryFn: () => apiClient.getNamespaces(cluster),
@@ -165,6 +182,7 @@ export default function AccessCheckTab() {
     setRulesLoading(true);
     setRulesError(null);
     setRulesResult(null);
+    fetchMatricula(email.trim());
     try {
       const result = await apiClient.getAccessCheckRules(cluster, namespace, email.trim());
       setRulesResult(result);
@@ -180,6 +198,7 @@ export default function AccessCheckTab() {
     setCanILoading(true);
     setCanIError(null);
     setCanIResult(null);
+    fetchMatricula(email.trim());
     try {
       const result = await apiClient.getAccessCheckCanI({
         cluster,
@@ -208,6 +227,7 @@ export default function AccessCheckTab() {
     setFleetError(null);
     setFleetResult(null);
     setSection("fleet");
+    fetchMatricula(email.trim());
     try {
       const result = await apiClient.getAccessCheckFleetScan(email.trim(), namespace || undefined);
       setFleetResult(result);
@@ -334,6 +354,28 @@ export default function AccessCheckTab() {
           )}
         </div>
       )}
+
+      {(section === "overview" || section === "pointcheck" || section === "allgroups" || section === "fleet") &&
+        (matriculaLoading || matriculaResult) && (
+          <div className="px-6 py-2 border-b border-border flex items-center gap-2 text-sm">
+            <IdCard className="w-4 h-4 text-muted-foreground shrink-0" />
+            {matriculaLoading ? (
+              <span className="text-muted-foreground flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Buscando matrícula no ServiceNow…
+              </span>
+            ) : matriculaResult?.success ? (
+              <span>
+                Matrícula: <span className="font-mono font-medium text-foreground">{matriculaResult.matricula || "não informada"}</span>
+                {matriculaResult.name && <span className="text-muted-foreground"> — {matriculaResult.name}</span>}
+              </span>
+            ) : (
+              <span className="text-amber-500 flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                {matriculaResult?.error || "Falha ao consultar matrícula no ServiceNow"}
+              </span>
+            )}
+          </div>
+        )}
 
       <div className="flex border-b border-border px-6 pt-2 gap-1 flex-shrink-0">
         {([
