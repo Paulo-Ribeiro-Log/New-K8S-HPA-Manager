@@ -1303,7 +1303,7 @@ func (h *PodHandler) GetMetrics(c *gin.Context) {
 			"success": true,
 			"data": gin.H{
 				"available": false,
-				"message":   "Metrics not available",
+				"message":   err.Error(),
 			},
 		})
 		return

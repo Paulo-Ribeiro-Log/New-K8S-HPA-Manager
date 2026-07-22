@@ -613,12 +613,18 @@ export const PodMonitorTable = ({
           <SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(6, d)} />
         </span>
-        <span className="relative overflow-hidden pr-4">
+        <span className="relative overflow-hidden pr-4 flex items-center gap-1">
           <SortBtn label="CPU" colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          {metrics && !metrics.available && (
+            <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
+          )}
           <ResizeHandle onResize={(d) => resize(7, d)} />
         </span>
-        <span className="relative overflow-hidden pr-4">
+        <span className="relative overflow-hidden pr-4 flex items-center gap-1">
           <SortBtn label="MEM" colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          {metrics && !metrics.available && (
+            <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
+          )}
           <ResizeHandle onResize={(d) => resize(8, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center">

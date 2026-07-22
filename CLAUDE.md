@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**New K8s HPA Manager** é uma ferramenta de gerenciamento de recursos Kubernetes/Azure AKS (com suporte também a EKS/GKE) em larga escala, com duas interfaces: **TUI** (Bubble Tea) e **Web** (Go/Gin API + React/TypeScript SPA). Cobre desde edição de HPAs/Node Pools em lote até Health Check com IA, FinOps, Access Checker, Code Editor com integração Git/LSP, e integrações com Dynatrace/ServiceNow/Teams.
+
 **IMPORTANTE**: Responda sempre em português brasileiro (pt-br).
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.

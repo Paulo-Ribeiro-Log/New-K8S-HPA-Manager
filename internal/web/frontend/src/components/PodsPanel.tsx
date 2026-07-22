@@ -138,6 +138,7 @@ export const PodsPanel = ({
     available: boolean;
     cpu?: { current: number; percent: number; limit: number; request: number };
     memory?: { current: number; percent: number; limit: number; request: number };
+    message?: string;
   } | null>(null);
 
   // Controle de undo/redo
@@ -483,10 +484,10 @@ export const PodsPanel = ({
           memory: response.data.memory,
         });
       } else {
-        setMetrics({ available: false });
+        setMetrics({ available: false, message: response.data?.message });
       }
     } catch (error) {
-      setMetrics({ available: false });
+      setMetrics({ available: false, message: "Metrics not available" });
     }
   };
 
@@ -1344,6 +1345,14 @@ export const PodsPanel = ({
                 unit="Mi"
                 formatValue={(v) => v.toFixed(0)}
               />
+            </div>
+          )}
+          {metrics && !metrics.available && (
+            <div
+              className="absolute top-2 right-4 text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 cursor-help max-w-[180px] text-right"
+              title={metrics.message || "Métricas indisponíveis"}
+            >
+              ⚠ Métricas indisponíveis
             </div>
           )}
 
