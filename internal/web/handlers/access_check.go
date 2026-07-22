@@ -148,7 +148,7 @@ func (h *AccessCheckHandler) GetRules(c *gin.Context) {
 
 	// Best-effort: acesso admin via IAM do Azure (bypassa o RBAC do K8s, invisível ao
 	// SelfSubjectRulesReview acima) — falha aqui não deve derrubar a resposta principal.
-	iamMatches, _ := findIAMAdminBypass(ctx, cluster, groups.all)
+	iamMatches, _ := findIAMAdminBypass(ctx, h.kubeManager, cluster, groups.all)
 
 	c.JSON(200, gin.H{
 		"resourceRules":         result.Status.ResourceRules,
@@ -211,7 +211,7 @@ func (h *AccessCheckHandler) CanI(c *gin.Context) {
 		return
 	}
 
-	iamMatches, _ := findIAMAdminBypass(ctx, cluster, groups.all)
+	iamMatches, _ := findIAMAdminBypass(ctx, h.kubeManager, cluster, groups.all)
 
 	c.JSON(200, gin.H{
 		"allowed":               result.Status.Allowed,

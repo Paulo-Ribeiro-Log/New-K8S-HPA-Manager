@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"k8s-hpa-manager/internal/config"
 )
 
 // iamAdminRoles são as roles nativas do Azure que concedem `listClusterAdminCredential` —
@@ -43,8 +45,8 @@ const iamCacheTTL = 45 * time.Minute
 // escopo diferente do RBAC do Kubernetes (RoleBinding/ClusterRoleBinding). Só se aplica a
 // clusters AKS; para GKE/EKS retorna nil sem erro (não há equivalente implementado ainda).
 // Resultado cacheado por cluster (não depende do e-mail consultado).
-func getAKSResourceRoleAssignments(ctx context.Context, clusterCtx string) ([]azRoleAssignment, error) {
-	if detectSNATProvider(clusterCtx) != "aks" {
+func getAKSResourceRoleAssignments(ctx context.Context, kubeManager *config.KubeConfigManager, clusterCtx string) ([]azRoleAssignment, error) {
+	if detectSNATProvider(kubeManager.GetServerURL(clusterCtx), clusterCtx) != "aks" {
 		return nil, nil
 	}
 
@@ -107,13 +109,13 @@ type iamAdminMatchDTO struct {
 
 // findIAMAdminBypass cruza os grupos do analista com os Role Assignments do recurso AKS,
 // retornando os que concedem acesso admin via IAM (fora do alcance do impersonation/RBAC).
-func findIAMAdminBypass(ctx context.Context, clusterCtx string, groups []matchedGroupDTO) ([]iamAdminMatchDTO, error) {
+func findIAMAdminBypass(ctx context.Context, kubeManager *config.KubeConfigManager, clusterCtx string, groups []matchedGroupDTO) ([]iamAdminMatchDTO, error) {
 	// Nunca retornar nil aqui — um slice nil vira `null` no JSON, e um `null` engana checks
 	// como `campo && campo.length` no frontend (null é falsy, mas `!== undefined` não pega
 	// null — já causou crash real quando esse campo vinha vazio).
 	matches := []iamAdminMatchDTO{}
 
-	assignments, err := getAKSResourceRoleAssignments(ctx, clusterCtx)
+	assignments, err := getAKSResourceRoleAssignments(ctx, kubeManager, clusterCtx)
 	if err != nil || len(assignments) == 0 {
 		return matches, err
 	}

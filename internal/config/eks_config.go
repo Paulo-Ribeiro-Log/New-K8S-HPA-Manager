@@ -43,6 +43,15 @@ func (k *KubeConfigManager) loadEKSClustersFromConfig() []EKSClusterConfig {
 // de retrocompatibilidade no clusters-config.json legado (campos awsRegion/awsProfile).
 func (k *KubeConfigManager) GetEKSClusterConfig(clusterName string) *EKSClusterConfig {
 	normalized := strings.TrimSuffix(clusterName, "-admin")
+	// clusterName costuma chegar como ARN completo (arn:aws:eks:REGION:ACCOUNT:cluster/NAME —
+	// é o formato usado como context/cluster query param para EKS, ver detectSNATProvider),
+	// mas Name no eks-clusters-config.json é sempre o nome curto (populado a partir de
+	// `aws eks list-clusters` em eks_discovery.go). Sem extrair a parte após o último "/",
+	// essa comparação nunca bate e a config é sempre reportada como "não encontrada" mesmo
+	// existindo — mesmo padrão de extração já usado em resolveAWSProfile (kubeconfig.go).
+	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
+		normalized = normalized[idx+1:]
+	}
 
 	// 1. Fonte primária: eks-clusters-config.json
 	for _, c := range k.loadEKSClustersFromConfig() {

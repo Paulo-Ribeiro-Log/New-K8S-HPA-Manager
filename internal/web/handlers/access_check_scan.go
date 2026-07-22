@@ -167,7 +167,7 @@ func (h *AccessCheckHandler) scanOneFleetCluster(ctx context.Context, clusterNam
 	result := fleetClusterResult{Cluster: clusterName, IAMAdminAccess: []iamAdminMatchDTO{}}
 
 	// IAM: chamada ao Azure Resource Manager, independe de conectividade com o kube-apiserver.
-	if iamMatches, err := findIAMAdminBypass(ctx, clusterName, allGroups); err == nil {
+	if iamMatches, err := findIAMAdminBypass(ctx, h.kubeManager, clusterName, allGroups); err == nil {
 		result.IAMAdminAccess = iamMatches
 	}
 
