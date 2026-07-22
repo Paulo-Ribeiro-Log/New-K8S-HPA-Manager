@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,11 +17,14 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/singleflight"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/kubernetes"
+	clientauthenticationv1beta1 "k8s.io/client-go/pkg/apis/clientauthentication/v1beta1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
@@ -57,6 +61,21 @@ const reachabilityCacheTTL = 15 * time.Second
 // reachabilityProbeTimeout é o timeout do dial TCP usado para o probe de conectividade.
 // Bem menor que restConfig.Timeout (30s) para que a falha apareça rápido ao usuário.
 const reachabilityProbeTimeout = 3 * time.Second
+
+// eksTokenTimeout limita a execução do subprocesso `aws eks get-token`. O exec credential
+// plugin nativo do client-go (vendor/k8s.io/client-go/plugin/pkg/client/auth/exec/exec.go)
+// roda exec.Command SEM nenhum timeout — se a sessão AWS SSO do perfil estiver expirada,
+// o processo pode travar indefinidamente. Gerar o token nós mesmos com um timeout curto
+// evita esse travamento e permite cair no fallback (ExecProvider nativo) rapidamente.
+const eksTokenTimeout = 10 * time.Second
+
+// eksTokenSafetyBuffer é subtraído da expiração real do token STS ao definir o TTL do
+// cache em memória — evita usar um token perto de expirar numa requisição em andamento.
+const eksTokenSafetyBuffer = 1 * time.Minute
+
+// eksTokenFallbackTTL é usado quando a resposta de `aws eks get-token` não traz
+// ExpirationTimestamp (não deveria acontecer, mas evita cachear indefinidamente).
+const eksTokenFallbackTTL = 10 * time.Minute
 
 type restConfigEntry struct {
 	config *rest.Config
@@ -678,10 +697,27 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 		if restConfig.ExecProvider != nil {
 			// Kubeconfig já tem exec provider configurado (ex: `aws eks update-kubeconfig --profile X`).
 			// Respeitar como está — mesmo comportamento do K9s/kubectl.
-		} else {
-			// Sem exec provider: token estático expira em 15min ou kubeconfig sem auth.
-			// Injetar nosso exec provider com perfil inferido para renovação automática.
-			if exec := k.buildEKSExecProvider(resolved, serverURL, clusterName); exec != nil {
+		} else if exec := k.buildEKSExecProvider(resolved, serverURL, clusterName); exec != nil {
+			// Preferir gerar e cachear o token nós mesmos (com timeout curto) em vez de
+			// deixar por conta do ExecProvider nativo do client-go, que roda `aws eks get-token`
+			// sem nenhum timeout e sem cache de app — uma sessão AWS SSO expirada travaria a
+			// troca de cluster indefinidamente. Ver getFreshEKSToken.
+			if token, ok := getFreshEKSToken(exec.Args); ok {
+				restConfig.ExecProvider = nil
+				restConfig.BearerToken = token // usado por KubectlAuthArgs (kubeconfig temporário de vida curta)
+				// O client Go do clientset fica cacheado até clientTTL (30min) de IDLE — pode
+				// viver bem mais que a validade real do token STS (~15min) se usado continuamente.
+				// WrapTransport reescreve o header Authorization a cada requisição com o token
+				// mais recente do cache (renovando sozinho quando expira), em vez de depender do
+				// BearerToken estático travado no valor de quando o client foi criado.
+				execArgs := exec.Args
+				restConfig.WrapTransport = func(rt http.RoundTripper) http.RoundTripper {
+					return &eksTokenRoundTripper{args: execArgs, base: rt}
+				}
+			} else {
+				// Fallback: comportamento anterior (ExecProvider nativo, sem cache/timeout
+				// próprios) — preserva a UX existente (incl. EnrichEKSError) se nossa
+				// geração direta falhar por qualquer motivo.
 				restConfig.ExecProvider = exec
 				restConfig.BearerToken = "" // Limpar token estático expirado
 			}
@@ -787,6 +823,107 @@ func (k *KubeConfigManager) KubectlAuthArgs(cluster string) (args []string, clea
 
 	return []string{"--kubeconfig", tmpPath}, func() { os.Remove(tmpPath) }, nil
 }
+
+// eksTokenCacheEntry armazena um bearer token EKS já obtido via `aws eks get-token`.
+type eksTokenCacheEntry struct {
+	token string
+	exp   time.Time
+}
+
+// Cache de token EKS por conjunto de args (cluster+region+profile) — evita spawnar o
+// subprocesso `aws eks get-token` a cada expiração do cache de rest.Config/clientset (30min)
+// e, com o singleflight, evita N subprocessos concorrentes quando várias requisições chegam
+// juntas logo após a troca de cluster no frontend (mesmo padrão de GetFreshGKEToken).
+var (
+	eksTokenCache   = make(map[string]*eksTokenCacheEntry)
+	eksTokenCacheMu sync.Mutex
+	eksTokenSF      singleflight.Group
+)
+
+// getFreshEKSToken executa (ou reaproveita do cache) `aws eks get-token` com os args
+// fornecidos — os mesmos que seriam passados ao ExecProvider — decodificando a resposta
+// ExecCredential (mesmo formato que o client-go usa nativamente).
+//
+// Diferente do exec credential plugin nativo do client-go (sem timeout, sem cache
+// próprio de app — só o cache interno por instância de transporte), esta função:
+//  1. Cacheia o token em memória com TTL derivado da expiração real do token STS.
+//  2. Limita a execução do subprocesso a eksTokenTimeout — uma sessão AWS SSO expirada
+//     não trava a troca de cluster indefinidamente.
+//
+// Retorna (token, true) em sucesso. Em qualquer falha (aws ausente, timeout, sessão SSO
+// expirada, resposta inválida), retorna (_, false) e o chamador deve cair no ExecProvider
+// nativo — preserva o comportamento anterior (e a mensagem de erro via EnrichEKSError).
+func getFreshEKSToken(args []string) (string, bool) {
+	key := strings.Join(args, "|")
+
+	eksTokenCacheMu.Lock()
+	if entry, ok := eksTokenCache[key]; ok && time.Now().Before(entry.exp) {
+		token := entry.token
+		eksTokenCacheMu.Unlock()
+		return token, true
+	}
+	eksTokenCacheMu.Unlock()
+
+	v, _, _ := eksTokenSF.Do(key, func() (interface{}, error) {
+		eksTokenCacheMu.Lock()
+		if entry, ok := eksTokenCache[key]; ok && time.Now().Before(entry.exp) {
+			token := entry.token
+			eksTokenCacheMu.Unlock()
+			return token, nil
+		}
+		eksTokenCacheMu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), eksTokenTimeout)
+		defer cancel()
+
+		out, err := exec.CommandContext(ctx, "aws", args...).Output()
+		if err != nil {
+			log.Warn().Err(err).Strs("args", args).Msg("[getFreshEKSToken] falha ao executar aws eks get-token — caindo no ExecProvider nativo")
+			return "", nil
+		}
+
+		var cred clientauthenticationv1beta1.ExecCredential
+		if err := json.Unmarshal(out, &cred); err != nil || cred.Status == nil || cred.Status.Token == "" {
+			log.Warn().Err(err).Msg("[getFreshEKSToken] resposta de aws eks get-token inválida — caindo no ExecProvider nativo")
+			return "", nil
+		}
+
+		exp := time.Now().Add(eksTokenFallbackTTL)
+		if cred.Status.ExpirationTimestamp != nil {
+			exp = cred.Status.ExpirationTimestamp.Time.Add(-eksTokenSafetyBuffer)
+		}
+
+		eksTokenCacheMu.Lock()
+		eksTokenCache[key] = &eksTokenCacheEntry{token: cred.Status.Token, exp: exp}
+		eksTokenCacheMu.Unlock()
+
+		return cred.Status.Token, nil
+	})
+
+	token, _ := v.(string)
+	return token, token != ""
+}
+
+// eksTokenRoundTripper reescreve o header Authorization em cada requisição com o token EKS
+// mais recente disponível em cache (via getFreshEKSToken), garantindo renovação automática
+// para clients de longa duração — o clientset K8s fica cacheado até clientTTL (30min) de
+// idle, período que pode facilmente ultrapassar a validade real de um token STS (~15min).
+// Isso substitui a dependência de um restConfig.BearerToken estático, que ficaria travado
+// no valor obtido no momento da criação do client.
+type eksTokenRoundTripper struct {
+	args []string
+	base http.RoundTripper
+}
+
+func (rt *eksTokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if token, ok := getFreshEKSToken(rt.args); ok {
+		req = utilnet.CloneRequest(req)
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return rt.base.RoundTrip(req)
+}
+
+func (rt *eksTokenRoundTripper) WrappedRoundTripper() http.RoundTripper { return rt.base }
 
 // buildEKSExecProvider constrói um ExecConfig para `aws eks get-token` a partir
 // das informações disponíveis no kubeconfig (contexto resolvido, URL do servidor).
