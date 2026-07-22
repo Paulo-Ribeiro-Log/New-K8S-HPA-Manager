@@ -529,7 +529,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
             }
             e.dataTransfer.effectAllowed = "move";
           }}
-          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-grab active:cursor-grabbing transition-colors focus:outline-none focus:ring-1 focus:ring-primary/40 ${isMultiSelected ? "bg-primary/20 ring-1 ring-primary/50" : ""} ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
+          className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded hover:bg-muted/50 text-left group cursor-default active:cursor-grabbing transition-colors focus:outline-none focus:ring-1 focus:ring-primary/40 ${isMultiSelected ? "bg-primary/20 ring-1 ring-primary/50" : ""} ${dragOver ? "ring-2 ring-primary bg-primary/10" : ""}`}
           style={{ paddingLeft: `${level * 12 + 4}px` }}
           onClick={e => {
             if (e.ctrlKey || e.metaKey) { e.preventDefault(); onMultiToggle?.(node.path); }
@@ -605,7 +605,7 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
         }
         e.dataTransfer.effectAllowed = "move";
       }}
-      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-grab active:cursor-grabbing ${isMultiSelected ? "bg-primary/20 ring-1 ring-primary/50" : isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""} ${isRevealed ? "ring-2 ring-yellow-400/70 bg-yellow-400/10" : ""}`}
+      className={`w-full flex items-center gap-1 px-1 py-0.5 text-xs rounded text-left hover:bg-muted/50 group focus:outline-none focus:ring-1 focus:ring-primary/40 cursor-default active:cursor-grabbing ${isMultiSelected ? "bg-primary/20 ring-1 ring-primary/50" : isSelected ? "bg-accent text-accent-foreground" : ""} ${isCut ? "opacity-40" : ""} ${isRevealed ? "ring-2 ring-yellow-400/70 bg-yellow-400/10" : ""}`}
       style={{ paddingLeft: `${level * 12 + 4}px` }}
       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(e, node); }}
       onKeyDown={e => {
