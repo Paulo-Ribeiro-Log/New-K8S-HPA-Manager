@@ -206,10 +206,15 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 // findHostNetworkPod localiza um pod com hostNetwork:true no nó alvo.
 // Prioriza kube-proxy; fallback para qualquer pod hostNetwork em kube-system.
 func findHostNetworkPod(ctx context.Context, clientset kubernetes.Interface, nodeName string) (podName, containerName string, err error) {
-	// Candidatos ordenados por preferência
+	// Candidatos ordenados por preferência. kube-proxy é o mais comum a todos os providers;
+	// os demais cobrem CNIs que também rodam hostNetwork:true (azure-npm no AKS, aws-node —
+	// o daemonset do VPC CNI da AWS — no EKS). Sem aws-node, clusters EKS onde kube-proxy foi
+	// substituído (ex: kube-proxy-replacement do Cilium) caem direto no fallback genérico
+	// abaixo, que pode não achar nada em setups como EKS Auto Mode/Fargate.
 	labelCandidates := []string{
 		"k8s-app=kube-proxy",
 		"component=kube-proxy",
+		"k8s-app=aws-node",
 		"k8s-app=azure-npm",
 		"app=azure-cni-networkmonitor",
 	}

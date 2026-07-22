@@ -43,7 +43,7 @@ func (h *NodePoolHandler) GetSNATCosts(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
 
-	provider := detectSNATProvider(cluster)
+	provider := detectSNATProvider(h.kubeManager.GetServerURL(cluster), cluster)
 	var info SNATCostInfo
 
 	switch provider {
@@ -52,7 +52,12 @@ func (h *NodePoolHandler) GetSNATCosts(c *gin.Context) {
 	case "gke":
 		info = fetchGKECosts(ctx, cluster)
 	case "eks":
-		info = fetchEKSCosts(ctx, cluster)
+		profile, regionHint := "", ""
+		if eksCfg := h.kubeManager.GetEKSClusterConfig(cluster); eksCfg != nil {
+			profile = eksCfg.AwsProfile
+			regionHint = eksCfg.AwsRegion
+		}
+		info = fetchEKSCosts(ctx, cluster, profile, regionHint)
 	default:
 		info = SNATCostInfo{Source: "reference", Error: "provider desconhecido"}
 	}
@@ -315,8 +320,16 @@ func gkeFallbackCosts(errMsg string) SNATCostInfo {
 // Usa `aws pricing get-products --service-code AmazonVPC` (sempre us-east-1 para pricing).
 // Extrai preços de NAT Gateway horário e por GB processado.
 
-func fetchEKSCosts(ctx context.Context, clusterCtx string) SNATCostInfo {
+func fetchEKSCosts(ctx context.Context, clusterCtx, profile, regionHint string) SNATCostInfo {
+	// extractAWSRegionFromARN só funciona quando clusterCtx é o ARN completo — contexts EKS
+	// com nome amigável (ex: "asaplog-production-admin", sem prefixo arn:aws:eks:) caem no
+	// regionHint (região salva em EKSClusterConfig) antes do fallback fixo us-east-1. Isso é
+	// só o valor exibido em PricingRegion — a chamada à Pricing API em si é sempre em
+	// us-east-1 (única região onde essa API está disponível).
 	region := extractAWSRegionFromARN(clusterCtx)
+	if region == "" {
+		region = regionHint
+	}
 	if region == "" {
 		region = "us-east-1"
 	}
@@ -331,6 +344,13 @@ func fetchEKSCosts(ctx context.Context, clusterCtx string) SNATCostInfo {
 		"--format-version", "aws_v1",
 		"--output", "json",
 		"--page-size", "100",
+	}
+	// Sem --profile, a chamada usa o profile default do ambiente, que pode não ter a
+	// permissão IAM pricing:GetProducts na conta específica desse cluster (ambientes com
+	// múltiplas contas/profiles AWS por cluster) — mesmo profile já resolvido para as
+	// demais chamadas EKS (buildSNATProfileEKS).
+	if profile != "" {
+		args = append(args, "--profile", profile)
 	}
 
 	out, err := exec.CommandContext(ctx, "aws", args...).Output()

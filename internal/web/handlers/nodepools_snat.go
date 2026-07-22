@@ -12,6 +12,7 @@ import (
 	"time"
 
 	gcpprovider "k8s-hpa-manager/internal/cloudprovider/gcp"
+	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -55,15 +56,24 @@ type SNATProfile struct {
 	RequiresGCPAuth          bool               `json:"requires_gcp_auth,omitempty"`
 }
 
-// detectSNATProvider retorna "gke", "eks" ou "aks" com base no prefixo do context.
-func detectSNATProvider(clusterCtx string) string {
-	if strings.HasPrefix(clusterCtx, "gke_") {
+// detectSNATProvider retorna "gke", "eks" ou "aks" a partir da URL real do API server —
+// a mesma fonte de verdade usada por GetRestConfig/GetNodeGroupProvider (config.DetectCloudProvider).
+//
+// Contexts EKS nem sempre têm o prefixo "arn:aws:eks:" no nome — clusters descobertos via
+// `autodiscover`/renomeados manualmente podem usar um alias amigável (ex:
+// "asaplog-production-admin"), mesmo sendo EKS de fato (confirmado: esse cluster usa
+// *aws.AWSNodeGroupProvider). Classificar só pelo prefixo do nome do context fazia esses
+// clusters caírem no "aks" por padrão, e todo o fluxo de SNAT/conntrack falhava (cluster
+// não encontrado em clusters-config.json, que é exclusivo de AKS).
+func detectSNATProvider(serverURL, clusterCtx string) string {
+	switch config.DetectCloudProvider(serverURL, clusterCtx) {
+	case config.CloudProviderGKE:
 		return "gke"
-	}
-	if strings.HasPrefix(clusterCtx, "arn:aws:eks:") {
+	case config.CloudProviderEKS:
 		return "eks"
+	default:
+		return "aks"
 	}
-	return "aks"
 }
 
 // ─── AKS ──────────────────────────────────────────────────────────────────────
@@ -435,7 +445,7 @@ func (h *NodePoolHandler) GetSNATProfile(c *gin.Context) {
 	// Coletar nós via K8s API (comum a todos os providers)
 	totalNodes, pools := h.collectNodePoolsFromK8s(ctx, clusterCtx)
 
-	provider := detectSNATProvider(clusterCtx)
+	provider := detectSNATProvider(h.kubeManager.GetServerURL(clusterCtx), clusterCtx)
 
 	var profile SNATProfile
 	var err error
@@ -590,7 +600,7 @@ func (h *NodePoolHandler) GetSNATNodes(c *gin.Context) {
 
 	resp := SNATNodesResponse{
 		Cluster:       clusterCtx,
-		CloudProvider: detectSNATProvider(clusterCtx),
+		CloudProvider: detectSNATProvider(h.kubeManager.GetServerURL(clusterCtx), clusterCtx),
 		FetchedAt:     time.Now(),
 	}
 
