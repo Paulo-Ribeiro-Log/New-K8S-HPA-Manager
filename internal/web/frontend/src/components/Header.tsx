@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -13,6 +13,16 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check, History, AlertCircle } from "lucide-react";
 import { NotificationBell } from "@/components/NotificationBell";
 import { NotificationDrawer } from "@/components/NotificationDrawer";
@@ -63,19 +73,71 @@ export const Header = ({
   const [open, setOpen] = useState(false);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [updating, setUpdating] = useState(false);
+  const [confirmUpdateOpen, setConfirmUpdateOpen] = useState(false);
+
+  // Polling pós-update: o processo mata e reinicia o próprio servidor (install-from-github.sh),
+  // então não dá pra acompanhar via SSE — a conexão cairia junto. Reaproveita o mesmo padrão de
+  // polling já usado no Device Auth Grant do GCP (SNATPortWidget.tsx): useRef pro handle do
+  // interval, catch silencioso em erro de rede (esperado enquanto o servidor está fora do ar).
+  const updatePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const updateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopUpdatePolling = () => {
+    if (updatePollRef.current) {
+      clearInterval(updatePollRef.current);
+      updatePollRef.current = null;
+    }
+    if (updateTimeoutRef.current) {
+      clearTimeout(updateTimeoutRef.current);
+      updateTimeoutRef.current = null;
+    }
+  };
+
+  useEffect(() => stopUpdatePolling, []);
 
   const handleUpdate = async () => {
+    setConfirmUpdateOpen(false);
     setUpdating(true);
+    const versionBeforeUpdate = versionInfo?.current_version;
+
     try {
       await apiClient.post("/version/update");
-      toast.success("Atualização iniciada", {
-        description: "O servidor será reiniciado em breve. Aguarde e recarregue a página.",
-        duration: 8000,
-      });
     } catch {
       toast.error("Falha ao iniciar atualização");
       setUpdating(false);
+      return;
     }
+
+    toast.loading("Atualizando servidor...", {
+      id: "server-update",
+      description: "O servidor vai reiniciar sozinho. Isso pode levar até 2 minutos — não feche esta aba.",
+    });
+
+    stopUpdatePolling();
+    updatePollRef.current = setInterval(async () => {
+      try {
+        const info = await apiClient.getVersion();
+        // Servidor ainda pode responder com a versão antiga por alguns segundos (download/instalação
+        // acontecem antes do kill do processo atual) — só considerar concluído quando a versão mudar.
+        if (info.current_version !== versionBeforeUpdate) {
+          stopUpdatePolling();
+          toast.success(`Atualizado para v${info.current_version}! Recarregando...`, { id: "server-update" });
+          setTimeout(() => window.location.reload(), 1500);
+        }
+      } catch {
+        // Servidor fora do ar durante o restart — esperado, tenta de novo no próximo tick.
+      }
+    }, 4000);
+
+    updateTimeoutRef.current = setTimeout(() => {
+      stopUpdatePolling();
+      setUpdating(false);
+      toast.error("Atualização demorando mais que o esperado", {
+        id: "server-update",
+        description: "Verifique o servidor manualmente ou recarregue a página em alguns instantes.",
+        duration: 15000,
+      });
+    }, 3 * 60 * 1000);
   };
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false);
   const [alertsDialogOpen, setAlertsDialogOpen] = useState(false);
@@ -126,7 +188,7 @@ export const Header = ({
             </h1>
             {versionInfo?.update_available && (
               <button
-                onClick={handleUpdate}
+                onClick={() => setConfirmUpdateOpen(true)}
                 disabled={updating}
                 className="flex items-center gap-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white text-xs font-medium rounded-full transition-colors"
                 title={`Nova versão disponível: ${versionInfo.latest_version} — clique para atualizar`}
@@ -308,6 +370,24 @@ export const Header = ({
           hpaName={alertsDialogContext.hpaName}
         />
       )}
+
+      {/* Confirmação de Update */}
+      <AlertDialog open={confirmUpdateOpen} onOpenChange={setConfirmUpdateOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Atualizar para v{versionInfo?.latest_version}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O servidor vai reiniciar automaticamente durante a atualização — a conexão cai por
+              alguns instantes (até ~2 minutos) e a página recarrega sozinha quando terminar. Não
+              feche esta aba enquanto isso.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleUpdate}>Atualizar agora</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </header>
   );
 };
