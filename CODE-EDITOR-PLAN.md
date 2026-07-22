@@ -352,3 +352,8 @@ Browsers throttleiam `setInterval` em abas em segundo plano — o heartbeat de 5
 - Timer pós-heartbeat: 25min → **45min**
 - Timer inicial: 30min → **45min**
 - Threshold de verificação: 20min → **40min**
+
+### Cursor "mãozinha" (grab) fixo na árvore de arquivos, branch `fix/code-editor-tree-cursor`
+Linhas de arquivo/pasta em `FileTreeNode` são `draggable` (suportam arrastar para mover, ver seção "Arrastar para mover (drag-and-drop)" acima), mas a classe `cursor-grab` deixava a mãozinha aberta visível permanentemente ao passar o mouse sobre qualquer item — mesmo sem nenhum arraste em andamento —, quando o esperado era o cursor padrão (seta).
+
+**Correção**: `cursor-grab` → `cursor-default` nas duas linhas (arquivo e pasta), mantendo `active:cursor-grabbing` — a mãozinha fechada só aparece com o botão do mouse pressionado, sinalizando o arraste em andamento.
