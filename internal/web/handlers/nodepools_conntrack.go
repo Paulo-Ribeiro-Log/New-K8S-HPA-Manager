@@ -208,15 +208,19 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 func findHostNetworkPod(ctx context.Context, clientset kubernetes.Interface, nodeName string) (podName, containerName string, err error) {
 	// Candidatos ordenados por preferência. kube-proxy é o mais comum a todos os providers;
 	// os demais cobrem CNIs que também rodam hostNetwork:true (azure-npm no AKS, aws-node —
-	// o daemonset do VPC CNI da AWS — no EKS). Sem aws-node, clusters EKS onde kube-proxy foi
-	// substituído (ex: kube-proxy-replacement do Cilium) caem direto no fallback genérico
-	// abaixo, que pode não achar nada em setups como EKS Auto Mode/Fargate.
+	// o daemonset do VPC CNI da AWS — no EKS; anetd/netd no GKE Dataplane V2, que substitui
+	// kube-proxy por um agente Cilium). Sem esses agentes, clusters onde kube-proxy foi
+	// substituído caem direto no fallback genérico abaixo, que pode não achar nada em setups
+	// como EKS Auto Mode/Fargate ou GKE Autopilot.
 	labelCandidates := []string{
 		"k8s-app=kube-proxy",
 		"component=kube-proxy",
 		"k8s-app=aws-node",
 		"k8s-app=azure-npm",
 		"app=azure-cni-networkmonitor",
+		"k8s-app=cilium",
+		"k8s-app=netd",
+		"k8s-app=gke-metadata-server",
 	}
 
 	for _, label := range labelCandidates {

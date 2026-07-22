@@ -31,11 +31,17 @@ func NewGCPNodeGroupProvider(clusterName, projectID, location string) *GCPNodeGr
 	}
 }
 
-// ValidateAuth verifica se gcloud está instalado, com conta ativa, e garante
-// que o gke-gcloud-auth-plugin está presente e USE_GKE_GCLOUD_AUTH_PLUGIN=True definido.
+// ValidateAuth verifica se há credenciais GCP válidas. Prioriza o ADC da própria aplicação
+// (Device Auth Grant, mesmo token usado por ListNodeGroups via REST API) — só exige o gcloud
+// CLI local quando não há ADC válido, pois ScaleNodeGroup/SetAutoscaling ainda dependem do
+// CLI (sem equivalente REST implementado).
 func (p *GCPNodeGroupProvider) ValidateAuth(ctx context.Context) error {
+	if NewGCPAuthManager().CheckStatus(ctx).Authenticated {
+		return nil
+	}
+
 	if _, err := exec.LookPath("gcloud"); err != nil {
-		return fmt.Errorf("gcloud CLI não encontrado — instale o Google Cloud SDK")
+		return fmt.Errorf("gcloud CLI não encontrado e nenhuma credencial ADC configurada — instale o Google Cloud SDK ou autentique via Device Auth Grant (Auto-Discover)")
 	}
 
 	if err := EnsureGKEAuthPlugin(nil); err != nil {

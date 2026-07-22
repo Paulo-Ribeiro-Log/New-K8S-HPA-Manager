@@ -41,22 +41,28 @@ func (h *NodePoolHandler) GetNodeResources(c *gin.Context) {
 		return
 	}
 
-	nodeList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("agentpool=%s", nodepool),
-	})
+	allNodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		c.JSON(500, gin.H{"error": fmt.Sprintf("erro ao listar nodes: %v", err)})
 		return
 	}
-	// Fallback para label alternativo do AKS
-	if len(nodeList.Items) == 0 {
-		nodeList, _ = client.CoreV1().Nodes().List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("kubernetes.azure.com/agentpool=%s", nodepool),
-		})
+
+	// Node pool label varia por cloud provider: AKS usa "agentpool"/"kubernetes.azure.com/agentpool",
+	// EKS usa "eks.amazonaws.com/nodegroup", GKE usa "cloud.google.com/gke-nodepool" — mesmo
+	// conjunto de labels já usado em GetNodesInNodePool (internal/kubernetes/client.go).
+	poolLabelKeys := []string{"agentpool", "kubernetes.azure.com/agentpool", "eks.amazonaws.com/nodegroup", "cloud.google.com/gke-nodepool"}
+	nodes := make([]corev1.Node, 0, len(allNodes.Items))
+	for _, node := range allNodes.Items {
+		for _, key := range poolLabelKeys {
+			if node.Labels[key] == nodepool {
+				nodes = append(nodes, node)
+				break
+			}
+		}
 	}
 
-	result := make([]NodeResourceInfo, 0, len(nodeList.Items))
-	for _, node := range nodeList.Items {
+	result := make([]NodeResourceInfo, 0, len(nodes))
+	for _, node := range nodes {
 		info := NodeResourceInfo{NodeName: node.Name}
 
 		if q, ok := node.Status.Allocatable[corev1.ResourceCPU]; ok {
