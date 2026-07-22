@@ -61,6 +61,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
+import { formatAge } from "@/lib/monitorUtils";
 
 const GATEWAY_KINDS = [
   { value: "gateway", label: "Gateway" },
@@ -741,9 +742,12 @@ export const GatewayTab = ({
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="text-left text-muted-foreground uppercase text-[10px] tracking-wide">
+                {!isClusterScoped && <th className="pb-2 pr-4 font-medium">Namespace ↑</th>}
                 <th className="pb-2 pr-4 font-medium">Nome</th>
-                {!isClusterScoped && <th className="pb-2 pr-4 font-medium">Namespace</th>}
-                <th className="pb-2 pr-4 font-medium">Endereços</th>
+                {selectedKind === "gateway" && <th className="pb-2 pr-4 font-medium">Classe</th>}
+                {selectedKind === "gateway" && <th className="pb-2 pr-4 font-medium">Endereço</th>}
+                {selectedKind === "gateway" && <th className="pb-2 pr-4 font-medium">Programado</th>}
+                <th className="pb-2 pr-4 font-medium">Idade</th>
                 <th className="pb-2 w-8" />
               </tr>
             </thead>
@@ -754,17 +758,36 @@ export const GatewayTab = ({
                   className="border-t border-border/30 hover:bg-accent/40 cursor-pointer transition-colors group"
                   onClick={() => loadManifest(gw)}
                 >
+                  {!isClusterScoped && (
+                    <td className="py-2 pr-4 text-muted-foreground">{gw.namespace || "—"}</td>
+                  )}
                   <td className="py-2 pr-4">
                     <div className="flex items-center gap-1.5 font-medium">
                       <Route className="h-3 w-3 text-muted-foreground flex-shrink-0" />
                       {gw.name}
                     </div>
                   </td>
-                  {!isClusterScoped && (
-                    <td className="py-2 pr-4 text-muted-foreground">{gw.namespace || "—"}</td>
+                  {selectedKind === "gateway" && (
+                    <td className="py-2 pr-4 text-muted-foreground">{gw.gatewayClass || "—"}</td>
+                  )}
+                  {selectedKind === "gateway" && (
+                    <td className="py-2 pr-4 text-muted-foreground">
+                      {gw.addresses && gw.addresses.length > 0 ? gw.addresses.join(", ") : "—"}
+                    </td>
+                  )}
+                  {selectedKind === "gateway" && (
+                    <td className="py-2 pr-4">
+                      {gw.programmed === "True" ? (
+                        <span className="text-emerald-400">True</span>
+                      ) : gw.programmed === "False" ? (
+                        <span className="text-red-400">False</span>
+                      ) : (
+                        <span className="text-muted-foreground">{gw.programmed || "—"}</span>
+                      )}
+                    </td>
                   )}
                   <td className="py-2 pr-4 text-muted-foreground">
-                    {gw.addresses && gw.addresses.length > 0 ? gw.addresses.join(", ") : "—"}
+                    {gw.updatedAt ? formatAge(gw.updatedAt) : "—"}
                   </td>
                   <td className="py-2 text-right">
                     <button

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -102,13 +103,27 @@ func (h *GatewayHandler) List(c *gin.Context) {
 			Name:      item.Name,
 			Kind:      item.Kind,
 			Labels:    item.Labels,
-			UpdatedAt: time.Now(),
+			UpdatedAt: item.CreatedAt,
 		}
-		if addr, ok := item.AdditionalColumns["address"]; ok && addr != "" {
-			s.Addresses = []string{addr}
+		if gc, ok := item.AdditionalColumns["gatewayClassName"]; ok && gc != "" {
+			s.GatewayClass = gc
+		}
+		if addrs, ok := item.AdditionalColumns["addresses"]; ok && addrs != "" {
+			s.Addresses = strings.Split(addrs, ",")
+		}
+		if programmed, ok := item.AdditionalColumns["programmed"]; ok && programmed != "" {
+			s.Programmed = programmed
 		}
 		summaries = append(summaries, s)
 	}
+
+	// Namespace asc, depois Name asc — mesma ordem que `kubectl get gateway --all-namespaces`.
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].Namespace != summaries[j].Namespace {
+			return summaries[i].Namespace < summaries[j].Namespace
+		}
+		return summaries[i].Name < summaries[j].Name
+	})
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": summaries, "count": len(summaries)})
 }

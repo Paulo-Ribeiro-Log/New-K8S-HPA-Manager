@@ -5412,6 +5412,7 @@ func ListGenericResources(cluster, namespace, name, group string, authArgs []str
 			if ts, ok := meta["creationTimestamp"].(string); ok {
 				if t, err := time.Parse(time.RFC3339, ts); err == nil {
 					summary.Age = formatAge(t)
+					summary.CreatedAt = t
 				}
 			}
 			if labels, ok := meta["labels"].(map[string]interface{}); ok {
@@ -5420,6 +5421,14 @@ func ListGenericResources(cluster, namespace, name, group string, authArgs []str
 						summary.Labels[k] = sv
 					}
 				}
+			}
+		}
+
+		// Gateway API (gateway.networking.k8s.io): spec.gatewayClassName identifica a classe
+		// (nginx, istio, etc.) — usado pela coluna CLASS de `kubectl get gateway`.
+		if spec, ok := item["spec"].(map[string]interface{}); ok {
+			if gc, ok := spec["gatewayClassName"].(string); ok && gc != "" {
+				summary.AdditionalColumns["gatewayClassName"] = gc
 			}
 		}
 
@@ -5433,6 +5442,35 @@ func ListGenericResources(cluster, namespace, name, group string, authArgs []str
 					summary.AdditionalColumns["ready"] = "true"
 				} else {
 					summary.AdditionalColumns["ready"] = "false"
+				}
+			}
+			// status.addresses[]: array de {type, value} — coluna ADDRESS do Gateway.
+			if addrs, ok := status["addresses"].([]interface{}); ok && len(addrs) > 0 {
+				values := make([]string, 0, len(addrs))
+				for _, a := range addrs {
+					if am, ok := a.(map[string]interface{}); ok {
+						if v, ok := am["value"].(string); ok && v != "" {
+							values = append(values, v)
+						}
+					}
+				}
+				if len(values) > 0 {
+					summary.AdditionalColumns["addresses"] = strings.Join(values, ",")
+				}
+			}
+			// status.conditions[type=Programmed].status — coluna PROGRAMMED do Gateway (True/False/Unknown).
+			if conds, ok := status["conditions"].([]interface{}); ok {
+				for _, c := range conds {
+					cm, ok := c.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if cm["type"] == "Programmed" {
+						if v, ok := cm["status"].(string); ok {
+							summary.AdditionalColumns["programmed"] = v
+						}
+						break
+					}
 				}
 			}
 		}
