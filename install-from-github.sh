@@ -37,6 +37,10 @@ REPO_NAME="New-K8S-HPA-Manager"
 INSTALL_PATH="/usr/local/bin"
 SCRIPTS_DIR="$HOME/.k8s-hpa-manager/scripts"
 
+# Marca se este script parou um servidor web em execução (install_binary) — usado por
+# restart_server() para decidir se deve reiniciar o servidor ao final da instalação/update.
+SERVER_WAS_RUNNING="false"
+
 # Fetch latest release version from GitHub API
 echo -e "${BLUE}ℹ️  Buscando última versão disponível no GitHub...${NC}"
 
@@ -198,6 +202,7 @@ install_binary() {
             lsof -ti:8080 | xargs -r kill -9 2>/dev/null
             sleep 2
             print_success "Servidor parado"
+            SERVER_WAS_RUNNING="true"
         fi
     fi
 
@@ -264,6 +269,32 @@ cleanup() {
         print_info "Removendo arquivo temporário..."
         rm -f "$BINARY_PATH"
         print_success "Limpeza concluída"
+    fi
+}
+
+# Restart web server if this script stopped one during install_binary().
+# Sem isso, tanto uma reinstalação manual quanto o auto-update pelo botão do Header
+# (que dispara este mesmo script) deixavam o processo morto sem reiniciar — o usuário
+# precisava rodar "$BINARY_NAME web" manualmente depois.
+restart_server() {
+    if [ "$SERVER_WAS_RUNNING" != "true" ]; then
+        return
+    fi
+
+    print_header "Reiniciando servidor web"
+    print_info "Um servidor estava rodando antes da atualização — reiniciando com o binário novo..."
+
+    # "$BINARY_NAME web" (sem -f) já se auto-daemoniza em background e retorna — não precisa
+    # de "&" aqui (ver runInBackground() em cmd/web.go).
+    if "$INSTALL_PATH/$BINARY_NAME" web > /dev/null 2>&1; then
+        sleep 2
+        if lsof -ti:8080 &> /dev/null; then
+            print_success "Servidor reiniciado com sucesso (porta 8080)"
+        else
+            print_warning "Servidor não respondeu na porta 8080 após o restart — inicie manualmente com: $BINARY_NAME web"
+        fi
+    else
+        print_warning "Falha ao reiniciar o servidor automaticamente — inicie manualmente com: $BINARY_NAME web"
     fi
 }
 
@@ -377,6 +408,7 @@ main() {
     if test_installation; then
         run_autodiscover
         cleanup
+        restart_server
         print_usage
     else
         print_warning "Instalação concluída com avisos. Verifique as mensagens acima."

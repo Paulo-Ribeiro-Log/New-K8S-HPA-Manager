@@ -52,7 +52,10 @@ func (h *VersionHandler) SelfUpdate(c *gin.Context) {
 
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		cmd := exec.Command("bash", "-c", "curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/new-k8s-hpa-dev/install-from-github.sh | bash")
+		// Sempre "main" — apontava para "new-k8s-hpa-dev", uma branch congelada ~1630 commits
+		// atrás, então correções no install-from-github.sh (ex: restart automático do servidor
+		// pós-update) nunca chegavam a este fluxo mesmo depois de mescladas na main.
+		cmd := exec.Command("bash", "-c", "curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		log.Info().Msg("Iniciando self-update via install-from-github.sh")

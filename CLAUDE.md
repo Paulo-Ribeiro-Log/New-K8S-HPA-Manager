@@ -459,6 +459,12 @@ O servidor desliga automaticamente quando nenhuma página web está conectada po
 
 **Causa mais comum de desconexão**: browsers throttleiam `setInterval` em abas em segundo plano — o intervalo de 5min pode escalar para 60min+. O threshold de 40min dá margem para isso. Se ainda ocorrer, reabrir a aba (o frontend envia heartbeat imediatamente ao montar).
 
+### Auto-Update / Instalação (`install-from-github.sh`)
+
+Botão de update no Header (visível quando `GET /api/v1/version` retorna `update_available: true`) chama `POST /api/v1/version/update` → `VersionHandler.SelfUpdate` (`internal/web/handlers/version.go`), que dispara `curl .../main/install-from-github.sh | bash` numa goroutine. **Sempre aponta para a branch `main`** — nunca hardcodear outra branch aqui: já apontou para `new-k8s-hpa-dev` (uma branch congelada, ~1630 commits atrás da `main`), fazendo correções no script nunca chegarem ao fluxo de auto-update mesmo depois de mescladas.
+
+**`install-from-github.sh` mata e reinicia o servidor quando necessário**: `install_binary()` mata (`kill -9`) qualquer processo na porta 8080 antes de substituir o binário — isso inclui o próprio servidor que disparou o self-update (a goroutine sobrevive porque `kill -9` no processo pai não mata o subprocesso bash já desatachado). `SERVER_WAS_RUNNING` marca quando isso acontece; `restart_server()` (chamada só no fluxo de sucesso, antes de `print_usage`) roda `$BINARY_NAME web` — que já se auto-daemoniza em background sozinho (mesmo mecanismo de `runInBackground()` em `cmd/web.go`, sem precisar de `&`) — só quando `SERVER_WAS_RUNNING=true`. Numa instalação nova (nenhum servidor rodando), nada é iniciado automaticamente — mantém o comportamento documentado de "rode `$BINARY_NAME web` manualmente depois".
+
 ### Monitoring V2
 
 `internal/monitoring/engine/monitoring_v2.go` — sem port-forwards. Discovery automático via HTTPS: `https://prometheus-{cluster}-{env}.viavarejo.com.br/`. Cache em memória (TTL 1h). Endpoints em `/api/v1/monitoring/v2/`.
