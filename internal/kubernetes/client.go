@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"sort"
@@ -4239,11 +4240,13 @@ func (c *Client) GetPodMetricsFromServer(ctx context.Context, namespace, name st
 		DoRaw(ctx)
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to get pod metrics: %w", err)
+		log.Printf("[GetPodMetricsFromServer] cluster=%s namespace=%s pod=%s: metrics.k8s.io indisponível: %v", c.cluster, namespace, name, err)
+		return nil, fmt.Errorf("metrics.k8s.io indisponível (metrics-server pode não estar instalado neste cluster): %w", err)
 	}
 
 	var metrics metricsv1beta1.PodMetrics
 	if err := json.Unmarshal(data, &metrics); err != nil {
+		log.Printf("[GetPodMetricsFromServer] cluster=%s namespace=%s pod=%s: falha ao decodificar resposta de metrics.k8s.io: %v", c.cluster, namespace, name, err)
 		return nil, fmt.Errorf("failed to unmarshal metrics: %w", err)
 	}
 
@@ -4264,6 +4267,7 @@ type BatchPodMetricsSingle struct {
 type BatchPodMetricsResult struct {
 	Available bool                             `json:"available"`
 	Pods      map[string]BatchPodMetricsSingle `json:"pods"`
+	Error     string                           `json:"error,omitempty"` // motivo real de Available=false (ex: metrics-server ausente)
 }
 
 // GetBatchPodMetrics returns real-time metrics for all pods in a namespace using metrics-server
@@ -4278,11 +4282,15 @@ func (c *Client) GetBatchPodMetrics(ctx context.Context, namespace string) (*Bat
 		AbsPath("/apis/metrics.k8s.io/v1beta1/namespaces/" + namespace + "/pods").
 		DoRaw(ctx)
 	if err != nil {
+		log.Printf("[GetBatchPodMetrics] cluster=%s namespace=%s: metrics.k8s.io indisponível: %v", c.cluster, namespace, err)
+		result.Error = fmt.Sprintf("metrics.k8s.io indisponível (metrics-server pode não estar instalado neste cluster): %v", err)
 		return result, nil // graceful degradation
 	}
 
 	var metricsList metricsv1beta1.PodMetricsList
 	if err := json.Unmarshal(data, &metricsList); err != nil {
+		log.Printf("[GetBatchPodMetrics] cluster=%s namespace=%s: falha ao decodificar resposta de metrics.k8s.io: %v", c.cluster, namespace, err)
+		result.Error = fmt.Sprintf("falha ao decodificar resposta de metrics.k8s.io: %v", err)
 		return result, nil
 	}
 

@@ -487,6 +487,7 @@ export interface PodMetricsSingle {
 export interface BatchPodMetrics {
   available: boolean;
   pods: Record<string, PodMetricsSingle>;  // key: podName
+  error?: string; // motivo real de available=false (ex: metrics-server ausente no cluster)
 }
 
 export interface PodMetadata {
