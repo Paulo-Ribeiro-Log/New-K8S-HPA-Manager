@@ -134,6 +134,7 @@ type GatewaySummary struct {
 	Kind            string            `json:"kind"`            // Gateway, HTTPRoute, GRPCRoute, TCPRoute, GatewayClass
 	GatewayClass    string            `json:"gatewayClass,omitempty"`
 	Addresses       []string          `json:"addresses,omitempty"`
+	Programmed      string            `json:"programmed,omitempty"` // condition status.conditions[type=Programmed]: True/False/Unknown
 	Listeners       int               `json:"listeners,omitempty"`
 	ParentRefs      []string          `json:"parentRefs,omitempty"`  // para routes
 	Hostnames       []string          `json:"hostnames,omitempty"`
@@ -1924,6 +1925,7 @@ type GenericResourceSummary struct {
 	Kind              string            `json:"kind"`
 	APIVersion        string            `json:"apiVersion"`
 	Age               string            `json:"age"`
+	CreatedAt         time.Time         `json:"createdAt,omitempty"`
 	Labels            map[string]string `json:"labels"`
 	AdditionalColumns map[string]string `json:"additionalColumns"` // status, phase, etc.
 }

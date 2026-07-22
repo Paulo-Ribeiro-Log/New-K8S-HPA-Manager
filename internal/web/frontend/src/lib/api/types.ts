@@ -385,6 +385,7 @@ export interface GatewaySummary {
   kind: string;
   gatewayClass?: string;
   addresses?: string[];
+  programmed?: string; // "True" | "False" | "Unknown"
   listeners?: number;
   parentRefs?: string[];
   hostnames?: string[];
