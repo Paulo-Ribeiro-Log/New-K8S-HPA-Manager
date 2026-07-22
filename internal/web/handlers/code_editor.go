@@ -184,6 +184,27 @@ func (h *CodeEditorHandler) resolveProfileToken(c *gin.Context, profileID string
 	return ""
 }
 
+// resolveActiveProfileToken retorna o token do perfil GitHub marcado como ativo no
+// ProfileSwitcher — usado como default quando o chamador não informa profile_id
+// explicitamente (ex: CreatePR). Sem isso, endpoints que só conheciam h.getToken(c)
+// (GitHubTokenStore — store legado, independente da lista de perfis nomeados) usavam
+// silenciosamente uma conta diferente da que o usuário vê como "ativa" na UI.
+func (h *CodeEditorHandler) resolveActiveProfileToken(c *gin.Context) string {
+	if h.userTokensStore == nil {
+		return ""
+	}
+	profiles, err := h.userTokensStore.GetGitHubEditorProfiles(profileEmail(c))
+	if err != nil {
+		return ""
+	}
+	for _, p := range profiles {
+		if p.Active {
+			return p.Token
+		}
+	}
+	return ""
+}
+
 // gitCmdWithToken cria um exec.Cmd que injeta o token via GIT_ASKPASS.
 // Quando token != "", desabilita o credential helper via -c credential.helper=
 // para evitar que credenciais cacheadas no sistema sobreponham o token fornecido.
@@ -2362,10 +2383,11 @@ func (h *CodeEditorHandler) CreatePR(c *gin.Context) {
 	}
 
 	var req struct {
-		Title string `json:"title" binding:"required"`
-		Body  string `json:"body"`
-		Head  string `json:"head" binding:"required"`
-		Base  string `json:"base" binding:"required"`
+		Title     string `json:"title" binding:"required"`
+		Body      string `json:"body"`
+		Head      string `json:"head" binding:"required"`
+		Base      string `json:"base" binding:"required"`
+		ProfileID string `json:"profile_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2378,7 +2400,16 @@ func (h *CodeEditorHandler) CreatePR(c *gin.Context) {
 		return
 	}
 
-	token := h.getToken(c)
+	// Prioriza o perfil GitHub nomeado explícito, depois o marcado como ativo no
+	// ProfileSwitcher, só caindo pro GitHubTokenStore legado (h.getToken) por último —
+	// antes usava sempre o legado, ignorando qual conta o usuário selecionou como ativa.
+	token := h.resolveProfileToken(c, req.ProfileID)
+	if token == "" {
+		token = h.resolveActiveProfileToken(c)
+	}
+	if token == "" {
+		token = h.getToken(c)
+	}
 	if token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PAT GitHub não configurado — configure em GitHub Releases → perfil"})
 		return

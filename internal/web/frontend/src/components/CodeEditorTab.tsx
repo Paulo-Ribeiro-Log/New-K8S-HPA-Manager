@@ -850,9 +850,10 @@ interface CreatePRModalProps {
   repoId: string;
   head: string;        // branch atual (source)
   branches: string[];  // branches disponíveis para base
+  profileId?: string;  // perfil GitHub ativo (ProfileSwitcher) — resolvido no servidor
 }
 
-function CreatePRModal({ open, onClose, repoId, head, branches }: CreatePRModalProps) {
+function CreatePRModal({ open, onClose, repoId, head, branches, profileId }: CreatePRModalProps) {
   const defaultBase = branches.includes("main") ? "main" : branches.includes("master") ? "master" : branches[0] ?? "main";
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -877,7 +878,7 @@ function CreatePRModal({ open, onClose, repoId, head, branches }: CreatePRModalP
     if (!title.trim()) { setError("Título obrigatório"); return; }
     setLoading(true); setError(""); setErrorInstructions([]);
     try {
-      const pr = await apiClient.codeEditorCreatePR(repoId, title, body, head, base);
+      const pr = await apiClient.codeEditorCreatePR(repoId, title, body, head, base, profileId);
       setResult({ number: pr.number, url: pr.url });
     } catch (e: any) {
       setError(e?.message || "Erro ao criar Pull Request");
@@ -5112,6 +5113,7 @@ export function CodeEditorTab() {
             ...(branches.local ?? []),
             ...(branches.remote ?? []).map((r: string) => r.replace(/^origin\//, "")),
           ].filter((b, i, a) => b !== branches.current && a.indexOf(b) === i)}
+          profileId={activeProfileId()}
         />
       )}
 
