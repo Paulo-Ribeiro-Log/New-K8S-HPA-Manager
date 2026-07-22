@@ -374,16 +374,19 @@ class APIClient {
         }
       }
 
-      // K8s RBAC negou a operação — erro amigável sem stack trace
-      if (response.status === 403) {
+      // K8s RBAC negou a operação — erro amigável sem stack trace. Só aplica o fallback
+      // genérico quando o backend não mandou um error_type próprio (ex: saml_authorization_required,
+      // emu_pat_blocked) — senão o texto específico do GitHub/etc. seria mascarado por um motivo errado.
+      if (response.status === 403 && !rawError?.error_type) {
         const friendly = "Permissão negada pelo K8s RBAC. Você não tem acesso de escrita neste namespace.";
-        throw Object.assign(new Error(message || friendly), { status: 403, code: "K8S_FORBIDDEN" });
+        throw Object.assign(new Error(message || friendly), { status: 403, code: "K8S_FORBIDDEN", details: rawError });
       }
 
       const code = rawError?.error?.code ?? rawError?.code;
       throw Object.assign(new Error(message || `Request failed: ${response.status}`), {
         status: response.status,
         code,
+        details: rawError,
       });
     }
 
