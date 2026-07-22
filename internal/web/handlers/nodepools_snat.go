@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"sort"
@@ -157,7 +158,7 @@ func (h *NodePoolHandler) buildSNATProfileAKS(ctx context.Context, clusterCtx st
 
 // ─── GKE ──────────────────────────────────────────────────────────────────────
 
-// gkeRouterNat resposta parcial de gcloud compute routers nats describe
+// gkeRouterNat resposta parcial de gcloud compute routers nats describe / Compute Engine API
 type gkeRouterNat struct {
 	Name                string   `json:"name"`
 	MinPortsPerVm       int      `json:"minPortsPerVm"`
@@ -165,11 +166,89 @@ type gkeRouterNat struct {
 	NatIps              []string `json:"natIps"`              // só se MANUAL_ONLY
 }
 
+// gkeRouter é um Cloud Router com sua config de NAT — mesmo formato retornado tanto pela
+// Compute Engine REST API quanto por `gcloud compute routers list --format json(name,nats)`.
+type gkeRouter struct {
+	Name string         `json:"name"`
+	Nats []gkeRouterNat `json:"nats"`
+}
+
+// listGKERouters busca os Cloud Routers (com config de NAT) da região via Compute Engine REST
+// API usando o token ADC da própria app (GetFreshGKEToken — mesmo mecanismo do ListNodeGroups
+// via REST). Evita depender de `gcloud auth login` local. Só cai para o gcloud CLI se não
+// houver token ADC disponível ou a chamada REST falhar.
+func listGKERouters(ctx context.Context, project, region string) ([]gkeRouter, error) {
+	if token := gcpprovider.GetFreshGKEToken(ctx); token != "" {
+		if routers, err := listGKERoutersViaAPI(ctx, token, project, region); err == nil {
+			return routers, nil
+		}
+	}
+	return listGKERoutersViaCLI(ctx, project, region)
+}
+
+func listGKERoutersViaAPI(ctx context.Context, token, project, region string) ([]gkeRouter, error) {
+	url := fmt.Sprintf(
+		"https://compute.googleapis.com/compute/v1/projects/%s/regions/%s/routers",
+		project, region,
+	)
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("compute API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var result struct {
+		Items []gkeRouter `json:"items"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse routers response: %w", err)
+	}
+	return result.Items, nil
+}
+
+func listGKERoutersViaCLI(ctx context.Context, project, region string) ([]gkeRouter, error) {
+	listArgs := []string{
+		"compute", "routers", "list",
+		"--project", project,
+		"--regions", region,
+		"--format", "json(name,nats)",
+	}
+	out, err := exec.CommandContext(ctx, "gcloud", listArgs...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("gcloud compute routers list falhou: %w", err)
+	}
+
+	var routers []gkeRouter
+	if err := json.Unmarshal(out, &routers); err != nil {
+		return nil, fmt.Errorf("falha ao parsear routers GKE: %w", err)
+	}
+	return routers, nil
+}
+
 func (h *NodePoolHandler) buildSNATProfileGKE(ctx context.Context, clusterCtx string, totalNodes int, pools []SNATNodePoolInfo) (SNATProfile, error) {
-	// Verificar autenticação GCP antes de chamar gcloud
+	// Verificar autenticação GCP — ADC da app (Device Auth Grant) já é suficiente, já que
+	// o fetch abaixo tenta REST API primeiro e só cai pro gcloud CLI como fallback.
 	gcpAuth := gcpprovider.NewGCPAuthManager()
 	authStatus := gcpAuth.CheckStatus(ctx)
-	if authStatus.HasGcloud && !authStatus.Authenticated && !authStatus.HasADC {
+	if !authStatus.Authenticated {
 		return SNATProfile{
 			Cluster:         clusterCtx,
 			CloudProvider:   "gke",
@@ -178,7 +257,7 @@ func (h *NodePoolHandler) buildSNATProfileGKE(ctx context.Context, clusterCtx st
 			Status:          "ok",
 			FetchedAt:       time.Now(),
 			RequiresGCPAuth: true,
-			Error:           "gcloud não autenticado — faça login para obter dados SNAT do Cloud NAT",
+			Error:           "GCP não autenticado — faça login para obter dados SNAT do Cloud NAT",
 		}, nil
 	}
 
@@ -196,30 +275,10 @@ func (h *NodePoolHandler) buildSNATProfileGKE(ctx context.Context, clusterCtx st
 		}
 	}
 
-	// 1. Listar routers na região
-	listArgs := []string{
-		"compute", "routers", "list",
-		"--project", gkeCfg.ProjectID,
-		"--regions", region,
-		"--format", "json(name,nats)",
-	}
-	out, err := exec.CommandContext(ctx, "gcloud", listArgs...).Output()
+	// 1. Listar routers (com config de NAT) na região
+	routers, err := listGKERouters(ctx, gkeCfg.ProjectID, region)
 	if err != nil {
-		return SNATProfile{}, fmt.Errorf("gcloud compute routers list falhou: %w", err)
-	}
-
-	// Resposta: array de routers com campo nats[]
-	var routers []struct {
-		Name string `json:"name"`
-		Nats []struct {
-			Name                string   `json:"name"`
-			MinPortsPerVm       int      `json:"minPortsPerVm"`
-			NatIpAllocateOption string   `json:"natIpAllocateOption"`
-			NatIps              []string `json:"natIps"`
-		} `json:"nats"`
-	}
-	if err := json.Unmarshal(out, &routers); err != nil {
-		return SNATProfile{}, fmt.Errorf("falha ao parsear routers GKE: %w", err)
+		return SNATProfile{}, fmt.Errorf("falha ao listar routers GKE: %w", err)
 	}
 
 	// Agregar todos os Cloud NATs encontrados

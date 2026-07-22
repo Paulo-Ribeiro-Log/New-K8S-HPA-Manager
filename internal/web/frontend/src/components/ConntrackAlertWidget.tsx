@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Activity } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Activity, HelpCircle } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ConntrackNodeStats } from "@/lib/api/types";
 
 const statusColors = {
-  ok:       { text: "text-emerald-400", icon: CheckCircle2, label: "OK" },
-  warning:  { text: "text-amber-400",   icon: AlertTriangle, label: "Atenção" },
-  critical: { text: "text-red-400",     icon: XCircle,       label: "Crítico" },
+  ok:       { text: "text-emerald-400",      icon: CheckCircle2, label: "OK" },
+  warning:  { text: "text-amber-400",        icon: AlertTriangle, label: "Atenção" },
+  critical: { text: "text-red-400",          icon: XCircle,       label: "Crítico" },
+  unknown:  { text: "text-muted-foreground", icon: HelpCircle,    label: "Sem dados" },
 };
 
 // Mesmo limiar de "atenção" já usado internamente pelo ConntrackTab (getCapacityRec, p95 >= 65)
@@ -43,7 +44,10 @@ export function ConntrackAlertWidget({ cluster }: Props) {
     null
   );
   const highestPct = highest?.usage_pct ?? 0;
-  const status = data ? widgetStatus(highestPct) : "ok";
+  // "unknown" cobre o caso em que o backend respondeu mas nenhum nó teve leitura válida
+  // (ex: nenhum pod hostNetwork exec-ável encontrado) — nunca mostrar "OK" verde nesse caso,
+  // que sugeriria falsamente que a coleta funcionou e está tudo bem.
+  const status = !data ? "ok" : validNodes.length === 0 ? "unknown" : widgetStatus(highestPct);
   const colors = statusColors[status];
   const StatusIcon = colors.icon;
 
@@ -53,6 +57,7 @@ export function ConntrackAlertWidget({ cluster }: Props) {
         className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-xs hover:bg-muted/20 transition-colors ${
           status === "critical" ? "border-red-500/40 bg-red-500/5" :
           status === "warning"  ? "border-amber-500/40 bg-amber-500/5" :
+          status === "unknown"  ? "border-border/50 bg-muted/20" :
           "border-border/50 bg-muted/10"
         }`}
         onClick={() => setOpen(true)}
