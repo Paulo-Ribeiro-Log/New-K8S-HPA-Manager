@@ -107,6 +107,9 @@ type Server struct {
 	// SNAT History Store (histórico de snapshots SNAT para projeção de crescimento)
 	snatHistoryStore *storage.SNATHistoryStore
 
+	// Notes Handler (anotações Markdown por cluster+aba)
+	notesHandler *handlers.NotesHandler
+
 	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
 	latencyTestHistoryStore *storage.LatencyTestHistoryStore
 }
@@ -367,6 +370,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ SNAT History Store inicializado (projeção de crescimento SNAT)")
 	}
 
+	// Notes Store (anotações Markdown por cluster+aba)
+	var notesHandler *handlers.NotesHandler
+	notesDBPath := filepath.Join(baseDir, "notes.db")
+	if store, err := storage.NewNotesStore(notesDBPath); err != nil {
+		fmt.Printf("⚠️  Notes Store: falha ao criar store: %v\n", err)
+	} else {
+		notesHandler = handlers.NewNotesHandler(store)
+		fmt.Println("✅ Notes Store inicializado (anotações por cluster+aba)")
+	}
+
 	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
 	var latencyTestHistoryStore *storage.LatencyTestHistoryStore
 	latencyTestHistoryDBPath := filepath.Join(baseDir, "latency_test_history.db")
@@ -409,6 +422,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		finopsTimelineStore:      finopsTimelineStore,      // Snapshots históricos HPA para comparação
 		snatHistoryStore:         snatHistoryStore,         // Histórico SNAT para projeção de crescimento
 		latencyTestHistoryStore:  latencyTestHistoryStore,  // Histórico de testes de latência (grafo Fase 6.4)
+		notesHandler:             notesHandler,             // Anotações Markdown por cluster+aba
 	}
 
 	server.setupMiddleware()
@@ -1420,6 +1434,14 @@ func (s *Server) setupRoutes() {
 	if s.cloudAccountHintsHandler != nil {
 		api.GET("/user/cloud-account-hints", rbacMiddleware.InjectUserEmail(), s.cloudAccountHintsHandler.Get)
 		api.POST("/user/cloud-account-hints", rbacMiddleware.InjectUserEmail(), s.cloudAccountHintsHandler.Save)
+	}
+
+	// Notes (anotações Markdown por cluster+aba)
+	if s.notesHandler != nil {
+		api.GET("/notes", rbacMiddleware.InjectUserEmail(), s.notesHandler.List)
+		api.POST("/notes", rbacMiddleware.InjectUserEmail(), s.notesHandler.Create)
+		api.PUT("/notes/:id", rbacMiddleware.InjectUserEmail(), s.notesHandler.Update)
+		api.DELETE("/notes/:id", rbacMiddleware.InjectUserEmail(), s.notesHandler.Delete)
 	}
 
 	// Predictive Analysis (análise preditiva de deployments)

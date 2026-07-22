@@ -44,6 +44,7 @@ import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
 import { LogViewer } from "@/components/LogViewer";
 import { HistoryViewer } from "@/components/HistoryViewer";
+import { NotesModal } from "@/components/NotesModal";
 import { StagingPanel } from "@/components/StagingPanel";
 import { VPNWarningBanner } from "@/components/VPNWarningBanner";
 import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
@@ -93,6 +94,7 @@ import {
   Link2,
   Shield,
   Code2,
+  StickyNote,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -158,6 +160,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const [showLoadSessionModal, setShowLoadSessionModal] = useState(false);
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [showHistoryViewer, setShowHistoryViewer] = useState(false);
+  const [showNotesModal, setShowNotesModal] = useState(false);
   const [isContextSwitching, setIsContextSwitching] = useState(false);
   const [showVPNWarning, setShowVPNWarning] = useState(false);
   const [compareModalOpen, setCompareModalOpen] = useState(false);
@@ -1498,6 +1501,15 @@ const Index = ({ onLogout }: IndexProps) => {
           <Search className="w-4 h-4" />
           Explorer
         </button>
+        {/* Notas — abre modal escopado por cluster+aba, não muda activeTab */}
+        <button
+          onClick={() => setShowNotesModal(true)}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium text-sm transition-all duration-200 text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Notas"
+        >
+          <StickyNote className="w-4 h-4" />
+          Notas
+        </button>
       </TabNavigation>
 
       {/* Conteúdo Principal */}
@@ -1799,6 +1811,14 @@ const Index = ({ onLogout }: IndexProps) => {
       <HistoryViewer
         open={showHistoryViewer}
         onOpenChange={setShowHistoryViewer}
+      />
+
+      {/* Modal de Notas — escopado por cluster+aba ativa */}
+      <NotesModal
+        open={showNotesModal}
+        onOpenChange={setShowNotesModal}
+        cluster={selectedCluster}
+        tab={activeTab}
       />
 
       {/* Sequence Progress Modal */}

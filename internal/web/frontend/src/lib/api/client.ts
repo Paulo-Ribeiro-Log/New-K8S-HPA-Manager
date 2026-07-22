@@ -107,6 +107,7 @@ import type {
   ConntrackResponse,
   ConntrackNodeHistoryResponse,
   CloudAccountHints,
+  Note,
   K8sNamespacePermissions,
   AccessCheckRulesResult,
   AccessCheckCanIResult,
@@ -2028,6 +2029,29 @@ class APIClient {
       method: "POST",
       body: JSON.stringify(hints),
     });
+  }
+
+  async getNotes(cluster: string, tab: string): Promise<Note[]> {
+    const params = new URLSearchParams({ cluster, tab });
+    return this.request<Note[]>(`/notes?${params.toString()}`);
+  }
+
+  async createNote(cluster: string, tab: string, content: string): Promise<{ id: number }> {
+    return this.request<{ id: number }>("/notes", {
+      method: "POST",
+      body: JSON.stringify({ cluster, tab, content }),
+    });
+  }
+
+  async updateNote(id: number, content: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/notes/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  async deleteNote(id: number): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/notes/${id}`, { method: "DELETE" });
   }
 
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {

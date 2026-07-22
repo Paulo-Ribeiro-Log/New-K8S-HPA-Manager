@@ -1634,6 +1634,16 @@ export interface CloudAccountHints {
   aws_email?: string;
 }
 
+export interface Note {
+  id: number;
+  cluster: string;
+  tab: string;
+  content: string;
+  user_email: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CommandRunnerSSEEvent {
   id: string;
   type: 'init' | 'output' | 'output_error' | 'cluster_done' | 'complete' | 'error';
