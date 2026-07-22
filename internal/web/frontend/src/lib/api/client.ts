@@ -4332,10 +4332,10 @@ class APIClient {
     );
   }
 
-  async codeEditorCreatePR(id: string, title: string, body: string, head: string, base: string): Promise<{ number: number; url: string; title: string }> {
+  async codeEditorCreatePR(id: string, title: string, body: string, head: string, base: string, profileId?: string): Promise<{ number: number; url: string; title: string }> {
     return this.request(`/code-editor/repos/${id}/pr/create`, {
       method: "POST",
-      body: JSON.stringify({ title, body, head, base }),
+      body: JSON.stringify({ title, body, head, base, ...(profileId ? { profile_id: profileId } : {}) }),
     });
   }
 }
