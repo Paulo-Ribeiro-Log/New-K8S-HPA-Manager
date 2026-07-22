@@ -857,6 +857,7 @@ function CreatePRModal({ open, onClose, repoId, head, branches }: CreatePRModalP
   const [base, setBase] = useState(defaultBase);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [errorInstructions, setErrorInstructions] = useState<string[]>([]);
   const [result, setResult] = useState<{ number: number; url: string } | null>(null);
 
   useEffect(() => {
@@ -865,18 +866,20 @@ function CreatePRModal({ open, onClose, repoId, head, branches }: CreatePRModalP
       setBody("");
       setBase(branches.includes("main") ? "main" : branches.includes("master") ? "master" : branches[0] ?? "main");
       setError("");
+      setErrorInstructions([]);
       setResult(null);
     }
   }, [open, head, branches]);
 
   async function submit() {
     if (!title.trim()) { setError("Título obrigatório"); return; }
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setErrorInstructions([]);
     try {
       const pr = await apiClient.codeEditorCreatePR(repoId, title, body, head, base);
       setResult({ number: pr.number, url: pr.url });
     } catch (e: any) {
       setError(e?.message || "Erro ao criar Pull Request");
+      setErrorInstructions(Array.isArray(e?.details?.instructions) ? e.details.instructions : []);
     } finally {
       setLoading(false);
     }
@@ -942,8 +945,17 @@ function CreatePRModal({ open, onClose, repoId, head, branches }: CreatePRModalP
               />
             </div>
             {error && (
-              <div className="flex items-center gap-2 text-red-400 text-xs">
-                <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+              <div className="space-y-1.5 text-xs">
+                <div className="flex items-center gap-2 text-red-400">
+                  <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+                </div>
+                {errorInstructions.length > 0 && (
+                  <ol className="list-decimal list-inside space-y-0.5 text-muted-foreground pl-1">
+                    {errorInstructions.map((step, i) => (
+                      <li key={i}>{step.replace(/^\d+\.\s*/, "")}</li>
+                    ))}
+                  </ol>
+                )}
               </div>
             )}
           </div>
@@ -2172,7 +2184,8 @@ export function CodeEditorTab() {
   const [showTerminal, setShowTerminal] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(() => {
     const saved = localStorage.getItem("ce_terminal_height");
-    return saved ? Math.max(80, Math.min(600, parseInt(saved, 10))) : 240;
+    const maxH = typeof window !== "undefined" ? window.innerHeight * 0.9 : 600;
+    return saved ? Math.max(80, Math.min(maxH, parseInt(saved, 10))) : 240;
   });
   const [terminalFont, setTerminalFont] = useState(
     () => localStorage.getItem("ce_terminal_font") ?? ""
@@ -2281,6 +2294,7 @@ export function CodeEditorTab() {
   const openFileRef = useRef<(node: CodeEditorFileNode) => Promise<void>>(async () => {});
   const pendingNavigationRef = useRef<{ line: number; col: number } | null>(null);
   const editorRowRef = useRef<HTMLDivElement>(null);
+  const editorPaneRef = useRef<HTMLDivElement>(null);
   const lspVersionRef = useRef<number>(0);
   const lspProviderDisposables = useRef<MonacoEditorNS.IDisposable[]>([]);
   const { toasts, addToast } = useToasts();
@@ -4399,7 +4413,7 @@ export function CodeEditorTab() {
         <ResizeDivider onDrag={d => setSidebarWidth(w => Math.max(160, Math.min(520, w + d)))} />
 
         {/* ── Área do editor ── */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
+        <div ref={editorPaneRef} className="flex-1 flex flex-col min-h-0 min-w-0 relative">
           {/* Barra de abas */}
           {openTabs.length > 0 && (
             <div className="flex items-center border-b border-border/50 flex-shrink-0 bg-card/10 overflow-x-auto">
@@ -4660,7 +4674,12 @@ export function CodeEditorTab() {
             <>
               <HResizeDivider onDrag={delta => {
                 setTerminalHeight(h => {
-                  const next = Math.max(80, Math.min(600, h - delta));
+                  // Até 90% da altura disponível do pane do editor (não 600px fixo) — permite
+                  // maximizar o terminal quase por completo, como um painel de terminal comum.
+                  const maxH = editorPaneRef.current
+                    ? editorPaneRef.current.clientHeight * 0.9
+                    : window.innerHeight * 0.9;
+                  const next = Math.max(80, Math.min(maxH, h - delta));
                   localStorage.setItem("ce_terminal_height", String(next));
                   return next;
                 });

@@ -2354,6 +2354,28 @@ func (h *CodeEditorHandler) CreatePR(c *gin.Context) {
 		if msg == "" {
 			msg = fmt.Sprintf("GitHub API retornou %d", resp.StatusCode)
 		}
+
+		// Orgs com Enterprise Managed Users (EMU) bloqueiam PAT clássico (ghp_*) nos endpoints
+		// da REST API por política do enterprise — a mesma credencial funciona normalmente para
+		// git clone/fetch/push (autenticação HTTP separada), então esse erro só aparece aqui,
+		// na criação do PR via API. Resolução real é do lado do GitHub (token), não do código:
+		// só um fine-grained PAT aprovado pelo admin do enterprise contorna a restrição.
+		if strings.Contains(msg, "Enterprise Managed User") {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":      "Token bloqueado pela política de Enterprise Managed Users (EMU) desta organização",
+				"error_type": "emu_pat_blocked",
+				"message":    "Este PAT clássico (ghp_*) não pode criar Pull Requests via API nesta organização — o enterprise usa Enterprise Managed Users (EMU), que restringe PATs clássicos na REST API (git clone/push continuam funcionando normalmente, só a API é bloqueada).",
+				"instructions": []string{
+					"1. Acesse: https://github.com/settings/personal-access-tokens/new",
+					"2. Crie um fine-grained token com acesso a este repositório",
+					"3. Em Permissions, habilite 'Pull requests: Read and write'",
+					"4. Se o enterprise exigir aprovação, solicite ao admin",
+					"5. Salve o novo token no perfil GitHub do Code Editor e tente novamente",
+				},
+			})
+			return
+		}
+
 		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
