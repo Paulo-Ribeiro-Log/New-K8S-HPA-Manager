@@ -712,13 +712,15 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
     if (!parsed) { setError("URL inválida. Use https://github.com/owner/repo"); return; }
     setError(""); setExistingId(""); setSuccess(false); setLogs([]); setCloning(true);
     const authToken = localStorage.getItem("auth_token") || "";
-    const profileToken = profiles.find(p => p.id === selectedProfileId)?.token;
+    // Envia só o ID do perfil — o backend resolve o PAT real server-side (resolveProfileToken),
+    // o token nunca precisa estar disponível no browser para clonar.
+    const hasSelectedProfile = profiles.some(p => p.id === selectedProfileId);
     let res: Response;
     try {
       res = await fetch(`${API_BASE}/code-editor/clone`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
-        body: JSON.stringify({ ...parsed, branch, ...(profileToken ? { token: profileToken } : {}) }),
+        body: JSON.stringify({ ...parsed, branch, ...(hasSelectedProfile ? { profile_id: selectedProfileId } : {}) }),
       });
     } catch (e) {
       setError("Falha de conexão com o servidor.");
@@ -2143,15 +2145,17 @@ export function CodeEditorTab() {
   // Dialogs
   const [showClone, setShowClone] = useState(false);
   const [showGitHubToken, setShowGitHubToken] = useState(false);
-  // Retorna o token da conta GitHub ativa.
+  // Retorna o ID (não o token) da conta GitHub ativa — o token real nunca precisa trafegar
+  // pelo browser, o backend resolve o profile_id para o PAT armazenado (resolveProfileToken).
   // Fallback em cascata: perfil padrão → perfil com active=true → único perfil existente.
-  function activeToken(): string | undefined {
+  function activeProfileId(): string | undefined {
     const profiles = loadProfiles();
     if (profiles.length === 0) return undefined;
     const pid = localStorage.getItem("ce_default_profile") ?? "";
-    return profiles.find(p => p.id === pid)?.token
-      ?? profiles.find(p => p.active)?.token
-      ?? (profiles.length === 1 ? profiles[0].token : undefined);
+    if (pid && profiles.some(p => p.id === pid)) return pid;
+    const active = profiles.find(p => p.active);
+    if (active) return active.id;
+    return profiles.length === 1 ? profiles[0].id : undefined;
   }
 
   const [showCommit, setShowCommit] = useState(false);
@@ -2412,7 +2416,7 @@ export function CodeEditorTab() {
   // ── carregamento inicial ──
   useEffect(() => {
     loadRepos();
-    // Sincroniza perfis do servidor para o localStorage (cache para activeToken())
+    // Sincroniza perfis do servidor para o localStorage (cache para activeProfileId())
     apiClient.codeEditorGetGitHubProfiles().then(r => {
       if (r.profiles.length > 0) {
         localStorage.setItem("ce_github_profiles", JSON.stringify(r.profiles));
@@ -2927,7 +2931,7 @@ export function CodeEditorTab() {
       setScmCommitMsg("");
       await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
       if (andPush) {
-        setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined });
+        setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeProfileId() ? { profile_id: activeProfileId() } : undefined });
       } else {
         showGitResult("success", "Commit", "Commit criado com sucesso");
       }
@@ -3625,7 +3629,7 @@ export function CodeEditorTab() {
               onClick={() => setSseDialog({
                 title: "Sincronizar (Pull)",
                 endpoint: `/code-editor/repos/${selectedRepo.id}/pull`,
-                body: activeToken() ? { token: activeToken() } : undefined,
+                body: activeProfileId() ? { profile_id: activeProfileId() } : undefined,
                 chainPush: true,
               })}>
               <RefreshCw className="w-3 h-3" />Sync
@@ -3637,7 +3641,7 @@ export function CodeEditorTab() {
               )}
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull`, body: activeToken() ? { token: activeToken() } : undefined })}>
+              onClick={() => setSseDialog({ title: "Git Pull", endpoint: `/code-editor/repos/${selectedRepo.id}/pull`, body: activeProfileId() ? { profile_id: activeProfileId() } : undefined })}>
               <Download className="w-3 h-3" />Pull
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
@@ -3647,7 +3651,7 @@ export function CodeEditorTab() {
               {modifiedPaths.size > 0 && <span className="bg-yellow-500 text-black text-[10px] px-1 rounded-full">{modifiedPaths.size}</span>}
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}>
+              onClick={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeProfileId() ? { profile_id: activeProfileId() } : undefined })}>
               <Upload className="w-3 h-3" />Push
               {status?.ahead && status.ahead !== "0" && <span className="bg-blue-500 text-white text-[10px] px-1 rounded-full">{status.ahead}</span>}
             </Button>
@@ -4948,7 +4952,7 @@ export function CodeEditorTab() {
               await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
               showGitResult("success", "Commit", "Commit criado com sucesso");
             }}
-            onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeToken() ? { token: activeToken() } : undefined })}
+            onPush={() => setSseDialog({ title: "Git Push", endpoint: `/code-editor/repos/${selectedRepo.id}/push`, body: activeProfileId() ? { profile_id: activeProfileId() } : undefined })}
             onRefresh={() => loadStatus(selectedRepo.id)}
           />
 
@@ -5033,7 +5037,7 @@ export function CodeEditorTab() {
                   setSseDialog({
                     title: "Sincronizar (Push)",
                     endpoint: `/code-editor/repos/${selectedRepo.id}/push`,
-                    body: activeToken() ? { token: activeToken() } : undefined,
+                    body: activeProfileId() ? { profile_id: activeProfileId() } : undefined,
                   });
                 }
               }}

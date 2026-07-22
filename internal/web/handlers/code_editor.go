@@ -164,6 +164,26 @@ func (h *CodeEditorHandler) getToken(c *gin.Context) string {
 	return tok
 }
 
+// resolveProfileToken resolve o PAT real de um perfil GitHub nomeado (ProfileSwitcher) pelo ID,
+// sem que o valor precise trafegar do browser — só o ID (não sensível) sai do frontend. Usado
+// por Clone/Pull/Push, que suportam múltiplas contas GitHub simultâneas (uma por repo).
+// Retorna "" se não encontrado — os chamadores devem cair para h.getToken(c) nesse caso.
+func (h *CodeEditorHandler) resolveProfileToken(c *gin.Context, profileID string) string {
+	if profileID == "" || h.userTokensStore == nil {
+		return ""
+	}
+	profiles, err := h.userTokensStore.GetGitHubEditorProfiles(profileEmail(c))
+	if err != nil {
+		return ""
+	}
+	for _, p := range profiles {
+		if p.ID == profileID {
+			return p.Token
+		}
+	}
+	return ""
+}
+
 // gitCmdWithToken cria um exec.Cmd que injeta o token via GIT_ASKPASS.
 // Quando token != "", desabilita o credential helper via -c credential.helper=
 // para evitar que credenciais cacheadas no sistema sobreponham o token fornecido.
@@ -267,10 +287,11 @@ func (h *CodeEditorHandler) ListRepos(c *gin.Context) {
 // Body: { "owner": "...", "repo": "...", "branch": "..." (optional) }
 func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	var req struct {
-		Owner  string `json:"owner"`
-		Repo   string `json:"repo"`
-		Branch string `json:"branch"`
-		Token  string `json:"token"` // token explícito sobrepõe o armazenado
+		Owner     string `json:"owner"`
+		Repo      string `json:"repo"`
+		Branch    string `json:"branch"`
+		Token     string `json:"token"`      // token explícito sobrepõe o armazenado
+		ProfileID string `json:"profile_id"` // perfil GitHub nomeado (ProfileSwitcher) — resolvido server-side
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.Owner == "" || req.Repo == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "owner e repo são obrigatórios"})
@@ -278,6 +299,9 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	}
 
 	token := req.Token
+	if token == "" {
+		token = h.resolveProfileToken(c, req.ProfileID)
+	}
 	if token == "" {
 		token = h.getToken(c)
 	}
@@ -698,7 +722,8 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	dir := h.repoDir(id)
 
 	var req struct {
-		Token string `json:"token"`
+		Token     string `json:"token"`
+		ProfileID string `json:"profile_id"`
 	}
 	c.ShouldBindJSON(&req) //nolint:errcheck
 
@@ -718,6 +743,9 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	sendSSE("Executando git pull...")
 
 	token := req.Token
+	if token == "" {
+		token = h.resolveProfileToken(c, req.ProfileID)
+	}
 	if token == "" {
 		token = h.getToken(c)
 	}
@@ -869,8 +897,9 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 	var req struct {
-		Branch string `json:"branch"`
-		Token  string `json:"token"`
+		Branch    string `json:"branch"`
+		Token     string `json:"token"`
+		ProfileID string `json:"profile_id"`
 	}
 	c.ShouldBindJSON(&req) //nolint:errcheck
 
@@ -895,6 +924,9 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	}
 
 	token := req.Token
+	if token == "" {
+		token = h.resolveProfileToken(c, req.ProfileID)
+	}
 	if token == "" {
 		token = h.getToken(c)
 	}
@@ -2244,7 +2276,23 @@ func profileEmail(c *gin.Context) string {
 	return s
 }
 
+// maskGitHubTokenMarker aparece em todo token mascarado devolvido pela API — nunca ocorre
+// num PAT real do GitHub, então serve de sentinela para SaveGitHubProfiles detectar "token não
+// foi alterado pelo usuário, preservar o valor já armazenado" em vez de gravar o valor mascarado.
+const maskGitHubTokenMarker = "••••"
+
+// maskGitHubToken mascara um PAT para exibição, preservando prefixo+sufixo — mesmo formato
+// já usado no preview local do ProfileSwitcher (frontend), só que agora aplicado a valores que
+// de fato saem da API.
+func maskGitHubToken(t string) string {
+	if len(t) <= 8 {
+		return "••••••••"
+	}
+	return t[:8] + maskGitHubTokenMarker + t[len(t)-4:]
+}
+
 // GetGitHubProfiles — GET /api/v1/code-editor/github-profiles
+// Tokens retornam mascarados — nunca expor o PAT completo por uma rota de leitura.
 func (h *CodeEditorHandler) GetGitHubProfiles(c *gin.Context) {
 	if h.userTokensStore == nil {
 		c.JSON(http.StatusOK, gin.H{"profiles": []storage.GitHubEditorProfile{}})
@@ -2255,10 +2303,18 @@ func (h *CodeEditorHandler) GetGitHubProfiles(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"profiles": profiles})
+	masked := make([]storage.GitHubEditorProfile, len(profiles))
+	for i, p := range profiles {
+		p.Token = maskGitHubToken(p.Token)
+		masked[i] = p
+	}
+	c.JSON(http.StatusOK, gin.H{"profiles": masked})
 }
 
 // SaveGitHubProfiles — PUT /api/v1/code-editor/github-profiles
+// Perfis cujo token chega mascarado (usuário não editou o campo — ex: só renomeou ou trocou
+// qual perfil está ativo) preservam o token real já armazenado, buscado por ID. Sem isso, todo
+// save que não seja a criação/edição explícita do token sobrescreveria o PAT real pela máscara.
 func (h *CodeEditorHandler) SaveGitHubProfiles(c *gin.Context) {
 	var req struct {
 		Profiles []storage.GitHubEditorProfile `json:"profiles"`
@@ -2271,7 +2327,23 @@ func (h *CodeEditorHandler) SaveGitHubProfiles(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage não disponível"})
 		return
 	}
-	if err := h.userTokensStore.SaveGitHubEditorProfiles(profileEmail(c), req.Profiles); err != nil {
+
+	email := profileEmail(c)
+	if existing, err := h.userTokensStore.GetGitHubEditorProfiles(email); err == nil {
+		existingByID := make(map[string]string, len(existing))
+		for _, p := range existing {
+			existingByID[p.ID] = p.Token
+		}
+		for i, p := range req.Profiles {
+			if strings.Contains(p.Token, maskGitHubTokenMarker) {
+				if real, ok := existingByID[p.ID]; ok {
+					req.Profiles[i].Token = real
+				}
+			}
+		}
+	}
+
+	if err := h.userTokensStore.SaveGitHubEditorProfiles(email, req.Profiles); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
