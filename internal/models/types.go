@@ -180,6 +180,12 @@ type DeploymentSummary struct {
 	UpdatedAt           time.Time         `json:"updatedAt"`
 	ServiceClusterIPs   []string          `json:"serviceClusterIPs,omitempty"`
 	ServiceExternalIPs  []string          `json:"serviceExternalIPs,omitempty"`
+	// UnhealthyPodCount/PodIssueReason refletem problemas por-pod (CrashLoopBackOff, ImagePullBackOff,
+	// Pending, container não-ready) que Status.ReadyReplicas pode não capturar — o K8s marca um pod
+	// como Ready de novo rapidamente entre restarts, então um Deployment pode ter ReadyReplicas ==
+	// Replicas no instante da consulta mesmo com um pod passando por crash loop. Ver ListDeployments.
+	UnhealthyPodCount int32  `json:"unhealthyPodCount,omitempty"`
+	PodIssueReason    string `json:"podIssueReason,omitempty"`
 }
 
 // DeploymentMetadata consolida metadados relevantes do Deployment

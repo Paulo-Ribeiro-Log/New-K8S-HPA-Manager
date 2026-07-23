@@ -188,6 +188,10 @@ export interface DeploymentSummary {
   updatedAt: string;
   serviceClusterIPs?: string[];
   serviceExternalIPs?: string[];
+  // Problema por-pod (CrashLoopBackOff, ImagePullBackOff, Pending, container não-ready) que
+  // readyReplicas pode não capturar — ver comentário em models.DeploymentSummary no backend.
+  unhealthyPodCount?: number;
+  podIssueReason?: string;
 }
 
 // Nota: statusCondition/statusReason/statusMessage vêm das Conditions do Deployment K8s

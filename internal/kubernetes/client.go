@@ -977,6 +977,39 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 		return svcList.Items
 	}
 
+	// Cache de problemas de pod por namespace, agregados por Deployment (via owner chain
+	// Pod -> ReplicaSet). Um único List de Pods por namespace cobre todos os deployments
+	// daquele namespace — mesmo padrão de getSvcs acima, não é N+1 por deployment.
+	nsPodIssuesMap := make(map[string]map[string]podIssueAgg)
+	getPodIssues := func(ns string) map[string]podIssueAgg {
+		if issues, ok := nsPodIssuesMap[ns]; ok {
+			return issues
+		}
+		issues := make(map[string]podIssueAgg)
+		podList, err := c.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for i := range podList.Items {
+				pod := &podList.Items[i]
+				depName, ok := deploymentNameForPod(pod)
+				if !ok {
+					continue
+				}
+				reason := podIssueReason(pod)
+				if reason == "" {
+					continue
+				}
+				agg := issues[depName]
+				agg.count++
+				if agg.reason == "" {
+					agg.reason = reason
+				}
+				issues[depName] = agg
+			}
+		}
+		nsPodIssuesMap[ns] = issues
+		return issues
+	}
+
 	appendSummaries := func(items []appsv1.Deployment) {
 		for _, dep := range items {
 			if !showSystemNamespaces && isSystemNamespace(dep.Namespace) {
@@ -989,6 +1022,10 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 			ips := serviceIPsForLabels(getSvcs(dep.Namespace), dep.Spec.Template.Labels)
 			summary.ServiceClusterIPs = ips.clusterIPs
 			summary.ServiceExternalIPs = ips.externalIPs
+			if agg, ok := getPodIssues(dep.Namespace)[dep.Name]; ok {
+				summary.UnhealthyPodCount = int32(agg.count)
+				summary.PodIssueReason = agg.reason
+			}
 			result = append(result, summary)
 		}
 	}
@@ -3812,6 +3849,83 @@ func ValidatePodSelector(selector string) error {
 // ===========================
 // Helper Functions
 // ===========================
+
+// podIssueAgg acumula, por Deployment, a contagem de pods com problema e o primeiro
+// motivo encontrado (usado como tooltip curto na listagem).
+type podIssueAgg struct {
+	count  int
+	reason string
+}
+
+// deploymentNameForPod resolve o nome do Deployment dono de um pod subindo a cadeia
+// Pod -> ReplicaSet -> Deployment (convenção de nome: ReplicaSet = "<deployment>-<hash>").
+// Retorna ok=false para pods sem ReplicaSet dono (DaemonSet, StatefulSet, Job, standalone).
+func deploymentNameForPod(pod *corev1.Pod) (string, bool) {
+	for _, ref := range pod.OwnerReferences {
+		if ref.Kind != "ReplicaSet" {
+			continue
+		}
+		if name := stripReplicaSetHashSuffix(ref.Name); name != "" {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// stripReplicaSetHashSuffix remove o sufixo de hash do nome do ReplicaSet. Retorna "" se
+// o sufixo não parecer um hash (evita falso positivo em nomes com hífen legítimo).
+func stripReplicaSetHashSuffix(rsName string) string {
+	idx := strings.LastIndex(rsName, "-")
+	if idx <= 0 {
+		return ""
+	}
+	suffix := rsName[idx+1:]
+	if len(suffix) < 6 || len(suffix) > 10 {
+		return ""
+	}
+	for _, r := range suffix {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return ""
+		}
+	}
+	return rsName[:idx]
+}
+
+// podIssueReason resume, numa string curta, por que um pod não está saudável — mesma
+// heurística usada em internal/healthcheck/deployment_checker.go, mas aplicada por-pod
+// (sem re-listar pods por deployment) e cobrindo também os casos triviais de phase/ready
+// que a listagem geral de Deployments até hoje não refletia (readyReplicas agregado do
+// Deployment pode ficar "em dia" entre um restart e outro). Retorna "" quando o pod está ok.
+func podIssueReason(pod *corev1.Pod) string {
+	if pod.DeletionTimestamp != nil {
+		return "Terminating"
+	}
+	switch pod.Status.Phase {
+	case corev1.PodPending:
+		return "Pending"
+	case corev1.PodFailed:
+		return "Failed"
+	case corev1.PodUnknown:
+		return "Unknown"
+	}
+
+	notReady := 0
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil {
+			switch cs.State.Waiting.Reason {
+			case "CrashLoopBackOff", "Error", "ImagePullBackOff", "ErrImagePull":
+				return cs.State.Waiting.Reason
+			}
+		}
+		if !cs.Ready {
+			notReady++
+		}
+	}
+	if notReady > 0 {
+		return fmt.Sprintf("%d container(s) not ready", notReady)
+	}
+	return ""
+}
 
 // isDaemonSetPod verifica se um pod pertence a um DaemonSet
 func isDaemonSetPod(pod corev1.Pod) bool {

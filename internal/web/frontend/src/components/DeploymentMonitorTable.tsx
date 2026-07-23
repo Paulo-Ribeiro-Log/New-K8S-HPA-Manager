@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { DeploymentSummary } from "@/lib/api/types";
 import { formatAge } from "@/lib/monitorUtils";
-import { Pencil, Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, RotateCw, Trash2, ArrowUpDown, ChevronUp, ChevronDown } from "lucide-react";
+import { Pencil, Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, RotateCw, Trash2, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -16,6 +16,16 @@ const REFRESH_INTERVAL_MS = 10000;
 
 // SEL | NAME/NS | VERSION | READY | UP-TO-DATE | AVAILABLE | AGE | EDIT
 const INITIAL_WIDTHS = [28, 400, 90, 80, 100, 80, 64, 28];
+
+// isDeploymentHealthy considera tanto o agregado readyReplicas/availableReplicas quanto
+// unhealthyPodCount (problema por-pod tipo CrashLoopBackOff/Pending que o agregado do
+// Deployment pode não capturar no instante da consulta — ver backend ListDeployments).
+function isDeploymentHealthy(dep: DeploymentSummary): boolean {
+  const ready = dep.readyReplicas ?? 0;
+  const desired = dep.replicas ?? 0;
+  const available = dep.availableReplicas ?? 0;
+  return ready === desired && available > 0 && !dep.unhealthyPodCount;
+}
 
 function formatVersion(v: string | undefined): string {
   if (!v) return "-";
@@ -278,13 +288,7 @@ export const DeploymentMonitorTable = ({
     }
 
     if (statusFilter.size > 0) {
-      result = result.filter((d) => {
-        const ready = d.readyReplicas ?? 0;
-        const desired = d.replicas ?? 0;
-        const available = d.availableReplicas ?? 0;
-        const isHealthy = ready === desired && available > 0;
-        return statusFilter.has(isHealthy ? "Saudável" : "Degradado");
-      });
+      result = result.filter((d) => statusFilter.has(isDeploymentHealthy(d) ? "Saudável" : "Degradado"));
     }
 
     if (namespaceFilter.size > 0) {
@@ -585,7 +589,7 @@ export const DeploymentMonitorTable = ({
           const desired = dep.replicas ?? 0;
           const available = dep.availableReplicas ?? 0;
           const updated = dep.updatedReplicas ?? 0;
-          const isHealthy = ready === desired && available > 0;
+          const isHealthy = isDeploymentHealthy(dep);
           const rowColor = isHealthy
             ? "text-green-600 dark:text-green-400"
             : "text-orange-600 dark:text-orange-400";
@@ -637,7 +641,15 @@ export const DeploymentMonitorTable = ({
               <span className="truncate text-muted-foreground" title={dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"] ?? ""}>
                 {formatVersion(dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"])}
               </span>
-              <span>{ready}/{desired}</span>
+              <span className="flex items-center gap-1">
+                {ready}/{desired}
+                {!!dep.unhealthyPodCount && (
+                  <AlertTriangle
+                    className="w-3 h-3 text-orange-500 dark:text-orange-400 flex-shrink-0"
+                    title={`${dep.unhealthyPodCount} pod(s) com problema: ${dep.podIssueReason ?? "status degradado"}`}
+                  />
+                )}
+              </span>
               <span>{updated}</span>
               <span>{available}</span>
               <span className="text-muted-foreground">

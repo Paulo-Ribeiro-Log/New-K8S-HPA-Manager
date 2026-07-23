@@ -301,27 +301,37 @@ export const DeploymentsTab = ({
     console.log("[PredictiveAnalysis] predictionResult changed:", predictionResult);
   }, [predictionResult]);
 
-  // Helper: Detectar deployment problemático
+  // Reasons de pod que indicam falha "dura" (crash), não apenas transição/inicialização —
+  // usado por getDeploymentSeverity pra decidir entre "error" e "degraded".
+  const CRASH_POD_REASONS = ["CrashLoopBackOff", "Error", "ImagePullBackOff", "ErrImagePull", "Failed"];
+
+  // Helper: Detectar deployment problemático. unhealthyPodCount cobre o caso em que
+  // readyReplicas/availableReplicas do Deployment já "fecharam" de novo (o K8s marca o pod
+  // Ready rapidamente entre restarts) mas ainda há um pod individual degradado — ver
+  // comentário em models.DeploymentSummary no backend.
   const isDeploymentProblematic = (dep: DeploymentSummary): boolean => {
     if (dep.availableReplicas < dep.replicas) return true;
     if (dep.readyReplicas < dep.replicas) return true;
     if (dep.statusCondition === "Available" && dep.statusReason) return true;
     if (dep.statusReason === "ProgressDeadlineExceeded") return true;
     if (dep.statusCondition === "ReplicaFailure") return true;
+    if (dep.unhealthyPodCount) return true;
     return false;
   };
 
   // Helper: severidade em 3 níveis para colorização correta
-  // "error"    → replicas=0 ou condição de falha crítica  → vermelho
-  // "degraded" → algumas replicas prontas mas não todas    → amarelo
-  // "ok"       → todas as replicas prontas                → verde
+  // "error"    → replicas=0, condição de falha crítica, ou pod em crash loop → vermelho
+  // "degraded" → algumas replicas prontas mas não todas, ou pod pending/not-ready → amarelo
+  // "ok"       → todas as replicas prontas e nenhum pod com problema → verde
   const getDeploymentSeverity = (dep: DeploymentSummary): "ok" | "degraded" | "error" => {
     if (dep.statusCondition === "ReplicaFailure") return "error";
     if (dep.statusReason === "ProgressDeadlineExceeded") return "error";
     if (dep.replicas > 0 && dep.readyReplicas === 0) return "error";
+    if (dep.unhealthyPodCount && dep.podIssueReason && CRASH_POD_REASONS.includes(dep.podIssueReason)) return "error";
     if (dep.readyReplicas < dep.replicas) return "degraded";
     if (dep.availableReplicas < dep.replicas) return "degraded";
     if (dep.statusCondition === "Available" && dep.statusReason) return "degraded";
+    if (dep.unhealthyPodCount) return "degraded";
     return "ok";
   };
 
@@ -338,6 +348,14 @@ export const DeploymentsTab = ({
     }
     if (dep.statusCondition === "Progressing" && dep.statusReason && dep.availableReplicas < dep.replicas) {
       return { label: dep.statusReason, color: "bg-yellow-500/20 text-yellow-400", tooltip: dep.statusMessage || "" };
+    }
+    if (dep.unhealthyPodCount && dep.podIssueReason) {
+      const isCrash = CRASH_POD_REASONS.includes(dep.podIssueReason);
+      return {
+        label: `${dep.unhealthyPodCount} pod(s): ${dep.podIssueReason}`,
+        color: isCrash ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400",
+        tooltip: `${dep.unhealthyPodCount} pod(s) deste deployment com problema individual não refletido em readyReplicas`,
+      };
     }
     return null;
   };
