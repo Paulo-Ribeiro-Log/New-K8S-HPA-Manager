@@ -20,6 +20,31 @@ contexts:
 current-context: fake-context
 `
 
+// TestSnapshotKubeconfig_SetsKubeconfigEnvVar cobre o motivo real de existir: chamadas
+// exec.Command("kubectl", ...) espalhadas pelo código que não recebem --kubeconfig explícito
+// (ex: describe de node, VPA, gateway, secrets, port-forward) dependem da variável de
+// ambiente KUBECONFIG do processo pra resolver a cópia privada em vez do arquivo
+// compartilhado. t.Setenv restaura o valor original ao final do teste automaticamente.
+func TestSnapshotKubeconfig_SetsKubeconfigEnvVar(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBECONFIG", "")
+
+	sourcePath := filepath.Join(home, "source-kubeconfig.yaml")
+	if err := os.WriteFile(sourcePath, []byte(fakeKubeconfigYAML), 0600); err != nil {
+		t.Fatalf("failed to write source kubeconfig: %v", err)
+	}
+
+	dest, err := snapshotKubeconfig(sourcePath)
+	if err != nil {
+		t.Fatalf("snapshotKubeconfig() error = %v", err)
+	}
+
+	if got := os.Getenv("KUBECONFIG"); got != dest {
+		t.Errorf("KUBECONFIG env var = %q, want %q", got, dest)
+	}
+}
+
 func TestSnapshotKubeconfig_CopiesToAppDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

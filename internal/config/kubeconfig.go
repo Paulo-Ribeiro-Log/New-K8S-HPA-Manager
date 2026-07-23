@@ -175,6 +175,21 @@ func snapshotKubeconfig(sourcePath string) (string, error) {
 		return "", fmt.Errorf("failed to finalize kubeconfig snapshot: %w", err)
 	}
 
+	// Aponta a variável de ambiente KUBECONFIG do processo pra cópia privada. Motivo: nem
+	// todo `exec.Command("kubectl", ...)` deste app passa `--kubeconfig` explícito —
+	// KubectlAuthArgs só monta um kubeconfig temporário explícito pra GKE/EKS; pra AKS (e
+	// qualquer chamada kubectl "nua" espalhada pelo código — describe de node, apply/patch de
+	// VPA, gateway, secrets, port-forward, Code Editor K8s tab, validators) o kubectl resolve
+	// sozinho via `$KUBECONFIG`/`~/.kube/config` do sistema. Sem isso, aquelas chamadas
+	// continuavam lendo o arquivo compartilhado direto — o próprio vetor de corrupção que essa
+	// função existe pra eliminar, mesmo com o clientset em memória já blindado via k.configPath.
+	// os.Setenv aqui é seguro mesmo com múltiplos KubeConfigManager concorrentes (cordon/drain
+	// instancia um por request): todos apontam pro mesmo dest fixo, então o pior caso é escrever
+	// o mesmo valor mais de uma vez.
+	if err := os.Setenv("KUBECONFIG", dest); err != nil {
+		return "", fmt.Errorf("failed to set KUBECONFIG env var: %w", err)
+	}
+
 	return dest, nil
 }
 
