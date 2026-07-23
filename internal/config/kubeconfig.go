@@ -104,15 +104,96 @@ type KubeConfigManager struct {
 	historyTracker *history.HistoryTracker
 }
 
-// NewKubeConfigManager cria um novo gerenciador de kubeconfig
+// snapshotKubeconfig copia sourcePath para uma cópia privada do app
+// (~/.k8s-hpa-manager/kubeconfig, sempre recriada) e retorna o caminho da cópia.
+//
+// Motivo: mesmo depois de SwitchContext parar de escrever `current-context` no arquivo
+// compartilhado (ver histórico de bug de corrupção), GetRestConfig ainda LÊ o kubeconfig
+// original do disco a cada cache-miss (a cada ~30-40min por cluster) via
+// clientcmd.ClientConfigLoadingRules — concorrendo com escritas de outras ferramentas
+// (kubectl, k9s, `az aks get-credentials`, `aws eks update-kubeconfig`, `gcloud container
+// clusters get-credentials`) que também usam ~/.kube/config. Uma leitura no meio de uma
+// escrita externa pode pegar YAML parcial/inválido e derrubar a resolução de todos os
+// clusters, não só o que estava sendo escrito. Tirar uma cópia própria uma única vez no
+// startup do processo e trabalhar só em cima dela elimina esse acoplamento por completo —
+// o processo nunca mais toca o arquivo original depois de copiá-lo. Trade-off aceito:
+// mudanças no kubeconfig original (novo contexto, credencial renovada) só são vistas após
+// reiniciar o app — já era o comportamento de fato, já que k.config (lista de contexts) só
+// é carregado uma vez em memória mesmo sem essa cópia.
+func snapshotKubeconfig(sourcePath string) (string, error) {
+	if sourcePath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to determine kubeconfig path: %w", err)
+		}
+		sourcePath = filepath.Join(home, ".kube", "config")
+	}
+
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read kubeconfig at %s: %w", sourcePath, err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	appDir := filepath.Join(home, ".k8s-hpa-manager")
+	if err := os.MkdirAll(appDir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create app config dir: %w", err)
+	}
+
+	dest := filepath.Join(appDir, "kubeconfig")
+
+	// Nome do arquivo temporário único por chamada (não um `dest+".tmp"` fixo): mais de um
+	// KubeConfigManager pode ser criado concorrentemente no mesmo processo (ex: cordon/drain
+	// em internal/web/handlers/nodepools.go instancia um manager próprio por request). Um nome
+	// fixo faria duas goroutines escreverem no mesmo arquivo tmp ao mesmo tempo — exatamente o
+	// tipo de corrupção por concorrência que esse mecanismo existe pra evitar. Com nome único,
+	// cada goroutine escreve seu próprio arquivo intacto e só a renomeação final (atômica a
+	// nível de SO) disputa `dest` — a última vence, sem nunca deixar `dest` num estado parcial.
+	tmpFile, err := os.CreateTemp(appDir, "kubeconfig-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("failed to create kubeconfig snapshot temp file: %w", err)
+	}
+	tmp := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmp)
+		return "", fmt.Errorf("failed to write kubeconfig snapshot: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("failed to write kubeconfig snapshot: %w", err)
+	}
+	if err := os.Chmod(tmp, 0600); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("failed to set kubeconfig snapshot permissions: %w", err)
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("failed to finalize kubeconfig snapshot: %w", err)
+	}
+
+	return dest, nil
+}
+
+// NewKubeConfigManager cria um novo gerenciador de kubeconfig. A cada chamada, tira um
+// snapshot privado do kubeconfig de origem (ver snapshotKubeconfig) e opera exclusivamente
+// sobre essa cópia — nunca sobre o arquivo compartilhado.
 func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
-	config, err := clientcmd.LoadFromFile(configPath)
+	privatePath, err := snapshotKubeconfig(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to snapshot kubeconfig: %w", err)
+	}
+
+	config, err := clientcmd.LoadFromFile(privatePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
 	}
 
 	km := &KubeConfigManager{
-		configPath:     configPath,
+		configPath:     privatePath,
 		config:         config,
 		clients:        make(map[string]kubernetes.Interface),
 		metricsClients: make(map[string]*metricsclientset.Clientset),
