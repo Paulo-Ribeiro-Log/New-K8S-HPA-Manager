@@ -1677,18 +1677,20 @@ func (k *KubeConfigManager) GetPodMetrics(contextName, namespace, resourceName, 
 	return client.GetPodMetrics(namespace, resourceName, workloadType)
 }
 
-// SwitchContext muda o contexto ativo do Kubernetes para o cluster especificado
+// SwitchContext muda o contexto ativo do Kubernetes para o cluster especificado.
+//
+// Atualiza apenas o estado em memória (k.config.CurrentContext) — NUNCA chamar
+// `kubectl config use-context` aqui. Todo o resto do app (GetRestConfig, chamadas
+// exec.Command("kubectl", ...), Helm via --kube-context) já resolve o context pelo
+// nome explicitamente, sem depender do current-context em disco. Reescrever
+// ~/.kube/config a cada troca de cluster na Web UI só arrisca corromper o arquivo
+// compartilhado — dois cliques de troca concorrentes (duas abas, dois usuários) ou
+// uma edição manual do kubectl feita ao mesmo tempo competem pelo mesmo arquivo sem
+// nenhum lock, podendo gerar YAML inválido. Ver histórico de investigação desse bug.
 func (k *KubeConfigManager) SwitchContext(context string) error {
 	// Verificar se o contexto existe
 	if _, exists := k.config.Contexts[context]; !exists {
 		return fmt.Errorf("context %s not found in kubeconfig", context)
-	}
-
-	// Executar kubectl config use-context
-	cmd := exec.Command("kubectl", "config", "use-context", context)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to switch kubectl context to %s: %w, output: %s", context, err, string(output))
 	}
 
 	// Atualizar contexto atual na configuração em memória
