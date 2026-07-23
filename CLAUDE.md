@@ -13,6 +13,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Todas as features abaixo já estão mescladas na `main` (verificado via `git merge-base`) e documentadas na seção `##`/`###` correspondente deste arquivo: Code Editor (Fases 1-10, incl. Source Control e integração K8s), Diagnóstico SNAT multi-cloud, Dynatrace + correlação K8s, Access Checker (`AccessCheckTab.tsx`), FinOps Storage, Teams/SRE Approval, JWT, RBAC K8s via `SelfSubjectRulesReview`, HPAEditor, Conntrack Viewer com comparação D-1/D-2/D-3, Resync AKV, CloudAccountHintField, sincronização de foco entre painel-lista e painel-tabela (`useRevealOnKeyChange`), drill-down de pods no DaemonSetMonitorTable, aba "Mesma Imagem" no `PodQuickViewModal`. Para o histórico de qual branch trouxe cada uma (com contexto e bugs corrigidos), ver [docs/history/CHANGELOG.md](docs/history/CHANGELOG.md).
 
+### Requisitos
+
+| Obrigatório | Opcional |
+|-------------|----------|
+| Go 1.25+ (compilação) | Azure CLI (Node Pools AKS) / AWS CLI (EKS) / gcloud (GKE) |
+| kubectl configurado | Prometheus (métricas + Conntrack histórico) |
+| Git | Ollama local ou API key Claude/Gemini/OpenAI (AI Diagnostics) |
+| | Kiali/Istio (Service Mesh) |
+| | Chrome/Edge do Windows via CDP (ServiceNow SSO, Teams — WSL2) |
+
 ---
 
 ## Documentação Modular
@@ -62,6 +72,9 @@ make build-web                # Build completo (frontend + backend)
 ./build/new-k8s-hpa web       # Servidor web (porta 8080)
 ./build/new-k8s-hpa web -f    # Foreground mode (logs no terminal)
 ./build/new-k8s-hpa web --ad  # EMERGÊNCIA: Bypass RBAC (flag oculta)
+./build/new-k8s-hpa           # TUI padrão
+./build/new-k8s-hpa version   # Versão + updates disponíveis
+# Atalhos TUI: F1 Ajuda · F3 Logs · F5 Reload · F8 Prometheus · F9 CronJobs · Ctrl+S Salvar sessão · Ctrl+L Carregar sessão · ESC Voltar
 
 # Dev
 make web-dev                  # Frontend dev server (Vite HMR - porta 5173)
@@ -197,6 +210,8 @@ k8s-hpa-manager/
 **Padrão: cache de chamadas de CLI externa (az/gcloud/aws)**: qualquer wrapper de CLI cloud chamado no hot path de uma requisição deve ser cacheado em memória com mutex + TTL curto — subprocessos custam 1-3s e são invocados por requisição sem isso. Exemplos existentes: `restConfigEntry` (`kubeconfig.go`, 40min GKE/30min outros), `IsGcloudAuthActive` (`internal/cloudprovider/gcp/auth.go`, 5min), cache de `ListNodeGroups` (2min), `checkReachability` — probe TCP de 3s cacheado por 15s para detectar VPN/rede fora do ar sem pagar o timeout completo de 30s do client K8s. Seguir esse padrão (não chamar CLI direto a cada request) ao adicionar novas integrações cloud.
 
 **Cache de token EKS** (`getFreshEKSToken`, `kubeconfig.go`): mesmo padrão aplicado à autenticação EKS. O exec credential plugin nativo do client-go (`plugin/pkg/client/auth/exec`) roda `aws eks get-token` via `exec.Command` **sem nenhum timeout** — se a sessão AWS SSO do profile estiver expirada, o processo trava indefinidamente e a troca de cluster no frontend fica pendurada. `getFreshEKSToken` gera o token por conta própria com `exec.CommandContext` (timeout `eksTokenTimeout=10s`), cacheia em memória com TTL derivado da expiração real do token STS (`exp - eksTokenSafetyBuffer=1min`) e usa `singleflight.Group` para não spawnar subprocessos concorrentes quando várias requisições chegam juntas logo após a troca de cluster (mesmo padrão de `GetFreshGKEToken`). Em qualquer falha (aws ausente, timeout, sessão SSO expirada, resposta inválida), cai de volta no `ExecProvider` nativo do client-go — preserva o `EnrichEKSError` e a UX de erro já existentes. Como o client K8s fica cacheado por até `clientTTL` (30min) de idle — mais que a validade real de um token STS (~15min) —, um `eksTokenRoundTripper` reescreve o header `Authorization` a cada requisição HTTP com o token mais recente do cache, em vez de depender de um `BearerToken` estático travado no valor de quando o client foi criado.
+
+**Bug real corrigido — `KubectlAuthArgs` (describe/Gateway API/Resource Explorer em EKS) usava Bearer Token estático potencialmente expirado**: `eksTokenRoundTripper` acima só protege o clientset típico (chamadas via `client-go`, HTTP em memória). `KubectlAuthArgs` (usada por `ExecuteKubectlDescribe` e outras chamadas que shell out pra `kubectl`) monta um kubeconfig **temporário em disco** com o `BearerToken` do `restConfig` — e esse `restConfig` vem do cache de `k.restConfigs`, válido por até 30min, sem nenhuma renovação. Como o token STS do EKS expira em ~15min, `kubectl describe` (e demais chamadas via subprocesso) funcionava só nos primeiros ~15min de cada janela de cache de 30min e falhava com 401/403 dali pra frente — sintoma observado: describe de pods em cluster EKS parava de funcionar pouco depois do primeiro uso do cluster, sem relação com nenhuma mudança recente de código (investigado a partir de um relato de regressão que apontava pro PR errado — a causa real não tinha nenhuma ligação com o PR suspeito). Corrigido: `KubectlAuthArgs` agora chama `getFreshEKSToken` de novo antes de gravar o token no kubeconfig temporário — como `getFreshEKSToken` já tem cache próprio com TTL derivado da expiração real do STS, isso não gera subprocessos `aws` extras na maioria das chamadas, só busca de novo quando o token realmente expirou. GKE não tem esse problema: `GetFreshGKEToken` já cacheia por 45min, maior que o TTL de 40min do `restConfig` para esse provider.
 
 **Bubble Tea — NUNCA usar goroutines diretas:**
 ```go

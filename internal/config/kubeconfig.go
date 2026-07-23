@@ -787,6 +787,24 @@ func (k *KubeConfigManager) KubectlAuthArgs(cluster string) (args []string, clea
 		return []string{"--context", cluster}, noop, nil
 	}
 
+	if cloudProvider == CloudProviderEKS && restConfig.BearerToken != "" {
+		// restConfig pode vir do cache de até 30min (k.restConfigs), mas o Bearer Token EKS
+		// (STS via `aws eks get-token`) só é válido por ~15min. O clientset típico não sofre
+		// com isso porque restConfig.WrapTransport (eksTokenRoundTripper) renova o header
+		// Authorization a cada requisição HTTP — mas aqui o token é gravado ESTÁTICO num
+		// kubeconfig temporário consumido por um subprocesso `kubectl`, que não tem esse
+		// mecanismo de renovação. Sem isso, describe (e as demais chamadas via kubectl
+		// subprocess) funcionava só nos primeiros ~15min de cada janela de cache de 30min e
+		// falhava com 401/403 dali em diante. getFreshEKSToken tem cache próprio com TTL
+		// derivado da expiração real do STS, então isso não gera subprocessos extras na
+		// maioria das chamadas — só busca de novo quando o token realmente expirou.
+		if exec := k.buildEKSExecProvider(resolved, serverURL, cluster); exec != nil {
+			if token, ok := getFreshEKSToken(exec.Args); ok {
+				restConfig.BearerToken = token
+			}
+		}
+	}
+
 	tmpKubeconfig := api.NewConfig()
 
 	clusterEntry := api.NewCluster()
