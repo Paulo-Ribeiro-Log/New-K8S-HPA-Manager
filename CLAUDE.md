@@ -1227,3 +1227,9 @@ gh release create v1.3.X \
 ```
 
 > `create-v1-release.sh` era específico para v1.0.0 — **não usar** para releases correntes.
+
+### CI (GitHub Actions)
+
+`.github/workflows/ci.yml` roda automaticamente em todo push/PR para `main`/`master`: `go mod download` + `go mod verify` → `make test` (com `SKIP_AZURE_TESTS=1`) → `make build` → `make version` → `make release` (cross-compilation) → upload do binário linux como artifact (retenção 7 dias). Não publica release no GitHub — isso continua manual via `gh release create` (seção acima).
+
+**`.github/workflows/release.yml`** existe como alternativa opcional ao `gh release create` manual acima — mas é **só `workflow_dispatch`** (Actions → Release → Run workflow, escolhendo a tag `vX.Y.Z` desejada em "Use workflow from"), **não** dispara mais automaticamente em `git push origin v*` (evita a corrida/duplicação com o fluxo manual documentado acima). Corrigido para Go 1.25 e convenção de nomes atual (`new-k8s-hpa-*`, `Paulo-Ribeiro-Log/New-K8S-HPA-Manager`) — antes usava Go 1.23 e nomes antigos (`k8s-hpa-manager-*`, `Scale_HPA`).

@@ -1,9 +1,13 @@
 name: Release
 
+# Disparo manual apenas (workflow_dispatch) — NÃO dispara automaticamente em push de tag.
+# Motivo: o fluxo de release documentado no CLAUDE.md (seção "Release") é manual via
+# `git tag vX.Y.Z && git push origin vX.Y.Z` seguido de `gh release create` explícito.
+# Um trigger automático em `push: tags: v*` corria em paralelo a esse fluxo manual e
+# publicava uma release duplicada/com nomes de binário desatualizados.
+# Para rodar: Actions → Release → Run workflow, escolhendo a tag desejada como "Use workflow from".
 on:
-  push:
-    tags:
-      - 'v*'  # Triggered quando criar tag v1.x.x
+  workflow_dispatch: {}
 
 jobs:
   release:
@@ -20,7 +24,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -30,6 +34,10 @@ jobs:
       - name: Get version from tag
         id: version
         run: |
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "ERRO: rode este workflow escolhendo uma tag vX.Y.Z em 'Use workflow from', não uma branch." >&2
+            exit 1
+          fi
           VERSION=${GITHUB_REF#refs/tags/v}
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION"
@@ -58,50 +66,47 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ## 🚀 k8s-hpa-manager ${{ steps.version.outputs.VERSION }}
+            ## 🚀 new-k8s-hpa ${{ steps.version.outputs.VERSION }}
 
             ### 📥 Instalação
 
             **Linux (amd64):**
             ```bash
-            curl -L https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/download/v${{ steps.version.outputs.VERSION }}/k8s-hpa-manager-linux-amd64 -o k8s-hpa-manager
-            chmod +x k8s-hpa-manager
-            sudo mv k8s-hpa-manager /usr/local/bin/
+            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ steps.version.outputs.VERSION }}/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+            chmod +x new-k8s-hpa
+            sudo mv new-k8s-hpa /usr/local/bin/
             ```
 
             **macOS (Intel):**
             ```bash
-            curl -L https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/download/v${{ steps.version.outputs.VERSION }}/k8s-hpa-manager-darwin-amd64 -o k8s-hpa-manager
-            chmod +x k8s-hpa-manager
-            sudo mv k8s-hpa-manager /usr/local/bin/
+            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ steps.version.outputs.VERSION }}/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
+            chmod +x new-k8s-hpa
+            sudo mv new-k8s-hpa /usr/local/bin/
             ```
 
             **macOS (Apple Silicon):**
             ```bash
-            curl -L https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/download/v${{ steps.version.outputs.VERSION }}/k8s-hpa-manager-darwin-arm64 -o k8s-hpa-manager
-            chmod +x k8s-hpa-manager
-            sudo mv k8s-hpa-manager /usr/local/bin/
+            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ steps.version.outputs.VERSION }}/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
+            chmod +x new-k8s-hpa
+            sudo mv new-k8s-hpa /usr/local/bin/
             ```
 
-            **Windows:**
-            ```powershell
-            # Download k8s-hpa-manager-windows-amd64.exe e adicione ao PATH
-            ```
+            **Windows**: Use WSL2 com o binário Linux.
 
             ### ✨ Verificar Instalação
             ```bash
-            k8s-hpa-manager version
+            new-k8s-hpa version
             ```
 
             ---
 
-            🤖 Release automática via GitHub Actions
+            🤖 Release publicada manualmente via GitHub Actions (workflow_dispatch)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: k8s-hpa-manager-${{ steps.version.outputs.VERSION }}
+          name: new-k8s-hpa-${{ steps.version.outputs.VERSION }}
           path: build/release/*
           retention-days: 90
