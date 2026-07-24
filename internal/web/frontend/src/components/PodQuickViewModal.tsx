@@ -136,6 +136,29 @@ function findEventsBlock(lines: string[]): DescribeBlock | null {
   return { start: idx, end };
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Destaca (case-insensitive) todas as ocorrências de `query` dentro de uma linha de log,
+// espelhando o match de filterLogLines (mesmo .toLowerCase().includes) — só que aqui
+// precisamos das posições exatas pra fatiar a string em spans normais + <mark>.
+function highlightMatches(line: string, query: string): React.ReactNode {
+  const text = line || " ";
+  const trimmed = query.trim();
+  if (!trimmed) return text;
+  const escaped = escapeRegExp(trimmed);
+  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
+  if (parts.length === 1) return text;
+  return parts.map((part, idx) =>
+    part.toLowerCase() === trimmed.toLowerCase() ? (
+      <mark key={idx} className="bg-yellow-400/80 text-black rounded-sm px-0.5">{part}</mark>
+    ) : (
+      <span key={idx}>{part}</span>
+    )
+  );
+}
+
 function filterLogLines(rawLogs: string, levelFilter: Set<LogLevel>, search: string): string[] {
   const lines = (rawLogs || "").split("\n");
   let result = lines;
@@ -384,7 +407,7 @@ function LogsViewer({
             filteredLines.length > 0 ? (
               filteredLines.map((line, i) => (
                 <div key={i} className={`whitespace-pre-wrap break-all ${logLineColor(line)}`}>
-                  {line || " "}
+                  {highlightMatches(line, logSearch)}
                 </div>
               ))
             ) : (
