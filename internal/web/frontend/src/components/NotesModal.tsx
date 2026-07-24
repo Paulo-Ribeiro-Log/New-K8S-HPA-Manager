@@ -2,16 +2,16 @@ import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
-import { Eye, Pencil, Plus, Save, Search, StickyNote, Trash2, X } from "lucide-react";
+import { Eye, Pencil, Plus, Save, Search, StickyNote, X } from "lucide-react";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MarkdownToolbar } from "@/components/MarkdownToolbar";
-import { useCreateNote, useDeleteNote, useNotes, useSearchNotes, useUpdateNote } from "@/hooks/useNotes";
+import { NoteEntry } from "@/components/NoteEntry";
+import { GENERAL_NOTES_TAB, useCreateNote, useDeleteNote, useNotes, useSearchNotes, useUpdateNote } from "@/hooks/useNotes";
 import { useUserProfile } from "@/hooks/useUserProfile";
 import type { Note } from "@/lib/api/types";
 
@@ -86,6 +86,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
   };
 
   const saving = createNote.isPending || updateNote.isPending;
+  const tabLabel = tab === GENERAL_NOTES_TAB ? "Gerais (todas as abas)" : tab;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -93,7 +94,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <StickyNote className="w-4 h-4" />
-            Notas — {cluster || "sem cluster"} / {tab}
+            Notas — {cluster || "sem cluster"} / {tabLabel}
           </DialogTitle>
         </DialogHeader>
 
@@ -130,20 +131,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
                     <p className="text-sm text-muted-foreground">Nenhuma nota encontrada.</p>
                   )}
                   {searchResults.map((note) => (
-                    <div key={note.id} className="border rounded-md p-3">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground mb-2 gap-2">
-                        <span className="truncate">
-                          {note.user_email} — {new Date(note.created_at).toLocaleString("pt-BR")}
-                        </span>
-                        <div className="flex gap-1 flex-shrink-0">
-                          <Badge variant="outline" className="text-[10px] font-normal">{note.cluster}</Badge>
-                          <Badge variant="outline" className="text-[10px] font-normal">{note.tab}</Badge>
-                        </div>
-                      </div>
-                      <div className="prose prose-sm dark:prose-invert max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
-                      </div>
-                    </div>
+                    <NoteEntry key={note.id} note={note} showScopeBadges defaultOpen={false} />
                   ))}
                 </div>
               </ScrollArea>
@@ -200,26 +188,14 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
                     {notes.map((note) => {
                       const isAuthor = !!user?.email && note.user_email === user.email;
                       return (
-                        <div key={note.id} className="border rounded-md p-3">
-                          <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
-                            <span>
-                              {note.user_email} — {new Date(note.created_at).toLocaleString("pt-BR")}
-                            </span>
-                            {isAuthor && (
-                              <div className="flex gap-1">
-                                <Button variant="ghost" size="sm" onClick={() => startEdit(note)} title="Editar">
-                                  <Pencil className="w-3.5 h-3.5" />
-                                </Button>
-                                <Button variant="ghost" size="sm" onClick={() => handleDelete(note.id)} title="Excluir">
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </Button>
-                              </div>
-                            )}
-                          </div>
-                          <div className="prose prose-sm dark:prose-invert max-w-none">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
-                          </div>
-                        </div>
+                        <NoteEntry
+                          key={note.id}
+                          note={note}
+                          isAuthor={isAuthor}
+                          onEdit={() => startEdit(note)}
+                          onDelete={() => handleDelete(note.id)}
+                          defaultOpen={false}
+                        />
                       );
                     })}
                   </div>

@@ -45,6 +45,7 @@ import { LoadSessionModal } from "@/components/LoadSessionModal";
 import { LogViewer } from "@/components/LogViewer";
 import { HistoryViewer } from "@/components/HistoryViewer";
 import { NotesModal } from "@/components/NotesModal";
+import { GeneralNotesWidget } from "@/components/GeneralNotesWidget";
 import { Badge } from "@/components/ui/badge";
 import { useNotes } from "@/hooks/useNotes";
 import { StagingPanel } from "@/components/StagingPanel";
@@ -1824,6 +1825,9 @@ const Index = ({ onLogout }: IndexProps) => {
         open={showHistoryViewer}
         onOpenChange={setShowHistoryViewer}
       />
+
+      {/* Post-it de lembretes gerais — visível em qualquer aba, independente do activeTab */}
+      <GeneralNotesWidget cluster={selectedCluster} />
 
       {/* Modal de Notas — escopado por cluster+aba ativa */}
       <NotesModal

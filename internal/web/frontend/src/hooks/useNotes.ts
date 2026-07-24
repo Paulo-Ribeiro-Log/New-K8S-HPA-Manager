@@ -3,6 +3,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../lib/api/client';
 import type { Note } from '../lib/api/types';
 
+// Aba reservada (nunca corresponde a um activeTab real da UI) para notas "gerais" de um
+// cluster — reminders que devem ficar visíveis independente de qual aba está aberta.
+// Reaproveita 100% do backend/CRUD de notas por cluster+aba já existente, sem schema novo.
+export const GENERAL_NOTES_TAB = '__general__';
+
 // Hook para listar notas de um escopo (cluster+aba)
 export function useNotes(cluster: string, tab: string) {
   return useQuery({
