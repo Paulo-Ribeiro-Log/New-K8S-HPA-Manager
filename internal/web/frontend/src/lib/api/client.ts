@@ -2036,6 +2036,11 @@ class APIClient {
     return this.request<Note[]>(`/notes?${params.toString()}`);
   }
 
+  async searchNotes(query: string): Promise<Note[]> {
+    const params = new URLSearchParams({ q: query });
+    return this.request<Note[]>(`/notes/search?${params.toString()}`);
+  }
+
   async createNote(cluster: string, tab: string, content: string): Promise<{ id: number }> {
     return this.request<{ id: number }>("/notes", {
       method: "POST",

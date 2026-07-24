@@ -2,14 +2,16 @@ import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
-import { Eye, Pencil, Plus, Save, StickyNote, Trash2, X } from "lucide-react";
+import { Eye, Pencil, Plus, Save, Search, StickyNote, X } from "lucide-react";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MarkdownToolbar } from "@/components/MarkdownToolbar";
-import { useCreateNote, useDeleteNote, useNotes, useUpdateNote } from "@/hooks/useNotes";
+import { NoteEntry } from "@/components/NoteEntry";
+import { GENERAL_NOTES_TAB, useCreateNote, useDeleteNote, useNotes, useSearchNotes, useUpdateNote } from "@/hooks/useNotes";
 import { useUserProfile } from "@/hooks/useUserProfile";
 import type { Note } from "@/lib/api/types";
 
@@ -32,6 +34,10 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const isSearching = searchQuery.trim().length >= 2;
+  const { data: searchResults = [], isFetching: searchLoading } = useSearchNotes(searchQuery);
 
   const startNew = () => {
     setComposing(true);
@@ -80,6 +86,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
   };
 
   const saving = createNote.isPending || updateNote.isPending;
+  const tabLabel = tab === GENERAL_NOTES_TAB ? "Gerais (todas as abas)" : tab;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -87,7 +94,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <StickyNote className="w-4 h-4" />
-            Notas — {cluster || "sem cluster"} / {tab}
+            Notas — {cluster || "sem cluster"} / {tabLabel}
           </DialogTitle>
         </DialogHeader>
 
@@ -97,81 +104,104 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
           </div>
         ) : (
           <div className="flex-1 min-h-0 flex flex-col gap-3">
-            {!composing && (
-              <Button size="sm" onClick={startNew} className="self-start">
-                <Plus className="w-4 h-4 mr-1" /> Nova nota
-              </Button>
-            )}
+            <div className="relative flex-shrink-0">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Buscar em todas as notas (todos os clusters/abas)..."
+                className="pl-8 pr-8 h-8 text-sm"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  title="Limpar busca"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
 
-            {composing && (
-              <div className="flex flex-col gap-2 border rounded-md p-3 flex-shrink-0">
-                <div className="flex items-center justify-between">
-                  <MarkdownToolbar textareaRef={textareaRef} value={draft} onChange={setDraft} />
-                  <Button variant="ghost" size="sm" onClick={() => setPreview((p) => !p)} title={preview ? "Editar" : "Pré-visualizar"}>
-                    {preview ? <Pencil className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </Button>
+            {isSearching ? (
+              <ScrollArea className="flex-1 min-h-0">
+                <div className="flex flex-col gap-3 pr-3">
+                  {searchLoading && <p className="text-sm text-muted-foreground">Buscando...</p>}
+                  {!searchLoading && searchResults.length === 0 && (
+                    <p className="text-sm text-muted-foreground">Nenhuma nota encontrada.</p>
+                  )}
+                  {searchResults.map((note) => (
+                    <NoteEntry key={note.id} note={note} showScopeBadges defaultOpen={false} />
+                  ))}
                 </div>
-
-                {preview ? (
-                  <div className="prose prose-sm dark:prose-invert max-w-none border rounded p-2 min-h-[150px]">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {draft || "*nada para pré-visualizar*"}
-                    </ReactMarkdown>
-                  </div>
-                ) : (
-                  <Textarea
-                    ref={textareaRef}
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    className="min-h-[150px] font-mono text-sm"
-                    placeholder="Escreva em Markdown..."
-                  />
+              </ScrollArea>
+            ) : (
+              <>
+                {!composing && (
+                  <Button size="sm" onClick={startNew} className="self-start">
+                    <Plus className="w-4 h-4 mr-1" /> Nova nota
+                  </Button>
                 )}
 
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" size="sm" onClick={cancelCompose}>
-                    <X className="w-4 h-4 mr-1" /> Cancelar
-                  </Button>
-                  <Button size="sm" onClick={handleSave} disabled={saving || !draft.trim()}>
-                    <Save className="w-4 h-4 mr-1" /> Salvar
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            <ScrollArea className="flex-1 min-h-0">
-              <div className="flex flex-col gap-3 pr-3">
-                {isLoading && <p className="text-sm text-muted-foreground">Carregando...</p>}
-                {!isLoading && notes.length === 0 && (
-                  <p className="text-sm text-muted-foreground">Nenhuma nota ainda neste cluster/aba.</p>
-                )}
-                {notes.map((note) => {
-                  const isAuthor = !!user?.email && note.user_email === user.email;
-                  return (
-                    <div key={note.id} className="border rounded-md p-3">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
-                        <span>
-                          {note.user_email} — {new Date(note.created_at).toLocaleString("pt-BR")}
-                        </span>
-                        {isAuthor && (
-                          <div className="flex gap-1">
-                            <Button variant="ghost" size="sm" onClick={() => startEdit(note)} title="Editar">
-                              <Pencil className="w-3.5 h-3.5" />
-                            </Button>
-                            <Button variant="ghost" size="sm" onClick={() => handleDelete(note.id)} title="Excluir">
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                      <div className="prose prose-sm dark:prose-invert max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
-                      </div>
+                {composing && (
+                  <div className="flex flex-col gap-2 border rounded-md p-3 flex-shrink-0">
+                    <div className="flex items-center justify-between">
+                      <MarkdownToolbar textareaRef={textareaRef} value={draft} onChange={setDraft} />
+                      <Button variant="ghost" size="sm" onClick={() => setPreview((p) => !p)} title={preview ? "Editar" : "Pré-visualizar"}>
+                        {preview ? <Pencil className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </Button>
                     </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
+
+                    {preview ? (
+                      <div className="prose prose-sm dark:prose-invert max-w-none border rounded p-2 min-h-[150px]">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {draft || "*nada para pré-visualizar*"}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <Textarea
+                        ref={textareaRef}
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        className="min-h-[150px] font-mono text-sm"
+                        placeholder="Escreva em Markdown..."
+                      />
+                    )}
+
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" size="sm" onClick={cancelCompose}>
+                        <X className="w-4 h-4 mr-1" /> Cancelar
+                      </Button>
+                      <Button size="sm" onClick={handleSave} disabled={saving || !draft.trim()}>
+                        <Save className="w-4 h-4 mr-1" /> Salvar
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <ScrollArea className="flex-1 min-h-0">
+                  <div className="flex flex-col gap-3 pr-3">
+                    {isLoading && <p className="text-sm text-muted-foreground">Carregando...</p>}
+                    {!isLoading && notes.length === 0 && (
+                      <p className="text-sm text-muted-foreground">Nenhuma nota ainda neste cluster/aba.</p>
+                    )}
+                    {notes.map((note) => {
+                      const isAuthor = !!user?.email && note.user_email === user.email;
+                      return (
+                        <NoteEntry
+                          key={note.id}
+                          note={note}
+                          isAuthor={isAuthor}
+                          onEdit={() => startEdit(note)}
+                          onDelete={() => handleDelete(note.id)}
+                          defaultOpen={false}
+                        />
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </>
+            )}
           </div>
         )}
       </DialogContent>
