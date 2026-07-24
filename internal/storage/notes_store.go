@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -110,6 +111,39 @@ func (s *NotesStore) List(cluster, tab string) ([]Note, error) {
 		notes = append(notes, n)
 	}
 	return notes, nil
+}
+
+// Search busca notas por substring do conteúdo em TODOS os clusters/abas (não escopado),
+// mais recente primeiro. Usado para achar uma nota quando não se lembra em qual cluster/aba foi criada.
+func (s *NotesStore) Search(query string, limit int) ([]Note, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		`SELECT id, cluster, tab, content, user_email, created_at, updated_at
+		 FROM notes WHERE content LIKE ? ESCAPE '\' ORDER BY created_at DESC LIMIT ?`,
+		"%"+escapeLike(query)+"%", limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("buscar notes: %w", err)
+	}
+	defer rows.Close()
+
+	notes := []Note{}
+	for rows.Next() {
+		var n Note
+		if err := rows.Scan(&n.ID, &n.Cluster, &n.Tab, &n.Content, &n.UserEmail, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			continue
+		}
+		notes = append(notes, n)
+	}
+	return notes, nil
+}
+
+// escapeLike escapa os wildcards do LIKE (% e _) presentes no termo de busca do usuário.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // GetByID busca uma nota específica — usado para checar autoria antes de editar/excluir.

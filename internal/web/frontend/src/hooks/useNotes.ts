@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../lib/api/client';
 import type { Note } from '../lib/api/types';
@@ -8,6 +9,25 @@ export function useNotes(cluster: string, tab: string) {
     queryKey: ['notes', cluster, tab],
     queryFn: () => apiClient.getNotes(cluster, tab),
     enabled: !!cluster && !!tab,
+    staleTime: 30000,
+  });
+}
+
+// Hook para buscar notas por conteúdo em TODOS os clusters/abas (não escopado).
+// Debounce de 400ms para não disparar uma request por tecla digitada.
+export function useSearchNotes(query: string) {
+  const [debounced, setDebounced] = useState(query);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query), 400);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const trimmed = debounced.trim();
+  return useQuery({
+    queryKey: ['notes-search', trimmed],
+    queryFn: () => apiClient.searchNotes(trimmed),
+    enabled: trimmed.length >= 2,
     staleTime: 30000,
   });
 }

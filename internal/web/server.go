@@ -1439,6 +1439,7 @@ func (s *Server) setupRoutes() {
 	// Notes (anotações Markdown por cluster+aba)
 	if s.notesHandler != nil {
 		api.GET("/notes", rbacMiddleware.InjectUserEmail(), s.notesHandler.List)
+		api.GET("/notes/search", rbacMiddleware.InjectUserEmail(), s.notesHandler.Search)
 		api.POST("/notes", rbacMiddleware.InjectUserEmail(), s.notesHandler.Create)
 		api.PUT("/notes/:id", rbacMiddleware.InjectUserEmail(), s.notesHandler.Update)
 		api.DELETE("/notes/:id", rbacMiddleware.InjectUserEmail(), s.notesHandler.Delete)

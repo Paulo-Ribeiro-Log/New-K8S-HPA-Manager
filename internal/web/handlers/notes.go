@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"k8s-hpa-manager/internal/storage"
 
@@ -44,6 +45,31 @@ func (h *NotesHandler) List(c *gin.Context) {
 		return
 	}
 	notes, err := h.store.List(cluster, tab)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, notes)
+}
+
+// Search — GET /api/v1/notes/search?q=&limit= — busca por conteúdo em todos os clusters/abas.
+func (h *NotesHandler) Search(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	if q == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "q é obrigatório"})
+		return
+	}
+	limit := 30
+	if raw := c.Query("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	if h.store == nil {
+		c.JSON(http.StatusOK, []storage.Note{})
+		return
+	}
+	notes, err := h.store.Search(q, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

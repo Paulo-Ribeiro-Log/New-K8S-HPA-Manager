@@ -130,3 +130,54 @@ func TestNotesStore_List_IsolatedByClusterAndTab(t *testing.T) {
 		t.Fatalf("esperava lista vazia para escopo sem notas, obteve %d", len(notes))
 	}
 }
+
+func TestNotesStore_Search_CrossesClusterAndTab(t *testing.T) {
+	store := newTestNotesStore(t)
+
+	mustSave := func(cluster, tab, content string) {
+		t.Helper()
+		if _, err := store.Save(Note{Cluster: cluster, Tab: tab, Content: content, UserEmail: "a@x.com"}); err != nil {
+			t.Fatalf("Save(%s,%s): %v", cluster, tab, err)
+		}
+	}
+
+	mustSave("cluster-a", "hpa", "investigando CrashLoopBackOff no checkout-api")
+	mustSave("cluster-b", "dynatrace", "problema correlacionado ao mesmo checkout-api")
+	mustSave("cluster-a", "healthcheck", "nada a ver com o outro assunto")
+
+	notes, err := store.Search("checkout-api", 30)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(notes) != 2 {
+		t.Fatalf("esperava 2 notas cruzando cluster/tab, obteve %d: %+v", len(notes), notes)
+	}
+
+	notes, err = store.Search("termo-que-nao-existe", 30)
+	if err != nil {
+		t.Fatalf("Search (sem match): %v", err)
+	}
+	if len(notes) != 0 {
+		t.Fatalf("esperava 0 notas, obteve %d", len(notes))
+	}
+}
+
+func TestNotesStore_Search_EscapesLikeWildcards(t *testing.T) {
+	store := newTestNotesStore(t)
+
+	if _, err := store.Save(Note{Cluster: "c1", Tab: "hpa", Content: "100% disco cheio", UserEmail: "a@x.com"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := store.Save(Note{Cluster: "c1", Tab: "hpa", Content: "sem percentual aqui", UserEmail: "a@x.com"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// "%" literal não deve virar wildcard e casar com a segunda nota também.
+	notes, err := store.Search("100%", 30)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(notes) != 1 || notes[0].Content != "100% disco cheio" {
+		t.Fatalf("wildcard do LIKE não foi escapado corretamente: %+v", notes)
+	}
+}

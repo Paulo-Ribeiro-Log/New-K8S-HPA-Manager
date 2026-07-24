@@ -1096,6 +1096,12 @@ Botão **Notas** dentro da barra `<TabNavigation>` em `Index.tsx`, inline ao lad
 
 **Frontend — hook** (`hooks/useNotes.ts`): React Query, `queryKey: ['notes', cluster, tab]`, `enabled: !!cluster && !!tab` (evita chamar a API sem cluster selecionado). `useCreateNote`/`useUpdateNote`/`useDeleteNote` invalidam essa mesma `queryKey` no `onSuccess`.
 
+**Badge de contagem no botão "Notas"**: `Index.tsx` chama `useNotes(selectedCluster, activeTab)` (mesmo hook/queryKey usado por `NotesModal`, então não duplica requisição quando o modal está aberto) só para ler `.length` e renderizar um `Badge` (mesmo componente/estilo usado no badge da aba "Staging" em `TabNavigation.tsx`) ao lado do texto do botão. Sem isso, o botão era idêntico com ou sem histórico — só dava pra descobrir abrindo o modal.
+
+**Busca cross-cluster/cross-aba** (`GET /api/v1/notes/search?q=&limit=`): como o modelo é diário e escopado por cluster+aba, achar uma nota antiga sem lembrar onde foi criada não era possível — `NotesStore.Search` faz `LIKE` sobre `content` em **todos** os clusters/abas (sem filtro de autor), `ORDER BY created_at DESC LIMIT` (default 30, máx 100). `escapeLike()` escapa `%`/`_`/`\` do termo digitado antes do `LIKE ... ESCAPE '\'` — sem isso, um usuário buscando por `"100%"` casaria também com qualquer nota que não tivesse o `%` (wildcard do SQL interpretado literalmente). Handler exige `q` não-vazio (`400` caso contrário).
+
+Frontend: campo de busca sempre visível no topo do `NotesModal` (`useSearchNotes`, debounce de 400ms client-side via `useEffect`+`setTimeout` — evita 1 request por tecla). A partir de 2 caracteres, a busca substitui a lista escopada por resultados de **todos** os clusters/abas, cada um com badges `cluster`/`tab` (já vêm no próprio `Note` — sem endpoint/campo novo) para dar contexto de onde a nota foi criada. Resultados de busca são **somente leitura** (sem botões Editar/Excluir) — evita a complexidade de invalidar a `queryKey` `['notes', cluster, tab]` correta de uma nota que pode pertencer a um cluster/aba diferente do que está aberto no momento; para editar/excluir, o usuário navega até o cluster/aba real da nota.
+
 ### Kafka Test Tool — Seleção de Pod/Container e OAUTHBEARER (Azure AD)
 
 `internal/web/handlers/kafka_test_tool.go` + `kafka_test_pods.go` + `KafkaTestTab.tsx`. Duas evoluções sobre o Teste de Kafka já documentado acima:
