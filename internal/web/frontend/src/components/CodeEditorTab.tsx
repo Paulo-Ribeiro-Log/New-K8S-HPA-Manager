@@ -514,6 +514,20 @@ function FileTreeNode({ node, selectedPath, onSelect, modifiedPaths, gitFileStat
   const fileXY = gitFileStatus?.get(node.path);
   const isMultiSelected = selectedPaths?.has(node.path) ?? false;
 
+  // "Revelar na tree" precisa abrir toda a cadeia de pastas ancestrais do arquivo revelado —
+  // sem isso, um arquivo dentro de uma pasta recolhida nunca chega a montar (children só são
+  // renderizados quando `open`), então revealPath nunca encontra o nó pra destacar. Cada pasta
+  // ancestral se auto-abre quando percebe que o path revelado está dentro dela; isso cascateia
+  // — abrir o pai monta os filhos, cujo próprio efeito abre o próximo nível, e assim por diante
+  // até o arquivo alvo ficar de fato no DOM. Não interfere no toggle manual do usuário depois,
+  // porque só reage a mudanças em revealPath/node.path, não a re-renders soltos.
+  useEffect(() => {
+    if (node.type !== "dir" || !revealPath) return;
+    if (revealPath.startsWith(node.path + "/")) {
+      setOpen(true);
+    }
+  }, [revealPath, node.path, node.type]);
+
   if (node.type === "dir") {
     return (
       <div>
@@ -3240,13 +3254,37 @@ export function CodeEditorTab() {
     return () => document.removeEventListener("mousedown", close);
   }, [contextMenu]);
 
-  // Scroll para o arquivo revelado na tree
+  // Scroll para o arquivo revelado na tree. O nó alvo pode estar dentro de várias pastas
+  // recolhidas — cada uma se auto-abre num ciclo de render próprio (ver efeito em
+  // FileTreeNode), então o elemento só aparece no DOM depois de alguns renders em cascata,
+  // não no mesmo tick em que revealPath foi setado. Faz polling via requestAnimationFrame até
+  // achar o elemento (ou desistir) em vez de checar uma única vez — e só começa a contar os
+  // 1500ms de destaque a partir do momento em que o elemento de fato aparece.
   useEffect(() => {
     if (!revealPath) return;
-    const el = document.querySelector("[data-reveal-path]");
-    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-    const t = setTimeout(() => setRevealPath(null), 1500);
-    return () => clearTimeout(t);
+    let cancelled = false;
+    let clearTimer: ReturnType<typeof setTimeout> | null = null;
+    let frame: number | null = null;
+
+    const tryScroll = (attemptsLeft: number) => {
+      if (cancelled) return;
+      const el = document.querySelector("[data-reveal-path]");
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        clearTimer = setTimeout(() => setRevealPath(null), 1500);
+        return;
+      }
+      if (attemptsLeft <= 0) return;
+      frame = requestAnimationFrame(() => tryScroll(attemptsLeft - 1));
+    };
+
+    tryScroll(60); // ~1s a 60fps — folga suficiente pra cascata de pastas aninhadas expandir
+
+    return () => {
+      cancelled = true;
+      if (clearTimer) clearTimeout(clearTimer);
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, [revealPath]);
 
   // Ctrl+P global (quando o Monaco não está focado)
