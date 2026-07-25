@@ -45,9 +45,8 @@ import { LoadSessionModal } from "@/components/LoadSessionModal";
 import { LogViewer } from "@/components/LogViewer";
 import { HistoryViewer } from "@/components/HistoryViewer";
 import { NotesModal } from "@/components/NotesModal";
-import { GeneralNotesWidget } from "@/components/GeneralNotesWidget";
 import { Badge } from "@/components/ui/badge";
-import { useNotes } from "@/hooks/useNotes";
+import { GENERAL_NOTES_TAB, useNotes } from "@/hooks/useNotes";
 import { StagingPanel } from "@/components/StagingPanel";
 import { VPNWarningBanner } from "@/components/VPNWarningBanner";
 import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
@@ -165,6 +164,8 @@ const Index = ({ onLogout }: IndexProps) => {
   const [showHistoryViewer, setShowHistoryViewer] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
   const { data: notesForCurrentTab } = useNotes(selectedCluster, activeTab);
+  const { data: generalNotesForBadge } = useNotes(selectedCluster, GENERAL_NOTES_TAB);
+  const notesBadgeCount = (notesForCurrentTab?.length ?? 0) + (generalNotesForBadge?.length ?? 0);
   const [isContextSwitching, setIsContextSwitching] = useState(false);
   const [showVPNWarning, setShowVPNWarning] = useState(false);
   const [compareModalOpen, setCompareModalOpen] = useState(false);
@@ -1510,16 +1511,16 @@ const Index = ({ onLogout }: IndexProps) => {
           onClick={() => setShowNotesModal(true)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium text-sm transition-all duration-200 text-muted-foreground hover:bg-muted hover:text-foreground"
           title={
-            notesForCurrentTab && notesForCurrentTab.length > 0
-              ? `${notesForCurrentTab.length} nota(s) neste cluster/aba`
+            notesBadgeCount > 0
+              ? `${notesForCurrentTab?.length ?? 0} nota(s) nesta aba + ${generalNotesForBadge?.length ?? 0} lembrete(s) geral(is)`
               : "Notas"
           }
         >
           <StickyNote className="w-4 h-4" />
           Notas
-          {!!notesForCurrentTab?.length && (
+          {notesBadgeCount > 0 && (
             <Badge variant="default" className="ml-1 h-5 min-w-5 px-1.5 text-xs">
-              {notesForCurrentTab.length}
+              {notesBadgeCount}
             </Badge>
           )}
         </button>
@@ -1826,10 +1827,7 @@ const Index = ({ onLogout }: IndexProps) => {
         onOpenChange={setShowHistoryViewer}
       />
 
-      {/* Post-it de lembretes gerais — visível em qualquer aba, independente do activeTab */}
-      <GeneralNotesWidget cluster={selectedCluster} />
-
-      {/* Modal de Notas — escopado por cluster+aba ativa */}
+      {/* Modal de Notas — escopado por cluster+aba ativa; lembretes gerais viram um toggle de escopo dentro do próprio modal */}
       <NotesModal
         open={showNotesModal}
         onOpenChange={setShowNotesModal}
