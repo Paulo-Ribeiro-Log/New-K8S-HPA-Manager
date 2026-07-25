@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MarkdownToolbar } from "@/components/MarkdownToolbar";
 import { NoteEntry } from "@/components/NoteEntry";
@@ -24,10 +25,20 @@ interface NotesModalProps {
 
 export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps) {
   const { user } = useUserProfile();
-  const { data: notes = [], isLoading } = useNotes(cluster, tab);
-  const createNote = useCreateNote(cluster, tab);
-  const updateNote = useUpdateNote(cluster, tab);
-  const deleteNote = useDeleteNote(cluster, tab);
+
+  // Escopo "Aba atual" x "Lembretes gerais" — as duas contagens ficam sempre disponíveis
+  // (react-query cacheia por chave, então trocar de escopo não refaz a request do que já
+  // foi buscado) pra mostrar o badge nos dois botões do seletor sem custo extra.
+  const [scope, setScope] = useState<"tab" | "general">("tab");
+  const effectiveTab = scope === "general" ? GENERAL_NOTES_TAB : tab;
+  const { data: tabNotes = [], isLoading: tabLoading } = useNotes(cluster, tab);
+  const { data: generalNotes = [], isLoading: generalLoading } = useNotes(cluster, GENERAL_NOTES_TAB);
+  const notes = scope === "general" ? generalNotes : tabNotes;
+  const isLoading = scope === "general" ? generalLoading : tabLoading;
+
+  const createNote = useCreateNote(cluster, effectiveTab);
+  const updateNote = useUpdateNote(cluster, effectiveTab);
+  const deleteNote = useDeleteNote(cluster, effectiveTab);
 
   const [composing, setComposing] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -38,6 +49,19 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
   const [searchQuery, setSearchQuery] = useState("");
   const isSearching = searchQuery.trim().length >= 2;
   const { data: searchResults = [], isFetching: searchLoading } = useSearchNotes(searchQuery);
+
+  const cancelCompose = () => {
+    setComposing(false);
+    setEditingId(null);
+    setDraft("");
+    setPreview(false);
+  };
+
+  const switchScope = (next: "tab" | "general") => {
+    if (next === scope) return;
+    setScope(next);
+    cancelCompose();
+  };
 
   const startNew = () => {
     setComposing(true);
@@ -50,13 +74,6 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
     setComposing(true);
     setEditingId(note.id);
     setDraft(note.content);
-    setPreview(false);
-  };
-
-  const cancelCompose = () => {
-    setComposing(false);
-    setEditingId(null);
-    setDraft("");
     setPreview(false);
   };
 
@@ -86,7 +103,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
   };
 
   const saving = createNote.isPending || updateNote.isPending;
-  const tabLabel = tab === GENERAL_NOTES_TAB ? "Gerais (todas as abas)" : tab;
+  const scopeLabel = scope === "general" ? "Lembretes gerais (todas as abas)" : tab;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -94,7 +111,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <StickyNote className="w-4 h-4" />
-            Notas — {cluster || "sem cluster"} / {tabLabel}
+            Notas — {cluster || "sem cluster"} / {scopeLabel}
           </DialogTitle>
         </DialogHeader>
 
@@ -104,6 +121,46 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
           </div>
         ) : (
           <div className="flex-1 min-h-0 flex flex-col gap-3">
+            <div className="flex gap-1.5 flex-shrink-0">
+              <button
+                onClick={() => switchScope("tab")}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                  scope === "tab"
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "text-muted-foreground border-border hover:bg-muted"
+                }`}
+              >
+                Aba atual ({tab})
+                {tabNotes.length > 0 && (
+                  <Badge
+                    variant="secondary"
+                    className={`h-4 min-w-4 px-1 text-[10px] ${scope === "tab" ? "bg-primary-foreground/20 text-primary-foreground hover:bg-primary-foreground/20" : ""}`}
+                  >
+                    {tabNotes.length}
+                  </Badge>
+                )}
+              </button>
+              <button
+                onClick={() => switchScope("general")}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                  scope === "general"
+                    ? "bg-amber-400 text-amber-950 border-amber-400 dark:bg-amber-500 dark:text-amber-950 dark:border-amber-500"
+                    : "text-muted-foreground border-border hover:bg-muted"
+                }`}
+              >
+                <StickyNote className="w-3.5 h-3.5" />
+                Lembretes gerais
+                {generalNotes.length > 0 && (
+                  <Badge
+                    variant="secondary"
+                    className={`h-4 min-w-4 px-1 text-[10px] ${scope === "general" ? "bg-amber-950/15 text-amber-950 hover:bg-amber-950/15" : ""}`}
+                  >
+                    {generalNotes.length}
+                  </Badge>
+                )}
+              </button>
+            </div>
+
             <div className="relative flex-shrink-0">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
@@ -139,7 +196,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
               <>
                 {!composing && (
                   <Button size="sm" onClick={startNew} className="self-start">
-                    <Plus className="w-4 h-4 mr-1" /> Nova nota
+                    <Plus className="w-4 h-4 mr-1" /> {scope === "general" ? "Novo lembrete" : "Nova nota"}
                   </Button>
                 )}
 
@@ -183,7 +240,11 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
                   <div className="flex flex-col gap-3 pr-3">
                     {isLoading && <p className="text-sm text-muted-foreground">Carregando...</p>}
                     {!isLoading && notes.length === 0 && (
-                      <p className="text-sm text-muted-foreground">Nenhuma nota ainda neste cluster/aba.</p>
+                      <p className="text-sm text-muted-foreground">
+                        {scope === "general"
+                          ? "Nenhum lembrete geral ainda neste cluster."
+                          : "Nenhuma nota ainda neste cluster/aba."}
+                      </p>
                     )}
                     {notes.map((note) => {
                       const isAuthor = !!user?.email && note.user_email === user.email;
