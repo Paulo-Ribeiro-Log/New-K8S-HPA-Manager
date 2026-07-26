@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
 import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -6,11 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import {
   Select,
   SelectContent,
@@ -56,6 +51,9 @@ import {
   MemoryStick,
   Target,
   Clock,
+  Eye,
+  EyeOff,
+  X,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -66,8 +64,64 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { formatBytes } from "@/lib/monitorUtils";
 import { toast } from "sonner";
-import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse, RedisServerInfo } from "@/lib/api/types";
+import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse, RedisServerInfo, RedisInfoSection, AzureRedisTierInfo } from "@/lib/api/types";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
+
+// ClearableInput envolve o <Input> do shadcn com um botão "Limpar" (X, some quando o campo está
+// vazio) e, quando `isPassword`, também um botão de mostrar/ocultar senha (Eye/EyeOff) — usado em
+// todos os campos de texto digitados manualmente nesta aba (host, connection string, usuário,
+// senha, padrão de chaves, database). `type` é passthrough (ex: "number" pro índice de banco do
+// Redis) — `isPassword` sempre tem precedência sobre `type` explícito.
+function ClearableInput({
+  value,
+  onChange,
+  isPassword = false,
+  type = "text",
+  className,
+  ...inputProps
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  isPassword?: boolean;
+} & Omit<ComponentProps<typeof Input>, "value" | "onChange">) {
+  const [revealed, setRevealed] = useState(false);
+  const effectiveType = isPassword ? (revealed ? "text" : "password") : type;
+  return (
+    <div className="relative">
+      <Input
+        {...inputProps}
+        type={effectiveType}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(isPassword ? "pr-14" : "pr-7", className)}
+      />
+      <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+        {isPassword && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => setRevealed((v) => !v)}
+            className="p-1 text-muted-foreground hover:text-foreground rounded"
+            title={revealed ? "Ocultar senha" : "Mostrar senha"}
+          >
+            {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+          </button>
+        )}
+        {value && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => onChange("")}
+            className="p-1 text-muted-foreground hover:text-foreground rounded"
+            title="Limpar"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de KafkaTestTab.tsx/
 // ClusterSelectorForTab.tsx (evita o bug do <Select> do Radix fechar o dropdown ao focar um
@@ -184,6 +238,119 @@ function RedisServerInfoCard({ info }: { info: RedisServerInfo }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// REDIS_INFO_TAB_GROUPS agrupa as seções de `redis-cli INFO` por assunto — cada aba junta seções
+// relacionadas (ex: Server+Clients+CPU+Memory numa aba só, "Servidor") em vez de uma aba por
+// seção, economizando espaço quando o modal precisa mostrar as ~10 seções do INFO de uma vez.
+// Nomes em minúsculo pra casar com section.name (que vem exatamente como o cabeçalho "# Nome" do
+// redis-cli) via comparação case-insensitive.
+const REDIS_INFO_TAB_GROUPS: { label: string; sectionNames: string[] }[] = [
+  { label: "Servidor", sectionNames: ["server", "clients", "cpu", "memory"] },
+  { label: "Persistência", sectionNames: ["persistence"] },
+  { label: "Estatísticas", sectionNames: ["stats", "commandstats", "latencystats", "errorstats"] },
+  { label: "Replicação", sectionNames: ["replication"] },
+  { label: "Cluster", sectionNames: ["cluster"] },
+  { label: "Keyspace", sectionNames: ["keyspace"] },
+];
+
+const AZURE_TIER_TAB_LABEL = "Tier (Azure)";
+
+// AzureTierTabPanel mostra o tier/SKU do Azure Cache for Redis dentro da aba dedicada de
+// RedisInfoTabs — mesmo conteúdo que antes ficava sempre visível acima da saída bruta, agora só
+// aparece quando o usuário abre essa aba (evita competir por espaço com as seções do INFO).
+function AzureTierTabPanel({ info }: { info: AzureRedisTierInfo }) {
+  if (!info.found) {
+    return <div className="text-xs text-amber-700 dark:text-amber-400">{info.error}</div>;
+  }
+  const rows: { label: string; value?: string | number }[] = [
+    { label: "Tier", value: info.tier_label },
+    { label: "Subscription", value: info.subscription },
+    { label: "Resource Group", value: info.resource_group },
+    { label: "Região", value: info.location },
+    { label: "Shards", value: info.shard_count || undefined },
+    { label: "Versão Redis", value: info.redis_version },
+  ];
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 font-mono text-xs">
+      {rows
+        .filter((r) => r.value !== undefined && r.value !== "")
+        .map((r) => (
+          <div key={r.label} className="flex gap-1.5 min-w-0">
+            <span className="text-muted-foreground shrink-0">{r.label}:</span>
+            <span className="truncate" title={String(r.value)}>{r.value}</span>
+          </div>
+        ))}
+    </div>
+  );
+}
+
+// RedisInfoTabs formata a saída de `redis-cli INFO` (já parseada em seções pelo backend, ver
+// RedisInfoSection) como abas agrupadas por assunto em vez de um texto corrido — pedido depois
+// que a versão anterior (Dialog com só um <pre> de texto puro) ficou difícil de vasculhar pra
+// achar um campo específico. `azureTier` opcional adiciona a aba de tier — só quando a busca foi
+// tentada (found ou error preenchido; ausência de ambos significa "nem parece Azure", omite a
+// aba).
+function RedisInfoTabs({
+  sections,
+  azureTier,
+}: {
+  sections: RedisInfoSection[];
+  azureTier?: AzureRedisTierInfo;
+}) {
+  const groups = REDIS_INFO_TAB_GROUPS.map((g) => ({
+    label: g.label,
+    sections: sections.filter((s) => g.sectionNames.includes(s.name.toLowerCase())),
+  })).filter((g) => g.sections.length > 0);
+
+  const showTierTab = !!azureTier && (azureTier.found || !!azureTier.error);
+  const tabLabels = [...groups.map((g) => g.label), ...(showTierTab ? [AZURE_TIER_TAB_LABEL] : [])];
+
+  const [activeTab, setActiveTab] = useState<string>("");
+  const effectiveTab = tabLabels.includes(activeTab) ? activeTab : tabLabels[0];
+
+  if (tabLabels.length === 0) return null;
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col border border-border rounded-md">
+      <div className="flex border-b border-border gap-1 px-2 flex-wrap flex-shrink-0">
+        {tabLabels.map((label) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => setActiveTab(label)}
+            className={cn(
+              "px-2.5 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px",
+              effectiveTab === label ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        {effectiveTab === AZURE_TIER_TAB_LABEL && azureTier ? (
+          <AzureTierTabPanel info={azureTier} />
+        ) : (
+          groups
+            .find((g) => g.label === effectiveTab)
+            ?.sections.map((section) => (
+              <div key={section.name} className="mb-4 last:mb-0">
+                <div className="text-xs font-semibold text-muted-foreground mb-1.5"># {section.name}</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs">
+                  {section.fields.map((f) => (
+                    <div key={f.key} className="flex gap-1.5 min-w-0">
+                      <span className="text-muted-foreground shrink-0">{f.key}:</span>
+                      <span className="truncate" title={f.value}>{f.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))
+        )}
       </div>
     </div>
   );
@@ -445,6 +612,7 @@ export default function DatabaseTestTab() {
   const [result, setResult] = useState<DBTestResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [rawOutputOpen, setRawOutputOpen] = useState(false);
+  const [showRawFallback, setShowRawFallback] = useState(false);
   // Ordenação da tabela de estatísticas (tabelas Postgres/MySQL, collections Mongo) — mesmo
   // espírito do "All Stats" do MongoDB Compass (coluna Size ordenável).
   const [statsSortKey, setStatsSortKey] = useState<"name" | "count" | "size_bytes" | "storage_size_bytes">("storage_size_bytes");
@@ -672,6 +840,17 @@ export default function DatabaseTestTab() {
     staleTime: 15_000,
   });
   const dockerReady = executionMode !== "local" || !!(dockerStatus?.installed && dockerStatus?.daemon_running);
+
+  // Tier/SKU do Azure Cache for Redis — só faz sentido buscar quando o modal de saída bruta está
+  // aberto (lazy, evita chamada a cada digitação de host) pro engine Redis com host preenchido
+  // (modo connstring não expõe um campo de host separado — ver DatabaseTestTab.tsx). staleTime
+  // igual ao TTL de cache do backend (30min): tier de um cache Azure raramente muda.
+  const { data: azureRedisTier } = useQuery({
+    queryKey: ["db-test-redis-azure-tier", host],
+    queryFn: () => apiClient.getRedisAzureTier(host),
+    enabled: rawOutputOpen && engine === "redis" && authMode !== "connstring" && !!host.trim(),
+    staleTime: 30 * 60_000,
+  });
 
   const { data: deployments = [] } = useQuery({
     queryKey: ["deployments-db-test", cluster, namespace],
@@ -1079,7 +1258,7 @@ export default function DatabaseTestTab() {
             {csSource === "manual" ? (
               <div className="w-full max-w-2xl">
                 <label className="text-xs text-muted-foreground block mb-1">Connection string completa</label>
-                <Input
+                <ClearableInput
                   placeholder={
                     engine === "postgres" ? "postgresql://user:pass@host:5432/db?sslmode=require" :
                     engine === "mysql" ? "mysql://user:pass@host:3306/db" :
@@ -1087,7 +1266,7 @@ export default function DatabaseTestTab() {
                     "redis://:pass@host:6379/0"
                   }
                   value={connectionString}
-                  onChange={(e) => setConnectionString(e.target.value)}
+                  onChange={setConnectionString}
                 />
                 {engine === "redis" && (() => {
                   const parsed = parseRedisCliLikeString(connectionString);
@@ -1185,7 +1364,7 @@ export default function DatabaseTestTab() {
               <>
                 <div className="w-72">
                   <label className="text-xs text-muted-foreground block mb-1">Host</label>
-                  <Input placeholder="ex: my-postgres.database.azure.com" value={host} onChange={(e) => setHost(e.target.value)} title={host || undefined} />
+                  <ClearableInput placeholder="ex: my-postgres.database.azure.com" value={host} onChange={setHost} title={host || undefined} />
                 </div>
                 <div className="w-28">
                   <label className="text-xs text-muted-foreground block mb-1">Porta</label>
@@ -1295,9 +1474,9 @@ export default function DatabaseTestTab() {
                       <label className="text-xs text-muted-foreground block mb-1">
                         Usuário{engine === "redis" && " (opcional)"}
                       </label>
-                      <Input
+                      <ClearableInput
                         value={username}
-                        onChange={(e) => setUsername(e.target.value)}
+                        onChange={setUsername}
                         placeholder={engine === "redis" ? "deixe em branco pra Access Key" : undefined}
                       />
                       {engine === "redis" && (
@@ -1311,7 +1490,7 @@ export default function DatabaseTestTab() {
                       <label className="text-xs text-muted-foreground block mb-1">
                         {engine === "redis" ? "Senha / Access Key" : "Senha"}
                       </label>
-                      <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+                      <ClearableInput isPassword value={password} onChange={setPassword} />
                     </div>
                   </>
                 ) : (
@@ -1386,13 +1565,13 @@ export default function DatabaseTestTab() {
           <label className="text-xs text-muted-foreground block mb-1">
             {engine === "redis" ? "Índice do banco (0-15, opcional)" : "Database (opcional)"}
           </label>
-          <Input
+          <ClearableInput
             type={engine === "redis" ? "number" : "text"}
             min={engine === "redis" ? 0 : undefined}
             max={engine === "redis" ? 15 : undefined}
             placeholder={engine === "redis" ? "0" : undefined}
             value={database}
-            onChange={(e) => setDatabase(e.target.value)}
+            onChange={setDatabase}
             title={database || undefined}
           />
           {engine !== "redis" && browseEnabled && (
@@ -1416,10 +1595,10 @@ export default function DatabaseTestTab() {
         {browseEnabled && engine === "redis" && (
           <div className="w-64 pl-8">
             <label className="text-xs text-muted-foreground block mb-1">Padrão de chaves (opcional)</label>
-            <Input
+            <ClearableInput
               placeholder="ex: sessao:*, cache:usuario:*"
               value={redisKeyPattern}
-              onChange={(e) => setRedisKeyPattern(e.target.value)}
+              onChange={setRedisKeyPattern}
             />
             <p className="text-[10px] text-muted-foreground mt-1">
               Filtra o SCAN por um padrão glob (MATCH) — vazio lista sem filtro. Redis não indexa
@@ -1600,25 +1779,62 @@ export default function DatabaseTestTab() {
               </div>
             )}
 
-            <Collapsible open={rawOutputOpen} onOpenChange={setRawOutputOpen}>
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" className="w-fit gap-1 text-xs text-muted-foreground">
-                  {rawOutputOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                  Saída bruta
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <pre className="mt-1.5 rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono whitespace-pre-wrap overflow-x-auto">
-                  {result.connectivity.raw_output || "(sem saída)"}
-                  {browseEnabled && result.browse.raw_output && (
-                    <>
-                      {"\n\n--- explorar dados ---\n"}
-                      {result.browse.raw_output}
-                    </>
-                  )}
-                </pre>
-              </CollapsibleContent>
-            </Collapsible>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-fit gap-1 text-xs text-muted-foreground"
+              onClick={() => setRawOutputOpen(true)}
+            >
+              <ChevronRight className="h-3 w-3" />
+              Ver saída bruta
+            </Button>
+
+            <Dialog open={rawOutputOpen} onOpenChange={setRawOutputOpen}>
+              <DialogContent className="max-w-3xl h-[80vh] flex flex-col overflow-hidden">
+                <DialogHeader>
+                  <DialogTitle>Saída bruta</DialogTitle>
+                </DialogHeader>
+
+                {engine === "redis" && browseEnabled && result.browse.redis_info_sections?.length ? (
+                  <>
+                    <RedisInfoTabs
+                      sections={result.browse.redis_info_sections}
+                      azureTier={authMode !== "connstring" && host.trim() ? azureRedisTier : undefined}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="w-fit gap-1 text-xs text-muted-foreground shrink-0"
+                      onClick={() => setShowRawFallback((v) => !v)}
+                    >
+                      {showRawFallback ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                      Ver texto bruto original (não formatado)
+                    </Button>
+                    {showRawFallback && (
+                      <pre className="max-h-40 overflow-y-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono whitespace-pre-wrap shrink-0">
+                        {result.connectivity.raw_output || "(sem saída)"}
+                        {result.browse.raw_output && (
+                          <>
+                            {"\n\n--- explorar dados ---\n"}
+                            {result.browse.raw_output}
+                          </>
+                        )}
+                      </pre>
+                    )}
+                  </>
+                ) : (
+                  <pre className="flex-1 min-h-0 overflow-y-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono whitespace-pre-wrap">
+                    {result.connectivity.raw_output || "(sem saída)"}
+                    {browseEnabled && result.browse.raw_output && (
+                      <>
+                        {"\n\n--- explorar dados ---\n"}
+                        {result.browse.raw_output}
+                      </>
+                    )}
+                  </pre>
+                )}
+              </DialogContent>
+            </Dialog>
           </div>
         )}
       </div>

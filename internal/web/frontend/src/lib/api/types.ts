@@ -2115,6 +2115,19 @@ export interface RedisServerInfo {
   hit_rate_pct: number;
 }
 
+// RedisInfoField/RedisInfoSection são o parsing genérico e completo de `redis-cli INFO` em seções
+// (Server, Clients, Memory, CPU, Persistence, Stats, Replication, Cluster, Keyspace, etc.) — ao
+// contrário de RedisServerInfo (só um punhado de campos curados), preserva TODOS os campos, na
+// ordem original, pra alimentar a visualização em abas do modal de saída bruta.
+export interface RedisInfoField {
+  key: string;
+  value: string;
+}
+export interface RedisInfoSection {
+  name: string;
+  fields: RedisInfoField[];
+}
+
 export interface DBBrowseResult {
   status: DBBrowseStatus;
   message: string;
@@ -2129,7 +2142,27 @@ export interface DBBrowseResult {
   // AMOSTRA, não uma listagem completa.
   truncated?: boolean;
   redis_server_info?: RedisServerInfo;
+  redis_info_sections?: RedisInfoSection[];
   raw_output: string;
+}
+
+// AzureRedisTierInfo é a resposta de GET /db-test/redis-azure-tier — dados do recurso Azure
+// (SKU/tier, shards, versão) que o INFO do Redis não expõe por serem propriedades do Azure
+// Resource Manager, não do protocolo Redis. found:false quando o host não é Azure Cache for
+// Redis, ou quando o cache não foi localizado em nenhuma subscription acessível pelo servidor.
+export interface AzureRedisTierInfo {
+  found: boolean;
+  resource_type?: 'Microsoft.Cache/Redis' | 'Microsoft.Cache/redisEnterprise';
+  sku_name?: string;
+  sku_family?: string;
+  sku_capacity?: number;
+  tier_label?: string;
+  location?: string;
+  resource_group?: string;
+  subscription?: string;
+  shard_count?: number;
+  redis_version?: string;
+  error?: string;
 }
 
 export interface DBTestResult {

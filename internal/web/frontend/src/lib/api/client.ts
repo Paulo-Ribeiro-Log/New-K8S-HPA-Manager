@@ -3717,6 +3717,18 @@ class APIClient {
     return this.request<import("./types").DBDockerStatus>("/db-test/docker-status");
   }
 
+  /**
+   * Tier/SKU do Azure Cache for Redis (versão/família/capacidade/shards) — informação que o
+   * comando INFO do próprio Redis não expõe (propriedade do Azure Resource Manager, não do
+   * protocolo). Só retorna algo útil quando host bate com o formato de DNS do Azure Cache
+   * (clássico ou Enterprise/Azure Managed Redis) — found:false nos demais casos.
+   */
+  async getRedisAzureTier(host: string): Promise<import("./types").AzureRedisTierInfo> {
+    return this.request<import("./types").AzureRedisTierInfo>(
+      `/db-test/redis-azure-tier?host=${encodeURIComponent(host)}`
+    );
+  }
+
   /** Amostra de dados reais (linhas/documentos) de uma tabela/collection/chave — síncrono, sem SSE */
   async previewDBTestObject(
     req: import("./types").DBPreviewRequest

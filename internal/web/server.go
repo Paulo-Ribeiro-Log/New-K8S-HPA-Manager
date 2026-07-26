@@ -973,6 +973,7 @@ func (s *Server) setupRoutes() {
 	dbTest := api.Group("/db-test")
 	{
 		dbTest.GET("/docker-status", dbTestHandler.DockerStatus)
+		dbTest.GET("/redis-azure-tier", dbTestHandler.RedisAzureTier)
 		dbTest.POST("/run", rbacMiddleware.RequireSREGroup(), dbTestHandler.Run)
 		dbTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), dbTestHandler.Cancel)
 		dbTest.POST("/preview", rbacMiddleware.RequireSREGroup(), dbTestHandler.Preview)

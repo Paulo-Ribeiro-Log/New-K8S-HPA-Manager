@@ -387,6 +387,50 @@ const redisInfoFixture = "# Server\r\n" +
 	"# Keyspace\r\n" +
 	"db0:keys=12,expires=3,avg_ttl=0\r\n"
 
+func TestParseRedisInfoSections(t *testing.T) {
+	t.Run("agrupa por seção na ordem original (CRLF)", func(t *testing.T) {
+		sections := parseRedisInfoSections(redisInfoFixture)
+		wantNames := []string{"Server", "Clients", "Memory", "Stats", "Replication", "Keyspace"}
+		if len(sections) != len(wantNames) {
+			t.Fatalf("got %d seções, want %d (%+v)", len(sections), len(wantNames), sections)
+		}
+		for i, name := range wantNames {
+			if sections[i].Name != name {
+				t.Errorf("sections[%d].Name = %q, want %q", i, sections[i].Name, name)
+			}
+		}
+	})
+
+	t.Run("campos preservam key e value crus", func(t *testing.T) {
+		sections := parseRedisInfoSections(redisInfoFixture)
+		server := sections[0]
+		if server.Name != "Server" {
+			t.Fatalf("esperava seção Server primeiro, got %q", server.Name)
+		}
+		found := false
+		for _, f := range server.Fields {
+			if f.Key == "redis_version" {
+				found = true
+				if f.Value != "7.4.10" {
+					t.Errorf("redis_version = %q, want 7.4.10", f.Value)
+				}
+			}
+		}
+		if !found {
+			t.Error("campo redis_version não encontrado na seção Server")
+		}
+	})
+
+	t.Run("saida vazia ou sem cabecalho de secao devolve nil", func(t *testing.T) {
+		if got := parseRedisInfoSections(""); got != nil {
+			t.Errorf("esperava nil, got %+v", got)
+		}
+		if got := parseRedisInfoSections("NOAUTH Authentication required.\r\n"); got != nil {
+			t.Errorf("esperava nil pra saída de erro sem cabeçalho de seção, got %+v", got)
+		}
+	})
+}
+
 func TestParseRedisServerInfo(t *testing.T) {
 	t.Run("extrai campos reais do INFO (CRLF)", func(t *testing.T) {
 		info := parseRedisServerInfo(redisInfoFixture)

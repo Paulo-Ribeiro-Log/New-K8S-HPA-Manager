@@ -291,7 +291,13 @@ type DBBrowseResult struct {
 	// servidor (versão, memória, clientes, hit rate), ver RedisServerInfo/parseRedisServerInfo.
 	// nil e omitido no JSON pros demais engines e pros níveis mais fundos da navegação do Redis.
 	ServerInfo *RedisServerInfo `json:"redis_server_info,omitempty"`
-	RawOutput  string           `json:"raw_output"`
+	// InfoSections é o parsing genérico e completo de `redis-cli INFO` em seções (Server, Clients,
+	// Memory, CPU, Persistence, Stats, Replication, Cluster, Keyspace, etc.) — usado pelo frontend
+	// pra renderizar o modal de "saída bruta" como abas organizadas por assunto em vez de um texto
+	// corrido. Só pro Redis, nível "database". RawOutput continua disponível como fallback pra
+	// quem quiser o texto puro original.
+	InfoSections []RedisInfoSection `json:"redis_info_sections,omitempty"`
+	RawOutput    string             `json:"raw_output"`
 }
 
 // RedisServerInfo resume os campos mais relevantes de `redis-cli INFO` (seções Server/Clients/
@@ -356,6 +362,63 @@ func parseRedisServerInfo(raw string) *RedisServerInfo {
 		}
 	}
 	return info
+}
+
+// RedisInfoField é um par campo:valor de uma seção de `redis-cli INFO` — genérico o suficiente
+// pra cobrir qualquer seção (inclusive as que a app não conhece de antemão, ex: campos novos de
+// uma versão futura do Redis), sem precisar de um struct dedicado por seção.
+type RedisInfoField struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// RedisInfoSection é uma seção de `redis-cli INFO` (ex: "Server", "Clients", "Memory") com seus
+// campos na ordem em que aparecem na saída original — usado pelo frontend pra agrupar seções
+// relacionadas em abas (ex: Server+Clients+CPU+Memory numa aba só, ver DatabaseTestTab.tsx).
+type RedisInfoSection struct {
+	Name   string           `json:"name"`
+	Fields []RedisInfoField `json:"fields"`
+}
+
+// redisInfoSectionHeaderRegex casa o cabeçalho de seção do INFO ("# Server", "# CPU", etc — o
+// nome logo após "# ", sempre no início da linha).
+var redisInfoSectionHeaderRegex = regexp.MustCompile(`^#\s+(.+)$`)
+
+// parseRedisInfoSections faz o parsing GENÉRICO e completo da saída de `redis-cli INFO` (CRLF
+// entre linhas) em seções ordenadas com seus campos — ao contrário de parseRedisServerInfo (que
+// extrai só um punhado de campos curados pro card de estatísticas), isso preserva TODAS as seções
+// e campos, na ordem original, pra alimentar a visualização em abas do modal de saída bruta.
+// Linhas em branco (separador entre seções) e linhas sem ":" (nunca acontece numa saída válida do
+// INFO, mas ignorado por segurança) são puladas. Best-effort: uma seção sem nenhum campo
+// reconhecido simplesmente não aparece no resultado.
+func parseRedisInfoSections(raw string) []RedisInfoSection {
+	var sections []RedisInfoSection
+	var current *RedisInfoSection
+
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if m := redisInfoSectionHeaderRegex.FindStringSubmatch(trimmed); m != nil {
+			sections = append(sections, RedisInfoSection{Name: m[1]})
+			current = &sections[len(sections)-1]
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		idx := strings.Index(trimmed, ":")
+		if idx < 0 {
+			continue
+		}
+		current.Fields = append(current.Fields, RedisInfoField{
+			Key:   trimmed[:idx],
+			Value: trimmed[idx+1:],
+		})
+	}
+	return sections
 }
 
 // DBTestResult é o resultado completo de uma execução do teste de banco de dados.
@@ -425,7 +488,11 @@ type dbEngine struct {
 	// seção de estatísticas embutida na mesma chamada). Só o Redis usa isso hoje (ver
 	// parseRedisServerInfo) — tipo `*RedisServerInfo` mesmo sendo genérico na struct porque é o
 	// único consumidor; DBBrowseResult.ServerInfo fica nil e omitido no JSON pros demais engines.
-	parseServerInfo   func(raw string) *RedisServerInfo
+	parseServerInfo func(raw string) *RedisServerInfo
+	// parseInfoSections faz o parsing genérico e completo (todas as seções/campos) da MESMA saída
+	// usada por parseServerInfo — alimenta a visualização em abas do modal de saída bruta. Só o
+	// Redis usa isso hoje (ver parseRedisInfoSections).
+	parseInfoSections func(raw string) []RedisInfoSection
 	networkErrorRegex *regexp.Regexp
 	authErrorRegex    *regexp.Regexp
 	tlsErrorRegex     *regexp.Regexp
@@ -1269,6 +1336,7 @@ var dbEngines = map[string]dbEngine{
 			return db
 		},
 		parseServerInfo:   parseRedisServerInfo,
+		parseInfoSections: parseRedisInfoSections,
 		networkErrorRegex: regexp.MustCompile(`(?i)(could not connect|connection refused|name or service not known)`),
 		authErrorRegex:    regexp.MustCompile(`(?i)(noauth|wrongpass|invalid username-password)`),
 		tlsErrorRegex:     regexp.MustCompile(`(?i)(tls|ssl).*(error|handshake)`),
@@ -1588,21 +1656,29 @@ func runDBBrowseStage(ctx context.Context, run dbExecFunc, engine dbEngine, conn
 	if objectType != "database" && engine.resolveDatabaseLabel != nil {
 		databaseLabel = engine.resolveDatabaseLabel(conn)
 	}
-	// parseServerInfo só existe pro Redis, e só no nível "database" (topo) — a mesma chamada de
-	// INFO que lista os bancos 0-15 já traz as estatísticas do servidor, ver RedisServerInfo.
+	// parseServerInfo/parseInfoSections só existem pro Redis, e só no nível "database" (topo) — a
+	// mesma chamada de INFO que lista os bancos 0-15 já traz as estatísticas do servidor e todas
+	// as seções, ver RedisServerInfo/RedisInfoSection.
 	var serverInfo *RedisServerInfo
-	if objectType == "database" && engine.parseServerInfo != nil {
-		serverInfo = engine.parseServerInfo(stdout)
+	var infoSections []RedisInfoSection
+	if objectType == "database" {
+		if engine.parseServerInfo != nil {
+			serverInfo = engine.parseServerInfo(stdout)
+		}
+		if engine.parseInfoSections != nil {
+			infoSections = engine.parseInfoSections(stdout)
+		}
 	}
 	return DBBrowseResult{
-		Status:     "ok",
-		Message:    message,
-		ObjectType: objectType,
-		Objects:    objects,
-		Database:   databaseLabel,
-		Truncated:  truncated,
-		ServerInfo: serverInfo,
-		RawOutput:  stdout,
+		Status:       "ok",
+		Message:      message,
+		ObjectType:   objectType,
+		Objects:      objects,
+		Database:     databaseLabel,
+		Truncated:    truncated,
+		ServerInfo:   serverInfo,
+		InfoSections: infoSections,
+		RawOutput:    stdout,
 	}
 }
 
