@@ -61,7 +61,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { formatBytes } from "@/lib/monitorUtils";
 import { toast } from "sonner";
-import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse, RedisServerInfo } from "@/lib/api/types";
+import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse, RedisServerInfo, RedisInfoSection, AzureRedisTierInfo } from "@/lib/api/types";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de KafkaTestTab.tsx/
@@ -179,6 +179,119 @@ function RedisServerInfoCard({ info }: { info: RedisServerInfo }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// REDIS_INFO_TAB_GROUPS agrupa as seções de `redis-cli INFO` por assunto — cada aba junta seções
+// relacionadas (ex: Server+Clients+CPU+Memory numa aba só, "Servidor") em vez de uma aba por
+// seção, economizando espaço quando o modal precisa mostrar as ~10 seções do INFO de uma vez.
+// Nomes em minúsculo pra casar com section.name (que vem exatamente como o cabeçalho "# Nome" do
+// redis-cli) via comparação case-insensitive.
+const REDIS_INFO_TAB_GROUPS: { label: string; sectionNames: string[] }[] = [
+  { label: "Servidor", sectionNames: ["server", "clients", "cpu", "memory"] },
+  { label: "Persistência", sectionNames: ["persistence"] },
+  { label: "Estatísticas", sectionNames: ["stats", "commandstats", "latencystats", "errorstats"] },
+  { label: "Replicação", sectionNames: ["replication"] },
+  { label: "Cluster", sectionNames: ["cluster"] },
+  { label: "Keyspace", sectionNames: ["keyspace"] },
+];
+
+const AZURE_TIER_TAB_LABEL = "Tier (Azure)";
+
+// AzureTierTabPanel mostra o tier/SKU do Azure Cache for Redis dentro da aba dedicada de
+// RedisInfoTabs — mesmo conteúdo que antes ficava sempre visível acima da saída bruta, agora só
+// aparece quando o usuário abre essa aba (evita competir por espaço com as seções do INFO).
+function AzureTierTabPanel({ info }: { info: AzureRedisTierInfo }) {
+  if (!info.found) {
+    return <div className="text-xs text-amber-700 dark:text-amber-400">{info.error}</div>;
+  }
+  const rows: { label: string; value?: string | number }[] = [
+    { label: "Tier", value: info.tier_label },
+    { label: "Subscription", value: info.subscription },
+    { label: "Resource Group", value: info.resource_group },
+    { label: "Região", value: info.location },
+    { label: "Shards", value: info.shard_count || undefined },
+    { label: "Versão Redis", value: info.redis_version },
+  ];
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 font-mono text-xs">
+      {rows
+        .filter((r) => r.value !== undefined && r.value !== "")
+        .map((r) => (
+          <div key={r.label} className="flex gap-1.5 min-w-0">
+            <span className="text-muted-foreground shrink-0">{r.label}:</span>
+            <span className="truncate" title={String(r.value)}>{r.value}</span>
+          </div>
+        ))}
+    </div>
+  );
+}
+
+// RedisInfoTabs formata a saída de `redis-cli INFO` (já parseada em seções pelo backend, ver
+// RedisInfoSection) como abas agrupadas por assunto em vez de um texto corrido — pedido depois
+// que a versão anterior (Dialog com só um <pre> de texto puro) ficou difícil de vasculhar pra
+// achar um campo específico. `azureTier` opcional adiciona a aba de tier — só quando a busca foi
+// tentada (found ou error preenchido; ausência de ambos significa "nem parece Azure", omite a
+// aba).
+function RedisInfoTabs({
+  sections,
+  azureTier,
+}: {
+  sections: RedisInfoSection[];
+  azureTier?: AzureRedisTierInfo;
+}) {
+  const groups = REDIS_INFO_TAB_GROUPS.map((g) => ({
+    label: g.label,
+    sections: sections.filter((s) => g.sectionNames.includes(s.name.toLowerCase())),
+  })).filter((g) => g.sections.length > 0);
+
+  const showTierTab = !!azureTier && (azureTier.found || !!azureTier.error);
+  const tabLabels = [...groups.map((g) => g.label), ...(showTierTab ? [AZURE_TIER_TAB_LABEL] : [])];
+
+  const [activeTab, setActiveTab] = useState<string>("");
+  const effectiveTab = tabLabels.includes(activeTab) ? activeTab : tabLabels[0];
+
+  if (tabLabels.length === 0) return null;
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col border border-border rounded-md">
+      <div className="flex border-b border-border gap-1 px-2 flex-wrap flex-shrink-0">
+        {tabLabels.map((label) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => setActiveTab(label)}
+            className={cn(
+              "px-2.5 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px",
+              effectiveTab === label ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        {effectiveTab === AZURE_TIER_TAB_LABEL && azureTier ? (
+          <AzureTierTabPanel info={azureTier} />
+        ) : (
+          groups
+            .find((g) => g.label === effectiveTab)
+            ?.sections.map((section) => (
+              <div key={section.name} className="mb-4 last:mb-0">
+                <div className="text-xs font-semibold text-muted-foreground mb-1.5"># {section.name}</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs">
+                  {section.fields.map((f) => (
+                    <div key={f.key} className="flex gap-1.5 min-w-0">
+                      <span className="text-muted-foreground shrink-0">{f.key}:</span>
+                      <span className="truncate" title={f.value}>{f.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))
+        )}
       </div>
     </div>
   );
@@ -440,6 +553,7 @@ export default function DatabaseTestTab() {
   const [result, setResult] = useState<DBTestResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [rawOutputOpen, setRawOutputOpen] = useState(false);
+  const [showRawFallback, setShowRawFallback] = useState(false);
   // Ordenação da tabela de estatísticas (tabelas Postgres/MySQL, collections Mongo) — mesmo
   // espírito do "All Stats" do MongoDB Compass (coluna Size ordenável).
   const [statsSortKey, setStatsSortKey] = useState<"name" | "count" | "size_bytes" | "storage_size_bytes">("storage_size_bytes");
@@ -1622,38 +1736,44 @@ export default function DatabaseTestTab() {
                   <DialogTitle>Saída bruta</DialogTitle>
                 </DialogHeader>
 
-                {engine === "redis" && authMode !== "connstring" && !!host.trim() &&
-                  azureRedisTier && (azureRedisTier.found || azureRedisTier.error) && (
-                  <div className="shrink-0 rounded-md border border-border bg-muted/20 p-3 text-xs">
-                    <div className="font-medium mb-1.5">Tier — Azure Cache for Redis</div>
-                    {azureRedisTier.found ? (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 font-mono">
-                        <div><span className="text-muted-foreground">Tier: </span>{azureRedisTier.tier_label}</div>
-                        <div><span className="text-muted-foreground">Subscription: </span>{azureRedisTier.subscription}</div>
-                        <div><span className="text-muted-foreground">Resource Group: </span>{azureRedisTier.resource_group}</div>
-                        <div><span className="text-muted-foreground">Região: </span>{azureRedisTier.location}</div>
-                        {!!azureRedisTier.shard_count && (
-                          <div><span className="text-muted-foreground">Shards: </span>{azureRedisTier.shard_count}</div>
+                {engine === "redis" && browseEnabled && result.browse.redis_info_sections?.length ? (
+                  <>
+                    <RedisInfoTabs
+                      sections={result.browse.redis_info_sections}
+                      azureTier={authMode !== "connstring" && host.trim() ? azureRedisTier : undefined}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="w-fit gap-1 text-xs text-muted-foreground shrink-0"
+                      onClick={() => setShowRawFallback((v) => !v)}
+                    >
+                      {showRawFallback ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                      Ver texto bruto original (não formatado)
+                    </Button>
+                    {showRawFallback && (
+                      <pre className="max-h-40 overflow-y-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono whitespace-pre-wrap shrink-0">
+                        {result.connectivity.raw_output || "(sem saída)"}
+                        {result.browse.raw_output && (
+                          <>
+                            {"\n\n--- explorar dados ---\n"}
+                            {result.browse.raw_output}
+                          </>
                         )}
-                        {azureRedisTier.redis_version && (
-                          <div><span className="text-muted-foreground">Versão Redis: </span>{azureRedisTier.redis_version}</div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="text-amber-700 dark:text-amber-400">{azureRedisTier.error}</div>
+                      </pre>
                     )}
-                  </div>
+                  </>
+                ) : (
+                  <pre className="flex-1 min-h-0 overflow-y-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono whitespace-pre-wrap">
+                    {result.connectivity.raw_output || "(sem saída)"}
+                    {browseEnabled && result.browse.raw_output && (
+                      <>
+                        {"\n\n--- explorar dados ---\n"}
+                        {result.browse.raw_output}
+                      </>
+                    )}
+                  </pre>
                 )}
-
-                <pre className="flex-1 min-h-0 overflow-y-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono whitespace-pre-wrap">
-                  {result.connectivity.raw_output || "(sem saída)"}
-                  {browseEnabled && result.browse.raw_output && (
-                    <>
-                      {"\n\n--- explorar dados ---\n"}
-                      {result.browse.raw_output}
-                    </>
-                  )}
-                </pre>
               </DialogContent>
             </Dialog>
           </div>
