@@ -51,6 +51,11 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Server,
+  Users,
+  MemoryStick,
+  Target,
+  Clock,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -61,7 +66,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { formatBytes } from "@/lib/monitorUtils";
 import { toast } from "sonner";
-import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse } from "@/lib/api/types";
+import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse, RedisServerInfo } from "@/lib/api/types";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de KafkaTestTab.tsx/
@@ -143,6 +148,44 @@ function StageBadge({ label, status }: { label: string; status: "ok" | "failed" 
       {meta.icon}
       {label}
     </Badge>
+  );
+}
+
+// RedisServerInfoCard mostra as estatísticas do próprio servidor Redis (versão, memória,
+// clientes conectados, hit rate) — vem junto do nível "database" (topo) da navegação, mesma
+// chamada de INFO que já lista os bancos 0-15 (ver parseRedisServerInfo no backend). hit_rate_pct
+// == -1 significa "sem dados ainda" (servidor recém-iniciado, hits e misses zerados) — mostrado
+// como "—" em vez de "0%", que seria enganoso (parece taxa de acerto ruim, não ausência de dado).
+function RedisServerInfoCard({ info }: { info: RedisServerInfo }) {
+  const tiles: { icon: typeof Server; label: string; value: string }[] = [
+    { icon: Server, label: "Versão", value: info.version ? `${info.version}${info.mode ? ` (${info.mode})` : ""}` : "—" },
+    { icon: Users, label: "Clientes conectados", value: String(info.connected_clients) },
+    { icon: MemoryStick, label: "Memória usada", value: info.used_memory_human || "—" },
+    {
+      icon: Target,
+      label: "Hit rate",
+      value: info.hit_rate_pct < 0 ? "—" : `${info.hit_rate_pct.toFixed(1)}% (${info.keyspace_hits}/${info.keyspace_hits + info.keyspace_misses})`,
+    },
+    { icon: Clock, label: "Uptime", value: `${info.uptime_days}d` },
+  ];
+  return (
+    <div className="rounded-md border border-border bg-muted/20 p-3">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
+        {info.role && <Badge variant="outline" className="text-[9px] px-1 py-0">{info.role}</Badge>}
+        Estatísticas do servidor
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {tiles.map(({ icon: Icon, label, value }) => (
+          <div key={label} className="flex items-start gap-1.5 min-w-0">
+            <Icon className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground" />
+            <div className="min-w-0">
+              <div className="text-[10px] text-muted-foreground truncate">{label}</div>
+              <div className="text-xs font-mono truncate" title={value}>{value}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1388,6 +1431,9 @@ export default function DatabaseTestTab() {
 
             {browseEnabled && (
               <div className="flex flex-col gap-2">
+                {engine === "redis" && result.browse.redis_server_info && (
+                  <RedisServerInfoCard info={result.browse.redis_server_info} />
+                )}
                 {result.browse.database && (
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
                     <Database className="w-3.5 h-3.5 shrink-0" />

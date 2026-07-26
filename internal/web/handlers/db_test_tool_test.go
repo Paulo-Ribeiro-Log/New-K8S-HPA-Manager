@@ -362,6 +362,79 @@ func TestRedisConnStringHint(t *testing.T) {
 	})
 }
 
+// redisInfoFixture reproduz o formato REAL de `redis-cli INFO` (CRLF entre linhas, cabeçalhos de
+// seção "# Nome"), capturado contra um redis:7-alpine real — só os campos usados por
+// parseRedisServerInfo, pra manter o teste legível sem as ~200 linhas da saída completa.
+const redisInfoFixture = "# Server\r\n" +
+	"redis_version:7.4.10\r\n" +
+	"redis_mode:standalone\r\n" +
+	"os:Linux 6.18.33.2\r\n" +
+	"\r\n" +
+	"# Clients\r\n" +
+	"connected_clients:3\r\n" +
+	"\r\n" +
+	"# Memory\r\n" +
+	"used_memory_human:965.91K\r\n" +
+	"maxmemory_human:0B\r\n" +
+	"\r\n" +
+	"# Stats\r\n" +
+	"keyspace_hits:842\r\n" +
+	"keyspace_misses:158\r\n" +
+	"\r\n" +
+	"# Replication\r\n" +
+	"role:master\r\n" +
+	"\r\n" +
+	"# Keyspace\r\n" +
+	"db0:keys=12,expires=3,avg_ttl=0\r\n"
+
+func TestParseRedisServerInfo(t *testing.T) {
+	t.Run("extrai campos reais do INFO (CRLF)", func(t *testing.T) {
+		info := parseRedisServerInfo(redisInfoFixture)
+		if info == nil {
+			t.Fatal("esperava *RedisServerInfo não-nil")
+		}
+		if info.Version != "7.4.10" {
+			t.Errorf("Version = %q, want 7.4.10", info.Version)
+		}
+		if info.Mode != "standalone" {
+			t.Errorf("Mode = %q, want standalone", info.Mode)
+		}
+		if info.Role != "master" {
+			t.Errorf("Role = %q, want master", info.Role)
+		}
+		if info.ConnectedClients != 3 {
+			t.Errorf("ConnectedClients = %d, want 3", info.ConnectedClients)
+		}
+		if info.UsedMemoryHuman != "965.91K" {
+			t.Errorf("UsedMemoryHuman = %q, want 965.91K", info.UsedMemoryHuman)
+		}
+		if info.KeyspaceHits != 842 || info.KeyspaceMisses != 158 {
+			t.Errorf("hits/misses = %d/%d, want 842/158", info.KeyspaceHits, info.KeyspaceMisses)
+		}
+		wantHitRate := 842.0 / (842.0 + 158.0) * 100
+		if info.HitRatePct != wantHitRate {
+			t.Errorf("HitRatePct = %v, want %v", info.HitRatePct, wantHitRate)
+		}
+	})
+
+	t.Run("hits e misses zerados vira -1 (sem dados), não 0%", func(t *testing.T) {
+		raw := "redis_version:7.4.10\r\nkeyspace_hits:0\r\nkeyspace_misses:0\r\n"
+		info := parseRedisServerInfo(raw)
+		if info.HitRatePct != -1 {
+			t.Errorf("HitRatePct = %v, want -1 (sem dados)", info.HitRatePct)
+		}
+	})
+
+	t.Run("saída vazia ou sem campos reconhecidos devolve nil", func(t *testing.T) {
+		if info := parseRedisServerInfo(""); info != nil {
+			t.Errorf("esperava nil pra saída vazia, got %+v", info)
+		}
+		if info := parseRedisServerInfo("NOAUTH Authentication required.\r\n"); info != nil {
+			t.Errorf("esperava nil pra saída de erro, got %+v", info)
+		}
+	})
+}
+
 func TestBuildMongoURIAuthMechanism(t *testing.T) {
 	t.Run("no mechanism omits query param", func(t *testing.T) {
 		got := buildMongoURI(dbConnParams{Host: "h", Port: 27017, Username: "u", Password: "p"})

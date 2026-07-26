@@ -286,8 +286,76 @@ type DBBrowseResult struct {
 	Database string `json:"database,omitempty"`
 	// Truncated é true quando o resultado foi cortado por um teto de segurança (só acontece no
 	// Redis — SCAN sobre um keyspace grande) — a lista exibida é uma AMOSTRA, não completa.
-	Truncated bool   `json:"truncated,omitempty"`
-	RawOutput string `json:"raw_output"`
+	Truncated bool `json:"truncated,omitempty"`
+	// ServerInfo só é preenchido pro Redis, no nível "database" (topo) — estatísticas do próprio
+	// servidor (versão, memória, clientes, hit rate), ver RedisServerInfo/parseRedisServerInfo.
+	// nil e omitido no JSON pros demais engines e pros níveis mais fundos da navegação do Redis.
+	ServerInfo *RedisServerInfo `json:"redis_server_info,omitempty"`
+	RawOutput  string           `json:"raw_output"`
+}
+
+// RedisServerInfo resume os campos mais relevantes de `redis-cli INFO` (seções Server/Clients/
+// Memory/Stats/Replication, retornadas juntas quando INFO roda sem argumento de seção) — exibido
+// no nível "database" (topo) da navegação do Redis, ao lado da lista de bancos lógicos 0-15 já
+// existente (parseRedisKeyspaceInfo, extraída da MESMA saída). Nil quando o parsing não encontra
+// nenhum campo reconhecido (saída inesperada — ex: erro do redis-cli capturado como stdout).
+type RedisServerInfo struct {
+	Version          string `json:"version,omitempty"`
+	Mode             string `json:"mode,omitempty"` // standalone | cluster | sentinel
+	Role             string `json:"role,omitempty"` // master | slave
+	UptimeDays       int64  `json:"uptime_days"`
+	ConnectedClients int64  `json:"connected_clients"`
+	UsedMemoryHuman  string `json:"used_memory_human,omitempty"`
+	MaxMemoryHuman   string `json:"maxmemory_human,omitempty"`
+	KeyspaceHits     int64  `json:"keyspace_hits"`
+	KeyspaceMisses   int64  `json:"keyspace_misses"`
+	// HitRatePct é calculado a partir de hits/misses — -1 (em vez de 0) quando não há dados
+	// suficientes (servidor recém-iniciado, hits==misses==0) pra distinguir de uma taxa real de
+	// 0% (frontend trata -1 como "sem dados ainda", não mostra o número).
+	HitRatePct float64 `json:"hit_rate_pct"`
+}
+
+// redisInfoFieldRegex casa linhas "campo:valor" da saída de `redis-cli INFO` — o formato usa
+// `\r\n` como separador de linha e `#` pra cabeçalho de seção (ex: "# Server"), ambos ignorados
+// aqui (a regex só captura linhas "identificador:resto-da-linha").
+var redisInfoFieldRegex = regexp.MustCompile(`(?m)^([a-zA-Z_][a-zA-Z0-9_]*):(.*?)\r?$`)
+
+// parseRedisServerInfo extrai os campos usados por RedisServerInfo da saída bruta de `INFO`
+// (sem argumento — todas as seções default). Best-effort: campos ausentes/malformados ficam no
+// zero-value, nunca abortam o parsing dos demais.
+func parseRedisServerInfo(raw string) *RedisServerInfo {
+	fields := make(map[string]string)
+	for _, m := range redisInfoFieldRegex.FindAllStringSubmatch(raw, -1) {
+		fields[m[1]] = strings.TrimSpace(m[2])
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+
+	info := &RedisServerInfo{
+		Version:         fields["redis_version"],
+		Mode:            fields["redis_mode"],
+		Role:            fields["role"],
+		UsedMemoryHuman: fields["used_memory_human"],
+		MaxMemoryHuman:  fields["maxmemory_human"],
+	}
+	if v, err := strconv.ParseInt(fields["uptime_in_days"], 10, 64); err == nil {
+		info.UptimeDays = v
+	}
+	if v, err := strconv.ParseInt(fields["connected_clients"], 10, 64); err == nil {
+		info.ConnectedClients = v
+	}
+	hits, hitsErr := strconv.ParseInt(fields["keyspace_hits"], 10, 64)
+	misses, missesErr := strconv.ParseInt(fields["keyspace_misses"], 10, 64)
+	info.HitRatePct = -1
+	if hitsErr == nil && missesErr == nil {
+		info.KeyspaceHits = hits
+		info.KeyspaceMisses = misses
+		if total := hits + misses; total > 0 {
+			info.HitRatePct = float64(hits) / float64(total) * 100
+		}
+	}
+	return info
 }
 
 // DBTestResult é o resultado completo de uma execução do teste de banco de dados.
@@ -351,9 +419,16 @@ type dbEngine struct {
 	// chave só é conhecido em runtime, formatos de saída incompatíveis entre si) — nesse caso o
 	// handler devolve só RawOutput e o frontend cai pra exibição de texto puro.
 	parsePreviewOutput func(raw string) ([]map[string]any, error)
-	networkErrorRegex  *regexp.Regexp
-	authErrorRegex     *regexp.Regexp
-	tlsErrorRegex      *regexp.Regexp
+	// parseServerInfo extrai estatísticas do próprio servidor (versão, memória, clientes
+	// conectados, hit rate) da MESMA saída de buildBrowse no nível "database" — nil pros engines
+	// que não expõem isso nesse ponto (Postgres/MySQL/Mongo listam só nomes de bancos ali, sem
+	// seção de estatísticas embutida na mesma chamada). Só o Redis usa isso hoje (ver
+	// parseRedisServerInfo) — tipo `*RedisServerInfo` mesmo sendo genérico na struct porque é o
+	// único consumidor; DBBrowseResult.ServerInfo fica nil e omitido no JSON pros demais engines.
+	parseServerInfo   func(raw string) *RedisServerInfo
+	networkErrorRegex *regexp.Regexp
+	authErrorRegex    *regexp.Regexp
+	tlsErrorRegex     *regexp.Regexp
 }
 
 // namesToObjects converte uma lista simples de nomes (sem type/detail) em DBBrowseObject — usado
@@ -1090,11 +1165,16 @@ var dbEngines = map[string]dbEngine{
 			cmd := redisCommand(p, "PING")
 			return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
 		},
-		// Sem Database (índice) informado: visão geral por banco lógico via `INFO keyspace` —
-		// preenche o "nível database" que os outros 3 engines já tinham (Postgres/MySQL/Mongo
-		// listam databases quando nenhum nome é informado; o Redis antes pulava direto pra lista
-		// de chaves, sempre). `INFO keyspace` é um único comando, server-wide — reporta os 16
-		// bancos (0-15) independente de qual `-n` a conexão está usando.
+		// Sem Database (índice) informado: visão geral por banco lógico + estatísticas do servidor
+		// via `INFO` sem seção específica — preenche o "nível database" que os outros 3 engines já
+		// tinham (Postgres/MySQL/Mongo listam databases quando nenhum nome é informado; o Redis
+		// antes pulava direto pra lista de chaves, sempre). `INFO` sem argumento devolve as seções
+		// default (Server/Clients/Memory/Stats/Replication/Keyspace, entre outras) num único
+		// comando, server-wide — tanto os 16 bancos (0-15, parseRedisKeyspaceInfo) quanto os campos
+		// usados por parseRedisServerInfo (versão, memória, clientes, hit rate) vêm da mesma
+		// chamada, sem round-trip extra. Antes era `INFO keyspace` (só a seção de bancos) — trocado
+		// porque o pedido de estatísticas do servidor precisava das outras seções, e pedir todas
+		// juntas não custa mais que pedir uma só.
 		//
 		// Com Database informado: mesmo scan de chaves de antes (`--scan` + `head`, nunca `KEYS
 		// *`), mas cada chave agora roda TYPE + MEMORY USAGE num único `redis-cli` (comandos
@@ -1104,7 +1184,7 @@ var dbEngines = map[string]dbEngine{
 		// de segurança do teto de 100 chaves.
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
 			if strings.TrimSpace(p.Database) == "" {
-				cmd := redisCommand(p, "INFO", "keyspace")
+				cmd := redisCommand(p, "INFO")
 				return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
 			}
 			scanArgs := []string{"--scan"}
@@ -1188,6 +1268,7 @@ var dbEngines = map[string]dbEngine{
 			}
 			return db
 		},
+		parseServerInfo:   parseRedisServerInfo,
 		networkErrorRegex: regexp.MustCompile(`(?i)(could not connect|connection refused|name or service not known)`),
 		authErrorRegex:    regexp.MustCompile(`(?i)(noauth|wrongpass|invalid username-password)`),
 		tlsErrorRegex:     regexp.MustCompile(`(?i)(tls|ssl).*(error|handshake)`),
@@ -1507,6 +1588,12 @@ func runDBBrowseStage(ctx context.Context, run dbExecFunc, engine dbEngine, conn
 	if objectType != "database" && engine.resolveDatabaseLabel != nil {
 		databaseLabel = engine.resolveDatabaseLabel(conn)
 	}
+	// parseServerInfo só existe pro Redis, e só no nível "database" (topo) — a mesma chamada de
+	// INFO que lista os bancos 0-15 já traz as estatísticas do servidor, ver RedisServerInfo.
+	var serverInfo *RedisServerInfo
+	if objectType == "database" && engine.parseServerInfo != nil {
+		serverInfo = engine.parseServerInfo(stdout)
+	}
 	return DBBrowseResult{
 		Status:     "ok",
 		Message:    message,
@@ -1514,6 +1601,7 @@ func runDBBrowseStage(ctx context.Context, run dbExecFunc, engine dbEngine, conn
 		Objects:    objects,
 		Database:   databaseLabel,
 		Truncated:  truncated,
+		ServerInfo: serverInfo,
 		RawOutput:  stdout,
 	}
 }

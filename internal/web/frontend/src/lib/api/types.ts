@@ -2098,6 +2098,23 @@ export interface DBBrowseObject {
   storage_size_bytes?: number;
 }
 
+// RedisServerInfo resume `redis-cli INFO` (versão, memória, clientes, hit rate) — só vem
+// preenchido pro engine redis, no nível "database" (topo) da navegação (object_type ==
+// "database"). hit_rate_pct == -1 significa "sem dados ainda" (keyspace_hits e _misses
+// zerados, servidor recém-iniciado) — não deve ser exibido como 0%.
+export interface RedisServerInfo {
+  version?: string;
+  mode?: string;
+  role?: string;
+  uptime_days: number;
+  connected_clients: number;
+  used_memory_human?: string;
+  maxmemory_human?: string;
+  keyspace_hits: number;
+  keyspace_misses: number;
+  hit_rate_pct: number;
+}
+
 export interface DBBrowseResult {
   status: DBBrowseStatus;
   message: string;
@@ -2111,6 +2128,7 @@ export interface DBBrowseResult {
   // truncated = true só acontece no Redis (SCAN sobre um keyspace grande) — a lista é uma
   // AMOSTRA, não uma listagem completa.
   truncated?: boolean;
+  redis_server_info?: RedisServerInfo;
   raw_output: string;
 }
 
