@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
 import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,9 @@ import {
   MemoryStick,
   Target,
   Clock,
+  Eye,
+  EyeOff,
+  X,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -63,6 +66,62 @@ import { formatBytes } from "@/lib/monitorUtils";
 import { toast } from "sonner";
 import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse, RedisServerInfo, RedisInfoSection, AzureRedisTierInfo } from "@/lib/api/types";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
+
+// ClearableInput envolve o <Input> do shadcn com um botão "Limpar" (X, some quando o campo está
+// vazio) e, quando `isPassword`, também um botão de mostrar/ocultar senha (Eye/EyeOff) — usado em
+// todos os campos de texto digitados manualmente nesta aba (host, connection string, usuário,
+// senha, padrão de chaves, database). `type` é passthrough (ex: "number" pro índice de banco do
+// Redis) — `isPassword` sempre tem precedência sobre `type` explícito.
+function ClearableInput({
+  value,
+  onChange,
+  isPassword = false,
+  type = "text",
+  className,
+  ...inputProps
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  isPassword?: boolean;
+} & Omit<ComponentProps<typeof Input>, "value" | "onChange">) {
+  const [revealed, setRevealed] = useState(false);
+  const effectiveType = isPassword ? (revealed ? "text" : "password") : type;
+  return (
+    <div className="relative">
+      <Input
+        {...inputProps}
+        type={effectiveType}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(isPassword ? "pr-14" : "pr-7", className)}
+      />
+      <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+        {isPassword && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => setRevealed((v) => !v)}
+            className="p-1 text-muted-foreground hover:text-foreground rounded"
+            title={revealed ? "Ocultar senha" : "Mostrar senha"}
+          >
+            {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+          </button>
+        )}
+        {value && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => onChange("")}
+            className="p-1 text-muted-foreground hover:text-foreground rounded"
+            title="Limpar"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de KafkaTestTab.tsx/
 // ClusterSelectorForTab.tsx (evita o bug do <Select> do Radix fechar o dropdown ao focar um
@@ -1199,7 +1258,7 @@ export default function DatabaseTestTab() {
             {csSource === "manual" ? (
               <div className="w-full max-w-2xl">
                 <label className="text-xs text-muted-foreground block mb-1">Connection string completa</label>
-                <Input
+                <ClearableInput
                   placeholder={
                     engine === "postgres" ? "postgresql://user:pass@host:5432/db?sslmode=require" :
                     engine === "mysql" ? "mysql://user:pass@host:3306/db" :
@@ -1207,7 +1266,7 @@ export default function DatabaseTestTab() {
                     "redis://:pass@host:6379/0"
                   }
                   value={connectionString}
-                  onChange={(e) => setConnectionString(e.target.value)}
+                  onChange={setConnectionString}
                 />
                 {engine === "redis" && (() => {
                   const parsed = parseRedisCliLikeString(connectionString);
@@ -1305,7 +1364,7 @@ export default function DatabaseTestTab() {
               <>
                 <div className="w-72">
                   <label className="text-xs text-muted-foreground block mb-1">Host</label>
-                  <Input placeholder="ex: my-postgres.database.azure.com" value={host} onChange={(e) => setHost(e.target.value)} title={host || undefined} />
+                  <ClearableInput placeholder="ex: my-postgres.database.azure.com" value={host} onChange={setHost} title={host || undefined} />
                 </div>
                 <div className="w-28">
                   <label className="text-xs text-muted-foreground block mb-1">Porta</label>
@@ -1415,9 +1474,9 @@ export default function DatabaseTestTab() {
                       <label className="text-xs text-muted-foreground block mb-1">
                         Usuário{engine === "redis" && " (opcional)"}
                       </label>
-                      <Input
+                      <ClearableInput
                         value={username}
-                        onChange={(e) => setUsername(e.target.value)}
+                        onChange={setUsername}
                         placeholder={engine === "redis" ? "deixe em branco pra Access Key" : undefined}
                       />
                       {engine === "redis" && (
@@ -1431,7 +1490,7 @@ export default function DatabaseTestTab() {
                       <label className="text-xs text-muted-foreground block mb-1">
                         {engine === "redis" ? "Senha / Access Key" : "Senha"}
                       </label>
-                      <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+                      <ClearableInput isPassword value={password} onChange={setPassword} />
                     </div>
                   </>
                 ) : (
@@ -1506,13 +1565,13 @@ export default function DatabaseTestTab() {
           <label className="text-xs text-muted-foreground block mb-1">
             {engine === "redis" ? "Índice do banco (0-15, opcional)" : "Database (opcional)"}
           </label>
-          <Input
+          <ClearableInput
             type={engine === "redis" ? "number" : "text"}
             min={engine === "redis" ? 0 : undefined}
             max={engine === "redis" ? 15 : undefined}
             placeholder={engine === "redis" ? "0" : undefined}
             value={database}
-            onChange={(e) => setDatabase(e.target.value)}
+            onChange={setDatabase}
             title={database || undefined}
           />
           {engine !== "redis" && browseEnabled && (
@@ -1536,10 +1595,10 @@ export default function DatabaseTestTab() {
         {browseEnabled && engine === "redis" && (
           <div className="w-64 pl-8">
             <label className="text-xs text-muted-foreground block mb-1">Padrão de chaves (opcional)</label>
-            <Input
+            <ClearableInput
               placeholder="ex: sessao:*, cache:usuario:*"
               value={redisKeyPattern}
-              onChange={(e) => setRedisKeyPattern(e.target.value)}
+              onChange={setRedisKeyPattern}
             />
             <p className="text-[10px] text-muted-foreground mt-1">
               Filtra o SCAN por um padrão glob (MATCH) — vazio lista sem filtro. Redis não indexa
