@@ -7,11 +7,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -672,6 +667,17 @@ export default function DatabaseTestTab() {
     staleTime: 15_000,
   });
   const dockerReady = executionMode !== "local" || !!(dockerStatus?.installed && dockerStatus?.daemon_running);
+
+  // Tier/SKU do Azure Cache for Redis — só faz sentido buscar quando o modal de saída bruta está
+  // aberto (lazy, evita chamada a cada digitação de host) pro engine Redis com host preenchido
+  // (modo connstring não expõe um campo de host separado — ver DatabaseTestTab.tsx). staleTime
+  // igual ao TTL de cache do backend (30min): tier de um cache Azure raramente muda.
+  const { data: azureRedisTier } = useQuery({
+    queryKey: ["db-test-redis-azure-tier", host],
+    queryFn: () => apiClient.getRedisAzureTier(host),
+    enabled: rawOutputOpen && engine === "redis" && authMode !== "connstring" && !!host.trim(),
+    staleTime: 30 * 60_000,
+  });
 
   const { data: deployments = [] } = useQuery({
     queryKey: ["deployments-db-test", cluster, namespace],
@@ -1600,15 +1606,46 @@ export default function DatabaseTestTab() {
               </div>
             )}
 
-            <Collapsible open={rawOutputOpen} onOpenChange={setRawOutputOpen}>
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" className="w-fit gap-1 text-xs text-muted-foreground">
-                  {rawOutputOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                  Saída bruta
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <pre className="mt-1.5 rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono whitespace-pre-wrap overflow-x-auto">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-fit gap-1 text-xs text-muted-foreground"
+              onClick={() => setRawOutputOpen(true)}
+            >
+              <ChevronRight className="h-3 w-3" />
+              Ver saída bruta
+            </Button>
+
+            <Dialog open={rawOutputOpen} onOpenChange={setRawOutputOpen}>
+              <DialogContent className="max-w-3xl h-[80vh] flex flex-col overflow-hidden">
+                <DialogHeader>
+                  <DialogTitle>Saída bruta</DialogTitle>
+                </DialogHeader>
+
+                {engine === "redis" && authMode !== "connstring" && !!host.trim() &&
+                  azureRedisTier && (azureRedisTier.found || azureRedisTier.error) && (
+                  <div className="shrink-0 rounded-md border border-border bg-muted/20 p-3 text-xs">
+                    <div className="font-medium mb-1.5">Tier — Azure Cache for Redis</div>
+                    {azureRedisTier.found ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 font-mono">
+                        <div><span className="text-muted-foreground">Tier: </span>{azureRedisTier.tier_label}</div>
+                        <div><span className="text-muted-foreground">Subscription: </span>{azureRedisTier.subscription}</div>
+                        <div><span className="text-muted-foreground">Resource Group: </span>{azureRedisTier.resource_group}</div>
+                        <div><span className="text-muted-foreground">Região: </span>{azureRedisTier.location}</div>
+                        {!!azureRedisTier.shard_count && (
+                          <div><span className="text-muted-foreground">Shards: </span>{azureRedisTier.shard_count}</div>
+                        )}
+                        {azureRedisTier.redis_version && (
+                          <div><span className="text-muted-foreground">Versão Redis: </span>{azureRedisTier.redis_version}</div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-amber-700 dark:text-amber-400">{azureRedisTier.error}</div>
+                    )}
+                  </div>
+                )}
+
+                <pre className="flex-1 min-h-0 overflow-y-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono whitespace-pre-wrap">
                   {result.connectivity.raw_output || "(sem saída)"}
                   {browseEnabled && result.browse.raw_output && (
                     <>
@@ -1617,8 +1654,8 @@ export default function DatabaseTestTab() {
                     </>
                   )}
                 </pre>
-              </CollapsibleContent>
-            </Collapsible>
+              </DialogContent>
+            </Dialog>
           </div>
         )}
       </div>
