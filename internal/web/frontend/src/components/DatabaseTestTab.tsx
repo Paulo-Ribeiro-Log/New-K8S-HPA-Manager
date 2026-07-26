@@ -341,6 +341,45 @@ function deriveConnectivityBadges(status: DBStageStatus, authMode: DBAuthMode, u
   return badges;
 }
 
+// parseRedisCliLikeString reconhece dois formatos que NÃO são URI (por isso rejeitados pelo
+// backend, ver isValidRedisConnString/redisConnStringHint em db_test_tool.go), mas que usuários
+// colam no campo "Connection string" esperando que funcionem — ambos vêm do jeito que a própria
+// Azure Portal descreve o Redis Cache pra teste manual, sem usuário (só Access Key), diferente dos
+// outros 3 engines:
+//   1. O comando redis-cli inteiro: `redis-cli -p 10000 -h host -a "chave" --tls`
+//   2. O atalho "host:porta --tls" (sem prefixo `redis-cli`, só os dados de conexão)
+// Retorna null quando não reconhece nenhum dos dois formatos — nesse caso a UI não mostra o botão
+// de preenchimento automático, só a mensagem genérica de connection string inválida.
+function parseRedisCliLikeString(raw: string): { host: string; port: number; password?: string; tls: boolean } | null {
+  const trimmed = raw.trim();
+  if (!trimmed || /^rediss?:\/\//i.test(trimmed)) return null;
+
+  const pick = (m: RegExpMatchArray | null) => (m ? m[2] ?? m[3] ?? m[4] : undefined);
+  const quotedOrBare = '("([^"]+)"|\'([^\']+)\'|(\\S+))';
+
+  const hostMatch = trimmed.match(new RegExp(`-h\\s+${quotedOrBare}`));
+  const portMatch = trimmed.match(new RegExp(`(?:-p|--port)\\s+${quotedOrBare}`));
+  const passMatch = trimmed.match(new RegExp(`-a\\s+${quotedOrBare}`));
+
+  let host = pick(hostMatch);
+  let portStr = pick(portMatch);
+
+  if (!host) {
+    // Atalho "host:porta" — sem flags de redis-cli, só os dados de conexão + --tls opcional.
+    const shortMatch = trimmed.match(/^([a-zA-Z0-9.-]+):(\d+)\b/);
+    if (shortMatch) {
+      host = shortMatch[1];
+      portStr = shortMatch[2];
+    }
+  }
+
+  if (!host || !portStr) return null;
+  const port = parseInt(portStr, 10);
+  if (!Number.isFinite(port) || port <= 0) return null;
+
+  return { host, port, password: pick(passMatch), tls: /(^|\s)--tls(\s|$)/.test(trimmed) };
+}
+
 const ENGINE_OPTIONS: { value: DBEngine; label: string; defaultPort: number }[] = [
   { value: "postgres", label: "PostgreSQL", defaultPort: 5432 },
   { value: "mysql", label: "MySQL/MariaDB", defaultPort: 3306 },
@@ -1050,6 +1089,38 @@ export default function DatabaseTestTab() {
                   value={connectionString}
                   onChange={(e) => setConnectionString(e.target.value)}
                 />
+                {engine === "redis" && (() => {
+                  const parsed = parseRedisCliLikeString(connectionString);
+                  if (!parsed) return null;
+                  return (
+                    <div className="mt-1.5 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400 flex-wrap">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        Isso parece um comando redis-cli (host/porta/senha/TLS), não uma connection string —
+                        o Redis Cache da Azure (e a maioria dos Redis self-hosted) não usa usuário, só host+porta+senha.
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-2 text-xs shrink-0"
+                        onClick={() => {
+                          setAuthMode("userpass");
+                          setCredSource("manual");
+                          setHostSource("manual");
+                          setHost(parsed.host);
+                          setPort(parsed.port);
+                          setUsername("");
+                          setPassword(parsed.password ?? "");
+                          setUseTLS(parsed.tls);
+                          setConnectionString("");
+                        }}
+                      >
+                        Preencher campos automaticamente
+                      </Button>
+                    </div>
+                  );
+                })()}
               </div>
             ) : (
               <>
@@ -1221,11 +1292,25 @@ export default function DatabaseTestTab() {
                 {credSource === "manual" ? (
                   <>
                     <div className="w-56">
-                      <label className="text-xs text-muted-foreground block mb-1">Usuário</label>
-                      <Input value={username} onChange={(e) => setUsername(e.target.value)} />
+                      <label className="text-xs text-muted-foreground block mb-1">
+                        Usuário{engine === "redis" && " (opcional)"}
+                      </label>
+                      <Input
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder={engine === "redis" ? "deixe em branco pra Access Key" : undefined}
+                      />
+                      {engine === "redis" && (
+                        <p className="text-[10px] text-muted-foreground mt-1 max-w-56">
+                          Redis não tem usuário (exceto ACL do Redis 6+) — deixe em branco e preencha só a senha
+                          (Access Key do Azure Cache, AUTH de outros providers, etc.).
+                        </p>
+                      )}
                     </div>
                     <div className="w-56">
-                      <label className="text-xs text-muted-foreground block mb-1">Senha</label>
+                      <label className="text-xs text-muted-foreground block mb-1">
+                        {engine === "redis" ? "Senha / Access Key" : "Senha"}
+                      </label>
                       <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
                     </div>
                   </>
