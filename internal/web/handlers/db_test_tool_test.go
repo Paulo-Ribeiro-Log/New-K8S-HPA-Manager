@@ -324,6 +324,44 @@ func TestParseRedisPreviewMeta(t *testing.T) {
 	})
 }
 
+func TestIsValidRedisConnString(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"redis scheme", "redis://:pass@host:6379/0", true},
+		{"rediss scheme", "rediss://:pass@host:10000/0", true},
+		{"uppercase scheme", "REDISS://:pass@host:10000/0", true},
+		{"empty", "", false},
+		{"azure redis-cli snippet", "-p 10000 -h mycache.redis.azure.net -a MyAccessKey --tls", false},
+		{"bare host no scheme", "mycache.redis.azure.net:10000", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isValidRedisConnString(tc.in); got != tc.want {
+				t.Errorf("isValidRedisConnString(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRedisConnStringHint(t *testing.T) {
+	t.Run("redis-cli snippet gets specific hint", func(t *testing.T) {
+		hint := redisConnStringHint("-p 10000 -h mycache.redis.azure.net -a MyAccessKey --tls")
+		if !strings.Contains(hint, "redis-cli") {
+			t.Errorf("expected hint to mention redis-cli, got %q", hint)
+		}
+	})
+
+	t.Run("generic invalid string gets generic hint", func(t *testing.T) {
+		hint := redisConnStringHint("mycache.redis.azure.net:10000")
+		if !strings.Contains(hint, "redis://") || !strings.Contains(hint, "rediss://") {
+			t.Errorf("expected hint to mention redis://  and rediss://, got %q", hint)
+		}
+	})
+}
+
 func TestBuildMongoURIAuthMechanism(t *testing.T) {
 	t.Run("no mechanism omits query param", func(t *testing.T) {
 		got := buildMongoURI(dbConnParams{Host: "h", Port: 27017, Username: "u", Password: "p"})

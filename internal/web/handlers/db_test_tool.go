@@ -597,6 +597,37 @@ func redisEffectiveTarget(p dbConnParams) (useURI bool, uri string, args []strin
 	return false, "", args
 }
 
+// redisConnStringSchemes são os únicos esquemas que `redis-cli -u` aceita — fora deles ele falha
+// com "Invalid URI scheme", um erro cru sem nenhuma explicação do porquê. Validado ANTES de
+// rodar o teste (validateDBTestRequest / runTest) pra nunca deixar esse erro cru chegar ao
+// usuário sem contexto.
+var redisConnStringSchemes = []string{"redis://", "rediss://"}
+
+func isValidRedisConnString(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	for _, scheme := range redisConnStringSchemes {
+		if strings.HasPrefix(lower, scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+// redisConnStringHint monta uma mensagem acionável pra connection string Redis inválida —
+// detecta especificamente o caso de o usuário colar o comando `redis-cli -h ... -p ... -a ...
+// --tls` (formato que a própria Azure Portal sugere na aba "Console"/documentação como comando
+// de teste) no campo de connection string, esperando que funcionasse como se estivesse rodando
+// redis-cli manualmente. Sem essa detecção, o único sinal que o usuário via era o "Invalid URI
+// scheme" cru devolvido pelo próprio redis-cli.
+func redisConnStringHint(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "-") || strings.Contains(trimmed, " -h ") || strings.Contains(trimmed, "--tls") {
+		return "Isso parece ser um comando redis-cli (-h/-p/-a/--tls), não uma connection string. " +
+			"Use o modo \"Usuário e senha\" preenchendo Host/Porta/Senha e marcando TLS, ou informe uma URI no formato rediss://:senha@host:porta/0"
+	}
+	return "Connection string do Redis deve começar com redis:// ou rediss:// (ex: rediss://:senha@host:porta/0)"
+}
+
 // redisBaseCommand monta "redis-cli <flags de conexão>" sem subcomando — reusado tanto por
 // redisCommand (um subcomando) quanto pelo estágio de navegação, que precisa reemitir a mesma
 // base de conexão várias vezes (um TYPE por chave, ver dbEngines["redis"].buildBrowse).
@@ -1624,6 +1655,10 @@ func validateDBTestRequest(c *gin.Context, req *RunDBTestRequest) (dbEngine, boo
 				c.JSON(http.StatusBadRequest, errorResponse("MISSING_CONNSTRING", "auth.connection_string ou auth.connstring_ref é obrigatório quando auth.mode é connstring"))
 				return dbEngine{}, false
 			}
+			if req.Engine == "redis" && !isValidRedisConnString(req.Auth.ConnectionString) {
+				c.JSON(http.StatusBadRequest, errorResponse("INVALID_REDIS_CONNSTRING", redisConnStringHint(req.Auth.ConnectionString)))
+				return dbEngine{}, false
+			}
 		}
 		if req.HostConfigMapRef != nil {
 			c.JSON(http.StatusBadRequest, errorResponse("INVALID_HOST_SOURCE", "host_configmap_ref não se aplica quando auth.mode é connstring — a connection string já embute host/porta"))
@@ -1794,6 +1829,10 @@ func (h *DBTestHandler) runTest(ctx context.Context, sessionID string, req RunDB
 		connStr, err := resolveDBConnString(ctx, clientset, &req.Auth)
 		if err != nil {
 			fail("falha ao resolver connection string", err)
+			return
+		}
+		if req.Engine == "redis" && !isValidRedisConnString(connStr) {
+			fail("connection string do Redis inválida", fmt.Errorf("%s", redisConnStringHint(connStr)))
 			return
 		}
 		conn.ConnStr = connStr
