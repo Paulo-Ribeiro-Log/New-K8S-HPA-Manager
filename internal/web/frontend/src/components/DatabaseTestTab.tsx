@@ -51,6 +51,11 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Server,
+  Users,
+  MemoryStick,
+  Target,
+  Clock,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -61,7 +66,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { formatBytes } from "@/lib/monitorUtils";
 import { toast } from "sonner";
-import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse } from "@/lib/api/types";
+import type { DBTestResult, DBTestSSEEvent, DBStageStatus, DBEngine, DBAuthMode, DBExecutionMode, DBBrowseObject, DBPreviewResponse, RedisServerInfo } from "@/lib/api/types";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de KafkaTestTab.tsx/
@@ -143,6 +148,44 @@ function StageBadge({ label, status }: { label: string; status: "ok" | "failed" 
       {meta.icon}
       {label}
     </Badge>
+  );
+}
+
+// RedisServerInfoCard mostra as estatísticas do próprio servidor Redis (versão, memória,
+// clientes conectados, hit rate) — vem junto do nível "database" (topo) da navegação, mesma
+// chamada de INFO que já lista os bancos 0-15 (ver parseRedisServerInfo no backend). hit_rate_pct
+// == -1 significa "sem dados ainda" (servidor recém-iniciado, hits e misses zerados) — mostrado
+// como "—" em vez de "0%", que seria enganoso (parece taxa de acerto ruim, não ausência de dado).
+function RedisServerInfoCard({ info }: { info: RedisServerInfo }) {
+  const tiles: { icon: typeof Server; label: string; value: string }[] = [
+    { icon: Server, label: "Versão", value: info.version ? `${info.version}${info.mode ? ` (${info.mode})` : ""}` : "—" },
+    { icon: Users, label: "Clientes conectados", value: String(info.connected_clients) },
+    { icon: MemoryStick, label: "Memória usada", value: info.used_memory_human || "—" },
+    {
+      icon: Target,
+      label: "Hit rate",
+      value: info.hit_rate_pct < 0 ? "—" : `${info.hit_rate_pct.toFixed(1)}% (${info.keyspace_hits}/${info.keyspace_hits + info.keyspace_misses})`,
+    },
+    { icon: Clock, label: "Uptime", value: `${info.uptime_days}d` },
+  ];
+  return (
+    <div className="rounded-md border border-border bg-muted/20 p-3">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
+        {info.role && <Badge variant="outline" className="text-[9px] px-1 py-0">{info.role}</Badge>}
+        Estatísticas do servidor
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {tiles.map(({ icon: Icon, label, value }) => (
+          <div key={label} className="flex items-start gap-1.5 min-w-0">
+            <Icon className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground" />
+            <div className="min-w-0">
+              <div className="text-[10px] text-muted-foreground truncate">{label}</div>
+              <div className="text-xs font-mono truncate" title={value}>{value}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -296,6 +339,45 @@ function deriveConnectivityBadges(status: DBStageStatus, authMode: DBAuthMode, u
     });
   }
   return badges;
+}
+
+// parseRedisCliLikeString reconhece dois formatos que NÃO são URI (por isso rejeitados pelo
+// backend, ver isValidRedisConnString/redisConnStringHint em db_test_tool.go), mas que usuários
+// colam no campo "Connection string" esperando que funcionem — ambos vêm do jeito que a própria
+// Azure Portal descreve o Redis Cache pra teste manual, sem usuário (só Access Key), diferente dos
+// outros 3 engines:
+//   1. O comando redis-cli inteiro: `redis-cli -p 10000 -h host -a "chave" --tls`
+//   2. O atalho "host:porta --tls" (sem prefixo `redis-cli`, só os dados de conexão)
+// Retorna null quando não reconhece nenhum dos dois formatos — nesse caso a UI não mostra o botão
+// de preenchimento automático, só a mensagem genérica de connection string inválida.
+function parseRedisCliLikeString(raw: string): { host: string; port: number; password?: string; tls: boolean } | null {
+  const trimmed = raw.trim();
+  if (!trimmed || /^rediss?:\/\//i.test(trimmed)) return null;
+
+  const pick = (m: RegExpMatchArray | null) => (m ? m[2] ?? m[3] ?? m[4] : undefined);
+  const quotedOrBare = '("([^"]+)"|\'([^\']+)\'|(\\S+))';
+
+  const hostMatch = trimmed.match(new RegExp(`-h\\s+${quotedOrBare}`));
+  const portMatch = trimmed.match(new RegExp(`(?:-p|--port)\\s+${quotedOrBare}`));
+  const passMatch = trimmed.match(new RegExp(`-a\\s+${quotedOrBare}`));
+
+  let host = pick(hostMatch);
+  let portStr = pick(portMatch);
+
+  if (!host) {
+    // Atalho "host:porta" — sem flags de redis-cli, só os dados de conexão + --tls opcional.
+    const shortMatch = trimmed.match(/^([a-zA-Z0-9.-]+):(\d+)\b/);
+    if (shortMatch) {
+      host = shortMatch[1];
+      portStr = shortMatch[2];
+    }
+  }
+
+  if (!host || !portStr) return null;
+  const port = parseInt(portStr, 10);
+  if (!Number.isFinite(port) || port <= 0) return null;
+
+  return { host, port, password: pick(passMatch), tls: /(^|\s)--tls(\s|$)/.test(trimmed) };
 }
 
 const ENGINE_OPTIONS: { value: DBEngine; label: string; defaultPort: number }[] = [
@@ -1007,6 +1089,38 @@ export default function DatabaseTestTab() {
                   value={connectionString}
                   onChange={(e) => setConnectionString(e.target.value)}
                 />
+                {engine === "redis" && (() => {
+                  const parsed = parseRedisCliLikeString(connectionString);
+                  if (!parsed) return null;
+                  return (
+                    <div className="mt-1.5 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400 flex-wrap">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        Isso parece um comando redis-cli (host/porta/senha/TLS), não uma connection string —
+                        o Redis Cache da Azure (e a maioria dos Redis self-hosted) não usa usuário, só host+porta+senha.
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-2 text-xs shrink-0"
+                        onClick={() => {
+                          setAuthMode("userpass");
+                          setCredSource("manual");
+                          setHostSource("manual");
+                          setHost(parsed.host);
+                          setPort(parsed.port);
+                          setUsername("");
+                          setPassword(parsed.password ?? "");
+                          setUseTLS(parsed.tls);
+                          setConnectionString("");
+                        }}
+                      >
+                        Preencher campos automaticamente
+                      </Button>
+                    </div>
+                  );
+                })()}
               </div>
             ) : (
               <>
@@ -1178,11 +1292,25 @@ export default function DatabaseTestTab() {
                 {credSource === "manual" ? (
                   <>
                     <div className="w-56">
-                      <label className="text-xs text-muted-foreground block mb-1">Usuário</label>
-                      <Input value={username} onChange={(e) => setUsername(e.target.value)} />
+                      <label className="text-xs text-muted-foreground block mb-1">
+                        Usuário{engine === "redis" && " (opcional)"}
+                      </label>
+                      <Input
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder={engine === "redis" ? "deixe em branco pra Access Key" : undefined}
+                      />
+                      {engine === "redis" && (
+                        <p className="text-[10px] text-muted-foreground mt-1 max-w-56">
+                          Redis não tem usuário (exceto ACL do Redis 6+) — deixe em branco e preencha só a senha
+                          (Access Key do Azure Cache, AUTH de outros providers, etc.).
+                        </p>
+                      )}
                     </div>
                     <div className="w-56">
-                      <label className="text-xs text-muted-foreground block mb-1">Senha</label>
+                      <label className="text-xs text-muted-foreground block mb-1">
+                        {engine === "redis" ? "Senha / Access Key" : "Senha"}
+                      </label>
                       <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
                     </div>
                   </>
@@ -1388,6 +1516,9 @@ export default function DatabaseTestTab() {
 
             {browseEnabled && (
               <div className="flex flex-col gap-2">
+                {engine === "redis" && result.browse.redis_server_info && (
+                  <RedisServerInfoCard info={result.browse.redis_server_info} />
+                )}
                 {result.browse.database && (
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
                     <Database className="w-3.5 h-3.5 shrink-0" />
