@@ -63,28 +63,34 @@ func (m *GCPAuthManager) CheckStatus(ctx context.Context) GCPAuthStatus {
 		status.HasGcloud = true
 
 		cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-
 		out, err := exec.CommandContext(cmdCtx, "gcloud", "auth", "list",
 			"--filter=status:ACTIVE", "--format=json").Output()
+		cancel()
 		if err == nil {
 			var accounts []struct {
 				Account string `json:"account"`
 			}
 			if json.Unmarshal(out, &accounts) == nil && len(accounts) > 0 {
-				status.Authenticated = true
 				status.Account = accounts[0].Account
 			}
 		}
 	}
 
-	adcPath := gcpADCPath()
-	if _, err := os.Stat(adcPath); err == nil {
+	if _, err := os.Stat(gcpADCPath()); err == nil {
 		status.HasADC = true
-		if !status.Authenticated {
-			status.Authenticated = isADCValid(adcPath)
-		}
 	}
+
+	// Checagem "ao vivo": tenta de fato obter um access token, pelo mesmo caminho usado pela
+	// autenticação real do GKE (GetFreshGKEToken: ADC via refresh_token → gcloud), em vez de só
+	// inferir a partir de estado em disco. Um refresh_token revogado/expirado no lado do Google
+	// não muda nem o conteúdo do arquivo ADC nem a listagem local do `gcloud auth list` — a
+	// checagem anterior (isADCValid: só via se o campo refresh_token estava presente/não-vazio,
+	// e `gcloud auth list --filter=status:ACTIVE` também é só estado local) reportava
+	// "autenticado" mesmo com a sessão morta no Google, então o dialog de login SSO proativo
+	// (GcpAuthDialog/useGcpSsoAuth) nunca disparava ao trocar de cluster GKE. Mesmo princípio já
+	// usado pelo SSO AWS (IsTokenValid faz `aws sts get-caller-identity`, uma chamada real, não
+	// leitura de estado local).
+	status.Authenticated = GetFreshGKEToken(ctx) != ""
 
 	return status
 }
