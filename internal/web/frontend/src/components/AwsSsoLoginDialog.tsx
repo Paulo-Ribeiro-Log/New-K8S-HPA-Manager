@@ -19,6 +19,12 @@ import type { AwsSsoState } from "@/hooks/useAwsSsoAuth";
 interface Props {
   state: AwsSsoState;
   onRetryAfterConfig: (profile: string) => void;
+  // onRetry reinicia o fluxo do zero (triggerLogin) — usado quando o erro NÃO é "perfil não
+  // configurado" (esse caso já tem seu próprio botão "Salvar e continuar"). Sem isso, um erro
+  // genérico (timeout, VPN AWS caída, sessão SSO expirada no meio do polling) só deixava
+  // "Fechar" disponível — fechar o modal perdia o fluxo de vez, sem jeito de tentar de novo a
+  // partir daqui (era preciso re-selecionar o cluster EKS pra reabrir o modal).
+  onRetry: () => void;
   onClose: () => void;
 }
 
@@ -30,7 +36,7 @@ interface SsoFormValues {
   region: string;
 }
 
-export function AwsSsoLoginDialog({ state, onRetryAfterConfig, onClose }: Props) {
+export function AwsSsoLoginDialog({ state, onRetryAfterConfig, onRetry, onClose }: Props) {
   const [form, setForm] = useState<SsoFormValues>({
     startUrl: "",
     ssoRegion: "us-east-1",
@@ -188,6 +194,9 @@ export function AwsSsoLoginDialog({ state, onRetryAfterConfig, onClose }: Props)
             <Button onClick={handleSaveConfig} disabled={saving}>
               {saving ? "Salvando…" : "Salvar e continuar"}
             </Button>
+          )}
+          {state.error && !state.needsConfig && !state.loading && (
+            <Button onClick={onRetry}>Tentar novamente</Button>
           )}
           {!state.success && (
             <Button variant="outline" onClick={onClose}>
