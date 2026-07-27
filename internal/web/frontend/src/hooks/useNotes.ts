@@ -15,6 +15,12 @@ export function useNotes(cluster: string, tab: string) {
     queryFn: () => apiClient.getNotes(cluster, tab),
     enabled: !!cluster && !!tab,
     staleTime: 30000,
+    // refetchInterval garante recuperação automática quando o servidor reinicia (make build,
+    // rebuild-web.sh) com a aba já aberta: o retry padrão do React Query desiste depois de só
+    // algumas tentativas com backoff (poucos segundos), tempo menor que o de um rebuild+restart
+    // típico — sem isso, a query ficava presa em erro até um F5 manual, dando a impressão de que
+    // "as notas não persistem" quando na verdade só não recarregavam sozinhas.
+    refetchInterval: 60000,
   });
 }
 
