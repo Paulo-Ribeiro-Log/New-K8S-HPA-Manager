@@ -113,6 +113,8 @@ import { VpnWarningDialog } from "@/components/VpnWarningDialog";
 import { ClusterUnreachableDialog } from "@/components/ClusterUnreachableDialog";
 import { useAwsSsoAuth } from "@/hooks/useAwsSsoAuth";
 import { AwsSsoLoginDialog } from "@/components/AwsSsoLoginDialog";
+import { useGcpSsoAuth } from "@/hooks/useGcpSsoAuth";
+import { GcpAuthDialog } from "@/components/GcpAuthDialog";
 
 interface IndexProps {
   onLogout?: () => void;
@@ -132,8 +134,8 @@ const Index = ({ onLogout }: IndexProps) => {
     cluster: "",
   });
   const [unreachableDialog, setUnreachableDialog] = useState<{
-    open: boolean; cluster: string; cloud: string; retrying: boolean;
-  }>({ open: false, cluster: "", cloud: "", retrying: false });
+    open: boolean; cluster: string; cloud: string; retrying: boolean; lastAttemptFailed: boolean;
+  }>({ open: false, cluster: "", cloud: "", retrying: false, lastAttemptFailed: false });
 
   // 🔄 Namespace independente por aba workload (evita interferência ao trocar namespaces em outras abas)
   // ✅ FIX: Inicializar com "__all__" para exibir todos os recursos (incluindo problemáticos) por padrão
@@ -341,7 +343,8 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // AWS SSO Auth — detecta token expirado automaticamente via evento global
   // onLoginSuccess é passado depois que os hooks de dados estiverem disponíveis (ver abaixo)
-  const { state: awsSsoState, checkForCluster: checkAwsToken, retryAfterConfig, close: closeAwsSso } = useAwsSsoAuth();
+  const { state: awsSsoState, checkForCluster: checkAwsToken, triggerLogin: triggerAwsSsoLogin, retryAfterConfig, close: closeAwsSso } = useAwsSsoAuth();
+  const { state: gcpSsoState, checkForCluster: checkGcpToken, triggerLogin: triggerGcpSsoLogin, close: closeGcpSso } = useGcpSsoAuth();
 
   // VPN Monitor — testa o cluster selecionado, não um context global
   const { isConnected: vpnConnected, lastStatus: vpnLastStatus, checkVPN } = useVPNMonitor({
@@ -413,8 +416,12 @@ const Index = ({ onLogout }: IndexProps) => {
       if (firstCluster.cloud_provider === "eks") {
         checkAwsToken(firstCluster.context, firstCluster.aws_profile);
       }
+      // Mesma checagem proativa pra GKE (Device Auth Grant) — antes só existia pro EKS.
+      if (firstCluster.cloud_provider === "gke") {
+        checkGcpToken(firstCluster.context);
+      }
     }
-  }, [clusters, selectedCluster, checkAwsToken]);
+  }, [clusters, selectedCluster, checkAwsToken, checkGcpToken]);
 
   // Após login SSO bem-sucedido, re-buscar dados do cluster EKS (namespaces, HPAs, node pools)
   useEffect(() => {
@@ -478,6 +485,12 @@ const Index = ({ onLogout }: IndexProps) => {
         checkAwsToken(newCluster, clusterObj?.aws_profile);
       }
 
+      // 5c. Para clusters GKE, verificar autenticação GCP proativamente — mesmo padrão do AWS
+      // acima. Antes desta implementação, não existia nenhuma checagem equivalente pra GKE.
+      if (cloudChange.to === "gke" || clusterProviders[newCluster] === "gke") {
+        checkGcpToken(newCluster);
+      }
+
       // 6. Toast de sucesso
       toast.success(`Contexto alterado para: ${newCluster}`);
 
@@ -486,7 +499,7 @@ const Index = ({ onLogout }: IndexProps) => {
       const cloudForTest = clusterProviders[newCluster] || cloudChange.to || "unknown";
       apiClient.testCluster(clusterForTest, 5).then((res) => {
         if (!res.data.reachable) {
-          setUnreachableDialog({ open: true, cluster: clusterForTest, cloud: cloudForTest, retrying: false });
+          setUnreachableDialog({ open: true, cluster: clusterForTest, cloud: cloudForTest, retrying: false, lastAttemptFailed: false });
         }
       }).catch(() => {
         // Falha na própria requisição ao backend — não mostrar dialog (problema de rede local)
@@ -1354,26 +1367,33 @@ const Index = ({ onLogout }: IndexProps) => {
       <AwsSsoLoginDialog
         state={awsSsoState}
         onRetryAfterConfig={retryAfterConfig}
+        onRetry={() => triggerAwsSsoLogin(awsSsoState.profile)}
         onClose={closeAwsSso}
+      />
+      <GcpAuthDialog
+        state={gcpSsoState}
+        onRetry={() => triggerGcpSsoLogin(gcpSsoState.cluster)}
+        onClose={closeGcpSso}
       />
       <ClusterUnreachableDialog
         open={unreachableDialog.open}
         clusterName={unreachableDialog.cluster}
         cloudProvider={unreachableDialog.cloud}
         retrying={unreachableDialog.retrying}
+        lastAttemptFailed={unreachableDialog.lastAttemptFailed}
         onClose={() => setUnreachableDialog((s) => ({ ...s, open: false }))}
         onRetry={() => {
-          setUnreachableDialog((s) => ({ ...s, retrying: true }));
+          setUnreachableDialog((s) => ({ ...s, retrying: true, lastAttemptFailed: false }));
           apiClient.testCluster(unreachableDialog.cluster, 5).then((res) => {
             if (res.data.reachable) {
               setUnreachableDialog((s) => ({ ...s, open: false, retrying: false }));
               toast.success(`Cluster ${unreachableDialog.cluster} acessível!`);
             } else {
-              setUnreachableDialog((s) => ({ ...s, retrying: false }));
+              setUnreachableDialog((s) => ({ ...s, retrying: false, lastAttemptFailed: true }));
               toast.error("Cluster ainda inacessível. Verifique a VPN e tente novamente.");
             }
           }).catch(() => {
-            setUnreachableDialog((s) => ({ ...s, retrying: false }));
+            setUnreachableDialog((s) => ({ ...s, retrying: false, lastAttemptFailed: true }));
             toast.error("Falha ao testar conectividade.");
           });
         }}

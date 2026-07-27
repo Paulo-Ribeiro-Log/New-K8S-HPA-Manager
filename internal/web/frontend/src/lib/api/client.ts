@@ -3901,6 +3901,29 @@ class APIClient {
     return this.request(`/aws/config/${encodeURIComponent(profile)}`, { method: "DELETE" });
   }
 
+  // ─── GCP Auth (Device Authorization Grant) ─────────────────────────────────
+  // Equivalente ao AWS SSO acima, mas sem conceito de "perfil" — autenticação GCP é global ao
+  // servidor (ADC), não por cluster/profile.
+
+  async getGcpAuthStatus(): Promise<{ authenticated: boolean; account?: string; has_gcloud: boolean; has_adc: boolean }> {
+    return this.request("/gcp/auth/status");
+  }
+
+  async startGcpLogin(): Promise<{
+    session_id: string;
+    user_code: string;
+    verify_url: string;
+    expires_at: string;
+    interval_sec: number;
+    message: string;
+  }> {
+    return this.request("/gcp/auth/login", { method: "POST" });
+  }
+
+  async pollGcpLogin(sessionId: string): Promise<{ session_id: string; done: boolean; success: boolean }> {
+    return this.request(`/gcp/auth/poll?session_id=${encodeURIComponent(sessionId)}`);
+  }
+
   // ==================== Teams Integration ====================
 
   async getTeamsApprovalsToday(): Promise<{
