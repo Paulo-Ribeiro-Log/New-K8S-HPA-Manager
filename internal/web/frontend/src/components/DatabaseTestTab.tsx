@@ -54,6 +54,9 @@ import {
   Eye,
   EyeOff,
   X,
+  Zap,
+  ArrowDownUp,
+  Timer,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -210,8 +213,14 @@ function StageBadge({ label, status }: { label: string; status: "ok" | "failed" 
 // chamada de INFO que já lista os bancos 0-15 (ver parseRedisServerInfo no backend). hit_rate_pct
 // == -1 significa "sem dados ainda" (servidor recém-iniciado, hits e misses zerados) — mostrado
 // como "—" em vez de "0%", que seria enganoso (parece taxa de acerto ruim, não ausência de dado).
+// formatMs formata milissegundos com casas decimais suficientes pra latências sub-milissegundo
+// (comuns no Redis, ex: 0.02ms) não virarem "0.0ms" e parecerem zero.
+function formatMs(ms: number): string {
+  return `${ms.toFixed(ms < 1 ? 3 : 2)}ms`;
+}
+
 function RedisServerInfoCard({ info }: { info: RedisServerInfo }) {
-  const tiles: { icon: typeof Server; label: string; value: string }[] = [
+  const tiles: { icon: typeof Server; label: string; value: string; title?: string }[] = [
     { icon: Server, label: "Versão", value: info.version ? `${info.version}${info.mode ? ` (${info.mode})` : ""}` : "—" },
     { icon: Users, label: "Clientes conectados", value: String(info.connected_clients) },
     { icon: MemoryStick, label: "Memória usada", value: info.used_memory_human || "—" },
@@ -219,6 +228,25 @@ function RedisServerInfoCard({ info }: { info: RedisServerInfo }) {
       icon: Target,
       label: "Hit rate",
       value: info.hit_rate_pct < 0 ? "—" : `${info.hit_rate_pct.toFixed(1)}% (${info.keyspace_hits}/${info.keyspace_hits + info.keyspace_misses})`,
+    },
+    { icon: Zap, label: "Throughput atual", value: `${info.instantaneous_ops_per_sec} ops/s` },
+    {
+      icon: Timer,
+      label: "Latência média",
+      value: info.avg_latency_ms < 0 ? "—" : formatMs(info.avg_latency_ms),
+      title: info.avg_latency_ms < 0
+        ? undefined
+        : info.slowest_command
+        ? `Latência real (soma de usec / soma de calls de todos os comandos). Comando mais lento: ${info.slowest_command} (${formatMs(info.slowest_command_latency_ms)}/chamada)`
+        : "Latência real (soma de usec / soma de calls de todos os comandos)",
+    },
+    {
+      icon: ArrowDownUp,
+      label: "Leitura / Escrita",
+      value: info.read_pct < 0 ? "—" : `${info.read_pct.toFixed(1)}% / ${info.write_pct.toFixed(1)}%`,
+      title: info.read_pct < 0
+        ? undefined
+        : `${info.total_reads_processed} leituras / ${info.total_writes_processed} escritas processadas (acumulado desde o start do servidor)`,
     },
     { icon: Clock, label: "Uptime", value: `${info.uptime_days}d` },
   ];
@@ -228,13 +256,13 @@ function RedisServerInfoCard({ info }: { info: RedisServerInfo }) {
         {info.role && <Badge variant="outline" className="text-[9px] px-1 py-0">{info.role}</Badge>}
         Estatísticas do servidor
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        {tiles.map(({ icon: Icon, label, value }) => (
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+        {tiles.map(({ icon: Icon, label, value, title }) => (
           <div key={label} className="flex items-start gap-1.5 min-w-0">
             <Icon className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground" />
             <div className="min-w-0">
               <div className="text-[10px] text-muted-foreground truncate">{label}</div>
-              <div className="text-xs font-mono truncate" title={value}>{value}</div>
+              <div className="text-xs font-mono truncate" title={title ?? value}>{value}</div>
             </div>
           </div>
         ))}

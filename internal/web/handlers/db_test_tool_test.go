@@ -380,9 +380,16 @@ const redisInfoFixture = "# Server\r\n" +
 	"# Stats\r\n" +
 	"keyspace_hits:842\r\n" +
 	"keyspace_misses:158\r\n" +
+	"instantaneous_ops_per_sec:5\r\n" +
+	"total_reads_processed:2000\r\n" +
+	"total_writes_processed:500\r\n" +
 	"\r\n" +
 	"# Replication\r\n" +
 	"role:master\r\n" +
+	"\r\n" +
+	"# Commandstats\r\n" +
+	"cmdstat_set:calls=5,usec=100,usec_per_call=20.00,rejected_calls=0,failed_calls=0\r\n" +
+	"cmdstat_get:calls=20,usec=100,usec_per_call=5.00,rejected_calls=0,failed_calls=0\r\n" +
 	"\r\n" +
 	"# Keyspace\r\n" +
 	"db0:keys=12,expires=3,avg_ttl=0\r\n"
@@ -390,7 +397,7 @@ const redisInfoFixture = "# Server\r\n" +
 func TestParseRedisInfoSections(t *testing.T) {
 	t.Run("agrupa por seção na ordem original (CRLF)", func(t *testing.T) {
 		sections := parseRedisInfoSections(redisInfoFixture)
-		wantNames := []string{"Server", "Clients", "Memory", "Stats", "Replication", "Keyspace"}
+		wantNames := []string{"Server", "Clients", "Memory", "Stats", "Replication", "Commandstats", "Keyspace"}
 		if len(sections) != len(wantNames) {
 			t.Fatalf("got %d seções, want %d (%+v)", len(sections), len(wantNames), sections)
 		}
@@ -459,6 +466,29 @@ func TestParseRedisServerInfo(t *testing.T) {
 		if info.HitRatePct != wantHitRate {
 			t.Errorf("HitRatePct = %v, want %v", info.HitRatePct, wantHitRate)
 		}
+		if info.InstantaneousOpsPerSec != 5 {
+			t.Errorf("InstantaneousOpsPerSec = %d, want 5", info.InstantaneousOpsPerSec)
+		}
+		if info.TotalReadsProcessed != 2000 || info.TotalWritesProcessed != 500 {
+			t.Errorf("reads/writes = %d/%d, want 2000/500", info.TotalReadsProcessed, info.TotalWritesProcessed)
+		}
+		wantReadPct := 2000.0 / (2000.0 + 500.0) * 100
+		if info.ReadPct != wantReadPct {
+			t.Errorf("ReadPct = %v, want %v", info.ReadPct, wantReadPct)
+		}
+		if info.ReadPct+info.WritePct != 100 {
+			t.Errorf("ReadPct+WritePct = %v, want 100", info.ReadPct+info.WritePct)
+		}
+		wantAvgLatency := (100.0 + 100.0) / (5.0 + 20.0) / 1000
+		if info.AvgLatencyMs != wantAvgLatency {
+			t.Errorf("AvgLatencyMs = %v, want %v", info.AvgLatencyMs, wantAvgLatency)
+		}
+		if info.SlowestCommand != "set" {
+			t.Errorf("SlowestCommand = %q, want %q", info.SlowestCommand, "set")
+		}
+		if info.SlowestCommandLatencyMs != 0.02 {
+			t.Errorf("SlowestCommandLatencyMs = %v, want 0.02", info.SlowestCommandLatencyMs)
+		}
 	})
 
 	t.Run("hits e misses zerados vira -1 (sem dados), não 0%", func(t *testing.T) {
@@ -469,12 +499,59 @@ func TestParseRedisServerInfo(t *testing.T) {
 		}
 	})
 
+	t.Run("reads e writes zerados vira -1 (sem dados), não 0%", func(t *testing.T) {
+		raw := "redis_version:7.4.10\r\ntotal_reads_processed:0\r\ntotal_writes_processed:0\r\n"
+		info := parseRedisServerInfo(raw)
+		if info.ReadPct != -1 || info.WritePct != -1 {
+			t.Errorf("ReadPct/WritePct = %v/%v, want -1/-1 (sem dados)", info.ReadPct, info.WritePct)
+		}
+	})
+
 	t.Run("saída vazia ou sem campos reconhecidos devolve nil", func(t *testing.T) {
 		if info := parseRedisServerInfo(""); info != nil {
 			t.Errorf("esperava nil pra saída vazia, got %+v", info)
 		}
 		if info := parseRedisServerInfo("NOAUTH Authentication required.\r\n"); info != nil {
 			t.Errorf("esperava nil pra saída de erro, got %+v", info)
+		}
+	})
+}
+
+func TestParseRedisCommandStats(t *testing.T) {
+	t.Run("media ponderada por chamada, nao media simples dos usec_per_call", func(t *testing.T) {
+		// set: 5 chamadas, 100 usec total (20 usec/call) — get: 20 chamadas, 400 usec total (20
+		// usec/call também, mas MUITO mais volume). Uma média simples dos usec_per_call (20 e 20)
+		// daria 20 de qualquer forma aqui — troca por valores diferentes pra realmente provar que
+		// é ponderado: set MUITO mais lento (usec_per_call alto) mas raro não deve dominar a média
+		// geral, que é por CHAMADA, não por comando.
+		fields := map[string]string{
+			"cmdstat_set": "calls=1,usec=1000,usec_per_call=1000.00,rejected_calls=0,failed_calls=0",
+			"cmdstat_get": "calls=999,usec=999,usec_per_call=1.00,rejected_calls=0,failed_calls=0",
+		}
+		avg, slowest, slowestMs := parseRedisCommandStats(fields)
+		wantAvg := (1000.0 + 999.0) / (1.0 + 999.0) / 1000 // ~0.002ms — dominado pelo volume do get
+		if avg != wantAvg {
+			t.Errorf("avg = %v, want %v", avg, wantAvg)
+		}
+		if slowest != "set" {
+			t.Errorf("slowest = %q, want %q (maior usec_per_call, mesmo sendo raro)", slowest, "set")
+		}
+		if slowestMs != 1.0 {
+			t.Errorf("slowestMs = %v, want 1.0", slowestMs)
+		}
+	})
+
+	t.Run("sem nenhum cmdstat_ devolve -1", func(t *testing.T) {
+		avg, slowest, slowestMs := parseRedisCommandStats(map[string]string{"redis_version": "7.4.10"})
+		if avg != -1 || slowest != "" || slowestMs != -1 {
+			t.Errorf("got avg=%v slowest=%q slowestMs=%v, want -1/\"\"/-1", avg, slowest, slowestMs)
+		}
+	})
+
+	t.Run("mapa vazio devolve -1", func(t *testing.T) {
+		avg, _, slowestMs := parseRedisCommandStats(map[string]string{})
+		if avg != -1 || slowestMs != -1 {
+			t.Errorf("got avg=%v slowestMs=%v, want -1/-1", avg, slowestMs)
 		}
 	})
 }

@@ -319,6 +319,32 @@ type RedisServerInfo struct {
 	// suficientes (servidor recém-iniciado, hits==misses==0) pra distinguir de uma taxa real de
 	// 0% (frontend trata -1 como "sem dados ainda", não mostra o número).
 	HitRatePct float64 `json:"hit_rate_pct"`
+	// InstantaneousOpsPerSec é o throughput ATUAL (comandos/segundo, média de amostragem do
+	// próprio Redis) — direto do campo instantaneous_ops_per_sec do INFO, sem cálculo nosso.
+	InstantaneousOpsPerSec int64 `json:"instantaneous_ops_per_sec"`
+	// TotalReadsProcessed/TotalWritesProcessed são os contadores ACUMULADOS (desde o start do
+	// processo, não uma taxa por segundo) de total_reads_processed/total_writes_processed do
+	// INFO — nível de syscall de socket, não "comando de leitura" vs "comando de escrita" (ex:
+	// um único GET pode gerar mais de 1 read se a resposta vier fragmentada) — é a métrica de
+	// leitura/escrita que o próprio Redis expõe, não uma classificação nossa por tipo de comando.
+	TotalReadsProcessed  int64 `json:"total_reads_processed"`
+	TotalWritesProcessed int64 `json:"total_writes_processed"`
+	// ReadPct/WritePct somam 100 entre si — proporção de leitura vs escrita desde o start do
+	// servidor. -1 quando reads+writes == 0 (servidor sem nenhuma operação registrada ainda),
+	// mesmo tratamento do HitRatePct pra não confundir "sem dado" com uma proporção real de 0%.
+	ReadPct  float64 `json:"read_pct"`
+	WritePct float64 `json:"write_pct"`
+	// AvgLatencyMs é a latência REAL média por chamada (não estimada), calculada a partir de
+	// TODAS as entradas cmdstat_* da seção Commandstats do `INFO all` (soma de usec / soma de
+	// calls, convertido pra ms) — só existe quando o INFO pedido inclui essa seção (ausente do
+	// INFO default, presente em `INFO all`/`INFO commandstats`). -1 quando não há nenhum comando
+	// registrado ainda (servidor sem tráfego desde o start).
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	// SlowestCommand/SlowestCommandLatencyMs identificam o comando com maior usec_per_call entre
+	// os registrados — útil pra apontar rapidamente o que está pesando na latência média (ex: um
+	// KEYS ou um comando O(N) mal-usado). Vazio/-1 quando não há dados.
+	SlowestCommand          string  `json:"slowest_command,omitempty"`
+	SlowestCommandLatencyMs float64 `json:"slowest_command_latency_ms"`
 }
 
 // redisInfoFieldRegex casa linhas "campo:valor" da saída de `redis-cli INFO` — o formato usa
@@ -361,7 +387,71 @@ func parseRedisServerInfo(raw string) *RedisServerInfo {
 			info.HitRatePct = float64(hits) / float64(total) * 100
 		}
 	}
+	if v, err := strconv.ParseInt(fields["instantaneous_ops_per_sec"], 10, 64); err == nil {
+		info.InstantaneousOpsPerSec = v
+	}
+	reads, readsErr := strconv.ParseInt(fields["total_reads_processed"], 10, 64)
+	writes, writesErr := strconv.ParseInt(fields["total_writes_processed"], 10, 64)
+	info.ReadPct = -1
+	info.WritePct = -1
+	if readsErr == nil && writesErr == nil {
+		info.TotalReadsProcessed = reads
+		info.TotalWritesProcessed = writes
+		if total := reads + writes; total > 0 {
+			info.ReadPct = float64(reads) / float64(total) * 100
+			info.WritePct = 100 - info.ReadPct
+		}
+	}
+	info.AvgLatencyMs, info.SlowestCommand, info.SlowestCommandLatencyMs = parseRedisCommandStats(fields)
 	return info
+}
+
+// parseRedisCommandStats calcula a latência média REAL (não estimada) a partir das entradas
+// cmdstat_* da seção Commandstats do `INFO all` — cada linha tem o formato
+// "cmdstat_<comando>:calls=N,usec=N,usec_per_call=F,rejected_calls=N,failed_calls=N". A média
+// geral é ponderada por chamada (soma de usec / soma de calls, entre TODOS os comandos), não uma
+// média simples dos usec_per_call de cada comando — isso evita que um comando raríssimo e lento
+// distorça a média geral do mesmo jeito que um comando frequente e rápido. `fields` já vem do
+// parsing genérico de parseRedisServerInfo (qualquer linha "chave:valor" do INFO, sem filtro de
+// seção) — só filtra pelo prefixo aqui. Retorna (-1, "", -1) quando não há nenhum cmdstat_* (INFO
+// sem a seção Commandstats, ou servidor sem nenhum comando executado ainda).
+func parseRedisCommandStats(fields map[string]string) (avgLatencyMs float64, slowestCmd string, slowestMs float64) {
+	var totalUsec, totalCalls int64
+	var maxUsecPerCall float64
+
+	for key, value := range fields {
+		cmdName, ok := strings.CutPrefix(key, "cmdstat_")
+		if !ok {
+			continue
+		}
+		var calls, usec int64
+		var usecPerCall float64
+		for _, part := range strings.Split(value, ",") {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			switch kv[0] {
+			case "calls":
+				calls, _ = strconv.ParseInt(kv[1], 10, 64)
+			case "usec":
+				usec, _ = strconv.ParseInt(kv[1], 10, 64)
+			case "usec_per_call":
+				usecPerCall, _ = strconv.ParseFloat(kv[1], 64)
+			}
+		}
+		totalCalls += calls
+		totalUsec += usec
+		if usecPerCall > maxUsecPerCall {
+			maxUsecPerCall = usecPerCall
+			slowestCmd = cmdName
+		}
+	}
+
+	if totalCalls == 0 {
+		return -1, "", -1
+	}
+	return float64(totalUsec) / float64(totalCalls) / 1000, slowestCmd, maxUsecPerCall / 1000
 }
 
 // RedisInfoField é um par campo:valor de uma seção de `redis-cli INFO` — genérico o suficiente
@@ -1238,10 +1328,11 @@ var dbEngines = map[string]dbEngine{
 		// antes pulava direto pra lista de chaves, sempre). `INFO` sem argumento devolve as seções
 		// default (Server/Clients/Memory/Stats/Replication/Keyspace, entre outras) num único
 		// comando, server-wide — tanto os 16 bancos (0-15, parseRedisKeyspaceInfo) quanto os campos
-		// usados por parseRedisServerInfo (versão, memória, clientes, hit rate) vêm da mesma
-		// chamada, sem round-trip extra. Antes era `INFO keyspace` (só a seção de bancos) — trocado
-		// porque o pedido de estatísticas do servidor precisava das outras seções, e pedir todas
-		// juntas não custa mais que pedir uma só.
+		// usados por parseRedisServerInfo (versão, memória, clientes, hit rate, latência real) vêm
+		// da mesma chamada, sem round-trip extra. `all` (em vez de sem argumento) inclui também as
+		// seções Commandstats/Latencystats — ausentes do INFO default —, necessárias pra calcular
+		// a latência média real por comando (parseRedisCommandStats). Pedir todas as seções juntas
+		// não custa mais que pedir uma só.
 		//
 		// Com Database informado: mesmo scan de chaves de antes (`--scan` + `head`, nunca `KEYS
 		// *`), mas cada chave agora roda TYPE + MEMORY USAGE num único `redis-cli` (comandos
@@ -1251,7 +1342,7 @@ var dbEngines = map[string]dbEngine{
 		// de segurança do teto de 100 chaves.
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
 			if strings.TrimSpace(p.Database) == "" {
-				cmd := redisCommand(p, "INFO")
+				cmd := redisCommand(p, "INFO", "all")
 				return fmt.Sprintf("timeout %ds %s 2>&1", timeoutSec, cmd)
 			}
 			scanArgs := []string{"--scan"}
