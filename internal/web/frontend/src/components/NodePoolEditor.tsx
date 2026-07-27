@@ -1905,8 +1905,8 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
       {/* Modal: motivo de remoção do node */}
       {removedDetail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setRemovedDetail(null)}>
-          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-4xl mx-4 flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-4xl mx-4 flex flex-col max-h-[80vh]">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
               <div className="min-w-0">
                 <p className="text-sm font-semibold font-mono truncate">{removedDetail.name}</p>
