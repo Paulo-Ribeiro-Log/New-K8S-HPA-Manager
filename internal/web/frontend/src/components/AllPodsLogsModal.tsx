@@ -42,12 +42,23 @@ interface Props {
 // o servidor da app quanto a API do cluster. Mesmo espírito de outros tetos já existentes no
 // projeto (ex: dbRedisScanCap).
 const MAX_PODS = 40;
-const REFRESH_INTERVAL_MS = 5000; // mesmo intervalo do auto-refresh do LogsViewer single-pod
 
-// Paleta fixa de cores por pod, cíclica por índice — cor estável entre refreshes (mesmo pod,
-// mesma cor), mesmo depois de a lista intercalada reordenar por timestamp a cada fetch. Cor do
-// PREFIXO [pod-name] — o conteúdo da linha em si continua colorido por severidade
-// (logLineColor), igual ao visualizador single-pod.
+// Throttle de render: linhas chegam via SSE uma por vez (potencialmente dezenas/segundo com vários
+// pods barulhentos) — sem agrupar, cada linha viraria um re-render do React, travando a UI. Acumula
+// num ref e libera pro state a cada FLUSH_INTERVAL_MS.
+const FLUSH_INTERVAL_MS = 150;
+
+// Ring buffer — "sem cache cheio": mantém só as últimas MAX_LINES no state, descarta as mais
+// antigas. Independente do bufferSize do replay buffer do broker SSE (já limitado no backend).
+const MAX_LINES = 2000;
+
+// Distância (px) do fundo do scroll a partir da qual ainda consideramos "colado no fim" —
+// pequena folga pra não perder o autoscroll por causa de 1-2px de arredondamento.
+const AUTOSCROLL_THRESHOLD_PX = 48;
+
+// Paleta fixa de cores por pod, cíclica por índice — cor estável durante toda a sessão do modal
+// (mesmo pod, mesma cor). Cor do PREFIXO [pod-name] — o conteúdo da linha em si continua colorido
+// por severidade (logLineColor), igual ao visualizador single-pod.
 const POD_COLORS = [
   "text-blue-300",
   "text-emerald-300",
@@ -64,40 +75,40 @@ const POD_COLORS = [
 interface MergedLine {
   podLabel: string;
   colorClass: string;
-  // ts: epoch ms, ou null quando a linha não tinha um timestamp parseável no início (cai no fim
-  // da ordenação, mantendo a ordem relativa entre si — nunca quebra o parse das demais linhas).
-  ts: number | null;
   content: string;
 }
 
-// parseTimestampedLine separa o prefixo RFC3339Nano (produzido pelo backend quando
-// getPodLogs(..., timestamps=true) é usado — equivalente a `kubectl logs --timestamps`) do
-// resto da linha. Linhas sem timestamp parseável no início (raro) ficam com ts=null.
-function parseTimestampedLine(raw: string): { ts: number | null; content: string } {
+// stripTimestampPrefix remove o prefixo RFC3339Nano que o backend inclui (PodLogOptions.Timestamps
+// = true, equivalente a `kubectl logs --timestamps`) — usado só pra exibição, sem reordenar: as
+// linhas já chegam na ordem real de emissão via streaming (Follow=true), então não há necessidade
+// de parsear o timestamp pra ordenação como na versão anterior (polling/snapshot).
+function stripTimestampPrefix(raw: string): string {
   const spaceIdx = raw.indexOf(" ");
-  if (spaceIdx === -1) return { ts: null, content: raw };
-  const parsed = Date.parse(raw.slice(0, spaceIdx));
-  if (Number.isNaN(parsed)) return { ts: null, content: raw };
-  return { ts: parsed, content: raw.slice(spaceIdx + 1) };
+  if (spaceIdx === -1) return raw;
+  if (Number.isNaN(Date.parse(raw.slice(0, spaceIdx)))) return raw;
+  return raw.slice(spaceIdx + 1);
 }
 
 // AllPodsLogsModal mostra os logs de vários pods intercalados por tempo real num único stream,
 // prefixados por pod — estilo `kubectl logs -l app=x --prefix` / `stern`. Reaproveita os MESMOS
 // recursos do visualizador single-pod (LogsViewer, dentro de PodQuickViewModal.tsx): filtro por
-// nível (ERR/WARN/INFO/DEBUG), busca com destaque, coloração de linha por severidade, auto-refresh
-// a cada 5s, copiar, inspetor de JSON — nada reduzido, só adaptado pra várias origens ao mesmo
-// tempo (prefixo [pod] + merge cronológico entre pods, que não existe no caso single-pod).
+// nível (ERR/WARN/INFO/DEBUG), busca com destaque, coloração de linha por severidade, copiar,
+// inspetor de JSON — nada reduzido, só adaptado pra várias origens ao mesmo tempo (prefixo [pod]).
 //
-// Não existe streaming nem endpoint de logs agregados no backend: é polling (mesmo padrão de
-// PodLogsPanel.tsx/LogsViewer) fazendo N chamadas paralelas de getPodLogs (uma por pod, primeiro
-// container "normal" de cada) a cada ciclo, remontando o stream intercalado do zero — sem append
-// incremental.
+// Streaming real via SSE (Follow=true, mesmo `kubectl logs -f`) — internal/web/handlers/
+// pods_logs_stream.go abre uma goroutine por pod, cada uma publicando linha-a-linha no mesmo
+// sessionID do broker SSE já usado por Command Runner/Health Check/etc. Diferente da primeira
+// versão (polling: buscava um snapshot a cada 5s, substituía o buffer inteiro e reordenava — daí o
+// sintoma de "carrega, trava, repete"), aqui a conexão fica aberta e cada linha nova chega e é
+// apensada ao buffer existente, sem re-fetch nem re-sort.
 export function AllPodsLogsModal({ open, onClose, cluster, pods }: Props) {
   const effectivePods = useMemo(() => pods.slice(0, MAX_PODS), [pods]);
   const truncated = pods.length > MAX_PODS;
 
   const [lines, setLines] = useState<MergedLine[]>([]);
   const [loading, setLoading] = useState(false);
+  // autoRefresh agora controla a CONEXÃO SSE (não um poll): desligado = stream fechado, buffer já
+  // recebido continua visível; ligado = (re)abre um streaming novo do zero.
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [tailLines, setTailLines] = useState("100");
   const [logLevelFilter, setLogLevelFilter] = useState<Set<LogLevel>>(new Set());
@@ -105,57 +116,112 @@ export function AllPodsLogsModal({ open, onClose, cluster, pods }: Props) {
   const [copied, setCopied] = useState(false);
   const jsonInspector = useJsonInspector();
 
-  const fetchAll = useCallback(async () => {
+  // Cor por pod estável durante a sessão do modal, independente da ordem de chegada das linhas
+  // (cada pod sempre pisca a mesma cor, mesmo padrão da versão anterior).
+  const podColorByName = useMemo(() => {
+    const map = new Map<string, string>();
+    effectivePods.forEach((pod, idx) => map.set(pod.name, POD_COLORS[idx % POD_COLORS.length]));
+    return map;
+  }, [effectivePods]);
+
+  const esRef = useRef<EventSource | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const bufferRef = useRef<MergedLine[]>([]);
+  const flushTimerRef = useRef<number | null>(null);
+
+  const flushBuffer = useCallback(() => {
+    flushTimerRef.current = null;
+    if (bufferRef.current.length === 0) return;
+    const incoming = bufferRef.current;
+    bufferRef.current = [];
+    setLines((prev) => {
+      const next = prev.length > 0 ? prev.concat(incoming) : incoming;
+      return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
+    });
+  }, []);
+
+  const scheduleFlush = useCallback(() => {
+    if (flushTimerRef.current !== null) return;
+    flushTimerRef.current = window.setTimeout(flushBuffer, FLUSH_INTERVAL_MS);
+  }, [flushBuffer]);
+
+  // closeStream fecha a conexão SSE atual e avisa o backend pra cancelar as goroutines de streaming
+  // daquela sessão (libera o Follow=true de cada pod em vez de deixá-lo pendurado no servidor).
+  const closeStream = useCallback(() => {
+    if (esRef.current) {
+      esRef.current.close();
+      esRef.current = null;
+    }
+    if (sessionIdRef.current) {
+      apiClient.cancelPodLogsStreamAll(sessionIdRef.current).catch(() => { /* best-effort */ });
+      sessionIdRef.current = null;
+    }
+    if (flushTimerRef.current !== null) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    bufferRef.current = [];
+  }, []);
+
+  const openStream = useCallback(async () => {
+    closeStream();
     if (effectivePods.length === 0) {
       setLines([]);
       return;
     }
+    setLines([]);
     setLoading(true);
     try {
-      const results = await Promise.allSettled(
-        effectivePods.map(async (pod, idx) => {
-          // Container "normal" (não init/ephemeral) — mesma heurística de "primeiro container"
-          // já usada em PodLogsPanel.tsx/ContainersTab.tsx. Sem seletor de container por pod
-          // nesta versão (limitação aceita — ver plano).
-          const container = pod.containers.find((c) => c.type === "container")?.name;
-          const res = await apiClient.getPodLogs(cluster, pod.namespace, pod.name, container, Number(tailLines), false, true);
-          return { pod, idx, raw: res.logs };
-        })
-      );
+      const podsReq = effectivePods.map((pod) => ({
+        namespace: pod.namespace,
+        name: pod.name,
+        // Container "normal" (não init/ephemeral) — mesma heurística já usada em
+        // PodLogsPanel.tsx/ContainersTab.tsx.
+        container: pod.containers.find((c) => c.type === "container")?.name,
+      }));
+      const { session_id } = await apiClient.startPodLogsStreamAll(cluster, podsReq, Number(tailLines));
+      sessionIdRef.current = session_id;
 
-      const merged: MergedLine[] = [];
-      for (const r of results) {
-        if (r.status !== "fulfilled") continue; // pod pode ter sido removido entre o clique e o fetch — ignora, não derruba os demais
-        const { pod, idx, raw } = r.value;
-        const colorClass = POD_COLORS[idx % POD_COLORS.length];
-        for (const rawLine of raw.split("\n")) {
-          if (!rawLine) continue;
-          const { ts, content } = parseTimestampedLine(rawLine);
-          merged.push({ podLabel: pod.name, colorClass, ts, content });
+      const es = new EventSource(apiClient.getPodLogsStreamAllURL(session_id));
+      esRef.current = es;
+
+      es.onopen = () => setLoading(false);
+
+      es.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          if (event.type === "complete") return; // todas as goroutines terminaram (ex: cancelado)
+          const result = event.result;
+          if (!result?.pod) return;
+          const content = result.error
+            ? `[erro ao ler logs deste pod] ${result.error}`
+            : stripTimestampPrefix(result.line ?? "");
+          bufferRef.current.push({
+            podLabel: result.pod,
+            colorClass: podColorByName.get(result.pod) ?? POD_COLORS[0],
+            content,
+          });
+          scheduleFlush();
+        } catch {
+          /* ignora evento malformado — não derruba a conexão por uma linha ruim */
         }
-      }
-      // Linhas sem timestamp (ts=null) vão pro fim, mantendo ordem relativa entre si (sort estável).
-      merged.sort((a, b) => {
-        if (a.ts === null && b.ts === null) return 0;
-        if (a.ts === null) return 1;
-        if (b.ts === null) return -1;
-        return a.ts - b.ts;
-      });
-      setLines(merged);
-    } finally {
+      };
+
+      es.onerror = () => setLoading(false);
+    } catch {
       setLoading(false);
     }
-  }, [cluster, effectivePods, tailLines]);
+  }, [cluster, effectivePods, tailLines, podColorByName, scheduleFlush, closeStream]);
 
   useEffect(() => {
-    if (open) fetchAll();
-  }, [open, fetchAll]);
-
-  useEffect(() => {
-    if (!open || !autoRefresh) return;
-    const id = setInterval(fetchAll, REFRESH_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [open, autoRefresh, fetchAll]);
+    if (open && autoRefresh) {
+      openStream();
+    } else {
+      closeStream();
+    }
+    return closeStream;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, autoRefresh, cluster, tailLines, effectivePods]);
 
   const toggleLevelFilter = (level: LogLevel) => {
     setLogLevelFilter((prev) => {
@@ -195,6 +261,33 @@ export function AllPodsLogsModal({ open, onClose, cluster, pods }: Props) {
       setTimeout(() => setCopied(false), 1500);
     });
   }, [filteredLines]);
+
+  // Autoscroll condicional — gruda no fim a cada novo lote de linhas, EXCETO se o usuário rolou
+  // pra cima manualmente (mesmo comportamento de um log viewer ao vivo tipo k9s/stern). Um scroll
+  // handler marca stickToBottomRef=false assim que o usuário se afasta do fim; volta a "colar"
+  // só quando ele rola de volta pra perto do fim por conta própria.
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= AUTOSCROLL_THRESHOLD_PX;
+  }, []);
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [filteredLines]);
+
+  // Reabrir o modal (ou trocar de pods/tail) deve voltar a colar no fim — sem isso, uma sessão
+  // anterior rolada pra cima "vazaria" o estado pro próximo streaming.
+  useEffect(() => {
+    if (open) stickToBottomRef.current = true;
+  }, [open]);
 
   // Resize da janela do modal — mesmo padrão já validado em PodQuickViewModal.tsx/
   // JsonInspectorModal.tsx (não extraído em hook compartilhado: replicar o bloco pequeno é mais
@@ -279,16 +372,23 @@ export function AllPodsLogsModal({ open, onClose, cluster, pods }: Props) {
             size="sm" variant={autoRefresh ? "default" : "outline"}
             className="h-7 text-xs gap-1"
             onClick={() => setAutoRefresh((v) => !v)}
+            title={autoRefresh ? "Streaming ao vivo ligado — clique pra pausar" : "Streaming pausado — clique pra retomar"}
           >
-            <RefreshCw className={`w-3 h-3 ${autoRefresh ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-3 h-3 ${autoRefresh && !loading ? "animate-spin" : ""}`} />
             Auto
           </Button>
 
           <Button
-            size="sm" variant="outline" className="h-7 text-xs"
-            onClick={fetchAll} disabled={loading}
+            size="sm" variant="outline" className="h-7 text-xs gap-1"
+            // Se o streaming estiver pausado (Auto desligado), religar via setAutoRefresh dispara o
+            // efeito que já chama openStream sozinho — chamar openStream aqui também duplicaria a
+            // conexão. Só quando já está ligado é que este botão precisa forçar o reconnect direto.
+            onClick={() => { if (!autoRefresh) setAutoRefresh(true); else openStream(); }}
+            disabled={loading}
+            title="Fecha e reabre o streaming do zero"
           >
             {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            Reconectar
           </Button>
 
           <div className="flex-1" />
@@ -361,7 +461,12 @@ export function AllPodsLogsModal({ open, onClose, cluster, pods }: Props) {
         </div>
 
         {/* Área de scroll de logs — mesmo fundo/estilo do LogsViewer single-pod */}
-        <div className="flex-1 min-h-0 overflow-auto bg-black/50" onMouseUp={jsonInspector.handleMouseUp}>
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 min-h-0 overflow-auto bg-black/50"
+          onMouseUp={jsonInspector.handleMouseUp}
+        >
           <div className="p-3 font-mono text-xs leading-5">
             {loading && lines.length === 0 ? (
               <div className="text-muted-foreground flex items-center gap-2">
