@@ -365,6 +365,26 @@ class APIClient {
         window.dispatchEvent(new CustomEvent("aws-sso-token-expired", { detail: { profile } }));
       }
 
+      // Equivalente GCP do bloco AWS acima — antes, a autenticação GCP só era checada
+      // proativamente no momento da troca de cluster (checkForCluster); se a sessão expirasse
+      // enquanto o usuário já estava num cluster GKE, nenhuma chamada real ao K8s disparava o
+      // GcpAuthDialog, então o usuário só via erros soltos pela UI sem nenhum caminho pra
+      // reautenticar. "gke-gcloud-auth-plugin" é o nome do exec credential plugin usado pelo
+      // kubeconfig padrão do sistema pra GKE (ver KubectlAuthArgs/GetRestConfig em
+      // kubeconfig.go) — falha desse binário (ausente ou sessão `gcloud` local expirada) é o
+      // sintoma real de precisar reautenticar, e client-go sempre embute o nome do binário na
+      // mensagem de erro (vendor/k8s.io/client-go/plugin/pkg/client/auth/exec/exec.go:
+      // wrapCmdRunErrorLocked — "exec: executable gke-gcloud-auth-plugin not found"/"failed with
+      // exit code N").
+      const isGcpAuthError = message && (
+        message.includes("gke-gcloud-auth-plugin") ||
+        message.includes("autenticação GCP necessária") ||
+        message.includes("Reauthentication failed")
+      );
+      if (isGcpAuthError) {
+        window.dispatchEvent(new CustomEvent("gcp-sso-token-expired"));
+      }
+
       // Token rejeitado pelo servidor (inválido, expirado ou formato errado)
       // Força re-login para que o usuário obtenha um JWT válido
       if (response.status === 401) {
@@ -3910,12 +3930,14 @@ class APIClient {
   }
 
   async startGcpLogin(): Promise<{
-    session_id: string;
-    user_code: string;
-    verify_url: string;
-    expires_at: string;
-    interval_sec: number;
-    message: string;
+    session_id?: string;
+    user_code?: string;
+    verify_url?: string;
+    expires_at?: string;
+    interval_sec?: number;
+    message?: string;
+    /** true quando a sessão GCP já estava válida — nenhum device auth novo foi iniciado */
+    already_valid?: boolean;
   }> {
     return this.request("/gcp/auth/login", { method: "POST" });
   }

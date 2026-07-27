@@ -34,6 +34,10 @@ export function GcpAuthDialog({ state, onRetry, onClose }: Props) {
     }
   }, [state.url]);
 
+  // Abertura só por clique explícito do usuário — nunca automática. window.open() sem interação
+  // direta do usuário é bloqueado por popup blocker na maioria dos browsers de qualquer forma, e
+  // abrir sozinho múltiplas vezes (ex: o dialog reabrindo por uma nova sessão) empilhava abas
+  // sem controle do usuário sobre quando isso acontece.
   const handleOpenUrl = useCallback(() => {
     if (state.url) window.open(state.url, "_blank");
   }, [state.url]);
@@ -84,11 +88,13 @@ export function GcpAuthDialog({ state, onRetry, onClose }: Props) {
         {state.url && !state.loading && !state.success && (
           <div className="space-y-4">
             <div className="rounded-md bg-muted p-3 space-y-2">
-              <p className="text-sm font-medium">1. Abra a URL no navegador:</p>
+              <p className="text-sm font-medium">1. Clique para autenticar no navegador:</p>
+              <Button onClick={handleOpenUrl} className="w-full">
+                Ir para autenticação web
+              </Button>
               <div className="flex gap-2">
                 <Input readOnly value={state.url} className="font-mono text-xs" />
                 <Button variant="outline" size="sm" onClick={handleCopyUrl}>Copiar</Button>
-                <Button variant="outline" size="sm" onClick={handleOpenUrl}>Abrir</Button>
               </div>
             </div>
 

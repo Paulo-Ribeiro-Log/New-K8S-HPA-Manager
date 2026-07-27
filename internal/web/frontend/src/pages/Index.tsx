@@ -434,6 +434,33 @@ const Index = ({ onLogout }: IndexProps) => {
     return () => window.removeEventListener("aws-sso-login-success", handler);
   }, [refetchNamespaces, refetchHPAs, refetchNodePools]);
 
+  // Equivalente GCP do listener acima — useGcpSsoAuth já dispara "gcp-sso-login-success" ao
+  // concluir o Device Auth Grant, mas até aqui nada escutava o evento (refetch nunca acontecia).
+  useEffect(() => {
+    const handler = () => {
+      refetchNamespaces();
+      refetchHPAs();
+      refetchNodePools();
+    };
+    window.addEventListener("gcp-sso-login-success", handler);
+    return () => window.removeEventListener("gcp-sso-login-success", handler);
+  }, [refetchNamespaces, refetchHPAs, refetchNodePools]);
+
+  // Reativo: dispara o GcpAuthDialog quando uma chamada real ao K8s falha por autenticação GCP
+  // expirada (evento disparado pelo apiClient — ver client.ts, isGcpAuthError), não só na troca
+  // de cluster. Antes desta correção, se a sessão GCP expirasse com o usuário já num cluster GKE
+  // (sem trocar de cluster), nenhum caminho levava de volta à página de autenticação — mesmo
+  // padrão reativo já usado pelo "aws-sso-token-expired" em useAwsSsoAuth.ts.
+  useEffect(() => {
+    const handler = () => {
+      if (clusterProviders[selectedCluster] === "gke") {
+        triggerGcpSsoLogin(selectedCluster);
+      }
+    };
+    window.addEventListener("gcp-sso-token-expired", handler);
+    return () => window.removeEventListener("gcp-sso-token-expired", handler);
+  }, [selectedCluster, clusterProviders, triggerGcpSsoLogin]);
+
   // 🔧 FIX: Handler para mudança de cluster com switch de contexto
   const handleClusterChange = async (newCluster: string) => {
     if (newCluster === selectedCluster) return;

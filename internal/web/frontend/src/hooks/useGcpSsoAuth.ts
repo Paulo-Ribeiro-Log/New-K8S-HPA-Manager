@@ -92,14 +92,24 @@ export function useGcpSsoAuth() {
 
     try {
       const res = await apiClient.startGcpLogin();
+
+      // Sessão GCP já válida — não abrir o dialog nem iniciar polling (mesmo tratamento do
+      // useAwsSsoAuth para already_valid). Sem isso, uma checagem reativa disparada por engano
+      // (ex: erro transitório de rede, ou uma segunda chamada em voo com o token antigo logo
+      // após o usuário já ter reautenticado) reabriria o modal mesmo estando tudo certo.
+      if (res.already_valid || !res.session_id || !res.verify_url) {
+        setState(INITIAL);
+        return;
+      }
+
       setState((s) => ({
         ...s,
         loading: false,
         polling: true,
-        url: res.verify_url,
-        userCode: res.user_code,
+        url: res.verify_url!,
+        userCode: res.user_code ?? "",
       }));
-      startPolling(res.session_id, res.interval_sec);
+      startPolling(res.session_id, res.interval_sec ?? 5);
     } catch (err: unknown) {
       setState((s) => ({
         ...s,
