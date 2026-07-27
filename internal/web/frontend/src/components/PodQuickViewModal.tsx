@@ -136,14 +136,15 @@ function findEventsBlock(lines: string[]): DescribeBlock | null {
   return { start: idx, end };
 }
 
-function escapeRegExp(s: string): string {
+// Exportadas pra reuso em AllPodsLogsModal.tsx (mesma lógica de destaque de busca em logs).
+export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // Destaca (case-insensitive) todas as ocorrências de `query` dentro de uma linha de log,
 // espelhando o match de filterLogLines (mesmo .toLowerCase().includes) — só que aqui
 // precisamos das posições exatas pra fatiar a string em spans normais + <mark>.
-function highlightMatches(line: string, query: string): React.ReactNode {
+export function highlightMatches(line: string, query: string): React.ReactNode {
   const text = line || " ";
   const trimmed = query.trim();
   if (!trimmed) return text;

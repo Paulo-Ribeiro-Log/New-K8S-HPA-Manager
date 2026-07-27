@@ -1667,12 +1667,16 @@ class APIClient {
     podName: string,
     containerName?: string,
     tailLines?: number,
-    previous?: boolean
+    previous?: boolean,
+    // timestamps prefixa cada linha com um RFC3339Nano (mesmo `kubectl logs --timestamps`) — usado
+    // pelo AllPodsLogsModal pra intercalar linhas de vários pods por tempo real.
+    timestamps?: boolean
   ): Promise<{ logs: string }> {
     const params = new URLSearchParams();
     if (containerName) params.append("container", containerName);
     if (tailLines) params.append("tail", tailLines.toString());
     if (previous) params.append("previous", "true");
+    if (timestamps) params.append("timestamps", "true");
 
     const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<{ logs: string }>>(

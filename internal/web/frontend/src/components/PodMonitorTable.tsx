@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { PodSummary, BatchPodMetrics } from "@/lib/api/types";
 import { formatAge, formatBytes, formatMillicores, parseCpuToMillicores, parseMemoryToBytes, podRowColor, podDotColor } from "@/lib/monitorUtils";
-import { Loader2, ChevronLeft, ChevronRight, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
+import { Loader2, ChevronLeft, ChevronRight, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown, ScrollText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -12,6 +12,7 @@ import { ProtectedAction } from "@/components/rbac/ProtectedAction";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
+import { AllPodsLogsModal } from "@/components/AllPodsLogsModal";
 
 const REFRESH_INTERVAL_MS = 5000;
 
@@ -221,6 +222,7 @@ export const PodMonitorTable = ({
   // Seleção de pods
   const [selectedPods, setSelectedPods] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<"kill" | "delete" | "restart" | null>(null);
+  const [allLogsOpen, setAllLogsOpen] = useState(false);
   const [bulkProcessing, setBulkProcessing] = useState(false);
 
   const refreshRef = useRef(onRequestRefresh);
@@ -524,6 +526,17 @@ export const PodMonitorTable = ({
             Limpar filtros
           </Button>
         )}
+
+        <Button
+          variant="outline" size="sm"
+          className="h-7 gap-1 text-xs flex-shrink-0"
+          disabled={filtered.length === 0}
+          onClick={() => setAllLogsOpen(true)}
+          title="Ver logs de todos os pods listados, intercalados por tempo real"
+        >
+          <ScrollText className="w-3 h-3" />
+          Ver Logs ({filtered.length})
+        </Button>
 
         <div className="relative w-40">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
@@ -861,6 +874,13 @@ export const PodMonitorTable = ({
           )}
         </div>
       )}
+
+      <AllPodsLogsModal
+        open={allLogsOpen}
+        onClose={() => setAllLogsOpen(false)}
+        cluster={cluster}
+        pods={filtered}
+      />
     </div>
   );
 };
