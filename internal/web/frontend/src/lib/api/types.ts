@@ -74,6 +74,11 @@ export interface ConfigMapUsage {
   usedBy: string[];
 }
 
+export interface DynatracePodStatusResponse {
+  cluster_supported: boolean;
+  monitored: string[]; // formato "namespace/nome", igual getPodKey() do frontend
+}
+
 export interface ConfigMapMetadata {
   uid?: string;
   resourceVersion?: string;

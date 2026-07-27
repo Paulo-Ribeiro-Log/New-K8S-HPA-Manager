@@ -38,6 +38,7 @@ type EntityStub struct {
 	K8sCluster   string `json:"k8sCluster,omitempty"`
 	K8sNamespace string `json:"k8sNamespace,omitempty"`
 	K8sWorkload  string `json:"k8sWorkload,omitempty"`
+	K8sPodName   string `json:"k8sPodName,omitempty"` // só populado para entidades CLOUD_APPLICATION_INSTANCE (uma por pod)
 	// Tags ricas do OneAgent — DevOps, versão, squad, GitHub, etc.
 	Labels *DTLabels `json:"labels,omitempty"`
 	// Relações de topologia (preenchidas após GetEntity)

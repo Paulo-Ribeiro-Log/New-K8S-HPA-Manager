@@ -12,6 +12,9 @@ import { ProtectedAction } from "@/components/rbac/ProtectedAction";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
+import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
+
+const EMPTY_DT_SET = new Set<string>();
 
 const REFRESH_INTERVAL_MS = 5000;
 
@@ -26,6 +29,11 @@ interface PodMonitorTableProps {
   loading: boolean;
   metrics: BatchPodMetrics | null;
   metricsLoading: boolean;
+  /** Status de monitoramento Dynatrace (useDynatracePodStatus, calculado 1x no painel pai — evita
+   * duplicar o polling entre o card da lista esquerda e esta tabela). */
+  dtClusterSupported?: boolean;
+  dtMonitoredKeys?: Set<string>;
+  dtHasLoaded?: boolean;
   onOpenDetail: (pod: PodSummary) => void;
   headerLabel: string;
   breadcrumb?: BreadcrumbSegment[];
@@ -102,9 +110,9 @@ function useSecondsTick(date: Date | null): string {
   return `${Math.floor(secs / 60)}m atrás`;
 }
 
-// Colunas: SEL | NAME/NS | VERSION | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
-// SEL(32) e dot(22) são fixos e não têm ResizeHandle por serem muito pequenos.
-const INITIAL_WIDTHS = [32, 400, 120, 22, 60, 140, 50, 110, 110, 180, 60];
+// Colunas: SEL | NAME/NS | VERSION | dot | DT | READY | STATUS | REST. | CPU | MEM | NODE | AGE
+// SEL(32), dot(22) e DT(24) são fixos e não têm ResizeHandle por serem muito pequenos.
+const INITIAL_WIDTHS = [32, 400, 120, 22, 24, 60, 140, 50, 110, 110, 180, 60];
 
 function extractImageVersion(image?: string): string {
   if (!image) return "-";
@@ -183,6 +191,9 @@ export const PodMonitorTable = ({
   pods,
   loading,
   metrics,
+  dtClusterSupported = false,
+  dtMonitoredKeys,
+  dtHasLoaded = false,
   onOpenDetail,
   headerLabel,
   breadcrumb,
@@ -600,41 +611,43 @@ export const PodMonitorTable = ({
         </span>
         {/* dot — fixo, sem resize */}
         <span></span>
+        {/* DT — fixo, sem resize (status de monitoramento Dynatrace) */}
+        <span></span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(4, d)} />
+          <ResizeHandle onResize={(d) => resize(5, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="STATUS" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
           <StatusSortIcon mode={statusSortMode} onCycle={cycleStatusSort} />
-          <ResizeHandle onResize={(d) => resize(5, d)} />
+          <ResizeHandle onResize={(d) => resize(6, d)} />
         </span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(6, d)} />
+          <ResizeHandle onResize={(d) => resize(7, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center gap-1">
           <SortBtn label="CPU" colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           {metrics && !metrics.available && (
             <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
           )}
-          <ResizeHandle onResize={(d) => resize(7, d)} />
+          <ResizeHandle onResize={(d) => resize(8, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center gap-1">
           <SortBtn label="MEM" colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           {metrics && !metrics.available && (
             <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
           )}
-          <ResizeHandle onResize={(d) => resize(8, d)} />
+          <ResizeHandle onResize={(d) => resize(9, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="NODE" options={uniqueNodes} selected={nodeFilter} onChange={setNodeFilter} />
           <SortIcon colKey="node" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(9, d)} />
+          <ResizeHandle onResize={(d) => resize(10, d)} />
         </span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(10, d)} />
+          <ResizeHandle onResize={(d) => resize(11, d)} />
         </span>
       </div>
 
@@ -710,6 +723,15 @@ export const PodMonitorTable = ({
               {/* dot */}
               <span className="flex items-center justify-center">
                 <span className={`w-2 h-2 rounded-full ${dotColor}`} />
+              </span>
+
+              {/* DT — status de monitoramento Dynatrace */}
+              <span className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+                {dtHasLoaded && (
+                  <DynatraceStatusIcon
+                    status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys ?? EMPTY_DT_SET, `${pod.namespace}/${pod.name}`)}
+                  />
+                )}
               </span>
 
               {/* READY */}

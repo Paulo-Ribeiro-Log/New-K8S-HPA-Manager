@@ -415,6 +415,7 @@ func enrichFromEntity(stub EntityStub, entity *Entity) EntityStub {
 		stub.K8sCluster = corr.Cluster
 		stub.K8sNamespace = corr.Namespace
 		stub.K8sWorkload = corr.Workload
+		stub.K8sPodName = corr.PodName
 	}
 	// Tags ricas (squad, journey, versão, GitHub repo, etc.)
 	stub.Labels = entity.ExtractDTLabels()

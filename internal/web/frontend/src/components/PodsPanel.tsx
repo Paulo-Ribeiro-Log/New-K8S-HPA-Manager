@@ -25,6 +25,9 @@ import {
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { useDynatracePodStatus } from "@/hooks/useAPI";
+import { useUserProfile } from "@/hooks/useUserProfile";
+import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
 import { PodTerminal } from "@/components/PodTerminal";
 import { PodFileTransferModal } from "@/components/PodFileTransferModal";
 import ResourceGauge from "@/components/ResourceGauge";
@@ -63,6 +66,8 @@ export const PodsPanel = ({
 }: PodsPanelProps) => {
   const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const { user } = useUserProfile();
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded } = useDynatracePodStatus(cluster, user?.email);
   const canWritePods = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWritePods : undefined;
 
   // ✅ Estados com persistência entre trocas de aba
@@ -1229,6 +1234,11 @@ export const PodsPanel = ({
                 className="flex-1 text-left"
               >
                 <div className="flex items-center gap-2 mb-1">
+                  {dtHasLoaded && (
+                    <DynatraceStatusIcon
+                      status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys, getPodKey(pod))}
+                    />
+                  )}
                   <div className="font-semibold text-sm truncate flex-1">{pod.name}</div>
                   <Badge variant="outline" className={`text-xs ${getPhaseColor(pod.statusReason || pod.phase)}`}>
                     {pod.statusReason || pod.phase}
@@ -1285,6 +1295,9 @@ export const PodsPanel = ({
             loading={loading}
             metrics={batchMetrics}
             metricsLoading={metricsLoading}
+            dtClusterSupported={dtClusterSupported}
+            dtMonitoredKeys={dtMonitoredKeys}
+            dtHasLoaded={dtHasLoaded}
             onOpenDetail={(pod) => setQuickViewPod(pod)}
             headerLabel={selectedNamespace && selectedNamespace !== "__all__"
               ? `${selectedNamespace} — pods (${filteredPods.length})`

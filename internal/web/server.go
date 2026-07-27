@@ -839,7 +839,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Pods/Containers
-	podHandler := handlers.NewPodHandler(s.kubeManager, s.historyTracker)
+	podHandler := handlers.NewPodHandler(s.kubeManager, s.historyTracker, s.aiTokensStore)
 	pods := api.Group("/pods")
 	{
 		pods.GET("", podHandler.List)
@@ -851,6 +851,7 @@ func (s *Server) setupRoutes() {
 		pods.GET("/:cluster/:namespace/:name/download", podHandler.DownloadFromPod)
 		pods.POST("/:cluster/:namespace/:name/download/batch", podHandler.DownloadMultipleFromPod)
 		pods.GET("/:cluster/:namespace/:name/browse", podHandler.BrowseFiles)
+		pods.GET("/:cluster/dynatrace-status", podHandler.GetDynatraceStatus)
 
 		// Pods - Write Operations (SRE-only)
 		pods.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Apply)

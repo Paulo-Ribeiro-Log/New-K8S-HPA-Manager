@@ -23,6 +23,7 @@ import type {
   HPAHealth,
   ConfigMapSummary,
   ConfigMapUsage,
+  DynatracePodStatusResponse,
   ConfigMapManifest,
   ConfigMapDiffResult,
   ConfigMapValidateResult,
@@ -1696,6 +1697,12 @@ class APIClient {
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
     );
     return response;
+  }
+
+  async getPodsDynatraceStatus(cluster: string, aiEmail?: string): Promise<DynatracePodStatusResponse> {
+    const params = new URLSearchParams();
+    if (aiEmail) params.append("ai_email", aiEmail);
+    return this.request(`/pods/${encodeURIComponent(cluster)}/dynatrace-status?${params.toString()}`);
   }
 
   // Events API Methods

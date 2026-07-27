@@ -19,6 +19,7 @@ import (
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
+	"k8s-hpa-manager/internal/storage"
 )
 
 // isSystemNamespace verifica se um namespace é de sistema
@@ -42,13 +43,15 @@ func isSystemNamespace(namespace string) bool {
 type PodHandler struct {
 	kubeManager    *config.KubeConfigManager
 	historyTracker *history.HistoryTracker
+	tokensStore    *storage.UserTokensStore // usado só por GetDynatraceStatus (pods_dynatrace_status.go)
 }
 
 // NewPodHandler cria um handler de pods
-func NewPodHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *PodHandler {
+func NewPodHandler(km *config.KubeConfigManager, ht *history.HistoryTracker, tokensStore *storage.UserTokensStore) *PodHandler {
 	return &PodHandler{
 		kubeManager:    km,
 		historyTracker: ht,
+		tokensStore:    tokensStore,
 	}
 }
 
