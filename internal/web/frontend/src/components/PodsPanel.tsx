@@ -25,6 +25,8 @@ import {
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { useDynatracePodStatus } from "@/hooks/useAPI";
+import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
 import { PodTerminal } from "@/components/PodTerminal";
 import { PodFileTransferModal } from "@/components/PodFileTransferModal";
 import ResourceGauge from "@/components/ResourceGauge";
@@ -63,6 +65,15 @@ export const PodsPanel = ({
 }: PodsPanelProps) => {
   const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  // Mesma fonte de e-mail usada pela aba Dynatrace/AI Diagnostics (localStorage["ai_email"],
+  // configurado em AI Settings) — não o e-mail de claims do JWT: em modo de token estático
+  // (K8S_HPA_JWT_SECRET não configurado, o padrão neste app) não há JWT nenhum, então
+  // apiClient.getTokenClaims() sempre retorna null e o e-mail de useUserProfile() fica sempre
+  // vazio. Bug real corrigido: isso fazia dynatraceClientForPods("") nunca achar o token salvo
+  // do usuário, então cluster_supported saía sempre false — ícone vermelho "não suportado" pra
+  // todo mundo, mesmo com um token Dynatrace funcionando de verdade na aba Dynatrace.
+  const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
   const canWritePods = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWritePods : undefined;
 
   // ✅ Estados com persistência entre trocas de aba
@@ -996,7 +1007,7 @@ export const PodsPanel = ({
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
       </Button>
-      <Button variant="outline" size="sm" onClick={() => fetchPods()} disabled={!cluster || loading}>
+      <Button variant="outline" size="sm" onClick={() => { fetchPods(); refetchDtStatus(); }} disabled={!cluster || loading}>
         <RefreshCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
       </Button>
       {selectedPod && (
@@ -1229,6 +1240,11 @@ export const PodsPanel = ({
                 className="flex-1 text-left"
               >
                 <div className="flex items-center gap-2 mb-1">
+                  {dtHasLoaded && (
+                    <DynatraceStatusIcon
+                      status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys, getPodKey(pod))}
+                    />
+                  )}
                   <div className="font-semibold text-sm truncate flex-1">{pod.name}</div>
                   <Badge variant="outline" className={`text-xs ${getPhaseColor(pod.statusReason || pod.phase)}`}>
                     {pod.statusReason || pod.phase}
@@ -1285,6 +1301,9 @@ export const PodsPanel = ({
             loading={loading}
             metrics={batchMetrics}
             metricsLoading={metricsLoading}
+            dtClusterSupported={dtClusterSupported}
+            dtMonitoredKeys={dtMonitoredKeys}
+            dtHasLoaded={dtHasLoaded}
             onOpenDetail={(pod) => setQuickViewPod(pod)}
             headerLabel={selectedNamespace && selectedNamespace !== "__all__"
               ? `${selectedNamespace} — pods (${filteredPods.length})`

@@ -415,6 +415,7 @@ func enrichFromEntity(stub EntityStub, entity *Entity) EntityStub {
 		stub.K8sCluster = corr.Cluster
 		stub.K8sNamespace = corr.Namespace
 		stub.K8sWorkload = corr.Workload
+		stub.K8sPodName = corr.PodName
 	}
 	// Tags ricas (squad, journey, versão, GitHub repo, etc.)
 	stub.Labels = entity.ExtractDTLabels()
@@ -600,46 +601,154 @@ func (c *Client) SearchEntitiesByName(ctx context.Context, names []string) []Ent
 	return all
 }
 
-// listEntitiesBySelector busca entidades com um entitySelector arbitrário e retorna EntityStubs enriquecidos.
-// Usa pageSize=500 (limite prático por cluster). Grava no cache entityCache.
+// listEntitiesBySelectorMaxPages limita quantas páginas de 500 entidades listEntitiesBySelector
+// segue via nextPageKey — 20 páginas = até 10.000 entidades, generoso o bastante pra maior cluster
+// real da frota hoje (~4.561 PROCESS_GROUP_INSTANCE em akspriv-oferta-prd, 103 nós) sem risco de
+// loop infinito caso a API do Dynatrace devolva nextPageKey indefinidamente por algum bug.
+const listEntitiesBySelectorMaxPages = 20
+
+// listEntitiesBySelector busca entidades com um entitySelector arbitrário e retorna EntityStubs
+// enriquecidos. Segue nextPageKey até listEntitiesBySelectorMaxPages páginas — sem isso, clusters
+// grandes (ex: akspriv-oferta-prd, 4.561 PROCESS_GROUP_INSTANCE) tinham 500 entidades retornadas e
+// o resto descartado silenciosamente, fazendo pods do MESMO deployment aparecerem alguns
+// "monitorados" (calharam de estar nos primeiros 500, ordem arbitrária da API) e outros "não
+// monitorados" mesmo sendo igualmente instrumentados pelo OneAgent — bug real confirmado
+// comparando kubectl (pods rodando há semanas, 0 restarts) contra a API do Dynatrace (entidade
+// PROCESS_GROUP_INSTANCE correspondente inexistente em QUALQUER página, não só ausente da
+// primeira). Grava no cache entityCache a cada página.
 func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector string) ([]EntityStub, error) {
-	params := url.Values{
-		"entitySelector": {entitySelector},
-		"fields":         {"+tags,+properties"},
-		"pageSize":       {"500"},
-	}
-	var resp struct {
-		Entities []Entity `json:"entities"`
-	}
-	if err := c.get(ctx, "entities", params, &resp); err != nil {
-		return nil, err
-	}
-	stubs := make([]EntityStub, 0, len(resp.Entities))
-	for _, e := range resp.Entities {
-		stub := EntityStub{
-			EntityID:    EntityID{ID: e.EntityID, Type: e.Type},
-			DisplayName: e.DisplayName,
+	var stubs []EntityStub
+	nextPageKey := ""
+
+	for page := 0; page < listEntitiesBySelectorMaxPages; page++ {
+		var params url.Values
+		if nextPageKey == "" {
+			params = url.Values{
+				"entitySelector": {entitySelector},
+				"fields":         {"+tags,+properties"},
+				"pageSize":       {"500"},
+			}
+		} else {
+			// Páginas seguintes: apenas nextPageKey (mesmo padrão de GetOpenProblems acima —
+			// os demais parâmetros já estão codificados nele pela própria API).
+			params = url.Values{"nextPageKey": {nextPageKey}}
 		}
-		enriched := enrichFromEntity(stub, &e)
-		entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
-		stubs = append(stubs, enriched)
+
+		var resp struct {
+			Entities    []Entity `json:"entities"`
+			NextPageKey string   `json:"nextPageKey,omitempty"`
+		}
+		if err := c.get(ctx, "entities", params, &resp); err != nil {
+			if page == 0 {
+				return nil, err
+			}
+			// Falha numa página intermediária — retorna o que já foi coletado em vez de
+			// descartar tudo (degradação graciosa, mesmo princípio de outras checagens
+			// best-effort do app).
+			break
+		}
+
+		for _, e := range resp.Entities {
+			stub := EntityStub{
+				EntityID:    EntityID{ID: e.EntityID, Type: e.Type},
+				DisplayName: e.DisplayName,
+			}
+			enriched := enrichFromEntity(stub, &e)
+			entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
+			stubs = append(stubs, enriched)
+		}
+
+		nextPageKey = resp.NextPageKey
+		if nextPageKey == "" {
+			break
+		}
 	}
+
 	return stubs, nil
 }
 
+// clusterEntityCache guarda o entityId da entidade KUBERNETES_CLUSTER resolvida por nome —
+// praticamente nunca muda (o cluster não é recriado no Dynatrace), TTL bem mais longo que
+// entityCache. Guarda também string vazia = "não encontrado" pra não bater na API repetidamente
+// por um cluster que o Dynatrace realmente não conhece.
+var clusterEntityCache sync.Map
+
+const clusterEntityCacheTTL = 30 * time.Minute
+
+type clusterEntityCacheEntry struct {
+	entityID string // vazio = confirmado "não encontrado"
+	cachedAt time.Time
+}
+
+// relationshipByEntityType mapeia o tipo de entidade pro nome da relação topológica que a liga a
+// um KUBERNETES_CLUSTER — confirmado empiricamente via /api/v2/entityTypes/<tipo> (toRelationships)
+// contra um tenant real, já que a documentação pública do Dynatrace não lista isso de forma óbvia.
+var relationshipByEntityType = map[string]string{
+	"CLOUD_APPLICATION":          "isClusterOfCa",
+	"CLOUD_APPLICATION_INSTANCE": "isClusterOfCai",
+	"SERVICE":                    "isClusterOfService",
+}
+
+// resolveKubernetesClusterEntityID resolve o entityId da entidade KUBERNETES_CLUSTER cujo
+// displayName bate com clusterName. Cacheado — ver clusterEntityCache.
+func (c *Client) resolveKubernetesClusterEntityID(ctx context.Context, clusterName string) (string, error) {
+	if raw, ok := clusterEntityCache.Load(clusterName); ok {
+		entry := raw.(clusterEntityCacheEntry)
+		if time.Since(entry.cachedAt) < clusterEntityCacheTTL {
+			return entry.entityID, nil
+		}
+		clusterEntityCache.Delete(clusterName)
+	}
+
+	selector := fmt.Sprintf(`type("KUBERNETES_CLUSTER"),entityName("%s")`, clusterName)
+	stubs, err := c.listEntitiesBySelector(ctx, selector)
+	if err != nil {
+		return "", err
+	}
+	entityID := ""
+	if len(stubs) > 0 {
+		entityID = stubs[0].EntityID.ID
+	}
+	clusterEntityCache.Store(clusterName, clusterEntityCacheEntry{entityID: entityID, cachedAt: time.Now()})
+	return entityID, nil
+}
+
 // ListEntitiesByCluster lista entidades de um tipo instrumentadas pelo OneAgent em um cluster.
-// Estratégia de busca em 3 tentativas para cobrir variações de tag e configuração:
-//  1. tag("dt.host_group.id:<cluster>") — primário para todos os tipos
-//  2. kubernetesCluster.name("<cluster>") — fallback K8s nativo (CLOUD_APPLICATION e SERVICE)
-//  3. tag("kubernetes.cluster.name:<cluster>") — fallback via tag K8s propagada pelo OneAgent
 //
-// Retorna até 500 entidades (limite prático por cluster, sem paginação).
+// Estratégia primária: resolver a entidade KUBERNETES_CLUSTER pelo nome e navegar a relação
+// topológica direta até o tipo pedido (toRelationships.isClusterOfCa/Cai/Service). Confirmado
+// empiricamente contra um tenant real que CLOUD_APPLICATION e CLOUD_APPLICATION_INSTANCE NÃO
+// carregam tags (`"tags": []` sempre, mesmo em entidades ativamente monitoradas) — os seletores
+// por tag abaixo NUNCA encontram nada pra esses 2 tipos, é preciso usar a relação. SERVICE tem
+// tags, mas com chave `k8s.cluster.name` (não `kubernetes.cluster.name` como a tentativa 3
+// assumia) — bug real também corrigido aqui.
+//
+// Fallback (defesa em profundidade, caso a entidade KUBERNETES_CLUSTER não exista/não resolva —
+// ex: versão antiga de OneAgent, cluster fora do Kubernetes API Monitoring):
+//  1. tag("dt.host_group.id:<cluster>")
+//  2. tag("k8s.cluster.name:<cluster>")
+//
+// listEntitiesBySelector pagina internamente (até listEntitiesBySelectorMaxPages), então clusters
+// grandes (milhares de entidades) não perdem resultado.
 func (c *Client) ListEntitiesByCluster(ctx context.Context, clusterName, entityType string) ([]EntityStub, error) {
 	if clusterName == "" || entityType == "" {
 		return nil, fmt.Errorf("clusterName e entityType são obrigatórios")
 	}
 
-	// Tentativa 1: tag dt.host_group.id (OneAgent injeta em hosts/processos/serviços do cluster)
+	// Estratégia primária: relação topológica direta com a entidade KUBERNETES_CLUSTER.
+	if relationship, ok := relationshipByEntityType[entityType]; ok {
+		clusterEntityID, err := c.resolveKubernetesClusterEntityID(ctx, clusterName)
+		if err == nil && clusterEntityID != "" {
+			selector := fmt.Sprintf(`type("%s"),toRelationships.%s(entityId("%s"))`, entityType, relationship, clusterEntityID)
+			stubs, serr := c.listEntitiesBySelector(ctx, selector)
+			if serr == nil && len(stubs) > 0 {
+				return stubs, nil
+			}
+		}
+	}
+
+	// Fallback 1: tag dt.host_group.id (usada por HOST/PROCESS_GROUP em alguns tenants — mantida
+	// por retrocompatibilidade, mas não confirmada como funcional pros tipos acima neste tenant).
 	primarySelector := fmt.Sprintf(`type("%s"),tag("dt.host_group.id:%s")`, entityType, clusterName)
 	stubs, err := c.listEntitiesBySelector(ctx, primarySelector)
 	if err != nil {
@@ -649,26 +758,67 @@ func (c *Client) ListEntitiesByCluster(ctx context.Context, clusterName, entityT
 		return stubs, nil
 	}
 
-	// Tentativa 2: kubernetesCluster.name — relação topológica nativa K8s (CLOUD_APPLICATION e SERVICE)
-	if entityType == "CLOUD_APPLICATION" || entityType == "SERVICE" {
-		fallbackSelector := fmt.Sprintf(`type("%s"),kubernetesCluster.name("%s")`, entityType, clusterName)
-		stubs, err = c.listEntitiesBySelector(ctx, fallbackSelector)
-		if err != nil {
-			stubs = nil
-		}
-		if len(stubs) > 0 {
-			return stubs, nil
-		}
-	}
-
-	// Tentativa 3: tag kubernetes.cluster.name propagada pelo OneAgent em processos K8s
-	tag3Selector := fmt.Sprintf(`type("%s"),tag("kubernetes.cluster.name:%s")`, entityType, clusterName)
-	stubs, err = c.listEntitiesBySelector(ctx, tag3Selector)
+	// Fallback 2: tag k8s.cluster.name propagada pelo OneAgent (chave confirmada empiricamente —
+	// a antiga "kubernetes.cluster.name" nunca bateu com nada, era só um typo do nome real da tag).
+	tag2Selector := fmt.Sprintf(`type("%s"),tag("k8s.cluster.name:%s")`, entityType, clusterName)
+	stubs, err = c.listEntitiesBySelector(ctx, tag2Selector)
 	if err != nil {
 		return nil, fmt.Errorf("ListEntitiesByCluster (todas as tentativas falharam): %w", err)
 	}
 
 	return stubs, nil
+}
+
+// hostGroupEntityCache guarda o entityId da entidade HOST_GROUP resolvida por nome — mesmo
+// espírito de clusterEntityCache, TTL longo (praticamente nunca muda).
+var hostGroupEntityCache sync.Map
+
+// resolveHostGroupEntityID resolve o entityId da entidade HOST_GROUP cujo displayName bate com
+// clusterName. HOST_GROUP é o nível de correlação certo pra clusters em modo OneAgent
+// "classicFullStack" — confirmado empiricamente que displayName == hostGroup configurado no
+// DynaKube (spec.oneAgent.classicFullStack.hostGroup), mesmo valor usado como nome do cluster em
+// todo o resto do app.
+func (c *Client) resolveHostGroupEntityID(ctx context.Context, clusterName string) (string, error) {
+	if raw, ok := hostGroupEntityCache.Load(clusterName); ok {
+		entry := raw.(clusterEntityCacheEntry)
+		if time.Since(entry.cachedAt) < clusterEntityCacheTTL {
+			return entry.entityID, nil
+		}
+		hostGroupEntityCache.Delete(clusterName)
+	}
+
+	selector := fmt.Sprintf(`type("HOST_GROUP"),entityName("%s")`, clusterName)
+	stubs, err := c.listEntitiesBySelector(ctx, selector)
+	if err != nil {
+		return "", err
+	}
+	entityID := ""
+	if len(stubs) > 0 {
+		entityID = stubs[0].EntityID.ID
+	}
+	hostGroupEntityCache.Store(clusterName, clusterEntityCacheEntry{entityID: entityID, cachedAt: time.Now()})
+	return entityID, nil
+}
+
+// ListProcessGroupInstancesByHostGroup lista as PROCESS_GROUP_INSTANCE (uma por processo/container
+// monitorado) de um cluster em modo OneAgent "classicFullStack" — a maioria real da frota (AKS
+// deste app), confirmado via `kubectl get dynakube -o yaml` contra vários clusters reais. Esse
+// modo NÃO cria KUBERNETES_CLUSTER/CLOUD_APPLICATION/CLOUD_APPLICATION_INSTANCE (só existem em
+// clusters com "Kubernetes API Monitoring"/Cloud Native Full Stack habilitado — ver
+// ListEntitiesByCluster) — a correlação por pod só é possível via PROCESS_GROUP_INSTANCE,
+// navegando a relação topológica isHostGroupOf até a entidade HOST_GROUP do cluster.
+// Namespace/PodName vêm de properties.metadata (KUBERNETES_NAMESPACE/KUBERNETES_FULL_POD_NAME),
+// não de tags — ver ExtractK8sCorrelation em models.go.
+func (c *Client) ListProcessGroupInstancesByHostGroup(ctx context.Context, clusterName string) ([]EntityStub, error) {
+	hostGroupID, err := c.resolveHostGroupEntityID(ctx, clusterName)
+	if err != nil {
+		return nil, err
+	}
+	if hostGroupID == "" {
+		return nil, nil // cluster não tem HOST_GROUP no Dynatrace — não é erro, só não monitorado
+	}
+	selector := fmt.Sprintf(`type("PROCESS_GROUP_INSTANCE"),toRelationships.isHostGroupOf(entityId("%s"))`, hostGroupID)
+	return c.listEntitiesBySelector(ctx, selector)
 }
 
 // GetOpenProblemsForEntity retorna problems OPEN que afetam uma entidade específica.

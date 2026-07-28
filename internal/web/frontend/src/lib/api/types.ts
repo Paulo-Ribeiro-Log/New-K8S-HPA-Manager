@@ -74,6 +74,11 @@ export interface ConfigMapUsage {
   usedBy: string[];
 }
 
+export interface DynatracePodStatusResponse {
+  cluster_supported: boolean;
+  monitored: string[]; // formato "namespace/nome", igual getPodKey() do frontend
+}
+
 export interface ConfigMapMetadata {
   uid?: string;
   resourceVersion?: string;
@@ -1631,6 +1636,55 @@ export interface ConntrackNodeHistoryResponse {
   points: ConntrackHistoryPoint[];
   prometheus_available: boolean;
   error?: string;
+}
+
+// ─── Gráfico de Comportamento do Deployment (DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md, Fase 1) ────────
+
+export interface DeploymentBehaviorPoint {
+  ts: number; // epoch MILISSEGUNDOS (não segundos) — mesma convenção nos dois caminhos (Prometheus/Dynatrace)
+  replicas_desired: number;
+  replicas_current: number;
+  replicas_ready: number;
+  replicas_updated: number;
+  replicas_unavailable: number;
+  cpu_usage_pct: number;
+  memory_usage_pct: number;
+  restarts: number;
+}
+
+export interface DeploymentScaleEvent {
+  ts: number;
+  from_replicas: number;
+  to_replicas: number;
+}
+
+export interface DTProblemMarker {
+  problem_id: string;
+  title: string;
+  severity: string;
+  start_ts: number;
+  end_ts?: number;
+}
+
+export interface DeploymentBehaviorResponse {
+  cluster: string;
+  namespace: string;
+  deployment: string;
+  window_minutes: number;
+  step_minutes: number;
+  offset_days?: number[];
+  points: DeploymentBehaviorPoint[];
+  compare_points?: Record<number, DeploymentBehaviorPoint[]>;
+  scale_events: DeploymentScaleEvent[];
+  has_hpa: boolean;
+  prometheus_available: boolean;
+  source: "prometheus" | "dynatrace" | "none";
+  error?: string;
+  cpu_request_millicores?: number;
+  cpu_limit_millicores?: number;
+  memory_request_bytes?: number;
+  memory_limit_bytes?: number;
+  dynatrace_problems?: DTProblemMarker[]; // Fase 2 — sempre vazio/ausente por ora
 }
 
 export interface CloudAccountHints {

@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/chart';
 import { apiClient } from '@/lib/api/client';
 import type { ConntrackNodeStats, ConntrackNodeHistoryResponse, ConntrackHistoryPoint } from '@/lib/api/types';
+import { COMPARE_DAYS, COMPARE_COLORS, COMPARE_LABELS, compareColorForDataKey, compareLabelForDataKey, decimate } from '@/lib/chartHelpers';
 
 interface ConntrackTabProps {
   cluster: string;
@@ -68,11 +69,6 @@ function barFill(pct: number): string {
 const fmt = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : String(Math.round(n));
 
-// Dias disponíveis para comparação (mesmo horário, N dias atrás)
-const COMPARE_DAYS = [1, 2, 3] as const;
-const COMPARE_COLORS: Record<number, string> = { 1: '#f97316', 2: '#a855f7', 3: '#64748b' };
-const COMPARE_LABELS: Record<number, string> = { 1: 'D-1', 2: 'D-2', 3: 'D-3' };
-
 // Mapa de histórico por offset de dias: compareHistoryMap[offset][nodeName]
 type CompareHistoryMap = Record<number, Record<string, ConntrackNodeHistoryResponse>>;
 
@@ -86,23 +82,15 @@ const chartConfig = {
 // Cor/label por série do tooltip. Não usar item.payload.fill: no ChartTooltipContent do shadcn,
 // todas as séries de um mesmo ponto compartilham o mesmo objeto `payload` (a linha do chartData),
 // então o campo `fill` (usado pela barra "Hoje") vazava para as linhas de comparação também.
+// O caso "pct" (série de hoje, cor por threshold via barFill) é específico do Conntrack — os
+// demais casos ("pctD1"/"pctD2"/"pctD3") delegam pro helper compartilhado (lib/chartHelpers.ts).
 function seriesColorForKey(dataKey: string, value: number): string {
   if (dataKey === 'pct') return barFill(value);
-  const offset = Number(dataKey.replace('pctD', ''));
-  return COMPARE_COLORS[offset] ?? '#94a3b8';
+  return compareColorForDataKey(dataKey);
 }
 function seriesLabelForKey(dataKey: string): string {
   if (dataKey === 'pct') return 'Hoje';
-  const offset = Number(dataKey.replace('pctD', ''));
-  return COMPARE_LABELS[offset] ?? dataKey;
-}
-
-// Reduz uma série de pontos a no máximo ~48 amostras (mesma lógica para todas as séries,
-// garante que o índice i de séries diferentes corresponda ao mesmo horário relativo).
-function decimate(points: ConntrackHistoryPoint[]): ConntrackHistoryPoint[] {
-  if (!points.length) return [];
-  const step = Math.ceil(points.length / 48);
-  return points.filter((_, i) => i % step === 0);
+  return compareLabelForDataKey(dataKey);
 }
 
 // ─── Sub-componentes pequenos ──────────────────────────────────────────────────

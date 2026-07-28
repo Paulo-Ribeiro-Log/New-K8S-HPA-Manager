@@ -27,7 +27,7 @@ import type {
   PodSummary,
   BatchPodMetrics,
 } from "@/lib/api/types";
-import { useDeployments } from "@/hooks/useAPI";
+import { useDeployments, useDynatracePodStatus } from "@/hooks/useAPI";
 import { DeploymentMonitorTable } from "@/components/DeploymentMonitorTable";
 import { PodMonitorTable } from "@/components/PodMonitorTable";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
@@ -36,6 +36,7 @@ import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { AITriggerButton } from "@/components/AITriggerButton";
 import { PredictionHistoryModal } from "@/components/PredictionHistoryModal";
+import { DeploymentBehaviorModal } from "@/components/DeploymentBehaviorModal";
 import { RolloutProgressGauge } from "@/components/RolloutProgressGauge";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -98,6 +99,15 @@ export const DeploymentsTab = ({
   // Permissões K8s reais — usa namespace do deployment selecionado ou o namespace filtrado
   const activeNamespace = selectedDeployment?.namespace || selectedNamespace;
   const { permissions: k8sPerms } = useK8sPermissions(cluster, activeNamespace);
+  // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
+  // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia
+  // mas nunca renderizava nada aqui (dtHasLoaded sempre false por padrão).
+  // Mesma fonte de e-mail usada pela aba Dynatrace/AI Diagnostics (localStorage["ai_email"]) —
+  // não o e-mail de claims do JWT: em modo de token estático (sem K8S_HPA_JWT_SECRET, o padrão
+  // deste app) nunca há JWT, então useUserProfile() fica sempre com e-mail vazio, e o backend
+  // nunca acha o token Dynatrace salvo do usuário — cluster_supported saía sempre false.
+  const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
 
   // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<DeploymentManifest | null>(null);
@@ -123,6 +133,7 @@ export const DeploymentsTab = ({
   const [isExporting, setIsExporting] = useState(false);
   const [showProjection, setShowProjection] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [behaviorModalOpen, setBehaviorModalOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [rolloutConfirmOpen, setRolloutConfirmOpen] = useState(false);
@@ -583,6 +594,7 @@ export const DeploymentsTab = ({
   const refreshDeployments = () => {
     if (!cluster) return;
     refetch();
+    refetchDtStatus();
   };
 
   const refreshManifest = async () => {
@@ -2414,6 +2426,15 @@ export const DeploymentsTab = ({
             <History className="w-4 h-4 mr-2" />
             Histórico de Análises
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setBehaviorModalOpen(true)}
+            disabled={!selectedDeployment}
+          >
+            <Activity className="w-4 h-4 mr-2" />
+            Comportamento
+          </Button>
           <AITriggerButton
             resourceType="Deployment"
             cluster={cluster}
@@ -2688,6 +2709,9 @@ export const DeploymentsTab = ({
                 loading={monitorPodsLoading}
                 metrics={batchMetrics}
                 metricsLoading={false}
+                dtClusterSupported={dtClusterSupported}
+                dtMonitoredKeys={dtMonitoredKeys}
+                dtHasLoaded={dtHasLoaded}
                 onOpenDetail={(pod) => setQuickViewPod(pod)}
                 headerLabel={`${rightView.deployment.name} — pods (${monitorPods.length})`}
                 breadcrumb={[
@@ -5415,6 +5439,17 @@ export const DeploymentsTab = ({
           setHistoryModalOpen(false);
         }}
       />
+
+      {/* Modal de Comportamento (réplicas/CPU/mem/restarts históricos) */}
+      {selectedDeployment && (
+        <DeploymentBehaviorModal
+          open={behaviorModalOpen}
+          onOpenChange={setBehaviorModalOpen}
+          cluster={selectedDeployment.cluster}
+          namespace={selectedDeployment.namespace}
+          deployment={selectedDeployment.name}
+        />
+      )}
 
       {/* Modal de Confirmação - Delete Deployment */}
       <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>

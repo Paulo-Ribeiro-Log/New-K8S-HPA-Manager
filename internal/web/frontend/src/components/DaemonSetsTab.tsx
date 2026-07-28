@@ -20,7 +20,7 @@ import type {
   PodSummary,
   BatchPodMetrics,
 } from "@/lib/api/types";
-import { useDaemonSets } from "@/hooks/useAPI";
+import { useDaemonSets, useDynatracePodStatus } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -73,6 +73,15 @@ export const DaemonSetsTab = ({
 }: DaemonSetsTabProps) => {
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
   const canWriteDaemonSets = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteDaemonSets : undefined;
+  // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
+  // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia
+  // mas nunca renderizava nada aqui (dtHasLoaded sempre false por padrão).
+  // Mesma fonte de e-mail usada pela aba Dynatrace/AI Diagnostics (localStorage["ai_email"]) —
+  // não o e-mail de claims do JWT: em modo de token estático (sem K8S_HPA_JWT_SECRET, o padrão
+  // deste app) nunca há JWT, então useUserProfile() fica sempre com e-mail vazio, e o backend
+  // nunca acha o token Dynatrace salvo do usuário — cluster_supported saía sempre false.
+  const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
 
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('daemonsets', 'searchQuery', "");
@@ -354,6 +363,7 @@ export const DaemonSetsTab = ({
   const refreshDaemonSets = () => {
     if (!cluster) return;
     refetch();
+    refetchDtStatus();
   };
 
   const handleClearSelection = () => {
@@ -805,6 +815,9 @@ export const DaemonSetsTab = ({
                 loading={monitorPodsLoading}
                 metrics={batchMetrics}
                 metricsLoading={false}
+                dtClusterSupported={dtClusterSupported}
+                dtMonitoredKeys={dtMonitoredKeys}
+                dtHasLoaded={dtHasLoaded}
                 onOpenDetail={(pod) => setQuickViewPod(pod)}
                 headerLabel={`${rightView.daemonSet.name} — pods (${monitorPods.length})`}
                 breadcrumb={[

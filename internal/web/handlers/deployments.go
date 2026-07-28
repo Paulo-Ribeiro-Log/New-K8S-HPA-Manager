@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,19 +21,29 @@ import (
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
+	promclient "k8s-hpa-manager/internal/monitoring/client"
+	"k8s-hpa-manager/internal/storage"
 )
 
 // DeploymentHandler gerencia as rotas de Deployments (placeholder KISS)
 type DeploymentHandler struct {
 	kubeManager    *config.KubeConfigManager
 	historyTracker *history.HistoryTracker
+	// tokensStore/promClients — usados só por GetDeploymentBehavior (deployment_behavior.go):
+	// resolução de credenciais Dynatrace (fallback de série temporal) e cache de client
+	// Prometheus por cluster (mesmo padrão de NodePoolHandler.getPromClient, nodepools.go).
+	tokensStore   *storage.UserTokensStore
+	promClients   map[string]*promclient.PrometheusClient
+	promClientsMu sync.RWMutex
 }
 
 // NewDeploymentHandler cria um handler com dependências já existentes
-func NewDeploymentHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *DeploymentHandler {
+func NewDeploymentHandler(km *config.KubeConfigManager, ht *history.HistoryTracker, tokensStore *storage.UserTokensStore) *DeploymentHandler {
 	return &DeploymentHandler{
 		kubeManager:    km,
 		historyTracker: ht,
+		tokensStore:    tokensStore,
+		promClients:    make(map[string]*promclient.PrometheusClient),
 	}
 }
 

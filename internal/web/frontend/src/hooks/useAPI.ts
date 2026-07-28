@@ -388,6 +388,65 @@ export function useConfigMapUsage(cluster?: string, namespace?: string) {
   return { usage, loading, refetch: fetchUsage };
 }
 
+/**
+ * Status de monitoramento Dynatrace por pod, pra o indicador visual na aba Pods (painéis
+ * esquerdo e direito). clusterSupported=false cobre tanto "cluster não é AKS" quanto "Dynatrace
+ * não configurado" — nesses casos monitoredKeys fica sempre vazio. Poll bem mais espaçado que o
+ * resto da tela de pods (refresh de 30s) — status de monitoramento muda devagar.
+ */
+export function useDynatracePodStatus(cluster?: string, aiEmail?: string) {
+  const [clusterSupported, setClusterSupported] = useState(false);
+  const [monitoredKeys, setMonitoredKeys] = useState<Set<string>>(new Set());
+  // hasLoaded distingue "ainda não sabemos" (não renderizar ícone nenhum) de "sabemos que não
+  // é suportado" (renderizar o ícone de proibido) — sem isso, o ícone piscaria "proibido" por um
+  // instante em todo cluster suportado, até a 1ª resposta chegar.
+  const [hasLoaded, setHasLoaded] = useState(false);
+
+  const fetchStatus = async () => {
+    if (!cluster) {
+      setClusterSupported(false);
+      setMonitoredKeys(new Set());
+      setHasLoaded(false);
+      return;
+    }
+    try {
+      const data = await apiClient.getPodsDynatraceStatus(cluster, aiEmail);
+      setClusterSupported(data.cluster_supported);
+      setMonitoredKeys(new Set(data.monitored));
+      setHasLoaded(true);
+    } catch {
+      // degradação graciosa: ícone simplesmente não aparece (hasLoaded fica false; o polling
+      // de 3min tenta de novo — não marcamos hasLoaded aqui pra não confundir "falha real" com
+      // "sabemos que não é suportado", que teria ícone próprio)
+    }
+  };
+
+  useEffect(() => {
+    fetchStatus();
+    if (!cluster) return;
+    let cancelled = false;
+    const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      apiClient.getPodsDynatraceStatus(cluster, aiEmail)
+        .then(data => {
+          if (cancelled) return;
+          setClusterSupported(data.cluster_supported);
+          setMonitoredKeys(new Set(data.monitored));
+          setHasLoaded(true);
+        })
+        .catch(() => {});
+    }, 3 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cluster, aiEmail]);
+
+  // refetch — permite ao painel (botão "Atualizar" de Pods/Deployments/DaemonSets) forçar uma
+  // nova checagem em vez de esperar o poll de 3min ou o cache de 2min do backend expirar. Útil
+  // sobretudo depois da correção de paginação: um cluster grande que antes só retornava as
+  // primeiras 500 entidades (bug real corrigido) se beneficia de poder re-checar sob demanda.
+  return { clusterSupported, monitoredKeys, hasLoaded, refetch: fetchStatus };
+}
+
 export function useSecrets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
   const [secrets, setSecrets] = useState<SecretSummary[]>([]);
   const [loading, setLoading] = useState(false);

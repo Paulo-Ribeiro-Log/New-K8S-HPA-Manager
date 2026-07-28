@@ -38,6 +38,7 @@ type EntityStub struct {
 	K8sCluster   string `json:"k8sCluster,omitempty"`
 	K8sNamespace string `json:"k8sNamespace,omitempty"`
 	K8sWorkload  string `json:"k8sWorkload,omitempty"`
+	K8sPodName   string `json:"k8sPodName,omitempty"` // só populado para entidades CLOUD_APPLICATION_INSTANCE (uma por pod)
 	// Tags ricas do OneAgent — DevOps, versão, squad, GitHub, etc.
 	Labels *DTLabels `json:"labels,omitempty"`
 	// Relações de topologia (preenchidas após GetEntity)
@@ -229,6 +230,66 @@ func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 			corr.GitHubRepoID = tag.Value
 		case "app.kubernetes.io/environment":
 			corr.Environment = tag.Value
+		}
+	}
+
+	// Fallback via properties.metadata — PROCESS_GROUP_INSTANCE (usada por clusters em modo
+	// OneAgent "classicFullStack", que é o modo da maioria da frota real — confirmado via
+	// `kubectl get dynakube -o yaml` contra vários clusters reais) não carrega tags úteis nem as
+	// properties planas (namespaceName/workloadName/detectedName) usadas acima — os dados K8s vêm
+	// dentro de properties.metadata, uma LISTA de {key,value} (formato diferente de tudo mais
+	// aqui), com chaves KUBERNETES_NAMESPACE/KUBERNETES_FULL_POD_NAME/KUBERNETES_BASE_POD_NAME.
+	// Confirmado empiricamente contra o tenant real (imagem/link compartilhados pelo usuário
+	// mostrando pods reais em Process Group Instances que o resto do código nunca enxergava).
+	if metadata, ok := e.Properties["metadata"].([]interface{}); ok {
+		for _, raw := range metadata {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			key, _ := item["key"].(string)
+			value, _ := item["value"].(string)
+			if value == "" {
+				continue
+			}
+			switch key {
+			case "KUBERNETES_NAMESPACE":
+				if corr.Namespace == "" {
+					corr.Namespace = value
+				}
+			case "KUBERNETES_FULL_POD_NAME":
+				if corr.PodName == "" {
+					corr.PodName = value
+				}
+			case "KUBERNETES_BASE_POD_NAME":
+				if corr.Workload == "" {
+					corr.Workload = strings.TrimSuffix(value, "-*")
+				}
+			}
+		}
+	}
+
+	// Fallback via properties — CLOUD_APPLICATION e CLOUD_APPLICATION_INSTANCE não carregam tags
+	// neste tenant em muitos casos (confirmado empiricamente: "tags": [] mesmo em entidades
+	// ativamente monitoradas por OneAgent), mas expõem os mesmos dados via properties
+	// namespaceName/workloadName/detectedName — usado pelo indicador de monitoramento Dynatrace
+	// na aba Pods (ListMonitoredPods) e pelo fallback do gráfico de comportamento do Deployment
+	// (ResolveEntityForWorkload). Bug real: sem isso, ListMonitoredPods nunca via nenhum pod como
+	// monitorado nesses casos, mesmo com o OneAgent ativo — a correlação nunca chegava a K8sNamespace/
+	// K8sPodName porque dependia só de tags que essas 2 entidades simplesmente não têm.
+	if corr.Namespace == "" {
+		if v, ok := e.Properties["namespaceName"].(string); ok && v != "" {
+			corr.Namespace = v
+		}
+	}
+	if corr.Workload == "" {
+		if v, ok := e.Properties["workloadName"].(string); ok && v != "" {
+			corr.Workload = v
+		}
+	}
+	if corr.PodName == "" {
+		if v, ok := e.Properties["detectedName"].(string); ok && v != "" {
+			corr.PodName = v
 		}
 	}
 
