@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { PodSummary, BatchPodMetrics } from "@/lib/api/types";
-import { formatAge, formatBytes, formatMillicores, parseCpuToMillicores, parseMemoryToBytes, podRowColor, podDotColor } from "@/lib/monitorUtils";
+import { formatAge, formatBytes, formatMillicores, parseCpuToMillicores, parseMemoryToBytes, podRowColor, podDotColor, podDotLabel } from "@/lib/monitorUtils";
 import { Loader2, ChevronLeft, ChevronRight, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown, ScrollText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -768,8 +768,9 @@ export const PodMonitorTable = ({
                 {extractImageVersion(pod.containers[0]?.image)}
               </span>
 
-              {/* dot */}
-              <span className="flex items-center justify-center">
+              {/* dot — status geral do pod (fase/motivo). Indicador diferente do de monitoramento
+                  Dynatrace na coluna seguinte — precisa de tooltip próprio pra não serem confundidos. */}
+              <span className="flex items-center justify-center" title={podDotLabel(pod.phase ?? "", effectiveReason)}>
                 <span className={`w-2 h-2 rounded-full ${dotColor}`} />
               </span>
 

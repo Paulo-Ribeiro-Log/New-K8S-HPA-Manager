@@ -46,11 +46,14 @@ export const DT_STATUS_PRIORITY: Record<DynatraceMonitoringStatus, number> = {
 /** Ícone compacto de status de monitoramento Dynatrace, usado nos painéis esquerdo e direito da aba Pods. */
 export function DynatraceStatusIcon({ status, className }: DynatraceStatusIconProps) {
   const Icon = ICON_BY_STATUS[status];
+  // O tooltip precisa estar num <span> HTML, não na prop `title` do ícone lucide (que vira um
+  // atributo `title` no <svg> raiz) — navegadores só mostram tooltip de SVG a partir de um
+  // elemento <title> FILHO dentro do svg, não de um atributo `title` no próprio svg. Bug real
+  // confirmado: o tooltip nunca aparecia em nenhum dos 3 estados (verde/vermelho/âmbar).
   return (
-    <Icon
-      className={`w-3.5 h-3.5 shrink-0 ${COLOR_BY_STATUS[status]} ${className ?? ""}`}
-      title={TITLE_BY_STATUS[status]}
-    />
+    <span title={TITLE_BY_STATUS[status]} className="inline-flex items-center">
+      <Icon className={`w-3.5 h-3.5 shrink-0 ${COLOR_BY_STATUS[status]} ${className ?? ""}`} />
+    </span>
   );
 }
 

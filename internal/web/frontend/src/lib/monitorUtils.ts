@@ -124,3 +124,23 @@ export function podDotColor(phase: string, reason?: string): string {
   if (p === "succeeded") return "bg-gray-500";
   return "bg-gray-600";
 }
+
+/**
+ * Rótulo textual do dot de status (mesmas condições de podDotColor) — usado como tooltip. Sem
+ * isso, a bolinha é um indicador de cor sozinho, sem nenhuma explicação, fácil de confundir com
+ * outro indicador ao lado (ex: o de monitoramento Dynatrace, na coluna seguinte da tabela).
+ */
+export function podDotLabel(phase: string, reason?: string): string {
+  const r = (reason ?? "").toLowerCase();
+  const p = (phase ?? "").toLowerCase();
+
+  if (r.includes("crashloop")) return "CrashLoopBackOff";
+  if (r.includes("oomkilled")) return "OOMKilled";
+  if (r.includes("error") || p === "failed") return "Failed";
+  if (r === "terminating" || p === "terminating") return "Terminating";
+  if (p === "running" && r === "notready") return "Running (containers não prontos)";
+  if (p === "running") return "Running";
+  if (p === "pending") return "Pending";
+  if (p === "succeeded") return "Succeeded";
+  return phase || "Status desconhecido";
+}
