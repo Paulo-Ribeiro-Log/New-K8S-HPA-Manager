@@ -19,10 +19,22 @@ var podMonitoringCache sync.Map
 
 const podMonitoringCacheTTL = 2 * time.Minute
 
-// ListMonitoredPods retorna o conjunto de pods ("namespace/nome") com entidade Dynatrace
-// correspondente (CLOUD_APPLICATION_INSTANCE, uma por pod) neste cluster. Cacheado em memória
-// por cluster (TTL curto, mesmo espírito de gcp.IsGcloudAuthActive) — ListEntitiesByCluster
-// escaneia todas as entidades do tipo, não é barato repetir por request da aba Pods.
+// ListMonitoredPods retorna o conjunto de pods ("namespace/nome") monitorados pelo Dynatrace
+// neste cluster. Cacheado em memória por cluster (TTL curto) — as buscas abaixo escaneiam
+// entidades do tenant, não é barato repetir por request da aba Pods.
+//
+// Mescla DUAS fontes, porque o modo de instrumentação do OneAgent varia por cluster (confirmado
+// via `kubectl get dynakube -o yaml` contra a frota real — a maioria usa classicFullStack, só uma
+// minoria usa Cloud Native Full Stack):
+//   - Cloud Native Full Stack: CLOUD_APPLICATION_INSTANCE (uma por pod) — via ListEntitiesByCluster.
+//   - classicFullStack (maioria real da frota): não cria CLOUD_APPLICATION_INSTANCE nenhuma — a
+//     única entidade com granularidade de pod é PROCESS_GROUP_INSTANCE, correlacionada via
+//     ListProcessGroupInstancesByHostGroup. Sem esse segundo caminho, ListMonitoredPods sempre
+//     retornava vazio pra praticamente todo cluster real do app, mesmo com OneAgent ativo em
+//     todos os nós — bug real confirmado e corrigido.
+//
+// Um cluster tipicamente usa só um dos dois modos, mas nada impede tentar os dois e mesclar —
+// cada chamada que não encontra nada (cluster não existe naquele modo) retorna vazio sem erro.
 func (c *Client) ListMonitoredPods(ctx context.Context, clusterName string) (map[string]bool, error) {
 	if raw, ok := podMonitoringCache.Load(clusterName); ok {
 		entry := raw.(podMonitoringCacheEntry)
@@ -32,19 +44,22 @@ func (c *Client) ListMonitoredPods(ctx context.Context, clusterName string) (map
 		podMonitoringCache.Delete(clusterName)
 	}
 
-	stubs, err := c.ListEntitiesByCluster(ctx, clusterName, "CLOUD_APPLICATION_INSTANCE")
-	if err != nil {
-		return nil, fmt.Errorf("ListMonitoredPods: %w", err)
+	pods := make(map[string]bool)
+
+	if caiStubs, err := c.ListEntitiesByCluster(ctx, clusterName, "CLOUD_APPLICATION_INSTANCE"); err == nil {
+		for _, stub := range c.EnrichEntitiesWithK8s(ctx, caiStubs) {
+			if stub.K8sNamespace != "" && stub.K8sPodName != "" {
+				pods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
+			}
+		}
 	}
 
-	enriched := c.EnrichEntitiesWithK8s(ctx, stubs)
-
-	pods := make(map[string]bool, len(enriched))
-	for _, stub := range enriched {
-		if stub.K8sNamespace == "" || stub.K8sPodName == "" {
-			continue
+	if pgiStubs, err := c.ListProcessGroupInstancesByHostGroup(ctx, clusterName); err == nil {
+		for _, stub := range c.EnrichEntitiesWithK8s(ctx, pgiStubs) {
+			if stub.K8sNamespace != "" && stub.K8sPodName != "" {
+				pods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
+			}
 		}
-		pods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
 	}
 
 	podMonitoringCache.Store(clusterName, podMonitoringCacheEntry{pods: pods, cachedAt: time.Now()})

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -64,7 +65,11 @@ func (h *PodHandler) GetDynatraceStatus(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 
-	monitored, err := dtc.ListMonitoredPods(ctx, cluster)
+	// O nome real da entidade no Dynatrace (HOST_GROUP/KUBERNETES_CLUSTER) nunca tem o sufixo
+	// "-admin" que os contexts do kubeconfig usam — sem isso, ListMonitoredPods nunca casava com
+	// nada mesmo depois de corrigida a correlação em si (bug real: confirmado que
+	// "akspriv-logreversa-prd-admin" retornava 0 pods, "akspriv-logreversa-prd" retornava 166).
+	monitored, err := dtc.ListMonitoredPods(ctx, strings.TrimSuffix(cluster, "-admin"))
 	if err != nil {
 		// Falha transitória na API do Dynatrace — não bloquear a tela, mas o cluster É suportado
 		// (cluster_supported continua true), só sem dados de monitoramento nesta chamada.

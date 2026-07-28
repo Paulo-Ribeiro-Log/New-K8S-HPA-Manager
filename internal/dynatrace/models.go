@@ -233,6 +233,42 @@ func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 		}
 	}
 
+	// Fallback via properties.metadata — PROCESS_GROUP_INSTANCE (usada por clusters em modo
+	// OneAgent "classicFullStack", que é o modo da maioria da frota real — confirmado via
+	// `kubectl get dynakube -o yaml` contra vários clusters reais) não carrega tags úteis nem as
+	// properties planas (namespaceName/workloadName/detectedName) usadas acima — os dados K8s vêm
+	// dentro de properties.metadata, uma LISTA de {key,value} (formato diferente de tudo mais
+	// aqui), com chaves KUBERNETES_NAMESPACE/KUBERNETES_FULL_POD_NAME/KUBERNETES_BASE_POD_NAME.
+	// Confirmado empiricamente contra o tenant real (imagem/link compartilhados pelo usuário
+	// mostrando pods reais em Process Group Instances que o resto do código nunca enxergava).
+	if metadata, ok := e.Properties["metadata"].([]interface{}); ok {
+		for _, raw := range metadata {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			key, _ := item["key"].(string)
+			value, _ := item["value"].(string)
+			if value == "" {
+				continue
+			}
+			switch key {
+			case "KUBERNETES_NAMESPACE":
+				if corr.Namespace == "" {
+					corr.Namespace = value
+				}
+			case "KUBERNETES_FULL_POD_NAME":
+				if corr.PodName == "" {
+					corr.PodName = value
+				}
+			case "KUBERNETES_BASE_POD_NAME":
+				if corr.Workload == "" {
+					corr.Workload = strings.TrimSuffix(value, "-*")
+				}
+			}
+		}
+	}
+
 	// Fallback via properties — CLOUD_APPLICATION e CLOUD_APPLICATION_INSTANCE não carregam tags
 	// neste tenant em muitos casos (confirmado empiricamente: "tags": [] mesmo em entidades
 	// ativamente monitoradas por OneAgent), mas expõem os mesmos dados via properties

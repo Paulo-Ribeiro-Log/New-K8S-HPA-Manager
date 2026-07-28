@@ -215,7 +215,9 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 		serverURL := h.kubeManager.GetServerURL(cluster)
 		if config.DetectCloudProvider(serverURL, cluster) == config.CloudProviderAKS {
 			if dtc, err := h.dynatraceClientForBehavior(aiEmail); err == nil {
-				entityID, found, rerr := dtc.ResolveEntityForWorkload(ctx, cluster, namespace, deployment)
+				// Nome real da entidade no Dynatrace nunca tem o sufixo "-admin" do context do
+				// kubeconfig — mesmo bug corrigido em pods_dynatrace_status.go.
+				entityID, found, rerr := dtc.ResolveEntityForWorkload(ctx, strings.TrimSuffix(cluster, "-admin"), namespace, deployment)
 				if rerr == nil && found {
 					end := time.Now()
 					start := end.Add(-duration)

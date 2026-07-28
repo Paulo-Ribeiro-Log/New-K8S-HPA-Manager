@@ -729,6 +729,58 @@ func (c *Client) ListEntitiesByCluster(ctx context.Context, clusterName, entityT
 	return stubs, nil
 }
 
+// hostGroupEntityCache guarda o entityId da entidade HOST_GROUP resolvida por nome — mesmo
+// espírito de clusterEntityCache, TTL longo (praticamente nunca muda).
+var hostGroupEntityCache sync.Map
+
+// resolveHostGroupEntityID resolve o entityId da entidade HOST_GROUP cujo displayName bate com
+// clusterName. HOST_GROUP é o nível de correlação certo pra clusters em modo OneAgent
+// "classicFullStack" — confirmado empiricamente que displayName == hostGroup configurado no
+// DynaKube (spec.oneAgent.classicFullStack.hostGroup), mesmo valor usado como nome do cluster em
+// todo o resto do app.
+func (c *Client) resolveHostGroupEntityID(ctx context.Context, clusterName string) (string, error) {
+	if raw, ok := hostGroupEntityCache.Load(clusterName); ok {
+		entry := raw.(clusterEntityCacheEntry)
+		if time.Since(entry.cachedAt) < clusterEntityCacheTTL {
+			return entry.entityID, nil
+		}
+		hostGroupEntityCache.Delete(clusterName)
+	}
+
+	selector := fmt.Sprintf(`type("HOST_GROUP"),entityName("%s")`, clusterName)
+	stubs, err := c.listEntitiesBySelector(ctx, selector)
+	if err != nil {
+		return "", err
+	}
+	entityID := ""
+	if len(stubs) > 0 {
+		entityID = stubs[0].EntityID.ID
+	}
+	hostGroupEntityCache.Store(clusterName, clusterEntityCacheEntry{entityID: entityID, cachedAt: time.Now()})
+	return entityID, nil
+}
+
+// ListProcessGroupInstancesByHostGroup lista as PROCESS_GROUP_INSTANCE (uma por processo/container
+// monitorado) de um cluster em modo OneAgent "classicFullStack" — a maioria real da frota (AKS
+// deste app), confirmado via `kubectl get dynakube -o yaml` contra vários clusters reais. Esse
+// modo NÃO cria KUBERNETES_CLUSTER/CLOUD_APPLICATION/CLOUD_APPLICATION_INSTANCE (só existem em
+// clusters com "Kubernetes API Monitoring"/Cloud Native Full Stack habilitado — ver
+// ListEntitiesByCluster) — a correlação por pod só é possível via PROCESS_GROUP_INSTANCE,
+// navegando a relação topológica isHostGroupOf até a entidade HOST_GROUP do cluster.
+// Namespace/PodName vêm de properties.metadata (KUBERNETES_NAMESPACE/KUBERNETES_FULL_POD_NAME),
+// não de tags — ver ExtractK8sCorrelation em models.go.
+func (c *Client) ListProcessGroupInstancesByHostGroup(ctx context.Context, clusterName string) ([]EntityStub, error) {
+	hostGroupID, err := c.resolveHostGroupEntityID(ctx, clusterName)
+	if err != nil {
+		return nil, err
+	}
+	if hostGroupID == "" {
+		return nil, nil // cluster não tem HOST_GROUP no Dynatrace — não é erro, só não monitorado
+	}
+	selector := fmt.Sprintf(`type("PROCESS_GROUP_INSTANCE"),toRelationships.isHostGroupOf(entityId("%s"))`, hostGroupID)
+	return c.listEntitiesBySelector(ctx, selector)
+}
+
 // GetOpenProblemsForEntity retorna problems OPEN que afetam uma entidade específica.
 // Usado na busca reversa: entity ID → problems ativos.
 func (c *Client) GetOpenProblemsForEntity(ctx context.Context, entityID string) ([]Problem, error) {
