@@ -1,6 +1,6 @@
 # Plano: Gráfico de Comportamento do Deployment + Indicador Dynatrace na aba Pods
 
-Status: ✅ Fase 0 concluída. ✅ Fase 1 (MVP do gráfico via Prometheus) concluída e validada contra dados reais de produção — ver checklist da Fase 1. Fases 2-3 ainda não iniciadas.
+Status: ✅ Fase 0 concluída. ✅ Fase 1 (MVP do gráfico via Prometheus) concluída e validada contra dados reais de produção. ✅ Fase 3 (reexposição em DeploymentsTab.tsx) concluída e validada. Fase 2 (overlay de problems do Dynatrace) ainda não iniciada.
 
 ## Contexto
 
@@ -141,9 +141,11 @@ A resolução de entity (`ResolveEntityForWorkload`) já é infra da Fase 1 — 
 
 Sem trabalho de backend adicional (endpoint já genérico por `cluster/namespace/name`).
 
-- [ ] Reaproveitar `DeploymentBehaviorChart.tsx` tal qual
-- [ ] Botão "Comportamento" ao lado de "Análise Preditiva"/"Histórico de Análises" já existentes em `DeploymentsTab.tsx`
-- [ ] Decidir UX na hora: modal dedicado (tipo `PredictionHistoryModal.tsx`) vs. painel inline
+- [x] Reaproveitar `DeploymentBehaviorChart.tsx` tal qual
+- [x] Botão "Comportamento" ao lado de "Análise Preditiva"/"Histórico de Análises" já existentes em `DeploymentsTab.tsx`
+- [x] UX decidida: modal dedicado `DeploymentBehaviorModal.tsx` (novo, `max-w-4xl h-[85vh]`, mesmo padrão de `PredictionHistoryModal.tsx` — altura fixa, não `max-h`)
+
+Validado no navegador contra o mesmo cluster AKS real de produção usado na Fase 1 (`arvore-defeitos`): modal abre com título "Comportamento — arvore-defeitos", os 3 painéis renderizam e os valores de CPU/memória request/limit batem exatamente com os já confirmados na aba do pod (200m/300m, 512.0Mi/768.0Mi).
 
 ---
 

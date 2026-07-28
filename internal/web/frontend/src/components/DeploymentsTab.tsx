@@ -36,6 +36,7 @@ import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { AITriggerButton } from "@/components/AITriggerButton";
 import { PredictionHistoryModal } from "@/components/PredictionHistoryModal";
+import { DeploymentBehaviorModal } from "@/components/DeploymentBehaviorModal";
 import { RolloutProgressGauge } from "@/components/RolloutProgressGauge";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -123,6 +124,7 @@ export const DeploymentsTab = ({
   const [isExporting, setIsExporting] = useState(false);
   const [showProjection, setShowProjection] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [behaviorModalOpen, setBehaviorModalOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [rolloutConfirmOpen, setRolloutConfirmOpen] = useState(false);
@@ -2413,6 +2415,15 @@ export const DeploymentsTab = ({
           >
             <History className="w-4 h-4 mr-2" />
             Histórico de Análises
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setBehaviorModalOpen(true)}
+            disabled={!selectedDeployment}
+          >
+            <Activity className="w-4 h-4 mr-2" />
+            Comportamento
           </Button>
           <AITriggerButton
             resourceType="Deployment"
@@ -5415,6 +5426,17 @@ export const DeploymentsTab = ({
           setHistoryModalOpen(false);
         }}
       />
+
+      {/* Modal de Comportamento (réplicas/CPU/mem/restarts históricos) */}
+      {selectedDeployment && (
+        <DeploymentBehaviorModal
+          open={behaviorModalOpen}
+          onOpenChange={setBehaviorModalOpen}
+          cluster={selectedDeployment.cluster}
+          namespace={selectedDeployment.namespace}
+          deployment={selectedDeployment.name}
+        />
+      )}
 
       {/* Modal de Confirmação - Delete Deployment */}
       <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
