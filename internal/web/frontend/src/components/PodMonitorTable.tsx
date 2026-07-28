@@ -111,10 +111,11 @@ function useSecondsTick(date: Date | null): string {
   return `${Math.floor(secs / 60)}m atrás`;
 }
 
-// Colunas: SEL | NAME/NS | VERSION | dot | DT | READY | STATUS | REST. | CPU | MEM | NODE | AGE
-// SEL(32) e dot(22) são fixos e não têm ResizeHandle por serem muito pequenos. DT(52) também não
-// tem ResizeHandle (largura fixa), mas foi alargada de 24 pra caber o filtro+sort do cabeçalho.
-const INITIAL_WIDTHS = [32, 400, 120, 22, 52, 60, 140, 50, 110, 110, 180, 60];
+// Colunas: SEL | NAME/NS | VERSION | DT | READY | STATUS | REST. | CPU | MEM | NODE | AGE
+// SEL(32) é fixo e não tem ResizeHandle por ser muito pequeno. DT(52) também não tem ResizeHandle
+// (largura fixa), mas foi alargada de 24 pra caber o filtro+sort do cabeçalho. O dot de saúde do
+// pod (fase/motivo) não é mais coluna própria — vive dentro da célula STATUS (ver render da linha).
+const INITIAL_WIDTHS = [32, 400, 120, 52, 60, 140, 50, 110, 110, 180, 60];
 
 function extractImageVersion(image?: string): string {
   if (!image) return "-";
@@ -653,49 +654,49 @@ export const PodMonitorTable = ({
           VERSION
           <ResizeHandle onResize={(d) => resize(2, d)} />
         </span>
-        {/* dot — fixo, sem resize */}
-        <span></span>
         {/* DT — fixo, sem resize (status de monitoramento Dynatrace); filtro+sort operam sobre o
-            rótulo pt-BR já resolvido (DT_STATUS_LABEL), não o enum interno */}
-        <span className="relative overflow-hidden flex items-center justify-center">
+            rótulo pt-BR já resolvido (DT_STATUS_LABEL), não o enum interno. Justificado à
+            esquerda (não justify-center) — o dot de saúde do pod que ficava colado aqui ao lado
+            foi removido desta coluna e movido pra dentro da célula STATUS. */}
+        <span className="relative overflow-hidden flex items-center justify-start">
           <ColumnFilter label="DT" options={uniqueDtStatuses} selected={dtStatusFilter} onChange={setDtStatusFilter} />
           <SortIcon colKey="dt" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
         </span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(5, d)} />
+          <ResizeHandle onResize={(d) => resize(4, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="STATUS" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
           <StatusSortIcon mode={statusSortMode} onCycle={cycleStatusSort} />
-          <ResizeHandle onResize={(d) => resize(6, d)} />
+          <ResizeHandle onResize={(d) => resize(5, d)} />
         </span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(7, d)} />
+          <ResizeHandle onResize={(d) => resize(6, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center gap-1">
           <SortBtn label="CPU" colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           {metrics && !metrics.available && (
             <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
           )}
-          <ResizeHandle onResize={(d) => resize(8, d)} />
+          <ResizeHandle onResize={(d) => resize(7, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center gap-1">
           <SortBtn label="MEM" colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           {metrics && !metrics.available && (
             <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
           )}
-          <ResizeHandle onResize={(d) => resize(9, d)} />
+          <ResizeHandle onResize={(d) => resize(8, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="NODE" options={uniqueNodes} selected={nodeFilter} onChange={setNodeFilter} />
           <SortIcon colKey="node" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(10, d)} />
+          <ResizeHandle onResize={(d) => resize(9, d)} />
         </span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(11, d)} />
+          <ResizeHandle onResize={(d) => resize(10, d)} />
         </span>
       </div>
 
@@ -768,12 +769,6 @@ export const PodMonitorTable = ({
                 {extractImageVersion(pod.containers[0]?.image)}
               </span>
 
-              {/* dot — status geral do pod (fase/motivo). Indicador diferente do de monitoramento
-                  Dynatrace na coluna seguinte — precisa de tooltip próprio pra não serem confundidos. */}
-              <span className="flex items-center justify-center" title={podDotLabel(pod.phase ?? "", effectiveReason)}>
-                <span className={`w-2 h-2 rounded-full ${dotColor}`} />
-              </span>
-
               {/* DT — status de monitoramento Dynatrace */}
               <span className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
                 {dtHasLoaded && (
@@ -786,9 +781,12 @@ export const PodMonitorTable = ({
               {/* READY */}
               <span>{pod.readyContainers}/{pod.totalContainers}</span>
 
-              {/* STATUS */}
-              <span className="truncate" title={pod.statusReason || pod.status || pod.phase}>
-                {pod.statusReason === "NotReady" ? "NotReady" : (pod.status || pod.phase || "-")}
+              {/* STATUS — dot de saúde geral do pod (fase/motivo) + texto. O dot morou numa coluna
+                  própria antes, colada à coluna DT (status de monitoramento Dynatrace) — os dois
+                  indicadores lado a lado sem rótulo confundiam o que cada um significava. */}
+              <span className="flex items-center gap-1.5 truncate" title={pod.statusReason || pod.status || pod.phase}>
+                <span className={`w-2 h-2 rounded-full shrink-0 ${dotColor}`} title={podDotLabel(pod.phase ?? "", effectiveReason)} />
+                <span className="truncate">{pod.statusReason === "NotReady" ? "NotReady" : (pod.status || pod.phase || "-")}</span>
               </span>
 
               {/* REST. */}
