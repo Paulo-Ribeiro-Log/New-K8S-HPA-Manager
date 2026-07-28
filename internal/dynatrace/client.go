@@ -601,30 +601,69 @@ func (c *Client) SearchEntitiesByName(ctx context.Context, names []string) []Ent
 	return all
 }
 
-// listEntitiesBySelector busca entidades com um entitySelector arbitrário e retorna EntityStubs enriquecidos.
-// Usa pageSize=500 (limite prático por cluster). Grava no cache entityCache.
+// listEntitiesBySelectorMaxPages limita quantas páginas de 500 entidades listEntitiesBySelector
+// segue via nextPageKey — 20 páginas = até 10.000 entidades, generoso o bastante pra maior cluster
+// real da frota hoje (~4.561 PROCESS_GROUP_INSTANCE em akspriv-oferta-prd, 103 nós) sem risco de
+// loop infinito caso a API do Dynatrace devolva nextPageKey indefinidamente por algum bug.
+const listEntitiesBySelectorMaxPages = 20
+
+// listEntitiesBySelector busca entidades com um entitySelector arbitrário e retorna EntityStubs
+// enriquecidos. Segue nextPageKey até listEntitiesBySelectorMaxPages páginas — sem isso, clusters
+// grandes (ex: akspriv-oferta-prd, 4.561 PROCESS_GROUP_INSTANCE) tinham 500 entidades retornadas e
+// o resto descartado silenciosamente, fazendo pods do MESMO deployment aparecerem alguns
+// "monitorados" (calharam de estar nos primeiros 500, ordem arbitrária da API) e outros "não
+// monitorados" mesmo sendo igualmente instrumentados pelo OneAgent — bug real confirmado
+// comparando kubectl (pods rodando há semanas, 0 restarts) contra a API do Dynatrace (entidade
+// PROCESS_GROUP_INSTANCE correspondente inexistente em QUALQUER página, não só ausente da
+// primeira). Grava no cache entityCache a cada página.
 func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector string) ([]EntityStub, error) {
-	params := url.Values{
-		"entitySelector": {entitySelector},
-		"fields":         {"+tags,+properties"},
-		"pageSize":       {"500"},
-	}
-	var resp struct {
-		Entities []Entity `json:"entities"`
-	}
-	if err := c.get(ctx, "entities", params, &resp); err != nil {
-		return nil, err
-	}
-	stubs := make([]EntityStub, 0, len(resp.Entities))
-	for _, e := range resp.Entities {
-		stub := EntityStub{
-			EntityID:    EntityID{ID: e.EntityID, Type: e.Type},
-			DisplayName: e.DisplayName,
+	var stubs []EntityStub
+	nextPageKey := ""
+
+	for page := 0; page < listEntitiesBySelectorMaxPages; page++ {
+		var params url.Values
+		if nextPageKey == "" {
+			params = url.Values{
+				"entitySelector": {entitySelector},
+				"fields":         {"+tags,+properties"},
+				"pageSize":       {"500"},
+			}
+		} else {
+			// Páginas seguintes: apenas nextPageKey (mesmo padrão de GetOpenProblems acima —
+			// os demais parâmetros já estão codificados nele pela própria API).
+			params = url.Values{"nextPageKey": {nextPageKey}}
 		}
-		enriched := enrichFromEntity(stub, &e)
-		entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
-		stubs = append(stubs, enriched)
+
+		var resp struct {
+			Entities    []Entity `json:"entities"`
+			NextPageKey string   `json:"nextPageKey,omitempty"`
+		}
+		if err := c.get(ctx, "entities", params, &resp); err != nil {
+			if page == 0 {
+				return nil, err
+			}
+			// Falha numa página intermediária — retorna o que já foi coletado em vez de
+			// descartar tudo (degradação graciosa, mesmo princípio de outras checagens
+			// best-effort do app).
+			break
+		}
+
+		for _, e := range resp.Entities {
+			stub := EntityStub{
+				EntityID:    EntityID{ID: e.EntityID, Type: e.Type},
+				DisplayName: e.DisplayName,
+			}
+			enriched := enrichFromEntity(stub, &e)
+			entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
+			stubs = append(stubs, enriched)
+		}
+
+		nextPageKey = resp.NextPageKey
+		if nextPageKey == "" {
+			break
+		}
 	}
+
 	return stubs, nil
 }
 
@@ -689,7 +728,8 @@ func (c *Client) resolveKubernetesClusterEntityID(ctx context.Context, clusterNa
 //  1. tag("dt.host_group.id:<cluster>")
 //  2. tag("k8s.cluster.name:<cluster>")
 //
-// Retorna até 500 entidades (limite prático por cluster, sem paginação).
+// listEntitiesBySelector pagina internamente (até listEntitiesBySelectorMaxPages), então clusters
+// grandes (milhares de entidades) não perdem resultado.
 func (c *Client) ListEntitiesByCluster(ctx context.Context, clusterName, entityType string) ([]EntityStub, error) {
 	if clusterName == "" || entityType == "" {
 		return nil, fmt.Errorf("clusterName e entityType são obrigatórios")

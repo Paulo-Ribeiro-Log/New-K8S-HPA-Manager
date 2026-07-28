@@ -44,22 +44,47 @@ func (c *Client) ListMonitoredPods(ctx context.Context, clusterName string) (map
 		podMonitoringCache.Delete(clusterName)
 	}
 
-	pods := make(map[string]bool)
+	// As duas fontes agora paginam internamente (ver listEntitiesBySelectorMaxPages) — clusters
+	// grandes (milhares de PROCESS_GROUP_INSTANCE, ex: akspriv-oferta-prd) levam bem mais tempo
+	// que antes (quando a busca parava em 500 resultados). Rodar em paralelo evita que o tempo
+	// total seja a SOMA das duas buscas — cada cluster real só usa uma das duas de qualquer
+	// forma (a outra retorna vazio rápido), mas isso só é sabido depois de tentar.
+	var wg sync.WaitGroup
+	var caiPods, pgiPods map[string]bool
+	wg.Add(2)
 
-	if caiStubs, err := c.ListEntitiesByCluster(ctx, clusterName, "CLOUD_APPLICATION_INSTANCE"); err == nil {
-		for _, stub := range c.EnrichEntitiesWithK8s(ctx, caiStubs) {
-			if stub.K8sNamespace != "" && stub.K8sPodName != "" {
-				pods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
+	go func() {
+		defer wg.Done()
+		caiPods = make(map[string]bool)
+		if caiStubs, err := c.ListEntitiesByCluster(ctx, clusterName, "CLOUD_APPLICATION_INSTANCE"); err == nil {
+			for _, stub := range c.EnrichEntitiesWithK8s(ctx, caiStubs) {
+				if stub.K8sNamespace != "" && stub.K8sPodName != "" {
+					caiPods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
+				}
 			}
 		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		pgiPods = make(map[string]bool)
+		if pgiStubs, err := c.ListProcessGroupInstancesByHostGroup(ctx, clusterName); err == nil {
+			for _, stub := range c.EnrichEntitiesWithK8s(ctx, pgiStubs) {
+				if stub.K8sNamespace != "" && stub.K8sPodName != "" {
+					pgiPods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
+				}
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	pods := make(map[string]bool, len(caiPods)+len(pgiPods))
+	for k := range caiPods {
+		pods[k] = true
 	}
-
-	if pgiStubs, err := c.ListProcessGroupInstancesByHostGroup(ctx, clusterName); err == nil {
-		for _, stub := range c.EnrichEntitiesWithK8s(ctx, pgiStubs) {
-			if stub.K8sNamespace != "" && stub.K8sPodName != "" {
-				pods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
-			}
-		}
+	for k := range pgiPods {
+		pods[k] = true
 	}
 
 	podMonitoringCache.Store(clusterName, podMonitoringCacheEntry{pods: pods, cachedAt: time.Now()})

@@ -62,7 +62,12 @@ func (h *PodHandler) GetDynatraceStatus(c *gin.Context) {
 
 	resp["cluster_supported"] = true
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	// 60s (era 20s) — ListMonitoredPods agora pagina de verdade (listEntitiesBySelectorMaxPages)
+	// pra não descartar entidades além das primeiras 500 (bug real confirmado: cluster com 103
+	// nós tinha 4.561 PROCESS_GROUP_INSTANCE, e só as primeiras 500 eram consideradas — pods do
+	// MESMO deployment apareciam alguns "monitorados" e outros não, dependendo só da ordem
+	// arbitrária de retorno da API). Paginar clusters grandes leva mais tempo; 20s era insuficiente.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
 	// O nome real da entidade no Dynatrace (HOST_GROUP/KUBERNETES_CLUSTER) nunca tem o sufixo
