@@ -14,6 +14,7 @@ import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { toast } from "sonner";
 import { useJsonInspector } from "@/hooks/useJsonInspector";
 import { JsonInspectorModal, JsonFloatingButton } from "@/components/JsonInspectorModal";
+import { DeploymentBehaviorChart } from "@/components/DeploymentBehaviorChart";
 
 // Gauge duplo concêntrico: anel externo = MEM, anel interno = CPU
 function DualGauge({ cpuPct, memPct, cpuVal, memVal }: {
@@ -672,6 +673,10 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   // Eventos de Warning do workload dono — sobrevivem à deleção do Pod (até expirarem pelo TTL do
   // cluster), então cobrem também pods de ANTES de um rollout que este Pod object não alcança.
   const workloadSearchTerm = (pod?.ownerWorkload?.split("/")[1] || pod?.name || "").trim();
+  // Aba "Comportamento" só faz sentido pra pods donos de um Deployment — o gráfico busca
+  // histórico via kube_deployment_* (Prometheus) / CLOUD_APPLICATION (Dynatrace), nenhum dos
+  // dois existe pra DaemonSet/StatefulSet/Job.
+  const isDeploymentOwned = (pod?.ownerWorkload ?? "").startsWith("Deployment/");
   useEffect(() => {
     if (activeTab !== "previous-logs" || !cluster || !pod || !workloadSearchTerm) return;
     let cancelled = false;
@@ -843,19 +848,26 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
           {/* Tab bar manual */}
           <div className="flex items-center justify-between border-b border-border px-4 pt-3 gap-2 flex-shrink-0">
             <div className="flex gap-1">
-              {(["details", "logs", "previous-logs", "same-image"] as const).map(tab => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px ${
-                    activeTab === tab
-                      ? "border-primary text-foreground"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {tab === "details" ? "Detalhes" : tab === "logs" ? "Logs" : tab === "previous-logs" ? "Logs Anteriores" : "Mesma Imagem"}
-                </button>
-              ))}
+              {(["details", "logs", "previous-logs", "same-image", "behavior"] as const).map(tab => {
+                const disabled = tab === "behavior" && !isDeploymentOwned;
+                return (
+                  <button
+                    key={tab}
+                    onClick={() => { if (!disabled) setActiveTab(tab); }}
+                    disabled={disabled}
+                    title={disabled ? "Disponível apenas para pods de um Deployment" : undefined}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px ${
+                      disabled
+                        ? "border-transparent text-muted-foreground/40 cursor-not-allowed"
+                        : activeTab === tab
+                          ? "border-primary text-foreground"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {tab === "details" ? "Detalhes" : tab === "logs" ? "Logs" : tab === "previous-logs" ? "Logs Anteriores" : tab === "same-image" ? "Mesma Imagem" : "Comportamento"}
+                  </button>
+                );
+              })}
             </div>
 
             {activeTab === "same-image" && (
@@ -1175,6 +1187,12 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                   </>
                 )}
               </div>
+            </div>
+          )}
+
+          {activeTab === "behavior" && isDeploymentOwned && cluster && pod && (
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <DeploymentBehaviorChart cluster={cluster} namespace={pod.namespace} deployment={workloadSearchTerm} />
             </div>
           )}
         </div>

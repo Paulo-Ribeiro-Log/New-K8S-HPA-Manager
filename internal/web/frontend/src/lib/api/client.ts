@@ -1017,6 +1017,25 @@ class APIClient {
     return response;
   }
 
+  /** Gráfico de comportamento do Deployment (réplicas/CPU/mem/restarts) — Prometheus como fonte
+   * primária, Dynatrace como fallback (ver DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md, Fase 1). */
+  async getDeploymentBehavior(
+    cluster: string,
+    namespace: string,
+    name: string,
+    params?: { hours?: number; step?: number; offsetDays?: number[]; aiEmail?: string }
+  ): Promise<import("./types").DeploymentBehaviorResponse> {
+    const query = new URLSearchParams();
+    if (params?.hours) query.set("hours", String(params.hours));
+    if (params?.step) query.set("step", String(params.step));
+    if (params?.offsetDays?.length) query.set("offset_days", params.offsetDays.join(","));
+    if (params?.aiEmail) query.set("ai_email", params.aiEmail);
+    const qs = query.toString() ? `?${query.toString()}` : "";
+    return this.request<import("./types").DeploymentBehaviorResponse>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/behavior${qs}`
+    );
+  }
+
   // Deployments Batch Operations
   async batchDeleteDeployments(cluster: string, deployments: Array<{ namespace: string; name: string }>): Promise<{
     results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;

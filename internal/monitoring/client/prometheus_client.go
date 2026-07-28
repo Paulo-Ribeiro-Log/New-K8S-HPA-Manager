@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"k8s-hpa-manager/internal/monitoring/discovery"
@@ -744,6 +745,130 @@ func (c *PrometheusClient) GetHPAHistoricalMetricsWithOffset(ctx context.Context
 	logger.Msg("Métricas históricas com offset coletadas do Prometheus")
 
 	return historicalMetrics, nil
+}
+
+// GetDeploymentHistoricalMetrics busca métricas históricas de comportamento de um Deployment
+// (réplicas desired/current/ready/updated/unavailable, CPU/memória %, restarts) — fonte primária
+// do gráfico de comportamento no quick-view de pod (ver DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md).
+//
+// Diferente de GetHPAHistoricalMetrics: aquela depende de métricas indexadas pelo NOME DO HPA
+// (kube_horizontalpodautoscaler_*) — não existem se o Deployment não tiver HPA, e reaproveitá-la
+// passando o nome do deployment no lugar do HPA retornaria vazio sempre que os nomes divergirem
+// (bug sutil). Esta função é independente de HPA — funciona pra qualquer Deployment.
+func (c *PrometheusClient) GetDeploymentHistoricalMetrics(ctx context.Context, namespace, deployment string, duration, step time.Duration) (map[string]*QueryRangeResult, error) {
+	end := time.Now()
+	start := end.Add(-duration)
+	return c.deploymentHistoricalMetricsRange(ctx, namespace, deployment, start, end, step)
+}
+
+// GetDeploymentHistoricalMetricsWithOffset busca a mesma janela de métricas de comportamento,
+// deslocada no tempo — usado pela comparação D-1/D-2/D-3 (mesmo padrão já validado em produção
+// no Conntrack Viewer e em GetHPAHistoricalMetricsWithOffset).
+func (c *PrometheusClient) GetDeploymentHistoricalMetricsWithOffset(ctx context.Context, namespace, deployment string, duration, step, offset time.Duration) (map[string]*QueryRangeResult, error) {
+	now := time.Now()
+	end := now.Add(-offset)
+	start := now.Add(-duration).Add(-offset)
+	return c.deploymentHistoricalMetricsRange(ctx, namespace, deployment, start, end, step)
+}
+
+// deploymentHistoricalMetricsRange executa em paralelo (goroutines + WaitGroup — o handler que
+// chama esta função tem timeout de 45s, mais queries que o Conntrack/HPA justificam paralelizar
+// em vez de sequenciar) as queries range de comportamento de um Deployment no intervalo
+// [start,end]. Cada query é best-effort: uma falha isolada só fica ausente do mapa resultado, não
+// derruba as demais (mesmo espírito de GetHPAHistoricalMetrics).
+//
+// pod=~"%s-.*" (com hífen) é mais preciso que o pod=~"%s.*" usado em GetHPAHistoricalMetrics —
+// evita match espúrio (ex: deployment "foo" casando pods de um deployment "foobar-xyz" diferente).
+func (c *PrometheusClient) deploymentHistoricalMetricsRange(ctx context.Context, namespace, deployment string, start, end time.Time, step time.Duration) (map[string]*QueryRangeResult, error) {
+	log.Info().
+		Str("namespace", namespace).
+		Str("deployment", deployment).
+		Time("start", start).
+		Time("end", end).
+		Dur("step", step).
+		Str("url", c.endpoint.URL).
+		Msg("Iniciando busca de métricas históricas de comportamento do Deployment no Prometheus")
+
+	queries := map[string]string{
+		"replicas_desired":     fmt.Sprintf(`kube_deployment_spec_replicas{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"replicas_current":     fmt.Sprintf(`kube_deployment_status_replicas{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"replicas_ready":       fmt.Sprintf(`kube_deployment_status_replicas_ready{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"replicas_updated":     fmt.Sprintf(`kube_deployment_status_replicas_updated{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"replicas_unavailable": fmt.Sprintf(`kube_deployment_status_replicas_unavailable{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"cpu": fmt.Sprintf(
+			`avg(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*",container!="",container!="POD"}[1m]) / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",pod=~"%s-.*",resource="cpu"}) * 100`,
+			namespace, deployment, namespace, deployment,
+		),
+		"memory": fmt.Sprintf(
+			`avg(container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*",container!="",container!="POD"} / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",pod=~"%s-.*",resource="memory"}) * 100`,
+			namespace, deployment, namespace, deployment,
+		),
+		// increase() dá "restarts NESTE intervalo" (por ponto do gráfico), não o contador cru
+		// acumulado desde sempre — é o que faz sentido plotar como barra por período. sum() é
+		// obrigatório aqui: sem ele a query retorna 1 série POR pod+container (confirmado contra
+		// um deployment real de produção com múltiplas réplicas — 2 séries numa deployment com 2
+		// pods), e o merge de séries deste pacote (deployment_behavior.go) só considera a primeira
+		// série de cada chave — sem sum(), restarts de todos os pods menos um seriam descartados
+		// silenciosamente.
+		"restarts": fmt.Sprintf(
+			`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s-.*"}[%s]))`,
+			namespace, deployment, step.String(),
+		),
+	}
+
+	var (
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		results = make(map[string]*QueryRangeResult, len(queries))
+	)
+	for key, query := range queries {
+		wg.Add(1)
+		go func(key, query string) {
+			defer wg.Done()
+			result, err := c.QueryRange(ctx, query, start, end, step)
+			if err != nil {
+				log.Debug().
+					Err(err).
+					Str("key", key).
+					Str("namespace", namespace).
+					Str("deployment", deployment).
+					Msg("Query de comportamento do Deployment falhou — ausente do resultado")
+				return
+			}
+			mu.Lock()
+			results[key] = result
+			mu.Unlock()
+		}(key, query)
+	}
+	wg.Wait()
+
+	log.Info().
+		Str("namespace", namespace).
+		Str("deployment", deployment).
+		Int("metrics_count", len(results)).
+		Msg("Métricas de comportamento do Deployment coletadas do Prometheus")
+
+	return results, nil
+}
+
+// GetDeploymentResourceLimits busca CPU/memória request+limit atuais do Deployment via query
+// instant (não query_range — request/limit mudam raramente, evita 4 séries range desnecessárias
+// por chamada). Retorna zero pros campos cuja métrica não existir (ex: container sem limit
+// definido) — não é erro, é um estado válido do cluster.
+func (c *PrometheusClient) GetDeploymentResourceLimits(ctx context.Context, namespace, deployment string) (cpuRequestCores, cpuLimitCores, memoryRequestBytes, memoryLimitBytes float64) {
+	if v, err := c.QueryScalar(ctx, fmt.Sprintf(`max(kube_pod_container_resource_requests{namespace="%s",pod=~"%s-.*",resource="cpu"})`, namespace, deployment)); err == nil {
+		cpuRequestCores = v
+	}
+	if v, err := c.QueryScalar(ctx, fmt.Sprintf(`max(kube_pod_container_resource_limits{namespace="%s",pod=~"%s-.*",resource="cpu"})`, namespace, deployment)); err == nil {
+		cpuLimitCores = v
+	}
+	if v, err := c.QueryScalar(ctx, fmt.Sprintf(`max(kube_pod_container_resource_requests{namespace="%s",pod=~"%s-.*",resource="memory"})`, namespace, deployment)); err == nil {
+		memoryRequestBytes = v
+	}
+	if v, err := c.QueryScalar(ctx, fmt.Sprintf(`max(kube_pod_container_resource_limits{namespace="%s",pod=~"%s-.*",resource="memory"})`, namespace, deployment)); err == nil {
+		memoryLimitBytes = v
+	}
+	return
 }
 
 // NamespaceMetrics representa métricas agregadas de um namespace

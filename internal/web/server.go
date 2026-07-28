@@ -786,12 +786,13 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Deployments
-	deploymentHandler := handlers.NewDeploymentHandler(s.kubeManager, s.historyTracker)
+	deploymentHandler := handlers.NewDeploymentHandler(s.kubeManager, s.historyTracker, s.aiTokensStore)
 	deployments := api.Group("/deployments")
 	{
 		deployments.GET("", deploymentHandler.List)
 		deployments.GET("/:cluster/:namespace/:name", deploymentHandler.Get)
 		deployments.GET("/:cluster/:namespace/:name/describe", deploymentHandler.Describe)
+		deployments.GET("/:cluster/:namespace/:name/behavior", deploymentHandler.GetDeploymentBehavior)
 		deployments.POST("/diff", deploymentHandler.Diff)
 		deployments.POST("/validate", deploymentHandler.Validate)
 

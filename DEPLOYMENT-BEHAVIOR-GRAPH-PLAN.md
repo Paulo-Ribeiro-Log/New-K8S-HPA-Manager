@@ -1,6 +1,6 @@
 # Plano: Gráfico de Comportamento do Deployment + Indicador Dynatrace na aba Pods
 
-Status: ✅ Fase 0 concluída (branch `feat/pods-dynatrace-monitoring-status`, mergeada com `main` local). Fases 1-3 ainda não iniciadas.
+Status: ✅ Fase 0 concluída. ✅ Fase 1 (MVP do gráfico via Prometheus) concluída e validada contra dados reais de produção — ver checklist da Fase 1. Fases 2-3 ainda não iniciadas.
 
 ## Contexto
 
@@ -68,9 +68,11 @@ Três estados visuais nas duas listas de pods (painel esquerdo — cards; painel
 
   **Por que função nova em vez de adaptar `GetHPAHistoricalMetrics`**: 4 das 8 queries dela dependem de `kube_horizontalpodautoscaler_*` indexado pelo NOME DO HPA — não existe se o Deployment não tiver HPA, e reaproveitar passando `deployment` no lugar de `hpaName` retornaria vazio sempre que os nomes divergirem (bug sutil). Ela já está em produção (tela HPA) — não mexer.
 
-- [ ] Detecção de HPA (`has_hpa`): via K8s API (`h.kubeManager.GetClient(cluster)` → `AutoscalingV2().HorizontalPodAutoscalers(namespace).List()`, checar `scaleTargetRef.name == deployment`), não PromQL
-- [ ] Scale events: `func deriveScaleEvents(points []DeploymentBehaviorPoint) []DeploymentScaleEvent` — diff sequencial de `replicas_desired`, no backend (zero queries extra, mantém frontend "burro")
-- [ ] Criar `internal/web/handlers/deployment_behavior.go` com os tipos de resposta e `func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context)`:
+  **Bug real encontrado e corrigido durante a validação**: a query de `restarts` como especificada acima (sem `sum()`) retorna **uma série por pod+container**, não uma série agregada — confirmado contra um deployment real de produção com 2 réplicas (2 séries retornadas). O merge de séries do handler (`pointsFromSeriesMap`) só considera a primeira série de cada chave, então sem `sum()` os restarts de todos os pods menos um seriam descartados silenciosamente. Corrigido para `sum(increase(...))` — revalidado contra o mesmo deployment, agora retorna exatamente 1 série.
+
+- [x] Detecção de HPA (`has_hpa`): via K8s API (`h.kubeManager.GetClient(cluster)` → `AutoscalingV2().HorizontalPodAutoscalers(namespace).List()`, checar `scaleTargetRef.name == deployment`), não PromQL — `deploymentHasHPA` em `deployment_behavior.go`
+- [x] Scale events: `func deriveScaleEvents(points []DeploymentBehaviorPoint) []DeploymentScaleEvent` — diff sequencial de `replicas_desired`, no backend (zero queries extra, mantém frontend "burro")
+- [x] Criar `internal/web/handlers/deployment_behavior.go` com os tipos de resposta e `func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context)`:
   ```go
   type DeploymentBehaviorPoint struct {
       Timestamp int64 `json:"ts"`
@@ -96,9 +98,9 @@ Três estados visuais nas duas listas de pods (painel esquerdo — cards; painel
   ```
   Rota: `GET /api/v1/deployments/:cluster/:namespace/:name/behavior?hours=6&step=5&offset_days=1,2,3`, registrada em `server.go` no grupo `deployments` já existente (perto de `deployments.GET("/:cluster/:namespace/:name/describe", ...)`)
 
-- [ ] Precedência de fonte no handler: tenta Prometheus (`h.getPromClient(cluster)`) primeiro; se falhar por qualquer motivo (não instalado ou fora do ar — mesmo tratamento), tenta Dynatrace só se AKS + credenciais DT configuradas (reaproveitar checagem da Fase 0). Nenhuma das duas → `source:"none"`, `points:[]`, HTTP 200, sem erro
-- [ ] Caminho Dynatrace: `ResolveEntityForWorkload` → `client.getMetricsBatch(ctx, entityID, k8sWorkloadMetricDefs, from, to, resolution)` → mapear `pods_running`/`pods_ready_pct`/`pod_restarts`/`cpu_milli`/`memory_mb` pro shape comum. `replicas_desired/updated/unavailable` sem equivalente DT — ficam vazios, scale-events some nesse caminho (limitação documentada, não simular)
-- [ ] Criar `internal/dynatrace/workload_resolver.go`:
+- [x] Precedência de fonte no handler: tenta Prometheus (`h.getPromClient(cluster)`) primeiro; se falhar por qualquer motivo (não instalado ou fora do ar — mesmo tratamento), tenta Dynatrace só se AKS + credenciais DT configuradas (reaproveitar checagem da Fase 0). Nenhuma das duas → `source:"none"`, `points:[]`, HTTP 200, sem erro
+- [x] Caminho Dynatrace: `ResolveEntityForWorkload` → `client.GetDeploymentBehaviorMetrics(ctx, entityID, from, to)` (wrapper de `getMetricsBatch` com `k8sWorkloadMetricDefs`) → mapear `pods_running`/`pods_ready_pct`/`pod_restarts` pro shape comum (`dynatraceSeriesToPointMap`). `cpu_milli`/`memory_mb` do DT são valores ABSOLUTOS (não % de request) — sem uma fonte de request/limit disponível nesse fallback, `CPUUsagePct`/`MemoryUsagePct` ficam 0 nesse caminho (limitação documentada no código, não simulada). `replicas_desired/updated/unavailable` também sem equivalente DT — scale-events some nesse caminho, como previsto. **Implementado, mas não validado contra um Dynatrace real configurado** (sem credenciais DT disponíveis neste ambiente de sandbox) — só o caminho Prometheus foi validado ponta a ponta contra dados reais de produção
+- [x] Criar `internal/dynatrace/workload_resolver.go`:
   ```go
   // ResolveEntityForWorkload resolve o entityID Dynatrace (CLOUD_APPLICATION) de um Deployment,
   // compondo ListEntitiesByCluster + EnrichEntitiesWithK8s + filtro por K8sNamespace/K8sWorkload.
@@ -106,28 +108,22 @@ Três estados visuais nas duas listas de pods (painel esquerdo — cards; painel
   // problems da Fase 2 — não duplicar.
   func (c *Client) ResolveEntityForWorkload(ctx context.Context, clusterName, namespace, deploymentName string) (entityID string, found bool, err error)
   ```
-- [ ] `internal/web/handlers/deployments.go`: `DeploymentHandler` ganha cache de client Prometheus por cluster (mesmo padrão de `NodePoolHandler.getPromClient`, `nodepools.go:104`) — considerar extrair um helper compartilhado `getOrCreatePromClient(...)` pros dois handlers em vez de colar uma 3ª cópia
-- [ ] Timeout do handler: 45s (vs 30s do conntrack — mais queries). Paralelizar as chamadas dentro de `deploymentHistoricalMetricsRange` com goroutines + `sync.WaitGroup`
+- [x] `internal/web/handlers/deployments.go`: `DeploymentHandler` ganha cache de client Prometheus por cluster (mesmo padrão de `NodePoolHandler.getPromClient`, `nodepools.go:104`) — cópia própria, não extraído helper compartilhado (mesmo padrão já usado pro client Dynatrace em cada handler que precisa — ver `PodHandler.dynatraceClientForPods`/`DynatraceHandler.clientForUser`/`DeploymentHandler.dynatraceClientForBehavior`, sempre duplicado, nunca abstraído)
+- [x] Timeout do handler: 45s (vs 30s do conntrack — mais queries). Paralelizado dentro de `deploymentHistoricalMetricsRange` com goroutines + `sync.WaitGroup`
 
 ### Frontend
 
-- [ ] Criar `internal/web/frontend/src/lib/chartHelpers.ts`: extrair `decimate`, `COMPARE_COLORS`/`COMPARE_LABELS` e resolvers de cor/label por `dataKey`, hoje só em `ConntrackTab.tsx:73-74` — reaproveitado pelos dois componentes
-- [ ] Criar `internal/web/frontend/src/components/DeploymentBehaviorChart.tsx` (componente próprio, não adaptação do `HistoryChart` do Conntrack — este precisa de painéis empilhados com escalas diferentes):
-  1. Réplicas (linhas desired/current/ready) + scale events como `ReferenceLine x={ts}` verticais
-  2. CPU% + Mem% (linhas 0-100%, `ReferenceLine` em 80%/95%)
-  3. Restarts (barras)
-
-  Comparação D-1/D-2/D-3 opt-in (toggle, nunca automático — evita 36 queries no caso comum). Badge de fonte (azul DT / laranja Prometheus). `source:"none"` → estado vazio explícito, nunca erro genérico
-- [ ] `internal/web/frontend/src/lib/api/types.ts`: `DeploymentBehaviorPoint`, `DeploymentScaleEvent`, `DeploymentBehaviorResponse`
-- [ ] `internal/web/frontend/src/lib/api/client.ts`: `getDeploymentBehavior(cluster, namespace, name, params)`
-- [ ] `internal/web/frontend/src/components/PodQuickViewModal.tsx`: 5ª aba manual (tupla linha 843 `["details","logs","previous-logs","same-image"]` → `[...,"behavior"]`, label "Comportamento"; bloco `flex-1 min-h-0 overflow-y-auto`, **nunca shadcn `<Tabs>`**). Nome do deployment via `workloadSearchTerm` (linha 671). Checar `pod.ownerWorkload?.startsWith("Deployment/")` antes de habilitar — senão, estado desabilitado "Disponível apenas para Deployments"
+- [x] Criar `internal/web/frontend/src/lib/chartHelpers.ts`: extraído `decimate` (agora genérico `<T>`), `COMPARE_DAYS`/`COMPARE_COLORS`/`COMPARE_LABELS` e resolvers `compareColorForDataKey`/`compareLabelForDataKey` de `ConntrackTab.tsx` — reaproveitado pelos dois componentes
+- [x] Criar `internal/web/frontend/src/components/DeploymentBehaviorChart.tsx` — 3 painéis empilhados (Réplicas com scale events via `ReferenceLine` vertical; CPU%/Mem% com `ReferenceLine` em 80%/95%; Restarts em barra). Comparação D-1/D-2/D-3 opt-in **só no painel de Réplicas** (decisão de escopo documentada no código — aplicar aos 3 painéis triplicaria a complexidade sem ganho proporcional). Badge de fonte (azul DT / laranja Prometheus). `source:"none"` → estado vazio explícito
+- [x] `internal/web/frontend/src/lib/api/types.ts`: `DeploymentBehaviorPoint`, `DeploymentScaleEvent`, `DeploymentBehaviorResponse`, `DTProblemMarker`
+- [x] `internal/web/frontend/src/lib/api/client.ts`: `getDeploymentBehavior(cluster, namespace, name, params)`
+- [x] `internal/web/frontend/src/components/PodQuickViewModal.tsx`: 5ª aba manual (`["details","logs","previous-logs","same-image","behavior"]`, label "Comportamento", desabilitada com tooltip quando `!pod.ownerWorkload?.startsWith("Deployment/")`); bloco `flex-1 min-h-0 overflow-y-auto`, nunca shadcn `<Tabs>`. Nome do deployment via `workloadSearchTerm` já existente
 
 ### Verificação Fase 1
-- [ ] `go build ./...`, `go vet ./internal/monitoring/client/... ./internal/dynatrace/... ./internal/web/handlers/...`, `tsc --noEmit`
-- [ ] Teste manual: cluster AKS+Prometheus (com e sem HPA, D-1/D-2/D-3 em janela 24h, sem timeout)
-- [ ] Teste manual: cluster AKS sem Prometheus + DT configurado (fallback funcionando, `source:"dynatrace"`, sem scale-events)
-- [ ] Teste manual: cluster sem nenhuma fonte (`source:"none"`, estado vazio, sem 5xx)
-- [ ] Teste manual: Prometheus configurado mas fora do ar (mesmo tratamento de "não instalado")
+- [x] `go build ./...`, `go vet ./...`, `tsc --noEmit`, `npm run lint` — sem erros/warnings novos
+- [x] `go test -race` nos 3 pacotes tocados (novos testes unitários pra `pointsFromSeriesMap`/`deriveScaleEvents`/`prometheusSeriesToPointMap`/`dynatraceSeriesToPointMap`, `deployment_behavior_test.go`)
+- [x] **Validado ponta a ponta contra um cluster AKS real de produção** (`akspriv-logreversa-prd`, Prometheus e API K8s alcançáveis a partir do ambiente de desenvolvimento): deployment sem HPA (`arvore-defeitos`, 1 réplica) → `source:"prometheus"`, `has_hpa:false`, CPU/mem/request/limit batendo exatamente com os valores brutos das queries Prometheus; deployment com HPA e 35 réplicas (`legacydata-api`) → `has_hpa:true`, todas as 35 réplicas refletidas corretamente nos 3 campos de réplicas. Aba "Comportamento" testada no navegador real contra o mesmo cluster/pod — 3 painéis renderizam corretamente, badge "Prometheus" (laranja), toggle de comparação D-1/D-2/D-3 visível, footer de request/limit batendo com os dados reais
+- [ ] **Não validado nesta rodada** (sem credenciais Dynatrace disponíveis no ambiente): fallback `source:"dynatrace"` end-to-end, comparação D-1/D-2/D-3 com dados reais (só testada a UI/toggle, sem confirmar visualmente as linhas tracejadas contra offset real), janela de 24h (só 1h/6h testadas), cenário "Prometheus configurado mas fora do ar" isolado (o cenário "sem nenhuma fonte" já foi coberto indiretamente via testes anteriores desta sessão com cluster k3s não-AKS sem Prometheus, mas não repetido especificamente pra esta Fase)
 
 ---
 
