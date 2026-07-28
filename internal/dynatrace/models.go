@@ -233,6 +233,30 @@ func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 		}
 	}
 
+	// Fallback via properties — CLOUD_APPLICATION e CLOUD_APPLICATION_INSTANCE não carregam tags
+	// neste tenant em muitos casos (confirmado empiricamente: "tags": [] mesmo em entidades
+	// ativamente monitoradas por OneAgent), mas expõem os mesmos dados via properties
+	// namespaceName/workloadName/detectedName — usado pelo indicador de monitoramento Dynatrace
+	// na aba Pods (ListMonitoredPods) e pelo fallback do gráfico de comportamento do Deployment
+	// (ResolveEntityForWorkload). Bug real: sem isso, ListMonitoredPods nunca via nenhum pod como
+	// monitorado nesses casos, mesmo com o OneAgent ativo — a correlação nunca chegava a K8sNamespace/
+	// K8sPodName porque dependia só de tags que essas 2 entidades simplesmente não têm.
+	if corr.Namespace == "" {
+		if v, ok := e.Properties["namespaceName"].(string); ok && v != "" {
+			corr.Namespace = v
+		}
+	}
+	if corr.Workload == "" {
+		if v, ok := e.Properties["workloadName"].(string); ok && v != "" {
+			corr.Workload = v
+		}
+	}
+	if corr.PodName == "" {
+		if v, ok := e.Properties["detectedName"].(string); ok && v != "" {
+			corr.PodName = v
+		}
+	}
+
 	// Fallback de último recurso: entidade está num cluster AKS (via dt.host_group.id)
 	// mas nenhuma tag de namespace foi encontrada — derivar do displayName.
 	// Ex: "TMS Embarcador" → "tms-embarcador", para entidades APPLICATION sem tags K8s completas.
