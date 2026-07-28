@@ -1667,18 +1667,49 @@ class APIClient {
     podName: string,
     containerName?: string,
     tailLines?: number,
-    previous?: boolean
+    previous?: boolean,
+    // timestamps prefixa cada linha com um RFC3339Nano (mesmo `kubectl logs --timestamps`) — usado
+    // pelo AllPodsLogsModal pra intercalar linhas de vários pods por tempo real.
+    timestamps?: boolean
   ): Promise<{ logs: string }> {
     const params = new URLSearchParams();
     if (containerName) params.append("container", containerName);
     if (tailLines) params.append("tail", tailLines.toString());
     if (previous) params.append("previous", "true");
+    if (timestamps) params.append("timestamps", "true");
 
     const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<{ logs: string }>>(
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}/logs${query}`
     );
     return response.data || { logs: "" };
+  }
+
+  /** Inicia o streaming ao vivo (Follow=true, mesmo `kubectl logs -f`) dos logs de vários pods
+   * simultaneamente — usado pelo AllPodsLogsModal. Retorna session_id pra conectar via SSE
+   * (getPodLogsStreamAllURL). Mesmo padrão de runDBTest/getDBTestStreamURL. */
+  async startPodLogsStreamAll(
+    cluster: string,
+    pods: { namespace: string; name: string; container?: string }[],
+    tailLines?: number
+  ): Promise<{ session_id: string }> {
+    return this.request<{ session_id: string }>("/pod-logs-stream", {
+      method: "POST",
+      body: JSON.stringify({ cluster, pods, tail_lines: tailLines }),
+    });
+  }
+
+  /** URL do SSE stream de um streaming de logs de múltiplos pods em andamento */
+  getPodLogsStreamAllURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/pod-logs-stream/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Cancela o streaming de logs de múltiplos pods em andamento */
+  async cancelPodLogsStreamAll(sessionId: string): Promise<void> {
+    await this.request<void>(`/pod-logs-stream/${encodeURIComponent(sessionId)}/cancel`, {
+      method: "POST",
+    });
   }
 
   async getBatchPodMetrics(cluster: string, namespace: string): Promise<BatchPodMetrics> {

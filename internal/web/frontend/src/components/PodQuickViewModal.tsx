@@ -66,9 +66,11 @@ function DualGauge({ cpuPct, memPct, cpuVal, memVal }: {
   );
 }
 
-type LogLevel = "error" | "warn" | "info" | "debug";
+// Exportados pra reuso em AllPodsLogsModal.tsx — mesmos recursos (filtro de nível, coloração por
+// severidade) reaproveitados no modal de "logs de todos os pods", não uma versão reduzida.
+export type LogLevel = "error" | "warn" | "info" | "debug";
 
-function getLogLevel(line: string): LogLevel | null {
+export function getLogLevel(line: string): LogLevel | null {
   const l = line.toUpperCase();
   if (/\b(ERROR|FATAL|EXCEPTION|PANIC)\b/.test(l)) return "error";
   if (/\b(WARN|WARNING)\b/.test(l)) return "warn";
@@ -77,7 +79,7 @@ function getLogLevel(line: string): LogLevel | null {
   return null;
 }
 
-function logLineColor(line: string): string {
+export function logLineColor(line: string): string {
   const level = getLogLevel(line);
   if (level === "error") return "text-red-400";
   if (level === "warn") return "text-yellow-400";
@@ -88,7 +90,7 @@ function logLineColor(line: string): string {
   return "";
 }
 
-const LOG_LEVEL_CONFIG: Record<LogLevel, { label: string; active: string; inactive: string }> = {
+export const LOG_LEVEL_CONFIG: Record<LogLevel, { label: string; active: string; inactive: string }> = {
   error: { label: "ERR",   active: "bg-red-500/20 text-red-400 border-red-500/50",    inactive: "text-muted-foreground border-border hover:border-red-500/40 hover:text-red-400" },
   warn:  { label: "WARN",  active: "bg-yellow-500/20 text-yellow-400 border-yellow-500/50", inactive: "text-muted-foreground border-border hover:border-yellow-500/40 hover:text-yellow-400" },
   info:  { label: "INFO",  active: "bg-blue-500/20 text-blue-400 border-blue-500/50",  inactive: "text-muted-foreground border-border hover:border-blue-500/40 hover:text-blue-400" },
@@ -136,14 +138,15 @@ function findEventsBlock(lines: string[]): DescribeBlock | null {
   return { start: idx, end };
 }
 
-function escapeRegExp(s: string): string {
+// Exportadas pra reuso em AllPodsLogsModal.tsx (mesma lógica de destaque de busca em logs).
+export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // Destaca (case-insensitive) todas as ocorrências de `query` dentro de uma linha de log,
 // espelhando o match de filterLogLines (mesmo .toLowerCase().includes) — só que aqui
 // precisamos das posições exatas pra fatiar a string em spans normais + <mark>.
-function highlightMatches(line: string, query: string): React.ReactNode {
+export function highlightMatches(line: string, query: string): React.ReactNode {
   const text = line || " ";
   const trimmed = query.trim();
   if (!trimmed) return text;
@@ -593,7 +596,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
     if (activeTab === "logs" && autoRefresh) {
-      intervalRef.current = setInterval(fetchLogs, 5000);
+      intervalRef.current = setInterval(fetchLogs, 2000);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [activeTab, autoRefresh, fetchLogs]);
