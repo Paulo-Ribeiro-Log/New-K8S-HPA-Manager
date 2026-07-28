@@ -1670,7 +1670,7 @@ export interface DeploymentBehaviorResponse {
   cluster: string;
   namespace: string;
   deployment: string;
-  hours: number;
+  window_minutes: number;
   step_minutes: number;
   offset_days?: number[];
   points: DeploymentBehaviorPoint[];

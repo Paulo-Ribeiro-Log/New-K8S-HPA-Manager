@@ -12,7 +12,7 @@ import { ProtectedAction } from "@/components/rbac/ProtectedAction";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
-import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
+import { DynatraceStatusIcon, resolveDynatraceStatus, DT_STATUS_LABEL, DT_STATUS_PRIORITY } from "@/components/DynatraceStatusIcon";
 import { AllPodsLogsModal } from "@/components/AllPodsLogsModal";
 
 const EMPTY_DT_SET = new Set<string>();
@@ -112,8 +112,9 @@ function useSecondsTick(date: Date | null): string {
 }
 
 // Colunas: SEL | NAME/NS | VERSION | dot | DT | READY | STATUS | REST. | CPU | MEM | NODE | AGE
-// SEL(32), dot(22) e DT(24) são fixos e não têm ResizeHandle por serem muito pequenos.
-const INITIAL_WIDTHS = [32, 400, 120, 22, 24, 60, 140, 50, 110, 110, 180, 60];
+// SEL(32) e dot(22) são fixos e não têm ResizeHandle por serem muito pequenos. DT(52) também não
+// tem ResizeHandle (largura fixa), mas foi alargada de 24 pra caber o filtro+sort do cabeçalho.
+const INITIAL_WIDTHS = [32, 400, 120, 22, 52, 60, 140, 50, 110, 110, 180, 60];
 
 function extractImageVersion(image?: string): string {
   if (!image) return "-";
@@ -131,8 +132,14 @@ function extractImageVersion(image?: string): string {
   return tag;
 }
 
-type PodSortKey = "name" | "ready" | "restarts" | "cpu" | "mem" | "age" | "node";
+type PodSortKey = "name" | "ready" | "restarts" | "cpu" | "mem" | "age" | "node" | "dt";
 type StatusSortMode = null | "running" | "error" | "completed";
+
+// Prioridade por LABEL (não pelo enum DynatraceMonitoringStatus) — o filtro/sort da coluna DT
+// opera sobre o rótulo pt-BR já resolvido (DT_STATUS_LABEL), não o enum interno.
+const DT_LABEL_PRIORITY: Record<string, number> = Object.fromEntries(
+  (Object.keys(DT_STATUS_PRIORITY) as Array<keyof typeof DT_STATUS_PRIORITY>).map((k) => [DT_STATUS_LABEL[k], DT_STATUS_PRIORITY[k]])
+);
 
 const STATUS_CYCLE: StatusSortMode[] = [null, "running", "error", "completed"];
 const STATUS_PRIORITY: Record<NonNullable<StatusSortMode>, (status: string) => number> = {
@@ -206,6 +213,7 @@ export const PodMonitorTable = ({
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [nodeFilter, setNodeFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
+  const [dtStatusFilter, setDtStatusFilter] = useState<Set<string>>(new Set());
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [sortKey, setSortKey] = useState<PodSortKey | null>(null);
@@ -320,13 +328,27 @@ export const PodMonitorTable = ({
     return Array.from(s).sort();
   }, [pods]);
 
-  const hasFilters = statusFilter.size > 0 || nodeFilter.size > 0 || namespaceFilter.size > 0;
-  const activeFilterCount = statusFilter.size + nodeFilter.size + namespaceFilter.size;
+  // dtStatusLabelForPod resolve o rótulo pt-BR de monitoramento Dynatrace de um pod — usado tanto
+  // pro filtro (ColumnFilter mostra/filtra por label, não pelo enum interno) quanto pra listar as
+  // opções únicas disponíveis (varia conforme dtClusterSupported/dtMonitoredKeys do painel pai).
+  const dtStatusLabelForPod = (p: PodSummary) =>
+    DT_STATUS_LABEL[resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys ?? EMPTY_DT_SET, `${p.namespace}/${p.name}`)];
+
+  const uniqueDtStatuses = useMemo(() => {
+    const s = new Set<string>();
+    pods.forEach((p) => s.add(dtStatusLabelForPod(p)));
+    return Array.from(s).sort((a, b) => DT_LABEL_PRIORITY[a] - DT_LABEL_PRIORITY[b]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pods, dtClusterSupported, dtMonitoredKeys]);
+
+  const hasFilters = statusFilter.size > 0 || nodeFilter.size > 0 || namespaceFilter.size > 0 || dtStatusFilter.size > 0;
+  const activeFilterCount = statusFilter.size + nodeFilter.size + namespaceFilter.size + dtStatusFilter.size;
 
   const clearAllFilters = () => {
     setStatusFilter(new Set());
     setNodeFilter(new Set());
     setNamespaceFilter(new Set());
+    setDtStatusFilter(new Set());
     setSearchQuery("");
   };
 
@@ -352,6 +374,8 @@ export const PodMonitorTable = ({
       result = result.filter((p) => nodeFilter.has(p.nodeName ?? ""));
     if (namespaceFilter.size > 0)
       result = result.filter((p) => namespaceFilter.has(p.namespace ?? ""));
+    if (dtStatusFilter.size > 0)
+      result = result.filter((p) => dtStatusFilter.has(dtStatusLabelForPod(p)));
 
     if (statusSortMode) {
       const priority = STATUS_PRIORITY[statusSortMode];
@@ -371,6 +395,7 @@ export const PodMonitorTable = ({
           case "mem":      va = metrics?.pods[a.name]?.memoryBytes ?? 0; vb = metrics?.pods[b.name]?.memoryBytes ?? 0; break;
           case "age":      va = a.createdAt ? new Date(a.createdAt).getTime() : 0; vb = b.createdAt ? new Date(b.createdAt).getTime() : 0; break;
           case "node":     va = a.nodeName ?? ""; vb = b.nodeName ?? ""; break;
+          case "dt":       va = DT_LABEL_PRIORITY[dtStatusLabelForPod(a)]; vb = DT_LABEL_PRIORITY[dtStatusLabelForPod(b)]; break;
         }
         if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb as string) : (vb as string).localeCompare(va);
         return sortDir === "asc" ? (va as number) - (vb as number) : (vb as number) - (va as number);
@@ -378,7 +403,7 @@ export const PodMonitorTable = ({
     }
 
     return result;
-  }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, sortKey, sortDir, statusSortMode, metrics]);
+  }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, dtStatusFilter, sortKey, sortDir, statusSortMode, metrics, dtClusterSupported, dtMonitoredKeys]);
 
   // Helpers de seleção
   const podKey = (p: PodSummary) => `${p.namespace}/${p.name}`;
@@ -593,6 +618,12 @@ export const PodMonitorTable = ({
               ns: {v} <X className="w-2.5 h-2.5" />
             </Badge>
           ))}
+          {Array.from(dtStatusFilter).map((v) => (
+            <Badge key={`dt-${v}`} variant="secondary" className="text-[10px] h-5 gap-1 cursor-pointer hover:bg-destructive/20"
+              onClick={() => { const n = new Set(dtStatusFilter); n.delete(v); setDtStatusFilter(n); }}>
+              DT: {v} <X className="w-2.5 h-2.5" />
+            </Badge>
+          ))}
         </div>
       )}
 
@@ -624,8 +655,12 @@ export const PodMonitorTable = ({
         </span>
         {/* dot — fixo, sem resize */}
         <span></span>
-        {/* DT — fixo, sem resize (status de monitoramento Dynatrace) */}
-        <span></span>
+        {/* DT — fixo, sem resize (status de monitoramento Dynatrace); filtro+sort operam sobre o
+            rótulo pt-BR já resolvido (DT_STATUS_LABEL), não o enum interno */}
+        <span className="relative overflow-hidden flex items-center justify-center">
+          <ColumnFilter label="DT" options={uniqueDtStatuses} selected={dtStatusFilter} onChange={setDtStatusFilter} />
+          <SortIcon colKey="dt" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+        </span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(5, d)} />

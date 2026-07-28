@@ -17,7 +17,28 @@ interface Props {
 
 type ChartRow = Record<string, number | string>;
 
-const HOUR_OPTIONS = [3, 6, 12, 24];
+// Janelas de tempo disponíveis no seletor — em minutos, pra caber as opções abaixo de 1h (30min).
+const WINDOW_OPTIONS = [
+  { label: "30m", minutes: 30 },
+  { label: "1h", minutes: 60 },
+  { label: "2h", minutes: 120 },
+  { label: "3h", minutes: 180 },
+  { label: "6h", minutes: 360 },
+  { label: "12h", minutes: 720 },
+  { label: "24h", minutes: 1440 },
+];
+
+// step (minutos por ponto) escalado com a janela — evita tanto pontos demais numa janela curta
+// (1 ponto/min numa janela de 24h seria 1440 pontos) quanto poucos demais numa janela curta (5min
+// de step numa janela de 30min daria só 6 pontos).
+function stepForWindow(minutes: number): number {
+  if (minutes <= 30) return 1;
+  if (minutes <= 120) return 2;
+  if (minutes <= 180) return 5;
+  if (minutes <= 360) return 5;
+  if (minutes <= 720) return 10;
+  return 15;
+}
 
 const repChartConfig = {
   replicas_desired: { label: "Desejadas", color: "#6366f1" },
@@ -54,7 +75,7 @@ function round1(n: number): number {
 // "por que este pod reiniciou" se apoia mais em quando as réplicas mudaram do que em CPU/mem
 // histórico ponto a ponto).
 export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Props) {
-  const [hours, setHours] = useState(6);
+  const [windowMinutes, setWindowMinutes] = useState(360);
   const [compareOffsets, setCompareOffsets] = useState<number[]>([]);
   const [data, setData] = useState<DeploymentBehaviorResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,8 +86,8 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     setError(null);
     try {
       const resp = await apiClient.getDeploymentBehavior(cluster, namespace, deployment, {
-        hours,
-        step: 5,
+        minutes: windowMinutes,
+        step: stepForWindow(windowMinutes),
         offsetDays: compareOffsets.length > 0 ? compareOffsets : undefined,
       });
       setData(resp);
@@ -75,12 +96,12 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     } finally {
       setLoading(false);
     }
-  }, [cluster, namespace, deployment, hours, compareOffsets]);
+  }, [cluster, namespace, deployment, windowMinutes, compareOffsets]);
 
   useEffect(() => {
     fetchBehavior();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cluster, namespace, deployment, hours, compareOffsets]);
+  }, [cluster, namespace, deployment, windowMinutes, compareOffsets]);
 
   const { chartData, decimatedPoints } = useMemo(() => {
     if (!data?.points?.length) return { chartData: [] as ChartRow[], decimatedPoints: [] as DeploymentBehaviorPoint[] };
@@ -165,13 +186,13 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     <div className="space-y-4 p-1">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
-        <Select value={String(hours)} onValueChange={(v) => setHours(Number(v))}>
+        <Select value={String(windowMinutes)} onValueChange={(v) => setWindowMinutes(Number(v))}>
           <SelectTrigger className="h-7 text-xs w-24">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {HOUR_OPTIONS.map((h) => (
-              <SelectItem key={h} value={String(h)} className="text-xs">{h}h</SelectItem>
+            {WINDOW_OPTIONS.map((opt) => (
+              <SelectItem key={opt.minutes} value={String(opt.minutes)} className="text-xs">{opt.label}</SelectItem>
             ))}
           </SelectContent>
         </Select>

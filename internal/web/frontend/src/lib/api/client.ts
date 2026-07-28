@@ -1023,10 +1023,10 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    params?: { hours?: number; step?: number; offsetDays?: number[]; aiEmail?: string }
+    params?: { minutes?: number; step?: number; offsetDays?: number[]; aiEmail?: string }
   ): Promise<import("./types").DeploymentBehaviorResponse> {
     const query = new URLSearchParams();
-    if (params?.hours) query.set("hours", String(params.hours));
+    if (params?.minutes) query.set("minutes", String(params.minutes));
     if (params?.step) query.set("step", String(params.step));
     if (params?.offsetDays?.length) query.set("offset_days", params.offsetDays.join(","));
     if (params?.aiEmail) query.set("ai_email", params.aiEmail);

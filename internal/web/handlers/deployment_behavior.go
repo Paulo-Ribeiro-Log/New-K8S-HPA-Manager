@@ -57,9 +57,11 @@ type DeploymentBehaviorResponse struct {
 	Cluster    string `json:"cluster"`
 	Namespace  string `json:"namespace"`
 	Deployment string `json:"deployment"`
-	Hours      int    `json:"hours"`
-	StepMinutes int   `json:"step_minutes"`
-	OffsetDays []int  `json:"offset_days,omitempty"`
+	// WindowMinutes é o tamanho total da janela em minutos — substituiu um campo "Hours" (int)
+	// porque a UI precisa de janelas menores que 1h (30min), que um inteiro de horas não representa.
+	WindowMinutes int   `json:"window_minutes"`
+	StepMinutes   int   `json:"step_minutes"`
+	OffsetDays    []int `json:"offset_days,omitempty"`
 
 	Points        []DeploymentBehaviorPoint         `json:"points"`
 	ComparePoints map[int][]DeploymentBehaviorPoint `json:"compare_points,omitempty"`
@@ -85,7 +87,7 @@ type DeploymentBehaviorResponse struct {
 }
 
 const (
-	deploymentBehaviorDefaultHours       = 6
+	deploymentBehaviorDefaultMinutes     = 360 // 6h
 	deploymentBehaviorDefaultStepMinutes = 5
 	deploymentBehaviorTimeout            = 45 * time.Second
 )
@@ -135,16 +137,16 @@ func (h *DeploymentHandler) dynatraceClientForBehavior(aiEmail string) (*dtclien
 // duas fontes disponível → source="none", points vazio, sempre HTTP 200 (estado vazio explícito,
 // nunca erro genérico — mesmo princípio de outras checagens best-effort do app).
 //
-// GET /api/v1/deployments/:cluster/:namespace/:name/behavior?hours=6&step=5&offset_days=1,2,3&ai_email=
+// GET /api/v1/deployments/:cluster/:namespace/:name/behavior?minutes=360&step=5&offset_days=1,2,3&ai_email=
 func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
 	deployment := c.Param("name")
 	aiEmail := c.Query("ai_email")
 
-	hours := deploymentBehaviorDefaultHours
-	if v, err := strconv.Atoi(c.Query("hours")); err == nil && v > 0 {
-		hours = v
+	minutes := deploymentBehaviorDefaultMinutes
+	if v, err := strconv.Atoi(c.Query("minutes")); err == nil && v > 0 {
+		minutes = v
 	}
 	stepMinutes := deploymentBehaviorDefaultStepMinutes
 	if v, err := strconv.Atoi(c.Query("step")); err == nil && v > 0 {
@@ -159,19 +161,19 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 		}
 	}
 
-	duration := time.Duration(hours) * time.Hour
+	duration := time.Duration(minutes) * time.Minute
 	step := time.Duration(stepMinutes) * time.Minute
 
 	resp := DeploymentBehaviorResponse{
-		Cluster:     cluster,
-		Namespace:   namespace,
-		Deployment:  deployment,
-		Hours:       hours,
-		StepMinutes: stepMinutes,
-		OffsetDays:  offsetDays,
-		Points:      []DeploymentBehaviorPoint{},
-		ScaleEvents: []DeploymentScaleEvent{},
-		Source:      "none",
+		Cluster:       cluster,
+		Namespace:     namespace,
+		Deployment:    deployment,
+		WindowMinutes: minutes,
+		StepMinutes:   stepMinutes,
+		OffsetDays:    offsetDays,
+		Points:        []DeploymentBehaviorPoint{},
+		ScaleEvents:   []DeploymentScaleEvent{},
+		Source:        "none",
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), deploymentBehaviorTimeout)
