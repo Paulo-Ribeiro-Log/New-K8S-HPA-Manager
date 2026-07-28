@@ -602,10 +602,15 @@ func (c *Client) SearchEntitiesByName(ctx context.Context, names []string) []Ent
 }
 
 // listEntitiesBySelectorMaxPages limita quantas páginas de 500 entidades listEntitiesBySelector
-// segue via nextPageKey — 20 páginas = até 10.000 entidades, generoso o bastante pra maior cluster
-// real da frota hoje (~4.561 PROCESS_GROUP_INSTANCE em akspriv-oferta-prd, 103 nós) sem risco de
-// loop infinito caso a API do Dynatrace devolva nextPageKey indefinidamente por algum bug.
-const listEntitiesBySelectorMaxPages = 20
+// segue via nextPageKey — 50 páginas = até 25.000 entidades. Sem isso, clusters com muito churn de
+// CLOUD_APPLICATION_INSTANCE (CronJobs frequentes acumulam uma entidade por execução — Dynatrace
+// não parece expirar essas entidades rápido) estouram o teto e voltam a perder resultado: 20
+// páginas (10.000) pareciam generosas o bastante pro maior cluster AKS da frota (~4.561
+// PROCESS_GROUP_INSTANCE em akspriv-oferta-prd, 103 nós), mas o cluster EKS asaplog-production
+// tem 10.804 CLOUD_APPLICATION_INSTANCE reais — confirmado truncando ~800 entidades com o teto
+// antigo. Ainda limitado (não ilimitado) pra não arriscar loop infinito caso a API do Dynatrace
+// devolva nextPageKey indefinidamente por algum bug.
+const listEntitiesBySelectorMaxPages = 50
 
 // listEntitiesBySelector busca entidades com um entitySelector arbitrário e retorna EntityStubs
 // enriquecidos. Segue nextPageKey até listEntitiesBySelectorMaxPages páginas — sem isso, clusters
@@ -689,8 +694,57 @@ var relationshipByEntityType = map[string]string{
 	"SERVICE":                    "isClusterOfService",
 }
 
+// fuzzyResolveEntityIDByName tenta achar uma entidade do tipo entityType cujo displayName contenha
+// o token mais distintivo de clusterName, exigindo que o token de ambiente do candidato seja
+// compatível com o do cluster original — evita que a correlação fuzzy misture clusters de
+// ambientes diferentes que só coincidem no nome do produto/squad (ex: "asaplog-preprod" vs
+// "asaplog-production", ambos contêm "asaplog", mas são ambientes diferentes).
+//
+// Usado só como fallback, quando a busca por nome exato (entityName("<clusterName>")) não
+// encontra nada — necessário porque nem todo cluster segue a convenção "nome do context ==
+// displayName da entidade Dynatrace". Confirmado contra um tenant real: o cluster EKS
+// "asaplog-production" tem sua entidade KUBERNETES_CLUSTER nomeada "eks-asaplog-prd" no
+// Dynatrace — escolhido manualmente por quem criou o DynaKube, sem relação determinística com o
+// nome real do cluster (diferente do sufixo "-admin" do AKS, que é só um strip fixo).
+//
+// Retorna "" (não encontrado) em vez de arriscar uma correlação errada sempre que o resultado é
+// ambíguo (múltiplos candidatos compatíveis) ou quando o nome original não tem nenhum marcador de
+// ambiente reconhecível (não dá pra desambiguar com segurança nesse caso).
+func (c *Client) fuzzyResolveEntityIDByName(ctx context.Context, entityType, clusterName string) (string, error) {
+	tokens := extractClusterDistinctiveTokens(clusterName)
+	if len(tokens) == 0 {
+		return "", nil
+	}
+
+	selector := fmt.Sprintf(`type("%s"),entityName.contains("%s")`, entityType, tokens[0])
+	stubs, err := c.listEntitiesBySelector(ctx, selector)
+	if err != nil || len(stubs) == 0 {
+		return "", err
+	}
+
+	originalEnv := extractClusterEnvToken(clusterName)
+	if originalEnv == "" {
+		return "", nil
+	}
+
+	match := ""
+	for _, stub := range stubs {
+		if extractClusterEnvToken(stub.DisplayName) != originalEnv {
+			continue
+		}
+		if match != "" {
+			// mais de um candidato compatível — ambíguo, não arrisca.
+			return "", nil
+		}
+		match = stub.EntityID.ID
+	}
+	return match, nil
+}
+
 // resolveKubernetesClusterEntityID resolve o entityId da entidade KUBERNETES_CLUSTER cujo
-// displayName bate com clusterName. Cacheado — ver clusterEntityCache.
+// displayName bate com clusterName. Cacheado — ver clusterEntityCache. Fallback fuzzy (ver
+// fuzzyResolveEntityIDByName) só é tentado quando o nome exato não encontra nada — não altera o
+// comportamento pra nenhum cluster que já resolvia corretamente antes.
 func (c *Client) resolveKubernetesClusterEntityID(ctx context.Context, clusterName string) (string, error) {
 	if raw, ok := clusterEntityCache.Load(clusterName); ok {
 		entry := raw.(clusterEntityCacheEntry)
@@ -708,6 +762,8 @@ func (c *Client) resolveKubernetesClusterEntityID(ctx context.Context, clusterNa
 	entityID := ""
 	if len(stubs) > 0 {
 		entityID = stubs[0].EntityID.ID
+	} else if fuzzyID, ferr := c.fuzzyResolveEntityIDByName(ctx, "KUBERNETES_CLUSTER", clusterName); ferr == nil {
+		entityID = fuzzyID
 	}
 	clusterEntityCache.Store(clusterName, clusterEntityCacheEntry{entityID: entityID, cachedAt: time.Now()})
 	return entityID, nil
@@ -795,6 +851,8 @@ func (c *Client) resolveHostGroupEntityID(ctx context.Context, clusterName strin
 	entityID := ""
 	if len(stubs) > 0 {
 		entityID = stubs[0].EntityID.ID
+	} else if fuzzyID, ferr := c.fuzzyResolveEntityIDByName(ctx, "HOST_GROUP", clusterName); ferr == nil {
+		entityID = fuzzyID
 	}
 	hostGroupEntityCache.Store(clusterName, clusterEntityCacheEntry{entityID: entityID, cachedAt: time.Now()})
 	return entityID, nil

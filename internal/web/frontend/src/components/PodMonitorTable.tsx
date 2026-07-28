@@ -769,12 +769,18 @@ export const PodMonitorTable = ({
                 {extractImageVersion(pod.containers[0]?.image)}
               </span>
 
-              {/* DT — status de monitoramento Dynatrace */}
+              {/* DT — status de monitoramento Dynatrace. Enquanto !dtHasLoaded a célula ficava
+                  em branco (nem ícone nem indicação nenhuma) — em clusters grandes a 1ª consulta
+                  ao Dynatrace pode levar vários segundos (pagina milhares de entidades), e o
+                  branco prolongado parecia "travado"/"não configurado" em vez de "carregando".
+                  Spinner discreto cobre esse intervalo. */}
               <span className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-                {dtHasLoaded && (
+                {dtHasLoaded ? (
                   <DynatraceStatusIcon
                     status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys ?? EMPTY_DT_SET, `${pod.namespace}/${pod.name}`)}
                   />
+                ) : (
+                  <Loader2 className="w-3 h-3 animate-spin text-muted-foreground/50" />
                 )}
               </span>
 

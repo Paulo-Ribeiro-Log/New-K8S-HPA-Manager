@@ -3,12 +3,10 @@ package handlers
 import (
 	"context"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"k8s-hpa-manager/internal/config"
 	dtclient "k8s-hpa-manager/internal/dynatrace"
 )
 
@@ -30,13 +28,24 @@ func (h *PodHandler) dynatraceClientForPods(aiEmail string) (*dtclient.Client, e
 }
 
 // GetDynatraceStatus retorna quais pods de um cluster têm entidade Dynatrace correspondente
-// (monitorados via OneAgent), para o indicador visual na aba Pods (painéis esquerdo e direito).
+// (monitorados via OneAgent ou via OpenTelemetry/Cloud Native Full Stack), para o indicador
+// visual na aba Pods (painéis esquerdo e direito).
 // GET /api/v1/pods/:cluster/dynatrace-status?ai_email=...
 //
-// cluster_supported=false cobre tanto "não é AKS" quanto "Dynatrace não configurado" — nesses
-// casos "monitored" vem sempre vazio, sem chamar a API do Dynatrace. Falha ao consultar o
-// Dynatrace (erro transitório) tem o mesmo efeito de cluster_supported=false — falha silenciosa,
-// não bloqueia a tela de pods (mesmo princípio de outras checagens best-effort do app).
+// cluster_supported=false cobre "Dynatrace não configurado" (nem tokens do usuário, nem env
+// vars) — nesse caso "monitored" vem sempre vazio, sem chamar a API do Dynatrace. Falha ao
+// consultar o Dynatrace (erro transitório) tem o mesmo efeito — falha silenciosa, não bloqueia a
+// tela de pods (mesmo princípio de outras checagens best-effort do app).
+//
+// Bug real corrigido: antes cortava aqui para qualquer cluster que não fosse AKS, assumindo que
+// só a frota AKS usa Dynatrace (EKS usaria New Relic — suposição documentada no plano de FinOps
+// NR Metrics, válida pra ALGUMAS contas EKS, mas não todas). Confirmado contra um cluster EKS
+// real (asaplog-production) que roda Dynatrace com OneAgent em modo Cloud Native Full Stack +
+// Kubernetes API Monitoring + ingest OpenTelemetry — cluster genuinamente monitorado que sempre
+// aparecia como "não suportado" só por não ser AKS. A checagem de cloud provider não tem mais
+// nenhum papel aqui: ListMonitoredPods já lida com "cluster não encontrado no Dynatrace" de forma
+// graciosa (retorna mapa vazio, sem erro) para QUALQUER provider — mesmo comportamento que um
+// cluster AKS não onboardado no Dynatrace já tinha antes desta mudança.
 func (h *PodHandler) GetDynatraceStatus(c *gin.Context) {
 	cluster := c.Param("cluster")
 	aiEmail := c.Query("ai_email")
@@ -44,12 +53,6 @@ func (h *PodHandler) GetDynatraceStatus(c *gin.Context) {
 	resp := gin.H{
 		"cluster_supported": false,
 		"monitored":         []string{},
-	}
-
-	serverURL := h.kubeManager.GetServerURL(cluster)
-	if config.DetectCloudProvider(serverURL, cluster) != config.CloudProviderAKS {
-		c.JSON(http.StatusOK, resp)
-		return
 	}
 
 	dtc, err := h.dynatraceClientForPods(aiEmail)
@@ -62,19 +65,22 @@ func (h *PodHandler) GetDynatraceStatus(c *gin.Context) {
 
 	resp["cluster_supported"] = true
 
-	// 60s (era 20s) — ListMonitoredPods agora pagina de verdade (listEntitiesBySelectorMaxPages)
-	// pra não descartar entidades além das primeiras 500 (bug real confirmado: cluster com 103
-	// nós tinha 4.561 PROCESS_GROUP_INSTANCE, e só as primeiras 500 eram consideradas — pods do
-	// MESMO deployment apareciam alguns "monitorados" e outros não, dependendo só da ordem
-	// arbitrária de retorno da API). Paginar clusters grandes leva mais tempo; 20s era insuficiente.
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	// 90s (era 20s) — ListMonitoredPods agora pagina de verdade (listEntitiesBySelectorMaxPages,
+	// até 50 páginas/25.000 entidades) pra não descartar resultado além do teto antigo (bugs reais
+	// confirmados: cluster AKS com 103 nós tinha 4.561 PROCESS_GROUP_INSTANCE cortadas em 500; o
+	// cluster EKS asaplog-production tem 10.804 CLOUD_APPLICATION_INSTANCE, cortadas em 10.000 com
+	// um teto de 20 páginas testado antes deste). Paginar mais fundo leva mais tempo — margem
+	// generosa pro pior caso (cluster com bastante churn de CronJobs acumulando entidades).
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
 	defer cancel()
 
-	// O nome real da entidade no Dynatrace (HOST_GROUP/KUBERNETES_CLUSTER) nunca tem o sufixo
-	// "-admin" que os contexts do kubeconfig usam — sem isso, ListMonitoredPods nunca casava com
-	// nada mesmo depois de corrigida a correlação em si (bug real: confirmado que
-	// "akspriv-logreversa-prd-admin" retornava 0 pods, "akspriv-logreversa-prd" retornava 166).
-	monitored, err := dtc.ListMonitoredPods(ctx, strings.TrimSuffix(cluster, "-admin"))
+	// dtclient.NormalizeClusterName cobre 2 casos onde o identificador de cluster usado
+	// internamente pelo app não bate com o nome da entidade no Dynatrace: sufixo "-admin" (AKS) e
+	// ARN completo de EKS sem alias amigável (bug real confirmado: `selectedCluster` no frontend
+	// vem de `cluster.context`, não `cluster.name` — pra um cluster como "asaplog-production" isso
+	// é o ARN inteiro, não o nome curto; sem normalizar, nem o nome exato nem o fallback fuzzy
+	// tinham qualquer chance de achar a entidade certa).
+	monitored, err := dtc.ListMonitoredPods(ctx, dtclient.NormalizeClusterName(cluster))
 	if err != nil {
 		// Falha transitória na API do Dynatrace — não bloquear a tela, mas o cluster É suportado
 		// (cluster_supported continua true), só sem dados de monitoramento nesta chamada.
