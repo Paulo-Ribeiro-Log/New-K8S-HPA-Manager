@@ -20,7 +20,7 @@ import type {
   PodSummary,
   BatchPodMetrics,
 } from "@/lib/api/types";
-import { useDaemonSets } from "@/hooks/useAPI";
+import { useDaemonSets, useDynatracePodStatus } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -43,6 +43,7 @@ import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { DaemonSetMonitorTable } from "@/components/DaemonSetMonitorTable";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { useUserProfile } from "@/hooks/useUserProfile";
 
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
@@ -73,6 +74,11 @@ export const DaemonSetsTab = ({
 }: DaemonSetsTabProps) => {
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
   const canWriteDaemonSets = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteDaemonSets : undefined;
+  // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
+  // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia
+  // mas nunca renderizava nada aqui (dtHasLoaded sempre false por padrão).
+  const { user: dtUser } = useUserProfile();
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded } = useDynatracePodStatus(cluster, dtUser?.email);
 
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('daemonsets', 'searchQuery', "");
@@ -805,6 +811,9 @@ export const DaemonSetsTab = ({
                 loading={monitorPodsLoading}
                 metrics={batchMetrics}
                 metricsLoading={false}
+                dtClusterSupported={dtClusterSupported}
+                dtMonitoredKeys={dtMonitoredKeys}
+                dtHasLoaded={dtHasLoaded}
                 onOpenDetail={(pod) => setQuickViewPod(pod)}
                 headerLabel={`${rightView.daemonSet.name} — pods (${monitorPods.length})`}
                 breadcrumb={[

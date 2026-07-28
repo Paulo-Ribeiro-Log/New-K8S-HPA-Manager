@@ -27,7 +27,7 @@ import type {
   PodSummary,
   BatchPodMetrics,
 } from "@/lib/api/types";
-import { useDeployments } from "@/hooks/useAPI";
+import { useDeployments, useDynatracePodStatus } from "@/hooks/useAPI";
 import { DeploymentMonitorTable } from "@/components/DeploymentMonitorTable";
 import { PodMonitorTable } from "@/components/PodMonitorTable";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
@@ -59,6 +59,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { useUserProfile } from "@/hooks/useUserProfile";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
@@ -99,6 +100,11 @@ export const DeploymentsTab = ({
   // Permissões K8s reais — usa namespace do deployment selecionado ou o namespace filtrado
   const activeNamespace = selectedDeployment?.namespace || selectedNamespace;
   const { permissions: k8sPerms } = useK8sPermissions(cluster, activeNamespace);
+  // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
+  // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia
+  // mas nunca renderizava nada aqui (dtHasLoaded sempre false por padrão).
+  const { user: dtUser } = useUserProfile();
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded } = useDynatracePodStatus(cluster, dtUser?.email);
 
   // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<DeploymentManifest | null>(null);
@@ -2699,6 +2705,9 @@ export const DeploymentsTab = ({
                 loading={monitorPodsLoading}
                 metrics={batchMetrics}
                 metricsLoading={false}
+                dtClusterSupported={dtClusterSupported}
+                dtMonitoredKeys={dtMonitoredKeys}
+                dtHasLoaded={dtHasLoaded}
                 onOpenDetail={(pod) => setQuickViewPod(pod)}
                 headerLabel={`${rightView.deployment.name} — pods (${monitorPods.length})`}
                 breadcrumb={[
