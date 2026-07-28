@@ -1,6 +1,6 @@
 # Plano: Gráfico de Comportamento do Deployment + Indicador Dynatrace na aba Pods
 
-Status: 🚧 Fase 0 implementada (branch `feat/pods-dynatrace-monitoring-status`) — falta só teste manual no navegador. Fases 1-3 ainda não iniciadas.
+Status: ✅ Fase 0 concluída (branch `feat/pods-dynatrace-monitoring-status`, mergeada com `main` local). Fases 1-3 ainda não iniciadas.
 
 ## Contexto
 
@@ -37,7 +37,7 @@ Três estados visuais nas duas listas de pods (painel esquerdo — cards; painel
 - [x] `internal/web/frontend/src/components/PodsPanel.tsx`: ícone no card do painel esquerdo (`useUserProfile()` fornece o `ai_email`), condicionado a `dtHasLoaded`
 - [x] `internal/web/frontend/src/components/PodMonitorTable.tsx`: nova coluna FIXA "DT" (24px, sem `ResizeHandle`, inserida entre `dot` e `READY` — `INITIAL_WIDTHS` e todos os índices de `resize()` de READY em diante deslocados em +1). Recebe `dtClusterSupported`/`dtMonitoredKeys`/`dtHasLoaded` como props do painel pai (`PodsPanel.tsx`) em vez de rodar o próprio polling — evita duplicar a chamada entre os dois painéis
 - [x] Verificação automatizada: `go build ./...`, `go vet ./internal/dynatrace/... ./internal/web/handlers/...`, `tsc --noEmit`, `npm run lint` (sem novos erros — só 1 warning `react-refresh/only-export-components` em `DynatraceStatusIcon.tsx` por exportar `resolveDynatraceStatus` junto do componente, mesmo padrão já tolerado em outros arquivos do repo)
-- [ ] Teste manual no navegador (`./rebuild-web.sh -b` + Ctrl+Shift+R): cluster AKS+DT com mix de pods monitorados/não, cluster sem DT → tudo `Ban` — **pendente**, não executado nesta rodada
+- [x] Teste manual no navegador — validado contra um cluster k3s real (não-AKS, via Docker): `GET /dynatrace-status` retorna `cluster_supported:false`, ícone `Ban` (cinza) aparece corretamente nos dois painéis (card esquerdo e coluna da `PodMonitorTable`), sem erros de console. **Caminho `cluster_supported=false` confirmado; os estados "monitorado" (verde) e "não monitorado" (âmbar) ainda não foram validados contra um cluster AKS real com Dynatrace configurado** — este ambiente de sandbox não tem acesso a nenhum cluster AKS real nem credenciais Dynatrace; validar no ambiente do usuário antes de considerar 100% coberto.
 
 ---
 
