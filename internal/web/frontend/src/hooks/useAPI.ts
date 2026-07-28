@@ -440,7 +440,11 @@ export function useDynatracePodStatus(cluster?: string, aiEmail?: string) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cluster, aiEmail]);
 
-  return { clusterSupported, monitoredKeys, hasLoaded };
+  // refetch — permite ao painel (botão "Atualizar" de Pods/Deployments/DaemonSets) forçar uma
+  // nova checagem em vez de esperar o poll de 3min ou o cache de 2min do backend expirar. Útil
+  // sobretudo depois da correção de paginação: um cluster grande que antes só retornava as
+  // primeiras 500 entidades (bug real corrigido) se beneficia de poder re-checar sob demanda.
+  return { clusterSupported, monitoredKeys, hasLoaded, refetch: fetchStatus };
 }
 
 export function useSecrets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {

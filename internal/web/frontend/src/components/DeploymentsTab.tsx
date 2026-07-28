@@ -59,7 +59,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
-import { useUserProfile } from "@/hooks/useUserProfile";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
@@ -103,8 +102,12 @@ export const DeploymentsTab = ({
   // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
   // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia
   // mas nunca renderizava nada aqui (dtHasLoaded sempre false por padrão).
-  const { user: dtUser } = useUserProfile();
-  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded } = useDynatracePodStatus(cluster, dtUser?.email);
+  // Mesma fonte de e-mail usada pela aba Dynatrace/AI Diagnostics (localStorage["ai_email"]) —
+  // não o e-mail de claims do JWT: em modo de token estático (sem K8S_HPA_JWT_SECRET, o padrão
+  // deste app) nunca há JWT, então useUserProfile() fica sempre com e-mail vazio, e o backend
+  // nunca acha o token Dynatrace salvo do usuário — cluster_supported saía sempre false.
+  const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
 
   // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<DeploymentManifest | null>(null);
@@ -591,6 +594,7 @@ export const DeploymentsTab = ({
   const refreshDeployments = () => {
     if (!cluster) return;
     refetch();
+    refetchDtStatus();
   };
 
   const refreshManifest = async () => {

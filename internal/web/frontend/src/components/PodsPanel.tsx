@@ -26,7 +26,6 @@ import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { useDynatracePodStatus } from "@/hooks/useAPI";
-import { useUserProfile } from "@/hooks/useUserProfile";
 import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
 import { PodTerminal } from "@/components/PodTerminal";
 import { PodFileTransferModal } from "@/components/PodFileTransferModal";
@@ -66,8 +65,15 @@ export const PodsPanel = ({
 }: PodsPanelProps) => {
   const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
-  const { user } = useUserProfile();
-  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded } = useDynatracePodStatus(cluster, user?.email);
+  // Mesma fonte de e-mail usada pela aba Dynatrace/AI Diagnostics (localStorage["ai_email"],
+  // configurado em AI Settings) — não o e-mail de claims do JWT: em modo de token estático
+  // (K8S_HPA_JWT_SECRET não configurado, o padrão neste app) não há JWT nenhum, então
+  // apiClient.getTokenClaims() sempre retorna null e o e-mail de useUserProfile() fica sempre
+  // vazio. Bug real corrigido: isso fazia dynatraceClientForPods("") nunca achar o token salvo
+  // do usuário, então cluster_supported saía sempre false — ícone vermelho "não suportado" pra
+  // todo mundo, mesmo com um token Dynatrace funcionando de verdade na aba Dynatrace.
+  const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
   const canWritePods = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWritePods : undefined;
 
   // ✅ Estados com persistência entre trocas de aba
@@ -1001,7 +1007,7 @@ export const PodsPanel = ({
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
       </Button>
-      <Button variant="outline" size="sm" onClick={() => fetchPods()} disabled={!cluster || loading}>
+      <Button variant="outline" size="sm" onClick={() => { fetchPods(); refetchDtStatus(); }} disabled={!cluster || loading}>
         <RefreshCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
       </Button>
       {selectedPod && (
