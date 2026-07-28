@@ -2118,6 +2118,23 @@ export interface RedisServerInfo {
   keyspace_hits: number;
   keyspace_misses: number;
   hit_rate_pct: number;
+  // instantaneous_ops_per_sec é o throughput ATUAL (comandos/segundo, amostrado pelo próprio
+  // Redis) — direto do INFO, não calculado por nós.
+  instantaneous_ops_per_sec: number;
+  // total_reads_processed/total_writes_processed são contadores ACUMULADOS desde o start do
+  // processo (nível de syscall de socket, não "comandos de leitura/escrita" classificados por
+  // nós). read_pct/write_pct somam 100 entre si; -1 quando reads+writes == 0 (sem dado ainda,
+  // não deve ser mostrado como 0%).
+  total_reads_processed: number;
+  total_writes_processed: number;
+  read_pct: number;
+  write_pct: number;
+  // avg_latency_ms é a latência REAL média por chamada (soma de usec / soma de calls de TODAS as
+  // entradas cmdstat_* do INFO, seção Commandstats — só presente em `INFO all`, ausente do INFO
+  // default). -1 quando não há nenhum comando registrado ainda.
+  avg_latency_ms: number;
+  slowest_command?: string;
+  slowest_command_latency_ms: number;
 }
 
 // RedisInfoField/RedisInfoSection são o parsing genérico e completo de `redis-cli INFO` em seções

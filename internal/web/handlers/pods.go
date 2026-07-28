@@ -699,6 +699,10 @@ func (h *PodHandler) GetLogs(c *gin.Context) {
 	containerName := c.Query("container")
 	tailStr := c.Query("tail")
 	previous := c.Query("previous") == "true"
+	// timestamps prefixa cada linha com um RFC3339Nano (mesmo campo nativo do `kubectl logs
+	// --timestamps`) — usado pelo modal "Ver Logs de Todos" pra intercalar linhas de vários pods
+	// por tempo real. Opcional e retrocompatível: default false, ninguém mais precisa passar.
+	timestamps := c.Query("timestamps") == "true"
 
 	if cluster == "" || namespace == "" || podName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -731,6 +735,10 @@ func (h *PodHandler) GetLogs(c *gin.Context) {
 
 	if previous {
 		opts.Previous = true
+	}
+
+	if timestamps {
+		opts.Timestamps = true
 	}
 
 	if tailStr != "" {

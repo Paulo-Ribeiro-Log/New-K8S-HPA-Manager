@@ -869,6 +869,20 @@ func (s *Server) setupRoutes() {
 	// Pods Summary
 	pods.GET("/:cluster/:namespace/summary", podHandler.GetSummary)
 
+	// Logs de todos os pods (filtrados) de uma vez, ao vivo (Follow=true) — grupo próprio (não
+	// aninhado em /pods) pra não colidir com as rotas wildcard /pods/:cluster/:namespace/:name
+	// (mesmo motivo de /db-test, /kafka-test serem grupos próprios em vez de sub-rotas de
+	// recursos existentes).
+	podLogsStreamHandler := handlers.NewPodLogsStreamHandler(s.kubeManager, handlers.GetProgressTracker())
+	s.router.GET("/api/v1/pod-logs-stream/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		podLogsStreamHandler.Stream)
+	podLogsStream := api.Group("/pod-logs-stream")
+	{
+		podLogsStream.POST("", podLogsStreamHandler.StreamAll)
+		podLogsStream.POST("/:sessionId/cancel", podLogsStreamHandler.Cancel)
+	}
+
 	// Events
 	eventHandler := handlers.NewEventHandler(s.kubeManager)
 	events := api.Group("/events")
