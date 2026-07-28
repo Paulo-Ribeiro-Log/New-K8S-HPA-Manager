@@ -596,7 +596,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
     if (activeTab === "logs" && autoRefresh) {
-      intervalRef.current = setInterval(fetchLogs, 5000);
+      intervalRef.current = setInterval(fetchLogs, 2000);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [activeTab, autoRefresh, fetchLogs]);
