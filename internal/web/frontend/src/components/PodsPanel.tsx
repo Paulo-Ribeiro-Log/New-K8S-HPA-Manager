@@ -1240,10 +1240,15 @@ export const PodsPanel = ({
                 className="flex-1 text-left"
               >
                 <div className="flex items-center gap-2 mb-1">
-                  {dtHasLoaded && (
+                  {dtHasLoaded ? (
                     <DynatraceStatusIcon
                       status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys, getPodKey(pod))}
                     />
+                  ) : (
+                    // Enquanto a 1ª consulta ao Dynatrace não resolve (pode levar vários segundos
+                    // em clusters grandes), mostra "carregando" em vez de deixar em branco — antes
+                    // parecia travado/não configurado.
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground/50" />
                   )}
                   <div className="font-semibold text-sm truncate flex-1">{pod.name}</div>
                   <Badge variant="outline" className={`text-xs ${getPhaseColor(pod.statusReason || pod.phase)}`}>
