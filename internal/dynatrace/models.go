@@ -174,6 +174,48 @@ type K8sCorrelation struct {
 // Também trata tags com Context="KUBERNETES" (formato usado por KUBERNETES_NAMESPACE e APPLICATION).
 func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 	corr := &K8sCorrelation{}
+
+	// properties.metadata (PROCESS_GROUP_INSTANCE) processado ANTES do loop de tags — bug real
+	// confirmado contra um tenant real (cluster AKS akspriv-adanalytics-prd): a tag
+	// "app.kubernetes.io/name" é usada nesse tenant como identificador de PRODUTO/grupo (ex:
+	// "adanalytics" para TODOS os deployments comercial-sortimento-*), não do Deployment
+	// específico — mas o código antes processava essa tag PRIMEIRO (guard "if corr.Workload=="""
+	// no loop abaixo), então KUBERNETES_BASE_POD_NAME (o nome real do Deployment, derivado
+	// estruturalmente do nome do pod pelo próprio OneAgent — não depende de convenção humana de
+	// labels) nunca tinha chance de ser usado pra PGIs que já tinham essa tag. Resultado:
+	// ResolveEntityIDsForWorkload/GetProblemsForEntitiesInWindow (overlay de problems da Fase 2)
+	// nunca encontrava nenhuma entidade pra Deployments desse cluster, mesmo com PGIs reais
+	// existindo e corretamente instrumentadas. Processar metadata primeiro garante que o valor
+	// estrutural (mais confiável) vença; tags com nome inequívoco tipo "kubernetes.workload.name"
+	// (sem guard, abaixo) continuam podendo sobrescrever se realmente existirem.
+	if metadata, ok := e.Properties["metadata"].([]interface{}); ok {
+		for _, raw := range metadata {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			key, _ := item["key"].(string)
+			value, _ := item["value"].(string)
+			if value == "" {
+				continue
+			}
+			switch key {
+			case "KUBERNETES_NAMESPACE":
+				if corr.Namespace == "" {
+					corr.Namespace = value
+				}
+			case "KUBERNETES_FULL_POD_NAME":
+				if corr.PodName == "" {
+					corr.PodName = value
+				}
+			case "KUBERNETES_BASE_POD_NAME":
+				if corr.Workload == "" {
+					corr.Workload = strings.TrimSuffix(value, "-*")
+				}
+			}
+		}
+	}
+
 	for _, tag := range e.Tags {
 		// Tags com contexto KUBERNETES explícito (usadas por KUBERNETES_NAMESPACE, APPLICATION, etc.)
 		// Ex: {Context:"KUBERNETES", Key:"namespace", Value:"tms-embarcador"}
@@ -230,42 +272,6 @@ func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 			corr.GitHubRepoID = tag.Value
 		case "app.kubernetes.io/environment":
 			corr.Environment = tag.Value
-		}
-	}
-
-	// Fallback via properties.metadata — PROCESS_GROUP_INSTANCE (usada por clusters em modo
-	// OneAgent "classicFullStack", que é o modo da maioria da frota real — confirmado via
-	// `kubectl get dynakube -o yaml` contra vários clusters reais) não carrega tags úteis nem as
-	// properties planas (namespaceName/workloadName/detectedName) usadas acima — os dados K8s vêm
-	// dentro de properties.metadata, uma LISTA de {key,value} (formato diferente de tudo mais
-	// aqui), com chaves KUBERNETES_NAMESPACE/KUBERNETES_FULL_POD_NAME/KUBERNETES_BASE_POD_NAME.
-	// Confirmado empiricamente contra o tenant real (imagem/link compartilhados pelo usuário
-	// mostrando pods reais em Process Group Instances que o resto do código nunca enxergava).
-	if metadata, ok := e.Properties["metadata"].([]interface{}); ok {
-		for _, raw := range metadata {
-			item, ok := raw.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			key, _ := item["key"].(string)
-			value, _ := item["value"].(string)
-			if value == "" {
-				continue
-			}
-			switch key {
-			case "KUBERNETES_NAMESPACE":
-				if corr.Namespace == "" {
-					corr.Namespace = value
-				}
-			case "KUBERNETES_FULL_POD_NAME":
-				if corr.PodName == "" {
-					corr.PodName = value
-				}
-			case "KUBERNETES_BASE_POD_NAME":
-				if corr.Workload == "" {
-					corr.Workload = strings.TrimSuffix(value, "-*")
-				}
-			}
 		}
 	}
 

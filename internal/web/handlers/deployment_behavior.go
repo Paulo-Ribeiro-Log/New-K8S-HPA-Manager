@@ -257,9 +257,19 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	}
 
 	// ─── 2b. Overlay de problems (Fase 2) — aditivo, não depende de qual fonte a série usou ───
-	if dtEntityFound {
-		if problems, perr := dtc.GetProblemsForEntityInWindow(ctx, dtEntityID, start, end); perr == nil && len(problems) > 0 {
-			resp.DynatraceProblems = dtProblemsToMarkers(problems)
+	//
+	// Bug real corrigido: usava só dtEntityID/dtEntityFound (CLOUD_APPLICATION, Cloud Native Full
+	// Stack) — mas a MAIORIA da frota AKS roda OneAgent em modo classicFullStack, que nunca cria
+	// CLOUD_APPLICATION nenhuma. Nesses clusters (o caso comum, não o exceção) dtEntityFound era
+	// sempre false e o overlay nunca aparecia, mesmo com problems reais existindo no Dynatrace
+	// pra aquele workload. ResolveEntityIDsForWorkload cobre os dois modos (CLOUD_APPLICATION
+	// quando existe; senão PROCESS_GROUP_INSTANCE por réplica via HOST_GROUP — mesma correlação
+	// já usada pelo indicador de monitoramento da aba Pods).
+	if dtc != nil {
+		if entityIDs, ierr := dtc.ResolveEntityIDsForWorkload(ctx, dtclient.NormalizeClusterName(cluster), namespace, deployment); ierr == nil && len(entityIDs) > 0 {
+			if problems, perr := dtc.GetProblemsForEntitiesInWindow(ctx, entityIDs, start, end); perr == nil && len(problems) > 0 {
+				resp.DynatraceProblems = dtProblemsToMarkers(problems)
+			}
 		}
 	}
 
