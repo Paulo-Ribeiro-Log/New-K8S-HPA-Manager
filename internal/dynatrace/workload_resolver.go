@@ -63,6 +63,66 @@ func (c *Client) ResolveEntityForWorkload(ctx context.Context, clusterName, name
 	return entityID, found, nil
 }
 
+// workloadEntityIDsCacheEntry guarda o resultado de ResolveEntityIDsForWorkload — separado de
+// workloadResolverCacheEntry porque o shape difere (slice, não um único ID).
+type workloadEntityIDsCacheEntry struct {
+	entityIDs []string
+	cachedAt  time.Time
+}
+
+var workloadEntityIDsCache sync.Map
+
+// ResolveEntityIDsForWorkload retorna TODOS os entityIDs Dynatrace relevantes pra um workload —
+// usado pelo overlay de problems (Fase 2), que precisa cobrir tanto Cloud Native Full Stack
+// quanto classicFullStack.
+//
+// Tenta CLOUD_APPLICATION primeiro (ResolveEntityForWorkload — 1 entidade por workload inteiro,
+// só existe em clusters Cloud Native Full Stack). Bug real corrigido: a MAIORIA da frota AKS usa
+// OneAgent em modo classicFullStack (confirmado via `kubectl get dynakube -o yaml` contra vários
+// clusters reais), que NUNCA cria CLOUD_APPLICATION — nesses clusters ResolveEntityForWorkload
+// sempre retornava found=false, então o overlay de problems nunca aparecia pra nenhum Deployment
+// rodando em AKS "clássico", só nos poucos clusters Cloud Native Full Stack (ex: o EKS usado pra
+// validar a Fase 2 originalmente). Fallback: PROCESS_GROUP_INSTANCE via HOST_GROUP — mesma
+// correlação já usada por ListMonitoredPods (pod_monitoring.go) pro indicador de monitoramento na
+// aba Pods. Como cada réplica do Deployment tem sua própria PROCESS_GROUP_INSTANCE, pode retornar
+// MÚLTIPLOS IDs (um por pod/processo) — problems de cada um são buscados e mesclados pelo
+// chamador (deployment_behavior.go).
+func (c *Client) ResolveEntityIDsForWorkload(ctx context.Context, clusterName, namespace, deploymentName string) ([]string, error) {
+	key := workloadResolverCacheKey(clusterName, namespace, deploymentName)
+	if raw, ok := workloadEntityIDsCache.Load(key); ok {
+		entry := raw.(workloadEntityIDsCacheEntry)
+		if time.Since(entry.cachedAt) < workloadResolverCacheTTL {
+			return entry.entityIDs, nil
+		}
+		workloadEntityIDsCache.Delete(key)
+	}
+
+	var ids []string
+
+	if id, found, err := c.ResolveEntityForWorkload(ctx, clusterName, namespace, deploymentName); err == nil && found {
+		ids = []string{id}
+	} else {
+		pgiStubs, perr := c.ListProcessGroupInstancesByHostGroup(ctx, clusterName)
+		if perr != nil {
+			return nil, fmt.Errorf("ResolveEntityIDsForWorkload: %w", perr)
+		}
+		seen := make(map[string]bool)
+		for _, stub := range c.EnrichEntitiesWithK8s(ctx, pgiStubs) {
+			if !strings.EqualFold(stub.K8sNamespace, namespace) || !strings.EqualFold(stub.K8sWorkload, deploymentName) {
+				continue
+			}
+			if seen[stub.EntityID.ID] {
+				continue
+			}
+			seen[stub.EntityID.ID] = true
+			ids = append(ids, stub.EntityID.ID)
+		}
+	}
+
+	workloadEntityIDsCache.Store(key, workloadEntityIDsCacheEntry{entityIDs: ids, cachedAt: time.Now()})
+	return ids, nil
+}
+
 // GetDeploymentBehaviorMetrics busca a série temporal de métricas de workload K8s
 // (k8sWorkloadMetricDefs: pods_running/pods_ready_pct/pod_restarts/cpu_milli/cpu_throttle/
 // memory_mb) para uma entidade CLOUD_APPLICATION já resolvida via ResolveEntityForWorkload —

@@ -934,6 +934,80 @@ func (c *Client) GetProblemsForEntityInWindow(ctx context.Context, entityID stri
 	return problems, nil
 }
 
+// getProblemsForEntitiesInWindowMaxEntities limita quantos entityIDs GetProblemsForEntitiesInWindow
+// consulta em paralelo — um Deployment com muitas réplicas (ex: 35, visto em cluster real) resolve
+// pra um PROCESS_GROUP_INSTANCE por pod (ver ResolveEntityIDsForWorkload); sem teto, um workload
+// grande dispararia dezenas de chamadas simultâneas à API do Dynatrace só pra montar o overlay de
+// um único gráfico. 10 é generoso o bastante pra achar os problems reais sem explodir chamadas.
+const getProblemsForEntitiesInWindowMaxEntities = 10
+
+// GetProblemsForEntitiesInWindow busca problems de múltiplas entidades em paralelo e mescla o
+// resultado, deduplicando por ProblemID — necessário porque ResolveEntityIDsForWorkload pode
+// retornar uma entidade por CLOUD_APPLICATION (Cloud Native Full Stack) OU várias
+// PROCESS_GROUP_INSTANCE, uma por réplica (classicFullStack, a maioria da frota AKS real). Um
+// mesmo problem geralmente afeta várias réplicas ao mesmo tempo — sem dedupe apareceria repetido
+// no overlay.
+func (c *Client) GetProblemsForEntitiesInWindow(ctx context.Context, entityIDs []string, from, to time.Time) ([]Problem, error) {
+	if len(entityIDs) > getProblemsForEntitiesInWindowMaxEntities {
+		entityIDs = entityIDs[:getProblemsForEntitiesInWindowMaxEntities]
+	}
+
+	type entityResult struct {
+		problems []Problem
+		err      error
+	}
+	results := make([]entityResult, len(entityIDs))
+	var wg sync.WaitGroup
+	wg.Add(len(entityIDs))
+	for i, id := range entityIDs {
+		go func(i int, id string) {
+			defer wg.Done()
+			problems, err := c.GetProblemsForEntityInWindow(ctx, id, from, to)
+			results[i] = entityResult{problems: problems, err: err}
+		}(i, id)
+	}
+	wg.Wait()
+
+	problemLists := make([][]Problem, 0, len(results))
+	var firstErr error
+	for _, r := range results {
+		if r.err != nil {
+			if firstErr == nil {
+				firstErr = r.err
+			}
+			continue
+		}
+		problemLists = append(problemLists, r.problems)
+	}
+
+	merged := mergeProblemsDedup(problemLists)
+	// Só propaga erro se NENHUMA entidade retornou problems e todas falharam — uma falha parcial
+	// (ex: 1 de 5 réplicas com erro transitório) não deve esconder os problems que as outras
+	// acharam com sucesso.
+	if len(merged) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return merged, nil
+}
+
+// mergeProblemsDedup mescla várias listas de problems (uma por entidade consultada) num único
+// slice, deduplicando por ProblemID — extraído em função pura pra ser testável sem precisar de um
+// cliente Dynatrace real (a paralelização em si não tem lógica de negócio pra testar).
+func mergeProblemsDedup(problemLists [][]Problem) []Problem {
+	seen := make(map[string]bool)
+	var merged []Problem
+	for _, problems := range problemLists {
+		for _, p := range problems {
+			if seen[p.ProblemID] {
+				continue
+			}
+			seen[p.ProblemID] = true
+			merged = append(merged, p)
+		}
+	}
+	return merged
+}
+
 // EnrichStub busca detalhes de uma única entidade e preenche DisplayName, K8s e DTLabels.
 func (c *Client) EnrichStub(ctx context.Context, stub EntityStub) EntityStub {
 	entity, err := c.GetEntity(ctx, stub.EntityID.ID)

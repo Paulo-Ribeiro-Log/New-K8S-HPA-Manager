@@ -146,3 +146,62 @@ func TestExtractK8sCorrelation_NoData_ReturnsNil(t *testing.T) {
 		t.Errorf("esperava nil pra entidade sem nenhum dado correlacionável, got %+v", corr)
 	}
 }
+
+// TestExtractK8sCorrelation_MetadataWorkloadBeatsGenericAppNameTag cobre o bug real confirmado
+// contra um cluster AKS real (akspriv-adanalytics-prd): a tag "app.kubernetes.io/name" é usada
+// nesse tenant como identificador de PRODUTO/grupo (ex: "adanalytics" para TODOS os deployments
+// comercial-sortimento-*, não o nome do Deployment específico) — mas o código processava essa tag
+// ANTES do bloco de properties.metadata, então KUBERNETES_BASE_POD_NAME (o nome real do
+// Deployment) nunca tinha chance de vencer pra PGIs que já tinham essa tag. Resultado real:
+// ResolveEntityIDsForWorkload nunca encontrava a entidade certa de nenhum Deployment desse
+// cluster (overlay de problems da Fase 2 sempre vazio), mesmo com PGIs reais existindo.
+func TestExtractK8sCorrelation_MetadataWorkloadBeatsGenericAppNameTag(t *testing.T) {
+	e := &Entity{
+		DisplayName: "gunicorn comercial-sortimento-kafka-consumidor-* (comercial-sortimento-kafka-consumidor-79d47b475-7ggqb)",
+		Tags: []Tag{
+			// tag real confirmada contra o tenant — valor de PRODUTO, não do Deployment
+			{Context: "KUBERNETES", Key: "app.kubernetes.io/name", Value: "adanalytics"},
+		},
+		Properties: map[string]interface{}{
+			"metadata": []interface{}{
+				map[string]interface{}{"key": "KUBERNETES_NAMESPACE", "value": "adanalytics-prd"},
+				map[string]interface{}{"key": "KUBERNETES_FULL_POD_NAME", "value": "comercial-sortimento-kafka-consumidor-79d47b475-7ggqb"},
+				map[string]interface{}{"key": "KUBERNETES_BASE_POD_NAME", "value": "comercial-sortimento-kafka-consumidor-*"},
+			},
+		},
+	}
+
+	corr := e.ExtractK8sCorrelation()
+	if corr == nil {
+		t.Fatal("esperava correlação não-nil")
+	}
+	if corr.Workload != "comercial-sortimento-kafka-consumidor" {
+		t.Errorf("Workload = %q, want %q (metadata deveria vencer sobre a tag app.kubernetes.io/name)", corr.Workload, "comercial-sortimento-kafka-consumidor")
+	}
+	if corr.AppName != "adanalytics" {
+		t.Errorf("AppName = %q, want %q (a tag continua populando AppName normalmente, só não deveria vencer Workload)", corr.AppName, "adanalytics")
+	}
+}
+
+// TestExtractK8sCorrelation_ExplicitWorkloadTagStillWins garante que a correção acima não regride
+// o caso em que a tag "kubernetes.workload.name" (nome inequívoco, não um heurístico como
+// app.kubernetes.io/name) realmente existe — essa continua tendo prioridade sobre o metadata.
+func TestExtractK8sCorrelation_ExplicitWorkloadTagStillWins(t *testing.T) {
+	e := &Entity{
+		Tags: []Tag{
+			{Key: "kubernetes.workload.name", Value: "workload-explicito"},
+		},
+		Properties: map[string]interface{}{
+			"metadata": []interface{}{
+				map[string]interface{}{"key": "KUBERNETES_BASE_POD_NAME", "value": "workload-do-metadata-*"},
+			},
+		},
+	}
+	corr := e.ExtractK8sCorrelation()
+	if corr == nil {
+		t.Fatal("esperava correlação não-nil")
+	}
+	if corr.Workload != "workload-explicito" {
+		t.Errorf("Workload = %q, want %q (tag explícita deveria vencer o metadata)", corr.Workload, "workload-explicito")
+	}
+}

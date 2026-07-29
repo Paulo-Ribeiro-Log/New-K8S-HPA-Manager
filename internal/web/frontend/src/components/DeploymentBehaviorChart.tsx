@@ -357,7 +357,10 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
               {dtProblemMarkers.length > 0 && ` · ${dtProblemMarkers.length} problema${dtProblemMarkers.length !== 1 ? "s" : ""} Dynatrace`}
             </p>
             <ChartContainer config={repChartConfig} className="h-[140px] w-full">
-              <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              {/* top:20 (não 8) — o label "de→para" dos eventos de escala (abaixo) precisa de
+                  espaço acima da linha do gráfico; com margem de 8px o texto ficava cortado, fora
+                  da área visível do ComposedChart. */}
+              <ComposedChart data={chartData} margin={{ top: 20, right: 8, left: -18, bottom: 0 }}>
                 <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} interval={xInterval} />
                 <YAxis tick={{ fontSize: 9 }} tickLine={false} axisLine={false} allowDecimals={false} />
                 <ChartTooltip
@@ -385,8 +388,18 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                 {dtProblemMarkers.map((m) => (
                   <ReferenceArea key={m.problemId} x1={m.x1} x2={m.x2} fill={severityColor(m.severity)} fillOpacity={0.15} stroke={severityColor(m.severity)} strokeOpacity={0.5} strokeWidth={1} ifOverflow="extendDomain" />
                 ))}
+                {/* label explícito — antes a linha tracejada não tinha nenhuma indicação do que
+                    representava (fácil de confundir com o overlay de problems Dynatrace, cor
+                    parecida); agora mostra "de→para" réplicas diretamente no gráfico. */}
                 {scaleEventMarkers.map((m, i) => (
-                  <ReferenceLine key={i} x={m.time} stroke="#f59e0b" strokeDasharray="3 3" strokeWidth={1} />
+                  <ReferenceLine
+                    key={i}
+                    x={m.time}
+                    stroke="#f59e0b"
+                    strokeDasharray="3 3"
+                    strokeWidth={1}
+                    label={{ value: `${m.event.from_replicas}→${m.event.to_replicas}`, position: "top", fontSize: 9, fill: "#f59e0b" }}
+                  />
                 ))}
                 <Line type="stepAfter" dataKey="replicas_desired" stroke={repChartConfig.replicas_desired.color} strokeWidth={1.5} dot={false} />
                 <Line type="monotone" dataKey="replicas_current" stroke={repChartConfig.replicas_current.color} strokeWidth={1.5} dot={false} />
@@ -401,6 +414,12 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: repChartConfig.replicas_desired.color }} />Desejadas</span>
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: repChartConfig.replicas_current.color }} />Atuais</span>
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: repChartConfig.replicas_ready.color }} />Prontas</span>
+              {scaleEventMarkers.length > 0 && (
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-3 h-0.5 border-t border-dashed" style={{ borderColor: "#f59e0b" }} />
+                  Mudança de escala
+                </span>
+              )}
               {compareOffsets.map((offset) => (
                 <span key={offset} className="flex items-center gap-1">
                   <span className="inline-block w-3 h-0.5" style={{ backgroundColor: COMPARE_COLORS[offset] }} />
