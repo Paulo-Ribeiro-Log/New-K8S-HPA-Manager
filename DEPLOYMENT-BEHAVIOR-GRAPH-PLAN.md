@@ -1,6 +1,6 @@
 # Plano: Gráfico de Comportamento do Deployment + Indicador Dynatrace na aba Pods
 
-Status: ✅ Fase 0 concluída. ✅ Fase 1 (MVP do gráfico via Prometheus) concluída e validada contra dados reais de produção. ✅ Fase 3 (reexposição em DeploymentsTab.tsx) concluída e validada. Fase 2 (overlay de problems do Dynatrace) ainda não iniciada.
+Status: ✅ Todas as fases concluídas. Fase 0 (indicador DT na aba Pods), Fase 1 (MVP do gráfico via Prometheus + fallback Dynatrace) e Fase 3 (reexposição em DeploymentsTab.tsx) validadas contra dados reais de produção. ✅ Fase 2 (overlay de problems do Dynatrace) concluída e validada ponta a ponta contra um cluster EKS real (`asaplog-production`, workload `entregas-web`, 10 problems reais retornados com título/severidade/janela corretos).
 
 ## Contexto
 
@@ -127,13 +127,16 @@ Três estados visuais nas duas listas de pods (painel esquerdo — cards; painel
 
 ---
 
-## Fase 2 — Overlay de problems do Dynatrace (aditivo, independente da fonte)
+## Fase 2 — Overlay de problems do Dynatrace (aditivo, independente da fonte) ✅ concluída
 
-A resolução de entity (`ResolveEntityForWorkload`) já é infra da Fase 1 — aqui só falta buscar e sobrepor os *problems*. Útil mesmo quando a série veio do Prometheus (cluster pode ter as duas fontes ao mesmo tempo).
+A resolução de entity (`ResolveEntityForWorkload`) já era infra da Fase 1 — só faltava buscar e sobrepor os *problems*. Funciona mesmo quando a série veio do Prometheus (cluster pode ter as duas fontes ao mesmo tempo) — a resolução de entidade/problems roda incondicionalmente em `GetDeploymentBehavior`, não só quando `resp.Source == "none"`.
 
-- [ ] `internal/dynatrace/`: nova variante `GetProblemsForEntityInWindow(ctx, entityID, from, to time.Time) ([]Problem, error)` — `GetOpenProblemsForEntity` hoje só cobre `status("OPEN")` hardcoded; esta cobre também fechados dentro da janela (API Problems v2 suporta `timeFrom`/`timeTo` sem filtro de status)
-- [ ] `DeploymentBehaviorResponse.DynatraceProblems` populado só quando AKS + DT configurado + entity resolvido (reaproveita `ResolveEntityForWorkload` da Fase 1); `omitempty` em qualquer outro caso
-- [ ] Frontend: `ReferenceArea` (Recharts) colorida por severidade, sobreposta ao painel de réplicas/CPU em `DeploymentBehaviorChart.tsx`
+- [x] `internal/dynatrace/client.go`: `GetProblemsForEntityInWindow(ctx, entityID, from, to time.Time) ([]Problem, error)` — seletor sem `status(...)`, cobre abertos e fechados na janela via `from`/`to` epoch-ms (mesma convenção de `GetEntityEvents`). **Bug real encontrado e corrigido durante a validação**: `pageSize` inicial era 20, mas a API do Dynatrace rejeita com HTTP 400 ("Page size can't be larger than 10 if the fields parameter is set") quando `fields` está presente — mesma restrição já documentada em `GetOpenProblems`/`GetOpenProblemsForEntity`, só que não replicada aqui na primeira versão. Corrigido pra `pageSize=10`.
+- [x] `internal/web/handlers/deployment_behavior.go`: `DeploymentBehaviorResponse.DynatraceProblems` populado sempre que a entidade Dynatrace do workload resolve, **independente de cloud provider** — removido o gate "só AKS" que existia no fallback de série da Fase 1 (mesma causa raiz do bug corrigido em `pods_dynatrace_status.go`: EKS pode ter Dynatrace real via Cloud Native Full Stack, não só New Relic). Resolução de client/entidade Dynatrace extraída pra rodar uma única vez, reaproveitada tanto pelo fallback de série (2a) quanto pelo overlay de problems (2b).
+- [x] **Bug real encontrado e corrigido durante a validação** (bloqueava tanto a Fase 1 quanto a Fase 2 para qualquer cluster Cloud Native Full Stack): `ExtractK8sCorrelation` (`internal/dynatrace/models.go`) mapeava `properties["detectedName"]` sempre para `PodName`, nunca para `Workload`, em entidades `CLOUD_APPLICATION` — mas essas entidades (uma por *workload*, não por pod) não têm a property `workloadName` que o código assumia; `detectedName` É o nome do Deployment/CronJob nesse caso. Sem essa distinção por `e.Type`, `ResolveEntityForWorkload` nunca encontrava nenhum workload em clusters Cloud Native Full Stack, mesmo com a entidade existindo e corretamente correlacionada por namespace. Corrigido com um branch por `e.Type == "CLOUD_APPLICATION"` — `CLOUD_APPLICATION_INSTANCE` (pod-level) continua mapeando `detectedName` pra `PodName`, sem regressão (testes cobrindo os dois casos).
+- [x] Frontend (`DeploymentBehaviorChart.tsx`): `ReferenceArea` (Recharts) colorida por severidade (`severityColor`, mapa `AVAILABILITY/ERROR` → vermelho/laranja, `PERFORMANCE/RESOURCE_CONTENTION` → âmbar, `CUSTOM_ALERT`/desconhecido → cinza), sobreposta aos painéis de Réplicas e CPU/Memória. Timestamps de início/fim mapeados pro rótulo de tempo decimado mais próximo (mesma técnica de `scaleEventMarkers`); problem ainda `OPEN` (sem `end_ts`) estende a área até o último ponto da janela. Lista de badges com título/severidade abaixo do painel de Réplicas (`title` no hover) — `ReferenceArea` não tem tooltip nativo no Recharts.
+- [x] Verificação: `go build ./...`, `go vet`, `go test -race` (testes novos: `dtProblemsToMarkers` open/closed/vazio, `ExtractK8sCorrelation` CLOUD_APPLICATION vs CLOUD_APPLICATION_INSTANCE), `tsc --noEmit`, `eslint` — sem erros novos.
+- [x] **Validado ponta a ponta contra o cluster EKS real `asaplog-production`** (Cloud Native Full Stack + Kubernetes API Monitoring + ingest OpenTelemetry, ver contexto na seção "OpenTelemetry" abaixo): workload `entregas-web` retornou 10 problems reais (`Container restarts`, `Not all pods ready`, `Backoff event`) com título/severidade/`start_ts`/`end_ts` batendo exatamente com a API do Dynatrace consultada diretamente; workloads sem problems na janela (`entregas-service`, `cotacao-service`) corretamente retornam array vazio, não erro.
 
 ---
 

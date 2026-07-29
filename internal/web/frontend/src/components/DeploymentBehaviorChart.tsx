@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, RefreshCw, AlertTriangle } from "lucide-react";
-import { ComposedChart, Bar, Line, XAxis, YAxis, ReferenceLine } from "recharts";
+import { Loader2, RefreshCw, AlertTriangle, ExternalLink } from "lucide-react";
+import { ComposedChart, Bar, Line, XAxis, YAxis, ReferenceLine, ReferenceArea } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { apiClient } from "@/lib/api/client";
 import type { DeploymentBehaviorResponse, DeploymentBehaviorPoint } from "@/lib/api/types";
@@ -63,11 +63,42 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
+// Cores por severidade — mesma paleta de severidade já usada em outras partes do app (Dynatrace
+// SeverityLevel: AVAILABILITY | ERROR | PERFORMANCE | RESOURCE_CONTENTION | CUSTOM_ALERT).
+// AVAILABILITY/ERROR são os mais graves (serviço fora do ar) → vermelho; PERFORMANCE/
+// RESOURCE_CONTENTION → âmbar (degradação, não indisponibilidade); CUSTOM_ALERT/desconhecido →
+// cinza-azulado neutro.
+const DT_PROBLEM_SEVERITY_COLOR: Record<string, string> = {
+  AVAILABILITY: "#ef4444",
+  ERROR: "#f97316",
+  PERFORMANCE: "#eab308",
+  RESOURCE_CONTENTION: "#f59e0b",
+  CUSTOM_ALERT: "#a855f7",
+};
+
+function severityColor(severity: string): string {
+  return DT_PROBLEM_SEVERITY_COLOR[severity] ?? "#94a3b8";
+}
+
+// dtProblemUrl monta o link "Abrir no Dynatrace" de um problem — mesmo padrão já usado no botão
+// equivalente de DynatraceTab.tsx. baseUrl vem de DeploymentBehaviorResponse.dynatrace_ui_base_url
+// (já normalizado pro domínio .apps.dynatrace.com da UI, não .live.dynatrace.com da API).
+function dtProblemUrl(baseUrl: string | undefined, problemId: string): string | null {
+  if (!baseUrl) return null;
+  return `${baseUrl}/ui/apps/dynatrace.davis.problems/problem/${problemId}`;
+}
+
 // DeploymentBehaviorChart — gráfico de comportamento do Deployment (réplicas, CPU/memória %,
-// restarts) ao longo do tempo. Ver DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md (Fase 1). Prometheus é a
+// restarts) ao longo do tempo. Ver DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md (Fases 1-2). Prometheus é a
 // fonte primária; Dynatrace entra como fallback real de série temporal quando o cluster não tem
-// Prometheus (só cobre AKS — única cloud com correlação DT neste app). Sem nenhuma das duas fontes
-// disponível, mostra estado vazio explícito (não erro genérico).
+// Prometheus — funciona em qualquer cloud provider onde o workload tenha uma entidade Dynatrace
+// CLOUD_APPLICATION resolvível (Cloud Native Full Stack), não só AKS (confirmado com um cluster
+// EKS real que usa Dynatrace). Sem nenhuma das duas fontes disponível, mostra estado vazio
+// explícito (não erro genérico).
+//
+// Overlay de problems Dynatrace (Fase 2, dtProblemMarkers/ReferenceArea abaixo) é aditivo e
+// independente de qual fonte alimentou a série — aparece mesmo com source="prometheus", desde
+// que a entidade do workload resolva no Dynatrace.
 //
 // Comparação D-1/D-2/D-3 (opt-in, nunca automático) é aplicada só ao painel de Réplicas
 // (replicas_current) — decisão de escopo: aplicar a mesma comparação aos 3 painéis triplicaria a
@@ -85,10 +116,17 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     setLoading(true);
     setError(null);
     try {
+      // Bug real corrigido: aiEmail nunca era enviado aqui, mesmo o client.ts já suportando o
+      // parâmetro — sem ele, o backend nunca acha o token do Dynatrace salvo do usuário
+      // (dynatraceClientForBehavior falha) e o fallback/overlay de problems (Fases 1-2) nunca
+      // tinham chance de funcionar pela UI de verdade, só nos testes manuais via curl com
+      // ai_email explícito. Mesma fonte já usada por PodsPanel/DeploymentsTab/DaemonSetsTab.
+      const aiEmail = localStorage.getItem("ai_email") ?? undefined;
       const resp = await apiClient.getDeploymentBehavior(cluster, namespace, deployment, {
         minutes: windowMinutes,
         step: stepForWindow(windowMinutes),
         offsetDays: compareOffsets.length > 0 ? compareOffsets : undefined,
+        aiEmail,
       });
       setData(resp);
     } catch (e) {
@@ -148,43 +186,60 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     }).filter((m) => m.time !== "");
   }, [data, decimatedPoints, chartData]);
 
+  // Overlay de problems Dynatrace (Fase 2) — mesma técnica de scaleEventMarkers: mapeia o
+  // timestamp real de início/fim pro rótulo de tempo do ponto decimado mais próximo, já que o
+  // eixo X usa strings decimadas, não os timestamps originais. EndTs ausente (problem ainda OPEN)
+  // usa o último ponto da janela como fim da área sombreada.
+  const dtProblemMarkers = useMemo(() => {
+    if (!data?.dynatrace_problems?.length || decimatedPoints.length === 0) return [];
+    const nearestLabel = (ts: number) => {
+      let bestIdx = 0;
+      let bestDiff = Infinity;
+      decimatedPoints.forEach((p, idx) => {
+        const diff = Math.abs(p.ts - ts);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestIdx = idx;
+        }
+      });
+      return String(chartData[bestIdx]?.time ?? "");
+    };
+    return data.dynatrace_problems
+      .map((p) => ({
+        problemId: p.problem_id,
+        title: p.title,
+        severity: p.severity,
+        x1: nearestLabel(p.start_ts),
+        x2: p.end_ts != null ? nearestLabel(p.end_ts) : String(chartData[chartData.length - 1]?.time ?? ""),
+      }))
+      .filter((m) => m.x1 !== "" && m.x2 !== "");
+  }, [data, decimatedPoints, chartData]);
+
   const xInterval = Math.max(0, Math.floor(chartData.length / 6) - 1);
 
   const toggleCompare = (offset: number) => {
     setCompareOffsets((prev) => (prev.includes(offset) ? prev.filter((o) => o !== offset) : [...prev, offset].sort((a, b) => a - b)));
   };
 
-  if (loading && !data) {
-    return (
-      <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
-        <Loader2 className="w-4 h-4 animate-spin" /> Carregando comportamento...
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col items-center gap-2 py-10 text-center">
-        <AlertTriangle className="w-5 h-5 text-destructive" />
-        <p className="text-sm text-destructive">{error}</p>
-        <Button size="sm" variant="outline" onClick={fetchBehavior}>Tentar de novo</Button>
-      </div>
-    );
-  }
-
-  if (!data || data.source === "none") {
-    return (
-      <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm text-muted-foreground">
-        <AlertTriangle className="w-5 h-5 text-amber-500" />
-        <p>Nenhuma fonte de métricas históricas disponível para este cluster.</p>
-        <p className="text-xs">Requer Prometheus instalado no cluster, ou Dynatrace configurado (só em AKS).</p>
-      </div>
-    );
-  }
+  // Bug real corrigido: o Toolbar (seletor de janela, badges, refresh) antes só era renderizado
+  // dentro do "caminho feliz" — qualquer early-return (loading inicial, erro, ou sem fonte de
+  // dados) escondia o seletor de janela junto, deixando o usuário sem como trocar pra uma janela
+  // com dados nem como fechar/atualizar: ao escolher uma janela sem nenhum evento, a tela ficava
+  // presa sem nenhum controle visível. Toolbar agora é sempre renderizado; só o conteúdo abaixo
+  // dele varia por estado (loading/erro/vazio/gráfico).
+  //
+  // Segundo bug real corrigido (mesma rodada): o antigo early-return de "sem dados" disparava
+  // sempre que source==="none", mesmo quando dynatrace_problems vinha populado — tornando o
+  // overlay da Fase 2 inalcançável em qualquer cluster sem série de métricas (ex: Prometheus
+  // indisponível + métricas k8sWorkloadMetricDefs vazias no Dynatrace, caso real de clusters cuja
+  // telemetria de runtime vem via OpenTelemetry em vez do caminho padrão do OneAgent). Confirmado
+  // contra um cluster real: source="none"/points=0 mas dynatrace_problems com 1 problem real.
+  // Agora só cai no estado vazio total quando NÃO há nem série nem problems.
+  const showEmptyState = !loading && (!data || (data.source === "none" && !data.dynatrace_problems?.length));
 
   return (
     <div className="space-y-4 p-1">
-      {/* Toolbar */}
+      {/* Toolbar — sempre visível, mesmo em loading/erro/estado vazio */}
       <div className="flex flex-wrap items-center gap-2">
         <Select value={String(windowMinutes)} onValueChange={(v) => setWindowMinutes(Number(v))}>
           <SelectTrigger className="h-7 text-xs w-24">
@@ -197,17 +252,19 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
           </SelectContent>
         </Select>
 
-        <span
-          className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-            data.source === "dynatrace"
-              ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
-              : "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300"
-          }`}
-        >
-          {data.source === "dynatrace" ? "Dynatrace" : "Prometheus"}
-        </span>
+        {data && data.source !== "none" && (
+          <span
+            className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+              data.source === "dynatrace"
+                ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                : "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300"
+            }`}
+          >
+            {data.source === "dynatrace" ? "Dynatrace" : "Prometheus"}
+          </span>
+        )}
 
-        {data.has_hpa && (
+        {data?.has_hpa && (
           <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
             HPA ativo
           </span>
@@ -215,7 +272,7 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
 
         <div className="flex-1" />
 
-        {data.source === "prometheus" && (
+        {data?.source === "prometheus" && (
           <div className="flex items-center gap-1">
             <span className="text-[10px] text-muted-foreground">Comparar:</span>
             {COMPARE_DAYS.map((d) => {
@@ -239,8 +296,57 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
         </Button>
       </div>
 
-      {chartData.length === 0 ? (
-        <p className="text-sm text-muted-foreground text-center py-6">Sem pontos na janela selecionada.</p>
+      {loading && !data ? (
+        <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+          <Loader2 className="w-4 h-4 animate-spin" /> Carregando comportamento...
+        </div>
+      ) : error ? (
+        <div className="flex flex-col items-center gap-2 py-10 text-center">
+          <AlertTriangle className="w-5 h-5 text-destructive" />
+          <p className="text-sm text-destructive">{error}</p>
+          <Button size="sm" variant="outline" onClick={fetchBehavior}>Tentar de novo</Button>
+        </div>
+      ) : showEmptyState ? (
+        <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm text-muted-foreground">
+          <AlertTriangle className="w-5 h-5 text-amber-500" />
+          <p>Nenhuma fonte de métricas históricas disponível para este cluster.</p>
+          <p className="text-xs">Requer Prometheus instalado no cluster, ou Dynatrace configurado com o workload resolvível como CLOUD_APPLICATION.</p>
+        </div>
+      ) : !data ? null : chartData.length === 0 ? (
+        <div className="py-6 space-y-3">
+          <p className="text-sm text-muted-foreground text-center">Sem série de métricas na janela selecionada.</p>
+          {/* Sem pontos não há timeline pra ancorar o ReferenceArea (dtProblemMarkers exige
+              decimatedPoints não-vazio) — lista simples com datas reais no lugar do overlay. */}
+          {data.dynatrace_problems && data.dynatrace_problems.length > 0 && (
+            <div className="space-y-1.5 max-w-md mx-auto">
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wide text-center">
+                {data.dynatrace_problems.length} problema{data.dynatrace_problems.length !== 1 ? "s" : ""} Dynatrace na janela
+              </p>
+              {data.dynatrace_problems.map((p) => {
+                const url = dtProblemUrl(data.dynatrace_ui_base_url, p.problem_id);
+                return (
+                  <div
+                    key={p.problem_id}
+                    className="flex items-center gap-2 text-xs px-2 py-1.5 rounded border"
+                    style={{ borderColor: severityColor(p.severity) }}
+                  >
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: severityColor(p.severity) }} />
+                    <span className="flex-1 truncate">{p.title}</span>
+                    <span className="text-muted-foreground shrink-0">
+                      {new Date(p.start_ts).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      {!p.end_ts && " · em aberto"}
+                    </span>
+                    {url && (
+                      <a href={url} target="_blank" rel="noopener noreferrer" title="Abrir no Dynatrace" className="shrink-0 text-muted-foreground hover:text-foreground">
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       ) : (
         <>
           {/* Painel 1 — Réplicas */}
@@ -248,6 +354,7 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
             <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">
               Réplicas
               {scaleEventMarkers.length > 0 && ` · ${scaleEventMarkers.length} mudança${scaleEventMarkers.length !== 1 ? "s" : ""} de escala`}
+              {dtProblemMarkers.length > 0 && ` · ${dtProblemMarkers.length} problema${dtProblemMarkers.length !== 1 ? "s" : ""} Dynatrace`}
             </p>
             <ChartContainer config={repChartConfig} className="h-[140px] w-full">
               <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -275,6 +382,9 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                     />
                   }
                 />
+                {dtProblemMarkers.map((m) => (
+                  <ReferenceArea key={m.problemId} x1={m.x1} x2={m.x2} fill={severityColor(m.severity)} fillOpacity={0.15} stroke={severityColor(m.severity)} strokeOpacity={0.5} strokeWidth={1} ifOverflow="extendDomain" />
+                ))}
                 {scaleEventMarkers.map((m, i) => (
                   <ReferenceLine key={i} x={m.time} stroke="#f59e0b" strokeDasharray="3 3" strokeWidth={1} />
                 ))}
@@ -298,6 +408,34 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                 </span>
               ))}
             </div>
+            {/* Lista dos problems Dynatrace na janela — ReferenceArea não tem tooltip nativo no
+                Recharts, então o título/severidade só ficam acessíveis aqui (title="..." no hover). */}
+            {data.dynatrace_problems && data.dynatrace_problems.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {data.dynatrace_problems.map((p) => {
+                  const url = dtProblemUrl(data.dynatrace_ui_base_url, p.problem_id);
+                  const title = `${p.title} (${p.severity}${p.end_ts ? "" : " · em aberto"})${url ? " — clique pra abrir no Dynatrace" : ""}`;
+                  const className = "inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border";
+                  const style = { borderColor: severityColor(p.severity), color: severityColor(p.severity) };
+                  const inner = (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: severityColor(p.severity) }} />
+                      <span className="truncate max-w-[160px]">{p.title}</span>
+                      {url && <ExternalLink className="w-2.5 h-2.5 shrink-0" />}
+                    </>
+                  );
+                  return url ? (
+                    <a key={p.problem_id} href={url} target="_blank" rel="noopener noreferrer" title={title} className={`${className} hover:bg-muted/50`} style={style}>
+                      {inner}
+                    </a>
+                  ) : (
+                    <span key={p.problem_id} title={title} className={`${className} cursor-help`} style={style}>
+                      {inner}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Painel 2 — CPU / Memória */}
@@ -316,6 +454,9 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                   <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} interval={xInterval} />
                   <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
                   <ChartTooltip content={<ChartTooltipContent labelFormatter={(l) => `Horário: ${l}`} />} />
+                  {dtProblemMarkers.map((m) => (
+                    <ReferenceArea key={m.problemId} x1={m.x1} x2={m.x2} fill={severityColor(m.severity)} fillOpacity={0.15} stroke={severityColor(m.severity)} strokeOpacity={0.5} strokeWidth={1} ifOverflow="extendDomain" />
+                  ))}
                   <ReferenceLine y={80} stroke="#eab308" strokeDasharray="4 3" strokeWidth={1} />
                   <ReferenceLine y={95} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1} />
                   <Line type="monotone" dataKey="cpu" stroke={usageChartConfig.cpu.color} strokeWidth={1.5} dot={false} />

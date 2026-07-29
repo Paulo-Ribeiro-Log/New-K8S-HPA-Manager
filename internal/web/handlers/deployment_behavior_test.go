@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"testing"
+	"time"
 
 	dtclient "k8s-hpa-manager/internal/dynatrace"
 	promclient "k8s-hpa-manager/internal/monitoring/client"
@@ -106,5 +107,53 @@ func TestDynatraceSeriesToPointMap_DerivesReadyReplicas(t *testing.T) {
 	}
 	if _, ok := out["cpu"]; ok {
 		t.Errorf("cpu não deveria estar presente na saída (sem fonte de request no fallback DT)")
+	}
+}
+
+func TestDtProblemsToMarkers_OpenProblem_EndTsNil(t *testing.T) {
+	start := time.UnixMilli(1700000000000)
+	problems := []dtclient.Problem{
+		{ProblemID: "P-1", Title: "CPU alto", SeverityLevel: "PERFORMANCE", StartTime: start, EndTime: nil},
+	}
+
+	markers := dtProblemsToMarkers(problems)
+	if len(markers) != 1 {
+		t.Fatalf("esperado 1 marker, got %d", len(markers))
+	}
+	m := markers[0]
+	if m.ProblemID != "P-1" || m.Title != "CPU alto" || m.Severity != "PERFORMANCE" {
+		t.Errorf("campos incorretos: %+v", m)
+	}
+	if m.StartTs != start.UnixMilli() {
+		t.Errorf("StartTs incorreto: got %d, want %d", m.StartTs, start.UnixMilli())
+	}
+	if m.EndTs != nil {
+		t.Errorf("EndTs deveria ser nil pra problem ainda OPEN, got %v", *m.EndTs)
+	}
+}
+
+func TestDtProblemsToMarkers_ClosedProblem_EndTsSet(t *testing.T) {
+	start := time.UnixMilli(1700000000000)
+	end := start.Add(30 * time.Minute)
+	problems := []dtclient.Problem{
+		{ProblemID: "P-2", Title: "Memória", SeverityLevel: "RESOURCE_CONTENTION", StartTime: start, EndTime: &end},
+	}
+
+	markers := dtProblemsToMarkers(problems)
+	if len(markers) != 1 {
+		t.Fatalf("esperado 1 marker, got %d", len(markers))
+	}
+	if markers[0].EndTs == nil {
+		t.Fatal("EndTs não deveria ser nil pra problem já fechado")
+	}
+	if *markers[0].EndTs != end.UnixMilli() {
+		t.Errorf("EndTs incorreto: got %d, want %d", *markers[0].EndTs, end.UnixMilli())
+	}
+}
+
+func TestDtProblemsToMarkers_EmptyInput(t *testing.T) {
+	markers := dtProblemsToMarkers(nil)
+	if markers == nil || len(markers) != 0 {
+		t.Errorf("esperado slice vazio (não nil) pra input vazio, got %+v", markers)
 	}
 }

@@ -287,7 +287,22 @@ func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 			corr.Workload = v
 		}
 	}
-	if corr.PodName == "" {
+	// CLOUD_APPLICATION (uma entidade por WORKLOAD, não por pod) nunca teve a property
+	// "workloadName" neste tenant — a própria entidade JÁ É o workload, então "detectedName" é o
+	// nome do Deployment/CronJob (ex: "entregas-service"), não o de um pod específico. Bug real
+	// confirmado contra um cluster EKS real (Cloud Native Full Stack): sem essa distinção,
+	// corr.Workload nunca era preenchido pra CLOUD_APPLICATION, e ResolveEntityForWorkload (usado
+	// pelo gráfico de comportamento — Fase 1 — e pelo overlay de problems — Fase 2) nunca
+	// encontrava NENHUM workload, mesmo com a entidade existindo e corretamente correlacionada por
+	// namespace. CLOUD_APPLICATION_INSTANCE (pod-level) continua mapeando "detectedName" pra
+	// PodName, como antes — só CLOUD_APPLICATION muda de destino.
+	if e.Type == "CLOUD_APPLICATION" {
+		if corr.Workload == "" {
+			if v, ok := e.Properties["detectedName"].(string); ok && v != "" {
+				corr.Workload = v
+			}
+		}
+	} else if corr.PodName == "" {
 		if v, ok := e.Properties["detectedName"].(string); ok && v != "" {
 			corr.PodName = v
 		}
