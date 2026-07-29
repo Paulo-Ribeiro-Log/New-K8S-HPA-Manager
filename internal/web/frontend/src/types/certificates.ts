@@ -88,6 +88,20 @@ export interface UploadRequest {
   targetNamespaces: string[];
 }
 
+// LivePropagationResult — resultado de EnrichWithPrometheus (Fase 3 do
+// CERT-ROLLBACK-VALIDATION-PLAN.md): cruza o serial do leaf cert com o que cada réplica do
+// ingress-nginx do cluster reporta estar servindo agora. checked=false não é erro — só significa
+// "não deu pra checar" (Prometheus indisponível, cert não está atrás de ingress-nginx, etc.).
+export interface LivePropagationResult {
+  checked: boolean;
+  total_replicas_found: number;
+  replicas_current: number;
+  replicas_stale?: string[]; // kubernetes_pod_name das réplicas com serial diferente do atual
+  live_issuer_cn?: string;
+  live_expires_at?: string;
+  notes?: string[];
+}
+
 // ChainValidationResult — resultado de ValidateCertificateChain (backend, internal/certificates/validate.go).
 // snake_case porque vem direto do JSON do backend (não passa por transformação camelCase).
 export interface ChainValidationResult {
@@ -100,4 +114,18 @@ export interface ChainValidationResult {
   warnings?: string[];
   chain_subjects: string[]; // leaf → intermediário(s) → (raiz, se presente)
   openssl_notes?: string[];
+  live_propagation?: LivePropagationResult;
+}
+
+// RollbackBackupInfo — backup de um Secret TLS salvo antes de ser sobrescrito (Fase 2 do
+// CERT-ROLLBACK-VALIDATION-PLAN.md). snake_case, mesmo motivo de ChainValidationResult.
+export interface RollbackBackupInfo {
+  backup_id: string;
+  cluster: string;
+  namespace: string;
+  secret_name: string;
+  backed_up_at: string;
+  subject: string;
+  serial_number: string;
+  not_after: string;
 }

@@ -1093,7 +1093,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Certificates TLS
-	certificatesHandler := handlers.NewCertificatesHandler(s.kubeManager)
+	certificatesHandler := handlers.NewCertificatesHandler(s.kubeManager, s.historyTracker)
 	certGroup := api.Group("/certificates")
 	{
 		certGroup.POST("/scan", certificatesHandler.Scan)
@@ -1102,6 +1102,10 @@ func (s *Server) setupRoutes() {
 		// Validação de cadeia (Fase 1 do CERT-ROLLBACK-VALIDATION-PLAN.md) — leitura/cálculo, sem RBAC
 		certGroup.POST("/validate-chain", certificatesHandler.ValidateChainPEM)
 		certGroup.GET("/:cluster/:namespace/:name/validate-chain", certificatesHandler.ValidateInstalledChain)
+		// Rollback (Fase 2 do CERT-ROLLBACK-VALIDATION-PLAN.md)
+		certGroup.GET("/:cluster/:namespace/:name/rollback", certificatesHandler.ListRollbacks) // leitura, sem RBAC
+		certGroup.POST("/:cluster/:namespace/:name/rollback", rbacMiddleware.RequireSREGroup(), certificatesHandler.Rollback)
+		certGroup.POST("/:cluster/:namespace/:name/backup", rbacMiddleware.RequireSREGroup(), certificatesHandler.Backup)
 		// Write Operations (SRE-only)
 		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
 		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)

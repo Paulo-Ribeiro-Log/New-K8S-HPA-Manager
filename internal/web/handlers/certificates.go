@@ -8,20 +8,35 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	corev1 "k8s.io/api/core/v1"
 
 	"k8s-hpa-manager/internal/certificates"
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 )
 
 // CertificatesHandler gerencia as rotas de certificados TLS
 type CertificatesHandler struct {
-	scanner *certificates.Scanner
+	scanner        *certificates.Scanner
+	rollbackStore  *certificates.RollbackStore // pode ser nil — backup/rollback fica indisponível nesse caso
+	historyTracker *history.HistoryTracker
 }
 
-// NewCertificatesHandler cria um handler de certificados
-func NewCertificatesHandler(km *config.KubeConfigManager) *CertificatesHandler {
+// NewCertificatesHandler cria um handler de certificados. Se a criação do RollbackStore falhar
+// (ex: erro ao resolver o home dir), o handler segue funcionando normalmente — só as rotas de
+// backup/rollback (Fase 2) ficam indisponíveis, mesmo espírito "melhor esforço" já usado no
+// enriquecimento OpenSSL da Fase 1.
+func NewCertificatesHandler(km *config.KubeConfigManager, historyTracker *history.HistoryTracker) *CertificatesHandler {
+	rollbackStore, err := certificates.NewRollbackStore()
+	if err != nil {
+		log.Warn().Err(err).Msg("Erro ao inicializar RollbackStore de certificados — backup/rollback ficará indisponível")
+		rollbackStore = nil
+	}
+
 	return &CertificatesHandler{
-		scanner: certificates.NewScanner(km),
+		scanner:        certificates.NewScanner(km, rollbackStore),
+		rollbackStore:  rollbackStore,
+		historyTracker: historyTracker,
 	}
 }
 
@@ -241,6 +256,11 @@ func (h *CertificatesHandler) Upload(c *gin.Context) {
 	// esse caso já teria sido barrado antes pelo ValidatePEM dentro de UploadCertificate).
 	var validation *certificates.ChainValidationResult
 	if v, verr := certificates.ValidateCertificateChain([]byte(req.TLSCrt), []byte(req.TLSKey)); verr == nil {
+		// Fase 3 — só faz sentido quando há exatamente 1 cluster/namespace destino: com múltiplos
+		// destinos (batch upload) não há um único cluster/namespace pra consultar no Prometheus.
+		if len(req.TargetClusters) == 1 && len(req.TargetNamespaces) == 1 {
+			v.LivePropagation = enrichLivePropagation(req.TargetClusters[0], req.TargetNamespaces[0], req.Name, []byte(req.TLSCrt))
+		}
 		validation = v
 	}
 
@@ -317,8 +337,198 @@ func (h *CertificatesHandler) ValidateInstalledChain(c *gin.Context) {
 		})
 		return
 	}
+	result.LivePropagation = enrichLivePropagation(cluster, namespace, name, tlsCrt)
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
+}
+
+// enrichLivePropagation é o ponto único de integração da Fase 3 (CERT-ROLLBACK-VALIDATION-PLAN.md)
+// — resolve o serial decimal do leaf cert e consulta o Prometheus do cluster. Melhor-esforço: se o
+// PEM não puder ser parseado, retorna nil (o restante da validação já teria capturado esse erro).
+func enrichLivePropagation(cluster, namespace, secretName string, certPEM []byte) *certificates.LivePropagationResult {
+	serialDecimal, err := certificates.LeafSerialDecimal(certPEM)
+	if err != nil {
+		return nil
+	}
+	return certificates.EnrichWithPrometheus(cluster, namespace, secretName, serialDecimal)
+}
+
+// Backup salva o conteúdo ATUAL de um Secret TLS já instalado, sem sobrescrever nada — usado pelo
+// caminho AWX (Fase 2), já que a renovação via playbook Ansible acontece fora do controle deste
+// backend e por isso precisa desse gatilho explícito ANTES do job rodar (diferente do upload
+// manual, que já dispara o backup sozinho dentro de Scanner.UploadCertificate).
+func (h *CertificatesHandler) Backup(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if h.rollbackStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "ROLLBACK_UNAVAILABLE", "message": "Rollback store indisponivel neste servidor"},
+		})
+		return
+	}
+
+	tlsCrt, tlsKey, err := h.scanner.GetRawTLSSecret(c.Request.Context(), cluster, namespace, name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "SECRET_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	secret := &corev1.Secret{Data: map[string][]byte{"tls.crt": tlsCrt, "tls.key": tlsKey}}
+	info, err := h.rollbackStore.Backup(cluster, namespace, name, secret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "BACKUP_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": info})
+}
+
+// ListRollbacks lista os backups disponíveis para um Secret — filtra por cluster/namespace porque
+// RollbackStore.List indexa só por secretName; sem esse filtro, secrets homônimos em
+// clusters/namespaces diferentes (ex: "viavarejo-tls" em 2 clusters distintos) apareceriam
+// misturados na mesma lista.
+func (h *CertificatesHandler) ListRollbacks(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if h.rollbackStore == nil {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": []certificates.RollbackBackupInfo{}})
+		return
+	}
+
+	list, err := h.rollbackStore.List(name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "LIST_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	filtered := make([]certificates.RollbackBackupInfo, 0, len(list))
+	for _, b := range list {
+		if b.Cluster == cluster && b.Namespace == namespace {
+			filtered = append(filtered, b)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": filtered})
+}
+
+// RollbackRequest é o body de POST /certificates/:cluster/:namespace/:name/rollback
+type RollbackRequest struct {
+	BackupID string `json:"backup_id"`
+}
+
+// Rollback restaura um backup anterior por cima do Secret atual. Reaproveita
+// Scanner.UploadCertificate para o próprio ato de restaurar — como UploadCertificate já faz backup
+// do estado atual antes de sobrescrever (Fase 2), um rollback também vira reversível de graça, sem
+// precisar duplicar a chamada de backup aqui.
+func (h *CertificatesHandler) Rollback(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if h.rollbackStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "ROLLBACK_UNAVAILABLE", "message": "Rollback store indisponivel neste servidor"},
+		})
+		return
+	}
+
+	var req RollbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.BackupID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": "backup_id e obrigatorio"},
+		})
+		return
+	}
+
+	tlsCrt, tlsKey, meta, err := h.rollbackStore.Get(name, req.BackupID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "BACKUP_NOT_FOUND", "message": err.Error()},
+		})
+		return
+	}
+	if meta.Cluster != cluster || meta.Namespace != namespace {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "BACKUP_MISMATCH", "message": "backup pertence a outro cluster/namespace"},
+		})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Checagem de sanidade sobre o cert do backup — não bloqueia: o backup pode ser de um cert
+	// que já tinha problema, quem decide se aceita mesmo assim é o usuário.
+	validation, _ := certificates.ValidateCertificateChain(tlsCrt, tlsKey)
+
+	// Estado atual, só pro "before" da auditoria — o backup de fato do estado atual acontece
+	// automaticamente dentro de UploadCertificate (backupBeforeOverwrite) logo abaixo.
+	var before map[string]interface{}
+	if currentInfo, cerr := h.scanner.GetCertificateDetails(ctx, cluster, namespace, name); cerr == nil {
+		before = map[string]interface{}{
+			"subject":       currentInfo.Subject,
+			"serial_number": currentInfo.SerialNumber,
+			"not_after":     currentInfo.NotAfter,
+		}
+	}
+
+	uploaded, err := h.scanner.UploadCertificate(ctx, certificates.UploadRequest{
+		Name:             name,
+		TLSCrt:           string(tlsCrt),
+		TLSKey:           string(tlsKey),
+		TargetClusters:   []string{cluster},
+		TargetNamespaces: []string{namespace},
+	})
+	if err != nil || uploaded == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "ROLLBACK_ERROR", "message": fmt.Sprintf("erro ao restaurar backup: %v", err)},
+		})
+		return
+	}
+	if validation != nil {
+		// Só depois de escrito de fato — antes disso o ingress-nginx ainda estaria servindo o
+		// cert anterior, e comparar contra ele daria um resultado enganoso.
+		validation.LivePropagation = enrichLivePropagation(cluster, namespace, name, tlsCrt)
+	}
+
+	after := map[string]interface{}{
+		"subject":            meta.Subject,
+		"serial_number":      meta.SerialNumber,
+		"not_after":          meta.NotAfter,
+		"restored_backup_id": meta.BackupID,
+	}
+	entry := CreateHistoryEntry(c, "cert-rollback", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", before, after, 0, "")
+	if err := h.historyTracker.Log(entry); err != nil {
+		log.Warn().Err(err).Msg("erro ao registrar rollback de certificado no history tracker")
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"message":    fmt.Sprintf("Certificado restaurado a partir do backup %s", meta.BackupID),
+		"validation": validation,
+	})
 }
 
 // Report gera relatório de certificados em formato Markdown

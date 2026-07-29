@@ -38,7 +38,7 @@ export function CertificateRenewModal({
   certInfo,
   onSuccess,
 }: CertificateRenewModalProps) {
-  const { uploadCertificateWithValidation, validateInstalledChain } = useCertificates();
+  const { uploadCertificateWithValidation, validateInstalledChain, backupCertificate } = useCertificates();
   const [tlsCrt, setTlsCrt] = useState("");
   const [tlsKey, setTlsKey] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -172,6 +172,7 @@ export function CertificateRenewModal({
               namespace={namespace}
               onCancel={() => handleClose(false)}
               onSuccess={handleAwxSuccess}
+              onBeforeLaunch={() => backupCertificate(cluster, namespace, secretName).then(() => {})}
             />
           </div>
         ) : validationResult ? (

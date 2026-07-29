@@ -22,6 +22,12 @@ type ChainValidationResult struct {
 	Warnings          []string `json:"warnings,omitempty"` // não-bloqueantes
 	ChainSubjects     []string `json:"chain_subjects"`     // leaf → intermediário(s) → (raiz, se presente)
 	OpenSSLNotes      []string `json:"openssl_notes,omitempty"`
+
+	// LivePropagation (Fase 3 do CERT-ROLLBACK-VALIDATION-PLAN.md) — só preenchido quando a
+	// validação parte de um cluster+namespace+secretName reais (ValidateInstalledChain, Upload,
+	// Rollback); nunca no caminho ad-hoc de PEM colado (ValidateChainPEM), que não tem esse
+	// contexto ainda.
+	LivePropagation *LivePropagationResult `json:"live_propagation,omitempty"`
 }
 
 // ValidateCertificateChain valida um par cert+key além do que ValidatePEM já cobre (existência de

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Shield, ExternalLink, Lock, ShieldCheck, Loader2 } from "lucide-react";
+import { Shield, ExternalLink, Lock, ShieldCheck, Loader2, History } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useCertificates } from "@/hooks/useCertificates";
 import { CertificateChainValidationPanel } from "@/components/CertificateChainValidationPanel";
+import { CertificateRollbackModal } from "@/components/CertificateRollbackModal";
 import type { CertificateInfo, ChainValidationResult } from "@/types/certificates";
 
 interface CertificateDetailModalProps {
@@ -22,6 +23,9 @@ interface CertificateDetailModalProps {
   cert: CertificateInfo | null;
   /** Botões extras no footer (ex: "Copiar para..." da aba Certificados) */
   footerExtra?: ReactNode;
+  /** Chamado após um rollback bem-sucedido via o botão "Backups / Rollback" — cada tab decide o
+   *  que "atualizar" significa pra si. Opcional. */
+  onRestored?: () => void;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -87,10 +91,12 @@ export function CertificateDetailModal({
   onOpenChange,
   cert,
   footerExtra,
+  onRestored,
 }: CertificateDetailModalProps) {
   const { validateInstalledChain } = useCertificates();
   const [validationResult, setValidationResult] = useState<ChainValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
+  const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
 
   const handleValidateChain = async () => {
     if (!cert) return;
@@ -268,9 +274,26 @@ export function CertificateDetailModal({
               Validar Cadeia
             </Button>
           )}
+          {cert && (
+            <Button variant="outline" onClick={() => setRollbackModalOpen(true)}>
+              <History className="h-4 w-4 mr-2" />
+              Backups / Rollback
+            </Button>
+          )}
           {footerExtra}
         </DialogFooter>
       </DialogContent>
+
+      {cert && (
+        <CertificateRollbackModal
+          open={rollbackModalOpen}
+          onOpenChange={setRollbackModalOpen}
+          cluster={cert.cluster}
+          namespace={cert.namespace}
+          secretName={cert.secretName}
+          onRestored={onRestored}
+        />
+      )}
     </Dialog>
   );
 }

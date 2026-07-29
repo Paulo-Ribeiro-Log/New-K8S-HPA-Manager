@@ -17,13 +17,16 @@ import (
 
 // Scanner escaneia certificados TLS em múltiplos clusters
 type Scanner struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager   *config.KubeConfigManager
+	rollbackStore *RollbackStore // pode ser nil — backup vira no-op nesse caso (ver backupBeforeOverwrite)
 }
 
-// NewScanner cria um novo Scanner
-func NewScanner(km *config.KubeConfigManager) *Scanner {
+// NewScanner cria um novo Scanner. rollbackStore pode ser nil (ex: em testes) — nesse caso
+// UploadCertificate simplesmente não faz backup antes de sobrescrever.
+func NewScanner(km *config.KubeConfigManager, rollbackStore *RollbackStore) *Scanner {
 	return &Scanner{
-		kubeManager: km,
+		kubeManager:   km,
+		rollbackStore: rollbackStore,
 	}
 }
 
@@ -298,6 +301,8 @@ func (s *Scanner) UploadCertificate(ctx context.Context, req UploadRequest) (int
 				},
 			}
 
+			s.backupBeforeOverwrite(ctx, targetClient, targetCluster, targetNs, req.Name)
+
 			// Tentar atualizar, se não existir, criar
 			_, err := targetClient.CoreV1().Secrets(targetNs).Update(ctx, newSecret, metav1.UpdateOptions{})
 			if err != nil {
@@ -351,6 +356,30 @@ func (s *Scanner) GetCertificateDetails(ctx context.Context, cluster, namespace,
 	s.crossRefIngresses(ctx, clientset, cluster, certs)
 
 	return &certs[0], nil
+}
+
+// backupBeforeOverwrite salva o conteúdo ATUAL do Secret (se existir) antes de UploadCertificate
+// sobrescrevê-lo — melhor-esforço: se o Secret ainda não existe (primeira instalação) não há o que
+// salvar; se rollbackStore for nil (ex: testes) ou o backup falhar por qualquer motivo, só loga um
+// aviso e segue com o upload normalmente — nunca bloqueia a atualização do certificado.
+func (s *Scanner) backupBeforeOverwrite(ctx context.Context, targetClient kubernetes.Interface, cluster, namespace, secretName string) {
+	if s.rollbackStore == nil {
+		return
+	}
+
+	existing, err := targetClient.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return // Secret não existe ainda — nada a fazer backup
+	}
+
+	if _, err := s.rollbackStore.Backup(cluster, namespace, secretName, existing); err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", cluster).
+			Str("namespace", namespace).
+			Str("secret", secretName).
+			Msg("Erro ao fazer backup do certificado anterior antes de sobrescrever")
+	}
 }
 
 // GetRawTLSSecret busca um Secret kubernetes.io/tls e retorna o PEM bruto de tls.crt/tls.key —

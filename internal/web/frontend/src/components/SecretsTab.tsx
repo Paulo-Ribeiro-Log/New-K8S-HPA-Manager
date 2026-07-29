@@ -1893,6 +1893,12 @@ export const SecretsTab = ({
         open={tlsCertModalOpen}
         onOpenChange={setTlsCertModalOpen}
         cert={tlsCertInfo}
+        onRestored={() => {
+          if (!selectedSecret) return;
+          handleSelectSecret(selectedSecret);
+          refreshTlsCertMap();
+          silentRefetch();
+        }}
       />
 
       {/* Modal de atualização do certificado TLS (expirando/expirado) */}

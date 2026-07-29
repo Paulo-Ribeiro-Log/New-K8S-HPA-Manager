@@ -1,4 +1,4 @@
-import { CheckCircle2, XCircle, AlertTriangle, ChevronRight } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, ChevronRight, Radio } from "lucide-react";
 import type { ChainValidationResult } from "@/types/certificates";
 
 interface CheckRowProps {
@@ -84,6 +84,27 @@ export function CertificateChainValidationPanel({ result, className }: Props) {
             <li key={i} className="text-xs text-amber-500">• {w}</li>
           ))}
         </ul>
+      )}
+
+      {result.live_propagation?.checked && (
+        <div className="pt-1 border-t border-border/50 space-y-1">
+          <div className="flex items-center gap-1.5 text-xs">
+            <Radio className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+            <span>
+              {result.live_propagation.replicas_current}/{result.live_propagation.total_replicas_found}{" "}
+              réplica(s) do ingress-nginx com o certificado atual
+            </span>
+          </div>
+          {result.live_propagation.replicas_stale && result.live_propagation.replicas_stale.length > 0 && (
+            <div className="flex items-start gap-1.5 text-xs text-amber-500">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>
+                Propagação em andamento — ainda servindo o certificado anterior:{" "}
+                {result.live_propagation.replicas_stale.join(", ")}
+              </span>
+            </div>
+          )}
+        </div>
       )}
 
       {result.openssl_notes && result.openssl_notes.length > 0 && (

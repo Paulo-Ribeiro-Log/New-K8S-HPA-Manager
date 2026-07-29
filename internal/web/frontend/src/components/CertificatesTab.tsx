@@ -1083,6 +1083,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
         open={detailModalOpen}
         onOpenChange={setDetailModalOpen}
         cert={selectedCert}
+        onRestored={handleScan}
         footerExtra={
           <div className="flex gap-2">
             <ProtectedAction>

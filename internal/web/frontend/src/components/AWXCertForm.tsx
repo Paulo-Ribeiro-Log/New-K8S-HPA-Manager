@@ -21,6 +21,12 @@ export interface AWXCertFormProps {
   namespace: string;
   onCancel?: () => void;
   onSuccess?: () => void;
+  /** Chamado antes de lançar o job AWX — usado por CertificateRenewModal.tsx (Fase 2 do
+   *  CERT-ROLLBACK-VALIDATION-PLAN.md) para salvar um backup do Secret atual antes da renovação,
+   *  já que a mutação via AWX acontece fora do controle deste backend (o playbook Ansible mexe no
+   *  Secret direto, sem passar por Scanner.UploadCertificate). Melhor-esforço: uma falha aqui é só
+   *  avisada, nunca bloqueia o lançamento do job. */
+  onBeforeLaunch?: () => Promise<void>;
 }
 
 type JobStatus = "idle" | "running" | "successful" | "failed";
@@ -30,7 +36,7 @@ interface SSEEvent {
   data: string;
 }
 
-export function AWXCertForm({ cluster, namespace, onCancel, onSuccess }: AWXCertFormProps) {
+export function AWXCertForm({ cluster, namespace, onCancel, onSuccess, onBeforeLaunch }: AWXCertFormProps) {
   const appName = (() => {
     let name = cluster;
     name = name.replace(/-admin$/i, "");
@@ -112,6 +118,17 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess }: AWXCert
 
     resetJob();
     setJobStatus("running");
+
+    if (onBeforeLaunch) {
+      try {
+        await onBeforeLaunch();
+      } catch (err) {
+        // Melhor-esforço — falha no backup nunca deve impedir a renovação em si.
+        toast.warning("Não foi possível salvar backup do certificado atual antes da renovação", {
+          description: err instanceof Error ? err.message : "Erro desconhecido",
+        });
+      }
+    }
 
     try {
       const resp = await apiClient.launchAWXCertJob({

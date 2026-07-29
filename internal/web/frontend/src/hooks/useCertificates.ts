@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult } from '../types/certificates';
+import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo } from '../types/certificates';
 
 const API_BASE = '/api/v1/certificates';
 
@@ -146,6 +146,61 @@ export function useCertificates() {
     return data.data as ChainValidationResult;
   }, []);
 
+  // backupCertificate — salva o conteúdo ATUAL de um Secret TLS já instalado, sem sobrescrever
+  // nada. Usado pelo caminho AWX (Fase 2): a renovação via playbook Ansible acontece fora do
+  // controle deste backend, então o backup precisa ser disparado explicitamente antes do job
+  // rodar (upload manual já dispara o backup sozinho, dentro do próprio endpoint /upload).
+  const backupCertificate = useCallback(async (cluster: string, namespace: string, name: string): Promise<RollbackBackupInfo> => {
+    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/backup`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return data.data as RollbackBackupInfo;
+  }, []);
+
+  // listRollbacks — lista os backups disponíveis para um Secret, mais recente primeiro.
+  const listRollbacks = useCallback(async (cluster: string, namespace: string, name: string): Promise<RollbackBackupInfo[]> => {
+    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/rollback`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return (data.data ?? []) as RollbackBackupInfo[];
+  }, []);
+
+  // rollbackCertificate — restaura um backup por cima do Secret atual.
+  const rollbackCertificate = useCallback(async (cluster: string, namespace: string, name: string, backupId: string): Promise<{ validation: ChainValidationResult | null }> => {
+    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/rollback`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+      body: JSON.stringify({ backup_id: backupId }),
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return { validation: data.validation ?? null };
+  }, []);
+
   const getReport = useCallback(async (clusters: string[], filter?: string, statusFilter?: string[]): Promise<{ data: ScanResult; markdown: string }> => {
     const params = new URLSearchParams();
     params.set('clusters', clusters.join(','));
@@ -179,6 +234,9 @@ export function useCertificates() {
     uploadCertificateWithValidation,
     validateChainPEM,
     validateInstalledChain,
+    backupCertificate,
+    listRollbacks,
+    rollbackCertificate,
     getReport,
     setScanResult,
   };
