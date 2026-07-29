@@ -82,6 +82,64 @@ func TestExtractK8sCorrelation_PropertiesFallback_CloudApplication(t *testing.T)
 	}
 }
 
+// TestExtractK8sCorrelation_CloudApplication_DetectedNameIsWorkload cobre o bug real confirmado
+// contra um tenant real (cluster EKS asaplog-production, Cloud Native Full Stack): entidades
+// CLOUD_APPLICATION reais NÃO têm a property "workloadName" — só "namespaceName" e "detectedName",
+// e detectedName É o nome do Deployment/CronJob (a entidade representa o workload inteiro, não um
+// pod). Sem diferenciar por e.Type, detectedName ia pro campo errado (PodName) e corr.Workload
+// nunca era preenchido, quebrando ResolveEntityForWorkload (Fase 1 e o overlay de problems da
+// Fase 2) para qualquer cluster que use Cloud Native Full Stack.
+func TestExtractK8sCorrelation_CloudApplication_DetectedNameIsWorkload(t *testing.T) {
+	e := &Entity{
+		Type: "CLOUD_APPLICATION",
+		Tags: []Tag{}, // confirmado real: CLOUD_APPLICATION não tem tags neste tenant
+		Properties: map[string]interface{}{
+			"namespaceName": "asaplog",
+			"detectedName":  "entregas-service",
+		},
+	}
+
+	corr := e.ExtractK8sCorrelation()
+	if corr == nil {
+		t.Fatal("esperava correlação não-nil")
+	}
+	if corr.Namespace != "asaplog" {
+		t.Errorf("Namespace = %q, want %q", corr.Namespace, "asaplog")
+	}
+	if corr.Workload != "entregas-service" {
+		t.Errorf("Workload = %q, want %q (detectedName deveria virar Workload, não PodName, pra CLOUD_APPLICATION)", corr.Workload, "entregas-service")
+	}
+	if corr.PodName != "" {
+		t.Errorf("PodName deveria ficar vazio pra CLOUD_APPLICATION (detectedName não é nome de pod aqui), got %q", corr.PodName)
+	}
+}
+
+// TestExtractK8sCorrelation_CloudApplicationInstance_DetectedNameIsPodName garante que a correção
+// acima não regrediu o comportamento já validado de CLOUD_APPLICATION_INSTANCE (pod-level) — essa
+// continua usando detectedName como PodName.
+func TestExtractK8sCorrelation_CloudApplicationInstance_DetectedNameIsPodName(t *testing.T) {
+	e := &Entity{
+		Type: "CLOUD_APPLICATION_INSTANCE",
+		Tags: []Tag{},
+		Properties: map[string]interface{}{
+			"namespaceName": "onboarding-pf-prd",
+			"workloadName":  "onboarding-profile-frontend",
+			"detectedName":  "onboarding-profile-frontend-6c578d4f9d-abcde",
+		},
+	}
+
+	corr := e.ExtractK8sCorrelation()
+	if corr == nil {
+		t.Fatal("esperava correlação não-nil")
+	}
+	if corr.PodName != "onboarding-profile-frontend-6c578d4f9d-abcde" {
+		t.Errorf("PodName = %q — regressão: CLOUD_APPLICATION_INSTANCE deveria continuar mapeando detectedName pra PodName", corr.PodName)
+	}
+	if corr.Workload != "onboarding-profile-frontend" {
+		t.Errorf("Workload = %q, want %q (via workloadName, não afetado pela correção)", corr.Workload, "onboarding-profile-frontend")
+	}
+}
+
 func TestExtractK8sCorrelation_NoData_ReturnsNil(t *testing.T) {
 	e := &Entity{DisplayName: "", Tags: []Tag{}, Properties: map[string]interface{}{}}
 	if corr := e.ExtractK8sCorrelation(); corr != nil {
