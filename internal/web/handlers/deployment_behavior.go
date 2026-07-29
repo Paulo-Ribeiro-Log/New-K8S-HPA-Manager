@@ -86,6 +86,12 @@ type DeploymentBehaviorResponse struct {
 	// independente de qual fonte (Prometheus/Dynatrace) alimentou Points. omitempty cobre tanto
 	// "sem Dynatrace configurado" quanto "sem problems na janela".
 	DynatraceProblems []DTProblemMarker `json:"dynatrace_problems,omitempty"`
+
+	// DynatraceUIBaseURL — base pra montar o link "Abrir no Dynatrace" de cada problem
+	// (frontend monta {base}/ui/apps/dynatrace.davis.problems/problem/{problem_id}), mesmo padrão
+	// já usado em DynatraceTab.tsx. Populado sempre que um client Dynatrace foi resolvido, mesmo
+	// sem nenhum problem na janela — barato (só troca de sufixo na URL já em memória).
+	DynatraceUIBaseURL string `json:"dynatrace_ui_base_url,omitempty"`
 }
 
 const (
@@ -228,6 +234,10 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	var dtEntityFound bool
 	if c, derr := h.dynatraceClientForBehavior(aiEmail); derr == nil {
 		dtc = c
+		// UI usa .apps.dynatrace.com (interface web), a API usa .live.dynatrace.com — mesma
+		// transformação já usada em internal/web/handlers/dynatrace.go pro botão "Abrir no
+		// Dynatrace" existente na aba Dynatrace.
+		resp.DynatraceUIBaseURL = strings.ReplaceAll(dtc.BaseURL(), ".live.dynatrace.com", ".apps.dynatrace.com")
 		if id, found, rerr := dtc.ResolveEntityForWorkload(ctx, dtclient.NormalizeClusterName(cluster), namespace, deployment); rerr == nil && found {
 			dtEntityID = id
 			dtEntityFound = true
