@@ -1,6 +1,6 @@
 # Plano: Validação de Cadeia de Certificados + Rollback de Atualizações TLS
 
-Status: 🔵 planejado — nenhuma fase iniciada.
+Status: ✅ Fase 1 (validação de cadeia) concluída e validada via HTTP real (curl, certs gerados com openssl). 🔵 Fase 2 (rollback) ainda não iniciada.
 
 ## Contexto
 
@@ -14,29 +14,30 @@ Pedido do usuário: (1) validar a cadeia de verdade antes/depois de instalar, e 
 
 ---
 
-## Fase 1 — Validação de cadeia (Go nativo, sem dependência de binário externo)
+## Fase 1 — Validação de cadeia (Go nativo, sem dependência de binário externo) ✅ concluída
 
 ### Backend
 
-- [ ] `internal/certificates/validate.go` (novo arquivo): struct `ChainValidationResult` (`Valid`, `KeyMatchesCert`, `ChainOrderCorrect`, `TrustedByPublicCA`, `ExpiryOK`, `Errors []string`, `Warnings []string`, `ChainSubjects []string`, `OpenSSLNotes []string`) + `func ValidateCertificateChain(certPEM, keyPEM []byte) (*ChainValidationResult, error)`
-- [ ] Passo 1: `parsePEMChain(certPEM)` (já existe em `parser.go:103`) → `certs[0]` leaf, `certs[1:]` intermediários
-- [ ] Passo 2 (chave bate com o cert): `tls.X509KeyPair(certPEM, keyPEM)` (stdlib `crypto/tls` — já faz essa checagem sem comparar RSA/ECDSA/Ed25519 manualmente). Erro → `Errors` (bloqueante)
-- [ ] Passo 3 (ordem da cadeia): `certs[i].CheckSignatureFrom(certs[i+1])` em sequência — detecta cadeia fora de ordem ou com elo faltando. Erro → `Errors`
-- [ ] Passo 4 (confiança/expiração): `certs[0].Verify(x509.VerifyOptions{Intermediates: pool(certs[1:]), CurrentTime: time.Now()})` usando root store do sistema (não passar `Roots` explícito). `x509.UnknownAuthorityError` → **warning** (CA privada é caso comum e válido aqui, não bloqueia); qualquer outro erro do `Verify` (expirado, hostname, uso errado) → `Errors`
-- [ ] Passo 5: `ChainSubjects` = `cert.Subject.CommonName` de cada cert da cadeia, na ordem
-- [ ] Passo 6 (opcional): `enrichWithOpenSSL(certPEM []byte) []string` — só roda se `exec.LookPath("openssl")` existir; `exec.CommandContext` com timeout 10s (padrão de `internal/pkg/helm/cli_client.go`); erro sempre engolido silenciosamente, nunca afeta `Valid`/`Errors`
-- [ ] Endpoint `POST /api/v1/certificates/validate-chain` — body `{cert_pem, key_pem}` → `ChainValidationResult`. Sem RBAC (leitura/cálculo)
-- [ ] Endpoint `GET /api/v1/certificates/:cluster/:namespace/:name/validate-chain` — lê o Secret já instalado e roda a mesma validação (cobre disparo manual sobre cert já instalado)
-- [ ] `Upload` (e `Rollback`, Fase 2) chamam `ValidateCertificateChain` logo após o Update/Create ter sucesso e incluem o resultado no campo `validation` da resposta — cobre "logo depois do certificado instalado" sem chamada extra do frontend. Falha na validação NÃO desfaz o upload (informativo, não bloqueante)
-- [ ] `internal/certificates/validate_test.go`: gerar certs de teste em memória (self-signed + mini-CA de 2 níveis via `crypto/x509`+`crypto/rsa`, sem fixtures externas) cobrindo: cadeia válida, chave que não bate, cadeia fora de ordem, cert expirado, CA privada (deve dar `Warnings`, não `Errors`)
+- [x] `internal/certificates/validate.go` (novo arquivo): struct `ChainValidationResult` (`Valid`, `KeyMatchesCert`, `ChainOrderCorrect`, `TrustedByPublicCA`, `ExpiryOK`, `Errors []string`, `Warnings []string`, `ChainSubjects []string`, `OpenSSLNotes []string`) + `func ValidateCertificateChain(certPEM, keyPEM []byte) (*ChainValidationResult, error)`
+- [x] Passo 1: `parsePEMChain(certPEM)` (já existe em `parser.go:103`) → `certs[0]` leaf, `certs[1:]` intermediários
+- [x] Passo 2 (chave bate com o cert): `tls.X509KeyPair(certPEM, keyPEM)` (stdlib `crypto/tls` — já faz essa checagem sem comparar RSA/ECDSA/Ed25519 manualmente). Erro → `Errors` (bloqueante)
+- [x] Passo 3 (ordem da cadeia): `certs[i].CheckSignatureFrom(certs[i+1])` em sequência — detecta cadeia fora de ordem ou com elo faltando. Erro → `Errors`
+- [x] Passo 4 (confiança/expiração): `certs[0].Verify(x509.VerifyOptions{Intermediates: pool(certs[1:]), CurrentTime: time.Now()})` usando root store do sistema (não passar `Roots` explícito). `x509.UnknownAuthorityError` → **warning** (CA privada é caso comum e válido aqui, não bloqueia); qualquer outro erro do `Verify` (expirado, hostname, uso errado) → `Errors`
+- [x] Passo 5: `ChainSubjects` = `cert.Subject.CommonName` de cada cert da cadeia, na ordem
+- [x] Passo 6 (opcional): `enrichWithOpenSSL(certPEM []byte) []string` — só roda se `exec.LookPath("openssl")` existir; `exec.CommandContext` com timeout 10s (padrão de `internal/pkg/helm/cli_client.go`); erro sempre engolido silenciosamente, nunca afeta `Valid`/`Errors`. Validado: openssl está disponível neste ambiente e o enriquecimento roda de verdade
+- [x] Endpoint `POST /api/v1/certificates/validate-chain` — body `{cert_pem, key_pem}` → `ChainValidationResult`. Sem RBAC (leitura/cálculo). Validado via curl real (cadeia válida + chave incompatível)
+- [x] Endpoint `GET /api/v1/certificates/:cluster/:namespace/:name/validate-chain` — lê o Secret já instalado (`Scanner.GetRawTLSSecret`, novo) e roda a mesma validação. **Não validado contra cluster real** — VPN pra AKS privado estava fora do ar durante o desenvolvimento; rotas registradas sem conflito e compilam corretamente, mas o caminho de leitura do Secret real não foi exercitado ponta a ponta
+- [x] `Upload` chama `ValidateCertificateChain` logo após o Update/Create ter sucesso, campo `validation` na resposta (não bloqueia o upload em caso de falha de validação). Rollback (Fase 2) vai reaproveitar o mesmo padrão quando implementado
+- [x] `internal/certificates/validate_test.go`: 5 testes com certs gerados em memória (self-signed + mini-CA de 2 níveis via `crypto/x509`+`crypto/rsa`) — cadeia válida (CA privada → warning, não erro), chave incompatível, cadeia fora de ordem, cert expirado, PEM inválido. Todos passando
 
 ### Frontend
 
-- [ ] `CertificateChainValidationPanel.tsx` (novo, reaproveitável): renderiza `ChainValidationResult` — ✅/⚠️/❌ por checagem, `ChainSubjects` (leaf → ... → raiz), `Errors` em vermelho, `Warnings` em âmbar, `OpenSSLNotes` colapsável se presente
-- [ ] `CertificateRenewModal.tsx`: após upload manual (ou job AWX completar via SSE) ter sucesso, renderiza `CertificateChainValidationPanel` inline automaticamente (manual: já vem no campo `validation` da resposta; AWX: disparar `GET .../validate-chain` já que a resposta desse caminho só vem via eventos SSE)
-- [ ] `CertificateDetailModal.tsx`: botão "Validar Cadeia" (chama `GET .../validate-chain` sob demanda) — cobre disparo manual sobre cert já instalado há tempos
-- [ ] `useCertificates.ts`: `validateChainPEM(certPem, keyPem)`, `validateInstalledChain(cluster, namespace, name)`
-- [ ] `types/certificates.ts`: `ChainValidationResult`
+- [x] `CertificateChainValidationPanel.tsx` (novo, reaproveitável): renderiza `ChainValidationResult` — ✅/⚠️/❌ por checagem, `ChainSubjects` (leaf → ... → raiz), `Errors` em vermelho, `Warnings` em âmbar, `OpenSSLNotes` colapsável
+- [x] `CertificateRenewModal.tsx`: após upload manual (campo `validation` já vem na resposta de `/upload` via novo `uploadCertificateWithValidation`) ou job AWX completar (busca via `GET .../validate-chain`, já que a resposta AWX só vem via SSE sem devolver o cert), renderiza `CertificateChainValidationPanel` inline automaticamente — modal fica aberto pra exibir o resultado, fecha só quando o usuário clica "Fechar"
+- [x] `CertificateDetailModal.tsx`: botão "Validar Cadeia" no footer (chama `GET .../validate-chain` sob demanda) — cobre disparo manual sobre cert já instalado há tempos
+- [x] `useCertificates.ts`: `validateChainPEM`, `validateInstalledChain`, `uploadCertificateWithValidation` (nova, não altera assinatura de `uploadCertificate` existente pra não quebrar os 2 call sites já existentes em `CertificatesTab.tsx`)
+- [x] `types/certificates.ts`: `ChainValidationResult`
+- [x] `tsc --noEmit` e `eslint` sem erros novos
 
 ---
 

@@ -236,11 +236,89 @@ func (h *CertificatesHandler) Upload(c *gin.Context) {
 		return
 	}
 
+	// Validação automática pós-instalação — informativa, nunca desfaz o upload já concluído
+	// (validationErr só significa "não deu pra parsear o PEM pra validar", não "cert inválido" —
+	// esse caso já teria sido barrado antes pelo ValidatePEM dentro de UploadCertificate).
+	var validation *certificates.ChainValidationResult
+	if v, verr := certificates.ValidateCertificateChain([]byte(req.TLSCrt), []byte(req.TLSKey)); verr == nil {
+		validation = v
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"success":  true,
-		"message":  fmt.Sprintf("Certificado uploaded para %d destino(s)", uploaded),
-		"uploaded": uploaded,
+		"success":    true,
+		"message":    fmt.Sprintf("Certificado uploaded para %d destino(s)", uploaded),
+		"uploaded":   uploaded,
+		"validation": validation,
 	})
+}
+
+// ValidateChainRequest é o body de POST /certificates/validate-chain
+type ValidateChainRequest struct {
+	CertPEM string `json:"cert_pem"`
+	KeyPEM  string `json:"key_pem"`
+}
+
+// ValidateChainPEM valida um par cert+key enviado no corpo da requisição — usado antes de
+// instalar um certificado (validação ad-hoc, sem precisar já estar no cluster).
+func (h *CertificatesHandler) ValidateChainPEM(c *gin.Context) {
+	var req ValidateChainRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": fmt.Sprintf("Requisicao invalida: %v", err)},
+		})
+		return
+	}
+	if req.CertPEM == "" || req.KeyPEM == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "MISSING_DATA", "message": "cert_pem e key_pem sao obrigatorios"},
+		})
+		return
+	}
+
+	result, err := certificates.ValidateCertificateChain([]byte(req.CertPEM), []byte(req.KeyPEM))
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "VALIDATE_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
+}
+
+// ValidateInstalledChain valida a cadeia de um certificado já instalado num Secret do cluster —
+// cobre o disparo "manual" da validação (ex: botão "Validar Cadeia" no detalhe de um cert antigo).
+func (h *CertificatesHandler) ValidateInstalledChain(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	tlsCrt, tlsKey, err := h.scanner.GetRawTLSSecret(c.Request.Context(), cluster, namespace, name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "SECRET_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	result, err := certificates.ValidateCertificateChain(tlsCrt, tlsKey)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "VALIDATE_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
 // Report gera relatório de certificados em formato Markdown

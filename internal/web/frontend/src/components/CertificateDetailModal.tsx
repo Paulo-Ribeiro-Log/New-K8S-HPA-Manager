@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { Shield, ExternalLink, Lock } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Shield, ExternalLink, Lock, ShieldCheck, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,9 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { CertificateInfo } from "@/types/certificates";
+import { useCertificates } from "@/hooks/useCertificates";
+import { CertificateChainValidationPanel } from "@/components/CertificateChainValidationPanel";
+import type { CertificateInfo, ChainValidationResult } from "@/types/certificates";
 
 interface CertificateDetailModalProps {
   open: boolean;
@@ -86,8 +88,32 @@ export function CertificateDetailModal({
   cert,
   footerExtra,
 }: CertificateDetailModalProps) {
+  const { validateInstalledChain } = useCertificates();
+  const [validationResult, setValidationResult] = useState<ChainValidationResult | null>(null);
+  const [validating, setValidating] = useState(false);
+
+  const handleValidateChain = async () => {
+    if (!cert) return;
+    setValidating(true);
+    try {
+      const result = await validateInstalledChain(cert.cluster, cert.namespace, cert.secretName);
+      setValidationResult(result);
+    } catch {
+      // best-effort — falha na validação não deveria travar o resto do modal
+      setValidationResult(null);
+    } finally {
+      setValidating(false);
+    }
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setValidationResult(null);
+        onOpenChange(next);
+      }}
+    >
       <DialogContent className="max-w-2xl max-h-[85vh]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -220,6 +246,10 @@ export function CertificateDetailModal({
                   </CardContent>
                 </Card>
               )}
+
+              {/* Validação de cadeia (Fase 1 do CERT-ROLLBACK-VALIDATION-PLAN.md) — disparo
+                  manual, útil pra reconferir um cert instalado há tempos. */}
+              {validationResult && <CertificateChainValidationPanel result={validationResult} />}
             </div>
           </ScrollArea>
         )}
@@ -228,6 +258,16 @@ export function CertificateDetailModal({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Fechar
           </Button>
+          {cert && (
+            <Button variant="outline" onClick={handleValidateChain} disabled={validating}>
+              {validating ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <ShieldCheck className="h-4 w-4 mr-2" />
+              )}
+              Validar Cadeia
+            </Button>
+          )}
           {footerExtra}
         </DialogFooter>
       </DialogContent>

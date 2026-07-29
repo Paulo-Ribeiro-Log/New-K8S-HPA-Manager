@@ -14,9 +14,10 @@ import { Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { useCertificates } from "@/hooks/useCertificates";
 import { getStatusBadge } from "@/components/CertificateDetailModal";
+import { CertificateChainValidationPanel } from "@/components/CertificateChainValidationPanel";
 import { AWXCertForm } from "@/components/AWXCertForm";
 import { apiClient } from "@/lib/api/client";
-import type { CertificateInfo } from "@/types/certificates";
+import type { CertificateInfo, ChainValidationResult } from "@/types/certificates";
 
 interface CertificateRenewModalProps {
   open: boolean;
@@ -37,13 +38,20 @@ export function CertificateRenewModal({
   certInfo,
   onSuccess,
 }: CertificateRenewModalProps) {
-  const { uploadCertificate } = useCertificates();
+  const { uploadCertificateWithValidation, validateInstalledChain } = useCertificates();
   const [tlsCrt, setTlsCrt] = useState("");
   const [tlsKey, setTlsKey] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [awxConfigured, setAwxConfigured] = useState(false);
   const [mode, setMode] = useState<"manual" | "awx">("manual");
+
+  // Validação de cadeia (Fase 1 do CERT-ROLLBACK-VALIDATION-PLAN.md) — disparada automaticamente
+  // logo após o certificado ser instalado, tanto pelo caminho manual (já vem no campo
+  // "validation" da resposta de /upload) quanto pelo AWX (que só sinaliza sucesso via evento SSE,
+  // sem devolver o cert — por isso busca de novo via GET .../validate-chain).
+  const [validationResult, setValidationResult] = useState<ChainValidationResult | null>(null);
+  const [validating, setValidating] = useState(false);
 
   useEffect(() => {
     apiClient
@@ -57,6 +65,7 @@ export function CertificateRenewModal({
       setTlsCrt("");
       setTlsKey("");
       setMode("manual");
+      setValidationResult(null);
     }
     onOpenChange(nextOpen);
   };
@@ -64,7 +73,7 @@ export function CertificateRenewModal({
   const handleSubmit = async () => {
     setIsSubmitting(true);
     try {
-      await uploadCertificate({
+      const { validation } = await uploadCertificateWithValidation({
         name: secretName,
         tlsCrt,
         tlsKey,
@@ -76,8 +85,9 @@ export function CertificateRenewModal({
       });
       setTlsCrt("");
       setTlsKey("");
-      onOpenChange(false);
+      setValidationResult(validation);
       onSuccess();
+      // Modal fica aberto pra exibir o resultado da validação — usuário fecha manualmente.
     } catch (err) {
       toast.error("Erro ao atualizar certificado", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -85,6 +95,24 @@ export function CertificateRenewModal({
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // Chamado quando o job AWX termina com sucesso — diferente do caminho manual, a resposta do
+  // AWX vem só via evento SSE de "concluído" (sem devolver o cert), então buscamos a validação de
+  // novo lendo o Secret já atualizado no cluster.
+  const handleAwxSuccess = async () => {
+    setMode("manual"); // troca já, ANTES da validação — senão a área de loading/painel nunca aparece
+    setValidating(true);
+    try {
+      const result = await validateInstalledChain(cluster, namespace, secretName);
+      setValidationResult(result);
+    } catch {
+      // best-effort — se a validação falhar (ex: rede), o usuário ainda sabe que o AWX terminou
+      // com sucesso via toast já emitido pelo próprio AWXCertForm
+    } finally {
+      setValidating(false);
+    }
+    onSuccess();
   };
 
   return (
@@ -143,11 +171,21 @@ export function CertificateRenewModal({
               cluster={cluster}
               namespace={namespace}
               onCancel={() => handleClose(false)}
-              onSuccess={() => {
-                handleClose(false);
-                onSuccess();
-              }}
+              onSuccess={handleAwxSuccess}
             />
+          </div>
+        ) : validationResult ? (
+          <>
+            <div className="space-y-3">
+              <CertificateChainValidationPanel result={validationResult} />
+            </div>
+            <DialogFooter>
+              <Button onClick={() => handleClose(false)}>Fechar</Button>
+            </DialogFooter>
+          </>
+        ) : validating ? (
+          <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Validando cadeia do certificado instalado...
           </div>
         ) : (
           <>

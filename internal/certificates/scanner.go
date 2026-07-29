@@ -353,6 +353,26 @@ func (s *Scanner) GetCertificateDetails(ctx context.Context, cluster, namespace,
 	return &certs[0], nil
 }
 
+// GetRawTLSSecret busca um Secret kubernetes.io/tls e retorna o PEM bruto de tls.crt/tls.key —
+// usado pela validação de cadeia sob demanda (ValidateInstalledChain) e pelo backup de rollback
+// (RollbackStore.Backup, Fase 2), que precisam do conteúdo bruto, não do CertificateInfo parseado.
+func (s *Scanner) GetRawTLSSecret(ctx context.Context, cluster, namespace, name string) (tlsCrt, tlsKey []byte, err error) {
+	clientset, err := s.kubeManager.GetClient(cluster)
+	if err != nil {
+		return nil, nil, fmt.Errorf("erro ao obter client para %s: %w", cluster, err)
+	}
+
+	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("erro ao obter secret %s/%s: %w", namespace, name, err)
+	}
+	if secret.Type != corev1.SecretTypeTLS {
+		return nil, nil, fmt.Errorf("secret %s/%s não é do tipo kubernetes.io/tls", namespace, name)
+	}
+
+	return secret.Data["tls.crt"], secret.Data["tls.key"], nil
+}
+
 // applyFilter aplica filtro nos certificados
 func applyFilter(certs []CertificateInfo, filter string) []CertificateInfo {
 	var filtered []CertificateInfo

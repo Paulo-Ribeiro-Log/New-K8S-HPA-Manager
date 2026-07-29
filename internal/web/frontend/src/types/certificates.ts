@@ -87,3 +87,17 @@ export interface UploadRequest {
   targetClusters: string[];
   targetNamespaces: string[];
 }
+
+// ChainValidationResult — resultado de ValidateCertificateChain (backend, internal/certificates/validate.go).
+// snake_case porque vem direto do JSON do backend (não passa por transformação camelCase).
+export interface ChainValidationResult {
+  valid: boolean;
+  key_matches_cert: boolean;
+  chain_order_correct: boolean;
+  trusted_by_public_ca: boolean; // false é comum e OK pra CA interna/privada
+  expiry_ok: boolean;
+  errors?: string[];
+  warnings?: string[];
+  chain_subjects: string[]; // leaf → intermediário(s) → (raiz, se presente)
+  openssl_notes?: string[];
+}

@@ -1099,6 +1099,9 @@ func (s *Server) setupRoutes() {
 		certGroup.POST("/scan", certificatesHandler.Scan)
 		certGroup.GET("/:cluster/:namespace/:name", certificatesHandler.GetDetails)
 		certGroup.GET("/report", certificatesHandler.Report)
+		// Validação de cadeia (Fase 1 do CERT-ROLLBACK-VALIDATION-PLAN.md) — leitura/cálculo, sem RBAC
+		certGroup.POST("/validate-chain", certificatesHandler.ValidateChainPEM)
+		certGroup.GET("/:cluster/:namespace/:name/validate-chain", certificatesHandler.ValidateInstalledChain)
 		// Write Operations (SRE-only)
 		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
 		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)
