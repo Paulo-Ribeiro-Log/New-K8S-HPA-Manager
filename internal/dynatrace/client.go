@@ -902,6 +902,38 @@ func (c *Client) GetOpenProblemsForEntity(ctx context.Context, entityID string) 
 	return problems, nil
 }
 
+// GetProblemsForEntityInWindow retorna problems (abertos OU fechados) que afetam uma entidade
+// específica dentro de uma janela de tempo — diferente de GetOpenProblemsForEntity, que só cobre
+// status("OPEN") e ignora completamente a janela. Usado pelo overlay de problems do gráfico de
+// comportamento do Deployment (DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md, Fase 2): um problem já fechado
+// (ex: um pico de CPU resolvido há 2h) ainda é relevante pra explicar o comportamento histórico
+// exibido no gráfico, então o seletor aqui não filtra por status — mesma convenção epoch-ms de
+// from/to já usada em GetEntityEvents. pageSize=10 (não 20) — confirmado empiricamente contra a
+// API real que ela rejeita com 400 "Page size can't be larger than 10 if the fields parameter is
+// set", mesma restrição já documentada em GetOpenProblems/GetOpenProblemsForEntity acima.
+func (c *Client) GetProblemsForEntityInWindow(ctx context.Context, entityID string, from, to time.Time) ([]Problem, error) {
+	params := url.Values{
+		"problemSelector": {fmt.Sprintf(`entityId("%s")`, entityID)},
+		"from":            {fmt.Sprintf("%d", from.UnixMilli())},
+		"to":              {fmt.Sprintf("%d", to.UnixMilli())},
+		"fields":          {"+affectedEntities,+impactedEntities,+rootCauseEntity"},
+		"pageSize":        {"10"},
+	}
+
+	var result struct {
+		Problems []problemRaw `json:"problems"`
+	}
+	if err := c.get(ctx, "problems", params, &result); err != nil {
+		return nil, err
+	}
+
+	problems := make([]Problem, 0, len(result.Problems))
+	for _, raw := range result.Problems {
+		problems = append(problems, raw.toModel())
+	}
+	return problems, nil
+}
+
 // EnrichStub busca detalhes de uma única entidade e preenche DisplayName, K8s e DTLabels.
 func (c *Client) EnrichStub(ctx context.Context, stub EntityStub) EntityStub {
 	entity, err := c.GetEntity(ctx, stub.EntityID.ID)

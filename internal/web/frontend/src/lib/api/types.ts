@@ -1684,7 +1684,7 @@ export interface DeploymentBehaviorResponse {
   cpu_limit_millicores?: number;
   memory_request_bytes?: number;
   memory_limit_bytes?: number;
-  dynatrace_problems?: DTProblemMarker[]; // Fase 2 — sempre vazio/ausente por ora
+  dynatrace_problems?: DTProblemMarker[]; // Fase 2 — overlay no gráfico (DeploymentBehaviorChart.tsx)
 }
 
 export interface CloudAccountHints {

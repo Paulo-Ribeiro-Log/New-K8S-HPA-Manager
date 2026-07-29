@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"k8s-hpa-manager/internal/config"
 	dtclient "k8s-hpa-manager/internal/dynatrace"
 	promclient "k8s-hpa-manager/internal/monitoring/client"
 )
@@ -42,8 +41,8 @@ type DeploymentScaleEvent struct {
 	ToReplicas   float64 `json:"to_replicas"`
 }
 
-// DTProblemMarker — placeholder do overlay de problems (Fase 2, ainda não implementada). Definido
-// já agora pra não precisar mexer no shape da resposta de novo quando a Fase 2 chegar.
+// DTProblemMarker — overlay de problems do Dynatrace (Fase 2) sobre o gráfico de comportamento.
+// EndTs ausente (nil) indica problem ainda OPEN no fim da janela consultada.
 type DTProblemMarker struct {
 	ProblemID string `json:"problem_id"`
 	Title     string `json:"title"`
@@ -83,7 +82,10 @@ type DeploymentBehaviorResponse struct {
 	MemoryRequestBytes   int64 `json:"memory_request_bytes,omitempty"`
 	MemoryLimitBytes     int64 `json:"memory_limit_bytes,omitempty"`
 
-	DynatraceProblems []DTProblemMarker `json:"dynatrace_problems,omitempty"` // Fase 2 — sempre vazio por ora
+	// DynatraceProblems (Fase 2) — populado sempre que a entidade Dynatrace do workload resolve,
+	// independente de qual fonte (Prometheus/Dynatrace) alimentou Points. omitempty cobre tanto
+	// "sem Dynatrace configurado" quanto "sem problems na janela".
+	DynatraceProblems []DTProblemMarker `json:"dynatrace_problems,omitempty"`
 }
 
 const (
@@ -210,27 +212,44 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 		}
 	}
 
-	// ─── 2. Fallback Dynatrace — só AKS + credenciais configuradas + entity resolvido ───────
-	if resp.Source == "none" {
-		serverURL := h.kubeManager.GetServerURL(cluster)
-		if config.DetectCloudProvider(serverURL, cluster) == config.CloudProviderAKS {
-			if dtc, err := h.dynatraceClientForBehavior(aiEmail); err == nil {
-				// dtclient.NormalizeClusterName cobre o sufixo "-admin" (AKS) e o ARN completo de
-				// EKS sem alias amigável — mesmo bug corrigido em pods_dynatrace_status.go.
-				entityID, found, rerr := dtc.ResolveEntityForWorkload(ctx, dtclient.NormalizeClusterName(cluster), namespace, deployment)
-				if rerr == nil && found {
-					end := time.Now()
-					start := end.Add(-duration)
-					dtSeries := dtc.GetDeploymentBehaviorMetrics(ctx, entityID, start, end)
-					if len(dtSeries) > 0 {
-						resp.Source = "dynatrace"
-						resp.Points = pointsFromSeriesMap(dynatraceSeriesToPointMap(dtSeries))
-						// Sem réplicas desejadas no Dynatrace (k8sWorkloadMetricDefs não cobre) —
-						// não há o que diferenciar pra gerar scale events, fica vazio de propósito
-						// (documentado no plano — não simular).
-					}
-				}
-			}
+	end := time.Now()
+	start := end.Add(-duration)
+
+	// ─── 2. Resolve cliente/entidade Dynatrace uma única vez — reaproveitado tanto pelo fallback
+	// de série (2a, só quando Prometheus não achou nada) quanto pelo overlay de problems (2b, Fase
+	// 2 — aditivo, roda independente de qual fonte "venceu" a série, útil mesmo com Prometheus).
+	// Sem gate de cloud provider: removido o "só AKS" que existia aqui — bug real já corrigido em
+	// pods_dynatrace_status.go, mesma causa (cluster EKS asaplog-production roda Dynatrace de
+	// verdade via Cloud Native Full Stack, suposição "EKS usa New Relic" não vale pra toda conta).
+	// dtclient.NormalizeClusterName cobre o sufixo "-admin" (AKS) e o ARN completo de EKS sem
+	// alias amigável configurado.
+	var dtc *dtclient.Client
+	var dtEntityID string
+	var dtEntityFound bool
+	if c, derr := h.dynatraceClientForBehavior(aiEmail); derr == nil {
+		dtc = c
+		if id, found, rerr := dtc.ResolveEntityForWorkload(ctx, dtclient.NormalizeClusterName(cluster), namespace, deployment); rerr == nil && found {
+			dtEntityID = id
+			dtEntityFound = true
+		}
+	}
+
+	// ─── 2a. Fallback Dynatrace de série — só quando Prometheus não retornou nada ───────
+	if resp.Source == "none" && dtEntityFound {
+		dtSeries := dtc.GetDeploymentBehaviorMetrics(ctx, dtEntityID, start, end)
+		if len(dtSeries) > 0 {
+			resp.Source = "dynatrace"
+			resp.Points = pointsFromSeriesMap(dynatraceSeriesToPointMap(dtSeries))
+			// Sem réplicas desejadas no Dynatrace (k8sWorkloadMetricDefs não cobre) — não há o
+			// que diferenciar pra gerar scale events, fica vazio de propósito (documentado no
+			// plano — não simular).
+		}
+	}
+
+	// ─── 2b. Overlay de problems (Fase 2) — aditivo, não depende de qual fonte a série usou ───
+	if dtEntityFound {
+		if problems, perr := dtc.GetProblemsForEntityInWindow(ctx, dtEntityID, start, end); perr == nil && len(problems) > 0 {
+			resp.DynatraceProblems = dtProblemsToMarkers(problems)
 		}
 	}
 
@@ -388,4 +407,25 @@ func deriveScaleEvents(points []DeploymentBehaviorPoint) []DeploymentScaleEvent 
 		}
 	}
 	return events
+}
+
+// dtProblemsToMarkers converte []dtclient.Problem em []DTProblemMarker pro overlay do gráfico de
+// comportamento (Fase 2) — extraído em função própria pra ser testável sem precisar de um cliente
+// Dynatrace real. EndTs fica nil quando o problem ainda está OPEN (EndTime == nil na origem).
+func dtProblemsToMarkers(problems []dtclient.Problem) []DTProblemMarker {
+	markers := make([]DTProblemMarker, 0, len(problems))
+	for _, p := range problems {
+		marker := DTProblemMarker{
+			ProblemID: p.ProblemID,
+			Title:     p.Title,
+			Severity:  p.SeverityLevel,
+			StartTs:   p.StartTime.UnixMilli(),
+		}
+		if p.EndTime != nil {
+			endTs := p.EndTime.UnixMilli()
+			marker.EndTs = &endTs
+		}
+		markers = append(markers, marker)
+	}
+	return markers
 }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, RefreshCw, AlertTriangle } from "lucide-react";
-import { ComposedChart, Bar, Line, XAxis, YAxis, ReferenceLine } from "recharts";
+import { ComposedChart, Bar, Line, XAxis, YAxis, ReferenceLine, ReferenceArea } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { apiClient } from "@/lib/api/client";
 import type { DeploymentBehaviorResponse, DeploymentBehaviorPoint } from "@/lib/api/types";
@@ -63,11 +63,34 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
+// Cores por severidade — mesma paleta de severidade já usada em outras partes do app (Dynatrace
+// SeverityLevel: AVAILABILITY | ERROR | PERFORMANCE | RESOURCE_CONTENTION | CUSTOM_ALERT).
+// AVAILABILITY/ERROR são os mais graves (serviço fora do ar) → vermelho; PERFORMANCE/
+// RESOURCE_CONTENTION → âmbar (degradação, não indisponibilidade); CUSTOM_ALERT/desconhecido →
+// cinza-azulado neutro.
+const DT_PROBLEM_SEVERITY_COLOR: Record<string, string> = {
+  AVAILABILITY: "#ef4444",
+  ERROR: "#f97316",
+  PERFORMANCE: "#eab308",
+  RESOURCE_CONTENTION: "#f59e0b",
+  CUSTOM_ALERT: "#a855f7",
+};
+
+function severityColor(severity: string): string {
+  return DT_PROBLEM_SEVERITY_COLOR[severity] ?? "#94a3b8";
+}
+
 // DeploymentBehaviorChart — gráfico de comportamento do Deployment (réplicas, CPU/memória %,
-// restarts) ao longo do tempo. Ver DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md (Fase 1). Prometheus é a
+// restarts) ao longo do tempo. Ver DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md (Fases 1-2). Prometheus é a
 // fonte primária; Dynatrace entra como fallback real de série temporal quando o cluster não tem
-// Prometheus (só cobre AKS — única cloud com correlação DT neste app). Sem nenhuma das duas fontes
-// disponível, mostra estado vazio explícito (não erro genérico).
+// Prometheus — funciona em qualquer cloud provider onde o workload tenha uma entidade Dynatrace
+// CLOUD_APPLICATION resolvível (Cloud Native Full Stack), não só AKS (confirmado com um cluster
+// EKS real que usa Dynatrace). Sem nenhuma das duas fontes disponível, mostra estado vazio
+// explícito (não erro genérico).
+//
+// Overlay de problems Dynatrace (Fase 2, dtProblemMarkers/ReferenceArea abaixo) é aditivo e
+// independente de qual fonte alimentou a série — aparece mesmo com source="prometheus", desde
+// que a entidade do workload resolva no Dynatrace.
 //
 // Comparação D-1/D-2/D-3 (opt-in, nunca automático) é aplicada só ao painel de Réplicas
 // (replicas_current) — decisão de escopo: aplicar a mesma comparação aos 3 painéis triplicaria a
@@ -148,6 +171,35 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     }).filter((m) => m.time !== "");
   }, [data, decimatedPoints, chartData]);
 
+  // Overlay de problems Dynatrace (Fase 2) — mesma técnica de scaleEventMarkers: mapeia o
+  // timestamp real de início/fim pro rótulo de tempo do ponto decimado mais próximo, já que o
+  // eixo X usa strings decimadas, não os timestamps originais. EndTs ausente (problem ainda OPEN)
+  // usa o último ponto da janela como fim da área sombreada.
+  const dtProblemMarkers = useMemo(() => {
+    if (!data?.dynatrace_problems?.length || decimatedPoints.length === 0) return [];
+    const nearestLabel = (ts: number) => {
+      let bestIdx = 0;
+      let bestDiff = Infinity;
+      decimatedPoints.forEach((p, idx) => {
+        const diff = Math.abs(p.ts - ts);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestIdx = idx;
+        }
+      });
+      return String(chartData[bestIdx]?.time ?? "");
+    };
+    return data.dynatrace_problems
+      .map((p) => ({
+        problemId: p.problem_id,
+        title: p.title,
+        severity: p.severity,
+        x1: nearestLabel(p.start_ts),
+        x2: p.end_ts != null ? nearestLabel(p.end_ts) : String(chartData[chartData.length - 1]?.time ?? ""),
+      }))
+      .filter((m) => m.x1 !== "" && m.x2 !== "");
+  }, [data, decimatedPoints, chartData]);
+
   const xInterval = Math.max(0, Math.floor(chartData.length / 6) - 1);
 
   const toggleCompare = (offset: number) => {
@@ -177,7 +229,7 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
       <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm text-muted-foreground">
         <AlertTriangle className="w-5 h-5 text-amber-500" />
         <p>Nenhuma fonte de métricas históricas disponível para este cluster.</p>
-        <p className="text-xs">Requer Prometheus instalado no cluster, ou Dynatrace configurado (só em AKS).</p>
+        <p className="text-xs">Requer Prometheus instalado no cluster, ou Dynatrace configurado com o workload resolvível como CLOUD_APPLICATION.</p>
       </div>
     );
   }
@@ -248,6 +300,7 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
             <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">
               Réplicas
               {scaleEventMarkers.length > 0 && ` · ${scaleEventMarkers.length} mudança${scaleEventMarkers.length !== 1 ? "s" : ""} de escala`}
+              {dtProblemMarkers.length > 0 && ` · ${dtProblemMarkers.length} problema${dtProblemMarkers.length !== 1 ? "s" : ""} Dynatrace`}
             </p>
             <ChartContainer config={repChartConfig} className="h-[140px] w-full">
               <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -275,6 +328,9 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                     />
                   }
                 />
+                {dtProblemMarkers.map((m) => (
+                  <ReferenceArea key={m.problemId} x1={m.x1} x2={m.x2} fill={severityColor(m.severity)} fillOpacity={0.15} stroke={severityColor(m.severity)} strokeOpacity={0.5} strokeWidth={1} ifOverflow="extendDomain" />
+                ))}
                 {scaleEventMarkers.map((m, i) => (
                   <ReferenceLine key={i} x={m.time} stroke="#f59e0b" strokeDasharray="3 3" strokeWidth={1} />
                 ))}
@@ -298,6 +354,23 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                 </span>
               ))}
             </div>
+            {/* Lista dos problems Dynatrace na janela — ReferenceArea não tem tooltip nativo no
+                Recharts, então o título/severidade só ficam acessíveis aqui (title="..." no hover). */}
+            {data.dynatrace_problems && data.dynatrace_problems.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {data.dynatrace_problems.map((p) => (
+                  <span
+                    key={p.problem_id}
+                    title={`${p.title} (${p.severity}${p.end_ts ? "" : " · em aberto"})`}
+                    className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border cursor-help"
+                    style={{ borderColor: severityColor(p.severity), color: severityColor(p.severity) }}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: severityColor(p.severity) }} />
+                    <span className="truncate max-w-[160px]">{p.title}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Painel 2 — CPU / Memória */}
@@ -316,6 +389,9 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                   <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} interval={xInterval} />
                   <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
                   <ChartTooltip content={<ChartTooltipContent labelFormatter={(l) => `Horário: ${l}`} />} />
+                  {dtProblemMarkers.map((m) => (
+                    <ReferenceArea key={m.problemId} x1={m.x1} x2={m.x2} fill={severityColor(m.severity)} fillOpacity={0.15} stroke={severityColor(m.severity)} strokeOpacity={0.5} strokeWidth={1} ifOverflow="extendDomain" />
+                  ))}
                   <ReferenceLine y={80} stroke="#eab308" strokeDasharray="4 3" strokeWidth={1} />
                   <ReferenceLine y={95} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1} />
                   <Line type="monotone" dataKey="cpu" stroke={usageChartConfig.cpu.color} strokeWidth={1.5} dot={false} />
