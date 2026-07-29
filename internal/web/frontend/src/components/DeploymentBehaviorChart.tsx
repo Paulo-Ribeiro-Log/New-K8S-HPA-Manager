@@ -108,10 +108,17 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     setLoading(true);
     setError(null);
     try {
+      // Bug real corrigido: aiEmail nunca era enviado aqui, mesmo o client.ts já suportando o
+      // parâmetro — sem ele, o backend nunca acha o token do Dynatrace salvo do usuário
+      // (dynatraceClientForBehavior falha) e o fallback/overlay de problems (Fases 1-2) nunca
+      // tinham chance de funcionar pela UI de verdade, só nos testes manuais via curl com
+      // ai_email explícito. Mesma fonte já usada por PodsPanel/DeploymentsTab/DaemonSetsTab.
+      const aiEmail = localStorage.getItem("ai_email") ?? undefined;
       const resp = await apiClient.getDeploymentBehavior(cluster, namespace, deployment, {
         minutes: windowMinutes,
         step: stepForWindow(windowMinutes),
         offsetDays: compareOffsets.length > 0 ? compareOffsets : undefined,
+        aiEmail,
       });
       setData(resp);
     } catch (e) {
