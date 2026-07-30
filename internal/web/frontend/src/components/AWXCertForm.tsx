@@ -21,6 +21,12 @@ export interface AWXCertFormProps {
   namespace: string;
   onCancel?: () => void;
   onSuccess?: () => void;
+  /** Chamado antes de lançar o job AWX — usado por CertificateRenewModal.tsx (Fase 2 do
+   *  CERT-ROLLBACK-VALIDATION-PLAN.md) para salvar um backup do Secret atual antes da renovação,
+   *  já que a mutação via AWX acontece fora do controle deste backend (o playbook Ansible mexe no
+   *  Secret direto, sem passar por Scanner.UploadCertificate). Melhor-esforço: uma falha aqui é só
+   *  avisada, nunca bloqueia o lançamento do job. */
+  onBeforeLaunch?: () => Promise<void>;
 }
 
 type JobStatus = "idle" | "running" | "successful" | "failed";
@@ -30,7 +36,7 @@ interface SSEEvent {
   data: string;
 }
 
-export function AWXCertForm({ cluster, namespace, onCancel, onSuccess }: AWXCertFormProps) {
+export function AWXCertForm({ cluster, namespace, onCancel, onSuccess, onBeforeLaunch }: AWXCertFormProps) {
   const appName = (() => {
     let name = cluster;
     name = name.replace(/-admin$/i, "");
@@ -113,6 +119,17 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess }: AWXCert
     resetJob();
     setJobStatus("running");
 
+    if (onBeforeLaunch) {
+      try {
+        await onBeforeLaunch();
+      } catch (err) {
+        // Melhor-esforço — falha no backup nunca deve impedir a renovação em si.
+        toast.warning("Não foi possível salvar backup do certificado atual antes da renovação", {
+          description: err instanceof Error ? err.message : "Erro desconhecido",
+        });
+      }
+    }
+
     try {
       const resp = await apiClient.launchAWXCertJob({
         template_id: templateId,
@@ -126,6 +143,16 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess }: AWXCert
       const es = new EventSource(apiClient.getAWXJobStreamURL(resp.job_id));
       eventSourceRef.current = es;
 
+      // `finished` (variável local, não estado React) resolve um bug real: `es.onerror` abaixo
+      // rodava dentro do mesmo closure de `launchJob`, então `jobStatus` ali sempre refletia o
+      // valor de ANTES do clique (setState é assíncrono, não muda o binding já capturado) — a
+      // checagem `jobStatus === "running"` era efetivamente sempre falsa, então uma queda de
+      // conexão SSE (proxy corporativo, rede instável, servidor reiniciando) nunca disparava toast
+      // nem tirava a UI do estado "running": o job ficava girando "Aguardando output..." pra
+      // sempre, sem nenhum aviso — a falha silenciosa relatada. `finished` é reatribuído pelos
+      // próprios handlers abaixo, no mesmo escopo, então reflete o estado real na hora do onerror.
+      let finished = false;
+
       es.onmessage = (event) => {
         try {
           const parsed: SSEEvent = JSON.parse(event.data);
@@ -134,12 +161,14 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess }: AWXCert
           } else if (parsed.type === "status") {
             setCurrentStatus(parsed.data);
           } else if (parsed.type === "complete") {
+            finished = true;
             setJobStatus("successful");
             setCurrentStatus("successful");
             es.close();
             toast.success("Certificado instalado/atualizado com sucesso!");
             onSuccess?.();
           } else if (parsed.type === "error") {
+            finished = true;
             setJobStatus("failed");
             setCurrentStatus(parsed.data);
             setLogs((prev) => [...prev, `[ERRO] ${parsed.data}`]);
@@ -152,9 +181,10 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess }: AWXCert
       };
 
       es.onerror = () => {
-        if (jobStatus === "running") {
+        if (!finished) {
+          finished = true;
           setJobStatus("failed");
-          toast.error("Conexão SSE perdida.");
+          toast.error("Conexão com o job AWX foi perdida antes de terminar — verifique manualmente no AWX se o job concluiu.");
         }
         es.close();
       };

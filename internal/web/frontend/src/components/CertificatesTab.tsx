@@ -87,6 +87,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
     scanCertificates,
     copyCertificate,
     uploadCertificate,
+    backupCertificate,
   } = useCertificates();
 
   // Scan config
@@ -1083,6 +1084,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
         open={detailModalOpen}
         onOpenChange={setDetailModalOpen}
         cert={selectedCert}
+        onRestored={handleScan}
         footerExtra={
           <div className="flex gap-2">
             <ProtectedAction>
@@ -1221,8 +1223,10 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                       Atualização em Massa
                     </span>
                   </div>
-                  {/* Toggle inner AWX (só no modo instalação) */}
-                  {uploadOuterMode === "install" && awxConfigured && (
+                  {/* Toggle inner AWX — disponível nos dois modos (instalação e atualização em
+                      massa); em atualização em massa, o form AWX só aparece com exatamente 1
+                      destino selecionado (AWXCertForm lança 1 job por vez, não em lote) */}
+                  {awxConfigured && (
                     <div className="flex items-center gap-2">
                       <span className={`text-xs ${uploadMode === "manual" ? "font-medium text-foreground" : "text-muted-foreground"}`}>
                         Manual
@@ -1405,31 +1409,60 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                   )}
                 </div>
 
-                <div>
-                  <Label className="text-xs">Novo Certificado (tls.crt — PEM)</Label>
-                  <textarea value={batchCrt} onChange={(e) => setBatchCrt(e.target.value)}
-                    placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-                    className="w-full mt-1 h-28 p-2 text-xs font-mono bg-background border rounded resize-none"
-                    disabled={isBatchUpdating} />
-                </div>
-                <div>
-                  <Label className="text-xs">Nova Chave Privada (tls.key — PEM)</Label>
-                  <textarea value={batchKey} onChange={(e) => setBatchKey(e.target.value)}
-                    placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
-                    className="w-full mt-1 h-28 p-2 text-xs font-mono bg-background border rounded resize-none"
-                    disabled={isBatchUpdating} />
-                </div>
+                {uploadMode === "manual" && (
+                  <>
+                    <div>
+                      <Label className="text-xs">Novo Certificado (tls.crt — PEM)</Label>
+                      <textarea value={batchCrt} onChange={(e) => setBatchCrt(e.target.value)}
+                        placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                        className="w-full mt-1 h-28 p-2 text-xs font-mono bg-background border rounded resize-none"
+                        disabled={isBatchUpdating} />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Nova Chave Privada (tls.key — PEM)</Label>
+                      <textarea value={batchKey} onChange={(e) => setBatchKey(e.target.value)}
+                        placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                        className="w-full mt-1 h-28 p-2 text-xs font-mono bg-background border rounded resize-none"
+                        disabled={isBatchUpdating} />
+                    </div>
+                  </>
+                )}
+
+                {uploadMode === "awx" && (
+                  batchSelected.size === 1 ? (
+                    (() => {
+                      const [batchAwxCluster, batchAwxNamespace] = Array.from(batchSelected)[0].split("||");
+                      return (
+                        <AWXCertForm
+                          key={`${batchAwxCluster}-${batchAwxNamespace}`}
+                          cluster={batchAwxCluster}
+                          namespace={batchAwxNamespace}
+                          onBeforeLaunch={() => backupCertificate(batchAwxCluster, batchAwxNamespace, batchSecretName).then(() => {})}
+                          onCancel={() => { setUploadMode("manual"); setUploadModalOpen(false); }}
+                          onSuccess={() => { setUploadMode("manual"); setUploadModalOpen(false); handleScan(); }}
+                        />
+                      );
+                    })()
+                  ) : (
+                    <p className="text-xs text-muted-foreground text-center py-4">
+                      AWX atualiza um cluster/namespace por vez — selecione exatamente 1 destino
+                      na lista acima para usar esse modo.
+                    </p>
+                  )
+                )}
               </div>
-              <DialogFooter className="flex-shrink-0">
-                <Button variant="outline" onClick={() => setUploadModalOpen(false)} disabled={isBatchUpdating}>
-                  Cancelar
-                </Button>
-                <Button onClick={handleBatchUpdate}
-                  disabled={isBatchUpdating || batchSelected.size === 0 || !batchCrt.trim() || !batchKey.trim()}>
-                  {isBatchUpdating && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  Atualizar em {batchSelected.size} entrada(s)
-                </Button>
-              </DialogFooter>
+              {uploadMode === "manual" && (
+                <DialogFooter className="flex-shrink-0">
+                  <Button variant="outline" onClick={() => setUploadModalOpen(false)} disabled={isBatchUpdating}>
+                    Cancelar
+                  </Button>
+                  <Button onClick={handleBatchUpdate}
+                    disabled={isBatchUpdating || batchSelected.size === 0 || !batchCrt.trim() || !batchKey.trim()}>
+                    {isBatchUpdating && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    Atualizar em {batchSelected.size} entrada(s)
+                  </Button>
+                </DialogFooter>
+              )}
             </>
           )}
         </DialogContent>
