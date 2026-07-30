@@ -42,6 +42,7 @@ import {
   ChevronRight,
   Server,
   Table,
+  ShieldAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import jsPDF from "jspdf";
@@ -95,7 +96,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
     selectedCluster ? [selectedCluster] : []
   );
   const [filterType, setFilterType] = useState<"all" | "ingress" | "common">("all");
-  const [statusFilters, setStatusFilters] = useState<Set<string>>(new Set(["valid", "expiring", "expired"]));
+  const [statusFilters, setStatusFilters] = useState<Set<string>>(new Set(["valid", "expiring", "expired", "alert"]));
 
   // UI state
   const [searchQuery, setSearchQuery] = useState("");
@@ -283,12 +284,22 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
     }
   };
 
+  // Contagem de certificados com cadeia inválida (chainValidation calculado no scan, Fase 5) —
+  // não vem do ScanSummary do backend (só tem valid/expiring/expired/total), calculado aqui porque
+  // é uma dimensão ortogonal ao status de expiração (um cert "valid" pode ter cadeia inválida).
+  const alertCount = useMemo(() => {
+    if (!scanResult?.certificates) return 0;
+    return scanResult.certificates.filter(c => c.chainValidation && c.chainValidation.valid === false).length;
+  }, [scanResult]);
+
   // Filtrar e ordenar certificados
   const filteredCerts = useMemo(() => {
     if (!scanResult?.certificates) return [];
 
     let certs = scanResult.certificates.filter(cert => {
-      if (!statusFilters.has(cert.status)) return false;
+      const matchesStatus = statusFilters.has(cert.status);
+      const matchesAlert = statusFilters.has("alert") && !!cert.chainValidation && cert.chainValidation.valid === false;
+      if (!matchesStatus && !matchesAlert) return false;
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
         return (
@@ -833,10 +844,11 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
         <Label className="text-sm font-medium mb-2 block">Status</Label>
         <div className="space-y-1">
           {[
-            { key: "valid", label: "Validos", color: "text-green-400" },
-            { key: "expiring", label: "Expirando (<30d)", color: "text-yellow-400" },
-            { key: "expired", label: "Expirados", color: "text-red-400" },
-          ].map(({ key, label, color }) => (
+            { key: "valid", label: "Validos", color: "text-green-400", count: scanResult?.summary.valid ?? 0 },
+            { key: "expiring", label: "Expirando (<30d)", color: "text-yellow-400", count: scanResult?.summary.expiring ?? 0 },
+            { key: "expired", label: "Expirados", color: "text-red-400", count: scanResult?.summary.expired ?? 0 },
+            { key: "alert", label: "Com Alerta de Cadeia", color: "text-orange-400", count: alertCount },
+          ].map(({ key, label, color, count }) => (
             <div key={key} className="flex items-center gap-2">
               <Checkbox
                 id={`status-${key}`}
@@ -847,7 +859,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                 {label}
                 {scanResult && (
                   <span className="ml-1 text-muted-foreground">
-                    ({scanResult.summary[key as keyof typeof scanResult.summary] ?? 0})
+                    ({count})
                   </span>
                 )}
               </Label>
@@ -1033,7 +1045,16 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                           className="grid grid-cols-12 gap-2 px-3 py-2 text-xs rounded cursor-pointer hover:bg-accent/50 transition-colors border-l-2 border-transparent hover:border-primary/30 ml-2"
                           onClick={() => handleCertClick(cert)}
                         >
-                          <div className="col-span-1">{getStatusBadge(cert.status)}</div>
+                          <div className="col-span-1 flex items-center gap-1">
+                            {getStatusBadge(cert.status)}
+                            {cert.chainValidation && !cert.chainValidation.valid && (
+                              <span
+                                title={`Cadeia inválida: ${(cert.chainValidation.errors ?? []).join("; ") || "ver detalhes"}`}
+                              >
+                                <ShieldAlert className="h-3.5 w-3.5 text-red-400 flex-shrink-0" />
+                              </span>
+                            )}
+                          </div>
                           <div className="col-span-3 truncate font-medium" title={cert.secretName}>
                             {cert.secretName}
                           </div>
