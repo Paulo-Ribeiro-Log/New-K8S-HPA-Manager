@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo } from '../types/certificates';
+import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo, ManualBackupInfo } from '../types/certificates';
 
 const API_BASE = '/api/v1/certificates';
 
@@ -201,6 +201,93 @@ export function useCertificates() {
     return { validation: data.validation ?? null };
   }, []);
 
+  // getRollbackContent — PEM bruto de um backup do RollbackStore, pra pré-popular os campos de
+  // texto do fluxo manual sem precisar copiar/colar (parte do picker de fonte, ver
+  // CertificateSourcePickerModal.tsx).
+  const getRollbackContent = useCallback(async (cluster: string, namespace: string, name: string, backupId: string): Promise<{ tls_crt: string; tls_key: string }> => {
+    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/rollback/${backupId}/content`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return data.data as { tls_crt: string; tls_key: string };
+  }, []);
+
+  // saveManualBackup — salva o conteúdo ATUAL de um Secret TLS num backup separado do Rollback,
+  // disparado sob demanda pelo usuário (botão "Copiar para Backup"), com comentário opcional.
+  const saveManualBackup = useCallback(async (cluster: string, namespace: string, name: string, comment?: string): Promise<ManualBackupInfo> => {
+    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/manual-backup`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+      body: JSON.stringify({ comment: comment || undefined }),
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return data.data as ManualBackupInfo;
+  }, []);
+
+  // listManualBackupSecrets — nomes de secret que têm ao menos 1 backup manual salvo, pra
+  // navegação "entre pastas" do picker de instalação (não fica restrita ao secret atual).
+  const listManualBackupSecrets = useCallback(async (): Promise<string[]> => {
+    const response = await fetch(`${API_BASE}/manual-backups`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return (data.data ?? []) as string[];
+  }, []);
+
+  // listManualBackups — backups manuais de um secret específico, mais recente primeiro.
+  const listManualBackups = useCallback(async (secretName: string): Promise<ManualBackupInfo[]> => {
+    const response = await fetch(`${API_BASE}/manual-backups/${encodeURIComponent(secretName)}`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return (data.data ?? []) as ManualBackupInfo[];
+  }, []);
+
+  // getManualBackupContent — PEM bruto de um backup manual específico.
+  const getManualBackupContent = useCallback(async (secretName: string, backupId: string): Promise<{ tls_crt: string; tls_key: string }> => {
+    const response = await fetch(`${API_BASE}/manual-backups/${encodeURIComponent(secretName)}/${backupId}/content`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return data.data as { tls_crt: string; tls_key: string };
+  }, []);
+
   const getReport = useCallback(async (clusters: string[], filter?: string, statusFilter?: string[]): Promise<{ data: ScanResult; markdown: string }> => {
     const params = new URLSearchParams();
     params.set('clusters', clusters.join(','));
@@ -237,6 +324,11 @@ export function useCertificates() {
     backupCertificate,
     listRollbacks,
     rollbackCertificate,
+    getRollbackContent,
+    saveManualBackup,
+    listManualBackupSecrets,
+    listManualBackups,
+    getManualBackupContent,
     getReport,
     setScanResult,
   };

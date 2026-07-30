@@ -1106,6 +1106,12 @@ func (s *Server) setupRoutes() {
 		certGroup.GET("/:cluster/:namespace/:name/rollback", certificatesHandler.ListRollbacks) // leitura, sem RBAC
 		certGroup.POST("/:cluster/:namespace/:name/rollback", rbacMiddleware.RequireSREGroup(), certificatesHandler.Rollback)
 		certGroup.POST("/:cluster/:namespace/:name/backup", rbacMiddleware.RequireSREGroup(), certificatesHandler.Backup)
+		certGroup.GET("/:cluster/:namespace/:name/rollback/:backupId/content", rbacMiddleware.RequireSREGroup(), certificatesHandler.GetRollbackContent)
+		// Backup manual (mecanismo separado do Rollback — botão "Copiar para Backup")
+		certGroup.POST("/:cluster/:namespace/:name/manual-backup", rbacMiddleware.RequireSREGroup(), certificatesHandler.SaveManualBackup)
+		certGroup.GET("/manual-backups", certificatesHandler.ListManualBackupSecrets)              // leitura, sem RBAC
+		certGroup.GET("/manual-backups/:secretName", certificatesHandler.ListManualBackups)         // leitura, sem RBAC
+		certGroup.GET("/manual-backups/:secretName/:backupId/content", rbacMiddleware.RequireSREGroup(), certificatesHandler.GetManualBackupContent)
 		// Write Operations (SRE-only)
 		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
 		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Shield, ExternalLink, Lock, ShieldCheck, Loader2, History } from "lucide-react";
+import { Shield, ExternalLink, Lock, ShieldCheck, Loader2, History, FolderPlus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +15,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useCertificates } from "@/hooks/useCertificates";
 import { CertificateChainValidationPanel } from "@/components/CertificateChainValidationPanel";
 import { CertificateRollbackModal } from "@/components/CertificateRollbackModal";
+import { CertificateManualBackupModal } from "@/components/CertificateManualBackupModal";
 import type { CertificateInfo, ChainValidationResult } from "@/types/certificates";
 
 interface CertificateDetailModalProps {
@@ -97,6 +98,7 @@ export function CertificateDetailModal({
   const [validationResult, setValidationResult] = useState<ChainValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
   const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
+  const [manualBackupModalOpen, setManualBackupModalOpen] = useState(false);
 
   // Pré-popula com o resultado já calculado durante o scan (Scanner.scanCluster chama
   // ValidateCertificateChain pra cada secret) — evita precisar clicar em "Validar Cadeia" só pra
@@ -289,6 +291,12 @@ export function CertificateDetailModal({
               Backups / Rollback
             </Button>
           )}
+          {cert && (
+            <Button variant="outline" onClick={() => setManualBackupModalOpen(true)}>
+              <FolderPlus className="h-4 w-4 mr-2" />
+              Copiar para Backup
+            </Button>
+          )}
           {footerExtra}
         </DialogFooter>
       </DialogContent>
@@ -303,6 +311,12 @@ export function CertificateDetailModal({
           onRestored={onRestored}
         />
       )}
+
+      <CertificateManualBackupModal
+        open={manualBackupModalOpen}
+        onOpenChange={setManualBackupModalOpen}
+        cert={cert}
+      />
     </Dialog>
   );
 }
