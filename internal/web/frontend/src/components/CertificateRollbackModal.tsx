@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -59,6 +59,14 @@ export function CertificateRollbackModal({
   const [restoring, setRestoring] = useState(false);
   const [validationResult, setValidationResult] = useState<ChainValidationResult | null>(null);
 
+  // restoringRef espelha `restoring`, mas lido de forma síncrona por `onOpenChange` do
+  // AlertDialog — `AlertDialogAction` (Radix) fecha o diálogo de confirmação automaticamente ao
+  // clicar, disparando `onOpenChange(false)` ANTES do próximo render aplicar `restoring=true` (o
+  // valor de estado capturado no closure ainda é o de antes do clique) — checar `restoring`
+  // (state) ali sempre lia o valor velho e derrubava a confirmação na hora, mesmo com a
+  // restauração ainda em andamento. Mesmo padrão de bug já corrigido no AWXCertForm.tsx.
+  const restoringRef = useRef(false);
+
   useEffect(() => {
     if (!open) return;
     setValidationResult(null);
@@ -72,6 +80,7 @@ export function CertificateRollbackModal({
 
   const handleConfirmRestore = async () => {
     if (!pendingRestore) return;
+    restoringRef.current = true;
     setRestoring(true);
     try {
       const { validation } = await rollbackCertificate(cluster, namespace, secretName, pendingRestore.backup_id);
@@ -86,6 +95,7 @@ export function CertificateRollbackModal({
         description: err instanceof Error ? err.message : "Erro desconhecido",
       });
     } finally {
+      restoringRef.current = false;
       setRestoring(false);
     }
   };
@@ -121,6 +131,14 @@ export function CertificateRollbackModal({
                 <Button onClick={() => handleClose(false)}>Fechar</Button>
               </DialogFooter>
             </>
+          ) : restoring ? (
+            // Precisa vir ANTES da lista de backups: o AlertDialogAction de confirmação (abaixo)
+            // fecha sozinho ao clicar (comportamento padrão do Radix), então sem esse estado
+            // intermediário o usuário via a lista de backups de novo — parecia ter "voltado" em
+            // vez de avançar pra aplicação do certificado, mesmo com a restauração em andamento.
+            <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Restaurando certificado...
+            </div>
           ) : loading ? (
             <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Carregando backups...
@@ -168,7 +186,7 @@ export function CertificateRollbackModal({
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!pendingRestore} onOpenChange={(o) => !o && !restoring && setPendingRestore(null)}>
+      <AlertDialog open={!!pendingRestore} onOpenChange={(o) => !o && !restoringRef.current && setPendingRestore(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Restaurar este backup?</AlertDialogTitle>

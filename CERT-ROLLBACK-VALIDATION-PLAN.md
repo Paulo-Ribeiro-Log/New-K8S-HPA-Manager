@@ -1,6 +1,6 @@
 # Plano: Validação de Cadeia de Certificados + Rollback de Atualizações TLS
 
-Status: ✅ Fase 1 (validação de cadeia) concluída. ✅ Fase 2 (rollback) concluída — endpoints validados via curl/JWT real, ainda sem round-trip de escrita contra um cluster real (evitado por ser uma ação de escrita num sistema compartilhado — pendente de confirmação antes de rodar). ✅ Fase 3 (enriquecimento via Prometheus) concluída — métricas confirmadas empiricamente contra `akspriv-adanalytics-prd` real. UI das 3 fases passou por `tsc`/`eslint` mas não foi testada visualmente num navegador nesta rodada (sem ferramenta de automação de browser disponível neste ambiente).
+Status: ✅ Fase 1 (validação de cadeia) concluída. ✅ Fase 2 (rollback) concluída — endpoints validados via curl/JWT real, ainda sem round-trip de escrita contra um cluster real (evitado por ser uma ação de escrita num sistema compartilhado — pendente de confirmação antes de rodar). ✅ Fase 3 (enriquecimento via Prometheus) concluída — métricas confirmadas empiricamente contra `akspriv-adanalytics-prd` real. ✅ Fase 4 (correções pós-implementação, achadas via uso real/feedback do usuário) concluída — 6 bugs reais corrigidos, ver seção própria. UI das 4 fases passou por `tsc`/`eslint` mas **segue sem teste visual em navegador** nesta série de rodadas (sem ferramenta de automação de browser disponível neste ambiente) — validar isso é o próximo passo recomendado antes de dar a feature por encerrada.
 
 ## Contexto
 
@@ -84,14 +84,36 @@ Confirmado empiricamente (VPN ativa, cluster real `akspriv-adanalytics-prd`, via
 
 ---
 
-## Arquivos afetados (acumulado das 3 fases)
+## Fase 4 — Correções pós-implementação (achadas via uso real) ✅ concluída
+
+Após as Fases 1-3, o uso real da feature (via feedback direto do usuário testando os modais) revelou 6 bugs reais, todos corrigidos nesta fase — nenhum deles hipotético, todos reproduzidos/explicados concretamente antes da correção:
+
+1. **Falso-positivo na checagem de ordem da cadeia** (`internal/certificates/validate.go`) — o "Passo 2" comparava `certs[i]` com o próximo item EXATO do arquivo (`certs[i+1]`) pra decidir se a cadeia estava "fora de ordem". Bundles reais (ex: Sectigo/USERTrust, confirmado contra um cert real `casasbahia-tls`) frequentemente trazem intermediário/raiz em ordem diferente da canônica — isso não quebra o TLS de verdade (servidores/browsers fazem path-building sobre o conjunto todo, não checagem posicional), mas reprovava praticamente qualquer certificado real testado ("todos os testes com erro na cadeia"). Corrigido pra procurar o assinante do leaf em qualquer posição do PEM, não só na seguinte — mantém a detecção real de intermediário genuinamente ausente. Teste antigo que codificava o comportamento errado (`TestValidateCertificateChain_WrongOrder`) substituído por `TestValidateCertificateChain_ReorderedIntermediateRoot_NaoEhErro` (regressão) + `TestValidateCertificateChain_IntermediarioRealmenteAusente` (garante que o caso real de bug continua detectado).
+
+2. **Footer do `CertificateDetailModal.tsx` estourava a largura do modal** — com 5 botões (Fechar/Validar Cadeia/Backups-Rollback/Copiar/Atualizar em Massa), o `DialogFooter` (shadcn) não tinha `flex-wrap`, então os botões extrapolavam a borda do modal em vez de quebrar linha. Corrigido com `className="flex-wrap gap-2 sm:space-x-0"` só nessa instância (não no componente compartilhado, pra não afetar outros modais que já cabem numa linha).
+
+3. **"Atualização em Massa" (`CertificatesTab.tsx`) não tinha opção de AWX** — só aceitava colar PEM manualmente, diferente do modal de renovação em Secrets (`CertificateRenewModal.tsx`), que já suportava AWX desde antes. Adicionado: toggle Manual/AWX também nesse modo (antes só existia em "Instalação"); como `AWXCertForm` lança 1 job por vez (não em lote), o formulário só aparece com exatamente 1 destino marcado na lista de "Clusters encontrados no scan" — com 0 ou mais de 1, mostra aviso explicando a limitação. Dispara `backupCertificate` antes do job e refaz o scan ao concluir.
+
+4. **Falha silenciosa no AWX — bug de stale closure** (`AWXCertForm.tsx`) — `es.onerror` (SSE) checava `jobStatus === "running"` lendo a variável `jobStatus` capturada no closure de `launchJob`, que sempre refletia o valor de ANTES do clique (`setState` é assíncrono, não muda o binding já capturado) — a condição era efetivamente sempre falsa. Resultado: uma queda de conexão SSE (proxy corporativo, rede instável, servidor reiniciando) nunca disparava toast nem tirava a UI do estado "running" — o job ficava girando "Aguardando output..." pra sempre, sem nenhum aviso. Corrigido com uma variável local (`finished`, não estado React) escopada à própria execução do job, reatribuída pelos próprios handlers no mesmo escopo — reflete o estado real. Como `AWXCertForm` é compartilhado pelas 3 telas que usam AWX (Certificados TLS, Secrets, modal standalone), a correção cobre todas de uma vez.
+
+5. **Seleção padrão da "Atualização em Massa" sempre marcava TODOS os destinos** (`CertificatesTab.tsx`) — `setBatchSelected(new Set(found))` marcava todos os clusters/namespaces encontrados por padrão em 3 pontos (botão "Atualizar em Massa", toggle de modo, campo de nome do secret), inclusive quando o modo já era AWX — que só aceita exatamente 1 destino. Isso fazia o formulário AWX nunca aparecer, caindo sempre no aviso "selecione 1 destino" (sintoma reportado como "a opção de instalação/update usando AWX foi retirada"). Corrigido: extraído helper `defaultBatchSelection(found)` que marca todos em modo manual (comportamento histórico) e só o primeiro em modo AWX; toggle Manual→AWX também colapsa uma seleção múltipla pra 1 se necessário.
+
+6. **Modal de rollback "voltava" pra lista de backups em vez de avançar** (`CertificateRollbackModal.tsx`) — mesmo padrão de bug #4 (stale closure): `AlertDialogAction` (Radix) fecha a confirmação sozinho ao clicar, e o guard de `onOpenChange` (`!o && !restoring && setPendingRestore(null)`) lia `restoring` (estado React) de um closure desatualizado — sempre `false` no momento do clique — então a confirmação sempre fechava na hora. Sem nenhum estado visual de "restaurando" no modal externo, o usuário via a lista de backups de novo, parecendo ter voltado em vez de avançar pra aplicação do certificado. Corrigido com `useRef` (mesma técnica do bug #4) pro guard + novo estado visual "Restaurando certificado..." exibido imediatamente após confirmar, independente do timing de fechamento da confirmação.
+
+**Padrão recorrente identificado** (bugs #4 e #6): checar uma variável de estado React (`useState`) dentro de um callback assíncrono que roda fora do fluxo normal de render (event handler de terceiro — `EventSource.onerror`, `Radix AlertDialog.onOpenChange`) é uma fonte real e recorrente de bugs nesta base de código — o valor lido reflete o render anterior, nunca o que acabou de ser setado na mesma call stack. Sempre que precisar checar "o estado mais recente" dentro desse tipo de callback, usar `useRef`/variável local escopada, nunca o valor de `useState` direto.
+
+Nenhum teste automatizado novo nesta fase (bugs de UI/interação, cobertos por `tsc`/`eslint` + análise de código; teste automatizado de comportamento de closures assíncronos em React não está no escopo de ferramentas deste projeto).
+
+---
+
+## Arquivos afetados (acumulado das 4 fases)
 
 | Arquivo | Mudança |
 |---|---|
-| `internal/certificates/validate.go` | **novo** — `ValidateCertificateChain`, enriquecimento OpenSSL opcional; depois ganhou campo `LivePropagation` (Fase 3) |
+| `internal/certificates/validate.go` | **novo** — `ValidateCertificateChain`, enriquecimento OpenSSL opcional; ganhou campo `LivePropagation` (Fase 3); checagem de ordem da cadeia corrigida pra ser order-independent (Fase 4) |
 | `internal/certificates/rollback.go` | **novo** — `RollbackStore` (Backup/List/Get/Prune) |
 | `internal/certificates/prometheus_enrich.go` | **novo** — `EnrichWithPrometheus`, `LivePropagationResult`, `LeafSerialDecimal` |
-| `internal/certificates/validate_test.go` | **novo** |
+| `internal/certificates/validate_test.go` | teste de ordem errada substituído por 2 testes (reordenação não é erro; intermediário ausente ainda é) — Fase 4 |
 | `internal/certificates/rollback_test.go` | **novo** |
 | `internal/certificates/prometheus_enrich_test.go` | **novo** |
 | `internal/certificates/scanner.go` | `Scanner` ganha `rollbackStore`; `UploadCertificate` faz backup antes de sobrescrever (`backupBeforeOverwrite`) |
@@ -100,18 +122,19 @@ Confirmado empiricamente (VPN ativa, cluster real `akspriv-adanalytics-prd`, via
 | `internal/web/frontend/src/hooks/useCertificates.ts` | +`backupCertificate`, `listRollbacks`, `rollbackCertificate` |
 | `internal/web/frontend/src/types/certificates.ts` | +`RollbackBackupInfo`, +`LivePropagationResult` |
 | `internal/web/frontend/src/components/CertificateChainValidationPanel.tsx` | **novo** (Fase 1); seção de propagação Prometheus (Fase 3) |
-| `internal/web/frontend/src/components/CertificateRollbackModal.tsx` | **novo** |
+| `internal/web/frontend/src/components/CertificateRollbackModal.tsx` | **novo** (Fase 2); `useRef` pro bug de fechamento prematuro + estado visual "Restaurando..." (Fase 4, bug #6) |
 | `internal/web/frontend/src/components/CertificateRenewModal.tsx` | validação automática pós-instalação; `onBeforeLaunch` pro AWX |
-| `internal/web/frontend/src/components/CertificateDetailModal.tsx` | botão "Validar Cadeia"; botão "Backups / Rollback" + `onRestored` |
-| `internal/web/frontend/src/components/CertificatesTab.tsx` | `onRestored={handleScan}` no `CertificateDetailModal` |
+| `internal/web/frontend/src/components/CertificateDetailModal.tsx` | botão "Validar Cadeia"; botão "Backups / Rollback" + `onRestored`; footer `flex-wrap` (Fase 4, bug #2) |
+| `internal/web/frontend/src/components/CertificatesTab.tsx` | `onRestored={handleScan}`; toggle Manual/AWX + seleção padrão no modo "Atualização em Massa" (Fase 4, bugs #3 e #5) |
 | `internal/web/frontend/src/components/SecretsTab.tsx` | `onRestored` no `CertificateDetailModal` (mesmo trio de `CertificateRenewModal.onSuccess`) |
-| `internal/web/frontend/src/components/AWXCertForm.tsx` | prop `onBeforeLaunch` chamada antes de `launchAWXCertJob` |
+| `internal/web/frontend/src/components/AWXCertForm.tsx` | prop `onBeforeLaunch` chamada antes de `launchAWXCertJob`; `es.onerror` corrigido com variável local em vez de estado React (Fase 4, bug #4) |
 
 ## Verificação
 
 - [x] `go build ./...`, `go vet ./internal/certificates/... ./internal/web/handlers/... ./internal/web/...`, `go test ./internal/... -race` (todos os testes novos + suíte existente completa, sem regressão)
-- [x] `tsc --noEmit`, `eslint .` no frontend — sem erros novos
+- [x] `tsc --noEmit`, `eslint .` no frontend — sem erros novos, em todas as 4 fases
 - [x] Servidor sobe sem panic de rota conflitante; smoke-test via `curl` com JWT real: `ListRollbacks` de secret inexistente retorna `{"data":[],"success":true}`; `Rollback` sem `backup_id` retorna 400; `Backup` contra cluster inexistente retorna o erro de client K8s esperado (não um erro de código)
-- [ ] Teste manual ponta a ponta de ESCRITA (upload → backup → segundo upload → rollback) **não executado nesta rodada** — exigiria escrever um Secret de teste num cluster real; evitado por ser uma ação de escrita não solicitada explicitamente. Roteiro sugerido pra quando for validar: gerar um cert self-signed local (`openssl req -x509 -newkey rsa:2048 ...`) → upload → conferir pasta `~/.k8s-hpa-manager/rollback-certs/<nome>/<data>/` criada com o cert ANTERIOR → upload de um segundo cert (chave trocada de propósito) → `validate-chain` deve reportar `key_matches_cert:false` → `rollback` pro backup do primeiro → `validate-chain` deve voltar a `valid:true`
-- [ ] Fase 3 contra cluster real: chamar `GET .../validate-chain` de um Secret real com Ingress (ex: `viavarejo-tls`/`adanalytics-prd`/`akspriv-adanalytics-prd`) e conferir que `live_propagation.checked=true` — não executado nesta rodada (mesmo motivo acima, e por ora não é estritamente uma escrita, mas envolve consultar Prometheus de produção)
-- [ ] Validar em navegador (`rebuild-web.sh -b`, já feito) os pontos de UI: botão "Validar Cadeia", botão "Backups / Rollback" listando/restaurando backups, seção de propagação Prometheus no painel de validação — **não testado visualmente** nesta rodada (sem ferramenta de automação de browser disponível neste ambiente)
+- [x] Fase 4, bug #1 (ordem da cadeia): reproduzido e corrigido contra um cenário real (bundle Sectigo/USERTrust reordenado, mesmo padrão do `casasbahia-tls` reportado pelo usuário) — coberto por teste unitário de regressão
+- [ ] Teste manual ponta a ponta de ESCRITA (upload → backup → segundo upload → rollback) **não executado ainda** — exigiria escrever um Secret de teste num cluster real; evitado por ser uma ação de escrita não solicitada explicitamente. Roteiro sugerido: gerar um cert self-signed local (`openssl req -x509 -newkey rsa:2048 ...`) → upload → conferir pasta `~/.k8s-hpa-manager/rollback-certs/<nome>/<data>/` criada com o cert ANTERIOR → upload de um segundo cert (chave trocada de propósito) → `validate-chain` deve reportar `key_matches_cert:false` → `rollback` pro backup do primeiro → `validate-chain` deve voltar a `valid:true`
+- [ ] Fase 3 contra cluster real: chamar `GET .../validate-chain` de um Secret real com Ingress (ex: `viavarejo-tls`/`adanalytics-prd`/`akspriv-adanalytics-prd`) e conferir que `live_propagation.checked=true` — não executado ainda (mesmo motivo acima, e por ora não é estritamente uma escrita, mas envolve consultar Prometheus de produção)
+- [ ] **Validar em navegador os 6 bugs da Fase 4** — nenhum deles foi confirmado visualmente ainda (sem ferramenta de automação de browser disponível neste ambiente); a análise/correção de cada um foi feita por leitura de código + raciocínio sobre o comportamento do React/Radix, não por reprodução ao vivo. Recomendado antes de dar a feature por encerrada: (a) testar upload/renovação via AWX em Secrets e em Certificados TLS, incluindo o cenário de conexão caindo no meio do job; (b) testar "Atualização em Massa" com AWX alternando entre 0/1/vários destinos marcados; (c) testar o fluxo completo de restaurar um backup no modal de rollback, incluindo o estado visual "Restaurando..."; (d) conferir que os 5 botões do footer de `CertificateDetailModal` quebram linha em vez de estourar; (e) validar a cadeia de um certificado real com bundle "fora de ordem" e confirmar `valid:true`
