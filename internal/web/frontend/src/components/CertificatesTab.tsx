@@ -1343,7 +1343,11 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
               {awxCluster && awxNamespace ? (
                 <AWXCertForm key={`${awxCluster}-${awxNamespace}`} cluster={awxCluster} namespace={awxNamespace}
                   onCancel={() => { setUploadMode("manual"); setUploadModalOpen(false); }}
-                  onSuccess={() => { setUploadMode("manual"); setUploadModalOpen(false); }} />
+                  // Não fecha o modal aqui — o AWXCertForm já mostra status/logs do job concluído;
+                  // fechar automaticamente escondia essa informação antes do usuário conseguir ler.
+                  // Fechamento agora é manual, via botão "Fechar" do próprio AWXCertForm (que vira
+                  // "Fechar" assim que o job termina, em vez de "Cancelar").
+                  onSuccess={() => handleScan()} />
               ) : (
                 <p className="text-sm text-muted-foreground text-center py-4">
                   Selecione o cluster e informe o namespace para continuar.
@@ -1457,7 +1461,9 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                           namespace={batchAwxNamespace}
                           onBeforeLaunch={() => backupCertificate(batchAwxCluster, batchAwxNamespace, batchSecretName).then(() => {})}
                           onCancel={() => { setUploadMode("manual"); setUploadModalOpen(false); }}
-                          onSuccess={() => { setUploadMode("manual"); setUploadModalOpen(false); handleScan(); }}
+                          // Não fecha o modal aqui — mesmo motivo do modo Instalação acima: deixa
+                          // o status/logs do job visíveis até o usuário fechar manualmente.
+                          onSuccess={() => handleScan()}
                         />
                       );
                     })()

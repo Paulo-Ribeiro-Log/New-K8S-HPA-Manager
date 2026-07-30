@@ -196,6 +196,7 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess, onBeforeL
   }
 
   const isRunning = jobStatus === "running";
+  const isTerminal = jobStatus === "successful" || jobStatus === "failed";
   const canSubmit = !isRunning && subsEnv.trim() !== "" && resourceGroup.trim() !== "" && certTLS !== "";
 
   return (
@@ -312,7 +313,7 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess, onBeforeL
       {/* Botões de ação */}
       <div className="flex items-center justify-between pt-1">
         <Button variant="outline" onClick={onCancel} disabled={isRunning}>
-          Cancelar
+          {isTerminal ? "Fechar" : "Cancelar"}
         </Button>
         <div className="flex gap-2">
           <Button
