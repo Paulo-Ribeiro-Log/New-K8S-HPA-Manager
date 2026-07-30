@@ -62,17 +62,29 @@ func ValidateCertificateChain(certPEM, keyPEM []byte) (*ChainValidationResult, e
 		result.KeyMatchesCert = true
 	}
 
-	// Passo 2 — ordem da cadeia: cada cert deve ser assinado pelo próximo da lista (leaf ->
-	// intermediário -> ... ). Detecta cadeia fora de ordem ou com elo faltando.
+	// Passo 2 — completude da cadeia: o leaf precisa ter um assinante em ALGUM lugar do PEM
+	// fornecido — mas não necessariamente no próximo elemento do arquivo. Bundles reais (ex:
+	// Sectigo/USERTrust) frequentemente trazem intermediário e raiz fora da ordem "canônica"
+	// leaf→intermediário→raiz, e isso não impede o TLS de funcionar: servidores/browsers fazem
+	// path-building sobre o CONJUNTO de certs, nunca checagem posicional estrita. Checar
+	// certs[i].CheckSignatureFrom(certs[i+1]) por posição (como antes) gerava falso-positivo pra
+	// praticamente qualquer bundle real cuja ordem não fosse exatamente sequencial — corrigido
+	// pra procurar o assinante em todo certs[1:], não só no próximo item.
 	result.ChainOrderCorrect = true
-	for i := 0; i < len(certs)-1; i++ {
-		if err := certs[i].CheckSignatureFrom(certs[i+1]); err != nil {
+	if len(certs) > 1 {
+		signedByAny := false
+		for _, candidate := range certs[1:] {
+			if err := certs[0].CheckSignatureFrom(candidate); err == nil {
+				signedByAny = true
+				break
+			}
+		}
+		if !signedByAny {
 			result.ChainOrderCorrect = false
 			result.Errors = append(result.Errors, fmt.Sprintf(
-				"cadeia fora de ordem ou incompleta: %q não foi assinado por %q (%s)",
-				certs[i].Subject.CommonName, certs[i+1].Subject.CommonName, err.Error(),
+				"certificado %q não foi assinado por nenhum dos demais certificados fornecidos — cadeia incompleta (falta o certificado intermediário correto?)",
+				certs[0].Subject.CommonName,
 			))
-			break
 		}
 	}
 

@@ -142,15 +142,19 @@ func TestValidateCertificateChain_KeyMismatch(t *testing.T) {
 	}
 }
 
-func TestValidateCertificateChain_WrongOrder(t *testing.T) {
+func TestValidateCertificateChain_ReorderedIntermediateRoot_NaoEhErro(t *testing.T) {
+	// Bundles reais frequentemente trazem intermediário/raiz fora da ordem "canônica"
+	// leaf→intermediário→raiz (ex: bundles Sectigo/USERTrust vistos em produção) — isso não
+	// impede o TLS de funcionar, então não deve ser reportado como erro. Regressão do bug real:
+	// a checagem antiga usava posição estrita (certs[i] assinado por certs[i+1]) e reprovava
+	// qualquer bundle real cuja ordem não fosse exatamente essa.
 	now := time.Now()
 	root := genCert(t, "Root CA de Teste", true, now.Add(-time.Hour), now.Add(10*365*24*time.Hour), nil)
 	intermediate := genCert(t, "Intermediate CA de Teste", true, now.Add(-time.Hour), now.Add(5*365*24*time.Hour), root)
 	leaf := genCert(t, "app.exemplo.com", false, now.Add(-time.Hour), now.Add(90*24*time.Hour), intermediate)
 
-	// Ordem errada: leaf certo em [0] (chave ainda bate), mas [1]/[2] trocados — root antes do
-	// intermediário. certs[0].CheckSignatureFrom(certs[1]) checa "leaf foi assinado por root?",
-	// que é falso (leaf foi assinado pelo intermediário).
+	// Root antes do intermediário — mesma inversão observada num bundle real (USERTrust antes de
+	// Sectigo, quando o intermediário devia vir logo após o leaf).
 	certPEM := concatPEM(leaf, root, intermediate)
 	result, err := ValidateCertificateChain(certPEM, leaf.keyPEM)
 	if err != nil {
@@ -159,8 +163,29 @@ func TestValidateCertificateChain_WrongOrder(t *testing.T) {
 	if !result.KeyMatchesCert {
 		t.Error("esperava KeyMatchesCert=true — leaf continua em [0], só a ordem dos demais mudou")
 	}
+	if !result.ChainOrderCorrect {
+		t.Errorf("esperava ChainOrderCorrect=true (o intermediário certo está presente, só fora de posição) — errors: %v", result.Errors)
+	}
+	if !result.Valid {
+		t.Errorf("esperava Valid=true — errors: %v", result.Errors)
+	}
+}
+
+func TestValidateCertificateChain_IntermediarioRealmenteAusente(t *testing.T) {
+	// Caso que DEVE continuar sendo detectado: o certificado que assina o leaf de fato não está
+	// presente no PEM (não é só reordenado) — aqui só a raiz é fornecida, sem o intermediário.
+	now := time.Now()
+	root := genCert(t, "Root CA de Teste", true, now.Add(-time.Hour), now.Add(10*365*24*time.Hour), nil)
+	intermediate := genCert(t, "Intermediate CA de Teste", true, now.Add(-time.Hour), now.Add(5*365*24*time.Hour), root)
+	leaf := genCert(t, "app.exemplo.com", false, now.Add(-time.Hour), now.Add(90*24*time.Hour), intermediate)
+
+	certPEM := concatPEM(leaf, root) // intermediário de propósito ausente
+	result, err := ValidateCertificateChain(certPEM, leaf.keyPEM)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
 	if result.ChainOrderCorrect {
-		t.Error("esperava ChainOrderCorrect=false")
+		t.Error("esperava ChainOrderCorrect=false — o intermediário que assina o leaf não está no PEM")
 	}
 	if result.Valid {
 		t.Error("esperava Valid=false")
