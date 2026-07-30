@@ -33,6 +33,12 @@ type CertificateInfo struct {
 	// Chain
 	ChainLength  int             `json:"chainLength"`
 	ChainDetails []ChainCertInfo `json:"chainDetails,omitempty"`
+
+	// ChainValidation — resultado de ValidateCertificateChain (validate.go, Fase 1 do
+	// CERT-ROLLBACK-VALIDATION-PLAN.md) já calculado durante o scan, sem precisar clicar em
+	// "Validar Cadeia" pra cada certificado. Não inclui LivePropagation (Fase 3, Prometheus) — isso
+	// continua só sob demanda, pra não multiplicar consultas ao Prometheus por certificado escaneado.
+	ChainValidation *ChainValidationResult `json:"chainValidation,omitempty"`
 }
 
 // IngressRef representa uma referência de Ingress que usa o certificado

@@ -29,6 +29,10 @@ export interface CertificateInfo {
   // Chain
   chainLength: number;
   chainDetails?: ChainCertInfo[];
+
+  // chainValidation — ValidateCertificateChain (Fase 1) já calculado durante o scan (sem
+  // LivePropagation/Prometheus, que continua só sob demanda via "Validar Cadeia").
+  chainValidation?: ChainValidationResult;
 }
 
 export interface IngressRef {

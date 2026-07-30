@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Shield, ExternalLink, Lock, ShieldCheck, Loader2, History } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -97,6 +97,15 @@ export function CertificateDetailModal({
   const [validationResult, setValidationResult] = useState<ChainValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
   const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
+
+  // Pré-popula com o resultado já calculado durante o scan (Scanner.scanCluster chama
+  // ValidateCertificateChain pra cada secret) — evita precisar clicar em "Validar Cadeia" só pra
+  // ver o que o scan já sabe. O botão continua disponível pra uma checagem nova/ao vivo (que também
+  // traz LivePropagation via Prometheus, ausente do resultado do scan).
+  useEffect(() => {
+    if (!open) return;
+    setValidationResult(cert?.chainValidation ?? null);
+  }, [open, cert?.cluster, cert?.namespace, cert?.secretName, cert?.chainValidation]);
 
   const handleValidateChain = async () => {
     if (!cert) return;

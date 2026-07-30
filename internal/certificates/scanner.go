@@ -106,6 +106,21 @@ func (s *Scanner) scanCluster(ctx context.Context, cluster string, namespaces []
 				Msg("Erro ao parsear certificado, ignorando")
 			continue
 		}
+
+		// Validação de cadeia (Fase 1, validate.go) já calculada no scan — mesma função usada por
+		// "Validar Cadeia"/Upload/Rollback, sem alterar seu comportamento. Melhor-esforço: erro
+		// aqui não derruba o certificado do resultado do scan, só fica sem ChainValidation.
+		if cv, cvErr := ValidateCertificateChain(tlsSecrets[i].Data["tls.crt"], tlsSecrets[i].Data["tls.key"]); cvErr == nil {
+			info.ChainValidation = cv
+		} else {
+			log.Warn().
+				Err(cvErr).
+				Str("cluster", cluster).
+				Str("secret", tlsSecrets[i].Name).
+				Str("namespace", tlsSecrets[i].Namespace).
+				Msg("Erro ao validar cadeia durante o scan, ignorando")
+		}
+
 		certs = append(certs, *info)
 	}
 
