@@ -751,7 +751,12 @@ func (h *AWXHandler) StreamJobLogs(c *gin.Context) {
 
 			sendEvent("status", jobSt.Status)
 
-			eventsPath := fmt.Sprintf("/api/v2/job_events/?job=%d&order_by=counter&page=%d&page_size=50", jobID, page)
+			// Endpoint aninhado (/api/v2/jobs/{id}/job_events/), não o top-level filtrado
+			// (/api/v2/job_events/?job=<id>) — confirmado via 404 real contra awx.via.com.br que a
+			// forma top-level não está disponível nesta instância (versão/RBAC restringindo a
+			// listagem geral); a forma aninhada é escopada ao job que já temos acesso confirmado
+			// (mesma chamada que já funciona pro status, /api/v2/jobs/{id}/).
+			eventsPath := fmt.Sprintf("/api/v2/jobs/%d/job_events/?order_by=counter&page=%d&page_size=50", jobID, page)
 			var eventList awxJobEventList
 			if err := h.awxGet(eventsPath, &eventList); err != nil {
 				log.Warn().Err(err).Int("job_id", jobID).Msg("[AWX] Erro ao buscar eventos")
