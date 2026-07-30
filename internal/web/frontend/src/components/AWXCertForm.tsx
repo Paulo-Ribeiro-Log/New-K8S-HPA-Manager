@@ -143,6 +143,16 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess, onBeforeL
       const es = new EventSource(apiClient.getAWXJobStreamURL(resp.job_id));
       eventSourceRef.current = es;
 
+      // `finished` (variável local, não estado React) resolve um bug real: `es.onerror` abaixo
+      // rodava dentro do mesmo closure de `launchJob`, então `jobStatus` ali sempre refletia o
+      // valor de ANTES do clique (setState é assíncrono, não muda o binding já capturado) — a
+      // checagem `jobStatus === "running"` era efetivamente sempre falsa, então uma queda de
+      // conexão SSE (proxy corporativo, rede instável, servidor reiniciando) nunca disparava toast
+      // nem tirava a UI do estado "running": o job ficava girando "Aguardando output..." pra
+      // sempre, sem nenhum aviso — a falha silenciosa relatada. `finished` é reatribuído pelos
+      // próprios handlers abaixo, no mesmo escopo, então reflete o estado real na hora do onerror.
+      let finished = false;
+
       es.onmessage = (event) => {
         try {
           const parsed: SSEEvent = JSON.parse(event.data);
@@ -151,12 +161,14 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess, onBeforeL
           } else if (parsed.type === "status") {
             setCurrentStatus(parsed.data);
           } else if (parsed.type === "complete") {
+            finished = true;
             setJobStatus("successful");
             setCurrentStatus("successful");
             es.close();
             toast.success("Certificado instalado/atualizado com sucesso!");
             onSuccess?.();
           } else if (parsed.type === "error") {
+            finished = true;
             setJobStatus("failed");
             setCurrentStatus(parsed.data);
             setLogs((prev) => [...prev, `[ERRO] ${parsed.data}`]);
@@ -169,9 +181,10 @@ export function AWXCertForm({ cluster, namespace, onCancel, onSuccess, onBeforeL
       };
 
       es.onerror = () => {
-        if (jobStatus === "running") {
+        if (!finished) {
+          finished = true;
           setJobStatus("failed");
-          toast.error("Conexão SSE perdida.");
+          toast.error("Conexão com o job AWX foi perdida antes de terminar — verifique manualmente no AWX se o job concluiu.");
         }
         es.close();
       };

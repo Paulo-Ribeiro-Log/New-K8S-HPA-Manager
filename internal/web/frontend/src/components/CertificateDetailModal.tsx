@@ -260,7 +260,7 @@ export function CertificateDetailModal({
           </ScrollArea>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="flex-wrap gap-2 sm:space-x-0">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Fechar
           </Button>
