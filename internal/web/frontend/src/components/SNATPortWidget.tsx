@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote, TrendingUp, TrendingDown, Minus, Server, KeyRound, Copy } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Network, Banknote, TrendingUp, TrendingDown, Minus, Server, KeyRound, Copy, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
@@ -125,12 +125,6 @@ const FALLBACK_COSTS: Record<string, Partial<SNATCostInfo>> = {
   aks: { ip_price_monthly: 20,   currency: "BRL", pricing_region: "brazilsouth" },
   gke: { ip_price_monthly: 2.92, gw_hourly_price: 0.044, data_price_per_gb: 0.045, currency: "USD", pricing_region: "southamerica-east1" },
   eks: { ip_price_monthly: 0,    gw_hourly_price: 0.044, data_price_per_gb: 0.044, currency: "USD", pricing_region: "us-east-1" },
-};
-
-const providerLabel: Record<string, string> = {
-  aks: "Azure LB",
-  gke: "Cloud NAT",
-  eks: "NAT Gateway",
 };
 
 const providerIPLabel: Record<string, string> = {
@@ -344,9 +338,11 @@ export function SNATPortWidget({ cluster }: Props) {
 
   return (
     <>
-      {/* Header compacto — sempre visível, abre o modal ao clicar */}
+      {/* Header compacto — 1 linha só, sem "ml-auto" empurrando os valores pra beira oposta do
+          widget (problema visível quando ele passa a dividir a largura com o
+          ConntrackAlertWidget). Conteúdo secundário fica num bloco truncável, não mais esticado. */}
       <button
-        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-xs hover:bg-muted/20 transition-colors ${
+        className={`w-fit flex items-center gap-2 px-3 py-2 rounded-lg border text-xs hover:bg-muted/20 transition-colors text-left whitespace-nowrap ${
           data?.status === "critical" ? "border-red-500/40 bg-red-500/5" :
           data?.status === "warning"  ? "border-amber-500/40 bg-amber-500/5" :
           "border-border/50 bg-muted/10"
@@ -354,61 +350,47 @@ export function SNATPortWidget({ cluster }: Props) {
         onClick={() => setOpen(true)}
       >
         <Network className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-        <span className="font-medium text-foreground">Diagnóstico SNAT</span>
+        <span className="font-medium text-foreground flex-shrink-0">SNAT</span>
 
         {isLoading || isFetching ? (
-          <RefreshCw className="w-3 h-3 animate-spin text-muted-foreground ml-1" />
+          <RefreshCw className="w-3 h-3 animate-spin text-muted-foreground flex-shrink-0" />
         ) : gcpNeedsAuth ? (
           <>
-            <KeyRound className="w-3.5 h-3.5 text-amber-400 ml-1" />
+            <KeyRound className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
             <span className="font-semibold text-amber-400">Login GCP necessário</span>
-            <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted/40 border border-border/40 ml-1">
-              Cloud NAT
-            </span>
           </>
         ) : data ? (
           <>
-            <StatusIcon className={`w-3.5 h-3.5 ${colors.text} ml-1`} />
-            <span className={`font-semibold ${colors.text}`}>{colors.label}</span>
-            {data.cloud_provider && data.cloud_provider !== "aks" && (
-              <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted/40 border border-border/40">
-                {providerLabel[data.cloud_provider]}
-              </span>
-            )}
-            <span className="text-muted-foreground ml-auto flex items-center gap-2">
-              <span>
-                {data.allocated_outbound_ports > 0 ? (
-                  <>
-                    {fmt(data.total_required_ports)} / {fmt(data.total_available_ports)} portas
-                    {" · "}
-                    <span className={
-                      data.usage_percent >= 100 ? "text-red-400 font-bold" :
-                      data.usage_percent >= 85  ? "text-amber-400 font-bold" :
-                      "text-foreground"
-                    }>
-                      {data.usage_percent.toFixed(1)}%
+            <StatusIcon className={`w-3.5 h-3.5 ${colors.text} flex-shrink-0`} />
+            <span className={`font-semibold ${colors.text} flex-shrink-0`}>{colors.label}</span>
+            <span className="text-muted-foreground">
+              {data.allocated_outbound_ports > 0 ? (
+                <>
+                  {fmt(data.total_required_ports)}/{fmt(data.total_available_ports)}
+                  {" · "}
+                  <span className={
+                    data.usage_percent >= 100 ? "text-red-400 font-bold" :
+                    data.usage_percent >= 85  ? "text-amber-400 font-bold" :
+                    "text-foreground"
+                  }>
+                    {data.usage_percent.toFixed(1)}%
+                  </span>
+                  {data.nodes_until_limit <= 10 && (
+                    <span className={data.nodes_until_limit <= 0 ? "text-red-400" : "text-amber-400"}>
+                      {" · "}{data.nodes_until_limit <= 0 ? "0 nós" : `+${fmt(data.nodes_until_limit)} nós`}
                     </span>
-                  </>
-                ) : (
-                  <>{fmt(data.outbound_ip_count)} EIP{data.outbound_ip_count !== 1 ? "s" : ""} · {fmt(data.total_node_count)} nós</>
-                )}
-              </span>
-              {data.allocated_outbound_ports > 0 && (
-                <span className={`font-semibold px-1.5 py-0.5 rounded text-[11px] ${
-                  data.nodes_until_limit <= 0  ? "bg-red-500/20 text-red-400" :
-                  data.nodes_until_limit <= 10 ? "bg-amber-500/20 text-amber-400" :
-                  "bg-emerald-500/20 text-emerald-400"
-                }`}>
-                  {data.nodes_until_limit <= 0 ? "0 nós disponíveis" : `+${fmt(data.nodes_until_limit)} nós`}
-                </span>
+                  )}
+                </>
+              ) : (
+                <>{fmt(data.outbound_ip_count)} EIP{data.outbound_ip_count !== 1 ? "s" : ""} · {fmt(data.total_node_count)} nós</>
               )}
             </span>
           </>
         ) : error ? (
-          <span className="text-red-400 ml-1">Erro ao carregar</span>
+          <span className="text-red-400">Erro ao carregar</span>
         ) : null}
 
-        <span className="text-muted-foreground text-[11px] flex-shrink-0 ml-2">Ver detalhes →</span>
+        <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/50 flex-shrink-0" />
       </button>
 
       {/* Modal */}

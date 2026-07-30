@@ -998,12 +998,6 @@ const Index = ({ onLogout }: IndexProps) => {
 
         return (
           <div className="flex flex-col h-full">
-            {selectedCluster && (
-              <div className="px-4 pt-3 pb-2 border-b border-border/50 space-y-2">
-                <SNATPortWidget cluster={selectedCluster} />
-                <ConntrackAlertWidget cluster={selectedCluster} />
-              </div>
-            )}
             <div className="flex-1 min-h-0">
           <SplitView
             leftPanel={{
@@ -1120,17 +1114,29 @@ const Index = ({ onLogout }: IndexProps) => {
             }}
             rightPanel={{
               title: `${nodeResourceSingular} Editor`,
-              titleAction: selectedNodePool ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => { setNodePoolEditorKey((k) => k + 1); refetchNodePools(); }}
-                  disabled={nodePoolsLoading}
-                  title={`Atualizar dados do ${nodeResourceSingular}`}
-                >
-                  <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? "animate-spin" : ""}`} />
-                </Button>
-              ) : undefined,
+              // Widgets de SNAT/Conntrack: dependem só do cluster selecionado, não do node pool —
+              // continuam visíveis mesmo sem nenhum node pool escolhido no painel esquerdo.
+              titleAction: (
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  {selectedCluster && (
+                    <div className="flex items-center gap-2">
+                      <SNATPortWidget cluster={selectedCluster} />
+                      <ConntrackAlertWidget cluster={selectedCluster} />
+                    </div>
+                  )}
+                  {selectedNodePool && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => { setNodePoolEditorKey((k) => k + 1); refetchNodePools(); }}
+                      disabled={nodePoolsLoading}
+                      title={`Atualizar dados do ${nodeResourceSingular}`}
+                    >
+                      <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? "animate-spin" : ""}`} />
+                    </Button>
+                  )}
+                </div>
+              ),
               content: <NodePoolEditor
                 key={nodePoolEditorKey}
                 nodePool={selectedNodePool ? (nodePools.find(np => np.name === selectedNodePool.name && np.cluster_name === selectedNodePool.cluster_name) ?? selectedNodePool) : selectedNodePool}
