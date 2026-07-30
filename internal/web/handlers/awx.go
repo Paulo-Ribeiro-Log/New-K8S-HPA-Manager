@@ -727,6 +727,15 @@ func (h *AWXHandler) StreamJobLogs(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
+	// eventsFetchErrorReported evita spam: antes, um erro ao buscar job_events só era logado no
+	// servidor (log.Warn) e NUNCA chegava ao frontend — se essa chamada especificamente falhasse
+	// (permissão, formato de API, versão do AWX), o usuário via status/badge normalmente (chamada
+	// separada, /api/v2/jobs/{id}/) mas nenhuma linha de log, sem nenhum aviso do motivo. Agora
+	// reporta uma vez como linha de log visível (não como "error" — job em si pode terminar bem
+	// mesmo com essa chamada específica falhando).
+	eventsFetchErrorReported := false
+	totalLogLinesSent := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -746,12 +755,17 @@ func (h *AWXHandler) StreamJobLogs(c *gin.Context) {
 			var eventList awxJobEventList
 			if err := h.awxGet(eventsPath, &eventList); err != nil {
 				log.Warn().Err(err).Int("job_id", jobID).Msg("[AWX] Erro ao buscar eventos")
+				if !eventsFetchErrorReported {
+					eventsFetchErrorReported = true
+					sendEvent("log", "[AWX] aviso: não foi possível buscar os logs do job ("+err.Error()+") — o job continua rodando normalmente, só a exibição de log está afetada")
+				}
 			} else {
 				for _, ev := range eventList.Results {
 					if ev.Stdout != "" {
 						for _, line := range strings.Split(ev.Stdout, "\n") {
 							if trimmed := strings.TrimRight(line, " \t\r"); trimmed != "" {
 								sendEvent("log", trimmed)
+								totalLogLinesSent++
 							}
 						}
 					}
@@ -762,6 +776,14 @@ func (h *AWXHandler) StreamJobLogs(c *gin.Context) {
 			}
 
 			if terminalStatuses[jobSt.Status] {
+				// Diagnóstico: job terminou mas nenhuma linha de log foi enviada em nenhum tick, e
+				// a busca de eventos nunca retornou erro — indica que /api/v2/job_events/ respondeu
+				// normalmente só que sem stdout em nenhum evento (verbosity do Job Template? versão
+				// do AWX?). Sem isso, o usuário só via o badge final, sem nenhuma pista do motivo de
+				// não ter log nenhum.
+				if totalLogLinesSent == 0 && !eventsFetchErrorReported {
+					sendEvent("log", "[AWX] aviso: nenhuma linha de log foi recebida da API do AWX durante a execução (job_events sem stdout) — o resultado final abaixo reflete o status real do job")
+				}
 				// Enviar detalhes do erro como linhas de log antes do evento final
 				if jobSt.Status != "successful" {
 					if jobSt.JobExplanation != "" {
