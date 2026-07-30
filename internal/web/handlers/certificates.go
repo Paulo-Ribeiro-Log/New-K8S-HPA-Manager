@@ -17,15 +17,16 @@ import (
 
 // CertificatesHandler gerencia as rotas de certificados TLS
 type CertificatesHandler struct {
-	scanner        *certificates.Scanner
-	rollbackStore  *certificates.RollbackStore // pode ser nil — backup/rollback fica indisponível nesse caso
-	historyTracker *history.HistoryTracker
+	scanner           *certificates.Scanner
+	rollbackStore     *certificates.RollbackStore     // pode ser nil — backup/rollback fica indisponível nesse caso
+	manualBackupStore *certificates.ManualBackupStore // pode ser nil — mecanismo separado, ver manual_backup.go
+	historyTracker    *history.HistoryTracker
 }
 
-// NewCertificatesHandler cria um handler de certificados. Se a criação do RollbackStore falhar
-// (ex: erro ao resolver o home dir), o handler segue funcionando normalmente — só as rotas de
-// backup/rollback (Fase 2) ficam indisponíveis, mesmo espírito "melhor esforço" já usado no
-// enriquecimento OpenSSL da Fase 1.
+// NewCertificatesHandler cria um handler de certificados. Se a criação de algum dos stores falhar
+// (ex: erro ao resolver o home dir), o handler segue funcionando normalmente — só as rotas
+// correspondentes ficam indisponíveis, mesmo espírito "melhor esforço" já usado no enriquecimento
+// OpenSSL da Fase 1.
 func NewCertificatesHandler(km *config.KubeConfigManager, historyTracker *history.HistoryTracker) *CertificatesHandler {
 	rollbackStore, err := certificates.NewRollbackStore()
 	if err != nil {
@@ -33,10 +34,17 @@ func NewCertificatesHandler(km *config.KubeConfigManager, historyTracker *histor
 		rollbackStore = nil
 	}
 
+	manualBackupStore, err := certificates.NewManualBackupStore()
+	if err != nil {
+		log.Warn().Err(err).Msg("Erro ao inicializar ManualBackupStore de certificados — backup manual ficará indisponível")
+		manualBackupStore = nil
+	}
+
 	return &CertificatesHandler{
-		scanner:        certificates.NewScanner(km, rollbackStore),
-		rollbackStore:  rollbackStore,
-		historyTracker: historyTracker,
+		scanner:           certificates.NewScanner(km, rollbackStore),
+		rollbackStore:     rollbackStore,
+		manualBackupStore: manualBackupStore,
+		historyTracker:    historyTracker,
 	}
 }
 
@@ -528,6 +536,167 @@ func (h *CertificatesHandler) Rollback(c *gin.Context) {
 		"success":    true,
 		"message":    fmt.Sprintf("Certificado restaurado a partir do backup %s", meta.BackupID),
 		"validation": validation,
+	})
+}
+
+// GetRollbackContent devolve o PEM bruto (tls.crt/tls.key) de um backup do RollbackStore — usado
+// pelo seletor de "instalar a partir de um backup" no fluxo manual, pra pré-popular os campos de
+// texto sem o usuário precisar copiar/colar. Expõe chave privada — RBAC obrigatório.
+func (h *CertificatesHandler) GetRollbackContent(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+	backupID := c.Param("backupId")
+
+	if h.rollbackStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "ROLLBACK_UNAVAILABLE", "message": "Rollback store indisponivel neste servidor"},
+		})
+		return
+	}
+
+	tlsCrt, tlsKey, meta, err := h.rollbackStore.Get(name, backupID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "BACKUP_NOT_FOUND", "message": err.Error()},
+		})
+		return
+	}
+	if meta.Cluster != cluster || meta.Namespace != namespace {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "BACKUP_MISMATCH", "message": "backup pertence a outro cluster/namespace"},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    gin.H{"tls_crt": string(tlsCrt), "tls_key": string(tlsKey)},
+	})
+}
+
+// ManualBackupRequest é o body de POST /certificates/:cluster/:namespace/:name/manual-backup
+type ManualBackupRequest struct {
+	Comment string `json:"comment,omitempty"`
+}
+
+// SaveManualBackup salva o conteúdo ATUAL de um Secret TLS num backup separado, disparado sob
+// demanda pelo usuário (mecanismo distinto do RollbackStore, que só guarda o estado anterior
+// automaticamente antes de uma sobrescrita). Aceita comentário opcional.
+func (h *CertificatesHandler) SaveManualBackup(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if h.manualBackupStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "MANUAL_BACKUP_UNAVAILABLE", "message": "Backup manual indisponivel neste servidor"},
+		})
+		return
+	}
+
+	var req ManualBackupRequest
+	_ = c.ShouldBindJSON(&req) // comentário é opcional — body ausente/vazio não é erro
+
+	tlsCrt, tlsKey, err := h.scanner.GetRawTLSSecret(c.Request.Context(), cluster, namespace, name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "SECRET_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	secret := &corev1.Secret{Data: map[string][]byte{"tls.crt": tlsCrt, "tls.key": tlsKey}}
+	info, err := h.manualBackupStore.Save(cluster, namespace, name, req.Comment, secret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "MANUAL_BACKUP_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": info})
+}
+
+// ListManualBackupSecrets lista os nomes de secret que têm ao menos 1 backup manual — alimenta a
+// navegação "entre pastas" do seletor de instalação manual, que não fica restrita ao secret
+// atualmente selecionado.
+func (h *CertificatesHandler) ListManualBackupSecrets(c *gin.Context) {
+	if h.manualBackupStore == nil {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": []string{}})
+		return
+	}
+
+	secrets, err := h.manualBackupStore.ListSecretsWithBackups()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "LIST_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": secrets})
+}
+
+// ListManualBackups lista os backups manuais de um secret específico (metadata apenas, sem chave).
+func (h *CertificatesHandler) ListManualBackups(c *gin.Context) {
+	secretName := c.Param("secretName")
+
+	if h.manualBackupStore == nil {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": []certificates.ManualBackupInfo{}})
+		return
+	}
+
+	list, err := h.manualBackupStore.List(secretName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "LIST_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": list})
+}
+
+// GetManualBackupContent devolve o PEM bruto de um backup manual — expõe chave privada, RBAC
+// obrigatório. Diferente de GetRollbackContent, não valida cluster/namespace (o backup manual é
+// deliberadamente navegável entre secrets de qualquer cluster/namespace).
+func (h *CertificatesHandler) GetManualBackupContent(c *gin.Context) {
+	secretName := c.Param("secretName")
+	backupID := c.Param("backupId")
+
+	if h.manualBackupStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "MANUAL_BACKUP_UNAVAILABLE", "message": "Backup manual indisponivel neste servidor"},
+		})
+		return
+	}
+
+	tlsCrt, tlsKey, _, err := h.manualBackupStore.Get(secretName, backupID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "BACKUP_NOT_FOUND", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    gin.H{"tls_crt": string(tlsCrt), "tls_key": string(tlsKey)},
 	})
 }
 

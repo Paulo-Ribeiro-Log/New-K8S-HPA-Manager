@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CertificateDetailModal } from "@/components/CertificateDetailModal";
+import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { AWXCertForm } from "@/components/AWXCertForm";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -43,6 +44,7 @@ import {
   Server,
   Table,
   ShieldAlert,
+  FolderOpen,
 } from "lucide-react";
 import { toast } from "sonner";
 import jsPDF from "jspdf";
@@ -141,6 +143,11 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
   const [batchCrt, setBatchCrt] = useState("");
   const [batchKey, setBatchKey] = useState("");
   const [isBatchUpdating, setIsBatchUpdating] = useState(false);
+
+  // Picker de fonte (Rollback / Backup Apartado) — compartilhado entre os modos "Instalação" e
+  // "Atualização em Massa" (só 1 modal por vez pode estar aberto). Escopo (cluster/namespace/
+  // secretName) e destino do onSelect dependem de qual modo disparou a abertura.
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
 
   // Extrair contextos dos clusters (com sufixo -admin)
   const clusterNames = useMemo(() => {
@@ -1297,6 +1304,18 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                   <Input value={uploadName} onChange={(e) => setUploadName(e.target.value)}
                     placeholder="meu-certificado-tls" className="mt-1" />
                 </div>
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-7"
+                    onClick={() => setSourcePickerOpen(true)}
+                  >
+                    <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+                    Escolher de um backup...
+                  </Button>
+                </div>
                 <div>
                   <Label className="text-sm">Certificado (tls.crt - PEM)</Label>
                   <textarea value={uploadCrt} onChange={(e) => setUploadCrt(e.target.value)}
@@ -1454,6 +1473,19 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
 
                 {uploadMode === "manual" && (
                   <>
+                    <div className="flex justify-end">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs h-7"
+                        onClick={() => setSourcePickerOpen(true)}
+                        disabled={isBatchUpdating}
+                      >
+                        <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+                        Escolher de um backup...
+                      </Button>
+                    </div>
                     <div>
                       <Label className="text-xs">Novo Certificado (tls.crt — PEM)</Label>
                       <textarea value={batchCrt} onChange={(e) => setBatchCrt(e.target.value)}
@@ -1512,6 +1544,33 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Picker de fonte (Rollback / Backup Apartado) — compartilhado entre "Instalação" e
+          "Atualização em Massa"; escopo e destino do onSelect dependem de qual modo está ativo. */}
+      <CertificateSourcePickerModal
+        open={sourcePickerOpen}
+        onOpenChange={setSourcePickerOpen}
+        cluster={
+          uploadOuterMode === "batch"
+            ? Array.from(batchSelected)[0]?.split("||")[0] ?? ""
+            : uploadTargetClusters[0] ?? ""
+        }
+        namespace={
+          uploadOuterMode === "batch"
+            ? Array.from(batchSelected)[0]?.split("||")[1] ?? ""
+            : uploadTargetNamespaces.split(",")[0]?.trim() ?? ""
+        }
+        secretName={uploadOuterMode === "batch" ? batchSecretName : uploadName}
+        onSelect={(crt, key) => {
+          if (uploadOuterMode === "batch") {
+            setBatchCrt(crt);
+            setBatchKey(key);
+          } else {
+            setUploadCrt(crt);
+            setUploadKey(key);
+          }
+        }}
+      />
 
       {/* Modal de Exportacao de Relatorio */}
       <Dialog open={reportModalOpen} onOpenChange={setReportModalOpen}>

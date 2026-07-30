@@ -1,6 +1,6 @@
 # Plano: Validação de Cadeia de Certificados + Rollback de Atualizações TLS
 
-Status: ✅ Fase 1 (validação de cadeia) concluída. ✅ Fase 2 (rollback) concluída — endpoints validados via curl/JWT real, ainda sem round-trip de escrita contra um cluster real (evitado por ser uma ação de escrita num sistema compartilhado — pendente de confirmação antes de rodar). ✅ Fase 3 (enriquecimento via Prometheus) concluída — métricas confirmadas empiricamente contra `akspriv-adanalytics-prd` real. ✅ Fase 4 (correções pós-implementação, achadas via uso real/feedback do usuário) concluída — 6 bugs reais corrigidos, ver seção própria. ✅ Fase 5 (mais 1 correção + 1 feature nova, achadas via uso real) concluída — modal AWX não fecha mais sozinho ao concluir, e a validação de cadeia agora já roda automaticamente durante o scan da frota. UI das 5 fases passou por `tsc`/`eslint` mas **segue sem teste visual em navegador** nesta série de rodadas (sem ferramenta de automação de browser disponível neste ambiente) — validar isso é o próximo passo recomendado antes de dar a feature por encerrada.
+Status: ✅ Fase 1 (validação de cadeia) concluída. ✅ Fase 2 (rollback) concluída — endpoints validados via curl/JWT real, ainda sem round-trip de escrita contra um cluster real (evitado por ser uma ação de escrita num sistema compartilhado — pendente de confirmação antes de rodar). ✅ Fase 3 (enriquecimento via Prometheus) concluída — métricas confirmadas empiricamente contra `akspriv-adanalytics-prd` real. ✅ Fase 4 (correções pós-implementação, achadas via uso real/feedback do usuário) concluída — 6 bugs reais corrigidos, ver seção própria. ✅ Fase 5 (mais 1 correção + 1 feature nova, achadas via uso real) concluída — modal AWX não fecha mais sozinho ao concluir, e a validação de cadeia agora já roda automaticamente durante o scan da frota. ✅ Fase 6 (Backup Apartado + picker de fonte na instalação manual) concluída — mecanismo de backup separado do Rollback, com comentário e navegação entre pastas, integrado nos dois modais manuais com busca embutida. UI das 6 fases passou por `tsc`/`eslint` mas **segue sem teste visual em navegador** nesta série de rodadas (sem ferramenta de automação de browser disponível neste ambiente) — validar isso é o próximo passo recomendado antes de dar a feature por encerrada.
 
 **Nota de arquitetura entre clouds (não implementada)**: a Fase 3 (Prometheus) só funciona em clusters com ingress-nginx rodando dentro do cluster — não se aplica a GKE Gateway API, cujo TLS termina num Load Balancer gerenciado da GCP (fora do cluster, sem pod pra fazer scrape). O equivalente pra esse caso seria consultar a API da GCP (`TargetHttpsProxy`/`SslCertificate` ou Certificate Manager) em vez de Prometheus — investigação levantada em conversa, mas nada foi codificado ainda; ver "Próximos passos" no fim deste documento.
 
@@ -126,39 +126,71 @@ Nenhum teste automatizado novo nesta fase (bug de fluxo de UI coberto por leitur
 
 ---
 
-## Arquivos afetados (acumulado das 5 fases)
+## Fase 6 — Backup Apartado + picker de fonte na instalação manual ✅ concluída
+
+Pedido do usuário: um botão pra copiar o certificado JÁ INSTALADO pra uma pasta própria — backup separado do RollbackStore (Fase 2), com nome/validade/data no título e comentário opcional — e um mecanismo pra escolher instalar a partir desse backup OU do Rollback na instalação/atualização manual, navegando entre pastas.
+
+**Decisões de design confirmadas com o usuário antes de implementar**: (1) pastas organizadas automaticamente por secret (como o Rollback já faz), não criadas manualmente pelo usuário — "navegar entre pastas" aqui significa navegar entre os secrets que já têm backup, não gerenciar uma árvore de diretórios livre; (2) integrado nos dois modais manuais (Secrets e Certificados TLS), mesmo padrão de outras correções desta sessão; (3) o botão sempre salva o certificado JÁ INSTALADO (visto no modal de detalhe), não permite colar um PEM arbitrário pra guardar.
+
+### Backend
+
+- `internal/certificates/manual_backup.go` (novo): `ManualBackupStore` — estruturalmente espelha `RollbackStore` (mesma pasta base por secret, mesmas permissões 0700/0600, reaproveita `validPathComponent`/`parsePEMChain`/`formatSerialNumber` do mesmo pacote), mas: (a) base dir própria `~/.k8s-hpa-manager/manual-cert-backups/`; (b) campo `Comment` opcional; (c) `ListSecretsWithBackups()` — lista TODOS os secrets com backup manual, não só o atual, alimentando a navegação entre pastas no picker; (d) sem `Prune` automático — são cópias deliberadas do usuário, não um buffer técnico rotativo.
+- 7 testes (`manual_backup_test.go`), espelhando os do RollbackStore: round-trip Save→List→Get, comentário vazio/preenchido, `ListSecretsWithBackups` ordenado alfabeticamente (+ caso vazio), path traversal rejeitado, permissões de arquivo, ordenação por mais recente.
+- Endpoints novos: `POST /:cluster/:namespace/:name/manual-backup` (RBAC, body `{comment?}`) → `SaveManualBackup`; `GET /manual-backups` (sem RBAC, só nomes) → `ListManualBackupSecrets`; `GET /manual-backups/:secretName` (sem RBAC, metadata) → `ListManualBackups`; `GET /manual-backups/:secretName/:backupId/content` (RBAC — expõe chave privada) → `GetManualBackupContent`.
+- Endpoint que faltava pro picker também puxar do Rollback: `GET /:cluster/:namespace/:name/rollback/:backupId/content` (RBAC) → `GetRollbackContent` — não existia antes porque o fluxo de rollback em si (Fase 2) sempre escreve server-side, nunca precisou expor o PEM bruto pro frontend.
+- `NewCertificatesHandler` ganha `manualBackupStore` (mesmo padrão "melhor esforço" do `rollbackStore` — se a criação falhar, loga aviso e as rotas correspondentes ficam indisponíveis, resto do handler funciona normal).
+- Rotas com prefixo estático (`/manual-backups`) coexistem sem conflito com as rotas `:cluster/:namespace/:name` já existentes no mesmo grupo — confirmado que gin resolve isso corretamente por precedência de match exato (mesmo padrão já usado por `/scan`, `/report`, `/validate-chain`), sem precisar de grupo de rotas separado.
+
+### Frontend
+
+- `CertificateManualBackupModal.tsx` (novo): botão "Copiar para Backup" no footer de `CertificateDetailModal.tsx`. Título derivado automaticamente (`{secretName} — válido até {notAfter} — cópia de {hoje}`, sem precisar de campo extra), campo de comentário opcional (textarea).
+- `CertificateSourcePickerModal.tsx` (novo): 2 abas manuais (`div`+estado, não shadcn `<Tabs>` — quebraria `flex-1 min-h-0`, ver nota já documentada no CLAUDE.md) — "Backup (Rollback)" (escopado ao secret atual) e "Backup Apartado" (navegação em 2 níveis: lista de secrets → lista de backups dentro do secret escolhido, com botão "Voltar às pastas"). Cada uma das 3 listas (Rollback, pastas do Backup Apartado, backups dentro de uma pasta) tem um campo de busca client-side (substring, sem nova chamada ao servidor) — adicionado numa rodada seguinte a pedido do usuário. Ao escolher um backup, busca o PEM bruto via `getRollbackContent`/`getManualBackupContent` e popula os campos de texto do fluxo manual via callback `onSelect`, exatamente como se o usuário tivesse colado à mão.
+- Integrado nos **dois modais manuais**: `CertificateRenewModal.tsx` (Secrets) e `CertificatesTab.tsx` (Certificados TLS — tanto "Instalação" quanto "Atualização em Massa", com escopo cluster/namespace/secretName derivado do form ativo em cada modo). Botão "Escolher de um backup..." acima dos campos de PEM.
+- `useCertificates.ts`: `getRollbackContent`, `saveManualBackup`, `listManualBackupSecrets`, `listManualBackups`, `getManualBackupContent`.
+- `types/certificates.ts`: `ManualBackupInfo`.
+
+Nenhum teste automatizado novo no frontend (componentes de UI puros, cobertos por `tsc`/`eslint`); backend coberto pelos 7 testes de `manual_backup_test.go` + suíte existente sem regressão.
+
+---
+
+## Arquivos afetados (acumulado das 6 fases)
 
 | Arquivo | Mudança |
 |---|---|
 | `internal/certificates/validate.go` | **novo** — `ValidateCertificateChain`, enriquecimento OpenSSL opcional; ganhou campo `LivePropagation` (Fase 3); checagem de ordem da cadeia corrigida pra ser order-independent (Fase 4) |
 | `internal/certificates/rollback.go` | **novo** — `RollbackStore` (Backup/List/Get/Prune) |
+| `internal/certificates/manual_backup.go` | **novo** (Fase 6) — `ManualBackupStore` (Save/ListSecretsWithBackups/List/Get) |
+| `internal/certificates/manual_backup_test.go` | **novo** (Fase 6) |
 | `internal/certificates/prometheus_enrich.go` | **novo** — `EnrichWithPrometheus`, `LivePropagationResult`, `LeafSerialDecimal` |
 | `internal/certificates/models.go` | `CertificateInfo` ganha campo `ChainValidation *ChainValidationResult` (Fase 5) |
 | `internal/certificates/validate_test.go` | teste de ordem errada substituído por 2 testes (reordenação não é erro; intermediário ausente ainda é) — Fase 4 |
 | `internal/certificates/rollback_test.go` | **novo** |
 | `internal/certificates/prometheus_enrich_test.go` | **novo** |
 | `internal/certificates/scanner.go` | `Scanner` ganha `rollbackStore`; `UploadCertificate` faz backup antes de sobrescrever (`backupBeforeOverwrite`); `scanCluster` chama `ValidateCertificateChain` por certificado (Fase 5) |
-| `internal/web/handlers/certificates.go` | +`Backup`, `ListRollbacks`, `Rollback`, `ValidateChainPEM`, `ValidateInstalledChain`, `enrichLivePropagation`; `NewCertificatesHandler` ganha `historyTracker`+`rollbackStore` interno |
-| `internal/web/server.go` | rotas novas de rollback/backup + atualiza call site de `NewCertificatesHandler` |
-| `internal/web/frontend/src/hooks/useCertificates.ts` | +`backupCertificate`, `listRollbacks`, `rollbackCertificate` |
-| `internal/web/frontend/src/types/certificates.ts` | +`RollbackBackupInfo`, +`LivePropagationResult`, +`chainValidation?` em `CertificateInfo` (Fase 5) |
+| `internal/web/handlers/certificates.go` | +`Backup`, `ListRollbacks`, `Rollback`, `ValidateChainPEM`, `ValidateInstalledChain`, `enrichLivePropagation`; +`SaveManualBackup`, `ListManualBackupSecrets`, `ListManualBackups`, `GetManualBackupContent`, `GetRollbackContent` (Fase 6); `NewCertificatesHandler` ganha `historyTracker`+`rollbackStore`+`manualBackupStore` interno |
+| `internal/web/server.go` | rotas novas de rollback/backup + manual-backup (Fase 6) + atualiza call site de `NewCertificatesHandler` |
+| `internal/web/frontend/src/hooks/useCertificates.ts` | +`backupCertificate`, `listRollbacks`, `rollbackCertificate`; +`getRollbackContent`, `saveManualBackup`, `listManualBackupSecrets`, `listManualBackups`, `getManualBackupContent` (Fase 6) |
+| `internal/web/frontend/src/types/certificates.ts` | +`RollbackBackupInfo`, +`LivePropagationResult`, +`chainValidation?` em `CertificateInfo` (Fase 5); +`ManualBackupInfo` (Fase 6) |
 | `internal/web/frontend/src/components/CertificateChainValidationPanel.tsx` | **novo** (Fase 1); seção de propagação Prometheus (Fase 3) |
 | `internal/web/frontend/src/components/CertificateRollbackModal.tsx` | **novo** (Fase 2); `useRef` pro bug de fechamento prematuro + estado visual "Restaurando..." (Fase 4, bug #6) |
-| `internal/web/frontend/src/components/CertificateRenewModal.tsx` | validação automática pós-instalação; `onBeforeLaunch` pro AWX |
-| `internal/web/frontend/src/components/CertificateDetailModal.tsx` | botão "Validar Cadeia"; botão "Backups / Rollback" + `onRestored`; footer `flex-wrap` (Fase 4, bug #2); `useEffect` pré-popula validação a partir do scan (Fase 5) |
-| `internal/web/frontend/src/components/CertificatesTab.tsx` | `onRestored={handleScan}`; toggle Manual/AWX + seleção padrão no modo "Atualização em Massa" (Fase 4, bugs #3 e #5); `onSuccess` do AWX não fecha mais o modal (Fase 5, bug #7) |
+| `internal/web/frontend/src/components/CertificateManualBackupModal.tsx` | **novo** (Fase 6) |
+| `internal/web/frontend/src/components/CertificateSourcePickerModal.tsx` | **novo** (Fase 6) — picker Rollback/Backup Apartado com busca |
+| `internal/web/frontend/src/components/CertificateRenewModal.tsx` | validação automática pós-instalação; `onBeforeLaunch` pro AWX; botão "Escolher de um backup..." (Fase 6) |
+| `internal/web/frontend/src/components/CertificateDetailModal.tsx` | botão "Validar Cadeia"; botão "Backups / Rollback" + `onRestored`; footer `flex-wrap` (Fase 4, bug #2); `useEffect` pré-popula validação a partir do scan (Fase 5); botão "Copiar para Backup" (Fase 6) |
+| `internal/web/frontend/src/components/CertificatesTab.tsx` | `onRestored={handleScan}`; toggle Manual/AWX + seleção padrão no modo "Atualização em Massa" (Fase 4, bugs #3 e #5); `onSuccess` do AWX não fecha mais o modal (Fase 5, bug #7); botão "Escolher de um backup..." nos dois modos manuais (Fase 6) |
 | `internal/web/frontend/src/components/SecretsTab.tsx` | `onRestored` no `CertificateDetailModal` (mesmo trio de `CertificateRenewModal.onSuccess`) |
 | `internal/web/frontend/src/components/AWXCertForm.tsx` | prop `onBeforeLaunch` chamada antes de `launchAWXCertJob`; `es.onerror` corrigido com variável local em vez de estado React (Fase 4, bug #4); botão vira "Fechar" em estado terminal (Fase 5, bug #7) |
 
 ## Verificação
 
 - [x] `go build ./...`, `go vet ./internal/certificates/... ./internal/web/handlers/... ./internal/web/...`, `go test ./internal/... -race` (todos os testes novos + suíte existente completa, sem regressão)
-- [x] `tsc --noEmit`, `eslint .` no frontend — sem erros novos, em todas as 5 fases
+- [x] `tsc --noEmit`, `eslint .` no frontend — sem erros novos, em todas as 6 fases
 - [x] Servidor sobe sem panic de rota conflitante; smoke-test via `curl` com JWT real: `ListRollbacks` de secret inexistente retorna `{"data":[],"success":true}`; `Rollback` sem `backup_id` retorna 400; `Backup` contra cluster inexistente retorna o erro de client K8s esperado (não um erro de código)
 - [x] Fase 4, bug #1 (ordem da cadeia): reproduzido e corrigido contra um cenário real (bundle Sectigo/USERTrust reordenado, mesmo padrão do `casasbahia-tls` reportado pelo usuário) — coberto por teste unitário de regressão
 - [ ] Teste manual ponta a ponta de ESCRITA (upload → backup → segundo upload → rollback) **não executado ainda** — exigiria escrever um Secret de teste num cluster real; evitado por ser uma ação de escrita não solicitada explicitamente. Roteiro sugerido: gerar um cert self-signed local (`openssl req -x509 -newkey rsa:2048 ...`) → upload → conferir pasta `~/.k8s-hpa-manager/rollback-certs/<nome>/<data>/` criada com o cert ANTERIOR → upload de um segundo cert (chave trocada de propósito) → `validate-chain` deve reportar `key_matches_cert:false` → `rollback` pro backup do primeiro → `validate-chain` deve voltar a `valid:true`
 - [ ] Fase 3 contra cluster real: chamar `GET .../validate-chain` de um Secret real com Ingress (ex: `viavarejo-tls`/`adanalytics-prd`/`akspriv-adanalytics-prd`) e conferir que `live_propagation.checked=true` — não executado ainda (mesmo motivo acima, e por ora não é estritamente uma escrita, mas envolve consultar Prometheus de produção)
 - [ ] **Validar em navegador os bugs das Fases 4 e 5** — nenhum deles foi confirmado visualmente ainda (sem ferramenta de automação de browser disponível neste ambiente); a análise/correção de cada um foi feita por leitura de código + raciocínio sobre o comportamento do React/Radix, não por reprodução ao vivo. Recomendado antes de dar a feature por encerrada: (a) testar upload/renovação via AWX em Secrets e em Certificados TLS, incluindo o cenário de conexão caindo no meio do job e conferir que o modal fica aberto mostrando o resultado até fechar manualmente; (b) testar "Atualização em Massa" com AWX alternando entre 0/1/vários destinos marcados; (c) testar o fluxo completo de restaurar um backup no modal de rollback, incluindo o estado visual "Restaurando..."; (d) conferir que os 5 botões do footer de `CertificateDetailModal` quebram linha em vez de estourar; (e) validar a cadeia de um certificado real com bundle "fora de ordem" e confirmar `valid:true`; (f) rodar um scan de frota e abrir o detalhe de um certificado sem clicar em "Validar Cadeia", conferindo que o painel já aparece populado
+- [ ] **Validar em navegador a Fase 6** (Backup Apartado + picker) — não testado visualmente ainda, mesmo motivo das fases anteriores: (a) salvar um backup manual com e sem comentário, conferir que aparece na lista com o comentário certo; (b) abrir o picker nos dois modais (Secrets e Certificados TLS, install e batch) e navegar entre pastas do Backup Apartado; (c) usar a busca nas 3 listas do picker; (d) escolher um backup (Rollback e Backup Apartado) e confirmar que os campos de texto são populados corretamente; (e) confirmar que o endpoint de conteúdo (que expõe chave privada) está de fato atrás de RBAC
 
 ## Próximos passos (não implementados, levantados em conversa)
 
