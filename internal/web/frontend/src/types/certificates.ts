@@ -133,3 +133,17 @@ export interface RollbackBackupInfo {
   serial_number: string;
   not_after: string;
 }
+
+// ManualBackupInfo — backup separado do Rollback, disparado sob demanda pelo usuário (botão
+// "Copiar para Backup"), com comentário opcional. snake_case, mesmo motivo de RollbackBackupInfo.
+export interface ManualBackupInfo {
+  backup_id: string;
+  cluster: string;
+  namespace: string;
+  secret_name: string;
+  backed_up_at: string;
+  subject: string;
+  serial_number: string;
+  not_after: string;
+  comment?: string;
+}

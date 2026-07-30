@@ -10,11 +10,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Loader2, RefreshCw, TriangleAlert } from "lucide-react";
+import { Loader2, RefreshCw, TriangleAlert, FolderOpen } from "lucide-react";
 import { toast } from "sonner";
 import { useCertificates } from "@/hooks/useCertificates";
 import { getStatusBadge } from "@/components/CertificateDetailModal";
 import { CertificateChainValidationPanel } from "@/components/CertificateChainValidationPanel";
+import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { AWXCertForm } from "@/components/AWXCertForm";
 import { apiClient } from "@/lib/api/client";
 import type { CertificateInfo, ChainValidationResult } from "@/types/certificates";
@@ -52,6 +53,7 @@ export function CertificateRenewModal({
   // sem devolver o cert — por isso busca de novo via GET .../validate-chain).
   const [validationResult, setValidationResult] = useState<ChainValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
 
   useEffect(() => {
     apiClient
@@ -202,6 +204,20 @@ export function CertificateRenewModal({
                 </div>
               )}
 
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs h-7"
+                  onClick={() => setSourcePickerOpen(true)}
+                  disabled={isSubmitting}
+                >
+                  <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+                  Escolher de um backup...
+                </Button>
+              </div>
+
               <div>
                 <Label className="text-sm">Certificado (tls.crt — PEM)</Label>
                 <textarea
@@ -240,6 +256,18 @@ export function CertificateRenewModal({
           </>
         )}
       </DialogContent>
+
+      <CertificateSourcePickerModal
+        open={sourcePickerOpen}
+        onOpenChange={setSourcePickerOpen}
+        cluster={cluster}
+        namespace={namespace}
+        secretName={secretName}
+        onSelect={(crt, key) => {
+          setTlsCrt(crt);
+          setTlsKey(key);
+        }}
+      />
     </Dialog>
   );
 }
