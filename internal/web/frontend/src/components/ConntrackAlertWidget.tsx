@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Activity, HelpCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle, RefreshCw, Activity, HelpCircle, ChevronRight } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ConntrackNodeStats } from "@/lib/api/types";
 
@@ -54,7 +54,7 @@ export function ConntrackAlertWidget({ cluster }: Props) {
   return (
     <>
       <button
-        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-xs hover:bg-muted/20 transition-colors ${
+        className={`w-fit flex items-center gap-2 px-3 py-2 rounded-lg border text-xs hover:bg-muted/20 transition-colors text-left whitespace-nowrap ${
           status === "critical" ? "border-red-500/40 bg-red-500/5" :
           status === "warning"  ? "border-amber-500/40 bg-amber-500/5" :
           status === "unknown"  ? "border-border/50 bg-muted/20" :
@@ -63,20 +63,20 @@ export function ConntrackAlertWidget({ cluster }: Props) {
         onClick={() => setOpen(true)}
       >
         <Activity className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-        <span className="font-medium text-foreground">Conntrack — cluster</span>
+        <span className="font-medium text-foreground flex-shrink-0">Conntrack</span>
 
         {isLoading || isFetching ? (
-          <RefreshCw className="w-3 h-3 animate-spin text-muted-foreground ml-1" />
+          <RefreshCw className="w-3 h-3 animate-spin text-muted-foreground flex-shrink-0" />
         ) : error ? (
-          <span className="text-red-400 ml-1">Erro ao carregar</span>
+          <span className="text-red-400">Erro ao carregar</span>
         ) : data ? (
           <>
-            <StatusIcon className={`w-3.5 h-3.5 ${colors.text} ml-1`} />
-            <span className={`font-semibold ${colors.text}`}>{colors.label}</span>
-            <span className="text-muted-foreground ml-auto">
+            <StatusIcon className={`w-3.5 h-3.5 ${colors.text} flex-shrink-0`} />
+            <span className={`font-semibold ${colors.text} flex-shrink-0`}>{colors.label}</span>
+            <span className="text-muted-foreground">
               {highest ? (
                 <>
-                  nó mais saturado: <strong className="text-foreground">{highest.node_name}</strong>
+                  <strong className="text-foreground">{highest.node_name}</strong>
                   {" · "}
                   <span className={colors.text}>{highestPct.toFixed(1)}%</span>
                 </>
@@ -87,7 +87,7 @@ export function ConntrackAlertWidget({ cluster }: Props) {
           </>
         ) : null}
 
-        <span className="text-muted-foreground text-[11px] flex-shrink-0 ml-2">Ver detalhes →</span>
+        <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/50 flex-shrink-0" />
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
