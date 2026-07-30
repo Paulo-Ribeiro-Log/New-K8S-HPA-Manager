@@ -1,6 +1,8 @@
 # Plano: Validação de Cadeia de Certificados + Rollback de Atualizações TLS
 
-Status: ✅ Fase 1 (validação de cadeia) concluída. ✅ Fase 2 (rollback) concluída — endpoints validados via curl/JWT real, ainda sem round-trip de escrita contra um cluster real (evitado por ser uma ação de escrita num sistema compartilhado — pendente de confirmação antes de rodar). ✅ Fase 3 (enriquecimento via Prometheus) concluída — métricas confirmadas empiricamente contra `akspriv-adanalytics-prd` real. ✅ Fase 4 (correções pós-implementação, achadas via uso real/feedback do usuário) concluída — 6 bugs reais corrigidos, ver seção própria. UI das 4 fases passou por `tsc`/`eslint` mas **segue sem teste visual em navegador** nesta série de rodadas (sem ferramenta de automação de browser disponível neste ambiente) — validar isso é o próximo passo recomendado antes de dar a feature por encerrada.
+Status: ✅ Fase 1 (validação de cadeia) concluída. ✅ Fase 2 (rollback) concluída — endpoints validados via curl/JWT real, ainda sem round-trip de escrita contra um cluster real (evitado por ser uma ação de escrita num sistema compartilhado — pendente de confirmação antes de rodar). ✅ Fase 3 (enriquecimento via Prometheus) concluída — métricas confirmadas empiricamente contra `akspriv-adanalytics-prd` real. ✅ Fase 4 (correções pós-implementação, achadas via uso real/feedback do usuário) concluída — 6 bugs reais corrigidos, ver seção própria. ✅ Fase 5 (mais 1 correção + 1 feature nova, achadas via uso real) concluída — modal AWX não fecha mais sozinho ao concluir, e a validação de cadeia agora já roda automaticamente durante o scan da frota. UI das 5 fases passou por `tsc`/`eslint` mas **segue sem teste visual em navegador** nesta série de rodadas (sem ferramenta de automação de browser disponível neste ambiente) — validar isso é o próximo passo recomendado antes de dar a feature por encerrada.
+
+**Nota de arquitetura entre clouds (não implementada)**: a Fase 3 (Prometheus) só funciona em clusters com ingress-nginx rodando dentro do cluster — não se aplica a GKE Gateway API, cujo TLS termina num Load Balancer gerenciado da GCP (fora do cluster, sem pod pra fazer scrape). O equivalente pra esse caso seria consultar a API da GCP (`TargetHttpsProxy`/`SslCertificate` ou Certificate Manager) em vez de Prometheus — investigação levantada em conversa, mas nada foi codificado ainda; ver "Próximos passos" no fim deste documento.
 
 ## Contexto
 
@@ -106,35 +108,59 @@ Nenhum teste automatizado novo nesta fase (bugs de UI/interação, cobertos por 
 
 ---
 
-## Arquivos afetados (acumulado das 4 fases)
+## Fase 5 — Correção adicional + validação já no scan ✅ concluída
+
+Rodada seguinte de uso real revelou mais 1 bug (distinto dos de stale closure da Fase 4) e motivou 1 feature nova:
+
+7. **Modal AWX fechava sozinho ao concluir o job, escondendo logs/status** (`CertificatesTab.tsx`, modos Instalação e Atualização em Massa) — `onSuccess={() => { ...; setUploadModalOpen(false); }}` fechava o `Dialog` inteiro no instante em que o job terminava. O `AWXCertForm` já renderiza logs em tempo real + badge de status final internamente (isso não mudou, é o "mecanismo que já existe") — o problema era só o pai fechando a janela antes do usuário conseguir ler qualquer coisa. Diferente dos bugs #4/#6 da Fase 4 (stale closure): aqui não havia bug de timing, era uma decisão de fluxo — fechar automaticamente no sucesso — que conflitava com "deixar o usuário ver o resultado". Corrigido: `onSuccess` não fecha mais o modal, só refaz o scan (`handleScan()`); fechamento vira manual via botão do próprio `AWXCertForm`, que agora troca o texto de "Cancelar" pra **"Fechar"** assim que `jobStatus` chega num estado terminal (`successful`/`failed`) — nova variável derivada `isTerminal`.
+
+**Nova feature: validação de cadeia já no scan** — antes, `ValidateCertificateChain` (Fase 1) só rodava sob demanda (clique em "Validar Cadeia", ou automaticamente só no momento de Upload/Rollback). Pedido do usuário: rodar essa mesma validação (sem alterar seu mecanismo interno) já durante o scan de certificados da frota, pra não precisar abrir cada certificado individualmente pra saber se a cadeia está ok.
+
+- `CertificateInfo` (`internal/certificates/models.go`) ganhou campo `ChainValidation *ChainValidationResult` (`omitempty`) — reaproveita o tipo já existente, nenhuma struct nova.
+- `Scanner.scanCluster` (`scanner.go`) chama `ValidateCertificateChain(tlsSecrets[i].Data["tls.crt"], ...Data["tls.key"])` pra cada Secret TLS encontrado, logo após o `ParseTLSSecret` — melhor-esforço: erro na validação de 1 cert só loga aviso, não derruba esse cert do resultado do scan nem afeta os demais.
+- **Deliberadamente não inclui `LivePropagation`** (Fase 3, consulta ao Prometheus) — rodar isso por certificado escaneado multiplicaria consultas ao Prometheus por toda a frota a cada scan; esse enriquecimento continua só sob demanda (botão "Validar Cadeia", que já dispara uma checagem nova/ao vivo).
+- Frontend: `types/certificates.ts` +`chainValidation?: ChainValidationResult`; `CertificateDetailModal.tsx` ganhou um `useEffect` que pré-popula `validationResult` a partir de `cert.chainValidation` assim que o modal abre (dependências: `open`, `cert?.cluster`, `cert?.namespace`, `cert?.secretName`, `cert?.chainValidation` — evita reset espúrio de um resultado ao vivo já buscado enquanto o modal segue aberto). O botão "Validar Cadeia" continua existindo e funcionando do jeito que já funcionava, pra uma checagem nova/ao vivo com Prometheus incluso.
+- **Ressalva de performance registrada, não resolvida**: como `ValidateCertificateChain` tenta `enrichWithOpenSSL` (subprocesso `openssl`, se o binário existir) pra cada chamada, isso agora roda uma vez por certificado durante um scan de frota inteiro — pode somar latência perceptível em scans grandes (muitos clusters/certs). Não foi otimizado por instrução explícita do usuário ("sem mexer no mecanismo que já existe") — só documentado aqui como trade-off conhecido, caso apareça lentidão real no scan.
+
+Nenhum teste automatizado novo nesta fase (bug de fluxo de UI coberto por leitura de código; feature nova coberta pela suíte já existente de `validate_test.go`, já que reaproveita `ValidateCertificateChain` sem alterá-la — `go build`/`go vet`/`go test -race` e `tsc`/`eslint` confirmam ausência de regressão).
+
+---
+
+## Arquivos afetados (acumulado das 5 fases)
 
 | Arquivo | Mudança |
 |---|---|
 | `internal/certificates/validate.go` | **novo** — `ValidateCertificateChain`, enriquecimento OpenSSL opcional; ganhou campo `LivePropagation` (Fase 3); checagem de ordem da cadeia corrigida pra ser order-independent (Fase 4) |
 | `internal/certificates/rollback.go` | **novo** — `RollbackStore` (Backup/List/Get/Prune) |
 | `internal/certificates/prometheus_enrich.go` | **novo** — `EnrichWithPrometheus`, `LivePropagationResult`, `LeafSerialDecimal` |
+| `internal/certificates/models.go` | `CertificateInfo` ganha campo `ChainValidation *ChainValidationResult` (Fase 5) |
 | `internal/certificates/validate_test.go` | teste de ordem errada substituído por 2 testes (reordenação não é erro; intermediário ausente ainda é) — Fase 4 |
 | `internal/certificates/rollback_test.go` | **novo** |
 | `internal/certificates/prometheus_enrich_test.go` | **novo** |
-| `internal/certificates/scanner.go` | `Scanner` ganha `rollbackStore`; `UploadCertificate` faz backup antes de sobrescrever (`backupBeforeOverwrite`) |
+| `internal/certificates/scanner.go` | `Scanner` ganha `rollbackStore`; `UploadCertificate` faz backup antes de sobrescrever (`backupBeforeOverwrite`); `scanCluster` chama `ValidateCertificateChain` por certificado (Fase 5) |
 | `internal/web/handlers/certificates.go` | +`Backup`, `ListRollbacks`, `Rollback`, `ValidateChainPEM`, `ValidateInstalledChain`, `enrichLivePropagation`; `NewCertificatesHandler` ganha `historyTracker`+`rollbackStore` interno |
 | `internal/web/server.go` | rotas novas de rollback/backup + atualiza call site de `NewCertificatesHandler` |
 | `internal/web/frontend/src/hooks/useCertificates.ts` | +`backupCertificate`, `listRollbacks`, `rollbackCertificate` |
-| `internal/web/frontend/src/types/certificates.ts` | +`RollbackBackupInfo`, +`LivePropagationResult` |
+| `internal/web/frontend/src/types/certificates.ts` | +`RollbackBackupInfo`, +`LivePropagationResult`, +`chainValidation?` em `CertificateInfo` (Fase 5) |
 | `internal/web/frontend/src/components/CertificateChainValidationPanel.tsx` | **novo** (Fase 1); seção de propagação Prometheus (Fase 3) |
 | `internal/web/frontend/src/components/CertificateRollbackModal.tsx` | **novo** (Fase 2); `useRef` pro bug de fechamento prematuro + estado visual "Restaurando..." (Fase 4, bug #6) |
 | `internal/web/frontend/src/components/CertificateRenewModal.tsx` | validação automática pós-instalação; `onBeforeLaunch` pro AWX |
-| `internal/web/frontend/src/components/CertificateDetailModal.tsx` | botão "Validar Cadeia"; botão "Backups / Rollback" + `onRestored`; footer `flex-wrap` (Fase 4, bug #2) |
-| `internal/web/frontend/src/components/CertificatesTab.tsx` | `onRestored={handleScan}`; toggle Manual/AWX + seleção padrão no modo "Atualização em Massa" (Fase 4, bugs #3 e #5) |
+| `internal/web/frontend/src/components/CertificateDetailModal.tsx` | botão "Validar Cadeia"; botão "Backups / Rollback" + `onRestored`; footer `flex-wrap` (Fase 4, bug #2); `useEffect` pré-popula validação a partir do scan (Fase 5) |
+| `internal/web/frontend/src/components/CertificatesTab.tsx` | `onRestored={handleScan}`; toggle Manual/AWX + seleção padrão no modo "Atualização em Massa" (Fase 4, bugs #3 e #5); `onSuccess` do AWX não fecha mais o modal (Fase 5, bug #7) |
 | `internal/web/frontend/src/components/SecretsTab.tsx` | `onRestored` no `CertificateDetailModal` (mesmo trio de `CertificateRenewModal.onSuccess`) |
-| `internal/web/frontend/src/components/AWXCertForm.tsx` | prop `onBeforeLaunch` chamada antes de `launchAWXCertJob`; `es.onerror` corrigido com variável local em vez de estado React (Fase 4, bug #4) |
+| `internal/web/frontend/src/components/AWXCertForm.tsx` | prop `onBeforeLaunch` chamada antes de `launchAWXCertJob`; `es.onerror` corrigido com variável local em vez de estado React (Fase 4, bug #4); botão vira "Fechar" em estado terminal (Fase 5, bug #7) |
 
 ## Verificação
 
 - [x] `go build ./...`, `go vet ./internal/certificates/... ./internal/web/handlers/... ./internal/web/...`, `go test ./internal/... -race` (todos os testes novos + suíte existente completa, sem regressão)
-- [x] `tsc --noEmit`, `eslint .` no frontend — sem erros novos, em todas as 4 fases
+- [x] `tsc --noEmit`, `eslint .` no frontend — sem erros novos, em todas as 5 fases
 - [x] Servidor sobe sem panic de rota conflitante; smoke-test via `curl` com JWT real: `ListRollbacks` de secret inexistente retorna `{"data":[],"success":true}`; `Rollback` sem `backup_id` retorna 400; `Backup` contra cluster inexistente retorna o erro de client K8s esperado (não um erro de código)
 - [x] Fase 4, bug #1 (ordem da cadeia): reproduzido e corrigido contra um cenário real (bundle Sectigo/USERTrust reordenado, mesmo padrão do `casasbahia-tls` reportado pelo usuário) — coberto por teste unitário de regressão
 - [ ] Teste manual ponta a ponta de ESCRITA (upload → backup → segundo upload → rollback) **não executado ainda** — exigiria escrever um Secret de teste num cluster real; evitado por ser uma ação de escrita não solicitada explicitamente. Roteiro sugerido: gerar um cert self-signed local (`openssl req -x509 -newkey rsa:2048 ...`) → upload → conferir pasta `~/.k8s-hpa-manager/rollback-certs/<nome>/<data>/` criada com o cert ANTERIOR → upload de um segundo cert (chave trocada de propósito) → `validate-chain` deve reportar `key_matches_cert:false` → `rollback` pro backup do primeiro → `validate-chain` deve voltar a `valid:true`
 - [ ] Fase 3 contra cluster real: chamar `GET .../validate-chain` de um Secret real com Ingress (ex: `viavarejo-tls`/`adanalytics-prd`/`akspriv-adanalytics-prd`) e conferir que `live_propagation.checked=true` — não executado ainda (mesmo motivo acima, e por ora não é estritamente uma escrita, mas envolve consultar Prometheus de produção)
-- [ ] **Validar em navegador os 6 bugs da Fase 4** — nenhum deles foi confirmado visualmente ainda (sem ferramenta de automação de browser disponível neste ambiente); a análise/correção de cada um foi feita por leitura de código + raciocínio sobre o comportamento do React/Radix, não por reprodução ao vivo. Recomendado antes de dar a feature por encerrada: (a) testar upload/renovação via AWX em Secrets e em Certificados TLS, incluindo o cenário de conexão caindo no meio do job; (b) testar "Atualização em Massa" com AWX alternando entre 0/1/vários destinos marcados; (c) testar o fluxo completo de restaurar um backup no modal de rollback, incluindo o estado visual "Restaurando..."; (d) conferir que os 5 botões do footer de `CertificateDetailModal` quebram linha em vez de estourar; (e) validar a cadeia de um certificado real com bundle "fora de ordem" e confirmar `valid:true`
+- [ ] **Validar em navegador os bugs das Fases 4 e 5** — nenhum deles foi confirmado visualmente ainda (sem ferramenta de automação de browser disponível neste ambiente); a análise/correção de cada um foi feita por leitura de código + raciocínio sobre o comportamento do React/Radix, não por reprodução ao vivo. Recomendado antes de dar a feature por encerrada: (a) testar upload/renovação via AWX em Secrets e em Certificados TLS, incluindo o cenário de conexão caindo no meio do job e conferir que o modal fica aberto mostrando o resultado até fechar manualmente; (b) testar "Atualização em Massa" com AWX alternando entre 0/1/vários destinos marcados; (c) testar o fluxo completo de restaurar um backup no modal de rollback, incluindo o estado visual "Restaurando..."; (d) conferir que os 5 botões do footer de `CertificateDetailModal` quebram linha em vez de estourar; (e) validar a cadeia de um certificado real com bundle "fora de ordem" e confirmar `valid:true`; (f) rodar um scan de frota e abrir o detalhe de um certificado sem clicar em "Validar Cadeia", conferindo que o painel já aparece populado
+
+## Próximos passos (não implementados, levantados em conversa)
+
+- **GKE Gateway API**: Fase 3 (Prometheus) não se aplica — TLS termina num Load Balancer gerenciado da GCP, sem pod pra Prometheus fazer scrape. Equivalente proposto: consultar a API da GCP (`TargetHttpsProxy`/`SslCertificate` ou Certificate Manager) pra ver o certificado de fato anexado. Não investigado contra um cluster GKE real ainda — só levantado como direção, pendente de confirmação empírica antes de codificar (mesmo cuidado já aplicado em toda a Fase 3 original).
+- **Handshake TLS ativo como complemento à Fase 3**: ideia discutida (não implementada) de, além de ler a métrica do Prometheus, abrir uma conexão TLS real (`crypto/tls.Dial` com SNI) contra o host do Ingress e comparar o serial retornado de fato — fecharia o loop entre "o que a métrica diz" e "o que está sendo servido agora". Descartado por ora (KISS — sem problema real que justifique a complexidade extra ainda).
