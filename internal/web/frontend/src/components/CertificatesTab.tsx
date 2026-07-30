@@ -202,6 +202,13 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
 
   const batchKey2 = (cluster: string, ns: string) => `${cluster}||${ns}`;
 
+  // Seleção padrão ao (re)popular a lista de destinos encontrados no scan: em modo manual, marca
+  // todos (comportamento histórico — o usuário desmarca o que não quer); em modo AWX, marca só o
+  // primeiro — AWXCertForm lança 1 job por vez, então deixar tudo marcado nunca deixa o form
+  // aparecer (cai sempre no aviso "selecione exatamente 1 destino").
+  const defaultBatchSelection = (found: string[]) =>
+    new Set(uploadMode === "awx" ? found.slice(0, 1) : found);
+
   // Handler batch update — agrupa por namespace para evitar combinações erradas
   const handleBatchUpdate = async () => {
     const targets = batchEntries.filter((e) => batchSelected.has(batchKey2(e.cluster, e.namespace)));
@@ -1110,7 +1117,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                   const found = scanResult?.certificates
                     .filter((c) => c.secretName === name)
                     .map((c) => `${c.cluster}||${c.namespace}`) ?? [];
-                  setBatchSelected(new Set(found));
+                  setBatchSelected(defaultBatchSelection(found));
                   setBatchCrt("");
                   setBatchKey("");
                   setUploadOuterMode("batch");
@@ -1214,7 +1221,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                           const found = scanResult.certificates
                             .filter((c) => c.secretName === name)
                             .map((c) => `${c.cluster}||${c.namespace}`);
-                          setBatchSelected(new Set(found));
+                          setBatchSelected(defaultBatchSelection(found));
                         }
                       }}
                       disabled={isUploading || isBatchUpdating}
@@ -1235,8 +1242,19 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                         checked={uploadMode === "awx"}
                         onCheckedChange={(checked) => {
                           setUploadMode(checked ? "awx" : "manual");
-                          if (checked && !awxCluster && clusterNames.length > 0)
-                            setAwxCluster(clusterNames[0]);
+                          if (!checked) return;
+                          if (uploadOuterMode === "install") {
+                            if (!awxCluster && clusterNames.length > 0) setAwxCluster(clusterNames[0]);
+                          } else {
+                            // AWX só suporta 1 destino por vez — se o modo batch já tinha vários
+                            // (ou nenhum) marcados, reduz pro primeiro encontrado, senão o form AWX
+                            // nunca aparece (cai direto no aviso "selecione 1 destino")
+                            setBatchSelected((prev) => {
+                              if (prev.size === 1) return prev;
+                              const first = batchEntries[0];
+                              return first ? new Set([batchKey2(first.cluster, first.namespace)]) : prev;
+                            });
+                          }
                         }}
                       />
                       <span className={`text-xs ${uploadMode === "awx" ? "font-medium text-foreground" : "text-muted-foreground"}`}>
@@ -1348,7 +1366,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                       const found = scanResult?.certificates
                         .filter((c) => c.secretName === e.target.value)
                         .map((c) => `${c.cluster}||${c.namespace}`) ?? [];
-                      setBatchSelected(new Set(found));
+                      setBatchSelected(defaultBatchSelection(found));
                     }}
                     placeholder="meuapp-tls"
                     className="mt-1 text-sm"
