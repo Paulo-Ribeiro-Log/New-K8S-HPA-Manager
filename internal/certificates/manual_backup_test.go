@@ -69,6 +69,79 @@ func TestManualBackupStore_Save_ComentarioVazio(t *testing.T) {
 	}
 }
 
+func TestManualBackupStore_UpdateComment(t *testing.T) {
+	store := newTestManualBackupStore(t)
+	now := time.Now()
+	leaf := genCert(t, "manual.example.com", false, now.Add(-time.Hour), now.Add(24*time.Hour), nil)
+	secret := testSecretFromCert(leaf)
+
+	info, err := store.Save("c", "ns", "MEU-CERT-TLS", "comentário original", secret)
+	if err != nil {
+		t.Fatalf("Save falhou: %v", err)
+	}
+
+	if err := store.UpdateComment("MEU-CERT-TLS", info.BackupID, "comentário editado"); err != nil {
+		t.Fatalf("UpdateComment falhou: %v", err)
+	}
+
+	_, _, meta, err := store.Get("MEU-CERT-TLS", info.BackupID)
+	if err != nil {
+		t.Fatalf("Get falhou: %v", err)
+	}
+	if meta.Comment != "comentário editado" {
+		t.Errorf("Comment = %q, esperado %q", meta.Comment, "comentário editado")
+	}
+	// Resto da metadata (subject, cluster, etc.) não deve ser afetado pela edição do comentário.
+	if meta.Subject != "manual.example.com" || meta.Cluster != "c" {
+		t.Errorf("metadata alterada além do comentário: %+v", meta)
+	}
+}
+
+func TestManualBackupStore_UpdateComment_BackupInexistente(t *testing.T) {
+	store := newTestManualBackupStore(t)
+	if err := store.UpdateComment("SECRET-QUALQUER", "backup-que-nao-existe", "x"); err == nil {
+		t.Error("esperava erro para backup inexistente")
+	}
+}
+
+func TestManualBackupStore_Delete(t *testing.T) {
+	store := newTestManualBackupStore(t)
+	now := time.Now()
+	leaf := genCert(t, "manual.example.com", false, now.Add(-time.Hour), now.Add(24*time.Hour), nil)
+	secret := testSecretFromCert(leaf)
+
+	info, err := store.Save("c", "ns", "MEU-CERT-TLS", "", secret)
+	if err != nil {
+		t.Fatalf("Save falhou: %v", err)
+	}
+
+	if err := store.Delete("MEU-CERT-TLS", info.BackupID); err != nil {
+		t.Fatalf("Delete falhou: %v", err)
+	}
+
+	if _, _, _, err := store.Get("MEU-CERT-TLS", info.BackupID); err == nil {
+		t.Error("esperava erro ao ler backup já deletado")
+	}
+
+	list, err := store.List("MEU-CERT-TLS")
+	if err != nil {
+		t.Fatalf("List falhou: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("esperava lista vazia após Delete, obteve %+v", list)
+	}
+}
+
+func TestManualBackupStore_Delete_RejeitaPathTraversal(t *testing.T) {
+	store := newTestManualBackupStore(t)
+	if err := store.Delete("../etc", "passwd"); err == nil {
+		t.Error("esperava erro para secretName com path traversal")
+	}
+	if err := store.Delete("secret", "../../etc"); err == nil {
+		t.Error("esperava erro para backupID com path traversal")
+	}
+}
+
 func TestManualBackupStore_ListSecretsWithBackups(t *testing.T) {
 	store := newTestManualBackupStore(t)
 	now := time.Now()

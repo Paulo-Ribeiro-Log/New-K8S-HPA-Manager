@@ -307,6 +307,40 @@ export function useCertificates() {
     return data.data as { tls_crt: string; tls_key: string };
   }, []);
 
+  // updateManualBackupComment — edita só o comentário de um backup já salvo (não afeta o PEM).
+  const updateManualBackupComment = useCallback(async (secretName: string, backupId: string, comment: string): Promise<void> => {
+    const response = await fetch(`${API_BASE}/manual-backups/${encodeURIComponent(secretName)}/${encodeURIComponent(backupId)}/comment`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+      body: JSON.stringify({ comment }),
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+  }, []);
+
+  // deleteManualBackup — remove por completo um backup manual (tls.crt/tls.key/metadata.json).
+  // Ação destrutiva e irreversível — o chamador (CertificateSourcePickerModal.tsx) sempre confirma
+  // antes de invocar.
+  const deleteManualBackup = useCallback(async (secretName: string, backupId: string): Promise<void> => {
+    const response = await fetch(`${API_BASE}/manual-backups/${encodeURIComponent(secretName)}/${encodeURIComponent(backupId)}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+  }, []);
+
   const getReport = useCallback(async (clusters: string[], filter?: string, statusFilter?: string[]): Promise<{ data: ScanResult; markdown: string }> => {
     const params = new URLSearchParams();
     params.set('clusters', clusters.join(','));
@@ -349,6 +383,8 @@ export function useCertificates() {
     listManualBackupSecrets,
     listManualBackups,
     getManualBackupContent,
+    updateManualBackupComment,
+    deleteManualBackup,
     getReport,
     setScanResult,
   };
