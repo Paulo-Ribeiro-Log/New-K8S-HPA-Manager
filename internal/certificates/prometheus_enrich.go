@@ -24,14 +24,20 @@ const prometheusEnrichTimeout = 8 * time.Second
 // alcançados em vez de réplicas de pod — usado quando o Prometheus não conseguiu checar, ex:
 // clusters GKE Gateway API sem ingress-nginx).
 type LivePropagationResult struct {
-	Checked            bool       `json:"checked"`
-	Method             string     `json:"method,omitempty"`
-	TotalReplicasFound int        `json:"total_replicas_found"`
-	ReplicasCurrent    int        `json:"replicas_current"`
-	ReplicasStale      []string   `json:"replicas_stale,omitempty"` // kubernetes_pod_name (nginx) ou hostname (tls-dial) das réplicas/hosts com serial diferente do atual
-	LiveIssuerCN       string     `json:"live_issuer_cn,omitempty"`
-	LiveExpiresAt      *time.Time `json:"live_expires_at,omitempty"`
-	Notes              []string   `json:"notes,omitempty"`
+	Checked            bool     `json:"checked"`
+	Method             string   `json:"method,omitempty"`
+	TotalReplicasFound int      `json:"total_replicas_found"`
+	ReplicasCurrent    int      `json:"replicas_current"`
+	ReplicasStale      []string `json:"replicas_stale,omitempty"` // kubernetes_pod_name (nginx) ou hostname (tls-dial) das réplicas/hosts com serial diferente do atual, MESMO emissor do esperado (propagação genuína)
+	// PossibleExternalLayer — só preenchido por EnrichWithTLSDial (method="tls-dial"): hosts onde o
+	// certificado realmente servido tem um emissor completamente diferente do esperado (não é uma
+	// versão antiga do mesmo certificado) — sinal de que existe uma camada externa (CDN/WAF/proxy
+	// corporativo) terminando TLS antes do tráfego chegar no cluster, não uma propagação atrasada.
+	// Disjunto de ReplicasStale (cada host cai em um dos dois, nunca nos dois).
+	PossibleExternalLayer []string   `json:"possible_external_layer,omitempty"`
+	LiveIssuerCN          string     `json:"live_issuer_cn,omitempty"`
+	LiveExpiresAt         *time.Time `json:"live_expires_at,omitempty"`
+	Notes                 []string   `json:"notes,omitempty"`
 }
 
 // LeafSerialDecimal parseia certPEM e retorna o serial do leaf cert em decimal
@@ -48,6 +54,22 @@ func LeafSerialDecimal(certPEM []byte) (string, error) {
 		return "", fmt.Errorf("nenhum certificado encontrado no PEM")
 	}
 	return certs[0].SerialNumber.String(), nil
+}
+
+// LeafIssuerCN parseia certPEM e retorna o Common Name do emissor do leaf cert — usado por
+// EnrichWithTLSDial (tls_dial_enrich.go) para diferenciar "propagação atrasada" (host serve uma
+// versão antiga do MESMO certificado, mesmo emissor) de "camada externa na frente do cluster"
+// (host serve um certificado de emissor completamente diferente — ex: CDN/WAF/proxy corporativo
+// terminando TLS antes do ingress-nginx, cenário real encontrado em cluster EKS).
+func LeafIssuerCN(certPEM []byte) (string, error) {
+	certs, err := parsePEMChain(certPEM)
+	if err != nil {
+		return "", fmt.Errorf("certificado PEM inválido: %w", err)
+	}
+	if len(certs) == 0 {
+		return "", fmt.Errorf("nenhum certificado encontrado no PEM")
+	}
+	return certs[0].Issuer.CommonName, nil
 }
 
 // EnrichWithPrometheus consulta o Prometheus do cluster (nginx_ingress_controller_ssl_certificate_info

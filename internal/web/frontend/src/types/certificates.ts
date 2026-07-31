@@ -132,7 +132,11 @@ export interface LivePropagationResult {
   method?: "prometheus-nginx" | "tls-dial";
   total_replicas_found: number;
   replicas_current: number;
-  replicas_stale?: string[]; // kubernetes_pod_name (nginx) ou hostname (tls-dial) com serial diferente do atual
+  replicas_stale?: string[]; // kubernetes_pod_name (nginx) ou hostname (tls-dial) com serial diferente do atual, mesmo emissor esperado
+  // possible_external_layer — só em method="tls-dial": hosts servindo cert de emissor
+  // completamente diferente do esperado (não é uma versão antiga do mesmo cert) — sinal de CDN/
+  // WAF/proxy corporativo terminando TLS antes do cluster, não uma propagação atrasada.
+  possible_external_layer?: string[];
   live_issuer_cn?: string;
   live_expires_at?: string;
   notes?: string[];

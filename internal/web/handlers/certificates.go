@@ -406,6 +406,10 @@ func (h *CertificatesHandler) enrichLivePropagation(cluster, namespace, secretNa
 	if err != nil {
 		return nil
 	}
+	// Melhor-esforço: usado só pra classificar hosts "stale" no fallback tls-dial (ver
+	// buildTLSDialResult) — erro aqui não impede o resto da validação, só faz o fallback tratar
+	// todo host divergente como propagação atrasada em vez de possível camada externa.
+	issuerCN, _ := certificates.LeafIssuerCN(certPEM)
 
 	promResult := certificates.EnrichWithPrometheus(cluster, namespace, secretName, serialDecimal)
 	if promResult.Checked {
@@ -426,7 +430,7 @@ func (h *CertificatesHandler) enrichLivePropagation(cluster, namespace, secretNa
 		return &certificates.LivePropagationResult{Checked: false, Notes: notes}
 	}
 
-	return certificates.EnrichWithTLSDial(ctx, hosts, serialDecimal)
+	return certificates.EnrichWithTLSDial(ctx, hosts, serialDecimal, issuerCN)
 }
 
 // Backup salva o conteúdo ATUAL de um Secret TLS já instalado, sem sobrescrever nada — usado pelo
