@@ -1113,6 +1113,8 @@ func (s *Server) setupRoutes() {
 		certGroup.GET("/manual-backups", certificatesHandler.ListManualBackupSecrets)              // leitura, sem RBAC
 		certGroup.GET("/manual-backups/:secretName", certificatesHandler.ListManualBackups)         // leitura, sem RBAC
 		certGroup.GET("/manual-backups/:secretName/:backupId/content", rbacMiddleware.RequireSREGroup(), certificatesHandler.GetManualBackupContent)
+		certGroup.PUT("/manual-backups/:secretName/:backupId/comment", rbacMiddleware.RequireSREGroup(), certificatesHandler.UpdateManualBackupComment)
+		certGroup.DELETE("/manual-backups/:secretName/:backupId", rbacMiddleware.RequireSREGroup(), certificatesHandler.DeleteManualBackup)
 		// Write Operations (SRE-only)
 		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
 		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)

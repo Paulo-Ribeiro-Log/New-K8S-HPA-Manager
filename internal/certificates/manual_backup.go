@@ -203,3 +203,50 @@ func (m *ManualBackupStore) Get(secretName, backupID string) (tlsCrt, tlsKey []b
 
 	return tlsCrt, tlsKey, meta, nil
 }
+
+// UpdateComment atualiza só o comentário de um backup manual já salvo — não toca no PEM salvo, só
+// na metadata.json. Usado pela ação "Editar nota" do picker (CertificateSourcePickerModal.tsx).
+func (m *ManualBackupStore) UpdateComment(secretName, backupID, comment string) error {
+	if !validPathComponent(secretName) || !validPathComponent(backupID) {
+		return fmt.Errorf("backup_id ou secret_name inválido")
+	}
+
+	metaPath := filepath.Join(m.baseDir, secretName, backupID, "metadata.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("backup não encontrado: %s/%s", secretName, backupID)
+		}
+		return fmt.Errorf("erro ao ler metadata do backup %s: %w", backupID, err)
+	}
+
+	var info ManualBackupInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return fmt.Errorf("erro ao parsear metadata do backup %s: %w", backupID, err)
+	}
+	info.Comment = comment
+
+	metaBytes, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		return fmt.Errorf("erro ao serializar metadata do backup: %w", err)
+	}
+	return os.WriteFile(metaPath, metaBytes, 0600)
+}
+
+// Delete remove por completo um backup manual (tls.crt/tls.key/metadata.json) — ação destrutiva e
+// irreversível, ao contrário de UpdateComment. Usada pela ação "Remover" do picker, sempre atrás
+// de confirmação no frontend (CertificateSourcePickerModal.tsx).
+func (m *ManualBackupStore) Delete(secretName, backupID string) error {
+	if !validPathComponent(secretName) || !validPathComponent(backupID) {
+		return fmt.Errorf("backup_id ou secret_name inválido")
+	}
+
+	dir := filepath.Join(m.baseDir, secretName, backupID)
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("backup não encontrado: %s/%s", secretName, backupID)
+		}
+		return fmt.Errorf("erro ao verificar backup %s: %w", backupID, err)
+	}
+	return os.RemoveAll(dir)
+}

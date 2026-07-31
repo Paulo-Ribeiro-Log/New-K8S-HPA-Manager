@@ -7,10 +7,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, History, FolderOpen, Folder, ArrowLeft, ChevronRight, Search } from "lucide-react";
+import { Loader2, History, FolderOpen, Folder, ArrowLeft, ChevronRight, Search, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useCertificates } from "@/hooks/useCertificates";
 import type { RollbackBackupInfo, ManualBackupInfo } from "@/types/certificates";
@@ -44,8 +54,15 @@ export function CertificateSourcePickerModal({
   secretName,
   onSelect,
 }: CertificateSourcePickerModalProps) {
-  const { listRollbacks, getRollbackContent, listManualBackupSecrets, listManualBackups, getManualBackupContent } =
-    useCertificates();
+  const {
+    listRollbacks,
+    getRollbackContent,
+    listManualBackupSecrets,
+    listManualBackups,
+    getManualBackupContent,
+    updateManualBackupComment,
+    deleteManualBackup,
+  } = useCertificates();
 
   const [tab, setTab] = useState<Tab>("rollback");
 
@@ -59,6 +76,15 @@ export function CertificateSourcePickerModal({
   const [loadingManualBackups, setLoadingManualBackups] = useState(false);
 
   const [applying, setApplying] = useState<string | null>(null); // backup_id em aplicação, pro spinner do botão
+
+  // Edição de nota (comentário) de um backup apartado — inline, uma linha por vez.
+  const [editingBackupId, setEditingBackupId] = useState<string | null>(null);
+  const [editCommentText, setEditCommentText] = useState("");
+  const [savingComment, setSavingComment] = useState(false);
+
+  // Exclusão de um backup apartado — ação destrutiva, sempre atrás de confirmação.
+  const [backupToDelete, setBackupToDelete] = useState<ManualBackupInfo | null>(null);
+  const [deletingBackup, setDeletingBackup] = useState(false);
 
   // Busca client-side por lista — nomes/subjects/comentários, não exige recarregar do servidor.
   const [rollbackSearch, setRollbackSearch] = useState("");
@@ -97,6 +123,8 @@ export function CertificateSourcePickerModal({
       setRollbackSearch("");
       setManualSecretSearch("");
       setManualBackupSearch("");
+      setEditingBackupId(null);
+      setBackupToDelete(null);
       return;
     }
     setLoadingRollbacks(true);
@@ -115,11 +143,55 @@ export function CertificateSourcePickerModal({
   const openManualSecretFolder = (name: string) => {
     setSelectedManualSecret(name);
     setManualBackupSearch("");
+    setEditingBackupId(null);
     setLoadingManualBackups(true);
     listManualBackups(name)
       .then(setManualBackups)
       .catch(() => setManualBackups([]))
       .finally(() => setLoadingManualBackups(false));
+  };
+
+  const handleStartEditComment = (b: ManualBackupInfo) => {
+    setEditingBackupId(b.backup_id);
+    setEditCommentText(b.comment ?? "");
+  };
+
+  const handleSaveComment = async (backupId: string) => {
+    if (!selectedManualSecret) return;
+    setSavingComment(true);
+    try {
+      await updateManualBackupComment(selectedManualSecret, backupId, editCommentText);
+      setManualBackups((prev) =>
+        prev.map((x) => (x.backup_id === backupId ? { ...x, comment: editCommentText } : x))
+      );
+      setEditingBackupId(null);
+      toast.success("Nota atualizada");
+    } catch (err) {
+      toast.error("Erro ao atualizar nota", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setSavingComment(false);
+    }
+  };
+
+  const handleConfirmDeleteBackup = async () => {
+    if (!backupToDelete || !selectedManualSecret) return;
+    setDeletingBackup(true);
+    try {
+      await deleteManualBackup(selectedManualSecret, backupToDelete.backup_id);
+      setManualBackups((prev) => prev.filter((x) => x.backup_id !== backupToDelete.backup_id));
+      // Se essa era a única cópia do secret, a "pasta" some da lista de nível 1 — atualiza também.
+      listManualBackupSecrets().then(setManualSecrets).catch(() => {});
+      toast.success("Backup removido");
+      setBackupToDelete(null);
+    } catch (err) {
+      toast.error("Erro ao remover backup", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setDeletingBackup(false);
+    }
   };
 
   const handleUseRollback = async (backupId: string) => {
@@ -156,6 +228,7 @@ export function CertificateSourcePickerModal({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
         <DialogHeader>
@@ -327,34 +400,89 @@ export function CertificateSourcePickerModal({
                       {filteredManualBackups.map((b) => (
                         <div
                           key={b.backup_id}
-                          className="flex items-center justify-between gap-3 rounded border border-border/50 p-2.5 text-xs"
+                          className="rounded border border-border/50 p-2.5 text-xs space-y-1.5"
                         >
-                          <div className="space-y-0.5 min-w-0">
-                            <p className="font-medium">{new Date(b.backed_up_at).toLocaleString("pt-BR")}</p>
-                            <p className="text-muted-foreground truncate" title={b.subject}>
-                              {b.subject || "(subject indisponível)"}
-                              {b.not_after && ` — válido até ${new Date(b.not_after).toLocaleDateString("pt-BR")}`}
-                            </p>
-                            {b.comment && (
-                              <p className="text-muted-foreground italic truncate" title={b.comment}>
-                                "{b.comment}"
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="space-y-0.5 min-w-0">
+                              <p className="font-medium">{new Date(b.backed_up_at).toLocaleString("pt-BR")}</p>
+                              <p className="text-muted-foreground truncate" title={b.subject}>
+                                {b.subject || "(subject indisponível)"}
+                                {b.not_after && ` — válido até ${new Date(b.not_after).toLocaleDateString("pt-BR")}`}
                               </p>
-                            )}
+                              {editingBackupId !== b.backup_id && b.comment && (
+                                <p className="text-muted-foreground italic truncate" title={b.comment}>
+                                  "{b.comment}"
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                title="Editar nota"
+                                onClick={() => handleStartEditComment(b)}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-destructive hover:text-destructive"
+                                title="Remover backup"
+                                onClick={() => setBackupToDelete(b)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="flex-shrink-0"
+                                disabled={applying === b.backup_id}
+                                onClick={() => handleUseManualBackup(b.backup_id)}
+                              >
+                                {applying === b.backup_id ? (
+                                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                                ) : (
+                                  <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+                                )}
+                                Usar este
+                              </Button>
+                            </div>
                           </div>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="flex-shrink-0"
-                            disabled={applying === b.backup_id}
-                            onClick={() => handleUseManualBackup(b.backup_id)}
-                          >
-                            {applying === b.backup_id ? (
-                              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                            ) : (
-                              <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
-                            )}
-                            Usar este
-                          </Button>
+                          {editingBackupId === b.backup_id && (
+                            <div className="flex items-center gap-1.5 pt-1 border-t border-border/30">
+                              <Input
+                                value={editCommentText}
+                                onChange={(e) => setEditCommentText(e.target.value)}
+                                placeholder="Comentário..."
+                                className="h-7 text-xs flex-1"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleSaveComment(b.backup_id);
+                                  if (e.key === "Escape") setEditingBackupId(null);
+                                }}
+                              />
+                              <Button
+                                size="sm"
+                                className="h-7 flex-shrink-0"
+                                disabled={savingComment}
+                                onClick={() => handleSaveComment(b.backup_id)}
+                              >
+                                {savingComment && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+                                Salvar
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 flex-shrink-0"
+                                disabled={savingComment}
+                                onClick={() => setEditingBackupId(null)}
+                              >
+                                Cancelar
+                              </Button>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -373,5 +501,30 @@ export function CertificateSourcePickerModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+      <AlertDialog open={!!backupToDelete} onOpenChange={(next) => !next && !deletingBackup && setBackupToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar Exclusão</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja remover o backup de{" "}
+              <strong>{backupToDelete && new Date(backupToDelete.backed_up_at).toLocaleString("pt-BR")}</strong>
+              {backupToDelete?.subject && <> ({backupToDelete.subject})</>}? Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingBackup}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDeleteBackup}
+              disabled={deletingBackup}
+              className="bg-destructive hover:bg-destructive/90"
+            >
+              {deletingBackup && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Remover
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

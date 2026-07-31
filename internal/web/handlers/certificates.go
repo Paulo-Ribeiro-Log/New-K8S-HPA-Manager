@@ -772,6 +772,79 @@ func (h *CertificatesHandler) GetManualBackupContent(c *gin.Context) {
 	})
 }
 
+// UpdateManualBackupCommentRequest é o body de PUT .../manual-backups/:secretName/:backupId/comment
+type UpdateManualBackupCommentRequest struct {
+	Comment string `json:"comment"`
+}
+
+// UpdateManualBackupComment edita só o comentário de um backup manual já salvo — não mexe no PEM
+// salvo. Ação não-destrutiva (diferente de DeleteManualBackup), mas ainda assim atrás de RBAC de
+// grupo (mesmo padrão de SaveManualBackup), já que altera estado em disco.
+func (h *CertificatesHandler) UpdateManualBackupComment(c *gin.Context) {
+	secretName := c.Param("secretName")
+	backupID := c.Param("backupId")
+
+	if h.manualBackupStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "MANUAL_BACKUP_UNAVAILABLE", "message": "Backup manual indisponivel neste servidor"},
+		})
+		return
+	}
+
+	var req UpdateManualBackupCommentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": fmt.Sprintf("Requisicao invalida: %v", err)},
+		})
+		return
+	}
+
+	if err := h.manualBackupStore.UpdateComment(secretName, backupID, req.Comment); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "não encontrado") {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "UPDATE_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// DeleteManualBackup remove por completo um backup manual (tls.crt/tls.key/metadata.json) — ação
+// destrutiva e irreversível, o frontend SEMPRE confirma antes de chamar esta rota.
+func (h *CertificatesHandler) DeleteManualBackup(c *gin.Context) {
+	secretName := c.Param("secretName")
+	backupID := c.Param("backupId")
+
+	if h.manualBackupStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "MANUAL_BACKUP_UNAVAILABLE", "message": "Backup manual indisponivel neste servidor"},
+		})
+		return
+	}
+
+	if err := h.manualBackupStore.Delete(secretName, backupID); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "não encontrado") {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "DELETE_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 // Report gera relatório de certificados em formato Markdown
 func (h *CertificatesHandler) Report(c *gin.Context) {
 	clustersParam := c.Query("clusters")
