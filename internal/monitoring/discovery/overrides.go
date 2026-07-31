@@ -71,6 +71,23 @@ func gkeShortName(cluster string) string {
 	return parts[len(parts)-1]
 }
 
+// gkeProjectID extrai o Project ID de um context GKE (gke_PROJECT_REGION_CLUSTER) — mesma
+// convenção de internal/config.splitGKEContext (não importado aqui pelo mesmo motivo do resto
+// deste arquivo: evitar o import cycle cloudprovider/gcp → ... → monitoring/discovery). Google
+// Cloud Project IDs nunca contêm "_" (só minúsculas/dígitos/hífen), então a divisão por "_" é
+// inequívoca — as duas últimas partes são sempre region/cluster, tudo antes é o project ID.
+// Retorna "" se `cluster` não tiver o formato de context GKE.
+func gkeProjectID(cluster string) string {
+	if !strings.HasPrefix(cluster, "gke_") {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(cluster, "gke_"), "_")
+	if len(parts) < 3 {
+		return ""
+	}
+	return strings.Join(parts[:len(parts)-2], "_")
+}
+
 // eksShortName extrai o nome curto do cluster de um ARN EKS completo, mesma convenção de
 // internal/config.GetEKSClusterConfig.
 func eksShortName(cluster string) string {

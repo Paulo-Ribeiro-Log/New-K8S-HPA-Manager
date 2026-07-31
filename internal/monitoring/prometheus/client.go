@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/monitoring/models"
 
 	"github.com/prometheus/client_golang/api"
@@ -26,15 +27,22 @@ type Client struct {
 
 // NewClient cria um novo client Prometheus (sem teste de conexão)
 // FASE 4: Lazy connection - client inicia desconectado, primeira query testa
-func NewClient(cluster, endpoint string) (*Client, error) {
-	// Criar HTTP client com TLS inseguro (aceita certificados auto-assinados)
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // Aceita certificados auto-assinados
-			},
-		},
+//
+// requiresGCPAuth: true quando `endpoint` é o Google Cloud Managed Service for Prometheus (GMP,
+// ver internal/monitoring/discovery.PrometheusEndpoint.RequiresGCPAuth) — nesse caso o client usa
+// TLS real (não pula verificação) e injeta "Authorization: Bearer <token>" via
+// discovery.GCPAuthTransport em vez de aceitar certificado auto-assinado sem auth.
+func NewClient(cluster, endpoint string, requiresGCPAuth bool) (*Client, error) {
+	transport := &http.Transport{}
+	var roundTripper http.RoundTripper = transport
+	if requiresGCPAuth {
+		roundTripper = discovery.GCPAuthTransport(transport)
+	} else {
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true, // Aceita certificados auto-assinados (Prometheus self-hosted)
+		}
 	}
+	httpClient := &http.Client{Transport: roundTripper}
 
 	// Cria client da API Prometheus com HTTP client customizado
 	apiClient, err := api.NewClient(api.Config{

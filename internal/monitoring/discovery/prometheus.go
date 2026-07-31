@@ -12,23 +12,26 @@ import (
 
 // PrometheusEndpoint representa um endpoint Prometheus descoberto
 type PrometheusEndpoint struct {
-	Cluster     string // "akspriv-faturamento-hlg-admin"
-	Name        string // "faturamento"
-	Environment string // "hlg", "dev", "prod"
-	URL         string // "https://prometheus-faturamento-hlg.viavarejo.com.br/"
-	Available   bool   // Endpoint acessível?
+	Cluster         string // "akspriv-faturamento-hlg-admin"
+	Name            string // "faturamento"
+	Environment     string // "hlg", "dev", "prod"
+	URL             string // "https://prometheus-faturamento-hlg.viavarejo.com.br/"
+	Available       bool   // Endpoint acessível?
+	RequiresGCPAuth bool   // true quando URL é o Google Cloud Managed Service for Prometheus (GMP) — requisições precisam de "Authorization: Bearer <token>" (ver GCPAuthTransport)
 }
 
 // DiscoverEndpoint descobre e valida o endpoint Prometheus para um cluster
 func DiscoverEndpoint(cluster string) (*PrometheusEndpoint, error) {
 	name, env := parseClusterName(cluster)
+	url, requiresGCPAuth := resolvePrometheusSource(cluster, name, env)
 
 	endpoint := &PrometheusEndpoint{
-		Cluster:     cluster,
-		Name:        name,
-		Environment: env,
-		URL:         resolvePrometheusURL(cluster, name, env),
-		Available:   false,
+		Cluster:         cluster,
+		Name:            name,
+		Environment:     env,
+		URL:             url,
+		Available:       false,
+		RequiresGCPAuth: requiresGCPAuth,
 	}
 
 	// Validar se endpoint está acessível
@@ -83,34 +86,51 @@ func buildPrometheusURL(nome, ambiente string) string {
 	return fmt.Sprintf("https://prometheus-%s-%s.viavarejo.com.br/", nome, ambiente)
 }
 
-// resolvePrometheusURL decide qual URL usar: um override manual (getPrometheusURLOverride, campo
-// "prometheusUrl" em clusters-config.json/eks-clusters-config.json/gke-clusters-config.json) tem
-// prioridade quando configurado; caso contrário cai no padrão automático de sempre
-// (buildPrometheusURL). Nenhuma instalação existente tem esse campo preenchido, então para todo
-// cluster AKS/EKS já funcionando hoje o resultado é idêntico ao anterior — o override só muda o
-// comportamento de clusters que nunca resolveram corretamente por esse padrão (GKE, e EKS/AKS fora
-// da convenção de hostname viavarejo.com.br).
-func resolvePrometheusURL(cluster, nome, ambiente string) string {
+// resolvePrometheusSource decide qual URL usar e se ela exige autenticação GCP, em ordem de
+// prioridade:
+//  1. Override manual (getPrometheusURLOverride, campo "prometheusUrl" nos *-clusters-config.json)
+//     — nunca exige auth GCP, é uma URL arbitrária configurada por quem operou o arquivo.
+//  2. GMP automático (buildGMPURL) — só se aplica a contexts GKE (gke_<project>_<region>_<cluster>)
+//     sem override; URL determinística a partir do Project ID embutido no context, sempre exige
+//     auth GCP.
+//  3. Padrão de sempre (buildPrometheusURL) — hostname viavarejo.com.br, sem auth.
+//
+// Nenhuma instalação existente tem override configurado, então para todo cluster AKS/EKS já
+// funcionando hoje o resultado desta função é idêntico ao buildPrometheusURL de antes — GMP só
+// entra em jogo para contexts que começam com "gke_", que antes desta fase sempre falhavam.
+func resolvePrometheusSource(cluster, nome, ambiente string) (url string, requiresGCPAuth bool) {
 	if override := getPrometheusURLOverride(cluster); override != "" {
-		return override
+		return override, false
 	}
-	return buildPrometheusURL(nome, ambiente)
+	if gmpURL := buildGMPURL(cluster); gmpURL != "" {
+		return gmpURL, true
+	}
+	return buildPrometheusURL(nome, ambiente), false
 }
 
 // validateEndpoint valida se o endpoint Prometheus está acessível
 func validateEndpoint(endpoint *PrometheusEndpoint) error {
-	// Cliente HTTP com SSL auto-assinado permitido
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // Certificado auto-assinado
-			},
-		},
+	var transport http.RoundTripper = &http.Transport{}
+
+	// /api/v1/status/config é um endpoint de introspecção de servidor Prometheus real — o GMP
+	// (Google Cloud Managed Service for Prometheus, usado por endpoints RequiresGCPAuth) não o
+	// implementa, só a API de query. Usa uma query barata (`up`) como equivalente.
+	statusPath := "api/v1/status/config"
+	if endpoint.RequiresGCPAuth {
+		statusPath = "api/v1/query?query=up"
+		transport = GCPAuthTransport(transport)
+	} else {
+		// Certificado auto-assinado — só se aplica ao Prometheus self-hosted (viavarejo.com.br).
+		// GMP tem certificado válido do Google; nunca pular verificação nesse caso.
+		transport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
-	// Testar endpoint /api/v1/status/config
-	statusURL := endpoint.URL + "api/v1/status/config"
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+	}
+
+	statusURL := endpoint.URL + statusPath
 
 	req, err := http.NewRequest("GET", statusURL, nil)
 	if err != nil {
@@ -135,10 +155,13 @@ func validateEndpoint(endpoint *PrometheusEndpoint) error {
 	return nil
 }
 
-// GetPrometheusURL retorna a URL completa do Prometheus para um cluster
+// GetPrometheusURL retorna a URL completa do Prometheus para um cluster. Não indica se a URL
+// exige autenticação GCP — usar RequiresGCPAuth(cluster) separadamente quando isso importar
+// (chamadores que só têm a URL crua em mãos, ex: internal/finops, internal/monitoring/alerts).
 func GetPrometheusURL(cluster string) string {
 	name, env := parseClusterName(cluster)
-	return resolvePrometheusURL(cluster, name, env)
+	url, _ := resolvePrometheusSource(cluster, name, env)
+	return url
 }
 
 // IsEndpointAvailable verifica rapidamente se o endpoint está disponível

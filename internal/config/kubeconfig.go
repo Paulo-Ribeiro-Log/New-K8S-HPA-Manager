@@ -37,6 +37,7 @@ import (
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
+	"k8s-hpa-manager/internal/monitoring/discovery"
 )
 
 // ClusterConfig representa a configuração de um cluster AKS no arquivo clusters-config.json.
@@ -426,6 +427,12 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 		// Pré-aquecer o cache de token GKE em background: quando o usuário selecionar
 		// um cluster GKE, o token já estará pronto (evita 15s de espera na primeira requisição).
 		go func() { gcpprovider.GetFreshGKEToken(context.Background()) }()
+		// Liga o hook de auth do internal/monitoring/discovery ao token GKE real. Não dá pra
+		// discovery importar cloudprovider/gcp direto (ciclo: cloudprovider/gcp → internal/ai →
+		// internal/collectors → internal/monitoring/client → internal/monitoring/discovery) — este
+		// é o único ponto que enxerga os dois lados sem fechar o ciclo. Idempotente (reatribuição
+		// de função), seguro chamar a cada DiscoverClusters/reload.
+		discovery.SetGCPTokenFunc(gcpprovider.GetFreshGKEToken)
 	}
 
 	var clusterNames []string

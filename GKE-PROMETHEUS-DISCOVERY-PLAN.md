@@ -68,27 +68,32 @@ Importar `cloudprovider/gcp` a partir de `monitoring/discovery` ou `monitoring/c
 - [x] `internal/monitoring/discovery/overrides.go` — leitura direta dos 3 JSONs, sem import cycle
 - [x] `resolvePrometheusURL()` em `prometheus.go` — override primeiro, fallback pro padrão de sempre
 - [x] `go test ./internal/... -race` + `make build` — sem regressão
-- [ ] Commit desta fase (ainda não commitado — perguntar ao usuário antes)
+- [x] Commit + push (`feat/prometheus-override-gke-discovery`, commit `4167517e`)
 
-### Fase 2 — Detecção automática de GMP + construção de URL
+### Fase 2 — Detecção automática de GMP + construção de URL ✅ CONCLUÍDA
 
-- [ ] `internal/monitoring/discovery/gmp.go` (novo arquivo): `buildGMPURL(cluster string) string` — extrai `PROJECT_ID` do context `gke_<project>_<region>_<cluster>` (mesma lógica de split já usada em `gkeShortName`, `overrides.go`) e monta `https://monitoring.googleapis.com/v1/projects/{PROJECT_ID}/location/global/prometheus/`
-- [ ] `PrometheusEndpoint` (struct em `prometheus.go`) ganha campo `RequiresGCPAuth bool`
-- [ ] `resolvePrometheusURL`/`DiscoverEndpoint`: para cluster `gke_*` **sem** override manual (Fase 1) configurado, usar `buildGMPURL` automaticamente e marcar `RequiresGCPAuth = true`
-- [ ] Decidir: `validateEndpoint` (que hoje faz um GET sem auth) precisa de uma variante autenticada para clusters GMP, ou a validação de disponibilidade deve ser pulada/adaptada nesse caso — sem token, a validação sempre vai falhar com 401/403 mesmo com a URL certa
+- [x] `internal/monitoring/discovery/gmp.go` (novo arquivo): `buildGMPURL(cluster string) string` — extrai `PROJECT_ID` do context `gke_<project>_<region>_<cluster>` via `gkeProjectID` (adicionado em `overrides.go`, mesma convenção de split de `gkeShortName`) e monta `https://monitoring.googleapis.com/v1/projects/{PROJECT_ID}/location/global/prometheus/`
+- [x] `PrometheusEndpoint` (struct em `prometheus.go`) ganhou campo `RequiresGCPAuth bool`
+- [x] `resolvePrometheusSource()` (renomeado de `resolvePrometheusURL`, agora retorna `(url string, requiresGCPAuth bool)`): override manual (Fase 1) → GMP automático (`gke_*` sem override) → padrão viavarejo de sempre, nessa ordem
+- [x] `validateEndpoint` adaptado: para `RequiresGCPAuth`, usa `api/v1/query?query=up` em vez de `api/v1/status/config` (GMP não implementa introspecção de servidor Prometheus real — só a API de query) e **não** seta `InsecureSkipVerify` (certificado do Google é válido)
 
-### Fase 3 — Hook de autenticação (quebra o import cycle)
+### Fase 3 — Hook de autenticação (quebra o import cycle) ✅ CONCLUÍDA
 
-- [ ] `internal/monitoring/discovery/gcp_auth.go` (novo arquivo): variável de pacote `var gcpTokenFunc func(ctx context.Context) string` + `func SetGCPTokenFunc(fn func(ctx context.Context) string)`
-- [ ] `GCPAuthTransport(base http.RoundTripper) http.RoundTripper` — round tripper que injeta `Authorization: Bearer <token>` via `gcpTokenFunc` (clona o request antes de mutar; usa `http.DefaultTransport` se `base == nil`; não injeta nada se `gcpTokenFunc` não foi configurado ou retornou vazio — nunca deve panicar/quebrar clusters não-GKE)
-- [ ] Wiring: em `cmd/web.go` (ou onde o servidor web é inicializado), chamar `discovery.SetGCPTokenFunc(gcpprovider.GetFreshGKEToken)` uma única vez no startup
+- [x] `internal/monitoring/discovery/gcp_auth.go` (novo arquivo): `var gcpTokenFunc func(ctx context.Context) string` + `SetGCPTokenFunc(fn)` — idempotente, nunca panica se não configurado
+- [x] `GCPAuthTransport(base http.RoundTripper) http.RoundTripper` — round tripper que clona o request e injeta `Authorization: Bearer <token>`; usa `http.DefaultTransport` se `base == nil`
+- [x] `RequiresGCPAuth(cluster string) bool` — variante barata (sem HTTP) de `resolvePrometheusSource`, pra quem só tem a URL crua via `GetPrometheusURL` (finops.go, alerts.go, latencylookup)
+- [x] Wiring: **não foi em `cmd/web.go`** como o plano original previa — o ponto real escolhido foi `internal/config/kubeconfig.go`, dentro de `DiscoverClusters()`, no mesmo bloco `if hasGKE` onde `EnsureGKEAuthPlugin`/`LoadSavedGCPADC`/pré-aquecimento de token já rodavam. `internal/config` já importa `cloudprovider/gcp` diretamente ali — importar `internal/monitoring/discovery` também não fecha ciclo (confirmado com build real), e reaproveita um bootstrap que já existia em vez de criar um novo ponto de entrada em `cmd/web.go`
 
-### Fase 4 — Aplicar nos 3 clientes Prometheus
+### Fase 4 — Aplicar nos clientes Prometheus (parcial — ver limitações abaixo) ⚠️ PARCIAL
 
-Em cada um dos 3 construtores, sem tocar nos métodos `Query`/`QueryRange`/etc. (mudança isolada na criação do `http.Client`):
-- [ ] `internal/monitoring/client/prometheus_client.go` (`NewPrometheusClient`) — quando `endpoint.RequiresGCPAuth`, usar `discovery.GCPAuthTransport(...)` no `Transport` e **não** setar `InsecureSkipVerify: true`
-- [ ] `internal/monitoring/prometheus/client.go` — mesma mudança (checar assinatura atual do construtor; hoje recebe `endpoint.URL` direto, não o `*PrometheusEndpoint` inteiro — precisa também receber o flag `RequiresGCPAuth` ou o `*PrometheusEndpoint`)
-- [ ] `internal/monitoring/alerts/client.go` — mesma mudança
+Aplicado nos 2 clientes que fazem **query** (compatíveis com a API que o GMP realmente expõe), sem tocar em nenhum método `Query`/`QueryRange`/etc. — só na construção do `http.Client`:
+- [x] `internal/monitoring/client/prometheus_client.go` (`NewPrometheusClient`) — branch por `endpoint.RequiresGCPAuth`
+- [x] `internal/monitoring/prometheus/client.go` — `NewClient` ganhou 3º parâmetro `requiresGCPAuth bool` (assinatura mudou; 6 call sites atualizados: `predictions.go`, `nodepool_predictions.go`, `latencylookup/lookup.go` via `discovery.RequiresGCPAuth`, e 3 usos internos em `discovery.go` do próprio pacote — todos dead-code/discovery alternativa não usada, passam `false`)
+- [x] `go test ./internal/... -race` + `make build` — sem regressão, sem import cycle
+
+**NÃO aplicado — `internal/monitoring/alerts/client.go`, e por um motivo estrutural, não só falta de tempo**: esse cliente consulta `/api/v1/alerts` (lista de alertas *firing* avaliados por um Prometheus server real). O GMP **não é um Prometheus server** — é só um backend de métricas consultável via PromQL (`/api/v1/query`, `/query_range`, `/series`, `/labels`, `/label/.../values`, `/metadata`); não tem motor de avaliação de regras de alerta, então `/api/v1/alerts` não existe nele independente de autenticação. Ou seja: **a aba Alertas nunca vai funcionar para clusters GKE só com wiring de auth** — precisaria de uma integração completamente diferente (ex: Google Cloud Monitoring Alerting API, `monitoring.googleapis.com/v3/projects/{id}/alertPolicies`, formato de dado totalmente distinto de `Alert`/`AlertFilter` deste pacote). Não implementado nesta fase; `getPrometheusURL()` em `alerts.go` continua devolvendo a URL do GMP automaticamente (via `GetPrometheusURL`), então a chamada vai falhar com 404 do Google em vez do erro de "endpoint não encontrado" de antes — melhor sinal de diagnóstico, mas ainda sem dado nenhum.
+
+**NÃO aplicado — clientes Prometheus internos do FinOps** (`internal/finops/prometheus_enricher.go`, `internal/finops/timeline.go` `QueryTimeline`, `internal/finops/calculator.go` `WithPrometheusURL`): descobertos durante esta fase — são um **4º grupo de clientes HTTP Prometheus**, não catalogado no diagnóstico original deste plano (que falava em "3 clientes"). Todos os 5 call sites em `finops.go` usam `discovery.GetPrometheusURL(cluster)` (string crua) alimentando essas funções, que hoje não têm nenhum parâmetro de auth. `discovery.RequiresGCPAuth(cluster)` já está disponível pra uso deles, mas a mudança em si (plumbing do Bearer token dentro do `internal/finops`) não foi feita.
 
 ### Fase 5 — Validação end-to-end (requer cluster GKE real com GMP habilitado)
 

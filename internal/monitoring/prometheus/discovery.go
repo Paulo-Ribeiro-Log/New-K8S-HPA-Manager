@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"k8s-hpa-manager/internal/monitoring/models"
 	"github.com/rs/zerolog/log"
+	"k8s-hpa-manager/internal/monitoring/models"
 )
 
 // DiscoveryConfig configuração para auto-discovery
@@ -41,7 +41,7 @@ func DefaultDiscoveryConfig() *DiscoveryConfig {
 
 // VerifyPrometheusEndpoint verifica se um endpoint está funcional
 func VerifyPrometheusEndpoint(ctx context.Context, cluster, endpoint string) error {
-	client, err := NewClient(cluster, endpoint)
+	client, err := NewClient(cluster, endpoint, false)
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ func GetPrometheusTargets(ctx context.Context, client *Client) (map[string]inter
 
 // CheckPrometheusHealth verifica saúde do Prometheus
 func CheckPrometheusHealth(ctx context.Context, endpoint string) (*models.PrometheusHealth, error) {
-	client, err := NewClient("health-check", endpoint)
+	client, err := NewClient("health-check", endpoint, false)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func DiscoverAndConnect(ctx context.Context, clientset interface{}, cluster, nam
 		// Tenta endpoint ClusterIP
 		endpoint := fmt.Sprintf("http://%s.%s.svc:9090", serviceName, namespace)
 
-		client, err := NewClient(cluster, endpoint)
+		client, err := NewClient(cluster, endpoint, false)
 		if err != nil {
 			continue
 		}
