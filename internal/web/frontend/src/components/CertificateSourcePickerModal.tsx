@@ -230,7 +230,7 @@ export function CertificateSourcePickerModal({
   return (
     <>
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
+      <DialogContent className="max-w-[38.4rem] max-h-[85vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>Escolher certificado de um backup</DialogTitle>
           <DialogDescription>
