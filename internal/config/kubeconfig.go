@@ -433,6 +433,7 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 		// é o único ponto que enxerga os dois lados sem fechar o ciclo. Idempotente (reatribuição
 		// de função), seguro chamar a cada DiscoverClusters/reload.
 		discovery.SetGCPTokenFunc(gcpprovider.GetFreshGKEToken)
+		discovery.SetGCPTokenInvalidateFunc(gcpprovider.InvalidateGKETokenCache)
 	}
 
 	var clusterNames []string
@@ -832,8 +833,15 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 	// Isso evita dependência do gke-gcloud-auth-plugin quando o usuário já está autenticado.
 	if cloudProvider == CloudProviderGKE {
 		if token := gcpprovider.GetFreshGKEToken(context.Background()); token != "" {
-			restConfig.ExecProvider = nil // ADC/gcloud têm prioridade sobre exec plugin
-			restConfig.BearerToken = token
+			restConfig.ExecProvider = nil  // ADC/gcloud têm prioridade sobre exec plugin
+			restConfig.BearerToken = token // usado por KubectlAuthArgs (kubeconfig temporário de vida curta, sem WrapTransport)
+			// O client Go do clientset fica cacheado até 40min (ver ttl abaixo) — sem isso o
+			// BearerToken acima ficaria travado no valor obtido agora, ignorando qualquer refresh
+			// (incluindo autorrecuperação de um token ruim, ver gkeTokenRoundTripper) que
+			// GetFreshGKEToken faça depois. Mesmo padrão/motivo de eksTokenRoundTripper acima.
+			restConfig.WrapTransport = func(rt http.RoundTripper) http.RoundTripper {
+				return &gkeTokenRoundTripper{base: rt}
+			}
 		}
 	}
 
@@ -906,6 +914,18 @@ func (k *KubeConfigManager) KubectlAuthArgs(cluster string) (args []string, clea
 			if token, ok := getFreshEKSToken(exec.Args); ok {
 				restConfig.BearerToken = token
 			}
+		}
+	}
+
+	if cloudProvider == CloudProviderGKE && restConfig.BearerToken != "" {
+		// Mesmo motivo do bloco EKS acima: restConfig pode vir do cache de até 40min, mas aqui o
+		// token é gravado ESTÁTICO num kubeconfig temporário consumido por um subprocesso
+		// `kubectl` — não passa pelo gkeTokenRoundTripper (WrapTransport), que só existe no
+		// clientset em memória. GetFreshGKEToken tem cache próprio (e se autorrecupera via
+		// InvalidateGKETokenCache), então isso normalmente não gera subprocesso `gcloud`/HTTP
+		// extra — só busca de novo quando o cache realmente expirou ou foi invalidado.
+		if token := gcpprovider.GetFreshGKEToken(context.Background()); token != "" {
+			restConfig.BearerToken = token
 		}
 	}
 
@@ -1046,6 +1066,61 @@ func (rt *eksTokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 }
 
 func (rt *eksTokenRoundTripper) WrappedRoundTripper() http.RoundTripper { return rt.base }
+
+// gkeTokenRoundTripper reescreve o header Authorization em cada requisição com o token GKE mais
+// recente disponível em cache (via gcpprovider.GetFreshGKEToken) — mesmo motivo/padrão de
+// eksTokenRoundTripper acima: o rest.Config fica cacheado até 40min (k.restConfigs), maior que
+// isso deixaria um restConfig.BearerToken estático travado no valor obtido na criação do client,
+// ignorando qualquer refresh que GetFreshGKEToken faça internamente depois disso.
+//
+// Também se autorrecupera de um token cacheado inválido: se a API responder 401, invalida o cache
+// (gcpprovider.InvalidateGKETokenCache) e — quando o corpo da requisição é seguramente
+// re-enviável (sem corpo, ou corpo rebobinável via req.GetBody, que o client-go seta
+// automaticamente pra payloads JSON comuns) — tenta de novo uma única vez já com o token fresco,
+// resolvendo dentro da MESMA chamada. Para corpos não rebobináveis, só invalida o cache sem
+// retentar (retentar arriscaria mandar um corpo vazio/corrompido numa escrita) — a PRÓXIMA
+// requisição do chamador já vem com token fresco. Motivado por um incidente real: o token
+// cacheado ficou inválido bem antes do TTL de 45min expirar, e toda autenticação GKE (client K8s
+// + Prometheus GMP, que reusa o mesmo cache) ficou quebrada até um restart manual do processo.
+type gkeTokenRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (rt *gkeTokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.doWithToken(req)
+	if err != nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+
+	gcpprovider.InvalidateGKETokenCache()
+
+	if req.Body != nil && req.GetBody == nil {
+		return resp, nil
+	}
+
+	retryReq := req
+	if req.GetBody != nil {
+		body, gbErr := req.GetBody()
+		if gbErr != nil {
+			return resp, nil
+		}
+		clone := req.Clone(req.Context())
+		clone.Body = body
+		retryReq = clone
+	}
+	resp.Body.Close()
+	return rt.doWithToken(retryReq)
+}
+
+func (rt *gkeTokenRoundTripper) doWithToken(req *http.Request) (*http.Response, error) {
+	if token := gcpprovider.GetFreshGKEToken(req.Context()); token != "" {
+		req = utilnet.CloneRequest(req)
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return rt.base.RoundTrip(req)
+}
+
+func (rt *gkeTokenRoundTripper) WrappedRoundTripper() http.RoundTripper { return rt.base }
 
 // buildEKSExecProvider constrói um ExecConfig para `aws eks get-token` a partir
 // das informações disponíveis no kubeconfig (contexto resolvido, URL do servidor).
