@@ -95,14 +95,42 @@ Aplicado nos 2 clientes que fazem **query** (compatíveis com a API que o GMP re
 
 **NÃO aplicado — clientes Prometheus internos do FinOps** (`internal/finops/prometheus_enricher.go`, `internal/finops/timeline.go` `QueryTimeline`, `internal/finops/calculator.go` `WithPrometheusURL`): descobertos durante esta fase — são um **4º grupo de clientes HTTP Prometheus**, não catalogado no diagnóstico original deste plano (que falava em "3 clientes"). Todos os 5 call sites em `finops.go` usam `discovery.GetPrometheusURL(cluster)` (string crua) alimentando essas funções, que hoje não têm nenhum parâmetro de auth. `discovery.RequiresGCPAuth(cluster)` já está disponível pra uso deles, mas a mudança em si (plumbing do Bearer token dentro do `internal/finops`) não foi feita.
 
-### Fase 5 — Validação end-to-end (requer cluster GKE real com GMP habilitado)
+### Fase 5 — Validação end-to-end contra cluster GKE real (`gke_via-gcb-higgs-hlg_southamerica-east1_gke-higgs-hlg`, projeto `via-gcb-higgs-hlg`)
 
-Nada disto foi/pode ser validado neste ambiente de desenvolvimento — checklist para quando houver acesso a um cluster real:
-- [ ] Confirmar que a identidade usada pelo `GetFreshGKEToken()` (ADC salvo em `~/.k8s-hpa-manager/gcp-adc.json` ou `gcloud` local) tem a IAM role `roles/monitoring.viewer` (ou mais ampla) no projeto GCP do cluster
-- [ ] Confirmar que o cluster realmente tem GMP habilitado e coletando métricas (`--enable-managed-prometheus` no `gcloud container clusters` ou equivalente Terraform) — sem isso a API responde vazio mesmo com auth/URL corretos, indistinguível de "não implementado" à primeira vista
-- [ ] Testar uma query real (`up`, ou uma métrica de HPA tipo `kube_pod_status_phase`) via `MonitoringEngineV2`/Alertas/Predictions contra o cluster GKE e comparar com o que aparece no Cloud Monitoring do console GCP para o mesmo projeto
-- [ ] Verificar se o formato de resposta do GMP bate 100% com os structs `QueryResult`/`QueryRangeResult` já existentes (campos `metric`/`value`/`values`) — API é "compatível", mas não há garantia formal de paridade byte-a-byte com Prometheus OSS para todo tipo de query
-- [ ] Se `validateEndpoint`/health-check inicial falhar por falta de dados (cluster sem métricas coletadas ainda) vs. falha real de auth/URL, garantir que a mensagem de erro exposta ao usuário distingue os dois casos
+**Atenção — lição operacional que gerou o primeiro falso positivo desta fase**: depois de implementar as Fases 2-4, o teste inicial do usuário bateu na URL antiga quebrada (`prometheus-gke_via-...-hlg.viavarejo.com.br`). Causa: o processo do servidor rodando (PID antigo, iniciado antes desta sessão) nunca recarrega o binário sozinho — `make build` só atualiza o arquivo em disco. Precisou `kill <PID antigo> && ./build/new-k8s-hpa web ...` pra o código novo entrar em vigor. Isso já está documentado na tabela de Troubleshooting do `CLAUDE.md`, mas vale reforçar aqui: **sempre reiniciar o servidor depois de build, antes de testar qualquer fase deste plano**.
+
+**Mecanismo (auth + URL + transporte HTTP) — ✅ confirmado com dados reais, via curl direto usando `gcloud auth print-access-token`** (mesmo mecanismo de fallback que `GetFreshGKEToken` usa quando não há `~/.k8s-hpa-manager/gcp-adc.json` — só esse fallback existe neste ambiente, confirmado por `ls` retornando "No such file"):
+- `GET .../api/v1/query?query=up` → HTTP 200, `"status":"success"`, com séries reais (`job="gmp-kubelet-cadvisor"`, `job="gmp-kubelet-metrics"`, `job="kube-state-metrics"`, todas do cluster `gke-higgs-hlg`)
+- `count(container_cpu_usage_seconds_total)` e `count(container_memory_working_set_bytes)` → 261 séries cada (métricas de container via kubelet/cAdvisor, GKE expõe isso ao GMP automaticamente, sem PodMonitoring manual)
+- Confirma: Project ID extraído certo do context, token OAuth2 aceito pelo Google, `resolvePrometheusSource`/`GCPAuthTransport`/`validateEndpoint` funcionando ponta a ponta
+
+**Dado de aplicação (o que o app realmente precisa: HPA, resources, deployment status) — ❌ ausente, causa raiz identificada e não é bug de código**:
+- `kube_horizontalpodautoscaler_status_current_replicas`, `kube_horizontalpodautoscaler_spec_max_replicas`, `kube_pod_container_resource_requests`, `kube_pod_container_resource_limits`, `kube_pod_info`, `kube_node_info`, `kube_deployment_status_replicas` (sem sufixo) → todas retornam `"result":[]` (vazio, não erro)
+- Outras como `kube_deployment_status_replicas_available`, `kube_pod_status_phase`, `kube_statefulset_status_replicas_ready`, `kube_daemonset_status_*`, `kube_persistentvolume*` → **têm dado real** (confirmado `count(kube_pod_status_phase)` = 120 séries)
+- **Causa raiz**: o cluster tem **dois** kube-state-metrics coexistindo:
+  1. `gke-managed-cim/kube-state-metrics-0` — addon **gerenciado pelo GKE** (`components.gke.io/component-name: cluster-infra-metrics`), já tem um `ClusterPodMonitoring` (`kubectl get clusterpodmonitoring kube-state-metrics -o yaml`) escaneando a porta nomeada `k8s-objects`, mas expõe só um **subconjunto curado** de métricas (o que aparece no catálogo `/api/v1/label/__name__/values` acima) — não inclui HPA nem resource requests/limits.
+  2. `monitoring/prometheus-kube-state-metrics-...` — kube-state-metrics **completo e padrão** (Helm chart `kube-prometheus-stack`, `kube-state-metrics-5.6.2`, versão `2.8.2`), Service `prometheus-kube-state-metrics.monitoring.svc:8080` (porta nomeada `http`), criado há só 8h no momento do teste — **mas sem nenhum `PodMonitoring`/`ClusterPodMonitoring` apontando pra ele** (`kubectl get podmonitoring -A` → `No resources found`). GMP simplesmente nunca sabe que esse Pod existe.
+- **Correção identificada, pronta pra aplicar quando aprovado** (aditiva, não mexe em nada existente — só adiciona um novo alvo de scrape):
+  ```yaml
+  apiVersion: monitoring.googleapis.com/v1
+  kind: PodMonitoring
+  metadata:
+    name: kube-state-metrics
+    namespace: monitoring
+  spec:
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: kube-state-metrics
+        app.kubernetes.io/instance: prometheus
+    endpoints:
+    - port: http
+      interval: 30s
+  ```
+  `kubectl apply -f` isso no cluster GKE deve fazer o coletor gerenciado do GMP começar a escanear `prometheus-kube-state-metrics:8080/metrics` no próximo ciclo — métricas de HPA/resources devem aparecer em ~1-2min. **Usuário optou por não aplicar nesta sessão** (2026-07-31) — decisão de infraestrutura em cluster real, não de código desta app.
+- [ ] Aplicar o `PodMonitoring` acima (ou equivalente `ClusterPodMonitoring` se o padrão preferido da organização for cluster-wide) e reconfirmar as queries que hoje retornam vazio
+- [ ] Depois de aplicado: revalidar `internal/monitoring/client`/`internal/monitoring/prometheus` na UI real (HPA metrics, Deployment Behavior, Node Pool predictions) — não só via curl direto
+- [ ] Confirmar se esse gap (dois kube-state-metrics, só o "reduzido" com PodMonitoring) é específico deste cluster ou padrão em todos os clusters GKE da frota — se for padrão, o `PodMonitoring` acima precisa ser aplicado em cada cluster GKE novo (ou automatizado via discovery/autodiscover desta app — fora de escopo deste plano)
+- [ ] Verificar se o formato de resposta do GMP bate 100% com os structs `QueryResult`/`QueryRangeResult` já existentes para métricas com dado real (histogram_quantile, matrix multi-série) — só testado com vetores simples (`up`, `count(...)`) até aqui
 
 ### Riscos conhecidos / não cobertos por este plano
 
