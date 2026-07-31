@@ -27,7 +27,7 @@ func DiscoverEndpoint(cluster string) (*PrometheusEndpoint, error) {
 		Cluster:     cluster,
 		Name:        name,
 		Environment: env,
-		URL:         buildPrometheusURL(name, env),
+		URL:         resolvePrometheusURL(cluster, name, env),
 		Available:   false,
 	}
 
@@ -83,6 +83,20 @@ func buildPrometheusURL(nome, ambiente string) string {
 	return fmt.Sprintf("https://prometheus-%s-%s.viavarejo.com.br/", nome, ambiente)
 }
 
+// resolvePrometheusURL decide qual URL usar: um override manual (getPrometheusURLOverride, campo
+// "prometheusUrl" em clusters-config.json/eks-clusters-config.json/gke-clusters-config.json) tem
+// prioridade quando configurado; caso contrário cai no padrão automático de sempre
+// (buildPrometheusURL). Nenhuma instalação existente tem esse campo preenchido, então para todo
+// cluster AKS/EKS já funcionando hoje o resultado é idêntico ao anterior — o override só muda o
+// comportamento de clusters que nunca resolveram corretamente por esse padrão (GKE, e EKS/AKS fora
+// da convenção de hostname viavarejo.com.br).
+func resolvePrometheusURL(cluster, nome, ambiente string) string {
+	if override := getPrometheusURLOverride(cluster); override != "" {
+		return override
+	}
+	return buildPrometheusURL(nome, ambiente)
+}
+
 // validateEndpoint valida se o endpoint Prometheus está acessível
 func validateEndpoint(endpoint *PrometheusEndpoint) error {
 	// Cliente HTTP com SSL auto-assinado permitido
@@ -124,7 +138,7 @@ func validateEndpoint(endpoint *PrometheusEndpoint) error {
 // GetPrometheusURL retorna a URL completa do Prometheus para um cluster
 func GetPrometheusURL(cluster string) string {
 	name, env := parseClusterName(cluster)
-	return buildPrometheusURL(name, env)
+	return resolvePrometheusURL(cluster, name, env)
 }
 
 // IsEndpointAvailable verifica rapidamente se o endpoint está disponível

@@ -46,6 +46,7 @@ type ClusterConfig struct {
 	ResourceGroup  string `json:"resourceGroup"`
 	Subscription   string `json:"subscription"`             // Nome legível ("PRD - ONLINE 2")
 	SubscriptionID string `json:"subscriptionId,omitempty"` // UUID do Azure
+	PrometheusURL  string `json:"prometheusUrl,omitempty"`  // override manual — usado só quando o cluster não segue o padrão de hostname viavarejo.com.br (ver GetPrometheusURLOverride)
 }
 
 // clientTTL define por quanto tempo um client inativo é mantido em memória
