@@ -26,6 +26,13 @@ type CertificateInfo struct {
 
 	// Cross-references
 	UsedByIngresses []IngressRef `json:"usedByIngresses"`
+	// UsedByGateways — equivalente de UsedByIngresses para Gateway API (Gateway+HTTPRoute).
+	UsedByGateways []GatewayRef `json:"usedByGateways,omitempty"`
+
+	// HasConfigIssues é derivado de UsedByIngresses[].HostIssues + UsedByGateways[].HostIssues —
+	// só para alimentar badge/filtro da listagem (CertificatesTab.tsx), nunca fonte de verdade (o
+	// texto das mensagens só existe nos HostIssues de cada referência).
+	HasConfigIssues bool `json:"hasConfigIssues,omitempty"`
 
 	// cert-manager (se disponível)
 	CertManager *CertManagerInfo `json:"certManager,omitempty"`
@@ -46,6 +53,33 @@ type IngressRef struct {
 	Name      string   `json:"name"`
 	Namespace string   `json:"namespace"`
 	Hosts     []string `json:"hosts"`
+
+	IngressClass string `json:"ingressClass,omitempty"`
+	// BackendTLS é true quando o Ingress usa nginx.ingress.kubernetes.io/backend-protocol
+	// HTTPS/GRPCS ou ssl-passthrough — re-encryption entre o ingress-controller e o pod backend,
+	// superfície de risco que a Fase 8 (Diagnóstico Avançado, backend_tls_check.go) cobre.
+	BackendTLS bool `json:"backendTLS,omitempty"`
+	// HostIssues — um item por host problemático desta referência (SAN não cobre o host,
+	// conflito de host com outro Ingress/Gateway, ou aviso de re-encryption).
+	HostIssues []HostIssue `json:"hostIssues,omitempty"`
+}
+
+// GatewayRef é o equivalente de IngressRef para Gateway API (Gateway+HTTPRoute) — ver
+// scanner.go/gateway_hosts.go para como é populado durante o scan.
+type GatewayRef struct {
+	Name       string      `json:"name"`
+	Namespace  string      `json:"namespace"`
+	Hosts      []string    `json:"hosts"`
+	HostIssues []HostIssue `json:"hostIssues,omitempty"`
+}
+
+// HostIssue descreve um problema de configuração associado a um host específico servido por um
+// Ingress/Gateway — não ao certificado em si (um Secret pode ser usado por vários
+// Ingresses/Gateways, com só um host problemático num deles).
+type HostIssue struct {
+	Host     string `json:"host"`
+	Severity string `json:"severity"` // "error" | "warning"
+	Message  string `json:"message"`
 }
 
 // CertManagerInfo representa informações do cert-manager

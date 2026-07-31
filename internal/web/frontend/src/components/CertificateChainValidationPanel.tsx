@@ -1,5 +1,6 @@
 import { CheckCircle2, XCircle, AlertTriangle, ChevronRight, Radio } from "lucide-react";
 import type { ChainValidationResult } from "@/types/certificates";
+import { IssueList } from "@/components/IssueList";
 
 interface CheckRowProps {
   label: string;
@@ -70,21 +71,7 @@ export function CertificateChainValidationPanel({ result, className }: Props) {
         </div>
       )}
 
-      {result.errors && result.errors.length > 0 && (
-        <ul className="space-y-0.5 pt-1">
-          {result.errors.map((e, i) => (
-            <li key={i} className="text-xs text-red-500">• {e}</li>
-          ))}
-        </ul>
-      )}
-
-      {result.warnings && result.warnings.length > 0 && (
-        <ul className="space-y-0.5">
-          {result.warnings.map((w, i) => (
-            <li key={i} className="text-xs text-amber-500">• {w}</li>
-          ))}
-        </ul>
-      )}
+      <IssueList errors={result.errors} warnings={result.warnings} />
 
       {result.live_propagation &&
         (result.live_propagation.checked ||

@@ -22,6 +22,12 @@ export interface CertificateInfo {
 
   // Cross-references
   usedByIngresses: IngressRef[];
+  usedByGateways?: GatewayRef[];
+
+  // hasConfigIssues é derivado de usedByIngresses[].hostIssues + usedByGateways[].hostIssues —
+  // só pra badge/filtro da listagem (CertificatesTab.tsx); o texto das mensagens só existe nos
+  // hostIssues de cada referência.
+  hasConfigIssues?: boolean;
 
   // cert-manager
   certManager?: CertManagerInfo;
@@ -39,6 +45,28 @@ export interface IngressRef {
   name: string;
   namespace: string;
   hosts: string[];
+  ingressClass?: string;
+  // backendTLS: este Ingress usa nginx.ingress.kubernetes.io/backend-protocol HTTPS/GRPCS ou
+  // ssl-passthrough (re-encryption entre o ingress-controller e o pod backend) — condiciona o
+  // botão "Diagnóstico Avançado" (backend-tls-check).
+  backendTLS?: boolean;
+  hostIssues?: HostIssue[];
+}
+
+// GatewayRef é o equivalente de IngressRef para Gateway API (Gateway+HTTPRoute).
+export interface GatewayRef {
+  name: string;
+  namespace: string;
+  hosts: string[];
+  hostIssues?: HostIssue[];
+}
+
+// HostIssue descreve um problema de configuração associado a um host específico servido por um
+// Ingress/Gateway — não ao certificado em si.
+export interface HostIssue {
+  host: string;
+  severity: "error" | "warning";
+  message: string;
 }
 
 export interface CertManagerInfo {
@@ -123,6 +151,16 @@ export interface ChainValidationResult {
   chain_subjects: string[]; // leaf → intermediário(s) → (raiz, se presente)
   openssl_notes?: string[];
   live_propagation?: LivePropagationResult;
+}
+
+// BackendTLSCheckResult — resultado de CheckIngressBackendTLS (backend_tls_check.go, Diagnóstico
+// Avançado sob demanda). Nunca confirma "sem erro" — só reporta se achou sinal (signals) na
+// janela de log analisada ou não (o que não significa ausência do problema).
+export interface BackendTLSCheckResult {
+  checked: boolean;
+  controller_pods?: string[];
+  signals?: string[];
+  notes?: string[];
 }
 
 // RollbackBackupInfo — backup de um Secret TLS salvo antes de ser sobrescrito (Fase 2 do

@@ -3,6 +3,7 @@ package certificates
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,8 +125,12 @@ func (s *Scanner) scanCluster(ctx context.Context, cluster string, namespaces []
 		certs = append(certs, *info)
 	}
 
-	// Cross-reference com Ingresses
-	s.crossRefIngresses(ctx, clientset, cluster, certs)
+	// Cross-reference com Ingresses e Gateway API — cada um retorna o mapa host -> owners
+	// referente à sua própria fonte; combinados antes de detectar conflito de host (B), pra pegar
+	// também o caso Ingress-vs-Gateway (migração incompleta pra Gateway API).
+	ingressHostOwners := s.crossRefIngresses(ctx, clientset, cluster, certs)
+	gatewayHostOwners := s.crossRefGateways(cluster, certs)
+	applyConfigIssues(certs, mergeHostOwners(ingressHostOwners, gatewayHostOwners))
 
 	// Aplicar filtro
 	if filter != "" && filter != "all" {
@@ -164,25 +169,31 @@ func (s *Scanner) listTLSSecrets(ctx context.Context, clientset kubernetes.Inter
 	return result, nil
 }
 
-// crossRefIngresses cruza certificados com Ingresses para preencher UsedByIngresses
-func (s *Scanner) crossRefIngresses(ctx context.Context, clientset kubernetes.Interface, cluster string, certs []CertificateInfo) {
+// crossRefIngresses cruza certificados com Ingresses para preencher UsedByIngresses. Retorna o
+// mapa host -> owners (pra detecção de conflito de host, config_issues.go/detectHostConflicts) —
+// combinado pelo chamador (scanCluster) com o equivalente de Gateway API (crossRefGateways).
+func (s *Scanner) crossRefIngresses(ctx context.Context, clientset kubernetes.Interface, cluster string, certs []CertificateInfo) map[string][]hostOwner {
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 
 	// Listar todos os ingresses
 	ingresses, err := kubeClient.ListIngresses(ctx, nil, "", true)
 	if err != nil {
 		log.Warn().Err(err).Str("cluster", cluster).Msg("Erro ao listar ingresses para cross-reference")
-		return
+		return nil
 	}
 
-	// Construir mapa: namespace/secretName → []IngressRef
+	// Construir mapa: namespace/secretName → []IngressRef, e host -> owners
 	ingressMap := make(map[string][]IngressRef)
+	hostOwners := make(map[string][]hostOwner)
 	for _, ing := range ingresses {
-		// Precisamos acessar o ingress raw para pegar spec.tls
+		// Precisamos acessar o ingress raw para pegar spec.tls e annotations (backend-protocol/
+		// ssl-passthrough) — IngressSummary não carrega nenhum dos dois.
 		rawIng, err := clientset.NetworkingV1().Ingresses(ing.Namespace).Get(ctx, ing.Name, metav1.GetOptions{})
 		if err != nil {
 			continue
 		}
+
+		backendTLS := isBackendTLSIngress(rawIng.Annotations)
 
 		for _, tls := range rawIng.Spec.TLS {
 			if tls.SecretName == "" {
@@ -190,11 +201,23 @@ func (s *Scanner) crossRefIngresses(ctx context.Context, clientset kubernetes.In
 			}
 			key := fmt.Sprintf("%s/%s", ing.Namespace, tls.SecretName)
 			ref := IngressRef{
-				Name:      ing.Name,
-				Namespace: ing.Namespace,
-				Hosts:     tls.Hosts,
+				Name:         ing.Name,
+				Namespace:    ing.Namespace,
+				Hosts:        tls.Hosts,
+				IngressClass: ing.IngressClass, // já resolvido por buildIngressSummary (com fallback de annotation)
+				BackendTLS:   backendTLS,
 			}
 			ingressMap[key] = append(ingressMap[key], ref)
+
+			for _, h := range tls.Hosts {
+				hostOwners[h] = append(hostOwners[h], hostOwner{
+					Kind:         "ingress",
+					Namespace:    ing.Namespace,
+					Name:         ing.Name,
+					SecretName:   tls.SecretName,
+					IngressClass: ing.IngressClass,
+				})
+			}
 		}
 	}
 
@@ -205,6 +228,19 @@ func (s *Scanner) crossRefIngresses(ctx context.Context, clientset kubernetes.In
 			certs[i].UsedByIngresses = refs
 		}
 	}
+
+	return hostOwners
+}
+
+// isBackendTLSIngress reporta se o Ingress usa TLS re-encryption/passthrough pro backend — via
+// nginx.ingress.kubernetes.io/backend-protocol (HTTPS/GRPCS) ou .../ssl-passthrough=true.
+// Superfície de risco que o Diagnóstico Avançado (backend_tls_check.go) cobre sob demanda.
+func isBackendTLSIngress(annotations map[string]string) bool {
+	proto := strings.ToUpper(annotations["nginx.ingress.kubernetes.io/backend-protocol"])
+	if proto == "HTTPS" || proto == "GRPCS" {
+		return true
+	}
+	return annotations["nginx.ingress.kubernetes.io/ssl-passthrough"] == "true"
 }
 
 // CopyCertificate copia um certificado de um cluster/namespace para outros destinos

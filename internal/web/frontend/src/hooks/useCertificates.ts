@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo, ManualBackupInfo } from '../types/certificates';
+import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo, ManualBackupInfo, BackendTLSCheckResult } from '../types/certificates';
 
 const API_BASE = '/api/v1/certificates';
 
@@ -144,6 +144,25 @@ export function useCertificates() {
     }
 
     return data.data as ChainValidationResult;
+  }, []);
+
+  // checkBackendTLS — "Diagnóstico Avançado" (Fase 8), disparo manual e explícito (mais custoso
+  // que validateInstalledChain — lê logs de todos os pods do ingress-controller). Nunca confirma
+  // "sem erro": Checked=true + signals vazio só significa que nenhum sinal foi encontrado na
+  // janela de log analisada.
+  const checkBackendTLS = useCallback(async (cluster: string, namespace: string, name: string): Promise<BackendTLSCheckResult> => {
+    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/backend-tls-check`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return data.data as BackendTLSCheckResult;
   }, []);
 
   // backupCertificate — salva o conteúdo ATUAL de um Secret TLS já instalado, sem sobrescrever
@@ -321,6 +340,7 @@ export function useCertificates() {
     uploadCertificateWithValidation,
     validateChainPEM,
     validateInstalledChain,
+    checkBackendTLS,
     backupCertificate,
     listRollbacks,
     rollbackCertificate,

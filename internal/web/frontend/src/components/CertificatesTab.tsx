@@ -44,6 +44,7 @@ import {
   Server,
   Table,
   ShieldAlert,
+  AlertTriangle,
   FolderOpen,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -98,7 +99,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
     selectedCluster ? [selectedCluster] : []
   );
   const [filterType, setFilterType] = useState<"all" | "ingress" | "common">("all");
-  const [statusFilters, setStatusFilters] = useState<Set<string>>(new Set(["valid", "expiring", "expired", "alert"]));
+  const [statusFilters, setStatusFilters] = useState<Set<string>>(new Set(["valid", "expiring", "expired", "alert", "configAlert"]));
 
   // UI state
   const [searchQuery, setSearchQuery] = useState("");
@@ -299,6 +300,14 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
     return scanResult.certificates.filter(c => c.chainValidation && c.chainValidation.valid === false).length;
   }, [scanResult]);
 
+  // Contagem de certificados com problema de configuração de Ingress/Gateway (SAN não cobre host,
+  // conflito de host, aviso de re-encryption) — dimensão ortogonal tanto ao status de expiração
+  // quanto à validade da cadeia x509 (chainValidation acima é só sobre o certificado em si).
+  const configAlertCount = useMemo(() => {
+    if (!scanResult?.certificates) return 0;
+    return scanResult.certificates.filter(c => c.hasConfigIssues).length;
+  }, [scanResult]);
+
   // Filtrar e ordenar certificados
   const filteredCerts = useMemo(() => {
     if (!scanResult?.certificates) return [];
@@ -306,7 +315,8 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
     let certs = scanResult.certificates.filter(cert => {
       const matchesStatus = statusFilters.has(cert.status);
       const matchesAlert = statusFilters.has("alert") && !!cert.chainValidation && cert.chainValidation.valid === false;
-      if (!matchesStatus && !matchesAlert) return false;
+      const matchesConfigAlert = statusFilters.has("configAlert") && !!cert.hasConfigIssues;
+      if (!matchesStatus && !matchesAlert && !matchesConfigAlert) return false;
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
         return (
@@ -855,6 +865,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
             { key: "expiring", label: "Expirando (<30d)", color: "text-yellow-400", count: scanResult?.summary.expiring ?? 0 },
             { key: "expired", label: "Expirados", color: "text-red-400", count: scanResult?.summary.expired ?? 0 },
             { key: "alert", label: "Com Alerta de Cadeia", color: "text-orange-400", count: alertCount },
+            { key: "configAlert", label: "Conflito de Host/SAN", color: "text-orange-400", count: configAlertCount },
           ].map(({ key, label, color, count }) => (
             <div key={key} className="flex items-center gap-2">
               <Checkbox
@@ -1059,6 +1070,11 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                                 title={`Cadeia inválida: ${(cert.chainValidation.errors ?? []).join("; ") || "ver detalhes"}`}
                               >
                                 <ShieldAlert className="h-3.5 w-3.5 text-red-400 flex-shrink-0" />
+                              </span>
+                            )}
+                            {cert.hasConfigIssues && (
+                              <span title="Problema de configuração de Ingress/Gateway (SAN não cobre host, conflito de host, ou re-encryption) — ver detalhes">
+                                <AlertTriangle className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
                               </span>
                             )}
                           </div>
