@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Shield, ExternalLink, Lock, ShieldCheck, Loader2, History, FolderPlus } from "lucide-react";
+import { Shield, ExternalLink, Waypoints, Lock, ShieldCheck, ShieldAlert, AlertTriangle, Loader2, History, FolderPlus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +16,7 @@ import { useCertificates } from "@/hooks/useCertificates";
 import { CertificateChainValidationPanel } from "@/components/CertificateChainValidationPanel";
 import { CertificateRollbackModal } from "@/components/CertificateRollbackModal";
 import { CertificateManualBackupModal } from "@/components/CertificateManualBackupModal";
-import type { CertificateInfo, ChainValidationResult } from "@/types/certificates";
+import type { CertificateInfo, ChainValidationResult, HostIssue, BackendTLSCheckResult } from "@/types/certificates";
 
 interface CertificateDetailModalProps {
   open: boolean;
@@ -74,6 +74,42 @@ function TimelineBar({ cert }: { cert: CertificateInfo }) {
   );
 }
 
+// HostBadges — badges de host com indicador de severidade (borda/ícone vermelho para "error",
+// âmbar para "warning") quando hostIssues contém 1+ entrada pra aquele host — compartilhado entre
+// o card Ingresses e o card Gateways, ambos iterando hosts[] + hostIssues[] no mesmo formato
+// (IngressRef/GatewayRef, ver types/certificates.ts).
+function HostBadges({ hosts, hostIssues }: { hosts: string[]; hostIssues?: HostIssue[] }) {
+  return (
+    <div className="flex flex-wrap gap-1 mt-1">
+      {hosts.map((host, j) => {
+        const issues = hostIssues?.filter((i) => i.host === host) ?? [];
+        const hasError = issues.some((i) => i.severity === "error");
+        const hasWarning = issues.some((i) => i.severity === "warning");
+        const colorClass = hasError
+          ? "border-red-500/50 text-red-400"
+          : hasWarning
+          ? "border-amber-500/50 text-amber-400"
+          : "";
+        return (
+          <Badge
+            key={j}
+            variant="outline"
+            className={`text-xs ${colorClass}`}
+            title={issues.length > 0 ? issues.map((i) => i.message).join("; ") : undefined}
+          >
+            {hasError ? (
+              <ShieldAlert className="h-3 w-3 mr-1" />
+            ) : hasWarning ? (
+              <AlertTriangle className="h-3 w-3 mr-1" />
+            ) : null}
+            {host}
+          </Badge>
+        );
+      })}
+    </div>
+  );
+}
+
 export function getStatusBadge(status: string) {
   switch (status) {
     case "valid":
@@ -94,11 +130,13 @@ export function CertificateDetailModal({
   footerExtra,
   onRestored,
 }: CertificateDetailModalProps) {
-  const { validateInstalledChain } = useCertificates();
+  const { validateInstalledChain, checkBackendTLS } = useCertificates();
   const [validationResult, setValidationResult] = useState<ChainValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
   const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
   const [manualBackupModalOpen, setManualBackupModalOpen] = useState(false);
+  const [backendTLSResult, setBackendTLSResult] = useState<BackendTLSCheckResult | null>(null);
+  const [checkingBackendTLS, setCheckingBackendTLS] = useState(false);
 
   // Pré-popula com o resultado já calculado durante o scan (Scanner.scanCluster chama
   // ValidateCertificateChain pra cada secret) — pintura instantânea, sem esperar rede, enquanto a
@@ -106,6 +144,7 @@ export function CertificateDetailModal({
   useEffect(() => {
     if (!open) return;
     setValidationResult(cert?.chainValidation ?? null);
+    setBackendTLSResult(null); // Diagnóstico Avançado é sempre sob demanda, nunca herda do cert anterior
   }, [open, cert?.cluster, cert?.namespace, cert?.secretName, cert?.chainValidation]);
 
   const handleValidateChain = async () => {
@@ -119,6 +158,22 @@ export function CertificateDetailModal({
       setValidationResult(null);
     } finally {
       setValidating(false);
+    }
+  };
+
+  // Diagnóstico Avançado (Fase 8) — sempre disparo manual (nunca automático): mais custoso que
+  // handleValidateChain (lê logs de todos os pods do ingress-controller) e só se aplica a uma
+  // minoria de Ingresses (backend-protocol HTTPS/GRPCS ou ssl-passthrough).
+  const handleCheckBackendTLS = async () => {
+    if (!cert) return;
+    setCheckingBackendTLS(true);
+    try {
+      const result = await checkBackendTLS(cert.cluster, cert.namespace, cert.secretName);
+      setBackendTLSResult(result);
+    } catch {
+      setBackendTLSResult(null);
+    } finally {
+      setCheckingBackendTLS(false);
     }
   };
 
@@ -138,7 +193,10 @@ export function CertificateDetailModal({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) setValidationResult(null);
+        if (!next) {
+          setValidationResult(null);
+          setBackendTLSResult(null);
+        }
         onOpenChange(next);
       }}
     >
@@ -218,14 +276,74 @@ export function CertificateDetailModal({
                   <CardContent className="px-3 pb-3 space-y-2">
                     {cert.usedByIngresses.map((ing, i) => (
                       <div key={i} className="text-xs border-b border-border/30 pb-1">
-                        <p className="font-medium">{ing.namespace}/{ing.name}</p>
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {ing.hosts?.map((host, j) => (
-                            <Badge key={j} variant="outline" className="text-xs">
-                              {host}
-                            </Badge>
-                          ))}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="font-medium">{ing.namespace}/{ing.name}</p>
+                          {ing.ingressClass && (
+                            <Badge variant="secondary" className="text-[10px]">{ing.ingressClass}</Badge>
+                          )}
                         </div>
+                        <HostBadges hosts={ing.hosts ?? []} hostIssues={ing.hostIssues} />
+                      </div>
+                    ))}
+
+                    {/* Diagnóstico Avançado (Fase 8) — só quando ao menos 1 Ingress usa
+                        re-encryption pro backend (backend-protocol HTTPS/GRPCS ou
+                        ssl-passthrough). Sempre sob demanda, nunca automático. */}
+                    {cert.usedByIngresses.some((ing) => ing.backendTLS) && (
+                      <div className="pt-1 space-y-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs w-full"
+                          onClick={handleCheckBackendTLS}
+                          disabled={checkingBackendTLS}
+                        >
+                          {checkingBackendTLS ? (
+                            <Loader2 className="h-3 w-3 mr-2 animate-spin" />
+                          ) : (
+                            <Waypoints className="h-3 w-3 mr-2" />
+                          )}
+                          Diagnóstico Avançado — TLS com backend
+                        </Button>
+
+                        {backendTLSResult && (
+                          <div className="rounded border border-border/50 bg-card/30 p-2 text-xs space-y-1">
+                            {backendTLSResult.signals && backendTLSResult.signals.length > 0 && (
+                              <ul className="space-y-0.5">
+                                {backendTLSResult.signals.map((s, i) => (
+                                  <li key={i} className="text-red-500">• {s}</li>
+                                ))}
+                              </ul>
+                            )}
+                            {backendTLSResult.notes && backendTLSResult.notes.length > 0 && (
+                              <ul className="space-y-0.5 text-muted-foreground">
+                                {backendTLSResult.notes.map((n, i) => (
+                                  <li key={i}>• {n}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Gateways (Gateway API) — mesmo padrão do card Ingresses */}
+              {cert.usedByGateways && cert.usedByGateways.length > 0 && (
+                <Card className="bg-card/50">
+                  <CardHeader className="py-2 px-3">
+                    <CardTitle className="text-xs font-medium flex items-center gap-1">
+                      <Waypoints className="h-3 w-3" />
+                      Gateways ({cert.usedByGateways.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-3 pb-3 space-y-2">
+                    {cert.usedByGateways.map((gw, i) => (
+                      <div key={i} className="text-xs border-b border-border/30 pb-1">
+                        <p className="font-medium">{gw.namespace}/{gw.name}</p>
+                        <HostBadges hosts={gw.hosts ?? []} hostIssues={gw.hostIssues} />
                       </div>
                     ))}
                   </CardContent>

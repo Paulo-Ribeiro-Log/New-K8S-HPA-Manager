@@ -557,6 +557,12 @@ func buildIngressSummary(cluster string, ing *networkingv1.Ingress) models.Ingre
 	ingressClass := ""
 	if ing.Spec.IngressClassName != nil {
 		ingressClass = *ing.Spec.IngressClassName
+	} else if v := ing.Annotations["kubernetes.io/ingress.class"]; v != "" {
+		// Fallback pra annotation legada (pre-IngressClass, ainda comum em clusters antigos) —
+		// sem isso, IngressClass ficava vazio mesmo quando o Ingress declara a classe só via
+		// annotation, mascarando a classe real tanto na aba Ingress quanto na detecção de
+		// conflito de host entre Ingresses de classes diferentes (certificates/config_issues.go).
+		ingressClass = v
 	}
 
 	updatedAt := ing.CreationTimestamp.Time

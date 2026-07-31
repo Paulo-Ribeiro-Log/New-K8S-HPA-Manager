@@ -351,6 +351,44 @@ func (h *CertificatesHandler) ValidateInstalledChain(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
+// CheckBackendTLS é o "Diagnóstico Avançado" (Fase 8, backend_tls_check.go) — disparo manual,
+// sob demanda: heurístico, mais custoso que validate-chain (lê logs de todos os pods do
+// ingress-controller), por isso nunca roda automaticamente. Resolve os hosts do Secret via
+// ResolveHostsForSecret (mesma função já usada pelo fallback TLS-dial da Fase 7) e delega a
+// checagem em si pro Scanner.
+func (h *CertificatesHandler) CheckBackendTLS(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	ctx := c.Request.Context()
+
+	hosts, err := h.scanner.ResolveHostsForSecret(ctx, cluster, namespace, name)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": certificates.BackendTLSCheckResult{
+				Checked: false,
+				Notes:   []string{fmt.Sprintf("não foi possível resolver hosts para este Secret: %s", err.Error())},
+			},
+		})
+		return
+	}
+	if len(hosts) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": certificates.BackendTLSCheckResult{
+				Checked: false,
+				Notes:   []string{"nenhum host (Ingress/Gateway API) encontrado para este Secret"},
+			},
+		})
+		return
+	}
+
+	result := h.scanner.CheckIngressBackendTLS(ctx, cluster, hosts)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
+}
+
 // tlsDialEnrichTimeout limita quanto tempo o fallback de handshake TLS direto (resolução de hosts
 // + dial em paralelo) espera, mesmo teto de prometheusEnrichTimeout (prometheus_enrich.go).
 const tlsDialEnrichTimeout = 8 * time.Second

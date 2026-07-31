@@ -1102,6 +1102,7 @@ func (s *Server) setupRoutes() {
 		// Validação de cadeia (Fase 1 do CERT-ROLLBACK-VALIDATION-PLAN.md) — leitura/cálculo, sem RBAC
 		certGroup.POST("/validate-chain", certificatesHandler.ValidateChainPEM)
 		certGroup.GET("/:cluster/:namespace/:name/validate-chain", certificatesHandler.ValidateInstalledChain)
+		certGroup.GET("/:cluster/:namespace/:name/backend-tls-check", certificatesHandler.CheckBackendTLS) // leitura, sem RBAC — mesmo padrão de validate-chain
 		// Rollback (Fase 2 do CERT-ROLLBACK-VALIDATION-PLAN.md)
 		certGroup.GET("/:cluster/:namespace/:name/rollback", certificatesHandler.ListRollbacks) // leitura, sem RBAC
 		certGroup.POST("/:cluster/:namespace/:name/rollback", rbacMiddleware.RequireSREGroup(), certificatesHandler.Rollback)
