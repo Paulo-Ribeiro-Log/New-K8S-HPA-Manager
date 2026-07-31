@@ -2,6 +2,12 @@
 
 Continuar de qualquer chat lendo este arquivo + `CLAUDE.md`.
 
+## ✅ Bug lateral corrigido durante a Fase 5 — cache de token GKE não se autorrecuperava
+
+Achado durante a validação ao vivo (ver Fase 5 abaixo): o token OAuth2 GKE cacheado em `GetFreshGKEToken` (`internal/cloudprovider/gcp/auth.go`, TTL 45min) ficou inválido bem antes do TTL expirar — provável corrida entre chamadas concorrentes ao `gcloud` CLI local durante os testes desta sessão. Nada detectava/corrigia isso: toda autenticação GKE (client K8s + Prometheus GMP, que reusam o mesmo cache) ficou quebrada até um restart manual do processo.
+
+Corrigido (commit `b8c647a7`): `InvalidateGKETokenCache()` + `gkeTokenRoundTripper` (mesmo padrão de `eksTokenRoundTripper` já existente — client K8s parava de usar `restConfig.BearerToken` estático, passa a reescrever o header a cada requisição) + `gcpAuthRoundTripper` (GMP, `internal/monitoring/discovery/gcp_auth.go`) — ambos invalidam o cache e tentam de novo uma vez ao receber 401. Validado ao vivo: depois do fix, um restart teve só 1 `401` (corrida de boot benigna, hooks ainda não registrados) e zero depois disso — métricas que falharam no boot se recuperaram sozinhas sem restart manual. Detalhe completo no commit message.
+
 ## Diagnóstico
 
 ### Causa raiz original (por que GKE nunca funcionou)
