@@ -38,7 +38,7 @@ export function useCertificates() {
   }, []);
 
   const getCertificateDetails = useCallback(async (cluster: string, namespace: string, name: string): Promise<CertificateInfo> => {
-    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}`, {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, {
       headers: {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
       },
@@ -132,7 +132,7 @@ export function useCertificates() {
   // validateInstalledChain — valida a cadeia de um certificado já instalado no cluster (disparo
   // manual, ex: botão "Validar Cadeia" no detalhe de um cert existente).
   const validateInstalledChain = useCallback(async (cluster: string, namespace: string, name: string): Promise<ChainValidationResult> => {
-    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/validate-chain`, {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/validate-chain`, {
       headers: {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
       },
@@ -151,7 +151,7 @@ export function useCertificates() {
   // "sem erro": Checked=true + signals vazio só significa que nenhum sinal foi encontrado na
   // janela de log analisada.
   const checkBackendTLS = useCallback(async (cluster: string, namespace: string, name: string): Promise<BackendTLSCheckResult> => {
-    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/backend-tls-check`, {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/backend-tls-check`, {
       headers: {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
       },
@@ -170,7 +170,7 @@ export function useCertificates() {
   // controle deste backend, então o backup precisa ser disparado explicitamente antes do job
   // rodar (upload manual já dispara o backup sozinho, dentro do próprio endpoint /upload).
   const backupCertificate = useCallback(async (cluster: string, namespace: string, name: string): Promise<RollbackBackupInfo> => {
-    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/backup`, {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/backup`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
@@ -187,7 +187,7 @@ export function useCertificates() {
 
   // listRollbacks — lista os backups disponíveis para um Secret, mais recente primeiro.
   const listRollbacks = useCallback(async (cluster: string, namespace: string, name: string): Promise<RollbackBackupInfo[]> => {
-    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/rollback`, {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/rollback`, {
       headers: {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
       },
@@ -203,7 +203,7 @@ export function useCertificates() {
 
   // rollbackCertificate — restaura um backup por cima do Secret atual.
   const rollbackCertificate = useCallback(async (cluster: string, namespace: string, name: string, backupId: string): Promise<{ validation: ChainValidationResult | null }> => {
-    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/rollback`, {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/rollback`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -224,7 +224,7 @@ export function useCertificates() {
   // texto do fluxo manual sem precisar copiar/colar (parte do picker de fonte, ver
   // CertificateSourcePickerModal.tsx).
   const getRollbackContent = useCallback(async (cluster: string, namespace: string, name: string, backupId: string): Promise<{ tls_crt: string; tls_key: string }> => {
-    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/rollback/${backupId}/content`, {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/rollback/${encodeURIComponent(backupId)}/content`, {
       headers: {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
       },
@@ -241,7 +241,7 @@ export function useCertificates() {
   // saveManualBackup — salva o conteúdo ATUAL de um Secret TLS num backup separado do Rollback,
   // disparado sob demanda pelo usuário (botão "Copiar para Backup"), com comentário opcional.
   const saveManualBackup = useCallback(async (cluster: string, namespace: string, name: string, comment?: string): Promise<ManualBackupInfo> => {
-    const response = await fetch(`${API_BASE}/${cluster}/${namespace}/${name}/manual-backup`, {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/manual-backup`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -293,7 +293,7 @@ export function useCertificates() {
 
   // getManualBackupContent — PEM bruto de um backup manual específico.
   const getManualBackupContent = useCallback(async (secretName: string, backupId: string): Promise<{ tls_crt: string; tls_key: string }> => {
-    const response = await fetch(`${API_BASE}/manual-backups/${encodeURIComponent(secretName)}/${backupId}/content`, {
+    const response = await fetch(`${API_BASE}/manual-backups/${encodeURIComponent(secretName)}/${encodeURIComponent(backupId)}/content`, {
       headers: {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
       },
