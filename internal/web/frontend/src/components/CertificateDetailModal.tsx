@@ -101,9 +101,8 @@ export function CertificateDetailModal({
   const [manualBackupModalOpen, setManualBackupModalOpen] = useState(false);
 
   // Pré-popula com o resultado já calculado durante o scan (Scanner.scanCluster chama
-  // ValidateCertificateChain pra cada secret) — evita precisar clicar em "Validar Cadeia" só pra
-  // ver o que o scan já sabe. O botão continua disponível pra uma checagem nova/ao vivo (que também
-  // traz LivePropagation via Prometheus, ausente do resultado do scan).
+  // ValidateCertificateChain pra cada secret) — pintura instantânea, sem esperar rede, enquanto a
+  // checagem completa (efeito abaixo) ainda não respondeu.
   useEffect(() => {
     if (!open) return;
     setValidationResult(cert?.chainValidation ?? null);
@@ -122,6 +121,18 @@ export function CertificateDetailModal({
       setValidating(false);
     }
   };
+
+  // Dispara a validação completa automaticamente ao abrir o modal — inclui LivePropagation
+  // (Prometheus/handshake TLS direto, Fase 3/4), ausente do resultado pré-populado do scan. Sem
+  // isso, a linha de propagação nunca aparecia a menos que o usuário clicasse manualmente em
+  // "Validar Cadeia", o que não era óbvio. Só dispara de novo ao trocar de certificado (não
+  // depende de cert.chainValidation) — o botão "Validar Cadeia" continua disponível pra reconferir
+  // sob demanda (ex: depois de uma atualização de certificado feita fora desta sessão).
+  useEffect(() => {
+    if (!open || !cert) return;
+    handleValidateChain();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, cert?.cluster, cert?.namespace, cert?.secretName]);
 
   return (
     <Dialog

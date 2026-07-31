@@ -18,11 +18,17 @@ const prometheusEnrichTimeout = 8 * time.Second
 // que cada réplica reporta estar servindo agora, via as métricas nginx_ingress_controller_ssl_*.
 // Checked=false significa "não deu pra checar" (Prometheus indisponível, certificado não está
 // atrás de ingress-nginx, etc.) — nunca é tratado como erro pela validação principal.
+// Method identifica qual mecanismo produziu o resultado: "prometheus-nginx" (métricas do
+// ingress-nginx, campos TotalReplicasFound/ReplicasCurrent/ReplicasStale contam réplicas de pod) ou
+// "tls-dial" (handshake TLS direto via EnrichWithTLSDial, os mesmos campos contam hosts públicos
+// alcançados em vez de réplicas de pod — usado quando o Prometheus não conseguiu checar, ex:
+// clusters GKE Gateway API sem ingress-nginx).
 type LivePropagationResult struct {
 	Checked            bool       `json:"checked"`
+	Method             string     `json:"method,omitempty"`
 	TotalReplicasFound int        `json:"total_replicas_found"`
 	ReplicasCurrent    int        `json:"replicas_current"`
-	ReplicasStale      []string   `json:"replicas_stale,omitempty"` // kubernetes_pod_name das réplicas com serial diferente do atual
+	ReplicasStale      []string   `json:"replicas_stale,omitempty"` // kubernetes_pod_name (nginx) ou hostname (tls-dial) das réplicas/hosts com serial diferente do atual
 	LiveIssuerCN       string     `json:"live_issuer_cn,omitempty"`
 	LiveExpiresAt      *time.Time `json:"live_expires_at,omitempty"`
 	Notes              []string   `json:"notes,omitempty"`
@@ -63,6 +69,7 @@ func EnrichWithPrometheus(cluster, namespace, secretName, leafSerialDecimal stri
 	if err != nil {
 		return &LivePropagationResult{
 			Checked: false,
+			Method:  "prometheus-nginx",
 			Notes:   []string{fmt.Sprintf("Prometheus indisponível para este cluster: %s", err.Error())},
 		}
 	}
@@ -72,6 +79,7 @@ func EnrichWithPrometheus(cluster, namespace, secretName, leafSerialDecimal stri
 	if err != nil {
 		return &LivePropagationResult{
 			Checked: false,
+			Method:  "prometheus-nginx",
 			Notes:   []string{fmt.Sprintf("erro ao consultar Prometheus: %s", err.Error())},
 		}
 	}
@@ -88,7 +96,7 @@ func EnrichWithPrometheus(cluster, namespace, secretName, leafSerialDecimal stri
 // HTTP (promclient.PrometheusClient não é uma interface hoje, não vale a pena introduzir uma só
 // para isso).
 func buildLivePropagationResult(certResult, expireResult *promclient.QueryResult, leafSerialDecimal string) *LivePropagationResult {
-	result := &LivePropagationResult{}
+	result := &LivePropagationResult{Method: "prometheus-nginx"}
 
 	if certResult == nil || len(certResult.Data.Result) == 0 {
 		result.Checked = false
