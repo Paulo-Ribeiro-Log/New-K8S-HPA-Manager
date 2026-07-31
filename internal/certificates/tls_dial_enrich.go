@@ -60,7 +60,8 @@ func dialHostForCert(ctx context.Context, host string) tlsDialResult {
 // nunca por lote inteiro) e compara o serial do certificado realmente servido com
 // leafSerialDecimal — funciona independente de quem termina o TLS (nginx, Istio, Traefik, GCP LB
 // do GKE Gateway, ALB da AWS), ao contrário de EnrichWithPrometheus que só enxerga ingress-nginx.
-func EnrichWithTLSDial(ctx context.Context, hosts []string, leafSerialDecimal string) *LivePropagationResult {
+// leafIssuerCN (LeafIssuerCN) é usado só pra classificar hosts "stale" — ver buildTLSDialResult.
+func EnrichWithTLSDial(ctx context.Context, hosts []string, leafSerialDecimal, leafIssuerCN string) *LivePropagationResult {
 	results := make([]tlsDialResult, len(hosts))
 
 	var wg sync.WaitGroup
@@ -75,12 +76,27 @@ func EnrichWithTLSDial(ctx context.Context, hosts []string, leafSerialDecimal st
 	}
 	wg.Wait()
 
-	return buildTLSDialResult(results, leafSerialDecimal)
+	return buildTLSDialResult(results, leafSerialDecimal, leafIssuerCN)
 }
 
 // buildTLSDialResult é a lógica pura de agregação — separada de EnrichWithTLSDial para ser
 // testável sem rede real.
-func buildTLSDialResult(results []tlsDialResult, leafSerialDecimal string) *LivePropagationResult {
+//
+// Classificação de host "stale" (serial diferente do esperado) em 2 baldes disjuntos, usando o
+// emissor (Issuer CN) do certificado servido:
+//   - mesmo emissor do esperado → ReplicasStale: é plausível que seja o MESMO certificado numa
+//     versão anterior (renovação recente ainda não propagada) — caso genuíno de propagação atrasada.
+//   - emissor diferente → PossibleExternalLayer: não é uma versão antiga do certificado esperado,
+//     é um certificado de outra autoridade — sinal de que existe uma camada externa (CDN/WAF/proxy
+//     corporativo) terminando TLS antes do tráfego chegar no cluster. Achado real: cluster EKS onde
+//     o Secret tem um cert Sectigo mas o host público serve um wildcard corporativo da DigiCert —
+//     nesse caso "propagação em andamento" é uma mensagem enganosa, o Secret nunca vai "propagar"
+//     porque o cliente público nunca fala TLS direto com o ingress-nginx.
+//
+// Best-effort: se leafIssuerCN vier vazio (falha ao parsear o PEM esperado) ou o host não retornar
+// IssuerCN, cai no balde ReplicasStale (comportamento conservador — não afirma "camada externa"
+// sem emissor pra comparar).
+func buildTLSDialResult(results []tlsDialResult, leafSerialDecimal, leafIssuerCN string) *LivePropagationResult {
 	result := &LivePropagationResult{Method: "tls-dial"}
 
 	var reached int
@@ -91,9 +107,12 @@ func buildTLSDialResult(results []tlsDialResult, leafSerialDecimal string) *Live
 			continue
 		}
 		reached++
-		if r.SerialDec == leafSerialDecimal {
+		switch {
+		case r.SerialDec == leafSerialDecimal:
 			result.ReplicasCurrent++
-		} else {
+		case leafIssuerCN != "" && r.IssuerCN != "" && r.IssuerCN != leafIssuerCN:
+			result.PossibleExternalLayer = append(result.PossibleExternalLayer, r.Host)
+		default:
 			result.ReplicasStale = append(result.ReplicasStale, r.Host)
 		}
 		if result.LiveIssuerCN == "" {
@@ -117,8 +136,14 @@ func buildTLSDialResult(results []tlsDialResult, leafSerialDecimal string) *Live
 
 	if len(result.ReplicasStale) > 0 {
 		result.Notes = append(result.Notes, fmt.Sprintf(
-			"%d de %d host(s) ainda servem um certificado diferente do atual (handshake TLS direto) — propagação pode estar em andamento",
+			"%d de %d host(s) ainda servem um certificado diferente do atual, mesmo emissor esperado (handshake TLS direto) — propagação pode estar em andamento",
 			len(result.ReplicasStale), reached,
+		))
+	}
+	if len(result.PossibleExternalLayer) > 0 {
+		result.Notes = append(result.Notes, fmt.Sprintf(
+			"%d de %d host(s) servem um certificado de emissor completamente diferente do esperado — provavelmente existe uma camada externa (CDN/WAF/proxy corporativo) terminando TLS antes do cluster; isso NÃO é necessariamente um problema de propagação, é comum nessa arquitetura",
+			len(result.PossibleExternalLayer), reached,
 		))
 	}
 

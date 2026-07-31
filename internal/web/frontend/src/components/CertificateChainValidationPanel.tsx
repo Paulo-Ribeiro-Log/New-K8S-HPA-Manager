@@ -1,4 +1,4 @@
-import { CheckCircle2, XCircle, AlertTriangle, ChevronRight, Radio } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, ChevronRight, Radio, Info } from "lucide-react";
 import type { ChainValidationResult } from "@/types/certificates";
 import { IssueList } from "@/components/IssueList";
 
@@ -94,6 +94,16 @@ export function CertificateChainValidationPanel({ result, className }: Props) {
                   <span>
                     Propagação em andamento — ainda servindo o certificado anterior:{" "}
                     {result.live_propagation.replicas_stale.join(", ")}
+                  </span>
+                </div>
+              )}
+              {result.live_propagation.possible_external_layer && result.live_propagation.possible_external_layer.length > 0 && (
+                <div className="flex items-start gap-1.5 text-xs text-sky-500">
+                  <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    Emissor completamente diferente do esperado — provavelmente há uma camada externa
+                    (CDN/WAF/proxy corporativo) terminando TLS antes do cluster, não é necessariamente
+                    um problema de propagação: {result.live_propagation.possible_external_layer.join(", ")}
                   </span>
                 </div>
               )}
