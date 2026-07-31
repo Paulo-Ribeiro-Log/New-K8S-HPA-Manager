@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -267,7 +268,7 @@ func (h *CertificatesHandler) Upload(c *gin.Context) {
 		// Fase 3 — só faz sentido quando há exatamente 1 cluster/namespace destino: com múltiplos
 		// destinos (batch upload) não há um único cluster/namespace pra consultar no Prometheus.
 		if len(req.TargetClusters) == 1 && len(req.TargetNamespaces) == 1 {
-			v.LivePropagation = enrichLivePropagation(req.TargetClusters[0], req.TargetNamespaces[0], req.Name, []byte(req.TLSCrt))
+			v.LivePropagation = h.enrichLivePropagation(req.TargetClusters[0], req.TargetNamespaces[0], req.Name, []byte(req.TLSCrt))
 		}
 		validation = v
 	}
@@ -345,20 +346,49 @@ func (h *CertificatesHandler) ValidateInstalledChain(c *gin.Context) {
 		})
 		return
 	}
-	result.LivePropagation = enrichLivePropagation(cluster, namespace, name, tlsCrt)
+	result.LivePropagation = h.enrichLivePropagation(cluster, namespace, name, tlsCrt)
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
-// enrichLivePropagation é o ponto único de integração da Fase 3 (CERT-ROLLBACK-VALIDATION-PLAN.md)
-// — resolve o serial decimal do leaf cert e consulta o Prometheus do cluster. Melhor-esforço: se o
-// PEM não puder ser parseado, retorna nil (o restante da validação já teria capturado esse erro).
-func enrichLivePropagation(cluster, namespace, secretName string, certPEM []byte) *certificates.LivePropagationResult {
+// tlsDialEnrichTimeout limita quanto tempo o fallback de handshake TLS direto (resolução de hosts
+// + dial em paralelo) espera, mesmo teto de prometheusEnrichTimeout (prometheus_enrich.go).
+const tlsDialEnrichTimeout = 8 * time.Second
+
+// enrichLivePropagation é o ponto único de integração da Fase 3/4 (CERT-ROLLBACK-VALIDATION-PLAN.md)
+// — resolve o serial decimal do leaf cert e tenta checar a propagação real do certificado por dois
+// mecanismos, nessa ordem: (1) Prometheus/ingress-nginx (EnrichWithPrometheus, mais rico quando
+// disponível — dados por pod individual, mais barato); (2) se o primeiro não conseguiu checar
+// (cluster sem ingress-nginx, ex: já migrado para Gateway API), cai para um handshake TLS direto
+// contra os hosts (Ingress/Gateway API) que servem o Secret — universal, funciona independente de
+// quem termina o TLS. Melhor-esforço: se o PEM não puder ser parseado, retorna nil (o restante da
+// validação já teria capturado esse erro).
+func (h *CertificatesHandler) enrichLivePropagation(cluster, namespace, secretName string, certPEM []byte) *certificates.LivePropagationResult {
 	serialDecimal, err := certificates.LeafSerialDecimal(certPEM)
 	if err != nil {
 		return nil
 	}
-	return certificates.EnrichWithPrometheus(cluster, namespace, secretName, serialDecimal)
+
+	promResult := certificates.EnrichWithPrometheus(cluster, namespace, secretName, serialDecimal)
+	if promResult.Checked {
+		return promResult
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), tlsDialEnrichTimeout)
+	defer cancel()
+
+	hosts, hostErr := h.scanner.ResolveHostsForSecret(ctx, cluster, namespace, secretName)
+	if hostErr != nil || len(hosts) == 0 {
+		notes := append([]string{}, promResult.Notes...)
+		if hostErr != nil {
+			notes = append(notes, fmt.Sprintf("handshake TLS direto também não pôde ser tentado: %s", hostErr.Error()))
+		} else {
+			notes = append(notes, "handshake TLS direto também não pôde ser tentado: nenhum host (Ingress/Gateway API) encontrado para este Secret")
+		}
+		return &certificates.LivePropagationResult{Checked: false, Notes: notes}
+	}
+
+	return certificates.EnrichWithTLSDial(ctx, hosts, serialDecimal)
 }
 
 // Backup salva o conteúdo ATUAL de um Secret TLS já instalado, sem sobrescrever nada — usado pelo
@@ -518,7 +548,7 @@ func (h *CertificatesHandler) Rollback(c *gin.Context) {
 	if validation != nil {
 		// Só depois de escrito de fato — antes disso o ingress-nginx ainda estaria servindo o
 		// cert anterior, e comparar contra ele daria um resultado enganoso.
-		validation.LivePropagation = enrichLivePropagation(cluster, namespace, name, tlsCrt)
+		validation.LivePropagation = h.enrichLivePropagation(cluster, namespace, name, tlsCrt)
 	}
 
 	after := map[string]interface{}{

@@ -92,15 +92,19 @@ export interface UploadRequest {
   targetNamespaces: string[];
 }
 
-// LivePropagationResult — resultado de EnrichWithPrometheus (Fase 3 do
-// CERT-ROLLBACK-VALIDATION-PLAN.md): cruza o serial do leaf cert com o que cada réplica do
-// ingress-nginx do cluster reporta estar servindo agora. checked=false não é erro — só significa
-// "não deu pra checar" (Prometheus indisponível, cert não está atrás de ingress-nginx, etc.).
+// LivePropagationResult — resultado de EnrichWithPrometheus (Fase 3) ou EnrichWithTLSDial (Fase 4,
+// CERT-ROLLBACK-VALIDATION-PLAN.md): cruza o serial do leaf cert com o que está sendo servido de
+// fato agora — via métricas do ingress-nginx (method="prometheus-nginx") ou, quando isso não é
+// possível (cluster sem ingress-nginx, ex: Gateway API), via handshake TLS direto contra os hosts
+// que servem o Secret (method="tls-dial"). checked=false não é erro — só significa "não deu pra
+// checar" (Prometheus indisponível e nenhum host resolvido para o handshake, etc.) — nesse caso
+// `notes` explica o motivo.
 export interface LivePropagationResult {
   checked: boolean;
+  method?: "prometheus-nginx" | "tls-dial";
   total_replicas_found: number;
   replicas_current: number;
-  replicas_stale?: string[]; // kubernetes_pod_name das réplicas com serial diferente do atual
+  replicas_stale?: string[]; // kubernetes_pod_name (nginx) ou hostname (tls-dial) com serial diferente do atual
   live_issuer_cn?: string;
   live_expires_at?: string;
   notes?: string[];

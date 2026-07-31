@@ -86,22 +86,42 @@ export function CertificateChainValidationPanel({ result, className }: Props) {
         </ul>
       )}
 
-      {result.live_propagation?.checked && (
+      {result.live_propagation &&
+        (result.live_propagation.checked ||
+          (result.live_propagation.notes && result.live_propagation.notes.length > 0)) && (
         <div className="pt-1 border-t border-border/50 space-y-1">
-          <div className="flex items-center gap-1.5 text-xs">
-            <Radio className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-            <span>
-              {result.live_propagation.replicas_current}/{result.live_propagation.total_replicas_found}{" "}
-              réplica(s) do ingress-nginx com o certificado atual
-            </span>
-          </div>
-          {result.live_propagation.replicas_stale && result.live_propagation.replicas_stale.length > 0 && (
-            <div className="flex items-start gap-1.5 text-xs text-amber-500">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span>
-                Propagação em andamento — ainda servindo o certificado anterior:{" "}
-                {result.live_propagation.replicas_stale.join(", ")}
-              </span>
+          {result.live_propagation.checked ? (
+            <>
+              <div className="flex items-center gap-1.5 text-xs">
+                <Radio className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                <span>
+                  {result.live_propagation.replicas_current}/{result.live_propagation.total_replicas_found}{" "}
+                  {result.live_propagation.method === "tls-dial"
+                    ? "host(s) respondendo com o certificado atual (handshake TLS direto)"
+                    : "réplica(s) do ingress-nginx com o certificado atual"}
+                </span>
+              </div>
+              {result.live_propagation.replicas_stale && result.live_propagation.replicas_stale.length > 0 && (
+                <div className="flex items-start gap-1.5 text-xs text-amber-500">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    Propagação em andamento — ainda servindo o certificado anterior:{" "}
+                    {result.live_propagation.replicas_stale.join(", ")}
+                  </span>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
+              <Radio className="w-3.5 h-3.5 shrink-0 mt-0.5 opacity-50" />
+              <div className="space-y-0.5">
+                <span className="block">Checagem de propagação não realizada:</span>
+                <ul className="space-y-0.5">
+                  {result.live_propagation.notes!.map((n, i) => (
+                    <li key={i} className="pl-2">• {n}</li>
+                  ))}
+                </ul>
+              </div>
             </div>
           )}
         </div>
