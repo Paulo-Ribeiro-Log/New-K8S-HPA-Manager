@@ -97,13 +97,19 @@ func (h *NodePoolRegistryHandler) Scan(c *gin.Context) {
 
 		for _, node := range nodeList.Items {
 			labels := node.Labels
-			poolName := labels["kubernetes.azure.com/agentpool"]
-			if poolName == "" {
-				// Fallback: extrair do nome do nó padrão AKS (aks-<pool>-<digits>-vmss*)
-				poolName = extractNodePoolFromName(node.Name)
-			}
-			if poolName == "" {
-				continue
+			// nodePoolLabel (nodepools_snat.go) já cobre AKS/EKS/GKE — antes daqui só existia o
+			// label AKS + fallback de nome de nó AKS, então nós GKE/EKS (sem
+			// kubernetes.azure.com/agentpool) nunca eram reconhecidos e eram descartados em
+			// silêncio (nenhum erro, só node_count=0 pools=0 pro cluster inteiro).
+			poolName := nodePoolLabel(labels)
+			if poolName == "default" {
+				// nodePoolLabel não reconheceu nenhum label conhecido — tenta o fallback
+				// histórico específico de AKS (nome do nó no padrão aks-<pool>-<digits>-vmss*)
+				// antes de aceitar "default" como nome genérico, preservando o comportamento
+				// anterior pra esse caso.
+				if fromName := extractNodePoolFromName(node.Name); fromName != "" {
+					poolName = fromName
+				}
 			}
 
 			if _, ok := pools[poolName]; !ok {

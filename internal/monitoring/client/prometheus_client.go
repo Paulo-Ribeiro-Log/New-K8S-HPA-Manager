@@ -78,18 +78,27 @@ func NewPrometheusClient(cluster string) (*PrometheusClient, error) {
 		return nil, fmt.Errorf("endpoint não disponível: %s", endpoint.URL)
 	}
 
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	var roundTripper http.RoundTripper = transport
+	if endpoint.RequiresGCPAuth {
+		// GMP (Google Cloud Managed Service for Prometheus) — certificado válido do Google,
+		// exige "Authorization: Bearer <token>" em toda requisição.
+		roundTripper = discovery.GCPAuthTransport(transport)
+	} else {
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true, // Certificado auto-assinado (Prometheus self-hosted)
+		}
+	}
+
 	client := &PrometheusClient{
 		endpoint: endpoint,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: true, // Certificado auto-assinado
-				},
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
-			},
+			Timeout:   30 * time.Second,
+			Transport: roundTripper,
 		},
 	}
 
@@ -456,7 +465,6 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 		historicalMetrics["desired_replicas"] = result
 	}
 
-
 	// Réplicas prontas ao longo do tempo (deployment com mesmo nome do HPA)
 	readyReplicasQuery := fmt.Sprintf(
 		`kube_deployment_status_replicas_ready{namespace="%s",deployment="%s"}`,
@@ -622,7 +630,6 @@ func (c *PrometheusClient) GetHPAHistoricalMetricsWithOffset(ctx context.Context
 	if err == nil {
 		historicalMetrics["desired_replicas"] = result
 	}
-
 
 	// Réplicas prontas ao longo do tempo (deployment com mesmo nome do HPA)
 	readyReplicasQuery := fmt.Sprintf(
@@ -873,15 +880,15 @@ func (c *PrometheusClient) GetDeploymentResourceLimits(ctx context.Context, name
 
 // NamespaceMetrics representa métricas agregadas de um namespace
 type NamespaceMetrics struct {
-	Namespace           string  `json:"namespace"`
-	CPURequestMillis    int64   `json:"cpu_request_millis"`
-	CPUUsageMillis      int64   `json:"cpu_usage_millis"`
-	CPUPercentOfCluster float64 `json:"cpu_percent_of_cluster"`
-	MemoryRequestGB     float64 `json:"memory_request_gb"`
-	MemoryUsageGB       float64 `json:"memory_usage_gb"`
+	Namespace              string  `json:"namespace"`
+	CPURequestMillis       int64   `json:"cpu_request_millis"`
+	CPUUsageMillis         int64   `json:"cpu_usage_millis"`
+	CPUPercentOfCluster    float64 `json:"cpu_percent_of_cluster"`
+	MemoryRequestGB        float64 `json:"memory_request_gb"`
+	MemoryUsageGB          float64 `json:"memory_usage_gb"`
 	MemoryPercentOfCluster float64 `json:"memory_percent_of_cluster"`
-	PodCount            int     `json:"pod_count"`
-	PodPercentOfCluster float64 `json:"pod_percent_of_cluster"`
+	PodCount               int     `json:"pod_count"`
+	PodPercentOfCluster    float64 `json:"pod_percent_of_cluster"`
 }
 
 // GetNamespaceMetrics busca métricas agregadas por namespace

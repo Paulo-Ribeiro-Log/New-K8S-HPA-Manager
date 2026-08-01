@@ -12,12 +12,19 @@ import (
 // EKSClusterConfig representa a configuração de um cluster EKS no arquivo eks-clusters-config.json.
 // Mantido separado de ClusterConfig (AKS) pois os campos não se sobrepõem.
 type EKSClusterConfig struct {
-	Name       string   `json:"clusterName"`
-	AwsRegion  string   `json:"awsRegion"`
-	AwsProfile string   `json:"awsProfile"`
-	AccountID  string   `json:"awsAccountId,omitempty"`
-	VpcID      string   `json:"vpcId,omitempty"`
-	NodeGroups []string `json:"nodeGroups,omitempty"`
+	Name          string   `json:"clusterName"`
+	AwsRegion     string   `json:"awsRegion"`
+	AwsProfile    string   `json:"awsProfile"`
+	AccountID     string   `json:"awsAccountId,omitempty"`
+	VpcID         string   `json:"vpcId,omitempty"`
+	NodeGroups    []string `json:"nodeGroups,omitempty"`
+	PrometheusURL string   `json:"prometheusUrl,omitempty"` // override manual — usado só quando o cluster não segue o padrão de hostname viavarejo.com.br (ver GetPrometheusURLOverride)
+
+	// Override manual: Prometheus só acessível dentro do cluster (sem URL externa) — alcançado via
+	// túnel port-forward (ver internal/monitoring/discovery.PortForwardTarget/KubeConfigManager.OpenPortForward).
+	PrometheusInClusterNamespace string `json:"prometheusInClusterNamespace,omitempty"`
+	PrometheusInClusterService   string `json:"prometheusInClusterService,omitempty"`
+	PrometheusInClusterPort      int    `json:"prometheusInClusterPort,omitempty"`
 }
 
 // eksConfigPath retorna o caminho padrão do arquivo eks-clusters-config.json

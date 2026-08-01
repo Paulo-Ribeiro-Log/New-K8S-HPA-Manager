@@ -59,7 +59,7 @@ func Fetch(ctx context.Context, dtURL, dtToken, cluster, namespace, workload str
 	}
 
 	promURL := discovery.GetPrometheusURL(cluster)
-	promC, err := promclient.NewClient(cluster, promURL)
+	promC, err := promclient.NewClient(cluster, promURL, discovery.RequiresGCPAuth(cluster))
 	if err != nil {
 		logger.Debug().Err(err).Msg("Prometheus: falha ao criar client")
 		return Result{}

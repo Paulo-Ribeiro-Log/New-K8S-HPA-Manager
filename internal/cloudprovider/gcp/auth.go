@@ -347,6 +347,21 @@ func GetFreshGKEToken(ctx context.Context) string {
 	return ""
 }
 
+// InvalidateGKETokenCache limpa o token GKE cacheado, forçando a próxima chamada a
+// GetFreshGKEToken buscar um novo em vez de servir o valor em cache até o TTL de 45min expirar
+// sozinho. Usado por gkeTokenRoundTripper (internal/config/kubeconfig.go) quando uma requisição
+// autenticada com o token cacheado é rejeitada pela API com 401 — sem isso, um token cacheado que
+// ficasse inválido antes do TTL natural (ex: revogado, ou obtido já inválido por uma corrida entre
+// múltiplas invocações concorrentes do `gcloud` CLI local) deixava toda a autenticação GKE
+// (client K8s + Prometheus GMP, que reusa o mesmo cache) quebrada até reiniciar o processo —
+// confirmado em uso real.
+func InvalidateGKETokenCache() {
+	gkeTokenMu.Lock()
+	gkeTokenCache = ""
+	gkeTokenCacheExp = time.Time{}
+	gkeTokenMu.Unlock()
+}
+
 // Cache do resultado de `gcloud auth list` — evita pagar ~1-3s de subprocesso gcloud
 // a cada cache-miss de ListNodeGroups (ValidateAuth era chamado toda vez).
 var (

@@ -18,13 +18,15 @@ import (
 	"k8s-hpa-manager/internal/storage"
 )
 
-// FinOpsHandler expõe análise de custo real de clusters AKS
+// FinOpsHandler expõe análise de custo real de clusters AKS/GKE (EKS ainda cai no pricer Azure —
+// gap conhecido, sem AWSPricer implementado ainda).
 type FinOpsHandler struct {
 	kubeManager     *config.KubeConfigManager
 	npRegistryStore *storage.NodePoolRegistryStore
 	timelineStore   *storage.FinOpsTimelineStore // pode ser nil se DB não disponível
-	pricer          *finops.AzurePricer
-	diskPricer      *finops.DiskPricer // nil = análise de storage omitida
+	pricer          *finops.AzurePricer          // AKS — também usado como fallback pra providers sem pricer próprio (EKS)
+	gcpPricer       *finops.GCPPricer            // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
+	diskPricer      *finops.DiskPricer           // nil = análise de storage omitida (Azure only — mesmo gap do EKS acima)
 	exchange        *finops.ExchangeRateProvider
 	aiHandler       *AIDiagnosticsHandler // opcional — nil se AI não configurado
 	dtTokenStore    dtTokenReader         // para criar DTEnricher sob demanda
@@ -36,11 +38,15 @@ type dtTokenReader interface {
 }
 
 // NewFinOpsHandler cria o handler com as dependências compartilhadas.
-// AzurePricer e DiskPricer são inicializados uma única vez (cache SQLite interno).
+// AzurePricer, GCPPricer e DiskPricer são inicializados uma única vez (cache SQLite interno).
 func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, aiHandler *AIDiagnosticsHandler, dtTokens dtTokenReader) *FinOpsHandler {
 	pricer, err := finops.NewAzurePricer("")
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar AzurePricer, usando apenas fallback")
+	}
+	gcpPricer, err := finops.NewGCPPricer("")
+	if err != nil {
+		log.Warn().Err(err).Msg("FinOps: falha ao inicializar GCPPricer, clusters GKE cairão no AzurePricer (preço incorreto)")
 	}
 	diskPricer, err := finops.NewDiskPricer("")
 	if err != nil {
@@ -51,11 +57,26 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		npRegistryStore: npRegistryStore,
 		timelineStore:   timelineStore,
 		pricer:          pricer,
+		gcpPricer:       gcpPricer,
 		diskPricer:      diskPricer,
 		exchange:        finops.NewExchangeRateProvider(),
 		aiHandler:       aiHandler,
 		dtTokenStore:    dtTokens,
 	}
+}
+
+// pricerForCluster escolhe o CloudPricer certo pro cluster: GCPPricer (Cloud Billing Catalog API)
+// pra GKE, AzurePricer (Azure Retail Prices API) pra AKS e, por ora, também como fallback pra EKS
+// (nenhum AWSPricer existe ainda — gap conhecido, preço de compute de cluster EKS fica incorreto).
+// Antes desta função, FinOpsHandler sempre usava AzurePricer pra qualquer cluster, inclusive GKE
+// — machine types GCE (ex: "e2-standard-4") nunca batem em nenhum SKU Azure, caindo sempre no
+// fallback genérico por família de VM (Standard_D/E/F/B), que não tem sentido nenhum pra GCP.
+func (h *FinOpsHandler) pricerForCluster(cluster string) finops.CloudPricer {
+	serverURL := h.kubeManager.GetServerURL(cluster)
+	if config.DetectCloudProvider(serverURL, cluster) == config.CloudProviderGKE && h.gcpPricer != nil {
+		return h.gcpPricer
+	}
+	return h.pricer
 }
 
 // GetReport godoc
@@ -104,12 +125,14 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	var enricher *finops.PrometheusEnricher
 	if c.Query("with_prometheus") == "true" {
 		promURL := strings.TrimSpace(c.Query("prometheus_url"))
+		requiresGCPAuth := false
 		if promURL == "" {
 			promURL = discovery.GetPrometheusURL(cluster)
+			requiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 			log.Info().Str("cluster", cluster).Str("prometheus_url", promURL).Msg("FinOps: URL Prometheus auto-descoberta")
 		}
 		var err error
-		enricher, err = finops.NewPrometheusEnricher(promURL, windowDays)
+		enricher, err = finops.NewPrometheusEnricher(promURL, windowDays, requiresGCPAuth)
 		if err != nil {
 			log.Warn().Err(err).Str("prometheus_url", promURL).Msg("FinOps: falha ao criar enricher Prometheus")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Falha ao conectar ao Prometheus: " + err.Error()})
@@ -151,10 +174,12 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	// prometheusURL também é passado ao StorageCalculator para obter uso real de Blob/Files
 	// via kubelet_volume_stats_used_bytes (capacidade placeholder > 50 TB → fallback para uso real)
 	storagePromURL := strings.TrimSpace(c.Query("prometheus_url"))
+	storageRequiresGCPAuth := false
 	if storagePromURL == "" {
 		storagePromURL = discovery.GetPrometheusURL(cluster)
+		storageRequiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
-	calc := finops.NewCalculator(h.pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL)
+	calc := finops.NewCalculator(h.pricerForCluster(cluster), h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
 	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
@@ -324,8 +349,10 @@ func (h *FinOpsHandler) GetTimeline(c *gin.Context) {
 	}
 
 	promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	requiresGCPAuth := false
 	if promURL == "" {
 		promURL = discovery.GetPrometheusURL(cluster)
+		requiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
 
 	days, _ := strconv.Atoi(c.Query("days"))
@@ -339,7 +366,7 @@ func (h *FinOpsHandler) GetTimeline(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
 	defer cancel()
 
-	report, err := finops.QueryTimeline(ctx, promURL, start, end)
+	report, err := finops.QueryTimeline(ctx, promURL, start, end, requiresGCPAuth)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Str("prometheus_url", promURL).Msg("FinOps: falha ao buscar timeline")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar timeline: " + err.Error()})
@@ -383,8 +410,10 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 	}
 
 	promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	requiresGCPAuth := false
 	if promURL == "" {
 		promURL = discovery.GetPrometheusURL(cluster)
+		requiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
 
 	days, _ := strconv.Atoi(c.Query("days"))
@@ -399,7 +428,7 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 	defer cancel()
 
 	// Busca período atual do Prometheus
-	current, err := finops.QueryTimeline(ctx, promURL, start, end)
+	current, err := finops.QueryTimeline(ctx, promURL, start, end, requiresGCPAuth)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps/compare: falha ao buscar timeline atual")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar timeline atual: " + err.Error()})
@@ -537,8 +566,10 @@ func (h *FinOpsHandler) CompareWithSnapshot(c *gin.Context) {
 	}
 
 	promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	requiresGCPAuth := false
 	if promURL == "" {
 		promURL = discovery.GetPrometheusURL(cluster)
+		requiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
 
 	days, _ := strconv.Atoi(c.Query("days"))
@@ -552,7 +583,7 @@ func (h *FinOpsHandler) CompareWithSnapshot(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
 	defer cancel()
 
-	current, err := finops.QueryTimeline(ctx, promURL, start, end)
+	current, err := finops.QueryTimeline(ctx, promURL, start, end, requiresGCPAuth)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps/compare-snapshot: falha ao buscar timeline atual")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar timeline atual: " + err.Error()})

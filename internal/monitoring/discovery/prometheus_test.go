@@ -6,29 +6,29 @@ import (
 
 func TestParseClusterName(t *testing.T) {
 	tests := []struct {
-		cluster string
+		cluster  string
 		wantName string
-		wantEnv string
+		wantEnv  string
 	}{
 		{
-			cluster: "akspriv-faturamento-hlg-admin",
+			cluster:  "akspriv-faturamento-hlg-admin",
 			wantName: "akspriv-faturamento",
-			wantEnv: "hlg",
+			wantEnv:  "hlg",
 		},
 		{
-			cluster: "akspriv-checkout-prod-admin",
+			cluster:  "akspriv-checkout-prod-admin",
 			wantName: "akspriv-checkout",
-			wantEnv: "prod",
+			wantEnv:  "prod",
 		},
 		{
-			cluster: "akspriv-pagamento-dev-admin",
+			cluster:  "akspriv-pagamento-dev-admin",
 			wantName: "akspriv-pagamento",
-			wantEnv: "dev",
+			wantEnv:  "dev",
 		},
 		{
-			cluster: "akspriv-log-reversa-prd-admin",
+			cluster:  "akspriv-log-reversa-prd-admin",
 			wantName: "akspriv-log-reversa",
-			wantEnv: "prd",
+			wantEnv:  "prd",
 		},
 	}
 
@@ -48,28 +48,28 @@ func TestParseClusterName(t *testing.T) {
 func TestBuildPrometheusURL(t *testing.T) {
 	tests := []struct {
 		name string
-		env string
+		env  string
 		want string
 	}{
 		{
 			name: "akspriv-faturamento",
-			env: "hlg",
+			env:  "hlg",
 			want: "https://prometheus-akspriv-faturamento-hlg.viavarejo.com.br/",
 		},
 		{
 			name: "akspriv-checkout",
-			env: "prod",
+			env:  "prod",
 			want: "https://prometheus-akspriv-checkout-prod.viavarejo.com.br/",
 		},
 		{
 			name: "akspriv-log-reversa",
-			env: "prd",
+			env:  "prd",
 			want: "https://prometheus-akspriv-log-reversa-prd.viavarejo.com.br/",
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name + "-" + tt.env, func(t *testing.T) {
+		t.Run(tt.name+"-"+tt.env, func(t *testing.T) {
 			got := buildPrometheusURL(tt.name, tt.env)
 			if got != tt.want {
 				t.Errorf("buildPrometheusURL() = %v, want %v", got, tt.want)
@@ -81,23 +81,23 @@ func TestBuildPrometheusURL(t *testing.T) {
 func TestGetPrometheusURL(t *testing.T) {
 	tests := []struct {
 		cluster string
-		want string
+		want    string
 	}{
 		{
 			cluster: "akspriv-faturamento-hlg-admin",
-			want: "https://prometheus-akspriv-faturamento-hlg.viavarejo.com.br/",
+			want:    "https://prometheus-akspriv-faturamento-hlg.viavarejo.com.br/",
 		},
 		{
 			cluster: "akspriv-checkout-prod-admin",
-			want: "https://prometheus-akspriv-checkout-prod.viavarejo.com.br/",
+			want:    "https://prometheus-akspriv-checkout-prod.viavarejo.com.br/",
 		},
 		{
 			cluster: "akspriv-logreversa-prd-admin",
-			want: "https://prometheus-akspriv-logreversa-prd.viavarejo.com.br/",
+			want:    "https://prometheus-akspriv-logreversa-prd.viavarejo.com.br/",
 		},
 		{
 			cluster: "akspriv-faturamento-prd-admin",
-			want: "https://prometheus-akspriv-faturamento-prd.viavarejo.com.br/",
+			want:    "https://prometheus-akspriv-faturamento-prd.viavarejo.com.br/",
 		},
 	}
 

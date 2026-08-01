@@ -34,10 +34,11 @@ type rawWorkload struct {
 
 // Calculator realiza a análise FinOps de um cluster
 type Calculator struct {
-	pricer        CloudPricer
-	diskPricer    *DiskPricer // nil = análise de storage desabilitada
-	exchange      *ExchangeRateProvider
-	prometheusURL string // opcional — usado para kubelet_volume_stats_used_bytes (Blob/Files)
+	pricer                    CloudPricer
+	diskPricer                *DiskPricer // nil = análise de storage desabilitada
+	exchange                  *ExchangeRateProvider
+	prometheusURL             string // opcional — usado para kubelet_volume_stats_used_bytes (Blob/Files)
+	prometheusRequiresGCPAuth bool   // true quando prometheusURL é o GMP (ver internal/monitoring/discovery.RequiresGCPAuth)
 }
 
 // NewCalculator cria um novo calculator com as dependências injetadas.
@@ -47,8 +48,12 @@ func NewCalculator(pricer CloudPricer, diskPricer *DiskPricer, exchange *Exchang
 }
 
 // WithPrometheusURL define a URL do Prometheus para consultar uso real de Blob/Files.
-func (c *Calculator) WithPrometheusURL(url string) *Calculator {
+//
+// requiresGCPAuth: true quando url é o Google Cloud Managed Service for Prometheus (GMP, ver
+// internal/monitoring/discovery.RequiresGCPAuth).
+func (c *Calculator) WithPrometheusURL(url string, requiresGCPAuth bool) *Calculator {
 	c.prometheusURL = url
+	c.prometheusRequiresGCPAuth = requiresGCPAuth
 	return c
 }
 
@@ -117,7 +122,7 @@ func (c *Calculator) BuildReport(
 	var storageSummary StorageSummary
 	if c.diskPricer != nil {
 		storageCalc := NewStorageCalculator(c.diskPricer)
-		storageCalc.WithPrometheus(c.prometheusURL)
+		storageCalc.WithPrometheus(c.prometheusURL, c.prometheusRequiresGCPAuth)
 
 		pvcs, storageSummary, err = storageCalc.Calculate(ctx, client, rate)
 		if err != nil {

@@ -16,6 +16,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"k8s-hpa-manager/internal/monitoring/discovery"
 )
 
 // scInfo armazena dados relevantes de uma StorageClass para cálculo de custo
@@ -36,15 +38,24 @@ func NewStorageCalculator(diskPricer *DiskPricer) *StorageCalculator {
 }
 
 // WithPrometheus adiciona um cliente Prometheus para consultar uso real de Blob/Files.
-func (s *StorageCalculator) WithPrometheus(prometheusURL string) {
+//
+// requiresGCPAuth: true quando prometheusURL é o Google Cloud Managed Service for Prometheus
+// (GMP, ver internal/monitoring/discovery.RequiresGCPAuth) — mesmo tratamento de auth/TLS de
+// NewPrometheusEnricher.
+func (s *StorageCalculator) WithPrometheus(prometheusURL string, requiresGCPAuth bool) {
 	if prometheusURL == "" {
 		return
 	}
+	transport := &http.Transport{}
+	var roundTripper http.RoundTripper = transport
+	if requiresGCPAuth {
+		roundTripper = discovery.GCPAuthTransport(transport)
+	} else {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
 	httpClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-		},
-		Timeout: 10 * time.Second,
+		Transport: roundTripper,
+		Timeout:   10 * time.Second,
 	}
 	apiClient, err := api.NewClient(api.Config{
 		Address:      prometheusURL,

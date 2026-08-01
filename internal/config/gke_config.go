@@ -12,10 +12,19 @@ import (
 // GKEClusterConfig representa a configuração de um cluster GKE no arquivo gke-clusters-config.json.
 // Mantido separado de ClusterConfig (AKS) e EKSClusterConfig (EKS).
 type GKEClusterConfig struct {
-	Name      string `json:"clusterName"`
-	ProjectID string `json:"projectId"`
-	Region    string `json:"region"`            // us-central1 ou us-central1-a (zona)
-	Network   string `json:"network,omitempty"` // nome da VPC
+	Name          string `json:"clusterName"`
+	ProjectID     string `json:"projectId"`
+	Region        string `json:"region"`                  // us-central1 ou us-central1-a (zona)
+	Network       string `json:"network,omitempty"`       // nome da VPC
+	PrometheusURL string `json:"prometheusUrl,omitempty"` // override manual — GKE não segue o padrão de hostname viavarejo.com.br usado por AKS/EKS (ver GetPrometheusURLOverride)
+
+	// Override manual: Prometheus só acessível dentro do cluster (sem URL externa, ex: GMP com
+	// PodMonitoring incompleto mas com um kube-prometheus-stack completo sem Ingress) — alcançado
+	// via túnel port-forward (ver internal/monitoring/discovery.PortForwardTarget/
+	// KubeConfigManager.OpenPortForward).
+	PrometheusInClusterNamespace string `json:"prometheusInClusterNamespace,omitempty"`
+	PrometheusInClusterService   string `json:"prometheusInClusterService,omitempty"`
+	PrometheusInClusterPort      int    `json:"prometheusInClusterPort,omitempty"`
 }
 
 // gkeConfigPath retorna o caminho padrão do arquivo gke-clusters-config.json

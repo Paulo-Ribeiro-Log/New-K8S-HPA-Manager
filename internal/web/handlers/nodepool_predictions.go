@@ -822,7 +822,7 @@ func (h *NodePoolPredictionsHandler) getNodePoolPrometheusClient(cluster string)
 	if err != nil {
 		return nil, err
 	}
-	return prometheus.NewClient(cluster, endpoint.URL)
+	return prometheus.NewClient(cluster, endpoint.URL, endpoint.RequiresGCPAuth)
 }
 
 // getNodePoolAnalyzerForUser retorna o analyzer AI configurado pelo usuário,

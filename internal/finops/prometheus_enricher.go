@@ -12,6 +12,8 @@ import (
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 	"github.com/rs/zerolog/log"
+
+	"k8s-hpa-manager/internal/monitoring/discovery"
 )
 
 // PrometheusEnricher enriquece workloads com dados históricos reais do Prometheus.
@@ -23,15 +25,25 @@ type PrometheusEnricher struct {
 }
 
 // NewPrometheusEnricher cria um enricher conectado ao endpoint Prometheus dado.
-func NewPrometheusEnricher(prometheusURL string, windowDays int) (*PrometheusEnricher, error) {
+//
+// requiresGCPAuth: true quando prometheusURL é o Google Cloud Managed Service for Prometheus
+// (GMP, ver internal/monitoring/discovery.RequiresGCPAuth) — nesse caso usa TLS real (não pula
+// verificação) e injeta "Authorization: Bearer <token>" via discovery.GCPAuthTransport em vez de
+// aceitar certificado auto-assinado sem auth.
+func NewPrometheusEnricher(prometheusURL string, windowDays int, requiresGCPAuth bool) (*PrometheusEnricher, error) {
 	if windowDays <= 0 {
 		windowDays = 30
 	}
+	transport := &http.Transport{}
+	var roundTripper http.RoundTripper = transport
+	if requiresGCPAuth {
+		roundTripper = discovery.GCPAuthTransport(transport)
+	} else {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
 	httpClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-		},
-		Timeout: 60 * time.Second,
+		Transport: roundTripper,
+		Timeout:   60 * time.Second,
 	}
 	apiClient, err := api.NewClient(api.Config{
 		Address:      prometheusURL,
@@ -305,7 +317,7 @@ func calculateWaste(wl *FinOpsWorkload) float64 {
 	if cpuFrac == 0 && memFrac == 0 {
 		return 0
 	}
-	return round2((cpuFrac+memFrac)/2 * wl.CostShareBRL)
+	return round2((cpuFrac + memFrac) / 2 * wl.CostShareBRL)
 }
 
 // verdictFromPrometheus atualiza o veredicto usando dados reais de uso P95.

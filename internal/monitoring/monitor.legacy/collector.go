@@ -81,7 +81,7 @@ func NewCollector(cluster *models.ClusterInfo, prometheusEndpoint string, config
 
 	// Cria Prometheus client se habilitado
 	if config.EnablePrometheus && prometheusEndpoint != "" {
-		promClient, err := prometheus.NewClient(cluster.Name, prometheusEndpoint)
+		promClient, err := prometheus.NewClient(cluster.Name, prometheusEndpoint, false)
 		if err != nil {
 			log.Warn().
 				Err(err).

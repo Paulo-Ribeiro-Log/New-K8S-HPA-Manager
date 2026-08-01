@@ -295,7 +295,7 @@ func (h *PredictionsHandler) getPrometheusClient(cluster string) (*prometheus.Cl
 	}
 
 	// Criar cliente Prometheus com endpoint descoberto
-	return prometheus.NewClient(cluster, endpoint.URL)
+	return prometheus.NewClient(cluster, endpoint.URL, endpoint.RequiresGCPAuth)
 }
 
 // getAnalyzerForUser obtém analyzer AI configurado pelo usuário
