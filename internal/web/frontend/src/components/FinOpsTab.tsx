@@ -3570,6 +3570,12 @@ function StorageTab({ pvcs: pvcsRaw, storage }: { pvcs: PVCCostItem[]; storage: 
     "Azure Files Standard": "#0ea5e9",
     "Azure Files Premium": "#8b5cf6",
     "Azure Blob": "#ec4899",
+    // GKE (Persistent Disk) — mesma paleta de "peso" do Azure: standard=verde, balanced=índigo,
+    // ssd=violeta, extreme=rosa (por ordem crescente de performance/custo).
+    "pd-standard": "#22c55e",
+    "pd-balanced": "#6366f1",
+    "pd-ssd": "#8b5cf6",
+    "pd-extreme": "#ec4899",
   };
 
   const chartData = (storage.by_storage_class ?? []).map(sc => ({
@@ -3706,7 +3712,7 @@ function StorageTab({ pvcs: pvcsRaw, storage }: { pvcs: PVCCostItem[]; storage: 
               <TableRow className="text-[11px]">
                 <TableHead>Namespace / Nome</TableHead>
                 <TableHead>Storage Class</TableHead>
-                <TableHead className="text-center">Tipo Azure</TableHead>
+                <TableHead className="text-center">Tipo de Disco</TableHead>
                 <TableHead className="text-center">Tier</TableHead>
                 <TableHead className="text-right">GB</TableHead>
                 <TableHead className="text-right">R$/mês</TableHead>

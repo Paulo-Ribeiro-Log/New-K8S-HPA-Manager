@@ -183,6 +183,37 @@ var gcpDiskFallbackPrices = map[string]float64{
 	"pd-extreme":  0.188,
 }
 
+// mapStorageClassToGCPDiskType determina o tipo de Persistent Disk (pd-standard/pd-balanced/
+// pd-ssd/pd-extreme) de uma StorageClass GKE — mesmo espírito de MapStorageClassToAzureType
+// (azure_disk_pricing.go), mas pro outro cloud. typeParam vem de sc.Parameters["type"] (parâmetro
+// usado tanto pelo driver moderno "pd.csi.storage.gke.io" quanto pelo legado in-tree
+// "kubernetes.io/gce-pd" — ambos usam a chave "type", diferente da Azure que usa "skuName"/
+// "storageaccounttype").
+//
+// Prioridade: parâmetro "type" explícito > nome da SC (hints) > default (pd-balanced, mesmo
+// default real da plataforma GKE já usado em osDiskCostForPool/calculator.go).
+// Retorna (diskType, method) onde method é "type_param", "name_hint" ou "default".
+func mapStorageClassToGCPDiskType(scName, typeParam string) (string, string) {
+	if typeParam != "" {
+		lower := strings.ToLower(typeParam)
+		if _, known := gcpDiskTypeSKULabels[lower]; known {
+			return lower, "type_param"
+		}
+	}
+
+	scLower := strings.ToLower(scName)
+	switch {
+	case strings.Contains(scLower, "extreme"):
+		return "pd-extreme", "name_hint"
+	case strings.Contains(scLower, "ssd"):
+		return "pd-ssd", "name_hint"
+	case strings.Contains(scLower, "standard"):
+		return "pd-standard", "name_hint"
+	}
+
+	return defaultGKEDiskType, "default"
+}
+
 // parseGCEMachineType interpreta um machine type GCE padrão (ex: "e2-standard-4",
 // "n2d-highmem-8") em família + specs. Não cobre machine types "custom"
 // (ex: "n2-custom-4-16384") nem famílias de GPU/memory-optimized com nomenclatura irregular

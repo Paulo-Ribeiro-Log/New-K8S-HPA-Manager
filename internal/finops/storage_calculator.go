@@ -23,18 +23,28 @@ import (
 // scInfo armazena dados relevantes de uma StorageClass para cálculo de custo
 type scInfo struct {
 	Provisioner string
-	SkuName     string // parâmetro skuName (ou storageaccounttype), se presente
+	SkuName     string // parâmetro skuName (ou storageaccounttype), se presente — Azure
+	TypeParam   string // parâmetro "type" (ex: "pd-balanced"), se presente — GKE (pd.csi.storage.gke.io / kubernetes.io/gce-pd)
 }
 
 // StorageCalculator enumera PVCs do cluster e calcula seus custos mensais
 type StorageCalculator struct {
 	diskPricer    *DiskPricer
-	prometheusAPI v1.API // opcional — usado para obter uso real de Blob/Files
+	gcpPricer     *GCPPricer // opcional — usado só quando Calculate é chamado com cluster GKE
+	prometheusAPI v1.API     // opcional — usado para obter uso real de Blob/Files
 }
 
 // NewStorageCalculator cria um StorageCalculator com DiskPricer injetado
 func NewStorageCalculator(diskPricer *DiskPricer) *StorageCalculator {
 	return &StorageCalculator{diskPricer: diskPricer}
+}
+
+// WithGCPPricer injeta o GCPPricer usado pra precificar PVCs (Persistent Disk) de clusters GKE.
+// Sem isso, PVCs de clusters GKE não têm custo calculado (MonthlyCostUSD fica 0) — mesmo padrão
+// de "opcional, degrada sem quebrar" já usado por WithPrometheus.
+func (s *StorageCalculator) WithGCPPricer(gcpPricer *GCPPricer) *StorageCalculator {
+	s.gcpPricer = gcpPricer
+	return s
 }
 
 // WithPrometheus adiciona um cliente Prometheus para consultar uso real de Blob/Files.
@@ -93,11 +103,14 @@ func (s *StorageCalculator) queryVolumeUsedBytes(ctx context.Context, namespace,
 
 // Calculate coleta todos os PVCs do cluster, calcula o custo de cada um e retorna
 // a lista de PVCCostItem e o StorageSummary agregado.
+// cluster: context do cluster — usado só pra decidir Azure vs. GCP (prefixo "gke_"), mesma
+// convenção de osDiskCostForPool (calculator.go).
 // rate: taxa de câmbio USD→BRL (mesma usada no relatório principal).
 // Erro não fatal: falhas parciais retornam dados disponíveis + log.Warn.
 func (s *StorageCalculator) Calculate(
 	ctx context.Context,
 	client kubernetes.Interface,
+	cluster string,
 	rate float64,
 ) ([]PVCCostItem, StorageSummary, error) {
 	region := defaultPricingRegion
@@ -135,7 +148,7 @@ func (s *StorageCalculator) Calculate(
 	// 5. Calcular custo de cada PVC
 	items := make([]PVCCostItem, 0, len(pvcList.Items))
 	for _, pvc := range pvcList.Items {
-		item := s.calculatePVCCost(ctx, pvc, pvMap, scMap, pvcToWorkload, rate, region)
+		item := s.calculatePVCCost(ctx, pvc, pvMap, scMap, pvcToWorkload, cluster, rate, region)
 		items = append(items, item)
 	}
 
@@ -187,6 +200,7 @@ func (s *StorageCalculator) calculatePVCCost(
 	pvMap map[string]corev1.PersistentVolume,
 	scMap map[string]scInfo,
 	pvcToWorkload map[string]string,
+	cluster string,
 	rate float64,
 	region string,
 ) PVCCostItem {
@@ -230,8 +244,37 @@ func (s *StorageCalculator) calculatePVCCost(
 		// Se Prometheus também não tem dados → CapacityGB = 0, custo = 0 (não estimável)
 	}
 
-	// Resolver tipo Azure a partir da StorageClass
 	sc := scMap[item.StorageClass]
+
+	// Bifurcação por provider — mesma convenção de osDiskCostForPool (calculator.go): GCP não tem
+	// conceito de "tier" (preço linear USD/GB/mês), então não é só trocar o pricer, é um cálculo
+	// diferente. item.AzureDiskType/AzureDiskTier são reaproveitados pra guardar o valor GCP
+	// também (ex: "pd-balanced") — nomes de campo datados, mas evita mudar o schema JSON
+	// consumido pelo frontend; o rótulo "Tipo Azure" na UI foi corrigido separadamente.
+	if strings.HasPrefix(cluster, "gke_") && s.gcpPricer != nil {
+		diskType, _ := mapStorageClassToGCPDiskType(item.StorageClass, sc.TypeParam)
+		item.AzureDiskType = diskType
+		pricePerGB, src, err := s.gcpPricer.GetDiskPricePerGBMonth(diskType)
+		if err != nil {
+			log.Debug().Err(err).
+				Str("pvc", pvc.Namespace+"/"+pvc.Name).
+				Msg("FinOps storage: preço de Persistent Disk (GCP) não encontrado")
+		}
+		item.PricePerMonth = pricePerGB
+		item.PriceSource = src
+		item.MonthlyCostUSD = round2(item.CapacityGB * pricePerGB)
+		item.MonthlyCostBRL = round2(item.MonthlyCostUSD * rate)
+		log.Debug().
+			Str("pvc", pvc.Namespace+"/"+pvc.Name).
+			Str("storage_class", item.StorageClass).
+			Str("disk_type", diskType).
+			Float64("capacity_gb", item.CapacityGB).
+			Float64("cost_usd", item.MonthlyCostUSD).
+			Msg("FinOps storage: PVC precificado (GCP)")
+		return item
+	}
+
+	// Resolver tipo Azure a partir da StorageClass
 	azureType, method := MapStorageClassToAzureType(item.StorageClass, sc.Provisioner, sc.SkuName)
 	item.AzureDiskType = azureType
 
@@ -297,6 +340,7 @@ func (s *StorageCalculator) listStorageClasses(
 		info := scInfo{
 			Provisioner: sc.Provisioner,
 			SkuName:     sc.Parameters["skuName"],
+			TypeParam:   sc.Parameters["type"], // GKE: pd.csi.storage.gke.io / kubernetes.io/gce-pd
 		}
 		// Alguns CSI drivers usam "storageaccounttype" em vez de "skuName"
 		if info.SkuName == "" {
