@@ -48,6 +48,12 @@ type ClusterConfig struct {
 	Subscription   string `json:"subscription"`             // Nome legível ("PRD - ONLINE 2")
 	SubscriptionID string `json:"subscriptionId,omitempty"` // UUID do Azure
 	PrometheusURL  string `json:"prometheusUrl,omitempty"`  // override manual — usado só quando o cluster não segue o padrão de hostname viavarejo.com.br (ver GetPrometheusURLOverride)
+
+	// Override manual: Prometheus só acessível dentro do cluster (sem URL externa) — alcançado via
+	// túnel port-forward (ver internal/monitoring/discovery.PortForwardTarget/KubeConfigManager.OpenPortForward).
+	PrometheusInClusterNamespace string `json:"prometheusInClusterNamespace,omitempty"`
+	PrometheusInClusterService   string `json:"prometheusInClusterService,omitempty"`
+	PrometheusInClusterPort      int    `json:"prometheusInClusterPort,omitempty"`
 }
 
 // clientTTL define por quanto tempo um client inativo é mantido em memória
@@ -435,6 +441,13 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 		discovery.SetGCPTokenFunc(gcpprovider.GetFreshGKEToken)
 		discovery.SetGCPTokenInvalidateFunc(gcpprovider.InvalidateGKETokenCache)
 	}
+
+	// Liga o hook de port-forward (Prometheus in-cluster sem URL externa, ver
+	// internal/monitoring/discovery/portforward.go) — não condicionado a hasGKE, já que o override
+	// manual que dispara isso (PrometheusInClusterNamespace/Service/Port) é suportado pelos 3
+	// providers (ClusterConfig/EKSClusterConfig/GKEClusterConfig). Mesmo motivo de import cycle dos
+	// hooks GCP acima: discovery não pode importar internal/config diretamente.
+	discovery.SetPortForwardFunc(k.OpenPortForward)
 
 	var clusterNames []string
 	for clusterName := range clusterToContext {

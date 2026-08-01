@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net/http"
@@ -23,7 +24,16 @@ type PrometheusEndpoint struct {
 // DiscoverEndpoint descobre e valida o endpoint Prometheus para um cluster
 func DiscoverEndpoint(cluster string) (*PrometheusEndpoint, error) {
 	name, env := parseClusterName(cluster)
-	url, requiresGCPAuth := resolvePrometheusSource(cluster, name, env)
+	url, requiresGCPAuth, portForward := resolvePrometheusSource(cluster, name, env)
+
+	if !portForward.isZero() {
+		localURL, err := openPortForward(context.Background(), cluster, portForward)
+		if err != nil {
+			return &PrometheusEndpoint{Cluster: cluster, Name: name, Environment: env, Available: false},
+				fmt.Errorf("falha ao abrir túnel pro Prometheus in-cluster (%s/%s): %w", portForward.Namespace, portForward.Service, err)
+		}
+		url = localURL
+	}
 
 	endpoint := &PrometheusEndpoint{
 		Cluster:         cluster,
@@ -86,26 +96,34 @@ func buildPrometheusURL(nome, ambiente string) string {
 	return fmt.Sprintf("https://prometheus-%s-%s.viavarejo.com.br/", nome, ambiente)
 }
 
-// resolvePrometheusSource decide qual URL usar e se ela exige autenticação GCP, em ordem de
+// resolvePrometheusSource decide qual fonte usar e como autenticar/alcançar, em ordem de
 // prioridade:
-//  1. Override manual (getPrometheusURLOverride, campo "prometheusUrl" nos *-clusters-config.json)
-//     — nunca exige auth GCP, é uma URL arbitrária configurada por quem operou o arquivo.
-//  2. GMP automático (buildGMPURL) — só se aplica a contexts GKE (gke_<project>_<region>_<cluster>)
-//     sem override; URL determinística a partir do Project ID embutido no context, sempre exige
-//     auth GCP.
-//  3. Padrão de sempre (buildPrometheusURL) — hostname viavarejo.com.br, sem auth.
+//  1. Override manual de URL (getPrometheusURLOverride, campo "prometheusUrl" nos
+//     *-clusters-config.json) — nunca exige auth GCP nem túnel, é uma URL arbitrária configurada
+//     por quem operou o arquivo.
+//  2. Override manual de port-forward (getPortForwardOverride, campos
+//     "prometheusInClusterNamespace/Service/Port") — túnel pro Service in-cluster configurado
+//     manualmente. Caso real: cluster GKE com GMP habilitado mas sem PodMonitoring completo pro
+//     kube-state-metrics real (HPA/resources ausentes no GMP), enquanto existe um Prometheus
+//     in-cluster completo (kube-prometheus-stack) só sem Ingress externo.
+//  3. GMP automático (buildGMPURL) — só se aplica a contexts GKE (gke_<project>_<region>_<cluster>)
+//     sem nenhum dos overrides acima; URL determinística a partir do Project ID embutido no
+//     context, sempre exige auth GCP.
+//  4. Padrão de sempre (buildPrometheusURL) — hostname viavarejo.com.br, sem auth.
 //
 // Nenhuma instalação existente tem override configurado, então para todo cluster AKS/EKS já
-// funcionando hoje o resultado desta função é idêntico ao buildPrometheusURL de antes — GMP só
-// entra em jogo para contexts que começam com "gke_", que antes desta fase sempre falhavam.
-func resolvePrometheusSource(cluster, nome, ambiente string) (url string, requiresGCPAuth bool) {
+// funcionando hoje o resultado desta função é idêntico ao buildPrometheusURL de antes.
+func resolvePrometheusSource(cluster, nome, ambiente string) (url string, requiresGCPAuth bool, portForward PortForwardTarget) {
 	if override := getPrometheusURLOverride(cluster); override != "" {
-		return override, false
+		return override, false, PortForwardTarget{}
+	}
+	if pf := getPortForwardOverride(cluster); !pf.isZero() {
+		return "", false, pf
 	}
 	if gmpURL := buildGMPURL(cluster); gmpURL != "" {
-		return gmpURL, true
+		return gmpURL, true, PortForwardTarget{}
 	}
-	return buildPrometheusURL(nome, ambiente), false
+	return buildPrometheusURL(nome, ambiente), false, PortForwardTarget{}
 }
 
 // validateEndpoint valida se o endpoint Prometheus está acessível
@@ -158,9 +176,21 @@ func validateEndpoint(endpoint *PrometheusEndpoint) error {
 // GetPrometheusURL retorna a URL completa do Prometheus para um cluster. Não indica se a URL
 // exige autenticação GCP — usar RequiresGCPAuth(cluster) separadamente quando isso importar
 // (chamadores que só têm a URL crua em mãos, ex: internal/finops, internal/monitoring/alerts).
+//
+// Quando o cluster tem um override de port-forward configurado, esta função abre (ou reusa) o
+// túnel antes de retornar — deixa de ser uma operação sem custo de rede nesse caso específico
+// (nenhuma instalação sem esse override é afetada). Retorna "" se o túnel falhar.
 func GetPrometheusURL(cluster string) string {
 	name, env := parseClusterName(cluster)
-	url, _ := resolvePrometheusSource(cluster, name, env)
+	url, _, portForward := resolvePrometheusSource(cluster, name, env)
+	if !portForward.isZero() {
+		localURL, err := openPortForward(context.Background(), cluster, portForward)
+		if err != nil {
+			log.Warn().Err(err).Str("cluster", cluster).Msg("Falha ao abrir túnel pro Prometheus in-cluster")
+			return ""
+		}
+		return localURL
+	}
 	return url
 }
 

@@ -8,19 +8,55 @@ import (
 )
 
 // clusterPrometheusOverride é um subconjunto mínimo dos structs ClusterConfig/EKSClusterConfig/
-// GKEClusterConfig (internal/config) — só os 2 campos necessários para resolver um override manual
-// de URL do Prometheus a partir dos arquivos clusters-config.json/eks-clusters-config.json/
+// GKEClusterConfig (internal/config) — só os campos necessários para resolver um override manual
+// de Prometheus (URL direta, ou alvo de port-forward pra um Prometheus só acessível dentro do
+// cluster) a partir dos arquivos clusters-config.json/eks-clusters-config.json/
 // gke-clusters-config.json.
 //
 // Duplicado aqui de propósito, em vez de importar internal/config: esse pacote fecharia um import
 // cycle (internal/config → internal/cloudprovider/gcp → internal/ai → internal/collectors →
-// internal/monitoring/client → internal/monitoring/discovery → internal/config). Os campos
-// "clusterName"/"prometheusUrl" são lidos como JSON solto, então a duplicação não corre o risco de
-// dessincronizar silenciosamente — um rename do campo em internal/config só pararia de bater aqui
-// se a tag JSON mudasse também, o que já quebraria a compatibilidade do arquivo em disco.
+// internal/monitoring/client → internal/monitoring/discovery → internal/config). Os campos são
+// lidos como JSON solto, então a duplicação não corre o risco de dessincronizar silenciosamente —
+// um rename do campo em internal/config só pararia de bater aqui se a tag JSON mudasse também, o
+// que já quebraria a compatibilidade do arquivo em disco.
 type clusterPrometheusOverride struct {
-	Name          string `json:"clusterName"`
-	PrometheusURL string `json:"prometheusUrl"`
+	Name                         string `json:"clusterName"`
+	PrometheusURL                string `json:"prometheusUrl"`
+	PrometheusInClusterNamespace string `json:"prometheusInClusterNamespace"`
+	PrometheusInClusterService   string `json:"prometheusInClusterService"`
+	PrometheusInClusterPort      int    `json:"prometheusInClusterPort"`
+}
+
+// lookupOverrideEntry acha a entrada de config do cluster (se houver) no arquivo certo por
+// provider, tentando nome curto e nome completo. Retorna zero-value se não encontrada — os
+// getters abaixo (getPrometheusURLOverride/getPortForwardOverride) tratam campos vazios/zero como
+// "sem override", caindo no comportamento automático de sempre.
+func lookupOverrideEntry(cluster string) clusterPrometheusOverride {
+	var path, shortName string
+	switch {
+	case strings.HasPrefix(cluster, "gke_"):
+		path, shortName = configFilePath("gke-clusters-config.json"), gkeShortName(cluster)
+	case strings.HasPrefix(cluster, "arn:aws:eks:"):
+		path, shortName = configFilePath("eks-clusters-config.json"), eksShortName(cluster)
+	default:
+		path, shortName = configFilePath("clusters-config.json"), strings.TrimSuffix(cluster, "-admin")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return clusterPrometheusOverride{}
+	}
+	var entries []clusterPrometheusOverride
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return clusterPrometheusOverride{}
+	}
+	for _, e := range entries {
+		name := strings.TrimSuffix(e.Name, "-admin")
+		if name == shortName || e.Name == cluster {
+			return e
+		}
+	}
+	return clusterPrometheusOverride{}
 }
 
 // getPrometheusURLOverride retorna a URL manual de Prometheus configurada para o cluster, ou "" se
@@ -29,36 +65,24 @@ type clusterPrometheusOverride struct {
 // "prometheusUrl" preenchido nesses arquivos, então para AKS/EKS já funcionando hoje o resultado é
 // idêntico ao de antes desta função existir.
 func getPrometheusURLOverride(cluster string) string {
-	switch {
-	case strings.HasPrefix(cluster, "gke_"):
-		return overrideFromFile(configFilePath("gke-clusters-config.json"), gkeShortName(cluster), cluster)
-	case strings.HasPrefix(cluster, "arn:aws:eks:"):
-		return overrideFromFile(configFilePath("eks-clusters-config.json"), eksShortName(cluster), cluster)
-	default:
-		return overrideFromFile(configFilePath("clusters-config.json"), strings.TrimSuffix(cluster, "-admin"), cluster)
+	return lookupOverrideEntry(cluster).PrometheusURL
+}
+
+// getPortForwardOverride retorna o alvo de port-forward configurado manualmente pro cluster
+// (Prometheus só acessível dentro do cluster, sem URL externa — ex: kube-prometheus-stack
+// completo instalado num namespace, sem Ingress), ou PortForwardTarget zero-value se não
+// configurado.
+func getPortForwardOverride(cluster string) PortForwardTarget {
+	e := lookupOverrideEntry(cluster)
+	return PortForwardTarget{
+		Namespace: e.PrometheusInClusterNamespace,
+		Service:   e.PrometheusInClusterService,
+		Port:      e.PrometheusInClusterPort,
 	}
 }
 
 func configFilePath(fileName string) string {
 	return filepath.Join(os.Getenv("HOME"), ".k8s-hpa-manager", fileName)
-}
-
-func overrideFromFile(path, shortName, fullName string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	var entries []clusterPrometheusOverride
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return ""
-	}
-	for _, e := range entries {
-		name := strings.TrimSuffix(e.Name, "-admin")
-		if (name == shortName || e.Name == fullName) && e.PrometheusURL != "" {
-			return e.PrometheusURL
-		}
-	}
-	return ""
 }
 
 // gkeShortName extrai o nome curto do cluster de um context GKE (gke_PROJECT_REGION_CLUSTER),
