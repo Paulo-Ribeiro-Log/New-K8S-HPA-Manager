@@ -88,10 +88,12 @@ func (h *NodePoolRegistryHandler) Scan(c *gin.Context) {
 
 		// Agregar por node pool
 		type poolInfo struct {
-			count  int
-			vmSize string
-			osSku  string
-			mode   string
+			count      int
+			vmSize     string
+			osSku      string
+			mode       string
+			diskSizeGB int32
+			diskType   string
 		}
 		pools := map[string]*poolInfo{}
 
@@ -122,6 +124,30 @@ func (h *NodePoolRegistryHandler) Scan(c *gin.Context) {
 			pools[poolName].count++
 		}
 
+		// GKE não expõe o tamanho/tipo do disco de boot via label de node nenhum (diferente da
+		// Azure, que tem kubernetes.azure.com/os-disk-size-gb) — só a Container API do GKE sabe
+		// disso (NodePool.config.diskSizeGb/diskType). Enriquece via NodeGroupProvider, mesmo
+		// caminho de auth já usado por Node Pools/SNAT/predictions, sem custo extra pra AKS/EKS
+		// (só chamado quando o context é GKE).
+		if strings.HasPrefix(clusterName, "gke_") {
+			if provider := h.kubeManager.GetNodeGroupProvider(clusterName); provider != nil {
+				// ctx acima já foi cancelado logo após o List de nodes (cancel() na linha de cima)
+				// — precisa de um context novo pra esta chamada.
+				diskCtx, diskCancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+				gkePools, gkeErr := provider.ListNodeGroups(diskCtx, clusterName)
+				diskCancel()
+				if gkeErr != nil {
+					log.Warn().Str("cluster", clusterName).Err(gkeErr).Msg("NodePoolRegistry: falha ao buscar disco via Container API (GKE)")
+				}
+				for _, gp := range gkePools {
+					if info, ok := pools[gp.Name]; ok {
+						info.diskSizeGB = gp.DiskSizeGB
+						info.diskType = gp.DiskType
+					}
+				}
+			}
+		}
+
 		// Limpar entries antigas do cluster antes de inserir novas
 		if len(pools) > 0 {
 			if err := h.store.DeleteByCluster(clusterName); err != nil {
@@ -138,6 +164,8 @@ func (h *NodePoolRegistryHandler) Scan(c *gin.Context) {
 				VMSize:      info.vmSize,
 				OSSku:       info.osSku,
 				Mode:        strings.Title(strings.ToLower(info.mode)),
+				DiskSizeGB:  int(info.diskSizeGB),
+				DiskType:    info.diskType,
 				LastScanned: now,
 			}
 			if err := h.store.Upsert(entry); err != nil {

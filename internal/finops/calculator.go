@@ -130,17 +130,20 @@ func (c *Calculator) BuildReport(
 		}
 
 		// 7a. Custo de disco OS por node pool
+		poolRegistryByName := make(map[string]storage.NodePoolRegistryEntry, len(pools))
+		for _, p := range pools {
+			poolRegistryByName[p.NodePool] = p
+		}
+
 		var totalOSDiskCostBRL float64
 		for i := range finOpsPools {
-			sizeGB, _ := storageCalc.OSDiskForNodePool(ctx, client, finOpsPools[i].Name)
-			tier := ResolveManagedDiskTier("Premium SSD", float64(sizeGB)) // AKS default: Premium SSD
-			priceUSD, _, pErr := c.diskPricer.GetDiskPrice("Premium SSD", tier, defaultPricingRegion)
-			if pErr != nil {
-				log.Debug().Err(pErr).Str("pool", finOpsPools[i].Name).Msg("FinOps: preço de OS disk não encontrado")
+			sku, tier, sizeGB, priceUSD, ok := c.osDiskCostForPool(ctx, client, cluster, finOpsPools[i].Name, poolRegistryByName[finOpsPools[i].Name], storageCalc)
+			if !ok {
+				log.Debug().Str("pool", finOpsPools[i].Name).Msg("FinOps: preço de OS disk não encontrado")
 				continue
 			}
 			osDiskCostUSD := round2(priceUSD * float64(finOpsPools[i].NodeCount))
-			finOpsPools[i].OSDiskSKU = "Premium SSD"
+			finOpsPools[i].OSDiskSKU = sku
 			finOpsPools[i].OSDiskTier = tier
 			finOpsPools[i].OSDiskGB = sizeGB
 			finOpsPools[i].OSDiskCostUSD = osDiskCostUSD
@@ -187,6 +190,64 @@ func (c *Calculator) BuildReport(
 		Storage:      storageSummary,
 		Summary:      summary,
 	}, nil
+}
+
+// Defaults usados quando o registry não tem o disco real do pool GKE (cluster nunca escaneado
+// depois desta mudança, ou Container API falhou no scan) — pd-balanced é o default real da
+// plataforma GKE desde ~2022 (antes era pd-standard); 100GB é o tamanho de boot disk sugerido
+// pela documentação do GKE quando não customizado.
+const (
+	defaultGKEDiskSizeGB = 100
+	defaultGKEDiskType   = "pd-balanced"
+)
+
+// osDiskCostForPool calcula o custo mensal do disco de boot/OS de um node pool, dividido em dois
+// caminhos totalmente diferentes por provider (não é só trocar o pricer — o próprio modelo de
+// billing é diferente):
+//   - AKS (padrão/fallback pra qualquer provider que não seja GKE): tamanho detectado ao vivo via
+//     label de node K8s (OSDiskForNodePool, inalterado), preço por "tier" fixo (Azure Managed
+//     Disk) — mesmo comportamento de sempre.
+//   - GKE: tamanho/tipo reais vindos do Node Pool Registry (populados no Scan via Container API —
+//     K8s não expõe isso como label), preço linear USD/GB/mês (GetDiskPricePerGBMonth). Sem
+//     conceito de "tier" — retorna tier="".
+func (c *Calculator) osDiskCostForPool(
+	ctx context.Context,
+	client kubernetes.Interface,
+	cluster, poolName string,
+	registryEntry storage.NodePoolRegistryEntry,
+	storageCalc *StorageCalculator,
+) (sku, tier string, sizeGB int, priceUSD float64, ok bool) {
+	if strings.HasPrefix(cluster, "gke_") {
+		gcpPricer, isGCP := c.pricer.(*GCPPricer)
+		if !isGCP {
+			// Não deveria acontecer (pricerForCluster já escolhe GCPPricer pra contexts gke_),
+			// mas não travar o relatório inteiro por causa do disco se acontecer.
+			return "", "", 0, 0, false
+		}
+
+		diskType := registryEntry.DiskType
+		if diskType == "" {
+			diskType = defaultGKEDiskType
+		}
+		size := registryEntry.DiskSizeGB
+		if size <= 0 {
+			size = defaultGKEDiskSizeGB
+		}
+
+		pricePerGBMonth, _, err := gcpPricer.GetDiskPricePerGBMonth(diskType)
+		if err != nil {
+			return "", "", 0, 0, false
+		}
+		return diskType, "", size, round2(pricePerGBMonth * float64(size)), true
+	}
+
+	sizeGB, _ = storageCalc.OSDiskForNodePool(ctx, client, poolName)
+	tier = ResolveManagedDiskTier("Premium SSD", float64(sizeGB)) // AKS default: Premium SSD
+	priceUSD, _, err := c.diskPricer.GetDiskPrice("Premium SSD", tier, defaultPricingRegion)
+	if err != nil {
+		return "", "", 0, 0, false
+	}
+	return "Premium SSD", tier, sizeGB, priceUSD, true
 }
 
 // calculatePoolCosts retorna os FinOpsPools com preço real, a capacidade total do cluster

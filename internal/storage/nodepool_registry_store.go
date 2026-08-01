@@ -19,7 +19,9 @@ type NodePoolRegistryEntry struct {
 	NodeCount   int       `json:"node_count"`
 	VMSize      string    `json:"vm_size,omitempty"`
 	OSSku       string    `json:"os_sku,omitempty"`
-	Mode        string    `json:"mode,omitempty"` // System | User
+	Mode        string    `json:"mode,omitempty"`         // System | User
+	DiskSizeGB  int       `json:"disk_size_gb,omitempty"` // tamanho real do disco de boot/OS — hoje só populado pra GKE (via Container API, node K8s não expõe isso como label)
+	DiskType    string    `json:"disk_type,omitempty"`    // ex: GKE "pd-balanced"/"pd-standard"/"pd-ssd"
 	LastScanned time.Time `json:"last_scanned"`
 }
 
@@ -64,7 +66,48 @@ func NewNodePoolRegistryStore(dbPath string) (*NodePoolRegistryStore, error) {
 	if _, err := db.Exec(nodepoolRegistrySchema); err != nil {
 		return nil, fmt.Errorf("criar schema nodepool_registry: %w", err)
 	}
+	if err := migrateNodePoolRegistryDiskColumns(db); err != nil {
+		return nil, fmt.Errorf("migrar colunas de disco em nodepool_registry: %w", err)
+	}
 	return &NodePoolRegistryStore{db: db}, nil
+}
+
+// migrateNodePoolRegistryDiskColumns adiciona disk_size_gb/disk_type em bancos criados antes
+// dessas colunas existirem — CREATE TABLE IF NOT EXISTS não altera uma tabela já existente.
+// SQLite não tem "ADD COLUMN IF NOT EXISTS", então checa via PRAGMA table_info antes de tentar.
+func migrateNodePoolRegistryDiskColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(nodepool_registry)`)
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if !existing["disk_size_gb"] {
+		if _, err := db.Exec(`ALTER TABLE nodepool_registry ADD COLUMN disk_size_gb INTEGER`); err != nil {
+			return err
+		}
+	}
+	if !existing["disk_type"] {
+		if _, err := db.Exec(`ALTER TABLE nodepool_registry ADD COLUMN disk_type TEXT`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Upsert insere ou atualiza um entry do registry.
@@ -73,15 +116,17 @@ func (s *NodePoolRegistryStore) Upsert(e NodePoolRegistryEntry) error {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(`
-INSERT INTO nodepool_registry (cluster, nodepool, node_count, vm_size, os_sku, mode, last_scanned)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO nodepool_registry (cluster, nodepool, node_count, vm_size, os_sku, mode, disk_size_gb, disk_type, last_scanned)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(cluster, nodepool) DO UPDATE SET
     node_count   = excluded.node_count,
     vm_size      = excluded.vm_size,
     os_sku       = excluded.os_sku,
     mode         = excluded.mode,
+    disk_size_gb = excluded.disk_size_gb,
+    disk_type    = excluded.disk_type,
     last_scanned = excluded.last_scanned`,
-		e.Cluster, e.NodePool, e.NodeCount, e.VMSize, e.OSSku, e.Mode, e.LastScanned)
+		e.Cluster, e.NodePool, e.NodeCount, e.VMSize, e.OSSku, e.Mode, e.DiskSizeGB, e.DiskType, e.LastScanned)
 	return err
 }
 
@@ -106,7 +151,7 @@ func (s *NodePoolRegistryStore) queryAll(cluster string) ([]NodePoolRegistryEntr
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	query := `SELECT cluster, nodepool, node_count, vm_size, os_sku, mode, last_scanned FROM nodepool_registry`
+	query := `SELECT cluster, nodepool, node_count, vm_size, os_sku, mode, disk_size_gb, disk_type, last_scanned FROM nodepool_registry`
 	args := []interface{}{}
 	if cluster != "" {
 		query += ` WHERE cluster = ?`
@@ -120,20 +165,9 @@ func (s *NodePoolRegistryStore) queryAll(cluster string) ([]NodePoolRegistryEntr
 	}
 	defer rows.Close()
 
-	var entries []NodePoolRegistryEntry
-	for rows.Next() {
-		var e NodePoolRegistryEntry
-		var vmSize, osSku, mode sql.NullString
-		if err := rows.Scan(&e.Cluster, &e.NodePool, &e.NodeCount, &vmSize, &osSku, &mode, &e.LastScanned); err != nil {
-			return nil, err
-		}
-		e.VMSize = vmSize.String
-		e.OSSku = osSku.String
-		e.Mode = mode.String
-		entries = append(entries, e)
-	}
-	if entries == nil {
-		entries = make([]NodePoolRegistryEntry, 0)
+	entries, err := scanNodePoolRegistryRows(rows)
+	if err != nil {
+		return nil, err
 	}
 	return entries, rows.Err()
 }
@@ -145,7 +179,7 @@ func (s *NodePoolRegistryStore) LookupByNodePool(nodepoolName string) ([]NodePoo
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(
-		`SELECT cluster, nodepool, node_count, vm_size, os_sku, mode, last_scanned
+		`SELECT cluster, nodepool, node_count, vm_size, os_sku, mode, disk_size_gb, disk_type, last_scanned
 		 FROM nodepool_registry WHERE nodepool = ? ORDER BY cluster`,
 		nodepoolName)
 	if err != nil {
@@ -153,20 +187,9 @@ func (s *NodePoolRegistryStore) LookupByNodePool(nodepoolName string) ([]NodePoo
 	}
 	defer rows.Close()
 
-	var entries []NodePoolRegistryEntry
-	for rows.Next() {
-		var e NodePoolRegistryEntry
-		var vmSize, osSku, mode sql.NullString
-		if err := rows.Scan(&e.Cluster, &e.NodePool, &e.NodeCount, &vmSize, &osSku, &mode, &e.LastScanned); err != nil {
-			return nil, err
-		}
-		e.VMSize = vmSize.String
-		e.OSSku = osSku.String
-		e.Mode = mode.String
-		entries = append(entries, e)
-	}
-	if entries == nil {
-		entries = make([]NodePoolRegistryEntry, 0)
+	entries, err := scanNodePoolRegistryRows(rows)
+	if err != nil {
+		return nil, err
 	}
 	return entries, rows.Err()
 }
@@ -179,7 +202,7 @@ func (s *NodePoolRegistryStore) LookupByKeyword(keyword string) ([]NodePoolRegis
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(
-		`SELECT cluster, nodepool, node_count, vm_size, os_sku, mode, last_scanned
+		`SELECT cluster, nodepool, node_count, vm_size, os_sku, mode, disk_size_gb, disk_type, last_scanned
 		 FROM nodepool_registry WHERE nodepool LIKE ? ORDER BY cluster`,
 		"%"+keyword+"%")
 	if err != nil {
@@ -187,22 +210,35 @@ func (s *NodePoolRegistryStore) LookupByKeyword(keyword string) ([]NodePoolRegis
 	}
 	defer rows.Close()
 
+	entries, err := scanNodePoolRegistryRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	return entries, rows.Err()
+}
+
+// scanNodePoolRegistryRows lê todas as linhas de um *sql.Rows já posicionado numa das 3 queries
+// acima (mesmo shape de colunas) — evita repetir o mesmo loop de Scan 3 vezes.
+func scanNodePoolRegistryRows(rows *sql.Rows) ([]NodePoolRegistryEntry, error) {
 	var entries []NodePoolRegistryEntry
 	for rows.Next() {
 		var e NodePoolRegistryEntry
-		var vmSize, osSku, mode sql.NullString
-		if err := rows.Scan(&e.Cluster, &e.NodePool, &e.NodeCount, &vmSize, &osSku, &mode, &e.LastScanned); err != nil {
+		var vmSize, osSku, mode, diskType sql.NullString
+		var diskSizeGB sql.NullInt64
+		if err := rows.Scan(&e.Cluster, &e.NodePool, &e.NodeCount, &vmSize, &osSku, &mode, &diskSizeGB, &diskType, &e.LastScanned); err != nil {
 			return nil, err
 		}
 		e.VMSize = vmSize.String
 		e.OSSku = osSku.String
 		e.Mode = mode.String
+		e.DiskSizeGB = int(diskSizeGB.Int64)
+		e.DiskType = diskType.String
 		entries = append(entries, e)
 	}
 	if entries == nil {
 		entries = make([]NodePoolRegistryEntry, 0)
 	}
-	return entries, rows.Err()
+	return entries, nil
 }
 
 // DeleteByCluster remove todos os entries de um cluster (antes de re-scan).
