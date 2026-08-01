@@ -31,6 +31,7 @@ type scInfo struct {
 type StorageCalculator struct {
 	diskPricer    *DiskPricer
 	gcpPricer     *GCPPricer // opcional — usado só quando Calculate é chamado com cluster GKE
+	awsPricer     *AWSPricer // opcional — usado só quando Calculate é chamado com cluster EKS
 	prometheusAPI v1.API     // opcional — usado para obter uso real de Blob/Files
 }
 
@@ -44,6 +45,13 @@ func NewStorageCalculator(diskPricer *DiskPricer) *StorageCalculator {
 // de "opcional, degrada sem quebrar" já usado por WithPrometheus.
 func (s *StorageCalculator) WithGCPPricer(gcpPricer *GCPPricer) *StorageCalculator {
 	s.gcpPricer = gcpPricer
+	return s
+}
+
+// WithAWSPricer injeta o AWSPricer usado pra precificar PVCs (EBS) de clusters EKS. Mesmo padrão
+// de WithGCPPricer.
+func (s *StorageCalculator) WithAWSPricer(awsPricer *AWSPricer) *StorageCalculator {
+	s.awsPricer = awsPricer
 	return s
 }
 
@@ -271,6 +279,29 @@ func (s *StorageCalculator) calculatePVCCost(
 			Float64("capacity_gb", item.CapacityGB).
 			Float64("cost_usd", item.MonthlyCostUSD).
 			Msg("FinOps storage: PVC precificado (GCP)")
+		return item
+	}
+
+	if strings.HasPrefix(cluster, "arn:aws:eks:") && s.awsPricer != nil {
+		volumeType, _ := mapStorageClassToAWSVolumeType(item.StorageClass, sc.TypeParam)
+		item.AzureDiskType = volumeType
+		pricePerGB, src, err := s.awsPricer.GetDiskPricePerGBMonth(volumeType)
+		if err != nil {
+			log.Debug().Err(err).
+				Str("pvc", pvc.Namespace+"/"+pvc.Name).
+				Msg("FinOps storage: preço de volume EBS não encontrado")
+		}
+		item.PricePerMonth = pricePerGB
+		item.PriceSource = src
+		item.MonthlyCostUSD = round2(item.CapacityGB * pricePerGB)
+		item.MonthlyCostBRL = round2(item.MonthlyCostUSD * rate)
+		log.Debug().
+			Str("pvc", pvc.Namespace+"/"+pvc.Name).
+			Str("storage_class", item.StorageClass).
+			Str("volume_type", volumeType).
+			Float64("capacity_gb", item.CapacityGB).
+			Float64("cost_usd", item.MonthlyCostUSD).
+			Msg("FinOps storage: PVC precificado (AWS)")
 		return item
 	}
 
