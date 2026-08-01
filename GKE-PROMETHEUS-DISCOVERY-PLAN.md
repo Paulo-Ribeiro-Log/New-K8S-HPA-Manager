@@ -8,6 +8,22 @@ Achado durante a validação ao vivo (ver Fase 5 abaixo): o token OAuth2 GKE cac
 
 Corrigido (commit `b8c647a7`): `InvalidateGKETokenCache()` + `gkeTokenRoundTripper` (mesmo padrão de `eksTokenRoundTripper` já existente — client K8s parava de usar `restConfig.BearerToken` estático, passa a reescrever o header a cada requisição) + `gcpAuthRoundTripper` (GMP, `internal/monitoring/discovery/gcp_auth.go`) — ambos invalidam o cache e tentam de novo uma vez ao receber 401. Validado ao vivo: depois do fix, um restart teve só 1 `401` (corrida de boot benigna, hooks ainda não registrados) e zero depois disso — métricas que falharam no boot se recuperaram sozinhas sem restart manual. Detalhe completo no commit message.
 
+## ✅ Fase 6 — Prometheus in-cluster via port-forward nativo (SPDY), quando GMP não tem os dados
+
+Motivado por uma pergunta direta do usuário depois da Fase 5: o cluster `gke-higgs-hlg` tem, no namespace `monitoring`, um `kube-prometheus-stack` **completo** (`prometheus-prometheus-prometheus-0`, Alertmanager, node-exporter — instalação real do `prometheus-operator`), com ServiceMonitors próprios já cobrindo `kube_horizontalpodautoscaler_*`/`kube_pod_container_resource_*` (confirmado via port-forward manual de teste: `count(kube_pod_container_resource_requests)` = 195 séries reais). O problema nunca foi falta de dado no cluster — foi só o GMP (Fase 2-5) não enxergar esse Prometheus específico (só o addon reduzido do GKE), e esse Prometheus real não ter Ingress externo (`ClusterIP` only).
+
+Implementado (commit `86724736`): `internal/config/portforward.go` (`KubeConfigManager.OpenPortForward`) abre um túnel SPDY via `client-go` (`k8s.io/client-go/tools/portforward` + `transport/spdy` — mesma tecnologia por trás de `kubectl port-forward`, usada como biblioteca), resolvendo o pod Running por trás do Service pelo próprio selector do Service. Cacheado por `cluster+namespace+service+port` com TTL de idle (30min) — não abre um túnel novo por request.
+
+`internal/monitoring/discovery/portforward.go`: `PortForwardTarget` + hook `SetPortForwardFunc`, mesmo padrão de inversão de dependência de `SetGCPTokenFunc` (import cycle real, `discovery` não pode importar `internal/config`). Ligado incondicionalmente em `DiscoverClusters` (não só GKE — o override novo é suportado pelos 3 providers).
+
+Novos campos de override manual `prometheusInClusterNamespace`/`Service`/`Port` em `ClusterConfig`/`EKSClusterConfig`/`GKEClusterConfig` — mesma tier de `prometheusUrl` (Fase 1). `resolvePrometheusSource` ganhou essa 3ª prioridade entre o override de URL e o GMP automático.
+
+**Zero mudança nos clientes Prometheus existentes** (`internal/monitoring/client`, `internal/monitoring/prometheus`) — a resolução do túnel acontece inteiramente dentro de `discovery.DiscoverEndpoint`/`GetPrometheusURL`, que entrega uma URL pronta (`http://127.0.0.1:<porta>/`) pros construtores já existentes, exatamente como fariam com qualquer URL externa.
+
+**Validado ao vivo** (configurado manualmente em `~/.k8s-hpa-manager/gke-clusters-config.json`, fora do repo): túnel abriu, pod certo resolvido, `kube_horizontalpodautoscaler_status_current_replicas`/`kube_pod_container_resource_requests` retornam dado real através do túnel. **Bônus não planejado**: `/api/v1/alerts` também passou a funcionar pra esse cluster (é um Prometheus real, diferente do GMP — a limitação estrutural documentada na Fase 4 pro `internal/monitoring/alerts` não se aplica aqui). AKS continuou 100% inalterado em paralelo.
+
+**Não resolvido**: `internal/finops` (4º grupo de clientes Prometheus, Fase 4) ainda não usa nenhum dos dois mecanismos (GMP nem port-forward) — continua limitado a `discovery.GetPrometheusURL(cluster)` puro. Nenhuma UI pra configurar o override de port-forward — só editando o JSON manualmente, mesma limitação já documentada pro override de URL da Fase 1.
+
 ## Diagnóstico
 
 ### Causa raiz original (por que GKE nunca funcionou)
