@@ -131,12 +131,12 @@ type GatewaySummary struct {
 	Cluster         string            `json:"cluster"`
 	Namespace       string            `json:"namespace"`
 	Name            string            `json:"name"`
-	Kind            string            `json:"kind"`            // Gateway, HTTPRoute, GRPCRoute, TCPRoute, GatewayClass
+	Kind            string            `json:"kind"` // Gateway, HTTPRoute, GRPCRoute, TCPRoute, GatewayClass
 	GatewayClass    string            `json:"gatewayClass,omitempty"`
 	Addresses       []string          `json:"addresses,omitempty"`
 	Programmed      string            `json:"programmed,omitempty"` // condition status.conditions[type=Programmed]: True/False/Unknown
 	Listeners       int               `json:"listeners,omitempty"`
-	ParentRefs      []string          `json:"parentRefs,omitempty"`  // para routes
+	ParentRefs      []string          `json:"parentRefs,omitempty"` // para routes
 	Hostnames       []string          `json:"hostnames,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
 	ResourceVersion string            `json:"resourceVersion,omitempty"`
@@ -272,16 +272,16 @@ type StatefulSetManifest struct {
 
 // SecretSummary descreve informações resumidas de um Secret
 type SecretSummary struct {
-	Cluster           string            `json:"cluster"`
-	Namespace         string            `json:"namespace"`
-	Name              string            `json:"name"`
-	Type              string            `json:"type"`
-	Labels            map[string]string `json:"labels,omitempty"`
-	DataKeys          []string          `json:"dataKeys"`
-	ResourceVersion   string            `json:"resourceVersion,omitempty"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
-	ServiceClusterIPs []string          `json:"serviceClusterIPs,omitempty"`
-	ServiceExternalIPs []string         `json:"serviceExternalIPs,omitempty"`
+	Cluster            string            `json:"cluster"`
+	Namespace          string            `json:"namespace"`
+	Name               string            `json:"name"`
+	Type               string            `json:"type"`
+	Labels             map[string]string `json:"labels,omitempty"`
+	DataKeys           []string          `json:"dataKeys"`
+	ResourceVersion    string            `json:"resourceVersion,omitempty"`
+	UpdatedAt          time.Time         `json:"updatedAt"`
+	ServiceClusterIPs  []string          `json:"serviceClusterIPs,omitempty"`
+	ServiceExternalIPs []string          `json:"serviceExternalIPs,omitempty"`
 }
 
 // SecretMetadata consolida metadados relevantes do Secret
@@ -998,6 +998,8 @@ type NodePool struct {
 	MinNodeCount       int32  `json:"min_node_count"`
 	MaxNodeCount       int32  `json:"max_node_count"`
 	AutoscalingEnabled bool   `json:"autoscaling_enabled"`
+	DiskSizeGB         int32  `json:"disk_size_gb,omitempty"` // tamanho do disco de boot/OS, quando o provider expõe (hoje só GKE via Container API)
+	DiskType           string `json:"disk_type,omitempty"`    // tipo do disco de boot/OS (ex: GKE "pd-balanced"/"pd-standard"/"pd-ssd")
 	Status             string `json:"status"`
 	IsSystemPool       bool   `json:"is_system_pool"`
 	Modified           bool   `json:"modified"`
@@ -1011,9 +1013,9 @@ type NodePool struct {
 	// Cluster info
 	ClusterName      string            `json:"cluster_name"`
 	ResourceGroup    string            `json:"resource_group"`
-	Subscription     string            `json:"subscription"`       // Valor da config (pode ser nome ou UUID)
-	SubscriptionName string            `json:"subscription_name"`  // Nome legível da subscription
-	SubscriptionUUID string            `json:"subscription_uuid"`  // UUID real resolvido via az account show
+	Subscription     string            `json:"subscription"`           // Valor da config (pode ser nome ou UUID)
+	SubscriptionName string            `json:"subscription_name"`      // Nome legível da subscription
+	SubscriptionUUID string            `json:"subscription_uuid"`      // UUID real resolvido via az account show
 	ClusterTags      map[string]string `json:"cluster_tags,omitempty"` // Tags do cluster AKS
 
 	// Valores originais para rollback
@@ -1787,6 +1789,7 @@ func (sp *StatusPanelModule) HPARollout(cluster, namespace, name, rolloutType st
 func (sp *StatusPanelModule) NodePoolScaling(cluster, pool string, from, to int) {
 	sp.Info("nodepool", fmt.Sprintf("📊 Scaling %s/%s: %d → %d nodes", cluster, pool, from, to))
 }
+
 // ============================================================================
 // Node Management Types
 // ============================================================================
@@ -1794,25 +1797,25 @@ func (sp *StatusPanelModule) NodePoolScaling(cluster, pool string, from, to int)
 // NodeInfo representa informações detalhadas de um node Kubernetes
 type NodeInfo struct {
 	Name              string            `json:"name"`
-	Status            string            `json:"status"`              // "Ready", "NotReady", "SchedulingDisabled"
+	Status            string            `json:"status"` // "Ready", "NotReady", "SchedulingDisabled"
 	NodePoolName      string            `json:"node_pool_name"`
 	ClusterName       string            `json:"cluster_name"`
-	ResourceGroup     string            `json:"resource_group"`      // Azure Resource Group
-	Subscription      string            `json:"subscription"`        // Subscription ID (UUID)
-	SubscriptionName  string            `json:"subscription_name"`   // Nome legível da subscription
+	ResourceGroup     string            `json:"resource_group"`         // Azure Resource Group
+	Subscription      string            `json:"subscription"`           // Subscription ID (UUID)
+	SubscriptionName  string            `json:"subscription_name"`      // Nome legível da subscription
 	ClusterTags       map[string]string `json:"cluster_tags,omitempty"` // Tags do cluster AKS
 	KubernetesVersion string            `json:"kubernetes_version"`
-	ProviderID        string            `json:"provider_id"`         // Azure resource ID
+	ProviderID        string            `json:"provider_id"` // Azure resource ID
 	InternalIP        string            `json:"internal_ip"`
 	ExternalIP        string            `json:"external_ip,omitempty"`
 	Hostname          string            `json:"hostname"`
-	Age               string            `json:"age"`                 // Formato: "2d5h", "30m", "45s"
+	Age               string            `json:"age"` // Formato: "2d5h", "30m", "45s"
 	CreatedAt         time.Time         `json:"created_at"`
 
 	// Capacity e Allocatable
-	CPUCapacity       string `json:"cpu_capacity"`       // Ex: "2"
-	MemoryCapacity    string `json:"memory_capacity"`    // Ex: "7Gi"
-	PodsCapacity      int    `json:"pods_capacity"`      // Ex: 30
+	CPUCapacity       string `json:"cpu_capacity"`    // Ex: "2"
+	MemoryCapacity    string `json:"memory_capacity"` // Ex: "7Gi"
+	PodsCapacity      int    `json:"pods_capacity"`   // Ex: 30
 	CPUAllocatable    string `json:"cpu_allocatable"`
 	MemoryAllocatable string `json:"memory_allocatable"`
 	PodsAllocatable   int    `json:"pods_allocatable"`
@@ -1851,7 +1854,7 @@ type NodeCondition struct {
 
 // NodeEvent representa eventos do Kubernetes relacionados ao node
 type NodeEvent struct {
-	Type            string    `json:"type"`    // "Normal", "Warning"
+	Type            string    `json:"type"` // "Normal", "Warning"
 	Reason          string    `json:"reason"`
 	Message         string    `json:"message"`
 	Count           int32     `json:"count"`
@@ -1863,18 +1866,18 @@ type NodeEvent struct {
 
 // PodOnNode representa um pod rodando em um node específico
 type PodOnNode struct {
-	Name          string  `json:"name"`
-	Namespace     string  `json:"namespace"`
-	Phase         string  `json:"phase"` // "Running", "Pending", etc.
-	CPURequest    string  `json:"cpu_request"`
-	MemoryRequest string  `json:"memory_request"`
-	CPULimit      string  `json:"cpu_limit"`
-	MemoryLimit   string  `json:"memory_limit"`
-	RestartCount  int     `json:"restart_count"`
+	Name          string `json:"name"`
+	Namespace     string `json:"namespace"`
+	Phase         string `json:"phase"` // "Running", "Pending", etc.
+	CPURequest    string `json:"cpu_request"`
+	MemoryRequest string `json:"memory_request"`
+	CPULimit      string `json:"cpu_limit"`
+	MemoryLimit   string `json:"memory_limit"`
+	RestartCount  int    `json:"restart_count"`
 	// Métricas de uso atual (via Metrics Server — omitempty se indisponível)
-	CPUUsage      string  `json:"cpu_usage,omitempty"`
-	MemoryUsage   string  `json:"memory_usage,omitempty"`
-	CPUUsagePct   float64 `json:"cpu_usage_pct,omitempty"`    // % do limit (ou request se sem limit)
+	CPUUsage       string  `json:"cpu_usage,omitempty"`
+	MemoryUsage    string  `json:"memory_usage,omitempty"`
+	CPUUsagePct    float64 `json:"cpu_usage_pct,omitempty"`    // % do limit (ou request se sem limit)
 	MemoryUsagePct float64 `json:"memory_usage_pct,omitempty"` // % do limit (ou request se sem limit)
 }
 
@@ -1891,7 +1894,7 @@ type VPASummary struct {
 	Cluster           string `json:"cluster"`
 	Namespace         string `json:"namespace"`
 	Name              string `json:"name"`
-	UpdateMode        string `json:"updateMode"`        // Auto, Off, Initial, Recreate
+	UpdateMode        string `json:"updateMode"` // Auto, Off, Initial, Recreate
 	TargetRefName     string `json:"targetRefName"`
 	TargetRefKind     string `json:"targetRefKind"`
 	ContainerCount    int    `json:"containerCount"`
@@ -1917,11 +1920,11 @@ type ServiceManifest struct {
 // APIResourceInfo descreve um tipo de recurso disponível no cluster (built-in ou CRD)
 type APIResourceInfo struct {
 	Kind       string   `json:"kind"`
-	Name       string   `json:"name"`       // plural (e.g. "externalsecrets")
-	Group      string   `json:"group"`      // e.g. "external-secrets.io" (vazio para core)
-	Version    string   `json:"version"`    // e.g. "v1", "v1beta1"
+	Name       string   `json:"name"`    // plural (e.g. "externalsecrets")
+	Group      string   `json:"group"`   // e.g. "external-secrets.io" (vazio para core)
+	Version    string   `json:"version"` // e.g. "v1", "v1beta1"
 	Namespaced bool     `json:"namespaced"`
-	Verbs      []string `json:"verbs"`      // list, get, update, delete, etc.
+	Verbs      []string `json:"verbs"` // list, get, update, delete, etc.
 }
 
 // GenericResourceSummary representa um recurso de qualquer tipo na listagem do Explorer

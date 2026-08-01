@@ -58,6 +58,8 @@ type gcpNodePool struct {
 	Name   string `json:"name"`
 	Config struct {
 		MachineType string `json:"machineType"`
+		DiskSizeGb  int32  `json:"diskSizeGb"` // tamanho do disco de boot em GB — GKE não expõe isso via label de node K8s, só aqui
+		DiskType    string `json:"diskType"`   // "pd-standard" | "pd-balanced" | "pd-ssd" | "pd-extreme"
 	} `json:"config"`
 	InitialNodeCount int32 `json:"initialNodeCount"`
 	Autoscaling      struct {
@@ -104,6 +106,8 @@ func (p *GCPNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 			Status:             strings.ToLower(np.Status),
 			ClusterName:        p.clusterName,
 			IsSystemPool:       np.Name == "default-pool",
+			DiskSizeGB:         np.Config.DiskSizeGb,
+			DiskType:           np.Config.DiskType,
 		})
 	}
 	return pools, nil

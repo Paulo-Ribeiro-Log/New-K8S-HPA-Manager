@@ -145,7 +145,42 @@ func NewGCPPricer(region string) (*GCPPricer, error) {
 		return nil, fmt.Errorf("criar schema de preços GCP: %w", err)
 	}
 
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS finops_gcp_disk_pricing_cache (
+			disk_type      TEXT NOT NULL,
+			region         TEXT NOT NULL,
+			usd_per_gb_mo  REAL NOT NULL,
+			fetched_at     DATETIME NOT NULL,
+			PRIMARY KEY (disk_type, region)
+		)`)
+	if err != nil {
+		return nil, fmt.Errorf("criar schema de preços de disco GCP: %w", err)
+	}
+
 	return &GCPPricer{db: db, region: region}, nil
+}
+
+// gcpDiskTypeSKULabels mapeia o tipo de disco GKE (config.diskType da Container API, também usado
+// como valor de PersistentVolume.spec.gcePersistentDisk / StorageClass "type" em CSI driver GCE)
+// para o prefixo exato da descrição de SKU na Cloud Billing Catalog API — confirmado
+// empiricamente contra a API real (southamerica-east1, 2026-08-01), não documentação. Diferente
+// da Azure (SKUs em "tiers" de tamanho fixo, ex: P10=128GB), a GCP precifica disco Persistente
+// linearmente em USD/GB/mês — não há conceito de tier aqui.
+var gcpDiskTypeSKULabels = map[string]string{
+	"pd-standard": "Storage PD Capacity",
+	"pd-balanced": "Balanced PD Capacity",
+	"pd-ssd":      "SSD backed PD Capacity",
+	"pd-extreme":  "Extreme PD Capacity",
+}
+
+// gcpDiskFallbackPrices são preços USD/GB/mês de referência pra southamerica-east1, capturados ao
+// vivo contra a Cloud Billing Catalog API em 2026-08-01 — usados só quando a API está
+// indisponível (mesmo espírito de gcpFallbackFamilyPrices acima).
+var gcpDiskFallbackPrices = map[string]float64{
+	"pd-standard": 0.06,
+	"pd-balanced": 0.15,
+	"pd-ssd":      0.255,
+	"pd-extreme":  0.188,
 }
 
 // parseGCEMachineType interpreta um machine type GCE padrão (ex: "e2-standard-4",
@@ -289,7 +324,8 @@ func (p *GCPPricer) doRefreshCatalog(ctx context.Context) error {
 		return fmt.Errorf("token GCP não disponível (autentique via gcloud ou Device Auth Grant)")
 	}
 
-	prices := make(map[string][2]float64) // familyKey -> [core_usd_hour, ram_usd_gb_hour]
+	prices := make(map[string][2]float64)  // familyKey -> [core_usd_hour, ram_usd_gb_hour]
+	diskPrices := make(map[string]float64) // diskType -> usd_per_gb_month
 	client := &http.Client{Timeout: 20 * time.Second}
 	pageToken := ""
 
@@ -325,6 +361,7 @@ func (p *GCPPricer) doRefreshCatalog(ctx context.Context) error {
 
 		for _, sku := range skuResp.Skus {
 			extractGCPFamilyPrice(sku, p.region, prices)
+			extractGCPDiskPrice(sku, p.region, diskPrices)
 		}
 
 		if skuResp.NextPageToken == "" {
@@ -351,8 +388,19 @@ func (p *GCPPricer) doRefreshCatalog(ctx context.Context) error {
 			log.Warn().Err(dbErr).Str("family", family).Msg("Falha ao salvar preço GCP no cache")
 		}
 	}
+	for diskType, price := range diskPrices {
+		_, dbErr := p.db.Exec(
+			`INSERT INTO finops_gcp_disk_pricing_cache (disk_type, region, usd_per_gb_mo, fetched_at)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(disk_type, region) DO UPDATE SET usd_per_gb_mo = excluded.usd_per_gb_mo, fetched_at = excluded.fetched_at`,
+			diskType, p.region, price, now,
+		)
+		if dbErr != nil {
+			log.Warn().Err(dbErr).Str("disk_type", diskType).Msg("Falha ao salvar preço de disco GCP no cache")
+		}
+	}
 
-	log.Info().Int("families", len(prices)).Str("region", p.region).Msg("Catálogo de preços GCP Compute Engine atualizado")
+	log.Info().Int("families", len(prices)).Int("disk_types", len(diskPrices)).Str("region", p.region).Msg("Catálogo de preços GCP Compute Engine atualizado")
 	return nil
 }
 
@@ -406,4 +454,95 @@ func extractGCPFamilyPrice(sku gcpSkuEntry, region string, out map[string][2]flo
 		out[familyKey] = entry
 		return
 	}
+}
+
+// extractGCPDiskPrice popula `out[diskType]` com o preço USD/GB/mês de `sku`, se ela for a SKU
+// de capacidade zonal padrão (não Regional PD, não snapshot, não Hyperdisk) de um tipo conhecido
+// (gcpDiskTypeSKULabels) na região informada. O prefixo exato (`"<label> in "`) já exclui
+// naturalmente as variantes "Regional ..."/"... Instant Snapshot data storage" confirmadas na API
+// real — nenhuma delas começa com o texto exato do label seguido de " in ".
+func extractGCPDiskPrice(sku gcpSkuEntry, region string, out map[string]float64) {
+	regionMatch := false
+	for _, r := range sku.ServiceRegions {
+		if r == region {
+			regionMatch = true
+			break
+		}
+	}
+	if !regionMatch {
+		return
+	}
+
+	desc := sku.Description
+	for diskType, label := range gcpDiskTypeSKULabels {
+		if !strings.HasPrefix(desc, label+" in ") {
+			continue
+		}
+		if len(sku.PricingInfo) == 0 || len(sku.PricingInfo[0].PricingExpression.TieredRates) == 0 {
+			return
+		}
+		price := float64(sku.PricingInfo[0].PricingExpression.TieredRates[0].UnitPrice.Nanos) / 1e9
+		if price <= 0 {
+			return
+		}
+		out[diskType] = price
+		return
+	}
+}
+
+// GetDiskPricePerGBMonth retorna o preço USD/GB/mês do tipo de disco Persistente informado
+// (ex: "pd-balanced") na região deste pricer. Diferente da Azure (GetDiskPrice recebe tier, não
+// tamanho — o preço já é fixo pro tier inteiro), aqui o chamador multiplica o retorno pelo
+// tamanho real do disco em GB para chegar no custo mensal.
+func (p *GCPPricer) GetDiskPricePerGBMonth(diskType string) (price float64, source string, err error) {
+	diskType = strings.ToLower(strings.TrimSpace(diskType))
+	if _, known := gcpDiskTypeSKULabels[diskType]; !known {
+		return 0, "unknown", fmt.Errorf("tipo de disco GCP não reconhecido: %s", diskType)
+	}
+
+	if price, ok := p.readDiskCache(diskType); ok {
+		return price, "api", nil
+	}
+
+	if refreshErr := p.refreshCatalog(context.Background()); refreshErr != nil {
+		if price, ok := p.readDiskCacheIgnoringTTL(diskType); ok {
+			return price, "api", nil
+		}
+		log.Warn().Str("disk_type", diskType).Str("region", p.region).Err(refreshErr).Msg("Falha ao obter preço de disco GCP, usando fallback")
+		if fb, ok := gcpDiskFallbackPrices[diskType]; ok {
+			return fb, "fallback", nil
+		}
+		return 0, "unknown", refreshErr
+	}
+
+	if price, ok := p.readDiskCacheIgnoringTTL(diskType); ok {
+		return price, "api", nil
+	}
+	if fb, ok := gcpDiskFallbackPrices[diskType]; ok {
+		return fb, "fallback", nil
+	}
+	return 0, "unknown", fmt.Errorf("preço de disco '%s' não encontrado na região %s", diskType, p.region)
+}
+
+func (p *GCPPricer) readDiskCache(diskType string) (price float64, ok bool) {
+	price, fetchedAt, found := p.queryDiskCache(diskType)
+	if !found || time.Since(fetchedAt) > pricingCacheTTL {
+		return 0, false
+	}
+	return price, true
+}
+
+func (p *GCPPricer) readDiskCacheIgnoringTTL(diskType string) (price float64, ok bool) {
+	price, _, found := p.queryDiskCache(diskType)
+	return price, found
+}
+
+func (p *GCPPricer) queryDiskCache(diskType string) (price float64, fetchedAt time.Time, found bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	err := p.db.QueryRow(
+		`SELECT usd_per_gb_mo, fetched_at FROM finops_gcp_disk_pricing_cache WHERE disk_type = ? AND region = ?`,
+		diskType, p.region,
+	).Scan(&price, &fetchedAt)
+	return price, fetchedAt, err == nil
 }
