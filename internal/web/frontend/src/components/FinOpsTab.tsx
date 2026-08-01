@@ -238,6 +238,23 @@ const fmtUSD = (v: number) =>
 /** Formata millicores: 1500 → "1.5" (cores), 250 → "250m" */
 const fmtMillis = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}` : `${Math.round(v)}m`;
 
+/**
+ * Rótulo do cloud provider + fonte de preço real usada pelo backend pra este cluster
+ * (FinOpsHandler.pricerForCluster, internal/web/handlers/finops.go). Mesma detecção por prefixo
+ * de context já usada no backend (gke_/arn:aws:eks:) — sem chamada de API extra.
+ * EKS ainda cai no AzurePricer (nenhum AWSPricer implementado) — texto avisa que o preço pode
+ * estar incorreto em vez de fingir suporte completo.
+ */
+function financeProviderInfo(clusterName: string): { label: string; source: string } {
+  if (clusterName.startsWith("gke_")) {
+    return { label: "GKE", source: "GCP Cloud Billing Catalog API (São Paulo)" };
+  }
+  if (clusterName.startsWith("arn:aws:eks:")) {
+    return { label: "EKS", source: "Azure Pricing API (fallback — sem pricer AWS ainda, preço pode estar incorreto)" };
+  }
+  return { label: "AKS", source: "Azure Pricing API (pay-as-you-go, Brasil Sul)" };
+}
+
 // ─── Recomendações concretas ──────────────────────────────────────────────────
 
 interface Recommendation {
@@ -4280,10 +4297,12 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
             <CircleDollarSign className="h-5 w-5 text-blue-500" />
-            FinOps — Análise de Custo AKS
+            FinOps — Análise de Custo{cluster ? ` ${financeProviderInfo(cluster).label}` : ""}
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Custo real baseado na Azure Pricing API (pay-as-you-go, Brasil Sul)
+            {cluster
+              ? `Custo real baseado na ${financeProviderInfo(cluster).source}`
+              : "Selecione um cluster para começar"}
           </p>
         </div>
         <div className="flex flex-col gap-2 items-end">
