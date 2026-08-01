@@ -123,8 +123,14 @@ func (c *Calculator) BuildReport(
 	if c.diskPricer != nil {
 		storageCalc := NewStorageCalculator(c.diskPricer)
 		storageCalc.WithPrometheus(c.prometheusURL, c.prometheusRequiresGCPAuth)
+		// c.pricer já é *GCPPricer pra clusters GKE (escolhido por FinOpsHandler.pricerForCluster
+		// antes de construir o Calculator) — reusa a mesma instância pra precificar PVCs em vez de
+		// criar outra (mesmo catálogo/cache já aquecido pelo cálculo de compute acima).
+		if gcpPricer, isGCP := c.pricer.(*GCPPricer); isGCP {
+			storageCalc.WithGCPPricer(gcpPricer)
+		}
 
-		pvcs, storageSummary, err = storageCalc.Calculate(ctx, client, rate)
+		pvcs, storageSummary, err = storageCalc.Calculate(ctx, client, cluster, rate)
 		if err != nil {
 			log.Warn().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao calcular storage (relatório retorna sem dados de storage)")
 		}
