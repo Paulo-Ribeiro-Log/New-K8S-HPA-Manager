@@ -104,12 +104,14 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	var enricher *finops.PrometheusEnricher
 	if c.Query("with_prometheus") == "true" {
 		promURL := strings.TrimSpace(c.Query("prometheus_url"))
+		requiresGCPAuth := false
 		if promURL == "" {
 			promURL = discovery.GetPrometheusURL(cluster)
+			requiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 			log.Info().Str("cluster", cluster).Str("prometheus_url", promURL).Msg("FinOps: URL Prometheus auto-descoberta")
 		}
 		var err error
-		enricher, err = finops.NewPrometheusEnricher(promURL, windowDays)
+		enricher, err = finops.NewPrometheusEnricher(promURL, windowDays, requiresGCPAuth)
 		if err != nil {
 			log.Warn().Err(err).Str("prometheus_url", promURL).Msg("FinOps: falha ao criar enricher Prometheus")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Falha ao conectar ao Prometheus: " + err.Error()})
@@ -151,10 +153,12 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	// prometheusURL também é passado ao StorageCalculator para obter uso real de Blob/Files
 	// via kubelet_volume_stats_used_bytes (capacidade placeholder > 50 TB → fallback para uso real)
 	storagePromURL := strings.TrimSpace(c.Query("prometheus_url"))
+	storageRequiresGCPAuth := false
 	if storagePromURL == "" {
 		storagePromURL = discovery.GetPrometheusURL(cluster)
+		storageRequiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
-	calc := finops.NewCalculator(h.pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL)
+	calc := finops.NewCalculator(h.pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
 	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
@@ -324,8 +328,10 @@ func (h *FinOpsHandler) GetTimeline(c *gin.Context) {
 	}
 
 	promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	requiresGCPAuth := false
 	if promURL == "" {
 		promURL = discovery.GetPrometheusURL(cluster)
+		requiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
 
 	days, _ := strconv.Atoi(c.Query("days"))
@@ -339,7 +345,7 @@ func (h *FinOpsHandler) GetTimeline(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
 	defer cancel()
 
-	report, err := finops.QueryTimeline(ctx, promURL, start, end)
+	report, err := finops.QueryTimeline(ctx, promURL, start, end, requiresGCPAuth)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Str("prometheus_url", promURL).Msg("FinOps: falha ao buscar timeline")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar timeline: " + err.Error()})
@@ -383,8 +389,10 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 	}
 
 	promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	requiresGCPAuth := false
 	if promURL == "" {
 		promURL = discovery.GetPrometheusURL(cluster)
+		requiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
 
 	days, _ := strconv.Atoi(c.Query("days"))
@@ -399,7 +407,7 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 	defer cancel()
 
 	// Busca período atual do Prometheus
-	current, err := finops.QueryTimeline(ctx, promURL, start, end)
+	current, err := finops.QueryTimeline(ctx, promURL, start, end, requiresGCPAuth)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps/compare: falha ao buscar timeline atual")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar timeline atual: " + err.Error()})
@@ -537,8 +545,10 @@ func (h *FinOpsHandler) CompareWithSnapshot(c *gin.Context) {
 	}
 
 	promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	requiresGCPAuth := false
 	if promURL == "" {
 		promURL = discovery.GetPrometheusURL(cluster)
+		requiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
 
 	days, _ := strconv.Atoi(c.Query("days"))
@@ -552,7 +562,7 @@ func (h *FinOpsHandler) CompareWithSnapshot(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
 	defer cancel()
 
-	current, err := finops.QueryTimeline(ctx, promURL, start, end)
+	current, err := finops.QueryTimeline(ctx, promURL, start, end, requiresGCPAuth)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps/compare-snapshot: falha ao buscar timeline atual")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar timeline atual: " + err.Error()})

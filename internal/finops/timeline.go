@@ -12,6 +12,8 @@ import (
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 	"github.com/rs/zerolog/log"
+
+	"k8s-hpa-manager/internal/monitoring/discovery"
 )
 
 // HPADayPoint representa o estado de um HPA em um dia específico
@@ -64,12 +66,21 @@ type TimelineReport struct {
 
 // QueryTimeline busca série temporal de HPAs e nodes via Prometheus QueryRange.
 // Usa step=2h para balancear granularidade vs volume de dados, agrega max/avg/min por dia.
-func QueryTimeline(ctx context.Context, prometheusURL string, start, end time.Time) (*TimelineReport, error) {
+//
+// requiresGCPAuth: true quando prometheusURL é o Google Cloud Managed Service for Prometheus
+// (GMP, ver internal/monitoring/discovery.RequiresGCPAuth) — mesmo tratamento de auth/TLS de
+// NewPrometheusEnricher.
+func QueryTimeline(ctx context.Context, prometheusURL string, start, end time.Time, requiresGCPAuth bool) (*TimelineReport, error) {
+	transport := &http.Transport{}
+	var roundTripper http.RoundTripper = transport
+	if requiresGCPAuth {
+		roundTripper = discovery.GCPAuthTransport(transport)
+	} else {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
 	httpClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-		},
-		Timeout: 120 * time.Second,
+		Transport: roundTripper,
+		Timeout:   120 * time.Second,
 	}
 	apiClient, err := api.NewClient(api.Config{
 		Address:      prometheusURL,
