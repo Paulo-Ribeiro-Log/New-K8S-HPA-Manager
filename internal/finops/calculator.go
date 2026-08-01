@@ -129,9 +129,6 @@ func (c *Calculator) BuildReport(
 		if gcpPricer, isGCP := c.pricer.(*GCPPricer); isGCP {
 			storageCalc.WithGCPPricer(gcpPricer)
 		}
-		if awsPricer, isAWS := c.pricer.(*AWSPricer); isAWS {
-			storageCalc.WithAWSPricer(awsPricer)
-		}
 
 		pvcs, storageSummary, err = storageCalc.Calculate(ctx, client, cluster, rate)
 		if err != nil {
@@ -210,18 +207,15 @@ const (
 	defaultGKEDiskType   = "pd-balanced"
 )
 
-// osDiskCostForPool calcula o custo mensal do disco de boot/OS de um node pool, dividido em
+// osDiskCostForPool calcula o custo mensal do disco de boot/OS de um node pool, dividido em dois
 // caminhos totalmente diferentes por provider (não é só trocar o pricer — o próprio modelo de
 // billing é diferente):
-//   - AKS (padrão/fallback pra qualquer provider que não seja GKE/EKS): tamanho detectado ao vivo
-//     via label de node K8s (OSDiskForNodePool, inalterado), preço por "tier" fixo (Azure Managed
+//   - AKS (padrão/fallback pra qualquer provider que não seja GKE): tamanho detectado ao vivo via
+//     label de node K8s (OSDiskForNodePool, inalterado), preço por "tier" fixo (Azure Managed
 //     Disk) — mesmo comportamento de sempre.
 //   - GKE: tamanho/tipo reais vindos do Node Pool Registry (populados no Scan via Container API —
 //     K8s não expõe isso como label), preço linear USD/GB/mês (GetDiskPricePerGBMonth). Sem
 //     conceito de "tier" — retorna tier="".
-//   - EKS: preço linear USD/GB/mês (AWSPricer.GetDiskPricePerGBMonth), mas sempre com os defaults
-//     acima (defaultEKSDiskSizeGB/gp3) — diferente do GKE, o tamanho/tipo reais de EBS não são
-//     capturados nesta fase (não validado ao vivo contra conta AWS real, ver CLAUDE.md).
 func (c *Calculator) osDiskCostForPool(
 	ctx context.Context,
 	client kubernetes.Interface,
@@ -247,22 +241,6 @@ func (c *Calculator) osDiskCostForPool(
 		}
 
 		pricePerGBMonth, _, err := gcpPricer.GetDiskPricePerGBMonth(diskType)
-		if err != nil {
-			return "", "", 0, 0, false
-		}
-		return diskType, "", size, round2(pricePerGBMonth * float64(size)), true
-	}
-
-	if strings.HasPrefix(cluster, "arn:aws:eks:") {
-		awsPricer, isAWS := c.pricer.(*AWSPricer)
-		if !isAWS {
-			return "", "", 0, 0, false
-		}
-
-		diskType := defaultEKSDiskType
-		size := defaultEKSDiskSizeGB
-
-		pricePerGBMonth, _, err := awsPricer.GetDiskPricePerGBMonth(diskType)
 		if err != nil {
 			return "", "", 0, 0, false
 		}

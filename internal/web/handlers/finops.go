@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,24 +18,18 @@ import (
 	"k8s-hpa-manager/internal/storage"
 )
 
-// FinOpsHandler expõe análise de custo real de clusters AKS/GKE/EKS.
+// FinOpsHandler expõe análise de custo real de clusters AKS/GKE (EKS ainda cai no pricer Azure —
+// gap conhecido, sem AWSPricer implementado ainda).
 type FinOpsHandler struct {
 	kubeManager     *config.KubeConfigManager
 	npRegistryStore *storage.NodePoolRegistryStore
 	timelineStore   *storage.FinOpsTimelineStore // pode ser nil se DB não disponível
-	pricer          *finops.AzurePricer          // AKS — também usado como fallback pra providers sem pricer próprio
+	pricer          *finops.AzurePricer          // AKS — também usado como fallback pra providers sem pricer próprio (EKS)
 	gcpPricer       *finops.GCPPricer            // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
-	diskPricer      *finops.DiskPricer           // nil = análise de storage omitida (Azure only)
+	diskPricer      *finops.DiskPricer           // nil = análise de storage omitida (Azure only — mesmo gap do EKS acima)
 	exchange        *finops.ExchangeRateProvider
 	aiHandler       *AIDiagnosticsHandler // opcional — nil se AI não configurado
 	dtTokenStore    dtTokenReader         // para criar DTEnricher sob demanda
-
-	// awsPricers cacheia um *finops.AWSPricer por (region, profile) — diferente de
-	// AzurePricer/GCPPricer (uma única região/instância pra todo o servidor), EKS pode ter
-	// clusters em regiões/contas AWS diferentes, então o pricer certo só é conhecido por cluster,
-	// não na construção do handler. Populado sob demanda em awsPricerForCluster.
-	awsPricers   map[string]*finops.AWSPricer
-	awsPricersMu sync.Mutex
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -69,62 +62,21 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		exchange:        finops.NewExchangeRateProvider(),
 		aiHandler:       aiHandler,
 		dtTokenStore:    dtTokens,
-		awsPricers:      make(map[string]*finops.AWSPricer),
 	}
 }
 
 // pricerForCluster escolhe o CloudPricer certo pro cluster: GCPPricer (Cloud Billing Catalog API)
-// pra GKE, AWSPricer (AWS Price List API) pra EKS, AzurePricer (Azure Retail Prices API) pra AKS
-// e como fallback final pra qualquer provider sem pricer disponível (ex: falha ao inicializar).
-// Antes de existir esta função, FinOpsHandler sempre usava AzurePricer pra qualquer cluster,
-// inclusive GKE/EKS — machine types/instance types de outro cloud nunca batem em nenhum SKU
-// Azure, caindo sempre no fallback genérico por família de VM (Standard_D/E/F/B), sem sentido
-// nenhum fora da Azure.
+// pra GKE, AzurePricer (Azure Retail Prices API) pra AKS e, por ora, também como fallback pra EKS
+// (nenhum AWSPricer existe ainda — gap conhecido, preço de compute de cluster EKS fica incorreto).
+// Antes desta função, FinOpsHandler sempre usava AzurePricer pra qualquer cluster, inclusive GKE
+// — machine types GCE (ex: "e2-standard-4") nunca batem em nenhum SKU Azure, caindo sempre no
+// fallback genérico por família de VM (Standard_D/E/F/B), que não tem sentido nenhum pra GCP.
 func (h *FinOpsHandler) pricerForCluster(cluster string) finops.CloudPricer {
 	serverURL := h.kubeManager.GetServerURL(cluster)
-	switch config.DetectCloudProvider(serverURL, cluster) {
-	case config.CloudProviderGKE:
-		if h.gcpPricer != nil {
-			return h.gcpPricer
-		}
-	case config.CloudProviderEKS:
-		if awsPricer := h.awsPricerForCluster(cluster); awsPricer != nil {
-			return awsPricer
-		}
+	if config.DetectCloudProvider(serverURL, cluster) == config.CloudProviderGKE && h.gcpPricer != nil {
+		return h.gcpPricer
 	}
 	return h.pricer
-}
-
-// awsPricerForCluster resolve region/profile do cluster EKS (mesma ordem de prioridade de
-// fetchEKSCosts em nodepools_snat_costs.go: ARN > EKSClusterConfig > default us-east-1) e retorna
-// um *finops.AWSPricer cacheado por (region, profile) — não recria a conexão SQLite a cada
-// request. Retorna nil se a construção falhar (chamador cai no AzurePricer).
-func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
-	region := extractAWSRegionFromARN(cluster)
-	profile := ""
-	if eksCfg := h.kubeManager.GetEKSClusterConfig(cluster); eksCfg != nil {
-		if region == "" {
-			region = eksCfg.AwsRegion
-		}
-		profile = eksCfg.AwsProfile
-	}
-	if region == "" {
-		region = "us-east-1"
-	}
-
-	key := region + "|" + profile
-	h.awsPricersMu.Lock()
-	defer h.awsPricersMu.Unlock()
-	if p, ok := h.awsPricers[key]; ok {
-		return p
-	}
-	p, err := finops.NewAWSPricer(region, profile)
-	if err != nil {
-		log.Warn().Err(err).Str("cluster", cluster).Str("region", region).Msg("FinOps: falha ao inicializar AWSPricer, cluster EKS cairá no AzurePricer (preço incorreto)")
-		return nil
-	}
-	h.awsPricers[key] = p
-	return p
 }
 
 // GetReport godoc
