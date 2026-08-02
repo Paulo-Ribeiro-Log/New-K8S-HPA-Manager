@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -277,11 +278,40 @@ func (h *PodHandler) List(c *gin.Context) {
 		}
 	}
 
-	for _, ns := range nsToQuery {
-		if metrics, err := kubeClient.GetBatchPodMetrics(c.Request.Context(), ns); err == nil && metrics.Available {
-			metricsMap[ns] = metrics.Pods
-		}
+	// Agrupa os pods já listados por namespace — GetBatchPodMetricsForPods reaproveita isso em vez
+	// de listar os pods de novo por namespace (N+1 que GetBatchPodMetrics faria sozinho).
+	podsByNamespace := make(map[string][]corev1.Pod, len(nsToQuery))
+	for _, pod := range allPods.Items {
+		podsByNamespace[pod.Namespace] = append(podsByNamespace[pod.Namespace], pod)
 	}
+
+	// Busca métricas de todos os namespaces em paralelo (mesmo padrão de semáforo já usado em
+	// internal/dynatrace — EnrichEntitiesWithK8s/BatchQueryMetrics). Bug real de performance
+	// corrigido: sequencial aqui, sob a carga concorrente normal de outras requisições no mesmo
+	// client K8s (QPS/Burst compartilhado), foi confirmado como o principal responsável por uma
+	// chamada real de /api/v1/pods levando 50s num cluster com só 16 namespaces — os round-trips
+	// sequenciais empilhavam atraso em vez de dividir entre si.
+	const metricsConcurrency = 8
+	sem := make(chan struct{}, metricsConcurrency)
+	var metricsWg sync.WaitGroup
+	var metricsMu sync.Mutex
+	for _, ns := range nsToQuery {
+		metricsWg.Add(1)
+		go func(ns string) {
+			defer metricsWg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			metrics, err := kubeClient.GetBatchPodMetricsForPods(c.Request.Context(), ns, podsByNamespace[ns])
+			if err != nil || !metrics.Available {
+				return
+			}
+			metricsMu.Lock()
+			metricsMap[ns] = metrics.Pods
+			metricsMu.Unlock()
+		}(ns)
+	}
+	metricsWg.Wait()
 
 	// Process pods
 	var pods []PodSummary

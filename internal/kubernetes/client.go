@@ -4390,49 +4390,43 @@ type BatchPodMetricsResult struct {
 	Error     string                           `json:"error,omitempty"` // motivo real de Available=false (ex: metrics-server ausente)
 }
 
-// GetBatchPodMetrics returns real-time metrics for all pods in a namespace using metrics-server
-func (c *Client) GetBatchPodMetrics(ctx context.Context, namespace string) (*BatchPodMetricsResult, error) {
-	result := &BatchPodMetricsResult{
-		Available: false,
-		Pods:      make(map[string]BatchPodMetricsSingle),
-	}
+// podMetricsUsage é o total de CPU/mem reportado pelo metrics-server para um pod (soma de containers).
+type podMetricsUsage struct{ cpu, mem int64 }
 
+// fetchPodMetricsUsage busca só a parte de metrics.k8s.io (sem listar pods) — usado tanto por
+// GetBatchPodMetrics (que lista os pods sozinho) quanto por GetBatchPodMetricsForPods (que reaproveita
+// uma lista já obtida pelo caller).
+func (c *Client) fetchPodMetricsUsage(ctx context.Context, namespace string) (map[string]podMetricsUsage, error) {
 	restClient := c.clientset.CoreV1().RESTClient()
 	data, err := restClient.Get().
 		AbsPath("/apis/metrics.k8s.io/v1beta1/namespaces/" + namespace + "/pods").
 		DoRaw(ctx)
 	if err != nil {
-		log.Printf("[GetBatchPodMetrics] cluster=%s namespace=%s: metrics.k8s.io indisponível: %v", c.cluster, namespace, err)
-		result.Error = fmt.Sprintf("metrics.k8s.io indisponível (metrics-server pode não estar instalado neste cluster): %v", err)
-		return result, nil // graceful degradation
+		return nil, fmt.Errorf("metrics.k8s.io indisponível (metrics-server pode não estar instalado neste cluster): %w", err)
 	}
 
 	var metricsList metricsv1beta1.PodMetricsList
 	if err := json.Unmarshal(data, &metricsList); err != nil {
-		log.Printf("[GetBatchPodMetrics] cluster=%s namespace=%s: falha ao decodificar resposta de metrics.k8s.io: %v", c.cluster, namespace, err)
-		result.Error = fmt.Sprintf("falha ao decodificar resposta de metrics.k8s.io: %v", err)
-		return result, nil
+		return nil, fmt.Errorf("falha ao decodificar resposta de metrics.k8s.io: %w", err)
 	}
 
-	// Build map: podName → total CPU/Mem usage
-	usageMap := make(map[string]struct{ cpu, mem int64 })
+	usageMap := make(map[string]podMetricsUsage, len(metricsList.Items))
 	for _, pm := range metricsList.Items {
 		var cpu, mem int64
 		for _, ct := range pm.Containers {
 			cpu += ct.Usage.Cpu().MilliValue()
 			mem += ct.Usage.Memory().Value()
 		}
-		usageMap[pm.Name] = struct{ cpu, mem int64 }{cpu, mem}
+		usageMap[pm.Name] = podMetricsUsage{cpu, mem}
 	}
+	return usageMap, nil
+}
 
-	// Fetch pods to get requests/limits for percent calculation
-	pods, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return result, nil
-	}
-
-	result.Available = true
-	for _, pod := range pods.Items {
+// buildBatchPodMetrics junta o uso reportado pelo metrics-server (usageMap) com request/limit de
+// cada pod — lógica compartilhada por GetBatchPodMetrics e GetBatchPodMetricsForPods.
+func buildBatchPodMetrics(pods []corev1.Pod, usageMap map[string]podMetricsUsage) map[string]BatchPodMetricsSingle {
+	out := make(map[string]BatchPodMetricsSingle, len(usageMap))
+	for _, pod := range pods {
 		usage, hasMetrics := usageMap[pod.Name]
 		if !hasMetrics {
 			continue
@@ -4475,9 +4469,55 @@ func (c *Client) GetBatchPodMetrics(ctx context.Context, namespace string) (*Bat
 			single.MemPercentLimit = float64(usage.mem) / float64(memLim) * 100
 		}
 
-		result.Pods[pod.Name] = single
+		out[pod.Name] = single
+	}
+	return out
+}
+
+// GetBatchPodMetrics returns real-time metrics for all pods in a namespace using metrics-server
+func (c *Client) GetBatchPodMetrics(ctx context.Context, namespace string) (*BatchPodMetricsResult, error) {
+	result := &BatchPodMetricsResult{
+		Available: false,
+		Pods:      make(map[string]BatchPodMetricsSingle),
 	}
 
+	usageMap, err := c.fetchPodMetricsUsage(ctx, namespace)
+	if err != nil {
+		log.Printf("[GetBatchPodMetrics] cluster=%s namespace=%s: %v", c.cluster, namespace, err)
+		result.Error = err.Error()
+		return result, nil // graceful degradation
+	}
+
+	// Fetch pods to get requests/limits for percent calculation
+	pods, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return result, nil
+	}
+
+	result.Available = true
+	result.Pods = buildBatchPodMetrics(pods.Items, usageMap)
+	return result, nil
+}
+
+// GetBatchPodMetricsForPods é equivalente a GetBatchPodMetrics, mas reaproveita uma lista de pods
+// já obtida pelo caller em vez de listar de novo — evita N+1 quando o chamador já tem o cluster
+// inteiro listado de uma vez (ex: PodHandler.List, que senão pagaria 1 List() extra POR namespace
+// consultado, além do List() completo que já fez no início da própria requisição).
+func (c *Client) GetBatchPodMetricsForPods(ctx context.Context, namespace string, pods []corev1.Pod) (*BatchPodMetricsResult, error) {
+	result := &BatchPodMetricsResult{
+		Available: false,
+		Pods:      make(map[string]BatchPodMetricsSingle),
+	}
+
+	usageMap, err := c.fetchPodMetricsUsage(ctx, namespace)
+	if err != nil {
+		log.Printf("[GetBatchPodMetricsForPods] cluster=%s namespace=%s: %v", c.cluster, namespace, err)
+		result.Error = err.Error()
+		return result, nil // graceful degradation
+	}
+
+	result.Available = true
+	result.Pods = buildBatchPodMetrics(pods, usageMap)
 	return result, nil
 }
 
