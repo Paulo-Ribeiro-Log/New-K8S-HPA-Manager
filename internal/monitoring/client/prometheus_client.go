@@ -821,6 +821,19 @@ func (c *PrometheusClient) deploymentHistoricalMetricsRange(ctx context.Context,
 			`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s-.*"}[%s]))`,
 			namespace, deployment, step.String(),
 		),
+		// container_network_{receive,transmit}_bytes_total são métricas por POD (cAdvisor não
+		// quebra por container — ao contrário de CPU/memória acima —, e sim por interface de
+		// rede), por isso sem o filtro container!="" usado nas queries de cpu/memory. sum() agrega
+		// todas as réplicas + todas as interfaces (eth0 etc.) num único número de bytes/s pro
+		// deployment inteiro — mesmo padrão de agregação já usado em "restarts" acima.
+		"network_in": fmt.Sprintf(
+			`sum(rate(container_network_receive_bytes_total{namespace="%s",pod=~"%s-.*"}[1m]))`,
+			namespace, deployment,
+		),
+		"network_out": fmt.Sprintf(
+			`sum(rate(container_network_transmit_bytes_total{namespace="%s",pod=~"%s-.*"}[1m]))`,
+			namespace, deployment,
+		),
 	}
 
 	var (

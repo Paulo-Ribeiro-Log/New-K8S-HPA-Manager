@@ -12,6 +12,8 @@ func TestPointsFromSeriesMap_MergesAndSorts(t *testing.T) {
 	series := map[string]map[int64]float64{
 		"replicas_desired": {3000: 3, 1000: 2, 2000: 3},
 		"cpu":              {1000: 45.5, 2000: 50},
+		"network_in":       {1000: 1024, 2000: 2048},
+		"network_out":      {1000: 512},
 		// "restarts" ausente de propósito — deve virar 0 em todos os pontos, sem panicar.
 	}
 
@@ -30,6 +32,12 @@ func TestPointsFromSeriesMap_MergesAndSorts(t *testing.T) {
 	}
 	if points[0].Restarts != 0 {
 		t.Errorf("série restarts ausente deveria produzir 0, got %v", points[0].Restarts)
+	}
+	if points[0].NetworkInBytesSec != 1024 || points[1].NetworkInBytesSec != 2048 {
+		t.Errorf("network_in incorreto: %+v", points)
+	}
+	if points[0].NetworkOutBytesSec != 512 || points[2].NetworkOutBytesSec != 0 {
+		t.Errorf("network_out incorreto (ts=3000 ausente deveria ser 0): %+v", points)
 	}
 }
 

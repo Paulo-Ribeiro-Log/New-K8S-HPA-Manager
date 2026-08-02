@@ -31,6 +31,8 @@ type DeploymentBehaviorPoint struct {
 	CPUUsagePct         float64 `json:"cpu_usage_pct"`
 	MemoryUsagePct      float64 `json:"memory_usage_pct"`
 	Restarts            float64 `json:"restarts"`
+	NetworkInBytesSec   float64 `json:"network_in_bytes_sec"`  // bytes/s recebidos, somado entre réplicas+interfaces — só caminho Prometheus (Dynatrace não popula, mesmo caso de CPUUsagePct/MemoryUsagePct)
+	NetworkOutBytesSec  float64 `json:"network_out_bytes_sec"` // bytes/s transmitidos, idem
 }
 
 // DeploymentScaleEvent marca uma mudança em ReplicasDesired ao longo da série — só disponível no
@@ -403,6 +405,8 @@ func pointsFromSeriesMap(series map[string]map[int64]float64) []DeploymentBehavi
 			CPUUsagePct:         series["cpu"][ts],
 			MemoryUsagePct:      series["memory"][ts],
 			Restarts:            series["restarts"][ts],
+			NetworkInBytesSec:   series["network_in"][ts],
+			NetworkOutBytesSec:  series["network_out"][ts],
 		})
 	}
 	return points
