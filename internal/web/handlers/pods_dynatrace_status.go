@@ -34,8 +34,11 @@ func (h *PodHandler) dynatraceClientForPods(aiEmail string) (*dtclient.Client, e
 //
 // cluster_supported=false cobre "Dynatrace não configurado" (nem tokens do usuário, nem env
 // vars) — nesse caso "monitored" vem sempre vazio, sem chamar a API do Dynatrace. Falha ao
-// consultar o Dynatrace (erro transitório) tem o mesmo efeito — falha silenciosa, não bloqueia a
-// tela de pods (mesmo princípio de outras checagens best-effort do app).
+// consultar o Dynatrace (erro transitório ou de autenticação) não bloqueia a tela de pods (mesmo
+// princípio de outras checagens best-effort do app), mas agora é reportada em "check_error" —
+// antes ListMonitoredPods nunca retornava erro (engolia 401/403/rede nas duas goroutines
+// internas), então uma falha de autenticação real produzia o mesmo "monitored: []" de um cluster
+// genuinamente sem instrumentação, sem nenhum sinal de qual dos dois casos era.
 //
 // Bug real corrigido: antes cortava aqui para qualquer cluster que não fosse AKS, assumindo que
 // só a frota AKS usa Dynatrace (EKS usaria New Relic — suposição documentada no plano de FinOps
@@ -82,8 +85,11 @@ func (h *PodHandler) GetDynatraceStatus(c *gin.Context) {
 	// tinham qualquer chance de achar a entidade certa).
 	monitored, err := dtc.ListMonitoredPods(ctx, dtclient.NormalizeClusterName(cluster))
 	if err != nil {
-		// Falha transitória na API do Dynatrace — não bloquear a tela, mas o cluster É suportado
-		// (cluster_supported continua true), só sem dados de monitoramento nesta chamada.
+		// Falha real na API do Dynatrace (auth ou rede) — não bloquear a tela, mas o cluster É
+		// suportado (cluster_supported continua true); "check_error" deixa o motivo real visível
+		// pro frontend em vez de aparecer como "nenhum pod monitorado" (indistinguível de um
+		// cluster genuinamente sem instrumentação).
+		resp["check_error"] = err.Error()
 		c.JSON(http.StatusOK, resp)
 		return
 	}

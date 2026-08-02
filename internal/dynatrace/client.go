@@ -433,33 +433,69 @@ func enrichFromEntity(stub EntityStub, entity *Entity) EntityStub {
 	return stub
 }
 
+// enrichConcurrency limita quantas chamadas GetEntity simultâneas EnrichEntitiesWithK8s dispara —
+// mesmo padrão/valor de BatchQueryMetrics (metrics.go) nesta mesma package.
+const enrichConcurrency = 10
+
 // EnrichEntitiesWithK8s busca as entidades afetadas e extrai correlação K8s + DTLabels.
 // Usa cache em memória (TTL 5 min) para evitar chamadas repetidas à API por entityID.
+//
+// Entidades com cache-hit são resolvidas na hora (sem rede); as com cache-miss disparam GetEntity
+// em paralelo (até enrichConcurrency por vez), não mais uma de cada vez. Bug real de performance
+// corrigido: entidades vindas de Problems (AffectedEntities/ImpactedEntities — GetOpenProblems,
+// investigação profunda, etc.) nunca passam por listEntitiesBySelector antes, então chegam aqui
+// SEMPRE com cache frio; um problem com dezenas de entidades pagava dezenas de round-trips HTTP
+// sequenciais (algumas centenas de ms cada), tornando telas de investigação/análise de problem
+// visivelmente lentas sem necessidade — cada GetEntity é independente, nada impede paralelizar.
 func (c *Client) EnrichEntitiesWithK8s(ctx context.Context, stubs []EntityStub) []EntityStub {
-	enriched := make([]EntityStub, 0, len(stubs))
-	for _, stub := range stubs {
-		// Verificar cache antes de chamar API
+	enriched := make([]EntityStub, len(stubs))
+
+	type pending struct {
+		idx  int
+		stub EntityStub
+	}
+	var toFetch []pending
+	for i, stub := range stubs {
 		if raw, ok := entityCache.Load(stub.EntityID.ID); ok {
 			entry := raw.(entityCacheEntry)
 			if time.Since(entry.cachedAt) < entityCacheTTL {
-				enriched = append(enriched, entry.stub)
+				enriched[i] = entry.stub
 				continue
 			}
 			entityCache.Delete(stub.EntityID.ID) // entrada expirada
 		}
-
-		entity, err := c.GetEntity(ctx, stub.EntityID.ID)
-		if err != nil {
-			if stub.DisplayName == "" && stub.Name != "" {
-				stub.DisplayName = stub.Name
-			}
-			enriched = append(enriched, stub)
-			continue
-		}
-		result := enrichFromEntity(stub, entity)
-		entityCache.Store(stub.EntityID.ID, entityCacheEntry{stub: result, cachedAt: time.Now()})
-		enriched = append(enriched, result)
+		toFetch = append(toFetch, pending{idx: i, stub: stub})
 	}
+
+	if len(toFetch) == 0 {
+		return enriched
+	}
+
+	sem := make(chan struct{}, enrichConcurrency)
+	var wg sync.WaitGroup
+	for _, p := range toFetch {
+		wg.Add(1)
+		go func(p pending) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			stub := p.stub
+			entity, err := c.GetEntity(ctx, stub.EntityID.ID)
+			if err != nil {
+				if stub.DisplayName == "" && stub.Name != "" {
+					stub.DisplayName = stub.Name
+				}
+				enriched[p.idx] = stub
+				return
+			}
+			result := enrichFromEntity(stub, entity)
+			entityCache.Store(stub.EntityID.ID, entityCacheEntry{stub: result, cachedAt: time.Now()})
+			enriched[p.idx] = result
+		}(p)
+	}
+	wg.Wait()
+
 	return enriched
 }
 

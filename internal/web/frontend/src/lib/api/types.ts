@@ -77,6 +77,7 @@ export interface ConfigMapUsage {
 export interface DynatracePodStatusResponse {
   cluster_supported: boolean;
   monitored: string[]; // formato "namespace/nome", igual getPodKey() do frontend
+  check_error?: string; // presente quando a checagem em si falhou (auth/rede) — distingue de "nenhum pod monitorado"
 }
 
 export interface ConfigMapMetadata {
