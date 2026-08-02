@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"k8s-hpa-manager/internal/monitoring/discovery"
 )
 
 // Client é um cliente para buscar alertas do Prometheus
@@ -30,18 +32,34 @@ func NewClient(prometheusURL string) *Client {
 	}
 }
 
-// GetAlerts busca todos os alertas ativos do Prometheus
+// GetAlerts busca todos os alertas ativos do Prometheus.
+//
+// Cache negativo (discovery.CheckKnownUnreachable/MarkPrometheusUnreachable): sem isso, cada uma
+// das chamadas independentes que passam por aqui (GetAlerts, GetAlertSummary, GetHPAAlerts,
+// GetNodePoolAlerts — cada endpoint HTTP cria seu próprio *Client) pagava o timeout completo de
+// 30s toda vez que o Prometheus do cluster estava inacessível, mesmo sabendo segundos antes que
+// aquele mesmo endpoint já tinha falhado. Só cacheia falha de rede/HTTP (endpoint genuinamente
+// fora do ar) — erro de decode/parse não entra no cache negativo, pode ser um problema pontual de
+// resposta, não de disponibilidade.
 func (c *Client) GetAlerts() ([]Alert, error) {
+	if err := discovery.CheckKnownUnreachable(c.prometheusURL); err != nil {
+		return nil, err
+	}
+
 	url := fmt.Sprintf("%s/api/v1/alerts", c.prometheusURL)
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("erro ao buscar alertas: %w", err)
+		wrapped := fmt.Errorf("erro ao buscar alertas: %w", err)
+		discovery.MarkPrometheusUnreachable(c.prometheusURL, wrapped)
+		return nil, wrapped
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("erro HTTP %d ao buscar alertas", resp.StatusCode)
+		httpErr := fmt.Errorf("erro HTTP %d ao buscar alertas", resp.StatusCode)
+		discovery.MarkPrometheusUnreachable(c.prometheusURL, httpErr)
+		return nil, httpErr
 	}
 
 	var response PrometheusAlertsResponse
@@ -53,6 +71,7 @@ func (c *Client) GetAlerts() ([]Alert, error) {
 		return nil, fmt.Errorf("resposta da API não foi sucesso: %s", response.Status)
 	}
 
+	discovery.MarkPrometheusReachable(c.prometheusURL)
 	return response.Data.Alerts, nil
 }
 
