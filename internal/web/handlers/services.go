@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -77,28 +78,53 @@ func (h *ServiceHandler) List(c *gin.Context) {
 
 	var services []ServiceSummary
 
-	listNS := namespaces
-	if len(listNS) == 0 {
-		// Listar de todos os namespaces via API
-		nsList, err := clientset.CoreV1().Namespaces().List(c.Request.Context(), metav1.ListOptions{})
+	// Bug real de performance corrigido: esta era a única aba de workload sem o fast path de "uma
+	// chamada só" para o caso comum de "todos os namespaces" — as outras (ConfigMaps, Deployments,
+	// Secrets, etc. em internal/kubernetes/client.go) já listam via List("") quando não há filtro.
+	// Aqui listava TODOS os namespaces do cluster e depois rodava um Services(ns).List() por
+	// namespace, sequencial, mesmo pro caso "sem filtro" — pior versão da mesma classe de bug já
+	// corrigida em /api/v1/pods (PR #325) e nas outras abas (este mesmo commit).
+	if len(namespaces) == 0 {
+		svcList, err := clientset.CoreV1().Services("").List(c.Request.Context(), metav1.ListOptions{})
 		if err == nil {
-			for _, ns := range nsList.Items {
-				listNS = append(listNS, ns.Name)
+			for _, svc := range svcList.Items {
+				if !showSystem && isSystemNamespaceFn(svc.Namespace) {
+					continue
+				}
+				services = append(services, buildServiceSummary(cluster, svc.Namespace, svc))
 			}
 		}
-	}
+	} else {
+		// Namespaces específicos pedidos explicitamente — busca em paralelo (mesmo padrão de
+		// semáforo já usado em internal/dynatrace e no fix de /api/v1/pods), não mais sequencial.
+		const concurrency = 8
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		for _, ns := range namespaces {
+			if !showSystem && isSystemNamespaceFn(ns) {
+				continue
+			}
+			wg.Add(1)
+			go func(ns string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 
-	for _, ns := range listNS {
-		if !showSystem && isSystemNamespaceFn(ns) {
-			continue
+				svcList, err := clientset.CoreV1().Services(ns).List(c.Request.Context(), metav1.ListOptions{})
+				if err != nil {
+					return
+				}
+				summaries := make([]ServiceSummary, 0, len(svcList.Items))
+				for _, svc := range svcList.Items {
+					summaries = append(summaries, buildServiceSummary(cluster, ns, svc))
+				}
+				mu.Lock()
+				services = append(services, summaries...)
+				mu.Unlock()
+			}(ns)
 		}
-		svcList, err := clientset.CoreV1().Services(ns).List(c.Request.Context(), metav1.ListOptions{})
-		if err != nil {
-			continue
-		}
-		for _, svc := range svcList.Items {
-			services = append(services, buildServiceSummary(cluster, ns, svc))
-		}
+		wg.Wait()
 	}
 
 	if services == nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pmezard/go-difflib/difflib"
@@ -73,18 +74,37 @@ func (h *VPAHandler) List(c *gin.Context) {
 			allVPAs = append(allVPAs, v)
 		}
 	} else {
+		// Namespaces específicos pedidos explicitamente — busca em paralelo (mesmo padrão de
+		// semáforo já usado em internal/dynatrace e no fix de /api/v1/pods), não mais sequencial.
+		// GetVPAs shell-a `kubectl get vpa` por chamada — mesmo custo real de subprocesso já visto
+		// no fix de az CLI dos node pools (PR #326), então cada namespace a mais aqui pagava o
+		// custo do kubectl de novo, esperando o anterior terminar.
+		const concurrency = 8
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
 		for _, ns := range namespaces {
 			if !showSystem && isSystemNamespaceFn(ns) {
 				continue
 			}
-			vpas, err := kubeclient.GetVPAs(cluster, ns)
-			if err != nil {
-				continue
-			}
-			for _, v := range vpas {
-				allVPAs = append(allVPAs, v)
-			}
+			wg.Add(1)
+			go func(ns string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				vpas, err := kubeclient.GetVPAs(cluster, ns)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				for _, v := range vpas {
+					allVPAs = append(allVPAs, v)
+				}
+				mu.Unlock()
+			}(ns)
 		}
+		wg.Wait()
 	}
 
 	if allVPAs == nil {
