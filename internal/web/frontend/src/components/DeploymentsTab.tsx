@@ -107,7 +107,7 @@ export const DeploymentsTab = ({
   // deste app) nunca há JWT, então useUserProfile() fica sempre com e-mail vazio, e o backend
   // nunca acha o token Dynatrace salvo do usuário — cluster_supported saía sempre false.
   const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
-  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, checkError: dtCheckError, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
 
   // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<DeploymentManifest | null>(null);
@@ -2712,6 +2712,7 @@ export const DeploymentsTab = ({
                 dtClusterSupported={dtClusterSupported}
                 dtMonitoredKeys={dtMonitoredKeys}
                 dtHasLoaded={dtHasLoaded}
+                dtCheckError={dtCheckError}
                 onOpenDetail={(pod) => setQuickViewPod(pod)}
                 headerLabel={`${rightView.deployment.name} — pods (${monitorPods.length})`}
                 breadcrumb={[
