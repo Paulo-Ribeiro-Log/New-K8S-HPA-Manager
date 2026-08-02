@@ -176,13 +176,17 @@ func (c *Client) ListConfigMaps(ctx context.Context, namespaces []string, search
 		return result, nil
 	}
 
-	for ns := range uniqueNamespaces {
+	items, err := listNamespacedInParallel(ctx, uniqueNamespaces, func(ctx context.Context, ns string) ([]corev1.ConfigMap, error) {
 		cms, err := c.clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list configmaps in %s/%s: %w", c.cluster, ns, err)
 		}
-		appendSummaries(cms.Items)
+		return cms.Items, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	appendSummaries(items)
 
 	return result, nil
 }
@@ -467,13 +471,17 @@ func (c *Client) ListIngresses(ctx context.Context, namespaces []string, search 
 		return result, nil
 	}
 
-	for ns := range uniqueNamespaces {
+	items, err := listNamespacedInParallel(ctx, uniqueNamespaces, func(ctx context.Context, ns string) ([]networkingv1.Ingress, error) {
 		ings, err := c.clientset.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list ingresses in %s/%s: %w", c.cluster, ns, err)
 		}
-		appendSummaries(ings.Items)
+		return ings.Items, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	appendSummaries(items)
 
 	return result, nil
 }
@@ -968,89 +976,97 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 		uniqueNamespaces[ns] = struct{}{}
 	}
 
-	// Cache de services por namespace para associar ClusterIPs aos deployments
-	nsSvcMap := make(map[string][]corev1.Service)
-	getSvcs := func(ns string) []corev1.Service {
-		if svcs, ok := nsSvcMap[ns]; ok {
-			return svcs
-		}
-		svcList, err := c.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			nsSvcMap[ns] = nil
-			return nil
-		}
-		nsSvcMap[ns] = svcList.Items
-		return svcList.Items
-	}
-
-	// Cache de problemas de pod por namespace, agregados por Deployment (via owner chain
-	// Pod -> ReplicaSet). Um único List de Pods por namespace cobre todos os deployments
-	// daquele namespace — mesmo padrão de getSvcs acima, não é N+1 por deployment.
-	nsPodIssuesMap := make(map[string]map[string]podIssueAgg)
-	getPodIssues := func(ns string) map[string]podIssueAgg {
-		if issues, ok := nsPodIssuesMap[ns]; ok {
-			return issues
-		}
-		issues := make(map[string]podIssueAgg)
-		podList, err := c.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
-		if err == nil {
-			for i := range podList.Items {
-				pod := &podList.Items[i]
-				depName, ok := deploymentNameForPod(pod)
-				if !ok {
-					continue
-				}
-				reason := podIssueReason(pod)
-				if reason == "" {
-					continue
-				}
-				agg := issues[depName]
-				agg.count++
-				if agg.reason == "" {
-					agg.reason = reason
-				}
-				issues[depName] = agg
-			}
-		}
-		nsPodIssuesMap[ns] = issues
-		return issues
-	}
-
-	appendSummaries := func(items []appsv1.Deployment) {
-		for _, dep := range items {
-			if !showSystemNamespaces && isSystemNamespace(dep.Namespace) {
-				continue
-			}
-			if search != "" && !matchesDeploymentSearch(&dep, search) {
-				continue
-			}
-			summary := buildDeploymentSummary(c.cluster, &dep)
-			ips := serviceIPsForLabels(getSvcs(dep.Namespace), dep.Spec.Template.Labels)
-			summary.ServiceClusterIPs = ips.clusterIPs
-			summary.ServiceExternalIPs = ips.externalIPs
-			if agg, ok := getPodIssues(dep.Namespace)[dep.Name]; ok {
-				summary.UnhealthyPodCount = int32(agg.count)
-				summary.PodIssueReason = agg.reason
-			}
-			result = append(result, summary)
-		}
-	}
-
+	var depItems []appsv1.Deployment
 	if listAllNamespaces {
 		deps, err := c.clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list deployments in cluster %s: %w", c.cluster, err)
 		}
-		appendSummaries(deps.Items)
-		return result, nil
+		depItems = deps.Items
+	} else {
+		items, err := listNamespacedInParallel(ctx, uniqueNamespaces, func(ctx context.Context, ns string) ([]appsv1.Deployment, error) {
+			deps, err := c.clientset.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return nil, fmt.Errorf("failed to list deployments in %s/%s: %w", c.cluster, ns, err)
+			}
+			return deps.Items, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		depItems = items
 	}
 
-	for ns := range uniqueNamespaces {
-		deps, err := c.clientset.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to list deployments in %s/%s: %w", c.cluster, ns, err)
+	// Namespaces distintos que vão sobreviver ao filtro de sistema — pré-busca Services e Pods
+	// (pra agregação de UnhealthyPodCount) em paralelo antes de montar os summaries. Bug real de
+	// performance corrigido: eram 2 caches lazy (getSvcs/getPodIssues), cada um preenchido
+	// sequencialmente durante o loop de summaries — 2 chamadas (Services+Pods) por namespace
+	// distinto, cada uma esperando a anterior terminar (mesma classe de bug já corrigida em
+	// /api/v1/pods, PR #325 — aqui era 2x pior, por serem 2 recursos em vez de 1 por namespace).
+	nsSet := make(map[string]struct{})
+	for _, d := range depItems {
+		if !showSystemNamespaces && isSystemNamespace(d.Namespace) {
+			continue
 		}
-		appendSummaries(deps.Items)
+		nsSet[d.Namespace] = struct{}{}
+	}
+	nsSvcMap := prefetchByNamespace(ctx, nsSet, func(ctx context.Context, ns string) ([]corev1.Service, error) {
+		svcList, err := c.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return svcList.Items, nil
+	})
+	nsPodsMap := prefetchByNamespace(ctx, nsSet, func(ctx context.Context, ns string) ([]corev1.Pod, error) {
+		podList, err := c.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return podList.Items, nil
+	})
+
+	// Agrega os problemas de pod por Deployment (via owner chain Pod -> ReplicaSet) uma única vez
+	// por namespace — não por deployment, senão reprocessaria a mesma lista de pods do namespace
+	// repetidamente.
+	nsPodIssuesMap := make(map[string]map[string]podIssueAgg, len(nsPodsMap))
+	for ns, pods := range nsPodsMap {
+		issues := make(map[string]podIssueAgg)
+		for i := range pods {
+			pod := &pods[i]
+			depName, ok := deploymentNameForPod(pod)
+			if !ok {
+				continue
+			}
+			reason := podIssueReason(pod)
+			if reason == "" {
+				continue
+			}
+			agg := issues[depName]
+			agg.count++
+			if agg.reason == "" {
+				agg.reason = reason
+			}
+			issues[depName] = agg
+		}
+		nsPodIssuesMap[ns] = issues
+	}
+
+	for _, dep := range depItems {
+		if !showSystemNamespaces && isSystemNamespace(dep.Namespace) {
+			continue
+		}
+		if search != "" && !matchesDeploymentSearch(&dep, search) {
+			continue
+		}
+		summary := buildDeploymentSummary(c.cluster, &dep)
+		ips := serviceIPsForLabels(nsSvcMap[dep.Namespace], dep.Spec.Template.Labels)
+		summary.ServiceClusterIPs = ips.clusterIPs
+		summary.ServiceExternalIPs = ips.externalIPs
+		if agg, ok := nsPodIssuesMap[dep.Namespace][dep.Name]; ok {
+			summary.UnhealthyPodCount = int32(agg.count)
+			summary.PodIssueReason = agg.reason
+		}
+		result = append(result, summary)
 	}
 
 	return result, nil
@@ -1361,13 +1377,17 @@ func (c *Client) ListDaemonSets(ctx context.Context, namespaces []string, search
 		return result, nil
 	}
 
-	for ns := range uniqueNamespaces {
+	items, err := listNamespacedInParallel(ctx, uniqueNamespaces, func(ctx context.Context, ns string) ([]appsv1.DaemonSet, error) {
 		dss, err := c.clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list daemonsets in %s/%s: %w", c.cluster, ns, err)
 		}
-		appendSummaries(dss.Items)
+		return dss.Items, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	appendSummaries(items)
 
 	return result, nil
 }
@@ -1590,13 +1610,17 @@ func (c *Client) ListStatefulSets(ctx context.Context, namespaces []string, sear
 		return result, nil
 	}
 
-	for ns := range uniqueNamespaces {
+	items, err := listNamespacedInParallel(ctx, uniqueNamespaces, func(ctx context.Context, ns string) ([]appsv1.StatefulSet, error) {
 		stss, err := c.clientset.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list statefulsets in %s/%s: %w", c.cluster, ns, err)
 		}
-		appendSummaries(stss.Items)
+		return stss.Items, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	appendSummaries(items)
 
 	return result, nil
 }
@@ -1802,52 +1826,59 @@ func (c *Client) ListSecrets(ctx context.Context, namespaces []string, search st
 		uniqueNamespaces[ns] = struct{}{}
 	}
 
-	// Cache de services por namespace para associar ClusterIPs aos secrets
-	nsSvcMap := make(map[string][]corev1.Service)
-	getSvcs := func(ns string) []corev1.Service {
-		if svcs, ok := nsSvcMap[ns]; ok {
-			return svcs
-		}
-		svcList, err := c.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			nsSvcMap[ns] = nil
-			return nil
-		}
-		nsSvcMap[ns] = svcList.Items
-		return svcList.Items
-	}
-
-	appendSummaries := func(items []corev1.Secret) {
-		for _, secret := range items {
-			if !showSystemNamespaces && isSystemNamespace(secret.Namespace) {
-				continue
-			}
-			if search != "" && !matchesSecretSearch(&secret, search) {
-				continue
-			}
-			summary := buildSecretSummary(c.cluster, &secret)
-			ips := serviceIPsForLabels(getSvcs(secret.Namespace), secret.Labels)
-			summary.ServiceClusterIPs = ips.clusterIPs
-			summary.ServiceExternalIPs = ips.externalIPs
-			result = append(result, summary)
-		}
-	}
-
+	var secretItems []corev1.Secret
 	if listAllNamespaces {
 		secrets, err := c.clientset.CoreV1().Secrets("").List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list secrets in cluster %s: %w", c.cluster, err)
 		}
-		appendSummaries(secrets.Items)
-		return result, nil
+		secretItems = secrets.Items
+	} else {
+		items, err := listNamespacedInParallel(ctx, uniqueNamespaces, func(ctx context.Context, ns string) ([]corev1.Secret, error) {
+			secrets, err := c.clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return nil, fmt.Errorf("failed to list secrets in %s/%s: %w", c.cluster, ns, err)
+			}
+			return secrets.Items, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		secretItems = items
 	}
 
-	for ns := range uniqueNamespaces {
-		secrets, err := c.clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to list secrets in %s/%s: %w", c.cluster, ns, err)
+	// Namespaces distintos que vão sobreviver ao filtro de sistema — pré-busca os Services desses
+	// namespaces em paralelo antes de montar os summaries. Bug real de performance corrigido: era
+	// um cache lazy (getSvcs), preenchido sequencialmente durante o loop de summaries — 1 chamada
+	// Services(ns).List() por namespace distinto, cada uma esperando a anterior terminar (mesma
+	// classe de bug já corrigida em /api/v1/pods, PR #325).
+	nsSet := make(map[string]struct{})
+	for _, s := range secretItems {
+		if !showSystemNamespaces && isSystemNamespace(s.Namespace) {
+			continue
 		}
-		appendSummaries(secrets.Items)
+		nsSet[s.Namespace] = struct{}{}
+	}
+	nsSvcMap := prefetchByNamespace(ctx, nsSet, func(ctx context.Context, ns string) ([]corev1.Service, error) {
+		svcList, err := c.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return svcList.Items, nil
+	})
+
+	for _, secret := range secretItems {
+		if !showSystemNamespaces && isSystemNamespace(secret.Namespace) {
+			continue
+		}
+		if search != "" && !matchesSecretSearch(&secret, search) {
+			continue
+		}
+		summary := buildSecretSummary(c.cluster, &secret)
+		ips := serviceIPsForLabels(nsSvcMap[secret.Namespace], secret.Labels)
+		summary.ServiceClusterIPs = ips.clusterIPs
+		summary.ServiceExternalIPs = ips.externalIPs
+		result = append(result, summary)
 	}
 
 	return result, nil
