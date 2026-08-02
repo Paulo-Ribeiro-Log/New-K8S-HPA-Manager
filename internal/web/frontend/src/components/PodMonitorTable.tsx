@@ -35,6 +35,9 @@ interface PodMonitorTableProps {
   dtClusterSupported?: boolean;
   dtMonitoredKeys?: Set<string>;
   dtHasLoaded?: boolean;
+  /** Presente quando a última checagem de monitoramento falhou (auth/rede no Dynatrace) — vira o
+   * tooltip do ícone em vez da mensagem genérica de "pod não aparece monitorado". */
+  dtCheckError?: string;
   onOpenDetail: (pod: PodSummary) => void;
   headerLabel: string;
   breadcrumb?: BreadcrumbSegment[];
@@ -203,6 +206,7 @@ export const PodMonitorTable = ({
   dtClusterSupported = false,
   dtMonitoredKeys,
   dtHasLoaded = false,
+  dtCheckError,
   onOpenDetail,
   headerLabel,
   breadcrumb,
@@ -778,6 +782,7 @@ export const PodMonitorTable = ({
                 {dtHasLoaded ? (
                   <DynatraceStatusIcon
                     status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys ?? EMPTY_DT_SET, `${pod.namespace}/${pod.name}`)}
+                    errorDetail={dtCheckError}
                   />
                 ) : (
                   <Loader2 className="w-3 h-3 animate-spin text-muted-foreground/50" />

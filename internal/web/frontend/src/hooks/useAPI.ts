@@ -401,18 +401,23 @@ export function useDynatracePodStatus(cluster?: string, aiEmail?: string) {
   // é suportado" (renderizar o ícone de proibido) — sem isso, o ícone piscaria "proibido" por um
   // instante em todo cluster suportado, até a 1ª resposta chegar.
   const [hasLoaded, setHasLoaded] = useState(false);
+  // checkError: a checagem em si falhou (auth/rede no Dynatrace), distinto de "cluster suportado
+  // mas este pod não aparece monitorado" — sem isso as duas causas eram indistinguíveis na UI.
+  const [checkError, setCheckError] = useState<string | undefined>(undefined);
 
   const fetchStatus = async () => {
     if (!cluster) {
       setClusterSupported(false);
       setMonitoredKeys(new Set());
       setHasLoaded(false);
+      setCheckError(undefined);
       return;
     }
     try {
       const data = await apiClient.getPodsDynatraceStatus(cluster, aiEmail);
       setClusterSupported(data.cluster_supported);
       setMonitoredKeys(new Set(data.monitored));
+      setCheckError(data.check_error);
       setHasLoaded(true);
     } catch {
       // degradação graciosa: ícone simplesmente não aparece (hasLoaded fica false; o polling
@@ -432,6 +437,7 @@ export function useDynatracePodStatus(cluster?: string, aiEmail?: string) {
           if (cancelled) return;
           setClusterSupported(data.cluster_supported);
           setMonitoredKeys(new Set(data.monitored));
+          setCheckError(data.check_error);
           setHasLoaded(true);
         })
         .catch(() => {});
@@ -444,7 +450,7 @@ export function useDynatracePodStatus(cluster?: string, aiEmail?: string) {
   // nova checagem em vez de esperar o poll de 3min ou o cache de 2min do backend expirar. Útil
   // sobretudo depois da correção de paginação: um cluster grande que antes só retornava as
   // primeiras 500 entidades (bug real corrigido) se beneficia de poder re-checar sob demanda.
-  return { clusterSupported, monitoredKeys, hasLoaded, refetch: fetchStatus };
+  return { clusterSupported, monitoredKeys, hasLoaded, checkError, refetch: fetchStatus };
 }
 
 export function useSecrets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {

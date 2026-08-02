@@ -73,7 +73,7 @@ export const PodsPanel = ({
   // do usuário, então cluster_supported saía sempre false — ícone vermelho "não suportado" pra
   // todo mundo, mesmo com um token Dynatrace funcionando de verdade na aba Dynatrace.
   const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
-  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
+  const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, checkError: dtCheckError, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
   const canWritePods = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWritePods : undefined;
 
   // ✅ Estados com persistência entre trocas de aba
@@ -1243,6 +1243,7 @@ export const PodsPanel = ({
                   {dtHasLoaded ? (
                     <DynatraceStatusIcon
                       status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys, getPodKey(pod))}
+                      errorDetail={dtCheckError}
                     />
                   ) : (
                     // Enquanto a 1ª consulta ao Dynatrace não resolve (pode levar vários segundos
@@ -1309,6 +1310,7 @@ export const PodsPanel = ({
             dtClusterSupported={dtClusterSupported}
             dtMonitoredKeys={dtMonitoredKeys}
             dtHasLoaded={dtHasLoaded}
+            dtCheckError={dtCheckError}
             onOpenDetail={(pod) => setQuickViewPod(pod)}
             headerLabel={selectedNamespace && selectedNamespace !== "__all__"
               ? `${selectedNamespace} — pods (${filteredPods.length})`

@@ -51,16 +51,20 @@ func (c *Client) ListMonitoredPods(ctx context.Context, clusterName string) (map
 	// forma (a outra retorna vazio rápido), mas isso só é sabido depois de tentar.
 	var wg sync.WaitGroup
 	var caiPods, pgiPods map[string]bool
+	var caiErr, pgiErr error
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
 		caiPods = make(map[string]bool)
-		if caiStubs, err := c.ListEntitiesByCluster(ctx, clusterName, "CLOUD_APPLICATION_INSTANCE"); err == nil {
-			for _, stub := range c.EnrichEntitiesWithK8s(ctx, caiStubs) {
-				if stub.K8sNamespace != "" && stub.K8sPodName != "" {
-					caiPods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
-				}
+		caiStubs, err := c.ListEntitiesByCluster(ctx, clusterName, "CLOUD_APPLICATION_INSTANCE")
+		if err != nil {
+			caiErr = err
+			return
+		}
+		for _, stub := range c.EnrichEntitiesWithK8s(ctx, caiStubs) {
+			if stub.K8sNamespace != "" && stub.K8sPodName != "" {
+				caiPods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
 			}
 		}
 	}()
@@ -68,16 +72,30 @@ func (c *Client) ListMonitoredPods(ctx context.Context, clusterName string) (map
 	go func() {
 		defer wg.Done()
 		pgiPods = make(map[string]bool)
-		if pgiStubs, err := c.ListProcessGroupInstancesByHostGroup(ctx, clusterName); err == nil {
-			for _, stub := range c.EnrichEntitiesWithK8s(ctx, pgiStubs) {
-				if stub.K8sNamespace != "" && stub.K8sPodName != "" {
-					pgiPods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
-				}
+		pgiStubs, err := c.ListProcessGroupInstancesByHostGroup(ctx, clusterName)
+		if err != nil {
+			pgiErr = err
+			return
+		}
+		for _, stub := range c.EnrichEntitiesWithK8s(ctx, pgiStubs) {
+			if stub.K8sNamespace != "" && stub.K8sPodName != "" {
+				pgiPods[fmt.Sprintf("%s/%s", stub.K8sNamespace, stub.K8sPodName)] = true
 			}
 		}
 	}()
 
 	wg.Wait()
+
+	// Só é falha de verdade quando OS DOIS caminhos falham — um cluster real só usa um dos dois
+	// modos de instrumentação (ver comentário do pacote acima), e o outro retorna vazio SEM erro
+	// nesse caso normal ("não existe entidade desse tipo aqui"), não por falha de autenticação/rede.
+	// Bug real corrigido: antes os dois `if err == nil` engoliam qualquer erro (incluindo 401/403
+	// de token expirado/revogado) sem sinal nenhum — ListMonitoredPods nunca retornava erro, então
+	// uma falha de autenticação real produzia o mesmo resultado vazio de "nenhum pod monitorado",
+	// indistinguível pro usuário de "cluster genuinamente sem instrumentação".
+	if caiErr != nil && pgiErr != nil {
+		return nil, fmt.Errorf("Dynatrace: falha ao listar entidades monitoradas (CLOUD_APPLICATION_INSTANCE: %v | PROCESS_GROUP_INSTANCE: %v)", caiErr, pgiErr)
+	}
 
 	pods := make(map[string]bool, len(caiPods)+len(pgiPods))
 	for k := range caiPods {
