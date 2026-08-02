@@ -1650,6 +1650,8 @@ export interface DeploymentBehaviorPoint {
   cpu_usage_pct: number;
   memory_usage_pct: number;
   restarts: number;
+  network_in_bytes_sec: number; // bytes/s recebidos — só caminho Prometheus (0 no fallback Dynatrace)
+  network_out_bytes_sec: number; // bytes/s transmitidos, idem
 }
 
 export interface DeploymentScaleEvent {

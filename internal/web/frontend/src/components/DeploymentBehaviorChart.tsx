@@ -55,6 +55,17 @@ const restartsChartConfig = {
   restarts: { label: "Restarts", color: "#ef4444" },
 } satisfies ChartConfig;
 
+const networkChartConfig = {
+  network_in: { label: "Entrada (IN)", color: "#06b6d4" },
+  network_out: { label: "Saída (OUT)", color: "#f97316" },
+} satisfies ChartConfig;
+
+// formatBytesPerSec formata bytes/s reaproveitando formatBytes (monitorUtils) — mesmo padrão de
+// "nunca calcular/formatar inline" já seguido pelo resto do componente (formatMillicores acima).
+function formatBytesPerSec(bytesPerSec: number): string {
+  return `${formatBytes(bytesPerSec)}/s`;
+}
+
 function toTimeLabel(tsMs: number): string {
   return new Date(tsMs).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
@@ -157,6 +168,8 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
         cpu: round1(p.cpu_usage_pct),
         memory: round1(p.memory_usage_pct),
         restarts: p.restarts,
+        network_in: p.network_in_bytes_sec,
+        network_out: p.network_out_bytes_sec,
       };
       compareSeries.forEach(({ offset, pts }) => {
         const cp = pts[idx];
@@ -490,6 +503,53 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                 Memória request/limit: {formatBytes(data.memory_request_bytes ?? 0)} / {formatBytes(data.memory_limit_bytes ?? 0)}
               </p>
             ) : null}
+          </div>
+
+          {/* Painel — Rede (IN/OUT) — mesmo chart pros dois sentidos, pedido explícito do usuário
+              em vez de dois painéis separados (facilita comparar entrada vs. saída no mesmo
+              instante). Só caminho Prometheus — container_network_*_bytes_total não tem
+              equivalente no fallback Dynatrace desta integração (mesma limitação de CPU/Memória
+              acima). */}
+          <div>
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">Rede (IN/OUT)</p>
+            {data.source === "dynatrace" ? (
+              <p className="text-xs text-muted-foreground py-3">
+                Tráfego de rede indisponível no fallback Dynatrace — sem métrica equivalente nesse caminho.
+              </p>
+            ) : (
+              <ChartContainer config={networkChartConfig} className="h-[140px] w-full">
+                <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                  <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} interval={xInterval} />
+                  <YAxis tick={{ fontSize: 9 }} tickLine={false} axisLine={false} tickFormatter={(v) => formatBytesPerSec(Number(v))} width={56} />
+                  <ChartTooltip
+                    content={
+                      <ChartTooltipContent
+                        labelFormatter={(l) => `Horário: ${l}`}
+                        formatter={(value, _name, item) => {
+                          const key = String(item.dataKey);
+                          const color = networkChartConfig[key as keyof typeof networkChartConfig]?.color ?? "#94a3b8";
+                          const label = networkChartConfig[key as keyof typeof networkChartConfig]?.label ?? key;
+                          return (
+                            <>
+                              <span className="h-2.5 w-2.5 rounded-[2px] shrink-0" style={{ backgroundColor: color }} />
+                              <div className="flex flex-1 justify-between items-center leading-none gap-3">
+                                <span className="text-muted-foreground">{label}</span>
+                                <span className="font-mono font-medium tabular-nums text-foreground">{formatBytesPerSec(Number(value))}</span>
+                              </div>
+                            </>
+                          );
+                        }}
+                      />
+                    }
+                  />
+                  {dtProblemMarkers.map((m) => (
+                    <ReferenceArea key={m.problemId} x1={m.x1} x2={m.x2} fill={severityColor(m.severity)} fillOpacity={0.15} stroke={severityColor(m.severity)} strokeOpacity={0.5} strokeWidth={1} ifOverflow="extendDomain" />
+                  ))}
+                  <Line type="monotone" dataKey="network_in" stroke={networkChartConfig.network_in.color} strokeWidth={1.5} dot={false} />
+                  <Line type="monotone" dataKey="network_out" stroke={networkChartConfig.network_out.color} strokeWidth={1.5} dot={false} />
+                </ComposedChart>
+              </ChartContainer>
+            )}
           </div>
 
           {/* Painel 3 — Restarts */}
