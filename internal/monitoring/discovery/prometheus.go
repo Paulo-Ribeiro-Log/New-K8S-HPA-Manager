@@ -44,8 +44,17 @@ func DiscoverEndpoint(cluster string) (*PrometheusEndpoint, error) {
 		RequiresGCPAuth: requiresGCPAuth,
 	}
 
+	// Cache negativo — se uma tentativa real recente já confirmou que este endpoint está fora do
+	// ar, não paga de novo o timeout de validateEndpoint (10s). Mesmo cache usado pelo cliente de
+	// alertas (internal/monitoring/alerts), compartilhado por URL — qualquer um dos dois lados
+	// "aprende" com a falha do outro.
+	if err := CheckKnownUnreachable(endpoint.URL); err != nil {
+		return endpoint, err
+	}
+
 	// Validar se endpoint está acessível
 	if err := validateEndpoint(endpoint); err != nil {
+		MarkPrometheusUnreachable(endpoint.URL, err)
 		log.Warn().
 			Str("cluster", cluster).
 			Str("url", endpoint.URL).
@@ -54,6 +63,7 @@ func DiscoverEndpoint(cluster string) (*PrometheusEndpoint, error) {
 		return endpoint, err
 	}
 
+	MarkPrometheusReachable(endpoint.URL)
 	endpoint.Available = true
 	log.Info().
 		Str("cluster", cluster).
