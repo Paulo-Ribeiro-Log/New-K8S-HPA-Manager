@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -45,39 +46,69 @@ func (p *AzureNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) (
 	listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer listCancel()
 
-	cmd := exec.CommandContext(listCtx, "az", "aks", "nodepool", "list",
-		"--resource-group", p.resourceGroup,
-		"--cluster-name", p.clusterName,
-		"--output", "json")
-
-	output, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			stderr := string(exitErr.Stderr)
-			if strings.Contains(stderr, "AADSTS") ||
-				strings.Contains(stderr, "expired") ||
-				strings.Contains(stderr, "authentication") ||
-				strings.Contains(stderr, "az login") {
-				return nil, fmt.Errorf("Azure CLI não autenticado. Execute no servidor: az login")
-			}
-			return nil, fmt.Errorf("az aks nodepool list falhou: %s", stderr)
-		}
-		return nil, fmt.Errorf("falha ao executar az: %w", err)
-	}
-
+	// As 4 chamadas `az` abaixo (nodepool list, tags do cluster, nome+UUID da subscription) são
+	// leituras independentes — nenhuma depende do resultado de outra, só de setSubscription já ter
+	// rodado. Bug real de performance corrigido: um comentário aqui já dizia "em paralelo", mas na
+	// prática só a busca de metadados rodava depois do nodepool list terminar, e mesmo essa parte
+	// era sequencial (3 subprocessos `az` um atrás do outro). Cada subprocesso `az` sozinho custa
+	// ~3-5s (CLI em Python, cold-start real + round-trip pra API do Azure) — confirmado via `time
+	// az ...` isolado — então rodar os 4 em paralelo é o que realmente importa (~5s no total, o
+	// tempo do mais lento, em vez de ~16s somando os 4 sequenciais). Nome e UUID da subscription
+	// também foram fundidos num só `az account show` (eram 2 chamadas idênticas exceto o --query).
 	var azPools []azureNodePool
-	if err := json.Unmarshal(output, &azPools); err != nil {
-		return nil, fmt.Errorf("falha ao parsear saída do Azure CLI: %w", err)
-	}
+	var listErr error
+	var clusterTags map[string]string
+	var subscriptionName, subscriptionUUID string
 
-	// Buscar metadados em paralelo (tags e subscription info)
-	clusterTags, err := p.getClusterTags(ctx)
-	if err != nil {
-		log.Warn().Err(err).Str("cluster", p.clusterName).Msg("Falha ao buscar tags do cluster, continuando sem tags")
-		clusterTags = make(map[string]string)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		cmd := exec.CommandContext(listCtx, "az", "aks", "nodepool", "list",
+			"--resource-group", p.resourceGroup,
+			"--cluster-name", p.clusterName,
+			"--output", "json")
+
+		output, err := cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				stderr := string(exitErr.Stderr)
+				if strings.Contains(stderr, "AADSTS") ||
+					strings.Contains(stderr, "expired") ||
+					strings.Contains(stderr, "authentication") ||
+					strings.Contains(stderr, "az login") {
+					listErr = fmt.Errorf("Azure CLI não autenticado. Execute no servidor: az login")
+				} else {
+					listErr = fmt.Errorf("az aks nodepool list falhou: %s", stderr)
+				}
+			} else {
+				listErr = fmt.Errorf("falha ao executar az: %w", err)
+			}
+			return
+		}
+
+		if err := json.Unmarshal(output, &azPools); err != nil {
+			listErr = fmt.Errorf("falha ao parsear saída do Azure CLI: %w", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		tags, tagsErr := p.getClusterTags(ctx)
+		if tagsErr != nil {
+			log.Warn().Err(tagsErr).Str("cluster", p.clusterName).Msg("Falha ao buscar tags do cluster, continuando sem tags")
+			tags = make(map[string]string)
+		}
+		clusterTags = tags
+	}()
+	go func() {
+		defer wg.Done()
+		subscriptionName, subscriptionUUID = p.getSubscriptionInfo(ctx)
+	}()
+	wg.Wait()
+
+	if listErr != nil {
+		return nil, listErr
 	}
-	subscriptionName := p.getSubscriptionName(ctx)
-	subscriptionUUID := p.getSubscriptionUUID(ctx)
 
 	var pools []models.NodePool
 	for _, az := range azPools {
@@ -246,38 +277,32 @@ func (p *AzureNodeGroupProvider) getClusterTags(ctx context.Context) (map[string
 	return tags, nil
 }
 
-func (p *AzureNodeGroupProvider) getSubscriptionName(ctx context.Context) string {
-	nameCtx, nameCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer nameCancel()
+// getSubscriptionInfo busca nome e UUID da subscription num único `az account show` — antes eram
+// 2 subprocessos `az` idênticos exceto pelo --query (name vs id).
+func (p *AzureNodeGroupProvider) getSubscriptionInfo(ctx context.Context) (name, uuid string) {
+	infoCtx, infoCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer infoCancel()
 
-	out, err := exec.CommandContext(nameCtx,
+	out, err := exec.CommandContext(infoCtx,
 		"az", "account", "show",
 		"--subscription", p.subscription,
-		"--query", "name",
-		"--output", "tsv",
+		"--query", "{name:name,id:id}",
+		"--output", "json",
 	).Output()
 	if err != nil {
-		log.Warn().Err(err).Str("subscription", p.subscription).Msg("Falha ao buscar nome da subscription")
-		return ""
+		log.Warn().Err(err).Str("subscription", p.subscription).Msg("Falha ao buscar informações da subscription")
+		return "", ""
 	}
-	return strings.TrimSpace(string(out))
-}
 
-func (p *AzureNodeGroupProvider) getSubscriptionUUID(ctx context.Context) string {
-	uuidCtx, uuidCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer uuidCancel()
-
-	out, err := exec.CommandContext(uuidCtx,
-		"az", "account", "show",
-		"--subscription", p.subscription,
-		"--query", "id",
-		"--output", "tsv",
-	).Output()
-	if err != nil {
-		log.Warn().Err(err).Str("subscription", p.subscription).Msg("Falha ao buscar UUID da subscription")
-		return ""
+	var info struct {
+		Name string `json:"name"`
+		ID   string `json:"id"`
 	}
-	return strings.TrimSpace(string(out))
+	if err := json.Unmarshal(out, &info); err != nil {
+		log.Warn().Err(err).Str("subscription", p.subscription).Msg("Falha ao parsear informações da subscription")
+		return "", ""
+	}
+	return info.Name, info.ID
 }
 
 // azureNodePool representa a estrutura retornada pela Azure CLI.
