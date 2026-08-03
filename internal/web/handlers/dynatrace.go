@@ -133,6 +133,7 @@ func (h *DynatraceHandler) SaveConfig(c *gin.Context) {
 
 	existingTokens, err := h.tokensStore.GetTokens(userEmail)
 	if err != nil {
+		log.Error().Err(err).Str("user_email", userEmail).Msg("Dynatrace SaveConfig: falha ao buscar tokens existentes")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get existing tokens"})
 		return
 	}
