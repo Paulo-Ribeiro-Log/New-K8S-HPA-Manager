@@ -74,14 +74,19 @@ func (h *DynatraceHandler) clientForUser(aiEmail string) (*dtclient.Client, erro
 // ─── GET /api/v1/dynatrace/config ─────────────────────────────────────────────
 
 // GetConfig retorna configuração atual sem expor o token
+//
+// Identidade via InjectUserEmail() (JWT/RBAC) — não mais um "ai_email" digitado manualmente
+// pelo cliente. Ver DYNATRACE-PROFILE-MIGRATION-PLAN.md: o campo digitado era um resquício de
+// quando o app suportava rodar sem JWT; hoje o JWT está sempre ativo, então a identidade real do
+// usuário logado já está sempre disponível.
 func (h *DynatraceHandler) GetConfig(c *gin.Context) {
-	aiEmail := c.Query("ai_email")
+	userEmail := c.GetString("user_email")
 
 	var dtURL, tagFilter string
 	hasToken := false
 
-	if aiEmail != "" && h.tokensStore != nil {
-		tokens, err := h.tokensStore.GetTokens(aiEmail)
+	if userEmail != "" && h.tokensStore != nil {
+		tokens, err := h.tokensStore.GetTokens(userEmail)
 		if err == nil && tokens != nil {
 			dtURL = tokens.DynatraceURL
 			hasToken = tokens.DynatraceToken != ""
@@ -97,19 +102,81 @@ func (h *DynatraceHandler) GetConfig(c *gin.Context) {
 	})
 }
 
-// ─── POST /api/v1/dynatrace/test ──────────────────────────────────────────────
+// ─── POST /api/v1/dynatrace/config ────────────────────────────────────────────
 
-// TestConnection testa conectividade com a API Dynatrace
-func (h *DynatraceHandler) TestConnection(c *gin.Context) {
+// SaveConfig salva URL/token/tag filter do Dynatrace para o usuário logado (identidade via
+// InjectUserEmail(), nunca um e-mail enviado pelo cliente). Faz merge com os tokens já
+// existentes — igual ao handler de SaveTokens em ai_tokens.go — para não sobrescrever/apagar as
+// chaves dos provedores de IA salvas na mesma linha (user_ai_tokens é uma tabela só, com colunas
+// dynatrace_* ao lado das colunas de cada provedor).
+func (h *DynatraceHandler) SaveConfig(c *gin.Context) {
+	userEmail := c.GetString("user_email")
+	if userEmail == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "usuário não identificado"})
+		return
+	}
+
 	var req struct {
-		AIEmail string `json:"ai_email"`
+		DynatraceURL       string `json:"dynatrace_url"`
+		DynatraceToken     string `json:"dynatrace_token"`
+		DynatraceTagFilter string `json:"dynatrace_tag_filter"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
 
-	client, err := h.clientForUser(req.AIEmail)
+	if h.tokensStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "tokens store não configurado"})
+		return
+	}
+
+	existingTokens, err := h.tokensStore.GetTokens(userEmail)
+	if err != nil {
+		log.Error().Err(err).Str("user_email", userEmail).Msg("Dynatrace SaveConfig: falha ao buscar tokens existentes")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get existing tokens"})
+		return
+	}
+	if existingTokens == nil {
+		existingTokens = &storage.UserTokens{UserEmail: userEmail}
+	}
+
+	// URL e token só sobrescrevem se vierem não-vazios (permite salvar só a tag filter sem
+	// precisar reenviar o token a cada save); tag filter sempre sobrescreve, mesmo vazio, pra
+	// permitir limpar o filtro — mesma semântica de ai_tokens.go:286-298.
+	if req.DynatraceURL != "" {
+		existingTokens.DynatraceURL = req.DynatraceURL
+	}
+	if req.DynatraceToken != "" {
+		existingTokens.DynatraceToken = req.DynatraceToken
+	}
+	existingTokens.DynatraceTagFilter = req.DynatraceTagFilter
+
+	if existingTokens.PreferredProvider == "" {
+		existingTokens.PreferredProvider = "ollama"
+	}
+
+	if err := h.tokensStore.SaveTokens(userEmail, existingTokens); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save dynatrace config"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"base_url":   existingTokens.DynatraceURL,
+		"has_token":  existingTokens.DynatraceToken != "",
+		"enabled":    existingTokens.DynatraceURL != "" && existingTokens.DynatraceToken != "",
+		"tag_filter": existingTokens.DynatraceTagFilter,
+	})
+}
+
+// ─── POST /api/v1/dynatrace/test ──────────────────────────────────────────────
+
+// TestConnection testa conectividade com a API Dynatrace do usuário logado (mesma identidade de
+// GetConfig/SaveConfig — via InjectUserEmail()).
+func (h *DynatraceHandler) TestConnection(c *gin.Context) {
+	userEmail := c.GetString("user_email")
+
+	client, err := h.clientForUser(userEmail)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "error": err.Error()})
 		return
@@ -321,7 +388,11 @@ func (h *DynatraceHandler) AnalyzeProblem(c *gin.Context) {
 		return
 	}
 
-	dtClient, err := h.clientForUser(req.AIEmail)
+	// Identidade Dynatrace via InjectUserEmail() (JWT/RBAC) — desacoplada do ai_email do body, que
+	// segue resolvendo só o provider de IA (req.AIEmail, usado abaixo em GetProviderForUser). As
+	// duas identidades podem ser pessoas/contas diferentes — não é bug, é o token Dynatrace sendo
+	// gerado sob uma conta diferente do e-mail corporativo primário usado no login deste app.
+	dtClient, err := h.clientForUser(c.GetString("user_email"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -600,7 +671,8 @@ func (h *DynatraceHandler) InvestigateProblem(c *gin.Context) {
 		return
 	}
 
-	dtClient, err := h.clientForUser(req.AIEmail)
+	// Identidade Dynatrace via InjectUserEmail() (JWT/RBAC) — ver nota equivalente em AnalyzeProblem.
+	dtClient, err := h.clientForUser(c.GetString("user_email"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

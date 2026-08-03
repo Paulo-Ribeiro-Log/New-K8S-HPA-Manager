@@ -51,6 +51,7 @@ import { GitHubCredentialModal } from '@/components/profile/GitHubCredentialModa
 import { ServiceNowSessionModal } from '@/components/profile/ServiceNowSessionModal';
 import { AWXCredentialModal } from '@/components/profile/AWXCredentialModal';
 import { SSOProfileModal } from '@/components/profile/SSOProfileModal';
+import { DynatraceCredentialModal } from '@/components/profile/DynatraceCredentialModal';
 import type { CredentialStatus } from '@/types/profile';
 
 interface UserProfileMenuProps {
@@ -67,6 +68,7 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
   const [serviceNowModalOpen, setServiceNowModalOpen] = useState(false);
   const [awxModalOpen, setAwxModalOpen] = useState(false);
   const [ssoProfileModalOpen, setSsoProfileModalOpen] = useState(false);
+  const [dynatraceModalOpen, setDynatraceModalOpen] = useState(false);
 
   // Contas do Editor de Código
   const [ceProfiles, setCeProfiles] = useState<GitHubProfile[]>([]);
@@ -307,6 +309,13 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
               <span className="flex-1">AWX / Ansible Tower</span>
               {renderStatusIcon(credentials.awx?.status || 'not_configured')}
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setDynatraceModalOpen(true)}
+              className="cursor-pointer"
+            >
+              <span className="flex-1">Dynatrace</span>
+              {renderStatusIcon(credentials.dynatrace?.status || 'not_configured')}
+            </DropdownMenuItem>
           </DropdownMenuGroup>
 
           <DropdownMenuSeparator />
@@ -346,6 +355,11 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
       <SSOProfileModal
         open={ssoProfileModalOpen}
         onOpenChange={setSsoProfileModalOpen}
+        onSaved={refreshCredentials}
+      />
+      <DynatraceCredentialModal
+        open={dynatraceModalOpen}
+        onOpenChange={setDynatraceModalOpen}
         onSaved={refreshCredentials}
       />
     </>

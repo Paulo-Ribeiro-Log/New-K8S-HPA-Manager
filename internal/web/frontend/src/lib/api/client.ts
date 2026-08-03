@@ -3818,16 +3818,37 @@ class APIClient {
 
   // ===== DYNATRACE =====
 
-  async getDynatraceConfig(aiEmail: string): Promise<{
+  // getDynatraceConfig/saveDynatraceConfig/testDynatraceConnection não recebem mais e-mail — o
+  // backend deriva o usuário via InjectUserEmail() (JWT/RBAC), não mais um "ai_email" enviado
+  // pelo cliente (ver DYNATRACE-PROFILE-MIGRATION-PLAN.md). Os demais métodos Dynatrace abaixo
+  // (management-zones, problems, etc.) continuam recebendo aiEmail explicitamente — contrato
+  // inalterado nesses.
+  async getDynatraceConfig(): Promise<{
     base_url: string;
     has_token: boolean;
     enabled: boolean;
     tag_filter: string;
   }> {
-    return this.request(`/dynatrace/config?ai_email=${encodeURIComponent(aiEmail)}`);
+    return this.request(`/dynatrace/config`);
   }
 
-  async testDynatraceConnection(aiEmail: string): Promise<{
+  async saveDynatraceConfig(payload: {
+    dynatrace_url?: string;
+    dynatrace_token?: string;
+    dynatrace_tag_filter?: string;
+  }): Promise<{
+    base_url: string;
+    has_token: boolean;
+    enabled: boolean;
+    tag_filter: string;
+  }> {
+    return this.request(`/dynatrace/config`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async testDynatraceConnection(): Promise<{
     success: boolean;
     latency_ms?: number;
     base_url?: string;
@@ -3835,7 +3856,7 @@ class APIClient {
   }> {
     return this.request("/dynatrace/test", {
       method: "POST",
-      body: JSON.stringify({ ai_email: aiEmail }),
+      body: JSON.stringify({}),
     });
   }
 

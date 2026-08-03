@@ -7,17 +7,37 @@ import { apiClient } from "@/lib/api/client";
 import type { CloudAccountHints } from "@/lib/api/types";
 
 interface CloudAccountHintFieldProps {
-  provider: "gcp" | "aws";
+  provider: "gcp" | "aws" | "dynatrace";
 }
 
 const FIELD_KEY: Record<CloudAccountHintFieldProps["provider"], keyof CloudAccountHints> = {
   gcp: "gcp_email",
   aws: "aws_email",
+  dynatrace: "dynatrace_email",
+};
+
+const PLACEHOLDER: Record<CloudAccountHintFieldProps["provider"], string> = {
+  gcp: "ex: nome.ca@via.com.br",
+  aws: "ex: nome.ca@via.com.br",
+  dynatrace: "ex: 4960023587@via.com.br",
+};
+
+const PROMPT: Record<CloudAccountHintFieldProps["provider"], string> = {
+  gcp: "Usar outra conta para autenticar? (ex: nome.ca@via.com.br)",
+  aws: "Usar outra conta para autenticar? (ex: nome.ca@via.com.br)",
+  dynatrace: "Lembrar qual conta gerou este token?",
+};
+
+const CURRENT_LABEL: Record<CloudAccountHintFieldProps["provider"], string> = {
+  gcp: "Autenticando como:",
+  aws: "Autenticando como:",
+  dynatrace: "Token gerado com:",
 };
 
 /**
- * Lembrete pessoal de qual e-mail usar ao autenticar via Device Auth Grant.
- * Puramente informativo — não força nem seleciona a conta na tela externa de login.
+ * Lembrete pessoal de qual e-mail usar ao autenticar via Device Auth Grant (GCP/AWS)
+ * ou ao gerar/renovar um token (Dynatrace). Puramente informativo — não força nem
+ * seleciona a conta na tela externa de login/geração de token.
  */
 export function CloudAccountHintField({ provider }: CloudAccountHintFieldProps) {
   const queryClient = useQueryClient();
@@ -49,7 +69,7 @@ export function CloudAccountHintField({ provider }: CloudAccountHintFieldProps) 
           autoFocus
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          placeholder="ex: nome.ca@via.com.br"
+          placeholder={PLACEHOLDER[provider]}
           className="h-7 text-xs"
           onKeyDown={(e) => {
             if (e.key === "Enter") saveMutation.mutate(value.trim());
@@ -87,7 +107,7 @@ export function CloudAccountHintField({ provider }: CloudAccountHintFieldProps) 
         }}
         className="flex items-center gap-1 mt-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
-        Autenticando como: <span className="font-medium">{currentEmail}</span>
+        {CURRENT_LABEL[provider]} <span className="font-medium">{currentEmail}</span>
         <Pencil className="h-3 w-3" />
       </button>
     );
@@ -102,7 +122,7 @@ export function CloudAccountHintField({ provider }: CloudAccountHintFieldProps) 
       }}
       className="mt-1 text-xs text-muted-foreground hover:text-foreground underline decoration-dotted transition-colors"
     >
-      Usar outra conta para autenticar? (ex: nome.ca@via.com.br)
+      {PROMPT[provider]}
     </button>
   );
 }

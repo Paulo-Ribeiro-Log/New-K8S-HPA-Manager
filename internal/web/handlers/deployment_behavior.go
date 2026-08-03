@@ -147,12 +147,15 @@ func (h *DeploymentHandler) dynatraceClientForBehavior(aiEmail string) (*dtclien
 // duas fontes disponível → source="none", points vazio, sempre HTTP 200 (estado vazio explícito,
 // nunca erro genérico — mesmo princípio de outras checagens best-effort do app).
 //
-// GET /api/v1/deployments/:cluster/:namespace/:name/behavior?minutes=360&step=5&offset_days=1,2,3&ai_email=
+// GET /api/v1/deployments/:cluster/:namespace/:name/behavior?minutes=360&step=5&offset_days=1,2,3
 func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
 	deployment := c.Param("name")
-	aiEmail := c.Query("ai_email")
+	// Identidade via InjectUserEmail() (JWT/RBAC) — não mais "ai_email" da query string. Usada só
+	// pra resolver o token Dynatrace do fallback de série temporal, nada de resolução de provider AI
+	// nesta função (não há entanglement com GetProviderForUser aqui).
+	dtEmail := c.GetString("user_email")
 
 	minutes := deploymentBehaviorDefaultMinutes
 	if v, err := strconv.Atoi(c.Query("minutes")); err == nil && v > 0 {
@@ -234,7 +237,7 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	var dtc *dtclient.Client
 	var dtEntityID string
 	var dtEntityFound bool
-	if c, derr := h.dynatraceClientForBehavior(aiEmail); derr == nil {
+	if c, derr := h.dynatraceClientForBehavior(dtEmail); derr == nil {
 		dtc = c
 		// UI usa .apps.dynatrace.com (interface web), a API usa .live.dynatrace.com — mesma
 		// transformação já usada em internal/web/handlers/dynatrace.go pro botão "Abrir no

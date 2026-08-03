@@ -792,7 +792,7 @@ func (s *Server) setupRoutes() {
 		deployments.GET("", deploymentHandler.List)
 		deployments.GET("/:cluster/:namespace/:name", deploymentHandler.Get)
 		deployments.GET("/:cluster/:namespace/:name/describe", deploymentHandler.Describe)
-		deployments.GET("/:cluster/:namespace/:name/behavior", deploymentHandler.GetDeploymentBehavior)
+		deployments.GET("/:cluster/:namespace/:name/behavior", rbacMiddleware.InjectUserEmail(), deploymentHandler.GetDeploymentBehavior)
 		deployments.POST("/diff", deploymentHandler.Diff)
 		deployments.POST("/validate", deploymentHandler.Validate)
 
@@ -1015,13 +1015,18 @@ func (s *Server) setupRoutes() {
 	dtHandler := handlers.NewDynatraceHandler(s.aiTokensStore, s.aiHistoryStore, s.aiHandler, s.npRegistryStore)
 	dt := api.Group("/dynatrace")
 	{
-		dt.GET("/config", dtHandler.GetConfig)
-		dt.POST("/test", dtHandler.TestConnection)
+		// config/test são operações sobre a credencial do PRÓPRIO usuário — identidade via
+		// InjectUserEmail() (JWT/RBAC), não mais um "ai_email" enviado pelo cliente. Os demais
+		// endpoints do grupo continuam aceitando ai_email como parâmetro (sem mudança de
+		// contrato) — ver DYNATRACE-PROFILE-MIGRATION-PLAN.md.
+		dt.GET("/config", rbacMiddleware.InjectUserEmail(), dtHandler.GetConfig)
+		dt.POST("/config", rbacMiddleware.InjectUserEmail(), dtHandler.SaveConfig)
+		dt.POST("/test", rbacMiddleware.InjectUserEmail(), dtHandler.TestConnection)
 		dt.GET("/management-zones", dtHandler.GetManagementZones)
 		dt.GET("/problems", dtHandler.ListProblems)
 		dt.GET("/problems/:problemId", dtHandler.GetProblem)
-		dt.POST("/problems/:problemId/analyze", dtHandler.AnalyzeProblem)
-		dt.POST("/problems/:problemId/investigate", dtHandler.InvestigateProblem)
+		dt.POST("/problems/:problemId/analyze", rbacMiddleware.InjectUserEmail(), dtHandler.AnalyzeProblem)
+		dt.POST("/problems/:problemId/investigate", rbacMiddleware.InjectUserEmail(), dtHandler.InvestigateProblem)
 		dt.GET("/problems/:problemId/metrics", dtHandler.GetProblemMetrics)
 		dt.GET("/problems/:problemId/context", dtHandler.GetProblemContext)
 		dt.GET("/history", dtHandler.GetHistory)
@@ -1110,8 +1115,8 @@ func (s *Server) setupRoutes() {
 		certGroup.GET("/:cluster/:namespace/:name/rollback/:backupId/content", rbacMiddleware.RequireSREGroup(), certificatesHandler.GetRollbackContent)
 		// Backup manual (mecanismo separado do Rollback — botão "Copiar para Backup")
 		certGroup.POST("/:cluster/:namespace/:name/manual-backup", rbacMiddleware.RequireSREGroup(), certificatesHandler.SaveManualBackup)
-		certGroup.GET("/manual-backups", certificatesHandler.ListManualBackupSecrets)              // leitura, sem RBAC
-		certGroup.GET("/manual-backups/:secretName", certificatesHandler.ListManualBackups)         // leitura, sem RBAC
+		certGroup.GET("/manual-backups", certificatesHandler.ListManualBackupSecrets)       // leitura, sem RBAC
+		certGroup.GET("/manual-backups/:secretName", certificatesHandler.ListManualBackups) // leitura, sem RBAC
 		certGroup.GET("/manual-backups/:secretName/:backupId/content", rbacMiddleware.RequireSREGroup(), certificatesHandler.GetManualBackupContent)
 		certGroup.PUT("/manual-backups/:secretName/:backupId/comment", rbacMiddleware.RequireSREGroup(), certificatesHandler.UpdateManualBackupComment)
 		certGroup.DELETE("/manual-backups/:secretName/:backupId", rbacMiddleware.RequireSREGroup(), certificatesHandler.DeleteManualBackup)
@@ -1595,7 +1600,7 @@ func (s *Server) setupRoutes() {
 			healthCheckGroup.GET("/:id", healthCheckHandler.Get)
 
 			// Rotas de escrita (POST, DELETE) - SRE only
-			healthCheckGroup.POST("/run", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
+			healthCheckGroup.POST("/run", rbacMiddleware.InjectUserEmail(), rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
 			healthCheckGroup.POST("/correlated/analyze", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeCorrelated)
 			healthCheckGroup.POST("/correlated/analyze-batch", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeCorrelatedBatch)
 			healthCheckGroup.POST("/oneagent/analyze", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeOneAgentSignal)

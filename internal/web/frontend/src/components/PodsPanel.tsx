@@ -25,6 +25,7 @@ import {
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { useUserPermissions } from "@/hooks/useUserPermissions";
 import { useDynatracePodStatus } from "@/hooks/useAPI";
 import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
 import { PodTerminal } from "@/components/PodTerminal";
@@ -65,14 +66,12 @@ export const PodsPanel = ({
 }: PodsPanelProps) => {
   const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
-  // Mesma fonte de e-mail usada pela aba Dynatrace/AI Diagnostics (localStorage["ai_email"],
-  // configurado em AI Settings) — não o e-mail de claims do JWT: em modo de token estático
-  // (K8S_HPA_JWT_SECRET não configurado, o padrão neste app) não há JWT nenhum, então
-  // apiClient.getTokenClaims() sempre retorna null e o e-mail de useUserProfile() fica sempre
-  // vazio. Bug real corrigido: isso fazia dynatraceClientForPods("") nunca achar o token salvo
-  // do usuário, então cluster_supported saía sempre false — ícone vermelho "não suportado" pra
-  // todo mundo, mesmo com um token Dynatrace funcionando de verdade na aba Dynatrace.
-  const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
+  // E-mail real do login (RBAC/JWT) — não mais um "ai_email" digitado manualmente em AI
+  // Settings. Ver DYNATRACE-PROFILE-MIGRATION-PLAN.md: esse endpoint (dynatrace-status) só
+  // resolve o cliente Dynatrace do usuário, sem nenhuma resolução de provedor de IA — seguro
+  // migrar pra identidade verificada sem afetar a seleção de provedor de IA em outras telas.
+  const { data: userPermsForDT } = useUserPermissions();
+  const aiEmailForDT = userPermsForDT?.email || "";
   const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, checkError: dtCheckError, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
   const canWritePods = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWritePods : undefined;
 

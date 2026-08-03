@@ -210,32 +210,42 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	row := s.client.db.QueryRow(query, userEmail)
 
 	var tokens UserTokens
-	var metadataJSON string
-	var geminiAuthMode, geminiVertexProject, geminiVertexLocation, geminiServiceAccountJSON, geminiRefreshToken sql.NullString
+	var metadataJSON sql.NullString
+	var geminiAPIKey, geminiModel, geminiAuthMode, geminiVertexProject, geminiVertexLocation, geminiServiceAccountJSON, geminiRefreshToken sql.NullString
 	var geminiWifLoginURL sql.NullString
-	var openaiBaseURL sql.NullString
+	var openaiAPIKey, openaiModel, openaiBaseURL sql.NullString
+	var claudeAPIKey, claudeModel sql.NullString
+	var copilotAPIKey, copilotEndpoint, copilotDeployment sql.NullString
+	var ollamaModel, preferredProvider sql.NullString
 	var dynatraceURL, dynatraceToken, dynatraceTagFilter sql.NullString
 
+	// Bug real corrigido: linhas criadas por caminhos de INSERT parciais (SaveGitHubEditorProfiles,
+	// SaveCloudAccountHints — só preenchem user_email + a própria coluna + preferred_provider)
+	// deixam as demais colunas (gemini_api_key, openai_api_key, etc.) com NULL de verdade no
+	// SQLite, não string vazia. Scanear direto num Go string (não-nullable) pra essas colunas
+	// falhava com "converting NULL to string is unsupported" — confirmado ao vivo: um usuário que
+	// só tinha configurado um perfil do GitHub Editor (nunca abriu AI Settings) quebrava QUALQUER
+	// chamada de GetTokens pra ele, incluindo o novo fluxo de salvar config do Dynatrace no Perfil.
 	err := row.Scan(
 		&tokens.UserEmail,
-		&tokens.GeminiAPIKey,
-		&tokens.GeminiModel,
+		&geminiAPIKey,
+		&geminiModel,
 		&geminiAuthMode,
 		&geminiVertexProject,
 		&geminiVertexLocation,
 		&geminiServiceAccountJSON,
 		&geminiRefreshToken,
 		&geminiWifLoginURL,
-		&tokens.OpenAIAPIKey,
-		&tokens.OpenAIModel,
+		&openaiAPIKey,
+		&openaiModel,
 		&openaiBaseURL,
-		&tokens.ClaudeAPIKey,
-		&tokens.ClaudeModel,
-		&tokens.CopilotAPIKey,
-		&tokens.CopilotEndpoint,
-		&tokens.CopilotDeployment,
-		&tokens.OllamaModel,
-		&tokens.PreferredProvider,
+		&claudeAPIKey,
+		&claudeModel,
+		&copilotAPIKey,
+		&copilotEndpoint,
+		&copilotDeployment,
+		&ollamaModel,
+		&preferredProvider,
 		&dynatraceURL,
 		&dynatraceToken,
 		&dynatraceTagFilter,
@@ -243,13 +253,24 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 		&tokens.UpdatedAt,
 		&tokens.CreatedAt,
 	)
+	tokens.GeminiAPIKey = geminiAPIKey.String
+	tokens.GeminiModel = geminiModel.String
 	tokens.GeminiAuthMode = geminiAuthMode.String
 	tokens.GeminiVertexProject = geminiVertexProject.String
 	tokens.GeminiVertexLocation = geminiVertexLocation.String
 	tokens.GeminiServiceAccountJSON = geminiServiceAccountJSON.String
 	tokens.GeminiRefreshToken = geminiRefreshToken.String
 	tokens.GeminiWifLoginURL = geminiWifLoginURL.String
+	tokens.OpenAIAPIKey = openaiAPIKey.String
+	tokens.OpenAIModel = openaiModel.String
 	tokens.OpenAIBaseURL = openaiBaseURL.String
+	tokens.ClaudeAPIKey = claudeAPIKey.String
+	tokens.ClaudeModel = claudeModel.String
+	tokens.CopilotAPIKey = copilotAPIKey.String
+	tokens.CopilotEndpoint = copilotEndpoint.String
+	tokens.CopilotDeployment = copilotDeployment.String
+	tokens.OllamaModel = ollamaModel.String
+	tokens.PreferredProvider = preferredProvider.String
 	tokens.DynatraceURL = dynatraceURL.String
 	tokens.DynatraceToken = dynatraceToken.String
 	tokens.DynatraceTagFilter = dynatraceTagFilter.String
@@ -263,8 +284,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	}
 
 	// Deserializar metadata
-	if metadataJSON != "" && metadataJSON != "{}" {
-		if err := json.Unmarshal([]byte(metadataJSON), &tokens.Metadata); err != nil {
+	if metadataJSON.String != "" && metadataJSON.String != "{}" {
+		if err := json.Unmarshal([]byte(metadataJSON.String), &tokens.Metadata); err != nil {
 			// Ignorar erro de deserialização de metadata
 			tokens.Metadata = nil
 		}
@@ -371,11 +392,13 @@ func (s *UserTokensStore) ensureGitHubEditorProfilesColumn() error {
 // ── Cloud Account Hints ───────────────────────────────────────────────────────
 
 // CloudAccountHints guarda, por usuário, qual e-mail lembrar de usar ao autenticar
-// em cada provider via Device Auth Grant (GCP/AWS). Puramente informativo — o app
-// não tem como forçar qual conta é escolhida na tela de login externa.
+// em cada provider via Device Auth Grant (GCP/AWS) ou ao gerar/renovar um token
+// (Dynatrace). Puramente informativo — o app não tem como forçar qual conta é
+// escolhida na tela de login externa.
 type CloudAccountHints struct {
-	GCPEmail string `json:"gcp_email,omitempty"`
-	AWSEmail string `json:"aws_email,omitempty"`
+	GCPEmail       string `json:"gcp_email,omitempty"`
+	AWSEmail       string `json:"aws_email,omitempty"`
+	DynatraceEmail string `json:"dynatrace_email,omitempty"`
 }
 
 // GetCloudAccountHints retorna os hints de conta salvos para o usuário.

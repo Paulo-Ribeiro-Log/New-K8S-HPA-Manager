@@ -31,6 +31,7 @@ export interface CredentialsState {
   github: CredentialInfo;
   servicenow?: CredentialInfo;
   awx?: CredentialInfo;
+  dynatrace?: CredentialInfo;
 }
 
 // Tema da aplicacao
