@@ -59,6 +59,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { useUserPermissions } from "@/hooks/useUserPermissions";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
@@ -102,11 +103,12 @@ export const DeploymentsTab = ({
   // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
   // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia
   // mas nunca renderizava nada aqui (dtHasLoaded sempre false por padrão).
-  // Mesma fonte de e-mail usada pela aba Dynatrace/AI Diagnostics (localStorage["ai_email"]) —
-  // não o e-mail de claims do JWT: em modo de token estático (sem K8S_HPA_JWT_SECRET, o padrão
-  // deste app) nunca há JWT, então useUserProfile() fica sempre com e-mail vazio, e o backend
-  // nunca acha o token Dynatrace salvo do usuário — cluster_supported saía sempre false.
-  const aiEmailForDT = localStorage.getItem("ai_email") ?? "";
+  // E-mail real do login (RBAC/JWT) — não mais um "ai_email" digitado manualmente em AI
+  // Settings. Ver DYNATRACE-PROFILE-MIGRATION-PLAN.md: esse endpoint (dynatrace-status) só
+  // resolve o cliente Dynatrace do usuário, sem nenhuma resolução de provedor de IA — seguro
+  // migrar pra identidade verificada sem afetar a seleção de provedor de IA em outras telas.
+  const { data: userPermsForDT } = useUserPermissions();
+  const aiEmailForDT = userPermsForDT?.email || "";
   const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, checkError: dtCheckError, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
 
   // Estados locais (não persistidos)
