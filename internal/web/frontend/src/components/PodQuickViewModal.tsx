@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { useJsonInspector } from "@/hooks/useJsonInspector";
 import { JsonInspectorModal, JsonFloatingButton } from "@/components/JsonInspectorModal";
 import { DeploymentBehaviorChart } from "@/components/DeploymentBehaviorChart";
+import { usePodLogStream, type PodLogStreamTarget } from "@/hooks/usePodLogStream";
 
 // Gauge duplo concêntrico: anel externo = MEM, anel interno = CPU
 function DualGauge({ cpuPct, memPct, cpuVal, memVal }: {
@@ -444,8 +445,6 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const [activeTab, setActiveTab] = useState("details");
   const [selectedContainer, setSelectedContainer] = useState("");
   const [tailLines, setTailLines] = useState("500");
-  const [logs, setLogs] = useState("");
-  const [logsLoading, setLogsLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [copied, setCopied] = useState(false);
 
@@ -483,7 +482,6 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const previousLogsEndRef = useRef<HTMLDivElement>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jsonInspector = useJsonInspector();
 
   // Resize state
@@ -571,36 +569,29 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     fetchSameImagePods();
   }, [activeTab, selectedContainerImage, fetchSameImagePods]);
 
-  const fetchLogs = useCallback(async () => {
-    if (!pod || !cluster) return;
-    setLogsLoading(true);
-    try {
-      const res = await apiClient.getPodLogs(
-        cluster, pod.namespace, pod.name,
-        selectedContainer || pod.containers?.[0]?.name,
-        parseInt(tailLines)
-      );
-      setLogs(res.logs ?? "");
-      setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
-    } catch {
-      setLogs("Erro ao carregar logs.");
-    } finally {
-      setLogsLoading(false);
-    }
-  }, [pod, cluster, selectedContainer, tailLines]);
+  // Streaming ao vivo (Follow=true, mesmo `kubectl logs -f` do k9s) — substitui o polling antigo
+  // (getPodLogs a cada 2s, substituindo o buffer inteiro a cada resposta, causando tanto a
+  // lentidão de refazer a busca completa do zero quanto o "log some por um instante" quando uma
+  // resposta vinha vazia/diferente). Ver hooks/usePodLogStream.ts — mesma infra SSE já usada pelo
+  // AllPodsLogsModal (vários pods), aqui com um único pod. "Auto" controla a conexão em si (mesmo
+  // padrão do AllPodsLogsModal): desligado = stream fechado, buffer já recebido continua visível.
+  const logsStreamTarget = useMemo<PodLogStreamTarget | null>(() => {
+    if (!pod || !cluster) return null;
+    return { cluster, namespace: pod.namespace, name: pod.name, container: selectedContainer || pod.containers?.[0]?.name };
+  }, [pod, cluster, selectedContainer]);
+
+  const { lines: logLines, loading: logsLoading, refetch: fetchLogs } = usePodLogStream(
+    logsStreamTarget,
+    parseInt(tailLines),
+    activeTab === "logs" && autoRefresh
+  );
+
+  const logs = useMemo(() => logLines.join("\n"), [logLines]);
 
   useEffect(() => {
-    if (activeTab !== "logs") return;
-    fetchLogs();
-  }, [activeTab, selectedContainer, tailLines, fetchLogs]);
-
-  useEffect(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (activeTab === "logs" && autoRefresh) {
-      intervalRef.current = setInterval(fetchLogs, 2000);
-    }
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [activeTab, autoRefresh, fetchLogs]);
+    if (activeTab !== "logs" || logLines.length === 0) return;
+    setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+  }, [activeTab, logLines]);
 
   const filteredLines = useMemo(
     () => filterLogLines(logs, logLevelFilter, logSearch),

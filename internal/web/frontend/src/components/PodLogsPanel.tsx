@@ -1,14 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { ChevronLeft, Copy, RefreshCw, Loader2, Braces } from "lucide-react";
-import { apiClient } from "@/lib/api/client";
 import type { PodSummary } from "@/lib/api/types";
 import { toast } from "sonner";
 import { useJsonInspector } from "@/hooks/useJsonInspector";
 import { JsonInspectorModal, JsonFloatingButton } from "@/components/JsonInspectorModal";
+import { usePodLogStream, type PodLogStreamTarget } from "@/hooks/usePodLogStream";
 
 interface PodLogsPanelProps {
   cluster: string;
@@ -45,38 +45,19 @@ export const PodLogsPanel = ({ cluster, pod, onBack, backLabel }: PodLogsPanelPr
   const [selectedContainer, setSelectedContainer] = useState(containers[0] ?? "");
   const [tailLines, setTailLines] = useState(500);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jsonInspector = useJsonInspector();
 
-  const fetchLogs = useCallback(async () => {
-    if (!selectedContainer) return;
-    setLoading(true);
-    try {
-      const result = await apiClient.getPodLogs(cluster, pod.namespace, pod.name, selectedContainer, tailLines);
-      setLogs(result.logs ? result.logs.split("\n") : []);
-    } catch {
-      // silently ignore
-    } finally {
-      setLoading(false);
-    }
-  }, [cluster, pod.namespace, pod.name, selectedContainer, tailLines]);
+  // Streaming ao vivo (Follow=true, mesmo `kubectl logs -f` do k9s) — substitui o polling antigo
+  // (getPodLogs a cada 3s, substituindo o buffer inteiro a cada resposta, causando tanto a
+  // lentidão de refazer a busca completa do zero quanto o "log some por um instante" quando uma
+  // resposta vinha vazia/diferente). Ver hooks/usePodLogStream.ts.
+  const streamTarget = useMemo<PodLogStreamTarget | null>(() => {
+    if (!selectedContainer) return null;
+    return { cluster, namespace: pod.namespace, name: pod.name, container: selectedContainer };
+  }, [cluster, pod.namespace, pod.name, selectedContainer]);
 
-  // Initial fetch
-  useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
-
-  // Auto-refresh
-  useEffect(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (autoRefresh) {
-      intervalRef.current = setInterval(fetchLogs, 3000);
-    }
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [autoRefresh, fetchLogs]);
+  const { lines: logs, loading, refetch: fetchLogs } = usePodLogStream(streamTarget, tailLines, autoRefresh);
 
   // Auto-scroll to bottom when autoRefresh is on
   useEffect(() => {
