@@ -388,7 +388,11 @@ func (h *DynatraceHandler) AnalyzeProblem(c *gin.Context) {
 		return
 	}
 
-	dtClient, err := h.clientForUser(req.AIEmail)
+	// Identidade Dynatrace via InjectUserEmail() (JWT/RBAC) — desacoplada do ai_email do body, que
+	// segue resolvendo só o provider de IA (req.AIEmail, usado abaixo em GetProviderForUser). As
+	// duas identidades podem ser pessoas/contas diferentes — não é bug, é o token Dynatrace sendo
+	// gerado sob uma conta diferente do e-mail corporativo primário usado no login deste app.
+	dtClient, err := h.clientForUser(c.GetString("user_email"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -667,7 +671,8 @@ func (h *DynatraceHandler) InvestigateProblem(c *gin.Context) {
 		return
 	}
 
-	dtClient, err := h.clientForUser(req.AIEmail)
+	// Identidade Dynatrace via InjectUserEmail() (JWT/RBAC) — ver nota equivalente em AnalyzeProblem.
+	dtClient, err := h.clientForUser(c.GetString("user_email"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

@@ -78,12 +78,18 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 		return
 	}
 
-	// Popular credenciais Dynatrace do perfil do usuário (se check_dynatrace ou check_oneagent_signals solicitado)
-	if (req.CheckDynatrace || req.CheckOneAgentSignals) && req.AIEmail != "" && h.tokensStore != nil {
-		if tokens, err := h.tokensStore.GetTokens(req.AIEmail); err == nil && tokens != nil {
-			req.DynatraceURL = tokens.DynatraceURL
-			req.DynatraceToken = tokens.DynatraceToken
-			req.DynatraceTagFilter = tokens.DynatraceTagFilter
+	// Popular credenciais Dynatrace do perfil do usuário (se check_dynatrace ou check_oneagent_signals
+	// solicitado). Identidade via InjectUserEmail() (JWT/RBAC) — desacoplada de req.AIEmail, que não é
+	// usado nesta função pra nada além disso (a resolução de provider de IA pros itens correlacionados
+	// acontece depois, em endpoints separados: AnalyzeCorrelated/AnalyzeCorrelatedBatch/
+	// AnalyzeOneAgentSignal, que continuam usando req.AIEmail — sem entanglement aqui).
+	if (req.CheckDynatrace || req.CheckOneAgentSignals) && h.tokensStore != nil {
+		if userEmail := c.GetString("user_email"); userEmail != "" {
+			if tokens, err := h.tokensStore.GetTokens(userEmail); err == nil && tokens != nil {
+				req.DynatraceURL = tokens.DynatraceURL
+				req.DynatraceToken = tokens.DynatraceToken
+				req.DynatraceTagFilter = tokens.DynatraceTagFilter
+			}
 		}
 	}
 

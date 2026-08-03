@@ -1,4 +1,4 @@
-# Plano: Mover autenticação Dynatrace da aba AI Diagnostics para o Perfil do Usuário — 🟡 Fases 1-3 concluídas, Fase 4 parcial (bloqueio documentado), Fase 5 pendente
+# Plano: Mover autenticação Dynatrace da aba AI Diagnostics para o Perfil do Usuário — ✅ Fases 1-4 concluídas, Fase 5 parcial (validação em navegador pendente)
 
 **Branch da implementação**: `feat/dynatrace-profile-auth-backend` (a partir de `main`), PR #333
 aberto (PR #332, a versão docs-only original deste checklist, foi fechado em favor deste branch).
@@ -146,29 +146,42 @@ e-mail" — só usam como chave de busca no SQLite. A maior parte da migração 
       encontrou e removeu 2 chamadas `setDynatrace*("")` residuais (reset pós-save e reset de
       troca de e-mail).
 
-### Fase 4 — Frontend: trocar fonte do `ai_email` nos demais consumidores 🟡 parcial (commit `97efc82b`)
+### Fase 4 — Frontend: trocar fonte do `ai_email` nos demais consumidores ✅ concluída (commits `97efc82b`, `<identidades-separadas>`)
 
 - [x] `grep -rn "ai_email" internal/web/frontend/src` — lista completa de call sites confirmada.
-- [x] **Migrados** (badge de monitoramento Dynatrace, endpoint puro sem resolução de provedor
-      de IA — seguro): `PodsPanel.tsx`, `DaemonSetsTab.tsx`, `DeploymentsTab.tsx` — `aiEmailForDT`
-      agora vem de `useUserPermissions().data?.email` em vez de
-      `localStorage.getItem("ai_email")`.
-- [ ] **Bloqueados — decisão arquitetural pendente, não migrados nesta sessão**:
-      `DynatraceTab.tsx`, `HealthCheckResultsPanel.tsx`, `HealthCheckingTab.tsx`,
-      `DeploymentBehaviorChart.tsx`. Motivo: nesses arquivos o MESMO `ai_email` também é usado
-      pelo backend para resolver o **provedor de IA** (`h.aiHandler.GetProviderForUser(email)`
-      dentro de `AnalyzeProblem`/`InvestigateProblem`/`analyzeCorrelatedItem`/
-      `analyzeOneAgentSignal`/`analyzeCorrelatedBatch`, e no fluxo de Health Check via
-      `check_dynatrace`/`check_oneagent_signals`) — não só o token Dynatrace. Trocar a fonte só
-      no frontend, sem separar as duas identidades no backend, arriscaria quebrar a seleção do
-      provedor de IA para qualquer usuário cujo `ai_email` digitado seja diferente do e-mail
-      real de login. Ver mensagem completa do commit `97efc82b` para o detalhamento por arquivo.
-      **Próximo passo sugerido**: decidir (a) manter os dois desacoplados de propósito (Dynatrace
-      via login real, IA via `ai_email` manual) documentando a divergência, ou (b) desacoplar os
-      dois parâmetros no backend (`ai_email` continua só para IA; novo parâmetro/identidade
-      própria para Dynatrace nesses endpoints) antes de migrar o restante do frontend.
-      `CommandRunnerTab.tsx`/`FinOpsTab.tsx`/`NodePoolEditor.tsx`/`useAIDiagnostics.ts` usam
-      `ai_email` só para IA (não-Dynatrace) — corretamente fora de escopo, não tocar.
+- [x] **Migrados via troca de fonte no frontend** (badge de monitoramento Dynatrace, endpoint
+      puro sem resolução de provedor de IA — seguro): `PodsPanel.tsx`, `DaemonSetsTab.tsx`,
+      `DeploymentsTab.tsx` — `aiEmailForDT` agora vem de `useUserPermissions().data?.email` em
+      vez de `localStorage.getItem("ai_email")`.
+- [x] **Resolvidos via separação de identidade no BACKEND, sem nenhuma mudança de frontend
+      necessária** (decisão do usuário: "separa as duas identidades no backend"):
+      - Investigação revelou que o "entanglement" documentado inicialmente só era real em 2 dos 4
+        endpoints (`dynatrace.go`: `AnalyzeProblem`/`InvestigateProblem`, onde o MESMO
+        `req.AIEmail` alimentava tanto `clientForUser` — Dynatrace — quanto
+        `h.aiHandler.GetProviderForUser` — provedor de IA). Os outros 2 endpoints
+        (`healthcheck.go: Run()`, usado por `HealthCheckingTab.tsx`; `deployment_behavior.go:
+        GetDeploymentBehavior`, usado por `DeploymentBehaviorChart.tsx`) usam `ai_email`/`aiEmail`
+        **só** para resolver o token Dynatrace — nunca chamam `GetProviderForUser` — então nunca
+        houve conflito real neles (a análise original da Fase 4 foi conservadora demais).
+        `HealthCheckResultsPanel.tsx` (`AnalyzeCorrelated`/`AnalyzeCorrelatedBatch`/
+        `AnalyzeOneAgentSignal`) usa `ai_email` só para provedor de IA, nunca resolve Dynatrace —
+        corretamente fora de escopo desta migração (é puramente identidade de IA, igual
+        `CommandRunnerTab.tsx`/`FinOpsTab.tsx`/`NodePoolEditor.tsx`/`useAIDiagnostics.ts`).
+      - Nos 3 endpoints que de fato resolvem Dynatrace (`AnalyzeProblem`, `InvestigateProblem`,
+        `healthcheck.go: Run()`, `GetDeploymentBehavior`), a resolução do cliente/token Dynatrace
+        passou a usar `c.GetString("user_email")` (JWT/RBAC, via `InjectUserEmail()` adicionado
+        às respectivas rotas em `server.go`) — desacoplada de `req.AIEmail`/`ai_email`, que
+        continua resolvendo só o provedor de IA nos 2 endpoints que precisam disso
+        (`AnalyzeProblem`/`InvestigateProblem`).
+      - **Resultado**: nenhuma mudança de frontend foi necessária nos 4 arquivos antes
+        bloqueados — o backend agora deriva a identidade Dynatrace corretamente (via login real)
+        independente do que o frontend envie em `ai_email`, sem risco de quebrar a seleção de
+        provedor de IA em nenhum caso.
+      - Validado: `go build`, `gofmt`, `SKIP_AZURE_TESTS=1 go test ./internal/web/... ./internal/healthcheck/... -race`
+        OK; teste ao vivo via `curl` com JWT real confirmando que a rota `.../behavior` responde
+        200 com token e 401 sem token (mesmo middleware JWT global já existente,
+        `InjectUserEmail()` só extrai o e-mail dos claims já validados — nenhuma autenticação
+        nova imposta).
 
 ### Achado extra não planejado — bug real corrigido (commit `2784ebaf`)
 
