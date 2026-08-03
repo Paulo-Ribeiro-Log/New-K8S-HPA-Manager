@@ -14,6 +14,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { CheckCircle2, XCircle, Info, Loader2, AlertTriangle, Eye, EyeOff, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { useUserPermissions } from '@/hooks/useUserPermissions';
+import { CloudAccountHintField } from '@/components/CloudAccountHintField';
 import { apiClient } from '@/lib/api/client';
 import type { CredentialModalProps } from '@/types/profile';
 
@@ -174,6 +175,7 @@ export function DynatraceCredentialModal({ open, onOpenChange, onSaved }: Creden
                 <code className="bg-muted px-1 rounded">metrics.read</code>{' '}
                 <code className="bg-muted px-1 rounded">events.read</code>
               </p>
+              <CloudAccountHintField provider="dynatrace" />
             </div>
 
             <div className="space-y-2">

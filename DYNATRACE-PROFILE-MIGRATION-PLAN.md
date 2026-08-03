@@ -1,7 +1,7 @@
 # Plano: Mover autenticação Dynatrace da aba AI Diagnostics para o Perfil do Usuário — 🟡 Fases 1-3 concluídas, Fase 4 parcial (bloqueio documentado), Fase 5 pendente
 
-**Branch da implementação**: `feat/dynatrace-profile-auth-backend` (a partir de `main`, ainda não
-pusheada/PR aberto no momento em que este checklist foi atualizado).
+**Branch da implementação**: `feat/dynatrace-profile-auth-backend` (a partir de `main`), PR #333
+aberto (PR #332, a versão docs-only original deste checklist, foi fechado em favor deste branch).
 
 Move a configuração de Dynatrace (URL, API token, filtro de Management Zone) de dentro da aba
 **AI Diagnostics → Configurações** (`AISettingsTab.tsx`) para o menu **Perfil do Usuário**
@@ -182,6 +182,22 @@ introduzido por esta migração — só surgiu porque `SaveConfig` foi o primeir
 chamar `GetTokens` para um usuário real nesse estado. Corrigido convertendo os scans afetados
 para `sql.NullString` (benefícia TODOS os chamadores de `GetTokens`, não só o Dynatrace). 2 testes
 de regressão novos em `internal/storage/user_tokens_store_test.go`.
+
+### Achado extra #2 — token Dynatrace gerado sob uma identidade diferente do SSO primário
+
+Discussão pós-implementação: o token Dynatrace é gerado/renovado sob uma conta que **não** é o
+e-mail corporativo primário usado no login SSO deste app (ex: identidade numérica
+`4960023587@...`, nem sequer o padrão `.ca@` já usado por GCP/AWS) — uma terceira identidade,
+específica do Dynatrace. Confirmado que isso **não bloqueia** nada tecnicamente: a chave de
+armazenamento no nosso SQLite é só uma partição por usuário logado, não precisa bater com a
+identidade que gerou o token no lado do Dynatrace. O risco é só de **memória/UX** na hora de
+renovar. Resolvido reaproveitando o mecanismo já existente `CloudAccountHintField`
+(`internal/storage/user_tokens_store.go` → `CloudAccountHints.DynatraceEmail`, novo
+`provider="dynatrace"` em `CloudAccountHintField.tsx`, campo inserido em
+`DynatraceCredentialModal.tsx` logo abaixo do token) — mesmo padrão de lembrete pessoal já usado
+pra GCP/AWS, sem nenhuma mudança de contrato de autenticação. Validado ao vivo via `curl` com JWT
+real: salvar/ler `dynatrace_email` em `/api/v1/user/cloud-account-hints` funcionando, dado de
+teste limpo do banco real depois.
 
 ### Fase 5 — Verificação 🟡 parcial
 

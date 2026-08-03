@@ -1694,6 +1694,7 @@ export interface DeploymentBehaviorResponse {
 export interface CloudAccountHints {
   gcp_email?: string;
   aws_email?: string;
+  dynatrace_email?: string;
 }
 
 export interface Note {

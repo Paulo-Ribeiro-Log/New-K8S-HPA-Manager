@@ -392,11 +392,13 @@ func (s *UserTokensStore) ensureGitHubEditorProfilesColumn() error {
 // ── Cloud Account Hints ───────────────────────────────────────────────────────
 
 // CloudAccountHints guarda, por usuário, qual e-mail lembrar de usar ao autenticar
-// em cada provider via Device Auth Grant (GCP/AWS). Puramente informativo — o app
-// não tem como forçar qual conta é escolhida na tela de login externa.
+// em cada provider via Device Auth Grant (GCP/AWS) ou ao gerar/renovar um token
+// (Dynatrace). Puramente informativo — o app não tem como forçar qual conta é
+// escolhida na tela de login externa.
 type CloudAccountHints struct {
-	GCPEmail string `json:"gcp_email,omitempty"`
-	AWSEmail string `json:"aws_email,omitempty"`
+	GCPEmail       string `json:"gcp_email,omitempty"`
+	AWSEmail       string `json:"aws_email,omitempty"`
+	DynatraceEmail string `json:"dynatrace_email,omitempty"`
 }
 
 // GetCloudAccountHints retorna os hints de conta salvos para o usuário.
