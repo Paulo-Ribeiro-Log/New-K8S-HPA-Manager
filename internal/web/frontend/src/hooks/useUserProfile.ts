@@ -38,7 +38,11 @@ export function useUserProfile() {
   const [awxStatus, setAwxStatus] = useState<{ configured: boolean; reachable: boolean } | null>(null);
   const [awxLoading, setAwxLoading] = useState(true);
 
-  // Verificar status do Nexus, ServiceNow e AWX ao montar
+  // Status do Dynatrace
+  const [dynatraceStatus, setDynatraceStatus] = useState<{ enabled: boolean; has_token: boolean } | null>(null);
+  const [dynatraceLoading, setDynatraceLoading] = useState(true);
+
+  // Verificar status do Nexus, ServiceNow, AWX e Dynatrace ao montar
   useEffect(() => {
     const checkNexus = async () => {
       try {
@@ -73,9 +77,21 @@ export function useUserProfile() {
       }
     };
 
+    const checkDynatrace = async () => {
+      try {
+        const status = await apiClient.getDynatraceConfig();
+        setDynatraceStatus(status);
+      } catch {
+        setDynatraceStatus(null);
+      } finally {
+        setDynatraceLoading(false);
+      }
+    };
+
     checkNexus();
     checkServiceNow();
     checkAWX();
+    checkDynatrace();
   }, []);
 
   // Funcao para refresh manual do status
@@ -83,12 +99,14 @@ export function useUserProfile() {
     setNexusLoading(true);
     setServiceNowLoading(true);
     setAwxLoading(true);
+    setDynatraceLoading(true);
 
     try {
-      const [nexus, servicenow, awx] = await Promise.allSettled([
+      const [nexus, servicenow, awx, dynatrace] = await Promise.allSettled([
         apiClient.get<NexusStatus>('/nexus/status'),
         apiClient.get<{ valid: boolean; status: string }>('/servicenow/session-status'),
         apiClient.getAWXStatus(),
+        apiClient.getDynatraceConfig(),
       ]);
 
       if (nexus.status === 'fulfilled') {
@@ -108,10 +126,17 @@ export function useUserProfile() {
       } else {
         setAwxStatus(null);
       }
+
+      if (dynatrace.status === 'fulfilled') {
+        setDynatraceStatus(dynatrace.value);
+      } else {
+        setDynatraceStatus(null);
+      }
     } finally {
       setNexusLoading(false);
       setServiceNowLoading(false);
       setAwxLoading(false);
+      setDynatraceLoading(false);
     }
   }, []);
 
@@ -162,6 +187,17 @@ export function useUserProfile() {
       awxCredStatus = 'error';
     }
 
+    // Determinar status do Dynatrace
+    let dynatraceCredStatus: CredentialStatus = 'not_configured';
+    if (dynatraceLoading) {
+      dynatraceCredStatus = 'validating';
+    } else if (dynatraceStatus?.enabled) {
+      dynatraceCredStatus = 'configured';
+    } else if (dynatraceStatus?.has_token) {
+      // Token salvo mas URL ausente (ou vice-versa) — configuração incompleta.
+      dynatraceCredStatus = 'error';
+    }
+
     return {
       nexus: {
         id: 'nexus',
@@ -191,8 +227,15 @@ export function useUserProfile() {
         status: awxCredStatus,
         lastChecked: new Date(),
       },
+      dynatrace: {
+        id: 'dynatrace',
+        name: 'Dynatrace',
+        description: 'Token individual para análise de problems com AI',
+        status: dynatraceCredStatus,
+        lastChecked: new Date(),
+      },
     };
-  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading, awxStatus, awxLoading]);
+  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading, awxStatus, awxLoading, dynatraceStatus, dynatraceLoading]);
 
   const isLoading = permissionsLoading || githubLoading;
 
