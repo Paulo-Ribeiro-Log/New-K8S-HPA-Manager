@@ -521,7 +521,9 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   useEffect(() => {
     if (!pod) return;
     setActiveTab("details");
-    setLogs("");
+    // logLines não precisa de reset manual aqui — usePodLogStream já reabre/zera o buffer sozinho
+    // quando pod.namespace/pod.name mudam (target do stream muda, closeStream+openStream roda de
+    // novo).
     setAutoRefresh(true);
     setPendingAction(null);
     setSelectedContainer(pod.containers?.[0]?.name ?? "");
