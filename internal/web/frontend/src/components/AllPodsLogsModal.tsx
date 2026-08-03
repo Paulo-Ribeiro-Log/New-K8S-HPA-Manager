@@ -105,6 +105,18 @@ export function AllPodsLogsModal({ open, onClose, cluster, pods }: Props) {
   const effectivePods = useMemo(() => pods.slice(0, MAX_PODS), [pods]);
   const truncated = pods.length > MAX_PODS;
 
+  // Chave estável (namespace/nome/container) do conjunto de pods — a lista embaixo (PodMonitorTable)
+  // refaz `pods` a cada refresh automático (REFRESH_INTERVAL_MS=5s), gerando um array NOVO por
+  // referência mesmo quando o conteúdo é idêntico. Bug real corrigido: o useEffect que abre/fecha o
+  // streaming dependia de `effectivePods` (a referência do array), então cada refresh de 5s da
+  // tabela reabria a conexão do zero (closeStream + setLines([])) mesmo sem nenhum pod ter mudado —
+  // sintoma de "o refresh limpa o log", igual ao já corrigido no visualizador single-pod. Efeitos
+  // abaixo agora dependem desta string (conteúdo), não da referência do array.
+  const effectivePodsKey = useMemo(
+    () => effectivePods.map((p) => `${p.namespace}/${p.name}/${p.containers.find((c) => c.type === "container")?.name ?? ""}`).join("|"),
+    [effectivePods]
+  );
+
   const [lines, setLines] = useState<MergedLine[]>([]);
   const [loading, setLoading] = useState(false);
   // autoRefresh agora controla a CONEXÃO SSE (não um poll): desligado = stream fechado, buffer já
@@ -221,7 +233,7 @@ export function AllPodsLogsModal({ open, onClose, cluster, pods }: Props) {
     }
     return closeStream;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, autoRefresh, cluster, tailLines, effectivePods]);
+  }, [open, autoRefresh, cluster, tailLines, effectivePodsKey]);
 
   const toggleLevelFilter = (level: LogLevel) => {
     setLogLevelFilter((prev) => {
