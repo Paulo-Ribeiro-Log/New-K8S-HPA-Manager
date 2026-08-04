@@ -98,6 +98,11 @@ func runInBackground() error {
 	// Set environment variable to signal browser was already opened
 	cmd.Env = append(os.Environ(), "K8S_HPA_BROWSER_OPENED=1")
 
+	// Cada start em background cria um log novo (nome com timestamp) e nunca apagava
+	// os anteriores — arquivos de sessões passadas (o servidor não roda com log
+	// rotacionado) ficavam acumulando em /tmp indefinidamente entre reinícios.
+	cleanupStaleWebLogs()
+
 	// Create log file for background process output
 	logFile := filepath.Join(os.TempDir(), fmt.Sprintf("k8s-hpa-manager-web-%d.log", time.Now().Unix()))
 	outFile, err := os.Create(logFile)
@@ -155,6 +160,31 @@ func runInBackground() error {
 	fmt.Printf("   kill %d\n", pid)
 
 	return nil
+}
+
+// cleanupStaleWebLogs remove logs de background de processos anteriores que já
+// encerraram. Não apaga arquivos recentes (< 2h) para não arriscar remover o log
+// de uma outra instância que ainda esteja rodando em paralelo (cenário suportado —
+// ver nota de kubeconfig privado por processo) — 2h é bem acima do timeout de
+// auto-shutdown por inatividade (40min), então qualquer arquivo mais velho que isso
+// quase certamente pertence a um processo que já morreu.
+func cleanupStaleWebLogs() {
+	pattern := filepath.Join(os.TempDir(), "k8s-hpa-manager-web-*.log")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return
+	}
+
+	cutoff := time.Now().Add(-2 * time.Hour)
+	for _, path := range matches {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			os.Remove(path)
+		}
+	}
 }
 
 // openBrowser opens the default browser at the given URL

@@ -451,8 +451,17 @@ func (s *Server) setupMiddleware() {
 	// Custom logging middleware que captura logs no buffer
 	s.router.Use(s.loggingMiddleware())
 
-	// Logging padrão do Gin (console)
-	s.router.Use(gin.Logger())
+	// Logging padrão do Gin (console). SkipPaths evita ruído de endpoints de alta
+	// frequência e sem valor diagnóstico no arquivo de log (que não tem rotação
+	// enquanto o processo roda — ver runInBackground em cmd/web.go): "/health" e
+	// "/heartbeat" são chamados a cada poucos minutos pelo próprio frontend, e
+	// "/api/v1/logs" é o endpoint QUE LÊ esse mesmo arquivo — sem o skip, o
+	// auto-refresh do LogViewer.tsx (a cada 3s) registra no arquivo a própria
+	// chamada que acabou de ler o arquivo, um loop que se realimenta e infla o
+	// arquivo ainda mais rápido quanto mais tempo o visualizador fica aberto.
+	s.router.Use(gin.LoggerWithConfig(gin.LoggerConfig{
+		SkipPaths: []string{"/health", "/heartbeat", "/api/v1/logs"},
+	}))
 
 	// Recovery
 	s.router.Use(gin.Recovery())
