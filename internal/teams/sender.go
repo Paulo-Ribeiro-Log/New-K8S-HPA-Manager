@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
 	"github.com/ysmood/gson"
@@ -30,39 +29,20 @@ type ProgressFunc func(result SendResult)
 // onProgress é chamada após cada envio individual — pode ser nil.
 // Todo o tráfego HTTP passa pela página do Teams (same-origin) para contornar o MCAS.
 func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProgress ProgressFunc, logger *zerolog.Logger) ([]SendResult, error) {
-	killExistingChrome(sessionDir, logger)
-	time.Sleep(800 * time.Millisecond)
+	// Serializa contra RunDiscovery/ScanConversations (ver operationMu em browser_manager.go).
+	operationMu.Lock()
+	defer operationMu.Unlock()
 
-	chromeBin := findSystemChrome()
-	l := launcher.New().
-		UserDataDir(sessionDir).
-		Headless(false).
-		Delete("enable-automation").
-		Set("disable-blink-features", "AutomationControlled").
-		Set("no-first-run").
-		Set("no-default-browser-check").
-		Set("disk-cache-size", "33554432").
-		Set("aggressive-cache-discard")
-	if chromeBin != "" {
-		l = l.Bin(chromeBin)
-		logger.Info().Str("bin", chromeBin).Msg("[Sender] Chrome encontrado")
-	}
-
-	ctrlURL, err := l.Launch()
+	browser, err := getBrowser(sessionDir, logger)
 	if err != nil {
-		return nil, fmt.Errorf("erro ao iniciar Chrome: %w", err)
+		return nil, err
 	}
 
-	browser := rod.New().ControlURL(ctrlURL)
-	if err := browser.Connect(); err != nil {
-		return nil, fmt.Errorf("erro ao conectar ao browser: %w", err)
-	}
-	defer browser.Close()
-
-	_, err = browser.Page(proto.TargetCreateTarget{URL: "https://teams.microsoft.com/v2/"})
+	createdPage, err := browser.Page(proto.TargetCreateTarget{URL: "https://teams.microsoft.com/v2/"})
 	if err != nil {
 		return nil, fmt.Errorf("erro ao criar página: %w", err)
 	}
+	defer createdPage.Close() //nolint:errcheck
 
 	logger.Info().Msg("[Sender] Aguardando Teams carregar (máx 3min)...")
 	var page *rod.Page

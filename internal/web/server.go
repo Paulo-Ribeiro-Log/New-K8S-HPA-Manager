@@ -27,6 +27,7 @@ import (
 	"k8s-hpa-manager/internal/notifications"
 	"k8s-hpa-manager/internal/rbac"
 	"k8s-hpa-manager/internal/storage"
+	"k8s-hpa-manager/internal/teams"
 	"k8s-hpa-manager/internal/updater"
 
 	// TODO: Remover após migração completa para V2
@@ -549,6 +550,7 @@ func (s *Server) setupRoutes() {
 		// Aguardar resposta ser enviada e então encerrar
 		go func() {
 			fmt.Println("\n🛑 Shutdown solicitado via API...")
+			teams.CloseBrowser()
 			fmt.Println("✅ Servidor encerrado")
 			os.Exit(0)
 		}()
@@ -1788,6 +1790,7 @@ func (s *Server) autoShutdown() {
 	fmt.Println("🛑 Nenhuma página web conectada por mais de 40 minutos")
 	fmt.Println("✅ Servidor sendo encerrado...")
 
+	teams.CloseBrowser()
 	os.Exit(0)
 }
 
@@ -1849,6 +1852,10 @@ func (s *Server) Shutdown() error {
 	// if s.monitoringCancel != nil { s.monitoringCancel() }
 	// if s.monitoringEngine != nil { s.monitoringEngine.Stop() }
 	// Salvar targets, fechar canais, etc...
+
+	// 3. Encerrar Chrome persistente do Teams (browser_manager.go) — sem isso ficaria órfão
+	teams.CloseBrowser()
+	fmt.Println("✓ Browser persistente do Teams encerrado")
 
 	fmt.Println("\n✅ Shutdown concluído com sucesso!")
 	return nil

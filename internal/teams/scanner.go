@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
 )
@@ -31,39 +29,22 @@ type ScanResult struct {
 // ScanConversations abre o Chrome com a sessão do Teams, aguarda o carregamento e
 // retorna TODAS as conversas: grupos via IndexedDB e DMs via scroll+click na sidebar.
 func ScanConversations(sessionDir, outputPath string, logger *zerolog.Logger) ([]ScannedChat, error) {
-	killExistingChrome(sessionDir, logger)
-	time.Sleep(800 * time.Millisecond)
+	// Serializa contra RunDiscovery/SendBatch (ver operationMu em browser_manager.go).
+	operationMu.Lock()
+	defer operationMu.Unlock()
 
-	chromeBin := findSystemChrome()
-	l := launcher.New().
-		UserDataDir(sessionDir).
-		Headless(false).
-		Delete("enable-automation").
-		Set("disable-blink-features", "AutomationControlled").
-		Set("no-first-run").
-		Set("no-default-browser-check").
-		Set("disk-cache-size", "33554432").
-		Set("aggressive-cache-discard")
-	if chromeBin != "" {
-		l = l.Bin(chromeBin)
-		logger.Info().Str("bin", chromeBin).Msg("[Scanner] Chrome encontrado")
-	}
-
-	ctrlURL, err := l.Launch()
+	browser, err := getBrowser(sessionDir, logger)
 	if err != nil {
-		return nil, fmt.Errorf("erro ao iniciar Chrome: %w", err)
+		return nil, err
 	}
-
-	browser := rod.New().ControlURL(ctrlURL)
-	if err := browser.Connect(); err != nil {
-		return nil, fmt.Errorf("erro ao conectar: %w", err)
-	}
-	defer browser.Close()
 
 	page, err := browser.Page(proto.TargetCreateTarget{URL: "https://teams.microsoft.com/v2/"})
 	if err != nil {
 		return nil, fmt.Errorf("erro ao criar página: %w", err)
 	}
+	// createdPage: `page` é reatribuída no loop de espera abaixo — fechar sempre a aba criada aqui.
+	createdPage := page
+	defer createdPage.Close() //nolint:errcheck
 
 	// Aguardar Teams carregar — apenas pela URL, sem verificar DOM.
 	logger.Info().Msg("[Scanner] Aguardando Teams carregar (máx 3min)...")
