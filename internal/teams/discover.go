@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
 )
@@ -137,60 +136,24 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		return nil, fmt.Errorf("erro ao criar diretório de saída: %v", err)
 	}
 
-	chromeBin := findSystemChrome()
-	if chromeBin != "" {
-		logger.Info().Str("bin", chromeBin).Msg("[Teams] Usando Chrome do sistema")
-	} else {
-		logger.Warn().Msg("[Teams] Chrome do sistema não encontrado — usando Chromium do Rod")
-	}
+	// Serializa contra ScanConversations/SendBatch — abas paralelas no mesmo perfil podem
+	// invalidar o SkypeToken (ver comentário de operationMu em browser_manager.go).
+	operationMu.Lock()
+	defer operationMu.Unlock()
 
-	// Matar instâncias Chrome existentes que usam o mesmo perfil para evitar conflito de lock.
-	// O Rod não consegue lançar uma nova instância de debug se o perfil já está em uso.
-	killExistingChrome(sessionDir, logger)
-	time.Sleep(1 * time.Second)
-
-	// Limpar cache do Chrome antes de lançar — cresce sem limite e pode esgotar o disco.
-	// Apenas cache e Code Cache são removidos; cookies/LocalStorage/IndexedDB são preservados.
-	for _, cacheSubDir := range []string{"Default/Cache", "Default/Code Cache", "Default/GPUCache"} {
-		cacheDir := filepath.Join(sessionDir, cacheSubDir)
-		if _, err := os.Stat(cacheDir); err == nil {
-			os.RemoveAll(cacheDir) //nolint:errcheck
-			logger.Info().Str("dir", cacheDir).Msg("[Teams] Cache Chrome removido antes do launch")
-		}
-	}
-
-	l := launcher.New().
-		UserDataDir(sessionDir).
-		Headless(false).
-		Delete("enable-automation").
-		Set("disable-blink-features", "AutomationControlled").
-		// Sem segundo argumento: Rod gera --flag (sem =), correto para flags booleanas
-		Set("no-first-run").
-		Set("no-default-browser-check").
-		// Limitar cache em disco a 32 MB para evitar esgotamento de espaço
-		Set("disk-cache-size", "33554432").
-		Set("aggressive-cache-discard").
-		Set("disable-application-cache")
-
-	if chromeBin != "" {
-		l = l.Bin(chromeBin)
-	}
-
-	ctrlURL, err := l.Launch()
+	browser, err := getBrowser(sessionDir, logger)
 	if err != nil {
-		return nil, fmt.Errorf("erro ao iniciar Chrome: %v", err)
+		return nil, err
 	}
-
-	browser := rod.New().ControlURL(ctrlURL)
-	if err := browser.Connect(); err != nil {
-		return nil, fmt.Errorf("erro ao conectar ao browser: %v", err)
-	}
-	defer browser.Close()
 
 	page, err := browser.Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
 		return nil, fmt.Errorf("erro ao criar página: %v", err)
 	}
+	// createdPage: `page` é reatribuída mais abaixo (MCAS pode abrir o Teams v2 em outra aba),
+	// mas a aba criada aqui precisa ser fechada de qualquer forma ao final.
+	createdPage := page
+	defer createdPage.Close() //nolint:errcheck
 
 	result := &DiscoveryResult{CapturedAt: time.Now()}
 	var mu sync.Mutex
@@ -349,9 +312,19 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	if mainInfo, err := page.Info(); err == nil && mainInfo != nil {
 		seenPages[string(mainInfo.TargetID)] = true
 	}
+	// tabMonitorDone limita esse goroutine à duração desta chamada. Antes o browser.Close() no
+	// final da função interrompia o loop indiretamente (browser.Pages() passava a retornar erro);
+	// com o browser persistente entre chamadas, sem isso o goroutine rodaria para sempre a cada
+	// nova invocação de RunDiscovery, acumulando N loops zumbis.
+	tabMonitorDone := make(chan struct{})
+	defer close(tabMonitorDone)
 	go func() {
 		for {
-			time.Sleep(3 * time.Second)
+			select {
+			case <-tabMonitorDone:
+				return
+			case <-time.After(3 * time.Second):
+			}
 			pages, err := browser.Pages()
 			if err != nil {
 				return
@@ -1068,7 +1041,6 @@ func extractConversations(convResp map[string]interface{}, result *DiscoveryResu
 		})
 	}
 }
-
 
 func printSummary(result *DiscoveryResult, _ string, logger *zerolog.Logger) {
 	logger.Info().Msg("[Teams] ════════════════ RESUMO ════════════════")
