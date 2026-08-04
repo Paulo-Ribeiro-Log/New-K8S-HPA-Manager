@@ -862,12 +862,20 @@ interface CreatePRModalProps {
   open: boolean;
   onClose: () => void;
   repoId: string;
-  head: string;        // branch atual (source)
-  branches: string[];  // branches disponíveis para base
-  profileId?: string;  // perfil GitHub ativo (ProfileSwitcher) — resolvido no servidor
+  head: string;                       // branch atual (source)
+  rawBranches: CodeEditorBranches | null; // objeto bruto do repo — a lista de base é derivada aqui via useMemo
+  profileId?: string;                 // perfil GitHub ativo (ProfileSwitcher) — resolvido no servidor
 }
 
-function CreatePRModal({ open, onClose, repoId, head, branches, profileId }: CreatePRModalProps) {
+function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: CreatePRModalProps) {
+  // Derivado do objeto bruto (referência estável entre renders — só muda quando loadBranches()
+  // de fato busca dados novos), não recriado a cada render do CodeEditorTab. Mesmo padrão de
+  // BranchDiffModal.allBranches.
+  const branches = useMemo(() => {
+    const local = rawBranches?.local ?? [];
+    const remote = (rawBranches?.remote ?? []).map(r => r.replace(/^origin\//, ""));
+    return [...local, ...remote].filter((b, i, a) => b !== rawBranches?.current && a.indexOf(b) === i);
+  }, [rawBranches]);
   const defaultBase = branches.includes("main") ? "main" : branches.includes("master") ? "master" : branches[0] ?? "main";
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -877,8 +885,15 @@ function CreatePRModal({ open, onClose, repoId, head, branches, profileId }: Cre
   const [errorInstructions, setErrorInstructions] = useState<string[]>([]);
   const [result, setResult] = useState<{ number: number; url: string } | null>(null);
 
+  // Reseta o formulário só na transição fechado→aberto, nunca a cada re-render com o modal
+  // já aberto. `branches`/`head` chegam do CodeEditorTab como valores recalculados a cada
+  // render (poll silencioso de status/tree a cada 5s, diagnósticos LSP a cada 2,5s, etc.) —
+  // depender deles no array de deps fazia o efeito rodar de novo e chamar setResult(null)
+  // enquanto o modal de sucesso da PR já estava aberto, derrubando de volta pro formulário
+  // ~1s depois de criar a PR.
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       setTitle(head.replace(/[-_/]/g, " ").replace(/\b\w/g, c => c.toUpperCase()));
       setBody("");
       setBase(branches.includes("main") ? "main" : branches.includes("master") ? "master" : branches[0] ?? "main");
@@ -886,6 +901,7 @@ function CreatePRModal({ open, onClose, repoId, head, branches, profileId }: Cre
       setErrorInstructions([]);
       setResult(null);
     }
+    wasOpenRef.current = open;
   }, [open, head, branches]);
 
   async function submit() {
@@ -5147,10 +5163,7 @@ export function CodeEditorTab() {
           onClose={() => setShowCreatePR(false)}
           repoId={selectedRepo.id}
           head={branches.current}
-          branches={[
-            ...(branches.local ?? []),
-            ...(branches.remote ?? []).map((r: string) => r.replace(/^origin\//, "")),
-          ].filter((b, i, a) => b !== branches.current && a.indexOf(b) === i)}
+          rawBranches={branches}
           profileId={activeProfileId()}
         />
       )}
