@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -154,16 +155,37 @@ func readLatestLogFile(pattern string) (string, error) {
 		return "", fmt.Errorf("no valid log files found")
 	}
 
-	// Ler conteúdo do arquivo (últimas 1000 linhas para não sobrecarregar)
-	content, err := os.ReadFile(latestFile)
+	// Lê só a cauda do arquivo (últimos 500KB) via Seek, em vez de carregar o arquivo
+	// inteiro em memória com os.ReadFile — o arquivo de log do processo em background
+	// (stdout/stderr de runInBackground, cmd/web.go) cresce sem rotação ao longo da
+	// sessão (chegou a 25MB numa sessão real de um dia), e esse endpoint é chamado a
+	// cada 3s pelo auto-refresh do LogViewer.tsx: um os.ReadFile aqui fazia cada
+	// chamada ficar mais lenta conforme o arquivo crescia — inclusive um loop que se
+	// realimenta, já que cada chamada a este endpoint é ela mesma registrada no
+	// arquivo pelo gin.Logger() (mitigado à parte via SkipPaths em server.go).
+	const maxSize = 500 * 1024 // 500 KB
+	f, err := os.Open(latestFile)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
 	if err != nil {
 		return "", err
 	}
 
-	// Limitar tamanho para evitar enviar arquivos muito grandes
-	maxSize := 500 * 1024 // 500 KB
-	if len(content) > maxSize {
-		content = content[len(content)-maxSize:]
+	var offset int64
+	if info.Size() > maxSize {
+		offset = info.Size() - maxSize
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return "", err
+	}
+
+	content, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
 	}
 
 	return string(content), nil
