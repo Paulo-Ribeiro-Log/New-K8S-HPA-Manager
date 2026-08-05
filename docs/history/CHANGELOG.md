@@ -3,6 +3,19 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Release v1.3.37 (Agosto 2026) ✅
+
+~190 PRs mescladas desde a `v1.3.36` (17/jun/2026) — a maior parte das features grandes já está documentada em detalhe (com as narrativas de bugs reais encontrados) nas seções `###` correspondentes do `CLAUDE.md`; este bloco é só o resumo executivo do período. Lista completa de PRs: [release v1.3.37 no GitHub](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/tag/v1.3.37) / [compare v1.3.36...v1.3.37](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/compare/v1.3.36...v1.3.37).
+
+**Destaques:**
+- **Editor de Código**: Git/GitHub completo (criar PR direto no app, perfis GitHub nomeados, terminal com fonte customizada servida pelo backend), LSP (gopls/pyright), Source Control estilo VSCode, seleção múltipla e drag-and-drop na árvore de arquivos. Ver `### Editor de Código (Code Editor)` no CLAUDE.md.
+- **Novas ferramentas**: Verificar Acesso via impersonation K8s (`### Access Checker — Verificar Acesso`), Teste de Kafka com Ephemeral Container + OAUTHBEARER/Azure AD (`### Kafka Test Tool`), Teste de Banco de Dados sob demanda — Postgres/MySQL/MongoDB/Redis (`DATABASE-TEST-PLAN.md`), Notas em Markdown por cluster+aba (`### Notas (anotações Markdown por cluster+aba)`).
+- **Certificados TLS**: validação de cadeia, rollback, backup manual apartado, handshake TLS direto como fallback universal (cobre Gateway API/GKE, onde não há métrica de ingress-nginx pra correlacionar), detecção de conflito de host/SAN entre certificado e Ingress/Gateway. Ver `### Certificates` e `CERT-ROLLBACK-VALIDATION-PLAN.md` (Fases 1-8).
+- **Multi-cloud**: diagnóstico SNAT/Conntrack e relatório FinOps passam a cobrir AKS/EKS/GKE nativamente (antes só AKS) — ver `### Diagnóstico SNAT (Node Pools)` e `### FinOps — Storage & Relatório Executivo`; discovery automático de Prometheus em clusters GKE (`GKE-PROMETHEUS-DISCOVERY-PLAN.md`); autenticação GCP via Device Auth Grant/gcloud real.
+- **Performance**: elimina N+1 e paraleliza busca de métricas/listagens em pods, node pools e 6 abas de workload (PRs #323-#328); cache negativo do Prometheus evita timeout de 30s repetido; browser Chrome persistente na extração do Teams em vez de kill+relaunch a cada chamada; leitura de logs da aplicação deixou de ser O(tamanho do arquivo) (PR #336).
+- **Pods**: causa real de crash/reinício visível sem depender de logs impossíveis de recuperar — exit code + `LastTerminationState` + eventos do workload (`### PodQuickViewModal — Causa real de crash/reinício`); logs com streaming ao vivo, igual ao k9s (`### Streaming ao vivo de logs`); status de monitoramento Dynatrace por pod.
+- **Correções de infraestrutura**: corrupção de kubeconfig compartilhado ao trocar de cluster (ver `### Thread-Safety (Go)` — cópia privada de kubeconfig por processo); tokens EKS/GKE expirando em operações longas via `kubectl` (`KubectlAuthArgs`); autenticação quebrada em rotas SSE quando não usava `WebSocketJWTAuthMiddleware`.
+
 ### Consolidação: features mescladas na `main` via ~14 branches (Julho 2026) ✅
 
 **Contexto:** este bloco reúne, por branch, tudo que estava documentado como "branch X ainda não mesclada" num único parágrafo corrido em `CLAUDE.md`. Verificado via `git merge-base --is-ancestor origin/<branch> origin/main`: todas as branches abaixo **já estão mescladas na `main`** (a mais recente, `db-test-tool`, entrou via PR #244). O texto foi movido para cá — reformatado em lista, sem cortar nenhum detalhe técnico — e o `CLAUDE.md` ficou só com o que é conhecimento de arquitetura atual (nas seções `###` correspondentes) ou um pointer para este histórico.
