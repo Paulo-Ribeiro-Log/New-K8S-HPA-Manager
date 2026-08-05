@@ -1272,9 +1272,10 @@ git checkout main && git merge --no-ff <branch> && git push origin main
 git tag v1.3.X && git push origin v1.3.X
 
 # Publicar: Actions → Release → Run workflow → escolher a tag v1.3.X em "Use workflow from"
-# (builda linux em ubuntu-latest e macOS em runners nativos — macos-13 Intel + macos-14 Apple
-# Silicon —, cada um com CGO_ENABLED=1 de verdade; cada job darwin roda um smoke-test que aborta
-# a release se o binário sair com SQLite quebrado, antes de publicar)
+# (builda linux em ubuntu-latest e os 2 binários darwin em macos-14/Apple Silicon — um nativo
+# arm64, outro cross-arch pra amd64 via clang universal do Xcode —, ambos com CGO_ENABLED=1 de
+# verdade; cada job darwin roda um smoke-test que aborta a release se o binário sair com SQLite
+# quebrado, antes de publicar)
 ```
 
 Se por algum motivo for necessário gerar/testar binários localmente (não para publicar):
@@ -1290,6 +1291,8 @@ make release           # as 3 plataformas de uma vez — ⚠️ ver aviso acima 
 
 Corrigido em duas frentes:
 1. **Diagnóstico centralizado e imediato** (`internal/storage/sqlite_health.go`, chamado logo no início de `NewServer` antes de qualquer store): `CheckSQLiteDriverWorks()` tenta abrir um banco `:memory:` real; se falhar com a mensagem específica do stub (`IsCGOStubError`), imprime um banner grande e inconfundível no log explicando exatamente o problema e a causa típica — em vez de esperar o usuário juntar sozinho ~14 avisos desconexos espalhados pelo startup.
-2. **Correção da causa raiz no pipeline de release**: novo target `make release-single` (builda UMA plataforma só, lendo `GOOS`/`GOARCH`/`CGO_ENABLED` do ambiente do chamador) usado pelo `release.yml` reestruturado em jobs por plataforma — `build-linux-amd64` em `ubuntu-latest`, `build-darwin-amd64` em `macos-13` (Intel, nativo) e `build-darwin-arm64` em `macos-14` (Apple Silicon, nativo) —, cada um com `CGO_ENABLED=1` de verdade (build nativo, sem cross-compilation de SO) e um smoke-test que roda `<binário> version` e aborta a release inteira se detectar a assinatura do stub `CGO_ENABLED=0` na saída. `make release`/`build-all` (uso local) ganharam avisos explícitos no próprio target alertando que os binários darwin gerados num host Linux/WSL2 não são seguros pra distribuir.
+2. **Correção da causa raiz no pipeline de release**: novo target `make release-single` (builda UMA plataforma só, lendo `GOOS`/`GOARCH`/`CGO_ENABLED` do ambiente do chamador) usado pelo `release.yml` reestruturado em jobs por plataforma — `build-linux-amd64` em `ubuntu-latest`, `build-darwin-arm64` em `macos-14` (Apple Silicon, nativo) —, cada um com `CGO_ENABLED=1` de verdade (build nativo, sem cross-compilation de SO) e um smoke-test que roda `<binário> version` e aborta a release inteira se detectar a assinatura do stub `CGO_ENABLED=0` na saída. `make release`/`build-all` (uso local) ganharam avisos explícitos no próprio target alertando que os binários darwin gerados num host Linux/WSL2 não são seguros pra distribuir.
+
+**`build-darwin-amd64` roda em `macos-14` (arm64), não `macos-13` (Intel)** — descoberto na primeira execução real do `release.yml` corrigido: o job em `macos-13` ficou **mais de 15 minutos em `queued` sem nenhum runner atribuído** (`runner_id: 0` via `gh api .../actions/jobs/<id>`), enquanto `macos-14` e `ubuntu-latest` pegaram runner em segundos — capacidade de `macos-13` no pool compartilhado do GitHub Actions está degradada/instável na prática, não é hipotético. Corrigido fazendo cross-arch a partir do runner `macos-14` (Apple Silicon) usando o clang universal do Xcode: `CGO_CFLAGS`/`CGO_LDFLAGS` com `-arch x86_64` fazem a parte C do `go-sqlite3` compilar pra x86_64 enquanto o Go cross-compila a parte pura-Go via `GOARCH=amd64` normalmente — mesmo compilador que a Apple usa pra gerar binários "Universal". O smoke-test do binário resultante precisa de `softwareupdate --install-rosetta --agree-to-license` antes (o runner é arm64, o binário testado é x86_64).
 
 `.github/workflows/ci.yml` continua rodando `make release` só como **smoke-test de compilação** (confirma que o código compila pras 3 plataformas a cada push/PR) — não valida a persistência SQLite em darwin, isso é responsabilidade do `release.yml`, que é quem de fato publica binários pro usuário final.
