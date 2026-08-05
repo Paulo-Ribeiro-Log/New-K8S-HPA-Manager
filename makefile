@@ -59,6 +59,13 @@ build:
 .PHONY: build-all
 build-all:
 	@echo "Building for multiple platforms..."
+	@echo "⚠️  ATENÇÃO: os binários darwin gerados por este target NÃO são seguros pra distribuir"
+	@echo "   se rodado num host Linux/WSL2 — sem toolchain C pra macOS, o Go cross-compila com"
+	@echo "   CGO_ENABLED=0 por padrão, e o driver SQLite (mattn/go-sqlite3) cai num stub que"
+	@echo "   COMPILA normalmente mas quebra TODA a persistência em runtime (Notas, tokens de"
+	@echo "   IA/Dynatrace/GitHub, predictions, etc. — ver internal/storage/sqlite_health.go)."
+	@echo "   Use só pra smoke-test de compilação local. Pra release de verdade, use o workflow"
+	@echo "   .github/workflows/release.yml (builda macOS em runners nativos)."
 	@mkdir -p ${BUILD_DIR} $(BUILD_CACHE_DIRS)
 	@GOOS=linux GOARCH=amd64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=amd64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
@@ -156,9 +163,25 @@ version:
 	@echo "Commit: $(shell git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 
 # Build para release (múltiplas plataformas - Linux e macOS apenas)
+#
+# ⚠️  ATENÇÃO — NÃO USE ESTE TARGET PARA PUBLICAR UMA RELEASE se estiver rodando num host
+# Linux/WSL2 (o ambiente de desenvolvimento padrão deste projeto): os binários darwin-amd64 e
+# darwin-arm64 saem com CGO_ENABLED=0 (nenhum toolchain C pra macOS disponível aqui), e o driver
+# SQLite (mattn/go-sqlite3) cai num stub que COMPILA normalmente mas quebra silenciosamente TODA
+# a persistência em runtime — Notas, tokens de IA/Dynatrace/GitHub, predictions, health check,
+# etc. (ver internal/storage/sqlite_health.go, e a seção correspondente no CLAUDE.md). O binário
+# sobe, a UI carrega, mas cada feature que depende de SQLite falha com uma mensagem desconexa
+# ("tokens store não configurado", "API not found", Notas "carrega e falha") sem apontar pra
+# causa real. Já aconteceu de um release real sair quebrado assim.
+#
+# Use este target só pra smoke-test de compilação local (confirma que o código compila pras 3
+# plataformas). Para gerar binários de release de verdade, use o workflow
+# .github/workflows/release.yml (Actions → Release → Run workflow) — ele builda macOS em runners
+# nativos (macos-13 Intel + macos-14 Apple Silicon), com CGO_ENABLED=1 de verdade.
 .PHONY: release
 release:
 	@echo "Creating release v${VERSION_CLEAN}..."
+	@echo "⚠️  Rodando localmente? Os binários darwin daqui podem sair com SQLite quebrado — veja o comentário deste target no makefile."
 	@mkdir -p ${BUILD_DIR}/release $(BUILD_CACHE_DIRS)
 	@GOOS=linux GOARCH=amd64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=amd64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
@@ -166,3 +189,15 @@ release:
 	@echo "✅ Release builds complete (v${VERSION_CLEAN})"
 	@echo "📦 Plataformas: Linux amd64, macOS Intel, macOS ARM"
 	@ls -lh ${BUILD_DIR}/release/
+
+# Build de release para UMA plataforma só, lida do ambiente (GOOS/GOARCH/CGO_ENABLED já setados
+# pelo chamador) — usado pelo workflow release.yml, que roda cada plataforma num runner nativo
+# separado (ubuntu-latest pra linux, macos-13/macos-14 pra darwin), garantindo CGO_ENABLED=1 real
+# em vez do stub silencioso que `release`/`build-all` produzem pra darwin quando rodados aqui.
+.PHONY: release-single
+release-single:
+	@if [ -z "$(GOOS)" ] || [ -z "$(GOARCH)" ]; then echo "❌ defina GOOS e GOARCH no ambiente antes de chamar este target"; exit 1; fi
+	@mkdir -p ${BUILD_DIR}/release $(BUILD_CACHE_DIRS)
+	@echo "Building ${BINARY_NAME}-$(GOOS)-$(GOARCH) v${VERSION_CLEAN} (CGO_ENABLED=$${CGO_ENABLED:-<padrão do Go>})..."
+	@go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-$(GOOS)-$(GOARCH) ${MAIN_PACKAGE}
+	@echo "✅ ${BUILD_DIR}/release/${BINARY_NAME}-$(GOOS)-$(GOARCH)"
