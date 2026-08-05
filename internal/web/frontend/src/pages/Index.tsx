@@ -46,7 +46,7 @@ import { LogViewer } from "@/components/LogViewer";
 import { HistoryViewer } from "@/components/HistoryViewer";
 import { NotesModal } from "@/components/NotesModal";
 import { Badge } from "@/components/ui/badge";
-import { GENERAL_NOTES_TAB, useNotes } from "@/hooks/useNotes";
+import { GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB, useNotes } from "@/hooks/useNotes";
 import { StagingPanel } from "@/components/StagingPanel";
 import { VPNWarningBanner } from "@/components/VPNWarningBanner";
 import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
@@ -120,9 +120,22 @@ interface IndexProps {
   onLogout?: () => void;
 }
 
+// Último cluster selecionado, restaurado ao carregar a página — sem isso, todo reload/restart
+// do app caía sempre no primeiro cluster da lista (ver efeito "Auto-select first cluster"
+// abaixo), fazendo qualquer estado escopado por cluster que já existisse (ex: Lembretes Gerais
+// da aba Notas) parecer "perdido" só porque o usuário reabriu o app num cluster diferente de
+// onde tinha deixado a anotação — o dado nunca saiu do SQLite, só ficou fora de vista.
+const LAST_CLUSTER_STORAGE_KEY = "k8s_hpa_last_selected_cluster";
+
 const Index = ({ onLogout }: IndexProps) => {
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [selectedCluster, setSelectedCluster] = useState("");
+  const [selectedCluster, setSelectedCluster] = useState(() => {
+    try {
+      return localStorage.getItem(LAST_CLUSTER_STORAGE_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
   // ✅ FIX: Inicializar com "__all__" para exibir todos os recursos por padrão
   const [selectedNamespace, setSelectedNamespace] = useState("__all__"); // Namespace global (HPAs, Namespaces tab)
   const [selectedHPA, setSelectedHPA] = useState<HPA | null>(null);
@@ -166,7 +179,9 @@ const Index = ({ onLogout }: IndexProps) => {
   const [showHistoryViewer, setShowHistoryViewer] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
   const { data: notesForCurrentTab } = useNotes(selectedCluster, activeTab);
-  const { data: generalNotesForBadge } = useNotes(selectedCluster, GENERAL_NOTES_TAB);
+  // Lembretes gerais são globais (cluster-sentinela GENERAL_NOTES_CLUSTER) — não dependem do
+  // selectedCluster do momento, ver comentário completo em useNotes.ts.
+  const { data: generalNotesForBadge } = useNotes(GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB);
   const notesBadgeCount = (notesForCurrentTab?.length ?? 0) + (generalNotesForBadge?.length ?? 0);
   const [isContextSwitching, setIsContextSwitching] = useState(false);
   const [showVPNWarning, setShowVPNWarning] = useState(false);
@@ -407,21 +422,35 @@ const Index = ({ onLogout }: IndexProps) => {
   const { nodePools, loading: nodePoolsLoading, notSupported: nodePoolsNotSupported, error: nodePoolsError, refetch: refetchNodePools } = useNodePools(selectedCluster);
 
 
-  // Auto-select first cluster (using context instead of name)
+  // Auto-select cluster ao carregar: restaura o último cluster usado (localStorage) se ele
+  // ainda existir na lista atual; cai no primeiro cluster só quando não há nada salvo ou o
+  // cluster salvo não existe mais (removido/renomeado).
   useEffect(() => {
-    if (clusters.length > 0 && !selectedCluster) {
-      const firstCluster = clusters[0];
-      setSelectedCluster(firstCluster.context);
-      // Para clusters EKS, verificar token SSO proativamente no carregamento inicial
-      if (firstCluster.cloud_provider === "eks") {
-        checkAwsToken(firstCluster.context, firstCluster.aws_profile);
-      }
-      // Mesma checagem proativa pra GKE (Device Auth Grant) — antes só existia pro EKS.
-      if (firstCluster.cloud_provider === "gke") {
-        checkGcpToken(firstCluster.context);
-      }
+    if (clusters.length === 0) return;
+    if (selectedCluster && clusters.some((c) => c.context === selectedCluster)) return;
+
+    const firstCluster = clusters[0];
+    setSelectedCluster(firstCluster.context);
+    // Para clusters EKS, verificar token SSO proativamente no carregamento inicial
+    if (firstCluster.cloud_provider === "eks") {
+      checkAwsToken(firstCluster.context, firstCluster.aws_profile);
+    }
+    // Mesma checagem proativa pra GKE (Device Auth Grant) — antes só existia pro EKS.
+    if (firstCluster.cloud_provider === "gke") {
+      checkGcpToken(firstCluster.context);
     }
   }, [clusters, selectedCluster, checkAwsToken, checkGcpToken]);
+
+  // Persiste o cluster atual pra restaurar no próximo carregamento da página (ver
+  // LAST_CLUSTER_STORAGE_KEY acima).
+  useEffect(() => {
+    if (!selectedCluster) return;
+    try {
+      localStorage.setItem(LAST_CLUSTER_STORAGE_KEY, selectedCluster);
+    } catch {
+      // localStorage indisponível (modo privado/quota) — restauração é best-effort, não crítico
+    }
+  }, [selectedCluster]);
 
   // Após login SSO bem-sucedido, re-buscar dados do cluster EKS (namespaces, HPAs, node pools)
   useEffect(() => {

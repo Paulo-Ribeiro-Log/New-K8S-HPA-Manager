@@ -1,8 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
-import { Eye, Pencil, Plus, Save, Search, StickyNote, X } from "lucide-react";
+import { AlertTriangle, Eye, Pencil, Plus, RefreshCw, Save, Search, StickyNote, X } from "lucide-react";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MarkdownToolbar } from "@/components/MarkdownToolbar";
 import { NoteEntry } from "@/components/NoteEntry";
-import { GENERAL_NOTES_TAB, useCreateNote, useDeleteNote, useNotes, useSearchNotes, useUpdateNote } from "@/hooks/useNotes";
+import { GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB, useCreateNote, useDeleteNote, useNotes, useSearchNotes, useUpdateNote } from "@/hooks/useNotes";
 import { useUserProfile } from "@/hooks/useUserProfile";
 import type { Note } from "@/lib/api/types";
 
@@ -31,14 +31,25 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
   // foi buscado) pra mostrar o badge nos dois botões do seletor sem custo extra.
   const [scope, setScope] = useState<"tab" | "general">("tab");
   const effectiveTab = scope === "general" ? GENERAL_NOTES_TAB : tab;
-  const { data: tabNotes = [], isLoading: tabLoading } = useNotes(cluster, tab);
-  const { data: generalNotes = [], isLoading: generalLoading } = useNotes(cluster, GENERAL_NOTES_TAB);
+  // Lembretes gerais usam um cluster-sentinela fixo (GENERAL_NOTES_CLUSTER), não o
+  // `selectedCluster` atual — precisam sobreviver a troca de cluster e a reinícios do app sem
+  // depender de "em qual cluster o usuário estava quando escreveu o lembrete". Ver comentário
+  // completo em useNotes.ts. Notas normais (escopo "tab") continuam por cluster+aba, de propósito.
+  const effectiveCluster = scope === "general" ? GENERAL_NOTES_CLUSTER : cluster;
+  const { data: tabNotes = [], isLoading: tabLoading, isError: tabError, refetch: refetchTab } = useNotes(cluster, tab);
+  const { data: generalNotes = [], isLoading: generalLoading, isError: generalError, refetch: refetchGeneral } = useNotes(GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB);
   const notes = scope === "general" ? generalNotes : tabNotes;
   const isLoading = scope === "general" ? generalLoading : tabLoading;
+  // isError distinto de "lista vazia": sem isso, uma falha transitória de rede/servidor
+  // (ex: janela entre `kill <PID>` e o novo processo voltar a escutar) renderiza a mesma
+  // mensagem de "nenhuma nota ainda" que uma nota de fato nunca criada — indistinguível de
+  // perda de dado aos olhos do usuário, mesmo a nota estando intacta no SQLite.
+  const isError = scope === "general" ? generalError : tabError;
+  const refetchCurrent = scope === "general" ? refetchGeneral : refetchTab;
 
-  const createNote = useCreateNote(cluster, effectiveTab);
-  const updateNote = useUpdateNote(cluster, effectiveTab);
-  const deleteNote = useDeleteNote(cluster, effectiveTab);
+  const createNote = useCreateNote(effectiveCluster, effectiveTab);
+  const updateNote = useUpdateNote(effectiveCluster, effectiveTab);
+  const deleteNote = useDeleteNote(effectiveCluster, effectiveTab);
 
   const [composing, setComposing] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -49,6 +60,16 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
   const [searchQuery, setSearchQuery] = useState("");
   const isSearching = searchQuery.trim().length >= 2;
   const { data: searchResults = [], isFetching: searchLoading } = useSearchNotes(searchQuery);
+
+  // Refetch imediato ao abrir o modal — ação deliberada do usuário pra ver as notas AGORA,
+  // não vale esperar o próximo tick do refetchInterval (até 60s) se a query anterior falhou
+  // (ex: modal aberto logo após reiniciar o servidor).
+  useEffect(() => {
+    if (!open) return;
+    if (cluster) refetchTab();
+    refetchGeneral();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, cluster]);
 
   const cancelCompose = () => {
     setComposing(false);
@@ -103,7 +124,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
   };
 
   const saving = createNote.isPending || updateNote.isPending;
-  const scopeLabel = scope === "general" ? "Lembretes gerais (todas as abas)" : tab;
+  const scopeLabel = scope === "general" ? "Lembretes gerais (todos os clusters e abas)" : `${cluster} / ${tab}`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -111,7 +132,7 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <StickyNote className="w-4 h-4" />
-            Notas — {cluster || "sem cluster"} / {scopeLabel}
+            Notas — {scopeLabel}
           </DialogTitle>
         </DialogHeader>
 
@@ -239,10 +260,23 @@ export function NotesModal({ open, onOpenChange, cluster, tab }: NotesModalProps
                 <ScrollArea className="flex-1 min-h-0">
                   <div className="flex flex-col gap-3 pr-3">
                     {isLoading && <p className="text-sm text-muted-foreground">Carregando...</p>}
-                    {!isLoading && notes.length === 0 && (
+                    {!isLoading && isError && (
+                      <div className="flex flex-col items-start gap-2 text-sm text-amber-600 dark:text-amber-400 border border-amber-500/30 bg-amber-500/10 rounded-md p-3">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                          <span>
+                            Não foi possível carregar as notas agora (servidor fora do ar ou reiniciando). Isso <strong>não significa que suas notas foram perdidas</strong> — elas continuam salvas no servidor.
+                          </span>
+                        </div>
+                        <Button variant="outline" size="sm" onClick={() => refetchCurrent()}>
+                          <RefreshCw className="w-3.5 h-3.5 mr-1" /> Tentar novamente
+                        </Button>
+                      </div>
+                    )}
+                    {!isLoading && !isError && notes.length === 0 && (
                       <p className="text-sm text-muted-foreground">
                         {scope === "general"
-                          ? "Nenhum lembrete geral ainda neste cluster."
+                          ? "Nenhum lembrete geral ainda."
                           : "Nenhuma nota ainda neste cluster/aba."}
                       </p>
                     )}

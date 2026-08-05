@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE INDEX IF NOT EXISTS idx_notes_scope ON notes(cluster, tab, created_at DESC);
 `
 
+// generalNotesTab/generalNotesCluster espelham as constantes GENERAL_NOTES_TAB/GENERAL_NOTES_CLUSTER
+// do frontend (hooks/useNotes.ts) — precisam bater exatamente com os mesmos literais.
+const (
+	generalNotesTab     = "__general__"
+	generalNotesCluster = "__all_clusters__"
+)
+
 func NewNotesStore(dbPath string) (*NotesStore, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, fmt.Errorf("criar diretório notes: %w", err)
@@ -61,6 +68,21 @@ func NewNotesStore(dbPath string) (*NotesStore, error) {
 	if _, err := db.Exec(notesSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("criar schema notes: %w", err)
+	}
+	// Migração idempotente: "Lembretes gerais" (tab=__general__) passaram a ser globais
+	// (independentes do cluster ativo no momento em que foram escritos) em vez de escopados
+	// por cluster+aba como as notas normais — sem isso, um lembrete geral criado sob um
+	// cluster específico sumia da visão assim que o usuário trocava de cluster (e o app não
+	// lembrava o último cluster selecionado entre reinícios), parecendo perda de dado mesmo
+	// com a linha intacta no SQLite. Consolida qualquer entrada antiga de __general__ ainda
+	// presa a um cluster real no novo cluster-sentinela; roda em toda inicialização mas só
+	// afeta linhas que ainda não migraram (WHERE cluster != sentinela).
+	if _, err := db.Exec(
+		`UPDATE notes SET cluster = ? WHERE tab = ? AND cluster != ?`,
+		generalNotesCluster, generalNotesTab, generalNotesCluster,
+	); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrar lembretes gerais: %w", err)
 	}
 	return &NotesStore{db: db}, nil
 }
