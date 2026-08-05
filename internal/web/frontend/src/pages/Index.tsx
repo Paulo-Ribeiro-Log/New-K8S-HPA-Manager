@@ -428,16 +428,39 @@ const Index = ({ onLogout }: IndexProps) => {
   useEffect(() => {
     if (clusters.length === 0) return;
     if (selectedCluster && clusters.some((c) => c.context === selectedCluster)) return;
+    setSelectedCluster(clusters[0].context);
+  }, [clusters, selectedCluster]);
 
-    const firstCluster = clusters[0];
-    setSelectedCluster(firstCluster.context);
-    // Para clusters EKS, verificar token SSO proativamente no carregamento inicial
-    if (firstCluster.cloud_provider === "eks") {
-      checkAwsToken(firstCluster.context, firstCluster.aws_profile);
+  // Checagem proativa de auth (AWS SSO / GCP Device Auth Grant) pro cluster que fica ativo
+  // logo no carregamento da página — seja ele restaurado do localStorage (efeito acima) ou o
+  // primeiro da lista por fallback. Roda só UMA vez por mount (hasCheckedInitialAuthRef), não a
+  // cada troca de selectedCluster — trocas manuais já dependem de checkAwsToken/checkGcpToken
+  // dentro de handleClusterChange, e o efeito de auto-select acima já dispara de novo quando
+  // muda `selectedCluster`.
+  //
+  // BUG real já cometido aqui: antes de existir a restauração de cluster via localStorage, este
+  // efeito só rodava (e só chamava checkAwsToken/checkGcpToken) no ramo "não tinha cluster
+  // selecionado, caiu no primeiro da lista" — funcionava porque selectedCluster SEMPRE começava
+  // vazio. Ao introduzir a restauração do último cluster usado, esse ramo passou a nunca mais
+  // executar quando o cluster restaurado já era válido (o caso mais comum!), then a checagem
+  // proativa de autenticação silenciosamente parou de rodar no load — sintoma reportado: troca
+  // pra cluster GKE sem sessão válida não abria mais o GcpAuthDialog sozinho, ficava esperando
+  // uma ação manual (`gcloud auth login`) fora do app. Corrigido separando "resolver qual
+  // cluster fica ativo" (efeito acima) de "checar auth pro cluster ativo" (aqui), pra que a
+  // checagem rode sempre que há um cluster ativo válido, independente de como ele chegou lá.
+  const hasCheckedInitialAuthRef = useRef(false);
+  useEffect(() => {
+    if (hasCheckedInitialAuthRef.current) return;
+    if (!selectedCluster || clusters.length === 0) return;
+    const current = clusters.find((c) => c.context === selectedCluster);
+    if (!current) return; // ainda não é válido (efeito acima vai trocar) — espera o próximo render
+
+    hasCheckedInitialAuthRef.current = true;
+    if (current.cloud_provider === "eks") {
+      checkAwsToken(current.context, current.aws_profile);
     }
-    // Mesma checagem proativa pra GKE (Device Auth Grant) — antes só existia pro EKS.
-    if (firstCluster.cloud_provider === "gke") {
-      checkGcpToken(firstCluster.context);
+    if (current.cloud_provider === "gke") {
+      checkGcpToken(current.context);
     }
   }, [clusters, selectedCluster, checkAwsToken, checkGcpToken]);
 

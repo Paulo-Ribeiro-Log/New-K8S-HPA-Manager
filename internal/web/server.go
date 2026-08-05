@@ -640,7 +640,9 @@ func (s *Server) setupRoutes() {
 	awsGroup.POST("/config", awsAuthHandler.SaveConfig)
 	awsGroup.DELETE("/config/:profile", awsAuthHandler.DeleteConfig)
 
-	// GCP Auth (Device Auth Grant para gcloud / gke-gcloud-auth-plugin)
+	// GCP Auth (roda `gcloud auth login` como subprocesso — ver comentário em
+	// internal/cloudprovider/gcp/auth.go sobre por que não é Device Auth Grant nem uma
+	// implementação própria de OAuth2)
 	gcpAuthHandler := handlers.NewGCPAuthHandler()
 	gcpGroup := api.Group("/gcp")
 	gcpGroup.GET("/auth/status", gcpAuthHandler.CheckStatus)

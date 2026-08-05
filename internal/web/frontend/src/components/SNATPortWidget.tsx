@@ -114,7 +114,6 @@ interface GCPAuthStatus {
 
 interface GCPLoginSession {
   session_id: string;
-  user_code: string;
   verify_url: string;
   expires_at: string;
   interval_sec: number;
@@ -447,25 +446,20 @@ export function SNATPortWidget({ cluster }: Props) {
               {gcpLoginSession && (
                 <div className="w-full max-w-sm space-y-3 p-4 rounded-lg border border-amber-500/30 bg-amber-500/5">
                   <p className="text-xs text-muted-foreground text-center">
-                    Acesse o link e insira o código:
+                    Clique para autenticar no navegador:
                   </p>
-                  <a
-                    href={gcpLoginSession.verify_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block text-xs text-blue-400 underline text-center break-all"
-                  >
-                    {gcpLoginSession.verify_url}
-                  </a>
                   <div className="flex items-center justify-center gap-2">
-                    <span className="font-mono text-lg font-bold tracking-widest text-foreground">
-                      {gcpLoginSession.user_code}
-                    </span>
+                    <Button size="sm" variant="outline" asChild>
+                      <a href={gcpLoginSession.verify_url} target="_blank" rel="noopener noreferrer">
+                        Ir para autenticação web
+                      </a>
+                    </Button>
                     <button
                       className="text-muted-foreground hover:text-foreground"
+                      title="Copiar link"
                       onClick={() => {
-                        navigator.clipboard.writeText(gcpLoginSession.user_code);
-                        toast.success("Código copiado!");
+                        navigator.clipboard.writeText(gcpLoginSession.verify_url);
+                        toast.success("Link copiado!");
                       }}
                     >
                       <Copy className="w-3.5 h-3.5" />

@@ -4,13 +4,14 @@ import { apiClient } from "@/lib/api/client";
 export interface GcpSsoState {
   open: boolean;
   cluster: string;
-  /** URL do Device Authorization Grant (accounts.google.com/device) */
+  /** URL real de autenticação do Google, capturada da saída de `gcloud auth login` rodado como
+   *  subprocesso no backend (ver internal/cloudprovider/gcp/auth.go) — mesma URL que apareceria
+   *  rodando o comando manualmente num terminal sem browser. */
   url: string;
-  /** Código exibido ao usuário (ex: ABCD-EFGH) */
-  userCode: string;
   /** true enquanto aguarda o backend iniciar o processo */
   loading: boolean;
-  /** true enquanto polling aguarda o usuário concluir no browser */
+  /** true enquanto polling aguarda o usuário concluir no browser (o gcloud completa sozinho via
+   *  seu próprio listener loopback assim que o redirect chega — não há código pra digitar) */
   polling: boolean;
   /** Mensagem de erro, se houver */
   error: string;
@@ -22,7 +23,6 @@ const INITIAL: GcpSsoState = {
   open: false,
   cluster: "",
   url: "",
-  userCode: "",
   loading: false,
   polling: false,
   error: "",
@@ -30,15 +30,15 @@ const INITIAL: GcpSsoState = {
 };
 
 /**
- * Equivalente GCP do useAwsSsoAuth.ts — verifica proativamente se a autenticação GCP (ADC) ainda
- * é válida ao trocar para um cluster GKE, e abre o fluxo de Device Authorization Grant
- * automaticamente quando não está. Antes desta implementação, clusters GKE não tinham NENHUMA
- * verificação proativa equivalente — o usuário só descobria que precisava reautenticar quando
- * uma chamada ao cluster já tinha falhado silenciosamente em algum outro lugar da UI.
+ * Equivalente GCP do useAwsSsoAuth.ts — verifica proativamente se a autenticação GCP ainda é
+ * válida ao trocar para um cluster GKE, e abre o fluxo de login automaticamente quando não está.
+ * Antes desta implementação, clusters GKE não tinham NENHUMA verificação proativa equivalente —
+ * o usuário só descobria que precisava reautenticar quando uma chamada ao cluster já tinha
+ * falhado silenciosamente em algum outro lugar da UI.
  *
- * Diferença chave em relação ao AWS: não há conceito de "perfil" — a autenticação GCP (ADC) é
- * global ao servidor, não por cluster/conta, então não existe um equivalente a
- * retryAfterConfig/needsConfig aqui.
+ * Diferença chave em relação ao AWS: não há conceito de "perfil" — a autenticação GCP é global ao
+ * servidor (uma única conta ativa no `gcloud` local), não por cluster/conta, então não existe um
+ * equivalente a retryAfterConfig/needsConfig aqui.
  */
 export function useGcpSsoAuth() {
   const [state, setState] = useState<GcpSsoState>(INITIAL);
@@ -69,7 +69,9 @@ export function useGcpSsoAuth() {
             setState((s) => ({
               ...s,
               polling: false,
-              error: "Autenticação GCP falhou ou expirou. Verifique se a VPN/rede está OK e tente novamente.",
+              // Mensagem real do backend quando disponível (ex: "login cancelado ou falhou: ...")
+              // — mais útil que um texto genérico pra diferenciar cancelamento de timeout de rede.
+              error: res.error || "Autenticação GCP falhou ou expirou. Verifique se a VPN/rede está OK e tente novamente.",
             }));
           }
         }
@@ -80,7 +82,7 @@ export function useGcpSsoAuth() {
   }, [stopPolling]);
 
   /**
-   * Inicia (ou reinicia) o fluxo de Device Authorization Grant pro cluster dado.
+   * Inicia (ou reinicia) o login (`gcloud auth login` via backend) pro cluster dado.
    * Chamado automaticamente por checkForCluster, ou manualmente pelo botão "Tentar novamente"
    * do GcpAuthDialog quando um erro anterior precisa ser reexecutado do zero.
    */
@@ -107,7 +109,6 @@ export function useGcpSsoAuth() {
         loading: false,
         polling: true,
         url: res.verify_url!,
-        userCode: res.user_code ?? "",
       }));
       startPolling(res.session_id, res.interval_sec ?? 5);
     } catch (err: unknown) {

@@ -380,7 +380,13 @@ class APIClient {
       const isGcpAuthError = message && (
         message.includes("gke-gcloud-auth-plugin") ||
         message.includes("autenticação GCP necessária") ||
-        message.includes("Reauthentication failed")
+        message.includes("Reauthentication failed") ||
+        // GCPAuthManager.ValidateAuth (Node Pools) usa IsGcloudAuthActive, que devolve essa
+        // mensagem literal (internal/cloudprovider/gcp/auth.go) — sem esse match, o usuário via
+        // só um toast cru mandando rodar `gcloud auth login` manualmente (impossível num
+        // servidor headless) em vez do GcpAuthDialog abrir sozinho, mesmo sintoma relatado do
+        // AWS SSO só não acontecer pra GKE.
+        message.includes("nenhuma conta GCP ativa")
       );
       if (isGcpAuthError) {
         window.dispatchEvent(new CustomEvent("gcp-sso-token-expired"));
@@ -3999,9 +4005,11 @@ class APIClient {
     return this.request(`/aws/config/${encodeURIComponent(profile)}`, { method: "DELETE" });
   }
 
-  // ─── GCP Auth (Device Authorization Grant) ─────────────────────────────────
+  // ─── GCP Auth (gcloud auth login via subprocesso) ───────────────────────────
   // Equivalente ao AWS SSO acima, mas sem conceito de "perfil" — autenticação GCP é global ao
-  // servidor (ADC), não por cluster/profile.
+  // servidor (uma única conta ativa no gcloud local), não por cluster/profile. O backend roda
+  // `gcloud auth login` em background e devolve a URL real que o próprio gcloud imprime — sem
+  // etapa de código manual, só um link (ver internal/cloudprovider/gcp/auth.go).
 
   async getGcpAuthStatus(): Promise<{ authenticated: boolean; account?: string; has_gcloud: boolean; has_adc: boolean }> {
     return this.request("/gcp/auth/status");
@@ -4009,18 +4017,17 @@ class APIClient {
 
   async startGcpLogin(): Promise<{
     session_id?: string;
-    user_code?: string;
     verify_url?: string;
     expires_at?: string;
     interval_sec?: number;
     message?: string;
-    /** true quando a sessão GCP já estava válida — nenhum device auth novo foi iniciado */
+    /** true quando a sessão GCP já estava válida — nenhum login novo foi iniciado */
     already_valid?: boolean;
   }> {
     return this.request("/gcp/auth/login", { method: "POST" });
   }
 
-  async pollGcpLogin(sessionId: string): Promise<{ session_id: string; done: boolean; success: boolean }> {
+  async pollGcpLogin(sessionId: string): Promise<{ session_id: string; done: boolean; success: boolean; error?: string }> {
     return this.request(`/gcp/auth/poll?session_id=${encodeURIComponent(sessionId)}`);
   }
 
