@@ -21,10 +21,12 @@ interface Props {
 }
 
 /**
- * Equivalente GCP do AwsSsoLoginDialog.tsx — Device Authorization Grant (accounts.google.com/device)
- * disparado automaticamente ao trocar para um cluster GKE sem autenticação GCP válida (ver
- * useGcpSsoAuth.checkForCluster). Antes desta implementação, essa verificação/dialog simplesmente
- * não existia pra GKE — só AWS EKS tinha o equivalente.
+ * Equivalente GCP do AwsSsoLoginDialog.tsx — login disparado automaticamente ao trocar para um
+ * cluster GKE sem autenticação GCP válida (ver useGcpSsoAuth.checkForCluster). O backend roda
+ * `gcloud auth login` como subprocesso e devolve a URL real de autenticação que o próprio gcloud
+ * imprime (ver internal/cloudprovider/gcp/auth.go) — não há etapa de "digite este código", só um
+ * link pra clicar; o resto (troca do código por token, redirect de volta) é o gcloud que resolve
+ * sozinho via seu próprio listener loopback.
  */
 export function GcpAuthDialog({ state, onRetry, onClose }: Props) {
   const handleCopyUrl = useCallback(() => {
@@ -84,11 +86,11 @@ export function GcpAuthDialog({ state, onRetry, onClose }: Props) {
           </div>
         )}
 
-        {/* URL de autorização + código */}
+        {/* URL de autorização — clicar já basta, sem etapa de código manual */}
         {state.url && !state.loading && !state.success && (
           <div className="space-y-4">
             <div className="rounded-md bg-muted p-3 space-y-2">
-              <p className="text-sm font-medium">1. Clique para autenticar no navegador:</p>
+              <p className="text-sm font-medium">Clique para autenticar no navegador:</p>
               <Button onClick={handleOpenUrl} className="w-full">
                 Ir para autenticação web
               </Button>
@@ -97,15 +99,6 @@ export function GcpAuthDialog({ state, onRetry, onClose }: Props) {
                 <Button variant="outline" size="sm" onClick={handleCopyUrl}>Copiar</Button>
               </div>
             </div>
-
-            {state.userCode && (
-              <div className="rounded-md bg-muted p-3 space-y-1 text-center">
-                <p className="text-sm font-medium">2. Insira o código:</p>
-                <p className="font-mono text-2xl font-bold tracking-widest text-primary">
-                  {state.userCode}
-                </p>
-              </div>
-            )}
 
             <CloudAccountHintField provider="gcp" />
 

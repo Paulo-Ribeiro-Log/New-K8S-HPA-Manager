@@ -1,38 +1,66 @@
 package gcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
-
-	"k8s-hpa-manager/internal/ai"
 )
 
-// GCPAuthManager gerencia autenticação GCP via Device Authorization Grant (RFC 8628).
-// Após autenticação, salva ADC JSON e configura GOOGLE_APPLICATION_CREDENTIALS para
-// que o gke-gcloud-auth-plugin use automaticamente as credenciais.
+// GCPAuthManager gerencia autenticação GCP rodando `gcloud auth login` como subprocesso.
+//
+// NÃO usa Device Authorization Grant (RFC 8628) nem uma implementação própria de OAuth2 — as
+// duas primeiras versões deste arquivo tentaram isso e nenhuma funcionava de fato:
+//
+//  1. Device Authorization Grant (StartDeviceAuth/TryExchangeDeviceToken, internal/ai): o
+//     client_id público do gcloud SDK está registrado no Google como "Desktop app", e o endpoint
+//     https://oauth2.googleapis.com/device/code rejeita esse tipo de client incondicionalmente
+//     com `{"error":"invalid_client","error_description":"Invalid client type."}` — confirmado
+//     com um POST direto ao endpoint, fora do código Go, pra isolar a causa. Só clients
+//     registrados como "TV and Limited Input" suportam esse grant type.
+//  2. OAuth2 Authorization Code reimplementado à mão (StartOAuth2AppCallback/ExchangeAuthCode,
+//     mesmo mecanismo usado com sucesso pela autenticação Vertex AI): funcionava tecnicamente,
+//     mas o usuário apontou (com razão) que é complexidade desnecessária reimplementar o fluxo
+//     OAuth2 do zero quando o próprio `gcloud auth login` já faz exatamente isso.
+//
+// A solução final: rodar `gcloud auth login` como subprocesso (sem DISPLAY/BROWSER no ambiente),
+// capturar a URL que ele mesmo imprime no fallback "não consigo abrir um browser local"
+// (`https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=32555940559...`,
+// com redirect_uri apontando pro listener loopback que o PRÓPRIO gcloud sobe numa porta
+// efêmera) e mostrar essa URL pro usuário — o resto (trocar o código por token, validar,
+// persistir a credencial) é feito inteiramente pelo gcloud, do jeito que ele já faz quando
+// rodado manualmente num terminal. Simples, e usa exatamente o mesmo client_id/fluxo que
+// `gcloud auth login` sempre usou.
 type GCPAuthManager struct {
-	mu       sync.Mutex
-	sessions map[string]*gcpLoginSession
+	mu              sync.Mutex
+	sessions        map[string]*gcloudLoginSession
+	activeSessionID string // sessão em andamento, se houver — ver StartGcloudLogin
 }
 
-type gcpLoginSession struct {
-	DeviceCode string
-	UserCode   string
-	VerifyURL  string
-	ExpiresAt  time.Time
-	Interval   int
-	Done       chan error
+// gcloudLoginSession rastreia um `gcloud auth login` rodando em background.
+type gcloudLoginSession struct {
+	cmd       *exec.Cmd
+	cancel    context.CancelFunc
+	status    string // "waiting_url" | "waiting_browser" | "authenticated" | "error"
+	authURL   string
+	errMsg    string
+	expiresAt time.Time
 }
+
+// gcloudAuthURLRe casa a URL de autorização impressa por `gcloud auth login` quando ele não
+// consegue abrir um browser local — mesmo padrão em todas as versões recentes do SDK.
+var gcloudAuthURLRe = regexp.MustCompile(`https://accounts\.google\.com/o/oauth2/auth\S+`)
 
 // GCPAuthStatus descreve o estado atual da autenticação GCP.
 type GCPAuthStatus struct {
@@ -42,17 +70,18 @@ type GCPAuthStatus struct {
 	HasADC        bool   `json:"has_adc"`
 }
 
-// GCPLoginResult retorna os dados para o frontend iniciar o fluxo.
+// GCPLoginResult retorna os dados para o frontend iniciar o fluxo. Sem UserCode: o fluxo
+// Authorization Code não tem etapa de "digite este código" — o usuário só clica no link,
+// autentica no Google e é redirecionado de volta automaticamente.
 type GCPLoginResult struct {
 	SessionID   string    `json:"session_id"`
-	UserCode    string    `json:"user_code"`
 	VerifyURL   string    `json:"verify_url"`
 	ExpiresAt   time.Time `json:"expires_at"`
 	IntervalSec int       `json:"interval_sec"`
 }
 
 func NewGCPAuthManager() *GCPAuthManager {
-	return &GCPAuthManager{sessions: make(map[string]*gcpLoginSession)}
+	return &GCPAuthManager{sessions: make(map[string]*gcloudLoginSession)}
 }
 
 // CheckStatus verifica o estado atual da autenticação GCP.
@@ -95,190 +124,200 @@ func (m *GCPAuthManager) CheckStatus(ctx context.Context) GCPAuthStatus {
 	return status
 }
 
-// StartLogin inicia o Device Authorization Grant e retorna os dados para exibição ao usuário.
-func (m *GCPAuthManager) StartLogin(ctx context.Context) (*GCPLoginResult, string, error) {
-	code, err := ai.StartDeviceAuth(ctx)
+// StartGcloudLogin roda `gcloud auth login` em background e retorna assim que a URL de
+// autenticação aparece na saída do processo (normalmente 1-2s) — a mesma URL que apareceria
+// rodando o comando manualmente num terminal sem browser. O restante do fluxo (trocar o código
+// por token, validar, persistir a credencial em ~/.config/gcloud/) é feito inteiramente pelo
+// próprio gcloud; esta função só observa o resultado.
+func (m *GCPAuthManager) StartGcloudLogin(ctx context.Context) (*GCPLoginResult, error) {
+	// Reaproveita uma sessão já em andamento em vez de spawnar outro `gcloud auth login`
+	// concorrente — importante porque o gcloud CLI usa um credential store compartilhado
+	// (~/.config/gcloud/credentials.db) entre processos, e múltiplos `gcloud auth login`
+	// simultâneos (ex: usuário clica "Tentar novamente" mais de uma vez, ou o listener reativo
+	// gcp-sso-token-expired dispara de novo enquanto o primeiro login ainda não terminou) podem
+	// interferir um no outro e deixar processos órfãos presos esperando um redirect que nunca
+	// chega — confirmado na prática durante o desenvolvimento desta função (2 subprocessos
+	// `gcloud auth login` ficaram vivos simultaneamente após alguns testes de chamada repetida).
+	m.mu.Lock()
+	if id := m.activeSessionID; id != "" {
+		if s, ok := m.sessions[id]; ok && s.status != "authenticated" && s.status != "error" && time.Now().Before(s.expiresAt) {
+			if s.authURL != "" {
+				m.mu.Unlock()
+				return &GCPLoginResult{SessionID: id, VerifyURL: s.authURL, ExpiresAt: s.expiresAt, IntervalSec: 2}, nil
+			}
+			// URL ainda não capturada (janela de ~1-2s logo após o início) — deixa a chamada
+			// original terminar de resolver em vez de competir por ela.
+			m.mu.Unlock()
+			return nil, fmt.Errorf("autenticação GCP já em andamento — aguarde alguns segundos e tente de novo")
+		}
+	}
+	m.mu.Unlock()
+
+	if _, err := exec.LookPath("gcloud"); err != nil {
+		return nil, fmt.Errorf("gcloud CLI não encontrado — instale o Google Cloud SDK")
+	}
+
+	// Timeout generoso pro processo inteiro (usuário precisa ter tempo de abrir o link e logar).
+	procCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	cmd := exec.CommandContext(procCtx, "gcloud", "auth", "login", "--quiet")
+	// Sem DISPLAY/BROWSER, o gcloud detecta que não consegue abrir um browser local e cai
+	// automaticamente no fallback: imprime a URL de autorização e sobe seu próprio listener
+	// loopback numa porta efêmera, esperando o redirect — sem isso (ex: rodando com o DISPLAY
+	// herdado do processo pai), ele tentaria abrir um browser gráfico que não existe no servidor.
+	cmd.Env = append(os.Environ(), "DISPLAY=", "BROWSER=")
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, "", fmt.Errorf("falha ao iniciar Device Auth: %w", err)
+		cancel()
+		return nil, fmt.Errorf("falha ao capturar saída do gcloud: %w", err)
+	}
+	cmd.Stderr = cmd.Stdout // gcloud imprime o prompt de auth no stderr em algumas versões — unificar simplifica o parsing
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("falha ao iniciar gcloud auth login: %w", err)
 	}
 
-	sessionID := fmt.Sprintf("gcp-%d", time.Now().UnixNano())
-	session := &gcpLoginSession{
-		DeviceCode: code.DeviceCode,
-		UserCode:   code.UserCode,
-		VerifyURL:  code.VerificationURL,
-		ExpiresAt:  time.Now().Add(time.Duration(code.ExpiresIn) * time.Second),
-		Interval:   code.Interval,
-		Done:       make(chan error, 1),
+	sessionID := fmt.Sprintf("gcloud-%d", time.Now().UnixNano())
+	expiresAt := time.Now().Add(5 * time.Minute)
+	session := &gcloudLoginSession{
+		cmd:       cmd,
+		cancel:    cancel,
+		status:    "waiting_url",
+		expiresAt: expiresAt,
 	}
-
 	m.mu.Lock()
 	m.sessions[sessionID] = session
+	m.activeSessionID = sessionID
 	m.mu.Unlock()
 
-	go m.pollAndSave(context.Background(), sessionID, session)
-
-	return &GCPLoginResult{
-		SessionID:   sessionID,
-		UserCode:    code.UserCode,
-		VerifyURL:   code.VerificationURL,
-		ExpiresAt:   session.ExpiresAt,
-		IntervalSec: code.Interval,
-	}, sessionID, nil
-}
-
-// PollStatus verifica se a sessão completou. Retorna (done, success).
-func (m *GCPAuthManager) PollStatus(sessionID string) (done bool, success bool) {
-	m.mu.Lock()
-	session, ok := m.sessions[sessionID]
-	m.mu.Unlock()
-
-	if !ok {
-		return true, false
-	}
+	urlChan := make(chan string, 1)
+	go m.streamGcloudLoginOutput(session, stdout, urlChan)
+	go m.awaitGcloudLoginExit(session)
 
 	select {
-	case err := <-session.Done:
-		m.mu.Lock()
-		delete(m.sessions, sessionID)
-		m.mu.Unlock()
-		return true, err == nil
-	default:
-		if time.Now().After(session.ExpiresAt) {
+	case url, ok := <-urlChan:
+		if !ok || url == "" {
+			m.removeSession(sessionID)
+			return nil, fmt.Errorf("gcloud auth login não imprimiu uma URL de autenticação (saída inesperada)")
+		}
+		return &GCPLoginResult{
+			SessionID:   sessionID,
+			VerifyURL:   url,
+			ExpiresAt:   expiresAt,
+			IntervalSec: 2,
+		}, nil
+	case <-time.After(20 * time.Second):
+		m.removeSession(sessionID)
+		return nil, fmt.Errorf("timeout aguardando gcloud imprimir a URL de autenticação")
+	}
+}
+
+// streamGcloudLoginOutput lê a saída (stdout+stderr combinados) do subprocesso linha a linha,
+// procurando a URL de autorização. Assim que encontra, publica em urlChan (uma única vez) e
+// continua drenando o resto da saída até o processo terminar — necessário pra `cmd.Wait()` (em
+// awaitGcloudLoginExit) não bloquear esperando o pipe esvaziar.
+func (m *GCPAuthManager) streamGcloudLoginOutput(session *gcloudLoginSession, r io.Reader, urlChan chan<- string) {
+	found := false
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if found {
+			continue
+		}
+		if url := gcloudAuthURLRe.FindString(scanner.Text()); url != "" {
+			found = true
 			m.mu.Lock()
-			delete(m.sessions, sessionID)
+			session.authURL = url
+			session.status = "waiting_browser"
 			m.mu.Unlock()
-			return true, false
-		}
-		return false, false
-	}
-}
-
-// pollAndSave faz polling do token e salva as credenciais quando autenticado.
-func (m *GCPAuthManager) pollAndSave(ctx context.Context, sessionID string, session *gcpLoginSession) {
-	interval := session.Interval
-	if interval <= 0 {
-		interval = 5
-	}
-
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			session.Done <- fmt.Errorf("cancelado")
-			return
-		case <-ticker.C:
-			token, pending, err := ai.TryExchangeDeviceToken(ctx, session.DeviceCode)
-			if err != nil {
-				session.Done <- err
-				return
-			}
-			if pending {
-				if time.Now().After(session.ExpiresAt) {
-					session.Done <- fmt.Errorf("código expirado")
-					return
-				}
-				continue
-			}
-
-			if saveErr := WriteGCPADCFile(token.AccessToken, token.RefreshToken); saveErr != nil {
-				session.Done <- saveErr
-				return
-			}
-
-			if token.RefreshToken != "" {
-				go activateRefreshToken(context.Background(), token.AccessToken, token.RefreshToken)
-			}
-
-			session.Done <- nil
-			return
+			urlChan <- url
 		}
 	}
+	if !found {
+		close(urlChan)
+	}
 }
 
-// WriteGCPADCFile salva Application Default Credentials em ~/.k8s-hpa-manager/gcp-adc.json
-// e configura GOOGLE_APPLICATION_CREDENTIALS no processo atual.
-func WriteGCPADCFile(accessToken, refreshToken string) error {
-	adcPath := gcpADCPath()
-	if err := os.MkdirAll(filepath.Dir(adcPath), 0755); err != nil {
-		return fmt.Errorf("falha ao criar diretório ADC: %w", err)
-	}
+// awaitGcloudLoginExit espera o subprocesso terminar e, em caso de sucesso, faz uma checagem
+// "ao vivo" (gcloud auth print-access-token) antes de marcar a sessão como autenticada — mesmo
+// princípio já usado em CheckStatus: o código de saída 0 já é uma validação real feita pelo
+// próprio gcloud (só sai 0 se conseguiu trocar o código por token), mas confirmar que dá pra
+// obter um access token de verdade cobre o caso raro de a conta logada não ter permissão de
+// gerar token de acesso mesmo com o login em si tendo "funcionado".
+func (m *GCPAuthManager) awaitGcloudLoginExit(session *gcloudLoginSession) {
+	waitErr := session.cmd.Wait()
 
-	adc := map[string]interface{}{
-		"client_id":     "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com",
-		"client_secret": "d-FL95Q19q7MQmFpd7hHD0Ty",
-		"refresh_token": refreshToken,
-		"type":          "authorized_user",
-	}
-	if accessToken != "" {
-		adc["access_token"] = accessToken
-	}
-
-	data, err := json.MarshalIndent(adc, "", "  ")
-	if err != nil {
-		return fmt.Errorf("falha ao serializar ADC: %w", err)
-	}
-
-	if err := os.WriteFile(adcPath, data, 0600); err != nil {
-		return fmt.Errorf("falha ao salvar ADC: %w", err)
-	}
-
-	os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adcPath) //nolint:errcheck
-	return nil
-}
-
-// activateRefreshToken tenta importar as credenciais no gcloud CLI para que
-// comandos gcloud (ex: gcloud container clusters list) também funcionem.
-func activateRefreshToken(ctx context.Context, accessToken, refreshToken string) {
-	if _, err := exec.LookPath("gcloud"); err != nil {
+	m.mu.Lock()
+	alreadyFailed := session.status == "error"
+	m.mu.Unlock()
+	if alreadyFailed {
 		return
 	}
 
-	account := resolveAccountEmail(ctx, accessToken)
-	if account == "" {
-		account = "k8s-hpa-manager@local"
+	if waitErr != nil {
+		m.mu.Lock()
+		session.status = "error"
+		session.errMsg = "login cancelado ou falhou: " + waitErr.Error()
+		m.mu.Unlock()
+		return
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Contexto próprio para a checagem final, em vez de reaproveitar `ctx` (o mesmo passado pro
+	// subprocesso que acabou de sair) — evita depender de quanto tempo sobrou no timeout de 5min
+	// do processo, e de uma possível corrida com PollGcloudLogin cancelando essa mesma sessão por
+	// expiração bem no instante em que o processo termina com sucesso.
+	tokenCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if tokenFromGcloud(tokenCtx) == "" {
+		m.mu.Lock()
+		session.status = "error"
+		session.errMsg = "gcloud reportou sucesso, mas não foi possível obter um access token — verifique as permissões da conta"
+		m.mu.Unlock()
+		return
+	}
 
-	exec.CommandContext(cmdCtx, //nolint:errcheck
-		"gcloud", "auth", "activate-refresh-token",
-		account, refreshToken, "--quiet",
-	).Run()
+	m.mu.Lock()
+	session.status = "authenticated"
+	m.mu.Unlock()
 }
 
-// resolveAccountEmail obtém o email da conta via Google userinfo endpoint.
-func resolveAccountEmail(ctx context.Context, accessToken string) string {
-	if accessToken == "" {
-		return ""
+// PollGcloudLogin verifica se a sessão de login completou. Retorna (done, success, errMsg).
+func (m *GCPAuthManager) PollGcloudLogin(sessionID string) (done bool, success bool, errMsg string) {
+	m.mu.Lock()
+	session, ok := m.sessions[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return true, false, "sessão não encontrada ou expirada"
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	m.mu.Lock()
+	status, msg, expired := session.status, session.errMsg, time.Now().After(session.expiresAt)
+	m.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(reqCtx, "GET",
-		"https://www.googleapis.com/oauth2/v3/userinfo", nil)
-	if err != nil {
-		return ""
+	switch {
+	case status == "authenticated":
+		m.removeSession(sessionID)
+		return true, true, ""
+	case status == "error":
+		m.removeSession(sessionID)
+		return true, false, msg
+	case expired:
+		session.cancel() // mata o subprocesso órfão em vez de deixá-lo pendurado
+		m.removeSession(sessionID)
+		return true, false, "tempo esgotado aguardando autenticação"
+	default:
+		return false, false, ""
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return ""
+func (m *GCPAuthManager) removeSession(sessionID string) {
+	m.mu.Lock()
+	delete(m.sessions, sessionID)
+	if m.activeSessionID == sessionID {
+		m.activeSessionID = ""
 	}
-	defer resp.Body.Close()
-
-	var info struct {
-		Email string `json:"email"`
-	}
-	if json.NewDecoder(resp.Body).Decode(&info) != nil {
-		return ""
-	}
-	return info.Email
+	m.mu.Unlock()
 }
 
 // LoadSavedGCPADC carrega o ADC salvo anteriormente e define GOOGLE_APPLICATION_CREDENTIALS.

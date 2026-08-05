@@ -9,7 +9,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Input } from "@/components/ui/input";
 import {
   Loader2,
   CheckCircle2,
@@ -57,7 +56,6 @@ interface GCPAuthStatus {
 
 interface GCPLoginSession {
   session_id: string;
-  user_code: string;
   verify_url: string;
   expires_at: string;
   interval_sec: number;
@@ -135,9 +133,10 @@ export function AutoDiscoverDialog({
     }
   };
 
-  // Detecta se já existem clusters GKE no kubeconfig local (contexts "gke_*") —
-  // usado para pedir autenticação GCP mesmo quando `gcloud` não está instalado,
-  // já que o fluxo de Device Auth Grant da app não depende do gcloud CLI.
+  // Detecta se já existem clusters GKE no kubeconfig local (contexts "gke_*") — usado como
+  // gatilho extra pro aviso de auth mesmo antes de saber se `gcloud` está instalado (a checagem
+  // de status já cobre isso; se não estiver, o botão "Autenticar GCP" mostra o erro real do
+  // backend — "gcloud CLI não encontrado" — em vez de simplesmente não aparecer).
   const checkGKEClustersInKubeconfig = async () => {
     try {
       const resp = await fetch("/api/v1/clusters", {
@@ -389,33 +388,23 @@ export function AutoDiscoverDialog({
                 {gcpLoginInProgress ? (
                   <div className="flex flex-col gap-2">
                     <span className="font-medium">Autenticação GCP em andamento</span>
-                    <span className="text-xs">
-                      Acesse{" "}
-                      <a
-                        href={gcpLoginSession.verify_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline font-medium"
-                      >
-                        accounts.google.com/device
-                      </a>{" "}
-                      e insira o código abaixo:
-                    </span>
                     <div className="flex items-center gap-2">
-                      <Input
-                        readOnly
-                        value={gcpLoginSession.user_code}
-                        className="font-mono text-center text-lg tracking-widest h-10 bg-background border-yellow-400 max-w-[160px]"
-                      />
+                      <Button size="sm" variant="outline" asChild className="gap-1 bg-background">
+                        <a href={gcpLoginSession.verify_url} target="_blank" rel="noopener noreferrer">
+                          Ir para autenticação web
+                        </a>
+                      </Button>
                       <Button
                         size="sm"
-                        variant="outline"
-                        onClick={() => copyToClipboard(gcpLoginSession.user_code)}
+                        variant="ghost"
+                        onClick={() => copyToClipboard(gcpLoginSession.verify_url)}
                         className="gap-1"
+                        title="Copiar link"
                       >
-                        <Copy className="h-3.5 w-3.5" /> Copiar
+                        <Copy className="h-3.5 w-3.5" />
                       </Button>
                       <Loader2 className="h-4 w-4 animate-spin text-yellow-600" />
+                      <span className="text-xs">Aguardando autenticação…</span>
                     </div>
                     <CloudAccountHintField provider="gcp" />
                   </div>
