@@ -6,7 +6,7 @@ import { ChevronDown, ChevronRight, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { GENERAL_NOTES_TAB } from "@/hooks/useNotes";
+import { GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB } from "@/hooks/useNotes";
 import type { Note } from "@/lib/api/types";
 
 interface NoteEntryProps {
@@ -57,9 +57,11 @@ export function NoteEntry({ note, isAuthor, onEdit, onDelete, showScopeBadges, d
         </div>
         {showScopeBadges && (
           <div className="flex items-center gap-1 flex-shrink-0">
-            <Badge variant="outline" className="text-[10px] font-normal">{note.cluster}</Badge>
+            {note.cluster !== GENERAL_NOTES_CLUSTER && (
+              <Badge variant="outline" className="text-[10px] font-normal">{note.cluster}</Badge>
+            )}
             <Badge variant="outline" className="text-[10px] font-normal">
-              {note.tab === GENERAL_NOTES_TAB ? "geral" : note.tab}
+              {note.tab === GENERAL_NOTES_TAB ? "geral (todos os clusters)" : note.tab}
             </Badge>
           </div>
         )}

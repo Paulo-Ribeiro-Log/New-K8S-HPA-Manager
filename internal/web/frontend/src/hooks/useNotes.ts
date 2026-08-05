@@ -8,6 +8,16 @@ import type { Note } from '../lib/api/types';
 // Reaproveita 100% do backend/CRUD de notas por cluster+aba já existente, sem schema novo.
 export const GENERAL_NOTES_TAB = '__general__';
 
+// Cluster reservado (nunca corresponde a um cluster real do kubeconfig — contexts reais nunca
+// começam com "__") usado SÓ pelos "Lembretes gerais": eles precisam sobreviver a troca de
+// cluster e a reinícios do app, então não podem ficar amarrados ao `selectedCluster` do momento
+// em que foram criados — diferente das notas normais (por cluster+aba), que continuam escopadas
+// de propósito. Sem esse sentinel, um lembrete "geral" ficava invisível assim que o usuário
+// trocava de cluster (e o app não lembra o último cluster selecionado entre reinícios), dando a
+// falsa impressão de que o lembrete tinha sido perdido — ele nunca saiu do SQLite, só ficou
+// fora do escopo de cluster+aba sendo consultado.
+export const GENERAL_NOTES_CLUSTER = '__all_clusters__';
+
 // Hook para listar notas de um escopo (cluster+aba)
 export function useNotes(cluster: string, tab: string) {
   return useQuery({
@@ -21,6 +31,16 @@ export function useNotes(cluster: string, tab: string) {
     // típico — sem isso, a query ficava presa em erro até um F5 manual, dando a impressão de que
     // "as notas não persistem" quando na verdade só não recarregavam sozinhas.
     refetchInterval: 60000,
+    // Retry mais insistente/rápido do que o padrão do React Query (3 tentativas, backoff até
+    // 30s) especificamente pro PRIMEIRO carregamento: se a página é aberta/recarregada bem no
+    // momento em que o backend acabou de ser morto (`kill <PID>`) e ainda não voltou a escutar
+    // na porta (janela típica de poucos segundos do fluxo `make build && kill && web -f`), a
+    // query nunca teve dados — cai direto em "Nenhuma nota ainda", indistinguível de uma nota
+    // de fato nunca criada. Sem isso, o usuário só via a lista recuperar no próximo tick do
+    // refetchInterval (até 60s depois), dando a falsa impressão de perda de dados logo depois
+    // de reiniciar o servidor.
+    retry: 6,
+    retryDelay: (attempt) => Math.min(1000 * (attempt + 1), 5000),
   });
 }
 
