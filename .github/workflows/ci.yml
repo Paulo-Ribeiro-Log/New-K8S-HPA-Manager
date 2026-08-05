@@ -46,7 +46,13 @@ jobs:
       - name: Check version detection
         run: make version
 
-      - name: Test cross-compilation
+      # Smoke-test de COMPILAÇÃO apenas (roda em ubuntu-latest, sem toolchain C pra macOS) — não
+      # valida que os binários darwin funcionam de verdade em runtime. `make release` cross-
+      # compila com CGO_ENABLED=0 pra darwin aqui, então o driver SQLite cai num stub que compila
+      # normalmente mas quebra toda a persistência (ver internal/storage/sqlite_health.go). A
+      # release de verdade (workflow release.yml) builda macOS em runners nativos com CGO real e
+      # tem um smoke-test específico pra pegar essa regressão antes de publicar.
+      - name: Test cross-compilation (compile-only, não valida CGO/SQLite em darwin)
         run: make release
 
       - name: Upload build artifact

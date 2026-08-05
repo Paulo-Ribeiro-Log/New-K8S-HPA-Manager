@@ -10,27 +10,12 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  release:
+  # Valida a tag e expõe a versão limpa (sem "v") pros demais jobs via output.
+  version:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Necessário para git describe
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Get version from tag
         id: version
         run: |
@@ -41,6 +26,20 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/v}
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION"
+
+  # Builda o frontend UMA vez só e compartilha internal/web/static (via go:embed, o binário Go
+  # embute esse diretório em build time) com os 3 jobs de build por plataforma abaixo — evita
+  # rodar `npm ci && npm run build` 3x e garante que os 3 binários embutem os MESMOS assets.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Build frontend
         run: |
@@ -55,8 +54,157 @@ jobs:
           ls -lah internal/web/static/assets/
           echo "=== Static files verified ==="
 
-      - name: Build binaries for all platforms
-        run: make release
+      - name: Upload frontend static assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-static
+          path: internal/web/static/
+          retention-days: 1
+
+  build-linux-amd64:
+    needs: [version, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # necessário para `git describe` (versão embutida no binário)
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Download frontend static assets
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: internal/web/static/
+
+      - name: Build (CGO_ENABLED=1, nativo)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 1
+        run: make release-single
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-amd64
+          path: build/release/new-k8s-hpa-linux-amd64
+          retention-days: 1
+
+  # macos-13 = runner Intel (x86_64) — build NATIVO, sem cross-compilation de arquitetura.
+  # CGO_ENABLED=1 é o padrão do Go quando GOOS/GOARCH batem com o host, mas setamos explícito
+  # pra não depender desse comportamento implícito silenciosamente mudar no futuro.
+  build-darwin-amd64:
+    needs: [version, frontend]
+    runs-on: macos-13
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Download frontend static assets
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: internal/web/static/
+
+      - name: Build (CGO_ENABLED=1, nativo — corrige binário com SQLite quebrado)
+        env:
+          GOOS: darwin
+          GOARCH: amd64
+          CGO_ENABLED: 1
+        run: make release-single
+
+      - name: Smoke-test SQLite real (não só compilação)
+        run: |
+          # Confirma que o driver SQLite funciona de verdade neste binário — é exatamente esta
+          # checagem que faltava antes e deixou um release com persistência quebrada passar
+          # despercebido (ver internal/storage/sqlite_health.go).
+          chmod +x build/release/new-k8s-hpa-darwin-amd64
+          OUT=$(./build/release/new-k8s-hpa-darwin-amd64 version 2>&1) || true
+          echo "$OUT"
+          if echo "$OUT" | grep -q "CGO_ENABLED=0"; then
+            echo "❌ Binário compilado sem CGO real — SQLite quebrado. Abortando release." >&2
+            exit 1
+          fi
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-amd64
+          path: build/release/new-k8s-hpa-darwin-amd64
+          retention-days: 1
+
+  # macos-14 = runner Apple Silicon (arm64) — build NATIVO.
+  build-darwin-arm64:
+    needs: [version, frontend]
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Download frontend static assets
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: internal/web/static/
+
+      - name: Build (CGO_ENABLED=1, nativo — corrige binário com SQLite quebrado)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: 1
+        run: make release-single
+
+      - name: Smoke-test SQLite real (não só compilação)
+        run: |
+          chmod +x build/release/new-k8s-hpa-darwin-arm64
+          OUT=$(./build/release/new-k8s-hpa-darwin-arm64 version 2>&1) || true
+          echo "$OUT"
+          if echo "$OUT" | grep -q "CGO_ENABLED=0"; then
+            echo "❌ Binário compilado sem CGO real — SQLite quebrado. Abortando release." >&2
+            exit 1
+          fi
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-arm64
+          path: build/release/new-k8s-hpa-darwin-arm64
+          retention-days: 1
+
+  publish:
+    needs: [version, build-linux-amd64, build-darwin-amd64, build-darwin-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: build/release
+          merge-multiple: true
+
+      - name: List binaries
+        run: ls -lh build/release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -66,27 +214,27 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ## 🚀 new-k8s-hpa ${{ steps.version.outputs.VERSION }}
+            ## 🚀 new-k8s-hpa ${{ needs.version.outputs.version }}
 
             ### 📥 Instalação
 
             **Linux (amd64):**
             ```bash
-            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ steps.version.outputs.VERSION }}/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ needs.version.outputs.version }}/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
             chmod +x new-k8s-hpa
             sudo mv new-k8s-hpa /usr/local/bin/
             ```
 
             **macOS (Intel):**
             ```bash
-            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ steps.version.outputs.VERSION }}/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
+            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ needs.version.outputs.version }}/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
             chmod +x new-k8s-hpa
             sudo mv new-k8s-hpa /usr/local/bin/
             ```
 
             **macOS (Apple Silicon):**
             ```bash
-            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ steps.version.outputs.VERSION }}/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
+            curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v${{ needs.version.outputs.version }}/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
             chmod +x new-k8s-hpa
             sudo mv new-k8s-hpa /usr/local/bin/
             ```
@@ -100,13 +248,16 @@ jobs:
 
             ---
 
-            🤖 Release publicada manualmente via GitHub Actions (workflow_dispatch)
+            🤖 Release publicada manualmente via GitHub Actions (workflow_dispatch) — binários
+            macOS buildados em runners nativos (macos-13 Intel / macos-14 Apple Silicon) com
+            CGO_ENABLED=1 real, garantindo que a persistência SQLite (Notas, tokens de IA/Dynatrace/
+            GitHub, predictions, etc.) funciona de verdade.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifacts
+      - name: Upload artifacts (retenção 90 dias)
         uses: actions/upload-artifact@v4
         with:
-          name: new-k8s-hpa-${{ steps.version.outputs.VERSION }}
+          name: new-k8s-hpa-${{ needs.version.outputs.version }}
           path: build/release/*
           retention-days: 90

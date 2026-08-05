@@ -118,6 +118,7 @@ cd internal/web/frontend && npm run lint   # eslint .
 - **`makefile` usa nome em minúsculas** — não `Makefile`. Ferramentas que procuram `Makefile` com M maiúsculo não encontrarão.
 - **GOCACHE** redirecionado para `~/.cache/go-build-wsl` (não `/dev/shm`) — evita OOM em WSL2. Auto-trimado ao passar 1500MB. Para limpar: `go clean -cache`.
 - **GOTMPDIR** usa `/tmp/go-tmp` — mesmo motivo (evita consumir RAM pura via `/dev/shm`).
+- **`make release`/`build-all` rodados num host Linux/WSL2 produzem binários darwin com SQLite quebrado** (persistência inteira falha em runtime, sem erro de build — ver "Bug real corrigido" na seção Release). Nunca usar o binário darwin gerado localmente por esses targets pra distribuir; a release de verdade sai do workflow `release.yml` (runners macOS nativos).
 
 ### Antes de Commitar
 
@@ -1260,6 +1261,9 @@ cd internal/web/frontend && npm run dev  # porta 5173
 ```
 
 ### Release
+
+**⚠️ Fluxo primário: `.github/workflows/release.yml` (Actions → Release → Run workflow, escolhendo a tag `vX.Y.Z` em "Use workflow from") — NÃO o `make release` local.** Ver "Bug real corrigido" abaixo: `make release` rodado num host Linux/WSL2 (o ambiente de dev padrão deste projeto) produz binários **darwin com a persistência SQLite completamente quebrada**, sem nenhum erro de compilação — só falha em runtime, de forma silenciosa e desconexa por feature.
+
 ```bash
 # Merge branch → main
 git checkout main && git merge --no-ff <branch> && git push origin main
@@ -1267,22 +1271,25 @@ git checkout main && git merge --no-ff <branch> && git push origin main
 # Tag e push
 git tag v1.3.X && git push origin v1.3.X
 
-# Build multi-plataforma
-make release   # gera: build/release/new-k8s-hpa-linux-amd64, darwin-amd64, darwin-arm64
+# Publicar: Actions → Release → Run workflow → escolher a tag v1.3.X em "Use workflow from"
+# (builda linux em ubuntu-latest e macOS em runners nativos — macos-13 Intel + macos-14 Apple
+# Silicon —, cada um com CGO_ENABLED=1 de verdade; cada job darwin roda um smoke-test que aborta
+# a release se o binário sair com SQLite quebrado, antes de publicar)
+```
 
-# Criar release no GitHub (com upload de binários)
-gh release create v1.3.X \
-  build/release/new-k8s-hpa-linux-amd64 \
-  build/release/new-k8s-hpa-darwin-amd64 \
-  build/release/new-k8s-hpa-darwin-arm64 \
-  --title "v1.3.X" \
-  --notes "Descrição das mudanças"
+Se por algum motivo for necessário gerar/testar binários localmente (não para publicar):
+```bash
+make build             # só a plataforma atual — sempre seguro (CGO nativo do host)
+make release-single    # UMA plataforma, lida GOOS/GOARCH/CGO_ENABLED do ambiente — usado pelo CI
+make release           # as 3 plataformas de uma vez — ⚠️ ver aviso acima sobre darwin/CGO
 ```
 
 > `create-v1-release.sh` era específico para v1.0.0 — **não usar** para releases correntes.
 
-### CI (GitHub Actions)
+**Bug real corrigido — releases macOS saíam com a persistência SQLite inteiramente quebrada, sem nenhum erro de build**: relatado pelo usuário como sintomas desconexos na build para macOS — "tokens store não configurado" ao salvar credencial do Dynatrace, "API not found" ao salvar o PAT do GitHub, e a aba Notas "carrega e depois falha", sem conseguir nem salvar uma nota. Investigado a partir daí: `mattn/go-sqlite3` (driver usado por TODOS os ~14 stores SQLite da app — Notas, tokens de IA/Dynatrace/GitHub, predictions, health check, FinOps pricing, node pool registry, SNAT history, latency test history, etc.) depende de cgo. `make release`/`build-all` cross-compilam pra `GOOS=darwin` a partir de um host Linux **sem** setar `CGO_ENABLED=1` nem ter um toolchain C pra macOS disponível — o Go, ao detectar `GOOS`/`GOARCH` diferentes do host, usa `CGO_ENABLED=0` por padrão nesse caso. Com cgo desabilitado, `vendor/github.com/mattn/go-sqlite3/static_mock.go` (ativado por `//go:build !cgo`) entra em cena: um **stub que registra o driver `"sqlite3"` normalmente e compila sem nenhum erro**, mas toda chamada real (`sql.Open`+`Ping`) falha em runtime com `"Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub"` — confirmado ao vivo compilando localmente com `CGO_ENABLED=0` e rodando o binário resultante: build 100% limpo, mas cada um dos ~14 stores logava sua própria falha isolada no startup (`⚠️ Falha ao criar SQLite client para AI`, `⚠️ Notes Store: falha ao criar store`, `⚠️ Falha ao inicializar GitHub Tokens Store`, etc.), cada feature dependente reagindo de um jeito diferente e confuso na UI (rota nunca registrada → "API not found"/404 real no caso do GitHub; handler retornando erro genérico no caso do Dynatrace; Notes com o novo tratamento de `isError` — ver seção Notas acima — finalmente tornando visível que era erro, não "vazio", mas sem apontar a causa raiz).
 
-`.github/workflows/ci.yml` roda automaticamente em todo push/PR para `main`/`master`: `go mod download` + `go mod verify` → `make test` (com `SKIP_AZURE_TESTS=1`) → `make build` → `make version` → `make release` (cross-compilation) → upload do binário linux como artifact (retenção 7 dias). Não publica release no GitHub — isso continua manual via `gh release create` (seção acima).
+Corrigido em duas frentes:
+1. **Diagnóstico centralizado e imediato** (`internal/storage/sqlite_health.go`, chamado logo no início de `NewServer` antes de qualquer store): `CheckSQLiteDriverWorks()` tenta abrir um banco `:memory:` real; se falhar com a mensagem específica do stub (`IsCGOStubError`), imprime um banner grande e inconfundível no log explicando exatamente o problema e a causa típica — em vez de esperar o usuário juntar sozinho ~14 avisos desconexos espalhados pelo startup.
+2. **Correção da causa raiz no pipeline de release**: novo target `make release-single` (builda UMA plataforma só, lendo `GOOS`/`GOARCH`/`CGO_ENABLED` do ambiente do chamador) usado pelo `release.yml` reestruturado em jobs por plataforma — `build-linux-amd64` em `ubuntu-latest`, `build-darwin-amd64` em `macos-13` (Intel, nativo) e `build-darwin-arm64` em `macos-14` (Apple Silicon, nativo) —, cada um com `CGO_ENABLED=1` de verdade (build nativo, sem cross-compilation de SO) e um smoke-test que roda `<binário> version` e aborta a release inteira se detectar a assinatura do stub `CGO_ENABLED=0` na saída. `make release`/`build-all` (uso local) ganharam avisos explícitos no próprio target alertando que os binários darwin gerados num host Linux/WSL2 não são seguros pra distribuir.
 
-**`.github/workflows/release.yml`** existe como alternativa opcional ao `gh release create` manual acima — mas é **só `workflow_dispatch`** (Actions → Release → Run workflow, escolhendo a tag `vX.Y.Z` desejada em "Use workflow from"), **não** dispara mais automaticamente em `git push origin v*` (evita a corrida/duplicação com o fluxo manual documentado acima). Corrigido para Go 1.25 e convenção de nomes atual (`new-k8s-hpa-*`, `Paulo-Ribeiro-Log/New-K8S-HPA-Manager`) — antes usava Go 1.23 e nomes antigos (`k8s-hpa-manager-*`, `Scale_HPA`).
+`.github/workflows/ci.yml` continua rodando `make release` só como **smoke-test de compilação** (confirma que o código compila pras 3 plataformas a cada push/PR) — não valida a persistência SQLite em darwin, isso é responsabilidade do `release.yml`, que é quem de fato publica binários pro usuário final.

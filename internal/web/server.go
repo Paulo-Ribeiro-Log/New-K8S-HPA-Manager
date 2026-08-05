@@ -199,6 +199,36 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
 	}
 	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
+
+	// Checagem cedo e centralizada do driver SQLite — ver comentário completo em
+	// internal/storage/sqlite_health.go. Roda ANTES de qualquer um dos ~14 stores SQLite
+	// independentes ser criado, pra dar um diagnóstico único e claro em vez de deixar cada um
+	// falhar sozinho com sintomas desconexos (Notas, tokens Dynatrace/GitHub, predictions, etc.).
+	if sqliteErr := storage.CheckSQLiteDriverWorks(); sqliteErr != nil {
+		if storage.IsCGOStubError(sqliteErr) {
+			fmt.Print(`
+╔══════════════════════════════════════════════════════════════════════════╗
+║  ⚠️  ERRO CRÍTICO: persistência SQLite completamente desabilitada         ║
+║                                                                            ║
+║  Este binário foi compilado com CGO_ENABLED=0 — o driver SQLite entrou   ║
+║  em modo "stub" e NENHUMA operação de banco vai funcionar (Notas,        ║
+║  tokens de IA/Dynatrace/GitHub, histórico de predictions, health check,  ║
+║  etc.). O binário compila e roda normalmente, só a persistência que      ║
+║  falha silenciosamente em cada feature, com mensagens desconexas.        ║
+║                                                                            ║
+║  Causa típica: binário macOS cross-compilado a partir de um host Linux   ║
+║  sem toolchain C pra darwin (ex: "make release" rodado no WSL2/Linux).   ║
+║  Baixe um binário oficial da release (buildado nativamente por SO), ou   ║
+║  rebuilde localmente com CGO_ENABLED=1 e um compilador C válido pra      ║
+║  este SO/arquitetura.                                                    ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+`)
+		} else {
+			fmt.Printf("⚠️  Aviso: driver SQLite indisponível (%v) — persistência local pode não funcionar\n", sqliteErr)
+		}
+	}
+
 	historyTracker, err := history.NewHistoryTracker(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create history tracker: %w", err)
