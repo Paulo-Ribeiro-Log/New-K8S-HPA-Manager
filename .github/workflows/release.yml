@@ -95,12 +95,15 @@ jobs:
           path: build/release/new-k8s-hpa-linux-amd64
           retention-days: 1
 
-  # macos-13 = runner Intel (x86_64) — build NATIVO, sem cross-compilation de arquitetura.
-  # CGO_ENABLED=1 é o padrão do Go quando GOOS/GOARCH batem com o host, mas setamos explícito
-  # pra não depender desse comportamento implícito silenciosamente mudar no futuro.
+  # Roda em macos-14 (Apple Silicon), NÃO macos-13 (Intel) — runners macos-13 do GitHub têm fila
+  # historicamente longa/instável (confirmado na prática: job ficou >15min em "queued" sem nenhum
+  # runner atribuído, `runner_id: 0`, enquanto macos-14 pegou runner em segundos). Em vez de
+  # depender de um pool de runner escasso, cross-compila amd64 a partir do host arm64 usando o
+  # clang universal do Xcode (`-arch x86_64` via CGO_CFLAGS/CGO_LDFLAGS) — o mesmo compilador que
+  # a Apple usa pra gerar binários "Universal" nativamente suporta as duas arquiteturas Darwin.
   build-darwin-amd64:
     needs: [version, frontend]
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -118,18 +121,24 @@ jobs:
           name: frontend-static
           path: internal/web/static/
 
-      - name: Build (CGO_ENABLED=1, nativo — corrige binário com SQLite quebrado)
+      - name: Build (CGO_ENABLED=1, cross-arch via clang universal do Xcode — corrige binário com SQLite quebrado)
         env:
           GOOS: darwin
           GOARCH: amd64
           CGO_ENABLED: 1
+          CGO_CFLAGS: -arch x86_64
+          CGO_LDFLAGS: -arch x86_64
         run: make release-single
+
+      - name: Instalar Rosetta 2 (necessário pra rodar o binário x86_64 no runner arm64 pro smoke-test)
+        run: softwareupdate --install-rosetta --agree-to-license || true
 
       - name: Smoke-test SQLite real (não só compilação)
         run: |
           # Confirma que o driver SQLite funciona de verdade neste binário — é exatamente esta
           # checagem que faltava antes e deixou um release com persistência quebrada passar
-          # despercebido (ver internal/storage/sqlite_health.go).
+          # despercebido (ver internal/storage/sqlite_health.go). Roda via Rosetta 2 (o runner é
+          # arm64, o binário é x86_64).
           chmod +x build/release/new-k8s-hpa-darwin-amd64
           OUT=$(./build/release/new-k8s-hpa-darwin-amd64 version 2>&1) || true
           echo "$OUT"
@@ -137,6 +146,7 @@ jobs:
             echo "❌ Binário compilado sem CGO real — SQLite quebrado. Abortando release." >&2
             exit 1
           fi
+          file build/release/new-k8s-hpa-darwin-amd64
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

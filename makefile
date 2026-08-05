@@ -177,7 +177,9 @@ version:
 # Use este target só pra smoke-test de compilação local (confirma que o código compila pras 3
 # plataformas). Para gerar binários de release de verdade, use o workflow
 # .github/workflows/release.yml (Actions → Release → Run workflow) — ele builda macOS em runners
-# nativos (macos-13 Intel + macos-14 Apple Silicon), com CGO_ENABLED=1 de verdade.
+# macos-14 (Apple Silicon nativo + cross-arch pra amd64 via clang universal do Xcode; macos-13
+# Intel tem fila de runner instável no GitHub Actions, evitado por esse motivo), com CGO_ENABLED=1
+# de verdade.
 .PHONY: release
 release:
 	@echo "Creating release v${VERSION_CLEAN}..."
@@ -191,9 +193,10 @@ release:
 	@ls -lh ${BUILD_DIR}/release/
 
 # Build de release para UMA plataforma só, lida do ambiente (GOOS/GOARCH/CGO_ENABLED já setados
-# pelo chamador) — usado pelo workflow release.yml, que roda cada plataforma num runner nativo
-# separado (ubuntu-latest pra linux, macos-13/macos-14 pra darwin), garantindo CGO_ENABLED=1 real
-# em vez do stub silencioso que `release`/`build-all` produzem pra darwin quando rodados aqui.
+# pelo chamador) — usado pelo workflow release.yml, que roda cada plataforma num runner separado
+# (ubuntu-latest pra linux, macos-14 pra darwin — nativo arm64 e cross-arch amd64), garantindo
+# CGO_ENABLED=1 real em vez do stub silencioso que `release`/`build-all` produzem pra darwin
+# quando rodados aqui.
 .PHONY: release-single
 release-single:
 	@if [ -z "$(GOOS)" ] || [ -z "$(GOARCH)" ]; then echo "❌ defina GOOS e GOARCH no ambiente antes de chamar este target"; exit 1; fi
