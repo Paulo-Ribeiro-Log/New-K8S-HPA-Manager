@@ -133,9 +133,9 @@ sem N+1 queries).
 **Arquivo:** `internal/storage/cert_endpoints_store_test.go` ← CRIAR
 - CRUD básico + poda de histórico acima de 20 checagens.
 
-- [ ] Criar `cert_endpoints_store.go`
-- [ ] Criar `cert_endpoints_store_test.go`
-- [ ] `go test ./internal/storage/... -race`
+- [x] Criar `cert_endpoints_store.go`
+- [x] Criar `cert_endpoints_store_test.go`
+- [x] `go test ./internal/storage/... -race` — suite completa (novos + existentes) OK
 
 ---
 
