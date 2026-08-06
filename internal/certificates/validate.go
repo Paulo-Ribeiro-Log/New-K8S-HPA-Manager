@@ -49,7 +49,7 @@ func ValidateCertificateChain(certPEM, keyPEM []byte) (*ChainValidationResult, e
 		ChainSubjects: make([]string, 0, len(certs)),
 	}
 	for _, cert := range certs {
-		result.ChainSubjects = append(result.ChainSubjects, cert.Subject.CommonName)
+		result.ChainSubjects = append(result.ChainSubjects, certSubjectDisplayName(cert))
 	}
 
 	// Passo 1 — a chave bate com o certificado? tls.X509KeyPair já faz essa checagem
@@ -83,7 +83,7 @@ func ValidateCertificateChain(certPEM, keyPEM []byte) (*ChainValidationResult, e
 			result.ChainOrderCorrect = false
 			result.Errors = append(result.Errors, fmt.Sprintf(
 				"certificado %q não foi assinado por nenhum dos demais certificados fornecidos — cadeia incompleta (falta o certificado intermediário correto?)",
-				certs[0].Subject.CommonName,
+				certSubjectDisplayName(certs[0]),
 			))
 		}
 	}

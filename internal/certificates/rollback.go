@@ -117,7 +117,7 @@ func (r *RollbackStore) backupAt(cluster, namespace, secretName string, secret *
 
 	if certs, err := parsePEMChain(tlsCrt); err == nil && len(certs) > 0 {
 		leaf := certs[0]
-		info.Subject = leaf.Subject.CommonName
+		info.Subject = certSubjectDisplayName(leaf)
 		info.SerialNumber = formatSerialNumber(leaf.SerialNumber)
 		info.NotAfter = leaf.NotAfter
 	}

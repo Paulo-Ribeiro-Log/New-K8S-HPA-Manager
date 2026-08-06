@@ -33,6 +33,28 @@ func classifyExpiry(notAfter time.Time) (status string, daysRemaining int) {
 	}
 }
 
+// certSubjectDisplayName resolve um nome legível pro Subject de um certificado. Desde ~2021 os
+// requisitos de baseline do CA/Browser Forum tornaram o campo Common Name opcional (e cada vez
+// mais raro) em certificados de CA pública — muitos certs reais têm Subject.CommonName vazio,
+// dependendo só de SAN (DNSNames) pra identificar o host. Sem esse fallback, "nome do
+// certificado" simplesmente não aparecia (string vazia) pra esses certs — bug real reportado
+// contra um endpoint externo cadastrado no monitor (endpoint_check.go), mas o mesmo
+// leaf.Subject.CommonName vazio afeta qualquer caminho desta app que lê certificado (Secret K8s
+// via ParseTLSSecret, rollback.go, manual_backup.go) — corrigido em todos eles, não só no
+// caminho novo. Nunca retorna string vazia.
+func certSubjectDisplayName(cert *x509.Certificate) string {
+	if cert.Subject.CommonName != "" {
+		return cert.Subject.CommonName
+	}
+	if len(cert.DNSNames) > 0 {
+		return cert.DNSNames[0]
+	}
+	if s := cert.Subject.String(); s != "" {
+		return s
+	}
+	return "(sem subject)"
+}
+
 // ParseTLSSecret parseia um Secret do tipo kubernetes.io/tls e extrai informações do certificado
 func ParseTLSSecret(secret *corev1.Secret, cluster string) (*CertificateInfo, error) {
 	certPEM, ok := secret.Data["tls.crt"]
@@ -57,7 +79,7 @@ func ParseTLSSecret(secret *corev1.Secret, cluster string) (*CertificateInfo, er
 		SecretName:   secret.Name,
 		Namespace:    secret.Namespace,
 		Cluster:      cluster,
-		Subject:      leaf.Subject.CommonName,
+		Subject:      certSubjectDisplayName(leaf),
 		Issuer:       leaf.Issuer.CommonName,
 		SerialNumber: formatSerialNumber(leaf.SerialNumber),
 		NotBefore:    leaf.NotBefore,
@@ -76,7 +98,7 @@ func ParseTLSSecret(secret *corev1.Secret, cluster string) (*CertificateInfo, er
 	if len(certs) > 1 {
 		for _, cert := range certs[1:] {
 			info.ChainDetails = append(info.ChainDetails, ChainCertInfo{
-				Subject:  cert.Subject.CommonName,
+				Subject:  certSubjectDisplayName(cert),
 				Issuer:   cert.Issuer.CommonName,
 				NotAfter: cert.NotAfter,
 				IsCA:     cert.IsCA,

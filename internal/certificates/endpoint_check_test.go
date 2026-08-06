@@ -2,6 +2,12 @@ package certificates
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -126,4 +132,56 @@ func TestClassifyExpiry(t *testing.T) {
 			}
 		})
 	}
+}
+
+// makeTestCert gera um certificado autoassinado de verdade (x509.CreateCertificate, sem TLS/rede)
+// com o CommonName e SANs informados — usado só para testar certSubjectDisplayName contra as
+// combinações reais possíveis (CN presente, CN vazio com SAN, nenhum dos dois).
+func makeTestCert(t *testing.T, cn string, dnsNames []string) *x509.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gerar chave: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: cn},
+		DNSNames:     dnsNames,
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("criar certificado: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parsear certificado: %v", err)
+	}
+	return cert
+}
+
+func TestCertSubjectDisplayName(t *testing.T) {
+	t.Run("usa CommonName quando presente", func(t *testing.T) {
+		cert := makeTestCert(t, "meu-servidor.local", nil)
+		if got := certSubjectDisplayName(cert); got != "meu-servidor.local" {
+			t.Errorf("got %q, esperado %q", got, "meu-servidor.local")
+		}
+	})
+
+	t.Run("cai pro primeiro SAN quando CommonName vazio (baseline requirements modernos)", func(t *testing.T) {
+		// Desde ~2021 CAs públicas frequentemente não preenchem mais CommonName, só SAN — este é
+		// o caso real que motivou o bug reportado (nome do certificado não aparecia).
+		cert := makeTestCert(t, "", []string{"svc.example.com", "svc-alt.example.com"})
+		if got := certSubjectDisplayName(cert); got != "svc.example.com" {
+			t.Errorf("got %q, esperado %q", got, "svc.example.com")
+		}
+	})
+
+	t.Run("nunca retorna vazio mesmo sem CommonName nem SAN", func(t *testing.T) {
+		cert := makeTestCert(t, "", nil)
+		if got := certSubjectDisplayName(cert); got == "" {
+			t.Error("certSubjectDisplayName não deveria retornar string vazia")
+		}
+	})
 }

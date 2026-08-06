@@ -82,7 +82,7 @@ func CheckEndpointTLS(ctx context.Context, host string, port int, sni string) En
 
 	return EndpointCheckResult{
 		Success:           true,
-		Subject:           leaf.Subject.CommonName,
+		Subject:           certSubjectDisplayName(leaf),
 		Issuer:            leaf.Issuer.CommonName,
 		SerialNumber:      formatSerialNumber(leaf.SerialNumber),
 		NotBefore:         leaf.NotBefore,
