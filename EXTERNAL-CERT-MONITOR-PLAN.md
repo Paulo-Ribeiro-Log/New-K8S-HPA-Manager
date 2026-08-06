@@ -229,10 +229,16 @@ habilitado, grava cada resultado via `RecordCheck`, retorna a lista atualizada.
   `CertManager` que não fazem sentido aqui; forçar compatibilidade custaria mais que um modal
   novo).
 
-- [ ] Tab bar em `CertificatesTab.tsx`
-- [ ] `ExternalCertEndpointsPanel.tsx`
-- [ ] `ExternalEndpointDetailModal.tsx`
-- [ ] `npx tsc --noEmit` + `npm run build`
+- [x] Tab bar em `CertificatesTab.tsx`
+- [x] `ExternalCertEndpointsPanel.tsx`
+- [x] `ExternalEndpointDetailModal.tsx`
+- [x] `npx tsc --noEmit` (76 erros pré-existentes em arquivos não tocados, zero novos) +
+      `npm run build` (produção, sem erros) + `./rebuild-web.sh -b` + servidor respondendo
+      (200 em `/` e no asset JS)
+- [ ] ⚠️ Validação visual no navegador NÃO feita nesta sessão (sem ferramenta de automação de
+      browser disponível) — confirmar manualmente antes de considerar a Fase 5 100% fechada:
+      abrir Certificados TLS → sub-aba "Endpoints Externos" → cadastrar/editar/excluir/verificar
+      um endpoint de verdade.
 
 ---
 

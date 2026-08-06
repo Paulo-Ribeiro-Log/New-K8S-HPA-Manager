@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CertificateDetailModal } from "@/components/CertificateDetailModal";
+import { ExternalCertEndpointsPanel } from "@/components/ExternalCertEndpointsPanel";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { AWXCertForm } from "@/components/AWXCertForm";
 import { Switch } from "@/components/ui/switch";
@@ -100,6 +101,11 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
   );
   const [filterType, setFilterType] = useState<"all" | "ingress" | "common">("all");
   const [statusFilters, setStatusFilters] = useState<Set<string>>(new Set(["valid", "expiring", "expired", "alert", "configAlert"]));
+
+  // Sub-aba: "Certificados K8s" (conteúdo original desta tab, inalterado) vs "Endpoints
+  // Externos" (monitor de TLS por handshake — endpoints fora de qualquer cluster K8s, ver
+  // EXTERNAL-CERT-MONITOR-PLAN.md).
+  const [certTab, setCertTab] = useState<"k8s" | "external">("k8s");
 
   // UI state
   const [searchQuery, setSearchQuery] = useState("");
@@ -1111,7 +1117,39 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
   );
 
   return (
-    <>
+    <div className="h-full flex flex-col min-h-0">
+      {/* Tab bar manual — nunca shadcn <Tabs>, quebra a cadeia flex-1 min-h-0 que o SplitView
+          abaixo depende (ver CLAUDE.md). */}
+      <div className="flex border-b border-border gap-0 flex-shrink-0 mb-3">
+        <button
+          onClick={() => setCertTab("k8s")}
+          className={`px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            certTab === "k8s"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Certificados K8s
+        </button>
+        <button
+          onClick={() => setCertTab("external")}
+          className={`px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            certTab === "external"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Endpoints Externos
+        </button>
+      </div>
+
+      {certTab === "external" && (
+        <div className="flex-1 min-h-0">
+          <ExternalCertEndpointsPanel />
+        </div>
+      )}
+
+      {certTab === "k8s" && <>
       <SplitView
         leftPanel={{
           title: "Certificados TLS",
@@ -1652,7 +1690,8 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </>}
+    </div>
   );
 }
 
