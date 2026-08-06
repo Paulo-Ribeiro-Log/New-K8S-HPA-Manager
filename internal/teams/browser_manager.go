@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
 )
 
@@ -92,6 +93,30 @@ func getBrowser(sessionDir string, logger *zerolog.Logger) (*rod.Browser, error)
 	sharedSessionDir = sessionDir
 	logger.Info().Msg("[Teams] Browser persistente iniciado")
 	return b, nil
+}
+
+// restoreWindow traz a janela do browser de volta ao estado normal (visível). Chamada no início
+// de RunDiscovery/ScanConversations/SendBatch — como o browser é persistente entre chamadas (ver
+// getBrowser acima), uma chamada anterior pode ter deixado a janela minimizada; se a sessão salva
+// expirou nesse meio-tempo, o Teams volta a pedir login, e o usuário precisa enxergar essa tela
+// desde o início da chamada, não só depois de já ter "perdido" a oportunidade de interagir.
+func restoreWindow(page *rod.Page, logger *zerolog.Logger) {
+	if err := page.SetWindow(&proto.BrowserBounds{WindowState: proto.BrowserWindowStateNormal}); err != nil {
+		// Não crítico: em WSL2 sem display gráfico (Xvfb) não existe uma janela real de verdade
+		// pra restaurar — a extração continua funcionando normalmente mesmo se isso falhar.
+		logger.Debug().Err(err).Msg("[Teams] Não foi possível restaurar a janela do browser (não crítico)")
+	}
+}
+
+// minimizeWindow minimiza a janela do browser. Chamado depois que a página autenticada do Teams
+// já está confirmada carregada — daí em diante toda a extração é via CDP/JS (DOM, IndexedDB),
+// sem nenhuma necessidade de interação do usuário, então não há motivo pra manter uma janela do
+// Chrome ocupando a tela. Se uma chamada futura precisar de login de novo (sessão expirada),
+// restoreWindow (acima) traz a janela de volta no início dessa próxima chamada.
+func minimizeWindow(page *rod.Page, logger *zerolog.Logger) {
+	if err := page.SetWindow(&proto.BrowserBounds{WindowState: proto.BrowserWindowStateMinimized}); err != nil {
+		logger.Debug().Err(err).Msg("[Teams] Não foi possível minimizar a janela do browser (não crítico)")
+	}
 }
 
 // CloseBrowser encerra o Chrome persistente do Teams, se houver algum aberto. Chamado no

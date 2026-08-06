@@ -155,6 +155,10 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	createdPage := page
 	defer createdPage.Close() //nolint:errcheck
 
+	// Garante que a janela esteja visível caso a sessão salva tenha expirado e um novo login
+	// seja necessário — ver comentário de restoreWindow em browser_manager.go.
+	restoreWindow(page, logger)
+
 	result := &DiscoveryResult{CapturedAt: time.Now()}
 	var mu sync.Mutex
 
@@ -366,6 +370,11 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		time.Sleep(5 * time.Second)
 	}
 teamsLoaded:
+
+	// Daqui em diante a extração é 100% via CDP/JS (hash nav, DOM, IndexedDB) — sem nenhuma
+	// necessidade de interação do usuário. Minimizar a janela pra não ocupar a tela à toa; ver
+	// comentário de minimizeWindow em browser_manager.go.
+	minimizeWindow(page, logger)
 
 	// ThreadId do Mr.ViaBot (descoberto na Fase 0)
 	const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"

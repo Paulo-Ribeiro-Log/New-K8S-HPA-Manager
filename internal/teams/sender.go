@@ -44,6 +44,8 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 	}
 	defer createdPage.Close() //nolint:errcheck
 
+	restoreWindow(createdPage, logger)
+
 	logger.Info().Msg("[Sender] Aguardando Teams carregar (máx 3min)...")
 	var page *rod.Page
 	deadline := time.Now().Add(3 * time.Minute)
@@ -69,6 +71,10 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 	return nil, fmt.Errorf("timeout aguardando Teams carregar")
 
 loaded:
+	// Daqui em diante os envios são via CDP/JS (preenche e clica o compose box) — sem
+	// necessidade de interação do usuário.
+	minimizeWindow(page, logger)
+
 	logger.Info().Msg("[Sender] Aguardando Teams inicializar (20s)...")
 	time.Sleep(20 * time.Second)
 

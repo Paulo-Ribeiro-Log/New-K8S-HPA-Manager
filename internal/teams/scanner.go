@@ -46,6 +46,8 @@ func ScanConversations(sessionDir, outputPath string, logger *zerolog.Logger) ([
 	createdPage := page
 	defer createdPage.Close() //nolint:errcheck
 
+	restoreWindow(page, logger)
+
 	// Aguardar Teams carregar — apenas pela URL, sem verificar DOM.
 	logger.Info().Msg("[Scanner] Aguardando Teams carregar (máx 3min)...")
 	deadline := time.Now().Add(3 * time.Minute)
@@ -71,6 +73,9 @@ func ScanConversations(sessionDir, outputPath string, logger *zerolog.Logger) ([
 	return nil, fmt.Errorf("timeout aguardando Teams carregar")
 
 loaded:
+	// Daqui em diante é tudo via CDP/JS — sem necessidade de interação do usuário.
+	minimizeWindow(page, logger)
+
 	logger.Info().Msg("[Scanner] Aguardando Teams inicializar completamente (25s)...")
 	time.Sleep(25 * time.Second)
 
