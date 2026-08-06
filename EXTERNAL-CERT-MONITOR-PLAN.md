@@ -32,7 +32,12 @@ livremente pelo usuário, sem nenhum Secret/Ingress/Gateway associado.
 - Sem integração com Notificações in-app.
 - Sem probe HTTP/TCP genérico (`tcp_connect`/`http_2xx` do blackbox) — escopo é estritamente
   handshake TLS + validade de certificado.
-- Sem import em lote (colar CSV/YAML) — cadastro é um-a-um via formulário.
+- ~~Sem import em lote~~ — **adicionado após validação real**: usuário tinha vários hosts pra
+  cadastrar (fluxo de teste real revelou a fricção do cadastro um-a-um). "Importar em Lote"
+  (`ExternalCertEndpointsPanel.tsx`) aceita um `host[:porta]` por linha, nome derivado do host —
+  formato simples de propósito (não CSV), pra colar direto de uma lista de inventário. Sem rota
+  de backend nova: loop client-side chamando `apiClient.createCertEndpoint` sequencialmente, um
+  único `invalidateQueries` no final (evita invalidar a lista N vezes).
 
 ---
 

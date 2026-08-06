@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -22,10 +24,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Loader2, Plus, RefreshCcw, Trash2, Pencil, Globe } from "lucide-react";
+import { Loader2, Plus, RefreshCcw, Trash2, Pencil, Globe, ListPlus } from "lucide-react";
 import { toast } from "sonner";
 import { getStatusBadge } from "@/components/CertificateDetailModal";
 import { ExternalEndpointDetailModal } from "@/components/ExternalEndpointDetailModal";
+import { apiClient } from "@/lib/api/client";
 import {
   useCertEndpoints,
   useCreateCertEndpoint,
@@ -35,6 +38,24 @@ import {
   useCheckAllCertEndpoints,
 } from "@/hooks/useCertEndpoints";
 import type { CertEndpointWithStatus } from "@/lib/api/types";
+
+// Parseia uma linha do textarea de import em lote: "host[:porta]" → { name, host, port }. Nome é
+// derivado do host (dá pra renomear depois, via editar) — formato deliberadamente simples pra
+// colar direto de uma lista de inventário/planilha existente, sem exigir CSV bem formado.
+// Não cobre IPv6 (ex: "::1") de propósito — caso raro no uso real (servidor on-prem por
+// hostname/IPv4), heurística simples (split no último ":") já cobre o formato pedido.
+function parseBulkLine(raw: string): { name: string; host: string; port: number } | null {
+  const line = raw.trim();
+  if (!line) return null;
+
+  const lastColon = line.lastIndexOf(":");
+  if (lastColon > 0 && /^\d+$/.test(line.slice(lastColon + 1))) {
+    const host = line.slice(0, lastColon);
+    const port = Number(line.slice(lastColon + 1));
+    return { name: host, host, port: port || 443 };
+  }
+  return { name: line, host: line, port: 443 };
+}
 
 type EndpointForm = {
   name: string;
@@ -52,6 +73,7 @@ const emptyForm: EndpointForm = { name: "", host: "", port: 443, sni: "", group_
 // Prometheus mas sem depender dele: handshake TLS real sob demanda. Ver
 // EXTERNAL-CERT-MONITOR-PLAN.md.
 export function ExternalCertEndpointsPanel() {
+  const queryClient = useQueryClient();
   const { data: endpoints = [], isLoading, isError, refetch } = useCertEndpoints();
   const createMutation = useCreateCertEndpoint();
   const updateMutation = useUpdateCertEndpoint();
@@ -65,6 +87,12 @@ export function ExternalCertEndpointsPanel() {
   const [deleteTarget, setDeleteTarget] = useState<CertEndpointWithStatus | null>(null);
   const [detailTarget, setDetailTarget] = useState<CertEndpointWithStatus | null>(null);
   const [checkingId, setCheckingId] = useState<number | null>(null);
+
+  // Import em lote — "host[:porta]" um por linha, ver parseBulkLine acima.
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
 
   const openCreateForm = () => {
     setEditingId(null);
@@ -137,6 +165,51 @@ export function ExternalCertEndpointsPanel() {
     }
   };
 
+  // Importa várias linhas de uma vez — chama apiClient direto (não a mutation) pra não invalidar
+  // a query N vezes seguidas; um único invalidateQueries no final já cobre a lista inteira.
+  const handleBulkImport = async () => {
+    const parsed = bulkText
+      .split("\n")
+      .map(parseBulkLine)
+      .filter((p): p is NonNullable<typeof p> => p !== null);
+
+    if (parsed.length === 0) {
+      toast.error("Cole ao menos um host por linha");
+      return;
+    }
+
+    setBulkImporting(true);
+    setBulkProgress({ current: 0, total: parsed.length });
+    let successCount = 0;
+    const errors: string[] = [];
+
+    for (let i = 0; i < parsed.length; i++) {
+      const item = parsed[i];
+      try {
+        await apiClient.createCertEndpoint(item);
+        successCount++;
+      } catch (err) {
+        errors.push(`${item.host}: ${err instanceof Error ? err.message : "erro"}`);
+      }
+      setBulkProgress({ current: i + 1, total: parsed.length });
+    }
+
+    queryClient.invalidateQueries({ queryKey: ["cert-endpoints"] });
+    setBulkImporting(false);
+    setBulkProgress(null);
+
+    if (successCount > 0) {
+      toast.success(`${successCount} endpoint${successCount > 1 ? "s" : ""} importado${successCount > 1 ? "s" : ""}`);
+    }
+    if (errors.length > 0) {
+      toast.error(`${errors.length} falharam: ${errors.slice(0, 3).join("; ")}${errors.length > 3 ? "…" : ""}`);
+    }
+    if (errors.length === 0) {
+      setBulkText("");
+      setBulkOpen(false);
+    }
+  };
+
   // "Última verificação" no cabeçalho = a mais recente entre todos os endpoints — os
   // checked_at do backend são RFC3339 UTC, comparáveis lexicograficamente sem parsear Date.
   const lastCheckedAt = endpoints.reduce<string | null>((latest, e) => {
@@ -171,6 +244,10 @@ export function ExternalCertEndpointsPanel() {
               <RefreshCcw className="h-3.5 w-3.5 mr-1.5" />
             )}
             Verificar agora
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setBulkOpen(true)}>
+            <ListPlus className="h-3.5 w-3.5 mr-1.5" />
+            Importar em Lote
           </Button>
           <Button size="sm" onClick={openCreateForm}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
@@ -381,6 +458,43 @@ export function ExternalCertEndpointsPanel() {
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               )}
               Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import em lote */}
+      <Dialog open={bulkOpen} onOpenChange={(open) => !bulkImporting && setBulkOpen(open)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Importar Endpoints em Lote</DialogTitle>
+            <DialogDescription>
+              Um host por linha, porta opcional (padrão 443) — ex:{" "}
+              <code className="bg-muted px-1 rounded">servidor.local</code> ou{" "}
+              <code className="bg-muted px-1 rounded">servidor.local:8443</code>. O nome de cada
+              endpoint é derivado do host — dá pra renomear depois, editando individualmente.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            placeholder={"servidor1.local\nservidor2.local:8443\n10.0.5.20\nad.datacenter.local:636"}
+            rows={10}
+            className="font-mono text-xs"
+            disabled={bulkImporting}
+          />
+          {bulkProgress && (
+            <p className="text-xs text-muted-foreground">
+              Importando {bulkProgress.current}/{bulkProgress.total}...
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkOpen(false)} disabled={bulkImporting}>
+              Cancelar
+            </Button>
+            <Button onClick={handleBulkImport} disabled={bulkImporting || !bulkText.trim()}>
+              {bulkImporting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Importar
             </Button>
           </DialogFooter>
         </DialogContent>
