@@ -205,6 +205,8 @@ k8s-hpa-manager/
 | Graphs | Cytoscape.js (dependency graphs) |
 | Forms | react-hook-form + Zod validation |
 
+**Go module**: `k8s-hpa-manager` (não um path `github.com/...`) — imports internos usam `k8s-hpa-manager/internal/...`. Frontend não tem test runner configurado (`npm run lint` é o único script de verificação além de `build`/`dev`/`preview`).
+
 ---
 
 ## Conceitos de Arquitetura Críticos
