@@ -767,7 +767,7 @@ export function ServiceNowImportModal({
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent
-        className="flex flex-col p-6 gap-0 overflow-hidden relative"
+        className="flex flex-col p-6 gap-0 overflow-hidden"
         style={{ width: modalSize.width, height: modalSize.height, maxWidth: "96vw", maxHeight: "96vh" }}
       >
         <DialogHeader className="flex-shrink-0">
@@ -787,10 +787,13 @@ export function ServiceNowImportModal({
 
         {/* Corpo rolável — DialogHeader fica fixo, tab bar + conteúdo da aba rolam dentro do
             espaço restante. Necessário pro modal virar resizable (flex-1 min-h-0), ver nota em
-            CLAUDE.md sobre max-height vs height em modais com abas manuais. */}
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1">
+            CLAUDE.md sobre max-height vs height em modais com abas manuais. flex flex-col (não só
+            overflow-y-auto) permite que o conteúdo da aba ativa (ex: lista de CHGs da aba Teams)
+            cresça via flex-1 até preencher o espaço do modal, em vez de ficar travado numa altura
+            fixa com sobra de espaço vazio abaixo. */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden pr-1">
         {/* Tab bar manual */}
-        <div className="flex border-b border-border gap-0">
+        <div className="flex border-b border-border gap-0 flex-shrink-0">
           {tabs.map((tab) => (
             <button
               key={tab.id}
@@ -816,8 +819,8 @@ export function ServiceNowImportModal({
 
         {/* ── Aba: Teams ─────────────────────────────────────────────── */}
         {activeTab === "teams" && (
-          <div className="space-y-3 pt-1">
-            <div className="flex items-center justify-between">
+          <div className="flex-1 min-h-0 flex flex-col gap-3 pt-1">
+            <div className="flex items-center justify-between flex-shrink-0">
               <div className="text-xs text-muted-foreground">
                 CHGs do dia atual — mensagens do <strong>Mr.ViaBot</strong>
                 {teamsLastUpdated && (
@@ -841,14 +844,14 @@ export function ServiceNowImportModal({
             </div>
 
             {teamsLoading && teamsItems.length === 0 && (
-              <div className="flex items-center justify-center py-8 text-sm text-muted-foreground gap-2">
+              <div className="flex items-center justify-center py-8 text-sm text-muted-foreground gap-2 flex-shrink-0">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Aguardando... o Chrome abrirá o Teams automaticamente (~60s)
               </div>
             )}
 
             {!teamsLoading && teamsNeedsRefresh && teamsItems.length === 0 && (
-              <div className="text-center py-6 space-y-2">
+              <div className="text-center py-6 space-y-2 flex-shrink-0">
                 <MessageSquare className="h-8 w-8 mx-auto text-muted-foreground opacity-50" />
                 <p className="text-sm text-muted-foreground">
                   Nenhuma CHG carregada ainda
@@ -860,7 +863,7 @@ export function ServiceNowImportModal({
             )}
 
             {/* Campo de busca por CHG ou nome de release */}
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-shrink-0">
               <input
                 type="text"
                 value={chgSearch}
@@ -899,8 +902,8 @@ export function ServiceNowImportModal({
             </div>
 
             {teamsItems.length > 0 && (
-              <>
-                <div className="flex items-center justify-between mb-1">
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex items-center justify-between mb-1 flex-shrink-0">
                   <span className="text-xs text-muted-foreground">
                     {selectedTeamsChgs.size > 0
                       ? `${selectedTeamsChgs.size} selecionada${selectedTeamsChgs.size > 1 ? "s" : ""}`
@@ -922,7 +925,7 @@ export function ServiceNowImportModal({
                     </button>
                   )}
                 </div>
-                <div className="space-y-1.5 max-h-64 overflow-y-auto overflow-x-hidden pr-1">
+                <div className="space-y-1.5 flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1">
                   {filteredTeamsItems.map((item) => {
                     const checked = selectedTeamsChgs.has(item.chg);
                     const approved = isChgApproved(item.chg);
@@ -1000,7 +1003,7 @@ export function ServiceNowImportModal({
                   })}
                 </div>
                 {(selectedTeamsChgs.size > 0 || teamsExtracting) && (
-                  <div className="flex gap-2 mt-2">
+                  <div className="flex gap-2 mt-2 flex-shrink-0">
                     <Button
                       onClick={handleImportSelectedTeams}
                       disabled={!!teamsExtracting}
@@ -1030,7 +1033,7 @@ export function ServiceNowImportModal({
                     )}
                   </div>
                 )}
-              </>
+              </div>
             )}
           </div>
         )}
