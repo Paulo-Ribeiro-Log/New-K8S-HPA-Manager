@@ -80,10 +80,10 @@ func CheckEndpointTLS(ctx context.Context, host string, port int, sni string) En
 - Caso de erro: dial contra porta fechada.
 - `classifyExpiry` nos 3 limiares (valid/expiring/expired).
 
-- [ ] Criar `endpoint_check.go` com `CheckEndpointTLS`/`classifyExpiry`
-- [ ] Refatorar `parser.go:ParseTLSSecret` pra usar `classifyExpiry` (sem mudar comportamento)
-- [ ] Criar `endpoint_check_test.go`
-- [ ] `go test ./internal/certificates/... -race`
+- [x] Criar `endpoint_check.go` com `CheckEndpointTLS`/`classifyExpiry`
+- [x] Refatorar `parser.go:ParseTLSSecret` pra usar `classifyExpiry` (sem mudar comportamento)
+- [x] Criar `endpoint_check_test.go`
+- [x] `go test ./internal/certificates/... -race` — suite completa (novos + existentes) OK
 
 ---
 

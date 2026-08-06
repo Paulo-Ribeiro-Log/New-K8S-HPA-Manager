@@ -16,6 +16,23 @@ import (
 // ExpiringThresholdDays define o limiar em dias para considerar um certificado "expirando"
 const ExpiringThresholdDays = 30
 
+// classifyExpiry classifica o status de expiração de um certificado a partir do seu NotAfter,
+// usando ExpiringThresholdDays como limiar. Compartilhada entre ParseTLSSecret (Secret K8s) e
+// CheckEndpointTLS (endpoint externo, ver endpoint_check.go) — mesmo limiar, uma única fonte de
+// verdade em vez de duplicar a lógica em cada caminho.
+func classifyExpiry(notAfter time.Time) (status string, daysRemaining int) {
+	now := time.Now()
+	daysRemaining = int(notAfter.Sub(now).Hours() / 24)
+	switch {
+	case now.After(notAfter):
+		return "expired", daysRemaining
+	case daysRemaining <= ExpiringThresholdDays:
+		return "expiring", daysRemaining
+	default:
+		return "valid", daysRemaining
+	}
+}
+
 // ParseTLSSecret parseia um Secret do tipo kubernetes.io/tls e extrai informações do certificado
 func ParseTLSSecret(secret *corev1.Secret, cluster string) (*CertificateInfo, error) {
 	certPEM, ok := secret.Data["tls.crt"]
@@ -35,7 +52,6 @@ func ParseTLSSecret(secret *corev1.Secret, cluster string) (*CertificateInfo, er
 
 	// O primeiro certificado é o leaf (principal)
 	leaf := certs[0]
-	now := time.Now()
 
 	info := &CertificateInfo{
 		SecretName:   secret.Name,
@@ -54,14 +70,7 @@ func ParseTLSSecret(secret *corev1.Secret, cluster string) (*CertificateInfo, er
 	}
 
 	// Calcular status e dias restantes
-	info.DaysRemaining = int(leaf.NotAfter.Sub(now).Hours() / 24)
-	if now.After(leaf.NotAfter) {
-		info.Status = "expired"
-	} else if info.DaysRemaining <= ExpiringThresholdDays {
-		info.Status = "expiring"
-	} else {
-		info.Status = "valid"
-	}
+	info.Status, info.DaysRemaining = classifyExpiry(leaf.NotAfter)
 
 	// Chain details (excluindo o leaf)
 	if len(certs) > 1 {
