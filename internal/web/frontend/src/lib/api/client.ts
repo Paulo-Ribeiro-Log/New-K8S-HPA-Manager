@@ -109,6 +109,8 @@ import type {
   ConntrackNodeHistoryResponse,
   CloudAccountHints,
   Note,
+  CertEndpointCheck,
+  CertEndpointWithStatus,
   K8sNamespacePermissions,
   AccessCheckRulesResult,
   AccessCheckCanIResult,
@@ -2140,6 +2142,53 @@ class APIClient {
 
   async deleteNote(id: number): Promise<{ ok: boolean }> {
     return this.request<{ ok: boolean }>(`/notes/${id}`, { method: "DELETE" });
+  }
+
+  // Monitor de Certificados Externos — endpoints fora de qualquer cluster K8s (ver
+  // EXTERNAL-CERT-MONITOR-PLAN.md). CRUD + checagem sob demanda via handshake TLS real.
+
+  async listCertEndpoints(): Promise<CertEndpointWithStatus[]> {
+    return this.request<CertEndpointWithStatus[]>("/cert-endpoints");
+  }
+
+  async createCertEndpoint(data: {
+    name: string;
+    host: string;
+    port?: number;
+    sni?: string;
+    group_label?: string;
+  }): Promise<{ id: number }> {
+    return this.request<{ id: number }>("/cert-endpoints", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateCertEndpoint(
+    id: number,
+    data: { name: string; host: string; port?: number; sni?: string; group_label?: string; enabled?: boolean }
+  ): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/cert-endpoints/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteCertEndpoint(id: number): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/cert-endpoints/${id}`, { method: "DELETE" });
+  }
+
+  async checkCertEndpoint(id: number): Promise<CertEndpointCheck> {
+    return this.request<CertEndpointCheck>(`/cert-endpoints/${id}/check`, { method: "POST" });
+  }
+
+  async checkAllCertEndpoints(): Promise<CertEndpointWithStatus[]> {
+    return this.request<CertEndpointWithStatus[]>("/cert-endpoints/check-all", { method: "POST" });
+  }
+
+  async getCertEndpointHistory(id: number, limit?: number): Promise<CertEndpointCheck[]> {
+    const query = limit ? `?limit=${limit}` : "";
+    return this.request<CertEndpointCheck[]>(`/cert-endpoints/${id}/history${query}`);
   }
 
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {

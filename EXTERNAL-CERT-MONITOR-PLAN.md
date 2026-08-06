@@ -195,10 +195,10 @@ habilitado, grava cada resultado via `RecordCheck`, retorna a lista atualizada.
 - React Query, mesmo padrão de `useNotes.ts` (`queryKey: ['cert-endpoints']`, `useMutation` +
   `invalidateQueries` no `onSuccess` pra create/update/delete/check).
 
-- [ ] Tipos em `types.ts`
-- [ ] Métodos em `client.ts`
-- [ ] `useCertEndpoints.ts`
-- [ ] `npx tsc --noEmit`
+- [x] Tipos em `types.ts`
+- [x] Métodos em `client.ts`
+- [x] `useCertEndpoints.ts`
+- [x] `npx tsc --noEmit` (sem erros novos) + `npm run build` (produção, sem erros)
 
 ---
 
