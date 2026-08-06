@@ -963,7 +963,11 @@ export const GitHubReleasesTab = () => {
         leftPanel={{
           title: "Configuração",
           titleAction: (
-            <div ref={titleBarRef} className="flex gap-1.5 min-w-0">
+            // w-full: faz esta div assumir a largura real disponível no header (agora que o
+            // wrapper pai em SplitView.tsx é flex-1), em vez do tamanho do próprio conteúdo —
+            // sem isso o ResizeObserver abaixo mede a largura dos botões que ele mesmo desenha,
+            // invertendo a detecção de "modo compacto" (grande no 1º render, some ao encolher).
+            <div ref={titleBarRef} className="flex gap-1.5 min-w-0 w-full justify-end">
               <Button
                 variant="outline"
                 size="sm"
