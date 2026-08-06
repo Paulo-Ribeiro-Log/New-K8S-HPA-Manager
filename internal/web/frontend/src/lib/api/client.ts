@@ -3314,10 +3314,11 @@ class APIClient {
    * Extract CHG data using Playwright (browser automation with Azure AD SSO)
    * POST /api/v1/servicenow/extract-playwright
    */
-  async extractServiceNowWithPlaywright(url: string): Promise<ServiceNowPlaywrightResponse> {
+  async extractServiceNowWithPlaywright(url: string, signal?: AbortSignal): Promise<ServiceNowPlaywrightResponse> {
     return this.request("/servicenow/extract-playwright", {
       method: "POST",
       body: JSON.stringify({ url }),
+      signal,
     });
   }
 

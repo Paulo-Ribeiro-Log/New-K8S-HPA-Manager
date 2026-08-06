@@ -1288,6 +1288,7 @@ func (s *Server) setupRoutes() {
 		servicenow.GET("/session-status", serviceNowHandler.GetSessionStatus)
 		servicenow.DELETE("/session", serviceNowHandler.ClearSession)
 		servicenow.POST("/session/test", serviceNowHandler.TestSession)
+		servicenow.POST("/session/test/cancel", serviceNowHandler.CancelSessionTest)
 		// Configuração de browser / info do ambiente
 		servicenow.GET("/browser-config", serviceNowHandler.GetBrowserConfig)
 		servicenow.POST("/browser-config", serviceNowHandler.SetBrowserConfig)

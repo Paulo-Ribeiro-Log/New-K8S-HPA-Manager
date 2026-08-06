@@ -20,11 +20,19 @@ import (
 // Não precisa de Node.js, npm ou dependências externas
 type RodExtractor struct {
 	logger      *zerolog.Logger
-	sessionDir  string // Diretório de sessão Chromium (~/.k8s-hpa-manager/rod-session)
-	mu          sync.Mutex // protege browser/browserStop
-	extractMu   sync.Mutex // serializa extrações — ServiceNow invalida token com abas paralelas
+	sessionDir  string       // Diretório de sessão Chromium (~/.k8s-hpa-manager/rod-session)
+	mu          sync.Mutex   // protege browser/browserStop
+	extractMu   sync.Mutex   // serializa extrações — ServiceNow invalida token com abas paralelas
 	browser     *rod.Browser // browser persistente — reutilizado entre extrações (N CHGs = 1 browser)
 	browserStop func()
+
+	// loginMu/loginCancel suportam cancelamento explícito de um login visível em andamento
+	// (TestSession). Não usamos o context da requisição HTTP aqui de propósito — TestSession
+	// roda sobre context.Background() (ver handler) para não ser derrubado por uma reconexão
+	// instável do browser durante os vários minutos que um login real pode levar. O cancelamento
+	// real vem do botão "Cancelar" do frontend, via endpoint dedicado que aciona este cancelFunc.
+	loginMu     sync.Mutex
+	loginCancel context.CancelFunc
 }
 
 // NewRodExtractor cria um novo extrator Rod
@@ -49,6 +57,58 @@ func NewRodExtractor(logger *zerolog.Logger) *RodExtractor {
 		logger:     logger,
 		sessionDir: sessionDir,
 	}
+}
+
+// maxLoginWait é um teto de segurança para fluxos de login visível (TestSession,
+// extractWithVisibleLogin) — NÃO é o mecanismo primário de encerramento. O login só deve parar
+// por sucesso ou por cancelamento explícito do usuário (botão "Cancelar" no frontend); este teto
+// existe apenas para não deixar um browser/processo Chromium órfão rodando pra sempre caso o
+// usuário abandone a aba sem cancelar (fechar o notebook, perder rede, etc.).
+const maxLoginWait = 20 * time.Minute
+
+// waitOrCancel dorme por d ou retorna mais cedo se ctx for cancelado. Retorna true quando a
+// espera foi interrompida por cancelamento (ctx.Done()), false quando o tempo total transcorreu
+// normalmente. Usado nos loops de espera de login para que "Cancelar" pare a espera quase
+// imediatamente, em vez de esperar o próximo tick do polling.
+func waitOrCancel(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return false
+	case <-ctx.Done():
+		return true
+	}
+}
+
+// beginLoginSession cria um context cancelável a partir de parent e registra seu cancelFunc para
+// que CancelActiveLogin() consiga interrompê-lo a partir de outra requisição HTTP (o botão
+// "Cancelar" do frontend). Retorna o context derivado e uma função release a ser chamada em defer
+// pelo chamador — release limpa o cancelFunc registrado (sem isso, uma chamada de cancelamento
+// tardia afetaria por engano um login seguinte) e libera os recursos do context.
+func (r *RodExtractor) beginLoginSession(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	r.loginMu.Lock()
+	r.loginCancel = cancel
+	r.loginMu.Unlock()
+	return ctx, func() {
+		r.loginMu.Lock()
+		r.loginCancel = nil
+		r.loginMu.Unlock()
+		cancel()
+	}
+}
+
+// CancelActiveLogin cancela um fluxo de login visível em andamento (aberto via TestSession),
+// fazendo o browser fechar e a requisição HTTP original retornar um status "cancelled" em vez de
+// ficar presa até o teto de segurança. Retorna false quando não havia nenhum login em andamento.
+func (r *RodExtractor) CancelActiveLogin() bool {
+	r.loginMu.Lock()
+	cancel := r.loginCancel
+	r.loginMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // IsConfigured sempre retorna true pois Rod baixa o browser automaticamente
@@ -279,6 +339,12 @@ func (r *RodExtractor) getBrowser() (*rod.Browser, error) {
 // O browser é invisível no Xvfb — use WSLg ou x11vnc para visualizá-lo,
 // ou confie no SSO silencioso se a máquina for domain-joined.
 func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) {
+	// Registra um cancelFunc para este login — permite que CancelActiveLogin() (acionado pelo
+	// botão "Cancelar" do frontend, numa requisição HTTP separada) interrompa a espera a
+	// qualquer momento, em vez de depender só do teto de segurança maxLoginWait.
+	ctx, release := r.beginLoginSession(ctx)
+	defer release()
+
 	sessionDir := r.activeSessionDir()
 	if IsWSL() && !HasGraphicalDisplay() {
 		if IsXvfbInstalled() {
@@ -308,7 +374,7 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 
 	// Limpar sessão anterior para garantir login fresco
 	r.logger.Info().Msg("[Rod] Limpando sessão anterior para garantir login fresco...")
-	os.RemoveAll(sessionDir)  //nolint:errcheck
+	os.RemoveAll(sessionDir)      //nolint:errcheck
 	os.MkdirAll(sessionDir, 0755) //nolint:errcheck
 
 	// Iniciar browser abrindo diretamente no ServiceNow (sem aba em branco)
@@ -331,11 +397,26 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 	r.logger.Info().Msg("[Rod] Navegando para ServiceNow...")
 	r.logger.Info().Msg("[Rod] ============================================")
 	r.logger.Info().Msg("[Rod] AGUARDANDO VOCÊ FAZER LOGIN NO AZURE AD...")
-	r.logger.Info().Msg("[Rod] O browser vai ficar aberto por até 3 minutos")
+	r.logger.Info().Msg("[Rod] A página só fecha quando o login terminar ou você clicar em Cancelar")
 	r.logger.Info().Msg("[Rod] ============================================")
 
-	loginTimeout := 3 * time.Minute
+	// loginTimeout é só um teto de segurança (ver comentário de maxLoginWait) — o encerramento
+	// normal é por sucesso ou pelo cancelamento explícito via CancelActiveLogin().
+	loginTimeout := maxLoginWait
 	startTime := time.Now()
+
+	// cancelledResult fecha a página/browser e monta o SessionStatus retornado quando o usuário
+	// cancela o login pelo botão "Cancelar" (ctx.Done() disparado por CancelActiveLogin()).
+	cancelledResult := func() (*SessionStatus, error) {
+		r.logger.Info().Msg("[Rod] Login cancelado pelo usuário")
+		page.Close() //nolint:errcheck
+		closeFunc()
+		return &SessionStatus{
+			Valid:   false,
+			Status:  "cancelled",
+			Message: "Login cancelado.",
+		}, nil
+	}
 
 	loginPatterns := []string{
 		"login.microsoftonline.com",
@@ -350,9 +431,15 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 	serviceNowLoadedCount := 0
 
 	for i := 0; i < 15; i++ {
+		if ctx.Err() != nil {
+			return cancelledResult()
+		}
+
 		pageInfo, err := page.Info()
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if waitOrCancel(ctx, 2*time.Second) {
+				return cancelledResult()
+			}
 			continue
 		}
 		currentURL := pageInfo.URL
@@ -378,7 +465,7 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 
 			if serviceNowLoadedCount >= 5 {
 				r.logger.Info().Msg("[Rod] Confirmado: já está autenticado no ServiceNow (sessão anterior válida)")
-				time.Sleep(2 * time.Second)
+				waitOrCancel(ctx, 2*time.Second)
 				page.Close() //nolint:errcheck
 				closeFunc()
 				status := r.GetSessionStatus()
@@ -390,35 +477,43 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 			serviceNowLoadedCount = 0
 		}
 
-		time.Sleep(2 * time.Second)
+		if waitOrCancel(ctx, 2*time.Second) {
+			return cancelledResult()
+		}
 	}
 
 	if !loginPageDetected {
 		r.logger.Warn().Msg("[Rod] Página de login não detectada após 30s, aguardando mais...")
 	}
 
-	// FASE 2: Aguardar o usuário completar o login (até 3 minutos)
+	// FASE 2: Aguardar o usuário completar o login.
 	// Se Perfil SSO corporativo estiver configurado, auto-preenche o formulário Azure AD.
 	r.logger.Info().Msg("[Rod] Aguardando login no Azure AD (auto-login via Perfil SSO se configurado)...")
 
 	autoLoginAttempted := false
 
 	for {
+		if ctx.Err() != nil {
+			return cancelledResult()
+		}
+
 		elapsed := time.Since(startTime)
 		if elapsed > loginTimeout {
-			r.logger.Warn().Msg("[Rod] Timeout aguardando login (3 minutos)")
+			r.logger.Warn().Dur("elapsed", elapsed).Msg("[Rod] Teto de segurança atingido aguardando login")
 			page.Close() //nolint:errcheck
 			closeFunc()
 			return &SessionStatus{
 				Valid:   false,
 				Status:  "timeout",
-				Message: "Timeout aguardando login. Tente novamente.",
+				Message: "Tempo máximo de espera atingido. Tente novamente.",
 			}, nil
 		}
 
 		pageInfo, err := page.Info()
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if waitOrCancel(ctx, 2*time.Second) {
+				return cancelledResult()
+			}
 			continue
 		}
 		currentURL := pageInfo.URL
@@ -438,7 +533,9 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 					autoLoginAttempted = true
 					r.logger.Info().Msg("[Rod] Auto-login SSO iniciado — aguardando redirect...")
 				}
-				time.Sleep(2 * time.Second)
+				if waitOrCancel(ctx, 2*time.Second) {
+					return cancelledResult()
+				}
 				continue
 			}
 		}
@@ -451,14 +548,20 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 			r.logger.Info().Str("url", currentURL).Dur("elapsed", elapsed).Msg("[Rod] LOGIN COMPLETADO COM SUCESSO!")
 
 			r.logger.Info().Msg("[Rod] Fase 4: Aguardando página carregar (5s)...")
-			time.Sleep(5 * time.Second)
+			if waitOrCancel(ctx, 5*time.Second) {
+				return cancelledResult()
+			}
 
 			r.logger.Info().Msg("[Rod] Navegando para home do ServiceNow...")
 			page.Navigate("https://viavarejo.service-now.com/now/nav/ui/home") //nolint:errcheck
-			time.Sleep(5 * time.Second)
+			if waitOrCancel(ctx, 5*time.Second) {
+				return cancelledResult()
+			}
 
 			r.logger.Info().Msg("[Rod] Aguardando cookies serem salvos (5s)...")
-			time.Sleep(5 * time.Second)
+			if waitOrCancel(ctx, 5*time.Second) {
+				return cancelledResult()
+			}
 
 			r.logger.Info().Msg("[Rod] Encerrando sessão de login...")
 			page.Close() //nolint:errcheck
@@ -481,7 +584,9 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 			r.logger.Info().Str("url", currentURL).Dur("elapsed", elapsed).Msg("[Rod] Ainda aguardando login...")
 		}
 
-		time.Sleep(2 * time.Second)
+		if waitOrCancel(ctx, 2*time.Second) {
+			return cancelledResult()
+		}
 	}
 }
 
@@ -604,6 +709,11 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	r.logger.Info().Msg("[Rod] Iniciando loop de verificação de login/acesso...")
 	loopCount := 0
 	for {
+		if ctx.Err() != nil {
+			r.logger.Info().Msg("[Rod] Extração cancelada aguardando login/acesso")
+			return &PlaywrightResult{Success: false, Error: "Extração cancelada."}, nil
+		}
+
 		loopCount++
 		elapsed := time.Since(startTime)
 
@@ -618,7 +728,9 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		pageInfo, err := page.Info()
 		if err != nil {
 			r.logger.Warn().Err(err).Int("loop_count", loopCount).Msg("[Rod] Erro ao obter info da página (tentando novamente...)")
-			time.Sleep(2 * time.Second)
+			if waitOrCancel(ctx, 2*time.Second) {
+				return &PlaywrightResult{Success: false, Error: "Extração cancelada."}, nil
+			}
 			continue
 		}
 		currentURL := pageInfo.URL
@@ -645,7 +757,9 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 			ssoDeadline := time.Now().Add(45 * time.Second)
 			ssoOK := false
 			for time.Now().Before(ssoDeadline) {
-				time.Sleep(1 * time.Second)
+				if waitOrCancel(ctx, 1*time.Second) {
+					return &PlaywrightResult{Success: false, Error: "Extração cancelada."}, nil
+				}
 				// Continuar tentando preencher formulário (múltiplas fases: email → senha → "stay signed in")
 				ssoAutoLoginAttempt(page, r.sessionDir, r.logger)
 
@@ -682,7 +796,9 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 			break
 		}
 
-		time.Sleep(300 * time.Millisecond)
+		if waitOrCancel(ctx, 300*time.Millisecond) {
+			return &PlaywrightResult{Success: false, Error: "Extração cancelada."}, nil
+		}
 	}
 
 	// Aguardar carregamento completo.
@@ -724,7 +840,7 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	deadline := time.Now().Add(45 * time.Second)
 
 	r.logger.Info().Msg("[Rod] Aguardando iframe gsft_main e conteúdo do template CHG...")
-	for time.Now().Before(deadline) {
+	for time.Now().Before(deadline) && ctx.Err() == nil {
 		// Tentar encontrar gsft_main se ainda não encontrado
 		if targetPage == nil {
 			if frames, ferr := page.Elements("iframe"); ferr == nil {
@@ -758,7 +874,12 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 				break
 			}
 		}
-		time.Sleep(500 * time.Millisecond)
+		waitOrCancel(ctx, 500*time.Millisecond)
+	}
+
+	if ctx.Err() != nil {
+		r.logger.Info().Msg("[Rod] Extração cancelada aguardando template CHG")
+		return &PlaywrightResult{Success: false, Error: "Extração cancelada."}, nil
 	}
 
 	if targetPage == nil {
@@ -826,7 +947,7 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 
 			activeDir := r.activeSessionDir()
 			r.logger.Info().Str("session_dir", activeDir).Msg("[Rod] Limpando sessão inválida e reabrindo browser para login...")
-			os.RemoveAll(activeDir)  //nolint:errcheck
+			os.RemoveAll(activeDir)      //nolint:errcheck
 			os.MkdirAll(activeDir, 0755) //nolint:errcheck
 
 			r.logger.Info().Msg("[Rod] ============================================")
@@ -1215,8 +1336,12 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 	}
 
 	r.logger.Info().Msg("[Rod] Browser aberto - faça login no Azure AD...")
+	r.logger.Info().Msg("[Rod] A página só fecha quando o login terminar ou a extração for cancelada")
 
-	loginTimeout := 3 * time.Minute
+	// loginTimeout é só um teto de segurança (ver comentário de maxLoginWait) — o encerramento
+	// normal é por sucesso de login ou pelo usuário cancelar a extração no frontend (que aborta
+	// esta mesma requisição HTTP e cancela ctx).
+	loginTimeout := maxLoginWait
 	startTime := time.Now()
 
 	loginPatterns := []string{
@@ -1226,16 +1351,23 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 	}
 
 	for {
+		if ctx.Err() != nil {
+			r.logger.Info().Msg("[Rod] Extração cancelada durante o login visível")
+			return &PlaywrightResult{Success: false, Error: "Extração cancelada."}, nil
+		}
+
 		if time.Since(startTime) > loginTimeout {
 			return &PlaywrightResult{
 				Success: false,
-				Error:   "Timeout aguardando login no Azure AD (3 minutos)",
+				Error:   "Tempo máximo de espera pelo login no Azure AD atingido. Tente novamente.",
 			}, nil
 		}
 
 		pageInfo, err := page.Info()
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if waitOrCancel(ctx, 2*time.Second) {
+				return &PlaywrightResult{Success: false, Error: "Extração cancelada."}, nil
+			}
 			continue
 		}
 		currentURL := pageInfo.URL
@@ -1251,11 +1383,13 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 		if strings.Contains(currentURL, "service-now.com") && !isOnLogin && !strings.Contains(currentURL, "saml") {
 			r.logger.Info().Str("url", currentURL).Msg("[Rod] Login completado! Aguardando página carregar...")
 			page.WaitLoad() //nolint:errcheck
-			time.Sleep(1 * time.Second)
+			waitOrCancel(ctx, 1*time.Second)
 			break
 		}
 
-		time.Sleep(300 * time.Millisecond)
+		if waitOrCancel(ctx, 300*time.Millisecond) {
+			return &PlaywrightResult{Success: false, Error: "Extração cancelada."}, nil
+		}
 	}
 
 	r.logger.Info().Msg("[Rod] Extraindo dados da CHG...")
