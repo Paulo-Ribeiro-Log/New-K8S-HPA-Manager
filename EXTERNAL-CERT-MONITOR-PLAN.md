@@ -167,9 +167,16 @@ habilitado, grava cada resultado via `RecordCheck`, retorna a lista atualizada.
   `InjectUserEmail()` nas rotas de escrita (Create/Update/Delete).
 - Inicializar `CertEndpointsStore` no bloco dos stores existentes.
 
-- [ ] Criar `cert_endpoints.go` (handler)
-- [ ] Registrar rotas + inicializar store em `server.go`
-- [ ] `go build ./...` / `go vet ./...`
+- [x] Criar `cert_endpoints.go` (handler)
+- [x] Registrar rotas + inicializar store em `server.go`
+- [x] `go build ./...` / `go vet ./...`
+- [x] Smoke test manual via curl (JWT gerado a partir do `jwt.secret` real, sem depender do
+      navegador — mesma técnica já usada antes nesta app): Create/List/Update/Delete/History/
+      CheckOne/CheckAll validados contra `www.google.com` (certificado real, `trusted_by_public_ca:
+      true`) e contra uma porta fechada (erro real de conexão recusada). Bug cosmético achado e
+      corrigido nessa validação: `CheckOne` devolvia `checked_at` zerado (RecordCheck gerava seu
+      próprio timestamp internamente, sem devolvê-lo ao chamador) — `RecordCheck` agora usa o
+      `CheckedAt` já setado pelo chamador quando presente.
 
 ---
 

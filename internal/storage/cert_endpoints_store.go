@@ -198,6 +198,27 @@ func (s *CertEndpointsStore) Delete(id int64) error {
 	return tx.Commit()
 }
 
+// GetByID busca um único endpoint — usado antes de disparar uma checagem individual (precisa de
+// host/porta/sni) e antes de editar/excluir.
+func (s *CertEndpointsStore) GetByID(id int64) (*CertEndpoint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var e CertEndpoint
+	var sni, groupLabel sql.NullString
+	err := s.db.QueryRow(
+		`SELECT id, name, host, port, sni, group_label, enabled, created_by, created_at
+		 FROM cert_endpoints WHERE id=?`,
+		id,
+	).Scan(&e.ID, &e.Name, &e.Host, &e.Port, &sni, &groupLabel, &e.Enabled, &e.CreatedBy, &e.CreatedAt)
+	if err != nil {
+		return nil, err // inclui sql.ErrNoRows
+	}
+	e.SNI = sni.String
+	e.GroupLabel = groupLabel.String
+	return &e, nil
+}
+
 // List retorna todos os endpoints cadastrados, mais recente primeiro. Nunca retorna nil.
 func (s *CertEndpointsStore) List() ([]CertEndpoint, error) {
 	s.mu.RLock()
@@ -323,12 +344,21 @@ func (s *CertEndpointsStore) RecordCheck(check CertEndpointCheck) (int64, error)
 		}
 	}
 
+	// checkedAt: usa o valor já setado pelo chamador (permite ao handler devolver o mesmo
+	// timestamp gravado, em vez do zero-value de CertEndpointCheck{} — ver
+	// runAndRecordCertEndpointCheck em cert_endpoints.go) ou gera agora, se omitido (mantém
+	// RecordCheck utilizável sem esse cuidado, como já era antes e como os testes já fazem).
+	checkedAt := check.CheckedAt
+	if checkedAt.IsZero() {
+		checkedAt = time.Now().UTC()
+	}
+
 	res, err := tx.Exec(
 		`INSERT INTO cert_endpoint_checks
 		 (endpoint_id, checked_at, success, error_message, subject, issuer, serial_number,
 		  not_before, not_after, dns_names, chain_length, status, days_remaining, trusted_by_public_ca)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		check.EndpointID, time.Now().UTC(), check.Success, nullableString(check.ErrorMessage),
+		check.EndpointID, checkedAt, check.Success, nullableString(check.ErrorMessage),
 		nullableString(check.Subject), nullableString(check.Issuer), nullableString(check.SerialNumber),
 		nullableTime(check.NotBefore), nullableTime(check.NotAfter), nullableString(dnsNamesJSON),
 		check.ChainLength, nullableString(check.Status), check.DaysRemaining, check.TrustedByPublicCA,

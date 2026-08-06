@@ -84,6 +84,27 @@ func TestCertEndpointsStore_CreateListUpdateDelete(t *testing.T) {
 	}
 }
 
+func TestCertEndpointsStore_GetByID(t *testing.T) {
+	store := newTestCertEndpointsStore(t)
+
+	id, err := store.Create(CertEndpoint{Name: "svc", Host: "svc.local", Port: 8443, CreatedBy: "a@b.com"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.GetByID(id)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Name != "svc" || got.Host != "svc.local" || got.Port != 8443 {
+		t.Fatalf("GetByID retornou dados incorretos: %+v", got)
+	}
+
+	if _, err := store.GetByID(999); err == nil {
+		t.Fatal("esperava erro (sql.ErrNoRows) para id inexistente")
+	}
+}
+
 func TestCertEndpointsStore_UpdateDeleteInexistente(t *testing.T) {
 	store := newTestCertEndpointsStore(t)
 
