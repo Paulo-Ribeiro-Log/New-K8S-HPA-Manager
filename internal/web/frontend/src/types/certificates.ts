@@ -137,6 +137,11 @@ export interface LivePropagationResult {
   // completamente diferente do esperado (não é uma versão antiga do mesmo cert) — sinal de CDN/
   // WAF/proxy corporativo terminando TLS antes do cluster, não uma propagação atrasada.
   possible_external_layer?: string[];
+  // default_fake_cert — só em method="tls-dial": hosts que responderam com o certificado
+  // autoassinado PADRÃO do ingress-nginx ("Kubernetes Ingress Controller Fake Certificate") em vez
+  // do certificado esperado — o host não bate com nenhum Ingress válido nesse ingress-nginx (SNI
+  // sem match). Checado com prioridade sobre possible_external_layer; disjunto dos outros dois.
+  default_fake_cert?: string[];
   live_issuer_cn?: string;
   live_expires_at?: string;
   notes?: string[];
