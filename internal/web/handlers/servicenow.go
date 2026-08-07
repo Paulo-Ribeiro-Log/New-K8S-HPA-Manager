@@ -302,8 +302,11 @@ func (h *ServiceNowHandler) TestSession(c *gin.Context) {
 		Interface("playwright_status", playwrightStatus).
 		Msg("[ServiceNow] Status do Playwright antes do teste")
 
-	// IMPORTANTE: Usar context.Background() para não ser cancelado pelo timeout do HTTP request
-	// O usuário pode levar até 3 minutos para fazer login no Azure AD
+	// IMPORTANTE: usar context.Background() em vez do context da requisição — o login pode levar
+	// vários minutos e não queremos que uma instabilidade de rede na conexão HTTP (comum em
+	// WSL2/CDP) derrube o login no meio do caminho. O cancelamento real de verdade (botão
+	// "Cancelar" no frontend) passa pelo endpoint CancelSessionTest abaixo, que aciona
+	// RodExtractor.CancelActiveLogin() — não depende desta conexão continuar viva.
 	ctx := context.Background()
 
 	status, err := h.rod.TestSession(ctx)
@@ -335,6 +338,16 @@ func (h *ServiceNowHandler) TestSession(c *gin.Context) {
 		"success": status.Valid,
 		"status":  status,
 	})
+}
+
+// CancelSessionTest cancela um login visível em andamento (aberto via TestSession), fazendo o
+// browser fechar e a requisição /session/test original retornar com status "cancelled" em vez de
+// ficar presa até o teto de segurança.
+// POST /api/v1/servicenow/session/test/cancel
+func (h *ServiceNowHandler) CancelSessionTest(c *gin.Context) {
+	wasActive := h.rod.CancelActiveLogin()
+	h.logger.Info().Bool("was_active", wasActive).Msg("[ServiceNow] Cancelamento de login solicitado")
+	c.JSON(http.StatusOK, gin.H{"success": true, "was_active": wasActive})
 }
 
 // GetBrowserConfig retorna o estado do ambiente de browser para autenticação ServiceNow

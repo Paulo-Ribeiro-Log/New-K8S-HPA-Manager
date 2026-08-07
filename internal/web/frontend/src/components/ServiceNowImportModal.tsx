@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -110,6 +110,45 @@ export function ServiceNowImportModal({
   }>({ configured: false, checked: false, isWsl: false, wslMode: false });
   const [forceWindowsBrowser, setForceWindowsBrowser] = useState(false);
   const [savingBrowserConfig, setSavingBrowserConfig] = useState(false);
+
+  // Resize do modal — mesmo padrão de PodQuickViewModal.tsx (handles nas bordas direita/inferior
+  // e no canto). Necessário porque a extração via browser pode envolver um login real do usuário,
+  // e o tamanho fixo original não deixava acompanhar bem o processo em telas menores.
+  const [modalSize, setModalSize] = useState({ width: 883, height: 640 });
+  const resizing = useRef(false);
+  const resizeDir = useRef<"se" | "e" | "s">("se");
+  const lastResizePos = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizing.current) return;
+      const dx = e.clientX - lastResizePos.current.x;
+      const dy = e.clientY - lastResizePos.current.y;
+      lastResizePos.current = { x: e.clientX, y: e.clientY };
+      setModalSize(prev => ({
+        width:  resizeDir.current !== "s" ? Math.max(560, prev.width  + dx) : prev.width,
+        height: resizeDir.current !== "e" ? Math.max(420, prev.height + dy) : prev.height,
+      }));
+    };
+    const onUp = () => {
+      if (!resizing.current) return;
+      resizing.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
+
+  // Cancelamento real das extrações — cada aba usa seu próprio AbortController porque as
+  // extrações do Rod (browser automation) podem envolver um login do Azure AD que trava por
+  // vários minutos. Abortar o fetch cancela o context da requisição Go correspondente
+  // (rod_extractor.go honra ctx.Done() nos loops de espera), então "Cancelar" para de verdade o
+  // processo no backend, não só esconde o spinner no frontend.
+  const playwrightAbortRef = useRef<AbortController | null>(null);
+  const teamsAbortRef = useRef<AbortController | null>(null);
+  const teamsCancelRequestedRef = useRef(false);
 
   // Teams state
   const [teamsItems, setTeamsItems] = useState<TeamsApprovalItem[]>([]);
@@ -245,6 +284,9 @@ export function ServiceNowImportModal({
   const handleExtractDirectChg = async () => {
     const chg = chgSearchNorm;
     setTeamsExtracting({ current: 0, total: 1, chg });
+    teamsCancelRequestedRef.current = false;
+    const controller = new AbortController();
+    teamsAbortRef.current = controller;
 
     // 1. Verificar cache local (últimos 2 dias) — evita re-scan do Teams
     let snUrl = `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${chg}`;
@@ -293,7 +335,7 @@ export function ServiceNowImportModal({
     // 2. Extrair ServiceNow e aguardar Teams em paralelo
     try {
       const [response, teamsInfo] = await Promise.all([
-        apiClient.extractServiceNowWithPlaywright(snUrl),
+        apiClient.extractServiceNowWithPlaywright(snUrl, controller.signal),
         teamsInfoPromise,
       ]);
       if (response.success && response.extracted_data) {
@@ -314,8 +356,13 @@ export function ServiceNowImportModal({
         toast.error(`${chg}: ${response.error || "falha na extração"}`);
       }
     } catch (err) {
-      toast.error(`${chg}: ${err instanceof Error ? err.message : "erro"}`);
+      if (err instanceof DOMException && err.name === "AbortError") {
+        toast.info("Extração cancelada");
+      } else {
+        toast.error(`${chg}: ${err instanceof Error ? err.message : "erro"}`);
+      }
     }
+    teamsAbortRef.current = null;
     setTeamsExtracting(null);
   };
 
@@ -323,6 +370,7 @@ export function ServiceNowImportModal({
   const handleExtractByName = async () => {
     const term = chgSearch.trim();
     setTeamsExtracting({ current: 0, total: 1, chg: term });
+    teamsCancelRequestedRef.current = false;
 
     try {
       // 1. Buscar no cache Teams pelo nome (resposta em ms)
@@ -358,12 +406,16 @@ export function ServiceNowImportModal({
       const errors: string[] = [];
 
       for (let idx = 0; idx < found.length; idx++) {
+        if (teamsCancelRequestedRef.current) break;
+
         const item = found[idx];
         setTeamsExtracting({ current: idx + 1, total: found.length, chg: item.chg });
         const snUrl = item.servicenow_url ||
           `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${item.chg}`;
+        const controller = new AbortController();
+        teamsAbortRef.current = controller;
         try {
-          const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+          const response = await apiClient.extractServiceNowWithPlaywright(snUrl, controller.signal);
           if (response.success && response.extracted_data) {
             const d = response.extracted_data as ExtractedData;
             onImportSuccess({
@@ -380,6 +432,9 @@ export function ServiceNowImportModal({
             errors.push(`${item.chg}: ${response.error || "falha"}`);
           }
         } catch (err) {
+          if (err instanceof DOMException && err.name === "AbortError") {
+            break;
+          }
           errors.push(`${item.chg}: ${err instanceof Error ? err.message : "erro"}`);
         }
       }
@@ -389,11 +444,13 @@ export function ServiceNowImportModal({
         toast.success(`${successCount} CHG${successCount > 1 ? "s" : ""} adicionada${successCount > 1 ? "s" : ""} via busca por nome`);
         setChgSearch("");
       }
-      if (errors.length > 0) toast.error(errors.join("; "));
+      if (teamsCancelRequestedRef.current) toast.info("Busca cancelada");
+      else if (errors.length > 0) toast.error(errors.join("; "));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro na busca por nome");
     }
 
+    teamsAbortRef.current = null;
     setTeamsExtracting(null);
   };
 
@@ -406,20 +463,27 @@ export function ServiceNowImportModal({
 
     const successChgs: string[] = [];
     const errorItems: string[] = [];
+    teamsCancelRequestedRef.current = false;
 
     for (let idx = 0; idx < selected.length; idx++) {
+      if (teamsCancelRequestedRef.current) break;
+
       const item = selected[idx];
       setTeamsExtracting({ current: idx + 1, total: selected.length, chg: item.chg });
 
       const snUrl = item.servicenow_url ||
         `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${item.chg}`;
 
+      const controller = new AbortController();
+      teamsAbortRef.current = controller;
+
       try {
-        let response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+        let response = await apiClient.extractServiceNowWithPlaywright(snUrl, controller.signal);
         // Retry se falhou OU se retornou sem Application (resultado parcial após redirect SAML)
         if (!response.success || !response.extracted_data?.application) {
+          if (teamsCancelRequestedRef.current) break;
           await new Promise(r => setTimeout(r, 2000));
-          response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+          response = await apiClient.extractServiceNowWithPlaywright(snUrl, controller.signal);
         }
         if (response.success && response.extracted_data) {
           const d = response.extracted_data as ExtractedData;
@@ -438,10 +502,14 @@ export function ServiceNowImportModal({
           errorItems.push(`${item.chg}: ${response.error || "falha na extração"}`);
         }
       } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          break;
+        }
         errorItems.push(`${item.chg}: ${err instanceof Error ? err.message : "erro"}`);
       }
     }
 
+    teamsAbortRef.current = null;
     setTeamsExtracting(null);
     setSelectedTeamsChgs(new Set());
 
@@ -449,12 +517,22 @@ export function ServiceNowImportModal({
       setAddedCount(c => c + successChgs.length);
       toast.success(`${successChgs.length} CHG${successChgs.length > 1 ? "s" : ""} adicionada${successChgs.length > 1 ? "s" : ""} a comparações`);
     }
-    if (errorItems.length > 0) {
+    if (teamsCancelRequestedRef.current) {
+      toast.info("Importação cancelada");
+    } else if (errorItems.length > 0) {
       toast.error(`${errorItems.length} com erro: ${errorItems.join("; ")}`);
     }
-    if (successChgs.length > 0 && errorItems.length === 0) {
+    if (successChgs.length > 0 && errorItems.length === 0 && !teamsCancelRequestedRef.current) {
       setTimeout(onClose, 1500);
     }
+  };
+
+  // Cancela qualquer extração em andamento na aba Teams (busca direta por CHG, busca por nome ou
+  // importação em lote de CHGs selecionadas) — as três compartilham o mesmo estado
+  // teamsExtracting/teamsAbortRef.
+  const handleCancelTeamsExtraction = () => {
+    teamsCancelRequestedRef.current = true;
+    teamsAbortRef.current?.abort();
   };
 
   const toggleTeamsChg = (chg: string) => {
@@ -508,6 +586,9 @@ export function ServiceNowImportModal({
     setIsLoading(true);
     setResult(null);
 
+    const controller = new AbortController();
+    playwrightAbortRef.current = controller;
+
     try {
       const browserMsg =
         forceWindowsBrowser || playwrightStatus.wslMode
@@ -515,7 +596,7 @@ export function ServiceNowImportModal({
           : "Abrindo browser... Faça login no Azure AD se necessário.";
       toast.info(browserMsg, { duration: 10000 });
 
-      const response = await apiClient.extractServiceNowWithPlaywright(targetUrl);
+      const response = await apiClient.extractServiceNowWithPlaywright(targetUrl, controller.signal);
 
       if (response.success && response.extracted_data) {
         setResult({
@@ -534,11 +615,20 @@ export function ServiceNowImportModal({
         toast.error(response.error || "Falha ao extrair dados");
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Erro desconhecido";
-      toast.error(errorMsg);
+      if (err instanceof DOMException && err.name === "AbortError") {
+        toast.info("Extração cancelada");
+      } else {
+        const errorMsg = err instanceof Error ? err.message : "Erro desconhecido";
+        toast.error(errorMsg);
+      }
     } finally {
+      playwrightAbortRef.current = null;
       setIsLoading(false);
     }
+  };
+
+  const handleCancelPlaywrightExtraction = () => {
+    playwrightAbortRef.current?.abort();
   };
 
   const handleExtractWithPlaywright = () => runPlaywrightExtraction(chgUrl);
@@ -626,6 +716,11 @@ export function ServiceNowImportModal({
   };
 
   const handleClose = () => {
+    // Fechar o modal também cancela qualquer extração em andamento — sem isso, o Rod continuava
+    // rodando no backend (browser aberto, aguardando login) mesmo com o modal já fechado.
+    teamsCancelRequestedRef.current = true;
+    teamsAbortRef.current?.abort();
+    playwrightAbortRef.current?.abort();
     setChgUrl("");
     setDescription("");
     setResult(null);
@@ -671,9 +766,11 @@ export function ServiceNowImportModal({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      {/* max-w-3xl (48rem) + 15% = 55.2rem */}
-      <DialogContent className="max-w-[55.2rem] max-h-[90vh] overflow-y-auto overflow-x-hidden">
-        <DialogHeader>
+      <DialogContent
+        className="flex flex-col p-6 gap-0 overflow-hidden"
+        style={{ width: modalSize.width, height: modalSize.height, maxWidth: "96vw", maxHeight: "96vh" }}
+      >
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Download className="h-5 w-5" />
             Importar de ServiceNow
@@ -688,8 +785,15 @@ export function ServiceNowImportModal({
           </DialogDescription>
         </DialogHeader>
 
+        {/* Corpo rolável — DialogHeader fica fixo, tab bar + conteúdo da aba rolam dentro do
+            espaço restante. Necessário pro modal virar resizable (flex-1 min-h-0), ver nota em
+            CLAUDE.md sobre max-height vs height em modais com abas manuais. flex flex-col (não só
+            overflow-y-auto) permite que o conteúdo da aba ativa (ex: lista de CHGs da aba Teams)
+            cresça via flex-1 até preencher o espaço do modal, em vez de ficar travado numa altura
+            fixa com sobra de espaço vazio abaixo. */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden pr-1">
         {/* Tab bar manual */}
-        <div className="flex border-b border-border gap-0">
+        <div className="flex border-b border-border gap-0 flex-shrink-0">
           {tabs.map((tab) => (
             <button
               key={tab.id}
@@ -715,8 +819,8 @@ export function ServiceNowImportModal({
 
         {/* ── Aba: Teams ─────────────────────────────────────────────── */}
         {activeTab === "teams" && (
-          <div className="space-y-3 pt-1">
-            <div className="flex items-center justify-between">
+          <div className="flex-1 min-h-0 flex flex-col gap-3 pt-1">
+            <div className="flex items-center justify-between flex-shrink-0">
               <div className="text-xs text-muted-foreground">
                 CHGs do dia atual — mensagens do <strong>Mr.ViaBot</strong>
                 {teamsLastUpdated && (
@@ -740,14 +844,14 @@ export function ServiceNowImportModal({
             </div>
 
             {teamsLoading && teamsItems.length === 0 && (
-              <div className="flex items-center justify-center py-8 text-sm text-muted-foreground gap-2">
+              <div className="flex items-center justify-center py-8 text-sm text-muted-foreground gap-2 flex-shrink-0">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Aguardando... o Chrome abrirá o Teams automaticamente (~60s)
               </div>
             )}
 
             {!teamsLoading && teamsNeedsRefresh && teamsItems.length === 0 && (
-              <div className="text-center py-6 space-y-2">
+              <div className="text-center py-6 space-y-2 flex-shrink-0">
                 <MessageSquare className="h-8 w-8 mx-auto text-muted-foreground opacity-50" />
                 <p className="text-sm text-muted-foreground">
                   Nenhuma CHG carregada ainda
@@ -759,7 +863,7 @@ export function ServiceNowImportModal({
             )}
 
             {/* Campo de busca por CHG ou nome de release */}
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-shrink-0">
               <input
                 type="text"
                 value={chgSearch}
@@ -798,8 +902,8 @@ export function ServiceNowImportModal({
             </div>
 
             {teamsItems.length > 0 && (
-              <>
-                <div className="flex items-center justify-between mb-1">
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex items-center justify-between mb-1 flex-shrink-0">
                   <span className="text-xs text-muted-foreground">
                     {selectedTeamsChgs.size > 0
                       ? `${selectedTeamsChgs.size} selecionada${selectedTeamsChgs.size > 1 ? "s" : ""}`
@@ -821,7 +925,7 @@ export function ServiceNowImportModal({
                     </button>
                   )}
                 </div>
-                <div className="space-y-1.5 max-h-64 overflow-y-auto overflow-x-hidden pr-1">
+                <div className="space-y-1.5 flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1">
                   {filteredTeamsItems.map((item) => {
                     const checked = selectedTeamsChgs.has(item.chg);
                     const approved = isChgApproved(item.chg);
@@ -899,26 +1003,37 @@ export function ServiceNowImportModal({
                   })}
                 </div>
                 {(selectedTeamsChgs.size > 0 || teamsExtracting) && (
-                  <Button
-                    onClick={handleImportSelectedTeams}
-                    disabled={!!teamsExtracting}
-                    className="w-full mt-2"
-                    size="lg"
-                  >
-                    {teamsExtracting ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Extraindo {teamsExtracting.chg}... ({teamsExtracting.current}/{teamsExtracting.total})
-                      </>
-                    ) : (
-                      <>
-                        <Download className="h-4 w-4 mr-2" />
-                        Importar {selectedTeamsChgs.size} CHG{selectedTeamsChgs.size > 1 ? "s" : ""} para comparações
-                      </>
+                  <div className="flex gap-2 mt-2 flex-shrink-0">
+                    <Button
+                      onClick={handleImportSelectedTeams}
+                      disabled={!!teamsExtracting}
+                      className="flex-1"
+                      size="lg"
+                    >
+                      {teamsExtracting ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Extraindo {teamsExtracting.chg}... ({teamsExtracting.current}/{teamsExtracting.total})
+                        </>
+                      ) : (
+                        <>
+                          <Download className="h-4 w-4 mr-2" />
+                          Importar {selectedTeamsChgs.size} CHG{selectedTeamsChgs.size > 1 ? "s" : ""} para comparações
+                        </>
+                      )}
+                    </Button>
+                    {teamsExtracting && (
+                      <Button
+                        variant="destructive"
+                        size="lg"
+                        onClick={handleCancelTeamsExtraction}
+                      >
+                        Cancelar
+                      </Button>
                     )}
-                  </Button>
+                  </div>
                 )}
-              </>
+              </div>
             )}
           </div>
         )}
@@ -973,24 +1088,35 @@ export function ServiceNowImportModal({
               </div>
             </div>
 
-            <Button
-              onClick={handleExtractWithPlaywright}
-              disabled={isLoading || !chgUrl.trim()}
-              className="w-full"
-              size="lg"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Extraindo... (aguarde login se necessário)
-                </>
-              ) : (
-                <>
-                  <Globe className="h-4 w-4 mr-2" />
-                  Extrair via Browser
-                </>
+            <div className="flex gap-2">
+              <Button
+                onClick={handleExtractWithPlaywright}
+                disabled={isLoading || !chgUrl.trim()}
+                className="flex-1"
+                size="lg"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Extraindo... (aguarde login se necessário)
+                  </>
+                ) : (
+                  <>
+                    <Globe className="h-4 w-4 mr-2" />
+                    Extrair via Browser
+                  </>
+                )}
+              </Button>
+              {isLoading && (
+                <Button
+                  variant="destructive"
+                  size="lg"
+                  onClick={handleCancelPlaywrightExtraction}
+                >
+                  Cancelar
+                </Button>
               )}
-            </Button>
+            </div>
           </div>
         )}
 
@@ -1188,6 +1314,47 @@ export function ServiceNowImportModal({
             </div>
           </>
         )}
+        </div>
+
+        {/* Handles de resize — mesmo padrão de PodQuickViewModal.tsx */}
+        <div
+          className="absolute top-0 right-0 w-1.5 h-full cursor-e-resize hover:bg-primary/20 transition-colors z-50"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "e";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "e-resize";
+            document.body.style.userSelect = "none";
+          }}
+        />
+        <div
+          className="absolute bottom-0 left-0 w-full h-1.5 cursor-s-resize hover:bg-primary/20 transition-colors z-50"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "s";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "s-resize";
+            document.body.style.userSelect = "none";
+          }}
+        />
+        <div
+          className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-50 flex items-end justify-end pr-0.5 pb-0.5"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "se";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "se-resize";
+            document.body.style.userSelect = "none";
+          }}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted-foreground/40 hover:text-primary/60">
+            <path d="M9 1 L9 9 L1 9" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+            <path d="M9 5 L9 9 L5 9" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+          </svg>
+        </div>
       </DialogContent>
     </Dialog>
   );

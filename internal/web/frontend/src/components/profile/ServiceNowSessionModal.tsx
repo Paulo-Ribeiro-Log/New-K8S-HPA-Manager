@@ -142,13 +142,15 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
     }
   };
 
+  // Login não tem mais timeout curto no backend — a página só fecha com sucesso ou com
+  // cancelamento explícito (botão "Cancelar" abaixo, que aciona /session/test/cancel).
   const handleTestSession = async () => {
     setIsTesting(true);
     const usesXvfb = browserEnv?.is_wsl && !browserEnv?.has_display;
     toast.info('Abrindo Chromium para login...', {
       description: usesXvfb
         ? 'WSL sem display gráfico: Xvfb será usado. Para ver o browser instale WSLg (Windows 11) ou use x11vnc.'
-        : 'Complete o login no Azure AD na janela que abrir.',
+        : 'Complete o login no Azure AD na janela que abrir. A página fica aberta até você terminar ou cancelar.',
       duration: 12000,
     });
 
@@ -163,6 +165,8 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
         toast.success('Login realizado com sucesso!', {
           description: 'Sessao salva para proximas extracoes.',
         });
+      } else if (data.status?.status === 'cancelled') {
+        toast.info('Login cancelado');
       } else {
         toast.warning('Sessao pode nao estar completa', {
           description: 'Verifique se completou o login corretamente.',
@@ -174,6 +178,18 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       toast.error('Erro ao testar sessao');
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  const handleCancelTestSession = async () => {
+    try {
+      await fetch('/api/v1/servicenow/session/test/cancel', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem("auth_token")}` },
+      });
+      toast.info('Cancelando login...', { description: 'A janela do browser vai fechar em instantes.' });
+    } catch {
+      toast.error('Erro ao cancelar login');
     }
   };
 
@@ -406,6 +422,16 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
               <RefreshCw className={`h-4 w-4 mr-1 ${isLoading ? 'animate-spin' : ''}`} />
               Atualizar
             </Button>
+
+            {isTesting && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleCancelTestSession}
+              >
+                Cancelar
+              </Button>
+            )}
 
             <Button
               size="sm"
