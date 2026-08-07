@@ -324,6 +324,13 @@ export function ExternalCertEndpointsPanel() {
                       >
                         Erro
                       </Badge>
+                    ) : e.latest_check.is_default_fake_cert ? (
+                      <Badge
+                        className="bg-orange-500/20 text-orange-400 border-orange-500/30"
+                        title="O servidor devolveu o certificado autoassinado padrão do ingress-nginx — o host/porta não tem TLS real configurado (SNI não bate com nenhum Ingress). Não é o certificado da aplicação."
+                      >
+                        Cert. Fake (Ingress)
+                      </Badge>
                     ) : (
                       <span className="inline-flex items-center gap-1.5">
                         {getStatusBadge(e.latest_check.status || "")}

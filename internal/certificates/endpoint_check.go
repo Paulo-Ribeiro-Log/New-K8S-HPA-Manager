@@ -40,6 +40,12 @@ type EndpointCheckResult struct {
 	DaysRemaining int
 
 	TrustedByPublicCA bool
+
+	// IsDefaultFakeCert é true quando o certificado servido é o autoassinado padrão do
+	// ingress-nginx (isIngressNginxDefaultFakeCert, parser.go) — sinal de que o host:porta
+	// cadastrado não tem TLS de verdade configurado pra esse SNI, mesmo com Status="valid" (o
+	// cert fake em si não está expirado). Ver comentário completo em isIngressNginxDefaultFakeCert.
+	IsDefaultFakeCert bool
 }
 
 // CheckEndpointTLS conecta em host:port via TLS (ServerName = sni, ou host quando sni é vazio) e
@@ -119,6 +125,7 @@ func CheckEndpointTLS(ctx context.Context, host string, port int, sni string) En
 		Status:            status,
 		DaysRemaining:     daysRemaining,
 		TrustedByPublicCA: isTrustedByPublicCA(certs, serverName),
+		IsDefaultFakeCert: isIngressNginxDefaultFakeCert(leaf),
 	}
 }
 

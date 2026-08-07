@@ -285,6 +285,7 @@ func runAndRecordCertEndpointCheck(ctx context.Context, store *storage.CertEndpo
 		Status:            result.Status,
 		DaysRemaining:     result.DaysRemaining,
 		TrustedByPublicCA: result.TrustedByPublicCA,
+		IsDefaultFakeCert: result.IsDefaultFakeCert,
 	}
 	if !result.NotBefore.IsZero() {
 		nb := result.NotBefore

@@ -1740,6 +1740,11 @@ export interface CertEndpointCheck {
   status?: "valid" | "expiring" | "expired" | "";
   days_remaining?: number;
   trusted_by_public_ca: boolean;
+  // is_default_fake_cert=true quando o certificado servido é o autoassinado padrão do
+  // ingress-nginx ("Kubernetes Ingress Controller Fake Certificate") — indica que o host:porta
+  // não tem TLS real configurado pra esse SNI, mesmo com status="valid" (o cert fake em si não
+  // está expirado). Ver internal/certificates/parser.go, isIngressNginxDefaultFakeCert.
+  is_default_fake_cert?: boolean;
 }
 
 // CertEndpointWithStatus é o shape consumido pela listagem — endpoint + última checagem

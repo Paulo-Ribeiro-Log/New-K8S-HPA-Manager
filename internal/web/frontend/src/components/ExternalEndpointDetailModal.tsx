@@ -34,7 +34,12 @@ export function ExternalEndpointDetailModal({ endpoint, open, onOpenChange }: Ex
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 flex-wrap">
             {endpoint.name}
-            {latest?.success && latest.status && getStatusBadge(latest.status)}
+            {latest?.success && latest.is_default_fake_cert && (
+              <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">
+                Cert. Fake (Ingress)
+              </Badge>
+            )}
+            {latest?.success && !latest.is_default_fake_cert && latest.status && getStatusBadge(latest.status)}
             {latest && !latest.success && (
               <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Erro</Badge>
             )}
@@ -53,6 +58,15 @@ export function ExternalEndpointDetailModal({ endpoint, open, onOpenChange }: Ex
           </div>
         ) : (
           <div className="space-y-2 text-sm py-2">
+            {latest.is_default_fake_cert && (
+              <div className="rounded-md border border-orange-500/30 bg-orange-500/10 text-orange-300 text-xs px-3 py-2">
+                Este é o certificado autoassinado <strong>padrão</strong> do ingress-nginx, não o
+                certificado real da aplicação — indica que o SNI/host deste endpoint não bate com
+                nenhum Ingress configurado no cluster (ou não há TLS configurado pra ele). O
+                certificado abaixo não expira tão cedo, mas isso não significa que este endpoint
+                tenha TLS válido de verdade.
+              </div>
+            )}
             <DetailRow label="Subject" value={latest.subject} />
             <DetailRow label="Emissor" value={latest.issuer} />
             <DetailRow label="Serial" value={latest.serial_number} mono />
@@ -103,7 +117,11 @@ export function ExternalEndpointDetailModal({ endpoint, open, onOpenChange }: Ex
                   className="flex items-center justify-between text-xs border-b border-border/50 py-1.5 last:border-0"
                 >
                   <span className="text-muted-foreground">{new Date(h.checked_at).toLocaleString("pt-BR")}</span>
-                  {h.success ? (
+                  {h.success && h.is_default_fake_cert ? (
+                    <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">
+                      Cert. Fake (Ingress)
+                    </Badge>
+                  ) : h.success ? (
                     getStatusBadge(h.status || "")
                   ) : (
                     <Badge className="bg-red-500/20 text-red-400 border-red-500/30" title={h.error_message}>

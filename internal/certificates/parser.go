@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -31,6 +32,28 @@ func classifyExpiry(notAfter time.Time) (status string, daysRemaining int) {
 	default:
 		return "valid", daysRemaining
 	}
+}
+
+// ingressNginxFakeCertCN é o Common Name fixo que o ingress-nginx grava no certificado
+// autoassinado que ele mesmo gera na inicialização (pkg/net/ssl do próprio controller) e serve
+// como fallback TLS quando o SNI da conexão não bate com nenhum host configurado em nenhum
+// Ingress do cluster — "certificado default" do controller, nunca o certificado real de nenhuma
+// aplicação. Igual nos dois lados (Subject e Issuer) porque é autoassinado.
+const ingressNginxFakeCertCN = "Kubernetes Ingress Controller Fake Certificate"
+
+// isIngressNginxDefaultFakeCert detecta esse certificado fallback — achado real: um endpoint
+// externo cadastrado no Monitor de Certificados Externos (endpoint_check.go) apontava pra um
+// host:porta cujo SNI não batia com nenhum Ingress real, e o handshake TLS (que sempre completa
+// com sucesso — o servidor não recusa a conexão, só serve o cert errado) devolvia esse
+// certificado fake, com NotAfter longe no futuro (ingress-nginx gera com validade de ~1 ano) —
+// classifyExpiry then reportava "valid", passando a falsa impressão de que o host tem um
+// certificado real e válido quando na verdade não tem TLS nenhum configurado pra ele. Checa
+// Subject E Issuer (não só Subject) pra reduzir a chance de colisão com um certificado real de
+// aplicação que por acaso usasse o mesmo Common Name — o par exato só ocorre no autoassinado do
+// controller.
+func isIngressNginxDefaultFakeCert(cert *x509.Certificate) bool {
+	return strings.EqualFold(cert.Subject.CommonName, ingressNginxFakeCertCN) &&
+		strings.EqualFold(cert.Issuer.CommonName, ingressNginxFakeCertCN)
 }
 
 // certSubjectDisplayName resolve um nome legível pro Subject de um certificado. Desde ~2021 os
