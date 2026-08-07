@@ -74,7 +74,12 @@ export const SplitView = ({ leftPanel, rightPanel }: SplitViewProps) => {
             {leftPanel.titleSuffix}
           </div>
           {leftPanel.titleAction && (
-            <div className="flex items-center gap-1 flex-wrap min-w-0">
+            // flex-1 justify-end: sem isso, esta div fica do tamanho do próprio conteúdo
+            // (shrink-to-fit) — quem mede a largura disponível via ResizeObserver dentro do
+            // titleAction (ex: GitHubReleasesTab.tsx) acaba medindo o resultado do próprio
+            // estado renderizado (largura dos botões) em vez do espaço real disponível no
+            // header, um loop auto-referente que inverte a lógica de "modo compacto".
+            <div className="flex items-center gap-1 flex-wrap min-w-0 flex-1 justify-end">
               {leftPanel.titleAction}
             </div>
           )}
