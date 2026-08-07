@@ -247,13 +247,15 @@ habilitado, grava cada resultado via `RecordCheck`, retorna a lista atualizada.
 
 ## Fase 6 — Validação manual + documentação
 
-- [ ] `./rebuild-web.sh -b` e teste manual real: cadastrar um endpoint (ex: servidor HTTPS
-      público conhecido, ou servidor on-prem real do usuário), clicar "Verificar agora",
-      confirmar que o certificado real aparece com status/dias corretos.
-- [ ] Testar host:porta que falha (porta fechada) — confirmar erro legível na UI.
-- [ ] Testar editar/excluir endpoint.
-- [ ] Reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) após o build, por
-      convenção do projeto.
-- [ ] `CLAUDE.md`: nova entrada documentando a feature (seção própria, padrão das demais),
-      só depois da validação manual.
-- [ ] Nova branch → commit → push → abrir PR (mesmo fluxo das tarefas anteriores desta sessão).
+- [x] `./rebuild-web.sh -b` e teste manual real: usuário cadastrou e verificou endpoints reais
+      da produção (`comercial-sortimento-api-hlg.viavarejo.com.br`, `oms-corporativo.api-cnova.com.br`,
+      um IP on-prem `10.128.22.140`) — certificado real, status/dias corretos, e um diagnóstico
+      de rede completo (timeout vs. connection refused vs. ping OK) feito em conjunto.
+- [x] Testar host:porta que falha (porta fechada/timeout) — confirmado erro legível na UI nos
+      dois formatos (connection refused e i/o timeout), com investigação de causa real (não é
+      bug — rede/firewall).
+- [x] Testar editar/excluir endpoint — validado no navegador.
+- [x] Reiniciar o servidor após cada build, por convenção do projeto — feito a cada fase.
+- [x] `CLAUDE.md`: nova entrada documentando a feature (seção própria "Monitor de Certificados
+      Externos"), feito nesta etapa.
+- [ ] push → abrir PR (branch `feat/external-cert-monitor`, já criada a partir da main).
