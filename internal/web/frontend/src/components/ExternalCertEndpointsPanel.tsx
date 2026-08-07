@@ -24,7 +24,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Loader2, Plus, RefreshCcw, Trash2, Pencil, Globe, ListPlus } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Loader2, Plus, RefreshCcw, Trash2, Pencil, Globe, ListPlus, Download, FileSpreadsheet, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { getStatusBadge } from "@/components/CertificateDetailModal";
 import { ExternalEndpointDetailModal } from "@/components/ExternalEndpointDetailModal";
@@ -67,6 +73,86 @@ type EndpointForm = {
 };
 
 const emptyForm: EndpointForm = { name: "", host: "", port: 443, sni: "", group_label: "", enabled: true };
+
+// endpointStatusLabel resolve o mesmo rótulo textual exibido nos badges da tabela (Status) — usado
+// pelos exports CSV/TXT pra não duplicar a árvore de decisão em cada formato.
+function endpointStatusLabel(e: CertEndpointWithStatus): string {
+  const check = e.latest_check;
+  if (!check) return "Nunca verificado";
+  if (!check.success) return `Erro: ${check.error_message || "erro desconhecido"}`;
+  if (check.is_default_fake_cert) return "Certificado Fake (Ingress)";
+  switch (check.status) {
+    case "valid":
+      return "Válido";
+    case "expiring":
+      return "Expirando";
+    case "expired":
+      return "Expirado";
+    default:
+      return check.status || "—";
+  }
+}
+
+// csvDelimiter=";" (não ",") porque o Excel em locale pt-BR (o idioma de toda a aplicação — datas,
+// labels, mensagens) usa vírgula como separador DECIMAL e por isso espera ";" como separador de
+// campo no CSV por padrão — abrir um CSV separado por vírgula nesse Excel resulta em tudo numa
+// única coluna só, sem nenhum erro visível pro usuário (comportamento silencioso, não um crash).
+const csvDelimiter = ";";
+
+// csvField escapa um valor pra CSV (RFC 4180): entre aspas quando contém o delimitador, aspas ou
+// quebra de linha; aspas internas duplicadas. Necessário porque Subject/SAN/mensagens de erro
+// podem conter ";"/"," — join(csvDelimiter) simples (como em HPAExportButton.tsx, que usa ",")
+// quebraria o CSV nesses casos.
+function csvField(value: string | number | undefined | null): string {
+  const s = value === undefined || value === null ? "" : String(value);
+  if (s.includes(csvDelimiter) || /["\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+const exportColumns = [
+  "Nome",
+  "Host",
+  "Porta",
+  "SNI",
+  "Grupo",
+  "Habilitado",
+  "Nome do Certificado",
+  "Status",
+  "Válido até",
+  "Dias restantes",
+  "Emissor",
+  "Última verificação",
+] as const;
+
+function exportRow(e: CertEndpointWithStatus): (string | number)[] {
+  const check = e.latest_check;
+  return [
+    e.name,
+    e.host,
+    e.port,
+    e.sni ?? "",
+    e.group_label ?? "",
+    e.enabled ? "Sim" : "Não",
+    check?.success ? check.subject ?? "" : "",
+    endpointStatusLabel(e),
+    check?.success && check.not_after ? new Date(check.not_after).toLocaleDateString("pt-BR") : "",
+    check?.success ? check.days_remaining ?? "" : "",
+    check?.success ? check.issuer ?? "" : "",
+    check?.checked_at ? new Date(check.checked_at).toLocaleString("pt-BR") : "",
+  ];
+}
+
+function downloadBlob(content: string, mimeType: string, filename: string) {
+  const blob = new Blob([content], { type: `${mimeType};charset=utf-8;` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 // Sub-aba "Endpoints Externos" — monitor de certificados TLS de servidores fora de qualquer
 // cluster K8s (on-prem Windows/Linux, serviços externos), estilo blackbox_exporter do
@@ -210,6 +296,62 @@ export function ExternalCertEndpointsPanel() {
     }
   };
 
+  // Export CSV/TXT — client-side puro (sem rota de backend), mesmo padrão de
+  // HPAExportButton.tsx: gera o conteúdo em memória e dispara download via <a download>. Exporta
+  // sempre a lista completa carregada (não há filtro/busca nesta tabela hoje).
+  const exportCSV = () => {
+    if (endpoints.length === 0) {
+      toast.error("Nenhum endpoint para exportar");
+      return;
+    }
+    const lines = [exportColumns.join(csvDelimiter)];
+    endpoints.forEach((e) => {
+      lines.push(exportRow(e).map(csvField).join(csvDelimiter));
+    });
+    // BOM UTF-8 (﻿) na frente: sem ele, o Excel abre o arquivo assumindo Windows-1252 e
+    // qualquer acento (ã, ç, é — presentes em Status/Grupo/Subject) vira caractere corrompido; com
+    // o BOM, o Excel detecta UTF-8 sozinho. \r\n (não só \n) é o quebra-linha que o Excel espera
+    // por padrão nesse tipo de arquivo — CRLF explícito evita depender do comportamento do
+    // navegador/SO na hora de gravar o Blob.
+    downloadBlob(
+      "﻿" + lines.join("\r\n"),
+      "text/csv",
+      `endpoints-externos-${new Date().toISOString().split("T")[0]}.csv`
+    );
+    toast.success(`CSV exportado: ${endpoints.length} endpoint${endpoints.length > 1 ? "s" : ""}`);
+  };
+
+  const exportTXT = () => {
+    if (endpoints.length === 0) {
+      toast.error("Nenhum endpoint para exportar");
+      return;
+    }
+    const separator = "=".repeat(60);
+    let txt = "Endpoints Externos — Certificados TLS\n";
+    txt += `Exportado em: ${new Date().toLocaleString("pt-BR")}\n\n`;
+    endpoints.forEach((e) => {
+      const check = e.latest_check;
+      txt += `${separator}\n`;
+      txt += `Nome: ${e.name}\n`;
+      txt += `Host:Porta: ${e.host}:${e.port}${e.sni ? ` (SNI: ${e.sni})` : ""}\n`;
+      if (e.group_label) txt += `Grupo: ${e.group_label}\n`;
+      txt += `Habilitado: ${e.enabled ? "Sim" : "Não"}\n`;
+      if (check?.success) {
+        txt += `Nome do Certificado: ${check.subject || "—"}\n`;
+        txt += `Status: ${endpointStatusLabel(e)}\n`;
+        if (check.not_after) txt += `Válido até: ${new Date(check.not_after).toLocaleDateString("pt-BR")} (${check.days_remaining} dias restantes)\n`;
+        txt += `Emissor: ${check.issuer || "—"}\n`;
+        if (check.dns_names && check.dns_names.length > 0) txt += `SAN: ${check.dns_names.join(", ")}\n`;
+      } else {
+        txt += `Status: ${endpointStatusLabel(e)}\n`;
+      }
+      txt += `Última verificação: ${check?.checked_at ? new Date(check.checked_at).toLocaleString("pt-BR") : "nunca"}\n`;
+    });
+    txt += `${separator}\n`;
+    downloadBlob(txt, "text/plain", `endpoints-externos-${new Date().toISOString().split("T")[0]}.txt`);
+    toast.success(`TXT exportado: ${endpoints.length} endpoint${endpoints.length > 1 ? "s" : ""}`);
+  };
+
   // "Última verificação" no cabeçalho = a mais recente entre todos os endpoints — os
   // checked_at do backend são RFC3339 UTC, comparáveis lexicograficamente sem parsear Date.
   const lastCheckedAt = endpoints.reduce<string | null>((latest, e) => {
@@ -249,6 +391,24 @@ export function ExternalCertEndpointsPanel() {
             <ListPlus className="h-3.5 w-3.5 mr-1.5" />
             Importar em Lote
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" disabled={endpoints.length === 0}>
+                <Download className="h-3.5 w-3.5 mr-1.5" />
+                Exportar
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={exportCSV}>
+                <FileSpreadsheet className="h-3.5 w-3.5 mr-2" />
+                Exportar como CSV
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportTXT}>
+                <FileText className="h-3.5 w-3.5 mr-2" />
+                Exportar como TXT
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button size="sm" onClick={openCreateForm}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             Adicionar Endpoint
@@ -282,7 +442,9 @@ export function ExternalCertEndpointsPanel() {
               <tr className="text-left text-muted-foreground">
                 <th className="px-3 py-2 font-medium">Nome</th>
                 <th className="px-3 py-2 font-medium">Host:Porta</th>
+                <th className="px-3 py-2 font-medium">Nome do Certificado</th>
                 <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Válido até</th>
                 <th className="px-3 py-2 font-medium">Emissor</th>
                 <th className="px-3 py-2 font-medium">Última verificação</th>
                 <th className="px-3 py-2 font-medium text-right">Ações</th>
@@ -314,6 +476,16 @@ export function ExternalCertEndpointsPanel() {
                     {e.host}:{e.port}
                     {e.sni ? ` (SNI: ${e.sni})` : ""}
                   </td>
+                  <td
+                    className="px-3 py-2 max-w-[220px] truncate"
+                    title={
+                      e.latest_check?.dns_names && e.latest_check.dns_names.length > 0
+                        ? `SAN: ${e.latest_check.dns_names.join(", ")}`
+                        : e.latest_check?.subject
+                    }
+                  >
+                    {e.latest_check?.success ? e.latest_check.subject || "—" : "—"}
+                  </td>
                   <td className="px-3 py-2">
                     {!e.latest_check ? (
                       <Badge variant="secondary">Nunca verificado</Badge>
@@ -337,6 +509,11 @@ export function ExternalCertEndpointsPanel() {
                         <span className="text-muted-foreground">{e.latest_check.days_remaining}d</span>
                       </span>
                     )}
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    {e.latest_check?.success && e.latest_check.not_after
+                      ? new Date(e.latest_check.not_after).toLocaleDateString("pt-BR")
+                      : "—"}
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">{e.latest_check?.issuer || "—"}</td>
                   <td className="px-3 py-2 text-muted-foreground">
