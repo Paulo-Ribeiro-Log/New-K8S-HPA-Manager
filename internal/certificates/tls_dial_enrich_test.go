@@ -105,6 +105,38 @@ func TestBuildTLSDialResult_EmissorDiferente_ClassificaComoCamadaExterna(t *test
 	}
 }
 
+// TestBuildTLSDialResult_FakeIngressCert_ClassificaSeparadoDeCamadaExterna valida o achado real:
+// um host que responde com o certificado autoassinado padrão do ingress-nginx tem emissor
+// "diferente do esperado" (mesmo sinal bruto de PossibleExternalLayer), mas a causa real é mais
+// específica — o host não bate com nenhum Ingress válido — e precisa cair no próprio balde
+// DefaultFakeCert, não ser confundido com "camada externa (CDN/WAF)".
+func TestBuildTLSDialResult_FakeIngressCert_ClassificaSeparadoDeCamadaExterna(t *testing.T) {
+	results := []tlsDialResult{
+		{Host: "sem-ingress.example.com", SerialDec: "999", IssuerCN: "Kubernetes Ingress Controller Fake Certificate", IsDefaultFakeCert: true},
+	}
+
+	result := buildTLSDialResult(results, "123", "Sectigo RSA Organization Validation Secure Server CA")
+
+	if len(result.DefaultFakeCert) != 1 || result.DefaultFakeCert[0] != "sem-ingress.example.com" {
+		t.Errorf("esperava DefaultFakeCert=[sem-ingress.example.com], obteve %v", result.DefaultFakeCert)
+	}
+	if len(result.PossibleExternalLayer) != 0 {
+		t.Errorf("esperava 0 em PossibleExternalLayer (deve cair só em DefaultFakeCert), obteve %v", result.PossibleExternalLayer)
+	}
+	if len(result.ReplicasStale) != 0 {
+		t.Errorf("esperava 0 em ReplicasStale, obteve %v", result.ReplicasStale)
+	}
+	foundNote := false
+	for _, n := range result.Notes {
+		if strings.Contains(n, "certificado autoassinado PADRÃO do ingress-nginx") {
+			foundNote = true
+		}
+	}
+	if !foundNote {
+		t.Errorf("esperava nota mencionando o certificado fake padrão, obteve %v", result.Notes)
+	}
+}
+
 func TestBuildTLSDialResult_MesmoEmissor_ClassificaComoStaleGenuino(t *testing.T) {
 	results := []tlsDialResult{
 		{Host: "api.example.com", SerialDec: "999", IssuerCN: "Sectigo RSA Organization Validation Secure Server CA"},

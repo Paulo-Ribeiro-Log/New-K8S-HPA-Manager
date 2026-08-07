@@ -88,6 +88,16 @@ export function CertificateChainValidationPanel({ result, className }: Props) {
                     : "réplica(s) do ingress-nginx com o certificado atual"}
                 </span>
               </div>
+              {result.live_propagation.default_fake_cert && result.live_propagation.default_fake_cert.length > 0 && (
+                <div className="flex items-start gap-1.5 text-xs text-amber-500">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    Respondendo com o certificado autoassinado PADRÃO do ingress-nginx (não é o
+                    certificado real) — esse host não bate com nenhum Ingress válido configurado:{" "}
+                    {result.live_propagation.default_fake_cert.join(", ")}
+                  </span>
+                </div>
+              )}
               {result.live_propagation.replicas_stale && result.live_propagation.replicas_stale.length > 0 && (
                 <div className="flex items-start gap-1.5 text-xs text-amber-500">
                   <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />

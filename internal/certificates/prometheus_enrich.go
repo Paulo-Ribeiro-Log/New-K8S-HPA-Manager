@@ -34,10 +34,18 @@ type LivePropagationResult struct {
 	// versão antiga do mesmo certificado) — sinal de que existe uma camada externa (CDN/WAF/proxy
 	// corporativo) terminando TLS antes do tráfego chegar no cluster, não uma propagação atrasada.
 	// Disjunto de ReplicasStale (cada host cai em um dos dois, nunca nos dois).
-	PossibleExternalLayer []string   `json:"possible_external_layer,omitempty"`
-	LiveIssuerCN          string     `json:"live_issuer_cn,omitempty"`
-	LiveExpiresAt         *time.Time `json:"live_expires_at,omitempty"`
-	Notes                 []string   `json:"notes,omitempty"`
+	PossibleExternalLayer []string `json:"possible_external_layer,omitempty"`
+	// DefaultFakeCert — só preenchido por EnrichWithTLSDial (method="tls-dial"): hosts que
+	// responderam com o certificado autoassinado padrão do ingress-nginx ("Kubernetes Ingress
+	// Controller Fake Certificate") em vez do certificado esperado — sinal de que o host não bate
+	// com nenhum Ingress válido configurado nesse ingress-nginx (SNI sem match), checado com
+	// prioridade sobre PossibleExternalLayer (o emissor do fake cert também é "diferente do
+	// esperado", mas a causa aqui é mais específica e acionável). Disjunto de ReplicasStale e
+	// PossibleExternalLayer.
+	DefaultFakeCert []string   `json:"default_fake_cert,omitempty"`
+	LiveIssuerCN    string     `json:"live_issuer_cn,omitempty"`
+	LiveExpiresAt   *time.Time `json:"live_expires_at,omitempty"`
+	Notes           []string   `json:"notes,omitempty"`
 }
 
 // LeafSerialDecimal parseia certPEM e retorna o serial do leaf cert em decimal

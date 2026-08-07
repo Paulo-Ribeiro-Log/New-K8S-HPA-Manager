@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,6 +23,13 @@ type tlsDialResult struct {
 	SerialDec string
 	IssuerCN  string
 	NotAfter  time.Time
+	// IsDefaultFakeCert — true quando o host respondeu com o certificado autoassinado padrão do
+	// ingress-nginx (isIngressNginxDefaultFakeCert, parser.go) em vez do certificado esperado.
+	// Achado real: sem essa checagem, esse cenário caía na comparação genérica de IssuerCN e era
+	// classificado como PossibleExternalLayer ("provavelmente CDN/WAF/proxy corporativo") — um
+	// diagnóstico errado, já que a causa real é o host não bater com nenhum Ingress válido no
+	// ingress-nginx, não uma camada externa terminando TLS antes do cluster.
+	IsDefaultFakeCert bool
 }
 
 // dialHostForCertFn é var (não const) só para permitir substituição em teste sem tocar rede real.
@@ -49,10 +57,11 @@ func dialHostForCert(ctx context.Context, host string) tlsDialResult {
 
 	leaf := certs[0]
 	return tlsDialResult{
-		Host:      host,
-		SerialDec: leaf.SerialNumber.String(),
-		IssuerCN:  leaf.Issuer.CommonName,
-		NotAfter:  leaf.NotAfter,
+		Host:              host,
+		SerialDec:         leaf.SerialNumber.String(),
+		IssuerCN:          leaf.Issuer.CommonName,
+		NotAfter:          leaf.NotAfter,
+		IsDefaultFakeCert: isIngressNginxDefaultFakeCert(leaf),
 	}
 }
 
@@ -82,8 +91,13 @@ func EnrichWithTLSDial(ctx context.Context, hosts []string, leafSerialDecimal, l
 // buildTLSDialResult é a lógica pura de agregação — separada de EnrichWithTLSDial para ser
 // testável sem rede real.
 //
-// Classificação de host "stale" (serial diferente do esperado) em 2 baldes disjuntos, usando o
-// emissor (Issuer CN) do certificado servido:
+// Classificação de host "stale" (serial diferente do esperado) em 3 baldes disjuntos:
+//   - DefaultFakeCert (checado primeiro, prioridade sobre os outros dois): o host respondeu com o
+//     certificado autoassinado padrão do ingress-nginx (isIngressNginxDefaultFakeCert) — não é uma
+//     questão de propagação nem de camada externa, é o host não bater com nenhum Ingress válido
+//     configurado nesse ingress-nginx (SNI sem match). Achado real: mesma armadilha já corrigida no
+//     Monitor de Certificados Externos (endpoint_check.go) também existe aqui — sem essa checagem,
+//     esse cenário caía indistinguível de PossibleExternalLayer (emissor diferente do esperado).
 //   - mesmo emissor do esperado → ReplicasStale: é plausível que seja o MESMO certificado numa
 //     versão anterior (renovação recente ainda não propagada) — caso genuíno de propagação atrasada.
 //   - emissor diferente → PossibleExternalLayer: não é uma versão antiga do certificado esperado,
@@ -110,6 +124,8 @@ func buildTLSDialResult(results []tlsDialResult, leafSerialDecimal, leafIssuerCN
 		switch {
 		case r.SerialDec == leafSerialDecimal:
 			result.ReplicasCurrent++
+		case r.IsDefaultFakeCert:
+			result.DefaultFakeCert = append(result.DefaultFakeCert, r.Host)
 		case leafIssuerCN != "" && r.IssuerCN != "" && r.IssuerCN != leafIssuerCN:
 			result.PossibleExternalLayer = append(result.PossibleExternalLayer, r.Host)
 		default:
@@ -134,6 +150,12 @@ func buildTLSDialResult(results []tlsDialResult, leafSerialDecimal, leafIssuerCN
 	result.Checked = true
 	result.TotalReplicasFound = reached
 
+	if len(result.DefaultFakeCert) > 0 {
+		result.Notes = append(result.Notes, fmt.Sprintf(
+			"%d de %d host(s) respondem com o certificado autoassinado PADRÃO do ingress-nginx, não o certificado esperado — esse host não bate com nenhum Ingress válido configurado nesse ingress-nginx (SNI sem match), não é uma questão de propagação nem de camada externa: %s",
+			len(result.DefaultFakeCert), reached, strings.Join(result.DefaultFakeCert, ", "),
+		))
+	}
 	if len(result.ReplicasStale) > 0 {
 		result.Notes = append(result.Notes, fmt.Sprintf(
 			"%d de %d host(s) ainda servem um certificado diferente do atual, mesmo emissor esperado (handshake TLS direto) — propagação pode estar em andamento",
