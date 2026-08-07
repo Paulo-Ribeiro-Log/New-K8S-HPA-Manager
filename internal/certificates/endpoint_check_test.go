@@ -5,8 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
@@ -109,6 +111,60 @@ func TestCheckEndpointTLS_TimeoutRespeitaContexto(t *testing.T) {
 	}
 	if elapsed > 1*time.Second {
 		t.Errorf("esperava falha quase imediata com contexto cancelado, levou %s", elapsed)
+	}
+}
+
+// TestCheckEndpointTLS_ExigeCertificadoCliente valida o achado real: um servidor configurado com
+// ClientAuth exigindo certificado de cliente (mTLS) rejeita nosso handshake (CheckEndpointTLS
+// nunca apresenta certificado de cliente nenhum) — o erro precisa vir enriquecido pela
+// classifyTLSDialError, não como um erro genérico de conexão.
+func TestCheckEndpointTLS_ExigeCertificadoCliente(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	srv.StartTLS()
+	defer srv.Close()
+
+	host, portStr, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	if err != nil {
+		t.Fatalf("erro ao extrair host/porta de %q: %v", srv.URL, err)
+	}
+	port, _ := strconv.Atoi(portStr)
+
+	result := CheckEndpointTLS(context.Background(), host, port, "")
+
+	if result.Success {
+		t.Fatal("esperava Success=false — servidor exige certificado de cliente que não enviamos")
+	}
+	if !strings.Contains(result.ErrorMessage, "certificado de cliente") {
+		t.Errorf("esperava mensagem mencionando 'certificado de cliente', obtive: %q", result.ErrorMessage)
+	}
+	if !strings.Contains(result.ErrorMessage, "Erro original:") {
+		t.Errorf("esperava que a mensagem original do Go TLS fosse preservada, obtive: %q", result.ErrorMessage)
+	}
+}
+
+func TestClassifyTLSDialError(t *testing.T) {
+	tests := []struct {
+		name        string
+		errMsg      string
+		wantContain string
+	}{
+		{"certificate required vira afirmação definitiva", "remote error: tls: certificate required", "exige certificado de cliente"},
+		{"bad certificate vira aviso qualificado", "remote error: tls: bad certificate", "Possível exigência"},
+		{"connection refused não é alterado", "dial tcp 127.0.0.1:443: connect: connection refused", "dial tcp 127.0.0.1:443: connect: connection refused"},
+		{"timeout não é alterado", "dial tcp 10.0.0.1:443: i/o timeout", "dial tcp 10.0.0.1:443: i/o timeout"},
+		{"handshake failure genérico não é alterado (ambíguo demais)", "remote error: tls: handshake failure", "remote error: tls: handshake failure"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyTLSDialError(errors.New(tt.errMsg))
+			if !strings.Contains(got, tt.wantContain) {
+				t.Errorf("got %q, esperava conter %q", got, tt.wantContain)
+			}
+		})
 	}
 }
 
