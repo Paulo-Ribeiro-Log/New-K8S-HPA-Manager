@@ -111,6 +111,10 @@ type Server struct {
 	// Notes Handler (anotações Markdown por cluster+aba)
 	notesHandler *handlers.NotesHandler
 
+	// Cert Endpoints Handler (monitor de certificados TLS de endpoints externos, fora de
+	// qualquer cluster K8s — ver EXTERNAL-CERT-MONITOR-PLAN.md)
+	certEndpointsHandler *handlers.CertEndpointsHandler
+
 	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
 	latencyTestHistoryStore *storage.LatencyTestHistoryStore
 }
@@ -411,6 +415,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ Notes Store inicializado (anotações por cluster+aba)")
 	}
 
+	// Cert Endpoints Store (monitor de certificados TLS de endpoints externos)
+	var certEndpointsHandler *handlers.CertEndpointsHandler
+	certEndpointsDBPath := filepath.Join(baseDir, "cert-endpoints.db")
+	if store, err := storage.NewCertEndpointsStore(certEndpointsDBPath); err != nil {
+		fmt.Printf("⚠️  Cert Endpoints Store: falha ao criar store: %v\n", err)
+	} else {
+		certEndpointsHandler = handlers.NewCertEndpointsHandler(store)
+		fmt.Println("✅ Cert Endpoints Store inicializado (monitor de endpoints externos)")
+	}
+
 	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
 	var latencyTestHistoryStore *storage.LatencyTestHistoryStore
 	latencyTestHistoryDBPath := filepath.Join(baseDir, "latency_test_history.db")
@@ -454,6 +468,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		snatHistoryStore:         snatHistoryStore,         // Histórico SNAT para projeção de crescimento
 		latencyTestHistoryStore:  latencyTestHistoryStore,  // Histórico de testes de latência (grafo Fase 6.4)
 		notesHandler:             notesHandler,             // Anotações Markdown por cluster+aba
+		certEndpointsHandler:     certEndpointsHandler,     // Monitor de certificados de endpoints externos
 	}
 
 	server.setupMiddleware()
@@ -1525,6 +1540,21 @@ func (s *Server) setupRoutes() {
 		api.POST("/notes", rbacMiddleware.InjectUserEmail(), s.notesHandler.Create)
 		api.PUT("/notes/:id", rbacMiddleware.InjectUserEmail(), s.notesHandler.Update)
 		api.DELETE("/notes/:id", rbacMiddleware.InjectUserEmail(), s.notesHandler.Delete)
+	}
+
+	// Cert Endpoints (monitor de certificados TLS de endpoints externos, fora de qualquer
+	// cluster K8s — sub-aba "Endpoints Externos" dentro de Certificados TLS). Sem
+	// RequireSREGroup(): é uma lista de configuração local da própria ferramenta, não uma
+	// mutação de cluster — mesmo racional já usado pra Notes; só autoria via InjectUserEmail()
+	// nas rotas de escrita.
+	if s.certEndpointsHandler != nil {
+		api.GET("/cert-endpoints", s.certEndpointsHandler.List)
+		api.GET("/cert-endpoints/:id/history", s.certEndpointsHandler.History)
+		api.POST("/cert-endpoints", rbacMiddleware.InjectUserEmail(), s.certEndpointsHandler.Create)
+		api.PUT("/cert-endpoints/:id", s.certEndpointsHandler.Update)
+		api.DELETE("/cert-endpoints/:id", s.certEndpointsHandler.Delete)
+		api.POST("/cert-endpoints/:id/check", s.certEndpointsHandler.CheckOne)
+		api.POST("/cert-endpoints/check-all", s.certEndpointsHandler.CheckAll)
 	}
 
 	// Predictive Analysis (análise preditiva de deployments)

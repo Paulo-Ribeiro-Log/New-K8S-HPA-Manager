@@ -1707,6 +1707,47 @@ export interface Note {
   updated_at: string;
 }
 
+// CertEndpoint — endpoint externo (fora de qualquer cluster K8s, ex: servidor on-prem
+// Windows/Linux) cadastrado pra ter seu certificado TLS monitorado via handshake real.
+// Ver EXTERNAL-CERT-MONITOR-PLAN.md.
+export interface CertEndpoint {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  sni?: string;
+  group_label?: string;
+  enabled: boolean;
+  created_by: string;
+  created_at: string;
+}
+
+// CertEndpointCheck é o resultado de uma checagem (sucesso ou falha) contra um CertEndpoint.
+// Campos do certificado ficam vazios/omitidos quando success=false.
+export interface CertEndpointCheck {
+  id: number;
+  endpoint_id: number;
+  checked_at: string;
+  success: boolean;
+  error_message?: string;
+  subject?: string;
+  issuer?: string;
+  serial_number?: string;
+  not_before?: string;
+  not_after?: string;
+  dns_names?: string[];
+  chain_length?: number;
+  status?: "valid" | "expiring" | "expired" | "";
+  days_remaining?: number;
+  trusted_by_public_ca: boolean;
+}
+
+// CertEndpointWithStatus é o shape consumido pela listagem — endpoint + última checagem
+// (latest_check ausente quando o endpoint ainda nunca foi checado).
+export interface CertEndpointWithStatus extends CertEndpoint {
+  latest_check?: CertEndpointCheck;
+}
+
 export interface CommandRunnerSSEEvent {
   id: string;
   type: 'init' | 'output' | 'output_error' | 'cluster_done' | 'complete' | 'error';
