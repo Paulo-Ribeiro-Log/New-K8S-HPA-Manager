@@ -54,6 +54,10 @@ type CertEndpointCheck struct {
 	DaysRemaining int    `json:"days_remaining,omitempty"`
 
 	TrustedByPublicCA bool `json:"trusted_by_public_ca"`
+	// IsDefaultFakeCert — certificado autoassinado padrão do ingress-nginx (Subject/Issuer
+	// "Kubernetes Ingress Controller Fake Certificate"), servido quando o SNI não bate com
+	// nenhum host configurado num Ingress real. Ver internal/certificates/parser.go.
+	IsDefaultFakeCert bool `json:"is_default_fake_cert"`
 }
 
 // CertEndpointWithStatus é o shape consumido pela listagem — endpoint + última checagem
@@ -98,7 +102,8 @@ CREATE TABLE IF NOT EXISTS cert_endpoint_checks (
     chain_length          INTEGER,
     status                TEXT,
     days_remaining        INTEGER,
-    trusted_by_public_ca  INTEGER
+    trusted_by_public_ca  INTEGER,
+    is_default_fake_cert  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_cert_endpoint_checks_endpoint ON cert_endpoint_checks(endpoint_id, checked_at DESC);
@@ -122,6 +127,10 @@ func NewCertEndpointsStore(dbPath string) (*CertEndpointsStore, error) {
 		db.Close() //nolint:errcheck
 		return nil, fmt.Errorf("criar schema cert-endpoints: %w", err)
 	}
+	// Migração: bancos criados antes da detecção de certificado fake do ingress-nginx não têm
+	// essa coluna — ignora o erro (mesmo padrão fire-and-forget de dependency_registry.go), já
+	// que ele só ocorre quando a coluna já existe.
+	db.Exec(`ALTER TABLE cert_endpoint_checks ADD COLUMN is_default_fake_cert INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 	return &CertEndpointsStore{db: db}, nil
 }
 
@@ -255,7 +264,7 @@ func (s *CertEndpointsStore) ListWithLatestCheck() ([]CertEndpointWithStatus, er
 		SELECT e.id, e.name, e.host, e.port, e.sni, e.group_label, e.enabled, e.created_by, e.created_at,
 		       c.id, c.checked_at, c.success, c.error_message, c.subject, c.issuer, c.serial_number,
 		       c.not_before, c.not_after, c.dns_names, c.chain_length, c.status, c.days_remaining,
-		       c.trusted_by_public_ca
+		       c.trusted_by_public_ca, c.is_default_fake_cert
 		FROM cert_endpoints e
 		LEFT JOIN cert_endpoint_checks c ON c.id = (
 			SELECT id FROM cert_endpoint_checks
@@ -278,13 +287,13 @@ func (s *CertEndpointsStore) ListWithLatestCheck() ([]CertEndpointWithStatus, er
 		var errMsg, subject, issuer, serial, dnsNamesJSON, status sql.NullString
 		var notBefore, notAfter sql.NullTime
 		var chainLength, daysRemaining sql.NullInt64
-		var trustedByPublicCA sql.NullBool
+		var trustedByPublicCA, isDefaultFakeCert sql.NullBool
 
 		if err := rows.Scan(
 			&e.ID, &e.Name, &e.Host, &e.Port, &sni, &groupLabel, &e.Enabled, &e.CreatedBy, &e.CreatedAt,
 			&checkID, &checkedAt, &success, &errMsg, &subject, &issuer, &serial,
 			&notBefore, &notAfter, &dnsNamesJSON, &chainLength, &status, &daysRemaining,
-			&trustedByPublicCA,
+			&trustedByPublicCA, &isDefaultFakeCert,
 		); err != nil {
 			continue
 		}
@@ -306,6 +315,7 @@ func (s *CertEndpointsStore) ListWithLatestCheck() ([]CertEndpointWithStatus, er
 				Status:            status.String,
 				DaysRemaining:     int(daysRemaining.Int64),
 				TrustedByPublicCA: trustedByPublicCA.Bool,
+				IsDefaultFakeCert: isDefaultFakeCert.Bool,
 			}
 			if notBefore.Valid {
 				check.NotBefore = &notBefore.Time
@@ -356,12 +366,14 @@ func (s *CertEndpointsStore) RecordCheck(check CertEndpointCheck) (int64, error)
 	res, err := tx.Exec(
 		`INSERT INTO cert_endpoint_checks
 		 (endpoint_id, checked_at, success, error_message, subject, issuer, serial_number,
-		  not_before, not_after, dns_names, chain_length, status, days_remaining, trusted_by_public_ca)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		  not_before, not_after, dns_names, chain_length, status, days_remaining, trusted_by_public_ca,
+		  is_default_fake_cert)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		check.EndpointID, checkedAt, check.Success, nullableString(check.ErrorMessage),
 		nullableString(check.Subject), nullableString(check.Issuer), nullableString(check.SerialNumber),
 		nullableTime(check.NotBefore), nullableTime(check.NotAfter), nullableString(dnsNamesJSON),
 		check.ChainLength, nullableString(check.Status), check.DaysRemaining, check.TrustedByPublicCA,
+		check.IsDefaultFakeCert,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("registrar checagem: %w", err)
@@ -394,7 +406,8 @@ func (s *CertEndpointsStore) GetLatestCheck(endpointID int64) (*CertEndpointChec
 
 	rows, err := s.db.Query(
 		`SELECT id, endpoint_id, checked_at, success, error_message, subject, issuer, serial_number,
-		        not_before, not_after, dns_names, chain_length, status, days_remaining, trusted_by_public_ca
+		        not_before, not_after, dns_names, chain_length, status, days_remaining, trusted_by_public_ca,
+		        is_default_fake_cert
 		 FROM cert_endpoint_checks WHERE endpoint_id=? ORDER BY checked_at DESC LIMIT 1`,
 		endpointID,
 	)
@@ -420,7 +433,8 @@ func (s *CertEndpointsStore) GetHistory(endpointID int64, limit int) ([]CertEndp
 
 	rows, err := s.db.Query(
 		`SELECT id, endpoint_id, checked_at, success, error_message, subject, issuer, serial_number,
-		        not_before, not_after, dns_names, chain_length, status, days_remaining, trusted_by_public_ca
+		        not_before, not_after, dns_names, chain_length, status, days_remaining, trusted_by_public_ca,
+		        is_default_fake_cert
 		 FROM cert_endpoint_checks WHERE endpoint_id=? ORDER BY checked_at DESC LIMIT ?`,
 		endpointID, limit,
 	)
@@ -462,6 +476,7 @@ func scanCertEndpointCheck(rows *sql.Rows) (CertEndpointCheck, error) {
 	if err := rows.Scan(
 		&c.ID, &c.EndpointID, &c.CheckedAt, &c.Success, &errMsg, &subject, &issuer, &serial,
 		&notBefore, &notAfter, &dnsNamesJSON, &c.ChainLength, &status, &c.DaysRemaining, &c.TrustedByPublicCA,
+		&c.IsDefaultFakeCert,
 	); err != nil {
 		return CertEndpointCheck{}, err
 	}

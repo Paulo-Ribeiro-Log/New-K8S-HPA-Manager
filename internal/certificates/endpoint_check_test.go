@@ -145,6 +145,56 @@ func TestCheckEndpointTLS_ExigeCertificadoCliente(t *testing.T) {
 	}
 }
 
+// TestCheckEndpointTLS_FakeIngressCert valida o achado real: um endpoint cadastrado apontando pra
+// um host:porta cujo SNI não bate com nenhum Ingress real recebe o certificado autoassinado
+// padrão do ingress-nginx (Subject=Issuer="Kubernetes Ingress Controller Fake Certificate") —
+// como esse cert nunca está expirado de verdade (validade ~1 ano), classifyExpiry sozinho
+// reportava "valid", passando a falsa impressão de certificado real e correto. IsDefaultFakeCert
+// precisa vir true mesmo com Success=true e Status="valid".
+func TestCheckEndpointTLS_FakeIngressCert(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gerar chave: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "Kubernetes Ingress Controller Fake Certificate"},
+		Issuer:       pkix.Name{CommonName: "Kubernetes Ingress Controller Fake Certificate"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("criar certificado fake: %v", err)
+	}
+	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	srv.StartTLS()
+	defer srv.Close()
+
+	host, portStr, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	if err != nil {
+		t.Fatalf("erro ao extrair host/porta de %q: %v", srv.URL, err)
+	}
+	port, _ := strconv.Atoi(portStr)
+
+	result := CheckEndpointTLS(context.Background(), host, port, "")
+
+	if !result.Success {
+		t.Fatalf("esperava Success=true (handshake completa normalmente), obtive erro: %s", result.ErrorMessage)
+	}
+	if result.Status != "valid" {
+		t.Errorf("Status = %q, esperado %q — o cert fake em si não está expirado", result.Status, "valid")
+	}
+	if !result.IsDefaultFakeCert {
+		t.Error("esperava IsDefaultFakeCert=true para o certificado autoassinado padrão do ingress-nginx")
+	}
+}
+
 func TestClassifyTLSDialError(t *testing.T) {
 	tests := []struct {
 		name        string
