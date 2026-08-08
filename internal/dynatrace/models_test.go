@@ -140,6 +140,65 @@ func TestExtractK8sCorrelation_CloudApplicationInstance_DetectedNameIsPodName(t 
 	}
 }
 
+// TestExtractK8sCorrelation_OTelSemanticConventionTags cobre entidades alimentadas só por
+// ingestão OTLP direta (sem OneAgent nenhum) — o Dynatrace grava os resource attributes do OTel
+// (https://opentelemetry.io/docs/specs/semconv/resource/k8s/) como tags com a MESMA chave que o
+// OTel usa ("k8s.cluster.name", "k8s.pod.name", "k8s.deployment.name"), diferente do vocabulário
+// "kubernetes.*" que o OneAgent usa. Antes da correção, essas 3 chaves não eram reconhecidas —
+// Cluster/PodName/Workload ficavam vazios mesmo com a tag presente.
+func TestExtractK8sCorrelation_OTelSemanticConventionTags(t *testing.T) {
+	e := &Entity{
+		Tags: []Tag{
+			{Key: "k8s.cluster.name", Value: "asaplog-production"},
+			{Key: "k8s.namespace.name", Value: "checkout"},
+			{Key: "k8s.pod.name", Value: "checkout-api-7d9f-xk2p1"},
+			{Key: "k8s.deployment.name", Value: "checkout-api"},
+		},
+	}
+
+	corr := e.ExtractK8sCorrelation()
+	if corr == nil {
+		t.Fatal("esperava correlação não-nil")
+	}
+	if corr.Cluster != "asaplog-production" {
+		t.Errorf("Cluster = %q, want %q", corr.Cluster, "asaplog-production")
+	}
+	if corr.Namespace != "checkout" {
+		t.Errorf("Namespace = %q, want %q", corr.Namespace, "checkout")
+	}
+	if corr.PodName != "checkout-api-7d9f-xk2p1" {
+		t.Errorf("PodName = %q, want %q", corr.PodName, "checkout-api-7d9f-xk2p1")
+	}
+	if corr.Workload != "checkout-api" {
+		t.Errorf("Workload = %q, want %q", corr.Workload, "checkout-api")
+	}
+}
+
+// TestExtractK8sCorrelation_OTelTags_NuncaSobrescrevemFonteOneAgent garante que as novas chaves
+// k8s.* só preenchem lacunas — nunca pisam num valor já extraído de uma tag "kubernetes.*"
+// (fonte mais autoritativa, quando as duas coexistem na mesma entidade).
+func TestExtractK8sCorrelation_OTelTags_NuncaSobrescrevemFonteOneAgent(t *testing.T) {
+	e := &Entity{
+		Tags: []Tag{
+			{Key: "kubernetes.pod.name", Value: "pod-do-oneagent"},
+			{Key: "k8s.pod.name", Value: "pod-do-otel-deveria-ser-ignorado"},
+			{Key: "kubernetes.workload.name", Value: "workload-do-oneagent"},
+			{Key: "k8s.deployment.name", Value: "workload-do-otel-deveria-ser-ignorado"},
+		},
+	}
+
+	corr := e.ExtractK8sCorrelation()
+	if corr == nil {
+		t.Fatal("esperava correlação não-nil")
+	}
+	if corr.PodName != "pod-do-oneagent" {
+		t.Errorf("PodName = %q, want %q (fonte OneAgent deve vencer)", corr.PodName, "pod-do-oneagent")
+	}
+	if corr.Workload != "workload-do-oneagent" {
+		t.Errorf("Workload = %q, want %q (fonte OneAgent deve vencer)", corr.Workload, "workload-do-oneagent")
+	}
+}
+
 func TestExtractK8sCorrelation_NoData_ReturnsNil(t *testing.T) {
 	e := &Entity{DisplayName: "", Tags: []Tag{}, Properties: map[string]interface{}{}}
 	if corr := e.ExtractK8sCorrelation(); corr != nil {

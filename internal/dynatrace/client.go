@@ -857,8 +857,71 @@ func (c *Client) ListEntitiesByCluster(ctx context.Context, clusterName, entityT
 	if err != nil {
 		return nil, fmt.Errorf("ListEntitiesByCluster (todas as tentativas falharam): %w", err)
 	}
+	if len(stubs) > 0 {
+		return stubs, nil
+	}
 
-	return stubs, nil
+	// Fallback 3: match fuzzy do VALOR da tag k8s.cluster.name — só entra em ação quando os 2
+	// fallbacks acima (que exigem o valor EXATO de clusterName) não acham nada. Cobre entidades
+	// alimentadas só por ingestão OTLP direta (sem OneAgent nenhum): o OTel Collector que seta esse
+	// resource attribute muitas vezes usa um alias "amigável" pro cluster (ex: "eks-asaplog-prd")
+	// em vez do nome do context K8s usado internamente por este app (ex: "asaplog-production") —
+	// mesmo problema (e mesma solução: casar por token distintivo + token de ambiente) já resolvido
+	// pra achar a entidade KUBERNETES_CLUSTER em fuzzyResolveEntityIDByName, aqui aplicado ao VALOR
+	// da tag em vez do displayName de uma entidade específica.
+	return c.listEntitiesByClusterTagFuzzy(ctx, clusterName, entityType)
+}
+
+// listEntitiesByClusterTagFuzzy busca TODAS as entidades de entityType que tenham ALGUM valor na
+// tag k8s.cluster.name (existência da tag, sem exigir valor exato — diferente do fallback 2 de
+// ListEntitiesByCluster) e filtra client-side pelo mesmo casamento fuzzy (token distintivo + token
+// de ambiente) já usado por fuzzyResolveEntityIDByName. listEntitiesBySelector já pede
+// "+tags,+properties" e roda ExtractK8sCorrelation por entidade (via enrichFromEntity) — os stubs
+// retornados já vêm com K8sCluster preenchido, sem precisar de uma segunda chamada GetEntity por
+// entidade.
+//
+// Escopo é o tenant inteiro (não filtrado por cluster na query — é justamente isso que a torna um
+// fallback capaz de achar entidades cujo valor de tag não bate exatamente com clusterName), mas só
+// roda como ÚLTIMO recurso (fallbacks 1 e 2 já retornaram vazio) — o custo de escanear mais
+// entidades só é pago pra clusters que genuinamente não têm nenhuma entidade taggeada com o nome
+// exato, mesmo padrão de "melhor-esforço, mais caro só quando necessário" já usado em
+// fuzzyResolveEntityIDByName.
+func (c *Client) listEntitiesByClusterTagFuzzy(ctx context.Context, clusterName, entityType string) ([]EntityStub, error) {
+	tokens := extractClusterDistinctiveTokens(clusterName)
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	originalEnv := extractClusterEnvToken(clusterName)
+	if originalEnv == "" {
+		// Sem token de ambiente reconhecível no nome original, não dá pra descamsar com segurança
+		// se um candidato é do mesmo ambiente ou não — mesmo comportamento conservador de
+		// fuzzyResolveEntityIDByName (retorna vazio em vez de arriscar).
+		return nil, nil
+	}
+
+	selector := fmt.Sprintf(`type("%s"),tag("k8s.cluster.name")`, entityType)
+	stubs, err := c.listEntitiesBySelector(ctx, selector)
+	if err != nil || len(stubs) == 0 {
+		return nil, err
+	}
+
+	matched := make([]EntityStub, 0, len(stubs))
+	for _, stub := range stubs {
+		if stub.K8sCluster == "" {
+			continue
+		}
+		if extractClusterEnvToken(stub.K8sCluster) != originalEnv {
+			continue // ambiente diferente (ex: candidato "hlg" pra um cluster "prd") — nunca casa
+		}
+		lowerVal := strings.ToLower(stub.K8sCluster)
+		for _, tok := range tokens {
+			if strings.Contains(lowerVal, tok) {
+				matched = append(matched, stub)
+				break
+			}
+		}
+	}
+	return matched, nil
 }
 
 // hostGroupEntityCache guarda o entityId da entidade HOST_GROUP resolvida por nome — mesmo

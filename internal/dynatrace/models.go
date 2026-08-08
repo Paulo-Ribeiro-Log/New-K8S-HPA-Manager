@@ -249,6 +249,34 @@ func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 			corr.Workload = tag.Value
 		case "kubernetes.pod.name":
 			corr.PodName = tag.Value
+		// k8s.cluster.name / k8s.pod.name / k8s.<kind>.name — convenção semântica de recurso do
+		// OpenTelemetry (https://opentelemetry.io/docs/specs/semconv/resource/k8s/), usada por
+		// entidades alimentadas só por ingestão OTLP direta, SEM OneAgent nenhum (nem host, nem
+		// injetado por pod) — o Dynatrace grava o resource attribute como tag com a MESMA chave que
+		// o OTel usa, sem tradução pro vocabulário "kubernetes.*" que o OneAgent usa. Sem esses
+		// casos, essas entidades nunca ganhavam correlação nenhuma (Cluster/PodName/Workload
+		// permaneciam vazios), mesmo quando a tag existia — ficavam invisíveis pro indicador de
+		// monitoramento da aba Pods, pro overlay K8s↔DT e pro "DT Sinais" do Health Check, ainda
+		// que a entidade em si já tivesse sido encontrada. Guardado (nunca sobrescreve um valor já
+		// extraído de "kubernetes.*"/metadata, fontes mais autoritativas quando ambas existem) —
+		// mesmo espírito de "k8s.namespace.name" (linha acima), que já seguia esse padrão.
+		case "k8s.cluster.name":
+			if corr.Cluster == "" {
+				corr.Cluster = tag.Value
+			}
+		case "k8s.pod.name":
+			if corr.PodName == "" {
+				corr.PodName = tag.Value
+			}
+		// Cobre os controllers mais comuns — não há como saber de antemão qual kind o workload
+		// realmente é, então qualquer um desses preenche Workload (guardado: o primeiro encontrado
+		// vence, evita um k8s.replicaset.name de um ReplicaSet-filho sobrescrever o
+		// k8s.deployment.name do dono real caso as duas tags coexistam na mesma entidade).
+		case "k8s.deployment.name", "k8s.statefulset.name", "k8s.daemonset.name",
+			"k8s.replicaset.name", "k8s.cronjob.name", "k8s.job.name":
+			if corr.Workload == "" {
+				corr.Workload = tag.Value
+			}
 		// Cluster via host_group (AKS: "akspriv-busca-prd")
 		case "dt.host_group.id":
 			if corr.Cluster == "" {
