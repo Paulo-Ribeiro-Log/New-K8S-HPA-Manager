@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dtclient "k8s-hpa-manager/internal/dynatrace"
@@ -33,10 +34,21 @@ type DeploymentBehaviorPoint struct {
 	Restarts            float64 `json:"restarts"`
 	NetworkInBytesSec   float64 `json:"network_in_bytes_sec"`  // bytes/s recebidos, somado entre réplicas+interfaces — só caminho Prometheus (Dynatrace não popula, mesmo caso de CPUUsagePct/MemoryUsagePct)
 	NetworkOutBytesSec  float64 `json:"network_out_bytes_sec"` // bytes/s transmitidos, idem
+
+	// CPUUsageMilliCores/MemoryUsageMB — valores ABSOLUTOS de uso (não percentual), só caminho
+	// Dynatrace (builtin:kubernetes.workload.cpu_usage/memory_working_set, ver
+	// k8sWorkloadMetricDefs em metrics.go). Existem porque o fallback Dynatrace não tem uma fonte
+	// de request/limit pra normalizar em % (por isso CPUUsagePct/MemoryUsagePct ficam 0 nesse
+	// caminho) — sem esses 2 campos, o dado real que a API do Dynatrace retorna simplesmente se
+	// perdia (chegava em dynatraceSeriesToPointMap, nunca era escrito em nenhuma chave lida por
+	// pointsFromSeriesMap). Omitempty: ficam ausentes no caminho Prometheus, onde não existem.
+	CPUUsageMilliCores float64 `json:"cpu_usage_millicores,omitempty"`
+	MemoryUsageMB      float64 `json:"memory_usage_mb,omitempty"`
 }
 
-// DeploymentScaleEvent marca uma mudança em ReplicasDesired ao longo da série — só disponível no
-// caminho Prometheus (o Dynatrace não expõe réplicas desejadas via k8sWorkloadMetricDefs).
+// DeploymentScaleEvent marca uma mudança em ReplicasDesired ao longo da série — disponível nos
+// dois caminhos (Prometheus e, desde a correção dos metricId de k8sWorkloadMetricDefs, também
+// Dynatrace via pods_desired).
 type DeploymentScaleEvent struct {
 	Timestamp    int64   `json:"ts"`
 	FromReplicas float64 `json:"from_replicas"`
@@ -255,10 +267,40 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 		if len(dtSeries) > 0 {
 			resp.Source = "dynatrace"
 			resp.Points = pointsFromSeriesMap(dynatraceSeriesToPointMap(dtSeries))
-			// Sem réplicas desejadas no Dynatrace (k8sWorkloadMetricDefs não cobre) — não há o
-			// que diferenciar pra gerar scale events, fica vazio de propósito (documentado no
-			// plano — não simular).
+			// pods_desired (ver k8sWorkloadMetricDefs, metrics.go) alimenta ReplicasDesired desde a
+			// correção dos metricId — scale events passam a existir também no caminho Dynatrace, não
+			// só Prometheus (bug real: a chamada a deriveScaleEvents tinha ficado só no branch
+			// Prometheus acima, apesar do comentário em dynatraceSeriesToPointMap já prometer isso).
+			resp.ScaleEvents = deriveScaleEvents(resp.Points)
 		}
+	}
+
+	// ─── 2c. Request/limit via API do K8s — fonte independente do Prometheus ───────────
+	//
+	// Só busca quando o Prometheus não já preencheu (evita uma chamada K8s redundante quando os 2
+	// campos de request já vieram por outro caminho). Alimenta só a linha informativa "CPU
+	// request/limit: X / Y" abaixo do gráfico — NÃO normaliza CPUUsageMilliCores/MemoryUsageMB em
+	// CPUUsagePct/MemoryUsagePct.
+	//
+	// Tentativa revertida — achado real testando ao vivo contra um tenant real (nyr48864,
+	// Deployment "cargas-web"/8 réplicas desejadas): dividir CPUUsageMilliCores/MemoryUsageMB (que
+	// vêm de builtin:kubernetes.workload.cpu_usage/memory_working_set, escopo CLOUD_APPLICATION —
+	// ver k8sWorkloadMetricDefs) pelo request de UM ÚNICO pod (o que este helper retorna, direto do
+	// template do Deployment, sem multiplicar pela contagem de réplicas) deu 407% de uso de
+	// memória — resultado implausível que expôs uma ambiguidade real: não há confirmação de que
+	// esses 2 metricId agregam por SOMA entre as réplicas do workload (o que exigiria multiplicar
+	// o request por ReplicasDesired antes de dividir) — uma segunda query ao vivo pra CPU (mesma
+	// entidade, resolução "Inf") retornou uma magnitude bem diferente da série por hora já obtida,
+	// sem uma explicação clara o suficiente pra confiar no cálculo. Preferível mostrar só o valor
+	// absoluto (já correto e confirmado) do que arriscar uma % errada numa ferramenta usada em
+	// troubleshooting real — reavaliar se/quando a semântica exata de agregação for confirmada
+	// (ex: documentação oficial do Dynatrace ou teste controlado com workload de réplica única).
+	if resp.CPURequestMillicores == 0 && resp.MemoryRequestBytes == 0 {
+		cpuReq, cpuLim, memReq, memLim := h.getDeploymentResourceLimitsFromK8s(ctx, cluster, namespace, deployment)
+		resp.CPURequestMillicores = cpuReq
+		resp.CPULimitMillicores = cpuLim
+		resp.MemoryRequestBytes = memReq
+		resp.MemoryLimitBytes = memLim
 	}
 
 	// ─── 2b. Overlay de problems (Fase 2) — aditivo, não depende de qual fonte a série usou ───
@@ -301,6 +343,43 @@ func (h *DeploymentHandler) deploymentHasHPA(ctx context.Context, cluster, names
 	return false
 }
 
+// getDeploymentResourceLimitsFromK8s soma request/limit de CPU/memória de todos os containers do
+// template do Deployment via API do K8s — fonte independente do Prometheus (o único caminho que
+// já calculava isso, via kube_pod_container_resource_requests/_limits). Importa justamente porque
+// o fallback Dynatrace de série (2a acima) entra em ação exatamente quando Prometheus NÃO está
+// disponível — sem esta fonte alternativa, os valores absolutos que o Dynatrace retorna
+// (CPUUsageMilliCores/MemoryUsageMB) nunca podiam ser normalizados em % (CPUUsagePct/
+// MemoryUsagePct ficavam sempre 0 nesse caminho, mesmo com uso real chegando via Dynatrace).
+// Soma por container (não por pod) — mesma convenção agregada da query Prometheus equivalente
+// (kube_pod_container_resource_requests, soma implícita entre containers do mesmo pod via `sum`).
+// Falha silenciosa (cluster inacessível, Deployment não encontrado) — campo informativo, não
+// crítico pro resto da resposta, mesmo princípio de deploymentHasHPA acima.
+func (h *DeploymentHandler) getDeploymentResourceLimitsFromK8s(ctx context.Context, cluster, namespace, deployment string) (cpuReqMilli, cpuLimMilli, memReqBytes, memLimBytes int64) {
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		return 0, 0, 0, 0
+	}
+	dep, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deployment, metav1.GetOptions{})
+	if err != nil {
+		return 0, 0, 0, 0
+	}
+	for _, container := range dep.Spec.Template.Spec.Containers {
+		if v, ok := container.Resources.Requests[corev1.ResourceCPU]; ok {
+			cpuReqMilli += v.MilliValue()
+		}
+		if v, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
+			cpuLimMilli += v.MilliValue()
+		}
+		if v, ok := container.Resources.Requests[corev1.ResourceMemory]; ok {
+			memReqBytes += v.Value()
+		}
+		if v, ok := container.Resources.Limits[corev1.ResourceMemory]; ok {
+			memLimBytes += v.Value()
+		}
+	}
+	return cpuReqMilli, cpuLimMilli, memReqBytes, memLimBytes
+}
+
 // ─── Merge de séries — Prometheus e Dynatrace convergem no mesmo formato de saída ──────────────
 
 // prometheusSeriesToPointMap converte o resultado bruto de deploymentHistoricalMetricsRange
@@ -340,16 +419,30 @@ func prometheusSeriesToPointMap(raw map[string]*promclient.QueryRangeResult) map
 }
 
 // dynatraceSeriesToPointMap converte []MetricSeriesData (k8sWorkloadMetricDefs) pro formato comum,
-// remapeando as chaves do Dynatrace (pods_running/pods_ready_pct/pod_restarts/cpu_milli/memory_mb)
-// pras chaves canônicas usadas por DeploymentBehaviorPoint (replicas_current/replicas_ready/
-// restarts/cpu/memory).
+// remapeando a chave do Dynatrace (pods_desired) pra chave canônica usada por
+// DeploymentBehaviorPoint (replicas_desired).
+//
+// Bug real corrigido — k8sWorkloadMetricDefs (metrics.go) usava 6 metricId que nunca retornaram
+// dado nenhum pra CLOUD_APPLICATION neste tenant (404/entity-type-mismatch, ver comentário
+// detalhado lá); corrigidos pros 4 selectors reais confirmados, mas 2 mudanças de cobertura ficam
+// documentadas aqui porque afetam diretamente o que esta função consegue mapear:
+//   - replicas_current/replicas_ready: SEM equivalente confirmado nesta família de métricas (só
+//     "desejado" existe de fato, não "rodando agora"/"pronto agora") — ficam sempre 0 no caminho
+//     Dynatrace, mesma limitação que replicas_desired tinha ANTES desta correção.
+//   - restarts: idem, sem selector CLOUD_APPLICATION confirmado — removido daqui.
+//   - replicas_desired: NOVO — antes impossível ("Sem réplicas desejadas no Dynatrace"), agora
+//     preenchido via pods_desired — habilita os "scale events" (deriveScaleEvents) também no
+//     caminho Dynatrace, não só Prometheus.
 //
 // LIMITAÇÃO CONHECIDA (documentada no plano — "cobertura quase 1:1", não total): cpu_milli/
 // memory_mb do Dynatrace são valores ABSOLUTOS de uso, não percentuais relativos a request como
 // no caminho Prometheus (que normaliza via kube_pod_container_resource_requests). Sem uma fonte
 // de request/limit disponível neste fallback — Prometheus indisponível é justamente por que
-// caímos aqui —, CPUUsagePct/MemoryUsagePct NÃO são preenchidos no caminho Dynatrace (ficam 0).
-// replicas_desired/updated/unavailable também não têm equivalente DT — mesma limitação.
+// caímos aqui —, CPUUsagePct/MemoryUsagePct NÃO são preenchidos no caminho Dynatrace (ficam 0) —
+// mas os valores absolutos em si (que a API do Dynatrace já retorna de verdade, desde a correção
+// acima) não precisam ser jogados fora só porque não dá pra calcular %: mapeados pra
+// cpu_absolute/memory_absolute, que pointsFromSeriesMap lê em CPUUsageMilliCores/MemoryUsageMB
+// (campos NOVOS, dedicados — nunca confundir com CPUUsagePct/MemoryUsagePct, unidades diferentes).
 func dynatraceSeriesToPointMap(series []dtclient.MetricSeriesData) map[string]map[int64]float64 {
 	raw := make(map[string]map[int64]float64, len(series))
 	for _, s := range series {
@@ -361,20 +454,14 @@ func dynatraceSeriesToPointMap(series []dtclient.MetricSeriesData) map[string]ma
 	}
 
 	out := make(map[string]map[int64]float64, 3)
-	if running, ok := raw["pods_running"]; ok {
-		out["replicas_current"] = running
-		if readyPct, ok2 := raw["pods_ready_pct"]; ok2 {
-			ready := make(map[int64]float64, len(running))
-			for ts, r := range running {
-				if pct, ok3 := readyPct[ts]; ok3 {
-					ready[ts] = r * pct / 100
-				}
-			}
-			out["replicas_ready"] = ready
-		}
+	if desired, ok := raw["pods_desired"]; ok {
+		out["replicas_desired"] = desired
 	}
-	if restarts, ok := raw["pod_restarts"]; ok {
-		out["restarts"] = restarts
+	if cpu, ok := raw["cpu_milli"]; ok {
+		out["cpu_absolute"] = cpu
+	}
+	if mem, ok := raw["memory_mb"]; ok {
+		out["memory_absolute"] = mem
 	}
 	return out
 }
@@ -410,6 +497,8 @@ func pointsFromSeriesMap(series map[string]map[int64]float64) []DeploymentBehavi
 			Restarts:            series["restarts"][ts],
 			NetworkInBytesSec:   series["network_in"][ts],
 			NetworkOutBytesSec:  series["network_out"][ts],
+			CPUUsageMilliCores:  series["cpu_absolute"][ts],
+			MemoryUsageMB:       series["memory_absolute"][ts],
 		})
 	}
 	return points

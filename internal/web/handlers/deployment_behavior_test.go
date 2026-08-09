@@ -93,28 +93,39 @@ func TestPrometheusSeriesToPointMap_ConvertsSecondsToMillis(t *testing.T) {
 	}
 }
 
-func TestDynatraceSeriesToPointMap_DerivesReadyReplicas(t *testing.T) {
+// TestDynatraceSeriesToPointMap_MapsDesiredReplicas cobre a correção real: k8sWorkloadMetricDefs
+// (metrics.go) trocou "pods_running"/"pods_ready_pct"/"pod_restarts" (metricId inexistentes ou com
+// entidade primária errada pra CLOUD_APPLICATION — nunca retornavam dado real) por "pods_desired"
+// (confirmado contra um tenant real). dynatraceSeriesToPointMap precisa mapear a chave NOVA pra
+// replicas_desired — as antigas não existem mais na saída de GetDeploymentBehaviorMetrics.
+func TestDynatraceSeriesToPointMap_MapsDesiredReplicas(t *testing.T) {
 	series := []dtclient.MetricSeriesData{
-		{Key: "pods_running", Points: []dtclient.MetricPoint{{T: 1000, V: 4}}},
-		{Key: "pods_ready_pct", Points: []dtclient.MetricPoint{{T: 1000, V: 75}}},
-		{Key: "pod_restarts", Points: []dtclient.MetricPoint{{T: 1000, V: 2}}},
-		// cpu_milli/memory_mb propositalmente presentes mas SEM equivalente de saída — a função
-		// não deve inventar cpu/memory percentuais sem uma fonte de request (limitação documentada).
+		{Key: "pods_desired", Points: []dtclient.MetricPoint{{T: 1000, V: 4}}},
 		{Key: "cpu_milli", Points: []dtclient.MetricPoint{{T: 1000, V: 250}}},
+		{Key: "memory_mb", Points: []dtclient.MetricPoint{{T: 1000, V: 512}}},
 	}
 
 	out := dynatraceSeriesToPointMap(series)
-	if out["replicas_current"][1000] != 4 {
-		t.Errorf("replicas_current incorreto: %+v", out["replicas_current"])
+	if out["replicas_desired"][1000] != 4 {
+		t.Errorf("replicas_desired incorreto: %+v", out["replicas_desired"])
 	}
-	if out["replicas_ready"][1000] != 3 { // 4 * 75% = 3
-		t.Errorf("replicas_ready incorreto: %+v", out["replicas_ready"])
+	if _, ok := out["replicas_current"]; ok {
+		t.Errorf("replicas_current não deveria estar presente (sem selector confirmado pra 'rodando agora')")
 	}
-	if out["restarts"][1000] != 2 {
-		t.Errorf("restarts incorreto: %+v", out["restarts"])
-	}
+	// cpu_milli/memory_mb são valores ABSOLUTOS (sem fonte de request pra normalizar em %) — vão
+	// pras chaves dedicadas cpu_absolute/memory_absolute, NUNCA pra "cpu"/"memory" (essas
+	// alimentam CPUUsagePct/MemoryUsagePct, que a função não deve inventar).
 	if _, ok := out["cpu"]; ok {
 		t.Errorf("cpu não deveria estar presente na saída (sem fonte de request no fallback DT)")
+	}
+	if _, ok := out["memory"]; ok {
+		t.Errorf("memory não deveria estar presente na saída (sem fonte de request no fallback DT)")
+	}
+	if out["cpu_absolute"][1000] != 250 {
+		t.Errorf("cpu_absolute incorreto: %+v", out["cpu_absolute"])
+	}
+	if out["memory_absolute"][1000] != 512 {
+		t.Errorf("memory_absolute incorreto: %+v", out["memory_absolute"])
 	}
 }
 
