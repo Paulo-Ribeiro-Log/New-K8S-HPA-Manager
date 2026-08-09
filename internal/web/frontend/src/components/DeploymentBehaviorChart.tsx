@@ -200,6 +200,23 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     [data]
   );
 
+  // hasPctUsage — backend agora calcula cpu_usage_pct/memory_usage_pct também no caminho
+  // Dynatrace (via request/limit buscado direto na API do K8s, independente do Prometheus — ver
+  // getDeploymentResourceLimitsFromK8s), então essa checagem NÃO depende mais de data.source: %
+  // pode vir populado nos dois caminhos, ou em nenhum (Deployment sem request configurado).
+  const hasPctUsage = useMemo(
+    () => (data?.points ?? []).some((p) => (p.cpu_usage_pct ?? 0) > 0 || (p.memory_usage_pct ?? 0) > 0),
+    [data]
+  );
+
+  // hasCurrentReplicas/hasReadyReplicas — no caminho Dynatrace, só "desejadas" tem cobertura real
+  // (nenhum metricId CLOUD_APPLICATION confirmado pra "rodando agora"/"pronto agora" — ver
+  // k8sWorkloadMetricDefs). Sem essa checagem, o painel de Réplicas desenhava uma linha "Atuais: 0"
+  // constante — visualmente indistinguível de "0 réplicas rodando" (alarmante e falso), quando na
+  // verdade é só "não temos esse dado nesse caminho".
+  const hasCurrentReplicas = useMemo(() => (data?.points ?? []).some((p) => p.replicas_current > 0), [data]);
+  const hasReadyReplicas = useMemo(() => (data?.points ?? []).some((p) => p.replicas_ready > 0), [data]);
+
   // Mapeia cada scale event pro rótulo de tempo do ponto decimado mais próximo — os eventos vêm
   // com o timestamp exato, mas o eixo X do gráfico usa strings decimadas (~48 amostras), então
   // precisamos achar a categoria mais próxima pra plotar a ReferenceLine vertical.
@@ -435,8 +452,12 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
                   />
                 ))}
                 <Line type="stepAfter" dataKey="replicas_desired" stroke={repChartConfig.replicas_desired.color} strokeWidth={1.5} dot={false} />
-                <Line type="monotone" dataKey="replicas_current" stroke={repChartConfig.replicas_current.color} strokeWidth={1.5} dot={false} />
-                <Line type="monotone" dataKey="replicas_ready" stroke={repChartConfig.replicas_ready.color} strokeWidth={1.5} dot={false} />
+                {hasCurrentReplicas && (
+                  <Line type="monotone" dataKey="replicas_current" stroke={repChartConfig.replicas_current.color} strokeWidth={1.5} dot={false} />
+                )}
+                {hasReadyReplicas && (
+                  <Line type="monotone" dataKey="replicas_ready" stroke={repChartConfig.replicas_ready.color} strokeWidth={1.5} dot={false} />
+                )}
                 {compareOffsets.map((offset) => (
                   <Line key={offset} type="monotone" dataKey={`replicasD${offset}`} stroke={COMPARE_COLORS[offset]}
                     strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
@@ -445,8 +466,12 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
             </ChartContainer>
             <div className="flex items-center gap-3 text-[10px] text-muted-foreground justify-end flex-wrap mt-0.5">
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: repChartConfig.replicas_desired.color }} />Desejadas</span>
-              <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: repChartConfig.replicas_current.color }} />Atuais</span>
-              <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: repChartConfig.replicas_ready.color }} />Prontas</span>
+              {hasCurrentReplicas && (
+                <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: repChartConfig.replicas_current.color }} />Atuais</span>
+              )}
+              {hasReadyReplicas && (
+                <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: repChartConfig.replicas_ready.color }} />Prontas</span>
+              )}
               {scaleEventMarkers.length > 0 && (
                 <span className="flex items-center gap-1">
                   <span className="inline-block w-3 h-0.5 border-t border-dashed" style={{ borderColor: "#f59e0b" }} />
@@ -490,46 +515,54 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
             )}
           </div>
 
-          {/* Painel 2 — CPU / Memória */}
+          {/* Painel 2 — CPU / Memória.
+              Prioriza % (hasPctUsage) sobre valor absoluto — NÃO depende mais de data.source: o
+              backend agora calcula cpu_usage_pct/memory_usage_pct também no caminho Dynatrace, via
+              request/limit buscado direto na API do K8s (getDeploymentResourceLimitsFromK8s,
+              independente do Prometheus). Só cai pro valor absoluto quando o Deployment realmente
+              não tem request configurado (não dá pra calcular % de jeito nenhum, nem com Prometheus
+              nem com K8s). */}
           <div>
             <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">
-              CPU / Memória {data.source === "prometheus" ? "(% do request)" : ""}
+              CPU / Memória {hasPctUsage ? "(% do request)" : ""}
             </p>
-            {data.source === "dynatrace" ? (
-              hasAbsoluteUsage ? (
-                <>
-                  <p className="text-[10px] text-muted-foreground mb-1">
-                    Uso absoluto (Dynatrace) — sem request/limit nesse caminho, não dá pra calcular %.
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <ChartContainer config={usageAbsoluteChartConfig} className="h-[120px] w-full">
-                      <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
-                        <XAxis dataKey="time" tick={{ fontSize: 8 }} tickLine={false} axisLine={false} interval={xInterval} />
-                        <YAxis tick={{ fontSize: 8 }} tickLine={false} axisLine={false} tickFormatter={(v) => formatMillicores(Number(v))} width={36} />
-                        <ChartTooltip content={<ChartTooltipContent labelFormatter={(l) => `Horário: ${l}`} formatter={(v) => formatMillicores(Number(v))} />} />
-                        <Line type="monotone" dataKey="cpu_absolute" stroke={usageAbsoluteChartConfig.cpu_absolute.color} strokeWidth={1.5} dot={false} name={usageAbsoluteChartConfig.cpu_absolute.label} />
-                      </ComposedChart>
-                    </ChartContainer>
-                    <ChartContainer config={usageAbsoluteChartConfig} className="h-[120px] w-full">
-                      <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
-                        <XAxis dataKey="time" tick={{ fontSize: 8 }} tickLine={false} axisLine={false} interval={xInterval} />
-                        <YAxis tick={{ fontSize: 8 }} tickLine={false} axisLine={false} tickFormatter={(v) => formatBytes(Number(v) * 1024 * 1024)} width={44} />
-                        <ChartTooltip content={<ChartTooltipContent labelFormatter={(l) => `Horário: ${l}`} formatter={(v) => formatBytes(Number(v) * 1024 * 1024)} />} />
-                        <Line type="monotone" dataKey="memory_absolute" stroke={usageAbsoluteChartConfig.memory_absolute.color} strokeWidth={1.5} dot={false} name={usageAbsoluteChartConfig.memory_absolute.label} />
-                      </ComposedChart>
-                    </ChartContainer>
-                  </div>
-                  <p className="text-[9px] text-muted-foreground mt-0.5 flex gap-3">
-                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: usageAbsoluteChartConfig.cpu_absolute.color }} />CPU</span>
-                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: usageAbsoluteChartConfig.memory_absolute.color }} />Memória</span>
-                  </p>
-                </>
-              ) : (
-                <p className="text-xs text-muted-foreground py-3">
-                  Uso de CPU/memória indisponível no fallback Dynatrace — sem uma fonte de request/limit
-                  nesse caminho pra normalizar em %.
+            {!hasPctUsage && hasAbsoluteUsage ? (
+              <>
+                <p className="text-[10px] text-muted-foreground mb-1">
+                  Uso absoluto (Dynatrace) — Deployment sem request de CPU/memória configurado, não dá pra calcular %.
                 </p>
-              )
+                {/* Empilhados (não lado a lado) — cada um com a largura cheia pro eixo de tempo não
+                    ficar espremido; domain=['auto','auto'] em vez do default [0, auto] — sem isso,
+                    memória (ex: variando 58000-59700MB) fica achatada perto do topo do gráfico
+                    contra uma escala que começa em 0. */}
+                <div className="space-y-2">
+                  <ChartContainer config={usageAbsoluteChartConfig} className="h-[110px] w-full">
+                    <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
+                      <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} interval={xInterval} />
+                      <YAxis domain={["auto", "auto"]} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} tickFormatter={(v) => formatMillicores(Number(v))} width={40} />
+                      <ChartTooltip content={<ChartTooltipContent labelFormatter={(l) => `Horário: ${l}`} formatter={(v) => formatMillicores(Number(v))} />} />
+                      <Line type="monotone" dataKey="cpu_absolute" stroke={usageAbsoluteChartConfig.cpu_absolute.color} strokeWidth={1.5} dot={false} name={usageAbsoluteChartConfig.cpu_absolute.label} />
+                    </ComposedChart>
+                  </ChartContainer>
+                  <ChartContainer config={usageAbsoluteChartConfig} className="h-[110px] w-full">
+                    <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
+                      <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} interval={xInterval} />
+                      <YAxis domain={["auto", "auto"]} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} tickFormatter={(v) => formatBytes(Number(v) * 1024 * 1024)} width={48} />
+                      <ChartTooltip content={<ChartTooltipContent labelFormatter={(l) => `Horário: ${l}`} formatter={(v) => formatBytes(Number(v) * 1024 * 1024)} />} />
+                      <Line type="monotone" dataKey="memory_absolute" stroke={usageAbsoluteChartConfig.memory_absolute.color} strokeWidth={1.5} dot={false} name={usageAbsoluteChartConfig.memory_absolute.label} />
+                    </ComposedChart>
+                  </ChartContainer>
+                </div>
+                <p className="text-[9px] text-muted-foreground mt-0.5 flex gap-3">
+                  <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: usageAbsoluteChartConfig.cpu_absolute.color }} />CPU</span>
+                  <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: usageAbsoluteChartConfig.memory_absolute.color }} />Memória</span>
+                </p>
+              </>
+            ) : !hasPctUsage && !hasAbsoluteUsage ? (
+              <p className="text-xs text-muted-foreground py-3">
+                Uso de CPU/memória indisponível — sem métrica de uso (Prometheus/Dynatrace) nem
+                request configurado no Deployment pra normalizar em %.
+              </p>
             ) : (
               <ChartContainer config={usageChartConfig} className="h-[140px] w-full">
                 <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>

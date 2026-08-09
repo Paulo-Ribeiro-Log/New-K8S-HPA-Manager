@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dtclient "k8s-hpa-manager/internal/dynatrace"
@@ -266,10 +267,40 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 		if len(dtSeries) > 0 {
 			resp.Source = "dynatrace"
 			resp.Points = pointsFromSeriesMap(dynatraceSeriesToPointMap(dtSeries))
-			// Sem réplicas desejadas no Dynatrace (k8sWorkloadMetricDefs não cobre) — não há o
-			// que diferenciar pra gerar scale events, fica vazio de propósito (documentado no
-			// plano — não simular).
+			// pods_desired (ver k8sWorkloadMetricDefs, metrics.go) alimenta ReplicasDesired desde a
+			// correção dos metricId — scale events passam a existir também no caminho Dynatrace, não
+			// só Prometheus (bug real: a chamada a deriveScaleEvents tinha ficado só no branch
+			// Prometheus acima, apesar do comentário em dynatraceSeriesToPointMap já prometer isso).
+			resp.ScaleEvents = deriveScaleEvents(resp.Points)
 		}
+	}
+
+	// ─── 2c. Request/limit via API do K8s — fonte independente do Prometheus ───────────
+	//
+	// Só busca quando o Prometheus não já preencheu (evita uma chamada K8s redundante quando os 2
+	// campos de request já vieram por outro caminho). Alimenta só a linha informativa "CPU
+	// request/limit: X / Y" abaixo do gráfico — NÃO normaliza CPUUsageMilliCores/MemoryUsageMB em
+	// CPUUsagePct/MemoryUsagePct.
+	//
+	// Tentativa revertida — achado real testando ao vivo contra um tenant real (nyr48864,
+	// Deployment "cargas-web"/8 réplicas desejadas): dividir CPUUsageMilliCores/MemoryUsageMB (que
+	// vêm de builtin:kubernetes.workload.cpu_usage/memory_working_set, escopo CLOUD_APPLICATION —
+	// ver k8sWorkloadMetricDefs) pelo request de UM ÚNICO pod (o que este helper retorna, direto do
+	// template do Deployment, sem multiplicar pela contagem de réplicas) deu 407% de uso de
+	// memória — resultado implausível que expôs uma ambiguidade real: não há confirmação de que
+	// esses 2 metricId agregam por SOMA entre as réplicas do workload (o que exigiria multiplicar
+	// o request por ReplicasDesired antes de dividir) — uma segunda query ao vivo pra CPU (mesma
+	// entidade, resolução "Inf") retornou uma magnitude bem diferente da série por hora já obtida,
+	// sem uma explicação clara o suficiente pra confiar no cálculo. Preferível mostrar só o valor
+	// absoluto (já correto e confirmado) do que arriscar uma % errada numa ferramenta usada em
+	// troubleshooting real — reavaliar se/quando a semântica exata de agregação for confirmada
+	// (ex: documentação oficial do Dynatrace ou teste controlado com workload de réplica única).
+	if resp.CPURequestMillicores == 0 && resp.MemoryRequestBytes == 0 {
+		cpuReq, cpuLim, memReq, memLim := h.getDeploymentResourceLimitsFromK8s(ctx, cluster, namespace, deployment)
+		resp.CPURequestMillicores = cpuReq
+		resp.CPULimitMillicores = cpuLim
+		resp.MemoryRequestBytes = memReq
+		resp.MemoryLimitBytes = memLim
 	}
 
 	// ─── 2b. Overlay de problems (Fase 2) — aditivo, não depende de qual fonte a série usou ───
@@ -310,6 +341,43 @@ func (h *DeploymentHandler) deploymentHasHPA(ctx context.Context, cluster, names
 		}
 	}
 	return false
+}
+
+// getDeploymentResourceLimitsFromK8s soma request/limit de CPU/memória de todos os containers do
+// template do Deployment via API do K8s — fonte independente do Prometheus (o único caminho que
+// já calculava isso, via kube_pod_container_resource_requests/_limits). Importa justamente porque
+// o fallback Dynatrace de série (2a acima) entra em ação exatamente quando Prometheus NÃO está
+// disponível — sem esta fonte alternativa, os valores absolutos que o Dynatrace retorna
+// (CPUUsageMilliCores/MemoryUsageMB) nunca podiam ser normalizados em % (CPUUsagePct/
+// MemoryUsagePct ficavam sempre 0 nesse caminho, mesmo com uso real chegando via Dynatrace).
+// Soma por container (não por pod) — mesma convenção agregada da query Prometheus equivalente
+// (kube_pod_container_resource_requests, soma implícita entre containers do mesmo pod via `sum`).
+// Falha silenciosa (cluster inacessível, Deployment não encontrado) — campo informativo, não
+// crítico pro resto da resposta, mesmo princípio de deploymentHasHPA acima.
+func (h *DeploymentHandler) getDeploymentResourceLimitsFromK8s(ctx context.Context, cluster, namespace, deployment string) (cpuReqMilli, cpuLimMilli, memReqBytes, memLimBytes int64) {
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		return 0, 0, 0, 0
+	}
+	dep, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deployment, metav1.GetOptions{})
+	if err != nil {
+		return 0, 0, 0, 0
+	}
+	for _, container := range dep.Spec.Template.Spec.Containers {
+		if v, ok := container.Resources.Requests[corev1.ResourceCPU]; ok {
+			cpuReqMilli += v.MilliValue()
+		}
+		if v, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
+			cpuLimMilli += v.MilliValue()
+		}
+		if v, ok := container.Resources.Requests[corev1.ResourceMemory]; ok {
+			memReqBytes += v.Value()
+		}
+		if v, ok := container.Resources.Limits[corev1.ResourceMemory]; ok {
+			memLimBytes += v.Value()
+		}
+	}
+	return cpuReqMilli, cpuLimMilli, memReqBytes, memLimBytes
 }
 
 // ─── Merge de séries — Prometheus e Dynatrace convergem no mesmo formato de saída ──────────────

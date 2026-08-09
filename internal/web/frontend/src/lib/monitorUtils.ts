@@ -57,7 +57,10 @@ export function formatBytes(bytes: number): string {
  */
 export function formatMillicores(m: number): string {
   if (m <= 0) return "0m";
-  if (m < 1000) return `${m}m`;
+  // Math.round: sem isso, um valor de origem Dynatrace tipo 254.674984748 (precisão de float,
+  // nunca um valor "redondo" como os de request/limit do K8s) aparecia cru na tela — millicores é
+  // sempre inteiro por convenção do K8s, então arredondar aqui nunca perde informação relevante.
+  if (m < 1000) return `${Math.round(m)}m`;
   return `${(m / 1000).toFixed(2).replace(/\.?0+$/, "")}`;
 }
 
