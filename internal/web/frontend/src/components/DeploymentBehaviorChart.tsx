@@ -51,6 +51,16 @@ const usageChartConfig = {
   memory: { label: "Memória %", color: "#a855f7" },
 } satisfies ChartConfig;
 
+// usageAbsoluteChartConfig — caminho Dynatrace: sem fonte de request/limit pra normalizar em %
+// (usageChartConfig acima), mas o valor ABSOLUTO de uso em si é real (builtin:kubernetes.workload.
+// cpu_usage/memory_working_set, ver k8sWorkloadMetricDefs no backend) — melhor mostrar isso do que
+// nada. Eixos separados (não dualAxis) de propósito: mCores e MB têm escalas tipicamente muito
+// diferentes (ex: ~500m vs ~50000MB observado ao vivo) — um único eixo esmagaria a série menor.
+const usageAbsoluteChartConfig = {
+  cpu_absolute: { label: "CPU", color: "#3b82f6" },
+  memory_absolute: { label: "Memória", color: "#a855f7" },
+} satisfies ChartConfig;
+
 const restartsChartConfig = {
   restarts: { label: "Restarts", color: "#ef4444" },
 } satisfies ChartConfig;
@@ -167,6 +177,8 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
         replicas_ready: p.replicas_ready,
         cpu: round1(p.cpu_usage_pct),
         memory: round1(p.memory_usage_pct),
+        cpu_absolute: p.cpu_usage_millicores ?? 0,
+        memory_absolute: p.memory_usage_mb ?? 0,
         restarts: p.restarts,
         network_in: p.network_in_bytes_sec,
         network_out: p.network_out_bytes_sec,
@@ -179,6 +191,14 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     });
     return { chartData: rows, decimatedPoints: mainPts };
   }, [data, compareOffsets]);
+
+  // hasAbsoluteUsage — só o caminho Dynatrace popula cpu_usage_millicores/memory_usage_mb; some
+  // pontos podem legitimamente vir zerados (workload ocioso), então checa QUALQUER ponto > 0 em
+  // vez de assumir presença só pela fonte ser "dynatrace" — mais fiel ao dado real recebido.
+  const hasAbsoluteUsage = useMemo(
+    () => (data?.points ?? []).some((p) => (p.cpu_usage_millicores ?? 0) > 0 || (p.memory_usage_mb ?? 0) > 0),
+    [data]
+  );
 
   // Mapeia cada scale event pro rótulo de tempo do ponto decimado mais próximo — os eventos vêm
   // com o timestamp exato, mas o eixo X do gráfico usa strings decimadas (~48 amostras), então
@@ -476,10 +496,40 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
               CPU / Memória {data.source === "prometheus" ? "(% do request)" : ""}
             </p>
             {data.source === "dynatrace" ? (
-              <p className="text-xs text-muted-foreground py-3">
-                Uso de CPU/memória indisponível no fallback Dynatrace — sem uma fonte de request/limit
-                nesse caminho pra normalizar em %.
-              </p>
+              hasAbsoluteUsage ? (
+                <>
+                  <p className="text-[10px] text-muted-foreground mb-1">
+                    Uso absoluto (Dynatrace) — sem request/limit nesse caminho, não dá pra calcular %.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <ChartContainer config={usageAbsoluteChartConfig} className="h-[120px] w-full">
+                      <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
+                        <XAxis dataKey="time" tick={{ fontSize: 8 }} tickLine={false} axisLine={false} interval={xInterval} />
+                        <YAxis tick={{ fontSize: 8 }} tickLine={false} axisLine={false} tickFormatter={(v) => formatMillicores(Number(v))} width={36} />
+                        <ChartTooltip content={<ChartTooltipContent labelFormatter={(l) => `Horário: ${l}`} formatter={(v) => formatMillicores(Number(v))} />} />
+                        <Line type="monotone" dataKey="cpu_absolute" stroke={usageAbsoluteChartConfig.cpu_absolute.color} strokeWidth={1.5} dot={false} name={usageAbsoluteChartConfig.cpu_absolute.label} />
+                      </ComposedChart>
+                    </ChartContainer>
+                    <ChartContainer config={usageAbsoluteChartConfig} className="h-[120px] w-full">
+                      <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
+                        <XAxis dataKey="time" tick={{ fontSize: 8 }} tickLine={false} axisLine={false} interval={xInterval} />
+                        <YAxis tick={{ fontSize: 8 }} tickLine={false} axisLine={false} tickFormatter={(v) => formatBytes(Number(v) * 1024 * 1024)} width={44} />
+                        <ChartTooltip content={<ChartTooltipContent labelFormatter={(l) => `Horário: ${l}`} formatter={(v) => formatBytes(Number(v) * 1024 * 1024)} />} />
+                        <Line type="monotone" dataKey="memory_absolute" stroke={usageAbsoluteChartConfig.memory_absolute.color} strokeWidth={1.5} dot={false} name={usageAbsoluteChartConfig.memory_absolute.label} />
+                      </ComposedChart>
+                    </ChartContainer>
+                  </div>
+                  <p className="text-[9px] text-muted-foreground mt-0.5 flex gap-3">
+                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: usageAbsoluteChartConfig.cpu_absolute.color }} />CPU</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: usageAbsoluteChartConfig.memory_absolute.color }} />Memória</span>
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground py-3">
+                  Uso de CPU/memória indisponível no fallback Dynatrace — sem uma fonte de request/limit
+                  nesse caminho pra normalizar em %.
+                </p>
+              )
             ) : (
               <ChartContainer config={usageChartConfig} className="h-[140px] w-full">
                 <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>

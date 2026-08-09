@@ -68,13 +68,41 @@ var serviceMetricDefs = []metricDef{
 }
 
 // CLOUD_APPLICATION / CLOUD_APPLICATION_INSTANCE — K8s pods + containers
+//
+// Bug real corrigido — os 6 selectors antigos nunca retornaram dado nenhum pra CLOUD_APPLICATION,
+// em nenhum cluster, desde que essa feature existe: confirmado direto na API contra um tenant real
+// (nyr48864) — "builtin:kubernetes.workload.pods.running"/".readyFraction"/".restarts" são 404
+// (metricId inexistente no catálogo atual do Dynatrace); "builtin:containers.cpu.usageMilliCores"
+// e "builtin:containers.memory.workingSet" existem, mas sua entidade primária é
+// CONTAINER_GROUP_INSTANCE, não CLOUD_APPLICATION ("Entity type mismatch... Possible primary
+// entity types: [CONTAINER_GROUP_INSTANCE]"); "builtin:containers.cpu.throttlingTime" tinha o
+// nome errado — o real é "throttledTime" (nem esse existe como CLOUD_APPLICATION, de qualquer
+// forma). Resultado prático: o fallback Dynatrace do Gráfico de Comportamento do Deployment
+// (GetDeploymentBehaviorMetrics) sempre caía em source="none" ("Nenhuma fonte de métricas
+// históricas disponível... requer... CLOUD_APPLICATION"), mesmo com a entidade CLOUD_APPLICATION
+// corretamente resolvida (ResolveEntityForWorkload retornando found=true) — o problema nunca foi a
+// resolução da entidade, sempre foram os metricId errados/inexistentes.
+//
+// Substituídos pelos 4 selectors reais da família "by workload" (builtin:kubernetes.workload.*,
+// entityType=CLOUD_APPLICATION confirmado via GET /api/v2/metrics/<id> contra o mesmo tenant, dado
+// real validado pro Deployment "cargas-web"/cluster eks-asaplog-prd). Duas mudanças de cobertura,
+// ambas documentadas explicitamente (nenhum substituto real encontrado, preferível omitir a
+// inventar um selector não confirmado):
+//   - "pods_running" virou "pods_desired": não existe, nesta família de métricas, um equivalente
+//     confiável de "pods rodando AGORA" — só "pods desejados" (builtin:kubernetes.workload.
+//     pods_desired). Trade-off aceito: dynatraceSeriesToPointMap (deployment_behavior.go) passa a
+//     preencher ReplicasDesired em vez de ReplicasCurrent no caminho Dynatrace — na prática HABILITA
+//     os "scale events" nesse caminho, que antes eram impossíveis (comentário antigo: "Sem réplicas
+//     desejadas no Dynatrace").
+//   - "pods_ready_pct"/"pod_restarts" foram removidos: builtin:cloud.kubernetes.workload.runningPods
+//     (candidato, [Deprecated]) devolveu 0 pontos no teste real; builtin:cloud.kubernetes.pod.
+//     containerRestarts (candidato, [Deprecated]) tem "Possible primary entity types: []" — não é
+//     filtrável por CLOUD_APPLICATION de jeito nenhum sem um embedded entitySelector mais complexo.
 var k8sWorkloadMetricDefs = []metricDef{
-	{"pods_running", "builtin:kubernetes.workload.pods.running", "Pods Rodando", "pods", 1},
-	{"pods_ready_pct", "builtin:kubernetes.workload.pods.readyFraction", "Pods Prontos", "%", 100},
-	{"pod_restarts", "builtin:kubernetes.workload.pods.restarts", "Restarts", "count", 1},
-	{"cpu_milli", "builtin:containers.cpu.usageMilliCores", "CPU Uso", "mCPU", 1},
-	{"cpu_throttle", "builtin:containers.cpu.throttlingTime", "CPU Throttling", "ms", 1},
-	{"memory_mb", "builtin:containers.memory.workingSet", "Memória", "MB", 1.0 / (1024 * 1024)},
+	{"pods_desired", "builtin:kubernetes.workload.pods_desired", "Pods Desejados", "pods", 1},
+	{"cpu_milli", "builtin:kubernetes.workload.cpu_usage", "CPU Uso", "mCPU", 1},
+	{"cpu_throttle", "builtin:kubernetes.workload.cpu_throttled", "CPU Throttling", "mCPU", 1},
+	{"memory_mb", "builtin:kubernetes.workload.memory_working_set", "Memória", "MB", 1.0 / (1024 * 1024)},
 }
 
 // KUBERNETES_NODE — nó K8s

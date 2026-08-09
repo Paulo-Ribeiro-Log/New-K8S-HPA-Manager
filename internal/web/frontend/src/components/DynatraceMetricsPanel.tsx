@@ -28,9 +28,7 @@ const KEY_COLORS: Record<string, string> = {
   ext_calls:       "#8b5cf6",
   db_calls:        "#06b6d4",
   db_latency_p95:  "#f59e0b",
-  pods_running:    "#6366f1",
-  pods_ready_pct:  "#22c55e",
-  pod_restarts:    "#ef4444",
+  pods_desired:    "#6366f1",
   cpu_milli:       "#f97316",
   cpu_throttle:    "#dc2626",
   memory_mb:       "#8b5cf6",
@@ -99,11 +97,16 @@ const SERVICE_GROUPS: ChartGroup[] = [
 
 const K8S_GROUPS: ChartGroup[] = [
   {
-    title: "Pod Health (Rodando / Prontos / Restarts)",
+    // Bug real corrigido: "pods_running"/"pods_ready_pct"/"pod_restarts" usavam metricId sem
+    // equivalente real pra CLOUD_APPLICATION nesta versão do Dynatrace (ver comentário detalhado em
+    // k8sWorkloadMetricDefs, internal/dynatrace/metrics.go) — nunca tinham dado, então este grupo
+    // inteiro sempre desaparecia (MetricChart retorna null com availableSeries vazio). Único
+    // substituto real confirmado nesta família de métricas é "pods_desired" (contagem desejada, não
+    // "rodando agora" — Dynatrace não expõe esse dado nesta dimensão).
+    title: "Pods Desejados",
     icon: <Layers className="h-3.5 w-3.5" />,
-    keys: ["pods_running", "pods_ready_pct", "pod_restarts"],
-    style: "bar_plus_lines",
-    dualAxis: true,
+    keys: ["pods_desired"],
+    style: "area",
   },
   {
     title: "CPU — Uso & Throttling",
