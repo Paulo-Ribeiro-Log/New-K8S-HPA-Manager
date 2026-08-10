@@ -194,6 +194,10 @@ export const GitHubReleasesTab = () => {
   const [serviceNowCHGPostedAt, setServiceNowCHGPostedAt] = useState<string | undefined>(undefined); // Data de postagem no Teams da CHG capturada
   const [batchSearch, setBatchSearch] = useState(""); // Busca no lote de comparações (CHG, nome, repo, tags...)
   const [showHowToUse, setShowHowToUse] = useState(false); // Card "Como usar" — recolhido por padrão
+  // Campos de busca manual — recolhidos atrás de um chevron pra dar mais espaço à lista de
+  // comparações abaixo. Default adaptativo: aberto quando o lote ainda está vazio (usuário
+  // provavelmente vai usar a busca manual pra popular), recolhido quando já há itens salvos.
+  const [showManualSearch, setShowManualSearch] = useState(() => comparisonBatch.length === 0);
   const [editingProductionTag, setEditingProductionTag] = useState<Record<string, string>>({}); // Edição inline da productionTag
   const [approvalUrlInput, setApprovalUrlInput] = useState(""); // Input manual de URL devstartcd
   const [showApprovalInput, setShowApprovalInput] = useState(false); // Exibir campo de input manual
@@ -1002,6 +1006,30 @@ export const GitHubReleasesTab = () => {
           ),
           content: (
             <div className="h-full flex flex-col space-y-4 p-4">
+              {/* Busca Manual de Release — recolhível: dá mais espaço à lista de comparações abaixo */}
+              <div className="rounded-md border border-border flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowManualSearch((v) => !v)}
+                  className="flex items-center gap-2 w-full text-left px-3 py-2 min-w-0"
+                >
+                  {showManualSearch ? (
+                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                  )}
+                  <Search className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                  <span className="text-sm font-medium flex-shrink-0">Busca Manual de Release</span>
+                  {!showManualSearch && (deploymentName || githubRepo || productionTag || newTag) && (
+                    <span className="text-xs text-muted-foreground truncate min-w-0">
+                      {[deploymentName || githubRepo || null, [productionTag, newTag].filter(Boolean).join(' → ') || null]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  )}
+                </button>
+                {showManualSearch && (
+                <div className="px-3 pb-3 pt-1 space-y-4 border-t border-border">
               {/* Campo 1: Nome do Deployment na Base - COM AUTOCOMPLETE */}
               <div className="space-y-2">
                 <Label htmlFor="deployment-name">Nome do Deployment (Base de Dados)</Label>
@@ -1261,6 +1289,9 @@ export const GitHubReleasesTab = () => {
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
+                </div>
+                )}
+              </div>
 
               {/* Alerta informativo — recolhível, recolhido por padrão */}
               <Alert>
@@ -1290,9 +1321,9 @@ export const GitHubReleasesTab = () => {
               {/* ✨ NOVO: Lote de Comparações */}
               {comparisonBatch.length > 0 && (
                 <>
-                  <Separator />
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
+                  <Separator className="flex-shrink-0" />
+                  <div className="space-y-2 flex-1 min-h-0 flex flex-col">
+                    <div className="flex items-center justify-between flex-shrink-0">
                       <Label className="text-sm font-semibold">
                         Lote de Comparações ({batchSearch.trim() ? `${filteredComparisonBatch.length} de ${comparisonBatch.length}` : comparisonBatch.length})
                       </Label>
@@ -1317,7 +1348,7 @@ export const GitHubReleasesTab = () => {
                       </div>
                     </div>
 
-                    <div className="relative">
+                    <div className="relative flex-shrink-0">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                       <Input
                         value={batchSearch}
@@ -1327,7 +1358,7 @@ export const GitHubReleasesTab = () => {
                       />
                     </div>
 
-                    <ScrollArea className="h-[300px]">
+                    <ScrollArea className="flex-1 min-h-[150px]">
                       <div className="space-y-2">
                         {filteredComparisonBatch.length === 0 && (
                           <p className="text-xs text-muted-foreground text-center py-4">
