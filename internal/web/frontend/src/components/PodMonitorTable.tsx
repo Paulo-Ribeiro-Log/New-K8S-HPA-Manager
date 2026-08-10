@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { PodSummary, BatchPodMetrics } from "@/lib/api/types";
 import { formatAge, formatBytes, formatMillicores, parseCpuToMillicores, parseMemoryToBytes, podRowColor, podDotColor, podDotLabel } from "@/lib/monitorUtils";
-import { Loader2, ChevronLeft, ChevronRight, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown, ScrollText } from "lucide-react";
+import { Loader2, ChevronLeft, ChevronRight, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown, ScrollText, Flame } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { ProtectedAction } from "@/components/rbac/ProtectedAction";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -96,6 +97,70 @@ function ColumnFilter({
             ))}
           </div>
         </ScrollArea>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+const TOP_N_OPTIONS = [5, 10, 20] as const;
+
+// Seleção rápida "maiores consumidores" — usada nas colunas CPU e MEM. Em vez de digitar um
+// número (min/max), o usuário escolhe um preset (Top 5/10/20): a tabela mostra só os N pods de
+// maior consumo atual do recurso, dentre os que já passaram pelos outros filtros ativos. Um
+// segundo clique na mesma opção desmarca (mesmo padrão toggle do StatusSortIcon).
+function TopNFilter({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+}) {
+  const active = value !== null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          className={`flex items-center gap-0.5 uppercase hover:text-foreground transition-colors ${active ? "text-primary" : "text-muted-foreground"}`}
+          title={`Mostrar só os maiores consumidores de ${label}`}
+        >
+          {label}
+          {active ? <Flame className="w-2.5 h-2.5 ml-0.5 fill-current" /> : <ListFilter className="w-2.5 h-2.5 ml-0.5" />}
+          {active && (
+            <span className="ml-0.5 bg-primary text-primary-foreground rounded-full text-[9px] w-3.5 h-3.5 flex items-center justify-center font-bold">
+              {value}
+            </span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-56 p-3" align="start">
+        <div className="flex items-center gap-1.5 mb-2.5">
+          <Flame className="w-3.5 h-3.5 text-orange-500" />
+          <span className="text-xs font-medium">Maiores consumidores de {label}</span>
+        </div>
+        <ToggleGroup
+          type="single"
+          collapsible
+          value={value !== null ? String(value) : ""}
+          onValueChange={(v) => onChange(v ? Number(v) : null)}
+          className="w-full gap-1.5"
+        >
+          {TOP_N_OPTIONS.map((n) => (
+            <ToggleGroupItem
+              key={n}
+              value={String(n)}
+              className="flex-1 h-8 text-xs rounded-md border border-border data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+            >
+              Top {n}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <p className="text-[10px] text-muted-foreground mt-2.5 leading-snug">
+          {active
+            ? `Mostrando só os ${value} pods com maior uso atual de ${label}.`
+            : `Escolha uma opção pra listar só os maiores consumidores — sem precisar digitar número.`}
+        </p>
       </PopoverContent>
     </Popover>
   );
@@ -219,6 +284,9 @@ export const PodMonitorTable = ({
   const [nodeFilter, setNodeFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
   const [dtStatusFilter, setDtStatusFilter] = useState<Set<string>>(new Set());
+  // Seleção "maiores consumidores" (Top 5/10/20) — null = filtro inativo (mostra todos).
+  const [cpuTopN, setCpuTopN] = useState<number | null>(null);
+  const [memTopN, setMemTopN] = useState<number | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [sortKey, setSortKey] = useState<PodSortKey | null>(null);
@@ -346,14 +414,18 @@ export const PodMonitorTable = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pods, dtClusterSupported, dtMonitoredKeys]);
 
-  const hasFilters = statusFilter.size > 0 || nodeFilter.size > 0 || namespaceFilter.size > 0 || dtStatusFilter.size > 0;
-  const activeFilterCount = statusFilter.size + nodeFilter.size + namespaceFilter.size + dtStatusFilter.size;
+  const hasCpuFilter = cpuTopN !== null;
+  const hasMemFilter = memTopN !== null;
+  const hasFilters = statusFilter.size > 0 || nodeFilter.size > 0 || namespaceFilter.size > 0 || dtStatusFilter.size > 0 || hasCpuFilter || hasMemFilter;
+  const activeFilterCount = statusFilter.size + nodeFilter.size + namespaceFilter.size + dtStatusFilter.size + (hasCpuFilter ? 1 : 0) + (hasMemFilter ? 1 : 0);
 
   const clearAllFilters = () => {
     setStatusFilter(new Set());
     setNodeFilter(new Set());
     setNamespaceFilter(new Set());
     setDtStatusFilter(new Set());
+    setCpuTopN(null);
+    setMemTopN(null);
     setSearchQuery("");
   };
 
@@ -381,6 +453,20 @@ export const PodMonitorTable = ({
       result = result.filter((p) => namespaceFilter.has(p.namespace ?? ""));
     if (dtStatusFilter.size > 0)
       result = result.filter((p) => dtStatusFilter.has(dtStatusLabelForPod(p)));
+    // Top N maiores consumidores — calculado sobre o resultado já filtrado pelos filtros acima
+    // (ex: Top 10 CPU dentro do namespace já filtrado), não sobre `pods` bruto. Se CPU e MEM
+    // estiverem ativos ao mesmo tempo, aplica em sequência (interseção: precisa estar no Top N
+    // de CPU E no Top N de MEM), igual ao AND dos demais filtros da tabela.
+    if (cpuTopN !== null) {
+      const byCpuDesc = [...result].sort((a, b) => (metrics?.pods[b.name]?.cpuMillicores ?? 0) - (metrics?.pods[a.name]?.cpuMillicores ?? 0));
+      const topKeys = new Set(byCpuDesc.slice(0, cpuTopN).map((p) => `${p.namespace}/${p.name}`));
+      result = result.filter((p) => topKeys.has(`${p.namespace}/${p.name}`));
+    }
+    if (memTopN !== null) {
+      const byMemDesc = [...result].sort((a, b) => (metrics?.pods[b.name]?.memoryBytes ?? 0) - (metrics?.pods[a.name]?.memoryBytes ?? 0));
+      const topKeys = new Set(byMemDesc.slice(0, memTopN).map((p) => `${p.namespace}/${p.name}`));
+      result = result.filter((p) => topKeys.has(`${p.namespace}/${p.name}`));
+    }
 
     if (statusSortMode) {
       const priority = STATUS_PRIORITY[statusSortMode];
@@ -408,7 +494,7 @@ export const PodMonitorTable = ({
     }
 
     return result;
-  }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, dtStatusFilter, sortKey, sortDir, statusSortMode, metrics, dtClusterSupported, dtMonitoredKeys]);
+  }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, dtStatusFilter, cpuTopN, memTopN, sortKey, sortDir, statusSortMode, metrics, dtClusterSupported, dtMonitoredKeys]);
 
   // Helpers de seleção
   const podKey = (p: PodSummary) => `${p.namespace}/${p.name}`;
@@ -629,6 +715,18 @@ export const PodMonitorTable = ({
               DT: {v} <X className="w-2.5 h-2.5" />
             </Badge>
           ))}
+          {hasCpuFilter && (
+            <Badge variant="secondary" className="text-[10px] h-5 gap-1 cursor-pointer hover:bg-destructive/20"
+              onClick={() => setCpuTopN(null)}>
+              CPU: Top {cpuTopN} <X className="w-2.5 h-2.5" />
+            </Badge>
+          )}
+          {hasMemFilter && (
+            <Badge variant="secondary" className="text-[10px] h-5 gap-1 cursor-pointer hover:bg-destructive/20"
+              onClick={() => setMemTopN(null)}>
+              MEM: Top {memTopN} <X className="w-2.5 h-2.5" />
+            </Badge>
+          )}
         </div>
       )}
 
@@ -666,8 +764,13 @@ export const PodMonitorTable = ({
           <ColumnFilter label="DT" options={uniqueDtStatuses} selected={dtStatusFilter} onChange={setDtStatusFilter} />
           <SortIcon colKey="dt" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
         </span>
-        <span className="relative overflow-hidden pr-4">
-          <SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+        {/* READY — filtro reaproveita o mesmo statusFilter da coluna STATUS (mesmo padrão da
+            coluna "READY" em DeploymentMonitorTable.tsx): não é um estado de filtro separado,
+            é só um segundo ponto de entrada pro mesmo filtro de status (Running/Completed/Error/
+            NotReady/etc.), já que READY e STATUS refletem a mesma saúde do pod. */}
+        <span className="relative overflow-hidden pr-4 flex items-center">
+          <ColumnFilter label="READY" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
+          <SortIcon colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(4, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center">
@@ -679,15 +782,19 @@ export const PodMonitorTable = ({
           <SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(6, d)} />
         </span>
+        {/* CPU — TopNFilter mostra só os N pods de maior consumo atual (Top 5/10/20), sem precisar
+            digitar número; SortIcon continua disponível pra ordenar manualmente a lista toda. */}
         <span className="relative overflow-hidden pr-4 flex items-center gap-1">
-          <SortBtn label="CPU" colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <TopNFilter label="CPU" value={cpuTopN} onChange={setCpuTopN} />
+          <SortIcon colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           {metrics && !metrics.available && (
             <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
           )}
           <ResizeHandle onResize={(d) => resize(7, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center gap-1">
-          <SortBtn label="MEM" colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <TopNFilter label="MEM" value={memTopN} onChange={setMemTopN} />
+          <SortIcon colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           {metrics && !metrics.available && (
             <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
           )}
