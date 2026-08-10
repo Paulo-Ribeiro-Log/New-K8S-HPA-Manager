@@ -2377,7 +2377,7 @@ export const DeploymentsTab = ({
         // cinza, sem destaque, que passava despercebido entre os outros ícones deste header.
         <button
           onClick={() => { setSelectedDeployment(null); setRightView({ kind: "deployment-table" }); }}
-          className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+          className="flex items-center justify-center w-7 h-7 rounded-full bg-primary text-primary-foreground shadow-sm hover:bg-primary/85 active:bg-primary/70 transition-colors flex-shrink-0"
           title="Desmarcar deployment selecionado"
         >
           <X className="w-4 h-4" />
