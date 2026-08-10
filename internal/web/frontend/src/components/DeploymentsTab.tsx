@@ -2372,15 +2372,16 @@ export const DeploymentsTab = ({
         <RefreshCcw className="w-4 h-4" />
       </Button>
       {selectedDeployment && (
-        <Button
-          variant="ghost"
-          size="sm"
+        // Mesmo padrão visual do botão "Voltar para lista" (círculo colorido) usado no painel
+        // direito de ConfigMaps/Secrets/Ingress/etc. — antes era um <Button variant="ghost">
+        // cinza, sem destaque, que passava despercebido entre os outros ícones deste header.
+        <button
           onClick={() => { setSelectedDeployment(null); setRightView({ kind: "deployment-table" }); }}
+          className="flex items-center justify-center w-7 h-7 rounded-full bg-primary text-primary-foreground shadow-sm hover:bg-primary/85 active:bg-primary/70 transition-colors flex-shrink-0"
           title="Desmarcar deployment selecionado"
-          className="text-muted-foreground hover:text-foreground"
         >
           <X className="w-4 h-4" />
-        </Button>
+        </button>
       )}
       {collapseButton}
     </div>

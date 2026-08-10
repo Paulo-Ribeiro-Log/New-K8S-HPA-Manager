@@ -761,18 +761,19 @@ export const NamespacesTab = ({
   const leftTitleAction = (
     <div className="flex items-center gap-2 flex-wrap">
       {selectedNamespace && (
-        <Button
-          variant="ghost"
-          size="sm"
+        // Mesmo padrão visual do botão "Voltar para lista" (círculo colorido) usado no painel
+        // direito de ConfigMaps/Secrets/Ingress/etc. — antes era um <Button variant="ghost">
+        // cinza, sem destaque, que passava despercebido entre os outros botões deste header.
+        <button
           onClick={() => {
             setSelectedNamespace(null);
             onNamespaceChange("");
           }}
+          className="flex items-center justify-center w-7 h-7 rounded-full bg-primary text-primary-foreground shadow-sm hover:bg-primary/85 active:bg-primary/70 transition-colors flex-shrink-0"
           title="Desmarcar namespace e ver overview"
         >
-          <X className="w-4 h-4 mr-1" />
-          Desmarcar
-        </Button>
+          <X className="w-4 h-4" />
+        </button>
       )}
       <Button
         variant={showSystemNamespaces ? "secondary" : "outline"}
