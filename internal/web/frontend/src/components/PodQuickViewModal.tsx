@@ -771,8 +771,12 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const isHealthy = pod.phase === "Running" && pod.readyContainers === pod.totalContainers;
   const statusVariant = isHealthy ? "default" : (pod.phase === "Pending" ? "secondary" : "destructive");
 
-  const cpuPct = metrics && metrics.cpuPercentRequest >= 0 ? metrics.cpuPercentRequest : 0;
-  const memPct = metrics && metrics.memPercentRequest >= 0 ? metrics.memPercentRequest : 0;
+  // % relativo ao LIMIT (não ao request) — mesma base de cálculo da coluna CPU/MEM em
+  // PodMonitorTable.tsx (`m.cpuMillicores / limitM * 100`), pra não divergir do que a lista já
+  // mostra. Request costuma ser bem menor que limit, então usar %request aqui inflava o gauge
+  // (ex: lista mostrando 68% do limite mas o gauge batendo 100% por já ter estourado o request).
+  const cpuPct = metrics && metrics.cpuPercentLimit >= 0 ? metrics.cpuPercentLimit : 0;
+  const memPct = metrics && metrics.memPercentLimit >= 0 ? metrics.memPercentLimit : 0;
 
   const actionConfig = {
     restart: {
