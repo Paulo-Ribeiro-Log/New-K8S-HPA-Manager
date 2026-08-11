@@ -92,6 +92,13 @@ export const SecretsTab = ({
   // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<SecretManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
+  // Sinal de "documento novo carregado" pro auto-check de espaços em branco do MonacoYamlEditor —
+  // só muda quando `manifest` é populado (mesmo render que `editorValue`), nunca a cada tecla
+  // digitada. `manifest` é nulled no início de handleSelectSecret, então esse key também passa por
+  // `null` durante o loading — inofensivo, o efeito no editor ignora transições pra `null`.
+  const secretDocumentKey = manifest && selectedSecret
+    ? `${selectedSecret.cluster}/${selectedSecret.namespace}/${selectedSecret.name}`
+    : null;
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
   const [isValidating, setIsValidating] = useState(false);
@@ -1336,6 +1343,8 @@ export const SecretsTab = ({
                 value={editorValue}
                 onChange={handleEditorChange}
                 height={600}
+                autoCheckSecretWhitespace
+                documentKey={secretDocumentKey}
               />
             )}
             {viewMode === "diff" && (
@@ -1679,6 +1688,8 @@ export const SecretsTab = ({
                   value={editorValue}
                   onChange={handleEditorChange}
                   height="calc(100vh - 140px)"
+                  autoCheckSecretWhitespace
+                  documentKey={secretDocumentKey}
                 />
               )}
               {viewMode === "diff" && (

@@ -21,12 +21,22 @@ interface MonacoYamlEditorProps {
   mode?: "editor" | "diff";
   height?: string | number;
   readOnly?: boolean;
+  // Dispara "Verificar espaços em branco (base64)" automaticamente sempre que `documentKey` mudar
+  // (em vez de exigir clique manual no menu de contexto) — usado pelo painel de detalhes da aba
+  // Secrets, onde faz sentido avisar assim que o manifesto é carregado. `documentKey` (ex:
+  // `cluster/namespace/name`) é o sinal de "documento novo carregado", distinto de `value` mudar
+  // por causa de cada tecla digitada pelo usuário — sem essa distinção, o auto-check reexecutaria
+  // (e notificaria) a cada edição, indo contra o comportamento já documentado de exigir novo scan
+  // manual após editar.
+  autoCheckSecretWhitespace?: boolean;
+  documentKey?: string | null;
 }
 
-export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "editor", height = 320, readOnly = false }: MonacoYamlEditorProps) => {
+export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "editor", height = 320, readOnly = false, autoCheckSecretWhitespace = false, documentKey }: MonacoYamlEditorProps) => {
   const [mounted, setMounted] = useState(false);
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const diffEditorRef = useRef<MonacoEditorNS.editor.IStandaloneDiffEditor | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
   const whitespaceDecorationsRef = useRef<MonacoEditorNS.editor.IEditorDecorationsCollection | null>(null);
 
   const handleBeforeMount: BeforeMount = (monacoInstance: Monaco) => {
@@ -42,8 +52,63 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
     });
   };
 
+  // Compartilhada entre a action do menu de contexto (clique manual) e o auto-check disparado por
+  // `documentKey` (carregamento de um Secret novo) — mesma lógica de scan/decoração/toast nos dois
+  // casos, de propósito: sem o toast de sucesso também no caminho automático, não haveria NENHUM
+  // sinal visível de que o auto-check rodou quando o secret está limpo — indistinguível de "não
+  // disparou" (bug real reportado: usuário testou um secret sem espaço em branco e não viu nada).
+  const runWhitespaceCheck = () => {
+    const ed = editorRef.current;
+    const monacoInstance = monacoRef.current;
+    if (!ed || !monacoInstance) return;
+
+    if (whitespaceDecorationsRef.current) {
+      whitespaceDecorationsRef.current.clear();
+      whitespaceDecorationsRef.current = null;
+    }
+
+    const results = scanSecretForWhitespaceIssues(ed.getValue());
+    if (results.length === 0) {
+      toast.success("Nenhum espaço em branco suspeito encontrado nos valores decodificados");
+      return;
+    }
+
+    const issueLabel = (issues: ("leading" | "trailing")[]) =>
+      issues.map((issue) => (issue === "leading" ? "início" : "fim")).join("/");
+
+    const decorations: MonacoEditorNS.editor.IModelDeltaDecoration[] = results.map((r) => {
+      const message = {
+        value:
+          `Espaço em branco suspeito no **${issueLabel(r.issues)}** do valor decodificado — comum quando ` +
+          `o secret foi criado com \`echo\` sem \`-n\`.\n\nPrévia: \`${r.decodedPreview}\``,
+      };
+      return {
+        range: new monacoInstance.Range(r.lineNumber, 1, r.lineNumber, 1),
+        options: {
+          isWholeLine: true,
+          className: "monaco-whitespace-issue-line",
+          glyphMarginClassName: "monaco-whitespace-issue-glyph",
+          glyphMarginHoverMessage: message,
+          hoverMessage: message,
+        },
+      };
+    });
+    whitespaceDecorationsRef.current = ed.createDecorationsCollection(decorations);
+
+    const MAX_LISTED = 5;
+    const listed = results
+      .slice(0, MAX_LISTED)
+      .map((r) => `${r.key} (${issueLabel(r.issues)})`)
+      .join(", ");
+    const suffix = results.length > MAX_LISTED ? ` e mais ${results.length - MAX_LISTED}` : "";
+    toast.warning(`${results.length} chave(s) com espaço em branco suspeito: ${listed}${suffix}`, {
+      description: "Veja o ícone de aviso na margem esquerda das linhas destacadas.",
+    });
+  };
+
   const handleMount: OnMount = (editor, monacoInstance) => {
     editorRef.current = editor;
+    monacoRef.current = monacoInstance;
 
     // Comando Ctrl+S para salvar
     editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
@@ -205,54 +270,22 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
       contextMenuGroupId: "1_modification",
       contextMenuOrder: 5,
       precondition: "isSecretYaml",
-      run: (ed) => {
-        if (whitespaceDecorationsRef.current) {
-          whitespaceDecorationsRef.current.clear();
-          whitespaceDecorationsRef.current = null;
-        }
-
-        const results = scanSecretForWhitespaceIssues(ed.getValue());
-        if (results.length === 0) {
-          toast.success("Nenhum espaço em branco suspeito encontrado nos valores decodificados");
-          return;
-        }
-
-        const issueLabel = (issues: ("leading" | "trailing")[]) =>
-          issues.map((issue) => (issue === "leading" ? "início" : "fim")).join("/");
-
-        const decorations: MonacoEditorNS.editor.IModelDeltaDecoration[] = results.map((r) => {
-          const message = {
-            value:
-              `Espaço em branco suspeito no **${issueLabel(r.issues)}** do valor decodificado — comum quando ` +
-              `o secret foi criado com \`echo\` sem \`-n\`.\n\nPrévia: \`${r.decodedPreview}\``,
-          };
-          return {
-            range: new monacoInstance.Range(r.lineNumber, 1, r.lineNumber, 1),
-            options: {
-              isWholeLine: true,
-              className: "monaco-whitespace-issue-line",
-              glyphMarginClassName: "monaco-whitespace-issue-glyph",
-              glyphMarginHoverMessage: message,
-              hoverMessage: message,
-            },
-          };
-        });
-        whitespaceDecorationsRef.current = ed.createDecorationsCollection(decorations);
-
-        const MAX_LISTED = 5;
-        const listed = results
-          .slice(0, MAX_LISTED)
-          .map((r) => `${r.key} (${issueLabel(r.issues)})`)
-          .join(", ");
-        const suffix = results.length > MAX_LISTED ? ` e mais ${results.length - MAX_LISTED}` : "";
-        toast.warning(`${results.length} chave(s) com espaço em branco suspeito: ${listed}${suffix}`, {
-          description: "Veja o ícone de aviso na margem esquerda das linhas destacadas.",
-        });
-      },
+      run: () => runWhitespaceCheck(),
     });
 
     setMounted(true);
   };
+
+  // Auto-check: dispara a mesma verificação (com o mesmo toast/decoração do clique manual) assim
+  // que um documento novo é carregado — não a cada tecla digitada, só quando `documentKey` muda. Só
+  // se aplica quando o conteúdo é de fato um Secret; para os demais recursos
+  // (`autoCheckSecretWhitespace` desligado, ou YAML sem `kind: Secret`) é um no-op.
+  useEffect(() => {
+    if (!autoCheckSecretWhitespace || !mounted || !documentKey) return;
+    const ed = editorRef.current;
+    if (!ed || !SECRET_KIND_REGEX.test(ed.getValue())) return;
+    runWhitespaceCheck();
+  }, [documentKey, mounted, autoCheckSecretWhitespace]);
 
   const handleDiffMount = (editor: MonacoEditorNS.editor.IStandaloneDiffEditor) => {
     diffEditorRef.current = editor;
