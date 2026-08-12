@@ -42,6 +42,20 @@ var (
 // mesmo processo entre elas elimina esse cold-start, mesmo padrão já usado pelo ServiceNow
 // (RodExtractor.getBrowser, "N CHGs = 1 browser").
 func getBrowser(sessionDir string, logger *zerolog.Logger) (*rod.Browser, error) {
+	// Docker (selenium/standalone-chrome) resolve a causa raiz real do crash do Chromium embed
+	// (revisão pinada e antiga, ver docker_browser.go) com um Chrome atual rodando isolado — mas
+	// fica atrás de opt-in explícito (ver comentário no topo de docker_browser.go: validado com
+	// sucesso, porém expôs um crash severo do servidor inteiro num 2º teste, corrigido via patch
+	// no vendor do go-rod, ainda não testado o suficiente pra virar padrão). Sem a env var, cai
+	// direto pro Chrome do sistema — comportamento idêntico a antes desta feature existir.
+	if teamsDockerEnabled() {
+		if b, err := getDockerBrowser(logger); err == nil {
+			return b, nil
+		} else {
+			logger.Warn().Err(err).Msg("[Teams] Docker indisponível ou falhou — caindo para Chrome do sistema/embed")
+		}
+	}
+
 	var chromeBin string
 	if teamsForceEmbedBrowser() {
 		logger.Info().Str("env", teamsEmbedBrowserEnvVar).
@@ -123,9 +137,12 @@ func minimizeWindow(page *rod.Page, logger *zerolog.Logger) {
 	browser.MinimizeWindow(page, logger)
 }
 
-// CloseBrowser encerra o Chrome persistente do Teams, se houver algum aberto. Chamado no
-// shutdown do servidor para não deixar o processo órfão rodando em segundo plano — a próxima
-// chamada relança do zero via getBrowser.
+// CloseBrowser encerra o Chrome persistente do Teams, se houver algum aberto — tanto o processo
+// local (Chrome do sistema/embed, via browserMgr) quanto o container Docker (se o modo Docker
+// tiver sido usado nesta execução, via CloseDockerBrowser). Chamado no shutdown do servidor para
+// não deixar nada órfão rodando em segundo plano — a próxima chamada relança do zero via
+// getBrowser.
 func CloseBrowser() {
 	browserMgr.Close()
+	CloseDockerBrowser()
 }

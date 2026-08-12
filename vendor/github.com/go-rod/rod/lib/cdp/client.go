@@ -128,6 +128,20 @@ func (cdp *Client) Event() <-chan *Event {
 }
 
 // Consume messages coming from the browser via the websocket.
+//
+// PATCH MANUAL (k8s-hpa-manager, ver CLAUDE.md "Notas de Build" > patch vendor go-rod): os 3
+// utils.E(err) originais deste loop PANICAVAM o processo inteiro sempre que um frame do
+// websocket vinha com JSON malformado/truncado (ex: "unexpected end of JSON input") — como esta
+// goroutine é lançada pelo próprio go-rod (cdp.Start, não pelo código da app), um panic aqui não
+// tem nenhum recover() no meio do caminho e derruba o servidor Go inteiro, não só a extração em
+// andamento. Reproduzido ao vivo usando o modo Docker (Chrome dentro de container
+// selenium/standalone-chrome, CDP retransmitido pelo proxy WebSocket do Selenium Grid — ver
+// internal/teams/docker_browser.go) — a camada extra de proxy expôs esse caso-limite que conexão
+// direta a um Chrome local (embed/sistema) aparentemente nunca disparou. Trocado por log +
+// `continue` (ignora a mensagem malformada e segue lendo a próxima) em vez de panic — mesmo
+// tratamento que uma mensagem sem sessionId/id reconhecido já recebe logo abaixo (`if !ok {
+// continue }`). Efeito colateral aceitável: uma resposta CDP pontual perdida vira timeout do
+// `Call()` que a esperava (erro tratável) em vez de crashar tudo.
 func (cdp *Client) consumeMessages() {
 	defer close(cdp.event)
 
@@ -144,21 +158,27 @@ func (cdp *Client) consumeMessages() {
 		var id struct {
 			ID int `json:"id"`
 		}
-		err = json.Unmarshal(data, &id)
-		utils.E(err)
+		if err := json.Unmarshal(data, &id); err != nil {
+			cdp.logger.Println("cdp: mensagem malformada ignorada (id):", err)
+			continue
+		}
 
 		if id.ID == 0 {
 			var evt Event
-			err := json.Unmarshal(data, &evt)
-			utils.E(err)
+			if err := json.Unmarshal(data, &evt); err != nil {
+				cdp.logger.Println("cdp: mensagem malformada ignorada (event):", err)
+				continue
+			}
 			cdp.logger.Println(&evt)
 			cdp.event <- &evt
 			continue
 		}
 
 		var res Response
-		err = json.Unmarshal(data, &res)
-		utils.E(err)
+		if err := json.Unmarshal(data, &res); err != nil {
+			cdp.logger.Println("cdp: mensagem malformada ignorada (response):", err)
+			continue
+		}
 
 		cdp.logger.Println(&res)
 
