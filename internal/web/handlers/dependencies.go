@@ -106,6 +106,12 @@ func (h *DependenciesHandler) Scan(c *gin.Context) {
 			}
 		}
 
+		// Persistir índice de chave/valor de Secrets (snapshot do cluster — substitui o que
+		// existia antes, não acumula) para a busca em Secrets da aba Dependencies.
+		if err := h.registry.ReplaceSecretDataForCluster(cluster, convertSecretDataEntries(result.SecretDataEntries)); err != nil {
+			log.Warn().Err(err).Str("cluster", cluster).Msg("Failed to persist secret data index")
+		}
+
 		totalFound += len(result.Dependencies)
 		totalSaved += savedCount
 
@@ -204,6 +210,11 @@ func (h *DependenciesHandler) ScanCluster(c *gin.Context) {
 		} else {
 			savedCount++
 		}
+	}
+
+	// Persistir índice de chave/valor de Secrets (snapshot do cluster)
+	if err := h.registry.ReplaceSecretDataForCluster(cluster, convertSecretDataEntries(result.SecretDataEntries)); err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Failed to persist secret data index")
 	}
 
 	durationMs := time.Since(startTime).Milliseconds()
@@ -592,6 +603,96 @@ func (h *DependenciesHandler) GetServiceUsage(c *gin.Context) {
 			"by_cluster":   usage,
 		},
 	})
+}
+
+// SearchSecrets busca no índice de chave/valor de Secrets E ConfigMaps persistido no SQLite (aba
+// Dependencies, modo "Secrets") — nunca toca o cluster, só lê do último scan já persistido por
+// Scan/ScanCluster. mode=key busca só no nome da chave (texto puro); mode=value (default) busca no
+// valor decodificado e no valor base64 (o termo é convertido para base64 automaticamente, só nesse
+// modo). Resultados de ConfigMap vêm junto com os de Secret — resource_kind distingue a origem.
+// GET /api/v1/dependencies/search-secrets?q=teste&mode=value
+func (h *DependenciesHandler) SearchSecrets(c *gin.Context) {
+	query := c.Query("q")
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Parâmetro 'q' (query) é obrigatório",
+			},
+		})
+		return
+	}
+	mode := c.DefaultQuery("mode", "value")
+
+	log.Info().Str("query", query).Str("mode", mode).Msg("Searching secret data index")
+
+	results, err := h.registry.SearchSecretData(query, mode)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Falha na busca",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"query":       query,
+			"mode":        mode,
+			"total_found": len(results),
+			"results":     results,
+		},
+	})
+}
+
+// ClearSecretData apaga TODO o índice de chave/valor de Secrets e ConfigMaps do SQLite (todos os
+// clusters) — ação dedicada e separada da limpeza do registry de dependências normal, dado que é
+// o único índice que persiste conteúdo bruto de Secret na aplicação.
+// DELETE /api/v1/dependencies/secret-data
+func (h *DependenciesHandler) ClearSecretData(c *gin.Context) {
+	if err := h.registry.ClearSecretData(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Falha ao limpar índice de Secrets",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	log.Info().Msg("Secret data index cleared")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Índice de Secrets limpo com sucesso",
+	})
+}
+
+// convertSecretDataEntries converte o resultado do scanner (healthcheck) para o tipo de
+// persistência (storage) — mantém os pacotes desacoplados (mesmo padrão já usado para
+// storage.DependencyRecord acima).
+func convertSecretDataEntries(entries []healthcheck.SecretDataEntry) []storage.SecretDataRecord {
+	records := make([]storage.SecretDataRecord, 0, len(entries))
+	for _, e := range entries {
+		records = append(records, storage.SecretDataRecord{
+			ResourceKind:    e.ResourceKind,
+			Cluster:         e.Cluster,
+			Namespace:       e.Namespace,
+			ResourceName:    e.ResourceName,
+			ResourceSubtype: e.ResourceSubtype,
+			DataKey:         e.DataKey,
+			ValueBase64:     e.ValueBase64,
+			ValueDecoded:    e.ValueDecoded,
+			IsBinary:        e.IsBinary,
+			Truncated:       e.Truncated,
+		})
+	}
+	return records
 }
 
 // ClearCache limpa o cache de scans em memória (não afeta SQLite)
