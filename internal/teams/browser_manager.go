@@ -3,6 +3,7 @@ package teams
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,19 @@ import (
 
 	"k8s-hpa-manager/internal/browser"
 )
+
+// teamsEmbedBrowserEnvVar, quando setada como "true"/"1", força o Teams a usar o Chromium
+// embutido do Rod em vez do Chrome do sistema — Fase 2 de BROWSER-CONSOLIDATION-STUDY.md.
+// Existe pra validar empiricamente se o SPA pesado do Teams v2 se comporta igual num Chromium
+// genérico sem branding "Google Chrome" (hipóteses da seção 3 do estudo — fingerprinting/
+// detecção de automação, robustez de renderização). Reversível: sem a env var, comportamento
+// idêntico a antes (prefere o Chrome do sistema, cai pro embed só se não achar nenhum).
+const teamsEmbedBrowserEnvVar = "K8S_HPA_TEAMS_EMBED_BROWSER"
+
+func teamsForceEmbedBrowser() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(teamsEmbedBrowserEnvVar)))
+	return v == "true" || v == "1"
+}
 
 // operationMu serializa RunDiscovery, ScanConversations e SendBatch entre si — abas paralelas no
 // mesmo perfil podem invalidar o SkypeToken (mesmo risco documentado no extractMu do ServiceNow,
@@ -28,8 +42,12 @@ var (
 // mesmo processo entre elas elimina esse cold-start, mesmo padrão já usado pelo ServiceNow
 // (RodExtractor.getBrowser, "N CHGs = 1 browser").
 func getBrowser(sessionDir string, logger *zerolog.Logger) (*rod.Browser, error) {
-	chromeBin := browser.FindSystemChrome()
-	if chromeBin != "" {
+	var chromeBin string
+	if teamsForceEmbedBrowser() {
+		logger.Info().Str("env", teamsEmbedBrowserEnvVar).
+			Msg("[Teams] Forçando Chromium embutido do Rod (Fase 2 de BROWSER-CONSOLIDATION-STUDY.md) — ignorando Chrome do sistema mesmo se disponível")
+	} else if bin := browser.FindSystemChrome(); bin != "" {
+		chromeBin = bin
 		logger.Info().Str("bin", chromeBin).Msg("[Teams] Usando Chrome do sistema")
 	} else {
 		logger.Warn().Msg("[Teams] Chrome do sistema não encontrado — usando Chromium do Rod")

@@ -1,7 +1,9 @@
 # Estudo de Viabilidade: Unificar todos os fluxos de browser no "embed" (Chromium do go-rod)
 
 **Status:** 🔬 estudo — Fase 0 ✅ concluída (limpeza de código morto). Fase 1 ✅ concluída
-(`internal/browser/` extraído). Fases 2-4 não iniciadas.
+(`internal/browser/` extraído). Fase 2 — flag implementada (`K8S_HPA_TEAMS_EMBED_BROWSER`), ⚠️
+**validação empírica contra o Teams real ainda pendente** (precisa de login SSO/MFA interativo).
+Fases 3-4 dependem do resultado da Fase 2.
 **Pergunta original do usuário:** existem hoje vários tipos de navegador usados pela aplicação
 (um "embed" pro ServiceNow, outros com navegadores instalados no WSL) — mapear tudo e avaliar a
 viabilidade de padronizar em um único mecanismo ("tudo no embed").
@@ -179,15 +181,33 @@ Validado: `go build ./...`, `go vet ./...`, `gofmt`, `go test ./internal/service
 ./internal/teams/... ./internal/browser/... -race`, `make build` — tudo passando.
 
 ### Fase 2 — Validação empírica: Teams rodando no embed (atrás de flag, sem trocar o padrão)
-Adicionar uma env var (`K8S_HPA_TEAMS_EMBED_BROWSER=true`) ou flag de config que, quando setada,
-chama `getBrowser` do novo pacote comum **sem** `.Bin()` (força o Chromium do Rod) para o Teams.
-Validar manualmente, numa sessão de teste:
-- Login SSO/MFA Azure AD completo funciona igual (visual, sem travar)
-- `RunDiscovery` extrai `SkypeToken` e conversas do IndexedDB normalmente
-- `ScanConversations`/`SendBatch` funcionam sem erro
+
+**Código implementado** (`internal/teams/browser_manager.go`): env var `K8S_HPA_TEAMS_EMBED_BROWSER`
+(`"true"`/`"1"`) faz `getBrowser()` ignorar `FindSystemChrome()` mesmo quando o Chrome do sistema
+está disponível, forçando `chromeBin=""` → `browser.Launch` sem `.Bin()` → Chromium embutido do
+Rod. Sem a env var, comportamento 100% idêntico a antes (prefere sistema, cai pro embed só se não
+achar nada instalado) — reversível, zero risco pra quem não setar a flag.
+
+**Como rodar o teste** (precisa de você presente pro login SSO/MFA — não dá pra automatizar):
+```bash
+export K8S_HPA_TEAMS_EMBED_BROWSER=true
+kill <PID_atual> && ./build/new-k8s-hpa web -f   # reinicia com a flag setada no ambiente
+```
+Na Web UI, Tools → "Teams Broadcast" (ou o fluxo que aciona `RunDiscovery`/`ScanConversations`/
+`SendBatch`) → disparar a extração normalmente. Como `Headless(false)` é sempre usado pro Teams
+(igual antes), uma janela deve abrir — em WSL2 precisa de WSLg (Windows 11) ou Xvfb+VNC pra
+enxergá-la; sem isso o browser sobe mas fica invisível, inviável de completar login manual.
+
+Checklist de validação:
+- [ ] Login SSO/MFA Azure AD completo funciona igual (visual, sem travar, sem o Teams
+      bloquear/degradar por detecção de automação)
+- [ ] `RunDiscovery` extrai `SkypeToken` e conversas do IndexedDB normalmente
+- [ ] `ScanConversations`/`SendBatch` funcionam sem erro
+- [ ] Nenhuma diferença perceptível de performance/estabilidade vs. Chrome do sistema
+
 Esse teste **precisa ser feito contra o Teams real** — não dá pra confirmar por leitura de
 código se o SPA do Teams se comporta diferente num Chromium genérico vs. Chrome instalado (ver
-hipóteses da seção 3).
+hipóteses da seção 3). ⚠️ **Ainda não executado** — depende de uma sessão com o usuário presente.
 
 ### Fase 3 — Se a Fase 2 validar: trocar o padrão do Teams pro embed
 Remove `findSystemChrome()`/`.Bin()` do caminho padrão (mantém só como fallback documentado, ou
