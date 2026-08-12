@@ -12,14 +12,25 @@ import (
 
 const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"
 
-// MaxMessageAge limita quão antiga uma mensagem pode ser pra entrar no resultado da extração.
-// O IndexedDB (skypexspaces) guarda o histórico COMPLETO do Mr.ViaBot sem paginação — sem esse
-// corte, cada refresh reprocessa meses de mensagens antigas (visto em produção: 321 CHGs
-// coletadas contra uma média real de ~30/dia no canal). Como o filtro é por PostedAt (data real
-// da mensagem, não da extração), itens genuinamente antigos somem de vez, em vez de reaparecer
-// a cada refresh com um novo ExtractedAt. 7 dias cobre uma semana de CHGs pendentes de
-// aprovação/importação sem deixar o cache crescer sem limite.
-const MaxMessageAge = 7 * 24 * time.Hour
+// MaxMessageAgeBusinessDays limita quão antiga uma mensagem pode ser (em dias ÚTEIS, não
+// corridos) pra entrar no resultado da extração. O IndexedDB (skypexspaces) guarda o histórico
+// COMPLETO do Mr.ViaBot sem paginação — sem esse corte, cada refresh reprocessa meses de
+// mensagens antigas (visto em produção: 321 CHGs coletadas contra uma média real de ~30/dia no
+// canal). Como o filtro é por PostedAt (data real da mensagem, não da extração), itens
+// genuinamente antigos somem de vez, em vez de reaparecer a cada refresh com um novo ExtractedAt.
+// Em dias úteis (não `time.Duration` fixo) porque uma janela corrida perde CHGs postadas numa
+// sexta-feira antes de um fim de semana/feriado prolongado — ver businessdays.go/holidays.go
+// (BusinessDaysAgo pula sábado, domingo e feriados nacionais). 3 dias úteis cobre a última CHG
+// pendente de aprovação/importação sem deixar o cache crescer sem limite.
+const MaxMessageAgeBusinessDays = 3
+
+// CutoffTime retorna o instante mais antigo ainda dentro da janela de coleta (MaxMessageAgeBusinessDays
+// dias úteis antes de `now`) — única fonte de verdade usada tanto pelo filtro de extração
+// (filterByAge) quanto pelo merge de cache e pela listagem padrão do handler HTTP
+// (GetApprovalsToday), pra nunca divergir entre os três.
+func CutoffTime(now time.Time) time.Time {
+	return BusinessDaysAgo(now, MaxMessageAgeBusinessDays)
+}
 
 // Extractor extrai aprovações SRE do Mr.ViaBot no Microsoft Teams via automação de browser.
 type Extractor struct {
@@ -96,8 +107,9 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 	items := ParseRawMessages(allMessages)
 	e.Logger.Info().Int("count", len(items)).Msg("[Teams] Aprovações extraídas (antes do filtro de idade)")
 
-	items = filterByAge(items, MaxMessageAge, time.Now())
-	e.Logger.Info().Int("count", len(items)).Dur("max_age", MaxMessageAge).Msg("[Teams] Aprovações após filtro de idade")
+	cutoff := CutoffTime(time.Now())
+	items = filterByAge(items, cutoff)
+	e.Logger.Info().Int("count", len(items)).Time("cutoff", cutoff).Msg("[Teams] Aprovações após filtro de idade")
 
 	source := "dom"
 	if _, err := os.Stat(idbFile); err == nil {
@@ -111,13 +123,13 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 	}, nil
 }
 
-// filterByAge descarta itens cuja mensagem foi postada há mais de maxAge — sem isso o histórico
-// completo do IndexedDB inunda o resultado com mensagens de meses atrás a cada refresh. Itens
-// sem PostedAt (timestamp não capturado) são mantidos: vêm de caminhos inerentemente limitados
-// ao conteúdo já carregado (DOM visível, messages[] do conversation-manager), não do histórico
-// irrestrito do IndexedDB — não há como confirmar que são antigos.
-func filterByAge(items []ApprovalItem, maxAge time.Duration, now time.Time) []ApprovalItem {
-	cutoff := now.Add(-maxAge)
+// filterByAge descarta itens cuja mensagem foi postada antes de cutoff (ver CutoffTime) — sem
+// isso o histórico completo do IndexedDB inunda o resultado com mensagens de meses atrás a cada
+// refresh. Itens sem PostedAt (timestamp não capturado) são mantidos: vêm de caminhos
+// inerentemente limitados ao conteúdo já carregado (DOM visível, messages[] do
+// conversation-manager), não do histórico irrestrito do IndexedDB — não há como confirmar que
+// são antigos.
+func filterByAge(items []ApprovalItem, cutoff time.Time) []ApprovalItem {
 	filtered := items[:0]
 	for _, item := range items {
 		if item.PostedAt != nil && item.PostedAt.Before(cutoff) {

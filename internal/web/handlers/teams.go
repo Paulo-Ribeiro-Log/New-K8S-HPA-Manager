@@ -46,13 +46,17 @@ func NewTeamsHandler(logger *zerolog.Logger) *TeamsHandler {
 	return h
 }
 
-// GetApprovalsToday retorna apenas as CHGs postadas no dia atual (filtradas por PostedAt — a
-// data real da mensagem no Teams; ExtractedAt só serve de fallback pra itens antigos sem
-// PostedAt capturado). ExtractedAt sozinho NÃO filtra "hoje" de verdade: como o IndexedDB
-// resurge o histórico completo a cada refresh, cada refresh re-carimba ExtractedAt=agora em
-// TODO item ainda dentro da janela de MaxMessageAge — usar só esse campo fazia "hoje" incluir
-// qualquer coisa dos últimos dias (visto em produção: 321 itens contra uma média real de ~30/dia).
-// O cache interno guarda até teams.MaxMessageAge — use SearchCHG pra buscar além da lista de hoje.
+// GetApprovalsToday retorna as CHGs dentro da mesma janela de teams.MaxMessageAgeBusinessDays
+// (dias ÚTEIS — pula sábado/domingo/feriado nacional, ver teams.CutoffTime) usada pela extração
+// e pelo merge de cache em RefreshApprovals — não mais só o dia calendário atual. Motivo da
+// mudança: numa segunda-feira de manhã (ou no dia seguinte a um feriado), a lista "de hoje"
+// filtrada por dia calendário ficava vazia mesmo com CHGs ainda válidas no cache, postadas no
+// último dia útil anterior — o usuário tinha que abrir "Buscar" manualmente pra achar algo que
+// já estava ali. Nome do endpoint/handler mantido (`/approvals/today`, GetApprovalsToday) por
+// compatibilidade com o frontend já existente, mas o filtro agora acompanha
+// teams.CutoffTime — a mesma regra usada em todo o resto do pacote, nunca diverge dela.
+// Filtra por PostedAt (data real da mensagem no Teams) quando disponível; ExtractedAt só serve de
+// fallback pra itens antigos sem PostedAt capturado.
 // GET /api/v1/teams/approvals/today
 func (h *TeamsHandler) GetApprovalsToday(c *gin.Context) {
 	h.cacheMu.RLock()
@@ -61,24 +65,24 @@ func (h *TeamsHandler) GetApprovalsToday(c *gin.Context) {
 	h.cacheMu.RUnlock()
 
 	if cached != nil {
-		today := time.Now()
-		var todayItems []teams.ApprovalItem
+		cutoff := teams.CutoffTime(time.Now())
+		var windowItems []teams.ApprovalItem
 		for _, item := range cached.Items {
 			postedAt := item.ExtractedAt
 			if item.PostedAt != nil {
 				postedAt = item.PostedAt.Local()
 			}
-			if postedAt.Year() == today.Year() && postedAt.YearDay() == today.YearDay() {
-				todayItems = append(todayItems, item)
+			if !postedAt.Before(cutoff) {
+				windowItems = append(windowItems, item)
 			}
 		}
-		if todayItems == nil {
-			todayItems = []teams.ApprovalItem{}
+		if windowItems == nil {
+			windowItems = []teams.ApprovalItem{}
 		}
 		needsRefresh := time.Since(cached.LastUpdated) >= 8*time.Hour
 		c.JSON(http.StatusOK, gin.H{
 			"success":       true,
-			"items":         todayItems,
+			"items":         windowItems,
 			"last_updated":  cached.LastUpdated,
 			"needs_refresh": needsRefresh,
 			"refreshing":    refreshing,
@@ -95,7 +99,7 @@ func (h *TeamsHandler) GetApprovalsToday(c *gin.Context) {
 	})
 }
 
-// SearchCHG busca uma CHG em todo o cache (janela de teams.MaxMessageAge).
+// SearchCHG busca uma CHG em todo o cache (janela de teams.MaxMessageAgeBusinessDays).
 // Mais rápido que uma varredura do Teams — responde em ms se estiver no cache.
 // GET /api/v1/teams/approvals/search?chg=CHG0455046   — match exato por número
 // GET /api/v1/teams/approvals/search?q=nome-da-app   — busca por descrição (retorna todos os matches)
@@ -183,11 +187,11 @@ func (h *TeamsHandler) RefreshApprovals(c *gin.Context) {
 
 	// Mesclar: manter itens antigos do cache que não foram recapturados nesta extração — rede
 	// de segurança pra CHGs que saíram do range visível do DOM/IndexedDB entre um refresh e
-	// outro. Janela igual ao MaxMessageAge do extractor (teams.MaxMessageAge) — do contrário um
+	// outro. Janela igual à do extractor (teams.CutoffTime, dias úteis) — do contrário um
 	// item que passou no filtro de idade da extração (por PostedAt) podia ser descartado aqui
 	// por um corte diferente. Usa PostedAt (data real da mensagem) quando disponível; cai pra
 	// ExtractedAt só pra itens antigos sem esse campo (extraídos antes dessa captura existir).
-	cutoff := time.Now().Add(-teams.MaxMessageAge)
+	cutoff := teams.CutoffTime(time.Now())
 	newCHGs := map[string]bool{}
 	for _, item := range result.Items {
 		newCHGs[strings.ToUpper(item.CHG)] = true

@@ -288,7 +288,7 @@ export function ServiceNowImportModal({
     const controller = new AbortController();
     teamsAbortRef.current = controller;
 
-    // 1. Verificar cache local (últimos 2 dias) — evita re-scan do Teams
+    // 1. Verificar cache local (janela de dias úteis do backend, teams.MaxMessageAgeBusinessDays) — evita re-scan do Teams
     let snUrl = `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${chg}`;
     // Promise que resolve com a approval URL + data de postagem — do cache ou de um refresh
     // disparado agora
@@ -311,7 +311,7 @@ export function ServiceNowImportModal({
           .then(async res => {
             toast.dismiss("teams-bg-refresh");
             if (!res.success) return { approvalUrl: "" };
-            // Buscar no cache completo (48h) após o merge — não só nos itens de hoje
+            // Buscar no cache completo (janela de dias úteis) após o merge — não só nos itens de hoje
             const afterRefresh = await apiClient.searchTeamsCHG(chg);
             if (afterRefresh.found && afterRefresh.item?.approval_url) {
               const found = afterRefresh.item as TeamsApprovalItem;
@@ -386,7 +386,7 @@ export function ServiceNowImportModal({
           const refreshResult = await apiClient.refreshTeamsApprovals();
           toast.dismiss("teams-bg-refresh-name");
           if (refreshResult.success) {
-            // Buscar no cache completo (48h) após merge
+            // Buscar no cache completo (janela de dias úteis) após merge
             searchRes = await apiClient.searchTeamsByName(term);
           }
         } catch {
