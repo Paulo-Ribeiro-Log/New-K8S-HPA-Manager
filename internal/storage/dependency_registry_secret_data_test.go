@@ -315,3 +315,49 @@ func TestSearchSecretData_MixedResourceKinds(t *testing.T) {
 		t.Fatalf("expected both 'secret' and 'configmap' kinds present, got %+v", results)
 	}
 }
+
+// TestReplaceSecretDataForResource_ScopedReplace confirma o comportamento usado pelo refresh
+// pontual pós-Resync AKV: substitui só as linhas do recurso indicado (cluster+namespace+
+// resource_kind+resource_name), sem tocar em outras chaves do MESMO cluster nem em outros
+// recursos — ao contrário de ReplaceSecretDataForCluster, que apaga o cluster inteiro.
+func TestReplaceSecretDataForResource_ScopedReplace(t *testing.T) {
+	r := newTestDependencyRegistry(t)
+
+	seedSecretData(t, r, "cluster-a", []SecretDataRecord{
+		{ResourceKind: "secret", Cluster: "cluster-a", Namespace: "ns-a", ResourceName: "akv-ns-a", DataKey: "DB_PASSWORD", ValueBase64: "eA==", ValueDecoded: "old-value"},
+		{ResourceKind: "secret", Cluster: "cluster-a", Namespace: "ns-a", ResourceName: "outra-secret", DataKey: "k1", ValueBase64: "eQ==", ValueDecoded: "intocado"},
+		{ResourceKind: "configmap", Cluster: "cluster-a", Namespace: "ns-a", ResourceName: "akv-ns-a", DataKey: "k2", ValueBase64: "eg==", ValueDecoded: "outro-kind"},
+	})
+
+	// Simula o resultado de uma releitura ao vivo com o valor já atualizado pelo external-secrets.
+	err := r.ReplaceSecretDataForResource("cluster-a", "ns-a", "secret", "akv-ns-a", []SecretDataRecord{
+		{ResourceKind: "secret", Cluster: "cluster-a", Namespace: "ns-a", ResourceName: "akv-ns-a", DataKey: "DB_PASSWORD", ValueBase64: "bmV3", ValueDecoded: "new-value"},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceSecretDataForResource failed: %v", err)
+	}
+
+	results, err := r.SearchSecretData("*", "key")
+	if err != nil {
+		t.Fatalf("SearchSecretData failed: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 rows total (1 atualizada + 2 intocadas), got %d: %+v", len(results), results)
+	}
+
+	byKey := map[string]SecretDataRecord{}
+	for _, rec := range results {
+		byKey[rec.ResourceKind+":"+rec.ResourceName+":"+rec.DataKey] = rec
+	}
+
+	updated, ok := byKey["secret:akv-ns-a:DB_PASSWORD"]
+	if !ok || updated.ValueDecoded != "new-value" {
+		t.Fatalf("expected DB_PASSWORD updated to 'new-value', got %+v", updated)
+	}
+	if _, ok := byKey["secret:outra-secret:k1"]; !ok {
+		t.Fatalf("outra-secret:k1 should be untouched by a resource-scoped replace, got %+v", results)
+	}
+	if _, ok := byKey["configmap:akv-ns-a:k2"]; !ok {
+		t.Fatalf("configmap:akv-ns-a:k2 should be untouched (different resource_kind, same name), got %+v", results)
+	}
+}

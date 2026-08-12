@@ -4,6 +4,7 @@ package healthcheck
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -383,6 +384,35 @@ func (s *DependencyScanner) Scan(ctx context.Context, cluster string, namespaces
 		Msg("Dependency scan completed")
 
 	return result, nil
+}
+
+// RefreshResourceData relê UM Secret ou ConfigMap específico direto do cluster (client-go `Get`,
+// não `List`) e devolve suas entries de índice já extraídas — usado pelo refresh pontual disparado
+// depois de um Resync AKV (aba Dependencies), quando não faz sentido esperar o próximo scan
+// completo (cache de 5min incluso) só pra ver o valor atualizado de uma secret. Deliberadamente
+// NÃO passa pelo cache de `Scan()` — é sempre uma leitura ao vivo.
+func (s *DependencyScanner) RefreshResourceData(ctx context.Context, cluster, namespace, resourceKind, resourceName string) ([]SecretDataEntry, error) {
+	client, err := s.kubeManager.GetClient(cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	switch resourceKind {
+	case "secret":
+		secret, err := client.CoreV1().Secrets(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return extractSecretDataEntries(cluster, namespace, secret), nil
+	case "configmap":
+		cm, err := client.CoreV1().ConfigMaps(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return extractConfigMapDataEntries(cluster, namespace, cm), nil
+	default:
+		return nil, fmt.Errorf("resource_kind inválido: %q (esperado \"secret\" ou \"configmap\")", resourceKind)
+	}
 }
 
 // scanResourcesByName detecta dependências pelo nome do recurso K8s (Service, StatefulSet).

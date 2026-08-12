@@ -2411,3 +2411,21 @@ export interface AccessCheckFleetScanResult {
   groupsResolutionError?: string;
   results: AccessCheckFleetClusterResult[];
 }
+
+// Entrada de chave/valor de um Secret ou ConfigMap indexada para a busca em Secrets/ConfigMaps da
+// aba Dependencies (modo "Secrets") — espelha storage.SecretDataRecord
+// (internal/storage/dependency_registry.go).
+export interface SecretDataRecord {
+  id: number;
+  resource_kind: "secret" | "configmap";
+  cluster: string;
+  namespace: string;
+  resource_name: string; // nome do Secret ou ConfigMap
+  resource_subtype: string; // Type do Secret (Opaque, kubernetes.io/tls...); vazio para ConfigMap
+  data_key: string;
+  value_base64: string;
+  value_decoded: string; // vazio quando is_binary
+  is_binary: boolean;
+  truncated: boolean;
+  last_seen: string;
+}

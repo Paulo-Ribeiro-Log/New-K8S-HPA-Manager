@@ -1735,8 +1735,9 @@ func (s *Server) setupRoutes() {
 			// Busca em Secrets (chave/valor) — persiste CONTEÚDO de secret no SQLite (diferente do
 			// resto da aba, que só indexa nomes de host por regex), por isso atrás de SRE mesmo
 			// sendo GET/DELETE.
-			dependenciesGroup.GET("/search-secrets", rbacMiddleware.RequireSREGroup(), dependenciesHandler.SearchSecrets)   // Busca por chave ou valor no índice de Secrets
-			dependenciesGroup.DELETE("/secret-data", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearSecretData) // Apaga todo o índice de Secrets do disco
+			dependenciesGroup.GET("/search-secrets", rbacMiddleware.RequireSREGroup(), dependenciesHandler.SearchSecrets)           // Busca por chave ou valor no índice de Secrets
+			dependenciesGroup.POST("/secret-data/refresh", rbacMiddleware.RequireSREGroup(), dependenciesHandler.RefreshSecretData) // Relê 1 recurso ao vivo (pós Resync AKV)
+			dependenciesGroup.DELETE("/secret-data", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearSecretData)         // Apaga todo o índice de Secrets do disco
 
 			// Rotas de escrita (POST) - Escaneiam K8s e persistem no SQLite. Exigem SRE porque agora
 			// também extraem e persistem o CONTEÚDO (chave/valor) de Secrets, não só nomes de host.
