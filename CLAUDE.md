@@ -1059,7 +1059,7 @@ O formato `TIMESTAMP LEVEL {JSON}` (timestamp fora do objeto) falha no FluentD `
 
 **Sessões separadas**:
 - `~/.k8s-hpa-manager/teams-session/` — perfil Chrome para Teams (go-rod). **Nunca misturar com `rod-session`** do ServiceNow — perfis Chrome incompatíveis corrompem um ao outro.
-- `~/.k8s-hpa-manager/teams-cache/approvals-cache.json` — cache de CHGs em disco. Persiste 48h por merge; `needs_refresh` na resposta JSON é apenas indicativo (não oculta dados).
+- `~/.k8s-hpa-manager/teams-cache/approvals-cache.json` — cache de CHGs em disco. Persiste a janela de `teams.MaxMessageAgeBusinessDays` por merge (ver "Janela de coleta em dias úteis" abaixo); `needs_refresh` na resposta JSON é apenas indicativo (não oculta dados).
 
 **Refresh é síncrono e lento** (`POST /api/v1/teams/approvals/refresh`): abre o Chrome, navega para `teams.microsoft.com/v2/`, aguarda carregamento (~2min max), navega para o chat do Mr.ViaBot via hash SPA `#/conversations/<threadID>`, extrai o DOM e fecha. Pode levar **~90s**. O handler bloqueia e retorna `409 Conflict` se já houver extração em andamento (`h.refreshing`).
 
@@ -1071,11 +1071,13 @@ O formato `TIMESTAMP LEVEL {JSON}` (timestamp fora do objeto) falha no FluentD `
 
 **Thread ID do Mr.ViaBot** é hardcoded em `discover.go` e `extractor.go`: `19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces`. Se o bot mudar de conta, atualizar ambos os arquivos.
 
+**Janela de coleta em dias úteis, não corridos** (`internal/teams/holidays.go` + `extractor.go`): `MaxMessageAgeBusinessDays = 3` — quantas mensagens do Mr.ViaBot entram no resultado da extração/cache, contado em **dias úteis** (pula sábado, domingo e feriado nacional), não em `time.Duration` fixo como antes (era uma janela de 7 dias corridos). Motivo: uma janela corrida perde CHGs postadas numa sexta-feira quando o refresh roda depois de um fim de semana ou feriado prolongado — "3 dias corridos atrás" de uma segunda-feira cai numa sexta-feira só por coincidência de calendário, não por regra. `holidays.go` converte pra Go o algoritmo do Computus (Anonymous Gregorian/Meeus, mesma fórmula usada por calendários litúrgicos ocidentais) para calcular Carnaval/Paixão de Cristo/Corpus Christi (feriados móveis brasileiros, derivados da Páscoa) e combina com a lista fixa de feriados nacionais (Confraternização, Tiradentes, Dia do Trabalho, Independência, Aparecida, Finados, Proclamação da República, Consciência Negra, Natal) — só feriados **nacionais**, não estaduais/municipais. `CutoffTime(now)` (`extractor.go`) é a única fonte de verdade do corte, usada nos três lugares que precisam concordar entre si: `filterByAge` (filtro da extração), o merge de cache em `RefreshApprovals` (`internal/web/handlers/teams.go`), e `GetApprovalsToday` — que **parou de filtrar por dia calendário atual** e passou a devolver a mesma janela de `CutoffTime`, pelo mesmo motivo (numa segunda de manhã ou no dia seguinte a um feriado, "só hoje" ficava vazio mesmo com CHGs válidas do último dia útil ainda no cache). Nome do endpoint/handler (`/approvals/today`, `GetApprovalsToday`) mantido por compatibilidade com o frontend, apesar de não filtrar mais só "hoje".
+
 **`internal/sreapproval/`** — aprovação de deployments em `https://devstartcd.via.com.br`. Fluxo CSRF-aware: GET página → `cookiejar` mantém sessão → extrai campos `<input type="hidden">` e `<form action>` → POST com `email`. Detecta `já foi finalizada` no HTML e retorna `*ErrAlreadyFinalized{ApproverEmail, ApproverSquad}` — o handler retorna `200 OK` com `already_finalized: true` (não erro HTTP).
 
 **Endpoints Teams**:
-- `GET /api/v1/teams/approvals/today` — CHGs do dia (filtro por `ExtractedAt.YearDay`)
-- `GET /api/v1/teams/approvals/search?chg=CHG0455046` — busca no cache 48h (resposta em ms)
+- `GET /api/v1/teams/approvals/today` — CHGs dentro da janela de `teams.MaxMessageAgeBusinessDays` (dias úteis, ver acima) — não mais só o dia calendário atual
+- `GET /api/v1/teams/approvals/search?chg=CHG0455046` — busca no cache (mesma janela de dias úteis, resposta em ms)
 - `POST /api/v1/teams/approvals/refresh` — extração completa (~90s, bloqueante)
 
 **Endpoints SRE Approval**:

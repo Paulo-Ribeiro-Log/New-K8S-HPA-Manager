@@ -221,7 +221,8 @@ export const GitHubReleasesTab = () => {
   // esse campo preenchido, mesmo depois de um rebuild — o valor só é setado no momento da
   // importação. Busca no cache do Teams (responde em ms) pra qualquer CHG do lote sem data,
   // uma única vez por CHG (backfillAttempted evita retry infinito quando o cache genuinamente
-  // não tem — CHG >48h — ou quando o backfill roda mas não altera o estado).
+  // não tem — CHG fora da janela de dias úteis do cache Teams — ou quando o backfill roda mas
+  // não altera o estado).
   const backfillAttempted = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
     const missing = comparisonBatch.filter(
