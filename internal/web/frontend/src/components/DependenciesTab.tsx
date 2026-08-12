@@ -55,7 +55,22 @@ import {
   Download,
   ChevronDown,
   ChevronRight,
+  KeyRound,
+  Eye,
+  EyeOff,
+  Trash2,
+  Copy,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
@@ -77,12 +92,31 @@ interface DependencyRecord {
   last_seen: string;
 }
 
+// Entrada de chave/valor de um Secret indexada para a busca em Secrets (modo "Secrets" da aba,
+// distinto do modo "Dependência" acima — ver DependencyRecord). Espelha storage.SecretDataRecord
+// (internal/storage/dependency_registry.go).
+interface SecretDataRecord {
+  id: number;
+  resource_kind: "secret" | "configmap";
+  cluster: string;
+  namespace: string;
+  resource_name: string; // nome do Secret ou ConfigMap
+  resource_subtype: string; // Type do Secret (Opaque, kubernetes.io/tls...); vazio para ConfigMap
+  data_key: string;
+  value_base64: string;
+  value_decoded: string; // vazio quando is_binary
+  is_binary: boolean;
+  truncated: boolean;
+  last_seen: string;
+}
+
 interface RegistryStats {
   total_dependencies: number;
   unique_services: number;
   unique_clusters: number;
   unique_namespaces: number;
   by_type: Record<string, number>;
+  secret_data_entries?: number;
   last_scan?: string;
 }
 
@@ -125,6 +159,15 @@ export const DependenciesTab = () => {
   const [filterType, setFilterType] = useState<string>("all");
   const [filterEnv, setFilterEnv] = useState<string>("all");
   const [filterEnvSearch, setFilterEnvSearch] = useState<string>("all");
+
+  // Busca em Secrets (modo alternativo dentro da aba "Busca Reversa") — nunca acumula estado com
+  // a busca de dependências acima, são queries/resultados totalmente separados.
+  const [searchMode, setSearchMode] = useState<"dependency" | "secret">("dependency");
+  const [secretSearchTarget, setSecretSearchTarget] = useState<"key" | "value">("value");
+  const [revealedRows, setRevealedRows] = useState<Set<string>>(new Set());
+  const [revealedAsBase64, setRevealedAsBase64] = useState<Set<string>>(new Set());
+  const [clearSecretDataConfirmOpen, setClearSecretDataConfirmOpen] = useState(false);
+  const [isClearingSecretData, setIsClearingSecretData] = useState(false);
 
   // Estado de auto-scan
   const [autoScanRunning, setAutoScanRunning] = useState(false);
@@ -247,6 +290,25 @@ export const DependenciesTab = () => {
     enabled: false, // Manual trigger
   });
 
+  // Busca no índice de chave/valor de Secrets — SEMPRE lê do SQLite (mesmo scan/agendamento da
+  // aba, nunca toca o cluster ao vivo). Query separada da busca de dependências acima.
+  const {
+    data: secretSearchResults,
+    isLoading: isSearchingSecrets,
+    refetch: executeSecretSearch,
+  } = useQuery({
+    queryKey: ["dependencies-search-secrets", reverseSearchQuery, secretSearchTarget],
+    queryFn: async () => {
+      if (!reverseSearchQuery.trim()) return null;
+      const response = await apiClient.get(
+        `/dependencies/search-secrets?q=${encodeURIComponent(reverseSearchQuery)}&mode=${secretSearchTarget}`
+      );
+      if (response.success) return response.data;
+      throw new Error("Failed to search secret data");
+    },
+    enabled: false, // Manual trigger
+  });
+
   // Filtrar dependências do registry
   // Extrair ambiente do nome do cluster (ex: "akspriv-faturamento-prd-admin" → "prd")
   const extractEnv = (cluster: string): string => {
@@ -286,6 +348,26 @@ export const DependenciesTab = () => {
       (dep) => extractEnv(dep.cluster) === filterEnvSearch
     );
   }, [searchResults, filterEnvSearch]);
+
+  // Ambientes únicos disponíveis nos resultados da busca em Secrets (mesmo extractEnv, opera
+  // sobre .cluster presente em SecretDataRecord também)
+  const availableEnvsSecretSearch = useMemo(() => {
+    if (!secretSearchResults?.results) return [];
+    const envSet = new Set<string>();
+    (secretSearchResults.results as SecretDataRecord[]).forEach((rec) => {
+      envSet.add(extractEnv(rec.cluster));
+    });
+    return Array.from(envSet).sort();
+  }, [secretSearchResults]);
+
+  // Resultados da busca em Secrets filtrados por ambiente
+  const filteredSecretSearchResults = useMemo(() => {
+    if (!secretSearchResults?.results) return [];
+    if (filterEnvSearch === "all") return secretSearchResults.results as SecretDataRecord[];
+    return (secretSearchResults.results as SecretDataRecord[]).filter(
+      (rec) => extractEnv(rec.cluster) === filterEnvSearch
+    );
+  }, [secretSearchResults, filterEnvSearch]);
 
   const filteredDependencies = useMemo(() => {
     if (!registryData?.dependencies) return [];
@@ -387,13 +469,69 @@ export const DependenciesTab = () => {
     }
   }, [clustersLoading, allClusters, runAutoScan]);
 
-  // Handler de busca reversa
+  // Handler de busca reversa — bifurca conforme searchMode (dependência no registry vs. índice
+  // de Secrets), nunca os dois ao mesmo tempo.
   const handleReverseSearch = async () => {
     if (!reverseSearchQuery.trim()) {
-      toast.error("Digite o nome do serviço para buscar");
+      toast.error(searchMode === "secret" ? "Digite um termo para buscar" : "Digite o nome do serviço para buscar");
       return;
     }
-    executeSearch();
+    if (searchMode === "secret") {
+      setRevealedRows(new Set());
+      setRevealedAsBase64(new Set());
+      executeSecretSearch();
+    } else {
+      executeSearch();
+    }
+  };
+
+  // Limpar índice de Secrets/ConfigMaps (todos os clusters) — ação destrutiva dedicada, separada da limpeza
+  // do registry de dependências (não sensível).
+  const handleClearSecretData = async () => {
+    setIsClearingSecretData(true);
+    try {
+      const response = await apiClient.delete("/dependencies/secret-data");
+      if (!response.success) throw new Error(response.error?.message || "Falha ao limpar");
+      toast.success("Índice de Secrets e ConfigMaps limpo com sucesso");
+      setClearSecretDataConfirmOpen(false);
+      if (reverseSearchQuery.trim()) executeSecretSearch();
+    } catch (error) {
+      toast.error("Erro ao limpar índice de Secrets e ConfigMaps", {
+        description: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsClearingSecretData(false);
+    }
+  };
+
+  const toggleRowRevealed = (rowKey: string) => {
+    setRevealedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
+
+  const toggleRowBase64 = (rowKey: string) => {
+    setRevealedAsBase64((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
+
+  // Copia o valor exibido (decodificado ou base64, conforme o toggle da linha) — complementa a
+  // quebra de linha (break-all) da célula: com valores longos quebrados em várias linhas, copiar
+  // manualmente com o mouse é inconveniente.
+  const copySecretValue = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success("Valor copiado para a área de transferência");
+    } catch {
+      toast.error("Não foi possível copiar o valor");
+    }
   };
 
   // Scan manual (força re-scan de todos os clusters)
@@ -599,11 +737,13 @@ export const DependenciesTab = () => {
     return `${diffDays}d atrás`;
   };
 
-  // Dados visíveis para exportação do painel direito
+  // Dados visíveis para exportação do painel direito — resultados de busca em Secrets
+  // deliberadamente FORA desse fluxo (nunca viram CSV/JSON/MD com conteúdo de secret em disco).
   const viewExportData = useMemo(() => {
     if (activeTab === "registry") return filteredDependencies;
+    if (searchMode === "secret") return [];
     return filteredSearchResults;
-  }, [activeTab, filteredDependencies, filteredSearchResults]);
+  }, [activeTab, filteredDependencies, filteredSearchResults, searchMode]);
 
   const viewExportHasData = viewExportData.length > 0;
 
@@ -1216,15 +1356,70 @@ export const DependenciesTab = () => {
                 {/* Input de busca */}
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-sm font-medium">Busca por Serviço</CardTitle>
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle className="text-sm font-medium">
+                        {searchMode === "secret" ? "Busca em Secrets e ConfigMaps" : "Busca por Serviço"}
+                      </CardTitle>
+                      <div className="inline-flex rounded-md border border-border/50 overflow-hidden text-xs shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setSearchMode("dependency")}
+                          className={`px-2.5 py-1 font-medium ${searchMode === "dependency" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
+                        >
+                          Dependência
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSearchMode("secret")}
+                          className={`px-2.5 py-1 font-medium flex items-center gap-1 ${searchMode === "secret" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
+                        >
+                          <KeyRound className="h-3 w-3" />
+                          Secrets/ConfigMaps
+                        </button>
+                      </div>
+                    </div>
                     <CardDescription className="text-xs">
-                      Digite o nome do serviço para encontrar onde ele é usado. Use * como coringa (ex: rds*, *kafka*, evh-*)
+                      {searchMode === "secret"
+                        ? "Busca no índice de chave/valor de Secrets e ConfigMaps, populado pelo mesmo scan da aba (não toca o cluster ao vivo)."
+                        : "Digite o nome do serviço para encontrar onde ele é usado. Use * como coringa (ex: rds*, *kafka*, evh-*)"}
                     </CardDescription>
+                    {searchMode === "secret" && (
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <div className="inline-flex rounded-md border border-border/50 overflow-hidden text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() => setSecretSearchTarget("key")}
+                            className={`px-2 py-0.5 font-medium ${secretSearchTarget === "key" ? "bg-secondary text-secondary-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
+                          >
+                            Buscar em: Chave
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSecretSearchTarget("value")}
+                            className={`px-2 py-0.5 font-medium ${secretSearchTarget === "value" ? "bg-secondary text-secondary-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
+                          >
+                            Valor
+                          </button>
+                        </div>
+                        {statsData?.secret_data_entries !== undefined && (
+                          <span className="text-[11px] text-muted-foreground">
+                            {statsData.secret_data_entries} valor(es) indexado(s) (Secrets + ConfigMaps)
+                            {statsData.last_scan ? ` · último scan ${formatRelativeDate(statsData.last_scan)}` : ""}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </CardHeader>
                   <CardContent>
                     <div className="flex gap-2">
                       <Input
-                        placeholder="Ex: rdsh-regional01, rds*, *kafka*, evh-mensagens..."
+                        placeholder={
+                          searchMode === "secret"
+                            ? secretSearchTarget === "key"
+                              ? "Ex: DB_PASSWORD, testeteste..."
+                              : "Ex: teste (convertido para base64 automaticamente)"
+                            : "Ex: rdsh-regional01, rds*, *kafka*, evh-mensagens..."
+                        }
                         value={reverseSearchQuery}
                         onChange={(e) => setReverseSearchQuery(e.target.value)}
                         onKeyDown={(e) => e.key === "Enter" && handleReverseSearch()}
@@ -1236,93 +1431,219 @@ export const DependenciesTab = () => {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="all">Todos Ambientes</SelectItem>
-                          {availableEnvsSearch.map((env) => (
+                          {(searchMode === "secret" ? availableEnvsSecretSearch : availableEnvsSearch).map((env) => (
                             <SelectItem key={env} value={env}>
                               {env.toUpperCase()}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <Button onClick={handleReverseSearch} disabled={isSearching}>
-                        {isSearching ? (
+                      <Button onClick={handleReverseSearch} disabled={searchMode === "secret" ? isSearchingSecrets : isSearching}>
+                        {(searchMode === "secret" ? isSearchingSecrets : isSearching) ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
                           <Search className="h-4 w-4" />
                         )}
                       </Button>
+                      {searchMode === "secret" && (
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          title="Limpar índice de Secrets e ConfigMaps (todos os clusters)"
+                          onClick={() => setClearSecretDataConfirmOpen(true)}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      )}
                     </div>
                     <p className="text-xs text-muted-foreground mt-2">
-                      Busca no registry local (SQLite). Use * como coringa: rds* (inicia com), *kafka* (contém), evh-prd* (prefixo)
+                      {searchMode === "secret" ? (
+                        secretSearchTarget === "key" ? (
+                          "Busca em texto puro pelo nome da chave — a chave nunca é base64."
+                        ) : (
+                          "Busca no valor decodificado E no valor bruto (o termo é convertido para base64 automaticamente); cole um base64 pronto para buscar por ele diretamente."
+                        )
+                      ) : (
+                        "Busca no registry local (SQLite). Use * como coringa: rds* (inicia com), *kafka* (contém), evh-prd* (prefixo)"
+                      )}
                     </p>
                   </CardContent>
                 </Card>
 
                 {/* Resultados da busca */}
-                <ScrollArea className="flex-1">
-                  {!searchResults ? (
-                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
-                      <Search className="h-12 w-12 mb-4 opacity-50" />
-                      <p className="text-sm">Nenhuma busca realizada</p>
-                      <p className="text-xs mt-1">
-                        Digite o nome de um serviço e clique em buscar
-                      </p>
-                    </div>
-                  ) : searchResults.total_found === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
-                      <AlertCircle className="h-12 w-12 mb-4 opacity-50" />
-                      <p className="text-sm">Nenhum uso encontrado</p>
-                      <p className="text-xs mt-1">
-                        O serviço "{reverseSearchQuery}" não foi encontrado no registry
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="text-xs text-muted-foreground mb-2">
-                        {filteredSearchResults.length} resultado(s){filterEnvSearch !== "all" ? ` (filtro: ${filterEnvSearch.toUpperCase()})` : ""} encontrado(s) para "{reverseSearchQuery}"
+                {searchMode === "secret" ? (
+                  <ScrollArea className="flex-1">
+                    {!secretSearchResults ? (
+                      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                        <KeyRound className="h-12 w-12 mb-4 opacity-50" />
+                        <p className="text-sm">Nenhuma busca realizada</p>
+                        <p className="text-xs mt-1">Digite um termo e clique em buscar</p>
                       </div>
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="text-xs">Serviço</TableHead>
-                            <TableHead className="text-xs">Cluster</TableHead>
-                            <TableHead className="text-xs">Namespace</TableHead>
-                            <TableHead className="text-xs">Fonte</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {filteredSearchResults.map((dep, index) => (
-                            <TableRow
-                              key={`${dep.cluster}-${dep.namespace}-${dep.source_name}-${dep.id}`}
-                              ref={(el) => (searchRowRefs.current[index] = el)}
-                              tabIndex={0}
-                              onKeyDown={(e) => handleListKeyDown(e, searchRowRefs, index)}
-                              className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:bg-muted/50"
-                            >
-                              <TableCell className="text-xs font-mono">
-                                <div className="flex items-center gap-1">
-                                  <Badge
-                                    variant="outline"
-                                    className={`text-[9px] ${SERVICE_TYPE_COLORS[dep.service_type] || SERVICE_TYPE_COLORS.other}`}
-                                  >
-                                    {dep.service_type}
-                                  </Badge>
-                                  {dep.service_name}
-                                </div>
-                              </TableCell>
-                              <TableCell className="text-xs">
-                                {dep.cluster.replace(/-admin$/, "")}
-                              </TableCell>
-                              <TableCell className="text-xs">{dep.namespace}</TableCell>
-                              <TableCell className="text-xs text-muted-foreground">
-                                {dep.source_type}: {dep.source_name}
-                              </TableCell>
+                    ) : secretSearchResults.total_found === 0 ? (
+                      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                        <AlertCircle className="h-12 w-12 mb-4 opacity-50" />
+                        <p className="text-sm">Nenhum resultado encontrado</p>
+                        <p className="text-xs mt-1">
+                          "{reverseSearchQuery}" não foi encontrado no índice de Secrets/ConfigMaps
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-xs text-muted-foreground mb-2">
+                          {filteredSecretSearchResults.length} resultado(s){filterEnvSearch !== "all" ? ` (filtro: ${filterEnvSearch.toUpperCase()})` : ""} encontrado(s) para "{reverseSearchQuery}"
+                        </div>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="text-xs">Serviço</TableHead>
+                              <TableHead className="text-xs">Cluster</TableHead>
+                              <TableHead className="text-xs">Namespace</TableHead>
+                              <TableHead className="text-xs">Fonte</TableHead>
                             </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  )}
-                </ScrollArea>
+                          </TableHeader>
+                          <TableBody>
+                            {filteredSecretSearchResults.map((rec, index) => {
+                              const rowKey = `${rec.resource_kind}-${rec.cluster}-${rec.namespace}-${rec.resource_name}-${rec.data_key}`;
+                              const revealed = revealedRows.has(rowKey);
+                              const showBase64 = revealedAsBase64.has(rowKey);
+                              const displayValue = rec.is_binary
+                                ? rec.value_base64
+                                : (showBase64 ? rec.value_base64 : rec.value_decoded) || rec.value_base64;
+                              return (
+                                <TableRow
+                                  key={rowKey}
+                                  ref={(el) => (searchRowRefs.current[index] = el)}
+                                  tabIndex={0}
+                                  onKeyDown={(e) => handleListKeyDown(e, searchRowRefs, index)}
+                                  className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:bg-muted/50"
+                                >
+                                  <TableCell className="font-mono align-top">
+                                    <div className="flex flex-col gap-1">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-sm font-semibold">{rec.data_key}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleRowRevealed(rowKey)}
+                                          className="text-muted-foreground hover:text-foreground shrink-0"
+                                          title={revealed ? "Ocultar valor" : "Revelar valor"}
+                                        >
+                                          {revealed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                                        </button>
+                                      </div>
+                                      {revealed ? (
+                                        <div className="flex items-start gap-1 min-w-0">
+                                          <span
+                                            className="break-all max-w-md text-xs text-muted-foreground"
+                                            title={rec.truncated ? "Valor truncado no armazenamento (>8KB) — não é o valor completo" : undefined}
+                                          >
+                                            {displayValue}
+                                            {rec.truncated ? "…" : ""}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => copySecretValue(displayValue)}
+                                            className="text-muted-foreground hover:text-foreground shrink-0"
+                                            title="Copiar valor"
+                                          >
+                                            <Copy className="h-3 w-3" />
+                                          </button>
+                                          {!rec.is_binary && (
+                                            <button
+                                              type="button"
+                                              onClick={() => toggleRowBase64(rowKey)}
+                                              className="text-[10px] text-muted-foreground underline hover:text-foreground shrink-0"
+                                            >
+                                              {showBase64 ? "decodificado" : "base64"}
+                                            </button>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <span className="text-xs text-muted-foreground select-none">••••••••</span>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-xs">
+                                    {rec.cluster.replace(/-admin$/, "")}
+                                  </TableCell>
+                                  <TableCell className="text-xs">{rec.namespace}</TableCell>
+                                  <TableCell className="text-xs text-muted-foreground">
+                                    {rec.resource_kind}: {rec.resource_name}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )}
+                  </ScrollArea>
+                ) : (
+                  <ScrollArea className="flex-1">
+                    {!searchResults ? (
+                      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                        <Search className="h-12 w-12 mb-4 opacity-50" />
+                        <p className="text-sm">Nenhuma busca realizada</p>
+                        <p className="text-xs mt-1">
+                          Digite o nome de um serviço e clique em buscar
+                        </p>
+                      </div>
+                    ) : searchResults.total_found === 0 ? (
+                      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                        <AlertCircle className="h-12 w-12 mb-4 opacity-50" />
+                        <p className="text-sm">Nenhum uso encontrado</p>
+                        <p className="text-xs mt-1">
+                          O serviço "{reverseSearchQuery}" não foi encontrado no registry
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-xs text-muted-foreground mb-2">
+                          {filteredSearchResults.length} resultado(s){filterEnvSearch !== "all" ? ` (filtro: ${filterEnvSearch.toUpperCase()})` : ""} encontrado(s) para "{reverseSearchQuery}"
+                        </div>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="text-xs">Serviço</TableHead>
+                              <TableHead className="text-xs">Cluster</TableHead>
+                              <TableHead className="text-xs">Namespace</TableHead>
+                              <TableHead className="text-xs">Fonte</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {filteredSearchResults.map((dep, index) => (
+                              <TableRow
+                                key={`${dep.cluster}-${dep.namespace}-${dep.source_name}-${dep.id}`}
+                                ref={(el) => (searchRowRefs.current[index] = el)}
+                                tabIndex={0}
+                                onKeyDown={(e) => handleListKeyDown(e, searchRowRefs, index)}
+                                className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:bg-muted/50"
+                              >
+                                <TableCell className="text-xs font-mono">
+                                  <div className="flex items-center gap-1">
+                                    <Badge
+                                      variant="outline"
+                                      className={`text-[9px] ${SERVICE_TYPE_COLORS[dep.service_type] || SERVICE_TYPE_COLORS.other}`}
+                                    >
+                                      {dep.service_type}
+                                    </Badge>
+                                    {dep.service_name}
+                                  </div>
+                                </TableCell>
+                                <TableCell className="text-xs">
+                                  {dep.cluster.replace(/-admin$/, "")}
+                                </TableCell>
+                                <TableCell className="text-xs">{dep.namespace}</TableCell>
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {dep.source_type}: {dep.source_name}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )}
+                  </ScrollArea>
+                )}
               </div>
             </TabsContent>
           </Tabs>
@@ -1384,6 +1705,40 @@ export const DependenciesTab = () => {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {/* Confirmação de limpeza do índice de Secrets/ConfigMaps — ação destrutiva, apaga conteúdo persistido */}
+    <AlertDialog open={clearSecretDataConfirmOpen} onOpenChange={(open) => !isClearingSecretData && setClearSecretDataConfirmOpen(open)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Limpar índice de Secrets e ConfigMaps?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Isso apaga do disco (SQLite local) TODO o conteúdo de chave/valor de Secrets e ConfigMaps indexado
+            até agora, de TODOS os clusters — não afeta o registry de dependências normal. Um novo "Atualizar"
+            na aba reconstrói o índice do zero.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={isClearingSecretData}>Cancelar</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(e) => {
+              e.preventDefault();
+              handleClearSecretData();
+            }}
+            disabled={isClearingSecretData}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            {isClearingSecretData ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                Limpando...
+              </>
+            ) : (
+              "Limpar"
+            )}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
     </>
   );
 };

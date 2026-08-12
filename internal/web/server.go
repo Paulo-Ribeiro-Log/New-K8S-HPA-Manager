@@ -1732,10 +1732,17 @@ func (s *Server) setupRoutes() {
 			dependenciesGroup.GET("/export", dependenciesHandler.Export)                        // Exportar CSV/JSON/Markdown do SQLite
 			dependenciesGroup.GET("/service/:serviceName", dependenciesHandler.GetServiceUsage) // Uso de serviço específico
 
-			// Rotas de escrita (POST) - Escaneiam K8s e persistem no SQLite
-			dependenciesGroup.POST("/scan", dependenciesHandler.Scan)                                                // Scan múltiplos clusters (sem RBAC: leitura K8s)
-			dependenciesGroup.POST("/scan/:cluster", dependenciesHandler.ScanCluster)                                // Scan cluster único (sem RBAC: auto-scan)
-			dependenciesGroup.POST("/cache/clear", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearCache) // Limpar cache em memória
+			// Busca em Secrets (chave/valor) — persiste CONTEÚDO de secret no SQLite (diferente do
+			// resto da aba, que só indexa nomes de host por regex), por isso atrás de SRE mesmo
+			// sendo GET/DELETE.
+			dependenciesGroup.GET("/search-secrets", rbacMiddleware.RequireSREGroup(), dependenciesHandler.SearchSecrets)   // Busca por chave ou valor no índice de Secrets
+			dependenciesGroup.DELETE("/secret-data", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearSecretData) // Apaga todo o índice de Secrets do disco
+
+			// Rotas de escrita (POST) - Escaneiam K8s e persistem no SQLite. Exigem SRE porque agora
+			// também extraem e persistem o CONTEÚDO (chave/valor) de Secrets, não só nomes de host.
+			dependenciesGroup.POST("/scan", rbacMiddleware.RequireSREGroup(), dependenciesHandler.Scan)                 // Scan múltiplos clusters
+			dependenciesGroup.POST("/scan/:cluster", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ScanCluster) // Scan cluster único (auto-scan)
+			dependenciesGroup.POST("/cache/clear", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearCache)    // Limpar cache em memória
 		}
 
 		fmt.Println("✅ Dependency Scanner routes registradas (com SQLite)")
