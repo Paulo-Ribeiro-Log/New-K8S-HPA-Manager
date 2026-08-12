@@ -352,13 +352,23 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	}
 teamsLoaded:
 
-	// Daqui em diante a extração é 100% via CDP/JS (hash nav, DOM, IndexedDB) — sem nenhuma
-	// necessidade de interação do usuário. Minimizar a janela pra não ocupar a tela à toa; ver
-	// comentário de minimizeWindow em browser_manager.go.
-	minimizeWindow(page, logger)
-
 	// ThreadId do Mr.ViaBot (descoberto na Fase 0)
 	const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"
+
+	// Bug real corrigido (achado ao vivo na Fase 2 do BROWSER-CONSOLIDATION-STUDY.md, testando o
+	// Chromium embed sem sessão SSO pré-existente): "Teams v2 carregado!" acima só confirma que a
+	// URL bate com o domínio/path do Teams v2 — isso é verdade mesmo numa tela de login/MFA em
+	// andamento (a URL continua em teams.microsoft.com/v2 durante boa parte do fluxo de auth
+	// embutido do Teams, só sai pra login.microsoftonline.com em alguns trechos). NÃO é o mesmo
+	// que "login concluído". minimizeWindow() rodava logo aqui, ANTES da espera do SkypeToken
+	// abaixo — minimizava a janela de login bem na cara do usuário, sem dar tempo de completar
+	// MFA. Com o Chrome do sistema isso nunca dava sintoma porque a sessão salva já estava
+	// autenticada na prática (login sempre silencioso) — o bug sempre existiu, só nunca tinha
+	// superfície pra aparecer antes. Movido pra depois do loop de espera do SkypeToken (mesmo
+	// sinal que o loop já usa como "login realmente completo"): a janela fica visível durante
+	// toda a janela de até 90s pra dar tempo real de interação: login manual, MFA, "continuar
+	// conectado". Se o SkypeToken nunca for capturado (login não aconteceu a tempo), a janela
+	// simplesmente permanece visível — não há necessidade de minimizar algo que não terminou.
 
 	// Aguardar SkypeToken ser capturado. Máximo 90s.
 	//
@@ -367,15 +377,28 @@ teamsLoaded:
 	// no DOM). Na prática o SkypeToken funciona como sinal indireto de "o Teams terminou de
 	// sincronizar dados o suficiente pra aceitar interação" — sem esperar por ele, o
 	// hash-nav/click/scroll rodam cedo demais, antes da conversa estar pronta. Mantido.
+	skypeTokenCaptured := false
 	for i := 0; i < 18; i++ {
 		time.Sleep(5 * time.Second)
 		mu.Lock()
 		captured := result.SkypeToken != ""
 		mu.Unlock()
 		if captured {
+			skypeTokenCaptured = true
 			logger.Info().Msg("[Teams] SkypeToken capturado — navegando ao chat do Mr.ViaBot")
 			break
 		}
+	}
+
+	// Daqui em diante a extração é 100% via CDP/JS (hash nav, DOM, IndexedDB) — sem nenhuma
+	// necessidade de interação do usuário. Minimizar a janela pra não ocupar a tela à toa; ver
+	// comentário de minimizeWindow em browser_manager.go. Só minimiza quando o login de fato
+	// completou (SkypeToken capturado) — se não completou, a janela fica visível pro usuário
+	// ver o que travou (tela de login/MFA/erro) em vez de sumir sem explicação.
+	if skypeTokenCaptured {
+		minimizeWindow(page, logger)
+	} else {
+		logger.Warn().Msg("[Teams] SkypeToken não capturado em 90s — mantendo janela visível (login pode não ter completado)")
 	}
 
 	// Navegar ao chat do Mr.ViaBot via JS (altera hash SPA sem criar nova aba).

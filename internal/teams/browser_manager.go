@@ -53,21 +53,35 @@ func getBrowser(sessionDir string, logger *zerolog.Logger) (*rod.Browser, error)
 		logger.Warn().Msg("[Teams] Chrome do sistema não encontrado — usando Chromium do Rod")
 	}
 
+	flags := map[string]string{
+		// Sem valor: launcher gera --flag (sem "="), correto para flags booleanas
+		"disable-blink-features":   "AutomationControlled",
+		"no-first-run":             "",
+		"no-default-browser-check": "",
+		// Limitar cache em disco a 32 MB para evitar esgotamento de espaço
+		"disk-cache-size":           "33554432",
+		"aggressive-cache-discard":  "",
+		"disable-application-cache": "",
+	}
+	if teamsForceEmbedBrowser() {
+		// Chromium embed do Rod (revisão pinada) — testado ao vivo em WSL2 sem essas flags: o
+		// processo caiu sozinho (~90s depois de carregar o Teams v2, CDP desconectou) durante a
+		// espera do SkypeToken. Mesmas flags de estabilidade que o ServiceNow já usa com sucesso
+		// nesta mesma máquina (rod_extractor.go:rodLaunchFlags). Escopado só ao caminho de
+		// experimento explícito (env var) — não aplicado ao fallback "Chrome do sistema não
+		// encontrado" pra não mudar esse comportamento pré-existente fora do escopo da Fase 2.
+		flags["disable-gpu"] = ""
+		flags["no-sandbox"] = ""
+		flags["disable-dev-shm-usage"] = ""
+		flags["disable-setuid-sandbox"] = ""
+	}
+
 	opts := browser.LaunchOptions{
 		SessionDir:  sessionDir,
 		Headless:    false,
 		SystemBin:   chromeBin,
 		DeleteFlags: []string{"enable-automation"},
-		Flags: map[string]string{
-			// Sem valor: launcher gera --flag (sem "="), correto para flags booleanas
-			"disable-blink-features":   "AutomationControlled",
-			"no-first-run":             "",
-			"no-default-browser-check": "",
-			// Limitar cache em disco a 32 MB para evitar esgotamento de espaço
-			"disk-cache-size":           "33554432",
-			"aggressive-cache-discard":  "",
-			"disable-application-cache": "",
-		},
+		Flags:       flags,
 	}
 
 	return browserMgr.Get(opts, func() {
