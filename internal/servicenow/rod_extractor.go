@@ -11,20 +11,22 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
+
+	sharedbrowser "k8s-hpa-manager/internal/browser"
 )
 
 // RodExtractor usa a biblioteca Rod (Go nativo) para extrair dados do ServiceNow
 // Não precisa de Node.js, npm ou dependências externas
 type RodExtractor struct {
-	logger      *zerolog.Logger
-	sessionDir  string       // Diretório de sessão Chromium (~/.k8s-hpa-manager/rod-session)
-	mu          sync.Mutex   // protege browser/browserStop
-	extractMu   sync.Mutex   // serializa extrações — ServiceNow invalida token com abas paralelas
-	browser     *rod.Browser // browser persistente — reutilizado entre extrações (N CHGs = 1 browser)
-	browserStop func()
+	logger     *zerolog.Logger
+	sessionDir string     // Diretório de sessão Chromium (~/.k8s-hpa-manager/rod-session)
+	extractMu  sync.Mutex // serializa extrações — ServiceNow invalida token com abas paralelas
+	// browserMgr é o browser headless persistente — reutilizado entre extrações (N CHGs = 1
+	// browser). Implementação compartilhada com internal/teams (Fase 1 de
+	// BROWSER-CONSOLIDATION-STUDY.md); protege a si mesma, sem precisar de mutex próprio aqui.
+	browserMgr sharedbrowser.Manager
 
 	// loginMu/loginCancel suportam cancelamento explícito de um login visível em andamento
 	// (TestSession). Não usamos o context da requisição HTTP aqui de propósito — TestSession
@@ -199,15 +201,7 @@ func (r *RodExtractor) GetSessionStatus() *SessionStatus {
 // ClearSession remove a sessão do Rod
 func (r *RodExtractor) ClearSession() error {
 	// Invalidar browser persistente antes de limpar o diretório de sessão
-	r.mu.Lock()
-	if r.browser != nil {
-		if r.browserStop != nil {
-			r.browserStop()
-		}
-		r.browser = nil
-		r.browserStop = nil
-	}
-	r.mu.Unlock()
+	r.browserMgr.Close()
 
 	dir := r.activeSessionDir()
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -239,17 +233,23 @@ func (r *RodExtractor) launchLocalBrowser(headless bool) (*rod.Browser, func(), 
 	return r.launchLocalBrowserWithDir(headless, r.activeSessionDir())
 }
 
+// rodLaunchFlags são as flags do launcher usadas por todo Chromium local lançado pelo
+// ServiceNow (persistente headless ou visível pra login) — mesmas em ambos os casos.
+func rodLaunchFlags() map[string]string {
+	return map[string]string{
+		"disable-blink-features": "AutomationControlled",
+		// Flags de estabilidade WSL2: sem valor → launcher gera --flag (não --flag=)
+		"disable-dev-shm-usage":  "",
+		"no-sandbox":             "",
+		"disable-gpu":            "",
+		"disable-setuid-sandbox": "",
+	}
+}
+
 // launchLocalBrowserWithDir inicia o Chromium local com um diretório de sessão específico.
 // Para sessões visíveis (headless=false) sem display gráfico, tenta Xvfb automaticamente.
 func (r *RodExtractor) launchLocalBrowserWithDir(headless bool, sessionDir string) (*rod.Browser, func(), error) {
-	// Remover lock files residuais de crashes anteriores
-	for _, lock := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie"} {
-		lockPath := filepath.Join(sessionDir, lock)
-		if _, err := os.Stat(lockPath); err == nil {
-			r.logger.Warn().Str("file", lockPath).Msg("[Rod] Removendo lock residual de crash anterior")
-			os.Remove(lockPath) //nolint:errcheck
-		}
-	}
+	sharedbrowser.RemoveStaleLockFiles(sessionDir, r.logger)
 
 	var xvfbCleanup func()
 
@@ -265,41 +265,27 @@ func (r *RodExtractor) launchLocalBrowserWithDir(headless bool, sessionDir strin
 		}
 	}
 
-	l := launcher.New().
-		UserDataDir(sessionDir).
-		Headless(headless).
-		Set("disable-blink-features", "AutomationControlled").
-		// Flags de estabilidade WSL2: sem segundo argumento → Rod gera --flag (não --flag=)
-		Set("disable-dev-shm-usage").
-		Set("no-sandbox").
-		Set("disable-gpu").
-		Set("disable-setuid-sandbox")
-
 	r.logger.Info().
 		Bool("headless", headless).
 		Str("session_dir", sessionDir).
 		Bool("has_display", HasGraphicalDisplay()).
 		Msg("[Rod] Iniciando Chromium local...")
 
-	ctrlURL, err := l.Launch()
+	b, stop, err := sharedbrowser.Launch(sharedbrowser.LaunchOptions{
+		SessionDir: sessionDir,
+		Headless:   headless,
+		Flags:      rodLaunchFlags(),
+	})
 	if err != nil {
 		if xvfbCleanup != nil {
 			xvfbCleanup()
 		}
-		return nil, nil, fmt.Errorf("erro ao iniciar browser: %v", err)
-	}
-
-	b := rod.New().ControlURL(ctrlURL)
-	if err := b.Connect(); err != nil {
-		if xvfbCleanup != nil {
-			xvfbCleanup()
-		}
-		return nil, nil, fmt.Errorf("erro ao conectar ao browser: %v", err)
+		return nil, nil, err
 	}
 
 	r.logger.Info().Msg("[Rod] Chromium local iniciado com sucesso")
 	return b, func() {
-		b.Close()
+		stop()
 		if xvfbCleanup != nil {
 			xvfbCleanup()
 		}
@@ -309,29 +295,17 @@ func (r *RodExtractor) launchLocalBrowserWithDir(headless bool, sessionDir strin
 // getBrowser retorna o browser headless persistente, criando um novo se necessário.
 // Reutilizar o mesmo browser entre extrações evita abrir N janelas para N CHGs.
 func (r *RodExtractor) getBrowser() (*rod.Browser, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.browser != nil {
-		if _, err := r.browser.Pages(); err == nil {
-			return r.browser, nil
-		}
-		// Browser morreu — cleanup e recria
-		if r.browserStop != nil {
-			r.browserStop()
-		}
-		r.browser = nil
-		r.browserStop = nil
+	sessionDir := r.activeSessionDir()
+	opts := sharedbrowser.LaunchOptions{
+		SessionDir: sessionDir,
+		Headless:   true,
+		Flags:      rodLaunchFlags(),
 	}
-
-	b, stop, err := r.launchLocalBrowserWithDir(true, r.activeSessionDir())
-	if err != nil {
-		return nil, err
-	}
-	r.browser = b
-	r.browserStop = stop
-	r.logger.Info().Msg("[Rod] Browser persistente iniciado")
-	return b, nil
+	return r.browserMgr.Get(opts, func() {
+		sharedbrowser.RemoveStaleLockFiles(sessionDir, r.logger)
+	}, func() {
+		r.logger.Info().Msg("[Rod] Browser persistente iniciado")
+	}, r.logger)
 }
 
 // TestSession abre o Chromium para o usuário fazer login no ServiceNow.
@@ -362,15 +336,7 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 		Msg("[Rod] Iniciando login - abrindo browser visível")
 
 	// Invalidar browser persistente: sessão será limpa a seguir
-	r.mu.Lock()
-	if r.browser != nil {
-		if r.browserStop != nil {
-			r.browserStop()
-		}
-		r.browser = nil
-		r.browserStop = nil
-	}
-	r.mu.Unlock()
+	r.browserMgr.Close()
 
 	// Limpar sessão anterior para garantir login fresco
 	r.logger.Info().Msg("[Rod] Limpando sessão anterior para garantir login fresco...")

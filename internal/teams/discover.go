@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -110,27 +109,9 @@ func isTeamsRelevant(url string) bool {
 
 // RunDiscovery lança o Chrome do sistema, navega para o Teams,
 // intercepta TODA atividade de rede via CDP Network events e salva em outputDir.
-// killExistingChrome encerra processos Chrome/Chromium que usam o sessionDir como perfil.
-// Necessário porque o Rod não consegue lançar uma instância de debug se o perfil já está bloqueado.
-func killExistingChrome(sessionDir string, logger *zerolog.Logger) {
-	// Listar PIDs de Chrome/Chromium usando o perfil
-	out, err := exec.Command("pgrep", "-f", sessionDir).Output()
-	if err != nil || len(out) == 0 {
-		return
-	}
-	pids := strings.Fields(string(out))
-	logger.Info().Strs("pids", pids).Msg("[Teams] Encerrando instâncias Chrome existentes com o perfil rod-session")
-	for _, pid := range pids {
-		exec.Command("kill", "-TERM", pid).Run() //nolint:errcheck
-	}
-	time.Sleep(500 * time.Millisecond)
-	// SIGKILL se ainda houver processos
-	out2, _ := exec.Command("pgrep", "-f", sessionDir).Output()
-	for _, pid := range strings.Fields(string(out2)) {
-		exec.Command("kill", "-9", pid).Run() //nolint:errcheck
-	}
-}
-
+// killExistingChrome/findSystemChrome foram movidas pra internal/browser (Fase 1 de
+// BROWSER-CONSOLIDATION-STUDY.md) — chamadas via browser.KillExistingChrome/browser.FindSystemChrome
+// em browser_manager.go.
 func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout time.Duration) (*DiscoveryResult, error) {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return nil, fmt.Errorf("erro ao criar diretório de saída: %v", err)
@@ -1063,30 +1044,6 @@ func printSummary(result *DiscoveryResult, _ string, logger *zerolog.Logger) {
 		logger.Warn().Msg("[Teams] SkypeToken    : NÃO ENCONTRADO")
 	}
 	logger.Info().Msg("[Teams] ═════════════════════════════════════════")
-}
-
-// findSystemChrome localiza o Chrome/Chromium instalado no sistema.
-func findSystemChrome() string {
-	candidates := []string{
-		"/usr/bin/google-chrome-stable",
-		"/usr/bin/google-chrome",
-		"/usr/bin/chromium-browser",
-		"/usr/bin/chromium",
-		"/snap/bin/chromium",
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/Applications/Chromium.app/Contents/MacOS/Chromium",
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	for _, name := range []string{"google-chrome-stable", "google-chrome", "chromium-browser", "chromium"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p
-		}
-	}
-	return ""
 }
 
 func min(a, b int) int {

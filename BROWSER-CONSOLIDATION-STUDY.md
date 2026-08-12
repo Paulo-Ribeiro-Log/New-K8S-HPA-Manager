@@ -1,6 +1,7 @@
 # Estudo de Viabilidade: Unificar todos os fluxos de browser no "embed" (Chromium do go-rod)
 
-**Status:** 🔬 estudo — Fase 0 ✅ concluída (limpeza de código morto). Fases 1-4 não iniciadas.
+**Status:** 🔬 estudo — Fase 0 ✅ concluída (limpeza de código morto). Fase 1 ✅ concluída
+(`internal/browser/` extraído). Fases 2-4 não iniciadas.
 **Pergunta original do usuário:** existem hoje vários tipos de navegador usados pela aplicação
 (um "embed" pro ServiceNow, outros com navegadores instalados no WSL) — mapear tudo e avaliar a
 viabilidade de padronizar em um único mecanismo ("tudo no embed").
@@ -96,20 +97,24 @@ pena especular mais sem esse teste.
 
 ---
 
-## 4. Não existe abstração compartilhada — cada serviço reimplementa sua própria lógica
+## 4. Não existia abstração compartilhada — cada serviço reimplementava sua própria lógica (✅ resolvido na Fase 1)
 
-Confirmado: **não existe `internal/browser/`** nem nada equivalente. ServiceNow e Teams têm cada
-um sua própria versão de:
+Confirmado (no momento em que este estudo foi escrito): **não existia `internal/browser/`** nem
+nada equivalente. ServiceNow e Teams tinham cada um sua própria versão de:
 
 - Lançar/reconectar num Chrome persistente entre chamadas (`getBrowser`)
 - Matar processos travados no mesmo perfil antes de relançar (`killExistingChrome`)
 - Limpar cache em disco antes de lançar
-- Detectar login SSO/Azure AD pendente
 - Minimizar/restaurar a janela
 
-O código é estruturalmente muito parecido nos dois pacotes (comentários num arquivo já citam o
-outro como referência — ex.: `browser_manager.go:18` cita `rod_extractor.go` e vice-versa) — é
-duplicação por cópia manual, não reuso.
+O código era estruturalmente muito parecido nos dois pacotes (comentários num arquivo já citavam
+o outro como referência — ex.: `browser_manager.go:18` citava `rod_extractor.go` e vice-versa) —
+era duplicação por cópia manual, não reuso. A Fase 1 (seção 5) extraiu isso pra `internal/browser/`.
+
+Detecção de login SSO/Azure AD pendente **continua** não-compartilhada — cada serviço lida com
+isso de um jeito bem diferente (ServiceNow: `SessionStatus`/timestamp de diretório; Teams: espera
+DOM/IndexedDB específica do Teams v2) — não era um caso genuíno de duplicação, ficou de fora da
+Fase 1 de propósito.
 
 ---
 
@@ -138,13 +143,40 @@ Removido o que não era chamado por ninguém:
 - **Consolida exatamente o pedido do usuário**: já elimina a única infraestrutura de "navegador
   do Windows via CDP lançado pela app" que existia no repo (mesmo que já estivesse inerte).
 
-### Fase 1 — Extrair `internal/browser/` compartilhado (refatoração pura, zero mudança de comportamento)
-Unificar a lógica duplicada (`getBrowser`/`killExistingChrome`/limpeza de cache/minimize-restore)
-num pacote comum, parametrizado por: diretório de sessão, preferir `.Bin()` sistema ou não,
-headless ou não. ServiceNow e Teams passam a chamar essa lib em vez de reimplementá-la — **Teams
-continua usando `.Bin()` do sistema por enquanto**, só a duplicação é eliminada. Reduz superfície
-de bugs (ex.: um fix de `killExistingChrome` feito só num dos dois pacotes hoje) sem qualquer
-risco de quebrar a extração do Teams.
+### Fase 1 — Extrair `internal/browser/` compartilhado (refatoração pura, zero mudança de comportamento) ✅ CONCLUÍDA
+Criado `internal/browser/browser.go`:
+- `Launch(opts LaunchOptions) (*rod.Browser, func(), error)` — o boilerplate `launcher.New()...
+  Launch()` + `rod.New().ControlURL(...).Connect()`, parametrizado por `SessionDir`/`Headless`/
+  `SystemBin` (vazio = embed do Rod)/`Flags`/`DeleteFlags`. Único ponto que chama `launcher.New()`
+  na aplicação agora (antes: 1 em `rod_extractor.go`, 1 em `browser_manager.go`, duplicados).
+- `Manager` — wrapper com mutex do padrão "browser persistente, reconecta se `.Pages()` falhar,
+  relança se o `SessionDir` pedido mudou" que ServiceNow (`RodExtractor.getBrowser`) e Teams
+  (`getBrowser`) cada um reimplementava por conta própria. `Get(opts, beforeLaunch, afterLaunch,
+  logger)` aceita hooks pra cada chamador preservar sua própria lógica pré-launch (matar
+  processos travados, limpar cache, remover locks) e o log "iniciado" que só disparava no
+  caminho de lançamento novo, nunca no de reuso — sem os hooks, um `Manager` genérico teria
+  mudado esse comportamento observável por acidente.
+- `FindSystemChrome()`, `KillExistingChrome(sessionDir, logger)` — movidas de
+  `internal/teams/discover.go` (únicas usuárias hoje; ServiceNow não killa processos por PID, só
+  remove lock files — ver `RemoveStaleLockFiles` abaixo, comportamento distinto preservado como
+  está, não unificado à força).
+- `RemoveStaleLockFiles(sessionDir, logger)` — movida de `rod_extractor.go` (SingletonLock/
+  SingletonSocket/SingletonCookie).
+- `RestoreWindow(page, logger)`/`MinimizeWindow(page, logger)` — movidas de
+  `internal/teams/browser_manager.go` (únicas usuárias hoje; ServiceNow não minimiza/restaura
+  janela, capacidade fica disponível pra reuso futuro sem mudar nada no ServiceNow agora).
+
+`internal/servicenow/rod_extractor.go`: `RodExtractor.browser`/`browserStop`/`mu` (campos do
+struct) viraram um único campo `browserMgr sharedbrowser.Manager`; `getBrowser()`/
+`launchLocalBrowserWithDir()`/`ClearSession()`/`TestSession()` passaram a chamar o pacote
+compartilhado. `internal/teams/browser_manager.go`: `sharedBrowser`/`sharedSessionDir`/
+`browserMu` (variáveis de pacote) viraram um único `browserMgr browser.Manager`; `getBrowser()`
+idem. **Teams continua usando `.Bin()` do sistema por enquanto** (`FindSystemChrome()` chamada
+com o mesmo comportamento de antes) — só a duplicação foi eliminada, nenhum comportamento
+observável muda.
+
+Validado: `go build ./...`, `go vet ./...`, `gofmt`, `go test ./internal/servicenow/...
+./internal/teams/... ./internal/browser/... -race`, `make build` — tudo passando.
 
 ### Fase 2 — Validação empírica: Teams rodando no embed (atrás de flag, sem trocar o padrão)
 Adicionar uma env var (`K8S_HPA_TEAMS_EMBED_BROWSER=true`) ou flag de config que, quando setada,
@@ -185,9 +217,8 @@ ServiceNow funciona bem hoje e não tem o mesmo tipo de SPA pesado do Teams).
 
 ## 7. Perguntas em aberto pro usuário
 
-- Quer que eu já aplique a **Fase 0** (limpeza do código morto + correção do CLAUDE.md) nesta
-  sessão?
-- Quer que eu prossiga com a **Fase 1** (pacote `internal/browser/` compartilhado) também, ou
-  prefere revisar o resultado da Fase 0 primeiro?
+- ~~Quer que eu já aplique a **Fase 0**...~~ ✅ aplicada e commitada
+  (`refactor/limpeza-browser-servicenow`).
+- ~~Quer que eu prossiga com a **Fase 1**...~~ ✅ aplicada nesta mesma branch.
 - Pra Fase 2 (teste real no Teams), precisa ser feito com você presente pra validar o login
   SSO/MFA visualmente — quer agendar isso separadamente?
