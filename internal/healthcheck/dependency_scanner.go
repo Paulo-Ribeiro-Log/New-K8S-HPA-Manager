@@ -3,10 +3,12 @@ package healthcheck
 
 import (
 	"context"
+	"encoding/base64"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rs/zerolog/log"
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +16,12 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 )
+
+// maxSecretValueIndexLen limita o tamanho (em bytes, antes de codificar) de cada valor de Secret
+// persistido no índice de busca — evita que blobs binários/PEM grandes inchem o SQLite. Valores
+// maiores são truncados (Truncated=true): uma busca por um termo que só aparece depois desse
+// ponto no valor original não vai encontrar essa entrada.
+const maxSecretValueIndexLen = 8192
 
 // DependencyType representa o tipo de dependência externa
 type DependencyType string
@@ -60,6 +68,24 @@ type ExternalDependency struct {
 	FoundAt time.Time `json:"found_at"`
 }
 
+// SecretDataEntry representa uma chave/valor de um Secret OU ConfigMap indexada para a busca em
+// Secrets/ConfigMaps da aba Dependencies (modo "Secrets") — diferente de ExternalDependency, aqui
+// o CONTEÚDO do recurso é exposto (não só nomes de host reconhecidos por regex). ResourceKind
+// distingue a origem ("secret" ou "configmap"), mesma convenção de SourceType/SourceName acima.
+// Ver nota de segurança em SecretDataRecord (internal/storage/dependency_registry.go).
+type SecretDataEntry struct {
+	ResourceKind    string // "secret" ou "configmap"
+	Cluster         string
+	Namespace       string
+	ResourceName    string // nome do Secret ou ConfigMap
+	ResourceSubtype string // Type do Secret (Opaque, kubernetes.io/tls...); vazio para ConfigMap
+	DataKey         string
+	ValueBase64     string
+	ValueDecoded    string // vazio quando IsBinary
+	IsBinary        bool
+	Truncated       bool
+}
+
 // DependencyScanResult representa o resultado de um scan
 type DependencyScanResult struct {
 	Cluster      string               `json:"cluster"`
@@ -67,6 +93,11 @@ type DependencyScanResult struct {
 	Dependencies []ExternalDependency `json:"dependencies"`
 	ScannedAt    time.Time            `json:"scanned_at"`
 	Duration     int64                `json:"duration_ms"`
+
+	// Índice de chave/valor de Secrets (aba Dependencies, modo "Secrets") — não exposto via JSON
+	// nos endpoints de dependências normais, só consumido internamente pelo handler para persistir
+	// no SQLite (ver DependenciesHandler.Scan/ScanCluster).
+	SecretDataEntries []SecretDataEntry `json:"-"`
 
 	// Estatísticas
 	Stats DependencyStats `json:"stats"`
@@ -245,6 +276,10 @@ func (s *DependencyScanner) Scan(ctx context.Context, cluster string, namespaces
 				uniqueServices[dep.ServiceName] = true
 				result.Stats.ByType[string(dep.ServiceType)]++
 			}
+
+			// Índice de chave/valor para a busca em Secrets/ConfigMaps (aba Dependencies, modo
+			// "Secrets") — reaproveita o ConfigMap já listado acima, sem chamada K8s extra.
+			result.SecretDataEntries = append(result.SecretDataEntries, extractConfigMapDataEntries(cluster, ns, &cm)...)
 		}
 
 		// 2. Escanear Secrets (apenas nomes, não valores decodificados)
@@ -275,6 +310,10 @@ func (s *DependencyScanner) Scan(ctx context.Context, cluster string, namespaces
 				uniqueServices[dep.ServiceName] = true
 				result.Stats.ByType[string(dep.ServiceType)]++
 			}
+
+			// Índice de chave/valor para a busca em Secrets (aba Dependencies, modo "Secrets") —
+			// reaproveita o secret já listado acima, sem chamada K8s extra.
+			result.SecretDataEntries = append(result.SecretDataEntries, extractSecretDataEntries(cluster, ns, &secret)...)
 		}
 
 		// 3. Escanear Deployments (env vars)
@@ -366,6 +405,115 @@ func (s *DependencyScanner) scanResourcesByName(cluster, namespace, resourceName
 		}
 	}
 	return deps
+}
+
+// extractSecretDataEntries converte cada chave/valor de um Secret já listado (sem chamada K8s
+// extra) numa SecretDataEntry pronta para persistir no índice de busca. secret.Data já vem
+// DECODIFICADO pelo client-go (map[string][]byte) — ValueBase64 é recalculado a partir dele
+// (equivalente ao que aparece no `data:` de `kubectl get secret -o yaml`). Valores que não são
+// UTF-8 válido (certificados/chaves binárias) marcam IsBinary=true e não populam ValueDecoded —
+// buscar por texto dentro deles não faria sentido, mas ValueBase64 continua indexado.
+func extractSecretDataEntries(cluster, namespace string, secret *corev1.Secret) []SecretDataEntry {
+	if len(secret.Data) == 0 {
+		return nil
+	}
+
+	entries := make([]SecretDataEntry, 0, len(secret.Data))
+	for key, value := range secret.Data {
+		truncated := false
+		v := value
+		if len(v) > maxSecretValueIndexLen {
+			v = v[:maxSecretValueIndexLen]
+			truncated = true
+		}
+
+		entry := SecretDataEntry{
+			ResourceKind:    "secret",
+			Cluster:         cluster,
+			Namespace:       namespace,
+			ResourceName:    secret.Name,
+			ResourceSubtype: string(secret.Type),
+			DataKey:         key,
+			ValueBase64:     base64.StdEncoding.EncodeToString(v),
+			Truncated:       truncated,
+		}
+
+		if utf8.Valid(v) {
+			entry.ValueDecoded = string(v)
+		} else {
+			entry.IsBinary = true
+		}
+
+		entries = append(entries, entry)
+	}
+
+	return entries
+}
+
+// extractConfigMapDataEntries é o equivalente de extractSecretDataEntries pra ConfigMaps — mesmo
+// índice de busca (SecretDataEntry/secret_data_entries), ResourceKind="configmap" distingue a
+// origem. Cobre as duas seções de um ConfigMap:
+//   - Data (map[string]string): SEMPRE texto plano válido no manifesto (o tipo Go já garante
+//     UTF-8) — nunca é base64 na origem, diferente de Secret.Data. ValueBase64 ainda é calculado
+//     por uniformidade (mesma lógica de busca serve pros dois recursos), mas é uma recodificação
+//     sintética, não algo que já existia no manifesto.
+//   - BinaryData (map[string][]byte): usado por arquivos binários pequenos (ex: um .png de ícone)
+//     — aqui SIM é base64 no manifesto, mesmo tratamento de Secret.Data (checagem UTF-8, IsBinary).
+func extractConfigMapDataEntries(cluster, namespace string, cm *corev1.ConfigMap) []SecretDataEntry {
+	if len(cm.Data) == 0 && len(cm.BinaryData) == 0 {
+		return nil
+	}
+
+	entries := make([]SecretDataEntry, 0, len(cm.Data)+len(cm.BinaryData))
+
+	for key, value := range cm.Data {
+		v := []byte(value)
+		truncated := false
+		if len(v) > maxSecretValueIndexLen {
+			v = v[:maxSecretValueIndexLen]
+			truncated = true
+		}
+
+		entries = append(entries, SecretDataEntry{
+			ResourceKind: "configmap",
+			Cluster:      cluster,
+			Namespace:    namespace,
+			ResourceName: cm.Name,
+			DataKey:      key,
+			ValueBase64:  base64.StdEncoding.EncodeToString(v),
+			ValueDecoded: string(v), // ConfigMap.Data é sempre texto — sem checagem de UTF-8 necessária
+			Truncated:    truncated,
+		})
+	}
+
+	for key, value := range cm.BinaryData {
+		v := value
+		truncated := false
+		if len(v) > maxSecretValueIndexLen {
+			v = v[:maxSecretValueIndexLen]
+			truncated = true
+		}
+
+		entry := SecretDataEntry{
+			ResourceKind: "configmap",
+			Cluster:      cluster,
+			Namespace:    namespace,
+			ResourceName: cm.Name,
+			DataKey:      key,
+			ValueBase64:  base64.StdEncoding.EncodeToString(v),
+			Truncated:    truncated,
+		}
+
+		if utf8.Valid(v) {
+			entry.ValueDecoded = string(v)
+		} else {
+			entry.IsBinary = true
+		}
+
+		entries = append(entries, entry)
+	}
+
+	return entries
 }
 
 // scanConfigMapOrSecret analisa um ConfigMap ou Secret em busca de dependências
