@@ -649,6 +649,63 @@ func (h *DependenciesHandler) SearchSecrets(c *gin.Context) {
 	})
 }
 
+// RefreshSecretDataRequest é o corpo de RefreshSecretData.
+type RefreshSecretDataRequest struct {
+	Cluster      string `json:"cluster" binding:"required"`
+	Namespace    string `json:"namespace" binding:"required"`
+	ResourceKind string `json:"resource_kind" binding:"required"` // "secret" ou "configmap"
+	ResourceName string `json:"resource_name" binding:"required"`
+}
+
+// RefreshSecretData relê UM Secret ou ConfigMap direto do cluster (sem cache, sem re-escanear o
+// cluster inteiro) e substitui só as linhas desse recurso no índice — usado depois de um Resync
+// AKV (aba Dependencies) pra refletir o valor atualizado sem esperar o próximo scan completo.
+// POST /api/v1/dependencies/secret-data/refresh
+func (h *DependenciesHandler) RefreshSecretData(c *gin.Context) {
+	var req RefreshSecretDataRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Dados inválidos",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	entries, err := h.scanner.RefreshResourceData(c.Request.Context(), req.Cluster, req.Namespace, req.ResourceKind, req.ResourceName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Falha ao reler o recurso do cluster",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	records := convertSecretDataEntries(entries)
+	if err := h.registry.ReplaceSecretDataForResource(req.Cluster, req.Namespace, req.ResourceKind, req.ResourceName, records); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Falha ao persistir o índice atualizado",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"results": records,
+		},
+	})
+}
+
 // ClearSecretData apaga TODO o índice de chave/valor de Secrets e ConfigMaps do SQLite (todos os
 // clusters) — ação dedicada e separada da limpeza do registry de dependências normal, dado que é
 // o único índice que persiste conteúdo bruto de Secret na aplicação.

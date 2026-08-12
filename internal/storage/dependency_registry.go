@@ -273,28 +273,66 @@ func (r *DependencyRegistry) ReplaceSecretDataForCluster(cluster string, entries
 	if _, err := tx.Exec(`DELETE FROM secret_data_entries WHERE cluster = ?`, cluster); err != nil {
 		return err
 	}
-
-	if len(entries) > 0 {
-		stmt, err := tx.Prepare(`
-		INSERT INTO secret_data_entries (resource_kind, cluster, namespace, resource_name, resource_subtype, data_key, value_base64, value_decoded, is_binary, truncated, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		`)
-		if err != nil {
-			return err
-		}
-		defer stmt.Close()
-
-		for _, e := range entries {
-			if _, err := stmt.Exec(
-				e.ResourceKind, e.Cluster, e.Namespace, e.ResourceName, e.ResourceSubtype, e.DataKey,
-				e.ValueBase64, e.ValueDecoded, boolToInt(e.IsBinary), boolToInt(e.Truncated),
-			); err != nil {
-				return err
-			}
-		}
+	if err := insertSecretDataEntries(tx, entries); err != nil {
+		return err
 	}
 
 	return tx.Commit()
+}
+
+// ReplaceSecretDataForResource é o equivalente de ReplaceSecretDataForCluster, mas escopado a UM
+// recurso (cluster+namespace+resource_kind+resource_name) — usado pelo refresh pontual disparado
+// depois de um Resync AKV (aba Dependencies), quando não faz sentido re-escanear o cluster inteiro
+// só pra atualizar uma secret. `entries` normalmente compartilham a mesma chave de escopo (mesmo
+// recurso), mas isso não é validado aqui — quem chama é responsável por montar `entries`
+// coerentemente com os parâmetros de escopo (ver DependencyScanner.RefreshResourceData).
+func (r *DependencyRegistry) ReplaceSecretDataForResource(cluster, namespace, resourceKind, resourceName string, entries []SecretDataRecord) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`DELETE FROM secret_data_entries WHERE cluster = ? AND namespace = ? AND resource_kind = ? AND resource_name = ?`,
+		cluster, namespace, resourceKind, resourceName,
+	); err != nil {
+		return err
+	}
+	if err := insertSecretDataEntries(tx, entries); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// insertSecretDataEntries insere um lote de SecretDataRecord na transação já aberta pelo chamador
+// (ReplaceSecretDataForCluster/ReplaceSecretDataForResource) — extraído pra evitar duplicar o
+// INSERT entre as duas variantes de escopo (cluster inteiro vs. um recurso só).
+func insertSecretDataEntries(tx *sql.Tx, entries []SecretDataRecord) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	stmt, err := tx.Prepare(`
+	INSERT INTO secret_data_entries (resource_kind, cluster, namespace, resource_name, resource_subtype, data_key, value_base64, value_decoded, is_binary, truncated, last_seen)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, e := range entries {
+		if _, err := stmt.Exec(
+			e.ResourceKind, e.Cluster, e.Namespace, e.ResourceName, e.ResourceSubtype, e.DataKey,
+			e.ValueBase64, e.ValueDecoded, boolToInt(e.IsBinary), boolToInt(e.Truncated),
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ClearSecretData apaga TODAS as entradas de secret_data_entries (todos os clusters) — botão

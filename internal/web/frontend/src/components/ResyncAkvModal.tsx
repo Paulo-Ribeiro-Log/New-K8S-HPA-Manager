@@ -11,11 +11,17 @@ interface ResyncAkvModalProps {
   cluster: string;
   namespace: string;
   secretName: string;
+  // Opcional — chamado quando o `kubectl annotate` do resync retorna com sucesso. O resync em si
+  // é assíncrono (o external-secrets ainda precisa buscar do AKV e atualizar o Secret no cluster),
+  // então isso não significa "valor já atualizado", só "comando disparado com sucesso" — quem usa
+  // esse callback decide o que fazer depois (ex: poll de releitura, ver DependenciesTab.tsx).
+  // SecretsTab.tsx não passa esse prop — comportamento dela fica inalterado.
+  onResyncSuccess?: () => void;
 }
 
 type Status = "running" | "success" | "error";
 
-export const ResyncAkvModal = ({ open, onOpenChange, cluster, namespace, secretName }: ResyncAkvModalProps) => {
+export const ResyncAkvModal = ({ open, onOpenChange, cluster, namespace, secretName, onResyncSuccess }: ResyncAkvModalProps) => {
   const [status, setStatus] = useState<Status>("running");
   const [command, setCommand] = useState("");
   const [output, setOutput] = useState("");
@@ -36,6 +42,7 @@ export const ResyncAkvModal = ({ open, onOpenChange, cluster, namespace, secretN
       toast.success("Resync AKV disparado", {
         description: `${namespace}/${result.resourceName || "sre-tools-external-secrets"}`,
       });
+      onResyncSuccess?.();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
       setErrorMessage(msg);
@@ -43,7 +50,7 @@ export const ResyncAkvModal = ({ open, onOpenChange, cluster, namespace, secretN
       setFinishedAt(new Date().toLocaleString());
       toast.error("Falha ao disparar Resync AKV", { description: msg });
     }
-  }, [cluster, namespace]);
+  }, [cluster, namespace, onResyncSuccess]);
 
   useEffect(() => {
     if (open) {

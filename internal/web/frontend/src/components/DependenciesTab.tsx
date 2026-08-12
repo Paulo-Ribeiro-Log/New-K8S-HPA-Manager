@@ -56,10 +56,7 @@ import {
   ChevronDown,
   ChevronRight,
   KeyRound,
-  Eye,
-  EyeOff,
   Trash2,
-  Copy,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -71,9 +68,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ResyncAkvModal } from "@/components/ResyncAkvModal";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import type { SecretDataRecord } from "@/lib/api/types";
+import { SecretDataResultsTable } from "@/components/SecretDataResultsTable";
 import { addLogoHeaderToPDF, getMarkdownHeader } from "@/lib/logoUtils";
 
 // Tipos
@@ -95,21 +95,6 @@ interface DependencyRecord {
 // Entrada de chave/valor de um Secret indexada para a busca em Secrets (modo "Secrets" da aba,
 // distinto do modo "Dependência" acima — ver DependencyRecord). Espelha storage.SecretDataRecord
 // (internal/storage/dependency_registry.go).
-interface SecretDataRecord {
-  id: number;
-  resource_kind: "secret" | "configmap";
-  cluster: string;
-  namespace: string;
-  resource_name: string; // nome do Secret ou ConfigMap
-  resource_subtype: string; // Type do Secret (Opaque, kubernetes.io/tls...); vazio para ConfigMap
-  data_key: string;
-  value_base64: string;
-  value_decoded: string; // vazio quando is_binary
-  is_binary: boolean;
-  truncated: boolean;
-  last_seen: string;
-}
-
 interface RegistryStats {
   total_dependencies: number;
   unique_services: number;
@@ -161,13 +146,28 @@ export const DependenciesTab = () => {
   const [filterEnvSearch, setFilterEnvSearch] = useState<string>("all");
 
   // Busca em Secrets (modo alternativo dentro da aba "Busca Reversa") — nunca acumula estado com
-  // a busca de dependências acima, são queries/resultados totalmente separados.
+  // a busca de dependências acima, são queries/resultados totalmente separados. Filtro por
+  // cluster/namespace/tipo (Secret vs ConfigMap) e o estado de "revelar valor" vivem dentro de
+  // SecretDataResultsTable (mesmo padrão de estado interno de *MonitorTable.tsx — o cluster/
+  // namespace ali é mais granular que o ambiente hlg/sit/prd acima, então esse Select de Ambiente
+  // só é exibido no modo "Dependência").
   const [searchMode, setSearchMode] = useState<"dependency" | "secret">("dependency");
   const [secretSearchTarget, setSecretSearchTarget] = useState<"key" | "value">("value");
-  const [revealedRows, setRevealedRows] = useState<Set<string>>(new Set());
-  const [revealedAsBase64, setRevealedAsBase64] = useState<Set<string>>(new Set());
   const [clearSecretDataConfirmOpen, setClearSecretDataConfirmOpen] = useState(false);
   const [isClearingSecretData, setIsClearingSecretData] = useState(false);
+
+  // Resync AKV a partir de um resultado de busca — mesmo ResyncAkvModal já usado na aba Secrets
+  // (SecretsTab.tsx), só precisa de cluster/namespace (já vêm no próprio SecretDataRecord); o
+  // ExternalSecret é resolvido pelo backend por convenção (sre-tools-external-secrets-<namespace>),
+  // não depende do nome exato do Secret.
+  const [resyncAkvTarget, setResyncAkvTarget] = useState<{ cluster: string; namespace: string; secretName: string } | null>(null);
+  // Cancela o poll de releitura em andamento se o componente desmontar no meio do caminho.
+  const resyncPollCancelledRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      resyncPollCancelledRef.current = true;
+    };
+  }, []);
 
   // Estado de auto-scan
   const [autoScanRunning, setAutoScanRunning] = useState(false);
@@ -349,26 +349,6 @@ export const DependenciesTab = () => {
     );
   }, [searchResults, filterEnvSearch]);
 
-  // Ambientes únicos disponíveis nos resultados da busca em Secrets (mesmo extractEnv, opera
-  // sobre .cluster presente em SecretDataRecord também)
-  const availableEnvsSecretSearch = useMemo(() => {
-    if (!secretSearchResults?.results) return [];
-    const envSet = new Set<string>();
-    (secretSearchResults.results as SecretDataRecord[]).forEach((rec) => {
-      envSet.add(extractEnv(rec.cluster));
-    });
-    return Array.from(envSet).sort();
-  }, [secretSearchResults]);
-
-  // Resultados da busca em Secrets filtrados por ambiente
-  const filteredSecretSearchResults = useMemo(() => {
-    if (!secretSearchResults?.results) return [];
-    if (filterEnvSearch === "all") return secretSearchResults.results as SecretDataRecord[];
-    return (secretSearchResults.results as SecretDataRecord[]).filter(
-      (rec) => extractEnv(rec.cluster) === filterEnvSearch
-    );
-  }, [secretSearchResults, filterEnvSearch]);
-
   const filteredDependencies = useMemo(() => {
     if (!registryData?.dependencies) return [];
 
@@ -477,8 +457,8 @@ export const DependenciesTab = () => {
       return;
     }
     if (searchMode === "secret") {
-      setRevealedRows(new Set());
-      setRevealedAsBase64(new Set());
+      // Estado de "revelar valor" agora vive dentro de SecretDataResultsTable (não precisa
+      // resetar aqui) — chaves de linha antigas simplesmente não batem com os novos resultados.
       executeSecretSearch();
     } else {
       executeSearch();
@@ -504,34 +484,65 @@ export const DependenciesTab = () => {
     }
   };
 
-  const toggleRowRevealed = (rowKey: string) => {
-    setRevealedRows((prev) => {
-      const next = new Set(prev);
-      if (next.has(rowKey)) next.delete(rowKey);
-      else next.add(rowKey);
-      return next;
-    });
-  };
-
-  const toggleRowBase64 = (rowKey: string) => {
-    setRevealedAsBase64((prev) => {
-      const next = new Set(prev);
-      if (next.has(rowKey)) next.delete(rowKey);
-      else next.add(rowKey);
-      return next;
-    });
-  };
-
-  // Copia o valor exibido (decodificado ou base64, conforme o toggle da linha) — complementa a
-  // quebra de linha (break-all) da célula: com valores longos quebrados em várias linhas, copiar
-  // manualmente com o mouse é inconveniente.
-  const copySecretValue = async (value: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      toast.success("Valor copiado para a área de transferência");
-    } catch {
-      toast.error("Não foi possível copiar o valor");
+  // Snapshot de "antes" pra distinguir "a chamada de refresh voltou" de "o valor de fato mudou" —
+  // sem isso, um refresh que apanha o Secret ainda com o valor antigo pareceria ter funcionado.
+  const buildResourceValueSnapshot = (cluster: string, namespace: string, resourceName: string) => {
+    const snapshot: Record<string, { decoded: string; base64: string }> = {};
+    const source = (secretSearchResults?.results as SecretDataRecord[] | undefined) || [];
+    for (const rec of source) {
+      if (rec.cluster === cluster && rec.namespace === namespace && rec.resource_kind === "secret" && rec.resource_name === resourceName) {
+        snapshot[rec.data_key] = { decoded: rec.value_decoded, base64: rec.value_base64 };
+      }
     }
+    return snapshot;
+  };
+
+  // Poll limitado após um Resync AKV bem-sucedido — o resync em si é assíncrono (o
+  // external-secrets ainda precisa buscar do AKV e atualizar o Secret no cluster), então uma
+  // releitura imediata única frequentemente ainda pegaria o valor antigo. Tenta algumas vezes com
+  // intervalo, parando assim que o valor realmente mudar (ou no limite de tentativas).
+  const pollResourceRefreshAfterResync = async (cluster: string, namespace: string, resourceName: string) => {
+    const before = buildResourceValueSnapshot(cluster, namespace, resourceName);
+    const maxAttempts = 8;
+    const intervalMs = 4000;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      if (resyncPollCancelledRef.current) return;
+
+      let changed = false;
+      try {
+        const response = await apiClient.post("/dependencies/secret-data/refresh", {
+          cluster,
+          namespace,
+          resource_kind: "secret",
+          resource_name: resourceName,
+        });
+        if (response.success) {
+          const results = (response.data?.results as SecretDataRecord[]) || [];
+          changed = results.some((rec) => {
+            const prev = before[rec.data_key];
+            return !prev || prev.decoded !== rec.value_decoded || prev.base64 !== rec.value_base64;
+          });
+        }
+      } catch {
+        // Tentativa isolada falhou (cluster instável, etc.) — segue pra próxima tentativa.
+      }
+
+      if (resyncPollCancelledRef.current) return;
+
+      // Reflete o estado mais atual do índice na tabela visível a cada tentativa, não só na última.
+      if (reverseSearchQuery.trim()) executeSecretSearch();
+
+      if (changed) {
+        toast.success("Valores atualizados após o Resync AKV", { description: `${namespace}/${resourceName}` });
+        return;
+      }
+    }
+
+    toast.warning("Resync disparado, mas o valor ainda não mudou", {
+      description: `${namespace}/${resourceName} — o external-secrets pode levar mais tempo pra sincronizar. Tente "Resync" de novo em instantes.`,
+    });
   };
 
   // Scan manual (força re-scan de todos os clusters)
@@ -1425,19 +1436,24 @@ export const DependenciesTab = () => {
                         onKeyDown={(e) => e.key === "Enter" && handleReverseSearch()}
                         className="flex-1"
                       />
-                      <Select value={filterEnvSearch} onValueChange={setFilterEnvSearch}>
-                        <SelectTrigger className="w-[130px]">
-                          <SelectValue placeholder="Ambiente" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Todos Ambientes</SelectItem>
-                          {(searchMode === "secret" ? availableEnvsSecretSearch : availableEnvsSearch).map((env) => (
-                            <SelectItem key={env} value={env}>
-                              {env.toUpperCase()}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      {/* Ambiente (hlg/sit/prd) — só no modo Dependência; no modo Secrets/ConfigMaps o
+                          filtro de Cluster já embutido nas colunas da tabela cobre isso, mais granular
+                          (nome exato, não só o bucket de ambiente). */}
+                      {searchMode === "dependency" && (
+                        <Select value={filterEnvSearch} onValueChange={setFilterEnvSearch}>
+                          <SelectTrigger className="w-[130px]">
+                            <SelectValue placeholder="Ambiente" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">Todos Ambientes</SelectItem>
+                            {availableEnvsSearch.map((env) => (
+                              <SelectItem key={env} value={env}>
+                                {env.toUpperCase()}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
                       <Button onClick={handleReverseSearch} disabled={searchMode === "secret" ? isSearchingSecrets : isSearching}>
                         {(searchMode === "secret" ? isSearchingSecrets : isSearching) ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
@@ -1472,111 +1488,17 @@ export const DependenciesTab = () => {
 
                 {/* Resultados da busca */}
                 {searchMode === "secret" ? (
-                  <ScrollArea className="flex-1">
-                    {!secretSearchResults ? (
-                      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
-                        <KeyRound className="h-12 w-12 mb-4 opacity-50" />
-                        <p className="text-sm">Nenhuma busca realizada</p>
-                        <p className="text-xs mt-1">Digite um termo e clique em buscar</p>
-                      </div>
-                    ) : secretSearchResults.total_found === 0 ? (
-                      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
-                        <AlertCircle className="h-12 w-12 mb-4 opacity-50" />
-                        <p className="text-sm">Nenhum resultado encontrado</p>
-                        <p className="text-xs mt-1">
-                          "{reverseSearchQuery}" não foi encontrado no índice de Secrets/ConfigMaps
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <div className="text-xs text-muted-foreground mb-2">
-                          {filteredSecretSearchResults.length} resultado(s){filterEnvSearch !== "all" ? ` (filtro: ${filterEnvSearch.toUpperCase()})` : ""} encontrado(s) para "{reverseSearchQuery}"
-                        </div>
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead className="text-xs">Serviço</TableHead>
-                              <TableHead className="text-xs">Cluster</TableHead>
-                              <TableHead className="text-xs">Namespace</TableHead>
-                              <TableHead className="text-xs">Fonte</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {filteredSecretSearchResults.map((rec, index) => {
-                              const rowKey = `${rec.resource_kind}-${rec.cluster}-${rec.namespace}-${rec.resource_name}-${rec.data_key}`;
-                              const revealed = revealedRows.has(rowKey);
-                              const showBase64 = revealedAsBase64.has(rowKey);
-                              const displayValue = rec.is_binary
-                                ? rec.value_base64
-                                : (showBase64 ? rec.value_base64 : rec.value_decoded) || rec.value_base64;
-                              return (
-                                <TableRow
-                                  key={rowKey}
-                                  ref={(el) => (searchRowRefs.current[index] = el)}
-                                  tabIndex={0}
-                                  onKeyDown={(e) => handleListKeyDown(e, searchRowRefs, index)}
-                                  className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:bg-muted/50"
-                                >
-                                  <TableCell className="font-mono align-top">
-                                    <div className="flex flex-col gap-1">
-                                      <div className="flex items-center gap-1.5">
-                                        <span className="text-sm font-semibold">{rec.data_key}</span>
-                                        <button
-                                          type="button"
-                                          onClick={() => toggleRowRevealed(rowKey)}
-                                          className="text-muted-foreground hover:text-foreground shrink-0"
-                                          title={revealed ? "Ocultar valor" : "Revelar valor"}
-                                        >
-                                          {revealed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                                        </button>
-                                      </div>
-                                      {revealed ? (
-                                        <div className="flex items-start gap-1 min-w-0">
-                                          <span
-                                            className="break-all max-w-md text-xs text-muted-foreground"
-                                            title={rec.truncated ? "Valor truncado no armazenamento (>8KB) — não é o valor completo" : undefined}
-                                          >
-                                            {displayValue}
-                                            {rec.truncated ? "…" : ""}
-                                          </span>
-                                          <button
-                                            type="button"
-                                            onClick={() => copySecretValue(displayValue)}
-                                            className="text-muted-foreground hover:text-foreground shrink-0"
-                                            title="Copiar valor"
-                                          >
-                                            <Copy className="h-3 w-3" />
-                                          </button>
-                                          {!rec.is_binary && (
-                                            <button
-                                              type="button"
-                                              onClick={() => toggleRowBase64(rowKey)}
-                                              className="text-[10px] text-muted-foreground underline hover:text-foreground shrink-0"
-                                            >
-                                              {showBase64 ? "decodificado" : "base64"}
-                                            </button>
-                                          )}
-                                        </div>
-                                      ) : (
-                                        <span className="text-xs text-muted-foreground select-none">••••••••</span>
-                                      )}
-                                    </div>
-                                  </TableCell>
-                                  <TableCell className="text-xs">
-                                    {rec.cluster.replace(/-admin$/, "")}
-                                  </TableCell>
-                                  <TableCell className="text-xs">{rec.namespace}</TableCell>
-                                  <TableCell className="text-xs text-muted-foreground">
-                                    {rec.resource_kind}: {rec.resource_name}
-                                  </TableCell>
-                                </TableRow>
-                              );
-                            })}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    )}
-                  </ScrollArea>
+                  <div className="flex-1 min-h-0">
+                    <SecretDataResultsTable
+                      items={(secretSearchResults?.results as SecretDataRecord[] | undefined) || []}
+                      loading={isSearchingSecrets}
+                      hasSearched={!!secretSearchResults}
+                      query={reverseSearchQuery}
+                      onResyncClick={(cluster, namespace, resourceName) =>
+                        setResyncAkvTarget({ cluster, namespace, secretName: resourceName })
+                      }
+                    />
+                  </div>
                 ) : (
                   <ScrollArea className="flex-1">
                     {!searchResults ? (
@@ -1739,6 +1661,20 @@ export const DependenciesTab = () => {
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
+    {/* Resync AKV disparado a partir de um resultado de busca em Secrets — mesmo modal da aba Secrets */}
+    {resyncAkvTarget && (
+      <ResyncAkvModal
+        open={!!resyncAkvTarget}
+        onOpenChange={(open) => !open && setResyncAkvTarget(null)}
+        cluster={resyncAkvTarget.cluster}
+        namespace={resyncAkvTarget.namespace}
+        secretName={resyncAkvTarget.secretName}
+        onResyncSuccess={() =>
+          pollResourceRefreshAfterResync(resyncAkvTarget.cluster, resyncAkvTarget.namespace, resyncAkvTarget.secretName)
+        }
+      />
+    )}
     </>
   );
 };
