@@ -71,8 +71,53 @@ var (
 	dockerMu        sync.Mutex
 	dockerBrowser   *rod.Browser
 	dockerSessionID string
+	dockerSessionAt time.Time
 	dockerVNCURL    string
 )
+
+// teamsDockerSessionMaxAge — teto preventivo de idade da sessão Docker reaproveitada, com margem
+// de segurança abaixo de teamsDockerSessionTimeoutSecs (o Grid expira a sessão sozinho depois
+// desse tempo, mas o websocket CDP em cima dela não fecha de forma limpa quando isso acontece —
+// ver bug real abaixo). Passado esse teto, getDockerBrowser relança preventivamente em vez de
+// tentar reaproveitar uma sessão que já pode estar morta.
+const teamsDockerSessionMaxAge = 20 * time.Minute
+
+// teamsDockerSessionTimeoutSecs configura SE_NODE_SESSION_TIMEOUT do Grid (segundos) — o padrão
+// da imagem é 300s (5min), curto demais pro tempo real que RunDiscovery/ScanConversations/
+// SendBatch podem levar entre chamadas (browser persistente, reaproveitado por potencialmente
+// várias operações ao longo de uma sessão de uso). 1800s (30min) dá folga generosa.
+const teamsDockerSessionTimeoutSecs = "1800"
+
+// pagesHealthTimeout — teto de tempo pra checagem de saúde "o browser Docker reaproveitado ainda
+// responde?" (dockerBrowser.Pages()).
+//
+// Bug real corrigido (achado ao vivo): quando a sessão Selenium expira no lado do Grid, o
+// websocket CDP correspondente NÃO fecha de forma limpa — Pages() (que espera uma resposta CDP)
+// trava indefinidamente, sem erro nem timeout. Como operationMu serializa RunDiscovery/
+// ScanConversations/SendBatch entre si, isso travava as TRÊS operações pra sempre (não um crash —
+// pior, um hang silencioso, sem log nenhum indicando o que aconteceu) até reiniciar o servidor.
+// Reproduzido ao vivo: 2ª chamada de RunDiscovery ficou >4min parada exatamente nesse ponto, ~5min
+// depois da sessão anterior ter sido criada (bate com o SE_NODE_SESSION_TIMEOUT default de 300s).
+const pagesHealthTimeout = 5 * time.Second
+
+// pagesWithTimeout chama browser.Pages() com um teto de tempo — Pages() em si não aceita context,
+// então uma goroutine + select é o único jeito de limitar uma chamada síncrona travada.
+func pagesWithTimeout(b *rod.Browser, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Pages()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		// A goroutine acima pode nunca terminar (mesmo bug que motivou este helper) — ela vaza,
+		// mas é inofensiva: só bloqueada num canal com buffer 1 que nunca mais é lido, sem reter
+		// nada além disso. Aceitável frente à alternativa (travar a chamada real).
+		return fmt.Errorf("timeout (%s) verificando browser Docker existente — sessão provavelmente expirada", timeout)
+	}
+}
 
 // TeamsDockerVNCURL retorna a última URL noVNC conhecida (pro usuário abrir e interagir com o
 // login) — vazio se o modo Docker nunca foi usado com sucesso nesta execução do servidor.
@@ -104,12 +149,17 @@ func getDockerBrowser(logger *zerolog.Logger) (*rod.Browser, error) {
 	defer dockerMu.Unlock()
 
 	if dockerBrowser != nil {
-		if _, err := dockerBrowser.Pages(); err == nil {
+		if age := time.Since(dockerSessionAt); age > teamsDockerSessionMaxAge {
+			logger.Info().Dur("age", age).Msg("[Teams] Sessão Docker passou da idade máxima segura — relançando preventivamente")
+			dockerBrowser = nil
+			dockerSessionID = ""
+		} else if err := pagesWithTimeout(dockerBrowser, pagesHealthTimeout); err == nil {
 			return dockerBrowser, nil
+		} else {
+			logger.Warn().Err(err).Msg("[Teams] Browser Docker persistente morreu/parou de responder — relançando")
+			dockerBrowser = nil
+			dockerSessionID = ""
 		}
-		logger.Warn().Msg("[Teams] Browser Docker persistente morreu — relançando")
-		dockerBrowser = nil
-		dockerSessionID = ""
 	}
 
 	ctx := context.Background()
@@ -133,6 +183,7 @@ func getDockerBrowser(logger *zerolog.Logger) (*rod.Browser, error) {
 
 	dockerBrowser = b
 	dockerSessionID = sessionID
+	dockerSessionAt = time.Now()
 	dockerVNCURL = fmt.Sprintf("http://localhost:%s/?autoconnect=1&resize=scale", teamsDockerVNCPort)
 	logger.Info().Str("vnc_url", dockerVNCURL).Str("session_id", sessionID).
 		Msg("[Teams] Browser Docker (selenium/standalone-chrome) pronto — abra a URL VNC pra ver/interagir com o login")
@@ -163,6 +214,7 @@ func ensureContainerRunning(ctx context.Context, logger *zerolog.Logger) error {
 		"-p", teamsDockerVNCPort + ":7900",
 		"-e", "SE_VNC_NO_PASSWORD=1",
 		"-e", "SE_NODE_MAX_SESSIONS=1",
+		"-e", "SE_NODE_SESSION_TIMEOUT=" + teamsDockerSessionTimeoutSecs,
 		teamsDockerImage,
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -277,6 +329,7 @@ func CloseDockerBrowser() {
 	sessionID := dockerSessionID
 	dockerBrowser = nil
 	dockerSessionID = ""
+	dockerSessionAt = time.Time{}
 	dockerVNCURL = ""
 	dockerMu.Unlock()
 

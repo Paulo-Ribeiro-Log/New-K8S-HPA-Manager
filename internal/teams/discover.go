@@ -17,6 +17,13 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// teamsSkypeTokenWaitTimeout — teto de espera pelo SkypeToken (sinal de "login concluído", ver
+// comentário no loop que usa esta constante). 4min dá tempo real pra um login totalmente
+// novo/interativo com MFA (achado ao vivo testando o modo Docker do browser — perfil recém-criado
+// sem sessão salva, diferente do Chrome do sistema que quase sempre já vem autenticado). Sessões
+// já autenticadas continuam rápidas — o loop sai assim que o token é capturado, bem antes do teto.
+const teamsSkypeTokenWaitTimeout = 4 * time.Minute
+
 // CapturedRequest representa uma requisição/resposta capturada do Teams.
 type CapturedRequest struct {
 	URL        string            `json:"url"`
@@ -370,15 +377,22 @@ teamsLoaded:
 	// conectado". Se o SkypeToken nunca for capturado (login não aconteceu a tempo), a janela
 	// simplesmente permanece visível — não há necessidade de minimizar algo que não terminou.
 
-	// Aguardar SkypeToken ser capturado. Máximo 90s.
+	// Aguardar SkypeToken ser capturado. Teto de teamsSkypeTokenWaitTimeout.
 	//
 	// Testado ao vivo removendo essa espera (achando que era só usada no fetch() diagnóstico
 	// pro chatsvcagg, que o MCAS sempre bloqueia): quebrou a extração de verdade (0 mensagens
 	// no DOM). Na prática o SkypeToken funciona como sinal indireto de "o Teams terminou de
 	// sincronizar dados o suficiente pra aceitar interação" — sem esperar por ele, o
 	// hash-nav/click/scroll rodam cedo demais, antes da conversa estar pronta. Mantido.
+	//
+	// Teto aumentado de 90s pra teamsSkypeTokenWaitTimeout (achado ao vivo testando o modo Docker
+	// do browser, internal/teams/docker_browser.go): um login totalmente novo/interativo, com MFA
+	// do zero (perfil recém-criado dentro do container, sem sessão salva), consistentemente não
+	// terminava em 90s — sessões já autenticadas continuam rápidas de qualquer forma, o `break`
+	// sai do loop assim que `captured` vira true, bem antes do teto.
 	skypeTokenCaptured := false
-	for i := 0; i < 18; i++ {
+	skypeTokenDeadline := time.Now().Add(teamsSkypeTokenWaitTimeout)
+	for time.Now().Before(skypeTokenDeadline) {
 		time.Sleep(5 * time.Second)
 		mu.Lock()
 		captured := result.SkypeToken != ""
@@ -398,7 +412,7 @@ teamsLoaded:
 	if skypeTokenCaptured {
 		minimizeWindow(page, logger)
 	} else {
-		logger.Warn().Msg("[Teams] SkypeToken não capturado em 90s — mantendo janela visível (login pode não ter completado)")
+		logger.Warn().Dur("timeout", teamsSkypeTokenWaitTimeout).Msg("[Teams] SkypeToken não capturado dentro do prazo — mantendo janela visível (login pode não ter completado)")
 	}
 
 	// Navegar ao chat do Mr.ViaBot via JS (altera hash SPA sem criar nova aba).
