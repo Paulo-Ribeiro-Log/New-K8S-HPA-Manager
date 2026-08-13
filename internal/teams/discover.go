@@ -15,6 +15,10 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
+
+	// Alias ssobrowser: o identificador "browser" já é usado dentro de RunDiscovery pra
+	// nomear o *rod.Browser retornado por getBrowser() — evita colisão de nome.
+	ssobrowser "k8s-hpa-manager/internal/browser"
 )
 
 // teamsSkypeTokenWaitTimeout — teto de espera pelo SkypeToken (sinal de "login concluído", ver
@@ -23,6 +27,13 @@ import (
 // sem sessão salva, diferente do Chrome do sistema que quase sempre já vem autenticado). Sessões
 // já autenticadas continuam rápidas — o loop sai assim que o token é capturado, bem antes do teto.
 const teamsSkypeTokenWaitTimeout = 4 * time.Minute
+
+// teamsMessageSyncTimeout — teto do loop adaptativo de scroll/espera por mensagens reais no DOM
+// (ver comentário no loop que usa esta constante, logo depois do hash-nav pro chat do Mr.ViaBot).
+// Substitui o antigo número fixo de 3 rodadas (~15-20s) — insuficiente pra um perfil de Chrome
+// totalmente novo (sempre o caso no modo Docker) sincronizar o histórico da conversa pela
+// primeira vez. 90s é generoso o bastante sem travar indefinidamente se algo real deu errado.
+const teamsMessageSyncTimeout = 90 * time.Second
 
 // CapturedRequest representa uma requisição/resposta capturada do Teams.
 type CapturedRequest struct {
@@ -114,6 +125,25 @@ func isTeamsRelevant(url string) bool {
 	return false
 }
 
+// detectMFANumber checa se a página atual está na tela de "number matching" do Authenticator
+// (browser.DetectMFANumber) e atualiza o estado exposto ao frontend (SetTeamsDockerMFANumber) —
+// só faz sentido no modo Docker (teamsDockerEnabled()), onde o usuário não vê a janela real do
+// Chrome e precisaria abrir o noVNC só pra copiar um número; no Chrome do sistema/embed a janela
+// já está visível na tela do usuário, sem necessidade de replicar o número em outro lugar.
+func detectMFANumber(page *rod.Page, logger *zerolog.Logger) {
+	if !teamsDockerEnabled() {
+		return
+	}
+	if num, found := ssobrowser.DetectMFANumber(page); found {
+		if TeamsDockerMFANumber() != num {
+			logger.Info().Str("number", num).Msg("[Teams] Número de MFA (number matching) detectado")
+		}
+		SetTeamsDockerMFANumber(num)
+	} else {
+		SetTeamsDockerMFANumber("")
+	}
+}
+
 // RunDiscovery lança o Chrome do sistema, navega para o Teams,
 // intercepta TODA atividade de rede via CDP Network events e salva em outputDir.
 // killExistingChrome/findSystemChrome foram movidas pra internal/browser (Fase 1 de
@@ -128,6 +158,10 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	// invalidar o SkypeToken (ver comentário de operationMu em browser_manager.go).
 	operationMu.Lock()
 	defer operationMu.Unlock()
+
+	// Limpa resquício de uma chamada anterior — sem isso, o modal do frontend podia mostrar por
+	// um instante o número de MFA de uma sessão de login já concluída/abandonada antes desta.
+	SetTeamsDockerMFANumber("")
 
 	browser, err := getBrowser(sessionDir, logger)
 	if err != nil {
@@ -339,6 +373,16 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	logger.Info().Msg("[Teams] Aguardando Teams v2 carregar (pode levar ~5min em WSL)...")
 	loadDeadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(loadDeadline) {
+		// Auto-login via Perfil SSO corporativo (mesmo mecanismo do ServiceNow, movido pra
+		// internal/browser/sso_autologin.go) — se a página atual for uma tela de login Azure AD
+		// e a app já tiver email/matrícula/senha salvos, preenche e avança sozinha. No-op (retorna
+		// false rápido) em qualquer outra URL, então é seguro chamar em toda iteração do loop.
+		ssobrowser.AttemptSSOAutoLogin(page, sessionDir, logger)
+		// Bypass da tela "Monitored access" do MCAS (ver internal/browser/mcas_bypass.go) —
+		// o form oculto dessa tela deveria se auto-submeter via JS, mas trava indefinidamente
+		// nesse ambiente; submeter manualmente evita ficar preso até o teto de segurança do loop.
+		ssobrowser.SubmitMCASHiddenForm(page)
+		detectMFANumber(page, logger)
 		info, _ := page.Info()
 		if info != nil && isTeamsURL(info.URL) &&
 			!strings.Contains(info.URL, "error") && !strings.Contains(info.URL, "eoa") {
@@ -394,6 +438,15 @@ teamsLoaded:
 	skypeTokenDeadline := time.Now().Add(teamsSkypeTokenWaitTimeout)
 	for time.Now().Before(skypeTokenDeadline) {
 		time.Sleep(5 * time.Second)
+		// Mesmo auto-login do loop acima — cobre o caso de uma tela de login/MFA aparecer só
+		// depois do match inicial de "Teams v2 carregado" (a URL bate com o domínio mesmo em
+		// telas de auth embutidas, ver comentário logo acima sobre o bug do minimizeWindow).
+		ssobrowser.AttemptSSOAutoLogin(page, sessionDir, logger)
+		// Bypass da tela "Monitored access" do MCAS (ver internal/browser/mcas_bypass.go) —
+		// o form oculto dessa tela deveria se auto-submeter via JS, mas trava indefinidamente
+		// nesse ambiente; submeter manualmente evita ficar preso até o teto de segurança do loop.
+		ssobrowser.SubmitMCASHiddenForm(page)
+		detectMFANumber(page, logger)
 		mu.Lock()
 		captured := result.SkypeToken != ""
 		mu.Unlock()
@@ -403,6 +456,9 @@ teamsLoaded:
 			break
 		}
 	}
+	// Login terminou (ou o teto acima estourou) — qualquer número de MFA que estivesse pendente
+	// não é mais relevante, limpa pro modal do frontend parar de mostrar algo obsoleto.
+	SetTeamsDockerMFANumber("")
 
 	// Daqui em diante a extração é 100% via CDP/JS (hash nav, DOM, IndexedDB) — sem nenhuma
 	// necessidade de interação do usuário. Minimizar a janela pra não ocupar a tela à toa; ver
@@ -437,6 +493,15 @@ teamsLoaded:
 	clickJS := `() => {
 		const keywords = ['viabot', 'mr.viabot', 'mr viabot'];
 		const selectors = [
+			// Bug real corrigido (achado ao vivo inspecionando a página real, depois do click de
+			// fallback sempre retornar clicked:false): a barra lateral do Teams v2 hoje usa o
+			// componente Tree do Fluent UI v9 (role="treeitem" dentro de role="tree"/"group",
+			// classes "fui-TreeItem*") — nenhum dos seletores antigos abaixo bate mais com essa
+			// estrutura. "Mr. ViaBot" nos Favoritos confirmado como <div role="treeitem"> contendo
+			// o texto, sem nenhum data-tid/class dos seletores legados.
+			'[role="treeitem"]',
+			// Seletores legados mantidos como fallback — cobrem versões antigas do Teams ou
+			// outras áreas da UI que talvez ainda usem esse padrão.
 			'[data-tid="chat-list-item"]',
 			'[class*="listItem"]',
 			'[class*="chatListItem"]',
@@ -445,7 +510,12 @@ teamsLoaded:
 			'[class*="chat-item"]'
 		];
 		for (const sel of selectors) {
-			for (const item of document.querySelectorAll(sel)) {
+			// Percorre do treeitem mais profundo (folha) pro mais raso — evita clicar num
+			// ancestral genérico (ex: o item "pai" de um Team inteiro) cujo textContent também
+			// bate a keyword só porque contém o item filho certo em algum lugar dentro dele.
+			const items = Array.from(document.querySelectorAll(sel));
+			for (let i = items.length - 1; i >= 0; i--) {
+				const item = items[i];
 				const text = (item.textContent || '').toLowerCase();
 				if (keywords.some(k => text.includes(k))) {
 					item.click();
@@ -499,14 +569,49 @@ teamsLoaded:
 		window.scrollTo(0, 0);
 		return { scrolled: false };
 	}`
-	for i := 0; i < 3; i++ {
+	//
+	// Bug real corrigido (relatado pelo usuário ao vivo testando o modo Docker, depois de um
+	// login+MFA 100% bem-sucedido): antes disso era sempre um número FIXO de 3 rodadas (~15-20s
+	// no total), independente de mensagem alguma ter aparecido. Num Chrome do sistema com sessão
+	// de meses, o Teams já tem tudo em cache local e isso é instantâneo — mascarando que o teto
+	// era, na prática, um cronômetro curto demais, não uma espera "até ler a última mensagem"
+	// (como deveria ser). Num perfil totalmente novo (sempre o caso no modo Docker — o container
+	// nunca persiste o perfil entre execuções), o Teams precisa buscar o histórico da conversa
+	// pela rede pela primeira vez, o que pode legitimamente levar bem mais que 20s. Corrigido:
+	// loop adaptativo que continua rolando e checando o DOM (checagem leve, só conta elementos —
+	// não roda o parser completo a cada rodada) até mensagens reais aparecerem, com teto de
+	// teamsMessageSyncTimeout como rede de segurança — sai assim que acha alguma coisa, sem
+	// esperar o teto inteiro à toa.
+	scrollDeadline := time.Now().Add(teamsMessageSyncTimeout)
+	scrollAttempt := 0
+	for time.Now().Before(scrollDeadline) {
+		scrollAttempt++
 		scrollRes, scrollErr := page.Eval(scrollJS)
 		if scrollErr == nil && !scrollRes.Value.Nil() {
-			logger.Info().Str("result", scrollRes.Value.String()).Msgf("[Teams] Scroll %d/3 para carregar mensagens antigas", i+1)
+			logger.Info().Str("result", scrollRes.Value.String()).Msgf("[Teams] Scroll %d para carregar mensagens antigas", scrollAttempt)
 		} else if scrollErr != nil {
-			logger.Warn().Err(scrollErr).Msgf("[Teams] Erro no scroll %d/3", i+1)
+			logger.Warn().Err(scrollErr).Msgf("[Teams] Erro no scroll %d", scrollAttempt)
 		}
 		time.Sleep(5 * time.Second)
+
+		countRes, countErr := page.Eval(`() => {
+			const selectors = ['[data-tid="messageBody"]', '[class*="messageBodyContent"]', '[class*="message-body"]', '[class*="messageBody"]'];
+			for (const sel of selectors) {
+				const n = document.querySelectorAll(sel).length;
+				if (n > 0) return n;
+			}
+			return 0;
+		}`)
+		if countErr == nil && countRes != nil && countRes.Value.Int() > 0 {
+			logger.Info().Int("count", countRes.Value.Int()).Int("attempts", scrollAttempt).
+				Msg("[Teams] Mensagens detectadas no DOM — prosseguindo sem esperar o teto")
+			break
+		}
+		if scrollAttempt == 3 {
+			// A partir daqui já passou do que era o teto antigo (~15-20s) — sinaliza que está
+			// numa espera mais longa que o normal, útil pra diagnosticar perfil frio via log.
+			logger.Info().Msg("[Teams] Ainda sem mensagens no DOM depois do teto antigo — perfil novo, continuando a tentar (sincronização pode levar mais tempo)...")
+		}
 	}
 
 	// Extrair mensagens diretamente do DOM (não depende de HTTP — MCAS bloqueia fetch() externo)
@@ -694,7 +799,7 @@ teamsLoaded:
 	logger.Info().Msg("[Teams] Buscando Mr.ViaBot no IndexedDB do Teams...")
 	// O store 'conversations' só tem metadata (sem conteúdo de mensagens).
 	// Buscar topics nos metadados + varrer skypexspaces que tem mensagens reais.
-	fetchJS := `async () => {
+	fetchJS := fmt.Sprintf(`async () => {
 		const openDB = (name) => new Promise((resolve, reject) => {
 			const r = indexedDB.open(name);
 			r.onsuccess = e => resolve(e.target.result);
@@ -712,6 +817,10 @@ teamsLoaded:
 		const dbs = await indexedDB.databases().catch(() => []);
 		const keywords = ['mr.viabot', 'viavarejo.service-now.com', 'devstartcd.via', 'chg0', 'sre-approval', 'sre approval'];
 		const hasKw = (s) => keywords.some(k => s.includes(k)) || /chg\d{5,}/i.test(s);
+		// Thread ID canônica do Mr.ViaBot (mesma constante Go — ver comentário de duplicação em
+		// mrViaBotThreadID acima). Usada só pra PRIORIZAR o match certo quando a busca ampla por
+		// keywords encontra várias conversas — nunca pra filtrar/descartar as demais.
+		const CANONICAL_ID = '%s';
 		const results = { total_dbs: dbs.length, viabot: null, all_matches: [], conv_topics: [], skypexspaces_stores: [], error: null };
 
 		// O schema exato de timestamp no IndexedDB do Teams varia entre versões/stores — tenta
@@ -760,14 +869,33 @@ teamsLoaded:
 						botSamples.push({ id: row.id, bots, topic });
 					}
 					if (hasKw(raw)) {
-						// Para o thread do Mr.ViaBot, retornar lastMessage completo e messages[]
-						const isViaBot = row.id && row.id.includes('unq.gbl.spaces');
-						const fullLastMsg = isViaBot ? (row.lastMessage || null) : undefined;
-						const msgs = isViaBot ? (Array.isArray(row.messages) ? row.messages : []) : undefined;
+						// Retornar lastMessage completo e messages[] pra QUALQUER conversa que já
+						// bateu no filtro de keywords (hasKw acima) — não só a thread canônica do
+						// Mr.ViaBot (id terminando em "@unq.gbl.spaces"). Bug real corrigido: o
+						// filtro antigo (isViaBot = row.id.includes('unq.gbl.spaces')) descartava
+						// messages/lastMessage de qualquer OUTRA conversa que también contivesse
+						// CHG/sre-approval (ex: um grupo com id "...@thread.v2") — resultado
+						// observado ao vivo: "MR.ViaBot encontrado no IndexedDB!" (match real, com
+						// thread_id e topic) seguido, no mesmo segundo, de "nenhuma mensagem
+						// encontrada" — results.viabot.messages ficava undefined porque o match
+						// vencedor não era a thread canônica, então o loop mais abaixo que empurra
+						// pra idb_messages (results.viabot.messages) não tinha nada pra iterar.
+						const fullLastMsg = row.lastMessage || null;
+						const msgs = Array.isArray(row.messages) ? row.messages : [];
 						const match = { id: row.id, topic, bots, source: 'conv-manager', snippet: raw.substring(0, 600),
-							...(isViaBot ? { lastMessage: fullLastMsg, messages: msgs } : {}) };
+							lastMessage: fullLastMsg, messages: msgs };
 						results.all_matches.push(match);
-						if (!results.viabot) results.viabot = match;
+						// Prioriza a thread canônica do Mr.ViaBot (CANONICAL_ID) sobre qualquer outro
+						// match genérico por keyword — bug real corrigido: numa busca com múltiplas
+						// conversas batendo hasKw (ex: um grupo chamado "CHGxxxxx - Migração...", sem
+						// relação com o bot), o PRIMEIRO match ganhava results.viabot mesmo tendo
+						// row.messages vazio, escondendo o match real (que tem conteúdo de verdade,
+						// já sincronizado via hash-nav antes deste scan). Não descarta os demais
+						// matches (continuam em all_matches) — só não deixa um genérico "vencer" a
+						// canônica se as duas aparecerem.
+						if (!results.viabot || (row.id === CANONICAL_ID && results.viabot.id !== CANONICAL_ID)) {
+							results.viabot = match;
+						}
 					}
 				}
 				results.bot_samples = botSamples;
@@ -797,7 +925,9 @@ teamsLoaded:
 							const threadId = row.conversationId || row.conversationid || row.threadId || row.id;
 							const match = { id: threadId, msg_id: row.id, source: 'chat-info/' + sn, raw_keys: Object.keys(row), snippet: JSON.stringify(row).substring(0, 600) };
 							results.all_matches.push(match);
-							if (!results.viabot) results.viabot = match;
+							if (!results.viabot || (threadId === CANONICAL_ID && results.viabot.id !== CANONICAL_ID)) {
+								results.viabot = match;
+							}
 						}
 					}
 				}
@@ -852,7 +982,7 @@ teamsLoaded:
 
 		results.idb_messages = idbMessages;
 		return JSON.stringify(results);
-	}`
+	}`, mrViaBotThreadID)
 	fetchResult, err := page.Eval(fetchJS)
 	if err == nil && !fetchResult.Value.Nil() {
 		rawConvs := fetchResult.Value.String()

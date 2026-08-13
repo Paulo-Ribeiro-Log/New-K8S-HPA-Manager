@@ -147,6 +147,15 @@ func (h *TeamsHandler) SearchCHG(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"found": len(matches) > 0, "items": matches, "count": len(matches)})
 }
 
+// DockerStatus — GET /api/v1/teams/docker-status. Reaproveita checkDockerStatus/
+// DBDockerStatusResult (db_test_docker.go) — a checagem (binário no PATH + daemon respondendo) não
+// tem nada de específico de banco de dados, é sobre o Docker do host, então serve igual pro modo
+// Docker do browser do Teams (K8S_HPA_TEAMS_DOCKER_BROWSER). Sem RequireSREGroup(): leitura
+// informacional sobre o próprio servidor, mesmo padrão dos endpoints equivalentes de Kafka/DB.
+func (h *TeamsHandler) DockerStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, checkDockerStatus(c.Request.Context()))
+}
+
 // RefreshApprovals dispara extração completa do Teams e atualiza o cache.
 // POST /api/v1/teams/approvals/refresh
 // Bloqueia até a extração terminar (pode levar ~90s — Chrome abre e navega).
@@ -226,6 +235,26 @@ func (h *TeamsHandler) RefreshApprovals(c *gin.Context) {
 		"items":         result.Items,
 		"last_updated":  result.ExtractedAt,
 		"needs_refresh": false,
+	})
+}
+
+// GetDockerSession expõe o estado do browser Docker do Teams (modo opt-in, ver docker_browser.go)
+// pro frontend decidir se/quando mostrar o modal de login embutido (iframe do noVNC) — sem essa
+// rota o único jeito de "acompanhar" o login era o usuário abrir a URL do noVNC manualmente numa
+// aba separada, o que não é o desejável (ver comentário em TeamsDockerVNCURL). Polling leve
+// (sem I/O bloqueante — só lê variáveis em memória protegidas por mutex), pensado pra ser chamado
+// a cada ~1.5s enquanto RefreshApprovals está em andamento.
+// GET /api/v1/teams/docker-session
+func (h *TeamsHandler) GetDockerSession(c *gin.Context) {
+	h.cacheMu.RLock()
+	refreshing := h.refreshing
+	h.cacheMu.RUnlock()
+
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":    teams.TeamsDockerEnabled(),
+		"vnc_url":    teams.TeamsDockerVNCURL(),
+		"mfa_number": teams.TeamsDockerMFANumber(),
+		"refreshing": refreshing,
 	})
 }
 

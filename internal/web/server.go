@@ -1317,6 +1317,8 @@ func (s *Server) setupRoutes() {
 		teamsGroup.GET("/approvals/today", teamsHandler.GetApprovalsToday)
 		teamsGroup.GET("/approvals/search", teamsHandler.SearchCHG)
 		teamsGroup.POST("/approvals/refresh", teamsHandler.RefreshApprovals)
+		teamsGroup.GET("/docker-session", teamsHandler.GetDockerSession)
+		teamsGroup.GET("/docker-status", teamsHandler.DockerStatus)
 
 		broadcastHandler := handlers.NewTeamsBroadcastHandler(&githubLogger)
 		teamsGroup.GET("/broadcast/chats", broadcastHandler.GetChats)
