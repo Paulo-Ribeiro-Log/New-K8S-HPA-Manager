@@ -28,8 +28,17 @@ const MaxMessageAgeBusinessDays = 3
 // dias úteis antes de `now`) — única fonte de verdade usada tanto pelo filtro de extração
 // (filterByAge) quanto pelo merge de cache e pela listagem padrão do handler HTTP
 // (GetApprovalsToday), pra nunca divergir entre os três.
+//
+// Corte em 00:00 do dia (não no horário exato de `now`) — decisão do usuário, ver discussão real:
+// sem isso, o corte era "N dias úteis atrás, no mesmo horário de agora" (ex: 16h de quinta ->
+// corte às 16h de segunda), o que excluía mensagens postadas de manhã na segunda mesmo sendo o
+// dia inteiro parte da janela de "3 dias úteis" — e fazia o corte MUDAR ao longo do mesmo dia
+// conforme o horário do refresh (refresh às 8h e às 20h no mesmo dia davam janelas diferentes).
+// Normalizar pra meia-noite antes de subtrair os dias úteis torna o corte estável durante todo o
+// dia corrente e inclui o dia inteiro de cada um dos N dias úteis anteriores.
 func CutoffTime(now time.Time) time.Time {
-	return BusinessDaysAgo(now, MaxMessageAgeBusinessDays)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return BusinessDaysAgo(startOfDay, MaxMessageAgeBusinessDays)
 }
 
 // Extractor extrai aprovações SRE do Mr.ViaBot no Microsoft Teams via automação de browser.
