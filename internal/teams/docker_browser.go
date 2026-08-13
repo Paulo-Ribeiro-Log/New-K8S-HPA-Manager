@@ -51,15 +51,46 @@ func teamsDockerEnabled() bool {
 	return v == "true" || v == "1"
 }
 
+// TeamsDockerEnabled expõe teamsDockerEnabled() pro handler HTTP decidir se vale a pena o
+// frontend fazer polling de TeamsDockerVNCURL() — sem isso, um cliente numa instância com o modo
+// Docker desligado ficaria fazendo polling à toa esperando uma URL que nunca vai aparecer.
+func TeamsDockerEnabled() bool {
+	return teamsDockerEnabled()
+}
+
 const (
 	teamsDockerImage         = "selenium/standalone-chrome:latest"
 	teamsDockerContainerName = "k8s-hpa-manager-teams-chrome"
-	// Portas fixas mapeadas no host — deliberadamente fora da faixa "óbvia" (4444/7900 são os
-	// padrões de um Selenium Grid local, que o usuário pode já ter rodando por conta própria)
-	// pra reduzir chance de colisão.
-	teamsDockerSeleniumPort = "14444"
-	teamsDockerVNCPort      = "17900"
+	// Portas do container em --network host (ver comentário em ensureContainerRunning) — como
+	// não há mapeamento de porta nesse modo, o container escuta direto nas portas padrão da
+	// própria imagem (4444 Selenium, 7900 noVNC), não numa faixa customizada. Bug real corrigido
+	// (achado ao vivo testando o refresh de verdade): com bridge network (modo original, portas
+	// 14444/17900 mapeadas), o container não enxergava a VPN corporativa do host (rota via tun0 +
+	// DNS interno 10.255.255.254) — `curl https://teams.microsoft.com/v2/` de dentro do container
+	// dava timeout total, enquanto o host resolvia/conectava em <300ms. Confirmado isolando a
+	// causa: o mesmo curl com `--network host` funcionou de primeira. Trade-off aceito: risco de
+	// colisão se o usuário já tiver um Selenium Grid local rodando nessas portas — pior que a
+	// alternativa (feature inteira inutilizável em qualquer rede corporativa com VPN).
+	teamsDockerSeleniumPort = "4444"
+	teamsDockerVNCPort      = "7900"
 	teamsDockerLabel        = "app=k8s-hpa-manager-teams-browser"
+
+	// teamsDockerProfileVolume/teamsDockerProfilePath — volume nomeado do Docker (gerenciado pelo
+	// próprio Docker, sem os problemas de permissão de um bind-mount direto do host — ver
+	// comentário em ensureProfileVolumeOwnership) usado como perfil PERSISTENTE do Chrome dentro
+	// do container, passado via `--user-data-dir` na criação da sessão WebDriver
+	// (createSeleniumSession). Bug real corrigido (achado ao vivo, relatado pelo usuário depois
+	// de um login+MFA 100% bem-sucedido e um scroll adaptativo de até 90s ainda assim não achar
+	// nenhuma mensagem): sem perfil persistente, TODO refresh no modo Docker parte de um Chrome
+	// zero — não só exige login+MFA de novo a cada vez, como o Teams v2 nem consegue *encontrar*
+	// a conversa do Mr.ViaBot na barra lateral num perfil recém-criado (diferente de "esperar mais
+	// tempo", que não resolve — confirmado ao vivo: DOM continuou vazio mesmo depois do teto de
+	// 90s). Com o perfil persistindo entre execuções (via volume, sobrevive a `docker rm`/restart
+	// do servidor), o primeiro login continua exigindo MFA normalmente, mas os próximos refreshes
+	// reaproveitam a MESMA sessão Azure AD + histórico do Teams já sincronizado — mesmo
+	// comportamento "quente" que o Chrome do sistema sempre teve.
+	teamsDockerProfileVolume = "k8s-hpa-manager-teams-chrome-profile"
+	teamsDockerProfilePath   = "/home/seluser/chrome-profile"
 )
 
 // dockerMu protege o estado do browser Docker persistente — mesmo padrão de browserMgr em
@@ -73,7 +104,26 @@ var (
 	dockerSessionID string
 	dockerSessionAt time.Time
 	dockerVNCURL    string
+	dockerMFANumber string // ver SetTeamsDockerMFANumber/TeamsDockerMFANumber abaixo
 )
+
+// SetTeamsDockerMFANumber registra o número do "number matching" do Authenticator detectado na
+// tela de MFA (browser.DetectMFANumber) — chamado de dentro do loop de espera em discover.go.
+// Passar "" limpa o valor (login avançou de fase ou terminou).
+func SetTeamsDockerMFANumber(n string) {
+	dockerMu.Lock()
+	defer dockerMu.Unlock()
+	dockerMFANumber = n
+}
+
+// TeamsDockerMFANumber expõe o último número de MFA detectado — o frontend mostra isso no modal
+// em vez do usuário ter que abrir o noVNC pra enxergar a tela e copiar o número manualmente. Vazio
+// quando nenhuma tela de MFA foi detectada (ainda não chegou nessa fase, ou já passou dela).
+func TeamsDockerMFANumber() string {
+	dockerMu.Lock()
+	defer dockerMu.Unlock()
+	return dockerMFANumber
+}
 
 // teamsDockerSessionMaxAge — teto preventivo de idade da sessão Docker reaproveitada, com margem
 // de segurança abaixo de teamsDockerSessionTimeoutSecs (o Grid expira a sessão sozinho depois
@@ -204,14 +254,25 @@ func ensureContainerRunning(ctx context.Context, logger *zerolog.Logger) error {
 	// resquício antes de recriar; `docker run --name` falha se o nome já existir, mesmo parado.
 	exec.CommandContext(ctx, "docker", "rm", "-f", teamsDockerContainerName).Run() //nolint:errcheck
 
+	if err := ensureProfileVolumeOwnership(ctx, logger); err != nil {
+		// Não crítico o bastante pra abortar — sem o volume utilizável o Chrome ainda funciona
+		// (só sem persistência), createSeleniumSession vai simplesmente falhar mais na frente se
+		// o --user-data-dir for de fato inacessível, com erro claro nesse ponto.
+		logger.Warn().Err(err).Msg("[Teams] Falha ao garantir permissão do volume de perfil persistente — seguindo mesmo assim")
+	}
+
 	logger.Info().Str("image", teamsDockerImage).Msg("[Teams] Subindo container Docker do Chrome (selenium/standalone-chrome)...")
+	// --network host (em vez de -p <porta>:<porta>): o container precisa da mesma rota de rede do
+	// host pra alcançar teams.microsoft.com/login.microsoftonline.com através da VPN corporativa
+	// (tun0) — o bridge network padrão do Docker não tem essa rota. Ver comentário nas constantes
+	// de porta acima pro bug real que motivou a mudança.
 	args := []string{
 		"run", "-d",
 		"--name", teamsDockerContainerName,
 		"--label", teamsDockerLabel,
 		"--shm-size", "2g",
-		"-p", teamsDockerSeleniumPort + ":4444",
-		"-p", teamsDockerVNCPort + ":7900",
+		"--network", "host",
+		"-v", teamsDockerProfileVolume + ":" + teamsDockerProfilePath,
 		"-e", "SE_VNC_NO_PASSWORD=1",
 		"-e", "SE_NODE_MAX_SESSIONS=1",
 		"-e", "SE_NODE_SESSION_TIMEOUT=" + teamsDockerSessionTimeoutSecs,
@@ -224,6 +285,44 @@ func ensureContainerRunning(ctx context.Context, logger *zerolog.Logger) error {
 	}
 
 	return waitSeleniumReady(ctx, logger)
+}
+
+// ensureProfileVolumeOwnership corrige a permissão do volume nomeado usado como perfil
+// persistente do Chrome (teamsDockerProfileVolume) — validado ao vivo: um volume Docker nomeado
+// recém-criado nasce dono de root:root (0755), mas o Chrome dentro do container roda como
+// "seluser" (não-root, por padrão da imagem selenium/standalone-chrome) — sem essa correção,
+// `--user-data-dir` aponta pra um diretório que o Chrome não tem permissão de escrita, e a
+// criação da sessão WebDriver falha com "cannot create default profile directory". Descobre o
+// UID/GID reais de "seluser" dinamicamente (via `id -u`/`id -g` rodado dentro da própria imagem)
+// em vez de hardcodar — a imagem é `:latest`, então o UID pode mudar entre pulls futuros.
+// Idempotente: seguro rodar toda vez que o container é recriado, mesmo que o volume já exista com
+// a permissão certa (chown de novo não tem efeito colateral).
+func ensureProfileVolumeOwnership(ctx context.Context, logger *zerolog.Logger) error {
+	idCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(idCtx, "docker", "run", "--rm", teamsDockerImage, "sh", "-c", "id -u; id -g").Output()
+	if err != nil {
+		return fmt.Errorf("erro ao descobrir uid/gid de seluser: %w", err)
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) != 2 {
+		return fmt.Errorf("saída inesperada de id -u/-g: %q", string(out))
+	}
+	uid, gid := fields[0], fields[1]
+
+	chownCtx, cancel2 := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel2()
+	args := []string{
+		"run", "--rm", "--user", "root", "--entrypoint", "chown",
+		"-v", teamsDockerProfileVolume + ":/mnt",
+		teamsDockerImage,
+		"-R", uid + ":" + gid, "/mnt",
+	}
+	if out, err := exec.CommandContext(chownCtx, "docker", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("chown do volume falhou: %v — %s", err, strings.TrimSpace(string(out)))
+	}
+	logger.Debug().Str("uid", uid).Str("gid", gid).Msg("[Teams] Volume de perfil persistente com permissão corrigida")
+	return nil
 }
 
 // waitSeleniumReady faz polling em GET /status até o Grid reportar {"value":{"ready":true}} —
@@ -260,8 +359,13 @@ func waitSeleniumReady(ctx context.Context, logger *zerolog.Logger) error {
 // Selenium sem reimplementar o protocolo WebDriver. Validado ao vivo contra a imagem real: a URL
 // devolvida usa o endereço INTERNO do container na rede Docker (ex: "ws://100.64.0.2:4444/..."),
 // inalcançável a partir do host — rewriteToLocalhost troca isso pela porta mapeada no host.
+//
+// --user-data-dir aponta pro volume persistente montado em teamsDockerProfilePath (ver
+// ensureContainerRunning/ensureProfileVolumeOwnership) — sem isso, o Selenium cria um profile
+// temporário novo por sessão (comportamento padrão, pensado pra isolamento de testes), perdendo
+// login/histórico do Teams a cada refresh.
 func createSeleniumSession(ctx context.Context) (cdpURL, sessionID string, err error) {
-	body := `{"capabilities":{"alwaysMatch":{"browserName":"chrome"}}}`
+	body := fmt.Sprintf(`{"capabilities":{"alwaysMatch":{"browserName":"chrome","goog:chromeOptions":{"args":["--user-data-dir=%s"]}}}}`, teamsDockerProfilePath)
 	url := fmt.Sprintf("http://localhost:%s/session", teamsDockerSeleniumPort)
 
 	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
