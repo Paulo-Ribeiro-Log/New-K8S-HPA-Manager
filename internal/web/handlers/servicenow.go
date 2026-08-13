@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
+	"k8s-hpa-manager/internal/browser"
 	"k8s-hpa-manager/internal/servicenow"
 )
 
@@ -353,7 +354,7 @@ func (h *ServiceNowHandler) CancelSessionTest(c *gin.Context) {
 // GetBrowserConfig retorna o estado do ambiente de browser para autenticação ServiceNow
 // GET /api/v1/servicenow/browser-config
 func (h *ServiceNowHandler) GetBrowserConfig(c *gin.Context) {
-	cfg := servicenow.LoadBrowserConfig()
+	cfg := browser.LoadBrowserConfig()
 	identifier := cfg.SSOLoginIdentifier
 	if identifier == "" {
 		identifier = "email"
@@ -379,14 +380,14 @@ func (h *ServiceNowHandler) SetBrowserConfig(c *gin.Context) {
 	c.ShouldBindJSON(&req) //nolint:errcheck
 
 	if req.SSOLoginIdentifier != "" {
-		cfg := servicenow.LoadBrowserConfig()
+		cfg := browser.LoadBrowserConfig()
 		if req.SSOLoginIdentifier == "email" || req.SSOLoginIdentifier == "matricula" {
 			cfg.SSOLoginIdentifier = req.SSOLoginIdentifier
-			servicenow.SaveBrowserConfig(cfg) //nolint:errcheck
+			browser.SaveBrowserConfig(cfg) //nolint:errcheck
 		}
 	}
 
-	cfg := servicenow.LoadBrowserConfig()
+	cfg := browser.LoadBrowserConfig()
 	identifier := cfg.SSOLoginIdentifier
 	if identifier == "" {
 		identifier = "email"
