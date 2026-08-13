@@ -1,7 +1,10 @@
 # Estudo de Viabilidade: Unificar todos os fluxos de browser no "embed" (Chromium do go-rod)
 
-**Status:** 🔬 estudo — Fase 0 ✅ concluída (limpeza de código morto). Fase 1 ✅ concluída
-(`internal/browser/` extraído). Fases 2-4 não iniciadas.
+**Status:** 🔬 estudo **CONCLUÍDO**. Fase 0 ✅ (limpeza de código morto). Fase 1 ✅
+(`internal/browser/` extraído). Fase 2 ❌ **reprovada com evidência real** — Chromium embed
+(revisão `1321438`) crasha (SIGTRAP) ao renderizar o Teams v2, reproduzido 3x ao vivo em
+12/08/2026, confirmado via kernel log do WSL2. Fase 3 não prossegue. Fase 4 ✅ aplicada — Teams
+permanece no Chrome do sistema, decisão final documentada na seção 5.
 **Pergunta original do usuário:** existem hoje vários tipos de navegador usados pela aplicação
 (um "embed" pro ServiceNow, outros com navegadores instalados no WSL) — mapear tudo e avaliar a
 viabilidade de padronizar em um único mecanismo ("tudo no embed").
@@ -179,46 +182,102 @@ Validado: `go build ./...`, `go vet ./...`, `gofmt`, `go test ./internal/service
 ./internal/teams/... ./internal/browser/... -race`, `make build` — tudo passando.
 
 ### Fase 2 — Validação empírica: Teams rodando no embed (atrás de flag, sem trocar o padrão)
-Adicionar uma env var (`K8S_HPA_TEAMS_EMBED_BROWSER=true`) ou flag de config que, quando setada,
-chama `getBrowser` do novo pacote comum **sem** `.Bin()` (força o Chromium do Rod) para o Teams.
-Validar manualmente, numa sessão de teste:
-- Login SSO/MFA Azure AD completo funciona igual (visual, sem travar)
-- `RunDiscovery` extrai `SkypeToken` e conversas do IndexedDB normalmente
-- `ScanConversations`/`SendBatch` funcionam sem erro
+
+**Código implementado** (`internal/teams/browser_manager.go`): env var `K8S_HPA_TEAMS_EMBED_BROWSER`
+(`"true"`/`"1"`) faz `getBrowser()` ignorar `FindSystemChrome()` mesmo quando o Chrome do sistema
+está disponível, forçando `chromeBin=""` → `browser.Launch` sem `.Bin()` → Chromium embutido do
+Rod. Sem a env var, comportamento 100% idêntico a antes (prefere sistema, cai pro embed só se não
+achar nada instalado) — reversível, zero risco pra quem não setar a flag.
+
+**Como rodar o teste** (precisa de você presente pro login SSO/MFA — não dá pra automatizar):
+```bash
+export K8S_HPA_TEAMS_EMBED_BROWSER=true
+kill <PID_atual> && ./build/new-k8s-hpa web -f   # reinicia com a flag setada no ambiente
+```
+Na Web UI, Tools → "Teams Broadcast" (ou o fluxo que aciona `RunDiscovery`/`ScanConversations`/
+`SendBatch`) → disparar a extração normalmente. Como `Headless(false)` é sempre usado pro Teams
+(igual antes), uma janela deve abrir — em WSL2 precisa de WSLg (Windows 11) ou Xvfb+VNC pra
+enxergá-la; sem isso o browser sobe mas fica invisível, inviável de completar login manual.
+
+Checklist de validação:
+- [x] ~~Login SSO/MFA Azure AD completo funciona igual~~ → **REPROVADO** (ver abaixo)
+- [x] ~~`RunDiscovery` extrai `SkypeToken` e conversas do IndexedDB normalmente~~ → **REPROVADO**
+- [ ] `ScanConversations`/`SendBatch` — nem chegou a ser testado, `RunDiscovery` já reprova antes
+- [x] ~~Nenhuma diferença perceptível de performance/estabilidade~~ → **REPROVADO**, ver abaixo
+
 Esse teste **precisa ser feito contra o Teams real** — não dá pra confirmar por leitura de
 código se o SPA do Teams se comporta diferente num Chromium genérico vs. Chrome instalado (ver
-hipóteses da seção 3).
+hipóteses da seção 3). ✅ **Executado ao vivo em 12/08/2026 (3 tentativas) — REPROVADO.**
 
-### Fase 3 — Se a Fase 2 validar: trocar o padrão do Teams pro embed
-Remove `findSystemChrome()`/`.Bin()` do caminho padrão (mantém só como fallback documentado, ou
-remove de vez). Resultado: **as duas features (ServiceNow + Teams) rodam 100% no Chromium
-embutido do Rod**, sem depender de nenhum Chrome/Chromium pré-instalado no host — elimina uma
-dependência de ambiente (`google-chrome-stable` no WSL2) e garante versão consistente entre
-features/máquinas.
+**Resultado real — ❌ Chromium embed (revisão `1321438`) crasha ao renderizar o Teams v2**
 
-### Fase 4 — Se a Fase 2 REPROVAR (Teams não funciona bem no embed)
-Documentar formalmente o motivo real (não mais hipótese) no CLAUDE.md, manter Teams no Chrome do
-sistema como decisão deliberada, e considerar aplicar o **inverso**: usar o Chrome do sistema
-também pro ServiceNow (menos provável de ser desejável, já que o modo atual headless do
-ServiceNow funciona bem hoje e não tem o mesmo tipo de SPA pesado do Teams).
+3 tentativas ao vivo, todas com o mesmo desfecho: o processo Chrome embed morre sozinho entre
+~40-90s depois de "Teams v2 carregado", sempre durante a espera do `SkypeToken`
+(`CDP: write tcp ...: use of closed network connection` do lado Go). Confirmado com evidência de
+kernel — as 3 tentativas batem 1:1 com 3 crashes reais capturados pelo WSL2:
+
+```
+kernel: chrome: potentially unexpected fatal signal 5.
+unknown: WSL (... - CaptureCrash): Capturing crash for pid: ..., executable:
+  !home!paulo!.cache!rod!browser!chromium-1321438!chrome, signal: 5, port: 50005
+```
+
+Sinal 5 = SIGTRAP, o padrão de crash de uma `CHECK`/`DCHECK` falhando dentro do próprio Chromium
+— não é sandbox, não é GPU (testado com `disable-gpu`/`no-sandbox`/`disable-dev-shm-usage`/
+`disable-setuid-sandbox` na 2ª tentativa, mesmo assim crashou), não é falta de display (WSLg
+confirmado ativo, janela visível), não é timeout/rede. É a revisão **pinada e antiga** do
+Chromium (a mesma desde sempre no `go-rod` vendorizado) tendo um bug real ao processar o SPA
+pesado do Teams v2 — confirma **exatamente a Hipótese 2** da seção 3.
+
+**Achado colateral real, corrigido no mesmo lote** (`internal/teams/discover.go`): investigando a
+1ª queda, achamos que `minimizeWindow()` rodava logo depois de "Teams v2 carregado!" — um check
+que só confirma a URL (`teams.microsoft.com/v2`), não login de fato completo (a URL já bate
+mesmo em telas de login/MFA em andamento). Com o Chrome do sistema isso nunca dava sintoma
+(sessão já vinha autenticada, login sempre silencioso); no embed, sem sessão prévia, a janela de
+login minimizava sozinha antes do usuário conseguir interagir. Corrigido: `minimizeWindow()`
+movida pra depois do loop de espera do `SkypeToken` (só minimiza quando o login de fato
+completou; se não completou em 90s, a janela fica visível). **Esse fix é real e válido
+independente do resultado da Fase 2** — beneficia também o caminho do Chrome do sistema em
+qualquer cenário de login não-silencioso (sessão nova/expirada) — mantido e commitado. Mas não
+foi a causa da queda: o processo morre por SIGTRAP mesmo com a janela minimizada ou visível.
+
+**Conclusão: Fase 2 reprovada com evidência real, não apenas hipótese.** Sem trocar a revisão do
+Chromium vendorizada no `go-rod` (mudança bem maior, fora de escopo deste estudo — nem se sabe se
+uma revisão mais nova resolveria, exigiria repetir todo o teste), o embed não é viável pro Teams
+hoje. Ver Fase 4 abaixo.
+
+### Fase 3 — Trocar o padrão do Teams pro embed — ❌ NÃO PROSSEGUE
+Dependia da Fase 2 validar. Reprovada com evidência real (crash SIGTRAP reproduzido 3x) — não há
+motivo pra prosseguir com essa fase.
+
+### Fase 4 — Fase 2 REPROVOU — ✅ EXECUTADA
+- Teams **permanece no Chrome do sistema** (`findSystemChrome()`/`.Bin()`) — decisão deliberada,
+  documentada aqui com causa raiz real (crash SIGTRAP na revisão pinada do Chromium embed ao
+  renderizar o Teams v2), não mais hipótese.
+- `K8S_HPA_TEAMS_EMBED_BROWSER` **permanece no código**, desligada por padrão — inofensiva (só
+  ativa se alguém setar a env var explicitamente) e serve como ponto de retomada caso o `go-rod`
+  vendorizado suba de revisão no futuro (só então valeria repetir este teste).
+- Inverter o modelo (Chrome do sistema também pro ServiceNow) **não se aplica** — o ServiceNow
+  segue headless, sem o mesmo tipo de SPA pesado, e nunca teve esse sintoma.
+- Servidor do usuário restaurado ao estado normal (sem a flag) ao final da sessão de teste.
 
 ---
 
 ## 6. Recomendação
 
-1. **Fase 0 é segura pra aplicar já** — é limpeza pura de código morto, sem risco, e resolve
-   diretamente a confusão entre o que o CLAUDE.md descreve e o que o código faz.
-2. **Fase 1 é segura e de baixo esforço** — reduz duplicação sem mudar comportamento observável.
-3. **Fases 2/3 exigem validação manual contra o Teams real** antes de qualquer decisão — não há
-   como confirmar por leitura de código se o Chromium genérico do Rod é aceito pelo SPA do Teams
-   v2 exatamente como o Chrome instalado. Recomendo tratar isso como um teste dedicado (não como
-   parte de uma sessão de refatoração maior), com rollback fácil (a flag da Fase 2) caso o
-   comportamento do Teams degrade.
+1. **Fase 0 aplicada** — limpeza pura de código morto, sem risco.
+2. **Fase 1 aplicada** — reduz duplicação sem mudar comportamento observável.
+3. **Fase 2 executada e reprovada com evidência real** (crash SIGTRAP do Chromium embed
+   reproduzido 3x ao vivo, confirmado via kernel log do WSL2). **Fase 3 não prossegue.** **Fase 4
+   aplicada**: Teams permanece no Chrome do sistema, motivo documentado formalmente acima.
 
-## 7. Perguntas em aberto pro usuário
+## 7. Estudo concluído
 
-- ~~Quer que eu já aplique a **Fase 0**...~~ ✅ aplicada e commitada
-  (`refactor/limpeza-browser-servicenow`).
-- ~~Quer que eu prossiga com a **Fase 1**...~~ ✅ aplicada nesta mesma branch.
-- Pra Fase 2 (teste real no Teams), precisa ser feito com você presente pra validar o login
-  SSO/MFA visualmente — quer agendar isso separadamente?
+- ~~Fase 0~~ ✅ aplicada e commitada (`refactor/limpeza-browser-servicenow`).
+- ~~Fase 1~~ ✅ aplicada nesta mesma branch.
+- ~~Fase 2~~ ✅ testada ao vivo com o usuário em 12/08/2026 — **reprovada** (crash SIGTRAP do
+  Chromium embed, 3x reproduzido, evidência de kernel).
+- ~~Fase 3~~ não prossegue (dependia da Fase 2 validar).
+- ~~Fase 4~~ ✅ aplicada — decisão final documentada, nada pendente.
+
+Nenhuma pergunta em aberto — não há mais fases planejadas neste estudo.
