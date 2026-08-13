@@ -2,6 +2,16 @@ module k8s-hpa-manager
 
 go 1.25.0
 
+// Ver "Bug real corrigido — TLS handshake timeout contra endpoints privados (EKS) atrás de VPN"
+// no CLAUDE.md: desde Go 1.24, o ClientHello do TLS 1.3 inclui por padrão o key share híbrido
+// pós-quântico X25519MLKEM768, que engorda o pacote além do MTU de túneis VPN — provoca
+// fragmentação IP que o caminho de rede corporativo usado por este projeto derruba/perde
+// silenciosamente, travando o handshake até estourar o timeout. curl/openssl (TLS stack própria,
+// sem esse key share) não sofrem disso — só clients Go (client-go, nosso próprio net/http).
+// Desativa o key share pós-quântico para todo o binário (mantém X25519/P-256/P-384/P-521
+// clássicos, ainda seguros contra ataques não-quânticos).
+godebug tlsmlkem=0
+
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
