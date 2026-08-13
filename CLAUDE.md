@@ -21,7 +21,7 @@ Todas as features abaixo já estão mescladas na `main` (verificado via `git mer
 | kubectl configurado | Prometheus (métricas + Conntrack histórico) |
 | Git | Ollama local ou API key Claude/Gemini/OpenAI (AI Diagnostics) |
 | | Kiali/Istio (Service Mesh) |
-| | Chrome/Edge do Windows via CDP (ServiceNow SSO, Teams — WSL2) |
+| | Google Chrome/Chromium instalado no WSL2 (Teams — usa o Chrome do sistema se achar; ServiceNow não depende disso, roda 100% no Chromium embutido do go-rod) |
 
 ---
 
@@ -43,6 +43,7 @@ Todas as features abaixo já estão mescladas na `main` (verificado via `git mer
 - [**Plano: Descoberta de Prometheus em Clusters GKE**](GKE-PROMETHEUS-DISCOVERY-PLAN.md) ← ✅ Fases 1-6 concluídas — GMP (Google Cloud Managed Service for Prometheus) funciona ponta a ponta (URL automática a partir do Project ID do context GKE, auth OAuth2 Bearer via hook `discovery.SetGCPTokenFunc`), mas descobriu-se que o cluster de teste (`gke-higgs-hlg`) tem o PodMonitoring gerenciado pelo GKE reduzido (sem HPA/resource requests) — resolvido na **Fase 6** com um mecanismo alternativo: `KubeConfigManager.OpenPortForward` (`internal/config/portforward.go`) abre um túnel SPDY nativo via `client-go` (mesma tecnologia de `kubectl port-forward`, como biblioteca) pra alcançar um Prometheus real in-cluster (`kube-prometheus-stack` completo, `ClusterIP` sem Ingress) — hook `discovery.SetPortForwardFunc` (mesmo padrão de inversão de dependência de `SetGCPTokenFunc`) + override manual `prometheusInClusterNamespace/Service/Port` nos 3 configs de cluster. Validado ao vivo: dado real de HPA/resources fluindo pelo túnel, e bônus não planejado — `/api/v1/alerts` também passou a funcionar (Prometheus real, não GMP). `internal/finops` (4º grupo de clientes Prometheus, antes descoberto sem cobertura) recebeu o mesmo tratamento de auth/túnel na Fase 4 — validado ao vivo com `req_millis`/`req_mi` reais retornados pelo endpoint de timeline
 - [**Plano: FinOps Isenções**](FINOPS-EXEMPTIONS-PLAN.md) ← work in progress — whitelist por workload com threshold de réplicas (nenhuma fase iniciada)
 - [**Estudo/Plano: Integração Zabbix**](ZABBIX-INTEGRATION-PLAN.md) ← 🔬 estudo — API JSON-RPC confirmada e documentada, benefícios mapeados (aba de problems, correlação no Health Check, FinOps para infra self-managed), mas Fases 2+ dependem de confirmar contra a instalação real (versão, o que é monitorado, convenção de nome/IP/tag pra correlacionar host↔K8s) — nenhuma fase iniciada
+- [**Estudo: Unificar navegadores no "embed"**](BROWSER-CONSOLIDATION-STUDY.md) ← 🔬 estudo — mapeamento completo de todo uso de browser na app (ServiceNow, Teams, abertura da própria SPA, `window.open` de fluxos de auth); Fase 0 (limpeza de código morto: Playwright legado + modo "Windows CDP" nunca chamado do ServiceNow) ✅ concluída; Fase 1 (`internal/browser/` — pacote compartilhado com `Launch`/`Manager`/`FindSystemChrome`/`KillExistingChrome`/`RestoreWindow`/`MinimizeWindow`, usado por `internal/servicenow` e `internal/teams` em vez de cada um reimplementar a própria versão) ✅ concluída, refatoração pura sem mudança de comportamento observável; Fases 2-4 (testar Teams no Chromium embutido do Rod em vez do Chrome do sistema) não iniciadas — dependem de validação manual contra o Teams real
 - [**Plano: Cluster Discovery AKS+EKS**](CLUSTER-DISCOVERY-PLAN.md) ← ✅ Fases 1-5 concluídas — discovery paralelo, config EKS separada, semáforos ampliados, frontend com badges AKS/EKS
 - [**Plano: Verificar Acesso (Access Checker)**](ACCESS-CHECK-PLAN.md) ← ⚠️ Revisão 7 pendente de validação real — checa acesso de analista via impersonation K8s + grupos AAD `VV_CLOUD*` resolvidos por `az ad user get-member-groups` (sem Graph API); detecta também acesso admin via IAM do Azure (bypass de RBAC, invisível à impersonation); scan de frota usa `SelfSubjectAccessReview` varrendo todos os namespaces
 - [**Plano: Teste de Latência sob Demanda**](LATENCY-METRICS-PLAN.md) ← ✅ Fases 1-7 concluídas — teste ativo (pod efêmero + curl/ping via exec) com guardrails, contexto histórico DT/Prometheus (P95/P99), grafo de topologia (Cytoscape.js) e correlação de breach de latência no Health Check. Fase 7 validada só por teste unitário, não por navegador
@@ -1015,18 +1016,13 @@ Ferramenta de inspeção e formatação de JSON embutida em todos os visualizado
 ```
 O formato `TIMESTAMP LEVEL {JSON}` (timestamp fora do objeto) falha no FluentD `@type json` e no EventHub consumer. O inspetor detecta esse caso via `extractJsonBlock` e avisa com o badge âmbar.
 
-### ServiceNow — Rod (Go nativo) + WSL2 CDP
+### ServiceNow — Rod (Go nativo), 100% Chromium embutido
 
 `internal/servicenow/` — extração de CHGs via browser automation com **go-rod v0.116.2** (Go nativo, sem Node.js/npm). Suporta autenticação SAML/SSO do Azure AD com persistência de sessão.
 
-**Dois modos de execução** (selecionados automaticamente por `NeedsWindowsBrowser()`):
-- **Modo local**: Chromium baixado automaticamente pelo Rod (`launcher.New()`). Sessão em `~/.k8s-hpa-manager/rod-session/`.
-- **Modo Windows/WSL2**: Chrome/Edge do Windows via CDP na porta **`9223`** (não 9222 — evita conflito com instâncias existentes). Rod conecta em `ws://<windows-host>:9223`. Sessão no caminho Windows configurado em `BrowserConfig.WindowsSessionDir`.
+**Um único mecanismo real hoje: Chromium "embed"** — baixado e gerenciado pelo próprio go-rod (`launcher.New()`, sem `.Bin(...)`, revisão fixa `1321438` vendorizada em `vendor/github.com/go-rod/rod/lib/launcher/revision.go`), nunca o Chrome/Chromium do sistema. Sessão em `~/.k8s-hpa-manager/rod-session/`. `Extract()` roda headless; `TestSession()` (login) roda visível, com **Xvfb** como display virtual quando não há display gráfico real (WSL2 sem WSLg).
 
-**Precedência de `NeedsWindowsBrowser()`:**
-1. Env var `K8S_HPA_WINDOWS_BROWSER=true` — força modo Windows
-2. Config persistida em `~/.k8s-hpa-manager/servicenow-browser.json`
-3. Auto-detect: WSL sem display gráfico (`DISPLAY`/`WAYLAND_DISPLAY` vazios)
+**Achado real — código morto removido (ver `BROWSER-CONSOLIDATION-STUDY.md`)**: até uma sessão anterior, o CLAUDE.md descrevia um segundo modo alternável ("Modo Windows/WSL2": Chrome/Edge do Windows lançado via PowerShell com `--remote-debugging-port=9223`, selecionado por `NeedsWindowsBrowser()`). Um levantamento completo do uso de browser na aplicação confirmou que esse modo **nunca era chamado por nada** — `GetBrowserConfig`/`SetBrowserConfig` sempre reportavam `"browser_mode": "chromium-local"` incondicionalmente, e `NeedsWindowsBrowser()`/`LaunchWindowsBrowserForCDP()`/`StartCDPRelay()`/`WindowsSessionWSLDir()`/`FindWindowsBrowser()` (todas em `wsl_browser.go`) não tinham nenhum call site fora do próprio arquivo. Removidas junto: a implementação legada via `npx playwright` (`playwright.go`'s `PlaywrightExtractor`, `script_embed.go`) e seus equivalentes PowerShell nunca chamados (`cdp_powershell.go`) — só os **tipos** `PlaywrightResult`/`SessionStatus` (ainda usados de verdade por `rod_extractor.go`/`sn_direct_client.go`, nome herdado da implementação antiga) foram preservados, movidos para `models.go`. O que restou de `wsl_browser.go`: `IsWSL()`, `HasGraphicalDisplay()`, `LoadBrowserConfig`/`SaveBrowserConfig` (config genérica, só `sso_login_identifier` é lido/escrito de fato hoje) e `WindowsCDPPort`/`cdpHosts()` — usados por um fast-path **passivo** em `ExtractCookiesViaCDP` (`cdp_cookies.go`) que tenta ler cookies de um Chrome na porta 9223 **se o usuário já tiver aberto um manualmente**; a aplicação nunca lança esse Chrome.
 
 **Sessão Azure AD**: expira em ~8h. `RodExtractor.GetSessionStatus()` valida pelo timestamp de modificação do diretório. `ClearSession()` remove e recria o diretório vazio.
 

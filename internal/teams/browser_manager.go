@@ -1,26 +1,25 @@
 package teams
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
+
+	"k8s-hpa-manager/internal/browser"
 )
 
-// browserMu protege o Chrome persistente do Teams. operationMu serializa RunDiscovery,
-// ScanConversations e SendBatch entre si — abas paralelas no mesmo perfil podem invalidar o
-// SkypeToken (mesmo risco documentado no extractMu do ServiceNow, internal/servicenow/rod_extractor.go).
+// operationMu serializa RunDiscovery, ScanConversations e SendBatch entre si — abas paralelas no
+// mesmo perfil podem invalidar o SkypeToken (mesmo risco documentado no extractMu do ServiceNow,
+// internal/servicenow/rod_extractor.go). browserMgr é o Chrome persistente reaproveitado pelas
+// três operações (Fase 1 de BROWSER-CONSOLIDATION-STUDY.md — implementação movida pra
+// internal/browser, que também é usada pelo ServiceNow).
 var (
-	browserMu        sync.Mutex
-	operationMu      sync.Mutex
-	sharedBrowser    *rod.Browser
-	sharedSessionDir string
+	operationMu sync.Mutex
+	browserMgr  browser.Manager
 )
 
 // getBrowser retorna o Chrome persistente da sessão do Teams, lançando um processo novo só na
@@ -29,70 +28,49 @@ var (
 // mesmo processo entre elas elimina esse cold-start, mesmo padrão já usado pelo ServiceNow
 // (RodExtractor.getBrowser, "N CHGs = 1 browser").
 func getBrowser(sessionDir string, logger *zerolog.Logger) (*rod.Browser, error) {
-	browserMu.Lock()
-	defer browserMu.Unlock()
-
-	if sharedBrowser != nil && sharedSessionDir == sessionDir {
-		if _, err := sharedBrowser.Pages(); err == nil {
-			return sharedBrowser, nil
-		}
-		logger.Warn().Msg("[Teams] Browser persistente morreu — relançando")
-		sharedBrowser = nil
-	}
-
-	chromeBin := findSystemChrome()
+	chromeBin := browser.FindSystemChrome()
 	if chromeBin != "" {
 		logger.Info().Str("bin", chromeBin).Msg("[Teams] Usando Chrome do sistema")
 	} else {
 		logger.Warn().Msg("[Teams] Chrome do sistema não encontrado — usando Chromium do Rod")
 	}
 
-	// Matar instâncias Chrome existentes que usam o mesmo perfil (recuperação de crash/restart
-	// anterior) — o Rod não consegue lançar uma nova instância de debug se o perfil já está travado.
-	killExistingChrome(sessionDir, logger)
-	time.Sleep(1 * time.Second)
+	opts := browser.LaunchOptions{
+		SessionDir:  sessionDir,
+		Headless:    false,
+		SystemBin:   chromeBin,
+		DeleteFlags: []string{"enable-automation"},
+		Flags: map[string]string{
+			// Sem valor: launcher gera --flag (sem "="), correto para flags booleanas
+			"disable-blink-features":   "AutomationControlled",
+			"no-first-run":             "",
+			"no-default-browser-check": "",
+			// Limitar cache em disco a 32 MB para evitar esgotamento de espaço
+			"disk-cache-size":           "33554432",
+			"aggressive-cache-discard":  "",
+			"disable-application-cache": "",
+		},
+	}
 
-	// Limpar cache do Chrome antes de lançar — cresce sem limite e pode esgotar o disco.
-	// Apenas cache e Code Cache são removidos; cookies/LocalStorage/IndexedDB são preservados.
-	for _, cacheSubDir := range []string{"Default/Cache", "Default/Code Cache", "Default/GPUCache"} {
-		cacheDir := filepath.Join(sessionDir, cacheSubDir)
-		if _, err := os.Stat(cacheDir); err == nil {
-			os.RemoveAll(cacheDir) //nolint:errcheck
-			logger.Info().Str("dir", cacheDir).Msg("[Teams] Cache Chrome removido antes do launch")
+	return browserMgr.Get(opts, func() {
+		// Matar instâncias Chrome existentes que usam o mesmo perfil (recuperação de
+		// crash/restart anterior) — o Rod não consegue lançar uma nova instância de debug se o
+		// perfil já está travado.
+		browser.KillExistingChrome(sessionDir, logger)
+		time.Sleep(1 * time.Second)
+
+		// Limpar cache do Chrome antes de lançar — cresce sem limite e pode esgotar o disco.
+		// Apenas cache e Code Cache são removidos; cookies/LocalStorage/IndexedDB são preservados.
+		for _, cacheSubDir := range []string{"Default/Cache", "Default/Code Cache", "Default/GPUCache"} {
+			cacheDir := filepath.Join(sessionDir, cacheSubDir)
+			if _, err := os.Stat(cacheDir); err == nil {
+				os.RemoveAll(cacheDir) //nolint:errcheck
+				logger.Info().Str("dir", cacheDir).Msg("[Teams] Cache Chrome removido antes do launch")
+			}
 		}
-	}
-
-	l := launcher.New().
-		UserDataDir(sessionDir).
-		Headless(false).
-		Delete("enable-automation").
-		Set("disable-blink-features", "AutomationControlled").
-		// Sem segundo argumento: Rod gera --flag (sem =), correto para flags booleanas
-		Set("no-first-run").
-		Set("no-default-browser-check").
-		// Limitar cache em disco a 32 MB para evitar esgotamento de espaço
-		Set("disk-cache-size", "33554432").
-		Set("aggressive-cache-discard").
-		Set("disable-application-cache")
-
-	if chromeBin != "" {
-		l = l.Bin(chromeBin)
-	}
-
-	ctrlURL, err := l.Launch()
-	if err != nil {
-		return nil, fmt.Errorf("erro ao iniciar Chrome: %w", err)
-	}
-
-	b := rod.New().ControlURL(ctrlURL)
-	if err := b.Connect(); err != nil {
-		return nil, fmt.Errorf("erro ao conectar ao browser: %w", err)
-	}
-
-	sharedBrowser = b
-	sharedSessionDir = sessionDir
-	logger.Info().Msg("[Teams] Browser persistente iniciado")
-	return b, nil
+	}, func() {
+		logger.Info().Msg("[Teams] Browser persistente iniciado")
+	}, logger)
 }
 
 // restoreWindow traz a janela do browser de volta ao estado normal (visível). Chamada no início
@@ -101,11 +79,7 @@ func getBrowser(sessionDir string, logger *zerolog.Logger) (*rod.Browser, error)
 // expirou nesse meio-tempo, o Teams volta a pedir login, e o usuário precisa enxergar essa tela
 // desde o início da chamada, não só depois de já ter "perdido" a oportunidade de interagir.
 func restoreWindow(page *rod.Page, logger *zerolog.Logger) {
-	if err := page.SetWindow(&proto.BrowserBounds{WindowState: proto.BrowserWindowStateNormal}); err != nil {
-		// Não crítico: em WSL2 sem display gráfico (Xvfb) não existe uma janela real de verdade
-		// pra restaurar — a extração continua funcionando normalmente mesmo se isso falhar.
-		logger.Debug().Err(err).Msg("[Teams] Não foi possível restaurar a janela do browser (não crítico)")
-	}
+	browser.RestoreWindow(page, logger)
 }
 
 // minimizeWindow minimiza a janela do browser. Chamado depois que a página autenticada do Teams
@@ -114,19 +88,12 @@ func restoreWindow(page *rod.Page, logger *zerolog.Logger) {
 // Chrome ocupando a tela. Se uma chamada futura precisar de login de novo (sessão expirada),
 // restoreWindow (acima) traz a janela de volta no início dessa próxima chamada.
 func minimizeWindow(page *rod.Page, logger *zerolog.Logger) {
-	if err := page.SetWindow(&proto.BrowserBounds{WindowState: proto.BrowserWindowStateMinimized}); err != nil {
-		logger.Debug().Err(err).Msg("[Teams] Não foi possível minimizar a janela do browser (não crítico)")
-	}
+	browser.MinimizeWindow(page, logger)
 }
 
 // CloseBrowser encerra o Chrome persistente do Teams, se houver algum aberto. Chamado no
 // shutdown do servidor para não deixar o processo órfão rodando em segundo plano — a próxima
 // chamada relança do zero via getBrowser.
 func CloseBrowser() {
-	browserMu.Lock()
-	defer browserMu.Unlock()
-	if sharedBrowser != nil {
-		sharedBrowser.Close() //nolint:errcheck
-		sharedBrowser = nil
-	}
+	browserMgr.Close()
 }
