@@ -350,32 +350,72 @@ func (k *KubeConfigManager) resolveAWSProfile(contextName string) string {
 // EvictClientsByAWSProfile remove do cache todos os clients K8s cujo perfil AWS
 // corresponde ao informado. Deve ser chamado após login SSO bem-sucedido para
 // forçar recriação com o novo token.
+//
+// Bug real corrigido — login SSO bem-sucedido não era suficiente para restaurar o acesso:
+// esta função só limpava k.clients/k.metricsClients, mas deixava intactos dois outros caches
+// que também podem conter credenciais obtidas com a sessão AWS antiga/expirada:
+//  1. k.restConfigs (até 30min de TTL) — se a PRIMEIRA tentativa de acesso ao cluster ocorreu
+//     com a sessão SSO já expirada, GetRestConfig cacheia um restConfig no modo de fallback
+//     (ExecProvider nativo, sem WrapTransport) por até 30min; evictar só o client não invalida
+//     esse restConfig cacheado, e o client recriado a partir dele herda o mesmo estado.
+//  2. eksTokenCache (pacote, TTL derivado da expiração real do token STS ~14min) — um Bearer
+//     Token já obtido e cacheado por getFreshEKSToken continua sendo servido por
+//     eksTokenRoundTripper independente de o client K8s ter sido recriado, já que o cache é
+//     keyed por args (cluster/região/perfil), não por instância de client.
+//
+// Sem limpar os três, o usuário podia completar o login SSO com sucesso (VPN ok, `aws sts
+// get-caller-identity` funcionando) e mesmo assim continuar vendo falha de acesso ao cluster
+// por até ~30min, até os caches expirarem sozinhos por TTL.
 func (k *KubeConfigManager) EvictClientsByAWSProfile(profile string) {
-	// Coletar contexts que correspondem ao perfil (sem locks).
-	var toEvict []string
+	// Coletar contexts que correspondem ao perfil (sem locks). k.restConfigs pode ter entradas
+	// que k.clients não tem ainda (ex: GetMetricsClient/KubectlAuthArgs chamados antes de
+	// qualquer GetClient para o mesmo cluster) — varrer os dois mapas, deduplicando.
+	toEvictSet := make(map[string]struct{})
 	k.clientMutex.RLock()
 	for contextName := range k.clients {
 		if k.resolveAWSProfile(contextName) == profile {
-			toEvict = append(toEvict, contextName)
+			toEvictSet[contextName] = struct{}{}
 		}
 	}
 	k.clientMutex.RUnlock()
 
-	if len(toEvict) == 0 {
-		return
+	k.restConfigsMu.RLock()
+	for contextName := range k.restConfigs {
+		if k.resolveAWSProfile(contextName) == profile {
+			toEvictSet[contextName] = struct{}{}
+		}
+	}
+	k.restConfigsMu.RUnlock()
+
+	if len(toEvictSet) > 0 {
+		toEvict := make([]string, 0, len(toEvictSet))
+		for name := range toEvictSet {
+			toEvict = append(toEvict, name)
+		}
+
+		k.clientMutex.Lock()
+		for _, name := range toEvict {
+			delete(k.clients, name)
+		}
+		k.clientMutex.Unlock()
+
+		k.metricsMutex.Lock()
+		for _, name := range toEvict {
+			delete(k.metricsClients, name)
+		}
+		k.metricsMutex.Unlock()
+
+		k.restConfigsMu.Lock()
+		for _, name := range toEvict {
+			delete(k.restConfigs, name)
+		}
+		k.restConfigsMu.Unlock()
 	}
 
-	k.clientMutex.Lock()
-	for _, name := range toEvict {
-		delete(k.clients, name)
-	}
-	k.clientMutex.Unlock()
-
-	k.metricsMutex.Lock()
-	for _, name := range toEvict {
-		delete(k.metricsClients, name)
-	}
-	k.metricsMutex.Unlock()
+	// Sempre limpar o token EKS cacheado por perfil — independente de haver client/restConfig
+	// cacheado (getFreshEKSToken também é chamado por KubectlAuthArgs/eksTokenRoundTripper sem
+	// necessariamente passar por GetClient antes).
+	evictEKSTokenCacheByProfile(profile)
 }
 
 // SetHistoryTracker configura o historyTracker para audit logging
@@ -1065,12 +1105,52 @@ func getFreshEKSToken(args []string) (string, bool) {
 // idle, período que pode facilmente ultrapassar a validade real de um token STS (~15min).
 // Isso substitui a dependência de um restConfig.BearerToken estático, que ficaria travado
 // no valor obtido no momento da criação do client.
+//
+// Bug real corrigido — token cacheado inválido (mas ainda dentro do TTL calculado a partir
+// da expiração STS) fazia toda chamada ao cluster falhar em loop até o cache expirar sozinho,
+// mesmo com a sessão AWS SSO já corrigida por um novo login: getFreshEKSToken cacheia o token
+// pelo TTL derivado de `ExpirationTimestamp`, mas esse timestamp reflete só a validade
+// criptográfica do token STS — não garante que o `kube-apiserver`/aws-iam-authenticator vá
+// aceitá-lo (sessão SSO revogada por outro motivo, relógio dessincronizado, role/permissão
+// alterada depois do token emitido). Sem invalidação nesse caso, cada requisição reaproveitava
+// o mesmo token ruim do cache até faltar ~14min para expirar de novo. Corrigido com o mesmo
+// padrão de self-healing já usado por gkeTokenRoundTripper abaixo: em 401, invalida a entrada
+// desse token no cache e tenta de novo uma única vez, já com um token recém-obtido — resolve
+// dentro da MESMA chamada, sem esperar o usuário perceber e repetir a ação manualmente.
 type eksTokenRoundTripper struct {
 	args []string
 	base http.RoundTripper
 }
 
 func (rt *eksTokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.doWithToken(req)
+	if err != nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+
+	invalidateEKSTokenCache(rt.args)
+
+	if req.Body != nil && req.GetBody == nil {
+		// Corpo não rebobinável (ex: stream) — não é seguro reenviar. A cache já foi
+		// invalidada, então a PRÓXIMA chamada do caller já usa um token fresco.
+		return resp, nil
+	}
+
+	retryReq := req
+	if req.GetBody != nil {
+		body, gbErr := req.GetBody()
+		if gbErr != nil {
+			return resp, nil
+		}
+		clone := req.Clone(req.Context())
+		clone.Body = body
+		retryReq = clone
+	}
+	resp.Body.Close()
+	return rt.doWithToken(retryReq)
+}
+
+func (rt *eksTokenRoundTripper) doWithToken(req *http.Request) (*http.Response, error) {
 	if token, ok := getFreshEKSToken(rt.args); ok {
 		req = utilnet.CloneRequest(req)
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -1079,6 +1159,40 @@ func (rt *eksTokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 }
 
 func (rt *eksTokenRoundTripper) WrappedRoundTripper() http.RoundTripper { return rt.base }
+
+// invalidateEKSTokenCache remove do cache em memória (eksTokenCache) o token associado aos
+// args exec informados — força getFreshEKSToken a rodar `aws eks get-token` de novo na
+// próxima chamada, em vez de servir o mesmo token potencialmente inválido até o TTL expirar.
+func invalidateEKSTokenCache(args []string) {
+	key := strings.Join(args, "|")
+	eksTokenCacheMu.Lock()
+	delete(eksTokenCache, key)
+	eksTokenCacheMu.Unlock()
+}
+
+// evictEKSTokenCacheByProfile remove do cache em memória (eksTokenCache) todo token EKS obtido
+// para o perfil informado — chamado por EvictClientsByAWSProfile após um login SSO bem-sucedido,
+// pelo mesmo motivo documentado ali: sem isso, um Bearer Token obtido com a sessão AWS antiga
+// continuava sendo servido por eksTokenRoundTripper mesmo depois do login corrigir a sessão,
+// até o TTL do cache (derivado da expiração real do STS, ~14min) expirar sozinho.
+//
+// args de buildEKSExecProvider sempre terminam em "--profile", "<profile>" quando um perfil é
+// resolvido (ver ali) — a chave do cache (args unidos por "|") portanto sempre termina em
+// "--profile|<profile>" para esse perfil, o que permite achar as entradas certas sem guardar
+// um índice reverso separado.
+func evictEKSTokenCacheByProfile(profile string) {
+	if profile == "" {
+		return
+	}
+	suffix := "--profile|" + profile
+	eksTokenCacheMu.Lock()
+	for key := range eksTokenCache {
+		if strings.HasSuffix(key, suffix) {
+			delete(eksTokenCache, key)
+		}
+	}
+	eksTokenCacheMu.Unlock()
+}
 
 // gkeTokenRoundTripper reescreve o header Authorization em cada requisição com o token GKE mais
 // recente disponível em cache (via gcpprovider.GetFreshGKEToken) — mesmo motivo/padrão de
