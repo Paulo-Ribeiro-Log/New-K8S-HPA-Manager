@@ -33,6 +33,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
+import type { DBDockerStatus } from "@/lib/api/types";
+import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
+import { TeamsDockerLoginModal } from "@/components/TeamsDockerLoginModal";
 
 interface ExtractedData {
   application: string;
@@ -168,6 +171,73 @@ export function ServiceNowImportModal({
     approved: boolean;
     approverEmail: string;
   }>>(new Map());
+
+  // Modo Docker do Teams (K8S_HPA_TEAMS_DOCKER_BROWSER, opt-in) — modal com o noVNC embutido
+  // abre sozinho assim que existe um login em andamento, sem o usuário ter que copiar/abrir
+  // nenhuma URL. Ver TeamsDockerLoginModal.tsx e GetDockerSession (internal/web/handlers/teams.go).
+  //
+  // Polling AMBIENTE, não atrelado a um clique específico: enquanto a aba Teams estiver visível
+  // (independente de quem/onde disparou o refresh — outra aba do navegador, o broadcast, um
+  // teste manual via API), checa a cada 1.5s se GetDockerSession reporta uma extração em
+  // andamento (`refreshing`) com sessão pronta (`vnc_url`) e mostra o modal automaticamente.
+  // Bug real corrigido: a primeira versão só começava a fazer polling dentro dos handlers de
+  // refresh (handleTeamsRefresh/handleExtractDirectChg/handleExtractByName) — um refresh
+  // disparado por qualquer outro caminho ficava invisível pra esta aba, exatamente o "abrir
+  // manualmente" que este modal existe pra evitar.
+  const [dockerVncUrl, setDockerVncUrl] = useState<string | null>(null);
+  const [dockerMfaNumber, setDockerMfaNumber] = useState<string | null>(null);
+  const [dockerModalDismissed, setDockerModalDismissed] = useState(false);
+  // Só pra saber se o modo Docker do Teams (K8S_HPA_TEAMS_DOCKER_BROWSER) está ligado nesta
+  // instância — independente de ter um refresh em andamento — pra decidir se vale a pena checar
+  // (e mostrar) o aviso de Docker ausente/não configurado abaixo.
+  const [dockerModeEnabled, setDockerModeEnabled] = useState(false);
+  // Aviso de Docker ausente/mal configurado — mesma checagem (checkDockerStatus) e mesmo painel
+  // (DOCKER_FIX_BY_REASON) já usados nas abas Teste de Kafka e Teste de Banco de Dados; aqui só
+  // faz sentido mostrar quando o modo Docker do Teams está de fato ligado (dockerModeEnabled),
+  // senão seria um aviso sobre um pré-requisito que a maioria dos usuários nem precisa (Docker
+  // continua opcional — o padrão é o Chrome do sistema).
+  const [teamsDockerStatus, setTeamsDockerStatus] = useState<DBDockerStatus | null>(null);
+  const [teamsDockerStatusRefreshKey, setTeamsDockerStatusRefreshKey] = useState(0);
+
+  useEffect(() => {
+    if (!open || activeTab !== "teams" || !dockerModeEnabled) {
+      setTeamsDockerStatus(null);
+      return;
+    }
+    let cancelled = false;
+    apiClient.getTeamsDockerStatus()
+      .then(res => { if (!cancelled) setTeamsDockerStatus(res); })
+      .catch(() => { /* best-effort */ });
+    return () => { cancelled = true; };
+  }, [open, activeTab, dockerModeEnabled, teamsDockerStatusRefreshKey]);
+
+  useEffect(() => {
+    if (!open || activeTab !== "teams") return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await apiClient.getTeamsDockerSession();
+        if (cancelled) return;
+        setDockerModeEnabled(res.enabled);
+        if (res.enabled && res.refreshing && res.vnc_url) {
+          setDockerVncUrl(res.vnc_url);
+          setDockerMfaNumber(res.mfa_number || null);
+        } else {
+          setDockerVncUrl(null);
+          setDockerMfaNumber(null);
+          setDockerModalDismissed(false);
+        }
+      } catch {
+        // Best-effort — uma falha de polling não deve interromper nada mais.
+      }
+    };
+    poll();
+    const interval = window.setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [open, activeTab]);
 
   useEffect(() => {
     if (open) {
@@ -765,6 +835,7 @@ export function ServiceNowImportModal({
   ];
 
   return (
+    <>
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent
         className="flex flex-col p-6 gap-0 overflow-hidden"
@@ -842,6 +913,42 @@ export function ServiceNowImportModal({
                 {teamsItems.length === 0 && teamsNeedsRefresh ? "Buscar do Teams" : "Atualizar"}
               </Button>
             </div>
+
+            {dockerModeEnabled && teamsDockerStatus && !(teamsDockerStatus.installed && teamsDockerStatus.daemon_running) && (() => {
+              const fix = DOCKER_FIX_BY_REASON[teamsDockerStatus.reason ?? "not_installed"] ?? DOCKER_FIX_BY_REASON.not_installed;
+              return (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 flex flex-col gap-2 flex-shrink-0">
+                  <div className="text-sm text-amber-700 dark:text-amber-400">
+                    <span className="font-semibold">{fix.title}</span>
+                    {teamsDockerStatus.error && <span> — {teamsDockerStatus.error}</span>}
+                  </div>
+                  <div className="relative">
+                    <pre className="rounded-md border border-border bg-muted/30 p-3 pr-10 text-[11px] font-mono whitespace-pre-wrap overflow-x-auto">
+                      {fix.snippet}
+                    </pre>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute top-1.5 right-1.5 h-6 w-6"
+                      onClick={() => {
+                        navigator.clipboard.writeText(fix.snippet);
+                        toast.success("Comando copiado!");
+                      }}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-fit"
+                    onClick={() => setTeamsDockerStatusRefreshKey(k => k + 1)}
+                  >
+                    Verificar novamente
+                  </Button>
+                </div>
+              );
+            })()}
 
             {teamsLoading && teamsItems.length === 0 && (
               <div className="flex items-center justify-center py-8 text-sm text-muted-foreground gap-2 flex-shrink-0">
@@ -1357,5 +1464,13 @@ export function ServiceNowImportModal({
         </div>
       </DialogContent>
     </Dialog>
+    <TeamsDockerLoginModal
+      vncUrl={dockerVncUrl}
+      mfaNumber={dockerMfaNumber}
+      dismissed={dockerModalDismissed}
+      onDismiss={() => setDockerModalDismissed(true)}
+      onReopen={() => setDockerModalDismissed(false)}
+    />
+    </>
   );
 }

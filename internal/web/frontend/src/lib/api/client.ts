@@ -4109,6 +4109,24 @@ class APIClient {
     return this.request(`/teams/approvals/search?chg=${encodeURIComponent(chg.toUpperCase())}`);
   }
 
+  // Estado do browser Docker do Teams (modo opt-in, K8S_HPA_TEAMS_DOCKER_BROWSER) — usado pra
+  // decidir se/quando mostrar o modal com o noVNC embutido durante um refresh em andamento.
+  // Ver TeamsDockerLoginModal.tsx.
+  async getTeamsDockerSession(): Promise<{
+    enabled: boolean;
+    vnc_url: string;
+    mfa_number: string;
+    refreshing: boolean;
+  }> {
+    return this.request("/teams/docker-session");
+  }
+
+  // Mesma checagem de Docker do host usada pelo Teste de Kafka/Banco de Dados (checkDockerStatus
+  // no backend) — reaproveitada aqui pro modo Docker do browser do Teams.
+  async getTeamsDockerStatus(): Promise<import("./types").DBDockerStatus> {
+    return this.request<import("./types").DBDockerStatus>("/teams/docker-status");
+  }
+
   async searchTeamsByName(q: string): Promise<{
     found: boolean;
     count: number;
