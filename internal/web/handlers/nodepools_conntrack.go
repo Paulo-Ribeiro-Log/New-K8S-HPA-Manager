@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,30 +105,37 @@ func (h *NodePoolHandler) GetConntrackStats(c *gin.Context) {
 	})
 }
 
-// resolveNodePoolNodes retorna os nomes dos nós pertencentes ao node pool
+// resolveNodePoolNodes retorna os nomes dos nós pertencentes ao node pool.
+//
+// Bug real corrigido (achado ao vivo investigando um relato de "nomes de node na lista de pods
+// que não batem com a listagem de node groups" — mesma classe de bug já corrigida em
+// nodePoolLabel/nodepools_snat.go, mas nunca replicada aqui): os dois seletores tentados eram
+// EXCLUSIVAMENTE do AKS (kubernetes.azure.com/agentpool, agentpool) — nenhum dos dois existe em
+// nó EKS/GKE. O fallback por substring no NOME do nó também nunca batia pra EKS, já que os nomes
+// seguem a convenção `ip-10-0-x-y.ec2.internal` (não contêm o nome do node group). Resultado
+// confirmado ao vivo contra um cluster EKS real: /nodepools/conntrack sempre devolvia
+// `"nodes": []` pra QUALQUER node pool, sem erro nenhum — silenciosamente vazio, indistinguível
+// de "conntrack indisponível". Corrigido reaproveitando nodePoolLabel (nodepools_snat.go, já
+// cobre AKS/EKS/GKE) pra resolver a QUAL pool cada nó pertence, em vez de tentar adivinhar via
+// seletor de label fixo por cloud.
 func resolveNodePoolNodes(ctx context.Context, clientset kubernetes.Interface, nodepool string) ([]string, error) {
-	selectors := []string{
-		fmt.Sprintf("kubernetes.azure.com/agentpool=%s", nodepool),
-		fmt.Sprintf("agentpool=%s", nodepool),
-	}
-
-	for _, sel := range selectors {
-		list, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: sel})
-		if err == nil && len(list.Items) > 0 {
-			names := make([]string, len(list.Items))
-			for i, n := range list.Items {
-				names[i] = n.Name
-			}
-			return names, nil
-		}
-	}
-
-	// Fallback: filtrar por substring no nome do nó
 	all, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("erro ao listar nós: %v", err)
 	}
+
 	var names []string
+	for _, n := range all.Items {
+		if nodePoolLabel(n.Labels) == nodepool {
+			names = append(names, n.Name)
+		}
+	}
+	if len(names) > 0 {
+		return names, nil
+	}
+
+	// Fallback: filtrar por substring no nome do nó — cobre clusters onde nenhum label
+	// conhecido bate (nodePoolLabel caiu no "default").
 	for _, n := range all.Items {
 		if strings.Contains(strings.ToLower(n.Name), strings.ToLower(nodepool)) {
 			names = append(names, n.Name)
@@ -152,15 +160,32 @@ func resolveAllClusterNodes(ctx context.Context, clientset kubernetes.Interface)
 // probeConntrack lê as métricas de conntrack de um nó via exec em pod com hostNetwork:true.
 // Lê /proc/sys/net/netfilter/nf_conntrack_* — qualquer pod hostNetwork tem acesso
 // ao conntrack do host sem necessidade de container privilegiado.
+//
+// Bug real corrigido (achado ao vivo contra um cluster EKS real, mesma investigação que revelou
+// o bug de resolveNodePoolNodes acima): imagens EKS modernas (kube-proxy v1.34, aws-node,
+// aws-eks-nodeagent, eks-pod-identity-agent — testado empiricamente contra
+// 602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/kube-proxy:v1.34.3-eksbuild.5) não têm `sh`
+// nem `cat` — são imagens mínimas, sem nenhum utilitário de shell. O exec sempre falhava com
+// "executable file not found in $PATH", mas só DEPOIS de já ter escolhido esse pod como único
+// candidato — sem chance de tentar outro. Corrigido: probeConntrack agora tenta TODOS os
+// candidatos hostNetwork do nó em ordem de preferência (findHostNetworkPodCandidates), não só o
+// primeiro — segue pro próximo assim que um exec falha, em vez de desistir. Confirmado ao vivo
+// que isso resolve: o daemonset do CrowdStrike Falcon (falcon-node-sensor, hostNetwork:true,
+// rodando em namespace PRÓPRIO — não kube-system) tem shell completo e serve como fallback real
+// nesse cluster. Não é garantido existir em todo cluster (é uma ferramenta de terceiro), mas o
+// mecanismo de múltiplos candidatos + busca em TODOS os namespaces (não só kube-system) generaliza
+// bem pra qualquer agente hostNetwork com shell que o cluster tiver (Datadog, Dynatrace, etc.).
 func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, nodeName string) ConntrackNodeStats {
 	stats := ConntrackNodeStats{NodeName: nodeName, Status: "error"}
 
-	podName, containerName, err := findHostNetworkPod(ctx, clientset, nodeName)
-	if err != nil {
+	candidates, err := findHostNetworkPodCandidates(ctx, clientset, nodeName)
+	if err != nil || len(candidates) == 0 {
+		if err == nil {
+			err = fmt.Errorf("nenhum pod hostNetwork Running encontrado no nó")
+		}
 		stats.Error = fmt.Sprintf("nenhum pod hostNetwork encontrado no nó: %v", err)
 		return stats
 	}
-	stats.ProbeMethod = fmt.Sprintf("exec:%s", podName)
 
 	// Ler os três arquivos em um único exec
 	cmd := []string{
@@ -171,85 +196,129 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 			"$(cat /proc/sys/net/netfilter/nf_conntrack_buckets 2>/dev/null || echo -1)",
 	}
 
-	output, execErr := execCmdInPod(ctx, clientset, restConfig, "kube-system", podName, containerName, cmd)
-	if execErr != nil {
-		stats.Error = fmt.Sprintf("exec falhou (%s): %v", podName, execErr)
+	var lastErr error
+	var triedPods []string
+	for _, cand := range candidates {
+		output, execErr := execCmdInPod(ctx, clientset, restConfig, cand.Namespace, cand.PodName, cand.ContainerName, cmd)
+		triedPods = append(triedPods, fmt.Sprintf("%s/%s", cand.Namespace, cand.PodName))
+		if execErr != nil {
+			lastErr = execErr
+			continue
+		}
+
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		if len(lines) < 2 {
+			lastErr = fmt.Errorf("resposta inesperada: %q", output)
+			continue
+		}
+
+		stats.ProbeMethod = fmt.Sprintf("exec:%s/%s", cand.Namespace, cand.PodName)
+		stats.Count = parseInt64(lines[0])
+		stats.Max = parseInt64(lines[1])
+		if len(lines) >= 3 {
+			stats.Buckets = parseInt64(lines[2])
+		}
+		if stats.Max > 0 {
+			stats.UsagePct = float64(stats.Count) / float64(stats.Max) * 100
+		}
+		switch {
+		case stats.UsagePct >= 90:
+			stats.Status = "critical"
+		case stats.UsagePct >= 70:
+			stats.Status = "warning"
+		default:
+			stats.Status = "ok"
+		}
 		return stats
 	}
 
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) < 2 {
-		stats.Error = fmt.Sprintf("resposta inesperada: %q", output)
-		return stats
-	}
-
-	stats.Count = parseInt64(lines[0])
-	stats.Max = parseInt64(lines[1])
-	if len(lines) >= 3 {
-		stats.Buckets = parseInt64(lines[2])
-	}
-
-	if stats.Max > 0 {
-		stats.UsagePct = float64(stats.Count) / float64(stats.Max) * 100
-	}
-	switch {
-	case stats.UsagePct >= 90:
-		stats.Status = "critical"
-	case stats.UsagePct >= 70:
-		stats.Status = "warning"
-	default:
-		stats.Status = "ok"
-	}
+	stats.Error = fmt.Sprintf("exec falhou em todos os %d candidato(s) hostNetwork (%s): %v", len(triedPods), strings.Join(triedPods, ", "), lastErr)
 	return stats
 }
 
-// findHostNetworkPod localiza um pod com hostNetwork:true no nó alvo.
-// Prioriza kube-proxy; fallback para qualquer pod hostNetwork em kube-system.
-func findHostNetworkPod(ctx context.Context, clientset kubernetes.Interface, nodeName string) (podName, containerName string, err error) {
-	// Candidatos ordenados por preferência. kube-proxy é o mais comum a todos os providers;
-	// os demais cobrem CNIs que também rodam hostNetwork:true (azure-npm no AKS, aws-node —
-	// o daemonset do VPC CNI da AWS — no EKS; anetd/netd no GKE Dataplane V2, que substitui
-	// kube-proxy por um agente Cilium). Sem esses agentes, clusters onde kube-proxy foi
-	// substituído caem direto no fallback genérico abaixo, que pode não achar nada em setups
-	// como EKS Auto Mode/Fargate ou GKE Autopilot.
-	labelCandidates := []string{
-		"k8s-app=kube-proxy",
-		"component=kube-proxy",
-		"k8s-app=aws-node",
-		"k8s-app=azure-npm",
-		"app=azure-cni-networkmonitor",
-		"k8s-app=cilium",
-		"k8s-app=netd",
-		"k8s-app=gke-metadata-server",
-	}
+// hostNetworkPodCandidate identifica um pod hostNetwork:true Running num nó, candidato a exec
+// pra leitura dos sysctls de conntrack.
+type hostNetworkPodCandidate struct {
+	Namespace     string
+	PodName       string
+	ContainerName string
+}
 
-	for _, label := range labelCandidates {
-		pods, listErr := clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
-			LabelSelector: label,
-			FieldSelector: fmt.Sprintf("spec.nodeName=%s,status.phase=Running", nodeName),
-		})
-		if listErr != nil || len(pods.Items) == 0 {
-			continue
-		}
-		p := pods.Items[0]
-		if p.Spec.HostNetwork && len(p.Spec.Containers) > 0 {
-			return p.Name, p.Spec.Containers[0].Name, nil
-		}
-	}
+// hostNetworkKnownLabels — candidatos ordenados por preferência (conhecidos primeiro). kube-proxy
+// é o mais comum a todos os providers; os demais cobrem CNIs que também rodam hostNetwork:true
+// (azure-npm no AKS, aws-node — o daemonset do VPC CNI da AWS — no EKS; anetd/netd no GKE
+// Dataplane V2, que substitui kube-proxy por um agente Cilium). Só usados pra ORDENAR — qualquer
+// outro pod hostNetwork encontrado (ver findHostNetworkPodCandidates) entra depois como fallback,
+// nunca é descartado.
+var hostNetworkKnownLabels = []string{
+	"k8s-app=kube-proxy",
+	"component=kube-proxy",
+	"k8s-app=aws-node",
+	"k8s-app=azure-npm",
+	"app=azure-cni-networkmonitor",
+	"k8s-app=cilium",
+	"k8s-app=netd",
+	"k8s-app=gke-metadata-server",
+}
 
-	// Fallback genérico: qualquer pod hostNetwork Running no nó
-	all, listErr := clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+// findHostNetworkPodCandidates localiza TODOS os pods hostNetwork:true Running no nó alvo, em
+// QUALQUER namespace (não só kube-system — bug real corrigido, ver comentário em probeConntrack:
+// agentes de terceiro com shell, como o CrowdStrike Falcon, costumam rodar no próprio namespace),
+// ordenados por preferência: primeiro os candidatos "conhecidos" (hostNetworkKnownLabels, na
+// ordem declarada), depois qualquer outro pod hostNetwork como fallback genérico.
+func findHostNetworkPodCandidates(ctx context.Context, clientset kubernetes.Interface, nodeName string) ([]hostNetworkPodCandidate, error) {
+	all, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s,status.phase=Running", nodeName),
 	})
-	if listErr != nil {
-		return "", "", fmt.Errorf("erro ao listar pods: %v", listErr)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao listar pods: %v", err)
 	}
-	for _, p := range all.Items {
-		if p.Spec.HostNetwork && len(p.Spec.Containers) > 0 {
-			return p.Name, p.Spec.Containers[0].Name, nil
+
+	knownRank := make(map[string]int, len(hostNetworkKnownLabels))
+	for i, label := range hostNetworkKnownLabels {
+		parts := strings.SplitN(label, "=", 2)
+		if len(parts) == 2 {
+			knownRank[parts[0]+"="+parts[1]] = i
 		}
 	}
-	return "", "", fmt.Errorf("nenhum pod hostNetwork Running encontrado em kube-system no nó %s", nodeName)
+	matchesKnown := func(labels map[string]string) (int, bool) {
+		for _, label := range hostNetworkKnownLabels {
+			parts := strings.SplitN(label, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			if labels[parts[0]] == parts[1] {
+				return knownRank[label], true
+			}
+		}
+		return 0, false
+	}
+
+	type ranked struct {
+		cand hostNetworkPodCandidate
+		rank int
+	}
+	var known []ranked
+	var others []hostNetworkPodCandidate
+	for _, p := range all.Items {
+		if !p.Spec.HostNetwork || len(p.Spec.Containers) == 0 {
+			continue
+		}
+		cand := hostNetworkPodCandidate{Namespace: p.Namespace, PodName: p.Name, ContainerName: p.Spec.Containers[0].Name}
+		if rank, ok := matchesKnown(p.Labels); ok {
+			known = append(known, ranked{cand, rank})
+		} else {
+			others = append(others, cand)
+		}
+	}
+	sort.Slice(known, func(i, j int) bool { return known[i].rank < known[j].rank })
+
+	result := make([]hostNetworkPodCandidate, 0, len(known)+len(others))
+	for _, k := range known {
+		result = append(result, k.cand)
+	}
+	result = append(result, others...)
+	return result, nil
 }
 
 // execCmdInPod executa um comando em um pod via SPDY e retorna o stdout
