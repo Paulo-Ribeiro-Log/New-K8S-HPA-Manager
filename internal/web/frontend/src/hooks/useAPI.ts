@@ -203,6 +203,16 @@ export function useNodePools(cluster?: string) {
   const [error, setError] = useState<string | null>(null);
   const [notSupported, setNotSupported] = useState(false);
   const lastClusterRef = useRef<string | undefined>(undefined);
+  // Sempre reflete o `cluster` mais recente (atualizado a cada render, não só quando muda) —
+  // usado por fetchNodePools pra descartar respostas de uma busca já obsoleta. Bug real
+  // corrigido: ao trocar de cluster rapidamente (antes da resposta anterior chegar), a resposta
+  // da busca ANTIGA podia resolver DEPOIS da busca nova e sobrescrever os dados corretos com os
+  // do cluster errado — sintoma relatado: node pools de um cluster aparecendo com outro cluster
+  // selecionado (mesmo bug existia, de forma ainda mais visível, no fetchPods de PodsPanel.tsx).
+  // O refresh automático de 60s (useEffect abaixo) já tinha proteção equivalente (`cancelled`);
+  // só a busca inicial/manual estava desprotegida.
+  const currentClusterRef = useRef(cluster);
+  currentClusterRef.current = cluster;
 
   const fetchNodePools = async () => {
     if (!cluster) {
@@ -211,6 +221,8 @@ export function useNodePools(cluster?: string) {
       lastClusterRef.current = undefined;
       return;
     }
+
+    const requestedCluster = cluster;
 
     // Limpa dados apenas quando o cluster muda — evita flash no refresh manual
     if (cluster !== lastClusterRef.current) {
@@ -223,16 +235,20 @@ export function useNodePools(cluster?: string) {
       setLoading(true);
       setError(null);
       const { pools, notSupported: ns } = await apiClient.getNodePools(cluster);
+      if (currentClusterRef.current !== requestedCluster) return; // resposta obsoleta, ignora
       setNodePools(pools);
       setNotSupported(ns);
     } catch (err) {
+      if (currentClusterRef.current !== requestedCluster) return;
       console.error('[useNodePools] Error fetching node pools:', err);
       setNodePools([]);
       setError(
         err instanceof Error ? err.message : "Failed to fetch node pools"
       );
     } finally {
-      setLoading(false);
+      if (currentClusterRef.current === requestedCluster) {
+        setLoading(false);
+      }
     }
   };
 
