@@ -93,6 +93,14 @@ export const PodsPanel = ({
   // Modal de detalhes rápido (abre ao clicar na tabela de monitoramento)
   const [quickViewPod, setQuickViewPod] = useState<PodSummary | null>(null);
   const leftListRef = useRef<HTMLDivElement>(null);
+  // Sempre reflete o `cluster` mais recente (atualizado a cada render) — usado por fetchPods pra
+  // descartar respostas de uma busca já obsoleta. Bug real corrigido: ao trocar de cluster
+  // rapidamente (antes da resposta anterior chegar), a resposta ANTIGA podia resolver DEPOIS da
+  // busca nova e sobrescrever a lista com pods do cluster errado — sintoma relatado: pods com
+  // nome de node que não existe/não bate com nenhum node group do cluster atualmente selecionado
+  // (porque, na real, o pod é de OUTRO cluster).
+  const currentClusterRef = useRef(cluster);
+  currentClusterRef.current = cluster;
   const focusedPodKey = quickViewPod
     ? `${quickViewPod.cluster}-${quickViewPod.namespace}-${quickViewPod.name}`
     : null;
@@ -523,6 +531,7 @@ export const PodsPanel = ({
 
   const fetchPods = async (silent = false) => {
     if (!cluster) return;
+    const requestedCluster = cluster;
 
     if (!silent) {
       setLoading(true);
@@ -530,6 +539,7 @@ export const PodsPanel = ({
     try {
       const namespaceFilter = selectedNamespace && selectedNamespace !== "__all__" ? [selectedNamespace] : undefined;
       const data = await apiClient.getPods(cluster, namespaceFilter, undefined, showSystemNamespaces, true);
+      if (currentClusterRef.current !== requestedCluster) return; // resposta obsoleta, ignora
       setPods(data);
 
       // Se há um pod selecionado, atualizar seus dados sem perder a seleção
@@ -543,20 +553,23 @@ export const PodsPanel = ({
           // Atualizar YAML silenciosamente também
           try {
             const manifest = await apiClient.getPod(updatedPod.cluster, updatedPod.namespace, updatedPod.name);
-            setPodYaml(manifest.yaml);
+            if (currentClusterRef.current === requestedCluster) {
+              setPodYaml(manifest.yaml);
+            }
           } catch (err) {
             // Erro silencioso - não mostra toast
           }
         }
       }
     } catch (err) {
+      if (currentClusterRef.current !== requestedCluster) return; // obsoleta — cluster já mudou
       if (!silent) {
         toast.error("Erro ao carregar Pods", {
           description: err instanceof Error ? err.message : "Erro desconhecido",
         });
       }
     } finally {
-      if (!silent) {
+      if (!silent && currentClusterRef.current === requestedCluster) {
         setLoading(false);
       }
     }
