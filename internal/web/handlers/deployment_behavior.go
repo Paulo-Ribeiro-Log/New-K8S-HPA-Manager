@@ -70,6 +70,14 @@ type DeploymentBehaviorResponse struct {
 	Cluster    string `json:"cluster"`
 	Namespace  string `json:"namespace"`
 	Deployment string `json:"deployment"`
+	// Pod ecoa o parâmetro `pod` da requisição (vazio quando o escopo pedido foi "Deployment
+	// inteiro"). PodScoped diz se a resposta DE FATO restringiu CPU/memória/restarts/rede a esse
+	// pod — false tanto quando `pod` não foi pedido quanto quando foi pedido mas a fonte que
+	// respondeu (Dynatrace, ver GetDeploymentBehavior) não suporta esse recorte, caso em que os
+	// dados voltam a ser do Deployment inteiro mesmo com Pod preenchido — o frontend usa essa
+	// combinação (Pod!="" && !PodScoped) pra avisar o usuário que caiu de volta pro agregado.
+	Pod       string `json:"pod,omitempty"`
+	PodScoped bool   `json:"pod_scoped"`
 	// WindowMinutes é o tamanho total da janela em minutos — substituiu um campo "Hours" (int)
 	// porque a UI precisa de janelas menores que 1h (30min), que um inteiro de horas não representa.
 	WindowMinutes int   `json:"window_minutes"`
@@ -168,6 +176,11 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	// pra resolver o token Dynatrace do fallback de série temporal, nada de resolução de provider AI
 	// nesta função (não há entanglement com GetProviderForUser aqui).
 	dtEmail := c.GetString("user_email")
+	// pod (opcional): toggle "Este pod / Deployment inteiro" na aba Comportamento
+	// (PodQuickViewModal.tsx) — quando presente, CPU/memória/restarts/rede ficam restritos a esse
+	// pod exato em vez da média/soma de todos os pods do Deployment. Réplicas nunca mudam com
+	// isso (ver comentário em deploymentHistoricalMetricsRange).
+	podName := c.Query("pod")
 
 	minutes := deploymentBehaviorDefaultMinutes
 	if v, err := strconv.Atoi(c.Query("minutes")); err == nil && v > 0 {
@@ -193,6 +206,7 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 		Cluster:       cluster,
 		Namespace:     namespace,
 		Deployment:    deployment,
+		Pod:           podName,
 		WindowMinutes: minutes,
 		StepMinutes:   stepMinutes,
 		OffsetDays:    offsetDays,
@@ -210,9 +224,16 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	if promClient, err := h.getPromClient(cluster); err == nil {
 		resp.PrometheusAvailable = true
 
-		rawSeries, qerr := promClient.GetDeploymentHistoricalMetrics(ctx, namespace, deployment, duration, step)
+		var rawSeries map[string]*promclient.QueryRangeResult
+		var qerr error
+		if podName != "" {
+			rawSeries, qerr = promClient.GetPodScopedHistoricalMetrics(ctx, namespace, deployment, podName, duration, step)
+		} else {
+			rawSeries, qerr = promClient.GetDeploymentHistoricalMetrics(ctx, namespace, deployment, duration, step)
+		}
 		if qerr == nil && len(rawSeries) > 0 {
 			resp.Source = "prometheus"
+			resp.PodScoped = podName != ""
 			resp.Points = pointsFromSeriesMap(prometheusSeriesToPointMap(rawSeries))
 			resp.ScaleEvents = deriveScaleEvents(resp.Points)
 
@@ -262,6 +283,31 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	}
 
 	// ─── 2a. Fallback Dynatrace de série — só quando Prometheus não retornou nada ───────
+	//
+	// Escopo por pod (podName != ""): tenta PRIMEIRO a granularidade real de pod, via
+	// CONTAINER_GROUP_INSTANCE (ResolveEntityForPod + GetPodBehaviorMetrics, pod_behavior_metrics.go)
+	// — caminho DIFERENTE do agregado por workload abaixo (k8sWorkloadMetricDefs, que REJEITA
+	// CLOUD_APPLICATION_INSTANCE como entidade primária: confirmado ao vivo contra o tenant real,
+	// a API retorna "Entity type mismatch... Possible primary entity types: [CLOUD_APPLICATION]",
+	// sempre 0 pontos — por isso um pod nunca tinha CPU/memória real vindas do Dynatrace antes desta
+	// mudança). Só existe em clusters Cloud Native Full Stack (mesma instrumentação de
+	// CLOUD_APPLICATION_INSTANCE) — se o pod não resolver ou não tiver containers correlacionados
+	// (cluster classicFullStack, maioria da frota), cai pro agregado por workload como já fazia,
+	// com PodScoped permanecendo false (fiel ao que a fonte realmente entregou).
+	if resp.Source == "none" && podName != "" && dtc != nil {
+		normalizedCluster := dtclient.NormalizeClusterName(cluster)
+		if podEntityID, found, perr := dtc.ResolveEntityForPod(ctx, normalizedCluster, namespace, podName); perr == nil && found {
+			if dtPodSeries, ok := dtc.GetPodBehaviorMetrics(ctx, podEntityID, start, end); ok {
+				resp.Source = "dynatrace"
+				resp.PodScoped = true
+				resp.Points = pointsFromSeriesMap(dynatracePodSeriesToPointMap(dtPodSeries))
+				// Sem pods_desired/restarts nesta granularidade (métricas de container não carregam
+				// esse conceito) — scale events ficam vazios no caminho pod-scoped, diferente do
+				// agregado por workload abaixo.
+			}
+		}
+	}
+
 	if resp.Source == "none" && dtEntityFound {
 		dtSeries := dtc.GetDeploymentBehaviorMetrics(ctx, dtEntityID, start, end)
 		if len(dtSeries) > 0 {
@@ -457,6 +503,31 @@ func dynatraceSeriesToPointMap(series []dtclient.MetricSeriesData) map[string]ma
 	if desired, ok := raw["pods_desired"]; ok {
 		out["replicas_desired"] = desired
 	}
+	if cpu, ok := raw["cpu_milli"]; ok {
+		out["cpu_absolute"] = cpu
+	}
+	if mem, ok := raw["memory_mb"]; ok {
+		out["memory_absolute"] = mem
+	}
+	return out
+}
+
+// dynatracePodSeriesToPointMap converte []MetricSeriesData (k8sContainerMetricDefs — ver
+// pod_behavior_metrics.go) pro formato comum, mesmas chaves de saída (cpu_absolute/memory_absolute)
+// que dynatraceSeriesToPointMap já usa pro caminho agregado — pointsFromSeriesMap não precisa saber
+// qual dos dois caminhos alimentou a série. Diferente do caminho agregado, não há replicas_desired
+// aqui (métricas de container não carregam esse conceito).
+func dynatracePodSeriesToPointMap(series []dtclient.MetricSeriesData) map[string]map[int64]float64 {
+	raw := make(map[string]map[int64]float64, len(series))
+	for _, s := range series {
+		m := make(map[int64]float64, len(s.Points))
+		for _, p := range s.Points {
+			m[p.T] = p.V
+		}
+		raw[s.Key] = m
+	}
+
+	out := make(map[string]map[int64]float64, 2)
 	if cpu, ok := raw["cpu_milli"]; ok {
 		out["cpu_absolute"] = cpu
 	}

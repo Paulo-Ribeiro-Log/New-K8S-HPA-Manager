@@ -765,7 +765,7 @@ func (c *PrometheusClient) GetHPAHistoricalMetricsWithOffset(ctx context.Context
 func (c *PrometheusClient) GetDeploymentHistoricalMetrics(ctx context.Context, namespace, deployment string, duration, step time.Duration) (map[string]*QueryRangeResult, error) {
 	end := time.Now()
 	start := end.Add(-duration)
-	return c.deploymentHistoricalMetricsRange(ctx, namespace, deployment, start, end, step)
+	return c.deploymentHistoricalMetricsRange(ctx, namespace, deployment, "", start, end, step)
 }
 
 // GetDeploymentHistoricalMetricsWithOffset busca a mesma janela de métricas de comportamento,
@@ -775,7 +775,18 @@ func (c *PrometheusClient) GetDeploymentHistoricalMetricsWithOffset(ctx context.
 	now := time.Now()
 	end := now.Add(-offset)
 	start := now.Add(-duration).Add(-offset)
-	return c.deploymentHistoricalMetricsRange(ctx, namespace, deployment, start, end, step)
+	return c.deploymentHistoricalMetricsRange(ctx, namespace, deployment, "", start, end, step)
+}
+
+// GetPodScopedHistoricalMetrics é a variante de GetDeploymentHistoricalMetrics restrita a um
+// único pod (CPU/memória/restarts/rede exatos do pod, não a média/soma do Deployment inteiro) —
+// ver toggle "Este pod / Deployment inteiro" na aba Comportamento (PodQuickViewModal.tsx). As
+// réplicas (replicas_desired/current/ready/...) continuam sempre no nível do Deployment — não
+// existe "réplicas de um pod só", esse conceito é inerentemente do workload inteiro.
+func (c *PrometheusClient) GetPodScopedHistoricalMetrics(ctx context.Context, namespace, deployment, podName string, duration, step time.Duration) (map[string]*QueryRangeResult, error) {
+	end := time.Now()
+	start := end.Add(-duration)
+	return c.deploymentHistoricalMetricsRange(ctx, namespace, deployment, podName, start, end, step)
 }
 
 // deploymentHistoricalMetricsRange executa em paralelo (goroutines + WaitGroup — o handler que
@@ -786,55 +797,23 @@ func (c *PrometheusClient) GetDeploymentHistoricalMetricsWithOffset(ctx context.
 //
 // pod=~"%s-.*" (com hífen) é mais preciso que o pod=~"%s.*" usado em GetHPAHistoricalMetrics —
 // evita match espúrio (ex: deployment "foo" casando pods de um deployment "foobar-xyz" diferente).
-func (c *PrometheusClient) deploymentHistoricalMetricsRange(ctx context.Context, namespace, deployment string, start, end time.Time, step time.Duration) (map[string]*QueryRangeResult, error) {
+//
+// podName (opcional): quando não-vazio, restringe CPU/memória/restarts/rede a esse pod exato
+// (pod="%s" em vez de pod=~"%s-.*") — ver GetPodScopedHistoricalMetrics. As queries de réplicas
+// nunca mudam com podName: "réplicas" é inerentemente um conceito do Deployment inteiro, não
+// existe uma versão "por pod" pra elas.
+func (c *PrometheusClient) deploymentHistoricalMetricsRange(ctx context.Context, namespace, deployment, podName string, start, end time.Time, step time.Duration) (map[string]*QueryRangeResult, error) {
 	log.Info().
 		Str("namespace", namespace).
 		Str("deployment", deployment).
+		Str("pod", podName).
 		Time("start", start).
 		Time("end", end).
 		Dur("step", step).
 		Str("url", c.endpoint.URL).
 		Msg("Iniciando busca de métricas históricas de comportamento do Deployment no Prometheus")
 
-	queries := map[string]string{
-		"replicas_desired":     fmt.Sprintf(`kube_deployment_spec_replicas{namespace="%s",deployment="%s"}`, namespace, deployment),
-		"replicas_current":     fmt.Sprintf(`kube_deployment_status_replicas{namespace="%s",deployment="%s"}`, namespace, deployment),
-		"replicas_ready":       fmt.Sprintf(`kube_deployment_status_replicas_ready{namespace="%s",deployment="%s"}`, namespace, deployment),
-		"replicas_updated":     fmt.Sprintf(`kube_deployment_status_replicas_updated{namespace="%s",deployment="%s"}`, namespace, deployment),
-		"replicas_unavailable": fmt.Sprintf(`kube_deployment_status_replicas_unavailable{namespace="%s",deployment="%s"}`, namespace, deployment),
-		"cpu": fmt.Sprintf(
-			`avg(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*",container!="",container!="POD"}[1m]) / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",pod=~"%s-.*",resource="cpu"}) * 100`,
-			namespace, deployment, namespace, deployment,
-		),
-		"memory": fmt.Sprintf(
-			`avg(container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*",container!="",container!="POD"} / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",pod=~"%s-.*",resource="memory"}) * 100`,
-			namespace, deployment, namespace, deployment,
-		),
-		// increase() dá "restarts NESTE intervalo" (por ponto do gráfico), não o contador cru
-		// acumulado desde sempre — é o que faz sentido plotar como barra por período. sum() é
-		// obrigatório aqui: sem ele a query retorna 1 série POR pod+container (confirmado contra
-		// um deployment real de produção com múltiplas réplicas — 2 séries numa deployment com 2
-		// pods), e o merge de séries deste pacote (deployment_behavior.go) só considera a primeira
-		// série de cada chave — sem sum(), restarts de todos os pods menos um seriam descartados
-		// silenciosamente.
-		"restarts": fmt.Sprintf(
-			`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s-.*"}[%s]))`,
-			namespace, deployment, step.String(),
-		),
-		// container_network_{receive,transmit}_bytes_total são métricas por POD (cAdvisor não
-		// quebra por container — ao contrário de CPU/memória acima —, e sim por interface de
-		// rede), por isso sem o filtro container!="" usado nas queries de cpu/memory. sum() agrega
-		// todas as réplicas + todas as interfaces (eth0 etc.) num único número de bytes/s pro
-		// deployment inteiro — mesmo padrão de agregação já usado em "restarts" acima.
-		"network_in": fmt.Sprintf(
-			`sum(rate(container_network_receive_bytes_total{namespace="%s",pod=~"%s-.*"}[1m]))`,
-			namespace, deployment,
-		),
-		"network_out": fmt.Sprintf(
-			`sum(rate(container_network_transmit_bytes_total{namespace="%s",pod=~"%s-.*"}[1m]))`,
-			namespace, deployment,
-		),
-	}
+	queries := buildDeploymentBehaviorQueries(namespace, deployment, podName, step)
 
 	var (
 		mu      sync.Mutex
@@ -869,6 +848,64 @@ func (c *PrometheusClient) deploymentHistoricalMetricsRange(ctx context.Context,
 		Msg("Métricas de comportamento do Deployment coletadas do Prometheus")
 
 	return results, nil
+}
+
+// buildDeploymentBehaviorQueries monta as queries PromQL usadas por deploymentHistoricalMetricsRange
+// — extraída como função pura (sem chamada de rede) pra ser testável diretamente
+// (TestBuildDeploymentBehaviorQueries), sem precisar mockar um servidor Prometheus.
+//
+// podName vazio: pod=~"deployment-.*" (agregado — soma/média de todos os pods do Deployment,
+// comportamento padrão de sempre). podName preenchido: pod="podName" (exato — toggle "Este pod"
+// na aba Comportamento, PodQuickViewModal.tsx). replicas_* NUNCA mudam com podName — "réplicas" é
+// inerentemente um conceito do Deployment inteiro, não existe uma versão "por pod".
+func buildDeploymentBehaviorQueries(namespace, deployment, podName string, step time.Duration) map[string]string {
+	// podSelector: mesmo padrão pod=~"deployment-.*" (agregado) por padrão; pod="podName" (exato)
+	// quando o chamador pediu o escopo de um pod específico.
+	podSelector := fmt.Sprintf(`pod=~"%s-.*"`, deployment)
+	if podName != "" {
+		podSelector = fmt.Sprintf(`pod="%s"`, podName)
+	}
+
+	return map[string]string{
+		"replicas_desired":     fmt.Sprintf(`kube_deployment_spec_replicas{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"replicas_current":     fmt.Sprintf(`kube_deployment_status_replicas{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"replicas_ready":       fmt.Sprintf(`kube_deployment_status_replicas_ready{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"replicas_updated":     fmt.Sprintf(`kube_deployment_status_replicas_updated{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"replicas_unavailable": fmt.Sprintf(`kube_deployment_status_replicas_unavailable{namespace="%s",deployment="%s"}`, namespace, deployment),
+		"cpu": fmt.Sprintf(
+			`avg(rate(container_cpu_usage_seconds_total{namespace="%s",%s,container!="",container!="POD"}[1m]) / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",%s,resource="cpu"}) * 100`,
+			namespace, podSelector, namespace, podSelector,
+		),
+		"memory": fmt.Sprintf(
+			`avg(container_memory_working_set_bytes{namespace="%s",%s,container!="",container!="POD"} / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",%s,resource="memory"}) * 100`,
+			namespace, podSelector, namespace, podSelector,
+		),
+		// increase() dá "restarts NESTE intervalo" (por ponto do gráfico), não o contador cru
+		// acumulado desde sempre — é o que faz sentido plotar como barra por período. sum() é
+		// obrigatório aqui: sem ele a query retorna 1 série POR pod+container (confirmado contra
+		// um deployment real de produção com múltiplas réplicas — 2 séries numa deployment com 2
+		// pods), e o merge de séries deste pacote (deployment_behavior.go) só considera a primeira
+		// série de cada chave — sem sum(), restarts de todos os pods menos um seriam descartados
+		// silenciosamente. Com podName preenchido, sum() agrega só os containers DESSE pod (ainda
+		// necessário — um pod com sidecar tem mais de um container, logo mais de uma série).
+		"restarts": fmt.Sprintf(
+			`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",%s}[%s]))`,
+			namespace, podSelector, step.String(),
+		),
+		// container_network_{receive,transmit}_bytes_total são métricas por POD (cAdvisor não
+		// quebra por container — ao contrário de CPU/memória acima —, e sim por interface de
+		// rede), por isso sem o filtro container!="" usado nas queries de cpu/memory. sum() agrega
+		// todas as réplicas (ou, com podName, todas as interfaces desse pod só) num único número
+		// de bytes/s — mesmo padrão de agregação já usado em "restarts" acima.
+		"network_in": fmt.Sprintf(
+			`sum(rate(container_network_receive_bytes_total{namespace="%s",%s}[1m]))`,
+			namespace, podSelector,
+		),
+		"network_out": fmt.Sprintf(
+			`sum(rate(container_network_transmit_bytes_total{namespace="%s",%s}[1m]))`,
+			namespace, podSelector,
+		),
+	}
 }
 
 // GetDeploymentResourceLimits busca CPU/memória request+limit atuais do Deployment via query

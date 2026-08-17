@@ -1189,7 +1189,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
           {activeTab === "behavior" && isDeploymentOwned && cluster && pod && (
             <div className="flex-1 min-h-0 overflow-y-auto">
-              <DeploymentBehaviorChart cluster={cluster} namespace={pod.namespace} deployment={workloadSearchTerm} />
+              <DeploymentBehaviorChart cluster={cluster} namespace={pod.namespace} deployment={workloadSearchTerm} podName={pod.name} />
             </div>
           )}
         </div>

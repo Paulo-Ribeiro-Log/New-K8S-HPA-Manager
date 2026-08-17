@@ -1678,6 +1678,11 @@ export interface DeploymentBehaviorResponse {
   cluster: string;
   namespace: string;
   deployment: string;
+  // pod ecoa o parâmetro pedido (vazio = "Deployment inteiro"); pod_scoped diz se a resposta DE
+  // FATO restringiu os dados a esse pod — false mesmo com pod preenchido quando a fonte que
+  // respondeu (ex: fallback Dynatrace) não suporta esse recorte, caindo de volta pro agregado.
+  pod?: string;
+  pod_scoped: boolean;
   window_minutes: number;
   step_minutes: number;
   offset_days?: number[];
