@@ -654,6 +654,91 @@ function SaveAsModal({
   );
 }
 
+// ── Modal Carregar mensagem por link do Teams ─────────────────────────────────
+
+function LoadFromLinkModal({
+  open,
+  onClose,
+  onLoaded,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onLoaded: (text: string, meta: { threadId: string; messageId: string; approximate: boolean }) => void;
+}) {
+  const [link, setLink] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      setLink("");
+      setErr(null);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [open]);
+
+  const handleLoad = async () => {
+    const trimmed = link.trim();
+    if (!trimmed) return;
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await apiClient.fetchTeamsMessageByLink(trimmed);
+      onLoaded(res.text, {
+        threadId: res.thread_id,
+        messageId: res.message_id,
+        approximate: !!res.approximate,
+      });
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Erro ao carregar mensagem");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !loading) onClose(); }}>
+      <DialogContent className="max-w-md w-full">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-sm">
+            <Link2 className="w-4 h-4" />
+            Carregar mensagem por link do Teams
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-[11px] text-muted-foreground -mt-1 leading-relaxed">
+          Cole o link de "Copiar link" de uma mensagem do Teams
+          (<code className="text-[10px]">teams.microsoft.com/l/message/...</code>). O texto da
+          mensagem substitui o conteúdo atual do editor. Pode levar até 1-2 minutos — o Teams é
+          aberto em segundo plano para localizar a mensagem.
+        </p>
+        <Input
+          ref={inputRef}
+          className="h-8 text-xs"
+          placeholder="https://teams.microsoft.com/l/message/..."
+          value={link}
+          onChange={(e) => setLink(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleLoad();
+            if (e.key === "Escape" && !loading) onClose();
+          }}
+          disabled={loading}
+        />
+        {err && <p className="text-[11px] text-destructive">{err}</p>}
+        <div className="flex justify-end gap-2 mt-1">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onClose} disabled={loading}>
+            Cancelar
+          </Button>
+          <Button size="sm" className="h-8 text-xs gap-1.5" onClick={handleLoad} disabled={!link.trim() || loading}>
+            {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
+            {loading ? "Carregando..." : "Carregar"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── Template padrão ───────────────────────────────────────────────────────────
 
 const DEFAULT_MARKDOWN = `# Título da Mensagem
@@ -684,6 +769,7 @@ export const TeamsBroadcastTab = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [loadLinkOpen, setLoadLinkOpen] = useState(false);
   const [currentFilename, setCurrentFilename] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [sending, setSending] = useState(false);
@@ -816,7 +902,6 @@ export const TeamsBroadcastTab = () => {
 
     const sessionId = crypto.randomUUID();
     const total = selected.size;
-    const htmlContent = previewRef.current?.innerHTML ?? "";
 
     setSending(true);
     setSendStatus(null);
@@ -873,11 +958,24 @@ export const TeamsBroadcastTab = () => {
     };
 
     try {
+      // Bug real corrigido (relatado ao vivo, 4ª rodada da mesma investigação de "espaçamento
+      // entre linhas ignorado ao enviar" — as 3 rodadas anteriores corrigiram
+      // markdownToTeamsHTML no backend sem NENHUM efeito visível): este `html` sempre mandava
+      // `previewRef.current.innerHTML` (o HTML já renderizado pelo react-markdown/remark-gfm no
+      // painel de preview) — como o backend só reconstrói o HTML a partir de `markdown` quando
+      // `html` vem VAZIO, esse campo sempre preenchido fazia todas as correções em
+      // markdownToTeamsHTML nunca rodarem de verdade. Pior: o HTML de preview via CommonMark
+      // padrão não tem como representar "várias linhas em branco" como algo diferente de "uma
+      // linha em branco" — é uma limitação do próprio Markdown, não um bug de renderização —
+      // então a informação já estava perdida antes de chegar em qualquer conversor. Não envia
+      // mais `html` — o backend reconstrói a partir de `markdown`/`is_plain_text`, processando
+      // cada linha literalmente (sem normalização CommonMark), preservando a contagem exata de
+      // linhas em branco do texto carregado/editado.
       await apiClient.sendBroadcastMessage({
         session_id: sessionId,
         thread_ids: Array.from(selected.keys()),
         markdown: content,
-        html: htmlContent,
+        is_plain_text: isPlainText,
       });
       // 202 retornado — aguardar eventos SSE para concluir.
     } catch (e: unknown) {
@@ -970,6 +1068,18 @@ export const TeamsBroadcastTab = () => {
         >
           <FolderOpen className="w-3.5 h-3.5" />
           Abrir
+        </button>
+
+        <button
+          onClick={() => {
+            if (isDirty && !window.confirm("Há alterações não salvas. Descartar e carregar mensagem via link do Teams?")) return;
+            setLoadLinkOpen(true);
+          }}
+          title="Carregar conteúdo a partir de um link de mensagem do Teams (Copiar link)"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+        >
+          <Link2 className="w-3.5 h-3.5" />
+          Link do Teams
         </button>
 
         <div className="w-px h-4 bg-border/60 mx-1" />
@@ -1209,6 +1319,27 @@ export const TeamsBroadcastTab = () => {
         initialName={currentFilename ?? ""}
         onClose={() => setSaveAsOpen(false)}
         onSave={saveToFilename}
+      />
+
+      {/* ── Modal Carregar mensagem por link do Teams ── */}
+      <LoadFromLinkModal
+        open={loadLinkOpen}
+        onClose={() => setLoadLinkOpen(false)}
+        onLoaded={(text, meta) => {
+          setContent(text);
+          // Backend agora converte o HTML da mensagem do Teams pra Markdown (negrito/itálico/
+          // links/listas) em vez de innerText puro — mantém o modo Markdown (não mais Texto
+          // Simples) pra essa formatação aparecer no editor/preview.
+          setIsPlainText(false);
+          setCurrentFilename(null);
+          setIsDirty(true);
+          setLoadLinkOpen(false);
+          toast.success(
+            meta.approximate
+              ? "Mensagem carregada (correspondência aproximada — confira o conteúdo)"
+              : "Mensagem carregada do Teams"
+          );
+        }}
       />
     </div>
   );

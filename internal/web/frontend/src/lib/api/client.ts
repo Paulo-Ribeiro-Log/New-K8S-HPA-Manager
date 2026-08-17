@@ -4173,10 +4173,24 @@ class APIClient {
     return this.request(`/teams/broadcast/templates/${encodeURIComponent(filename)}`, { method: "DELETE" });
   }
 
+  async fetchTeamsMessageByLink(link: string): Promise<{
+    thread_id: string;
+    message_id: string;
+    text: string;
+    posted_at?: string;
+    approximate?: boolean;
+  }> {
+    return this.request("/teams/broadcast/message/fetch", {
+      method: "POST",
+      body: JSON.stringify({ link }),
+    });
+  }
+
   async sendBroadcastMessage(payload: {
     session_id: string;
     thread_ids: string[];
     markdown: string;
+    is_plain_text?: boolean;
     html?: string;
   }): Promise<{ session_id?: string; total?: number; error?: string }> {
     return this.request("/teams/broadcast/send", {
