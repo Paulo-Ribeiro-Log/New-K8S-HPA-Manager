@@ -37,7 +37,29 @@ type SendBroadcastRequest struct {
 	SessionID string   `json:"session_id"` // UUID gerado pelo frontend para o stream SSE
 	ThreadIDs []string `json:"thread_ids"`
 	Markdown  string   `json:"markdown"`
-	HTML      string   `json:"html"` // conteúdo já renderizado do painel de preview
+	// HTML — campo legado (conteúdo renderizado do painel de preview via innerHTML). Bug real
+	// corrigido (relatado ao vivo, 4ª rodada da mesma investigação de "espaçamento entre linhas
+	// ignorado ao enviar" — as 3 rodadas anteriores corrigiram markdownToTeamsHTML sem nenhum
+	// efeito visível, porque essa função NUNCA rodava de verdade): o frontend sempre populava
+	// este campo com `previewRef.current.innerHTML` e nunca o deixava vazio, então o branch que
+	// chama `markdownToTeamsHTML` (abaixo) nunca era alcançado — todas as correções anteriores
+	// eram código morto do ponto de vista da UI real. E o HTML gerado pelo preview (react-
+	// markdown/remark-gfm, CommonMark padrão) sofre uma limitação estrutural: markdown padrão
+	// **não tem como representar** "várias linhas em branco" como algo diferente de "uma linha
+	// em branco" — múltiplas linhas em branco consecutivas sempre colapsam pra uma única quebra
+	// de parágrafo, não importa quantas existiam no texto original. Ou seja, mesmo com
+	// `markdownToTeamsHTML` corrigido, o HTML do preview já tinha perdido essa informação antes
+	// de chegar aqui. Corrigido no frontend: `handleSend` para de mandar este campo (fica vazio
+	// por padrão agora) — o envio passa a sempre reconstruir o HTML a partir de `Markdown`/
+	// `IsPlainText` aqui no backend, que processa cada linha literalmente (não via parser
+	// CommonMark), preservando a contagem exata de linhas em branco. Mantido no struct só por
+	// compatibilidade — se vier preenchido (cliente antigo/futuro uso manual da API), ainda tem
+	// prioridade, mas a UI atual nunca mais o envia.
+	HTML string `json:"html"`
+	// IsPlainText — replica o toggle "Texto simples"/"Markdown" do editor (`isPlainText` no
+	// frontend). Quando true, `Markdown` é tratado como texto literal (escapado, sem interpretar
+	// `*`/`_`/`` ` ``/etc. como sintaxe) — via plainTextToTeamsHTML, não markdownToTeamsHTML.
+	IsPlainText bool `json:"is_plain_text"`
 }
 
 type BroadcastTemplate struct {
@@ -51,13 +73,19 @@ type SaveTemplateRequest struct {
 	Content  string `json:"content"`
 }
 
+type FetchMessageRequest struct {
+	Link string `json:"link"`
+}
+
 type TeamsBroadcastHandler struct {
-	logger   *zerolog.Logger
-	tracker  *sse.ProgressTracker
-	scanning bool
-	scanMu   sync.Mutex
-	sending  bool
-	sendMu   sync.Mutex
+	logger      *zerolog.Logger
+	tracker     *sse.ProgressTracker
+	scanning    bool
+	scanMu      sync.Mutex
+	sending     bool
+	sendMu      sync.Mutex
+	fetchingMsg bool
+	fetchMsgMu  sync.Mutex
 }
 
 func NewTeamsBroadcastHandler(logger *zerolog.Logger) *TeamsBroadcastHandler {
@@ -277,6 +305,49 @@ func (h *TeamsBroadcastHandler) DeleteTemplate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": filename})
 }
 
+// FetchMessage carrega o texto de uma mensagem específica do Teams a partir do link de
+// "Copiar link" (ex: https://teams.microsoft.com/l/message/<threadId>/<messageId>?context=...).
+// Útil para reaproveitar o conteúdo de uma mensagem já publicada como ponto de partida do
+// broadcast, sem precisar copiar/colar manualmente do Teams (perde formatação/quebras de linha).
+func (h *TeamsBroadcastHandler) FetchMessage(c *gin.Context) {
+	var req FetchMessageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Link) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "link é obrigatório"})
+		return
+	}
+
+	h.fetchMsgMu.Lock()
+	if h.fetchingMsg {
+		h.fetchMsgMu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": "outro carregamento de mensagem já está em andamento"})
+		return
+	}
+	h.fetchingMsg = true
+	h.fetchMsgMu.Unlock()
+	defer func() {
+		h.fetchMsgMu.Lock()
+		h.fetchingMsg = false
+		h.fetchMsgMu.Unlock()
+	}()
+
+	homeDir, _ := os.UserHomeDir()
+	sessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "teams-session")
+
+	h.logger.Info().Str("link", req.Link).Msg("[Broadcast] Carregando mensagem via link do Teams...")
+
+	msg, err := teams.FetchMessageByLink(sessionDir, req.Link, h.logger)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, msg)
+}
+
 // Send inicia o envio em lote de forma assíncrona e retorna 202 imediatamente.
 // O progresso é publicado via SSE no stream identificado por session_id.
 func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
@@ -303,6 +374,10 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 	h.sending = true
 	h.sendMu.Unlock()
 
+	// req.HTML só tem prioridade se vier preenchido explicitamente (compatibilidade — a UI atual
+	// nunca mais envia esse campo, ver comentário no struct SendBroadcastRequest). Caminho normal:
+	// reconstrói o HTML aqui a partir de Markdown/IsPlainText, preservando a contagem exata de
+	// linhas em branco (o que o HTML de preview via CommonMark não consegue fazer).
 	htmlContent := req.HTML
 	if htmlContent == "" {
 		if req.Markdown == "" {
@@ -312,7 +387,11 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "html ou markdown é obrigatório"})
 			return
 		}
-		htmlContent = markdownToTeamsHTML(req.Markdown)
+		if req.IsPlainText {
+			htmlContent = plainTextToTeamsHTML(req.Markdown)
+		} else {
+			htmlContent = markdownToTeamsHTML(req.Markdown)
+		}
 	}
 
 	sessionID := req.SessionID
@@ -451,43 +530,121 @@ func (h *TeamsBroadcastHandler) StreamSend(c *gin.Context) {
 }
 
 // markdownToTeamsHTML converte markdown simples para HTML aceito pelo Teams.
-// Suporta: negrito, itálico, código, quebras de linha, cabeçalhos e listas.
+// Suporta: negrito, itálico, tachado, código, links, quebras de linha, cabeçalhos, listas e
+// citações.
+//
+// Bug real corrigido (relatado ao vivo: "os espaços entre linhas ao enviar o arquivo continua
+// sendo ignorado e fica mal formatado na mensagem final") — a versão original tratava CADA linha
+// não-vazia como um `<p>` isolado e **descartava por completo** qualquer linha em branco.
+//
+// Bug real corrigido — 2ª rodada (relatado ao vivo: "o texto tem espaços de 2 linhas entre elas,
+// mas o espaço exibido na mensagem entregue é de apenas uma linha") — a 1ª correção emitia um
+// `<p>&nbsp;</p>` por linha em branco, e assumia que `<p>`s sucessivos já tinham uma margem
+// própria dando o espaçamento "de base" (só emitindo `&nbsp;` pras linhas ALÉM da primeira).
+//
+// Bug real corrigido — 3ª rodada (relatado ao vivo comparando o texto extraído com o que
+// efetivamente chegou entregue no Teams: espaçamento simples nunca aparecia, só o "extra"):
+// a suposição da 2ª rodada — de que dois `<p>` vizinhos têm margem suficiente pra criar
+// separação visível sozinhos — é FALSA no client de mensagens do Teams, que zera (ou deixa bem
+// próximo de zero) a margem entre parágrafos consecutivos pra manter mensagens compactas.
+// Resultado prático: toda linha em branco do texto original (não só a partir da 2ª) precisava de
+// representação explícita, e a versão anterior só cobria "linha em branco extra além da primeira"
+// — a separação "de base" nunca existia de verdade para começo.
+//
+// Reescrito com um modelo mais simples e sem depender de NENHUMA suposição sobre margem de `<p>`
+// do Teams: o corpo de texto corrido (parágrafos + linhas em branco) vira uma lista de
+// "segmentos" (`bodySegments`) unidos por `<br>` dentro de UM ÚNICO `<p>` — cada linha de
+// conteúdo é um segmento; cada linha em branco é um segmento VAZIO. Como `<br>` sempre força uma
+// quebra de linha de verdade (não depende de margem/CSS de bloco), o número de `<br>` entre dois
+// segmentos de conteúdo reproduz exatamente o número de linhas em branco que existiam entre eles
+// no original: 1 linha em branco → 2 `<br>` seguidos (fecha a linha de cima, abre e fecha a linha
+// vazia); 2 linhas em branco → 3 `<br>` seguidos; e assim por diante — sem precisar de nenhum
+// caso especial "-1" ou de `&nbsp;` decorativo. Só elementos genuinamente estruturais (cabeçalho,
+// lista, citação) continuam em blocos `<p>`/`<ul>` próprios, o que é esperado ficarem visualmente
+// destacados do corpo.
 func markdownToTeamsHTML(md string) string {
 	lines := strings.Split(md, "\n")
 	var sb strings.Builder
 	inList := false
 
+	// bodySegments acumula o corpo de texto corrido até um elemento estrutural interromper —
+	// ver comentário da função acima sobre como isso reproduz o número exato de linhas em branco.
+	var bodySegments []string
+	flushBody := func() {
+		// Remove segmentos vazios do INÍCIO/FIM do bloco antes de unir — evitam um <br> solto e
+		// sem sentido visual no começo/fim do <p> (ex: a mensagem inteira sempre termina com uma
+		// linha em branco "estrutural", sobra do \n final que htmlToMarkdown sempre adiciona;
+		// sem isso, TODA mensagem enviada ganhava um <br> supérfluo bem no final). Segmentos
+		// vazios NO MEIO do bloco são preservados — são eles que representam linhas em branco de
+		// verdade entre parágrafos (ver comentário da função acima).
+		start, end := 0, len(bodySegments)
+		for start < end && bodySegments[start] == "" {
+			start++
+		}
+		for end > start && bodySegments[end-1] == "" {
+			end--
+		}
+		segs := bodySegments[start:end]
+		bodySegments = nil
+		if len(segs) == 0 {
+			return
+		}
+		sb.WriteString("<p>" + strings.Join(segs, "<br>") + "</p>")
+	}
+	closeList := func() {
+		if inList {
+			sb.WriteString("</ul>")
+			inList = false
+		}
+	}
+
 	for _, line := range lines {
 		trimmed := strings.TrimRight(line, " \t")
 
-		// Cabeçalho
-		if strings.HasPrefix(trimmed, "### ") {
-			if inList {
-				sb.WriteString("</ul>")
-				inList = false
+		// Linha vazia — vira um segmento vazio no corpo em andamento (ver comentário da função).
+		// Ignorada se nada foi acumulado ainda (linhas em branco soltas antes do primeiro texto
+		// real, ou logo após um bloco estrutural, não precisam virar espaço visível).
+		if trimmed == "" {
+			if len(bodySegments) > 0 {
+				bodySegments = append(bodySegments, "")
 			}
+			continue
+		}
+
+		// Cabeçalho — flushBody() aqui (e em citação/lista abaixo) é necessário mesmo sem linha
+		// vazia entre um parágrafo e o próximo bloco (ex: "texto\n# Título", sem separador): sem
+		// isso o corpo acumulado ficaria pendurado no buffer e sairia DEPOIS do cabeçalho no HTML
+		// final, embora viesse antes no texto original — ordem trocada.
+		if strings.HasPrefix(trimmed, "### ") {
+			flushBody()
+			closeList()
 			sb.WriteString("<p><b>" + htmlEscape(trimmed[4:]) + "</b></p>")
 			continue
 		}
 		if strings.HasPrefix(trimmed, "## ") {
-			if inList {
-				sb.WriteString("</ul>")
-				inList = false
-			}
+			flushBody()
+			closeList()
 			sb.WriteString("<p><b>" + htmlEscape(trimmed[3:]) + "</b></p>")
 			continue
 		}
 		if strings.HasPrefix(trimmed, "# ") {
-			if inList {
-				sb.WriteString("</ul>")
-				inList = false
-			}
+			flushBody()
+			closeList()
 			sb.WriteString("<p><b>" + htmlEscape(trimmed[2:]) + "</b></p>")
+			continue
+		}
+
+		// Citação (produzida por htmlToMarkdown a partir de <blockquote> ao carregar)
+		if strings.HasPrefix(trimmed, "> ") {
+			flushBody()
+			closeList()
+			sb.WriteString("<p>" + applyInlineMarkdown(trimmed[2:]) + "</p>")
 			continue
 		}
 
 		// Item de lista
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			flushBody()
 			if !inList {
 				sb.WriteString("<ul>")
 				inList = true
@@ -497,27 +654,43 @@ func markdownToTeamsHTML(md string) string {
 			continue
 		}
 
-		// Linha vazia
-		if trimmed == "" {
-			if inList {
-				sb.WriteString("</ul>")
-				inList = false
-			}
-			continue
-		}
-
-		// Parágrafo normal
-		if inList {
-			sb.WriteString("</ul>")
-			inList = false
-		}
-		sb.WriteString("<p>" + applyInlineMarkdown(trimmed) + "</p>")
+		// Linha de corpo normal — acumula; linhas de conteúdo E linhas em branco se intercalam
+		// no mesmo buffer, unidas por <br> ao fechar (ver comentário da função).
+		closeList()
+		bodySegments = append(bodySegments, applyInlineMarkdown(trimmed))
 	}
 
-	if inList {
-		sb.WriteString("</ul>")
-	}
+	closeList()
+	flushBody()
 	return sb.String()
+}
+
+// plainTextToTeamsHTML converte texto literal (modo "Texto simples" do editor, sem interpretar
+// nenhuma sintaxe Markdown) pra HTML aceito pelo Teams. Cada linha vira um segmento HTML-escapado,
+// unido por `<br>` — mesmo modelo de `markdownToTeamsHTML` (preserva a contagem exata de linhas
+// em branco), mas sem nenhuma das checagens de cabeçalho/lista/citação/negrito/etc., já que texto
+// simples deve chegar exatamente como foi digitado (um `*` ou `#` aqui é só um caractere literal,
+// nunca sintaxe).
+func plainTextToTeamsHTML(text string) string {
+	lines := strings.Split(text, "\n")
+	segs := make([]string, len(lines))
+	for i, line := range lines {
+		segs[i] = htmlEscape(line)
+	}
+	// Mesmo trim de segmentos vazios do início/fim que flushBody faz — evita um <br> sobrando no
+	// começo/fim vindo só de uma quebra de linha "estrutural" (o \n final do texto, por exemplo).
+	start, end := 0, len(segs)
+	for start < end && segs[start] == "" {
+		start++
+	}
+	for end > start && segs[end-1] == "" {
+		end--
+	}
+	segs = segs[start:end]
+	if len(segs) == 0 {
+		return ""
+	}
+	return "<p>" + strings.Join(segs, "<br>") + "</p>"
 }
 
 var (
@@ -525,7 +698,13 @@ var (
 	reBold2   = regexp.MustCompile(`__(.+?)__`)
 	reItalic1 = regexp.MustCompile(`\*(.+?)\*`)
 	reItalic2 = regexp.MustCompile(`_(.+?)_`)
+	reStrike  = regexp.MustCompile(`~~(.+?)~~`)
 	reCode    = regexp.MustCompile("`(.+?)`")
+	// reLink casa a sintaxe de link do Markdown ([texto](url)) — produzida por htmlToMarkdown a
+	// partir de <a href> ao carregar uma mensagem via link (ver internal/teams/message_fetch.go).
+	// Sem isso, um link carregado do Teams voltava como texto literal "[texto](url)" ao reenviar
+	// em vez de um link clicável de verdade — parte do mesmo bug de "formatação alterada".
+	reLink = regexp.MustCompile(`\[(.+?)\]\((.+?)\)`)
 )
 
 func applyInlineMarkdown(s string) string {
@@ -533,7 +712,9 @@ func applyInlineMarkdown(s string) string {
 	s = reBold2.ReplaceAllString(s, "<b>$1</b>")
 	s = reItalic1.ReplaceAllString(s, "<i>$1</i>")
 	s = reItalic2.ReplaceAllString(s, "<i>$1</i>")
+	s = reStrike.ReplaceAllString(s, "<s>$1</s>")
 	s = reCode.ReplaceAllString(s, "<code>$1</code>")
+	s = reLink.ReplaceAllString(s, `<a href="$2">$1</a>`)
 	return s
 }
 
