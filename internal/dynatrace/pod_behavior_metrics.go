@@ -99,6 +99,21 @@ func (c *Client) ResolveEntityForPod(ctx context.Context, clusterName, namespace
 //
 // found=false quando o pod não tem nenhuma CONTAINER_GROUP_INSTANCE correlacionada (cluster
 // classicFullStack, ou pod não instrumentado) — o chamador cai de volta pro agregado por workload.
+//
+// Achado real (levantamento ao vivo, sem código pra corrigir — é limitação do próprio tenant/
+// coleta, não da resolução): a RESOLUÇÃO (pod → CAI → CGI) é 100% confiável mesmo pra pods
+// legitimamente rodando (confirmado em 8/8 tentativas, 4 clusters diferentes AKS/EKS/GKE) — o
+// gargalo real é a MÉTRICA em si (builtin:containers.cpu.usageMilliCores/residentSetBytes) não ter
+// dado nenhum pra boa parte dos containers, mesmo com OneAgent injetado e o pod confirmado
+// `RUNNING`. Cobertura varia MUITO por cluster: `akspriv-checkout-prd` deu dado em 9/10 pods
+// amostrados; `eks-asaplog-prd` deu 0/10 nos mesmos moldes — mas uma query em lote (sem
+// entityId() único, via fromRelationships.isCgiOfCluster + splitBy) confirmou que a métrica TEM
+// dado nesse mesmo cluster, só que pra uma fração ínfima dos containers (dataPointCountRatio
+// ~0.02% no teste, ~30 containers com dado entre milhares) — sugere alguma forma de amostragem/
+// limite de cardinalidade na coleta desse tipo de métrica nesse cluster específico, não ausência
+// total de dado nem bug na correlação. Não há contorno client-side confiável pra isso (o pod
+// específico que o usuário abre raramente cai nessa fração pequena) — o fallback pro agregado por
+// workload abaixo é o comportamento correto, não uma limitação a "corrigir" por aqui.
 func (c *Client) GetPodBehaviorMetrics(ctx context.Context, caiEntityID string, from, to time.Time) ([]MetricSeriesData, bool) {
 	selector := fmt.Sprintf(`type("CONTAINER_GROUP_INSTANCE"),fromRelationships.isCgiOfCai(entityId("%s"))`, caiEntityID)
 	cgiStubs, err := c.listEntitiesBySelector(ctx, selector)

@@ -327,7 +327,7 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment, podNam
       {data?.pod && !data.pod_scoped && (
         <div className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
           {data.source === "dynatrace"
-            ? "Não foi possível isolar este pod no Dynatrace — mostrando o Deployment inteiro. Granularidade por pod exige Cloud Native Full Stack (a maioria dos clusters usa classicFullStack) e dados recentes o bastante do pod (métricas de container somem pouco depois de ele terminar)."
+            ? "Não foi possível isolar este pod no Dynatrace — mostrando o Deployment inteiro. A causa mais comum não é o pod em si: mesmo com Cloud Native Full Stack e o pod rodando normalmente, este cluster pode simplesmente não ter métrica de CPU/memória por container coletada para a maioria dos containers (confirmado que varia MUITO entre clusters — cobertura quase total em alguns, quase nula em outros, sem relação com o pod estar ativo ou não)."
             : `A fonte atual (${data.source}) não suporta granularidade por pod — mostrando o Deployment inteiro mesmo assim.`}
         </div>
       )}
