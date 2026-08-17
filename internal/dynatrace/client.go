@@ -334,14 +334,40 @@ func (c *Client) GetProblem(ctx context.Context, problemID string) (*Problem, er
 }
 
 // GetEntity retorna uma entidade pelo ID com tags e relações.
+// GetEntity busca uma entidade completa (tags, properties, relacionamentos) por ID.
+//
+// Bug real corrigido — "toRelationships.calls"/"fromRelationships.calledBy" (usados só pra
+// preencher CallsTo/CalledBy, a call chain do VRP) são relações válidas apenas pra entidades
+// SERVICE; pedir esses 2 campos pra QUALQUER outro tipo (CLOUD_APPLICATION_INSTANCE, HOST,
+// KUBERNETES_NODE, PROCESS_GROUP_INSTANCE, etc.) sempre falha com 400 ("'calls' is not a valid
+// to-relationship for type '<X>'") — confirmado ao vivo, 15/15 tentativas, contra um tenant real.
+// GetEntity é genérico (não sabe o tipo da entidade de antemão), então esse bug silenciosamente
+// derrubava a enriquecimento INTEIRA (DisplayName, K8s correlation, Labels — não só CallsTo/
+// CalledBy) sempre que chamado direto pra um tipo não-SERVICE. Na prática ficava mascarado na
+// maioria dos usos reais (ResolveEntityForWorkload, ListMonitoredPods, ResolveEntityForPod) porque
+// esses passam antes por ListEntitiesByCluster → listEntitiesBySelector, que já enriquece e
+// aquece entityCache com "+tags,+properties" (sem os 2 campos problemáticos) — EnrichEntitiesWithK8s
+// então bate cache-hit e nunca chega a chamar GetEntity de verdade. Só era exposto pra entidades
+// SEM esse aquecimento prévio de cache — o próprio comentário de EnrichEntitiesWithK8s já apontava
+// esse caso: entidades vindas de Problems (AffectedEntities/ImpactedEntities), que "nunca passam
+// por listEntitiesBySelector antes, então chegam aqui SEMPRE com cache frio" — pra qualquer uma
+// dessas que não seja SERVICE, a correlação K8s silenciosamente nunca era preenchida.
+// Corrigido com retry: na falha, tenta de novo sem os 2 campos de relação — cobre os demais tipos;
+// CallsTo/CalledBy ficam vazios nesse caso (aceitável, só têm sentido pra SERVICE mesmo).
 func (c *Client) GetEntity(ctx context.Context, entityID string) (*Entity, error) {
-	params := url.Values{
+	var entity Entity
+	fullParams := url.Values{
 		"fields": {"+tags,+properties,+toRelationships.calls,+fromRelationships.calledBy"},
 	}
-
-	var entity Entity
-	if err := c.get(ctx, "entities/"+entityID, params, &entity); err != nil {
-		return nil, err
+	if err := c.get(ctx, "entities/"+entityID, fullParams, &entity); err != nil {
+		if !strings.Contains(err.Error(), "status 400") {
+			return nil, err
+		}
+		entity = Entity{}
+		basicParams := url.Values{"fields": {"+tags,+properties"}}
+		if err2 := c.get(ctx, "entities/"+entityID, basicParams, &entity); err2 != nil {
+			return nil, err2
+		}
 	}
 	return &entity, nil
 }

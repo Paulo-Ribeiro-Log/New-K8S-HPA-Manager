@@ -1031,13 +1031,16 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    params?: { minutes?: number; step?: number; offsetDays?: number[]; aiEmail?: string }
+    params?: { minutes?: number; step?: number; offsetDays?: number[]; aiEmail?: string; pod?: string }
   ): Promise<import("./types").DeploymentBehaviorResponse> {
     const query = new URLSearchParams();
     if (params?.minutes) query.set("minutes", String(params.minutes));
     if (params?.step) query.set("step", String(params.step));
     if (params?.offsetDays?.length) query.set("offset_days", params.offsetDays.join(","));
     if (params?.aiEmail) query.set("ai_email", params.aiEmail);
+    // Toggle "Este pod / Deployment inteiro" na aba Comportamento — vazio (padrão) = Deployment
+    // inteiro, mesmo comportamento de sempre.
+    if (params?.pod) query.set("pod", params.pod);
     const qs = query.toString() ? `?${query.toString()}` : "";
     return this.request<import("./types").DeploymentBehaviorResponse>(
       `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/behavior${qs}`

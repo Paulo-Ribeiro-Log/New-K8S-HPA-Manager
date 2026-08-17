@@ -2,9 +2,75 @@ package client
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestBuildDeploymentBehaviorQueries_AggregatedByDefault — sem podName, todas as métricas
+// pod-scoped (cpu/memory/restarts/network_*) devem usar o seletor agregado pod=~"deployment-.*",
+// e as réplicas usam só namespace+deployment (nunca dependem de pod nenhum).
+func TestBuildDeploymentBehaviorQueries_AggregatedByDefault(t *testing.T) {
+	queries := buildDeploymentBehaviorQueries("prod-ns", "checkout-api", "", time.Minute)
+
+	podScopedKeys := []string{"cpu", "memory", "restarts", "network_in", "network_out"}
+	for _, key := range podScopedKeys {
+		q, ok := queries[key]
+		if !ok {
+			t.Fatalf("query %q ausente", key)
+		}
+		if !strings.Contains(q, `pod=~"checkout-api-.*"`) {
+			t.Errorf("query %q deveria usar o seletor agregado pod=~\"checkout-api-.*\", got: %s", key, q)
+		}
+		if strings.Contains(q, `pod="`) {
+			t.Errorf("query %q não deveria conter um seletor de pod exato sem podName, got: %s", key, q)
+		}
+	}
+
+	replicaKeys := []string{"replicas_desired", "replicas_current", "replicas_ready", "replicas_updated", "replicas_unavailable"}
+	for _, key := range replicaKeys {
+		q, ok := queries[key]
+		if !ok {
+			t.Fatalf("query %q ausente", key)
+		}
+		if strings.Contains(q, "pod=") {
+			t.Errorf("query de réplicas %q não deveria referenciar pod nenhum, got: %s", key, q)
+		}
+		if !strings.Contains(q, `deployment="checkout-api"`) {
+			t.Errorf("query %q deveria filtrar por deployment=\"checkout-api\", got: %s", key, q)
+		}
+	}
+}
+
+// TestBuildDeploymentBehaviorQueries_PodScoped — com podName, as métricas pod-scoped devem trocar
+// pra um seletor de pod EXATO (toggle "Este pod" na aba Comportamento); réplicas continuam
+// exatamente iguais (nunca dependem de podName).
+func TestBuildDeploymentBehaviorQueries_PodScoped(t *testing.T) {
+	agg := buildDeploymentBehaviorQueries("prod-ns", "checkout-api", "", time.Minute)
+	scoped := buildDeploymentBehaviorQueries("prod-ns", "checkout-api", "checkout-api-7d9f-abcde", time.Minute)
+
+	podScopedKeys := []string{"cpu", "memory", "restarts", "network_in", "network_out"}
+	for _, key := range podScopedKeys {
+		q, ok := scoped[key]
+		if !ok {
+			t.Fatalf("query %q ausente", key)
+		}
+		if !strings.Contains(q, `pod="checkout-api-7d9f-abcde"`) {
+			t.Errorf("query %q deveria usar o seletor exato pod=\"checkout-api-7d9f-abcde\", got: %s", key, q)
+		}
+		if strings.Contains(q, `pod=~"checkout-api-.*"`) {
+			t.Errorf("query %q não deveria mais conter o seletor agregado com podName preenchido, got: %s", key, q)
+		}
+	}
+
+	// Réplicas: byte-a-byte idênticas entre os dois escopos — "réplicas" nunca é por pod.
+	replicaKeys := []string{"replicas_desired", "replicas_current", "replicas_ready", "replicas_updated", "replicas_unavailable"}
+	for _, key := range replicaKeys {
+		if agg[key] != scoped[key] {
+			t.Errorf("query de réplicas %q não deveria mudar com podName: agregado=%q, escopado=%q", key, agg[key], scoped[key])
+		}
+	}
+}
 
 // Teste de criação de cliente (requer endpoint disponível)
 func TestNewPrometheusClient_Integration(t *testing.T) {

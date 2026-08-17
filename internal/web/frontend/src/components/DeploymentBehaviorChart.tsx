@@ -13,6 +13,10 @@ interface Props {
   cluster: string;
   namespace: string;
   deployment: string;
+  // podName (opcional): nome do pod que abriu esta aba (PodQuickViewModal) — habilita o toggle
+  // "Este pod / Deployment inteiro". Sem isso (chamador não sabe/não tem um pod específico), o
+  // toggle não aparece e o gráfico permanece só no agregado do Deployment, como sempre foi.
+  podName?: string;
 }
 
 type ChartRow = Record<string, number | string>;
@@ -126,12 +130,19 @@ function dtProblemUrl(baseUrl: string | undefined, problemId: string): string | 
 // complexidade do componente sem ganho proporcional pro caso de uso principal (troubleshooting de
 // "por que este pod reiniciou" se apoia mais em quando as réplicas mudaram do que em CPU/mem
 // histórico ponto a ponto).
-export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Props) {
+export function DeploymentBehaviorChart({ cluster, namespace, deployment, podName }: Props) {
   const [windowMinutes, setWindowMinutes] = useState(360);
   const [compareOffsets, setCompareOffsets] = useState<number[]>([]);
   const [data, setData] = useState<DeploymentBehaviorResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Toggle "Este pod / Deployment inteiro" — ver overview de design em
+  // DEPLOYMENT-BEHAVIOR-GRAPH-PLAN.md ("Comportamento" mede o Deployment por padrão, não o pod
+  // selecionado — ephemeral pods teriam histórico quase vazio se fosse o padrão). Começa em
+  // "deployment" mesmo quando podName está disponível: preserva o comportamento de sempre por
+  // padrão, o usuário opta conscientemente por "Este pod" quando quiser esse recorte.
+  const [scope, setScope] = useState<"deployment" | "pod">("deployment");
+  const effectivePod = scope === "pod" && podName ? podName : undefined;
 
   const fetchBehavior = useCallback(async () => {
     setLoading(true);
@@ -148,6 +159,7 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
         step: stepForWindow(windowMinutes),
         offsetDays: compareOffsets.length > 0 ? compareOffsets : undefined,
         aiEmail,
+        pod: effectivePod,
       });
       setData(resp);
     } catch (e) {
@@ -155,12 +167,12 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
     } finally {
       setLoading(false);
     }
-  }, [cluster, namespace, deployment, windowMinutes, compareOffsets]);
+  }, [cluster, namespace, deployment, windowMinutes, compareOffsets, effectivePod]);
 
   useEffect(() => {
     fetchBehavior();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cluster, namespace, deployment, windowMinutes, compareOffsets]);
+  }, [cluster, namespace, deployment, windowMinutes, compareOffsets, effectivePod]);
 
   const { chartData, decimatedPoints } = useMemo(() => {
     if (!data?.points?.length) return { chartData: [] as ChartRow[], decimatedPoints: [] as DeploymentBehaviorPoint[] };
@@ -287,10 +299,62 @@ export function DeploymentBehaviorChart({ cluster, namespace, deployment }: Prop
   // Agora só cai no estado vazio total quando NÃO há nem série nem problems.
   const showEmptyState = !loading && (!data || (data.source === "none" && !data.dynatrace_problems?.length));
 
+  // replicaCountLabel — última contagem conhecida de réplicas, só pra dar contexto no rótulo de
+  // escopo abaixo ("Deployment inteiro (N réplicas)"). Prefere replicas_current; cai pra
+  // replicas_desired se o caminho atual não populou "atuais" (ver hasCurrentReplicas acima).
+  const lastPoint = data?.points?.[data.points.length - 1];
+  const replicaCountLabel = lastPoint
+    ? (lastPoint.replicas_current || lastPoint.replicas_desired || undefined)
+    : undefined;
+
   return (
     <div className="space-y-4 p-1">
+      {/* Rótulo de escopo — sempre visível, evita a confusão de "por que isso não bate com o pod
+          que eu abri" (achado real reportado pelo usuário: sem isso, nada no gráfico deixava
+          claro que os dados são do Deployment inteiro, não do pod selecionado). */}
+      <div className="text-xs text-muted-foreground">
+        {effectivePod ? (
+          <>Comportamento do pod <span className="font-mono text-foreground">{effectivePod}</span></>
+        ) : (
+          <>
+            Comportamento do Deployment <span className="font-medium text-foreground">{deployment}</span>
+            {replicaCountLabel ? ` (${replicaCountLabel} réplica${replicaCountLabel === 1 ? "" : "s"})` : ""}
+            {" — dados agregados de todos os pods, não só o selecionado"}
+          </>
+        )}
+      </div>
+
+      {data?.pod && !data.pod_scoped && (
+        <div className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
+          {data.source === "dynatrace"
+            ? "Não foi possível isolar este pod no Dynatrace — mostrando o Deployment inteiro. Granularidade por pod exige Cloud Native Full Stack (a maioria dos clusters usa classicFullStack) e dados recentes o bastante do pod (métricas de container somem pouco depois de ele terminar)."
+            : `A fonte atual (${data.source}) não suporta granularidade por pod — mostrando o Deployment inteiro mesmo assim.`}
+        </div>
+      )}
+
       {/* Toolbar — sempre visível, mesmo em loading/erro/estado vazio */}
       <div className="flex flex-wrap items-center gap-2">
+        {podName && (
+          <div className="flex items-center rounded-md border border-border overflow-hidden">
+            <button
+              onClick={() => setScope("pod")}
+              className={`h-7 px-2 text-[11px] font-medium transition-colors ${
+                scope === "pod" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              Este pod
+            </button>
+            <button
+              onClick={() => setScope("deployment")}
+              className={`h-7 px-2 text-[11px] font-medium transition-colors ${
+                scope === "deployment" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              Deployment inteiro
+            </button>
+          </div>
+        )}
+
         <Select value={String(windowMinutes)} onValueChange={(v) => setWindowMinutes(Number(v))}>
           <SelectTrigger className="h-7 text-xs w-24">
             <SelectValue />
