@@ -14,6 +14,26 @@ interface SpinnakerRolloutModalProps {
   error?: string;
 }
 
+// ChgValue renderiza o número da CHG como link direto pro ServiceNow quando a URL vem
+// disponível (seção 9 item 3 do plano) — poupa copiar/colar o número e buscar manualmente.
+// Sem URL, cai pro texto simples de sempre (nem toda squad/execução tem esse campo populado).
+function ChgValue({ chg, url }: { chg: string | undefined; url: string | undefined }) {
+  if (!chg) return <>—</>;
+  if (!url) return <>{chg}</>;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 text-primary hover:underline"
+      title="Abrir CHG no ServiceNow"
+    >
+      {chg}
+      <ExternalLink className="h-3 w-3 shrink-0" />
+    </a>
+  );
+}
+
 function fmtDate(epochMs: number | undefined): string {
   if (!epochMs) return "—";
   return new Date(epochMs).toLocaleString("pt-BR", {
@@ -92,7 +112,9 @@ export function SpinnakerRolloutModal({
               <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                 <div>
                   <span className="text-muted-foreground">Última CHG aplicada:</span>
-                  <p className="font-mono font-medium mt-0.5 text-foreground">{info.last_chg_applied || "—"}</p>
+                  <p className="font-mono font-medium mt-0.5 text-foreground">
+                    <ChgValue chg={info.last_chg_applied} url={info.last_chg_applied_url} />
+                  </p>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Status da execução:</span>
@@ -153,7 +175,9 @@ export function SpinnakerRolloutModal({
                     </div>
                     <div className="col-span-2">
                       <span className="text-muted-foreground">CHG que falhou:</span>{" "}
-                      <span className="font-mono font-medium">{info.failed_chg || "—"}</span>
+                      <span className="font-mono font-medium">
+                        <ChgValue chg={info.failed_chg} url={info.failed_chg_url} />
+                      </span>
                     </div>
                   </div>
                 </div>

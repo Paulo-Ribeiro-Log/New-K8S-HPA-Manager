@@ -16,12 +16,14 @@ type RollbackInfo struct {
 	RollbackType string `json:"rollback_type,omitempty"` // "explicit" | "implicit" | ""
 
 	LastCHGApplied     string `json:"last_chg_applied,omitempty"`
+	LastCHGAppliedURL  string `json:"last_chg_applied_url,omitempty"` // link direto pra CHG no ServiceNow (Trigger.CHGUrl)
 	PipelineExecutedAt int64  `json:"pipeline_executed_at,omitempty"`
 	ExecutionStatus    string `json:"execution_status,omitempty"`
 
 	RollbackStartedAt    int64  `json:"rollback_started_at,omitempty"`
 	RollbackEndedAt      int64  `json:"rollback_ended_at,omitempty"`
 	FailedCHG            string `json:"failed_chg,omitempty"`
+	FailedCHGURL         string `json:"failed_chg_url,omitempty"`         // link direto pra CHG no ServiceNow (Trigger.CHGUrl)
 	RollbackPipelineName string `json:"rollback_pipeline_name,omitempty"` // só preenchido quando RollbackType == "explicit"
 
 	SpinnakerExecutionID string `json:"spinnaker_execution_id,omitempty"`
@@ -134,11 +136,13 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			IsRollback:           &isTrue,
 			RollbackType:         "explicit",
 			LastCHGApplied:       ex.Trigger.CHGNumber(),
+			LastCHGAppliedURL:    ex.Trigger.CHGUrl(),
 			PipelineExecutedAt:   executionTime(ex),
 			ExecutionStatus:      ex.Status,
 			RollbackStartedAt:    ex.StartTime,
 			RollbackEndedAt:      ex.EndTime,
 			FailedCHG:            ex.Trigger.CHGNumber(),
+			FailedCHGURL:         ex.Trigger.CHGUrl(),
 			RollbackPipelineName: ex.Name,
 			SpinnakerExecutionID: ex.ID,
 		}
@@ -154,11 +158,13 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			IsRollback:           &isTrue,
 			RollbackType:         "implicit",
 			LastCHGApplied:       latest.Trigger.CHGNumber(),
+			LastCHGAppliedURL:    latest.Trigger.CHGUrl(),
 			PipelineExecutedAt:   executionTime(latest),
 			ExecutionStatus:      latest.Status,
 			RollbackStartedAt:    latest.StartTime,
 			RollbackEndedAt:      latest.EndTime,
 			FailedCHG:            latest.Trigger.CHGNumber(),
+			FailedCHGURL:         latest.Trigger.CHGUrl(),
 			SpinnakerExecutionID: latest.ID,
 		}
 	}
@@ -170,6 +176,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			Matched:              true,
 			IsRollback:           &isFalse,
 			LastCHGApplied:       latest.Trigger.CHGNumber(),
+			LastCHGAppliedURL:    latest.Trigger.CHGUrl(),
 			PipelineExecutedAt:   executionTime(latest),
 			ExecutionStatus:      latest.Status,
 			SpinnakerExecutionID: latest.ID,

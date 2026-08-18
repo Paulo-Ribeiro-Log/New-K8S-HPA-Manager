@@ -194,6 +194,26 @@ func TestDetectRollback_ExplicitViaIsRollbackFlag_OutraSquad(t *testing.T) {
 	}
 }
 
+// TestDetectRollback_PropagaCHGUrl cobre a seção 9 item 3 do plano (link direto pro ServiceNow):
+// LastCHGAppliedURL/FailedCHGURL vêm de Trigger.CHGUrl() (Payload), propagados pelo DetectRollback
+// tanto no caminho normal quanto no explícito.
+func TestDetectRollback_PropagaCHGUrl(t *testing.T) {
+	trigger := mkTrigger("app-x", "ns-x", "1.0.0", "CHG0000001")
+	trigger.Payload = map[string]interface{}{
+		"serviceNowChgUrl": "https://viavarejo.service-now.com/change_request.do?sys_id=xyz",
+	}
+
+	executions := []Execution{
+		{ID: "deploy-ok", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 1000, Trigger: trigger},
+	}
+
+	got := DetectRollback(executions, "app-x", "ns-x", "1.0.0")
+
+	if got.LastCHGAppliedURL != "https://viavarejo.service-now.com/change_request.do?sys_id=xyz" {
+		t.Errorf("LastCHGAppliedURL = %q, esperava a URL do Payload", got.LastCHGAppliedURL)
+	}
+}
+
 // TestManifestReference_ContextInvalido garante que Stage.ManifestReference nunca panica nem
 // retorna erro fatal com um context malformado/ausente — dado best-effort.
 func TestManifestReference_ContextInvalido(t *testing.T) {

@@ -1551,11 +1551,13 @@ export interface SpinnakerRollbackInfo {
   is_rollback: boolean | null;
   rollback_type?: "explicit" | "implicit" | "";
   last_chg_applied?: string;
+  last_chg_applied_url?: string; // link direto pra CHG no ServiceNow (seção 9 item 3 do plano)
   pipeline_executed_at?: number;
   execution_status?: string;
   rollback_started_at?: number;
   rollback_ended_at?: number;
   failed_chg?: string;
+  failed_chg_url?: string; // link direto pra CHG no ServiceNow
   rollback_pipeline_name?: string;
   spinnaker_execution_id?: string;
   spinnaker_execution_url?: string;

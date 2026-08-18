@@ -74,3 +74,20 @@ func TestTrigger_IsRollbackFlag(t *testing.T) {
 		})
 	}
 }
+
+// TestTrigger_CHGUrl cobre o achado da seção 9 item 3 (link direto pro ServiceNow) — o campo só
+// existe em Payload ("serviceNowChgUrl"), confirmado ao vivo numa execução real de rollback da
+// squad SRE Marketplace. Nunca em Parameters (só o número da CHG está lá).
+func TestTrigger_CHGUrl(t *testing.T) {
+	t1 := Trigger{Payload: map[string]interface{}{
+		"serviceNowChgUrl": "https://viavarejo.service-now.com/change_request.do?sys_id=abc",
+	}}
+	if got := t1.CHGUrl(); got != "https://viavarejo.service-now.com/change_request.do?sys_id=abc" {
+		t.Errorf("CHGUrl() = %q, want a URL real", got)
+	}
+
+	t2 := Trigger{Parameters: map[string]interface{}{"Application SN Change Number": "CHG0001234"}}
+	if got := t2.CHGUrl(); got != "" {
+		t.Errorf("CHGUrl() = %q, want vazio (não existe em Parameters)", got)
+	}
+}

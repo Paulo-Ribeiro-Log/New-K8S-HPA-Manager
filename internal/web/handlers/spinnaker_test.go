@@ -17,11 +17,13 @@ func TestToHistoryRecord_RoundTripsThroughFromHistoryRecord(t *testing.T) {
 		IsRollback:            &isRollback,
 		RollbackType:          "implicit",
 		LastCHGApplied:        "CHG0001234",
+		LastCHGAppliedURL:     "https://viavarejo.service-now.com/change_request.do?sys_id=abc",
 		PipelineExecutedAt:    1000,
 		ExecutionStatus:       "TERMINAL",
 		RollbackStartedAt:     1000,
 		RollbackEndedAt:       2000,
 		FailedCHG:             "CHG0001234",
+		FailedCHGURL:          "https://viavarejo.service-now.com/change_request.do?sys_id=abc",
 		RollbackPipelineName:  "deploy-aks-global",
 		SpinnakerExecutionID:  "exec-1",
 		SpinnakerExecutionURL: "https://deck/exec-1",
@@ -59,6 +61,12 @@ func TestToHistoryRecord_RoundTripsThroughFromHistoryRecord(t *testing.T) {
 	}
 	if rebuilt.SpinnakerExecutionURL != original.SpinnakerExecutionURL {
 		t.Errorf("SpinnakerExecutionURL = %q, want %q", rebuilt.SpinnakerExecutionURL, original.SpinnakerExecutionURL)
+	}
+	if rebuilt.LastCHGAppliedURL != original.LastCHGAppliedURL {
+		t.Errorf("LastCHGAppliedURL = %q, want %q", rebuilt.LastCHGAppliedURL, original.LastCHGAppliedURL)
+	}
+	if rebuilt.FailedCHGURL != original.FailedCHGURL {
+		t.Errorf("FailedCHGURL = %q, want %q", rebuilt.FailedCHGURL, original.FailedCHGURL)
 	}
 }
 

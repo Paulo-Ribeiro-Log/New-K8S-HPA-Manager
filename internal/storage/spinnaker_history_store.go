@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,11 +26,13 @@ type SpinnakerRolloutRecord struct {
 	IsRollback            bool      `json:"is_rollback"`
 	RollbackType          string    `json:"rollback_type,omitempty"`
 	LastCHGApplied        string    `json:"last_chg_applied,omitempty"`
+	LastCHGAppliedURL     string    `json:"last_chg_applied_url,omitempty"`
 	PipelineExecutedAt    int64     `json:"pipeline_executed_at,omitempty"`
 	ExecutionStatus       string    `json:"execution_status,omitempty"`
 	RollbackStartedAt     int64     `json:"rollback_started_at,omitempty"`
 	RollbackEndedAt       int64     `json:"rollback_ended_at,omitempty"`
 	FailedCHG             string    `json:"failed_chg,omitempty"`
+	FailedCHGURL          string    `json:"failed_chg_url,omitempty"`
 	RollbackPipelineName  string    `json:"rollback_pipeline_name,omitempty"`
 	SpinnakerExecutionID  string    `json:"spinnaker_execution_id,omitempty"`
 	SpinnakerExecutionURL string    `json:"spinnaker_execution_url,omitempty"`
@@ -52,11 +55,13 @@ CREATE TABLE IF NOT EXISTS spinnaker_rollout_status (
     is_rollback              INTEGER  NOT NULL,
     rollback_type            TEXT     NOT NULL DEFAULT '',
     last_chg_applied         TEXT     NOT NULL DEFAULT '',
+    last_chg_applied_url     TEXT     NOT NULL DEFAULT '',
     pipeline_executed_at     INTEGER  NOT NULL DEFAULT 0,
     execution_status         TEXT     NOT NULL DEFAULT '',
     rollback_started_at      INTEGER  NOT NULL DEFAULT 0,
     rollback_ended_at        INTEGER  NOT NULL DEFAULT 0,
     failed_chg                TEXT    NOT NULL DEFAULT '',
+    failed_chg_url            TEXT    NOT NULL DEFAULT '',
     rollback_pipeline_name   TEXT     NOT NULL DEFAULT '',
     spinnaker_execution_id   TEXT     NOT NULL DEFAULT '',
     spinnaker_execution_url  TEXT     NOT NULL DEFAULT '',
@@ -83,6 +88,19 @@ func NewSpinnakerHistoryStore(dbPath string) (*SpinnakerHistoryStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("criar schema spinnaker_history: %w", err)
 	}
+	// Migração idempotente: last_chg_applied_url/failed_chg_url (link direto pra CHG no
+	// ServiceNow, seção 9 item 3 do plano) chegaram depois da primeira versão do schema —
+	// bancos já existentes (ex: desta própria sessão de desenvolvimento) precisam do ALTER TABLE.
+	// "duplicate column name" é o erro esperado quando a coluna já existe — ignorado.
+	for _, stmt := range []string{
+		`ALTER TABLE spinnaker_rollout_status ADD COLUMN last_chg_applied_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE spinnaker_rollout_status ADD COLUMN failed_chg_url TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("migrar spinnaker_history (%s): %w", stmt, err)
+		}
+	}
 	return &SpinnakerHistoryStore{db: db}, nil
 }
 
@@ -103,26 +121,28 @@ func (s *SpinnakerHistoryStore) Upsert(rec SpinnakerRolloutRecord) error {
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO spinnaker_rollout_status (
-			cluster, namespace, deployment_name, is_rollback, rollback_type, last_chg_applied,
+			cluster, namespace, deployment_name, is_rollback, rollback_type, last_chg_applied, last_chg_applied_url,
 			pipeline_executed_at, execution_status, rollback_started_at, rollback_ended_at,
-			failed_chg, rollback_pipeline_name, spinnaker_execution_id, spinnaker_execution_url, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			failed_chg, failed_chg_url, rollback_pipeline_name, spinnaker_execution_id, spinnaker_execution_url, updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(cluster, namespace, deployment_name) DO UPDATE SET
 			is_rollback=excluded.is_rollback,
 			rollback_type=excluded.rollback_type,
 			last_chg_applied=excluded.last_chg_applied,
+			last_chg_applied_url=excluded.last_chg_applied_url,
 			pipeline_executed_at=excluded.pipeline_executed_at,
 			execution_status=excluded.execution_status,
 			rollback_started_at=excluded.rollback_started_at,
 			rollback_ended_at=excluded.rollback_ended_at,
 			failed_chg=excluded.failed_chg,
+			failed_chg_url=excluded.failed_chg_url,
 			rollback_pipeline_name=excluded.rollback_pipeline_name,
 			spinnaker_execution_id=excluded.spinnaker_execution_id,
 			spinnaker_execution_url=excluded.spinnaker_execution_url,
 			updated_at=excluded.updated_at`,
-		rec.Cluster, rec.Namespace, rec.DeploymentName, isRollback, rec.RollbackType, rec.LastCHGApplied,
+		rec.Cluster, rec.Namespace, rec.DeploymentName, isRollback, rec.RollbackType, rec.LastCHGApplied, rec.LastCHGAppliedURL,
 		rec.PipelineExecutedAt, rec.ExecutionStatus, rec.RollbackStartedAt, rec.RollbackEndedAt,
-		rec.FailedCHG, rec.RollbackPipelineName, rec.SpinnakerExecutionID, rec.SpinnakerExecutionURL, time.Now().UTC(),
+		rec.FailedCHG, rec.FailedCHGURL, rec.RollbackPipelineName, rec.SpinnakerExecutionID, rec.SpinnakerExecutionURL, time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert spinnaker rollout status: %w", err)
@@ -140,15 +160,15 @@ func (s *SpinnakerHistoryStore) Get(cluster, namespace, deploymentName string) (
 	var rec SpinnakerRolloutRecord
 	var isRollback int
 	err := s.db.QueryRow(
-		`SELECT cluster, namespace, deployment_name, is_rollback, rollback_type, last_chg_applied,
+		`SELECT cluster, namespace, deployment_name, is_rollback, rollback_type, last_chg_applied, last_chg_applied_url,
 			pipeline_executed_at, execution_status, rollback_started_at, rollback_ended_at,
-			failed_chg, rollback_pipeline_name, spinnaker_execution_id, spinnaker_execution_url, updated_at
+			failed_chg, failed_chg_url, rollback_pipeline_name, spinnaker_execution_id, spinnaker_execution_url, updated_at
 		 FROM spinnaker_rollout_status WHERE cluster=? AND namespace=? AND deployment_name=?`,
 		cluster, namespace, deploymentName,
 	).Scan(
-		&rec.Cluster, &rec.Namespace, &rec.DeploymentName, &isRollback, &rec.RollbackType, &rec.LastCHGApplied,
+		&rec.Cluster, &rec.Namespace, &rec.DeploymentName, &isRollback, &rec.RollbackType, &rec.LastCHGApplied, &rec.LastCHGAppliedURL,
 		&rec.PipelineExecutedAt, &rec.ExecutionStatus, &rec.RollbackStartedAt, &rec.RollbackEndedAt,
-		&rec.FailedCHG, &rec.RollbackPipelineName, &rec.SpinnakerExecutionID, &rec.SpinnakerExecutionURL, &rec.UpdatedAt,
+		&rec.FailedCHG, &rec.FailedCHGURL, &rec.RollbackPipelineName, &rec.SpinnakerExecutionID, &rec.SpinnakerExecutionURL, &rec.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err // inclui sql.ErrNoRows
@@ -164,9 +184,9 @@ func (s *SpinnakerHistoryStore) GetAll(cluster, namespace string) (map[string]Sp
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	query := `SELECT cluster, namespace, deployment_name, is_rollback, rollback_type, last_chg_applied,
+	query := `SELECT cluster, namespace, deployment_name, is_rollback, rollback_type, last_chg_applied, last_chg_applied_url,
 		pipeline_executed_at, execution_status, rollback_started_at, rollback_ended_at,
-		failed_chg, rollback_pipeline_name, spinnaker_execution_id, spinnaker_execution_url, updated_at
+		failed_chg, failed_chg_url, rollback_pipeline_name, spinnaker_execution_id, spinnaker_execution_url, updated_at
 		FROM spinnaker_rollout_status WHERE cluster=?`
 	args := []interface{}{cluster}
 	if namespace != "" {
@@ -185,9 +205,9 @@ func (s *SpinnakerHistoryStore) GetAll(cluster, namespace string) (map[string]Sp
 		var rec SpinnakerRolloutRecord
 		var isRollback int
 		if err := rows.Scan(
-			&rec.Cluster, &rec.Namespace, &rec.DeploymentName, &isRollback, &rec.RollbackType, &rec.LastCHGApplied,
+			&rec.Cluster, &rec.Namespace, &rec.DeploymentName, &isRollback, &rec.RollbackType, &rec.LastCHGApplied, &rec.LastCHGAppliedURL,
 			&rec.PipelineExecutedAt, &rec.ExecutionStatus, &rec.RollbackStartedAt, &rec.RollbackEndedAt,
-			&rec.FailedCHG, &rec.RollbackPipelineName, &rec.SpinnakerExecutionID, &rec.SpinnakerExecutionURL, &rec.UpdatedAt,
+			&rec.FailedCHG, &rec.FailedCHGURL, &rec.RollbackPipelineName, &rec.SpinnakerExecutionID, &rec.SpinnakerExecutionURL, &rec.UpdatedAt,
 		); err != nil {
 			continue
 		}

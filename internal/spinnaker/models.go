@@ -130,6 +130,14 @@ func (t Trigger) TargetEnv() string {
 	return t.payloadString("targetEnv")
 }
 
+// CHGUrl devolve o link direto pra CHG no ServiceNow — só existe em Trigger.Payload
+// ("serviceNowChgUrl"), confirmado ao vivo (Fase 4, execução real da squad SRE Marketplace):
+// `https://viavarejo.service-now.com/change_request.do?sys_id=...`. Não existe equivalente em
+// Trigger.Parameters (só o número da CHG, "Application SN Change Number").
+func (t Trigger) CHGUrl() string {
+	return t.payloadString("serviceNowChgUrl")
+}
+
 // IsRollbackFlag lê o sinal explícito "Is Rollback" (Parameters) / "isRollback" (Payload) —
 // achado real da Fase 4 (generalização entre squads, ver SPINNAKER-INTEGRATION-PLAN.md seção 6
 // item 2): testado ao vivo contra 8 applications de squads DIFERENTES (SRE Logística, SRE

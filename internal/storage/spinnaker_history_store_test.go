@@ -31,6 +31,7 @@ func TestSpinnakerHistoryStore_UpsertAndGet(t *testing.T) {
 		DeploymentName:        "dat-documento-vendas-api",
 		IsRollback:            false,
 		LastCHGApplied:        "CHG0478175",
+		LastCHGAppliedURL:     "https://viavarejo.service-now.com/change_request.do?sys_id=abc",
 		PipelineExecutedAt:    1785229410605,
 		ExecutionStatus:       "SUCCEEDED",
 		SpinnakerExecutionID:  "01KYKZE041AJCRWFQFGSC17R5C",
@@ -46,6 +47,9 @@ func TestSpinnakerHistoryStore_UpsertAndGet(t *testing.T) {
 	}
 	if got.LastCHGApplied != "CHG0478175" {
 		t.Errorf("LastCHGApplied = %q, want CHG0478175", got.LastCHGApplied)
+	}
+	if got.LastCHGAppliedURL != rec.LastCHGAppliedURL {
+		t.Errorf("LastCHGAppliedURL = %q, want %q", got.LastCHGAppliedURL, rec.LastCHGAppliedURL)
 	}
 	if got.ExecutionStatus != "SUCCEEDED" {
 		t.Errorf("ExecutionStatus = %q, want SUCCEEDED", got.ExecutionStatus)
