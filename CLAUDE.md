@@ -293,9 +293,9 @@ Todo o estado da aplicação vive em `Index.tsx` (`activeTab` string). Não há 
 
 **`WorkloadMenu`** (Workloads dropdown): `configmaps`, `ingresses`, `gateways`, `secrets`, `deployments`, `daemonsets`, `statefulsets`, `vpas`, `services`, `containers`, `pods`, `events`, `cronjobs`, `namespaces`, `helm`, `prometheus`
 
-**`ToolsMenu`** (Tools dropdown): `monitoring`, `servicemesh`, `healthcheck`, `nexus-values`, `ai-diagnostics`, `github-releases`, `dependencies`, `certificates`, `resource-compare`, `command-runner`, `dynatrace`, `finops`, `teams-broadcast`, `access-check`, `latency-test`
+**`ToolsMenu`** (Tools dropdown): `monitoring`, `servicemesh`, `healthcheck`, `nexus-values`, `ai-diagnostics`, `github-releases`, `dependencies`, `certificates`, `resource-compare`, `command-runner`, `dynatrace`, `finops`, `teams-broadcast`, `access-check`, `latency-test`, `kafka-test`, `db-test`
 
-**Tabs principais** (TabNavigation): `dashboard`, `hpa`, `nodepools`, `explorer`, `code-editor`
+**Tabs principais** (`tabs` array passada pro `TabNavigation` em `Index.tsx`): `dashboard`, `hpas`, `nodepools`, `staging`. `explorer` e `code-editor` **não** fazem parte desse array — são botões inline renderizados como `children` do `TabNavigation` (junto de `WorkloadMenu`/`ToolsMenu`/botão "Notas"), cada um trocando `activeTab` manualmente no `onClick`.
 
 **Dois padrões de renderização** em `Index.tsx`:
 ```tsx
@@ -339,12 +339,12 @@ Broker em `internal/web/sse/progress.go` gerencia múltiplos clients. Usado em C
 
 ### WebSocket (Terminal)
 
-Protocolo JSON em `internal/web/handlers/websocket_shell.go`:
+Protocolo JSON em `internal/web/handlers/podexec.go` (rotas `/api/v1/pods/:cluster/:namespace/:name/shell` e `/debug`):
 - Envio: `{type: "input", data: "..."}` ou `{type: "resize", rows: N, cols: N}`
 - Resposta: `{type: "output", data: "base64..."}`
 - SEMPRE usar `event.preventDefault()` em key handlers para evitar duplicação de caracteres
 
-**Auth WebSocket**: WebSockets não enviam headers customizados. O middleware `WebSocketAuthMiddleware` aceita token via query param como fallback: `ws://host/terminal?token=<TOKEN>`.
+**Auth WebSocket**: WebSockets não enviam headers customizados. O middleware `WebSocketJWTAuthMiddleware` aceita token via query param como fallback: `ws://host/api/v1/pods/.../shell?token=<TOKEN>`. Mesmo middleware usado pelo terminal do Code Editor (`internal/web/handlers/code_editor_terminal.go`, rota `/repos/:id/terminal`).
 
 ### Versionamento
 
@@ -560,7 +560,7 @@ Botão de update no Header (visível quando `GET /api/v1/version` retorna `updat
 
 ### ToolsMenu
 
-`ToolsMenu.tsx` — dropdown com 14 ferramentas avançadas acessíveis no header. Ao adicionar nova ferramenta, registrar aqui como novo item do dropdown.
+`ToolsMenu.tsx` — dropdown com 17 ferramentas avançadas acessíveis no header. Ao adicionar nova ferramenta, registrar aqui como novo item do dropdown.
 
 ### Editor de Código (Code Editor)
 
