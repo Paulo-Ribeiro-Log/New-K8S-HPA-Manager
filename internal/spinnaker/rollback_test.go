@@ -301,6 +301,45 @@ func TestDetectRollback_Stages(t *testing.T) {
 	}
 }
 
+// TestDetectRollback_PreviousVersion responde a pergunta real do usuário: "qual a versão
+// anterior da aplicação deployada antes da execução da pipeline?". A execução SUCCEEDED mais
+// recente ANTES (cronologicamente) da execução decisiva é a "versão anterior" — pula execuções
+// falhas no meio, que nunca chegaram a ficar live de verdade.
+func TestDetectRollback_PreviousVersion(t *testing.T) {
+	executions := []Execution{
+		{ID: "e1", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 4000, Trigger: mkTrigger("app-x", "ns-x", "1.0.3", "CHG0000004")},
+		{ID: "e2-falhou", Name: "deploy-aks-global", Status: "TERMINAL", StartTime: 3000, Trigger: mkTrigger("app-x", "ns-x", "1.0.2-tentativa", "CHG0000003")},
+		{ID: "e3", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 2000, Trigger: mkTrigger("app-x", "ns-x", "1.0.1", "CHG0000002")},
+		{ID: "e4", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 1000, Trigger: mkTrigger("app-x", "ns-x", "1.0.0", "CHG0000001")},
+	}
+
+	got := DetectRollback(executions, "app-x", "ns-x", "1.0.3")
+
+	if got.PreviousVersion != "1.0.1" {
+		t.Errorf("PreviousVersion = %q, esperava 1.0.1 (pula e2-falhou, que nunca ficou live de verdade)", got.PreviousVersion)
+	}
+	if got.PreviousVersionCHG != "CHG0000002" {
+		t.Errorf("PreviousVersionCHG = %q, esperava CHG0000002", got.PreviousVersionCHG)
+	}
+	if got.PreviousVersionExecutedAt != 2000 {
+		t.Errorf("PreviousVersionExecutedAt = %d, esperava 2000", got.PreviousVersionExecutedAt)
+	}
+}
+
+// TestDetectRollback_PreviousVersion_NenhumaAnterior garante que o campo fica vazio (não
+// panica, não inventa dado) quando não há nenhuma execução SUCCEEDED mais antiga na janela.
+func TestDetectRollback_PreviousVersion_NenhumaAnterior(t *testing.T) {
+	executions := []Execution{
+		{ID: "unica", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 1000, Trigger: mkTrigger("app-x", "ns-x", "1.0.0", "CHG0000001")},
+	}
+
+	got := DetectRollback(executions, "app-x", "ns-x", "1.0.0")
+
+	if got.PreviousVersion != "" {
+		t.Errorf("PreviousVersion = %q, esperava vazio (só há 1 execução na janela)", got.PreviousVersion)
+	}
+}
+
 // TestManifestReference_ContextInvalido garante que Stage.ManifestReference nunca panica nem
 // retorna erro fatal com um context malformado/ausente — dado best-effort.
 func TestManifestReference_ContextInvalido(t *testing.T) {

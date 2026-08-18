@@ -141,6 +141,26 @@ export function SpinnakerRolloutModal({
                   <span className="text-muted-foreground">Data/hora da execução:</span>
                   <p className="font-medium mt-0.5 text-foreground">{fmtDate(info.pipeline_executed_at)}</p>
                 </div>
+                {/* Pedido explícito do usuário: qual era a versão anterior a este deploy —
+                    última execução SUCCEEDED antes desta, pulando falhas no meio. Ausente
+                    quando não há nenhuma dentro da janela de busca atual do Gate. */}
+                {info.previous_version && (
+                  <div className="col-span-2 pt-1 border-t border-border/60">
+                    <span className="text-muted-foreground">Versão anterior:</span>
+                    <p className="font-mono font-medium mt-0.5 text-foreground">
+                      {info.previous_version}
+                      {info.previous_version_chg && (
+                        <>
+                          {" "}
+                          (<ChgValue chg={info.previous_version_chg} url={info.previous_version_chg_url} />)
+                        </>
+                      )}
+                      {info.previous_version_executed_at && (
+                        <span className="text-muted-foreground font-sans"> — {fmtDate(info.previous_version_executed_at)}</span>
+                      )}
+                    </p>
+                  </div>
+                )}
               </div>
 
               {isRollback === false && (

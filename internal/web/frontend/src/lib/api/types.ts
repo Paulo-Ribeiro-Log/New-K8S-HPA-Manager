@@ -1573,6 +1573,13 @@ export interface SpinnakerRollbackInfo {
   // Detalhamento por etapa (Step/Started/Completed/Status) da execução que decidiu o resultado
   // acima — mesma tabela "Execution Details" da UI do Deck. Pedido explícito do usuário.
   stages?: SpinnakerStageSummary[];
+  // Versão que estava rodando no cluster imediatamente antes da execução acima (a última
+  // SUCCEEDED anterior, pulando falhas no meio). Pedido explícito do usuário. Ausente quando
+  // não há nenhuma execução SUCCEEDED mais antiga dentro da janela de busca atual do Gate.
+  previous_version?: string;
+  previous_version_chg?: string;
+  previous_version_chg_url?: string;
+  previous_version_executed_at?: number;
 }
 
 export interface SpinnakerExecutionSummary {

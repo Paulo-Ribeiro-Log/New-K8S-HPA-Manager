@@ -56,6 +56,18 @@ type RollbackInfo struct {
 	// com uma etapa SKIPPED, confirmado ao vivo. Não persistido no SpinnakerHistoryStore (mesmo
 	// motivo de RecentExecutions — detalhe de exibição, não o "último status confirmado").
 	Stages []StageSummary `json:"stages,omitempty"`
+
+	// PreviousVersion* — pedido do usuário: "qual a versão anterior da aplicação deployada antes
+	// da execução da pipeline?". É a execução SUCCEEDED mais recente ANTES (cronologicamente) da
+	// execução que decidiu o resultado principal acima — ou seja, a versão que estava rodando de
+	// verdade no cluster até esse deploy substituí-la. Pula execuções falhas/skipped no meio
+	// (nunca chegaram a ficar live, não são "a versão anterior" de fato). Vazio quando não há
+	// nenhuma execução SUCCEEDED mais antiga dentro da janela de busca atual do Gate (achado real
+	// documentado no handler HTTP: ~28 dias) — não confunda com "não existia versão anterior".
+	PreviousVersion           string `json:"previous_version,omitempty"`
+	PreviousVersionCHG        string `json:"previous_version_chg,omitempty"`
+	PreviousVersionCHGURL     string `json:"previous_version_chg_url,omitempty"`
+	PreviousVersionExecutedAt int64  `json:"previous_version_executed_at,omitempty"`
 }
 
 // ExecutionSummary é uma linha do histórico curto (RollbackInfo.RecentExecutions) — só os
@@ -189,6 +201,33 @@ func buildStageSummary(stages []Stage) []StageSummary {
 	return out
 }
 
+// previousSuccessfulExecution acha, a partir de fromIndex (índice em matched — já ordenado desc
+// por tempo em executionsForTarget) pra frente (índices maiores = execuções mais antigas), a
+// primeira execução com status de sucesso — essa é a versão que estava rodando de fato no
+// cluster imediatamente antes da execução em fromIndex. Pula execuções falhas/canceladas/skipped
+// no meio: elas nunca chegaram a ficar live, não contam como "a versão anterior".
+func previousSuccessfulExecution(matched []Execution, fromIndex int) *Execution {
+	for i := fromIndex + 1; i < len(matched); i++ {
+		if successStatuses[matched[i].Status] {
+			return &matched[i]
+		}
+	}
+	return nil
+}
+
+// applyPreviousVersion preenche os campos PreviousVersion* de info a partir da execução anterior
+// bem-sucedida (ou não faz nada se não achar nenhuma dentro da janela de busca atual).
+func applyPreviousVersion(info *RollbackInfo, matched []Execution, decisiveIndex int) {
+	prev := previousSuccessfulExecution(matched, decisiveIndex)
+	if prev == nil {
+		return
+	}
+	info.PreviousVersion = prev.Trigger.Version()
+	info.PreviousVersionCHG = prev.Trigger.CHGNumber()
+	info.PreviousVersionCHGURL = prev.Trigger.CHGUrl()
+	info.PreviousVersionExecutedAt = executionTime(*prev)
+}
+
 // DetectRollback aplica as duas regras da seção 0.6 do plano pra decidir se a versão
 // atualmente vigente no K8s (currentLiveVersion, já coletada via DeploymentRegistry — esta
 // função nunca fala com o Spinnaker nem com o K8s diretamente) chegou lá por rollback:
@@ -210,7 +249,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 	recent := buildRecentExecutions(matched)
 
 	// Regra (a) — explícita: procura uma execução de rollback cuja versão-alvo já é a vigente.
-	for _, ex := range matched {
+	for i, ex := range matched {
 		if !isExplicitRollbackExecution(ex) {
 			continue
 		}
@@ -218,7 +257,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			continue
 		}
 		isTrue := true
-		return &RollbackInfo{
+		info := &RollbackInfo{
 			Matched:              true,
 			IsRollback:           &isTrue,
 			RollbackType:         "explicit",
@@ -235,6 +274,8 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			RecentExecutions:     recent,
 			Stages:               buildStageSummary(ex.Stages),
 		}
+		applyPreviousVersion(info, matched, i)
+		return info
 	}
 
 	latest := matched[0]
@@ -242,7 +283,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 	// Regra (b) — implícita: a execução mais recente falhou e não é a versão vigente.
 	if !successStatuses[latest.Status] && latest.Trigger.Version() != currentLiveVersion {
 		isTrue := true
-		return &RollbackInfo{
+		info := &RollbackInfo{
 			Matched:              true,
 			IsRollback:           &isTrue,
 			RollbackType:         "implicit",
@@ -258,12 +299,14 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			RecentExecutions:     recent,
 			Stages:               buildStageSummary(latest.Stages),
 		}
+		applyPreviousVersion(info, matched, 0)
+		return info
 	}
 
 	// A execução mais recente bate com a versão vigente — deploy normal, não é rollback.
 	if latest.Trigger.Version() == currentLiveVersion {
 		isFalse := false
-		return &RollbackInfo{
+		info := &RollbackInfo{
 			Matched:              true,
 			IsRollback:           &isFalse,
 			LastCHGApplied:       latest.Trigger.CHGNumber(),
@@ -274,6 +317,8 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			RecentExecutions:     recent,
 			Stages:               buildStageSummary(latest.Stages),
 		}
+		applyPreviousVersion(info, matched, 0)
+		return info
 	}
 
 	// Nenhuma execução conhecida corresponde à versão vigente — não dá pra afirmar nada
