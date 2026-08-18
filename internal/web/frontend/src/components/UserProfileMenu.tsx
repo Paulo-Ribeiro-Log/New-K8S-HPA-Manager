@@ -52,6 +52,7 @@ import { ServiceNowSessionModal } from '@/components/profile/ServiceNowSessionMo
 import { AWXCredentialModal } from '@/components/profile/AWXCredentialModal';
 import { SSOProfileModal } from '@/components/profile/SSOProfileModal';
 import { DynatraceCredentialModal } from '@/components/profile/DynatraceCredentialModal';
+import { SpinnakerCredentialModal } from '@/components/profile/SpinnakerCredentialModal';
 import type { CredentialStatus } from '@/types/profile';
 
 interface UserProfileMenuProps {
@@ -69,6 +70,7 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
   const [awxModalOpen, setAwxModalOpen] = useState(false);
   const [ssoProfileModalOpen, setSsoProfileModalOpen] = useState(false);
   const [dynatraceModalOpen, setDynatraceModalOpen] = useState(false);
+  const [spinnakerModalOpen, setSpinnakerModalOpen] = useState(false);
 
   // Contas do Editor de Código
   const [ceProfiles, setCeProfiles] = useState<GitHubProfile[]>([]);
@@ -316,6 +318,13 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
               <span className="flex-1">Dynatrace</span>
               {renderStatusIcon(credentials.dynatrace?.status || 'not_configured')}
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setSpinnakerModalOpen(true)}
+              className="cursor-pointer"
+            >
+              <span className="flex-1">Spinnaker</span>
+              {renderStatusIcon(credentials.spinnaker?.status || 'not_configured')}
+            </DropdownMenuItem>
           </DropdownMenuGroup>
 
           <DropdownMenuSeparator />
@@ -360,6 +369,11 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
       <DynatraceCredentialModal
         open={dynatraceModalOpen}
         onOpenChange={setDynatraceModalOpen}
+        onSaved={refreshCredentials}
+      />
+      <SpinnakerCredentialModal
+        open={spinnakerModalOpen}
+        onOpenChange={setSpinnakerModalOpen}
         onSaved={refreshCredentials}
       />
     </>
