@@ -262,6 +262,45 @@ func TestDetectRollback_RecentExecutions_RespeitaLimite(t *testing.T) {
 	}
 }
 
+// TestDetectRollback_Stages cobre o pedido do usuário (screenshot da UI real do Deck): o
+// detalhamento por etapa (Step/Started/Completed/Status) da execução que decidiu o resultado
+// vem anexado — inclusive quando uma etapa individual tem status diferente do geral (SKIPPED
+// dentro de uma execução SUCCEEDED, confirmado ao vivo).
+func TestDetectRollback_Stages(t *testing.T) {
+	trigger := mkTrigger("estoque-margem-seguranca", "oferta-estoque-1p-api-internas-prd", "3.3.0-4", "CHG0475290")
+	executions := []Execution{
+		{
+			ID:        "rollback-exec",
+			Name:      "rollback-aks-global",
+			Status:    "SUCCEEDED",
+			StartTime: 1000,
+			EndTime:   2000,
+			Trigger:   trigger,
+			Stages: []Stage{
+				{Name: "rollback", Status: "SUCCEEDED", StartTime: 1000, EndTime: 1500},
+				{Name: "rollback-helm", Status: "SKIPPED", StartTime: 0, EndTime: 0},
+				{Name: "xl-release-callback", Status: "SUCCEEDED", StartTime: 1500, EndTime: 2000},
+			},
+		},
+	}
+
+	got := DetectRollback(executions, "estoque-margem-seguranca", "oferta-estoque-1p-api-internas-prd", "3.3.0-4")
+
+	if len(got.Stages) != 3 {
+		t.Fatalf("Stages tem %d itens, esperava 3", len(got.Stages))
+	}
+	if got.Stages[0].Name != "rollback" || got.Stages[0].Status != "SUCCEEDED" {
+		t.Errorf("Stages[0] = %+v, esperava rollback/SUCCEEDED", got.Stages[0])
+	}
+	if got.Stages[1].Name != "rollback-helm" || got.Stages[1].Status != "SKIPPED" {
+		t.Errorf("Stages[1] = %+v, esperava rollback-helm/SKIPPED (status por-etapa diferente do geral)", got.Stages[1])
+	}
+	// ordem preservada — a mesma ordem que o Gate/pipeline usa, não reordenada por tempo.
+	if got.Stages[2].Name != "xl-release-callback" {
+		t.Errorf("Stages[2].Name = %q, esperava xl-release-callback (ordem original preservada)", got.Stages[2].Name)
+	}
+}
+
 // TestManifestReference_ContextInvalido garante que Stage.ManifestReference nunca panica nem
 // retorna erro fatal com um context malformado/ausente — dado best-effort.
 func TestManifestReference_ContextInvalido(t *testing.T) {

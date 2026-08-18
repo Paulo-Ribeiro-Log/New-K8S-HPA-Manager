@@ -48,6 +48,14 @@ type RollbackInfo struct {
 	// resto de RollbackInfo) — é dado auxiliar/exibição, não o "último status confirmado" que a
 	// persistência existe pra preservar; FromCache=true nunca traz RecentExecutions.
 	RecentExecutions []ExecutionSummary `json:"recent_executions,omitempty"`
+
+	// Stages — detalhamento por etapa da execução que decidiu o resultado acima (mesma tabela
+	// "Step / Started / Completed / Duration / Status" que a UI do Deck mostra em "Execution
+	// Details"), pedido explícito do usuário depois de ver essa tela real do Spinnaker. Cada
+	// etapa pode ter um status diferente do status geral da execução — ex: execução SUCCEEDED
+	// com uma etapa SKIPPED, confirmado ao vivo. Não persistido no SpinnakerHistoryStore (mesmo
+	// motivo de RecentExecutions — detalhe de exibição, não o "último status confirmado").
+	Stages []StageSummary `json:"stages,omitempty"`
 }
 
 // ExecutionSummary é uma linha do histórico curto (RollbackInfo.RecentExecutions) — só os
@@ -61,6 +69,14 @@ type ExecutionSummary struct {
 	CHG          string `json:"chg,omitempty"`
 	CHGUrl       string `json:"chg_url,omitempty"`
 	IsRollback   bool   `json:"is_rollback"`
+}
+
+// StageSummary é uma etapa (stage) dentro de uma execução — ver comentário de RollbackInfo.Stages.
+type StageSummary struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	StartedAt   int64  `json:"started_at,omitempty"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
 }
 
 // successStatuses — status de execução considerados sucesso (a versão-alvo dessa execução
@@ -154,6 +170,25 @@ func buildRecentExecutions(matched []Execution) []ExecutionSummary {
 	return out
 }
 
+// buildStageSummary extrai o detalhamento por etapa (Step/Started/Completed/Duration/Status na
+// UI do Deck) de uma execução — ver comentário de RollbackInfo.Stages. Preserva a ordem original
+// do Gate (que já é a ordem de execução do pipeline).
+func buildStageSummary(stages []Stage) []StageSummary {
+	if len(stages) == 0 {
+		return nil
+	}
+	out := make([]StageSummary, 0, len(stages))
+	for _, s := range stages {
+		out = append(out, StageSummary{
+			Name:        s.Name,
+			Status:      s.Status,
+			StartedAt:   s.StartTime,
+			CompletedAt: s.EndTime,
+		})
+	}
+	return out
+}
+
 // DetectRollback aplica as duas regras da seção 0.6 do plano pra decidir se a versão
 // atualmente vigente no K8s (currentLiveVersion, já coletada via DeploymentRegistry — esta
 // função nunca fala com o Spinnaker nem com o K8s diretamente) chegou lá por rollback:
@@ -198,6 +233,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			RollbackPipelineName: ex.Name,
 			SpinnakerExecutionID: ex.ID,
 			RecentExecutions:     recent,
+			Stages:               buildStageSummary(ex.Stages),
 		}
 	}
 
@@ -220,6 +256,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			FailedCHGURL:         latest.Trigger.CHGUrl(),
 			SpinnakerExecutionID: latest.ID,
 			RecentExecutions:     recent,
+			Stages:               buildStageSummary(latest.Stages),
 		}
 	}
 
@@ -235,6 +272,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			ExecutionStatus:      latest.Status,
 			SpinnakerExecutionID: latest.ID,
 			RecentExecutions:     recent,
+			Stages:               buildStageSummary(latest.Stages),
 		}
 	}
 

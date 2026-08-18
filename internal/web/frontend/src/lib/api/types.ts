@@ -1570,6 +1570,9 @@ export interface SpinnakerRollbackInfo {
   // Últimas execuções (mais recente primeiro) desse deployment, não só a que decidiu o
   // resultado acima — seção 9 item 5 do plano. Ausente quando FromCache=true (não persistido).
   recent_executions?: SpinnakerExecutionSummary[];
+  // Detalhamento por etapa (Step/Started/Completed/Status) da execução que decidiu o resultado
+  // acima — mesma tabela "Execution Details" da UI do Deck. Pedido explícito do usuário.
+  stages?: SpinnakerStageSummary[];
 }
 
 export interface SpinnakerExecutionSummary {
@@ -1581,6 +1584,13 @@ export interface SpinnakerExecutionSummary {
   chg?: string;
   chg_url?: string;
   is_rollback: boolean;
+}
+
+export interface SpinnakerStageSummary {
+  name: string;
+  status: string;
+  started_at?: number;
+  completed_at?: number;
 }
 
 // Chave do mapa devolvido por /spinnaker/rollout-status/batch: "appName/namespace"

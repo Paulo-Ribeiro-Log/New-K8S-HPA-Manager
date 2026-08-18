@@ -48,6 +48,17 @@ function fmtDate(epochMs: number | undefined): string {
   });
 }
 
+// fmtDuration formata a duração de uma etapa (ex: "1m 31s") a partir de started/completed —
+// mesma info que a coluna "Duration" da UI do Deck, calculada no cliente (o backend só manda
+// os dois timestamps).
+function fmtDuration(startedAt: number | undefined, completedAt: number | undefined): string {
+  if (!startedAt || !completedAt || completedAt < startedAt) return "—";
+  const totalSeconds = Math.round((completedAt - startedAt) / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
 // Badge/modal gatilho pra este componente vive em DeploymentsTab.tsx — ver seção 8 do
 // SPINNAKER-INTEGRATION-PLAN.md. `info` já vem resolvido do batch endpoint (nunca uma chamada
 // própria daqui — evita N chamadas ao Gate, ver seção 9.1 do plano).
@@ -64,6 +75,7 @@ export function SpinnakerRolloutModal({
   // Colapsado por padrão (mesmo padrão de NoteEntry.tsx/AIHistoryPanel.tsx) — o resultado
   // principal acima já responde a pergunta mais comum, o histórico é um detalhe opcional.
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [stagesOpen, setStagesOpen] = useState(false);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -186,6 +198,57 @@ export function SpinnakerRolloutModal({
                     </div>
                   </div>
                 </div>
+              )}
+
+              {/* Etapas da execução (Step/Started/Completed/Duration/Status) — pedido explícito
+                  do usuário depois de ver a tela "Execution Details" real do Deck. Uma etapa
+                  pode ter status diferente do geral (ex: SKIPPED numa execução SUCCEEDED). */}
+              {info.stages && info.stages.length > 0 && (
+                <Collapsible open={stagesOpen} onOpenChange={setStagesOpen}>
+                  <CollapsibleTrigger className="flex w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                    <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${stagesOpen ? "rotate-180" : ""}`} />
+                    Etapas da execução ({info.stages.length})
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="mt-2">
+                    <div className="rounded-md border border-border overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-muted/40 text-muted-foreground">
+                            <th className="text-left font-medium px-2.5 py-1.5">Etapa</th>
+                            <th className="text-left font-medium px-2.5 py-1.5">Concluída em</th>
+                            <th className="text-left font-medium px-2.5 py-1.5">Duração</th>
+                            <th className="text-left font-medium px-2.5 py-1.5">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {info.stages.map((stage, i) => (
+                            <tr key={`${stage.name}-${i}`} className={i > 0 ? "border-t border-border" : ""}>
+                              <td className="px-2.5 py-1.5 font-mono truncate max-w-[140px]" title={stage.name}>
+                                {stage.name}
+                              </td>
+                              <td className="px-2.5 py-1.5 whitespace-nowrap">{fmtDate(stage.completed_at)}</td>
+                              <td className="px-2.5 py-1.5 whitespace-nowrap">{fmtDuration(stage.started_at, stage.completed_at)}</td>
+                              <td className="px-2.5 py-1.5">
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[10px] py-0 ${
+                                    stage.status === "SUCCEEDED"
+                                      ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                                      : stage.status === "SKIPPED"
+                                        ? "border-muted-foreground/40 text-muted-foreground"
+                                        : "border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                  }`}
+                                >
+                                  {stage.status}
+                                </Badge>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
               )}
 
               {/* Histórico curto (seção 9 item 5 do plano) — últimas execuções, não só a que
