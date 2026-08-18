@@ -72,21 +72,28 @@ import { SpinnakerRolloutModal } from "@/components/SpinnakerRolloutModal";
 function SpinnakerChip({ info, onClick }: { info: SpinnakerRollbackInfo | undefined; onClick?: () => void }) {
   if (!info?.matched) return null;
   const isRollback = info.is_rollback === true;
+  const succeeded = !isRollback && info.execution_status === "SUCCEEDED";
   const Icon = isRollback ? RotateCcw : Rocket;
   const label = info.last_chg_applied || (isRollback ? "Rollback" : "");
   if (!label) return null;
 
+  // Cor por estado: âmbar pra rollback (já existia), verde pra deploy normal com sucesso
+  // confirmado (achado real do usuário — o chip neutro/cinza passava despercebido, mesmo sendo
+  // a informação mais comum e "boa notícia"), cinza neutro só quando o status não é SUCCEEDED
+  // (ex: execução em andamento/falha sem caracterizar rollback pela regra implícita).
+  const colorClass = isRollback
+    ? "border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+    : succeeded
+      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+      : "border-border bg-muted/40 text-muted-foreground";
+
   const chip = (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors ${
-        isRollback
-          ? "border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-          : "border-border bg-muted/40 text-muted-foreground"
-      } ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors ${colorClass} ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
       title={
         isRollback
           ? `Rollback (${info.rollback_type === "explicit" ? "manual" : "implícito"}) — CHG que falhou: ${info.failed_chg || "?"}`
-          : `Última CHG aplicada: ${info.last_chg_applied || "?"}`
+          : `Última CHG aplicada: ${info.last_chg_applied || "?"} (${info.execution_status || "status desconhecido"})`
       }
     >
       <Icon className="w-2.5 h-2.5 shrink-0" />

@@ -145,6 +145,16 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 			return nil // projeto sem applications, ou não encontrado — resolvido abaixo
 		}
 		for _, app := range applications {
+			// Limit alto aqui não ajuda — testado ao vivo (Limit 30/150/1000 contra a application
+			// real "logreversa", projeto "SRE Logistica"): as 3 chamadas devolveram EXATAMENTE as
+			// mesmas 10 execuções, mesma mais antiga (~28 dias atrás). O Gate capa a busca numa
+			// janela de tempo própria (não documentada, não exposta como parâmetro em
+			// SearchOptions), independente do "limit" pedido — não é uma limitação desta
+			// integração. Na prática: só deployments com pelo menos 1 execução registrada nessa
+			// janela aparecem com dado real; os demais (a maioria, numa application/squad que não
+			// redeploya toda hora) legitimamente não têm badge — "matched: false" é o resultado
+			// correto pra esse caso, não um bug. Mantido em 30 (mesmo custo, sem ganho medido acima
+			// disso).
 			execs, err := cl.SearchExecutions(ctx, app, spinnaker.SearchOptions{Limit: 30})
 			if err != nil {
 				h.logf("SearchExecutions falhou pra application %s: %v", app, err)
