@@ -1554,6 +1554,7 @@ export interface SpinnakerRollbackInfo {
   last_chg_applied_url?: string; // link direto pra CHG no ServiceNow (seção 9 item 3 do plano)
   pipeline_executed_at?: number;
   execution_status?: string;
+  version?: string; // versão-alvo da execução decisiva — pedido explícito do usuário
   rollback_started_at?: number;
   rollback_ended_at?: number;
   failed_chg?: string;
@@ -1598,6 +1599,10 @@ export interface SpinnakerStageSummary {
   status: string;
   started_at?: number;
   completed_at?: number;
+  // Reconstrução legível da causa de falha (Stage.FailureLog no backend) — presente só em
+  // etapas com falha real (não é log bruto de pod, é o mesmo dado que a UI do Deck usa em
+  // "Execution Details"). Ausente em etapas bem-sucedidas/puladas.
+  log?: string;
 }
 
 // Chave do mapa devolvido por /spinnaker/rollout-status/batch: "appName/namespace"

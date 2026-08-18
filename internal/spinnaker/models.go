@@ -7,6 +7,7 @@ package spinnaker
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Execution é uma execução de pipeline do Spinnaker, campos confirmados ao vivo contra uma
@@ -60,6 +61,129 @@ func (s Stage) ManifestReference() string {
 		return ""
 	}
 	return ctx.ManifestArtifact.Reference
+}
+
+// stageContextFailure é o subconjunto de Stage.Context com informação de falha — confirmado ao
+// vivo contra 2 falhas reais e independentes (squad "Inteligência Comercial", stage
+// deployManifest com timeout; squad "SRE Logística" ambiente HLG, stage runJobManifest sem
+// conseguir alcançar o cluster). O Gate não expõe um endpoint de "log" separado — a Deck monta a
+// mesma tela "Execution Details" a partir deste mesmo context, então isso é o que existe.
+//
+// Dois formatos observados, não mutuamente exclusivos (uma falha pode ter só um dos dois):
+//   - "exception" no nível raiz do context — erros de orquestração do próprio Orca (timeout de
+//     estágio, etc.), com stackTrace Java completo.
+//   - "kato.tasks" — falhas específicas de operação Kubernetes via clouddriver (deploy/run job),
+//     cada item com "history" (narrativa passo-a-passo) e "exception" (causa real, ex: erro de
+//     DNS/rede tentando alcançar a API do cluster).
+type stageContextFailure struct {
+	Exception *struct {
+		ExceptionType string `json:"exceptionType"`
+		Operation     string `json:"operation"`
+		Details       *struct {
+			Error      string   `json:"error"`
+			Errors     []string `json:"errors"`
+			StackTrace string   `json:"stackTrace"`
+		} `json:"details"`
+	} `json:"exception"`
+	KatoTasks []struct {
+		History []struct {
+			Phase  string `json:"phase"`
+			Status string `json:"status"`
+		} `json:"history"`
+		Exception *struct {
+			Message   string `json:"message"`
+			Cause     string `json:"cause"`
+			Operation string `json:"operation"`
+		} `json:"exception"`
+	} `json:"kato.tasks"`
+}
+
+// maxStageLogChars — teto de segurança pra não deixar um stackTrace Java gigante inchar a
+// resposta HTTP; log de falha real observado ficou bem abaixo disso.
+const maxStageLogChars = 20000
+
+// FailureLog reconstrói um texto legível "tipo log" a partir do context do stage — não é o log
+// bruto de um pod (o Gate não expõe isso via API), é a mesma informação de causa-raiz que a UI
+// do Deck mostra em "Execution Details". Retorna "" quando o stage não tem nenhum dos dois
+// formatos reconhecidos (ex: stage bem-sucedido, sem informação de falha pra mostrar).
+//
+// Bug real corrigido: "kato.tasks[].history" (narrativa passo-a-passo) está presente em TODA
+// execução de deploy Kubernetes via clouddriver, sucesso incluso — não é sinal de falha sozinho.
+// Confirmado ao vivo contra 2 deployments reais com execução SUCCEEDED (viatracking-api,
+// viatracking-correios-api, squad tracking) que tinham "history" preenchido no stage
+// "deploy-helm" mesmo sem nenhuma falha. Corrigido com dois filtros: (1) nunca monta log pra um
+// stage cujo Status é SUCCEEDED/SKIPPED, mesmo que o context tenha "history"; (2) dentro de
+// "kato.tasks", só inclui a tarefa (e sua history) quando ela própria tem "exception" — history
+// sozinha nunca é motivo suficiente.
+func (s Stage) FailureLog() string {
+	if s.Status == "SUCCEEDED" || s.Status == "SKIPPED" || s.Status == "" {
+		return ""
+	}
+	if len(s.Context) == 0 {
+		return ""
+	}
+	var ctx stageContextFailure
+	if err := json.Unmarshal(s.Context, &ctx); err != nil {
+		return ""
+	}
+
+	var b strings.Builder
+	if ctx.Exception != nil {
+		b.WriteString("=== Exceção ===\n")
+		if ctx.Exception.ExceptionType != "" {
+			fmt.Fprintf(&b, "Tipo: %s\n", ctx.Exception.ExceptionType)
+		}
+		if ctx.Exception.Operation != "" {
+			fmt.Fprintf(&b, "Operação: %s\n", ctx.Exception.Operation)
+		}
+		if d := ctx.Exception.Details; d != nil {
+			if d.Error != "" {
+				fmt.Fprintf(&b, "Erro: %s\n", d.Error)
+			}
+			for _, e := range d.Errors {
+				fmt.Fprintf(&b, "  - %s\n", e)
+			}
+			if d.StackTrace != "" {
+				b.WriteString("\nStack trace:\n")
+				b.WriteString(d.StackTrace)
+				b.WriteString("\n")
+			}
+		}
+	}
+	for i, task := range ctx.KatoTasks {
+		// "history" sozinha nunca basta — está presente em toda tarefa Kubernetes, sucesso
+		// incluso (achado real, ver comentário de FailureLog acima). Só uma "exception" de
+		// verdade confirma que essa tarefa específica falhou.
+		if task.Exception == nil {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "=== Tarefa Kubernetes %d ===\n", i+1)
+		if task.Exception != nil {
+			if task.Exception.Operation != "" {
+				fmt.Fprintf(&b, "Operação: %s\n", task.Exception.Operation)
+			}
+			if task.Exception.Message != "" {
+				fmt.Fprintf(&b, "Erro: %s\n", task.Exception.Message)
+			} else if task.Exception.Cause != "" {
+				fmt.Fprintf(&b, "Erro: %s\n", task.Exception.Cause)
+			}
+		}
+		if len(task.History) > 0 {
+			b.WriteString("\nHistórico:\n")
+			for _, h := range task.History {
+				fmt.Fprintf(&b, "[%s] %s\n", h.Phase, h.Status)
+			}
+		}
+	}
+
+	out := b.String()
+	if len(out) > maxStageLogChars {
+		out = out[:maxStageLogChars] + "\n...[truncado]..."
+	}
+	return out
 }
 
 // Trigger é quem/o que disparou a execução. Achado real (seção 0.3 do plano): `Parameters`

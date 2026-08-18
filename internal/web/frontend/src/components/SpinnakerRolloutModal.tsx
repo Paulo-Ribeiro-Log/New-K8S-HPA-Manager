@@ -3,8 +3,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Loader2, RotateCcw, CheckCircle2, HelpCircle, ExternalLink, Rocket, History, ChevronDown } from "lucide-react";
-import type { SpinnakerRollbackInfo } from "@/lib/api/types";
+import { Loader2, RotateCcw, CheckCircle2, HelpCircle, ExternalLink, Rocket, History, ChevronDown, FileWarning } from "lucide-react";
+import type { SpinnakerRollbackInfo, SpinnakerStageSummary } from "@/lib/api/types";
+import { SpinnakerStageLogModal } from "@/components/SpinnakerStageLogModal";
 
 interface SpinnakerRolloutModalProps {
   open: boolean;
@@ -76,6 +77,9 @@ export function SpinnakerRolloutModal({
   // principal acima já responde a pergunta mais comum, o histórico é um detalhe opcional.
   const [historyOpen, setHistoryOpen] = useState(false);
   const [stagesOpen, setStagesOpen] = useState(false);
+  // Etapa cujo log está aberto no modal de log (seção própria, gatilho a partir daqui) — null =
+  // fechado. Guarda a etapa inteira (não só o texto) pra usar o nome dela no título do modal.
+  const [logStage, setLogStage] = useState<SpinnakerStageSummary | null>(null);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -136,6 +140,10 @@ export function SpinnakerRolloutModal({
                 <div>
                   <span className="text-muted-foreground">Status da execução:</span>
                   <p className="font-medium mt-0.5 text-foreground">{info.execution_status || "—"}</p>
+                  {/* Versão da aplicação nesta execução — pedido explícito do usuário, logo
+                      abaixo do status. */}
+                  <span className="text-muted-foreground block mt-1.5">Versão:</span>
+                  <p className="font-mono font-medium mt-0.5 text-foreground">{info.version || "—"}</p>
                 </div>
                 <div className="col-span-2">
                   <span className="text-muted-foreground">Data/hora da execução:</span>
@@ -238,6 +246,7 @@ export function SpinnakerRolloutModal({
                             <th className="text-left font-medium px-2.5 py-1.5">Concluída em</th>
                             <th className="text-left font-medium px-2.5 py-1.5">Duração</th>
                             <th className="text-left font-medium px-2.5 py-1.5">Status</th>
+                            <th className="px-2.5 py-1.5" />
                           </tr>
                         </thead>
                         <tbody>
@@ -261,6 +270,21 @@ export function SpinnakerRolloutModal({
                                 >
                                   {stage.status}
                                 </Badge>
+                              </td>
+                              <td className="px-2.5 py-1.5">
+                                {/* Só aparece em etapas com falha real (log reconstruído no
+                                    backend) — pedido explícito do usuário. */}
+                                {stage.log && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setLogStage(stage)}
+                                    className="inline-flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400 hover:underline whitespace-nowrap"
+                                    title="Ver detalhes da falha desta etapa"
+                                  >
+                                    <FileWarning className="h-3 w-3 shrink-0" />
+                                    Ver log
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           ))}
@@ -329,6 +353,16 @@ export function SpinnakerRolloutModal({
           )}
         </div>
       </DialogContent>
+
+      {/* Modal de log — próprio, redimensionável, gatilho a partir da tabela de etapas acima
+          (só aparece em etapas com falha real). Fica fora do DialogContent principal, mesmo
+          padrão de modal-dentro-de-modal já usado em PodQuickViewModal.tsx (Describe). */}
+      <SpinnakerStageLogModal
+        open={logStage !== null}
+        onOpenChange={(o) => { if (!o) setLogStage(null); }}
+        stageName={logStage?.name ?? ""}
+        log={logStage?.log ?? ""}
+      />
     </Dialog>
   );
 }

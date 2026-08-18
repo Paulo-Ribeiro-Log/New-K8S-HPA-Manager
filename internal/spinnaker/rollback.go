@@ -19,6 +19,7 @@ type RollbackInfo struct {
 	LastCHGAppliedURL  string `json:"last_chg_applied_url,omitempty"` // link direto pra CHG no ServiceNow (Trigger.CHGUrl)
 	PipelineExecutedAt int64  `json:"pipeline_executed_at,omitempty"`
 	ExecutionStatus    string `json:"execution_status,omitempty"`
+	Version            string `json:"version,omitempty"` // versão-alvo (Trigger.Version()) da execução decisiva — pedido do usuário
 
 	RollbackStartedAt    int64  `json:"rollback_started_at,omitempty"`
 	RollbackEndedAt      int64  `json:"rollback_ended_at,omitempty"`
@@ -89,6 +90,11 @@ type StageSummary struct {
 	Status      string `json:"status"`
 	StartedAt   int64  `json:"started_at,omitempty"`
 	CompletedAt int64  `json:"completed_at,omitempty"`
+	// Log — reconstrução legível da causa de falha (ver Stage.FailureLog), pedido do usuário
+	// pra investigar execuções que falharam sem precisar abrir o Spinnaker. Vazio em etapas
+	// bem-sucedidas/puladas — não é log bruto de pod, é a mesma informação de causa-raiz que a
+	// UI do Deck usa pra montar "Execution Details".
+	Log string `json:"log,omitempty"`
 }
 
 // successStatuses — status de execução considerados sucesso (a versão-alvo dessa execução
@@ -196,6 +202,7 @@ func buildStageSummary(stages []Stage) []StageSummary {
 			Status:      s.Status,
 			StartedAt:   s.StartTime,
 			CompletedAt: s.EndTime,
+			Log:         s.FailureLog(),
 		})
 	}
 	return out
@@ -265,6 +272,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			LastCHGAppliedURL:    ex.Trigger.CHGUrl(),
 			PipelineExecutedAt:   executionTime(ex),
 			ExecutionStatus:      ex.Status,
+			Version:              ex.Trigger.Version(),
 			RollbackStartedAt:    ex.StartTime,
 			RollbackEndedAt:      ex.EndTime,
 			FailedCHG:            ex.Trigger.CHGNumber(),
@@ -291,6 +299,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			LastCHGAppliedURL:    latest.Trigger.CHGUrl(),
 			PipelineExecutedAt:   executionTime(latest),
 			ExecutionStatus:      latest.Status,
+			Version:              latest.Trigger.Version(),
 			RollbackStartedAt:    latest.StartTime,
 			RollbackEndedAt:      latest.EndTime,
 			FailedCHG:            latest.Trigger.CHGNumber(),
@@ -313,6 +322,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			LastCHGAppliedURL:    latest.Trigger.CHGUrl(),
 			PipelineExecutedAt:   executionTime(latest),
 			ExecutionStatus:      latest.Status,
+			Version:              latest.Trigger.Version(),
 			SpinnakerExecutionID: latest.ID,
 			RecentExecutions:     recent,
 			Stages:               buildStageSummary(latest.Stages),
