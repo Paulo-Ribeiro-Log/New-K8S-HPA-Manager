@@ -1526,6 +1526,44 @@ export interface SSOProfile {
   has_password?: boolean;
 }
 
+// ─── Spinnaker (SPINNAKER-INTEGRATION-PLAN.md) ────────────────────────────
+
+export interface SpinnakerConfig {
+  login_identifier?: "email" | "matricula";
+  hlg_base_url?: string;
+  prd_base_url?: string;
+  selected_project?: string;
+}
+
+export interface SpinnakerProject {
+  id: string;
+  name: string;
+  email?: string;
+  config: {
+    applications: string[];
+  };
+}
+
+// Contrato final — seção 5 do plano. is_rollback é tri-state (null = não determinado, nunca
+// inferir "não houve rollback" por ausência de dado).
+export interface SpinnakerRollbackInfo {
+  matched: boolean;
+  is_rollback: boolean | null;
+  rollback_type?: "explicit" | "implicit" | "";
+  last_chg_applied?: string;
+  pipeline_executed_at?: number;
+  execution_status?: string;
+  rollback_started_at?: number;
+  rollback_ended_at?: number;
+  failed_chg?: string;
+  rollback_pipeline_name?: string;
+  spinnaker_execution_id?: string;
+  spinnaker_execution_url?: string;
+}
+
+// Chave do mapa devolvido por /spinnaker/rollout-status/batch: "appName/namespace"
+export type SpinnakerRolloutStatusBatch = Record<string, SpinnakerRollbackInfo>;
+
 export interface AWXStatus {
   configured: boolean;
   reachable: boolean;

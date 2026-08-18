@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -61,6 +61,8 @@ import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { useUserPermissions } from "@/hooks/useUserPermissions";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
+import { useSpinnakerRolloutStatus } from "@/hooks/useSpinnaker";
+import { SpinnakerRolloutModal } from "@/components/SpinnakerRolloutModal";
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
 const formatVersion = (version: string | undefined): string => {
@@ -100,6 +102,21 @@ export const DeploymentsTab = ({
   // Permissões K8s reais — usa namespace do deployment selecionado ou o namespace filtrado
   const activeNamespace = selectedDeployment?.namespace || selectedNamespace;
   const { permissions: k8sPerms } = useK8sPermissions(cluster, activeNamespace);
+
+  // Spinnaker — detecção de rollback (SPINNAKER-INTEGRATION-PLAN.md, seção 8). Uma única
+  // chamada em lote cobre todos os cards da lista (seção 9.1 do plano — nunca N chamadas);
+  // env é derivado do nome do cluster (hlg/prd), null quando não reconhecido (ex: cluster de
+  // ambiente sem Gate próprio confirmado) e o hook simplesmente fica `enabled: false` nesse caso.
+  const spinnakerStatus = useSpinnakerRolloutStatus(cluster, selectedNamespace || undefined);
+  const [spinnakerModalOpen, setSpinnakerModalOpen] = useState(false);
+
+  // Chave de correlação com o resultado do Spinnaker: app.kubernetes.io/name (mesmo campo
+  // usado pelo DeploymentRegistry no backend) com fallback pro nome do próprio Deployment K8s
+  // quando o label não existe.
+  const spinnakerKeyFor = useCallback((dep: DeploymentSummary) => {
+    const appName = dep.labels?.["app.kubernetes.io/name"] || dep.name;
+    return `${appName}/${dep.namespace}`;
+  }, []);
   // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
   // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia
   // mas nunca renderizava nada aqui (dtHasLoaded sempre false por padrão).
@@ -2438,6 +2455,37 @@ export const DeploymentsTab = ({
             <Activity className="w-4 h-4 mr-2" />
             Comportamento
           </Button>
+          {(() => {
+            // Badge-gatilho pro modal Spinnaker (seção 8 do plano) — só aparece quando o
+            // ambiente do cluster é reconhecido (hlg/prd); sem isso o hook fica desabilitado e
+            // spinnakerStatus.data nunca populated, não vale mostrar um botão morto.
+            const info = spinnakerStatus.data?.[spinnakerKeyFor(selectedDeployment)];
+            const isRollback = info?.is_rollback === true;
+            return (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSpinnakerModalOpen(true)}
+                disabled={!spinnakerStatus.isFetched && spinnakerStatus.isLoading}
+                className={isRollback ? "border-amber-500/50 text-amber-600 dark:text-amber-400" : undefined}
+                title="Detecção de rollback via Spinnaker"
+              >
+                {spinnakerStatus.isLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : isRollback ? (
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                ) : (
+                  <Rocket className="w-4 h-4 mr-2" />
+                )}
+                Spinnaker
+                {info?.last_chg_applied && (
+                  <Badge variant="outline" className="ml-2 text-[10px] py-0 font-mono">
+                    {info.last_chg_applied}
+                  </Badge>
+                )}
+              </Button>
+            );
+          })()}
           <AITriggerButton
             resourceType="Deployment"
             cluster={cluster}
@@ -2650,6 +2698,24 @@ export const DeploymentsTab = ({
                   )}
                 </div>
                 <div className="text-xs text-muted-foreground">{dep.namespace}</div>
+                {(() => {
+                  // Badge informativo do Spinnaker (seção 8 do plano) — só na lista, nunca
+                  // abre o modal daqui (gatilho é o botão no painel de visualização à direita).
+                  const info = spinnakerStatus.data?.[spinnakerKeyFor(dep)];
+                  if (!info?.matched) return null;
+                  const isRollback = info.is_rollback === true;
+                  return (
+                    <div
+                      className={`text-[10px] font-mono mt-0.5 flex items-center gap-1 ${
+                        isRollback ? "text-amber-500" : "text-muted-foreground/60"
+                      }`}
+                      title={isRollback ? `Rollback (${info.rollback_type}) — CHG ${info.failed_chg || "?"}` : `CHG ${info.last_chg_applied || "?"}`}
+                    >
+                      {isRollback && <RotateCcw className="w-2.5 h-2.5" />}
+                      {info.last_chg_applied && <span>{info.last_chg_applied}</span>}
+                    </div>
+                  );
+                })()}
                 {dep.serviceClusterIPs && dep.serviceClusterIPs.length > 0 && (
                   <div className="text-[10px] font-mono mt-0.5 flex items-center gap-1">
                     <span className="text-muted-foreground/60 uppercase tracking-wide">CIP</span>
@@ -5452,6 +5518,19 @@ export const DeploymentsTab = ({
           cluster={selectedDeployment.cluster}
           namespace={selectedDeployment.namespace}
           deployment={selectedDeployment.name}
+        />
+      )}
+
+      {/* Modal Spinnaker — detecção de rollback (SPINNAKER-INTEGRATION-PLAN.md, seção 8) */}
+      {selectedDeployment && (
+        <SpinnakerRolloutModal
+          open={spinnakerModalOpen}
+          onOpenChange={setSpinnakerModalOpen}
+          deploymentName={selectedDeployment.name}
+          namespace={selectedDeployment.namespace}
+          info={spinnakerStatus.data?.[spinnakerKeyFor(selectedDeployment)]}
+          loading={spinnakerStatus.isLoading}
+          error={spinnakerStatus.isError ? (spinnakerStatus.error instanceof Error ? spinnakerStatus.error.message : "Falha ao consultar o Spinnaker") : undefined}
         />
       )}
 

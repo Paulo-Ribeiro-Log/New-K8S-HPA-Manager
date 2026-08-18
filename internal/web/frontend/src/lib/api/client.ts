@@ -3692,6 +3692,37 @@ class APIClient {
     await this.request<void>("/sso/profile", { method: "DELETE" });
   }
 
+  // ─── Spinnaker (detecção de rollback) ──────────────────────────────────────
+
+  /** Busca a configuração da integração Spinnaker (login, URLs, projeto selecionado) */
+  async getSpinnakerConfig(): Promise<import("./types").SpinnakerConfig> {
+    return this.request("/spinnaker/config");
+  }
+
+  /** Salva a configuração da integração Spinnaker */
+  async saveSpinnakerConfig(config: import("./types").SpinnakerConfig): Promise<import("./types").SpinnakerConfig> {
+    return this.request("/spinnaker/config", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+  }
+
+  /** Lista os projetos Spinnaker reais (GET /projects do Gate) pro seletor */
+  async listSpinnakerProjects(env: "hlg" | "prd"): Promise<import("./types").SpinnakerProject[]> {
+    return this.request(`/spinnaker/projects?env=${encodeURIComponent(env)}`);
+  }
+
+  /** Busca o status de rollout/rollback em lote pra todos os Deployments de um cluster/namespace */
+  async getSpinnakerRolloutStatusBatch(
+    cluster: string,
+    namespace: string | undefined,
+    env: "hlg" | "prd"
+  ): Promise<import("./types").SpinnakerRolloutStatusBatch> {
+    const params = new URLSearchParams({ cluster, env });
+    if (namespace) params.set("namespace", namespace);
+    return this.request(`/spinnaker/rollout-status/batch?${params.toString()}`);
+  }
+
   // ─── Command Runner ────────────────────────────────────────────────────────
 
   /** Inicia execução em lote e retorna session_id para streaming SSE */
