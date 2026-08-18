@@ -49,3 +49,28 @@ func TestTrigger_ParametersDecodesNonStringValues(t *testing.T) {
 		t.Errorf("paramString(number) = %q, want %q", got, "42")
 	}
 }
+
+// TestTrigger_IsRollbackFlag cobre o achado da Fase 4 (generalização entre squads): "Is Rollback"
+// (Parameters, bool) confirmado ao vivo em 8 applications de 4 squads diferentes; "isRollback"
+// (Payload, bool) confirmado numa execução satélite real de rollback (squad SRE Marketplace).
+func TestTrigger_IsRollbackFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		t    Trigger
+		want bool
+	}{
+		{"Parameters true", Trigger{Parameters: map[string]interface{}{"Is Rollback": true}}, true},
+		{"Parameters false", Trigger{Parameters: map[string]interface{}{"Is Rollback": false}}, false},
+		{"Payload true (Parameters ausente)", Trigger{Payload: map[string]interface{}{"isRollback": true}}, true},
+		{"nenhum dos dois presente", Trigger{}, false},
+		{"Parameters com tipo errado (string, não bool) é ignorado", Trigger{Parameters: map[string]interface{}{"Is Rollback": "true"}}, false},
+		{"chave parecida mas diferente ('Is Automatic Rollback') não conta", Trigger{Parameters: map[string]interface{}{"Is Automatic Rollback": "false"}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.t.IsRollbackFlag(); got != c.want {
+				t.Errorf("IsRollbackFlag() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

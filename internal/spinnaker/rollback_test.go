@@ -157,6 +157,43 @@ func TestDetectRollback_VersaoVigenteForaDaJanela(t *testing.T) {
 	}
 }
 
+// TestDetectRollback_ExplicitViaIsRollbackFlag_OutraSquad reproduz o achado da Fase 4
+// (generalização entre squads, confirmado ao vivo contra a squad SRE Marketplace — diferente da
+// SRE Logística usada nos demais testes): o sinal "Is Rollback" no trigger.parameters continua
+// funcionando mesmo se, hipoteticamente, uma squad nomeasse o pipeline de rollback de outro
+// jeito (não "rollback-*") — o pipeline "deploy-hotfix", sem "rollback" no nome nem manifesto
+// helm-rollback.yaml, ainda é detectado via IsRollbackFlag.
+func TestDetectRollback_ExplicitViaIsRollbackFlag_OutraSquad(t *testing.T) {
+	trigger := mkTrigger("mp-pas-comercial", "marketplace-cross-prd", "2.8.4-1", "CHG0478329")
+	trigger.Parameters["Is Rollback"] = true
+
+	executions := []Execution{
+		{
+			ID:        "rollback-via-flag",
+			Name:      "deploy-hotfix", // nome deliberadamente sem "rollback" — só o flag identifica
+			Status:    "SUCCEEDED",
+			StartTime: 1000,
+			EndTime:   2000,
+			Trigger:   trigger,
+		},
+	}
+
+	got := DetectRollback(executions, "mp-pas-comercial", "marketplace-cross-prd", "2.8.4-1")
+
+	if !got.Matched {
+		t.Fatal("esperava Matched=true")
+	}
+	if got.IsRollback == nil || !*got.IsRollback {
+		t.Fatal("esperava IsRollback=true (via Is Rollback flag, não nome de pipeline)")
+	}
+	if got.RollbackType != "explicit" {
+		t.Errorf("RollbackType = %q, esperava \"explicit\"", got.RollbackType)
+	}
+	if got.FailedCHG != "CHG0478329" {
+		t.Errorf("FailedCHG = %q, esperava CHG0478329", got.FailedCHG)
+	}
+}
+
 // TestManifestReference_ContextInvalido garante que Stage.ManifestReference nunca panica nem
 // retorna erro fatal com um context malformado/ausente — dado best-effort.
 func TestManifestReference_ContextInvalido(t *testing.T) {

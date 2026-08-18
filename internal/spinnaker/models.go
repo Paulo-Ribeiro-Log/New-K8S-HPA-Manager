@@ -130,6 +130,34 @@ func (t Trigger) TargetEnv() string {
 	return t.payloadString("targetEnv")
 }
 
+// IsRollbackFlag lê o sinal explícito "Is Rollback" (Parameters) / "isRollback" (Payload) —
+// achado real da Fase 4 (generalização entre squads, ver SPINNAKER-INTEGRATION-PLAN.md seção 6
+// item 2): testado ao vivo contra 8 applications de squads DIFERENTES (SRE Logística, SRE
+// Compra Self Service, sre cyber iam, SRE Marketplace) — o campo aparece em 100% das execuções
+// amostradas (sempre bool, nunca ausente nas squads testadas), sempre `false` em deploys normais
+// e `true` na única execução de rollback real encontrada fora de SRE Logística. É um sinal MAIS
+// confiável que nome de pipeline (frágil — squads podem nomear diferente) ou manifestArtifact
+// (indireto), mas usado aqui como reforço, não substituto: numa execução real observada, esse
+// campo veio `true` numa execução SATÉLITE (pipeline "deploy-aks-global" reaplicando o artefato
+// antigo) que tinha Namespace/Version/CHG vazios — não corresponderia a nenhum Deployment via
+// executionsForTarget sozinha; a execução do pipeline nomeado "rollback-*" (com esses campos
+// populados) continua sendo a que a correlação de fato usa. Não confundir com "Is Automatic
+// Rollback" (chave diferente, presente na execução do pipeline de rollback em si — indica se
+// foi disparado automaticamente ou não, não se É um rollback).
+func (t Trigger) IsRollbackFlag() bool {
+	if v, ok := t.Parameters["Is Rollback"]; ok {
+		if b, isBool := v.(bool); isBool {
+			return b
+		}
+	}
+	if v, ok := t.Payload["isRollback"]; ok {
+		if b, isBool := v.(bool); isBool {
+			return b
+		}
+	}
+	return false
+}
+
 // paramString lê Trigger.Parameters tolerando qualquer tipo JSON (string é o caso comum, mas o
 // Gate real já mandou bool pra alguma chave observada) — nunca aplica type assertion direta.
 func (t Trigger) paramString(key string) string {

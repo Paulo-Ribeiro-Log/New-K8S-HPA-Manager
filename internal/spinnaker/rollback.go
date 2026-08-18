@@ -70,7 +70,11 @@ func isExplicitRollbackExecution(ex Execution) bool {
 			return true
 		}
 	}
-	return false
+	// Sinal explícito "Is Rollback"/"isRollback" (ver Trigger.IsRollbackFlag) — reforço pra
+	// squads que não seguem a convenção de nome "rollback-*"/manifesto "helm-rollback.yaml"
+	// (confirmado company-wide na Fase 4, mas o nome do pipeline em si continua sendo
+	// convenção, não contrato — este campo é o dado mais direto disponível).
+	return ex.Trigger.IsRollbackFlag()
 }
 
 // executionsForTarget filtra e ordena (mais recente primeiro) as execuções que correspondem a
