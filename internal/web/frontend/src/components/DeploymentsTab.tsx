@@ -149,12 +149,13 @@ export const DeploymentsTab = ({
   const spinnakerStatus = useSpinnakerRolloutStatus(cluster, selectedNamespace || undefined);
   const [spinnakerModalOpen, setSpinnakerModalOpen] = useState(false);
 
-  // Chave de correlação com o resultado do Spinnaker: app.kubernetes.io/name (mesmo campo
-  // usado pelo DeploymentRegistry no backend) com fallback pro nome do próprio Deployment K8s
-  // quando o label não existe.
+  // Chave de correlação com o resultado do Spinnaker: nome do próprio objeto Deployment no K8s
+  // (dep.name), não a label app.kubernetes.io/name — achado real (internal/web/handlers/spinnaker.go):
+  // alguns Deployments (chart convair-helm) têm essa label igual ao nome do CHART, não da
+  // aplicação, o que colidia vários Deployments diferentes na mesma chave. dep.name é sempre
+  // único e é o mesmo valor que o Spinnaker reporta em trigger.parameters["Application Name"].
   const spinnakerKeyFor = useCallback((dep: DeploymentSummary) => {
-    const appName = dep.labels?.["app.kubernetes.io/name"] || dep.name;
-    return `${appName}/${dep.namespace}`;
+    return `${dep.name}/${dep.namespace}`;
   }, []);
   // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
   // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia

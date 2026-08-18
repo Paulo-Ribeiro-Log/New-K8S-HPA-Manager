@@ -461,10 +461,19 @@ func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions
 
 	// Filtro por versões válidas (padrão semver x.x.x ou x.x.x-x)
 	if onlyValidVersions {
-		// Regex SQLite para validar padrão: dígitos.dígitos.dígitos ou dígitos.dígitos.dígitos-dígitos
+		// Regex SQLite para validar padrão: dígitos.dígitos.dígitos ou dígitos.dígitos.dígitos-dígitos.
+		// Também aceita a variante com TODOS os separadores trocados por hífen (ex: "0-0-2-6") —
+		// achado real (ver internal/web/handlers/spinnaker.go): alguns Helm charts (ex: convair-helm,
+		// squad Reversa/Dat) sanitizam a label app.kubernetes.io/version trocando "." por "-" antes de
+		// aplicá-la, então "0.0.2-6" vira "0-0-2-6" no valor persistido em DeploymentRecord.Version.
+		// Sem essa segunda variante, esses registros inteiros eram excluídos aqui — não só do
+		// Spinnaker (que já tinha um fix separado pra preferir ImageTag), mas de qualquer consumidor
+		// de onlyValidVersions=true (ex: GitHub Releases).
 		query += ` AND (
 			version GLOB '[0-9]*.[0-9]*.[0-9]*' OR
-			version GLOB '[0-9]*.[0-9]*.[0-9]*-[0-9]*'
+			version GLOB '[0-9]*.[0-9]*.[0-9]*-[0-9]*' OR
+			version GLOB '[0-9]*-[0-9]*-[0-9]*' OR
+			version GLOB '[0-9]*-[0-9]*-[0-9]*-[0-9]*'
 		)`
 	}
 

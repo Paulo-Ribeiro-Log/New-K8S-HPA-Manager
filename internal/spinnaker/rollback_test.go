@@ -4,7 +4,7 @@ import "testing"
 
 func mkTrigger(nameApp, namespace, version, chg string) Trigger {
 	return Trigger{
-		Parameters: map[string]string{
+		Parameters: map[string]interface{}{
 			paramAppName:   nameApp,
 			paramNamespace: namespace,
 			paramVersion:   version,

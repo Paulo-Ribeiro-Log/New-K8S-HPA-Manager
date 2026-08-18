@@ -4,7 +4,10 @@
 // handler HTTP nem persistência de configuração (isso é Fase 2/2.5).
 package spinnaker
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Execution é uma execução de pipeline do Spinnaker, campos confirmados ao vivo contra uma
 // instância real (ver seção 2/0.2/0.3 do plano) — não é o schema completo do Gate, só os
@@ -63,10 +66,16 @@ func (s Stage) ManifestReference() string {
 // (labels humanos, ex: "Application SN Change Number") é fonte mais estável e limpa que
 // `Payload` (dump bruto de env vars de CI, usado só como fallback).
 type Trigger struct {
-	Type       string                 `json:"type"`
-	User       string                 `json:"user"`
-	Source     string                 `json:"source"` // conta/cluster que disparou o webhook, ex: "akspriv-logreversa-hlg"
-	Parameters map[string]string      `json:"parameters"`
+	Type   string `json:"type"`
+	User   string `json:"user"`
+	Source string `json:"source"` // conta/cluster que disparou o webhook, ex: "akspriv-logreversa-hlg"
+	// Parameters é map[string]interface{}, não map[string]string — achado real (bug reproduzido
+	// ao vivo contra o Gate de PRD, projeto "SRE Logistica"): pelo menos uma application manda um
+	// valor não-string em trigger.parameters (ex: um bool), o que quebrava o unmarshal de TODAS as
+	// applications consultadas (json.Unmarshal falha a struct inteira, não só o campo problemático)
+	// — o sintoma era "matched: false" silencioso pra qualquer deployment, porque SearchExecutions
+	// nunca retornava nenhuma execução decodificada. paramString() converte pra string on-demand.
+	Parameters map[string]interface{} `json:"parameters"`
 	Payload    map[string]interface{} `json:"payload"`
 }
 
@@ -84,21 +93,21 @@ const (
 // minúsculas/camelCase, confirmadas na mesma investigação).
 
 func (t Trigger) AppName() string {
-	if v := t.Parameters[paramAppName]; v != "" {
+	if v := t.paramString(paramAppName); v != "" {
 		return v
 	}
 	return t.payloadString("nameApp")
 }
 
 func (t Trigger) Namespace() string {
-	if v := t.Parameters[paramNamespace]; v != "" {
+	if v := t.paramString(paramNamespace); v != "" {
 		return v
 	}
 	return t.payloadString("namespace")
 }
 
 func (t Trigger) Version() string {
-	if v := t.Parameters[paramVersion]; v != "" {
+	if v := t.paramString(paramVersion); v != "" {
 		return v
 	}
 	if v := t.payloadString("version"); v != "" {
@@ -108,17 +117,30 @@ func (t Trigger) Version() string {
 }
 
 func (t Trigger) CHGNumber() string {
-	if v := t.Parameters[paramCHGNumber]; v != "" {
+	if v := t.paramString(paramCHGNumber); v != "" {
 		return v
 	}
 	return t.payloadString("serviceNowTaskNumber")
 }
 
 func (t Trigger) TargetEnv() string {
-	if v := t.Parameters[paramTargetEnv]; v != "" {
+	if v := t.paramString(paramTargetEnv); v != "" {
 		return v
 	}
 	return t.payloadString("targetEnv")
+}
+
+// paramString lê Trigger.Parameters tolerando qualquer tipo JSON (string é o caso comum, mas o
+// Gate real já mandou bool pra alguma chave observada) — nunca aplica type assertion direta.
+func (t Trigger) paramString(key string) string {
+	v, ok := t.Parameters[key]
+	if !ok || v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 func (t Trigger) payloadString(key string) string {

@@ -173,15 +173,32 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 	deckURL, _ := cfg.DeckURLForEnv(env)
 	result := make(map[string]*spinnaker.RollbackInfo, len(records))
 	for _, rec := range records {
-		version := rec.Version
+		// ImageTag primeiro, não Version — achado real: DeploymentRecord.Version
+		// (app.kubernetes.io/version) sai sanitizado por alguns Helm charts (ex: convair-helm,
+		// usado pelas apps da squad Reversa/Dat) trocando "." por "-" (ex: "0.0.2-6" vira
+		// "0-0-2-6"), enquanto o Spinnaker sempre usa o formato com ponto real
+		// (trigger.Parameters["Application Version"], confirmado ao vivo). Com Version primeiro,
+		// a comparação de versão em DetectRollback nunca batia pra nenhum deployment dessas
+		// squads — o badge nunca aparecia em lugar nenhum, silenciosamente (Matched sempre
+		// false). ImageTag é extraído direto da imagem do container, sem essa sanitização.
+		version := rec.ImageTag
 		if version == "" {
-			version = rec.ImageTag
+			version = rec.Version
 		}
-		info := spinnaker.DetectRollback(allExecutions, rec.AppName, rec.Namespace, version)
+		// DeploymentName, não AppName — 2º achado real do mesmo chart convair-helm: pelo menos
+		// 2 deployments reais (dat-documento-vendas-api, ms-dat-satex-core) têm
+		// app.kubernetes.io/name literalmente igual ao nome do CHART ("convair-helm"), não ao
+		// nome do próprio microsserviço — o chart nunca sobrescreve esse label com um valor
+		// por-instância. Com AppName, dois deployments diferentes colidiam na mesma chave de
+		// resultado ("convair-helm/dat-prd", um sobrescrevendo o outro) e nunca batiam contra
+		// trigger.AppName() do Spinnaker (que sempre reporta o nome real do nameApp, confirmado
+		// ao vivo: "dat-documento-vendas-api"). DeploymentName é o nome do objeto Deployment no
+		// K8s — sempre único, sempre confiável, e é exatamente o valor que o Spinnaker usa.
+		info := spinnaker.DetectRollback(allExecutions, rec.DeploymentName, rec.Namespace, version)
 		if info.Matched && info.SpinnakerExecutionID != "" {
 			info.SpinnakerExecutionURL = buildExecutionURL(deckURL, cfg.SelectedProject, applicationForExecution(executionsByApp, info.SpinnakerExecutionID), info.SpinnakerExecutionID)
 		}
-		result[rec.AppName+"/"+rec.Namespace] = info
+		result[rec.DeploymentName+"/"+rec.Namespace] = info
 	}
 
 	c.JSON(http.StatusOK, result)
