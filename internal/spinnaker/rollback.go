@@ -39,6 +39,28 @@ type RollbackInfo struct {
 	// tendo sido confirmado numa consulta anterior.
 	FromCache bool  `json:"from_cache,omitempty"`
 	CachedAt  int64 `json:"cached_at,omitempty"` // epoch ms — última vez confirmado AO VIVO no Gate
+
+	// RecentExecutions — seção 9 item 5 do plano: últimas execuções (mais recente primeiro,
+	// até recentExecutionsLimit) desse mesmo nameApp/namespace, não só a que determinou o
+	// resultado acima — útil pra ver o padrão recente (ex: "rollback seguido de deploy
+	// corrigido") sem abrir o Spinnaker. Preenchido só quando Matched=true — sem execução
+	// nenhuma não há nada pra listar. Não persistido no SpinnakerHistoryStore (diferente do
+	// resto de RollbackInfo) — é dado auxiliar/exibição, não o "último status confirmado" que a
+	// persistência existe pra preservar; FromCache=true nunca traz RecentExecutions.
+	RecentExecutions []ExecutionSummary `json:"recent_executions,omitempty"`
+}
+
+// ExecutionSummary é uma linha do histórico curto (RollbackInfo.RecentExecutions) — só os
+// campos que a lista compacta do modal usa, não a Execution completa.
+type ExecutionSummary struct {
+	ExecutionID  string `json:"execution_id"`
+	PipelineName string `json:"pipeline_name"`
+	Status       string `json:"status"`
+	ExecutedAt   int64  `json:"executed_at"`
+	Version      string `json:"version,omitempty"`
+	CHG          string `json:"chg,omitempty"`
+	CHGUrl       string `json:"chg_url,omitempty"`
+	IsRollback   bool   `json:"is_rollback"`
 }
 
 // successStatuses — status de execução considerados sucesso (a versão-alvo dessa execução
@@ -103,6 +125,35 @@ func executionTime(ex Execution) int64 {
 	return ex.BuildTime
 }
 
+// recentExecutionsLimit — "últimas 3-5 execuções" (seção 9 item 5 do plano); 5 escolhido como
+// teto (mostra tudo quando há menos).
+const recentExecutionsLimit = 5
+
+// buildRecentExecutions resume as N execuções mais recentes de matched (já ordenado desc por
+// executionTime em executionsForTarget) pro histórico curto do modal — mesmo dado que
+// SearchExecutions já trouxe, só não descartado depois de achar a execução que decide o
+// resultado principal.
+func buildRecentExecutions(matched []Execution) []ExecutionSummary {
+	n := len(matched)
+	if n > recentExecutionsLimit {
+		n = recentExecutionsLimit
+	}
+	out := make([]ExecutionSummary, 0, n)
+	for _, ex := range matched[:n] {
+		out = append(out, ExecutionSummary{
+			ExecutionID:  ex.ID,
+			PipelineName: ex.Name,
+			Status:       ex.Status,
+			ExecutedAt:   executionTime(ex),
+			Version:      ex.Trigger.Version(),
+			CHG:          ex.Trigger.CHGNumber(),
+			CHGUrl:       ex.Trigger.CHGUrl(),
+			IsRollback:   isExplicitRollbackExecution(ex),
+		})
+	}
+	return out
+}
+
 // DetectRollback aplica as duas regras da seção 0.6 do plano pra decidir se a versão
 // atualmente vigente no K8s (currentLiveVersion, já coletada via DeploymentRegistry — esta
 // função nunca fala com o Spinnaker nem com o K8s diretamente) chegou lá por rollback:
@@ -121,6 +172,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 	if len(matched) == 0 {
 		return &RollbackInfo{Matched: false}
 	}
+	recent := buildRecentExecutions(matched)
 
 	// Regra (a) — explícita: procura uma execução de rollback cuja versão-alvo já é a vigente.
 	for _, ex := range matched {
@@ -145,6 +197,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			FailedCHGURL:         ex.Trigger.CHGUrl(),
 			RollbackPipelineName: ex.Name,
 			SpinnakerExecutionID: ex.ID,
+			RecentExecutions:     recent,
 		}
 	}
 
@@ -166,6 +219,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			FailedCHG:            latest.Trigger.CHGNumber(),
 			FailedCHGURL:         latest.Trigger.CHGUrl(),
 			SpinnakerExecutionID: latest.ID,
+			RecentExecutions:     recent,
 		}
 	}
 
@@ -180,6 +234,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			PipelineExecutedAt:   executionTime(latest),
 			ExecutionStatus:      latest.Status,
 			SpinnakerExecutionID: latest.ID,
+			RecentExecutions:     recent,
 		}
 	}
 

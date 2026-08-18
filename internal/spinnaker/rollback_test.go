@@ -1,6 +1,9 @@
 package spinnaker
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func mkTrigger(nameApp, namespace, version, chg string) Trigger {
 	return Trigger{
@@ -211,6 +214,51 @@ func TestDetectRollback_PropagaCHGUrl(t *testing.T) {
 
 	if got.LastCHGAppliedURL != "https://viavarejo.service-now.com/change_request.do?sys_id=xyz" {
 		t.Errorf("LastCHGAppliedURL = %q, esperava a URL do Payload", got.LastCHGAppliedURL)
+	}
+}
+
+// TestDetectRollback_RecentExecutions cobre a seção 9 item 5 do plano (histórico curto): as
+// últimas execuções desse nameApp/namespace vêm anexadas ao resultado, mais recente primeiro,
+// limitadas a recentExecutionsLimit — não só a execução que decidiu o resultado principal.
+func TestDetectRollback_RecentExecutions(t *testing.T) {
+	executions := []Execution{
+		{ID: "e1", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 4000, Trigger: mkTrigger("app-x", "ns-x", "1.0.3", "CHG0000004")},
+		{ID: "e2", Name: "deploy-aks-global", Status: "TERMINAL", StartTime: 3000, Trigger: mkTrigger("app-x", "ns-x", "1.0.2", "CHG0000003")},
+		{ID: "e3", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 2000, Trigger: mkTrigger("app-x", "ns-x", "1.0.1", "CHG0000002")},
+		{ID: "e4", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 1000, Trigger: mkTrigger("app-x", "ns-x", "1.0.0", "CHG0000001")},
+	}
+
+	got := DetectRollback(executions, "app-x", "ns-x", "1.0.3")
+
+	if len(got.RecentExecutions) != 4 {
+		t.Fatalf("RecentExecutions tem %d itens, esperava 4 (menos que o limite de %d)", len(got.RecentExecutions), recentExecutionsLimit)
+	}
+	if got.RecentExecutions[0].ExecutionID != "e1" {
+		t.Errorf("RecentExecutions[0].ExecutionID = %q, esperava e1 (mais recente primeiro)", got.RecentExecutions[0].ExecutionID)
+	}
+	if got.RecentExecutions[3].ExecutionID != "e4" {
+		t.Errorf("RecentExecutions[3].ExecutionID = %q, esperava e4 (mais antiga por último)", got.RecentExecutions[3].ExecutionID)
+	}
+	if got.RecentExecutions[0].Version != "1.0.3" || got.RecentExecutions[0].CHG != "CHG0000004" {
+		t.Errorf("RecentExecutions[0] = %+v, campos incorretos", got.RecentExecutions[0])
+	}
+}
+
+// TestDetectRollback_RecentExecutions_RespeitaLimite garante que a lista nunca ultrapassa
+// recentExecutionsLimit mesmo com muito mais execuções disponíveis.
+func TestDetectRollback_RecentExecutions_RespeitaLimite(t *testing.T) {
+	var executions []Execution
+	for i := 0; i < 20; i++ {
+		executions = append(executions, Execution{
+			ID: fmt.Sprintf("e%d", i), Name: "deploy-aks-global", Status: "SUCCEEDED",
+			StartTime: int64(i * 1000), Trigger: mkTrigger("app-x", "ns-x", "1.0.0", "CHG0000001"),
+		})
+	}
+
+	got := DetectRollback(executions, "app-x", "ns-x", "1.0.0")
+
+	if len(got.RecentExecutions) != recentExecutionsLimit {
+		t.Fatalf("RecentExecutions tem %d itens, esperava exatamente %d (o limite)", len(got.RecentExecutions), recentExecutionsLimit)
 	}
 }
 

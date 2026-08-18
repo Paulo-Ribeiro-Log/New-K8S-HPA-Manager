@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Loader2, RotateCcw, CheckCircle2, HelpCircle, ExternalLink, Rocket, History } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Loader2, RotateCcw, CheckCircle2, HelpCircle, ExternalLink, Rocket, History, ChevronDown } from "lucide-react";
 import type { SpinnakerRollbackInfo } from "@/lib/api/types";
 
 interface SpinnakerRolloutModalProps {
@@ -59,6 +61,9 @@ export function SpinnakerRolloutModal({
   error,
 }: SpinnakerRolloutModalProps) {
   const isRollback = info?.is_rollback;
+  // Colapsado por padrão (mesmo padrão de NoteEntry.tsx/AIHistoryPanel.tsx) — o resultado
+  // principal acima já responde a pergunta mais comum, o histórico é um detalhe opcional.
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -181,6 +186,52 @@ export function SpinnakerRolloutModal({
                     </div>
                   </div>
                 </div>
+              )}
+
+              {/* Histórico curto (seção 9 item 5 do plano) — últimas execuções, não só a que
+                  decidiu o resultado acima. Ausente quando FromCache (não persistido). */}
+              {info.recent_executions && info.recent_executions.length > 0 && (
+                <Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
+                  <CollapsibleTrigger className="flex w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                    <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${historyOpen ? "rotate-180" : ""}`} />
+                    Histórico recente ({info.recent_executions.length} execuç{info.recent_executions.length === 1 ? "ão" : "ões"})
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="mt-2 space-y-1.5">
+                    {info.recent_executions.map((ex) => (
+                      <div
+                        key={ex.execution_id}
+                        className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-2.5 py-1.5 text-xs"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {ex.is_rollback ? (
+                            <RotateCcw className="h-3 w-3 shrink-0 text-amber-600 dark:text-amber-400" />
+                          ) : (
+                            <Rocket className="h-3 w-3 shrink-0 text-muted-foreground" />
+                          )}
+                          <span className="font-mono truncate" title={ex.pipeline_name}>
+                            {ex.version || ex.pipeline_name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-mono">
+                            <ChgValue chg={ex.chg} url={ex.chg_url} />
+                          </span>
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] py-0 ${
+                              ex.status === "SUCCEEDED"
+                                ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                                : "border-muted-foreground/40 text-muted-foreground"
+                            }`}
+                          >
+                            {ex.status}
+                          </Badge>
+                          <span className="text-muted-foreground whitespace-nowrap">{fmtDate(ex.executed_at)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </CollapsibleContent>
+                </Collapsible>
               )}
 
               {info.spinnaker_execution_url && (

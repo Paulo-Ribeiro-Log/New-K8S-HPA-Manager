@@ -1567,6 +1567,20 @@ export interface SpinnakerRollbackInfo {
   // isso numa consulta anterior, mas não está mais dentro da janela atual do Gate".
   from_cache?: boolean;
   cached_at?: number; // epoch ms — última vez confirmado AO VIVO no Gate
+  // Últimas execuções (mais recente primeiro) desse deployment, não só a que decidiu o
+  // resultado acima — seção 9 item 5 do plano. Ausente quando FromCache=true (não persistido).
+  recent_executions?: SpinnakerExecutionSummary[];
+}
+
+export interface SpinnakerExecutionSummary {
+  execution_id: string;
+  pipeline_name: string;
+  status: string;
+  executed_at: number;
+  version?: string;
+  chg?: string;
+  chg_url?: string;
+  is_rollback: boolean;
 }
 
 // Chave do mapa devolvido por /spinnaker/rollout-status/batch: "appName/namespace"
