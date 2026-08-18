@@ -1276,6 +1276,20 @@ func (s *Server) setupRoutes() {
 	api.POST("/github/commit-file", rbacMiddleware.InjectUserEmail(), githubHandler.CommitFile)
 	fmt.Println("✅ GitHub Releases routes registradas (com autenticação de usuário)")
 
+	// Spinnaker — detecção de rollback (Fase 2 do SPINNAKER-INTEGRATION-PLAN.md). Reaproveita o
+	// mesmo Deployment Registry do GitHub Releases (githubRegistry) pra saber a versão vigente
+	// de cada Deployment — pode ser nil (graceful degradation, mesmo padrão acima).
+	spinnakerLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "spinnaker").Logger()
+	spinnakerHandler := handlers.NewSpinnakerHandler(baseDir, githubRegistry, &spinnakerLogger)
+	spinnakerRoutes := api.Group("/spinnaker")
+	{
+		spinnakerRoutes.GET("/config", spinnakerHandler.GetConfig)
+		spinnakerRoutes.POST("/config", spinnakerHandler.SaveConfig)
+		spinnakerRoutes.GET("/projects", spinnakerHandler.ListProjects)
+		spinnakerRoutes.GET("/rollout-status/batch", spinnakerHandler.RolloutStatusBatch)
+	}
+	fmt.Println("✅ Spinnaker routes registradas (config + detecção de rollback)")
+
 	// GitHub Tokens Management (gerenciamento de tokens individuais)
 	if githubTokenStore != nil {
 		githubTokensHandler := handlers.NewGitHubTokensHandler(githubTokenStore, &githubLogger)

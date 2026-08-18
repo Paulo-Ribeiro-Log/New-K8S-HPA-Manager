@@ -7,23 +7,27 @@ import (
 )
 
 // RollbackInfo é o contrato de dados final (seção 5 do plano) — o que a Fase 2 (handler HTTP)
-// devolve pro frontend. Campos de tempo em epoch ms (mesmo formato do Gate).
+// devolve pro frontend. Campos de tempo em epoch ms (mesmo formato do Gate). Tags JSON já no
+// formato do contrato — este struct é serializado quase direto pelo handler HTTP.
 type RollbackInfo struct {
-	Matched bool // achou alguma execução pra esse nameApp/namespace
+	Matched bool `json:"matched"` // achou alguma execução pra esse nameApp/namespace
 
-	IsRollback   *bool  // nil = não determinado (nunca inferir false por omissão)
-	RollbackType string // "explicit" | "implicit" | ""
+	IsRollback   *bool  `json:"is_rollback"`             // nil = não determinado (nunca inferir false por omissão)
+	RollbackType string `json:"rollback_type,omitempty"` // "explicit" | "implicit" | ""
 
-	LastCHGApplied     string
-	PipelineExecutedAt int64
-	ExecutionStatus    string
+	LastCHGApplied     string `json:"last_chg_applied,omitempty"`
+	PipelineExecutedAt int64  `json:"pipeline_executed_at,omitempty"`
+	ExecutionStatus    string `json:"execution_status,omitempty"`
 
-	RollbackStartedAt    int64
-	RollbackEndedAt      int64
-	FailedCHG            string
-	RollbackPipelineName string // só preenchido quando RollbackType == "explicit"
+	RollbackStartedAt    int64  `json:"rollback_started_at,omitempty"`
+	RollbackEndedAt      int64  `json:"rollback_ended_at,omitempty"`
+	FailedCHG            string `json:"failed_chg,omitempty"`
+	RollbackPipelineName string `json:"rollback_pipeline_name,omitempty"` // só preenchido quando RollbackType == "explicit"
 
-	SpinnakerExecutionID string
+	SpinnakerExecutionID string `json:"spinnaker_execution_id,omitempty"`
+	// SpinnakerExecutionURL é montada pelo handler HTTP (precisa da URL do Deck + projeto,
+	// que este pacote não conhece) — deixado pra Fase 2 preencher antes de responder.
+	SpinnakerExecutionURL string `json:"spinnaker_execution_url,omitempty"`
 }
 
 // successStatuses — status de execução considerados sucesso (a versão-alvo dessa execução
