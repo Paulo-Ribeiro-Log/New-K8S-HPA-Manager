@@ -26,6 +26,7 @@ import type {
   DeploymentManifest,
   PodSummary,
   BatchPodMetrics,
+  SpinnakerRollbackInfo,
 } from "@/lib/api/types";
 import { useDeployments, useDynatracePodStatus } from "@/hooks/useAPI";
 import { DeploymentMonitorTable } from "@/components/DeploymentMonitorTable";
@@ -63,6 +64,44 @@ import { useUserPermissions } from "@/hooks/useUserPermissions";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { useSpinnakerRolloutStatus } from "@/hooks/useSpinnaker";
 import { SpinnakerRolloutModal } from "@/components/SpinnakerRolloutModal";
+
+// Badge/chip do Spinnaker (SPINNAKER-INTEGRATION-PLAN.md, seção 8) — mesmo componente visual
+// usado nos dois lugares pedidos: informativo (sem onClick) na lista à esquerda, e como
+// gatilho do modal (com onClick) no painel de visualização à direita. Deliberadamente um chip
+// compacto, não um botão de ação com label — não é uma ação, é uma informação de estado.
+function SpinnakerChip({ info, onClick }: { info: SpinnakerRollbackInfo | undefined; onClick?: () => void }) {
+  if (!info?.matched) return null;
+  const isRollback = info.is_rollback === true;
+  const Icon = isRollback ? RotateCcw : Rocket;
+  const label = info.last_chg_applied || (isRollback ? "Rollback" : "");
+  if (!label) return null;
+
+  const chip = (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors ${
+        isRollback
+          ? "border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+          : "border-border bg-muted/40 text-muted-foreground"
+      } ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
+      title={
+        isRollback
+          ? `Rollback (${info.rollback_type === "explicit" ? "manual" : "implícito"}) — CHG que falhou: ${info.failed_chg || "?"}`
+          : `Última CHG aplicada: ${info.last_chg_applied || "?"}`
+      }
+    >
+      <Icon className="w-2.5 h-2.5 shrink-0" />
+      {label}
+    </span>
+  );
+
+  if (!onClick) return chip;
+
+  return (
+    <button type="button" onClick={onClick} className="inline-flex">
+      {chip}
+    </button>
+  );
+}
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
 const formatVersion = (version: string | undefined): string => {
@@ -2455,37 +2494,15 @@ export const DeploymentsTab = ({
             <Activity className="w-4 h-4 mr-2" />
             Comportamento
           </Button>
-          {(() => {
-            // Badge-gatilho pro modal Spinnaker (seção 8 do plano) — só aparece quando o
-            // ambiente do cluster é reconhecido (hlg/prd); sem isso o hook fica desabilitado e
-            // spinnakerStatus.data nunca populated, não vale mostrar um botão morto.
-            const info = spinnakerStatus.data?.[spinnakerKeyFor(selectedDeployment)];
-            const isRollback = info?.is_rollback === true;
-            return (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setSpinnakerModalOpen(true)}
-                disabled={!spinnakerStatus.isFetched && spinnakerStatus.isLoading}
-                className={isRollback ? "border-amber-500/50 text-amber-600 dark:text-amber-400" : undefined}
-                title="Detecção de rollback via Spinnaker"
-              >
-                {spinnakerStatus.isLoading ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : isRollback ? (
-                  <RotateCcw className="w-4 h-4 mr-2" />
-                ) : (
-                  <Rocket className="w-4 h-4 mr-2" />
-                )}
-                Spinnaker
-                {info?.last_chg_applied && (
-                  <Badge variant="outline" className="ml-2 text-[10px] py-0 font-mono">
-                    {info.last_chg_applied}
-                  </Badge>
-                )}
-              </Button>
-            );
-          })()}
+          {/* Chip do Spinnaker (seção 8 do plano) — gatilho do modal, mesmo componente visual
+              usado no card da lista (só que lá sem onClick, aqui clicável). Sem "matched" não
+              renderiza nada (não é uma ação sempre disponível como os botões acima, é uma
+              informação — só existe quando há dado real). */}
+          <SpinnakerChip
+            info={spinnakerStatus.data?.[spinnakerKeyFor(selectedDeployment)]}
+            onClick={() => setSpinnakerModalOpen(true)}
+          />
+          {spinnakerStatus.isLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
           <AITriggerButton
             resourceType="Deployment"
             cluster={cluster}
@@ -2698,24 +2715,11 @@ export const DeploymentsTab = ({
                   )}
                 </div>
                 <div className="text-xs text-muted-foreground">{dep.namespace}</div>
-                {(() => {
-                  // Badge informativo do Spinnaker (seção 8 do plano) — só na lista, nunca
-                  // abre o modal daqui (gatilho é o botão no painel de visualização à direita).
-                  const info = spinnakerStatus.data?.[spinnakerKeyFor(dep)];
-                  if (!info?.matched) return null;
-                  const isRollback = info.is_rollback === true;
-                  return (
-                    <div
-                      className={`text-[10px] font-mono mt-0.5 flex items-center gap-1 ${
-                        isRollback ? "text-amber-500" : "text-muted-foreground/60"
-                      }`}
-                      title={isRollback ? `Rollback (${info.rollback_type}) — CHG ${info.failed_chg || "?"}` : `CHG ${info.last_chg_applied || "?"}`}
-                    >
-                      {isRollback && <RotateCcw className="w-2.5 h-2.5" />}
-                      {info.last_chg_applied && <span>{info.last_chg_applied}</span>}
-                    </div>
-                  );
-                })()}
+                {/* Mesmo chip do painel direito (seção 8 do plano) — aqui só informativo, sem
+                    onClick (o gatilho do modal fica no painel de visualização à direita). */}
+                <div className="mt-0.5">
+                  <SpinnakerChip info={spinnakerStatus.data?.[spinnakerKeyFor(dep)]} />
+                </div>
                 {dep.serviceClusterIPs && dep.serviceClusterIPs.length > 0 && (
                   <div className="text-[10px] font-mono mt-0.5 flex items-center gap-1">
                     <span className="text-muted-foreground/60 uppercase tracking-wide">CIP</span>
