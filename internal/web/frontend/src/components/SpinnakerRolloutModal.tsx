@@ -1,7 +1,7 @@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Loader2, RotateCcw, CheckCircle2, HelpCircle, ExternalLink, Rocket } from "lucide-react";
+import { Loader2, RotateCcw, CheckCircle2, HelpCircle, ExternalLink, Rocket, History } from "lucide-react";
 import type { SpinnakerRollbackInfo } from "@/lib/api/types";
 
 interface SpinnakerRolloutModalProps {
@@ -78,6 +78,17 @@ export function SpinnakerRolloutModal({
 
           {!loading && !error && info?.matched && (
             <>
+              {info.from_cache && (
+                <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 p-3 text-sm text-blue-700 dark:text-blue-400">
+                  <History className="h-4 w-4 mt-0.5 shrink-0" />
+                  <span>
+                    Dado de um scan anterior ({fmtDate(info.cached_at)}) — este deployment não
+                    teve execução dentro da janela de busca atual do Spinnaker (~28 dias), mas o
+                    último resultado confirmado foi preservado.
+                  </span>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                 <div>
                   <span className="text-muted-foreground">Última CHG aplicada:</span>

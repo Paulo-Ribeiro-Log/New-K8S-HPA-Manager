@@ -87,13 +87,22 @@ function SpinnakerChip({ info, onClick }: { info: SpinnakerRollbackInfo | undefi
       ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
       : "border-border bg-muted/40 text-muted-foreground";
 
+  // from_cache: dado veio do SpinnakerHistoryStore (persistência local), não de uma busca ao
+  // vivo no Gate — achado real: a busca do Gate só enxerga os últimos ~28 dias, então um
+  // deployment sem redeploy recente sai da resposta ao vivo mesmo sem nada ter mudado.
+  // Indicado com borda tracejada (sinal visual sutil, sem poluir com um badge extra) + texto
+  // explícito no tooltip.
+  const cacheNote = info.from_cache
+    ? ` — dado de scan anterior (${new Date(info.cached_at || 0).toLocaleDateString("pt-BR")}), fora da janela atual do Spinnaker`
+    : "";
+
   const chip = (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors ${colorClass} ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors ${colorClass} ${info.from_cache ? "border-dashed" : ""} ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
       title={
-        isRollback
+        (isRollback
           ? `Rollback (${info.rollback_type === "explicit" ? "manual" : "implícito"}) — CHG que falhou: ${info.failed_chg || "?"}`
-          : `Última CHG aplicada: ${info.last_chg_applied || "?"} (${info.execution_status || "status desconhecido"})`
+          : `Última CHG aplicada: ${info.last_chg_applied || "?"} (${info.execution_status || "status desconhecido"})`) + cacheNote
       }
     >
       <Icon className="w-2.5 h-2.5 shrink-0" />

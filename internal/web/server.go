@@ -1279,8 +1279,20 @@ func (s *Server) setupRoutes() {
 	// Spinnaker — detecção de rollback (Fase 2 do SPINNAKER-INTEGRATION-PLAN.md). Reaproveita o
 	// mesmo Deployment Registry do GitHub Releases (githubRegistry) pra saber a versão vigente
 	// de cada Deployment — pode ser nil (graceful degradation, mesmo padrão acima).
+	// SpinnakerHistoryStore persiste o último rollout status confirmado ao vivo por deployment —
+	// achado real: `executions/search` do Gate só devolve as execuções dos últimos ~28 dias,
+	// então sem essa persistência um deployment não redeployado há mais tempo que isso perderia
+	// o dado de CHG/status assim que a janela do Gate rolasse pra frente.
+	var spinnakerHistoryStore *storage.SpinnakerHistoryStore
+	spinnakerHistoryDBPath := filepath.Join(baseDir, "spinnaker_history.db")
+	if store, err := storage.NewSpinnakerHistoryStore(spinnakerHistoryDBPath); err != nil {
+		fmt.Printf("⚠️  Spinnaker History Store: falha ao criar store: %v\n", err)
+	} else {
+		spinnakerHistoryStore = store
+		fmt.Println("✅ Spinnaker History Store inicializado (persistência de rollout status)")
+	}
 	spinnakerLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "spinnaker").Logger()
-	spinnakerHandler := handlers.NewSpinnakerHandler(baseDir, githubRegistry, &spinnakerLogger)
+	spinnakerHandler := handlers.NewSpinnakerHandler(baseDir, githubRegistry, spinnakerHistoryStore, &spinnakerLogger)
 	spinnakerRoutes := api.Group("/spinnaker")
 	{
 		spinnakerRoutes.GET("/config", spinnakerHandler.GetConfig)

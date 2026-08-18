@@ -28,6 +28,15 @@ type RollbackInfo struct {
 	// SpinnakerExecutionURL é montada pelo handler HTTP (precisa da URL do Deck + projeto,
 	// que este pacote não conhece) — deixado pra Fase 2 preencher antes de responder.
 	SpinnakerExecutionURL string `json:"spinnaker_execution_url,omitempty"`
+
+	// FromCache/CachedAt são preenchidos só pelo handler HTTP (nunca por DetectRollback) quando
+	// o resultado veio do SpinnakerHistoryStore (persistência local) em vez de uma busca ao vivo
+	// no Gate — achado real: `executions/search` só devolve as execuções dos últimos ~28 dias,
+	// independente do "limit" pedido. Sem persistência, um deployment não redeployado há mais
+	// tempo que isso perderia o dado assim que a janela do Gate rolasse pra frente, mesmo já
+	// tendo sido confirmado numa consulta anterior.
+	FromCache bool  `json:"from_cache,omitempty"`
+	CachedAt  int64 `json:"cached_at,omitempty"` // epoch ms — última vez confirmado AO VIVO no Gate
 }
 
 // successStatuses — status de execução considerados sucesso (a versão-alvo dessa execução

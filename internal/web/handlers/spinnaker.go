@@ -17,19 +17,23 @@ import (
 // SpinnakerHandler expõe a configuração do usuário (login, URLs, projeto) e a detecção de
 // rollback via Spinnaker (Fase 2 do SPINNAKER-INTEGRATION-PLAN.md). deploymentRegistry pode ser
 // nil (graceful degradation, mesmo padrão do GitHubReleasesHandler) — sem ele, RolloutStatusBatch
-// não tem como saber a versão vigente de cada Deployment, então retorna erro claro.
+// não tem como saber a versão vigente de cada Deployment, então retorna erro claro. history
+// também pode ser nil (mesmo padrão) — nesse caso o endpoint funciona normalmente, só sem o
+// fallback pra dado antigo fora da janela de busca do Gate (ver comentário em RolloutStatusBatch).
 type SpinnakerHandler struct {
 	baseDir            string
 	deploymentRegistry *storage.DeploymentRegistry
+	history            *storage.SpinnakerHistoryStore
 	logger             *zerolog.Logger
 }
 
 // NewSpinnakerHandler cria o handler. baseDir é ~/.k8s-hpa-manager (mesmo diretório do Perfil
 // SSO já existente — sso_profile.json e spinnaker_config.json vivem lado a lado).
-func NewSpinnakerHandler(baseDir string, registry *storage.DeploymentRegistry, logger *zerolog.Logger) *SpinnakerHandler {
+func NewSpinnakerHandler(baseDir string, registry *storage.DeploymentRegistry, history *storage.SpinnakerHistoryStore, logger *zerolog.Logger) *SpinnakerHandler {
 	return &SpinnakerHandler{
 		baseDir:            baseDir,
 		deploymentRegistry: registry,
+		history:            history,
 		logger:             logger,
 	}
 }
@@ -208,10 +212,71 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 		if info.Matched && info.SpinnakerExecutionID != "" {
 			info.SpinnakerExecutionURL = buildExecutionURL(deckURL, cfg.SelectedProject, applicationForExecution(executionsByApp, info.SpinnakerExecutionID), info.SpinnakerExecutionID)
 		}
+
+		if h.history != nil {
+			if info.Matched {
+				// Achou dado ao vivo — persiste (upsert) pra sobreviver depois que a janela de
+				// busca do Gate (~28 dias, ver comentário acima) rolar pra frente e esse
+				// deployment sair da resposta do Gate mesmo sem nada ter mudado de verdade.
+				if err := h.history.Upsert(toHistoryRecord(cluster, rec.Namespace, rec.DeploymentName, info)); err != nil {
+					h.logf("falha ao persistir rollout status de %s/%s: %v", rec.DeploymentName, rec.Namespace, err)
+				}
+			} else if stored, err := h.history.Get(cluster, rec.Namespace, rec.DeploymentName); err == nil && stored != nil {
+				// Nada ao vivo dentro da janela atual do Gate, mas já vimos esse deployment
+				// antes — devolve o último dado confirmado em vez de "sem informação", marcado
+				// como FromCache pro frontend indicar que não é mais garantidamente atual.
+				info = fromHistoryRecord(*stored)
+			}
+		}
+
 		result[rec.DeploymentName+"/"+rec.Namespace] = info
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// toHistoryRecord/fromHistoryRecord convertem entre o contrato de resposta (spinnaker.RollbackInfo)
+// e o registro persistido (storage.SpinnakerRolloutRecord) — dois tipos deliberadamente
+// independentes (internal/storage nunca importa pacotes de domínio, mesma convenção já usada
+// pelos demais registries deste pacote).
+func toHistoryRecord(cluster, namespace, deploymentName string, info *spinnaker.RollbackInfo) storage.SpinnakerRolloutRecord {
+	isRollback := info.IsRollback != nil && *info.IsRollback
+	return storage.SpinnakerRolloutRecord{
+		Cluster:               cluster,
+		Namespace:             namespace,
+		DeploymentName:        deploymentName,
+		IsRollback:            isRollback,
+		RollbackType:          info.RollbackType,
+		LastCHGApplied:        info.LastCHGApplied,
+		PipelineExecutedAt:    info.PipelineExecutedAt,
+		ExecutionStatus:       info.ExecutionStatus,
+		RollbackStartedAt:     info.RollbackStartedAt,
+		RollbackEndedAt:       info.RollbackEndedAt,
+		FailedCHG:             info.FailedCHG,
+		RollbackPipelineName:  info.RollbackPipelineName,
+		SpinnakerExecutionID:  info.SpinnakerExecutionID,
+		SpinnakerExecutionURL: info.SpinnakerExecutionURL,
+	}
+}
+
+func fromHistoryRecord(rec storage.SpinnakerRolloutRecord) *spinnaker.RollbackInfo {
+	isRollback := rec.IsRollback
+	return &spinnaker.RollbackInfo{
+		Matched:               true,
+		IsRollback:            &isRollback,
+		RollbackType:          rec.RollbackType,
+		LastCHGApplied:        rec.LastCHGApplied,
+		PipelineExecutedAt:    rec.PipelineExecutedAt,
+		ExecutionStatus:       rec.ExecutionStatus,
+		RollbackStartedAt:     rec.RollbackStartedAt,
+		RollbackEndedAt:       rec.RollbackEndedAt,
+		FailedCHG:             rec.FailedCHG,
+		RollbackPipelineName:  rec.RollbackPipelineName,
+		SpinnakerExecutionID:  rec.SpinnakerExecutionID,
+		SpinnakerExecutionURL: rec.SpinnakerExecutionURL,
+		FromCache:             true,
+		CachedAt:              rec.UpdatedAt.UnixMilli(),
+	}
 }
 
 // applicationForExecution acha de qual application veio um executionID — só usado pra montar o

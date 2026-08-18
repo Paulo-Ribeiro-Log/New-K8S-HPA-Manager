@@ -1559,6 +1559,12 @@ export interface SpinnakerRollbackInfo {
   rollback_pipeline_name?: string;
   spinnaker_execution_id?: string;
   spinnaker_execution_url?: string;
+  // Presentes quando o dado veio do SpinnakerHistoryStore (persistência local) em vez de uma
+  // busca ao vivo no Gate — achado real: `executions/search` só devolve as execuções dos
+  // últimos ~28 dias, independente do "limit" pedido. from_cache=true significa "confirmamos
+  // isso numa consulta anterior, mas não está mais dentro da janela atual do Gate".
+  from_cache?: boolean;
+  cached_at?: number; // epoch ms — última vez confirmado AO VIVO no Gate
 }
 
 // Chave do mapa devolvido por /spinnaker/rollout-status/batch: "appName/namespace"
