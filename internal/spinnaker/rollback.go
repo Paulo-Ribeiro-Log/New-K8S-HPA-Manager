@@ -210,22 +210,31 @@ func buildStageSummary(stages []Stage) []StageSummary {
 
 // previousSuccessfulExecution acha, a partir de fromIndex (índice em matched — já ordenado desc
 // por tempo em executionsForTarget) pra frente (índices maiores = execuções mais antigas), a
-// primeira execução com status de sucesso — essa é a versão que estava rodando de fato no
-// cluster imediatamente antes da execução em fromIndex. Pula execuções falhas/canceladas/skipped
-// no meio: elas nunca chegaram a ficar live, não contam como "a versão anterior".
-func previousSuccessfulExecution(matched []Execution, fromIndex int) *Execution {
+// primeira execução com status de sucesso E versão-alvo DIFERENTE de currentVersion — essa é a
+// versão anterior de verdade, a última vez que o deployment rodou algo diferente do que roda
+// hoje. Pula execuções falhas/canceladas/skipped no meio (nunca chegaram a ficar live) e também
+// execuções SUCCEEDED que reimplantaram a MESMA versão (achado real, reportado pelo usuário: o
+// pipeline pode ser re-executado pra mesma versão sob uma CHG diferente — ex: reprocessamento,
+// mudança de infra sem bump de versão — e isso não é "a versão anterior", é a mesma versão de
+// novo; mostrar como se fosse diferente é enganoso).
+func previousSuccessfulExecution(matched []Execution, fromIndex int, currentVersion string) *Execution {
 	for i := fromIndex + 1; i < len(matched); i++ {
-		if successStatuses[matched[i].Status] {
-			return &matched[i]
+		if !successStatuses[matched[i].Status] {
+			continue
 		}
+		if matched[i].Trigger.Version() == currentVersion {
+			continue
+		}
+		return &matched[i]
 	}
 	return nil
 }
 
 // applyPreviousVersion preenche os campos PreviousVersion* de info a partir da execução anterior
-// bem-sucedida (ou não faz nada se não achar nenhuma dentro da janela de busca atual).
+// bem-sucedida com versão diferente (ou não faz nada se não achar nenhuma dentro da janela de
+// busca atual, ou se todo o histórico disponível for da mesma versão).
 func applyPreviousVersion(info *RollbackInfo, matched []Execution, decisiveIndex int) {
-	prev := previousSuccessfulExecution(matched, decisiveIndex)
+	prev := previousSuccessfulExecution(matched, decisiveIndex, info.Version)
 	if prev == nil {
 		return
 	}

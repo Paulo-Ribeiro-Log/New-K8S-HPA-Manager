@@ -340,6 +340,48 @@ func TestDetectRollback_PreviousVersion_NenhumaAnterior(t *testing.T) {
 	}
 }
 
+// TestDetectRollback_PreviousVersion_PulaMesmaVersaoReimplantada — bug real reportado pelo
+// usuário: o pipeline pode ser re-executado pra MESMA versão sob uma CHG diferente (ex:
+// reprocessamento, mudança de infra sem bump de versão). Antes desse fix, previousSuccessfulExecution
+// não checava se a versão da execução anterior era diferente da atual — "Versão anterior"
+// mostrava a mesma versão de "Versão" (só com CHG diferente), o que é enganoso: "versão
+// anterior" precisa significar "a última vez que rodou algo DIFERENTE", não só "a execução
+// anterior, seja qual for a versão". Corrigido pulando execuções com versão igual e continuando
+// a busca até achar uma genuinamente diferente.
+func TestDetectRollback_PreviousVersion_PulaMesmaVersaoReimplantada(t *testing.T) {
+	executions := []Execution{
+		{ID: "e1", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 4000, Trigger: mkTrigger("app-x", "ns-x", "1.14.2-2", "CHG0480565")},
+		// mesma versão da e1, CHG diferente — reprocessamento/redeploy sem mudança de código.
+		{ID: "e2-mesma-versao", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 3000, Trigger: mkTrigger("app-x", "ns-x", "1.14.2-2", "CHG0479999")},
+		{ID: "e3", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 2000, Trigger: mkTrigger("app-x", "ns-x", "1.12.0-5", "CHG0476326")},
+	}
+
+	got := DetectRollback(executions, "app-x", "ns-x", "1.14.2-2")
+
+	if got.PreviousVersion != "1.12.0-5" {
+		t.Errorf("PreviousVersion = %q, esperava 1.12.0-5 (pula e2-mesma-versao, que é a mesma versão da atual)", got.PreviousVersion)
+	}
+	if got.PreviousVersionCHG != "CHG0476326" {
+		t.Errorf("PreviousVersionCHG = %q, esperava CHG0476326", got.PreviousVersionCHG)
+	}
+}
+
+// TestDetectRollback_PreviousVersion_TodoHistoricoMesmaVersao garante que o campo fica vazio
+// (não mostra uma versão igual à atual como se fosse "anterior") quando TODO o histórico
+// disponível na janela é da mesma versão — nenhuma versão genuinamente anterior foi vista ainda.
+func TestDetectRollback_PreviousVersion_TodoHistoricoMesmaVersao(t *testing.T) {
+	executions := []Execution{
+		{ID: "e1", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 2000, Trigger: mkTrigger("app-x", "ns-x", "1.0.0", "CHG0000002")},
+		{ID: "e2", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 1000, Trigger: mkTrigger("app-x", "ns-x", "1.0.0", "CHG0000001")},
+	}
+
+	got := DetectRollback(executions, "app-x", "ns-x", "1.0.0")
+
+	if got.PreviousVersion != "" {
+		t.Errorf("PreviousVersion = %q, esperava vazio (todo histórico disponível é da mesma versão 1.0.0)", got.PreviousVersion)
+	}
+}
+
 // TestManifestReference_ContextInvalido garante que Stage.ManifestReference nunca panica nem
 // retorna erro fatal com um context malformado/ausente — dado best-effort.
 func TestManifestReference_ContextInvalido(t *testing.T) {
