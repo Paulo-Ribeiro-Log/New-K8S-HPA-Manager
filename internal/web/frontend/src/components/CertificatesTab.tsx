@@ -290,6 +290,15 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
         filter: filterType,
       };
       const result = await scanCertificates(req);
+
+      // Bug real corrigido (relatado ao vivo: "o chevron vem exibindo tudo aberto por default" —
+      // com vários clusters no resultado, a lista inteira aparecia expandida de uma vez,
+      // obrigando a colapsar cluster por cluster manualmente pra conseguir navegar). Com mais de
+      // 1 cluster no resultado, começa tudo colapsado (só os cabeçalhos de cluster visíveis); com
+      // 1 cluster só, não faz sentido colapsar por padrão — já é a única coisa em tela.
+      const resultClusters = new Set(result.certificates.map(c => c.cluster));
+      setCollapsedClusters(resultClusters.size > 1 ? resultClusters : new Set());
+
       // Bug real corrigido (relatado pelo usuário: "o scan de certificados por vezes falha
       // deixando alguns clusters de fora, sem nenhum aviso"): antes, um cluster que falhasse
       // (VPN fora do ar, cliente K8s inacessível, etc.) simplesmente desaparecia do resultado —
