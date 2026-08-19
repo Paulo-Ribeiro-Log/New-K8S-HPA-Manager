@@ -140,10 +140,15 @@ export function SpinnakerRolloutModal({
                 <div>
                   <span className="text-muted-foreground">Status da execução:</span>
                   <p className="font-medium mt-0.5 text-foreground">{info.execution_status || "—"}</p>
-                  {/* Versão da aplicação nesta execução — pedido explícito do usuário, logo
-                      abaixo do status. */}
-                  <span className="text-muted-foreground block mt-1.5">Versão:</span>
-                  <p className="font-mono font-medium mt-0.5 text-foreground">{info.version || "—"}</p>
+                </div>
+                {/* Versão da aplicação nesta execução — pedido explícito do usuário. Linha
+                    própria (col-span-2), não empilhada dentro da célula de "Status da
+                    execução" — empilhar ali deixava essa coluna mais alta que "Última CHG
+                    aplicada" ao lado, quebrando o alinhamento das duas colunas (achado real,
+                    reportado pelo usuário com screenshot). */}
+                <div className="col-span-2">
+                  <span className="text-muted-foreground">Versão:</span>{" "}
+                  <span className="font-mono font-medium text-foreground">{info.version || "—"}</span>
                 </div>
                 <div className="col-span-2">
                   <span className="text-muted-foreground">Data/hora da execução:</span>
