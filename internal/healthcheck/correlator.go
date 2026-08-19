@@ -93,15 +93,18 @@ func Correlate(ctx context.Context, store *HealthCheckStorage, result *HealthChe
 			continue
 		}
 		addK8sIssue(d.Namespace, d.Name, CorrelatedK8sIssue{
-			ResourceKind:       "Deployment",
-			ResourceName:       d.Name,
-			Status:             d.Status,
-			Message:            d.Message,
-			Severity:           statusToSeverity(d.Status),
-			Suggestions:        d.Suggestions,
-			ResourceVerdict:    d.ResourceVerdict,
-			CPUUsagePercent:    d.CPUUsagePercent,
-			MemoryUsagePercent: d.MemoryUsagePercent,
+			ResourceKind:            "Deployment",
+			ResourceName:            d.Name,
+			Status:                  d.Status,
+			Message:                 d.Message,
+			Severity:                statusToSeverity(d.Status),
+			Suggestions:             d.Suggestions,
+			ResourceVerdict:         d.ResourceVerdict,
+			CPUUsagePercent:         d.CPUUsagePercent,
+			MemoryUsagePercent:      d.MemoryUsagePercent,
+			SpinnakerRecentRollback: d.SpinnakerRecentRollback,
+			SpinnakerRollbackCHG:    d.SpinnakerRollbackCHG,
+			SpinnakerRollbackAt:     d.SpinnakerRollbackAt,
 		})
 	}
 

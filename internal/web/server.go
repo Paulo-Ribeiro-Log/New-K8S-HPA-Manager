@@ -1675,7 +1675,7 @@ func (s *Server) setupRoutes() {
 	filtersConfigPath := filepath.Join(baseDir, "health_check_filters.json") // ✅ Config de filtros
 	progressTracker := handlers.GetProgressTracker()                         // Reutilizar ProgressTracker global
 
-	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath, filtersConfigPath)
+	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath, filtersConfigPath, baseDir)
 	if err != nil {
 		fmt.Printf("⚠️  Falha ao criar Health Check Orchestrator: %v\n", err)
 	} else {

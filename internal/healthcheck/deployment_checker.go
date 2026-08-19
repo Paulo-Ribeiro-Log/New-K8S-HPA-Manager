@@ -47,7 +47,7 @@ func NewDeploymentChecker() *DeploymentChecker {
 
 // CheckAll verifica todos os deployments nos namespaces especificados
 // clusterName é usado para popular a base de conhecimento de deployments
-func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespaces []string, timeout int, clusterName string, registry *storage.DeploymentRegistry, resourceEnricher *ResourceEnricher, progressCallback ProgressCallback) []DeploymentHealth {
+func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespaces []string, timeout int, clusterName string, registry *storage.DeploymentRegistry, resourceEnricher *ResourceEnricher, spinnakerEnricher *SpinnakerEnricher, progressCallback ProgressCallback) []DeploymentHealth {
 	results := []DeploymentHealth{}
 
 	type nsDeployments struct {
@@ -100,7 +100,7 @@ func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Inte
 			}
 
 			deploymentCtx, cancel := c.withTimeout(ctx, timeout)
-			health := c.Check(deploymentCtx, client, metricsClient, batch.namespace, deployment.Name, timeout, clusterName, registry, resourceEnricher)
+			health := c.Check(deploymentCtx, client, metricsClient, batch.namespace, deployment.Name, timeout, clusterName, registry, resourceEnricher, spinnakerEnricher)
 			if cancel != nil {
 				cancel()
 			}
@@ -128,7 +128,7 @@ func (c *DeploymentChecker) getHealthSummary(health DeploymentHealth) string {
 
 // Check verifica a saúde de um deployment específico
 // clusterName e registry são usados para popular a base de conhecimento
-func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespace, name string, timeout int, clusterName string, registry *storage.DeploymentRegistry, resourceEnricher *ResourceEnricher) DeploymentHealth {
+func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespace, name string, timeout int, clusterName string, registry *storage.DeploymentRegistry, resourceEnricher *ResourceEnricher, spinnakerEnricher *SpinnakerEnricher) DeploymentHealth {
 	deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		status := StatusCritical
@@ -293,6 +293,15 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 	if health.Status == "" {
 		health.Status = StatusHealthy
 		health.Message = "Deployment saudável"
+	}
+
+	// 9. Rollback recente no Spinnaker — sinal extra de risco (seção 9 item 7 do plano de
+	// integração Spinnaker), mesmo quando nenhum problema K8s foi detectado agora (ex: o
+	// RollingUpdate nunca chegou a substituir a versão anterior, deployment aparenta saudável).
+	// Roda por último, de propósito: pode escalar health.Status mesmo que os passos 1-8 não
+	// tenham achado nada.
+	if spinnakerEnricher != nil {
+		c.enrichWithSpinnakerRollback(deployment, spinnakerEnricher, &health)
 	}
 
 	return health
@@ -802,6 +811,56 @@ func (c *DeploymentChecker) enrichWithResourceHistory(ctx context.Context, enric
 		health.Suggestions = appendSuggestionOnce(health.Suggestions,
 			"Uso real de CPU/memória (P95 histórico) está bem abaixo do request configurado — considerar reduzir requests/limits")
 	}
+}
+
+// enrichWithSpinnakerRollback checa se a versão vigente do deployment chegou lá por rollback
+// recente no Spinnaker (SpinnakerEnricher) — seção 9 item 7 do plano de integração Spinnaker.
+// Best-effort: sem erro pro chamador se não houver dado suficiente (nameApp/namespace não
+// corresponde a nenhuma execução conhecida, versão fora da janela de busca do Gate, etc.).
+func (c *DeploymentChecker) enrichWithSpinnakerRollback(deployment *appsv1.Deployment, enricher *SpinnakerEnricher, health *DeploymentHealth) {
+	if len(deployment.Spec.Template.Spec.Containers) == 0 {
+		return
+	}
+	// ImageTag, não a label app.kubernetes.io/version — achado real (ver
+	// internal/web/handlers/spinnaker.go): alguns Helm charts (ex: convair-helm) sanitizam essa
+	// label trocando "." por "-", enquanto o Spinnaker sempre usa o formato com ponto real. A
+	// imagem do container nunca passa por essa sanitização.
+	fullImage := deployment.Spec.Template.Spec.Containers[0].Image
+	currentVersion := storage.ExtractVersionFromImage(fullImage)
+	if currentVersion == "" {
+		return
+	}
+
+	rollback := enricher.RecentRollback(deployment.Name, deployment.Namespace, currentVersion)
+	if rollback == nil {
+		return
+	}
+
+	health.SpinnakerRecentRollback = true
+	health.SpinnakerRollbackCHG = rollback.FailedCHG
+	rollbackTime := rollback.RollbackEndedAt
+	if rollbackTime == 0 {
+		rollbackTime = rollback.PipelineExecutedAt
+	}
+	health.SpinnakerRollbackAt = rollbackTime
+
+	// Escala pra Warning mesmo se os passos 1-8 não acharam nada — um rollback recente é sinal
+	// de risco por si só (a versão vigente não é a que deveria estar rodando, mesmo que os pods
+	// pareçam saudáveis agora). Nunca rebaixa uma severidade já mais grave (Critical continua
+	// Critical).
+	if health.Status == StatusHealthy {
+		health.Status = StatusWarning
+	}
+	chgNote := ""
+	if rollback.FailedCHG != "" {
+		chgNote = fmt.Sprintf(" (CHG %s)", rollback.FailedCHG)
+	}
+	rollbackKind := "implícito — deploy anterior falhou e a versão não foi substituída"
+	if rollback.RollbackType == "explicit" {
+		rollbackKind = "manual, via pipeline dedicado"
+	}
+	health.Suggestions = appendSuggestionOnce(health.Suggestions,
+		fmt.Sprintf("Rollback recente detectado no Spinnaker%s — %s. Revisar se a causa raiz do deploy revertido já foi corrigida antes de tentar novamente.", chgNote, rollbackKind))
 }
 
 // deploymentResourceBaseline soma o request (ou limit, como fallback) de CPU/memória de todos os
