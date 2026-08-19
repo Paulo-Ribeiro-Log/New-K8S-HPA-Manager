@@ -141,18 +141,16 @@ export function SpinnakerRolloutModal({
                   <span className="text-muted-foreground">Status da execução:</span>
                   <p className="font-medium mt-0.5 text-foreground">{info.execution_status || "—"}</p>
                 </div>
-                {/* Versão da aplicação nesta execução — pedido explícito do usuário. Linha
-                    própria (col-span-2), não empilhada dentro da célula de "Status da
-                    execução" — empilhar ali deixava essa coluna mais alta que "Última CHG
-                    aplicada" ao lado, quebrando o alinhamento das duas colunas (achado real,
-                    reportado pelo usuário com screenshot). */}
-                <div className="col-span-2">
-                  <span className="text-muted-foreground">Versão:</span>{" "}
-                  <span className="font-mono font-medium text-foreground">{info.version || "—"}</span>
-                </div>
-                <div className="col-span-2">
+                {/* Pedido explícito do usuário: "Versão" abaixo de "Status da execução" (mesma
+                    coluna), na MESMA LINHA de "Data/hora da execução" (que fica na coluna
+                    esquerda, abaixo de "Última CHG aplicada") — não mais col-span-2 sozinha. */}
+                <div>
                   <span className="text-muted-foreground">Data/hora da execução:</span>
                   <p className="font-medium mt-0.5 text-foreground">{fmtDate(info.pipeline_executed_at)}</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Versão:</span>
+                  <p className="font-mono font-medium mt-0.5 text-foreground">{info.version || "—"}</p>
                 </div>
                 {/* Pedido explícito do usuário: qual era a versão anterior a este deploy —
                     última execução SUCCEEDED antes desta, pulando falhas no meio. Ausente
