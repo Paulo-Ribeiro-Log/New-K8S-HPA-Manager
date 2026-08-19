@@ -112,16 +112,17 @@ type HealthCheckRequest struct {
 	Namespaces []string `json:"namespaces"` // Vazio = todos
 
 	// Opções de verificação
-	CheckDeployments bool `json:"check_deployments"`
-	CheckServices    bool `json:"check_services"`
-	CheckConfigs     bool `json:"check_configs"`
-	CheckEvents      bool `json:"check_events"`    // Verificar eventos do Kubernetes (FailedScheduling, etc.)
-	CheckHPAs        bool `json:"check_hpas"`      // Verificar HPAs (min=max, métricas, scaling)
-	CheckPVCs        bool `json:"check_pvcs"`      // Verificar PersistentVolumeClaims (status, storage class)
-	CheckNodes           bool `json:"check_nodes"`           // Verificar capacidade/utilização dos nós (pods ativos vs. capacidade)
-	CheckResourceHistory bool `json:"check_resource_history"` // Comparar uso real (P95 via Prometheus) vs. request configurado dos deployments
-	CheckDynatrace      bool `json:"check_dynatrace"`       // Verificar problems OPEN no Dynatrace
-	CheckOneAgentSignals bool `json:"check_oneagent_signals"` // Varrer entidades OneAgent por threshold (sem problem ativo)
+	CheckDeployments       bool `json:"check_deployments"`
+	CheckServices          bool `json:"check_services"`
+	CheckConfigs           bool `json:"check_configs"`
+	CheckEvents            bool `json:"check_events"`             // Verificar eventos do Kubernetes (FailedScheduling, etc.)
+	CheckHPAs              bool `json:"check_hpas"`               // Verificar HPAs (min=max, métricas, scaling)
+	CheckPVCs              bool `json:"check_pvcs"`               // Verificar PersistentVolumeClaims (status, storage class)
+	CheckNodes             bool `json:"check_nodes"`              // Verificar capacidade/utilização dos nós (pods ativos vs. capacidade)
+	CheckResourceHistory   bool `json:"check_resource_history"`   // Comparar uso real (P95 via Prometheus) vs. request configurado dos deployments
+	CheckSpinnakerRollback bool `json:"check_spinnaker_rollback"` // Sinal extra de risco: deployment com rollback recente no Spinnaker (seção 9 item 7 do plano)
+	CheckDynatrace         bool `json:"check_dynatrace"`          // Verificar problems OPEN no Dynatrace
+	CheckOneAgentSignals   bool `json:"check_oneagent_signals"`   // Varrer entidades OneAgent por threshold (sem problem ativo)
 
 	// Thresholds para OneAgent Signals (zero = usar defaults)
 	OneAgentThresholds OneAgentThresholds `json:"oneagent_thresholds,omitempty"`
@@ -242,6 +243,14 @@ type CorrelatedK8sIssue struct {
 	ResourceVerdict    string  `json:"resource_verdict,omitempty"`
 	CPUUsagePercent    float64 `json:"cpu_usage_percent,omitempty"`
 	MemoryUsagePercent float64 `json:"memory_usage_percent,omitempty"`
+
+	// Preenchidos apenas quando ResourceKind == "Deployment" e o Spinnaker detectou rollback
+	// recente (SpinnakerEnricher, seção 9 item 7 do plano de integração Spinnaker) — sinal de
+	// risco extra mesmo quando o deployment está saudável agora (ex: crash mascarado por
+	// RollingUpdate que nunca substituiu a versão anterior).
+	SpinnakerRecentRollback bool   `json:"spinnaker_recent_rollback,omitempty"`
+	SpinnakerRollbackCHG    string `json:"spinnaker_rollback_chg,omitempty"`
+	SpinnakerRollbackAt     int64  `json:"spinnaker_rollback_at,omitempty"` // epoch ms
 }
 
 // CorrelatedHealthItem une sintomas K8s com problems Dynatrace para o mesmo workload.
@@ -252,7 +261,7 @@ type CorrelatedHealthItem struct {
 	Cluster      string `json:"cluster"`
 
 	// K8s side (pode existir sem match DT)
-	K8sIssues  []CorrelatedK8sIssue `json:"k8s_issues,omitempty"`
+	K8sIssues   []CorrelatedK8sIssue `json:"k8s_issues,omitempty"`
 	K8sSeverity Severity             `json:"k8s_severity"`
 
 	// DT side (pode existir sem match K8s)
@@ -387,6 +396,13 @@ type DeploymentHealth struct {
 	CPUP95Millis    float64 `json:"cpu_p95_millis,omitempty"`
 	MemoryP95Bytes  float64 `json:"memory_p95_bytes,omitempty"`
 	ResourceVerdict string  `json:"resource_verdict,omitempty"` // "oom_risk" | "superprovisioned" | "ok"
+
+	// Spinnaker - Rollback recente (opcional, requer CheckSpinnakerRollback + projeto Spinnaker
+	// configurado no perfil do usuário). Ver SpinnakerEnricher — sinal de risco extra mesmo
+	// quando o deployment está saudável agora (seção 9 item 7 do plano de integração Spinnaker).
+	SpinnakerRecentRollback bool   `json:"spinnaker_recent_rollback,omitempty"`
+	SpinnakerRollbackCHG    string `json:"spinnaker_rollback_chg,omitempty"`
+	SpinnakerRollbackAt     int64  `json:"spinnaker_rollback_at,omitempty"` // epoch ms
 
 	// Recursos - Configuração
 	QoSClass           QoSClass             `json:"qos_class"`                     // Guaranteed, Burstable, BestEffort

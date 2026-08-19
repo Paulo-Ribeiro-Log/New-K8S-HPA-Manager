@@ -87,6 +87,7 @@ export interface HealthCheckRequest {
   check_pvcs: boolean;       // Verificar PVCs (status, StorageClass, access modes)
   check_nodes?: boolean;     // Verificar capacidade/utilização dos nós (pods ativos vs. capacidade)
   check_resource_history?: boolean; // Comparar uso real (P95 via Prometheus) vs. request configurado
+  check_spinnaker_rollback?: boolean; // Sinal extra de risco: deployment com rollback recente no Spinnaker
   check_dynatrace?: boolean;        // Verificar problems OPEN no Dynatrace
   check_oneagent_signals?: boolean; // Escanear métricas OneAgent (sem problem ativo)
 
@@ -197,6 +198,12 @@ export interface DeploymentHealth {
   cpu_p95_millis?: number;
   memory_p95_bytes?: number;
   resource_verdict?: string; // "oom_risk" | "superprovisioned" | "ok"
+
+  // Spinnaker - Rollback recente (opcional, requer check_spinnaker_rollback + projeto Spinnaker
+  // configurado no perfil do usuário)
+  spinnaker_recent_rollback?: boolean;
+  spinnaker_rollback_chg?: string;
+  spinnaker_rollback_at?: number; // epoch ms
 
   // Recursos - Configuração
   qos_class?: QoSClass;
@@ -726,6 +733,10 @@ export interface CorrelatedK8sIssue {
   resource_verdict?: string; // "oom_risk" | "superprovisioned" | "ok"
   cpu_usage_percent?: number;
   memory_usage_percent?: number;
+  // Preenchidos apenas quando resource_kind === "Deployment" e houve rollback recente no Spinnaker
+  spinnaker_recent_rollback?: boolean;
+  spinnaker_rollback_chg?: string;
+  spinnaker_rollback_at?: number; // epoch ms
 }
 
 // Item correlacionado: une sintomas K8s com problems Dynatrace do mesmo workload

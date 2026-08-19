@@ -25,22 +25,23 @@ type Orchestrator struct {
 	deploymentChecker  *DeploymentChecker
 	serviceChecker     *ServiceChecker
 	configChecker      *ConfigChecker
-	eventChecker       *EventChecker     // ✅ Verificador de eventos K8s
-	hpaChecker         *HPAChecker       // ✅ Verificador de HPAs
-	pvChecker          *PVChecker        // ✅ Verificador de PVCs
-	nodeChecker           *NodeChecker           // ✅ Verificador de capacidade/utilização dos nós
-	dynatraceChecker      *DynatraceChecker      // ✅ Verificador de problems Dynatrace
-	oneAgentChecker       *OneAgentSignalsChecker // ✅ Varredura OneAgent por threshold
-	nodePoolStore         *storage.NodePoolRegistryStore
-	depRegistry           *storage.DependencyRegistry
-	storage               *HealthCheckStorage
+	eventChecker       *EventChecker           // ✅ Verificador de eventos K8s
+	hpaChecker         *HPAChecker             // ✅ Verificador de HPAs
+	pvChecker          *PVChecker              // ✅ Verificador de PVCs
+	nodeChecker        *NodeChecker            // ✅ Verificador de capacidade/utilização dos nós
+	dynatraceChecker   *DynatraceChecker       // ✅ Verificador de problems Dynatrace
+	oneAgentChecker    *OneAgentSignalsChecker // ✅ Varredura OneAgent por threshold
+	nodePoolStore      *storage.NodePoolRegistryStore
+	depRegistry        *storage.DependencyRegistry
+	storage            *HealthCheckStorage
 	progressTracker    *sse.ProgressTracker
 	filterManager      *FilterManager              // ✅ Gerenciador de filtros
 	deploymentRegistry *storage.DeploymentRegistry // ✅ Base de conhecimento de deployments
+	baseDir            string                      // ~/.k8s-hpa-manager — usado pelo SpinnakerEnricher (spinnaker_config.json)
 }
 
 // NewOrchestrator cria um novo orchestrator
-func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse.ProgressTracker, dbPath string, filtersConfigPath string) (*Orchestrator, error) {
+func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse.ProgressTracker, dbPath string, filtersConfigPath string, baseDir string) (*Orchestrator, error) {
 	hcStorage, err := NewHealthCheckStorage(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
@@ -74,6 +75,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		progressTracker:    progressTracker,
 		filterManager:      filterManager,
 		deploymentRegistry: deploymentRegistry,
+		baseDir:            baseDir,
 	}, nil
 }
 
@@ -312,6 +314,25 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		}
 	}
 
+	// Rollback recente no Spinnaker como sinal extra de risco (seção 9 item 7 do
+	// SPINNAKER-INTEGRATION-PLAN.md) — opcional, condicionada a CheckSpinnakerRollback + projeto
+	// Spinnaker configurado no perfil do usuário + cluster com ambiente Spinnaker reconhecido
+	// (sufixo -hlg/-prd). Resolvido uma única vez por cluster (login + busca de execuções de
+	// todas as applications do projeto, ~7-10s), mesmo padrão de custo do resourceEnricher acima
+	// — nunca por deployment.
+	var spinnakerEnricher *SpinnakerEnricher
+	if req.CheckDeployments && req.CheckSpinnakerRollback {
+		enricher, err := NewSpinnakerEnricher(ctx, o.baseDir, cluster)
+		if err != nil {
+			log.Debug().Err(err).Str("cluster", cluster).
+				Msg("[HealthCheck] Spinnaker indisponível — sinal de rollback recente desabilitado para este cluster")
+		} else {
+			spinnakerEnricher = enricher
+			log.Debug().Str("cluster", cluster).Int("applications", len(enricher.executionsByApp)).
+				Msg("[HealthCheck] SpinnakerEnricher pronto — sinal de rollback recente habilitado para este cluster")
+		}
+	}
+
 	// Executar checks em paralelo (dentro do cluster)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -381,7 +402,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "deployments", message, deploymentProgress, status)
 			}
 
-			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.GetTimeoutDeployments(), cluster, o.deploymentRegistry, resourceEnricher, deploymentCallback)
+			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.GetTimeoutDeployments(), cluster, o.deploymentRegistry, resourceEnricher, spinnakerEnricher, deploymentCallback)
 
 			// ✅ Aplicar filtros se habilitado
 			if req.ApplyFilters && o.filterManager != nil {

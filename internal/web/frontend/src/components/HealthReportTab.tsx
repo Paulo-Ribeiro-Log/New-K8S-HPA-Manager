@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AlertTriangle, Server, Clock } from "lucide-react";
+import { AlertTriangle, Server, Clock, RotateCcw } from "lucide-react";
 import type { HealthCheckResult, Severity, NodeHealth } from "@/types/healthcheck";
 import { SeverityWeight, SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 
@@ -13,6 +13,10 @@ interface ReportFinding {
   isChronic?: boolean;
   chronicSince?: string;
   resourceVerdict?: string;
+  // Rollback recente no Spinnaker (seção 9 item 7 do plano de integração Spinnaker) — sinal
+  // extra de risco, presente só quando o Deployment teve rollback dentro de ~48h.
+  spinnakerRollbackCHG?: string;
+  spinnakerRollbackAt?: number;
 }
 
 // Prioriza dados correlacionados (K8s+DT) quando disponíveis — já vêm com severidade final
@@ -32,6 +36,8 @@ function buildFindings(result: HealthCheckResult): ReportFinding[] {
           isChronic: issue.chronicity?.is_chronic,
           chronicSince: issue.chronicity?.first_seen_ever,
           resourceVerdict: issue.resource_verdict,
+          spinnakerRollbackCHG: issue.spinnaker_recent_rollback ? issue.spinnaker_rollback_chg : undefined,
+          spinnakerRollbackAt: issue.spinnaker_rollback_at,
         });
       }
     }
@@ -47,6 +53,8 @@ function buildFindings(result: HealthCheckResult): ReportFinding[] {
       resourceName: `${d.namespace}/${d.name}`,
       message: d.message,
       resourceVerdict: d.resource_verdict,
+      spinnakerRollbackCHG: d.spinnaker_recent_rollback ? d.spinnaker_rollback_chg : undefined,
+      spinnakerRollbackAt: d.spinnaker_rollback_at,
     });
   }
   for (const e of result.event_results ?? []) {
@@ -184,6 +192,15 @@ export const HealthReportTab = ({ result }: { result: HealthCheckResult }) => {
                         {verdict && (
                           <Badge variant="outline" className={`text-xs w-fit ${verdict.className}`}>
                             {verdict.label}
+                          </Badge>
+                        )}
+                        {f.spinnakerRollbackCHG && (
+                          <Badge
+                            variant="outline"
+                            className="text-xs w-fit gap-1 bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30"
+                            title={f.spinnakerRollbackAt ? `Rollback em ${new Date(f.spinnakerRollbackAt).toLocaleString("pt-BR")}` : undefined}
+                          >
+                            <RotateCcw className="h-3 w-3" /> Rollback recente ({f.spinnakerRollbackCHG})
                           </Badge>
                         )}
                       </div>

@@ -105,3 +105,41 @@ func TestGetProductionVersion_NotFoundAtAll(t *testing.T) {
 		t.Fatal("esperava erro para app inexistente no registry")
 	}
 }
+
+// TestGetAll_OnlyValidVersions_AcceptsDashSanitizedFormat reproduz o achado real (ver
+// internal/web/handlers/spinnaker.go): o chart convair-helm (squad Reversa/Dat) sanitiza
+// app.kubernetes.io/version trocando "." por "-" (ex: "0.0.2-6" vira "0-0-2-6"). Sem aceitar
+// essa variante, onlyValidVersions=true excluía esses registros inteiros — não só do Spinnaker,
+// de qualquer consumidor de GetAll(..., true) (ex: GitHub Releases).
+func TestGetAll_OnlyValidVersions_AcceptsDashSanitizedFormat(t *testing.T) {
+	r := newTestRegistry(t)
+	records := []DeploymentRecord{
+		{DeploymentName: "dot-format", Namespace: "ns", Cluster: "c", AppName: "dot-format", Version: "0.0.2-6", LastSeen: time.Now()},
+		{DeploymentName: "dash-format", Namespace: "ns", Cluster: "c", AppName: "dash-format", Version: "0-0-2-6", LastSeen: time.Now()},
+		{DeploymentName: "garbage-format", Namespace: "ns", Cluster: "c", AppName: "garbage-format", Version: "latest", LastSeen: time.Now()},
+	}
+	for _, rec := range records {
+		if err := r.UpsertDeployment(rec); err != nil {
+			t.Fatalf("upsert %s: %v", rec.DeploymentName, err)
+		}
+	}
+
+	got, err := r.GetAll("c", "ns", true)
+	if err != nil {
+		t.Fatalf("GetAll: %v", err)
+	}
+
+	names := map[string]bool{}
+	for _, rec := range got {
+		names[rec.DeploymentName] = true
+	}
+	if !names["dot-format"] {
+		t.Error("esperava 'dot-format' (versão com ponto) no resultado")
+	}
+	if !names["dash-format"] {
+		t.Error("esperava 'dash-format' (versão sanitizada com hífen, achado real do chart convair-helm) no resultado")
+	}
+	if names["garbage-format"] {
+		t.Error("'garbage-format' (versão não-semver, ex: 'latest') não deveria passar no filtro")
+	}
+}

@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -26,6 +26,7 @@ import type {
   DeploymentManifest,
   PodSummary,
   BatchPodMetrics,
+  SpinnakerRollbackInfo,
 } from "@/lib/api/types";
 import { useDeployments, useDynatracePodStatus } from "@/hooks/useAPI";
 import { DeploymentMonitorTable } from "@/components/DeploymentMonitorTable";
@@ -61,6 +62,73 @@ import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { useUserPermissions } from "@/hooks/useUserPermissions";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
+import { useSpinnakerRolloutStatus } from "@/hooks/useSpinnaker";
+import { SpinnakerRolloutModal } from "@/components/SpinnakerRolloutModal";
+
+// Badge/chip do Spinnaker (SPINNAKER-INTEGRATION-PLAN.md, seção 8) — mesmo componente visual
+// usado nos dois lugares pedidos: informativo (sem onClick) na lista à esquerda, e como
+// gatilho do modal (com onClick) no painel de visualização à direita. Deliberadamente um chip
+// compacto, não um botão de ação com label — não é uma ação, é uma informação de estado.
+function SpinnakerChip({ info, onClick }: { info: SpinnakerRollbackInfo | undefined; onClick?: () => void }) {
+  if (!info?.matched) return null;
+  const isRollback = info.is_rollback === true;
+  const succeeded = !isRollback && info.execution_status === "SUCCEEDED";
+  const Icon = isRollback ? RotateCcw : Rocket;
+  const label = info.last_chg_applied || (isRollback ? "Rollback" : "");
+  if (!label) return null;
+
+  // Cor por estado: âmbar pra rollback (já existia), verde pra deploy normal com sucesso
+  // confirmado (achado real do usuário — o chip neutro/cinza passava despercebido, mesmo sendo
+  // a informação mais comum e "boa notícia"), cinza neutro só quando o status não é SUCCEEDED
+  // (ex: execução em andamento/falha sem caracterizar rollback pela regra implícita).
+  const colorClass = isRollback
+    ? "border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+    : succeeded
+      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+      : "border-border bg-muted/40 text-muted-foreground";
+
+  // from_cache: dado veio do SpinnakerHistoryStore (persistência local), não de uma busca ao
+  // vivo no Gate — achado real: a busca do Gate só enxerga os últimos ~28 dias, então um
+  // deployment sem redeploy recente sai da resposta ao vivo mesmo sem nada ter mudado.
+  // Indicado com borda tracejada (sinal visual sutil, sem poluir com um badge extra) + texto
+  // explícito no tooltip.
+  const cacheNote = info.from_cache
+    ? ` — dado de scan anterior (${new Date(info.cached_at || 0).toLocaleDateString("pt-BR")}), fora da janela atual do Spinnaker`
+    : "";
+
+  const chip = (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors ${colorClass} ${info.from_cache ? "border-dashed" : ""} ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
+      title={
+        (isRollback
+          ? `Rollback (${info.rollback_type === "explicit" ? "manual" : "implícito"}) — CHG que falhou: ${info.failed_chg || "?"}`
+          : `Última CHG aplicada: ${info.last_chg_applied || "?"} (${info.execution_status || "status desconhecido"})`) + cacheNote
+      }
+    >
+      <Icon className="w-2.5 h-2.5 shrink-0" />
+      {label}
+    </span>
+  );
+
+  if (!onClick) return chip;
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        // stopPropagation defensivo — o card da lista (item 6 da seção 9) envolve o chip num
+        // wrapper clicável próprio (não mais um <button>, pra evitar aninhar <button> dentro de
+        // <button>, HTML inválido); sem isso o clique no chip também dispararia a seleção do
+        // card por baixo dele.
+        e.stopPropagation();
+        onClick();
+      }}
+      className="inline-flex"
+    >
+      {chip}
+    </button>
+  );
+}
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
 const formatVersion = (version: string | undefined): string => {
@@ -100,6 +168,22 @@ export const DeploymentsTab = ({
   // Permissões K8s reais — usa namespace do deployment selecionado ou o namespace filtrado
   const activeNamespace = selectedDeployment?.namespace || selectedNamespace;
   const { permissions: k8sPerms } = useK8sPermissions(cluster, activeNamespace);
+
+  // Spinnaker — detecção de rollback (SPINNAKER-INTEGRATION-PLAN.md, seção 8). Uma única
+  // chamada em lote cobre todos os cards da lista (seção 9.1 do plano — nunca N chamadas);
+  // env é derivado do nome do cluster (hlg/prd), null quando não reconhecido (ex: cluster de
+  // ambiente sem Gate próprio confirmado) e o hook simplesmente fica `enabled: false` nesse caso.
+  const spinnakerStatus = useSpinnakerRolloutStatus(cluster, selectedNamespace || undefined);
+  const [spinnakerModalOpen, setSpinnakerModalOpen] = useState(false);
+
+  // Chave de correlação com o resultado do Spinnaker: nome do próprio objeto Deployment no K8s
+  // (dep.name), não a label app.kubernetes.io/name — achado real (internal/web/handlers/spinnaker.go):
+  // alguns Deployments (chart convair-helm) têm essa label igual ao nome do CHART, não da
+  // aplicação, o que colidia vários Deployments diferentes na mesma chave. dep.name é sempre
+  // único e é o mesmo valor que o Spinnaker reporta em trigger.parameters["Application Name"].
+  const spinnakerKeyFor = useCallback((dep: DeploymentSummary) => {
+    return `${dep.name}/${dep.namespace}`;
+  }, []);
   // Status de monitoramento Dynatrace — a coluna DT no drill-down de pods (PodMonitorTable
   // abaixo) precisa desses props tanto quanto a aba Pods principal; sem isso a coluna existia
   // mas nunca renderizava nada aqui (dtHasLoaded sempre false por padrão).
@@ -2438,6 +2522,15 @@ export const DeploymentsTab = ({
             <Activity className="w-4 h-4 mr-2" />
             Comportamento
           </Button>
+          {/* Chip do Spinnaker (seção 8 do plano) — gatilho do modal, mesmo componente visual
+              usado no card da lista (só que lá sem onClick, aqui clicável). Sem "matched" não
+              renderiza nada (não é uma ação sempre disponível como os botões acima, é uma
+              informação — só existe quando há dado real). */}
+          <SpinnakerChip
+            info={spinnakerStatus.data?.[spinnakerKeyFor(selectedDeployment)]}
+            onClick={() => setSpinnakerModalOpen(true)}
+          />
+          {spinnakerStatus.isLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
           <AITriggerButton
             resourceType="Deployment"
             cluster={cluster}
@@ -2630,9 +2723,22 @@ export const DeploymentsTab = ({
                 className="mt-1"
                 aria-label={`Selecionar ${dep.name}`}
               />
-              <button
+              {/* div (não <button>) — o card agora contém o chip do Spinnaker, que é ele
+                  próprio um <button> clicável (item 6 da seção 9 do plano); <button> dentro de
+                  <button> é HTML inválido e o navegador quebra o aninhamento de forma
+                  imprevisível. role="button"+tabIndex+onKeyDown preservam a semântica/acessibilidade
+                  de antes. */}
+              <div
+                role="button"
+                tabIndex={0}
                 onClick={() => handleSelectDeployment(dep)}
-                className="flex-1 text-left"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleSelectDeployment(dep);
+                  }
+                }}
+                className="flex-1 text-left cursor-pointer"
                 title={statusInfo?.tooltip || undefined}
               >
                 {severity !== "ok" && (
@@ -2650,6 +2756,21 @@ export const DeploymentsTab = ({
                   )}
                 </div>
                 <div className="text-xs text-muted-foreground">{dep.namespace}</div>
+                {/* Mesmo chip do painel direito (seção 8 do plano) — item 6 da seção 9: também
+                    clicável aqui, atalho pra abrir o modal direto da lista sem precisar
+                    selecionar o deployment primeiro. Selecionar + abrir juntos porque o modal
+                    lê o dado de spinnakerStatus via spinnakerKeyFor(selectedDeployment) — sem
+                    selecionar primeiro, o modal mostraria o card errado (o que já estava
+                    selecionado antes do clique). */}
+                <div className="mt-0.5">
+                  <SpinnakerChip
+                    info={spinnakerStatus.data?.[spinnakerKeyFor(dep)]}
+                    onClick={() => {
+                      handleSelectDeployment(dep);
+                      setSpinnakerModalOpen(true);
+                    }}
+                  />
+                </div>
                 {dep.serviceClusterIPs && dep.serviceClusterIPs.length > 0 && (
                   <div className="text-[10px] font-mono mt-0.5 flex items-center gap-1">
                     <span className="text-muted-foreground/60 uppercase tracking-wide">CIP</span>
@@ -2670,7 +2791,7 @@ export const DeploymentsTab = ({
                     {statusInfo.label}
                   </div>
                 )}
-              </button>
+              </div>
             </div>
           );
         })}
@@ -5452,6 +5573,19 @@ export const DeploymentsTab = ({
           cluster={selectedDeployment.cluster}
           namespace={selectedDeployment.namespace}
           deployment={selectedDeployment.name}
+        />
+      )}
+
+      {/* Modal Spinnaker — detecção de rollback (SPINNAKER-INTEGRATION-PLAN.md, seção 8) */}
+      {selectedDeployment && (
+        <SpinnakerRolloutModal
+          open={spinnakerModalOpen}
+          onOpenChange={setSpinnakerModalOpen}
+          deploymentName={selectedDeployment.name}
+          namespace={selectedDeployment.namespace}
+          info={spinnakerStatus.data?.[spinnakerKeyFor(selectedDeployment)]}
+          loading={spinnakerStatus.isLoading}
+          error={spinnakerStatus.isError ? (spinnakerStatus.error instanceof Error ? spinnakerStatus.error.message : "Falha ao consultar o Spinnaker") : undefined}
         />
       )}
 

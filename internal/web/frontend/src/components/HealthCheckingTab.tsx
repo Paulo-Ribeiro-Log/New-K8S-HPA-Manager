@@ -83,6 +83,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [checkPVCs, setCheckPVCs] = useState(true);      // Verificar PVCs (habilitado por padrão)
   const [checkNodes, setCheckNodes] = useState(false);   // Verificar capacidade/utilização dos nós (desabilitado por padrão)
   const [checkResourceHistory, setCheckResourceHistory] = useState(false); // Comparar uso real (P95 Prometheus) vs. request (desabilitado por padrão)
+  const [checkSpinnakerRollback, setCheckSpinnakerRollback] = useState(false); // Sinal extra de risco: rollback recente no Spinnaker (desabilitado por padrão)
   const [checkDynatrace, setCheckDynatrace] = useState(false); // Verificar problems Dynatrace
   const [checkOneAgentSignals, setCheckOneAgentSignals] = useState(false); // Escanear sinais OneAgent
   const [timeout, setTimeout] = useState(30); // Timeout geral (fallback)
@@ -266,7 +267,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       return;
     }
 
-    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs && !checkNodes && !checkResourceHistory && !checkDynatrace && !checkOneAgentSignals) {
+    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs && !checkNodes && !checkResourceHistory && !checkSpinnakerRollback && !checkDynatrace && !checkOneAgentSignals) {
       console.error("[HealthCheckingTab] No check types selected");
       toast.error("Selecione pelo menos um tipo de check");
       return;
@@ -289,6 +290,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       check_pvcs: checkPVCs,
       check_nodes: checkNodes,
       check_resource_history: checkResourceHistory,
+      check_spinnaker_rollback: checkSpinnakerRollback,
       check_dynatrace: checkDynatrace,
       check_oneagent_signals: checkOneAgentSignals,
       ai_email: localStorage.getItem("ai_email") || undefined,
@@ -597,6 +599,19 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                       </Label>
                       <Badge variant="outline" className="text-xs">
                         P95 histórico, requer Prometheus alcançável
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="check-spinnaker-rollback"
+                        checked={checkSpinnakerRollback}
+                        onCheckedChange={(checked) => setCheckSpinnakerRollback(checked as boolean)}
+                      />
+                      <Label htmlFor="check-spinnaker-rollback" className="text-sm cursor-pointer">
+                        Rollback Recente (Spinnaker)
+                      </Label>
+                      <Badge variant="outline" className="text-xs">
+                        últimas 48h, requer projeto Spinnaker configurado no perfil
                       </Badge>
                     </div>
                     <div className="flex items-center gap-2">

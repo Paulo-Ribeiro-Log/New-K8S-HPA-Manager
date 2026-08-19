@@ -1526,6 +1526,88 @@ export interface SSOProfile {
   has_password?: boolean;
 }
 
+// ─── Spinnaker (SPINNAKER-INTEGRATION-PLAN.md) ────────────────────────────
+
+export interface SpinnakerConfig {
+  login_identifier?: "email" | "matricula";
+  hlg_base_url?: string;
+  prd_base_url?: string;
+  selected_project?: string;
+}
+
+export interface SpinnakerProject {
+  id: string;
+  name: string;
+  email?: string;
+  config: {
+    applications: string[];
+  };
+}
+
+// Contrato final — seção 5 do plano. is_rollback é tri-state (null = não determinado, nunca
+// inferir "não houve rollback" por ausência de dado).
+export interface SpinnakerRollbackInfo {
+  matched: boolean;
+  is_rollback: boolean | null;
+  rollback_type?: "explicit" | "implicit" | "";
+  last_chg_applied?: string;
+  last_chg_applied_url?: string; // link direto pra CHG no ServiceNow (seção 9 item 3 do plano)
+  pipeline_executed_at?: number;
+  execution_status?: string;
+  version?: string; // versão-alvo da execução decisiva — pedido explícito do usuário
+  rollback_started_at?: number;
+  rollback_ended_at?: number;
+  failed_chg?: string;
+  failed_chg_url?: string; // link direto pra CHG no ServiceNow
+  rollback_pipeline_name?: string;
+  spinnaker_execution_id?: string;
+  spinnaker_execution_url?: string;
+  // Presentes quando o dado veio do SpinnakerHistoryStore (persistência local) em vez de uma
+  // busca ao vivo no Gate — achado real: `executions/search` só devolve as execuções dos
+  // últimos ~28 dias, independente do "limit" pedido. from_cache=true significa "confirmamos
+  // isso numa consulta anterior, mas não está mais dentro da janela atual do Gate".
+  from_cache?: boolean;
+  cached_at?: number; // epoch ms — última vez confirmado AO VIVO no Gate
+  // Últimas execuções (mais recente primeiro) desse deployment, não só a que decidiu o
+  // resultado acima — seção 9 item 5 do plano. Ausente quando FromCache=true (não persistido).
+  recent_executions?: SpinnakerExecutionSummary[];
+  // Detalhamento por etapa (Step/Started/Completed/Status) da execução que decidiu o resultado
+  // acima — mesma tabela "Execution Details" da UI do Deck. Pedido explícito do usuário.
+  stages?: SpinnakerStageSummary[];
+  // Versão que estava rodando no cluster imediatamente antes da execução acima (a última
+  // SUCCEEDED anterior, pulando falhas no meio). Pedido explícito do usuário. Ausente quando
+  // não há nenhuma execução SUCCEEDED mais antiga dentro da janela de busca atual do Gate.
+  previous_version?: string;
+  previous_version_chg?: string;
+  previous_version_chg_url?: string;
+  previous_version_executed_at?: number;
+}
+
+export interface SpinnakerExecutionSummary {
+  execution_id: string;
+  pipeline_name: string;
+  status: string;
+  executed_at: number;
+  version?: string;
+  chg?: string;
+  chg_url?: string;
+  is_rollback: boolean;
+}
+
+export interface SpinnakerStageSummary {
+  name: string;
+  status: string;
+  started_at?: number;
+  completed_at?: number;
+  // Reconstrução legível da causa de falha (Stage.FailureLog no backend) — presente só em
+  // etapas com falha real (não é log bruto de pod, é o mesmo dado que a UI do Deck usa em
+  // "Execution Details"). Ausente em etapas bem-sucedidas/puladas.
+  log?: string;
+}
+
+// Chave do mapa devolvido por /spinnaker/rollout-status/batch: "appName/namespace"
+export type SpinnakerRolloutStatusBatch = Record<string, SpinnakerRollbackInfo>;
+
 export interface AWXStatus {
   configured: boolean;
   reachable: boolean;

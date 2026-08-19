@@ -42,6 +42,10 @@ export function useUserProfile() {
   const [dynatraceStatus, setDynatraceStatus] = useState<{ enabled: boolean; has_token: boolean } | null>(null);
   const [dynatraceLoading, setDynatraceLoading] = useState(true);
 
+  // Status do Spinnaker
+  const [spinnakerStatus, setSpinnakerStatus] = useState<{ hlg_base_url?: string; prd_base_url?: string; selected_project?: string } | null>(null);
+  const [spinnakerLoading, setSpinnakerLoading] = useState(true);
+
   // Verificar status do Nexus, ServiceNow, AWX e Dynatrace ao montar
   useEffect(() => {
     const checkNexus = async () => {
@@ -88,10 +92,22 @@ export function useUserProfile() {
       }
     };
 
+    const checkSpinnaker = async () => {
+      try {
+        const status = await apiClient.getSpinnakerConfig();
+        setSpinnakerStatus(status);
+      } catch {
+        setSpinnakerStatus(null);
+      } finally {
+        setSpinnakerLoading(false);
+      }
+    };
+
     checkNexus();
     checkServiceNow();
     checkAWX();
     checkDynatrace();
+    checkSpinnaker();
   }, []);
 
   // Funcao para refresh manual do status
@@ -100,13 +116,15 @@ export function useUserProfile() {
     setServiceNowLoading(true);
     setAwxLoading(true);
     setDynatraceLoading(true);
+    setSpinnakerLoading(true);
 
     try {
-      const [nexus, servicenow, awx, dynatrace] = await Promise.allSettled([
+      const [nexus, servicenow, awx, dynatrace, spinnaker] = await Promise.allSettled([
         apiClient.get<NexusStatus>('/nexus/status'),
         apiClient.get<{ valid: boolean; status: string }>('/servicenow/session-status'),
         apiClient.getAWXStatus(),
         apiClient.getDynatraceConfig(),
+        apiClient.getSpinnakerConfig(),
       ]);
 
       if (nexus.status === 'fulfilled') {
@@ -132,11 +150,18 @@ export function useUserProfile() {
       } else {
         setDynatraceStatus(null);
       }
+
+      if (spinnaker.status === 'fulfilled') {
+        setSpinnakerStatus(spinnaker.value);
+      } else {
+        setSpinnakerStatus(null);
+      }
     } finally {
       setNexusLoading(false);
       setServiceNowLoading(false);
       setAwxLoading(false);
       setDynatraceLoading(false);
+      setSpinnakerLoading(false);
     }
   }, []);
 
@@ -198,6 +223,19 @@ export function useUserProfile() {
       dynatraceCredStatus = 'error';
     }
 
+    // Determinar status do Spinnaker — "configured" só quando um projeto foi escolhido (o que
+    // exige login real bem-sucedido antes, ver SpinnakerCredentialModal.tsx); URL(s) preenchidas
+    // sem projeto selecionado conta como configuração incompleta ("error"), mesmo espírito do
+    // Dynatrace acima.
+    let spinnakerCredStatus: CredentialStatus = 'not_configured';
+    if (spinnakerLoading) {
+      spinnakerCredStatus = 'validating';
+    } else if (spinnakerStatus?.selected_project) {
+      spinnakerCredStatus = 'configured';
+    } else if (spinnakerStatus?.hlg_base_url || spinnakerStatus?.prd_base_url) {
+      spinnakerCredStatus = 'error';
+    }
+
     return {
       nexus: {
         id: 'nexus',
@@ -234,8 +272,15 @@ export function useUserProfile() {
         status: dynatraceCredStatus,
         lastChecked: new Date(),
       },
+      spinnaker: {
+        id: 'spinnaker',
+        name: 'Spinnaker',
+        description: 'Detecção de rollback de deployments (aba Deployments)',
+        status: spinnakerCredStatus,
+        lastChecked: new Date(),
+      },
     };
-  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading, awxStatus, awxLoading, dynatraceStatus, dynatraceLoading]);
+  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading, awxStatus, awxLoading, dynatraceStatus, dynatraceLoading, spinnakerStatus, spinnakerLoading]);
 
   const isLoading = permissionsLoading || githubLoading;
 

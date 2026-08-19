@@ -32,6 +32,7 @@ export interface CredentialsState {
   servicenow?: CredentialInfo;
   awx?: CredentialInfo;
   dynatrace?: CredentialInfo;
+  spinnaker?: CredentialInfo;
 }
 
 // Tema da aplicacao
