@@ -95,6 +95,14 @@ export interface ScanResult {
   totalScanned: number;
   summary: ScanSummary;
   scannedAt: string;
+  // failures — clusters que falharam durante o scan (cliente K8s inacessível, VPN fora do ar,
+  // etc.) e por isso não aparecem em `certificates`. Ver CertificatesTab.tsx.
+  failures: ScanFailure[];
+}
+
+export interface ScanFailure {
+  cluster: string;
+  error: string;
 }
 
 export interface ScanSummary {

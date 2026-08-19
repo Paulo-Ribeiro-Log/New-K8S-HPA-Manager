@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -153,7 +154,24 @@ func ValidatePEM(certPEM, keyPEM []byte) error {
 	return nil
 }
 
-// parsePEMChain parseia todos os certificados em um bloco PEM (chain)
+// parsePEMChain parseia todos os certificados em um bloco PEM (chain).
+//
+// Bug real corrigido (relatado ao vivo: "por vezes ignora um certificado dentro de namespaces,
+// mesmo que ele exista") — a versão original abortava a função INTEIRA (`return nil, err`) assim
+// que QUALQUER bloco `CERTIFICATE` do PEM falhasse em `x509.ParseCertificate`, mesmo quando esse
+// bloco era um intermediário/raiz no MEIO ou FIM da chain, com o leaf (primeiro bloco, o
+// certificado de verdade da aplicação) perfeitamente válido. Como `ParseTLSSecret` (chamador
+// principal) usa `certs[0]` como leaf, um Secret com certificado real e funcionando — mas cujo
+// bundle PEM carregava um intermediário malformado/incomum em algum lugar (bundle com comentários,
+// certificado duplicado, tool de terceiro que gera PEM não-padrão, etc.) — fazia a chain inteira
+// falhar, descartando SILENCIOSAMENTE até o leaf válido: `scanCluster` só loga em `Warn` e faz
+// `continue`, então o certificado simplesmente não aparecia na listagem, indistinguível de "esse
+// Secret não existe". Afeta todos os chamadores de `parsePEMChain` (scan, validação de cadeia,
+// rollback, backup manual, enriquecimento via Prometheus), não só o scan — mesma correção central
+// resolve todos de uma vez. Corrigido pulando (com log `Warn`, não abortando) blocos individuais
+// que falham — a chain resultante vem só com os blocos que realmente parsearam, sem exigir que
+// TODOS sejam válidos. `ParseTLSSecret` já checa `len(certs) == 0` separadamente pra cobrir o caso
+// de falha total (PEM sem nenhum certificado válido) — esse comportamento não muda.
 func parsePEMChain(data []byte) ([]*x509.Certificate, error) {
 	var certs []*x509.Certificate
 	rest := data
@@ -169,7 +187,8 @@ func parsePEMChain(data []byte) ([]*x509.Certificate, error) {
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("erro ao parsear certificado: %w", err)
+			log.Warn().Err(err).Msg("Bloco CERTIFICATE malformado dentro de uma chain PEM — ignorado, restante da chain segue processado normalmente")
+			continue
 		}
 		certs = append(certs, cert)
 	}

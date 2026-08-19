@@ -35,6 +35,7 @@ func NewScanner(km *config.KubeConfigManager, rollbackStore *RollbackStore) *Sca
 func (s *Scanner) ScanClusters(ctx context.Context, req ScanRequest) (*ScanResult, error) {
 	result := &ScanResult{
 		ScannedAt: time.Now(),
+		Failures:  []ScanFailure{},
 	}
 
 	var mu sync.Mutex
@@ -48,6 +49,13 @@ func (s *Scanner) ScanClusters(ctx context.Context, req ScanRequest) (*ScanResul
 			certs, scanned, err := s.scanCluster(ctx, clusterName, req.Namespaces, req.Filter)
 			if err != nil {
 				log.Error().Err(err).Str("cluster", clusterName).Msg("Erro ao escanear cluster")
+				// Bug real corrigido: até aqui, o erro só ia pro log do servidor e o cluster
+				// simplesmente sumia do resultado — nenhum sinal chegava ao usuário (indistinguível
+				// de "cluster sem certificados TLS"). Agora fica registrado em result.Failures,
+				// devolvido na resposta pro frontend mostrar quais clusters falharam e por quê.
+				mu.Lock()
+				result.Failures = append(result.Failures, ScanFailure{Cluster: clusterName, Error: err.Error()})
+				mu.Unlock()
 				return
 			}
 

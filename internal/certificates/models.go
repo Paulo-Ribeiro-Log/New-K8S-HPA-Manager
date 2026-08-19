@@ -112,6 +112,22 @@ type ScanResult struct {
 	TotalScanned int               `json:"totalScanned"`
 	Summary      ScanSummary       `json:"summary"`
 	ScannedAt    time.Time         `json:"scannedAt"`
+	// Failures — clusters que falharam durante o scan (cliente K8s inacessível, VPN fora do ar,
+	// erro ao listar Secrets, etc.). Bug real corrigido: antes, uma falha em `scanCluster` só era
+	// logada no servidor (log.Error) e o cluster simplesmente desaparecia do resultado, sem
+	// nenhum sinal pro usuário — indistinguível de "esse cluster genuinamente não tem certificado
+	// TLS nenhum". `ScanClusters` sempre retornava erro nil no nível do handler, então nem o
+	// tratamento de erro HTTP existente pegava esse caso. Populado por `ScanClusters`
+	// (scanner.go); nunca inicializar como `var s []T` — sempre `[]ScanFailure{}` — pra não virar
+	// `null` no JSON (mesma armadilha documentada no Access Checker).
+	Failures []ScanFailure `json:"failures"`
+}
+
+// ScanFailure descreve um cluster que falhou durante o scan de certificados — ver comentário de
+// ScanResult.Failures.
+type ScanFailure struct {
+	Cluster string `json:"cluster"`
+	Error   string `json:"error"`
 }
 
 // ScanSummary representa o resumo de um scan

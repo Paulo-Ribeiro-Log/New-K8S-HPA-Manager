@@ -289,8 +289,24 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
         clusters: selectedClusters,
         filter: filterType,
       };
-      await scanCertificates(req);
-      toast.success("Scan concluido");
+      const result = await scanCertificates(req);
+      // Bug real corrigido (relatado pelo usuário: "o scan de certificados por vezes falha
+      // deixando alguns clusters de fora, sem nenhum aviso"): antes, um cluster que falhasse
+      // (VPN fora do ar, cliente K8s inacessível, etc.) simplesmente desaparecia do resultado —
+      // indistinguível de "esse cluster não tem certificado TLS nenhum". Backend agora devolve
+      // `failures` com cada cluster que falhou + o motivo; aqui isso vira um toast de aviso (em
+      // vez de "Scan concluído" genérico) e um banner persistente no painel de resumo (ver
+      // abaixo, dentro do bloco `{scanResult && (...)}`) — não desaparece sozinho como o toast,
+      // fica visível até o próximo scan bem-sucedido cobrir os mesmos clusters.
+      if (result.failures?.length > 0) {
+        const names = result.failures.map(f => f.cluster).join(", ");
+        toast.warning(`Scan concluído com ${result.failures.length} cluster(s) sem sucesso`, {
+          description: names,
+          duration: 10000,
+        });
+      } else {
+        toast.success("Scan concluido");
+      }
     } catch {
       toast.error("Erro ao escanear certificados", {
         description: scanError || "Erro desconhecido",
@@ -927,6 +943,39 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
               <p className="text-xs text-muted-foreground">Total</p>
             </div>
           </div>
+
+          {/* Banner de clusters que falharam no scan — persistente (não some sozinho como o
+              toast), fica visível até o próximo scan bem-sucedido cobrir os mesmos clusters. Ver
+              comentário do bug real corrigido em handleScan. */}
+          {scanResult.failures?.length > 0 && (
+            <div className="rounded border border-orange-500/40 bg-orange-500/10 p-2 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-orange-400">
+                <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                <p className="text-xs font-medium">
+                  {scanResult.failures.length} cluster(s) fora do scan
+                </p>
+              </div>
+              <ul className="text-[11px] text-muted-foreground space-y-0.5 pl-5 list-disc">
+                {scanResult.failures.map(f => (
+                  <li key={f.cluster} title={f.error}>
+                    <span className="font-medium text-foreground">{f.cluster}</span>
+                    {" — "}
+                    <span className="line-clamp-1">{f.error}</span>
+                  </li>
+                ))}
+              </ul>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full h-6 text-[11px]"
+                onClick={handleScan}
+                disabled={scanning}
+              >
+                <RefreshCcw className="h-3 w-3 mr-1.5" />
+                Tentar novamente
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
