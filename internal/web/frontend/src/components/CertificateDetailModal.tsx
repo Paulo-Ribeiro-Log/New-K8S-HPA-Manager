@@ -368,12 +368,20 @@ export function CertificateDetailModal({
                 </Card>
               )}
 
-              {/* Chain */}
+              {/* Chain — bug real corrigido (relatado ao vivo: "Chain (3 certificados)" só listava
+                  2 itens, parecia inconsistente/errado). Não era: `cert.chainLength` (backend,
+                  ParseTLSSecret) conta a chain INTEIRA (leaf + CAs), mas `cert.chainDetails` só
+                  traz os certificados ALÉM do leaf (`certs[1:]`) — o leaf já é o certificado
+                  principal, mostrado em Subject/Issuer/Expira no topo deste mesmo modal, então
+                  repeti-lo aqui seria redundante. O título usava a contagem errada (chainLength,
+                  a da chain inteira) pra rotular uma lista que só tem os N-1 restantes — corrigido
+                  pra usar `chainDetails.length` (o que de fato é listado abaixo) e deixar explícito
+                  que o certificado principal já foi mostrado antes. */}
               {cert.chainDetails && cert.chainDetails.length > 0 && (
                 <Card className="bg-card/50">
                   <CardHeader className="py-2 px-3">
                     <CardTitle className="text-xs font-medium">
-                      Chain ({cert.chainLength} certificados)
+                      Chain — CAs ({cert.chainDetails.length}, além do certificado principal acima)
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="px-3 pb-3 space-y-2">
