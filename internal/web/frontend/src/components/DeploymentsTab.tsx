@@ -113,7 +113,18 @@ function SpinnakerChip({ info, onClick }: { info: SpinnakerRollbackInfo | undefi
   if (!onClick) return chip;
 
   return (
-    <button type="button" onClick={onClick} className="inline-flex">
+    <button
+      type="button"
+      onClick={(e) => {
+        // stopPropagation defensivo — o card da lista (item 6 da seção 9) envolve o chip num
+        // wrapper clicável próprio (não mais um <button>, pra evitar aninhar <button> dentro de
+        // <button>, HTML inválido); sem isso o clique no chip também dispararia a seleção do
+        // card por baixo dele.
+        e.stopPropagation();
+        onClick();
+      }}
+      className="inline-flex"
+    >
       {chip}
     </button>
   );
@@ -2712,9 +2723,22 @@ export const DeploymentsTab = ({
                 className="mt-1"
                 aria-label={`Selecionar ${dep.name}`}
               />
-              <button
+              {/* div (não <button>) — o card agora contém o chip do Spinnaker, que é ele
+                  próprio um <button> clicável (item 6 da seção 9 do plano); <button> dentro de
+                  <button> é HTML inválido e o navegador quebra o aninhamento de forma
+                  imprevisível. role="button"+tabIndex+onKeyDown preservam a semântica/acessibilidade
+                  de antes. */}
+              <div
+                role="button"
+                tabIndex={0}
                 onClick={() => handleSelectDeployment(dep)}
-                className="flex-1 text-left"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleSelectDeployment(dep);
+                  }
+                }}
+                className="flex-1 text-left cursor-pointer"
                 title={statusInfo?.tooltip || undefined}
               >
                 {severity !== "ok" && (
@@ -2732,10 +2756,20 @@ export const DeploymentsTab = ({
                   )}
                 </div>
                 <div className="text-xs text-muted-foreground">{dep.namespace}</div>
-                {/* Mesmo chip do painel direito (seção 8 do plano) — aqui só informativo, sem
-                    onClick (o gatilho do modal fica no painel de visualização à direita). */}
+                {/* Mesmo chip do painel direito (seção 8 do plano) — item 6 da seção 9: também
+                    clicável aqui, atalho pra abrir o modal direto da lista sem precisar
+                    selecionar o deployment primeiro. Selecionar + abrir juntos porque o modal
+                    lê o dado de spinnakerStatus via spinnakerKeyFor(selectedDeployment) — sem
+                    selecionar primeiro, o modal mostraria o card errado (o que já estava
+                    selecionado antes do clique). */}
                 <div className="mt-0.5">
-                  <SpinnakerChip info={spinnakerStatus.data?.[spinnakerKeyFor(dep)]} />
+                  <SpinnakerChip
+                    info={spinnakerStatus.data?.[spinnakerKeyFor(dep)]}
+                    onClick={() => {
+                      handleSelectDeployment(dep);
+                      setSpinnakerModalOpen(true);
+                    }}
+                  />
                 </div>
                 {dep.serviceClusterIPs && dep.serviceClusterIPs.length > 0 && (
                   <div className="text-[10px] font-mono mt-0.5 flex items-center gap-1">
@@ -2757,7 +2791,7 @@ export const DeploymentsTab = ({
                     {statusInfo.label}
                   </div>
                 )}
-              </button>
+              </div>
             </div>
           );
         })}
