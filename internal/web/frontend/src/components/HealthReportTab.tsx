@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AlertTriangle, Server, Clock, RotateCcw, Zap, CircleOff, CheckCircle2 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { AlertTriangle, Server, Clock, RotateCcw, Zap, CircleOff, CheckCircle2, ChevronDown, ChevronRight } from "lucide-react";
 import type { HealthCheckResult, Severity, NodeHealth } from "@/types/healthcheck";
 import { SeverityWeight, SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 
@@ -116,6 +117,10 @@ function resourceVerdictLabel(verdict?: string): { label: string; className: str
 export const HealthReportTab = ({ result }: { result: HealthCheckResult }) => {
   const findings = useMemo(() => buildFindings(result), [result]);
   const nodes = result.node_results ?? [];
+  // Aberto por padrão (diferente do NoteEntry, que colapsa por padrão) — é justamente o motivo
+  // de existir o Modo Triagem: mostrar POR QUE cada namespace entrou no escopo, não só a contagem
+  // no badge. Escondido atrás de mais um clique derrotaria o propósito.
+  const [reasonsOpen, setReasonsOpen] = useState(true);
 
   const counts = useMemo(() => {
     const c: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
@@ -211,6 +216,33 @@ export const HealthReportTab = ({ result }: { result: HealthCheckResult }) => {
               );
             })}
           </div>
+
+          {/* Motivos por namespace — sem isso, o badge acima ("Prometheus: 8 namespace(s)") não
+              diz NADA sobre qual alerta específico colocou cada namespace no escopo. É o dado
+              mais importante da triagem (o "porquê"), já calculado no backend (TriageSummary.
+              Reasons) — só faltava renderizar. */}
+          {!result.triage_summary.fell_back_to_full &&
+            result.triage_summary.reasons &&
+            Object.keys(result.triage_summary.reasons).length > 0 && (
+              <Collapsible open={reasonsOpen} onOpenChange={setReasonsOpen}>
+                <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground">
+                  {reasonsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                  Motivos por namespace
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-1.5 space-y-1.5">
+                  {Object.entries(result.triage_summary.reasons).map(([ns, reasons]) => (
+                    <div key={ns} className="text-xs rounded border bg-background/50 p-1.5">
+                      <span className="font-mono font-medium">{ns}</span>
+                      <ul className="list-disc list-inside ml-1 text-muted-foreground mt-0.5">
+                        {reasons.map((r, i) => (
+                          <li key={i}>{r}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </CollapsibleContent>
+              </Collapsible>
+            )}
         </div>
       )}
 
