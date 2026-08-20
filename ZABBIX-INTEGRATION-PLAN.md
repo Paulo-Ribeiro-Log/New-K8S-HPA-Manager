@@ -1,20 +1,73 @@
 # Estudo + Plano: Integração com Zabbix
 
-**Status:** 🔬 estudo/planejamento — nenhuma fase iniciada, nenhum código escrito.
-**Confirmado com o usuário (2026-08-11):** Zabbix está instalado (servidor próprio) e em uso
-real monitorando vários clusters e VMs desta empresa — a pergunta 2 da seção 5 está respondida
-(não é hipotético). Perguntas 1, 3 e 4 da seção 5 (versão exata, convenção de nome/IP/tag pra
-correlação host↔K8s, usuário de API dedicado) seguem em aberto — a confirmar quando a Fase 2
-pedir a URL/token na UI.
+**Status:** 🔬 estudo/planejamento — nenhuma fase iniciada, nenhum código escrito, mas **todas as
+perguntas bloqueantes da seção 5 já foram respondidas** (2026-08-19) — Fases 1, 2 e 4 (nível de
+nó) podem ser estimadas/iniciadas sem suposições pendentes. Revisado também contra o estado atual
+da ferramenta (ver seção 0): conclusões da Rev. 1 mantidas, só a Fase 4 foi realinhada pra um
+padrão mais leve, validado por uma integração real feita nesse meio-tempo (Spinnaker).
+**Confirmado com o usuário**: Zabbix está instalado (servidor próprio) e em uso real monitorando
+vários clusters e VMs desta empresa (2026-08-11); versão 7.x, host Zabbix = nome do nó K8s
+(correlação determinística), token de serviço só-leitura já existe, "integração K8s" é Zabbix
+Agent clássico por VM sem noção de pod/namespace (2026-08-19, ver seção 5 para o detalhe de cada
+resposta).
 Continuar de qualquer chat lendo este arquivo + `CLAUDE.md` (seções "Dynatrace" e
 "Health Checking" para o padrão de correlação já existente que este plano reaproveita).
 
 **Pergunta original do usuário:** existe API para o Zabbix, como funciona, e que benefícios
 isso agregaria à aplicação. Este documento responde as duas primeiras perguntas com uma
 pesquisa verificada contra a documentação oficial (não é conhecimento de memória sem
-checagem) e propõe um plano faseado para a terceira — mas **deixa decisões-chave em aberto**
-(seção "Perguntas antes de começar") porque dependem de como o Zabbix está de fato configurado
-nesta empresa, informação que não está disponível nesta sessão.
+checagem) e propõe um plano faseado para a terceira — as decisões-chave que dependiam da
+instalação real (seção 5) já foram todas confirmadas com o usuário.
+
+---
+
+## 0. Atualização (2026-08-19) — o que mudou na ferramenta desde a Rev. 1
+
+A Rev. 1 deste estudo (2026-08-11/12) comparava a proposta de Zabbix só contra o padrão já
+existente do **Dynatrace** (`Correlate()` em `internal/healthcheck/correlator.go`: correlação
+dedicada, mapa K8s↔DT por workload, 8ª aba própria "K8s↔DT" nos resultados do Health Check).
+Nos ~7 dias seguintes, a integração **Spinnaker** (`SPINNAKER-INTEGRATION-PLAN.md`) foi implementada
+de ponta a ponta (Fases 1-4 + seção 9, validada ao vivo) e inclui, na seção 9 item 7, uma **segunda
+fonte externa correlacionada no Health Check** — mas com uma arquitetura mais leve que a do
+Dynatrace, relevante o suficiente pra revisar a Fase 4 deste plano:
+
+- **`internal/healthcheck/spinnaker_enricher.go`**: em vez de uma correlação dedicada tipo
+  `Correlate()` (mapa completo + tab própria), o `SpinnakerEnricher` só resolve **uma vez por
+  cluster** (login + 1 busca de execuções, custo comparável ao `ResourceEnricher`/Prometheus já
+  existente) e expõe um método simples — `RecentRollback(deployment, namespace, currentVersion)`
+  — chamado durante a checagem normal de cada Deployment. O resultado vira só **3 campos novos**
+  em `DeploymentHealth`/`CorrelatedK8sIssue` (`SpinnakerRecentRollback`, `SpinnakerRollbackCHG`,
+  `SpinnakerRollbackAt`), escalando `StatusHealthy`→`StatusWarning` quando aplicável — sem tab
+  própria, exibido como badge na aba "Relatório" (`HealthReportTab.tsx`) já existente.
+- **Opt-in via checkbox** (`HealthCheckRequest.CheckSpinnakerRollback`), condicionado a
+  `CheckDeployments` já estar marcado — mesmo padrão de opt-in que este plano já previa pro
+  Zabbix na Fase 4, confirmado como o caminho certo.
+- **Best-effort de verdade, testado ao vivo**: se o Spinnaker estiver indisponível ou o cluster
+  não tiver ambiente reconhecido, `NewSpinnakerEnricher` retorna erro que o orchestrator só loga
+  (`Debug`/`Warn`) — nunca derruba o Health Check inteiro. Mesmo contrato que este plano já
+  assumia por analogia ao Dynatrace, agora com um segundo exemplo real confirmando que o padrão
+  se generaliza bem para uma terceira fonte.
+
+**Impacto na Fase 4 deste plano (revisado abaixo, seção 4)**: o esforço/risco da correlação
+Zabbix↔K8s cai em relação à Rev. 1 — não é mais necessário decidir entre "replicar o modelo
+pesado do Dynatrace" ou inventar algo novo; existe agora um template leve, já provado com uma
+segunda integração, que se encaixa bem no formato de dado do Zabbix (`problem.get` por host →
+resolver host↔workload uma vez por cluster → enriquecer `DeploymentHealth`, sem exigir uma nova
+aba dedicada tipo "K8s↔Zabbix"). Isso **não** resolve a pergunta em aberto mais importante (seção
+5, item 3 — se existe convenção de nome/IP/tag pra casar host Zabbix com nó/workload K8s), só
+reduz o custo de implementar a correlação **depois** que essa convenção for confirmada.
+
+**Distinção importante que o exemplo Spinnaker também deixa clara**: Spinnaker usa login SSO
+**por usuário** (matrícula/email do Perfil SSO, `SSOProfileModal.tsx`) porque a resposta da API
+precisa refletir quem tem permissão de ver aquela application — não é o mesmo modelo do Zabbix,
+que usa um **API Token de serviço** (Fase 2 original, `UserTokensStore` com `ZabbixURL`/
+`ZabbixAPIToken`, mesmo padrão de credencial compartilhada já usado por Dynatrace/GitHub). A Fase
+2 deste plano **não muda** por causa do precedente Spinnaker — os dois modelos de credencial
+coexistem na aplicação por motivos diferentes, e Zabbix se encaixa no modelo Dynatrace, não no
+Spinnaker.
+
+Nenhuma outra mudança recente na ferramenta (certificados, Dependencies, Teams, EKS/TLS) afeta
+as conclusões da Rev. 1 — revisadas e mantidas como estavam, exceto a Fase 4 (seção 4 abaixo).
 
 ---
 
@@ -237,16 +290,33 @@ ZabbixAPIToken string `json:"zabbix_api_token,omitempty"`
 - Configuração de credenciais: mesma seção de AI Settings/tokens onde Dynatrace já vive
   (`profile/` — verificar componente exato na hora, ex. `AISettingsModal.tsx` ou modal próprio).
 
-### Fase 4 — Correlação no Health Check (condicionada à seção 5)
+### Fase 4 — Correlação no Health Check (condicionada à seção 5; revisada 2026-08-19)
 
 Só inicia depois de confirmado que existe uma forma determinística de casar host Zabbix ↔
-nó/workload K8s (nome, IP ou tag). Réplica do padrão `Correlate()`:
-- `internal/healthcheck/zabbix_correlator.go` (ou estender `correlator.go` com uma segunda fonte)
-- `HealthCheckRequest.CheckZabbix bool` + `ZabbixURL`/`ZabbixAPIToken` (ou reaproveitar do
-  `UserTokensStore` direto, sem pedir de novo por request — decidir durante a fase, mesmo padrão
-  hoje inconsistente entre Dynatrace, que pede na request, e outras integrações que só leem do
-  store)
-- Nova aba/seção nos resultados do Health Check, mesmo padrão visual de "K8s↔DT"
+nó/workload K8s (nome, IP ou tag). **Réplica do padrão `SpinnakerEnricher`** (mais barato que o
+`Correlate()` do Dynatrace — ver seção 0), não uma correlação dedicada nova:
+
+- `internal/healthcheck/zabbix_enricher.go` (CRIAR) — `NewZabbixEnricher(ctx, cluster)` resolve
+  **uma vez por cluster**: busca `problem.get` filtrado por hosts do cluster (via a convenção de
+  nome/IP/tag confirmada na seção 5.3) e guarda em memória; método
+  `ProblemsForHost(hostRef string) []zabbix.Problem` (ou por node name, dependendo do que a seção
+  5.3 confirmar) consultado durante a checagem normal de cada Deployment/Node. Nunca é fatal —
+  erro só é logado (`Debug`/`Warn`), Health Check segue sem o sinal extra.
+- `HealthCheckRequest.CheckZabbixProblems bool` (opt-in, condicionado a `CheckDeployments` ou
+  `CheckNodes` já marcados, conforme o alvo da correlação — nós ou workloads). Credenciais
+  **sempre** do `UserTokensStore` (Fase 2), nunca pedidas de novo na request — diferente do
+  Dynatrace hoje (que pede na request por herança histórica) e igual ao que a Fase 2 deste plano
+  já previa.
+- Campos novos em `DeploymentHealth`/`CorrelatedK8sIssue` (mesmo padrão de
+  `SpinnakerRecentRollback`/`SpinnakerRollbackCHG`/`SpinnakerRollbackAt`): algo como
+  `ZabbixHasOpenProblem bool` + `ZabbixProblemName`/`ZabbixProblemSeverity` — escalando severidade
+  quando aplicável (`StatusHealthy`→`StatusWarning`, ou `Critical` se a severidade Zabbix mapeada
+  for alta — ver `SeverityToInternal` da Fase 1).
+- **Sem aba nova dedicada** — exibido como badge na aba "Relatório" (`HealthReportTab.tsx`) já
+  existente, mesmo lugar onde o badge de rollback recente do Spinnaker apareceu. Evita replicar o
+  esforço de UI que a 8ª aba "K8s↔DT" exigiu, que só se justifica pelo volume/granularidade
+  específica dos problems Dynatrace (correlação completa workload↔entidade, não só um sinal
+  booleano por host).
 
 ### Fase 5 — FinOps (só se a seção 2.3 for confirmada como aplicável)
 
@@ -255,26 +325,50 @@ Réplica de `FINOPS-NR-METRICS.md` Fase 1-2 (enricher + wiring no `Calculator.Bu
 
 ---
 
-## 5. Perguntas antes de começar qualquer fase além da 1
+## 5. Perguntas antes de começar qualquer fase além da 1 — ✅ TODAS RESPONDIDAS (2026-08-19)
 
-Este plano evita comprometer esforço em cima de suposições. Antes de iniciar a Fase 2 em diante,
-confirmar:
+Este plano evitava comprometer esforço em cima de suposições. As 5 perguntas abaixo foram
+confirmadas diretamente com o usuário em 2026-08-19 — **nenhum bloqueio restante pras Fases 1, 2
+e 4 (nível de nó)**. Fase 3 (FinOps) segue como estava (seção 2.3, ver nota abaixo).
 
-1. **Versão do Zabbix em uso** — determina se dá pra usar API Token nativo (≥5.4) ou se precisa
-   cair para `user.login` com um usuário de serviço dedicado.
-2. **O que está de fato monitorado no Zabbix desta empresa?** VMs/hosts físicos? Switches/rede?
-   Bancos on-prem? Algum plugin de Kubernetes já configurado (nesse caso pode haver sobreposição
-   real com Dynatrace/Prometheus, não só complementaridade)? Isso decide quais das seções
-   2.1–2.4 realmente se aplicam.
+1. **Versão do Zabbix em uso** — ✅ **7.x (atual)**. API Token nativo (Bearer) disponível, mecanismo
+   recomendado desde o início (seção 1) confirmado como o caminho certo — não precisa de
+   `user.login`/gestão de sessão.
+2. **O que está de fato monitorado no Zabbix desta empresa?** — ✅ **VMs/hosts físicos, incluindo
+   as próprias VMs que são nós dos clusters K8s** (via Zabbix Agent clássico instalado no SO —
+   ver item 2b). Não foi confirmado monitoramento de switches/rede ou bancos on-prem nesta rodada
+   (não perguntado diretamente); se relevante, reconfirmar antes da Fase 3.
+   - **2b. Que tipo de "integração K8s" existe?** — ✅ **Zabbix Agent clássico rodando dentro das
+     VMs-nó, sem noção de pod/namespace/deployment** (monitora CPU/memória/disco/processos do SO,
+     nada nativo de Kubernetes/LLD). Isso **confirma** a premissa original da tabela da seção 3
+     ("sem plugin/agente K8s, um host Zabbix é só uma VM") — não precisa revisar o mapeamento.
+     Também significa: **sem sobreposição real com Prometheus/Dynatrace no nível de workload** —
+     o Zabbix aqui enxerga só a VM/SO por baixo do nó, nunca o pod/deployment rodando nela. Pode
+     haver sobreposição parcial com métricas de nó (CPU/mem do host) que Prometheus/node exporter
+     também expõem — mas os thresholds/triggers do Zabbix são configurados independentemente e
+     podem carregar tuning operacional próprio (histórico de incidentes reais), então mesmo essa
+     sobreposição parcial tem valor como segunda fonte de alerta, não é dado redundante descartável.
 3. **Existe convenção de nome/IP/tag que permita casar um host Zabbix com um nó ou workload
-   K8s desta aplicação?** Sem isso, a Fase 4 (correlação) não é viável — a aba de problems da
-   Fase 1/3 ainda teria valor sozinha, só não haveria cruzamento automático.
-4. **Há (ou pode ser criado) um usuário/token de API só-leitura dedicado?** Nunca usar uma conta
-   Admin/Super Admin do Zabbix para esta integração — mesmo cuidado já documentado para os
-   demais tokens de terceiros neste projeto (nunca hardcoded, sempre via `UserTokensStore`).
-5. **Faz sentido pra esta empresa hoje?** Se o Zabbix cobre só um punhado de hosts legados em
-   fase de descomissionamento, o retorno pode não justificar nem a Fase 1 — vale confirmar
-   relevância operacional antes de codar.
+   K8s desta aplicação?** — ✅ **Sim — nome do host Zabbix = nome do nó K8s.** Correlação
+   determinística e simples: mesma string usada em `node.Name` do K8s aparece como `host`/`name`
+   no Zabbix. **Destrava a Fase 4 sem heurística** — `ZabbixEnricher.ProblemsForHost` pode indexar
+   direto por nome de nó, sem precisar de matching por IP/regex/tag (mais simples que o
+   `extractNodePoolFromName` que o Dynatrace precisa pra VMSS).
+4. **Há (ou pode ser criado) um usuário/token de API só-leitura dedicado?** — ✅ **Já existe um
+   usuário/token de serviço só-leitura.** Fase 2 pode usá-lo diretamente — nada a negociar/criar
+   antes de começar.
+5. **Faz sentido pra esta empresa hoje?** — ✅ Já confirmado antes (2026-08-11): Zabbix está em
+   uso real monitorando vários clusters e VMs, não é infra legada em descomissionamento.
+
+**Conclusão**: as 4 perguntas antes em aberto (1, 3, 4, e o desdobramento de 2) têm resposta
+favorável e sem ambiguidade — **Fases 1, 2 e 4 (correlação a nível de nó) podem ser estimadas e
+iniciadas sem mais nenhuma suposição pendente.** A única área que segue especulativa é a Fase 3/
+seção 2.3 (FinOps para infra self-managed): as VMs-nó identificadas aqui são nós de cluster K8s
+normais (AKS/EKS/GKE), já precificados via API de cada cloud — não são hardware bare-metal
+self-managed sem fonte de preço, então a motivação original da seção 2.3 (precificar o que a
+Retail Pricing API não cobre) **não se aplica a essas VMs especificamente**. Se houver outra
+categoria de host (bancos on-prem, hardware próprio fora de qualquer cluster) coberta pelo Zabbix,
+isso ainda não foi confirmado — reconfirmar só quando a Fase 3 for cogitada.
 
 ---
 
@@ -289,8 +383,8 @@ internal/web/server.go                               ← MODIFICAR (Fase 2 — r
 internal/web/frontend/src/components/ToolsMenu.tsx   ← MODIFICAR (Fase 3)
 internal/web/frontend/src/components/ZabbixTab.tsx    ← CRIAR (Fase 3)
 internal/web/frontend/src/lib/api/client.ts           ← MODIFICAR (Fase 3 — novos métodos)
-internal/healthcheck/zabbix_correlator.go             ← CRIAR (Fase 4, condicional)
-internal/healthcheck/orchestrator.go                  ← MODIFICAR (Fase 4, condicional)
+internal/healthcheck/zabbix_enricher.go               ← CRIAR (Fase 4, condicional — padrão SpinnakerEnricher, ver seção 0)
+internal/healthcheck/orchestrator.go                  ← MODIFICAR (Fase 4, condicional — wiring do opt-in, mesmo ponto do CheckSpinnakerRollback)
 internal/finops/zabbix_enricher.go                    ← CRIAR (Fase 5, condicional)
 internal/finops/calculator.go                         ← MODIFICAR (Fase 5, condicional)
 ```
