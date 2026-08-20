@@ -78,12 +78,15 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 		return
 	}
 
-	// Popular credenciais Dynatrace do perfil do usuário (se check_dynatrace ou check_oneagent_signals
-	// solicitado). Identidade via InjectUserEmail() (JWT/RBAC) — desacoplada de req.AIEmail, que não é
-	// usado nesta função pra nada além disso (a resolução de provider de IA pros itens correlacionados
-	// acontece depois, em endpoints separados: AnalyzeCorrelated/AnalyzeCorrelatedBatch/
-	// AnalyzeOneAgentSignal, que continuam usando req.AIEmail — sem entanglement aqui).
-	if (req.CheckDynatrace || req.CheckOneAgentSignals) && h.tokensStore != nil {
+	// Popular credenciais Dynatrace do perfil do usuário (se check_dynatrace, check_oneagent_signals
+	// ou triage_mode solicitado — o Modo Triagem usa Dynatrace como fonte de escopo independente do
+	// checkbox de correlação completa estar marcado, ver DynatraceTargetSource/
+	// HEALTHCHECK-TRIAGE-MODE-PLAN.md). Identidade via InjectUserEmail() (JWT/RBAC) — desacoplada de
+	// req.AIEmail, que não é usado nesta função pra nada além disso (a resolução de provider de IA
+	// pros itens correlacionados acontece depois, em endpoints separados: AnalyzeCorrelated/
+	// AnalyzeCorrelatedBatch/AnalyzeOneAgentSignal, que continuam usando req.AIEmail — sem
+	// entanglement aqui).
+	if (req.CheckDynatrace || req.CheckOneAgentSignals || req.TriageMode) && h.tokensStore != nil {
 		if userEmail := c.GetString("user_email"); userEmail != "" {
 			if tokens, err := h.tokensStore.GetTokens(userEmail); err == nil && tokens != nil {
 				req.DynatraceURL = tokens.DynatraceURL

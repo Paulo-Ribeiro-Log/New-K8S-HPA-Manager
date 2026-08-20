@@ -1,6 +1,8 @@
 # Plano: Modo Triagem no Health Check (sinaliza primeiro, investiga depois)
 
-**Status:** 📋 planejamento — nenhuma fase iniciada, nenhum código escrito.
+**Status:** 🟡 Fase 1 implementada (backend) — Fase 2 (frontend: toggle + transparência de escopo)
+ainda não iniciada. Sem validação ao vivo contra um cluster real ainda (só testes unitários +
+build/vet/testes existentes passando).
 **Origem:** conversa sobre `ZABBIX-INTEGRATION-PLAN.md` levou o usuário a propor repensar a
 arquitetura do Health Check: hoje ele varre o cluster ponto a ponto e devolve muita informação
 de erro/postura; a proposta é buscar primeiro em ferramentas de monitoramento (Dynatrace/
@@ -192,18 +194,55 @@ e sem problema" (bom sinal — cluster saudável, relatório rápido) de "fonte 
 
 ## 3. Fases
 
-### Fase 1 — `TargetResolver` + fontes Dynatrace/Prometheus (sem Zabbix)
+### Fase 1 — `TargetResolver` + fontes Dynatrace/Prometheus (sem Zabbix) — ✅ implementada
 
-**Arquivos a criar:**
-- `internal/healthcheck/target_resolver.go` — interface `TargetSource`, `resolveTriageTargets`
-- `internal/healthcheck/target_source_dynatrace.go` — wrap de `DynatraceChecker.CheckAll`
-- `internal/healthcheck/target_source_prometheus.go` — wrap de `alerts.Client.GetAlerts`
+**Arquivos criados:**
+- `internal/healthcheck/target_resolver.go` — interface `TargetSource`, `TargetSourceResult`,
+  `TriageResolution`, `resolveTriageTargets` (agrega as fontes, sequencial — custo de rede único
+  por cluster por fonte, mesmo padrão do `ResourceEnricher`/`SpinnakerEnricher`), `intersectOrUse`
+  (aplica o filtro manual de `req.Namespaces` por cima do escopo resolvido, quando informado)
+- `internal/healthcheck/target_source_dynatrace.go` — `DynatraceTargetSource`, reaproveita
+  `DynatraceChecker.CheckAll` sem duplicar lógica de correlação/enriquecimento
+- `internal/healthcheck/target_source_prometheus.go` — `PrometheusAlertsTargetSource`, reaproveita
+  `alerts.Client.GetAlerts()` filtrando `State=="firing"` + `Labels["namespace"]`
+- `internal/healthcheck/target_resolver_test.go` — cobre explicitamente o risco #2 da seção 4
+  (fonte disponível-mas-vazia vs. indisponível), união/dedup de namespaces entre fontes, e
+  `intersectOrUse`
 
-**Arquivos a modificar:**
-- `internal/healthcheck/models.go` — `HealthCheckRequest.TriageMode`, `HealthCheckResult.TriageSummary`
-- `internal/healthcheck/orchestrator.go` — reordenar fluxo conforme seção 2.3 (resolver ANTES de
-  determinar `namespaces`, hoje os checks externos rodam em paralelo com os internos)
-- **Nenhum `*_checker.go` precisa mudar** — todos já aceitam `namespaces []string` filtrado.
+**Arquivos modificados:**
+- `internal/healthcheck/models.go` — `HealthCheckRequest.TriageMode`, `HealthCheckResult.TriageSummary`,
+  `TriageSummary`/`TriageSourceStatus` (novos tipos)
+- `internal/healthcheck/orchestrator.go` — `buildTriageSources()` (novo helper) + fluxo de
+  `executeClusterCheck` revisado: resolve o escopo de triagem ANTES do fallback
+  `getAllNamespaces`, com uma flag `triageDecided` que impede esse fallback de sobrescrever um
+  escopo já decidido (mesmo quando decidido como vazio — o caso "cluster saudável, nada a
+  escanear") — ver nota abaixo, o pseudocódigo original da seção 2.3 tinha essa lacuna
+- `internal/healthcheck/dynatrace_checker.go` — `DynatraceChecker.CheckAll` passou a retornar
+  `(results, error)` em vez de só `results` — necessário pro `DynatraceTargetSource` distinguir
+  "chamada falhou" de "chamada funcionou e não achou nada" (`CheckAll` sempre engoliu esse erro
+  internamente, só logava; único call site existente, em `orchestrator.go`, foi atualizado pra
+  `dtResults, _ := ...`, preservando o comportamento de quem só quer os resultados)
+- `internal/web/handlers/healthcheck.go` — o gate que popula `req.DynatraceURL`/`Token` do
+  `UserTokensStore` (`if req.CheckDynatrace || req.CheckOneAgentSignals`) ganhou `|| req.TriageMode`
+  — achado real durante a implementação: sem isso, `DynatraceTargetSource` nunca teria credencial
+  quando o usuário ligasse só o Modo Triagem sem também marcar o checkbox de correlação DT
+  completa, e falharia silenciosamente como "fonte não configurada" (Available=false) mesmo com
+  Dynatrace configurado no perfil do usuário
+- **Nenhum `*_checker.go` de resultado (Deployment/Service/Config/Event/HPA/PVC) precisou mudar**
+  — todos já aceitam `namespaces []string` filtrado, confirmando o achado-chave da seção 1.1
+
+**Nota sobre a lacuna do pseudocódigo original (seção 2.3)**: o rascunho `if len(namespaces) == 0
+&& !req.TriageMode` (usando a flag da REQUEST) bloquearia o fallback de Varredura Completa mesmo
+no caso de fallback intencional (nenhuma fonte disponível, `req.Namespaces` vazio) — porque
+`req.TriageMode` continua `true` nesse caso, mesmo a triagem tendo "desistido". A implementação
+usa uma flag derivada do RESULTADO da resolução (`triageDecided`, só true quando alguma fonte
+esteve disponível), não da request — corrige esse caso sem mudar a intenção da seção 2.3.
+
+**Validação até agora**: `go build ./...`, `go vet`, `gofmt`, testes unitários dedicados (ver
+`target_resolver_test.go`) e a suíte completa de `internal/healthcheck`/`internal/web/handlers`
+(`go test -race`) passando. **Não validado ainda contra um cluster real** — a Fase 1 é só backend;
+sem toggle no frontend (Fase 2), a única forma de exercitar `triage_mode` hoje é enviando
+`{"triage_mode": true, ...}` direto pro `POST /api/v1/healthcheck/run`.
 
 ### Fase 2 — Frontend: toggle de modo + transparência de origem
 
@@ -256,11 +295,14 @@ disso até a Fase 1 estar validada com uso real.
 ## 5. Arquivos a criar/modificar (resumo)
 
 ```
-internal/healthcheck/target_resolver.go               ← CRIAR (Fase 1)
-internal/healthcheck/target_source_dynatrace.go        ← CRIAR (Fase 1)
-internal/healthcheck/target_source_prometheus.go       ← CRIAR (Fase 1)
-internal/healthcheck/models.go                         ← MODIFICAR (Fase 1 — TriageMode, TriageSummary)
-internal/healthcheck/orchestrator.go                   ← MODIFICAR (Fase 1 — reordenar fluxo)
+internal/healthcheck/target_resolver.go               ← ✅ CRIADO (Fase 1)
+internal/healthcheck/target_resolver_test.go           ← ✅ CRIADO (Fase 1)
+internal/healthcheck/target_source_dynatrace.go        ← ✅ CRIADO (Fase 1)
+internal/healthcheck/target_source_prometheus.go       ← ✅ CRIADO (Fase 1)
+internal/healthcheck/models.go                         ← ✅ MODIFICADO (Fase 1 — TriageMode, TriageSummary)
+internal/healthcheck/orchestrator.go                   ← ✅ MODIFICADO (Fase 1 — reordenar fluxo)
+internal/healthcheck/dynatrace_checker.go              ← ✅ MODIFICADO (Fase 1 — CheckAll retorna error)
+internal/web/handlers/healthcheck.go                   ← ✅ MODIFICADO (Fase 1 — gate de credenciais DT)
 internal/web/frontend/src/components/HealthReportTab.tsx (ou equivalente) ← MODIFICAR (Fase 2)
 internal/healthcheck/target_source_zabbix.go            ← CRIAR (Fase 3, condicional)
 ```

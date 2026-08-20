@@ -154,6 +154,13 @@ type HealthCheckRequest struct {
 
 	// Aplicar filtros de falsos positivos (padrão: true)
 	ApplyFilters bool `json:"apply_filters"` // Filtrar ConfigMaps vazios conhecidos, secrets de sistema, etc
+
+	// Modo Triagem (HEALTHCHECK-TRIAGE-MODE-PLAN.md, Fase 1): quando true, o escopo de namespaces
+	// varridos é resolvido primeiro a partir de fontes externas (Dynatrace/Prometheus, hoje) — só
+	// os namespaces com algo sinalizado entram na varredura. Nenhuma fonte disponível para o
+	// cluster cai de volta pro comportamento padrão (Varredura Completa). Não altera nenhum
+	// Check*/Timeout* — só o escopo de `namespaces` passado pros checkers.
+	TriageMode bool `json:"triage_mode,omitempty"`
 }
 
 // HealthCheckResult resultado de health check
@@ -182,6 +189,9 @@ type HealthCheckResult struct {
 
 	// Sinais OneAgent: workloads com métricas elevadas sem problem DT ativo (nil = não executado, [] = executado sem dados)
 	OneAgentSignals []OneAgentSignal `json:"oneagent_signals"`
+
+	// Resultado da resolução de escopo do Modo Triagem (nil quando TriageMode=false na request)
+	TriageSummary *TriageSummary `json:"triage_summary,omitempty"`
 
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
@@ -221,6 +231,36 @@ type DynatraceHealth struct {
 	RecentEvents   []string           `json:"recent_events,omitempty"`   // Top 3 eventos recentes: "TIPO: título"
 	MetricsSummary map[string]float64 `json:"metrics_summary,omitempty"` // ex: {"error_rate": 12.5, "response_p90_ms": 2300}
 	ContextFetched bool               `json:"context_fetched"`           // true se GetProblemContext foi chamado com sucesso
+}
+
+// TriageSourceStatus é o resultado de UMA fonte de triagem (Dynatrace, Prometheus, ...) pra um
+// cluster — ver TargetSource/TargetSourceResult em target_resolver.go. Available=false é
+// distinto, de propósito, de Namespaces vazio: o primeiro significa "sem dado desta fonte" (a
+// triagem não pode confiar nela), o segundo significa "fonte respondeu e não achou problema"
+// (bom sinal). Ver HEALTHCHECK-TRIAGE-MODE-PLAN.md seção 2.3/4.2 pra essa distinção.
+type TriageSourceStatus struct {
+	Name       string   `json:"name"`
+	Available  bool     `json:"available"`
+	Namespaces []string `json:"namespaces"`
+	Error      string   `json:"error,omitempty"` // preenchido só quando Available=false por falha real (não "não configurado")
+}
+
+// TriageSummary documenta como o Modo Triagem resolveu o escopo de namespaces varridos — existe
+// pra tornar um resultado "vazio" (poucos/nenhum namespace escaneado) distinguível de "não rodou
+// direito", igual ao cuidado já tomado com Notes/Access Checker (ver CLAUDE.md).
+type TriageSummary struct {
+	Enabled bool                 `json:"enabled"`
+	Sources []TriageSourceStatus `json:"sources"`
+	// Namespaces é o escopo final (união das fontes disponíveis, com o filtro manual do usuário
+	// aplicado por cima quando informado) — pode ser vazio de propósito quando toda fonte
+	// disponível respondeu "sem problema" (cluster saudável, nada pra escanear).
+	Namespaces []string `json:"namespaces"`
+	// Reasons: namespace → motivos que o colocaram no escopo (ex: "Dynatrace: problem X (ERROR)").
+	Reasons map[string][]string `json:"reasons,omitempty"`
+	// FellBackToFull=true quando NENHUMA fonte estava disponível e o cluster caiu de volta pro
+	// comportamento padrão (Varredura Completa) — nunca "sem checar nada" por omissão.
+	FellBackToFull bool   `json:"fell_back_to_full"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
 }
 
 // CorrelatedK8sIssue representa um issue K8s de um workload específico para correlação

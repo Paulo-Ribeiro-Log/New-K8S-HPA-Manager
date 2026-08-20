@@ -246,6 +246,19 @@ func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string,
 	return o.executeMultiClusterCheck(ctx, sessionID, clusters, req, numWorkers)
 }
 
+// buildTriageSources monta as fontes de triagem disponíveis nesta instância — Dynatrace e
+// Prometheus na Fase 1 (Zabbix entra como 3ª fonte na Fase 3, condicional a
+// ZABBIX-INTEGRATION-PLAN.md, ver HEALTHCHECK-TRIAGE-MODE-PLAN.md seção 3). Credenciais Dynatrace
+// vêm da mesma request (preenchidas pelo handler a partir dos tokens do usuário, igual ao check
+// tradicional) — a fonte de triagem não depende de req.CheckDynatrace estar marcado, só das
+// credenciais estarem presentes (DynatraceTargetSource.Resolve trata URL/token vazios sozinho).
+func (o *Orchestrator) buildTriageSources(req HealthCheckRequest) []TargetSource {
+	return []TargetSource{
+		NewDynatraceTargetSource(o.dynatraceChecker, req.DynatraceURL, req.DynatraceToken, req.DynatraceTagFilter, req.GetTimeoutDynatrace()),
+		NewPrometheusAlertsTargetSource(),
+	}
+}
+
 // executeClusterCheck executa health check em um único cluster
 func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, cluster string, req HealthCheckRequest) (*HealthCheckResult, error) {
 	// Resetar circuit breaker de métricas para nova sessão/cluster
@@ -279,7 +292,35 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 	// Determinar namespaces
 	namespaces := req.Namespaces
-	if len(namespaces) == 0 {
+
+	// Modo Triagem (HEALTHCHECK-TRIAGE-MODE-PLAN.md, Fase 1): resolve o escopo de namespaces via
+	// fontes externas (Dynatrace/Prometheus) ANTES de decidir "todos os namespaces" abaixo.
+	// triageDecided=true significa que o escopo já é autoritativo — mesmo quando vier vazio (bom
+	// sinal: nenhuma fonte disponível sinalizou problema) — e não deve cair no fallback de
+	// getAllNamespaces logo abaixo, que existe só pra "usuário não filtrou nada".
+	triageDecided := false
+	if req.TriageMode {
+		o.publishProgress(sessionID, cluster, "init", "Modo Triagem: resolvendo escopo via Dynatrace/Prometheus...", 0, StatusHealthy)
+		resolution := resolveTriageTargets(ctx, cluster, o.buildTriageSources(req))
+		summary := &TriageSummary{Enabled: true, Sources: resolution.Sources, Reasons: resolution.Reasons}
+		if resolution.AnyAvailable {
+			triageDecided = true
+			namespaces = intersectOrUse(req.Namespaces, resolution.Namespaces)
+			summary.Namespaces = namespaces
+			if len(namespaces) == 0 {
+				o.publishProgress(sessionID, cluster, "init", "Modo Triagem: nenhuma fonte sinalizou problema — cluster aparenta saudável, varredura reduzida", 3, StatusHealthy)
+			} else {
+				o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("Modo Triagem: %d namespace(s) sinalizado(s): %v", len(namespaces), namespaces), 3, StatusHealthy)
+			}
+		} else {
+			summary.FellBackToFull = true
+			summary.FallbackReason = "nenhuma fonte de triagem disponível para este cluster"
+			o.publishProgress(sessionID, cluster, "init", "Modo Triagem: nenhuma fonte disponível — caindo para Varredura Completa", 3, StatusWarning)
+		}
+		result.TriageSummary = summary
+	}
+
+	if len(namespaces) == 0 && !triageDecided {
 		o.publishProgress(sessionID, cluster, "init", "Buscando todos os namespaces do cluster...", 0, StatusHealthy)
 		namespaces, err = getAllNamespaces(ctx, client)
 		if err != nil {
@@ -288,8 +329,10 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			return nil, fmt.Errorf("failed to get namespaces for %s: %w", cluster, err)
 		}
 		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("%d namespace(s) encontrado(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
+	} else if triageDecided && len(namespaces) == 0 {
+		o.publishProgress(sessionID, cluster, "init", "Nenhum namespace no escopo da triagem — pulando varredura detalhada", 5, StatusHealthy)
 	} else {
-		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("Verificando %d namespace(s) especificado(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
+		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("Verificando %d namespace(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
 	}
 
 	// Comparação de uso real (P95 histórico) vs. request configurado dos deployments, via
@@ -671,7 +714,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			defer wg.Done()
 			o.publishProgress(sessionID, cluster, "dynatrace", "Buscando problems abertos no Dynatrace...", dtStart, StatusHealthy)
 
-			dtResults := o.dynatraceChecker.CheckAll(ctx, req.DynatraceURL, req.DynatraceToken, req.DynatraceTagFilter, cluster, req.GetTimeoutDynatrace())
+			dtResults, _ := o.dynatraceChecker.CheckAll(ctx, req.DynatraceURL, req.DynatraceToken, req.DynatraceTagFilter, cluster, req.GetTimeoutDynatrace())
 
 			mu.Lock()
 			result.DynatraceResults = dtResults

@@ -54,7 +54,14 @@ func matchesCluster(clusterNorm string, e dtclient.EntityStub) bool {
 // CheckAll busca problems OPEN no Dynatrace filtrados pelo cluster e pela tag do analista.
 // tagFilter (opcional): filtra por management zone ou tag — ex: "SRE-LOGISTICA".
 // O filtro de cluster é sempre aplicado (mesmo sem tagFilter) usando normalizeClusterName.
-func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilter, cluster string, timeoutSec int) []DynatraceHealth {
+//
+// O erro retornado serve só pra distinguir "chamada falhou" (client/API inacessível) de "chamada
+// funcionou e não achou nada" — necessário pro DynatraceTargetSource (target_source_dynatrace.go,
+// Modo Triagem) decidir Available=false sem inferir isso de uma lista vazia, que também é o
+// resultado normal de "sem problems". Quem só quer os resultados (ignorando o erro, como o
+// orchestrator faz hoje no check tradicional) não muda de comportamento — CheckAll sempre logou e
+// engoliu esses erros internamente.
+func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilter, cluster string, timeoutSec int) ([]DynatraceHealth, error) {
 	results := []DynatraceHealth{}
 
 	log.Info().
@@ -68,7 +75,7 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 	client, err := dtclient.NewClient(dtURL, dtToken)
 	if err != nil {
 		log.Error().Err(err).Msg("[DynatraceChecker] Falha ao criar client")
-		return results
+		return results, err
 	}
 
 	checkCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
@@ -77,7 +84,7 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 	dtResult, err := client.GetOpenProblems(checkCtx, tagFilter, "OPEN", "", "")
 	if err != nil {
 		log.Error().Err(err).Str("tagFilter", tagFilter).Msg("[DynatraceChecker] Falha ao buscar problems")
-		return results
+		return results, err
 	}
 
 	log.Info().
@@ -257,7 +264,7 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 	// Fase 2: enriquecer com Davis AI context + métricas (Top 5 por severidade, sem bloquear o HC)
 	results = enrichWithContext(checkCtx, client, results, matchedProblems)
 
-	return results
+	return results, nil
 }
 
 // mapDTSeverity converte severidade Dynatrace para o sistema de saúde do HC
@@ -480,7 +487,7 @@ func (c *DynatraceChecker) SearchProblemsForWorkloads(
 	}
 
 	type problemEntry struct {
-		p       dtclient.Problem
+		p        dtclient.Problem
 		enriched []dtclient.EntityStub
 	}
 	type result struct {
