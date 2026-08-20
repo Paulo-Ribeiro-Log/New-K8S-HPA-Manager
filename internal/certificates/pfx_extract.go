@@ -71,17 +71,31 @@ func ExtractPFX(pfxBytes []byte, password string) (tlsCrt, tlsKey []byte, leaf *
 		}
 	}
 
-	// tlsKey: PKCS#8 SEM senha (-----BEGIN PRIVATE KEY-----) — nunca criptografado. Resolve de
-	// saída o mesmo problema já visto com chaves "ENCRYPTED PRIVATE KEY": um Secret K8s não tem
-	// como fornecer senha no momento do handshake TLS, então a chave extraída aqui já sai pronta
-	// pra uso, sem precisar de um passo de descriptografia manual depois.
-	keyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("erro ao serializar chave privada: %w", err)
-	}
+	// tlsKey: SEM senha, sempre (nunca criptografado) — resolve de saída o mesmo problema já visto
+	// com chaves "ENCRYPTED PRIVATE KEY": um Secret K8s não tem como fornecer senha no momento do
+	// handshake TLS, então a chave extraída aqui já sai pronta pra uso.
+	//
+	// Formato PEM: PKCS#1 (-----BEGIN RSA PRIVATE KEY-----) quando a chave é RSA — mesma convenção
+	// já usada nos Secrets TLS reais desta empresa (achado ao vivo: certificados aplicados nos
+	// clusters vêm nesse formato, não PKCS#8). PKCS#8 (-----BEGIN PRIVATE KEY-----) só como fallback
+	// pra ECDSA/Ed25519, que não têm formato PKCS#1 (esse é específico de RSA). Puramente cosmético
+	// — o conteúdo criptográfico é idêntico nos dois formatos (confirmado comparando o módulo da
+	// chave via `openssl rsa -noout -modulus` contra `openssl x509 -noout -modulus` do leaf); todo
+	// client TLS moderno (inclusive `tls.X509KeyPair` do Go, usado por praticamente todo controller/
+	// proxy) aceita os dois sem diferença. Motivo puro de consistência visual com o que já existe.
 	var keyBuf bytes.Buffer
-	if err := pem.Encode(&keyBuf, &pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}); err != nil {
-		return nil, nil, nil, fmt.Errorf("erro ao codificar chave privada em PEM: %w", err)
+	if rsaKey, ok := privateKey.(*rsa.PrivateKey); ok {
+		if err := pem.Encode(&keyBuf, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaKey)}); err != nil {
+			return nil, nil, nil, fmt.Errorf("erro ao codificar chave privada RSA em PEM: %w", err)
+		}
+	} else {
+		keyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("erro ao serializar chave privada: %w", err)
+		}
+		if err := pem.Encode(&keyBuf, &pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}); err != nil {
+			return nil, nil, nil, fmt.Errorf("erro ao codificar chave privada em PEM: %w", err)
+		}
 	}
 
 	return crtBuf.Bytes(), keyBuf.Bytes(), cert, nil
