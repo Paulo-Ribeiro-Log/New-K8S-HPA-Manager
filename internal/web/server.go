@@ -1178,6 +1178,15 @@ func (s *Server) setupRoutes() {
 		certGroup.GET("/manual-backups/:secretName/:backupId/content", rbacMiddleware.RequireSREGroup(), certificatesHandler.GetManualBackupContent)
 		certGroup.PUT("/manual-backups/:secretName/:backupId/comment", rbacMiddleware.RequireSREGroup(), certificatesHandler.UpdateManualBackupComment)
 		certGroup.DELETE("/manual-backups/:secretName/:backupId", rbacMiddleware.RequireSREGroup(), certificatesHandler.DeleteManualBackup)
+		// Extração de .pfx (PFX-CERT-EXTRACTION-PLAN.md) — recebe/gera chave privada, RBAC nas
+		// mesmas rotas que o Backup Manual protege (extração em si, conteúdo, edição, remoção);
+		// listagem de nomes/extrações fica de leitura livre, mesmo padrão de manual-backups acima.
+		certGroup.POST("/pfx/extract", rbacMiddleware.RequireSREGroup(), certificatesHandler.ExtractPFX)
+		certGroup.GET("/pfx/names", certificatesHandler.ListPFXNames)    // leitura, sem RBAC
+		certGroup.GET("/pfx/:name", certificatesHandler.ListPFXExtracts) // leitura, sem RBAC
+		certGroup.GET("/pfx/:name/:extractId/content", rbacMiddleware.RequireSREGroup(), certificatesHandler.GetPFXContent)
+		certGroup.PUT("/pfx/:name/:extractId/comment", rbacMiddleware.RequireSREGroup(), certificatesHandler.UpdatePFXComment)
+		certGroup.DELETE("/pfx/:name/:extractId", rbacMiddleware.RequireSREGroup(), certificatesHandler.DeletePFX)
 		// Write Operations (SRE-only)
 		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
 		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)

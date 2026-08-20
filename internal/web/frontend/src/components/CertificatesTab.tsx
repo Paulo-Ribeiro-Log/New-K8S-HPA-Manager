@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { CertificateDetailModal } from "@/components/CertificateDetailModal";
 import { ExternalCertEndpointsPanel } from "@/components/ExternalCertEndpointsPanel";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
+import { PFXExtractModal } from "@/components/PFXExtractModal";
 import { AWXCertForm } from "@/components/AWXCertForm";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -34,6 +35,7 @@ import {
   ShieldCheck,
   Copy,
   Upload,
+  FileArchive,
   FileText,
   Loader2,
   Download,
@@ -119,6 +121,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [copyModalOpen, setCopyModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [pfxExtractModalOpen, setPfxExtractModalOpen] = useState(false);
   const [reportModalOpen, setReportModalOpen] = useState(false);
 
   // Copy state
@@ -1015,6 +1018,17 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
               Upload Certificado
             </Button>
           </ProtectedAction>
+          <ProtectedAction>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => setPfxExtractModalOpen(true)}
+            >
+              <FileArchive className="h-3 w-3 mr-2" />
+              Extrair de .pfx
+            </Button>
+          </ProtectedAction>
         </div>
       )}
     </div>
@@ -1683,6 +1697,11 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
           }
         }}
       />
+
+      {/* Extração de .pfx — o resultado fica salvo por nome, navegável depois pelo
+          CertificateSourcePickerModal acima (3ª aba, "Extraído de PFX"). Ver
+          PFX-CERT-EXTRACTION-PLAN.md. */}
+      <PFXExtractModal open={pfxExtractModalOpen} onOpenChange={setPfxExtractModalOpen} />
 
       {/* Modal de Exportacao de Relatorio */}
       <Dialog open={reportModalOpen} onOpenChange={setReportModalOpen}>

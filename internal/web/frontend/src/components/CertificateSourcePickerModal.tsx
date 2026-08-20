@@ -20,10 +20,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, History, FolderOpen, Folder, ArrowLeft, ChevronRight, Search, Pencil, Trash2 } from "lucide-react";
+import { Loader2, History, FolderOpen, Folder, ArrowLeft, ChevronRight, Search, Pencil, Trash2, FileArchive } from "lucide-react";
 import { toast } from "sonner";
 import { useCertificates } from "@/hooks/useCertificates";
-import type { RollbackBackupInfo, ManualBackupInfo } from "@/types/certificates";
+import type { RollbackBackupInfo, ManualBackupInfo, PFXExtractInfo } from "@/types/certificates";
 
 interface CertificateSourcePickerModalProps {
   open: boolean;
@@ -38,13 +38,14 @@ interface CertificateSourcePickerModalProps {
   onSelect: (tlsCrt: string, tlsKey: string) => void;
 }
 
-type Tab = "rollback" | "manual";
+type Tab = "rollback" | "manual" | "pfx";
 
 /**
- * CertificateSourcePickerModal — "escolher instalar do backup/rollback ou do backup apartado,
- * podendo navegar entre as pastas". Duas abas: Rollback (escopado ao secret atual, como o resto do
- * app já faz) e Backup Apartado (navegável entre QUALQUER secret que já tenha um backup manual —
- * útil pra reinstalar um cert de outro secret/cluster, não só o atual).
+ * CertificateSourcePickerModal — "escolher instalar do backup/rollback, do backup apartado ou de
+ * uma extração de .pfx, podendo navegar entre as pastas". Três abas: Rollback (escopado ao secret
+ * atual, como o resto do app já faz), Backup Apartado (navegável entre QUALQUER secret que já
+ * tenha um backup manual) e Extraído de PFX (navegável entre QUALQUER nome já extraído via
+ * PFXExtractModal — ver PFX-CERT-EXTRACTION-PLAN.md), mesmo padrão master-detail da aba anterior.
  */
 export function CertificateSourcePickerModal({
   open,
@@ -62,6 +63,11 @@ export function CertificateSourcePickerModal({
     getManualBackupContent,
     updateManualBackupComment,
     deleteManualBackup,
+    listPFXNames,
+    listPFXExtracts,
+    getPFXContent,
+    updatePFXComment,
+    deletePFX,
   } = useCertificates();
 
   const [tab, setTab] = useState<Tab>("rollback");
@@ -85,6 +91,21 @@ export function CertificateSourcePickerModal({
   // Exclusão de um backup apartado — ação destrutiva, sempre atrás de confirmação.
   const [backupToDelete, setBackupToDelete] = useState<ManualBackupInfo | null>(null);
   const [deletingBackup, setDeletingBackup] = useState(false);
+
+  // Aba "Extraído de PFX" — mesmo padrão master-detail da aba "manual" acima, só troca a fonte de
+  // dados (PFXExtractStore em vez de ManualBackupStore).
+  const [pfxNames, setPfxNames] = useState<string[]>([]);
+  const [loadingPfxNames, setLoadingPfxNames] = useState(false);
+  const [selectedPfxName, setSelectedPfxName] = useState<string | null>(null);
+  const [pfxExtracts, setPfxExtracts] = useState<PFXExtractInfo[]>([]);
+  const [loadingPfxExtracts, setLoadingPfxExtracts] = useState(false);
+  const [editingPfxId, setEditingPfxId] = useState<string | null>(null);
+  const [editPfxCommentText, setEditPfxCommentText] = useState("");
+  const [savingPfxComment, setSavingPfxComment] = useState(false);
+  const [pfxToDelete, setPfxToDelete] = useState<PFXExtractInfo | null>(null);
+  const [deletingPfx, setDeletingPfx] = useState(false);
+  const [pfxNameSearch, setPfxNameSearch] = useState("");
+  const [pfxExtractSearch, setPfxExtractSearch] = useState("");
 
   // Busca client-side por lista — nomes/subjects/comentários, não exige recarregar do servidor.
   const [rollbackSearch, setRollbackSearch] = useState("");
@@ -116,15 +137,38 @@ export function CertificateSourcePickerModal({
     );
   }, [manualBackups, manualBackupSearch]);
 
+  const filteredPfxNames = useMemo(() => {
+    const q = pfxNameSearch.trim().toLowerCase();
+    if (!q) return pfxNames;
+    return pfxNames.filter((name) => name.toLowerCase().includes(q));
+  }, [pfxNames, pfxNameSearch]);
+
+  const filteredPfxExtracts = useMemo(() => {
+    const q = pfxExtractSearch.trim().toLowerCase();
+    if (!q) return pfxExtracts;
+    return pfxExtracts.filter(
+      (e) =>
+        e.subject.toLowerCase().includes(q) ||
+        (e.comment ?? "").toLowerCase().includes(q) ||
+        (e.original_filename ?? "").toLowerCase().includes(q) ||
+        new Date(e.extracted_at).toLocaleString("pt-BR").toLowerCase().includes(q)
+    );
+  }, [pfxExtracts, pfxExtractSearch]);
+
   useEffect(() => {
     if (!open) {
       setTab("rollback");
       setSelectedManualSecret(null);
+      setSelectedPfxName(null);
       setRollbackSearch("");
       setManualSecretSearch("");
       setManualBackupSearch("");
+      setPfxNameSearch("");
+      setPfxExtractSearch("");
       setEditingBackupId(null);
       setBackupToDelete(null);
+      setEditingPfxId(null);
+      setPfxToDelete(null);
       return;
     }
     setLoadingRollbacks(true);
@@ -138,7 +182,13 @@ export function CertificateSourcePickerModal({
       .then(setManualSecrets)
       .catch(() => setManualSecrets([]))
       .finally(() => setLoadingManualSecrets(false));
-  }, [open, cluster, namespace, secretName, listRollbacks, listManualBackupSecrets]);
+
+    setLoadingPfxNames(true);
+    listPFXNames()
+      .then(setPfxNames)
+      .catch(() => setPfxNames([]))
+      .finally(() => setLoadingPfxNames(false));
+  }, [open, cluster, namespace, secretName, listRollbacks, listManualBackupSecrets, listPFXNames]);
 
   const openManualSecretFolder = (name: string) => {
     setSelectedManualSecret(name);
@@ -149,6 +199,17 @@ export function CertificateSourcePickerModal({
       .then(setManualBackups)
       .catch(() => setManualBackups([]))
       .finally(() => setLoadingManualBackups(false));
+  };
+
+  const openPfxNameFolder = (name: string) => {
+    setSelectedPfxName(name);
+    setPfxExtractSearch("");
+    setEditingPfxId(null);
+    setLoadingPfxExtracts(true);
+    listPFXExtracts(name)
+      .then(setPfxExtracts)
+      .catch(() => setPfxExtracts([]))
+      .finally(() => setLoadingPfxExtracts(false));
   };
 
   const handleStartEditComment = (b: ManualBackupInfo) => {
@@ -227,6 +288,66 @@ export function CertificateSourcePickerModal({
     }
   };
 
+  const handleStartEditPfxComment = (e: PFXExtractInfo) => {
+    setEditingPfxId(e.extract_id);
+    setEditPfxCommentText(e.comment ?? "");
+  };
+
+  const handleSavePfxComment = async (extractId: string) => {
+    if (!selectedPfxName) return;
+    setSavingPfxComment(true);
+    try {
+      await updatePFXComment(selectedPfxName, extractId, editPfxCommentText);
+      setPfxExtracts((prev) =>
+        prev.map((x) => (x.extract_id === extractId ? { ...x, comment: editPfxCommentText } : x))
+      );
+      setEditingPfxId(null);
+      toast.success("Nota atualizada");
+    } catch (err) {
+      toast.error("Erro ao atualizar nota", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setSavingPfxComment(false);
+    }
+  };
+
+  const handleConfirmDeletePfx = async () => {
+    if (!pfxToDelete || !selectedPfxName) return;
+    setDeletingPfx(true);
+    try {
+      await deletePFX(selectedPfxName, pfxToDelete.extract_id);
+      setPfxExtracts((prev) => prev.filter((x) => x.extract_id !== pfxToDelete.extract_id));
+      // Se essa era a única extração desse nome, a "pasta" some da lista de nível 1 — atualiza também.
+      listPFXNames().then(setPfxNames).catch(() => {});
+      toast.success("Extração removida");
+      setPfxToDelete(null);
+    } catch (err) {
+      toast.error("Erro ao remover extração", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setDeletingPfx(false);
+    }
+  };
+
+  const handleUsePfx = async (extractId: string) => {
+    if (!selectedPfxName) return;
+    setApplying(extractId);
+    try {
+      const { tls_crt, tls_key } = await getPFXContent(selectedPfxName, extractId);
+      onSelect(tls_crt, tls_key);
+      toast.success("Certificado carregado da extração .pfx");
+      onOpenChange(false);
+    } catch (err) {
+      toast.error("Erro ao carregar extração", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setApplying(null);
+    }
+  };
+
   return (
     <>
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -255,6 +376,14 @@ export function CertificateSourcePickerModal({
             onClick={() => setTab("manual")}
           >
             Backup Apartado
+          </button>
+          <button
+            className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px ${
+              tab === "pfx" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"
+            }`}
+            onClick={() => setTab("pfx")}
+          >
+            Extraído de PFX
           </button>
         </div>
 
@@ -494,6 +623,187 @@ export function CertificateSourcePickerModal({
           </div>
         )}
 
+        {tab === "pfx" && (
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            {selectedPfxName === null ? (
+              // Nível 1: navegar entre os "nomes" escolhidos em cada extração de .pfx
+              loadingPfxNames ? (
+                <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Carregando pastas...
+                </div>
+              ) : pfxNames.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-8 text-center">
+                  Nenhuma extração de .pfx salva ainda. Use o botão "Extrair de .pfx" na aba
+                  Certificados TLS pra criar uma.
+                </p>
+              ) : (
+                <>
+                  <div className="relative mb-2">
+                    <Search className="absolute left-2 top-2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Buscar pasta (nome da extração)..."
+                      value={pfxNameSearch}
+                      onChange={(e) => setPfxNameSearch(e.target.value)}
+                      className="pl-8 h-8 text-sm"
+                    />
+                  </div>
+                  {filteredPfxNames.length === 0 && (
+                    <p className="text-xs text-muted-foreground text-center py-4">Nenhum resultado para a busca.</p>
+                  )}
+                <ScrollArea className="max-h-[40vh] pr-4">
+                  <div className="space-y-1">
+                    {filteredPfxNames.map((name) => (
+                      <button
+                        key={name}
+                        className="w-full flex items-center gap-2 rounded border border-border/50 p-2.5 text-xs hover:bg-accent/50 transition-colors text-left"
+                        onClick={() => openPfxNameFolder(name)}
+                      >
+                        <Folder className="h-4 w-4 text-blue-400 flex-shrink-0" />
+                        <span className="font-medium truncate flex-1">{name}</span>
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                </ScrollArea>
+                </>
+              )
+            ) : (
+              // Nível 2: extrações salvas dentro do nome escolhido
+              <div className="space-y-2">
+                <button
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setSelectedPfxName(null)}
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" /> Voltar às pastas
+                </button>
+                <div className="flex items-center gap-2 text-xs font-medium">
+                  <FolderOpen className="h-4 w-4 text-blue-400" />
+                  {selectedPfxName}
+                </div>
+                {loadingPfxExtracts ? (
+                  <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Carregando extrações...
+                  </div>
+                ) : pfxExtracts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">Nenhuma extração nesta pasta.</p>
+                ) : (
+                  <>
+                    <div className="relative">
+                      <Search className="absolute left-2 top-2 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        placeholder="Buscar por data, subject ou comentário..."
+                        value={pfxExtractSearch}
+                        onChange={(e) => setPfxExtractSearch(e.target.value)}
+                        className="pl-8 h-8 text-sm"
+                      />
+                    </div>
+                    {filteredPfxExtracts.length === 0 && (
+                      <p className="text-xs text-muted-foreground text-center py-4">Nenhum resultado para a busca.</p>
+                    )}
+                  <ScrollArea className="max-h-[34vh] pr-4">
+                    <div className="space-y-2">
+                      {filteredPfxExtracts.map((e) => (
+                        <div
+                          key={e.extract_id}
+                          className="rounded border border-border/50 p-2.5 text-xs space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="space-y-0.5 min-w-0">
+                              <p className="font-medium">{new Date(e.extracted_at).toLocaleString("pt-BR")}</p>
+                              <p className="text-muted-foreground truncate" title={e.subject}>
+                                {e.subject || "(subject indisponível)"}
+                                {e.not_after && ` — válido até ${new Date(e.not_after).toLocaleDateString("pt-BR")}`}
+                              </p>
+                              {e.original_filename && (
+                                <p className="text-muted-foreground truncate" title={e.original_filename}>
+                                  {e.original_filename}
+                                </p>
+                              )}
+                              {editingPfxId !== e.extract_id && e.comment && (
+                                <p className="text-muted-foreground italic truncate" title={e.comment}>
+                                  "{e.comment}"
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                title="Editar nota"
+                                onClick={() => handleStartEditPfxComment(e)}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-destructive hover:text-destructive"
+                                title="Remover extração"
+                                onClick={() => setPfxToDelete(e)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="flex-shrink-0"
+                                disabled={applying === e.extract_id}
+                                onClick={() => handleUsePfx(e.extract_id)}
+                              >
+                                {applying === e.extract_id ? (
+                                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                                ) : (
+                                  <FileArchive className="h-3.5 w-3.5 mr-1.5" />
+                                )}
+                                Usar este
+                              </Button>
+                            </div>
+                          </div>
+                          {editingPfxId === e.extract_id && (
+                            <div className="flex items-center gap-1.5 pt-1 border-t border-border/30">
+                              <Input
+                                value={editPfxCommentText}
+                                onChange={(ev) => setEditPfxCommentText(ev.target.value)}
+                                placeholder="Comentário..."
+                                className="h-7 text-xs flex-1"
+                                autoFocus
+                                onKeyDown={(ev) => {
+                                  if (ev.key === "Enter") handleSavePfxComment(e.extract_id);
+                                  if (ev.key === "Escape") setEditingPfxId(null);
+                                }}
+                              />
+                              <Button
+                                size="sm"
+                                className="h-7 flex-shrink-0"
+                                disabled={savingPfxComment}
+                                onClick={() => handleSavePfxComment(e.extract_id)}
+                              >
+                                {savingPfxComment && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+                                Salvar
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 flex-shrink-0"
+                                disabled={savingPfxComment}
+                                onClick={() => setEditingPfxId(null)}
+                              >
+                                Cancelar
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         <DialogFooter className="flex-shrink-0">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancelar
@@ -520,6 +830,30 @@ export function CertificateSourcePickerModal({
               className="bg-destructive hover:bg-destructive/90"
             >
               {deletingBackup && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Remover
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!pfxToDelete} onOpenChange={(next) => !next && !deletingPfx && setPfxToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar Exclusão</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja remover a extração de{" "}
+              <strong>{pfxToDelete && new Date(pfxToDelete.extracted_at).toLocaleString("pt-BR")}</strong>
+              {pfxToDelete?.subject && <> ({pfxToDelete.subject})</>}? Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingPfx}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDeletePfx}
+              disabled={deletingPfx}
+              className="bg-destructive hover:bg-destructive/90"
+            >
+              {deletingPfx && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Remover
             </AlertDialogAction>
           </AlertDialogFooter>
