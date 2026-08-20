@@ -46,6 +46,7 @@ import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/health
 import { HealthCheckCard } from "@/components/HealthCheckCard";
 import { HealthCheckDTTab } from "@/components/HealthCheckDTTab";
 import { HealthReportTab } from "@/components/HealthReportTab";
+import { TriageScopeModal } from "@/components/TriageScopeModal";
 import { apiClient } from "@/lib/api/client";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -537,6 +538,9 @@ export const HealthCheckResultsPanel = ({
   const [expandedCluster, setExpandedCluster] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedAlerts, setSelectedAlerts] = useState<Set<string>>(new Set());
+  // Resultado cujo TriageScopeModal está aberto — null = fechado. Guarda o result inteiro (não só
+  // o nome do cluster) porque cada card do map abaixo já tem o result em mãos ao clicar.
+  const [triageModalResult, setTriageModalResult] = useState<HealthCheckResult | null>(null);
 
   // Fase 4.1: mapa display_id → clusters onde o problem foi visto (dedup cross-cluster)
   const displayIdClusters = useMemo(() => {
@@ -945,6 +949,35 @@ export const HealthCheckResultsPanel = ({
                               )}
                             </div>
                           </Button>
+
+                          {/* Badge Triagem — sempre visível no cabeçalho do cluster, independente
+                              de expandir o card ou entrar na aba "Relatório" (achado real via
+                              feedback do usuário: a versão anterior, só dentro da aba Relatório,
+                              "ficava perdida na leitura global"). Só aparece quando o Modo Triagem
+                              foi usado nesta execução. */}
+                          {result.triage_summary?.enabled && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setTriageModalResult(result)}
+                              className={`relative h-auto py-2.5 px-4 cursor-pointer ${
+                                result.triage_summary.fell_back_to_full
+                                  ? "border-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950/20"
+                                  : "border-purple-500 hover:bg-purple-50 dark:hover:bg-purple-950/20"
+                              }`}
+                              title="Clique para ver o escopo da triagem (quais namespaces e por quê)"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Zap className={`h-4 w-4 ${result.triage_summary.fell_back_to_full ? "text-amber-600" : "text-purple-600"}`} />
+                                <span className={`text-sm font-medium ${result.triage_summary.fell_back_to_full ? "text-amber-700 dark:text-amber-500" : "text-purple-700 dark:text-purple-500"}`}>
+                                  Triagem
+                                </span>
+                                <div className={`absolute -top-2 -right-2 h-6 w-6 rounded-full text-white text-xs flex items-center justify-center font-bold shadow-lg ${result.triage_summary.fell_back_to_full ? "bg-amber-600" : "bg-purple-600"}`}>
+                                  {result.triage_summary.fell_back_to_full ? "!" : result.triage_summary.namespaces.length}
+                                </div>
+                              </div>
+                            </Button>
+                          )}
                         </div>
                         <p className="text-xs text-muted-foreground mt-2 ml-6">
                           💡 Clique nos badges para ver logs detalhados da análise
@@ -1187,6 +1220,12 @@ export const HealthCheckResultsPanel = ({
           </ScrollArea>
         </div>
       )}
+
+      <TriageScopeModal
+        result={triageModalResult}
+        open={!!triageModalResult}
+        onOpenChange={(open) => !open && setTriageModalResult(null)}
+      />
     </div>
   );
 };

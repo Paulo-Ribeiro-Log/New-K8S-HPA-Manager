@@ -406,19 +406,43 @@ vivo pelo usuário** (screenshot real de um cluster acessível, `akspriv-logreve
 seção "Escopo da Triagem" renderizando corretamente: 8 namespaces resolvidos, badges
 Dynatrace/Prometheus, e a tabela de findings abaixo já confinada a esses namespaces).
 
-**Bug de UX real achado nessa mesma validação (2026-08-20)**: o painel só mostrava
+**Bug de UX real achado nessa mesma validação, round 1 (2026-08-20)**: o painel só mostrava
 `Badge: "Prometheus: 8 namespace(s)"` — uma contagem, sem dizer **qual** alerta específico
 colocou cada namespace no escopo. Feedback direto do usuário: "só há um badge... nada mais além
 disso — como isso serve ao propósito que definimos no plano?". Achado real: `TriageSummary.Reasons`
 (o mapa namespace→motivos, ex: `"Prometheus: KubeHpaMaxedOut (warning)"`) já existia no backend
 desde a Fase 1 — populado, testado, confirmado nos dados reais da validação ao vivo anterior — e
-simplesmente nunca tinha sido renderizado no frontend. Corrigido: seção colapsável "Motivos por
-namespace" (`Collapsible`, mesmo primitivo de `NoteEntry.tsx`) logo abaixo dos badges de fonte,
-**aberta por padrão** (diferente do padrão "colapsado por padrão" de `NoteEntry` — aqui esconder
-atrás de um clique extra derrotaria o propósito central do Modo Triagem: explicar o "porquê").
-Lista cada namespace do escopo com os motivos reais. Não validado ao vivo ainda (cluster ficou
-inacessível durante essa correção — ver nota de conectividade abaixo) — estruturalmente é o mesmo
-padrão já provado dos badges, só um nível abaixo.
+simplesmente nunca tinha sido renderizado no frontend. Primeira correção: seção colapsável "Motivos
+por namespace" dentro da aba "Relatório".
+
+**Round 2 — feedback do usuário sobre a correção do round 1**: "essas informações não deveriam
+estar apenas na sub tab relatório, pois ficam perdidas na leitura global do relatório. ela deveria
+ter um modal próprio e com as informações mais detalhadas" — acompanhado de um exemplo real
+(`calculo-de-fretes-prd`) com **9 linhas idênticas** de `"Prometheus: KubePodNotReady (warning)"`
+seguidas. Dois problemas reais, corrigidos juntos:
+
+1. **Lugar errado**: "Escopo da Triagem" vivia só dentro de UMA aba (Relatório) entre várias
+   (Deploys/Services/HPAs/etc.) — mas o escopo reduzido afeta TODAS elas igualmente. Corrigido:
+   `TriageScopeModal.tsx` (novo componente) — modal dedicado, acionado por um badge **"Triagem"**
+   sempre visível no cabeçalho do resultado de cada cluster (mesma linha dos badges
+   Healthy/Warning/Critical/Total, visível mesmo sem expandir o card ou trocar de aba). A seção
+   correspondente em `HealthReportTab.tsx` foi reduzida a uma única linha-lembrete apontando pro
+   badge — não duplica o conteúdo (mesmo princípio de fonte única já seguido por `NoteEntry.tsx`).
+2. **Duplicação real, não só um problema de exibição**: o exemplo do usuário revelou que
+   Prometheus dispara **um alerta por objeto afetado** (um `KubePodNotReady` por pod, um
+   `KubeHpaMaxedOut` por HPA) — todos com o mesmo alertname/severity, virando o mesmo texto de
+   motivo repetido dezenas de vezes por namespace. Corrigido na agregação (`resolveTriageTargets`,
+   `target_resolver.go`) — motivos idênticos colapsam numa única entrada com contagem (ex:
+   `"KubePodNotReady (warning) (×9)"`), ordenados, determinísticos. Corrigido no ponto único de
+   merge entre fontes (não em cada `TargetSource`), então cobre automaticamente Zabbix/Elasticsearch
+   quando essas fases existirem. Teste dedicado (`TestResolveTriageTargets_DedupsRepeatedReasons`).
+
+**✅ Validado ao vivo de ponta a ponta (2026-08-20, conectividade do cluster restabelecida)**: via
+Playwright real contra `akspriv-abastecimento-hlg` — badge "Triagem" (roxo, contador "8") aparece
+no cabeçalho do resultado sem precisar expandir nada; clique abre o modal com o painel farol
+(Dynatrace 0/Prometheus 8) e a lista por namespace já deduplicada — confirmado ao vivo, ex:
+`adanalytics-hlg` foi de 5 linhas repetidas pra 3 linhas únicas com contagem
+(`"KubeHpaMaxedOut (warning) (×3)"`). Resultado de teste removido do histórico depois.
 
 **Nota "N de M namespaces"**: a seção 2.4 original sugeria um texto tipo "N de M namespaces
 verificados" — implementado só como "N namespace(s) no escopo", sem o "de M", porque
@@ -597,7 +621,8 @@ internal/healthcheck/dynatrace_checker.go              ← ✅ MODIFICADO (Fase 
 internal/web/handlers/healthcheck.go                   ← ✅ MODIFICADO (Fase 1 — gate de credenciais DT)
 internal/web/frontend/src/types/healthcheck.ts               ← ✅ MODIFICADO (Fase 2 — triage_mode, TriageSummary)
 internal/web/frontend/src/components/HealthCheckingTab.tsx    ← ✅ MODIFICADO (Fase 2 — toggle Triagem/Varredura)
-internal/web/frontend/src/components/HealthReportTab.tsx      ← ✅ MODIFICADO (Fase 2 — painel "farol" por fonte)
+internal/web/frontend/src/components/HealthReportTab.tsx      ← ✅ MODIFICADO (Fase 2 — reduzido a 1 linha-lembrete, ver TriageScopeModal)
+internal/web/frontend/src/components/TriageScopeModal.tsx     ← ✅ CRIADO (Fase 2 round 2 — modal dedicado, badge "Triagem" sempre visível)
 internal/elasticsearch/client.go                        ← CRIAR (Fase 3, condicional — ver seção 4 item 5)
 internal/healthcheck/target_source_elasticsearch.go      ← CRIAR (Fase 3, condicional)
 internal/storage/user_tokens_store.go                    ← MODIFICAR (Fase 3 — credenciais Elasticsearch)

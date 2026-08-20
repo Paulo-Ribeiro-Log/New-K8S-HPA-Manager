@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"fmt"
 	"sort"
 )
 
@@ -41,7 +42,14 @@ type TriageResolution struct {
 // resultado. Nunca retorna erro — cada fonte já trata a própria falha via Available=false.
 func resolveTriageTargets(ctx context.Context, cluster string, sources []TargetSource) TriageResolution {
 	nsSet := make(map[string]struct{})
-	reasons := make(map[string][]string)
+	// reasonCounts: namespace → texto do motivo → quantas vezes apareceu. Achado real via
+	// validação ao vivo (2026-08-20): Prometheus dispara UM alerta por objeto afetado (um
+	// KubePodNotReady por pod, um KubeHpaMaxedOut por HPA) — todos com o mesmo alertname/severity,
+	// então viravam o mesmo texto de motivo repetido dezenas de vezes na UI (ex: "KubePodNotReady
+	// (warning)" 9x seguidas para o mesmo namespace). Agregado aqui, no ponto único de merge entre
+	// fontes, em vez de em cada TargetSource — cobre automaticamente qualquer fonte futura
+	// (Zabbix/Elasticsearch) sem precisar duplicar a lógica de dedup em cada uma.
+	reasonCounts := make(map[string]map[string]int)
 	statuses := make([]TriageSourceStatus, 0, len(sources))
 	anyAvailable := false
 
@@ -67,7 +75,12 @@ func resolveTriageTargets(ctx context.Context, cluster string, sources []TargetS
 			nsSet[ns] = struct{}{}
 		}
 		for ns, rs := range res.Reasons {
-			reasons[ns] = append(reasons[ns], rs...)
+			if reasonCounts[ns] == nil {
+				reasonCounts[ns] = make(map[string]int)
+			}
+			for _, r := range rs {
+				reasonCounts[ns][r]++
+			}
 		}
 	}
 
@@ -76,6 +89,21 @@ func resolveTriageTargets(ctx context.Context, cluster string, sources []TargetS
 		namespaces = append(namespaces, ns)
 	}
 	sort.Strings(namespaces)
+
+	// Achata reasonCounts em Reasons final — cada motivo único uma vez só, com "(×N)" quando
+	// repetiu (N>1). Ordenado por texto pra saída determinística (testes, UI estável entre runs).
+	reasons := make(map[string][]string, len(reasonCounts))
+	for ns, counts := range reasonCounts {
+		list := make([]string, 0, len(counts))
+		for text, count := range counts {
+			if count > 1 {
+				text = fmt.Sprintf("%s (×%d)", text, count)
+			}
+			list = append(list, text)
+		}
+		sort.Strings(list)
+		reasons[ns] = list
+	}
 
 	return TriageResolution{
 		AnyAvailable: anyAvailable,

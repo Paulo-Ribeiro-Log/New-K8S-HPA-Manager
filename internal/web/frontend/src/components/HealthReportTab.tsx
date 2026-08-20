@@ -1,8 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { AlertTriangle, Server, Clock, RotateCcw, Zap, CircleOff, CheckCircle2, ChevronDown, ChevronRight } from "lucide-react";
+import { AlertTriangle, Server, Clock, RotateCcw, Zap } from "lucide-react";
 import type { HealthCheckResult, Severity, NodeHealth } from "@/types/healthcheck";
 import { SeverityWeight, SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 
@@ -117,10 +116,6 @@ function resourceVerdictLabel(verdict?: string): { label: string; className: str
 export const HealthReportTab = ({ result }: { result: HealthCheckResult }) => {
   const findings = useMemo(() => buildFindings(result), [result]);
   const nodes = result.node_results ?? [];
-  // Aberto por padrão (diferente do NoteEntry, que colapsa por padrão) — é justamente o motivo
-  // de existir o Modo Triagem: mostrar POR QUE cada namespace entrou no escopo, não só a contagem
-  // no badge. Escondido atrás de mais um clique derrotaria o propósito.
-  const [reasonsOpen, setReasonsOpen] = useState(true);
 
   const counts = useMemo(() => {
     const c: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
@@ -160,90 +155,18 @@ export const HealthReportTab = ({ result }: { result: HealthCheckResult }) => {
         </div>
       </div>
 
-      {/* Escopo do Modo Triagem (HEALTHCHECK-TRIAGE-MODE-PLAN.md Fase 2) — presente só quando
-          triage_mode=true na request. Torna explícito COMO o escopo foi decidido, pra um
-          resultado com poucos/nenhum namespace nunca ser confundido com "não rodou direito". */}
+      {/* Escopo do Modo Triagem — não renderizado aqui de propósito. Achado real via feedback do
+          usuário (2026-08-20): a versão anterior vivia só nesta sub-aba e "ficava perdida na
+          leitura global do relatório", já que ela é só uma entre várias abas (Deploys/Services/
+          HPAs/etc.) e o escopo reduzido afeta TODAS elas, não só esta. Movido pro
+          TriageScopeModal.tsx, acionado por um badge sempre visível no cabeçalho do resultado do
+          cluster (visível mesmo sem expandir o card ou trocar de aba) — ver
+          HealthCheckResultsPanel.tsx. Este é só um lembrete de que o escopo foi reduzido. */}
       {result.triage_summary?.enabled && (
-        <div className="rounded-lg border p-3 bg-muted/30 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-              <Zap className="h-3 w-3" /> Escopo da Triagem
-            </p>
-            {result.triage_summary.fell_back_to_full && (
-              <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30">
-                Nenhuma fonte disponível — Varredura Completa usada
-              </Badge>
-            )}
-          </div>
-
-          {result.triage_summary.fell_back_to_full ? (
-            <p className="text-xs text-muted-foreground">
-              {result.triage_summary.fallback_reason || "Nenhuma fonte de triagem disponível para este cluster."}
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {result.triage_summary.namespaces.length === 0
-                ? "Nenhuma fonte sinalizou problema — cluster aparenta saudável, varredura reduzida."
-                : `${result.triage_summary.namespaces.length} namespace(s) no escopo: ${result.triage_summary.namespaces.join(", ")}`}
-            </p>
-          )}
-
-          {/* Painel "farol" por fonte — cinza (indisponível) vs. verde (checou, sem problema) vs.
-              âmbar (checou, achou problema) */}
-          <div className="flex flex-wrap gap-2">
-            {result.triage_summary.sources.map((s) => {
-              const cls = !s.available
-                ? "bg-muted text-muted-foreground border-muted-foreground/30"
-                : s.namespaces.length > 0
-                  ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30"
-                  : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30";
-              return (
-                <Badge
-                  key={s.name}
-                  variant="outline"
-                  title={s.error || undefined}
-                  className={`text-xs gap-1 ${cls}`}
-                >
-                  {!s.available ? (
-                    <CircleOff className="h-3 w-3" />
-                  ) : s.namespaces.length > 0 ? (
-                    <AlertTriangle className="h-3 w-3" />
-                  ) : (
-                    <CheckCircle2 className="h-3 w-3" />
-                  )}
-                  {s.name}: {!s.available ? "indisponível" : `${s.namespaces.length} namespace(s)`}
-                </Badge>
-              );
-            })}
-          </div>
-
-          {/* Motivos por namespace — sem isso, o badge acima ("Prometheus: 8 namespace(s)") não
-              diz NADA sobre qual alerta específico colocou cada namespace no escopo. É o dado
-              mais importante da triagem (o "porquê"), já calculado no backend (TriageSummary.
-              Reasons) — só faltava renderizar. */}
-          {!result.triage_summary.fell_back_to_full &&
-            result.triage_summary.reasons &&
-            Object.keys(result.triage_summary.reasons).length > 0 && (
-              <Collapsible open={reasonsOpen} onOpenChange={setReasonsOpen}>
-                <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground">
-                  {reasonsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                  Motivos por namespace
-                </CollapsibleTrigger>
-                <CollapsibleContent className="mt-1.5 space-y-1.5">
-                  {Object.entries(result.triage_summary.reasons).map(([ns, reasons]) => (
-                    <div key={ns} className="text-xs rounded border bg-background/50 p-1.5">
-                      <span className="font-mono font-medium">{ns}</span>
-                      <ul className="list-disc list-inside ml-1 text-muted-foreground mt-0.5">
-                        {reasons.map((r, i) => (
-                          <li key={i}>{r}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
-                </CollapsibleContent>
-              </Collapsible>
-            )}
-        </div>
+        <p className="text-xs text-muted-foreground flex items-center gap-1">
+          <Zap className="h-3 w-3" />
+          Esta varredura usou o Modo Triagem — veja o badge "Triagem" no cabeçalho do cluster para o escopo completo.
+        </p>
       )}
 
       {/* Tabela-resumo priorizada por severidade */}

@@ -101,6 +101,36 @@ func TestResolveTriageTargets_UnionAndDedup(t *testing.T) {
 	}
 }
 
+// TestResolveTriageTargets_DedupsRepeatedReasons cobre o achado real de 2026-08-20 (validação ao
+// vivo): Prometheus dispara um alerta por objeto afetado (um KubePodNotReady por pod), então o
+// mesmo texto de motivo aparecia repetido dezenas de vezes na UI pro mesmo namespace. A agregação
+// deve colapsar textos idênticos numa única entrada com contagem, não listar cada ocorrência.
+func TestResolveTriageTargets_DedupsRepeatedReasons(t *testing.T) {
+	sources := []TargetSource{
+		fakeTargetSource{name: "Prometheus", result: TargetSourceResult{
+			Available:  true,
+			Namespaces: []string{"checkout"},
+			Reasons: map[string][]string{"checkout": {
+				"Prometheus: KubePodNotReady (warning)",
+				"Prometheus: KubePodNotReady (warning)",
+				"Prometheus: KubePodNotReady (warning)",
+				"Prometheus: KubeHpaMaxedOut (warning)",
+			}},
+		}},
+	}
+
+	res := resolveTriageTargets(context.Background(), "cluster-a", sources)
+
+	reasons := res.Reasons["checkout"]
+	if len(reasons) != 2 {
+		t.Fatalf("esperava 2 motivos únicos (não 4 repetidos) — veio %v", reasons)
+	}
+	want := []string{"Prometheus: KubeHpaMaxedOut (warning)", "Prometheus: KubePodNotReady (warning) (×3)"}
+	if !reflect.DeepEqual(reasons, want) {
+		t.Fatalf("reasons = %v, want %v", reasons, want)
+	}
+}
+
 func TestIntersectOrUse(t *testing.T) {
 	tests := []struct {
 		name       string
