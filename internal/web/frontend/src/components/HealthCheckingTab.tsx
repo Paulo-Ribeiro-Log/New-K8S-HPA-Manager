@@ -33,6 +33,8 @@ import {
   Download,
   CheckCircle2,
   BarChart3,
+  Zap,
+  Search,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useHealthChecking } from "@/hooks/useHealthChecking";
@@ -86,6 +88,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [checkSpinnakerRollback, setCheckSpinnakerRollback] = useState(false); // Sinal extra de risco: rollback recente no Spinnaker (desabilitado por padrão)
   const [checkDynatrace, setCheckDynatrace] = useState(false); // Verificar problems Dynatrace
   const [checkOneAgentSignals, setCheckOneAgentSignals] = useState(false); // Escanear sinais OneAgent
+  const [triageMode, setTriageMode] = useState(false); // Modo Triagem (HEALTHCHECK-TRIAGE-MODE-PLAN.md) — desligado por padrão, preserva o comportamento atual
   const [timeout, setTimeout] = useState(30); // Timeout geral (fallback)
   const [showAdvancedTimeouts, setShowAdvancedTimeouts] = useState(false);
   const [timeoutDeployments, setTimeoutDeployments] = useState(60); // Padrão: 60s
@@ -303,6 +306,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       timeout_hpas: showAdvancedTimeouts ? timeoutHPAs : undefined,
       timeout_pvcs: showAdvancedTimeouts ? timeoutPVCs : undefined,
       apply_filters: applyFilters, // ✅ Aplicar filtros de falsos positivos
+      triage_mode: triageMode,
     };
 
     console.log("[HealthCheckingTab] Sending request:", request);
@@ -497,6 +501,61 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                         {parseNamespaces().length} namespace(s): {parseNamespaces().join(", ")}
                       </p>
                     )}
+                  </CardContent>
+                </Card>
+
+                {/* Modo de Verificação: Triagem Rápida vs. Varredura Completa */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-sm font-medium">Modo de Verificação</CardTitle>
+                        <CardDescription className="text-xs">
+                          {triageMode
+                            ? "Resolve o escopo via Dynatrace/Prometheus antes de varrer"
+                            : "Verifica todos os namespaces selecionados, ponto a ponto"}
+                        </CardDescription>
+                      </div>
+                      <Button
+                        variant={triageMode ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setTriageMode(!triageMode)}
+                        className="h-8 gap-2"
+                      >
+                        {triageMode ? (
+                          <>
+                            <Zap className="h-4 w-4" />
+                            Triagem Rápida
+                          </>
+                        ) : (
+                          <>
+                            <Search className="h-4 w-4" />
+                            Varredura Completa
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-xs text-muted-foreground">
+                      {triageMode ? (
+                        <>
+                          Verifica primeiro quais namespaces têm problema sinalizado por{" "}
+                          <strong>Dynatrace</strong> ou <strong>Prometheus</strong>, e varre a
+                          fundo só esse escopo reduzido. Sem nenhuma fonte disponível pro cluster,
+                          cai automaticamente para Varredura Completa. Não substitui a Varredura
+                          Completa — não encontra problema de postura/higiene (sem probe, QoS
+                          errado, ConfigMap órfão) que nenhuma ferramenta de monitoramento sinaliza
+                          sozinha.
+                        </>
+                      ) : (
+                        <>
+                          Verifica todos os namespaces selecionados por completo — mais lento, mas
+                          é o único jeito de achar problema de postura/higiene que nenhuma
+                          ferramenta de monitoramento sinaliza sozinha.
+                        </>
+                      )}
+                    </p>
                   </CardContent>
                 </Card>
 

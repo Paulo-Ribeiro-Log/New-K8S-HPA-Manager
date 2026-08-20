@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AlertTriangle, Server, Clock, RotateCcw } from "lucide-react";
+import { AlertTriangle, Server, Clock, RotateCcw, Zap, CircleOff, CheckCircle2 } from "lucide-react";
 import type { HealthCheckResult, Severity, NodeHealth } from "@/types/healthcheck";
 import { SeverityWeight, SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 
@@ -154,6 +154,65 @@ export const HealthReportTab = ({ result }: { result: HealthCheckResult }) => {
           )}
         </div>
       </div>
+
+      {/* Escopo do Modo Triagem (HEALTHCHECK-TRIAGE-MODE-PLAN.md Fase 2) — presente só quando
+          triage_mode=true na request. Torna explícito COMO o escopo foi decidido, pra um
+          resultado com poucos/nenhum namespace nunca ser confundido com "não rodou direito". */}
+      {result.triage_summary?.enabled && (
+        <div className="rounded-lg border p-3 bg-muted/30 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+              <Zap className="h-3 w-3" /> Escopo da Triagem
+            </p>
+            {result.triage_summary.fell_back_to_full && (
+              <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30">
+                Nenhuma fonte disponível — Varredura Completa usada
+              </Badge>
+            )}
+          </div>
+
+          {result.triage_summary.fell_back_to_full ? (
+            <p className="text-xs text-muted-foreground">
+              {result.triage_summary.fallback_reason || "Nenhuma fonte de triagem disponível para este cluster."}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {result.triage_summary.namespaces.length === 0
+                ? "Nenhuma fonte sinalizou problema — cluster aparenta saudável, varredura reduzida."
+                : `${result.triage_summary.namespaces.length} namespace(s) no escopo: ${result.triage_summary.namespaces.join(", ")}`}
+            </p>
+          )}
+
+          {/* Painel "farol" por fonte — cinza (indisponível) vs. verde (checou, sem problema) vs.
+              âmbar (checou, achou problema) */}
+          <div className="flex flex-wrap gap-2">
+            {result.triage_summary.sources.map((s) => {
+              const cls = !s.available
+                ? "bg-muted text-muted-foreground border-muted-foreground/30"
+                : s.namespaces.length > 0
+                  ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30"
+                  : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30";
+              return (
+                <Badge
+                  key={s.name}
+                  variant="outline"
+                  title={s.error || undefined}
+                  className={`text-xs gap-1 ${cls}`}
+                >
+                  {!s.available ? (
+                    <CircleOff className="h-3 w-3" />
+                  ) : s.namespaces.length > 0 ? (
+                    <AlertTriangle className="h-3 w-3" />
+                  ) : (
+                    <CheckCircle2 className="h-3 w-3" />
+                  )}
+                  {s.name}: {!s.available ? "indisponível" : `${s.namespaces.length} namespace(s)`}
+                </Badge>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Tabela-resumo priorizada por severidade */}
       {findings.length > 0 && (

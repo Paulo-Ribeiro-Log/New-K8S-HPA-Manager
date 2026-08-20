@@ -1,7 +1,8 @@
 # Plano: Modo Triagem no Health Check (sinaliza primeiro, investiga depois)
 
-**Status:** 🟡 Fase 1 implementada (backend) — Fases 2-6 ainda não iniciadas. Sem validação ao vivo
-contra um cluster real ainda (só testes unitários + build/vet/testes existentes passando). Fases 3
+**Status:** 🟡 Fases 1 e 2 implementadas (Modo Triagem já é usável ponta a ponta: backend +
+toggle/UI de resultado) — Fases 3-6 ainda não iniciadas. Sem validação ao vivo no navegador contra
+um cluster real ainda (só testes unitários + build/type-check/lint passando). Fases 3
 (Elasticsearch) e 4 (ignore-lists) registradas em 2026-08-20 a partir da revisão de um script
 Python de referência de outra ferramenta interna — ver seção 0. **Fase 3 desbloqueada em
 2026-08-20**: confirmado que esta empresa usa ELK/Kibana de verdade, pipeline Fluentd, credencial
@@ -333,13 +334,38 @@ esteve disponível), não da request — corrige esse caso sem mudar a intençã
 sem toggle no frontend (Fase 2), a única forma de exercitar `triage_mode` hoje é enviando
 `{"triage_mode": true, ...}` direto pro `POST /api/v1/healthcheck/run`.
 
-### Fase 2 — Frontend: toggle de modo + transparência de origem
+### Fase 2 — Frontend: toggle de modo + transparência de origem — ✅ implementada
 
-- Componente de configuração do Health Check (verificar nome exato do form na hora — painel de
-  opções antes de iniciar o check): toggle "Triagem rápida (recomendado)" vs. "Varredura completa"
-- `HealthReportTab.tsx` (ou onde fizer mais sentido dentro dos resultados): seção de escopo da
-  triagem (seção 2.4), incluindo o painel "farol" por fonte (seção 2.4, item adicionado em
-  2026-08-20) — dado já pronto desde a Fase 1 (`TriageSummary.Sources`), só falta o componente.
+**Arquivos modificados:**
+- `internal/web/frontend/src/types/healthcheck.ts` — `HealthCheckRequest.triage_mode`,
+  `HealthCheckResult.triage_summary`, novos tipos `TriageSummary`/`TriageSourceStatus` (espelham
+  `internal/healthcheck/models.go` 1:1)
+- `internal/web/frontend/src/components/HealthCheckingTab.tsx` — novo card "Modo de Verificação"
+  entre "Namespaces" e "Tipos de Verificação", toggle `triageMode` (`false` por padrão — preserva
+  o comportamento atual pra quem não mexer em nada), enviado como `triage_mode` no request. Mesmo
+  padrão visual do card "Filtros Inteligentes" já existente (botão que troca de rótulo/ícone,
+  `Zap` pra Triagem Rápida vs. `Search` pra Varredura Completa) — não inventou um componente novo.
+- `internal/web/frontend/src/components/HealthReportTab.tsx` — seção "Escopo da Triagem" (só
+  renderiza quando `result.triage_summary?.enabled`), com: (1) texto do escopo final resolvido ou
+  do motivo de fallback, (2) painel "farol" por fonte (item do backlog de 2026-08-20) — badge
+  cinza `CircleOff` quando `!available` (fonte fora do jogo), verde `CheckCircle2` quando
+  disponível e sem namespace sinalizado, âmbar `AlertTriangle` quando disponível e achou algo;
+  `title` do badge mostra o erro real quando existe (`TriageSourceStatus.Error`). Reaproveita
+  exatamente o dado que a Fase 1 já produz (`TriageSummary.Sources`) — nenhum campo novo no
+  backend foi necessário pra esse painel.
+
+**Validação até agora**: `npx tsc --noEmit -p tsconfig.app.json`, `npx eslint` nos arquivos
+tocados, `./rebuild-web.sh -b` (build completo frontend+backend) e suíte Go (`-race`) passando.
+**Não validado ao vivo no navegador contra um cluster real ainda** — só build/type-check; a
+próxima sessão que tiver acesso a um cluster real deveria rodar um Health Check com o toggle
+"Triagem Rápida" ligado e conferir visualmente a aba "Relatório".
+
+**Nota "N de M namespaces"**: a seção 2.4 original sugeria um texto tipo "N de M namespaces
+verificados" — implementado só como "N namespace(s) no escopo", sem o "de M", porque
+`TriageSummary` (Fase 1) nunca ganhou um campo com o total de namespaces do cluster (só o escopo
+resolvido) — adicionar isso exigiria uma chamada squeeze pra `getAllNamespaces` só pra exibir um
+número, custo que não parecia valer a pena pro ganho de UI. Puramente uma decisão de escopo, não
+um bug — revisitar se o "de M" fizer falta na prática.
 
 ### Fase 3 — `ElasticsearchTargetSource` — ✅ desbloqueada em 2026-08-20 (respostas na seção 4 item 5), código ainda não iniciado
 
@@ -466,7 +492,9 @@ internal/healthcheck/models.go                         ← ✅ MODIFICADO (Fase 
 internal/healthcheck/orchestrator.go                   ← ✅ MODIFICADO (Fase 1 — reordenar fluxo)
 internal/healthcheck/dynatrace_checker.go              ← ✅ MODIFICADO (Fase 1 — CheckAll retorna error)
 internal/web/handlers/healthcheck.go                   ← ✅ MODIFICADO (Fase 1 — gate de credenciais DT)
-internal/web/frontend/src/components/HealthReportTab.tsx (ou equivalente) ← MODIFICAR (Fase 2 — inclui painel "farol" por fonte)
+internal/web/frontend/src/types/healthcheck.ts               ← ✅ MODIFICADO (Fase 2 — triage_mode, TriageSummary)
+internal/web/frontend/src/components/HealthCheckingTab.tsx    ← ✅ MODIFICADO (Fase 2 — toggle Triagem/Varredura)
+internal/web/frontend/src/components/HealthReportTab.tsx      ← ✅ MODIFICADO (Fase 2 — painel "farol" por fonte)
 internal/elasticsearch/client.go                        ← CRIAR (Fase 3, condicional — ver seção 4 item 5)
 internal/healthcheck/target_source_elasticsearch.go      ← CRIAR (Fase 3, condicional)
 internal/storage/user_tokens_store.go                    ← MODIFICAR (Fase 3 — credenciais Elasticsearch)

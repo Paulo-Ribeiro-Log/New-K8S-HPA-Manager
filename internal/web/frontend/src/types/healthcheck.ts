@@ -111,6 +111,33 @@ export interface HealthCheckRequest {
 
   // Aplicar filtros de falsos positivos (opcional, padrão: true)
   apply_filters?: boolean;
+
+  // Modo Triagem (HEALTHCHECK-TRIAGE-MODE-PLAN.md Fase 1/2): quando true, o escopo de namespaces
+  // varridos é resolvido primeiro via Dynatrace/Prometheus — só os namespaces com algo sinalizado
+  // entram na varredura. Nenhuma fonte disponível cai de volta pra Varredura Completa.
+  triage_mode?: boolean;
+}
+
+// Status de UMA fonte de triagem (Dynatrace, Prometheus, ...) para um cluster — ver
+// TriageSummary. Available=false é distinto de namespaces vazio: o primeiro significa "sem dado
+// desta fonte", o segundo significa "fonte respondeu e não achou problema" (bom sinal).
+export interface TriageSourceStatus {
+  name: string;
+  available: boolean;
+  namespaces: string[];
+  error?: string;
+}
+
+// Resultado da resolução de escopo do Modo Triagem — presente só quando triage_mode=true na
+// request. Documenta como o escopo final foi decidido, pra um resultado "vazio" nunca ser
+// confundido com "não rodou direito".
+export interface TriageSummary {
+  enabled: boolean;
+  sources: TriageSourceStatus[];
+  namespaces: string[]; // escopo final (pode ser vazio de propósito — cluster saudável)
+  reasons?: Record<string, string[]>; // namespace → motivos
+  fell_back_to_full: boolean;
+  fallback_reason?: string;
 }
 
 // Resultado de health check (por cluster)
@@ -133,6 +160,9 @@ export interface HealthCheckResult {
   dynatrace_results?: DynatraceHealth[]; // Problems Dynatrace correlacionados
   correlated_items?: CorrelatedHealthItem[]; // Correlação K8s ↔ Dynatrace
   oneagent_signals?: OneAgentSignal[];   // Sinais de risco detectados via OneAgent (sem problem ativo)
+
+  // Resultado da resolução de escopo do Modo Triagem (ausente quando triage_mode=false na request)
+  triage_summary?: TriageSummary;
 
   // Resumo
   total_checks: number;
