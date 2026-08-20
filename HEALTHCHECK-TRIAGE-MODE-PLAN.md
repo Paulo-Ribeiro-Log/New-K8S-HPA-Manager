@@ -401,7 +401,24 @@ própria, o risco residual aqui é baixo, mas ainda é um "não visto com os pr�
 tocados, `./rebuild-web.sh -b` (build completo frontend+backend) e suíte Go (`-race`) passando. O
 backend que esta UI consome foi validado ao vivo contra um cluster real (ver "Validação ao vivo
 (2026-08-20)" ao final da Fase 1) — o que falta especificamente aqui é clicar a UI React em si num
-navegador (ver a nota "O que ainda não foi clicado" na mesma seção).
+navegador (ver a nota "O que ainda não foi clicado" na mesma seção). **A UI EM SI foi validada ao
+vivo pelo usuário** (screenshot real de um cluster acessível, `akspriv-logreversa-prd`, com a
+seção "Escopo da Triagem" renderizando corretamente: 8 namespaces resolvidos, badges
+Dynatrace/Prometheus, e a tabela de findings abaixo já confinada a esses namespaces).
+
+**Bug de UX real achado nessa mesma validação (2026-08-20)**: o painel só mostrava
+`Badge: "Prometheus: 8 namespace(s)"` — uma contagem, sem dizer **qual** alerta específico
+colocou cada namespace no escopo. Feedback direto do usuário: "só há um badge... nada mais além
+disso — como isso serve ao propósito que definimos no plano?". Achado real: `TriageSummary.Reasons`
+(o mapa namespace→motivos, ex: `"Prometheus: KubeHpaMaxedOut (warning)"`) já existia no backend
+desde a Fase 1 — populado, testado, confirmado nos dados reais da validação ao vivo anterior — e
+simplesmente nunca tinha sido renderizado no frontend. Corrigido: seção colapsável "Motivos por
+namespace" (`Collapsible`, mesmo primitivo de `NoteEntry.tsx`) logo abaixo dos badges de fonte,
+**aberta por padrão** (diferente do padrão "colapsado por padrão" de `NoteEntry` — aqui esconder
+atrás de um clique extra derrotaria o propósito central do Modo Triagem: explicar o "porquê").
+Lista cada namespace do escopo com os motivos reais. Não validado ao vivo ainda (cluster ficou
+inacessível durante essa correção — ver nota de conectividade abaixo) — estruturalmente é o mesmo
+padrão já provado dos badges, só um nível abaixo.
 
 **Nota "N de M namespaces"**: a seção 2.4 original sugeria um texto tipo "N de M namespaces
 verificados" — implementado só como "N namespace(s) no escopo", sem o "de M", porque
