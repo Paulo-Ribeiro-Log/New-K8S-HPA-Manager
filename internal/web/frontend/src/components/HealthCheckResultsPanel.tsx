@@ -950,35 +950,71 @@ export const HealthCheckResultsPanel = ({
                             </div>
                           </Button>
 
-                          {/* Badge Triagem — sempre visível no cabeçalho do cluster, independente
-                              de expandir o card ou entrar na aba "Relatório" (achado real via
-                              feedback do usuário: a versão anterior, só dentro da aba Relatório,
-                              "ficava perdida na leitura global"). Só aparece quando o Modo Triagem
-                              foi usado nesta execução. */}
-                          {result.triage_summary?.enabled && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setTriageModalResult(result)}
-                              className={`relative h-auto py-2.5 px-4 cursor-pointer ${
-                                result.triage_summary.fell_back_to_full
-                                  ? "border-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950/20"
-                                  : "border-purple-500 hover:bg-purple-50 dark:hover:bg-purple-950/20"
-                              }`}
-                              title="Clique para ver o escopo da triagem (quais namespaces e por quê)"
-                            >
-                              <div className="flex items-center gap-2">
-                                <Zap className={`h-4 w-4 ${result.triage_summary.fell_back_to_full ? "text-amber-600" : "text-purple-600"}`} />
-                                <span className={`text-sm font-medium ${result.triage_summary.fell_back_to_full ? "text-amber-700 dark:text-amber-500" : "text-purple-700 dark:text-purple-500"}`}>
-                                  Triagem
-                                </span>
-                                <div className={`absolute -top-2 -right-2 h-6 w-6 rounded-full text-white text-xs flex items-center justify-center font-bold shadow-lg ${result.triage_summary.fell_back_to_full ? "bg-amber-600" : "bg-purple-600"}`}>
-                                  {result.triage_summary.fell_back_to_full ? "!" : result.triage_summary.namespaces.length}
-                                </div>
-                              </div>
-                            </Button>
-                          )}
                         </div>
+
+                        {/* Banner "O que a triagem fez" — SEMPRE visível (não atrás de um clique
+                            em badge), no cabeçalho do resultado, independente de expandir o card
+                            ou entrar em qualquer aba. Achado real via feedback do usuário: um
+                            badge sozinho ("Triagem: 8") não comunica NADA sobre o que realmente
+                            aconteceu — se achou problema, se não achou, ou se caiu pra varredura
+                            completa por falta de fonte. As 3 frases abaixo cobrem essas 3
+                            situações de forma explícita, sem exigir interpretação. */}
+                        {result.triage_summary?.enabled && (
+                          <button
+                            onClick={() => setTriageModalResult(result)}
+                            className={`w-full text-left mt-3 ml-6 mr-2 rounded-lg border p-2.5 flex items-start gap-2 transition-colors ${
+                              result.triage_summary.fell_back_to_full
+                                ? "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15"
+                                : result.triage_summary.namespaces.length === 0
+                                  ? "border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/15"
+                                  : "border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/15"
+                            }`}
+                          >
+                            <Zap
+                              className={`h-4 w-4 mt-0.5 flex-shrink-0 ${
+                                result.triage_summary.fell_back_to_full
+                                  ? "text-amber-600"
+                                  : result.triage_summary.namespaces.length === 0
+                                    ? "text-emerald-600"
+                                    : "text-purple-600"
+                              }`}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p
+                                className={`text-xs font-medium ${
+                                  result.triage_summary.fell_back_to_full
+                                    ? "text-amber-700 dark:text-amber-400"
+                                    : result.triage_summary.namespaces.length === 0
+                                      ? "text-emerald-700 dark:text-emerald-400"
+                                      : "text-purple-700 dark:text-purple-400"
+                                }`}
+                              >
+                                {result.triage_summary.fell_back_to_full
+                                  ? "Modo Triagem: nenhuma fonte disponível — Varredura Completa foi usada nesta execução"
+                                  : result.triage_summary.namespaces.length === 0
+                                    ? "Modo Triagem: nenhuma fonte sinalizou problema — cluster aparenta saudável, nenhum namespace verificado em profundidade"
+                                    : `Modo Triagem: ${result.triage_summary.namespaces.length} namespace(s) sinalizado(s) — varredura concentrada neles`}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                                {result.triage_summary.fell_back_to_full
+                                  ? (result.triage_summary.fallback_reason || "Dynatrace e Prometheus indisponíveis para este cluster.")
+                                  : result.triage_summary.sources
+                                      .map((s) =>
+                                        !s.available
+                                          ? `${s.name}: indisponível`
+                                          : s.namespaces.length > 0
+                                            ? `${s.name}: ${s.namespaces.length} sinalizado(s)`
+                                            : `${s.name}: sem problema`
+                                      )
+                                      .join(" • ")}
+                              </p>
+                            </div>
+                            <span className="text-xs text-muted-foreground flex-shrink-0 self-center whitespace-nowrap">
+                              Ver detalhes →
+                            </span>
+                          </button>
+                        )}
+
                         <p className="text-xs text-muted-foreground mt-2 ml-6">
                           💡 Clique nos badges para ver logs detalhados da análise
                         </p>

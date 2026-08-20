@@ -451,6 +451,27 @@ resolvido) — adicionar isso exigiria uma chamada squeeze pra `getAllNamespaces
 número, custo que não parecia valer a pena pro ganho de UI. Puramente uma decisão de escopo, não
 um bug — revisitar se o "de M" fizer falta na prática.
 
+**Round 3 — usuário reportou estar "perdido no entendimento da ferramenta"**: achava que nada
+comunicava se a triagem achou problema, não achou, ou caiu pra Varredura Completa — mesmo com
+badge+modal já existindo (round 2), a informação continuava atrás de um clique. Confirmado via
+`AskUserQuestion` (não presumido): (1) o comportamento de fallback está correto como desenhado —
+fonte disponível + sem problema = resultado rápido, **sem** escanear por dentro (não virou
+"fallback pra Varredura Completa também nesse caso" — isso continuaria a decisão original da seção
+0/2.3, não reaberta); (2) mas a comunicação devia ser um **banner sempre visível**, não escondido
+atrás do badge. Corrigido: o badge "Triagem" foi removido da fileira de badges
+(Healthy/Warning/Critical/Total) e virou um **banner de largura total**, sempre visível, logo
+abaixo dessa fileira — cobre as 3 situações com frase explícita, sem exigir interpretação:
+- Fallback: `"Modo Triagem: nenhuma fonte disponível — Varredura Completa foi usada nesta execução"` + o motivo
+- Sem problema: `"Modo Triagem: nenhuma fonte sinalizou problema — cluster aparenta saudável, nenhum namespace verificado em profundidade"`
+- Achou: `"Modo Triagem: N namespace(s) sinalizado(s) — varredura concentrada neles"` + resumo por fonte (`"Dynatrace: sem problema • Prometheus: N sinalizado(s)"`)
+
+O banner inteiro é clicável (abre o `TriageScopeModal` já existente pro detalhe completo por
+namespace) — cor muda por estado (âmbar/verde/roxo). **Validado ao vivo** contra
+`akspriv-entregamais-hlg`: banner roxo renderizou corretamente com "12 namespace(s) sinalizado(s)
+— varredura concentrada neles / Dynatrace: sem problema • Prometheus: 12 sinalizado(s)". Os
+estados de fallback e "sem problema" não foram exercitados ao vivo nesta rodada (nenhum cluster
+testado caiu nesses casos) — lógica é ternário simples, coberta por type-check, risco baixo.
+
 ### Fase 3 — `ElasticsearchTargetSource` — ✅ desbloqueada em 2026-08-20 (respostas na seção 4 item 5), código ainda não iniciado
 
 Confirmado com o usuário: esta empresa opera ELK de verdade, pipeline **Fluentd**, credencial de
