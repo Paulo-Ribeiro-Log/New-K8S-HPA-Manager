@@ -2,6 +2,9 @@ package certificates
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -26,6 +29,33 @@ func ExtractPFX(pfxBytes []byte, password string) (tlsCrt, tlsKey []byte, leaf *
 	}
 	if cert == nil {
 		return nil, nil, nil, fmt.Errorf(".pfx não contém certificado")
+	}
+
+	// BUG REAL CORRIGIDO — pkcs12.DecodeChain (vendor) decide qual certificado é o "leaf" só pela
+	// ORDEM dos bags no arquivo (o primeiro certBag encontrado vira `cert`, o resto vira
+	// `caCerts`), sem nenhuma validação de que esse certificado de fato corresponde à chave
+	// privada. Reproduzido isoladamente: um .pfx cujos bags não vêm na ordem leaf-primeiro (comum
+	// em exports de outras ferramentas — Windows/IIS, keytool, algumas CAs) faz `cert` virar uma
+	// intermediária/raiz, e o leaf real acaba dentro de `caCerts` — visualmente o tls.crt resultante
+	// mostra primeiro um certificado de CA, não o do domínio, mesmo com todos os certificados
+	// fisicamente presentes ("a chain não foi extraída junto" na prática, mesmo a chain estando lá).
+	// Corrigido comparando a chave pública de cada certificado candidato (cert + caCerts) contra a
+	// chave privada decodificada — o que bate de verdade é promovido a leaf, independente da ordem
+	// dos bags no arquivo original.
+	candidates := append([]*x509.Certificate{cert}, caCerts...)
+	leafIdx := 0
+	for i, c := range candidates {
+		if certMatchesPrivateKey(c, privateKey) {
+			leafIdx = i
+			break
+		}
+	}
+	cert = candidates[leafIdx]
+	caCerts = make([]*x509.Certificate, 0, len(candidates)-1)
+	for i, c := range candidates {
+		if i != leafIdx {
+			caCerts = append(caCerts, c)
+		}
 	}
 
 	// tlsCrt: leaf primeiro, seguido das intermediárias/raiz (se houver) — a chain inteira num
@@ -55,4 +85,33 @@ func ExtractPFX(pfxBytes []byte, password string) (tlsCrt, tlsKey []byte, leaf *
 	}
 
 	return crtBuf.Bytes(), keyBuf.Bytes(), cert, nil
+}
+
+// certMatchesPrivateKey confere se a chave pública do certificado corresponde à chave privada
+// decodificada — usado por ExtractPFX pra achar o leaf de verdade, independente da ordem dos bags
+// no .pfx original. Cobre os 3 tipos de chave que pkcs12.DecodeChain pode devolver (RSA/ECDSA/
+// Ed25519, via x509.ParsePKCS8PrivateKey); qualquer outra combinação retorna false (nunca panica).
+func certMatchesPrivateKey(cert *x509.Certificate, privateKey interface{}) bool {
+	switch pub := cert.PublicKey.(type) {
+	case *rsa.PublicKey:
+		priv, ok := privateKey.(*rsa.PrivateKey)
+		if !ok {
+			return false
+		}
+		return pub.N.Cmp(priv.N) == 0 && pub.E == priv.E
+	case *ecdsa.PublicKey:
+		priv, ok := privateKey.(*ecdsa.PrivateKey)
+		if !ok {
+			return false
+		}
+		return pub.Curve == priv.Curve && pub.X.Cmp(priv.X) == 0 && pub.Y.Cmp(priv.Y) == 0
+	case ed25519.PublicKey:
+		priv, ok := privateKey.(ed25519.PrivateKey)
+		if !ok {
+			return false
+		}
+		return bytes.Equal(pub, priv.Public().(ed25519.PublicKey))
+	default:
+		return false
+	}
 }

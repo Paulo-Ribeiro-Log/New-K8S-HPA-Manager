@@ -58,6 +58,7 @@ import { addLogoHeaderToPDF, getMarkdownHeader, addFooterToPDF } from "@/lib/log
 import { useClusters } from "@/hooks/useAPI";
 import { useCertificates } from "@/hooks/useCertificates";
 import { apiClient } from "@/lib/api/client";
+import { countPemCertificates } from "@/lib/pemUtils";
 import type { Cluster } from "@/lib/api/types";
 import type {
   CertificateInfo,
@@ -1443,7 +1444,15 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                   </Button>
                 </div>
                 <div>
-                  <Label className="text-sm">Certificado (tls.crt - PEM)</Label>
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm">Certificado (tls.crt - PEM)</Label>
+                    {uploadCrt.trim() && (
+                      <span className="text-[11px] text-muted-foreground">
+                        {countPemCertificates(uploadCrt)} certificado(s) neste campo
+                        {countPemCertificates(uploadCrt) > 1 && " (chain incluída)"}
+                      </span>
+                    )}
+                  </div>
                   <textarea value={uploadCrt} onChange={(e) => setUploadCrt(e.target.value)}
                     placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
                     className="w-full mt-1 h-32 p-2 text-xs font-mono bg-background border rounded resize-none" />
@@ -1613,7 +1622,15 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                       </Button>
                     </div>
                     <div>
-                      <Label className="text-xs">Novo Certificado (tls.crt — PEM)</Label>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs">Novo Certificado (tls.crt — PEM)</Label>
+                        {batchCrt.trim() && (
+                          <span className="text-[11px] text-muted-foreground">
+                            {countPemCertificates(batchCrt)} certificado(s) neste campo
+                            {countPemCertificates(batchCrt) > 1 && " (chain incluída)"}
+                          </span>
+                        )}
+                      </div>
                       <textarea value={batchCrt} onChange={(e) => setBatchCrt(e.target.value)}
                         placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
                         className="w-full mt-1 h-28 p-2 text-xs font-mono bg-background border rounded resize-none"

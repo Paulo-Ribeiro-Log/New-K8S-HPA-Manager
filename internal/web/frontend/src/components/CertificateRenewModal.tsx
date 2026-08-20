@@ -18,6 +18,7 @@ import { CertificateChainValidationPanel } from "@/components/CertificateChainVa
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { AWXCertForm } from "@/components/AWXCertForm";
 import { apiClient } from "@/lib/api/client";
+import { countPemCertificates } from "@/lib/pemUtils";
 import type { CertificateInfo, ChainValidationResult } from "@/types/certificates";
 
 interface CertificateRenewModalProps {
@@ -219,7 +220,18 @@ export function CertificateRenewModal({
               </div>
 
               <div>
-                <Label className="text-sm">Certificado (tls.crt — PEM)</Label>
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm">Certificado (tls.crt — PEM)</Label>
+                  {tlsCrt.trim() && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {countPemCertificates(tlsCrt)} certificado(s) neste campo
+                      {countPemCertificates(tlsCrt) > 1 && " (chain incluída)"}
+                    </span>
+                  )}
+                </div>
+                {/* Caixa fixa (~6-8 linhas visíveis) — um bundle leaf+chain tem 60-90 linhas de
+                    PEM, então sem o contador acima parece "só 1 certificado" mesmo com a chain
+                    presente, exigindo rolar pra confirmar. Ver CLAUDE.md. */}
                 <textarea
                   value={tlsCrt}
                   onChange={(e) => setTlsCrt(e.target.value)}
