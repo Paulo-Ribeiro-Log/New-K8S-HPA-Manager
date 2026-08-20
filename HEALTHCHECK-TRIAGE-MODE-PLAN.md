@@ -1,10 +1,14 @@
 # Plano: Modo Triagem no Health Check (sinaliza primeiro, investiga depois)
 
-**Status:** 🟡 Fases 1, 2 e 4 implementadas — Modo Triagem usável ponta a ponta (backend + toggle/UI
-de resultado) com supressão de ruído configurável (ignore-list por sinal externo). Fases 3
-(Elasticsearch), 5 (Zabbix) e 6 (granularidade por workload) ainda não iniciadas. Sem validação ao
-vivo no navegador contra um cluster real ainda (só testes unitários + build/type-check/lint
-passando). Fases 3/4 registradas em 2026-08-20 a partir da revisão de um script Python de
+**Status:** 🟢 Fases 1, 2 e 4 implementadas e **validadas ao vivo (2026-08-20) contra um cluster
+real** (`akspriv-abastecimento-hlg`, via API direta/curl com JWT real — ver "Validação ao vivo" ao
+final da Fase 1) — Modo Triagem funciona ponta a ponta de verdade: escopo resolvido via
+Dynatrace/Prometheus reais, deployment/HPA checkers de fato confinados a esse escopo, e
+supressão de ruído (Fase 4) confirmada reduzindo o escopo na prática. Um bug real foi encontrado e
+corrigido nessa validação (`triage_summary` não sobrevivia ao Save/Get — commit `1d9d25df`). Só a
+UI React em si não foi clicada num navegador ainda (risco residual baixo — ver nota "O que ainda
+não foi clicado"). Fases 3 (Elasticsearch), 5 (Zabbix) e 6 (granularidade por workload) ainda não
+iniciadas. Fases 3/4 registradas em 2026-08-20 a partir da revisão de um script Python de
 referência de outra ferramenta interna — ver seção 0. **Fase 3 desbloqueada em 2026-08-20**:
 confirmado que esta empresa usa ELK/Kibana de verdade, pipeline Fluentd, credencial de leitura já
 existe, acesso é direto ao Elasticsearch (não via proxy Kibana) — ver seção 4 item 5.
@@ -331,9 +335,47 @@ esteve disponível), não da request — corrige esse caso sem mudar a intençã
 
 **Validação até agora**: `go build ./...`, `go vet`, `gofmt`, testes unitários dedicados (ver
 `target_resolver_test.go`) e a suíte completa de `internal/healthcheck`/`internal/web/handlers`
-(`go test -race`) passando. **Não validado ainda contra um cluster real** — a Fase 1 é só backend;
-sem toggle no frontend (Fase 2), a única forma de exercitar `triage_mode` hoje é enviando
-`{"triage_mode": true, ...}` direto pro `POST /api/v1/healthcheck/run`.
+(`go test -race`) passando — ver também "Validação ao vivo (2026-08-20)" logo após a Fase 2, que
+exercitou este backend ponta a ponta contra um cluster real.
+
+#### Validação ao vivo (2026-08-20) — API direta (curl + JWT real), não pelo navegador
+
+Sessão com acesso real a um cluster (`akspriv-abastecimento-hlg`, 23/26 clusters acessíveis no
+ambiente): login via `POST /auth/login` (sessão `az` já autenticada), depois
+`POST /api/v1/healthcheck/run` com `"triage_mode": true` de verdade.
+
+**Bug real encontrado e corrigido nesta validação** (não coberto por nenhum teste unitário até
+então): `triage_summary` sempre voltava `null` no `GET /api/v1/healthcheck/:id`, mesmo com a
+triagem rodando certo em memória. Causa: `internal/healthcheck/storage.go` serializa campos sem
+coluna própria na tabela SQLite via um struct `extraResultFields` — `TriageSummary` nunca tinha
+sido adicionado lá, então `Save`/`Get`/`GetHistory` descartavam o campo silenciosamente. **Mesma
+classe de bug que `TestSaveAndGetHistory_RoundTripsAllExtraFields` já existia pra pegar** — o
+comentário desse teste documenta um caso idêntico anterior com `NodeResults`; `TriageSummary`
+simplesmente nunca tinha sido adicionado a esse teste também. Corrigido (commit `1d9d25df`):
+campo adicionado a `extraResultFields` + aos 3 call sites + teste estendido.
+
+**Depois da correção, validado com sucesso**:
+- `triage_summary` veio completo: Dynatrace `available:true` (0 problems pro cluster/tag deste
+  usuário), Prometheus `available:true` com **10 namespaces reais** e **alertnames reais**
+  (`KubeDeploymentReplicasMismatch`, `KubeHpaMaxedOut`, `Eventos PodStatus`, `KubePodNotReady`,
+  `KubeJobFailed`, `CPUThrottlingHigh`, `Eventos OOMKilled`, `KubeDaemonSetRolloutStuck`,
+  `TargetDown`, `PrometheusNotConnectedToAlertmanagers`, `InfoInhibitor`).
+- **Confirmado que o escopo realmente restringiu a varredura**: todo `namespace` presente em
+  `deployment_results`/`hpa_results` do resultado é subconjunto do `triage_summary.namespaces`
+  resolvido — a triagem não é só um relatório decorativo, ela de fato controla o que os checkers
+  varrem.
+- **Fase 4 (ignore-list) também validada no mesmo teste**: suprimir `InfoInhibitor` +
+  `CPUThrottlingHigh` (via `POST /api/v1/triage-ignore`) derrubou o namespace
+  `falcon-image-analyzer` do escopo inteiro (eram seus 2 únicos motivos) e removeu
+  `CPUThrottlingHigh` da lista de motivos de todos os outros namespaces afetados, num segundo run.
+- Dados de teste (entradas de ignore-list, resultados de health check) removidos do
+  banco/config ao final — nada de teste ficou para trás.
+
+**O que ainda não foi clicado**: a UI React em si (toggle no `HealthCheckingTab.tsx`, seção "Escopo
+da Triagem" no `HealthReportTab.tsx`) — a validação acima cobriu o backend inteiro (API → cluster
+real → resolução de triagem → persistência → API de leitura), mas não abriu um navegador de
+verdade. Dado que o frontend só espelha tipos e passa `triage_mode`/lê `triage_summary` sem lógica
+própria, o risco residual aqui é baixo, mas ainda é um "não visto com os próprios olhos".
 
 ### Fase 2 — Frontend: toggle de modo + transparência de origem — ✅ implementada
 
@@ -356,10 +398,10 @@ sem toggle no frontend (Fase 2), a única forma de exercitar `triage_mode` hoje 
   backend foi necessário pra esse painel.
 
 **Validação até agora**: `npx tsc --noEmit -p tsconfig.app.json`, `npx eslint` nos arquivos
-tocados, `./rebuild-web.sh -b` (build completo frontend+backend) e suíte Go (`-race`) passando.
-**Não validado ao vivo no navegador contra um cluster real ainda** — só build/type-check; a
-próxima sessão que tiver acesso a um cluster real deveria rodar um Health Check com o toggle
-"Triagem Rápida" ligado e conferir visualmente a aba "Relatório".
+tocados, `./rebuild-web.sh -b` (build completo frontend+backend) e suíte Go (`-race`) passando. O
+backend que esta UI consome foi validado ao vivo contra um cluster real (ver "Validação ao vivo
+(2026-08-20)" ao final da Fase 1) — o que falta especificamente aqui é clicar a UI React em si num
+navegador (ver a nota "O que ainda não foi clicado" na mesma seção).
 
 **Nota "N de M namespaces"**: a seção 2.4 original sugeria um texto tipo "N de M namespaces
 verificados" — implementado só como "N namespace(s) no escopo", sem o "de M", porque
@@ -455,13 +497,12 @@ API REST pra 1 endpoint de escrita em vez de 4. Mesma ideia, estrutura de dados 
   (Dynatrace/Prometheus) sem precisar de nenhuma delas existir.
 
 **Validação até agora**: `go build`/`go vet`/`gofmt`, testes unitários dedicados (4 cenários em
-`triage_ignore_test.go`), `tsc --noEmit`/`eslint` limpos, `./rebuild-web.sh -b` com sucesso,
-servidor reiniciado e log confirmando `"Triage ignore manager initialized"` +
-`"✅ Triage Ignore routes registradas"`; `GET /api/v1/triage-ignore/sources` respondeu
-`401 UNAUTHORIZED` (não `404`) sem token, confirmando que a rota está de fato registrada. **Não
-validado ao vivo no navegador** — próxima sessão com acesso deveria abrir o modal de Filtros,
-aba "Sinal Externo (Triagem)", cadastrar uma entrada de verdade e confirmar que ela reduz o
-escopo de um Health Check em Modo Triagem.
+`triage_ignore_test.go`), `tsc --noEmit`/`eslint` limpos, `./rebuild-web.sh -b` com sucesso. **✅
+Validado ao vivo via API** (ver "Validação ao vivo (2026-08-20)" na Fase 1) — `POST`/`GET`/`DELETE
+/api/v1/triage-ignore` exercitados contra o backend real com um JWT real, e o efeito de fato
+confirmado contra um Health Check real em Modo Triagem (suprimir `InfoInhibitor`+
+`CPUThrottlingHigh` derrubou `falcon-image-analyzer` do escopo). **Só a UI React (a nova aba
+"Sinal Externo (Triagem)" dentro de `FiltersManagementModal.tsx`) não foi clicada num navegador.**
 
 ### Fase 5 — `ZabbixTargetSource` (condicional, depende de `ZABBIX-INTEGRATION-PLAN.md` Fase 1/4)
 
