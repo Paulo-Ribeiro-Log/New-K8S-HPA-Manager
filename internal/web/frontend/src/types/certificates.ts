@@ -206,3 +206,19 @@ export interface ManualBackupInfo {
   not_after: string;
   comment?: string;
 }
+
+// PFXExtractInfo — resultado de uma extração de .pfx salva por PFXExtractStore (ver
+// PFX-CERT-EXTRACTION-PLAN.md). "name" é escolhido livremente pelo usuário na extração, diferente
+// de ManualBackupInfo (onde a "pasta" é o nome do Secret K8s de origem).
+export interface PFXExtractInfo {
+  extract_id: string;
+  name: string;
+  extracted_at: string;
+  subject: string;
+  issuer: string;
+  serial_number: string;
+  not_after: string;
+  chain_length: number;
+  original_filename?: string;
+  comment?: string;
+}

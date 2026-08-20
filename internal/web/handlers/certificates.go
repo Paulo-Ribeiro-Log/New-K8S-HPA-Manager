@@ -21,6 +21,7 @@ type CertificatesHandler struct {
 	scanner           *certificates.Scanner
 	rollbackStore     *certificates.RollbackStore     // pode ser nil — backup/rollback fica indisponível nesse caso
 	manualBackupStore *certificates.ManualBackupStore // pode ser nil — mecanismo separado, ver manual_backup.go
+	pfxExtractStore   *certificates.PFXExtractStore   // pode ser nil — extração de .pfx fica indisponível nesse caso, ver pfx_store.go
 	historyTracker    *history.HistoryTracker
 }
 
@@ -41,10 +42,17 @@ func NewCertificatesHandler(km *config.KubeConfigManager, historyTracker *histor
 		manualBackupStore = nil
 	}
 
+	pfxExtractStore, err := certificates.NewPFXExtractStore()
+	if err != nil {
+		log.Warn().Err(err).Msg("Erro ao inicializar PFXExtractStore — extração de .pfx ficará indisponível")
+		pfxExtractStore = nil
+	}
+
 	return &CertificatesHandler{
 		scanner:           certificates.NewScanner(km, rollbackStore),
 		rollbackStore:     rollbackStore,
 		manualBackupStore: manualBackupStore,
+		pfxExtractStore:   pfxExtractStore,
 		historyTracker:    historyTracker,
 	}
 }

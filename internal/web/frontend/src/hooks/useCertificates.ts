@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo, ManualBackupInfo, BackendTLSCheckResult } from '../types/certificates';
+import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo, ManualBackupInfo, PFXExtractInfo, BackendTLSCheckResult } from '../types/certificates';
 
 const API_BASE = '/api/v1/certificates';
 
@@ -341,6 +341,116 @@ export function useCertificates() {
     }
   }, []);
 
+  // extractPFX — decodifica um .pfx/.p12 no backend e salva o resultado (tls.crt/tls.key) em
+  // PFXExtractStore (ver PFX-CERT-EXTRACTION-PLAN.md). multipart/form-data (não JSON) porque
+  // carrega um arquivo binário; a senha vai junto no mesmo form, nunca fica em localStorage/state
+  // além do tempo de vida do formulário. Devolve os PEMs completos junto com a metadata, pra já
+  // poder popular tls.crt/tls.key sem precisar de um segundo round-trip pelo picker.
+  const extractPFX = useCallback(async (file: File, password: string, name: string, comment?: string): Promise<{ info: PFXExtractInfo; tls_crt: string; tls_key: string }> => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('password', password);
+    form.append('name', name);
+    if (comment) form.append('comment', comment);
+
+    const response = await fetch(`${API_BASE}/pfx/extract`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+      body: form,
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return data.data as { info: PFXExtractInfo; tls_crt: string; tls_key: string };
+  }, []);
+
+  // listPFXNames — nomes que têm ao menos 1 extração de .pfx salva, pra navegação "entre pastas"
+  // do picker de instalação — mesmo papel de listManualBackupSecrets.
+  const listPFXNames = useCallback(async (): Promise<string[]> => {
+    const response = await fetch(`${API_BASE}/pfx/names`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return (data.data ?? []) as string[];
+  }, []);
+
+  // listPFXExtracts — extrações de um nome específico, mais recente primeiro.
+  const listPFXExtracts = useCallback(async (name: string): Promise<PFXExtractInfo[]> => {
+    const response = await fetch(`${API_BASE}/pfx/${encodeURIComponent(name)}`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return (data.data ?? []) as PFXExtractInfo[];
+  }, []);
+
+  // getPFXContent — PEM bruto (tls.crt/tls.key) de uma extração específica.
+  const getPFXContent = useCallback(async (name: string, extractId: string): Promise<{ tls_crt: string; tls_key: string }> => {
+    const response = await fetch(`${API_BASE}/pfx/${encodeURIComponent(name)}/${encodeURIComponent(extractId)}/content`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return data.data as { tls_crt: string; tls_key: string };
+  }, []);
+
+  // updatePFXComment — edita só o comentário de uma extração já salva (não afeta o PEM).
+  const updatePFXComment = useCallback(async (name: string, extractId: string, comment: string): Promise<void> => {
+    const response = await fetch(`${API_BASE}/pfx/${encodeURIComponent(name)}/${encodeURIComponent(extractId)}/comment`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+      body: JSON.stringify({ comment }),
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+  }, []);
+
+  // deletePFX — remove por completo uma extração (tls.crt/tls.key/metadata.json). Ação destrutiva
+  // e irreversível — o chamador (CertificateSourcePickerModal.tsx) sempre confirma antes de invocar.
+  const deletePFX = useCallback(async (name: string, extractId: string): Promise<void> => {
+    const response = await fetch(`${API_BASE}/pfx/${encodeURIComponent(name)}/${encodeURIComponent(extractId)}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+  }, []);
+
   const getReport = useCallback(async (clusters: string[], filter?: string, statusFilter?: string[]): Promise<{ data: ScanResult; markdown: string }> => {
     const params = new URLSearchParams();
     params.set('clusters', clusters.join(','));
@@ -385,6 +495,12 @@ export function useCertificates() {
     getManualBackupContent,
     updateManualBackupComment,
     deleteManualBackup,
+    extractPFX,
+    listPFXNames,
+    listPFXExtracts,
+    getPFXContent,
+    updatePFXComment,
+    deletePFX,
     getReport,
     setScanResult,
   };
