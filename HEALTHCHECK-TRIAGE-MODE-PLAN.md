@@ -1,8 +1,9 @@
 # Plano: Modo Triagem no Health Check (sinaliza primeiro, investiga depois)
 
-**Status:** 🟡 Fase 1 implementada (backend) — Fase 2 (frontend: toggle + transparência de escopo)
-ainda não iniciada. Sem validação ao vivo contra um cluster real ainda (só testes unitários +
-build/vet/testes existentes passando).
+**Status:** 🟡 Fase 1 implementada (backend) — Fases 2-6 ainda não iniciadas. Sem validação ao vivo
+contra um cluster real ainda (só testes unitários + build/vet/testes existentes passando). Fases 3
+(Elasticsearch) e 4 (ignore-lists) registradas em 2026-08-20 a partir da revisão de um script
+Python de referência de outra ferramenta interna — ver seção 0.
 **Origem:** conversa sobre `ZABBIX-INTEGRATION-PLAN.md` levou o usuário a propor repensar a
 arquitetura do Health Check: hoje ele varre o cluster ponto a ponto e devolve muita informação
 de erro/postura; a proposta é buscar primeiro em ferramentas de monitoramento (Dynatrace/
@@ -27,9 +28,19 @@ Continuar de qualquer chat lendo este arquivo + `CLAUDE.md` (seção "Health Che
    nesta aplicação (`internal/monitoring/alerts`, ver seção 1.3) — nunca ligado ao Health Check,
    só usado hoje na aba de Alertas/Dashboard. Nenhuma API do Grafana em si precisa ser integrada.
 3. **Zabbix não bloqueia.** As fontes já integradas (Dynatrace + Prometheus) são suficientes pra
-   implementar o Modo Triagem inteiro hoje. Zabbix entra depois, como uma 3ª fonte plugável,
+   implementar o Modo Triagem inteiro hoje. Zabbix entra depois, como mais uma fonte plugável,
    quando `ZABBIX-INTEGRATION-PLAN.md` tiver pelo menos a Fase 1 pronta — sem precisar reabrir a
-   arquitetura deste plano (ver seção 3, Fase 3).
+   arquitetura deste plano (ver seção 3).
+
+**Origem dos itens de 2026-08-20 (Fases 3/4 abaixo)**: usuário compartilhou um script Python de
+referência de outra ferramenta interna (SRE multi-squad, não deste repositório) que já resolve
+correlação multi-fonte de forma parecida — revisão comparativa registrada aqui, sem portar nada
+literalmente (arquitetura/stack diferentes). Dessa revisão, 2 ideias genuinamente novas (não
+cobertas por nada existente nesta app, confirmado lendo o código) entraram no backlog deste plano:
+Elasticsearch/ELK como fonte de erro de log (Fase 3) e ignore-lists configuráveis por nome de
+sinal externo (Fase 4). Um 3º item (painel "farol" por fonte) não é uma fase própria — é só a
+seção 2.4 (UI da Fase 2) ficando mais específica sobre o que já é possível hoje com
+`TriageSummary.Sources`, que a Fase 1 já produz.
 
 ---
 
@@ -78,6 +89,15 @@ tinha acontecido inteira antes disso. `SpinnakerEnricher` segue o mesmo princíp
 | **Dynatrace** (problems OPEN) | `internal/dynatrace` + `DynatraceChecker.CheckAll` (`internal/healthcheck/dynatrace_checker.go`) | Sim — opt-in (`CheckDynatrace`), roda em paralelo, correlaciona depois |
 | **Prometheus/Alertmanager** (alertas firing) | `internal/monitoring/alerts.Client.GetAlerts()` (`internal/monitoring/alerts/client.go`) | **Não** — só usado na aba de Alertas/Dashboard, nunca chamado pelo orchestrator do Health Check |
 | **Zabbix** (problems) | Não existe ainda — ver `ZABBIX-INTEGRATION-PLAN.md` Fase 1 | N/A |
+| **Elasticsearch/ELK** (volume de erro de log por app) | Não existe **nenhum** client Elasticsearch/Kibana nesta app hoje (confirmado por busca no código, 2026-08-20) — ver Fase 3 | N/A |
+
+O motivo de ELK ter valor próprio, não redundante com Dynatrace: `/api/v2/logs/search` do
+Dynatrace está documentado como bloqueado pra praticamente todo mundo (exige Bearer JWT via
+OAuth2 client credentials — Settings → OAuth clients, escopo `storage:spans:read`/logs
+equivalente —, credencial que ninguém no time tem permissão de criar; ver seção "Dynatrace" do
+`CLAUDE.md`, `internal/dynatrace/logs.go`). Um Elasticsearch/Kibana próprio (Basic Auth, sem essa
+exigência de Grail/Platform) contornaria esse bloqueio por completo — condicional a esta empresa
+de fato operar um ELK (não confirmado ainda, ver seção 4).
 
 `DynatraceHealth` (`internal/healthcheck/models.go:198`) já vem com `K8sNamespaces []string` e
 `K8sWorkloads []string` (formato `"namespace/workload"`) por problem — dado pronto pra virar
@@ -108,7 +128,7 @@ workload exato que gerou o alerta) — dois motivos:
    (mesmo problema que o `extractNodePoolFromName`/`newWorkloadKey` do Dynatrace hoje têm) — usar
    granularidade de namespace tolera erro de matching sem deixar de checar nada relevante.
 
-Granularidade por workload fica como possível incremento futuro (Fase 4, condicional — ver
+Granularidade por workload fica como possível incremento futuro (Fase 6, condicional — ver
 seção 3), só se o uso real mostrar que "namespace inteiro" ainda traz ruído demais.
 
 ### 2.2. Fontes plugáveis — interface comum
@@ -140,9 +160,17 @@ type TargetSourceResult struct {
   filosofia de "nunca inventa sinal" já usada no Dynatrace (`extractEnvHint`) e no Access Checker.
   `Available=false` quando o Prometheus do cluster não é alcançável (mesmo helper
   `discovery.IsEndpointAvailable` já usado pelo `ResourceEnricher`).
-- **`ZabbixTargetSource`** (Fase 3, condicional): ver seção 3.
+- **`ElasticsearchTargetSource`** (Fase 3, condicional — ver seção 4 item 5): consulta um índice
+  de logs por janela curta (ex: `now-15m`), filtra por nível `error`/`fatal`, agrega por
+  `kubernetes.namespace_name` (campo padrão quando o pipeline de ingestão é Filebeat/Fluentd com
+  enriquecimento K8s — mesma convenção observada no script Python de referência). `Available=false`
+  quando não configurado ou a query falhar.
+- **`ZabbixTargetSource`** (Fase 5, condicional): ver seção 3.
 
-União de `Namespaces` de todas as fontes `Available=true` = escopo de triagem.
+União de `Namespaces` de todas as fontes `Available=true` = escopo de triagem. Antes dessa união,
+cada fonte deve aplicar a lista de supressão da Fase 4 (seção 2.5) — um alerta/trigger/problem
+"conhecido e aceito" não deve contribuir namespace nenhum, senão o Modo Triagem herda o mesmo
+ruído que ele existe pra evitar.
 
 ### 2.3. Fluxo revisado no orchestrator
 
@@ -189,6 +217,65 @@ e sem problema" (bom sinal — cluster saudável, relatório rápido) de "fonte 
   `NOTES-PLAN.md`/Access Checker já tiveram com `isError` vs. lista vazia.
 - Exibição: seção nova em `HealthReportTab.tsx` (ou painel próprio) — "N de M namespaces
   verificados (triagem: Dynatrace 3, Prometheus 2, sobreposição 1)".
+- **Painel "farol" por fonte** (item do backlog de 2026-08-20, inspirado no
+  `classify_source_status()` do script Python de referência — ver seção 0): um card por fonte
+  (Dynatrace 🟢/Zabbix 🟡/Prometheus 🔴/Elasticsearch...) mostrando `TriageSourceStatus.Available`
+  + o motivo resumido. **Não é dado novo** — `TriageSummary.Sources` já é exatamente esse array
+  desde a Fase 1 (`internal/healthcheck/models.go`); é só uma decisão de desenho de UI da Fase 2,
+  não uma fase própria. Cor do card: cinza quando `Available=false` (fonte fora do jogo, não
+  "problema"), verde quando `Available=true` e `Namespaces` vazio (checou e achou tudo limpo),
+  âmbar/vermelho proporcional à quantidade de namespaces sinalizados por aquela fonte.
+
+### 2.5. Supressão de ruído — ignore-lists por nome de sinal externo (Fase 4)
+
+**Gap real, confirmado lendo o código**: `FilterManager` (`internal/healthcheck/filters.go`) já
+existe e já tem UI própria (`FiltersManagementModal.tsx` + `GET/POST/DELETE /api/v1/filters`), mas
+seu modelo (`FilterRule{Type, ResourceType, Namespace, Name, Category}`) é inteiramente sobre
+**postura de recursos K8s** (ConfigMap vazio, Secret de sistema, Deployment sem probe em
+`kube-system`) — `ResourceType` só aceita `Deployment`/`Service`/`ConfigMap`/`Secret` (ver
+`models.go`). Não existe hoje nenhum jeito de dizer "ignore o alerta Prometheus `Watchdog`" ou
+"ignore esse problem Dynatrace específico, já sabemos, não é acionável" — o script Python de
+referência (seção 0) resolve isso com listas por nome (`ignore.alertNames`, `.zabbixTriggers`,
+`.dynatraceProblems`) carregadas do config da squad.
+
+**Por que isso importa especificamente pro Modo Triagem** (não é só "mais uma feature de
+filtro"): sem supressão, um alerta ruidoso-mas-aceito (ex: `Watchdog`, sempre firing por design;
+ou um problem Dynatrace crônico já em acompanhamento formal fora desta ferramenta) força um
+namespace inteiro pra dentro do escopo triado toda vez — na prática, esvazia o ganho da triagem
+pra esse namespace, que volta a ser varrido por completo sempre. Diferente do `FilterManager`
+atual, que suprime *achados* depois de encontrados, aqui a supressão precisa acontecer *antes*, na
+hora de decidir escopo — dentro de cada `TargetSource.Resolve()`, não depois.
+
+**Desenho proposto** — mecanismo próprio, paralelo ao `FilterManager` (não uma extensão dele: o
+modelo de dados é estruturalmente diferente — nome de alerta/trigger/problem não é um
+`ResourceType` K8s):
+
+```go
+// internal/healthcheck/triage_ignore.go (novo)
+
+// TriageIgnoreConfig lista nomes de sinal externo (não recursos K8s) a ignorar na resolução de
+// escopo do Modo Triagem — carregado/persistido em ~/.k8s-hpa-manager/triage-ignore.json, mesmo
+// padrão de storage local em arquivo do FilterManager (filters.go).
+type TriageIgnoreConfig struct {
+    Version           string   `json:"version"`
+    PrometheusAlerts  []string `json:"prometheus_alerts"`  // alertname, ex: "Watchdog"
+    DynatraceProblems []string `json:"dynatrace_problems"` // título ou displayId
+    ZabbixTriggers    []string `json:"zabbix_triggers"`    // nome do trigger (Fase 5)
+    ElasticsearchPatterns []string `json:"elasticsearch_patterns"` // Fase 3
+}
+```
+
+- Cada `TargetSource` concreto recebe o `TriageIgnoreConfig` (ou só a fatia relevante) no
+  construtor — mesmo padrão de injeção usado hoje pra credenciais (`NewDynatraceTargetSource`) —
+  e filtra ANTES de popular `Namespaces`/`Reasons`, nunca depois: um problem/alerta ignorado não
+  deve nem aparecer em `Reasons`, senão o motivo mostrado na UI fica confuso ("por que este
+  namespace está no escopo, se o único motivo listado está marcado como ignorado?").
+- **Escopo da lista: global, não por cluster** — mesma decisão já tomada pelo `FilterManager`
+  (`FilterRule` não tem campo cluster). Consistente, e mais simples: alertname/trigger/problem
+  title costuma ser o mesmo em todo o ambiente de determinada empresa (não varia por cluster).
+- **UI**: nova aba dentro do `FiltersManagementModal.tsx` existente (ou um modal irmão) — reutiliza
+  o padrão visual (lista + adicionar + remover), evita inventar um componente do zero.
+- **Endpoints**: `GET/POST/DELETE /api/v1/triage-ignore` — mesmo padrão de `internal/web/handlers/filters.go`.
 
 ---
 
@@ -249,9 +336,48 @@ sem toggle no frontend (Fase 2), a única forma de exercitar `triage_mode` hoje 
 - Componente de configuração do Health Check (verificar nome exato do form na hora — painel de
   opções antes de iniciar o check): toggle "Triagem rápida (recomendado)" vs. "Varredura completa"
 - `HealthReportTab.tsx` (ou onde fizer mais sentido dentro dos resultados): seção de escopo da
-  triagem (seção 2.4)
+  triagem (seção 2.4), incluindo o painel "farol" por fonte (seção 2.4, item adicionado em
+  2026-08-20) — dado já pronto desde a Fase 1 (`TriageSummary.Sources`), só falta o componente.
 
-### Fase 3 — `ZabbixTargetSource` (condicional, depende de `ZABBIX-INTEGRATION-PLAN.md` Fase 1/4)
+### Fase 3 — `ElasticsearchTargetSource` (condicional — depende de confirmar que a empresa opera ELK/Kibana, ver seção 4)
+
+Diferente das fontes da Fase 1, **não existe nenhum client Elasticsearch/Kibana nesta app hoje**
+(confirmado por busca no código, 2026-08-20) — esta fase exige criar um pacote novo, não só
+reaproveitar um existente:
+- `internal/elasticsearch/client.go` (CRIAR) — client HTTP mínimo (Basic Auth, mesmo padrão de
+  `internal/servicenow`/`internal/sreapproval` pra auth simples via `net/http`), método pra rodar
+  uma query de agregação por nível de log + janela de tempo (`now-15m` como padrão sugerido pelo
+  script de referência da seção 0) e devolver contagem por `kubernetes.namespace_name`.
+- `internal/healthcheck/target_source_elasticsearch.go` (CRIAR) — `ElasticsearchTargetSource`,
+  mesmo formato dos `TargetSource` da Fase 1: `Available=false` quando não configurado/inacessível,
+  `Reasons["<namespace>"]` com contagem de erro (ex: `"Elasticsearch: 42 erros em 15m (app checkout-api)"`).
+- **Credenciais**: seguir o padrão já usado por Dynatrace — novos campos em
+  `internal/storage/user_tokens_store.go` (`ElasticsearchURL`/`ElasticsearchUsername`/
+  `ElasticsearchPassword`, ou reaproveitar o padrão de `UserTokensStore` como um todo) + o mesmo
+  cuidado já corrigido na Fase 1 pro Dynatrace: o handler que popula essas credenciais na request
+  precisa considerar `req.TriageMode` desde o início, não só um eventual `CheckElasticsearch`
+  futuro — evita repetir o mesmo bug real já encontrado e corrigido na Fase 1
+  (`internal/web/handlers/healthcheck.go`).
+- **Mapeamento namespace**: depende do pipeline de ingestão de logs desta empresa ter o campo
+  `kubernetes.namespace_name` (convenção Filebeat/Fluentd com enriquecimento K8s) — não confirmado
+  ainda contra um índice real; ver pergunta bloqueante na seção 4.
+
+### Fase 4 — Supressão de ruído (ignore-lists) — ver desenho completo na seção 2.5
+
+- `internal/healthcheck/triage_ignore.go` (CRIAR) — `TriageIgnoreConfig` + load/save em
+  `~/.k8s-hpa-manager/triage-ignore.json`, mesmo padrão de persistência do `FilterManager`
+  (`filters.go`).
+- `internal/web/handlers/triage_ignore.go` (CRIAR) — `GET/POST/DELETE /api/v1/triage-ignore`,
+  mesmo padrão de `internal/web/handlers/filters.go`.
+- `internal/healthcheck/target_source_dynatrace.go` / `target_source_prometheus.go` (MODIFICAR) —
+  aceitar a lista de supressão relevante no construtor e filtrar antes de popular
+  `Namespaces`/`Reasons`.
+- Frontend: nova aba dentro de `FiltersManagementModal.tsx` (ou modal irmão) reaproveitando o
+  padrão visual já existente (lista + adicionar + remover).
+- **Não depende de Fase 3/5** — aplica-se imediatamente às 2 fontes já implementadas na Fase 1
+  (Dynatrace/Prometheus); pode ser feita antes ou depois delas sem alterar o desenho.
+
+### Fase 5 — `ZabbixTargetSource` (condicional, depende de `ZABBIX-INTEGRATION-PLAN.md` Fase 1/4)
 
 Único ponto que precisa de trabalho novo além de "implementar a interface": Zabbix não devolve
 namespace diretamente — devolve **host** (e a convenção já confirmada é `host == nome do nó K8s`,
@@ -263,7 +389,7 @@ de triagem cruzada). Esse join é o único item de esforço real desta fase, al�
   Fase 4 do plano Zabbix (`ProblemsForHost`), resolve pods por nó via `client.CoreV1().Pods("").List`
   com `fieldSelector: spec.nodeName=<host>` (chamada padrão do client-go, sem novidade).
 
-### Fase 4 (futuro/opcional) — granularidade por workload, não só por namespace
+### Fase 6 (futuro/opcional) — granularidade por workload, não só por namespace
 
 Só se o uso real da Fase 1 mostrar que "namespace inteiro" ainda traz ruído demais em namespaces
 grandes/compartilhados. Toca a assinatura de **todo** `*_checker.go` (adicionar um filtro de nome
@@ -281,7 +407,7 @@ disso até a Fase 1 estar validada com uso real.
    um bug real** — errar aqui faz um cluster saudável parecer "não verificado" (falso alarme de
    cobertura) ou o oposto (fallback de varredura completa nunca dispara quando deveria). Vale
    teste unitário dedicado nesse ponto específico antes de considerar a Fase 1 pronta.
-3. **Fase 3 (Zabbix) depende de um join nó→pods que não existe hoje** — não é só "plugar mais uma
+3. **Fase 5 (Zabbix) depende de um join nó→pods que não existe hoje** — não é só "plugar mais uma
    fonte", é trabalho novo não coberto pelo `ZABBIX-INTEGRATION-PLAN.md` original.
 4. **Não decidido ainda**: se `TriageMode` é um modo **exclusivo** (usuário escolhe um dos dois
    antes de rodar) ou se pode coexistir com a Varredura Completa numa mesma execução (ex: triagem
@@ -289,6 +415,19 @@ disso até a Fase 1 estar validada com uso real.
    de novo do zero). A primeira opção é mais simples de implementar na Fase 1; a segunda tem mais
    valor de UX mas exige guardar o contexto da execução anterior — decidir na Fase 2 com base em
    como a Fase 1 se comportar na prática.
+5. **Fase 3 (Elasticsearch) tem uma pergunta bloqueante não respondida ainda**: esta empresa
+   opera algum ELK/Kibana de verdade (fora do escopo de qualquer cluster K8s desta app, tipo o
+   `Docs/`/dumps legados do repo, ou um serviço real usado pra troubleshooting)? Sem essa
+   confirmação, a Fase 3 não deveria começar — diferente de Dynatrace/Prometheus (Fase 1), que já
+   tinham credenciais/uso confirmados nesta aplicação antes de qualquer código ser escrito. Se a
+   resposta for "não" ou "não sei", a Fase 3 fica arquivada até surgir esse contexto (mesmo espírito
+   da seção 5 do `ZABBIX-INTEGRATION-PLAN.md`, que não começou o código até responder isso pro
+   Zabbix).
+6. **Fase 4 (ignore-lists) decidiu por um mecanismo paralelo ao `FilterManager`, não uma extensão
+   dele** — risco de os dois sistemas de supressão (postura K8s vs. sinal externo) parecerem
+   redundantes pro usuário final sem uma UI que deixe a distinção clara. Mitigação proposta (seção
+   2.5): mesmo modal (`FiltersManagementModal.tsx`), abas separadas — não decidido se vale a pena
+   unificar de verdade num único conceito no futuro, revisitar se a duplicação incomodar na prática.
 
 ---
 
@@ -303,8 +442,14 @@ internal/healthcheck/models.go                         ← ✅ MODIFICADO (Fase 
 internal/healthcheck/orchestrator.go                   ← ✅ MODIFICADO (Fase 1 — reordenar fluxo)
 internal/healthcheck/dynatrace_checker.go              ← ✅ MODIFICADO (Fase 1 — CheckAll retorna error)
 internal/web/handlers/healthcheck.go                   ← ✅ MODIFICADO (Fase 1 — gate de credenciais DT)
-internal/web/frontend/src/components/HealthReportTab.tsx (ou equivalente) ← MODIFICAR (Fase 2)
-internal/healthcheck/target_source_zabbix.go            ← CRIAR (Fase 3, condicional)
+internal/web/frontend/src/components/HealthReportTab.tsx (ou equivalente) ← MODIFICAR (Fase 2 — inclui painel "farol" por fonte)
+internal/elasticsearch/client.go                        ← CRIAR (Fase 3, condicional — ver seção 4 item 5)
+internal/healthcheck/target_source_elasticsearch.go      ← CRIAR (Fase 3, condicional)
+internal/storage/user_tokens_store.go                    ← MODIFICAR (Fase 3 — credenciais Elasticsearch)
+internal/healthcheck/triage_ignore.go                     ← CRIAR (Fase 4)
+internal/web/handlers/triage_ignore.go                    ← CRIAR (Fase 4)
+internal/web/frontend/src/components/FiltersManagementModal.tsx ← MODIFICAR (Fase 4 — aba de ignore-list de sinal externo)
+internal/healthcheck/target_source_zabbix.go            ← CRIAR (Fase 5, condicional)
 ```
 
 ---
@@ -321,3 +466,14 @@ internal/healthcheck/target_source_zabbix.go            ← CRIAR (Fase 3, condi
 - `grafana/README.md` (confirma que o `grafana/` do repo é um dashboard consumindo `/metrics`
   desta própria app, não uma integração onde a app lê dados do Grafana)
 - `ZABBIX-INTEGRATION-PLAN.md` (seção 5 — respostas já confirmadas sobre a instalação real)
+- `internal/healthcheck/filters.go` + `internal/web/handlers/filters.go` (2026-08-20 — confirmado
+  que `FilterManager` é só sobre postura de recursos K8s, não sobre nome de sinal externo; base
+  do gap descrito na seção 2.5/Fase 4)
+- Busca por `elasticsearch`/`kibana`/`elk` e `redis enterprise`/`azuremonitor` em todo `internal/`
+  (2026-08-20 — confirmado que nenhum dos dois existe nesta app hoje; base da Fase 3 e de um item
+  de backlog não registrado neste plano — Azure Monitor pra serviços gerenciados é uma categoria
+  de feature independente do Health Check, ficou fora deste documento por escopo)
+- Script Python de referência de outra ferramenta interna (SRE multi-squad, compartilhado pelo
+  usuário em 2026-08-20) — não é parte deste repositório, citado só como inspiração comparativa
+  pros itens acima (`classify_source_status()`, `ignore.*` do config de squad,
+  `collect_elk`/`collect_azure_redis`)
