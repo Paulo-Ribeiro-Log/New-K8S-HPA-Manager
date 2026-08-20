@@ -3,7 +3,9 @@
 **Status:** 🟡 Fase 1 implementada (backend) — Fases 2-6 ainda não iniciadas. Sem validação ao vivo
 contra um cluster real ainda (só testes unitários + build/vet/testes existentes passando). Fases 3
 (Elasticsearch) e 4 (ignore-lists) registradas em 2026-08-20 a partir da revisão de um script
-Python de referência de outra ferramenta interna — ver seção 0.
+Python de referência de outra ferramenta interna — ver seção 0. **Fase 3 desbloqueada em
+2026-08-20**: confirmado que esta empresa usa ELK/Kibana de verdade, pipeline Fluentd, credencial
+de leitura já existe, acesso é direto ao Elasticsearch (não via proxy Kibana) — ver seção 4 item 5.
 **Origem:** conversa sobre `ZABBIX-INTEGRATION-PLAN.md` levou o usuário a propor repensar a
 arquitetura do Health Check: hoje ele varre o cluster ponto a ponto e devolve muita informação
 de erro/postura; a proposta é buscar primeiro em ferramentas de monitoramento (Dynatrace/
@@ -96,8 +98,8 @@ Dynatrace está documentado como bloqueado pra praticamente todo mundo (exige Be
 OAuth2 client credentials — Settings → OAuth clients, escopo `storage:spans:read`/logs
 equivalente —, credencial que ninguém no time tem permissão de criar; ver seção "Dynatrace" do
 `CLAUDE.md`, `internal/dynatrace/logs.go`). Um Elasticsearch/Kibana próprio (Basic Auth, sem essa
-exigência de Grail/Platform) contornaria esse bloqueio por completo — condicional a esta empresa
-de fato operar um ELK (não confirmado ainda, ver seção 4).
+exigência de Grail/Platform) contorna esse bloqueio por completo — **confirmado em 2026-08-20**:
+esta empresa opera ELK de verdade, ver seção 4 item 5 (respostas).
 
 `DynatraceHealth` (`internal/healthcheck/models.go:198`) já vem com `K8sNamespaces []string` e
 `K8sWorkloads []string` (formato `"namespace/workload"`) por problem — dado pronto pra virar
@@ -339,28 +341,41 @@ sem toggle no frontend (Fase 2), a única forma de exercitar `triage_mode` hoje 
   triagem (seção 2.4), incluindo o painel "farol" por fonte (seção 2.4, item adicionado em
   2026-08-20) — dado já pronto desde a Fase 1 (`TriageSummary.Sources`), só falta o componente.
 
-### Fase 3 — `ElasticsearchTargetSource` (condicional — depende de confirmar que a empresa opera ELK/Kibana, ver seção 4)
+### Fase 3 — `ElasticsearchTargetSource` — ✅ desbloqueada em 2026-08-20 (respostas na seção 4 item 5), código ainda não iniciado
 
-Diferente das fontes da Fase 1, **não existe nenhum client Elasticsearch/Kibana nesta app hoje**
+Confirmado com o usuário: esta empresa opera ELK de verdade, pipeline **Fluentd**, credencial de
+leitura **já existe** (forma exata — Basic Auth vs. API key — a confirmar ao começar o código,
+ver nota abaixo), acesso é **direto ao Elasticsearch** (não precisa do console proxy do Kibana,
+diferente do 2º modo que o script de referência da seção 0 tinha pra quando só o Kibana está
+acessível — esse modo fica descartado aqui, não é necessário).
+
+Diferente das fontes da Fase 1, **não existe nenhum client Elasticsearch nesta app hoje**
 (confirmado por busca no código, 2026-08-20) — esta fase exige criar um pacote novo, não só
 reaproveitar um existente:
-- `internal/elasticsearch/client.go` (CRIAR) — client HTTP mínimo (Basic Auth, mesmo padrão de
+- `internal/elasticsearch/client.go` (CRIAR) — client HTTP mínimo (mesmo padrão de
   `internal/servicenow`/`internal/sreapproval` pra auth simples via `net/http`), método pra rodar
   uma query de agregação por nível de log + janela de tempo (`now-15m` como padrão sugerido pelo
-  script de referência da seção 0) e devolver contagem por `kubernetes.namespace_name`.
+  script de referência da seção 0) e devolver contagem por namespace. **Forma da credencial**
+  (Basic Auth usuário/senha vs. API key no header) precisa ser confirmada com quem administra o
+  ELK ao começar o código — "já existe" não especificou qual das duas.
 - `internal/healthcheck/target_source_elasticsearch.go` (CRIAR) — `ElasticsearchTargetSource`,
   mesmo formato dos `TargetSource` da Fase 1: `Available=false` quando não configurado/inacessível,
   `Reasons["<namespace>"]` com contagem de erro (ex: `"Elasticsearch: 42 erros em 15m (app checkout-api)"`).
 - **Credenciais**: seguir o padrão já usado por Dynatrace — novos campos em
   `internal/storage/user_tokens_store.go` (`ElasticsearchURL`/`ElasticsearchUsername`/
-  `ElasticsearchPassword`, ou reaproveitar o padrão de `UserTokensStore` como um todo) + o mesmo
+  `ElasticsearchPassword`, ou `ElasticsearchAPIKey` conforme a forma confirmada acima) + o mesmo
   cuidado já corrigido na Fase 1 pro Dynatrace: o handler que popula essas credenciais na request
   precisa considerar `req.TriageMode` desde o início, não só um eventual `CheckElasticsearch`
   futuro — evita repetir o mesmo bug real já encontrado e corrigido na Fase 1
   (`internal/web/handlers/healthcheck.go`).
-- **Mapeamento namespace**: depende do pipeline de ingestão de logs desta empresa ter o campo
-  `kubernetes.namespace_name` (convenção Filebeat/Fluentd com enriquecimento K8s) — não confirmado
-  ainda contra um índice real; ver pergunta bloqueante na seção 4.
+- **Mapeamento namespace**: pipeline confirmado como Fluentd (não Filebeat) — o plugin
+  `fluent-plugin-kubernetes_metadata_filter` (o mais comum pra esse enriquecimento) também usa a
+  chave `kubernetes.namespace_name` por padrão, mesma convenção assumida pro script de referência,
+  mas **isso ainda não foi confirmado contra um índice real desta empresa** — configs Fluentd
+  variam bastante entre instalações (alguns pipelines usam `kubernetes.namespace` sem sufixo, ou
+  achatam o campo de outro jeito). Primeiro passo real da implementação: uma query manual/`curl`
+  contra o índice real pra confirmar o nome exato do campo antes de escrever `client.go` — não
+  assumir a convenção do script de referência sem checar.
 
 ### Fase 4 — Supressão de ruído (ignore-lists) — ver desenho completo na seção 2.5
 
@@ -415,14 +430,23 @@ disso até a Fase 1 estar validada com uso real.
    de novo do zero). A primeira opção é mais simples de implementar na Fase 1; a segunda tem mais
    valor de UX mas exige guardar o contexto da execução anterior — decidir na Fase 2 com base em
    como a Fase 1 se comportar na prática.
-5. **Fase 3 (Elasticsearch) tem uma pergunta bloqueante não respondida ainda**: esta empresa
-   opera algum ELK/Kibana de verdade (fora do escopo de qualquer cluster K8s desta app, tipo o
-   `Docs/`/dumps legados do repo, ou um serviço real usado pra troubleshooting)? Sem essa
-   confirmação, a Fase 3 não deveria começar — diferente de Dynatrace/Prometheus (Fase 1), que já
-   tinham credenciais/uso confirmados nesta aplicação antes de qualquer código ser escrito. Se a
-   resposta for "não" ou "não sei", a Fase 3 fica arquivada até surgir esse contexto (mesmo espírito
-   da seção 5 do `ZABBIX-INTEGRATION-PLAN.md`, que não começou o código até responder isso pro
-   Zabbix).
+5. **Fase 3 (Elasticsearch) — ✅ TODAS AS PERGUNTAS BLOQUEANTES RESPONDIDAS (2026-08-20)**:
+   - Esta empresa opera ELK/Kibana de verdade? **Sim.**
+   - Pipeline de ingestão de log (decide o nome do campo de namespace)? **Fluentd** — não
+     Filebeat/Fluent Bit. A convenção `kubernetes.namespace_name` (assumida pelo script de
+     referência da seção 0, e também comum em Fluentd via
+     `fluent-plugin-kubernetes_metadata_filter`) ainda precisa ser **confirmada contra um índice
+     real** antes de codar — configs Fluentd variam entre instalações, isso não é garantia
+     automática só por ser Fluentd.
+   - Já existe credencial de leitura dedicada para acesso automatizado? **Sim** — forma exata
+     (Basic Auth vs. API key) não especificada, confirmar ao começar o código.
+   - Acesso direto ao Elasticsearch, ou só via Kibana (proxy)? **Direto ao Elasticsearch** — o
+     modo "console proxy do Kibana" que o script de referência também suportava não é necessário
+     aqui, simplifica o `client.go` (só uma forma de montar a URL de busca, não duas).
+   
+   Conclusão: Fase 3 pode começar a ser codada quando houver prioridade — não há mais nenhuma
+   pergunta pendente do lado de negócio/acesso, só o passo técnico de confirmar o nome exato do
+   campo de namespace contra um índice real antes de escrever `client.go` (ver Fase 3, seção 3).
 6. **Fase 4 (ignore-lists) decidiu por um mecanismo paralelo ao `FilterManager`, não uma extensão
    dele** — risco de os dois sistemas de supressão (postura K8s vs. sinal externo) parecerem
    redundantes pro usuário final sem uma UI que deixe a distinção clara. Mitigação proposta (seção
