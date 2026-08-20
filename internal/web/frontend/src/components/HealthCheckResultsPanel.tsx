@@ -834,6 +834,27 @@ export const HealthCheckResultsPanel = ({
                 const result = clusterResults[cluster];
                 const isExpanded = expandedCluster === cluster;
 
+                // Texto "N de M" pro banner do Modo Triagem — achado real via feedback do
+                // usuário (2026-08-20): sem o total, "12 namespace(s) sinalizado(s)" não deixa
+                // claro se é um escopo pequeno ou quase o cluster inteiro (e "quase o cluster
+                // inteiro" é justamente quando a varredura ainda demora, sem ser bug). M ausente
+                // em resultados salvos antes desse campo existir — cai pra só "N" nesse caso.
+                const ts = result.triage_summary;
+                const triageTotal = ts?.all_namespaces_count;
+                const triageFoundLabel =
+                  ts && !ts.fell_back_to_full
+                    ? triageTotal
+                      ? `${ts.namespaces.length} de ${triageTotal}`
+                      : `${ts.namespaces.length}`
+                    : "";
+                const triageLargeShare = !!(
+                  ts &&
+                  !ts.fell_back_to_full &&
+                  triageTotal &&
+                  ts.namespaces.length > 0 &&
+                  ts.namespaces.length / triageTotal >= 0.5
+                );
+
                 return (
                   <Collapsible
                     key={cluster}
@@ -992,8 +1013,8 @@ export const HealthCheckResultsPanel = ({
                                 {result.triage_summary.fell_back_to_full
                                   ? "Modo Triagem: nenhuma fonte disponível — Varredura Completa foi usada nesta execução"
                                   : result.triage_summary.namespaces.length === 0
-                                    ? "Modo Triagem: nenhuma fonte sinalizou problema — cluster aparenta saudável, nenhum namespace verificado em profundidade"
-                                    : `Modo Triagem: ${result.triage_summary.namespaces.length} namespace(s) sinalizado(s) — varredura concentrada neles`}
+                                    ? `Modo Triagem: nenhuma fonte sinalizou problema${triageTotal ? ` (0 de ${triageTotal} namespaces)` : ""} — cluster aparenta saudável, nenhum namespace verificado em profundidade`
+                                    : `Modo Triagem: ${triageFoundLabel} namespace(s) sinalizado(s) — varredura concentrada neles`}
                               </p>
                               <p className="text-xs text-muted-foreground mt-0.5 truncate">
                                 {result.triage_summary.fell_back_to_full
@@ -1008,6 +1029,15 @@ export const HealthCheckResultsPanel = ({
                                       )
                                       .join(" • ")}
                               </p>
+                              {/* Contexto extra só quando metade+ do cluster foi sinalizada — é
+                                  exatamente o caso onde a varredura ainda demora, sem ser sintoma
+                                  de bug (ver HEALTHCHECK-TRIAGE-MODE-PLAN.md, achado 2026-08-20). */}
+                              {triageLargeShare && (
+                                <p className="text-xs text-muted-foreground/80 mt-0.5 italic">
+                                  Boa parte do cluster tem problema real sinalizado — por isso a
+                                  varredura ainda pode demorar, mesmo reduzida.
+                                </p>
+                              )}
                             </div>
                             <span className="text-xs text-muted-foreground flex-shrink-0 self-center whitespace-nowrap">
                               Ver detalhes →

@@ -58,8 +58,8 @@ export const TriageScopeModal = ({ result, open, onOpenChange }: TriageScopeModa
           <div className="flex-1 min-h-0 flex flex-col gap-3">
             <p className="text-sm text-muted-foreground">
               {ts.namespaces.length === 0
-                ? "Nenhuma fonte sinalizou problema — cluster aparenta saudável, varredura reduzida."
-                : `${ts.namespaces.length} namespace(s) no escopo.`}
+                ? `Nenhuma fonte sinalizou problema${ts.all_namespaces_count ? ` (0 de ${ts.all_namespaces_count} namespaces)` : ""} — cluster aparenta saudável, varredura reduzida.`
+                : `${ts.all_namespaces_count ? `${ts.namespaces.length} de ${ts.all_namespaces_count}` : ts.namespaces.length} namespace(s) no escopo.`}
             </p>
 
             {/* Painel "farol" por fonte — cinza (indisponível) vs. verde (checou, sem problema)

@@ -138,6 +138,10 @@ export interface TriageSummary {
   reasons?: Record<string, string[]>; // namespace → motivos
   fell_back_to_full: boolean;
   fallback_reason?: string;
+  // Total de namespaces do cluster (não só o escopo resolvido) — 0/ausente em resultados salvos
+  // antes desse campo existir (round-trip via extra_json no backend). Usado só pro texto "N de M"
+  // — nunca pra decisão de escopo.
+  all_namespaces_count?: number;
 }
 
 // Resultado de health check (por cluster)

@@ -261,6 +261,13 @@ type TriageSummary struct {
 	// comportamento padrão (Varredura Completa) — nunca "sem checar nada" por omissão.
 	FellBackToFull bool   `json:"fell_back_to_full"`
 	FallbackReason string `json:"fallback_reason,omitempty"`
+	// AllNamespacesCount é o total de namespaces do cluster (não só o escopo resolvido) — achado
+	// real via feedback do usuário (2026-08-20): sem essa contagem, "12 namespace(s) sinalizado(s)"
+	// não deixa claro se isso é um escopo bem reduzido ou quase o cluster inteiro — e "quase o
+	// cluster inteiro sinalizado" é exatamente o caso onde a varredura ainda demora bastante (não
+	// é um sintoma de bug, é proporcional ao tanto de problema real encontrado). 0 quando a
+	// contagem falhou (nunca bloqueia a decisão de escopo, só o texto "N de M" cai pra só "N").
+	AllNamespacesCount int `json:"all_namespaces_count,omitempty"`
 }
 
 // CorrelatedK8sIssue representa um issue K8s de um workload específico para correlação

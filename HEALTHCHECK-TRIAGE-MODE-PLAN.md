@@ -472,6 +472,45 @@ namespace) — cor muda por estado (âmbar/verde/roxo). **Validado ao vivo** con
 estados de fallback e "sem problema" não foram exercitados ao vivo nesta rodada (nenhum cluster
 testado caiu nesses casos) — lógica é ternário simples, coberta por type-check, risco baixo.
 
+**Round 4 — usuário questionou se o fallback rápido de fato existe** ("ao que parece está sim
+fazendo buscas profundas... investigue isso"), depois de ver o Round 3 rodar por ~12s num cluster
+real. Investigação empírica (sem alterar código, só medição) contra `akspriv-entregamais-hlg`:
+
+| Cenário | Duração real | Namespaces verificados | Deployments verificados |
+|---|---|---|---|
+| Triagem, alertas reais firing | 12,2s | 12 de 18 (display) / 31 (total real) | 32 de 73 |
+| Varredura Completa | 22,1s | 18 / 31 | 73 |
+| Triagem, **todos os alertas suprimidos artificialmente** (via `/api/v1/triage-ignore`, teste) | **1,07s** | 0 | 0 |
+
+Conclusão: **não é bug**. O fast path existe e funciona (1s comprovado quando genuinamente não há
+sinal). A "lentidão" percebida no Round 3 era proporcional a um cluster real com bastante coisa
+acesa — 12 dos 31 namespaces tinham alertas Prometheus genuínos de severidade warning/critical
+(nenhum era ruído tipo `InfoInhibitor`/`CPUThrottlingHigh` — conferido um por um). `deployment_results`
+confirmado como subconjunto estrito de `namespaces` resolvido nos dois casos — sem vazamento de
+escopo. Confirmado com o usuário via `AskUserQuestion` que o comportamento de fallback em si
+**não muda** — só a comunicação (ver Round 5).
+
+**Round 5 — usuário pediu, a partir da conclusão do Round 4, que o banner deixasse explícito
+"N de M namespaces têm problema real"** pra essa distinção (escopo pequeno vs. quase o cluster
+inteiro) ficar visível sem precisar eu investigar de novo cada vez. Adicionado:
+- `TriageSummary.AllNamespacesCount` (novo campo, backend) — 1 chamada `getAllNamespaces` extra
+  (barata, não itera nada por namespace) só quando `TriageMode` resolve com fonte disponível;
+  reaproveitada sem custo extra no caso de fallback (a mesma chamada que já ia rodar ali).
+- Banner: texto vira `"N de M namespace(s) sinalizado(s)"` (`triageFoundLabel` em
+  `HealthCheckResultsPanel.tsx`) — cai pra só "N" em resultados salvos antes desse campo existir
+  (`all_namespaces_count` ausente/0, tratado como opcional, nunca quebra).
+- Nova linha condicional, só quando a razão N/M ≥ 50%: *"Boa parte do cluster tem problema real
+  sinalizado — por isso a varredura ainda pode demorar, mesmo reduzida."* — exatamente a frase que
+  o usuário sugeriu, adaptada.
+- `TriageScopeModal.tsx` ganhou o mesmo "N de M" no resumo.
+
+**Validado ao vivo** contra o mesmo `akspriv-entregamais-hlg`: banner mostrou **"12 de 31
+namespace(s) sinalizado(s)"** (31 = contagem real via `getAllNamespaces`, maior que os 18 que a
+API de display filtrada mostra — reforça que a redução real é ainda melhor do que o Round 4
+sugeria: ~39% do total real, não 66%). Como 12/31 < 50%, a linha extra de aviso corretamente
+**não apareceu** — confirma que o limiar condicional funciona nos dois sentidos, não só quando
+verdadeiro.
+
 ### Fase 3 — `ElasticsearchTargetSource` — ✅ desbloqueada em 2026-08-20 (respostas na seção 4 item 5), código ainda não iniciado
 
 Confirmado com o usuário: esta empresa opera ELK de verdade, pipeline **Fluentd**, credencial de

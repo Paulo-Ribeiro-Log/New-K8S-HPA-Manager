@@ -328,6 +328,15 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			triageDecided = true
 			namespaces = intersectOrUse(req.Namespaces, resolution.Namespaces)
 			summary.Namespaces = namespaces
+			// Contagem do total de namespaces do cluster só pra exibição ("N de M") — 1 chamada
+			// List() extra, barata (não itera nada por namespace), nunca bloqueia a decisão de
+			// escopo já tomada acima se falhar.
+			if allNS, err := getAllNamespaces(ctx, client); err == nil {
+				summary.AllNamespacesCount = len(allNS)
+			} else {
+				log.Debug().Err(err).Str("cluster", cluster).
+					Msg("[HealthCheck] Modo Triagem: falha ao contar total de namespaces (só afeta o texto 'N de M', não a decisão de escopo)")
+			}
 			if len(namespaces) == 0 {
 				o.publishProgress(sessionID, cluster, "init", "Modo Triagem: nenhuma fonte sinalizou problema — cluster aparenta saudável, varredura reduzida", 3, StatusHealthy)
 			} else {
@@ -348,6 +357,11 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			// Publicar erro via SSE antes de retornar
 			o.publishProgress(sessionID, cluster, "error", fmt.Sprintf("Falha ao obter namespaces: %v", err), 0, StatusCritical)
 			return nil, fmt.Errorf("failed to get namespaces for %s: %w", cluster, err)
+		}
+		// Fallback do Modo Triagem (nenhuma fonte disponível) reaproveita esta MESMA chamada pra
+		// popular AllNamespacesCount — não é uma segunda List(), é a mesma que já ia acontecer aqui.
+		if result.TriageSummary != nil {
+			result.TriageSummary.AllNamespacesCount = len(namespaces)
 		}
 		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("%d namespace(s) encontrado(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
 	} else if triageDecided && len(namespaces) == 0 {
