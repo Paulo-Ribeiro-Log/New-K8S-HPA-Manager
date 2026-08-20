@@ -27,7 +27,10 @@ export const TriageScopeModal = ({ result, open, onOpenChange }: TriageScopeModa
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+      {/* h-[80vh] fixo, não max-h — max-height sozinho não dá uma altura DETERMINADA pro filho
+          `flex-1 min-h-0` (ScrollArea) computar contra, então ele só cresce pra caber o conteúdo
+          em vez de rolar. Mesma lição já documentada no CLAUDE.md pro modal Describe do pod. */}
+      <DialogContent className="max-w-2xl h-[80vh] flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Zap className="h-5 w-5" />
