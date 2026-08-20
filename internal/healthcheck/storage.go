@@ -235,14 +235,21 @@ func (s *HealthCheckStorage) GetEventChronicity(ctx context.Context, cluster, na
 
 // extraResultFields agrupa campos que não cabem nas colunas individuais.
 type extraResultFields struct {
-	EventResults    []EventHealth         `json:"event_results,omitempty"`
-	HPAResults      []HPAHealth           `json:"hpa_results,omitempty"`
-	PVCResults      []PVCHealth           `json:"pvc_results,omitempty"`
-	NodeResults     []NodeHealth          `json:"node_results,omitempty"`
-	DynatraceResults []DynatraceHealth    `json:"dynatrace_results,omitempty"`
-	CorrelatedItems []CorrelatedHealthItem `json:"correlated_items,omitempty"`
-	OneAgentSignals []OneAgentSignal       `json:"oneagent_signals"` // sem omitempty: [] != null
-	SeverityCounts  SeverityCounts         `json:"severity_counts"`
+	EventResults     []EventHealth          `json:"event_results,omitempty"`
+	HPAResults       []HPAHealth            `json:"hpa_results,omitempty"`
+	PVCResults       []PVCHealth            `json:"pvc_results,omitempty"`
+	NodeResults      []NodeHealth           `json:"node_results,omitempty"`
+	DynatraceResults []DynatraceHealth      `json:"dynatrace_results,omitempty"`
+	CorrelatedItems  []CorrelatedHealthItem `json:"correlated_items,omitempty"`
+	OneAgentSignals  []OneAgentSignal       `json:"oneagent_signals"` // sem omitempty: [] != null
+	SeverityCounts   SeverityCounts         `json:"severity_counts"`
+	// TriageSummary (HEALTHCHECK-TRIAGE-MODE-PLAN.md Fase 1) — achado real durante validação ao
+	// vivo (2026-08-20): sem esse campo aqui, o resultado do Modo Triagem rodava certo em memória
+	// (SSE mostrava o escopo reduzido corretamente) mas GET /api/v1/healthcheck/:id sempre
+	// devolvia triage_summary=null, porque Save/Get só persistem os campos listados nesta struct
+	// — TriageSummary nunca tinha sido adicionado aqui. Mesma classe de bug que
+	// TestSaveAndGetHistory_RoundTripsAllExtraFields existe pra pegar.
+	TriageSummary *TriageSummary `json:"triage_summary,omitempty"`
 }
 
 // Save salva resultado de health check
@@ -272,6 +279,7 @@ func (s *HealthCheckStorage) Save(ctx context.Context, result *HealthCheckResult
 		CorrelatedItems:  result.CorrelatedItems,
 		OneAgentSignals:  result.OneAgentSignals,
 		SeverityCounts:   result.SeverityCounts,
+		TriageSummary:    result.TriageSummary,
 	}
 	extraJSON, err := json.Marshal(extra)
 	if err != nil {
@@ -388,6 +396,7 @@ func (s *HealthCheckStorage) Get(ctx context.Context, id string) (*HealthCheckRe
 		result.CorrelatedItems = extra.CorrelatedItems
 		result.OneAgentSignals = extra.OneAgentSignals
 		result.SeverityCounts = extra.SeverityCounts
+		result.TriageSummary = extra.TriageSummary
 	}
 
 	return &result, nil
@@ -473,6 +482,7 @@ func (s *HealthCheckStorage) GetHistory(ctx context.Context, cluster, namespace 
 			result.CorrelatedItems = extra.CorrelatedItems
 			result.OneAgentSignals = extra.OneAgentSignals
 			result.SeverityCounts = extra.SeverityCounts
+			result.TriageSummary = extra.TriageSummary
 		}
 
 		results = append(results, &result)

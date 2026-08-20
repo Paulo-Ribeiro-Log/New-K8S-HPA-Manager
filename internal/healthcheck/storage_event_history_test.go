@@ -40,6 +40,14 @@ func TestSaveAndGetHistory_RoundTripsAllExtraFields(t *testing.T) {
 		NodeResults:        []NodeHealth{{Name: "node-a", Status: StatusWarning}},
 		DynatraceResults:   []DynatraceHealth{},
 		OverallStatus:      StatusWarning,
+		// TriageSummary (Fase 1 do Modo Triagem) — achado real via validação ao vivo contra um
+		// cluster real (2026-08-20): mesma classe de bug do comentário acima, campo esquecido em
+		// extraResultFields (GET /healthcheck/:id sempre devolvia triage_summary=null).
+		TriageSummary: &TriageSummary{
+			Enabled:    true,
+			Namespaces: []string{"checkout"},
+			Sources:    []TriageSourceStatus{{Name: "Dynatrace", Available: true, Namespaces: []string{"checkout"}}},
+		},
 	}
 	if err := s.Save(ctx, result); err != nil {
 		t.Fatalf("Save failed: %v", err)
@@ -54,6 +62,9 @@ func TestSaveAndGetHistory_RoundTripsAllExtraFields(t *testing.T) {
 	}
 	if len(byID.PVCResults) != 1 {
 		t.Errorf("Get(): PVCResults não veio corretamente, got %+v", byID.PVCResults)
+	}
+	if byID.TriageSummary == nil || !byID.TriageSummary.Enabled || len(byID.TriageSummary.Namespaces) != 1 {
+		t.Errorf("Get(): TriageSummary não veio corretamente, got %+v", byID.TriageSummary)
 	}
 
 	history, err := s.GetHistory(ctx, result.Cluster, "", 10)
@@ -71,6 +82,9 @@ func TestSaveAndGetHistory_RoundTripsAllExtraFields(t *testing.T) {
 	}
 	if len(history[0].EventResults) != 1 {
 		t.Errorf("GetHistory(): EventResults não veio corretamente, got %+v", history[0].EventResults)
+	}
+	if history[0].TriageSummary == nil || !history[0].TriageSummary.Enabled || len(history[0].TriageSummary.Namespaces) != 1 {
+		t.Errorf("GetHistory(): TriageSummary não veio corretamente, got %+v", history[0].TriageSummary)
 	}
 }
 
