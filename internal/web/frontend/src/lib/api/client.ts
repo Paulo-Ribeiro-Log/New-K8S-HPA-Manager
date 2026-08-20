@@ -3197,6 +3197,51 @@ class APIClient {
   }
 
   // ========================================
+  // Triage Ignore (Modo Triagem — supressão de sinal externo, Fase 4)
+  // HEALTHCHECK-TRIAGE-MODE-PLAN.md seção 2.5 — distinto de /filters acima (postura K8s)
+  // ========================================
+
+  /**
+   * Get all triage ignore entries
+   * GET /api/v1/triage-ignore
+   */
+  async getTriageIgnoreEntries(): Promise<any> {
+    return this.request("/triage-ignore");
+  }
+
+  /**
+   * Get supported triage ignore sources
+   * GET /api/v1/triage-ignore/sources
+   */
+  async getTriageIgnoreSources(): Promise<any> {
+    return this.request("/triage-ignore/sources");
+  }
+
+  /**
+   * Add new triage ignore entry
+   * POST /api/v1/triage-ignore
+   */
+  async addTriageIgnoreEntry(entry: any): Promise<any> {
+    return this.request("/triage-ignore", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(entry),
+    });
+  }
+
+  /**
+   * Remove triage ignore entry
+   * DELETE /api/v1/triage-ignore/:id
+   */
+  async removeTriageIgnoreEntry(id: string): Promise<any> {
+    return this.request(`/triage-ignore/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // ========================================
   // GitHub Releases API
   // ========================================
 

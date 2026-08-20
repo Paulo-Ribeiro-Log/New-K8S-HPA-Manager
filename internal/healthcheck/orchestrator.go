@@ -3,6 +3,7 @@ package healthcheck
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,23 +22,24 @@ import (
 
 // Orchestrator coordena todos os health checks
 type Orchestrator struct {
-	kubeManager        *config.KubeConfigManager
-	deploymentChecker  *DeploymentChecker
-	serviceChecker     *ServiceChecker
-	configChecker      *ConfigChecker
-	eventChecker       *EventChecker           // ✅ Verificador de eventos K8s
-	hpaChecker         *HPAChecker             // ✅ Verificador de HPAs
-	pvChecker          *PVChecker              // ✅ Verificador de PVCs
-	nodeChecker        *NodeChecker            // ✅ Verificador de capacidade/utilização dos nós
-	dynatraceChecker   *DynatraceChecker       // ✅ Verificador de problems Dynatrace
-	oneAgentChecker    *OneAgentSignalsChecker // ✅ Varredura OneAgent por threshold
-	nodePoolStore      *storage.NodePoolRegistryStore
-	depRegistry        *storage.DependencyRegistry
-	storage            *HealthCheckStorage
-	progressTracker    *sse.ProgressTracker
-	filterManager      *FilterManager              // ✅ Gerenciador de filtros
-	deploymentRegistry *storage.DeploymentRegistry // ✅ Base de conhecimento de deployments
-	baseDir            string                      // ~/.k8s-hpa-manager — usado pelo SpinnakerEnricher (spinnaker_config.json)
+	kubeManager         *config.KubeConfigManager
+	deploymentChecker   *DeploymentChecker
+	serviceChecker      *ServiceChecker
+	configChecker       *ConfigChecker
+	eventChecker        *EventChecker           // ✅ Verificador de eventos K8s
+	hpaChecker          *HPAChecker             // ✅ Verificador de HPAs
+	pvChecker           *PVChecker              // ✅ Verificador de PVCs
+	nodeChecker         *NodeChecker            // ✅ Verificador de capacidade/utilização dos nós
+	dynatraceChecker    *DynatraceChecker       // ✅ Verificador de problems Dynatrace
+	oneAgentChecker     *OneAgentSignalsChecker // ✅ Varredura OneAgent por threshold
+	nodePoolStore       *storage.NodePoolRegistryStore
+	depRegistry         *storage.DependencyRegistry
+	storage             *HealthCheckStorage
+	progressTracker     *sse.ProgressTracker
+	filterManager       *FilterManager              // ✅ Gerenciador de filtros
+	triageIgnoreManager *TriageIgnoreManager        // Supressão de sinal externo do Modo Triagem (Fase 4) — pode ser nil se a inicialização falhar, tratado como "sem supressão"
+	deploymentRegistry  *storage.DeploymentRegistry // ✅ Base de conhecimento de deployments
+	baseDir             string                      // ~/.k8s-hpa-manager — usado pelo SpinnakerEnricher (spinnaker_config.json)
 }
 
 // NewOrchestrator cria um novo orchestrator
@@ -53,6 +55,15 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		return nil, fmt.Errorf("failed to initialize filter manager: %w", err)
 	}
 
+	// Inicializar TriageIgnoreManager (Fase 4 do Modo Triagem) — não fatal: uma falha aqui não
+	// deveria derrubar o orchestrator inteiro (mesmo espírito do deploymentRegistry logo abaixo),
+	// já que a única consequência de rodar sem ele é "sem supressão de ruído", não perda de dado.
+	triageIgnoreManager, err := NewTriageIgnoreManager(filepath.Join(baseDir, "triage_ignore.json"))
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to initialize triage ignore manager; continuing without noise suppression in Triage Mode")
+		triageIgnoreManager = nil
+	}
+
 	// ✅ Inicializar DeploymentRegistry (base de conhecimento)
 	deploymentRegistry, err := storage.NewDeploymentRegistry()
 	if err != nil {
@@ -61,21 +72,22 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 	}
 
 	return &Orchestrator{
-		kubeManager:        kubeManager,
-		deploymentChecker:  NewDeploymentChecker(),
-		serviceChecker:     NewServiceChecker(),
-		configChecker:      NewConfigChecker(),
-		eventChecker:       NewEventChecker(),
-		hpaChecker:         NewHPAChecker(),
-		pvChecker:          NewPVChecker(),
-		nodeChecker:        NewNodeChecker(),
-		dynatraceChecker:   NewDynatraceChecker(),
-		oneAgentChecker:    NewOneAgentSignalsChecker(),
-		storage:            hcStorage,
-		progressTracker:    progressTracker,
-		filterManager:      filterManager,
-		deploymentRegistry: deploymentRegistry,
-		baseDir:            baseDir,
+		kubeManager:         kubeManager,
+		deploymentChecker:   NewDeploymentChecker(),
+		serviceChecker:      NewServiceChecker(),
+		configChecker:       NewConfigChecker(),
+		eventChecker:        NewEventChecker(),
+		hpaChecker:          NewHPAChecker(),
+		pvChecker:           NewPVChecker(),
+		nodeChecker:         NewNodeChecker(),
+		dynatraceChecker:    NewDynatraceChecker(),
+		oneAgentChecker:     NewOneAgentSignalsChecker(),
+		storage:             hcStorage,
+		progressTracker:     progressTracker,
+		filterManager:       filterManager,
+		triageIgnoreManager: triageIgnoreManager,
+		deploymentRegistry:  deploymentRegistry,
+		baseDir:             baseDir,
 	}, nil
 }
 
@@ -253,9 +265,18 @@ func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string,
 // tradicional) — a fonte de triagem não depende de req.CheckDynatrace estar marcado, só das
 // credenciais estarem presentes (DynatraceTargetSource.Resolve trata URL/token vazios sozinho).
 func (o *Orchestrator) buildTriageSources(req HealthCheckRequest) []TargetSource {
+	// Listas de supressão da Fase 4 (seção 2.5 do plano) — nil quando o TriageIgnoreManager não
+	// inicializou (nunca fatal, ver NewOrchestrator); os dois TargetSource tratam mapa nil como
+	// "nenhuma entrada ignorada" (leitura de map nil é segura em Go, sempre "não encontrado").
+	var ignoredDynatraceProblems, ignoredPrometheusAlerts map[string]struct{}
+	if o.triageIgnoreManager != nil {
+		ignoredDynatraceProblems = o.triageIgnoreManager.IgnoredValues(TriageIgnoreSourceDynatraceProblem)
+		ignoredPrometheusAlerts = o.triageIgnoreManager.IgnoredValues(TriageIgnoreSourcePrometheusAlert)
+	}
+
 	return []TargetSource{
-		NewDynatraceTargetSource(o.dynatraceChecker, req.DynatraceURL, req.DynatraceToken, req.DynatraceTagFilter, req.GetTimeoutDynatrace()),
-		NewPrometheusAlertsTargetSource(),
+		NewDynatraceTargetSource(o.dynatraceChecker, req.DynatraceURL, req.DynatraceToken, req.DynatraceTagFilter, req.GetTimeoutDynatrace(), ignoredDynatraceProblems),
+		NewPrometheusAlertsTargetSource(ignoredPrometheusAlerts),
 	}
 }
 
@@ -1456,6 +1477,13 @@ func detectEnvironment(clusterName string) string {
 // GetFilterManager retorna o gerenciador de filtros
 func (o *Orchestrator) GetFilterManager() *FilterManager {
 	return o.filterManager
+}
+
+// GetTriageIgnoreManager retorna o gerenciador de supressão de sinal externo do Modo Triagem
+// (Fase 4) — pode ser nil se a inicialização falhou (ver NewOrchestrator); chamadores devem
+// tratar nil como "sem entradas cadastradas", nunca como erro fatal.
+func (o *Orchestrator) GetTriageIgnoreManager() *TriageIgnoreManager {
+	return o.triageIgnoreManager
 }
 
 // extractTroubledWorkloadInfos retorna workloads K8s com problema incluindo namespace e resumo de issues.

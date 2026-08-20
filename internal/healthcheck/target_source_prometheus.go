@@ -14,10 +14,15 @@ import (
 // triagem (não contribuem um namespace, mas não quebram nada) — mesma filosofia de "nunca inventa
 // sinal" já usada no Dynatrace (extractEnvHint) e no Access Checker. Não há garantia de que toda
 // regra de alerta desta empresa tenha o label namespace (ver seção 1.3/4.1 do plano).
-type PrometheusAlertsTargetSource struct{}
+type PrometheusAlertsTargetSource struct {
+	// ignoredAlerts (Fase 4 — TriageIgnoreManager): alertnames que nunca devem contribuir
+	// namespace nenhum, mesmo firing. Leitura de mapa nil é segura em Go — não precisa ser
+	// inicializado quando não há supressão configurada.
+	ignoredAlerts map[string]struct{}
+}
 
-func NewPrometheusAlertsTargetSource() *PrometheusAlertsTargetSource {
-	return &PrometheusAlertsTargetSource{}
+func NewPrometheusAlertsTargetSource(ignoredAlerts map[string]struct{}) *PrometheusAlertsTargetSource {
+	return &PrometheusAlertsTargetSource{ignoredAlerts: ignoredAlerts}
 }
 
 func (s *PrometheusAlertsTargetSource) Name() string {
@@ -42,11 +47,14 @@ func (s *PrometheusAlertsTargetSource) Resolve(_ context.Context, cluster string
 		if a.State != "firing" {
 			continue
 		}
+		alertName := a.Labels["alertname"]
+		if _, ignored := s.ignoredAlerts[alertName]; ignored { // Fase 4 — supressão por alertname
+			continue
+		}
 		ns := a.Labels["namespace"]
 		if ns == "" {
 			continue // sem label — não contribui, mas a fonte continua Available
 		}
-		alertName := a.Labels["alertname"]
 		severity := a.Labels["severity"]
 		reason := fmt.Sprintf("Prometheus: %s (%s)", alertName, severity)
 		nsSet[ns] = struct{}{}

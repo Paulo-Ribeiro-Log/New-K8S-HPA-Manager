@@ -1,12 +1,13 @@
 # Plano: Modo Triagem no Health Check (sinaliza primeiro, investiga depois)
 
-**Status:** 🟡 Fases 1 e 2 implementadas (Modo Triagem já é usável ponta a ponta: backend +
-toggle/UI de resultado) — Fases 3-6 ainda não iniciadas. Sem validação ao vivo no navegador contra
-um cluster real ainda (só testes unitários + build/type-check/lint passando). Fases 3
-(Elasticsearch) e 4 (ignore-lists) registradas em 2026-08-20 a partir da revisão de um script
-Python de referência de outra ferramenta interna — ver seção 0. **Fase 3 desbloqueada em
-2026-08-20**: confirmado que esta empresa usa ELK/Kibana de verdade, pipeline Fluentd, credencial
-de leitura já existe, acesso é direto ao Elasticsearch (não via proxy Kibana) — ver seção 4 item 5.
+**Status:** 🟡 Fases 1, 2 e 4 implementadas — Modo Triagem usável ponta a ponta (backend + toggle/UI
+de resultado) com supressão de ruído configurável (ignore-list por sinal externo). Fases 3
+(Elasticsearch), 5 (Zabbix) e 6 (granularidade por workload) ainda não iniciadas. Sem validação ao
+vivo no navegador contra um cluster real ainda (só testes unitários + build/type-check/lint
+passando). Fases 3/4 registradas em 2026-08-20 a partir da revisão de um script Python de
+referência de outra ferramenta interna — ver seção 0. **Fase 3 desbloqueada em 2026-08-20**:
+confirmado que esta empresa usa ELK/Kibana de verdade, pipeline Fluentd, credencial de leitura já
+existe, acesso é direto ao Elasticsearch (não via proxy Kibana) — ver seção 4 item 5.
 **Origem:** conversa sobre `ZABBIX-INTEGRATION-PLAN.md` levou o usuário a propor repensar a
 arquitetura do Health Check: hoje ele varre o cluster ponto a ponto e devolve muita informação
 de erro/postura; a proposta é buscar primeiro em ferramentas de monitoramento (Dynatrace/
@@ -403,20 +404,64 @@ reaproveitar um existente:
   contra o índice real pra confirmar o nome exato do campo antes de escrever `client.go` — não
   assumir a convenção do script de referência sem checar.
 
-### Fase 4 — Supressão de ruído (ignore-lists) — ver desenho completo na seção 2.5
+### Fase 4 — Supressão de ruído (ignore-lists) — ✅ implementada (desenho original na seção 2.5)
 
-- `internal/healthcheck/triage_ignore.go` (CRIAR) — `TriageIgnoreConfig` + load/save em
-  `~/.k8s-hpa-manager/triage-ignore.json`, mesmo padrão de persistência do `FilterManager`
-  (`filters.go`).
-- `internal/web/handlers/triage_ignore.go` (CRIAR) — `GET/POST/DELETE /api/v1/triage-ignore`,
-  mesmo padrão de `internal/web/handlers/filters.go`.
-- `internal/healthcheck/target_source_dynatrace.go` / `target_source_prometheus.go` (MODIFICAR) —
-  aceitar a lista de supressão relevante no construtor e filtrar antes de popular
-  `Namespaces`/`Reasons`.
-- Frontend: nova aba dentro de `FiltersManagementModal.tsx` (ou modal irmão) reaproveitando o
-  padrão visual já existente (lista + adicionar + remover).
-- **Não depende de Fase 3/5** — aplica-se imediatamente às 2 fontes já implementadas na Fase 1
-  (Dynatrace/Prometheus); pode ser feita antes ou depois delas sem alterar o desenho.
+**Arquivos criados:**
+- `internal/healthcheck/triage_ignore.go` — `TriageIgnoreManager` + persistência em
+  `~/.k8s-hpa-manager/triage_ignore.json`, mesmo padrão do `FilterManager` (`filters.go`:
+  `Load`/`Save`/`AddEntry`/`RemoveEntry`/`GetEntries`, mutex, JSON indentado). Método novo
+  `IgnoredValues(source) map[string]struct{}` é o ponto de consumo pelos `TargetSource`.
+- `internal/healthcheck/triage_ignore_test.go` — validação/dedup de `AddEntry`, `RemoveEntry`,
+  isolamento entre fontes em `IgnoredValues` (uma entrada Dynatrace não pode vazar pro conjunto
+  do Prometheus), e round-trip real de persistência (Save → novo `NewTriageIgnoreManager` → Load).
+- `internal/web/handlers/triage_ignore.go` — `TriageIgnoreHandler` (`ListEntries`/`AddEntry`/
+  `RemoveEntry`/`ListSources`), mesmo padrão de `internal/web/handlers/filters.go`. `ListSources`
+  é novo em relação ao design original — devolve as 4 fontes (`prometheus_alert`/
+  `dynatrace_problem`/`zabbix_trigger`/`elasticsearch_pattern`) com `enabled: true/false` conforme
+  a fase correspondente já tem `TargetSource` implementado — o frontend usa isso pra desabilitar
+  Zabbix/Elasticsearch no seletor até as Fases 3/5 existirem, sem precisar hardcodear a lista lá.
+
+**Arquivos modificados:**
+- `internal/healthcheck/orchestrator.go` — campo `triageIgnoreManager *TriageIgnoreManager`
+  (inicializado em `NewOrchestrator`, não-fatal — falha vira `log.Warn` + `nil`, igual ao
+  `deploymentRegistry`), `GetTriageIgnoreManager()`, e `buildTriageSources` passa os conjuntos de
+  supressão pros dois construtores.
+- `internal/healthcheck/target_source_dynatrace.go` — campo `ignoredProblems map[string]struct{}`,
+  filtra por `p.Title` OU `p.DisplayID` (o usuário pode cadastrar qualquer um dos dois, sem
+  precisar saber qual usar) ANTES de popular `Namespaces`/`Reasons`.
+- `internal/healthcheck/target_source_prometheus.go` — campo `ignoredAlerts map[string]struct{}`,
+  filtra por `Labels["alertname"]` antes do filtro de label `namespace` (ordem importa pouco aqui,
+  mas checar o nome do alerta primeiro evita o log de "sem label" pra alertas que nem deveriam
+  contar de qualquer forma).
+- `internal/web/server.go` — grupo de rotas `/api/v1/triage-ignore` (GET público, POST/DELETE
+  atrás de `RequireSREGroup()`, mesmo padrão de `/api/v1/filters`).
+- `internal/web/frontend/src/lib/api/client.ts` — 4 métodos novos (`getTriageIgnoreEntries`,
+  `getTriageIgnoreSources`, `addTriageIgnoreEntry`, `removeTriageIgnoreEntry`).
+- `internal/web/frontend/src/hooks/useTriageIgnore.ts` (CRIADO) — mesmo formato de `useFilters.ts`.
+- `internal/web/frontend/src/components/FiltersManagementModal.tsx` — ganhou abas manuais
+  ("Postura K8s" / "Sinal Externo (Triagem)", nunca shadcn `<Tabs>` — mesma convenção documentada
+  no CLAUDE.md) em vez de um modal irmão separado (decisão tomada na implementação, diferente do
+  "ou modal irmão" deixado em aberto no desenho original) — menos superfície de UI nova, e a
+  distinção de propósito (postura vs. sinal externo) já fica clara só pelo rótulo da aba.
+
+**Desvio deliberado do desenho original (seção 2.5)**: o sketch do plano tinha `TriageIgnoreConfig`
+como 4 slices paralelas (`PrometheusAlerts []string`, `DynatraceProblems []string`, etc.). A
+implementação usa uma lista única de `TriageIgnoreEntry{ID, Source, Value, Reason, CreatedAt,
+CreatedBy}` com um campo `Source` (enum) em vez disso — mais consistente com o `FilterRule` que
+já existe neste mesmo pacote (lista de entradas tipadas, não campos paralelos), e simplifica a
+API REST pra 1 endpoint de escrita em vez de 4. Mesma ideia, estrutura de dados diferente.
+
+- **Não dependia de Fase 3/5** — confirmado: aplica-se às 2 fontes já implementadas na Fase 1
+  (Dynatrace/Prometheus) sem precisar de nenhuma delas existir.
+
+**Validação até agora**: `go build`/`go vet`/`gofmt`, testes unitários dedicados (4 cenários em
+`triage_ignore_test.go`), `tsc --noEmit`/`eslint` limpos, `./rebuild-web.sh -b` com sucesso,
+servidor reiniciado e log confirmando `"Triage ignore manager initialized"` +
+`"✅ Triage Ignore routes registradas"`; `GET /api/v1/triage-ignore/sources` respondeu
+`401 UNAUTHORIZED` (não `404`) sem token, confirmando que a rota está de fato registrada. **Não
+validado ao vivo no navegador** — próxima sessão com acesso deveria abrir o modal de Filtros,
+aba "Sinal Externo (Triagem)", cadastrar uma entrada de verdade e confirmar que ela reduz o
+escopo de um Health Check em Modo Triagem.
 
 ### Fase 5 — `ZabbixTargetSource` (condicional, depende de `ZABBIX-INTEGRATION-PLAN.md` Fase 1/4)
 
@@ -498,9 +543,13 @@ internal/web/frontend/src/components/HealthReportTab.tsx      ← ✅ MODIFICADO
 internal/elasticsearch/client.go                        ← CRIAR (Fase 3, condicional — ver seção 4 item 5)
 internal/healthcheck/target_source_elasticsearch.go      ← CRIAR (Fase 3, condicional)
 internal/storage/user_tokens_store.go                    ← MODIFICAR (Fase 3 — credenciais Elasticsearch)
-internal/healthcheck/triage_ignore.go                     ← CRIAR (Fase 4)
-internal/web/handlers/triage_ignore.go                    ← CRIAR (Fase 4)
-internal/web/frontend/src/components/FiltersManagementModal.tsx ← MODIFICAR (Fase 4 — aba de ignore-list de sinal externo)
+internal/healthcheck/triage_ignore.go                     ← ✅ CRIADO (Fase 4)
+internal/healthcheck/triage_ignore_test.go                ← ✅ CRIADO (Fase 4)
+internal/web/handlers/triage_ignore.go                    ← ✅ CRIADO (Fase 4)
+internal/web/server.go                                    ← ✅ MODIFICADO (Fase 4 — rotas /api/v1/triage-ignore)
+internal/web/frontend/src/lib/api/client.ts               ← ✅ MODIFICADO (Fase 4 — 4 métodos triage-ignore)
+internal/web/frontend/src/hooks/useTriageIgnore.ts        ← ✅ CRIADO (Fase 4)
+internal/web/frontend/src/components/FiltersManagementModal.tsx ← ✅ MODIFICADO (Fase 4 — aba "Sinal Externo (Triagem)")
 internal/healthcheck/target_source_zabbix.go            ← CRIAR (Fase 5, condicional)
 ```
 

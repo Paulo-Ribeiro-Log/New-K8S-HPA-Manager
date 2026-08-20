@@ -1736,6 +1736,23 @@ func (s *Server) setupRoutes() {
 
 		fmt.Println("✅ Health Check Filters routes registradas")
 
+		// ✅ Rotas de ignore-list de sinal externo do Modo Triagem (Fase 4,
+		// HEALTHCHECK-TRIAGE-MODE-PLAN.md seção 2.5) — distinto do FilterManager acima (postura
+		// K8s vs. nome de sinal externo)
+		triageIgnoreHandler := handlers.NewTriageIgnoreHandler(healthCheckOrchestrator)
+		triageIgnoreGroup := api.Group("/triage-ignore")
+		{
+			// Rotas públicas (GET)
+			triageIgnoreGroup.GET("", triageIgnoreHandler.ListEntries)         // Listar entradas
+			triageIgnoreGroup.GET("/sources", triageIgnoreHandler.ListSources) // Listar fontes suportadas
+
+			// Rotas de escrita (POST, DELETE) - SRE only
+			triageIgnoreGroup.POST("", rbacMiddleware.InjectUserEmail(), rbacMiddleware.RequireSREGroup(), triageIgnoreHandler.AddEntry) // Adicionar entrada
+			triageIgnoreGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), triageIgnoreHandler.RemoveEntry)                          // Remover entrada
+		}
+
+		fmt.Println("✅ Triage Ignore routes registradas")
+
 		// ✅ Rotas de Dependency Scanner com SQLite Registry
 		dependencyScanner := healthcheck.NewDependencyScanner(s.kubeManager)
 		dependencyRegistry, err := storage.NewDependencyRegistry()
