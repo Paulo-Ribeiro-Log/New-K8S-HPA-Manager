@@ -30,7 +30,7 @@ import { useUserPermissions } from "@/hooks/useUserPermissions";
 import { useDynatracePodStatus } from "@/hooks/useAPI";
 import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
 import { PodTerminal } from "@/components/PodTerminal";
-import { PodFileTransferModal } from "@/components/PodFileTransferModal";
+import { PodSFTPModal } from "@/components/PodSFTPModal";
 import ResourceGauge from "@/components/ResourceGauge";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -1092,7 +1092,7 @@ export const PodsPanel = ({
           onClick={() => setShowFileTransferModal(true)}
         >
           <Download className="w-4 h-4 mr-2" />
-          Transferir Arquivos
+          Arquivos (SFTP)
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <ProtectedAction showWarning={false} allowed={canWritePods}>
@@ -2534,9 +2534,10 @@ export const PodsPanel = ({
         />
       )}
 
-      {/* Modal de Transferência de Arquivos */}
+      {/* Modal de Arquivos (SFTP embutido) — substitui o antigo PodFileTransferModal
+          (download-only); ver SFTP-FILE-BROWSER-PLAN.md pro desenho do servidor SFTP. */}
       {selectedPod && (
-        <PodFileTransferModal
+        <PodSFTPModal
           open={showFileTransferModal}
           onOpenChange={setShowFileTransferModal}
           cluster={cluster}
