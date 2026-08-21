@@ -4725,13 +4725,63 @@ type FileInfo struct {
 	ModTime     time.Time `json:"modTime"`
 }
 
-// ListDirectory lista arquivos e diretórios em um caminho do pod
-func (c *Client) ListDirectory(namespace, podName, container, remotePath string) ([]FileInfo, error) {
-	// Comando: ls -la --time-style='+%Y-%m-%d %H:%M:%S' <path>
-	// Output: drwxr-xr-x 2 root root 4096 2024-10-31 13:07:34 dirname
-	//         -rw-r----- 1 root root 214K 2024-10-31 13:07:34 filename.jpg
+// parseLsDate interpreta o formato de data padrão de `ls -la` (sem --time-style) — "Mon DD
+// HH:MM" pra arquivos modificados nos últimos ~6 meses, "Mon DD  YYYY" (hora omitida, ano no
+// lugar) pra mais antigos — mesma convenção usada por GNU coreutils e BusyBox. Retorna
+// time.Time{} (zero value) se o mês não for reconhecido, nunca panica.
+func parseLsDate(month, day, timeOrYear string) time.Time {
+	monthNum, ok := lsMonthNumbers[month]
+	if !ok {
+		return time.Time{}
+	}
+	dayNum, err := strconv.Atoi(day)
+	if err != nil {
+		return time.Time{}
+	}
+	if strings.Contains(timeOrYear, ":") {
+		// "HH:MM", ano omitido — ls sempre assume o ano corrente aqui; não há como diferenciar
+		// "ano corrente" de "ano corrente - 1" só pela saída do ls (mesma ambiguidade que
+		// qualquer usuário rodando `ls -la` também tem só de olhar o terminal).
+		t, err := time.Parse("15:04", timeOrYear)
+		if err != nil {
+			return time.Time{}
+		}
+		return time.Date(time.Now().Year(), monthNum, dayNum, t.Hour(), t.Minute(), 0, 0, time.Local)
+	}
+	year, err := strconv.Atoi(timeOrYear)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Date(year, monthNum, dayNum, 0, 0, 0, 0, time.Local)
+}
 
-	lsCmd := fmt.Sprintf("ls -la --time-style='+%%Y-%%m-%%d %%H:%%M:%%S' %s 2>&1", remotePath)
+var lsMonthNumbers = map[string]time.Month{
+	"Jan": time.January, "Feb": time.February, "Mar": time.March, "Apr": time.April,
+	"May": time.May, "Jun": time.June, "Jul": time.July, "Aug": time.August,
+	"Sep": time.September, "Oct": time.October, "Nov": time.November, "Dec": time.December,
+}
+
+// ListDirectory lista arquivos e diretórios em um caminho do pod
+//
+// BUG REAL CORRIGIDO — `--time-style` (usado aqui até então) não é reconhecido pelo `ls` do
+// BusyBox (confirmado ao vivo contra um pod real `nginx-ingress-controller`, cujo `ls` é
+// BusyBox — imagem extremamente comum, junto com qualquer coisa baseada em Alpine): o comando
+// falhava (`ls: unrecognized option`), mas como o código só tratava erro quando a saída vinha
+// VAZIA (`err != nil && len(outputStr) == 0`), o texto de erro/ajuda do BusyBox — não vazio —
+// era parseado como se fosse listagem de arquivo de verdade, produzindo entradas fantasma (ex:
+// um arquivo chamado "of names", na prática um fragmento da linha "List directory contents" do
+// help do BusyBox) em vez de um erro claro ou lista vazia. Corrigido removendo `--time-style` por
+// completo: SEM essa flag, tanto GNU coreutils quanto BusyBox usam o MESMO formato de data por
+// padrão ("Mon DD HH:MM" pra arquivos recentes, "Mon DD  YYYY" pra mais antigos — 3 tokens em vez
+// de 2), então um único parser cobre os dois. Efeito colateral aceito: perde-se os segundos
+// (nunca exposto na UI mesmo antes, `ModTime` só formatada até minutos em qualquer tela desta
+// app) — troca aceitável por funcionar em qualquer imagem, GNU ou BusyBox.
+func (c *Client) ListDirectory(namespace, podName, container, remotePath string) ([]FileInfo, error) {
+	// Comando: ls -la <path>
+	// Output: drwxr-xr-x 2 root root  4096 Aug 21 13:47 dirname
+	//         -rw-r----- 1 root root 219136 Jan  3  2025 filename.jpg (ano em vez de hora quando >6 meses)
+
+	lsCmd := fmt.Sprintf("ls -la %s 2>&1", remotePath)
 
 	args := []string{"exec", podName, "-n", namespace, "--context", c.cluster}
 	if container != "" {
@@ -4763,7 +4813,8 @@ func (c *Client) ListDirectory(namespace, podName, container, remotePath string)
 			continue
 		}
 
-		// Parse: drwxr-xr-x 2 root root 4096 2024-10-31 13:07:34 filename
+		// Parse: drwxr-xr-x 2 root root 4096 Aug 21 13:47 filename
+		// (GNU coreutils e BusyBox, sem --time-style — ver comentário de ListDirectory)
 		parts := strings.Fields(line)
 		if len(parts) < 9 {
 			continue // Linha inválida
@@ -4772,8 +4823,8 @@ func (c *Client) ListDirectory(namespace, podName, container, remotePath string)
 		permissions := parts[0]
 		isDir := strings.HasPrefix(permissions, "d")
 		sizeStr := parts[4]
-		dateStr := parts[5] + " " + parts[6]
-		name := strings.Join(parts[7:], " ")
+		month, day, timeOrYear := parts[5], parts[6], parts[7]
+		name := strings.Join(parts[8:], " ")
 
 		// Ignorar . e ..
 		if name == "." || name == ".." {
@@ -4804,7 +4855,7 @@ func (c *Client) ListDirectory(namespace, podName, container, remotePath string)
 		}
 
 		// Parse modTime
-		modTime, _ := time.Parse("2006-01-02 15:04:05", dateStr)
+		modTime := parseLsDate(month, day, timeOrYear)
 
 		// Construir path completo
 		fullPath := strings.TrimSuffix(remotePath, "/") + "/" + name
