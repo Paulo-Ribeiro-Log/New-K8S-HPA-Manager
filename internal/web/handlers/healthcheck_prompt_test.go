@@ -49,13 +49,13 @@ func realisticCorrelatedItem() healthcheck.CorrelatedHealthItem {
 		},
 		DTProblems: []healthcheck.DynatraceHealth{
 			{
-				ProblemID:  "P-99001",
-				DisplayID:  "P-99001",
-				Title:      "multicd-3p: taxa de erro acima do threshold",
-				DTSeverity: "ERROR",
+				ProblemID:   "P-99001",
+				DisplayID:   "P-99001",
+				Title:       "multicd-3p: taxa de erro acima do threshold",
+				DTSeverity:  "ERROR",
 				ImpactLevel: "SERVICE",
-				StartTime:  time.Now().Add(-9 * 24 * time.Hour),
-				Evidence:   []string{"[Root Cause] Container reiniciando repetidamente por OOMKilled"},
+				StartTime:   time.Now().Add(-9 * 24 * time.Hour),
+				Evidence:    []string{"[Root Cause] Container reiniciando repetidamente por OOMKilled"},
 				MetricsSummary: map[string]float64{
 					"error_rate": 95.74,
 					"cpu_milli":  1850,

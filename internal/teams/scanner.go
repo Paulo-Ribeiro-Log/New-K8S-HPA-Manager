@@ -51,6 +51,7 @@ func ScanConversations(sessionDir, outputPath string, logger *zerolog.Logger) ([
 	// Aguardar Teams carregar — apenas pela URL, sem verificar DOM.
 	logger.Info().Msg("[Scanner] Aguardando Teams carregar (máx 3min)...")
 	deadline := time.Now().Add(3 * time.Minute)
+	loaded := false
 	for time.Now().Before(deadline) {
 		pages, _ := browser.Pages()
 		for _, p := range pages {
@@ -64,20 +65,32 @@ func ScanConversations(sessionDir, outputPath string, logger *zerolog.Logger) ([
 				!strings.Contains(u, "login.microsoftonline") &&
 				u != "about:blank" {
 				page = p
+				loaded = true
 				logger.Info().Str("url", u).Msg("[Scanner] Teams detectado")
-				goto loaded
+				break
 			}
+		}
+		if loaded {
+			break
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return nil, fmt.Errorf("timeout aguardando Teams carregar")
+	if !loaded {
+		return nil, fmt.Errorf("timeout aguardando Teams carregar")
+	}
 
-loaded:
+	// Espera de verdade a UI autenticar (barra lateral renderizada) antes de minimizar — ver
+	// comentário de waitForTeamsUIReady em browser_manager.go. Antes disso minimizava a janela
+	// assim que a URL batia (sinal fraco, verdadeiro mesmo em tela de login) e só esperava um
+	// sleep fixo de 25s, resultando em scans retornando 0 conversas sem erro nenhum quando a
+	// sessão salva tinha expirado ou o login não tinha tempo de completar.
+	logger.Info().Msg("[Scanner] Aguardando Teams inicializar e autenticar (máx 4min)...")
+	if !waitForTeamsUIReady(page, sessionDir, logger, "[Scanner]") {
+		return nil, fmt.Errorf("teams não terminou de carregar/autenticar a tempo — se uma tela de login apareceu, complete-a e tente novamente")
+	}
+
 	// Daqui em diante é tudo via CDP/JS — sem necessidade de interação do usuário.
 	minimizeWindow(page, logger)
-
-	logger.Info().Msg("[Scanner] Aguardando Teams inicializar completamente (25s)...")
-	time.Sleep(25 * time.Second)
 
 	// Timeout generoso para o JS — a fase DOM+click pode levar ~3 min para 300+ DMs.
 	page = page.Timeout(6 * time.Minute)

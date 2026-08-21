@@ -4233,6 +4233,17 @@ class APIClient {
     });
   }
 
+  async deleteBroadcastMessages(targets: { thread_id: string; message_id: string }[]): Promise<{
+    deleted: number;
+    failed: number;
+    results: { thread_id: string; message_id: string; ok: boolean; status: number; error?: string }[];
+  }> {
+    return this.request("/teams/broadcast/delete", {
+      method: "POST",
+      body: JSON.stringify({ targets }),
+    });
+  }
+
   // ==================== SRE Approval ====================
 
   async getSreApprovalInfo(approvalUrl: string): Promise<{
