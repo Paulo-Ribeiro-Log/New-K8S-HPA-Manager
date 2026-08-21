@@ -143,11 +143,21 @@ export function PodSFTPModal({ open, onOpenChange, cluster, namespace, podName, 
     }
   }, [basePath, container]);
 
+  // BUG REAL CORRIGIDO — este efeito dependia de `containers` (o array inteiro), mas esse prop
+  // é passado como `selectedPod.containers.map(c => c.name)` em PodsPanel.tsx — uma referência de
+  // array NOVA a cada re-render do painel (inclusive os re-renders periódicos do polling da lista
+  // de pods, sem nenhuma ação do usuário). Como um array recriado via .map() nunca é
+  // referencialmente igual ao anterior mesmo com conteúdo idêntico, o efeito reexecutava a cada
+  // poll, resetando `container` de volta pro primeiro (ex: "istio-proxy") e `path` de volta pra
+  // "/" — mesmo com o usuário já tendo trocado de container ou navegado pra uma subpasta.
+  // Corrigido dependendo só de `open` (primitivo estável): a lista de containers de um pod nunca
+  // muda de verdade durante a mesma sessão do modal, então não há necessidade de reagir a ela.
   useEffect(() => {
     if (!open) return;
     setContainer(containers[0] ?? "");
     setPath("/");
-  }, [open, containers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   useEffect(() => {
     if (open && container) load(path);
