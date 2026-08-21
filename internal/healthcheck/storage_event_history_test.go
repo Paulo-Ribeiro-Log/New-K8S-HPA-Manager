@@ -28,18 +28,18 @@ func TestSaveAndGetHistory_RoundTripsAllExtraFields(t *testing.T) {
 
 	result := &HealthCheckResult{
 		ID:                "test-result-1",
-		Cluster:            "cluster-a",
-		Namespace:          "ns",
-		StartedAt:          time.Now(),
-		FinishedAt:         time.Now(),
-		DeploymentResults:  []DeploymentHealth{},
-		ServiceResults:     []ServiceHealth{},
-		ConfigResults:      []ConfigHealth{},
-		EventResults:       []EventHealth{{Namespace: "ns", Reason: "BackOff"}},
-		PVCResults:         []PVCHealth{{Name: "pvc-a"}},
-		NodeResults:        []NodeHealth{{Name: "node-a", Status: StatusWarning}},
-		DynatraceResults:   []DynatraceHealth{},
-		OverallStatus:      StatusWarning,
+		Cluster:           "cluster-a",
+		Namespace:         "ns",
+		StartedAt:         time.Now(),
+		FinishedAt:        time.Now(),
+		DeploymentResults: []DeploymentHealth{},
+		ServiceResults:    []ServiceHealth{},
+		ConfigResults:     []ConfigHealth{},
+		EventResults:      []EventHealth{{Namespace: "ns", Reason: "BackOff"}},
+		PVCResults:        []PVCHealth{{Name: "pvc-a"}},
+		NodeResults:       []NodeHealth{{Name: "node-a", Status: StatusWarning}},
+		DynatraceResults:  []DynatraceHealth{},
+		OverallStatus:     StatusWarning,
 		// TriageSummary (Fase 1 do Modo Triagem) — achado real via validação ao vivo contra um
 		// cluster real (2026-08-20): mesma classe de bug do comentário acima, campo esquecido em
 		// extraResultFields (GET /healthcheck/:id sempre devolvia triage_summary=null).

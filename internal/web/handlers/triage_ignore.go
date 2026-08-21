@@ -151,8 +151,8 @@ func (h *TriageIgnoreHandler) RemoveEntry(c *gin.Context) {
 }
 
 // ListSources retorna as fontes de sinal externo suportadas hoje (usado pelo frontend pra montar
-// o seletor) — só Dynatrace/Prometheus têm um TargetSource implementado (Fase 1); Zabbix/
-// Elasticsearch aparecem como desabilitados até suas próprias fases serem implementadas.
+// o seletor) — Dynatrace/Prometheus (Fase 1) e Elasticsearch (Fase 3) têm um TargetSource
+// implementado; Zabbix aparece desabilitado até a Fase 5 ser implementada.
 // GET /api/v1/triage-ignore/sources
 func (h *TriageIgnoreHandler) ListSources(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
@@ -161,7 +161,7 @@ func (h *TriageIgnoreHandler) ListSources(c *gin.Context) {
 			{"value": "prometheus_alert", "label": "Alerta Prometheus", "field_label": "Nome do alerta (alertname)", "enabled": true},
 			{"value": "dynatrace_problem", "label": "Problem Dynatrace", "field_label": "Título ou Display ID do problem", "enabled": true},
 			{"value": "zabbix_trigger", "label": "Trigger Zabbix", "field_label": "Nome do trigger", "enabled": false},
-			{"value": "elasticsearch_pattern", "label": "Padrão Elasticsearch", "field_label": "Padrão/app", "enabled": false},
+			{"value": "elasticsearch_pattern", "label": "Namespace Elasticsearch", "field_label": "Nome do namespace a ignorar", "enabled": true},
 		},
 	})
 }

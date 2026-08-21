@@ -53,6 +53,7 @@ import { AWXCredentialModal } from '@/components/profile/AWXCredentialModal';
 import { SSOProfileModal } from '@/components/profile/SSOProfileModal';
 import { DynatraceCredentialModal } from '@/components/profile/DynatraceCredentialModal';
 import { SpinnakerCredentialModal } from '@/components/profile/SpinnakerCredentialModal';
+import { ElasticsearchCredentialModal } from '@/components/profile/ElasticsearchCredentialModal';
 import type { CredentialStatus } from '@/types/profile';
 
 interface UserProfileMenuProps {
@@ -71,6 +72,7 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
   const [ssoProfileModalOpen, setSsoProfileModalOpen] = useState(false);
   const [dynatraceModalOpen, setDynatraceModalOpen] = useState(false);
   const [spinnakerModalOpen, setSpinnakerModalOpen] = useState(false);
+  const [elasticsearchModalOpen, setElasticsearchModalOpen] = useState(false);
 
   // Contas do Editor de Código
   const [ceProfiles, setCeProfiles] = useState<GitHubProfile[]>([]);
@@ -325,6 +327,13 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
               <span className="flex-1">Spinnaker</span>
               {renderStatusIcon(credentials.spinnaker?.status || 'not_configured')}
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setElasticsearchModalOpen(true)}
+              className="cursor-pointer"
+            >
+              <span className="flex-1">Elasticsearch</span>
+              {renderStatusIcon(credentials.elasticsearch?.status || 'not_configured')}
+            </DropdownMenuItem>
           </DropdownMenuGroup>
 
           <DropdownMenuSeparator />
@@ -374,6 +383,11 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
       <SpinnakerCredentialModal
         open={spinnakerModalOpen}
         onOpenChange={setSpinnakerModalOpen}
+        onSaved={refreshCredentials}
+      />
+      <ElasticsearchCredentialModal
+        open={elasticsearchModalOpen}
+        onOpenChange={setElasticsearchModalOpen}
         onSaved={refreshCredentials}
       />
     </>

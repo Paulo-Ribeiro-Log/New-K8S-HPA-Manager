@@ -1090,6 +1090,17 @@ func (s *Server) setupRoutes() {
 		dt.GET("/history", dtHandler.GetHistory)
 	}
 
+	// Elasticsearch (HEALTHCHECK-TRIAGE-MODE-PLAN.md Fase 3) — só credenciais + teste de conexão
+	// hoje, consumido pelo ElasticsearchTargetSource do Modo Triagem. Mesmo padrão do grupo
+	// /dynatrace acima (config/test com identidade via InjectUserEmail()).
+	esHandler := handlers.NewElasticsearchConfigHandler(s.aiTokensStore)
+	es := api.Group("/elasticsearch")
+	{
+		es.GET("/config", rbacMiddleware.InjectUserEmail(), esHandler.GetConfig)
+		es.POST("/config", rbacMiddleware.InjectUserEmail(), esHandler.SaveConfig)
+		es.POST("/test", rbacMiddleware.InjectUserEmail(), esHandler.TestConnection)
+	}
+
 	// Helm
 	helmLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "helm-cli").Logger()
 	helmOptions := []helmclient.Option{helmclient.WithLogger(helmLogger)}

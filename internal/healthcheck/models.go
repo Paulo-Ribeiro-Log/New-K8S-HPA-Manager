@@ -133,6 +133,14 @@ type HealthCheckRequest struct {
 	DynatraceToken     string `json:"-"` // não exposto no JSON de request (preenchido internamente)
 	DynatraceTagFilter string `json:"-"` // tag para filtrar problems (ex: "SRE-LOGISTICA")
 
+	// Credenciais Elasticsearch (Fase 3 do Modo Triagem, preenchidas pelo handler a partir dos
+	// tokens do usuário) — usadas só pelo ElasticsearchTargetSource, não existe um checker
+	// dedicado de erro de log ainda.
+	ElasticsearchURL          string `json:"-"`
+	ElasticsearchUsername     string `json:"-"`
+	ElasticsearchPassword     string `json:"-"`
+	ElasticsearchIndexPattern string `json:"-"`
+
 	// Timeout geral (segundos) - usado como fallback se timeouts específicos não forem definidos
 	Timeout int `json:"timeout"` // Padrão: 30s
 

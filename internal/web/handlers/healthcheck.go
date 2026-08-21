@@ -92,6 +92,14 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 				req.DynatraceURL = tokens.DynatraceURL
 				req.DynatraceToken = tokens.DynatraceToken
 				req.DynatraceTagFilter = tokens.DynatraceTagFilter
+				// Elasticsearch (Fase 3 do Modo Triagem) — mesma identidade/tokens do usuário,
+				// mesmo gate de req.TriageMode (sem checkbox "Check*" próprio ainda, ver
+				// ElasticsearchTargetSource). Reaproveita a mesma leitura de GetTokens acima —
+				// não é uma segunda consulta ao SQLite.
+				req.ElasticsearchURL = tokens.ElasticsearchURL
+				req.ElasticsearchUsername = tokens.ElasticsearchUsername
+				req.ElasticsearchPassword = tokens.ElasticsearchPassword
+				req.ElasticsearchIndexPattern = tokens.ElasticsearchIndexPattern
 			}
 		}
 	}

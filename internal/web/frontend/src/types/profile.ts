@@ -33,6 +33,7 @@ export interface CredentialsState {
   awx?: CredentialInfo;
   dynatrace?: CredentialInfo;
   spinnaker?: CredentialInfo;
+  elasticsearch?: CredentialInfo;
 }
 
 // Tema da aplicacao

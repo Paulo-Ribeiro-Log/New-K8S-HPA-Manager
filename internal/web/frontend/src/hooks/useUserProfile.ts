@@ -46,6 +46,10 @@ export function useUserProfile() {
   const [spinnakerStatus, setSpinnakerStatus] = useState<{ hlg_base_url?: string; prd_base_url?: string; selected_project?: string } | null>(null);
   const [spinnakerLoading, setSpinnakerLoading] = useState(true);
 
+  // Status do Elasticsearch (HEALTHCHECK-TRIAGE-MODE-PLAN.md Fase 3)
+  const [elasticsearchStatus, setElasticsearchStatus] = useState<{ enabled: boolean; has_password: boolean } | null>(null);
+  const [elasticsearchLoading, setElasticsearchLoading] = useState(true);
+
   // Verificar status do Nexus, ServiceNow, AWX e Dynatrace ao montar
   useEffect(() => {
     const checkNexus = async () => {
@@ -92,6 +96,17 @@ export function useUserProfile() {
       }
     };
 
+    const checkElasticsearch = async () => {
+      try {
+        const status = await apiClient.getElasticsearchConfig();
+        setElasticsearchStatus(status);
+      } catch {
+        setElasticsearchStatus(null);
+      } finally {
+        setElasticsearchLoading(false);
+      }
+    };
+
     const checkSpinnaker = async () => {
       try {
         const status = await apiClient.getSpinnakerConfig();
@@ -108,6 +123,7 @@ export function useUserProfile() {
     checkAWX();
     checkDynatrace();
     checkSpinnaker();
+    checkElasticsearch();
   }, []);
 
   // Funcao para refresh manual do status
@@ -117,14 +133,16 @@ export function useUserProfile() {
     setAwxLoading(true);
     setDynatraceLoading(true);
     setSpinnakerLoading(true);
+    setElasticsearchLoading(true);
 
     try {
-      const [nexus, servicenow, awx, dynatrace, spinnaker] = await Promise.allSettled([
+      const [nexus, servicenow, awx, dynatrace, spinnaker, elasticsearch] = await Promise.allSettled([
         apiClient.get<NexusStatus>('/nexus/status'),
         apiClient.get<{ valid: boolean; status: string }>('/servicenow/session-status'),
         apiClient.getAWXStatus(),
         apiClient.getDynatraceConfig(),
         apiClient.getSpinnakerConfig(),
+        apiClient.getElasticsearchConfig(),
       ]);
 
       if (nexus.status === 'fulfilled') {
@@ -156,12 +174,19 @@ export function useUserProfile() {
       } else {
         setSpinnakerStatus(null);
       }
+
+      if (elasticsearch.status === 'fulfilled') {
+        setElasticsearchStatus(elasticsearch.value);
+      } else {
+        setElasticsearchStatus(null);
+      }
     } finally {
       setNexusLoading(false);
       setServiceNowLoading(false);
       setAwxLoading(false);
       setDynatraceLoading(false);
       setSpinnakerLoading(false);
+      setElasticsearchLoading(false);
     }
   }, []);
 
@@ -236,6 +261,17 @@ export function useUserProfile() {
       spinnakerCredStatus = 'error';
     }
 
+    // Determinar status do Elasticsearch — mesmo espírito do Dynatrace acima (senha salva sem
+    // URL/usuário configurados corretamente conta como configuração incompleta).
+    let elasticsearchCredStatus: CredentialStatus = 'not_configured';
+    if (elasticsearchLoading) {
+      elasticsearchCredStatus = 'validating';
+    } else if (elasticsearchStatus?.enabled) {
+      elasticsearchCredStatus = 'configured';
+    } else if (elasticsearchStatus?.has_password) {
+      elasticsearchCredStatus = 'error';
+    }
+
     return {
       nexus: {
         id: 'nexus',
@@ -279,8 +315,15 @@ export function useUserProfile() {
         status: spinnakerCredStatus,
         lastChecked: new Date(),
       },
+      elasticsearch: {
+        id: 'elasticsearch',
+        name: 'Elasticsearch',
+        description: 'Fonte de triagem do Health Check (erro de log por namespace)',
+        status: elasticsearchCredStatus,
+        lastChecked: new Date(),
+      },
     };
-  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading, awxStatus, awxLoading, dynatraceStatus, dynatraceLoading, spinnakerStatus, spinnakerLoading]);
+  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading, awxStatus, awxLoading, dynatraceStatus, dynatraceLoading, spinnakerStatus, spinnakerLoading, elasticsearchStatus, elasticsearchLoading]);
 
   const isLoading = permissionsLoading || githubLoading;
 

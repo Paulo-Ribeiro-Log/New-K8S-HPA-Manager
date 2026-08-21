@@ -259,24 +259,26 @@ func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string,
 }
 
 // buildTriageSources monta as fontes de triagem disponíveis nesta instância — Dynatrace e
-// Prometheus na Fase 1 (Zabbix entra como 3ª fonte na Fase 3, condicional a
-// ZABBIX-INTEGRATION-PLAN.md, ver HEALTHCHECK-TRIAGE-MODE-PLAN.md seção 3). Credenciais Dynatrace
-// vêm da mesma request (preenchidas pelo handler a partir dos tokens do usuário, igual ao check
-// tradicional) — a fonte de triagem não depende de req.CheckDynatrace estar marcado, só das
-// credenciais estarem presentes (DynatraceTargetSource.Resolve trata URL/token vazios sozinho).
+// Prometheus na Fase 1, Elasticsearch na Fase 3 (Zabbix entra como 3ª/4ª fonte na Fase 5,
+// condicional a ZABBIX-INTEGRATION-PLAN.md, ver HEALTHCHECK-TRIAGE-MODE-PLAN.md seção 3).
+// Credenciais vêm da mesma request (preenchidas pelo handler a partir dos tokens do usuário,
+// igual ao check tradicional) — nenhuma fonte depende de um checkbox "Check*" estar marcado, só
+// das credenciais estarem presentes (cada TargetSource.Resolve trata credenciais vazias sozinho).
 func (o *Orchestrator) buildTriageSources(req HealthCheckRequest) []TargetSource {
 	// Listas de supressão da Fase 4 (seção 2.5 do plano) — nil quando o TriageIgnoreManager não
-	// inicializou (nunca fatal, ver NewOrchestrator); os dois TargetSource tratam mapa nil como
+	// inicializou (nunca fatal, ver NewOrchestrator); os TargetSource tratam mapa nil como
 	// "nenhuma entrada ignorada" (leitura de map nil é segura em Go, sempre "não encontrado").
-	var ignoredDynatraceProblems, ignoredPrometheusAlerts map[string]struct{}
+	var ignoredDynatraceProblems, ignoredPrometheusAlerts, ignoredElasticsearchNamespaces map[string]struct{}
 	if o.triageIgnoreManager != nil {
 		ignoredDynatraceProblems = o.triageIgnoreManager.IgnoredValues(TriageIgnoreSourceDynatraceProblem)
 		ignoredPrometheusAlerts = o.triageIgnoreManager.IgnoredValues(TriageIgnoreSourcePrometheusAlert)
+		ignoredElasticsearchNamespaces = o.triageIgnoreManager.IgnoredValues(TriageIgnoreSourceElasticsearchApp)
 	}
 
 	return []TargetSource{
 		NewDynatraceTargetSource(o.dynatraceChecker, req.DynatraceURL, req.DynatraceToken, req.DynatraceTagFilter, req.GetTimeoutDynatrace(), ignoredDynatraceProblems),
 		NewPrometheusAlertsTargetSource(ignoredPrometheusAlerts),
+		NewElasticsearchTargetSource(req.ElasticsearchURL, req.ElasticsearchUsername, req.ElasticsearchPassword, req.ElasticsearchIndexPattern, ignoredElasticsearchNamespaces),
 	}
 }
 

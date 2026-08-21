@@ -19,31 +19,38 @@ func NewUserTokensStore(client *SQLiteClient) *UserTokensStore {
 
 // UserTokens representa tokens de um usuário
 type UserTokens struct {
-	UserEmail                string            `json:"user_email"`
-	GeminiAPIKey             string            `json:"gemini_api_key,omitempty"`
-	GeminiModel              string            `json:"gemini_model,omitempty"`
-	GeminiAuthMode           string            `json:"gemini_auth_mode,omitempty"`            // "apikey" ou "vertex"
-	GeminiVertexProject      string            `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
-	GeminiVertexLocation     string            `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
-	GeminiServiceAccountJSON string            `json:"gemini_service_account_json,omitempty"` // JSON do service account (sem gcloud)
-	GeminiRefreshToken       string            `json:"gemini_refresh_token,omitempty"`        // OAuth refresh token (Device Auth flow)
-	GeminiWifLoginURL        string            `json:"gemini_wif_login_url,omitempty"`        // URL de login SSO corporativo (WIF)
-	OpenAIAPIKey             string            `json:"openai_api_key,omitempty"`
-	OpenAIModel              string            `json:"openai_model,omitempty"`
-	OpenAIBaseURL            string            `json:"openai_base_url,omitempty"` // endpoint compatível (ex: GitHub Models)
-	ClaudeAPIKey             string            `json:"claude_api_key,omitempty"`
-	ClaudeModel              string            `json:"claude_model,omitempty"`
-	CopilotAPIKey            string            `json:"copilot_api_key,omitempty"`
-	CopilotEndpoint          string            `json:"copilot_endpoint,omitempty"`
-	CopilotDeployment        string            `json:"copilot_deployment,omitempty"`
-	OllamaModel              string            `json:"ollama_model,omitempty"`
-	PreferredProvider        string            `json:"preferred_provider"`
-	DynatraceURL             string            `json:"dynatrace_url,omitempty"`
-	DynatraceToken           string            `json:"dynatrace_token,omitempty"`
-	DynatraceTagFilter       string            `json:"dynatrace_tag_filter,omitempty"` // filtro de tag: mostrar apenas problems com essa tag
-	Metadata                 map[string]string `json:"metadata,omitempty"`
-	UpdatedAt                time.Time         `json:"updated_at"`
-	CreatedAt                time.Time         `json:"created_at"`
+	UserEmail                string `json:"user_email"`
+	GeminiAPIKey             string `json:"gemini_api_key,omitempty"`
+	GeminiModel              string `json:"gemini_model,omitempty"`
+	GeminiAuthMode           string `json:"gemini_auth_mode,omitempty"`            // "apikey" ou "vertex"
+	GeminiVertexProject      string `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
+	GeminiVertexLocation     string `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
+	GeminiServiceAccountJSON string `json:"gemini_service_account_json,omitempty"` // JSON do service account (sem gcloud)
+	GeminiRefreshToken       string `json:"gemini_refresh_token,omitempty"`        // OAuth refresh token (Device Auth flow)
+	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`        // URL de login SSO corporativo (WIF)
+	OpenAIAPIKey             string `json:"openai_api_key,omitempty"`
+	OpenAIModel              string `json:"openai_model,omitempty"`
+	OpenAIBaseURL            string `json:"openai_base_url,omitempty"` // endpoint compatível (ex: GitHub Models)
+	ClaudeAPIKey             string `json:"claude_api_key,omitempty"`
+	ClaudeModel              string `json:"claude_model,omitempty"`
+	CopilotAPIKey            string `json:"copilot_api_key,omitempty"`
+	CopilotEndpoint          string `json:"copilot_endpoint,omitempty"`
+	CopilotDeployment        string `json:"copilot_deployment,omitempty"`
+	OllamaModel              string `json:"ollama_model,omitempty"`
+	PreferredProvider        string `json:"preferred_provider"`
+	DynatraceURL             string `json:"dynatrace_url,omitempty"`
+	DynatraceToken           string `json:"dynatrace_token,omitempty"`
+	DynatraceTagFilter       string `json:"dynatrace_tag_filter,omitempty"` // filtro de tag: mostrar apenas problems com essa tag
+	// Elasticsearch (HEALTHCHECK-TRIAGE-MODE-PLAN.md Fase 3) — acesso direto (Basic Auth, sem
+	// proxy Kibana, confirmado com o usuário). Usado hoje só como fonte de triagem do Health
+	// Check (ElasticsearchTargetSource), não uma aba própria de observabilidade.
+	ElasticsearchURL          string            `json:"elasticsearch_url,omitempty"`
+	ElasticsearchUsername     string            `json:"elasticsearch_username,omitempty"`
+	ElasticsearchPassword     string            `json:"elasticsearch_password,omitempty"`
+	ElasticsearchIndexPattern string            `json:"elasticsearch_index_pattern,omitempty"` // ex: "k8s-logs-*" — instalação-específico, não tem default seguro
+	Metadata                  map[string]string `json:"metadata,omitempty"`
+	UpdatedAt                 time.Time         `json:"updated_at"`
+	CreatedAt                 time.Time         `json:"created_at"`
 }
 
 // CreateTable cria tabela de tokens de usuários
@@ -96,6 +103,10 @@ func (s *UserTokensStore) CreateTable() error {
 		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_tag_filter TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_wif_login_url TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN openai_base_url TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN elasticsearch_url TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN elasticsearch_username TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN elasticsearch_password TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN elasticsearch_index_pattern TEXT`,
 	}
 
 	for _, migration := range migrations {
@@ -130,8 +141,10 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
 		gemini_service_account_json, gemini_refresh_token, gemini_wif_login_url, openai_api_key, openai_model, openai_base_url,
 		claude_api_key, claude_model, copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model,
-		preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter, metadata, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter,
+		elasticsearch_url, elasticsearch_username, elasticsearch_password, elasticsearch_index_pattern,
+		metadata, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(user_email) DO UPDATE SET
 		gemini_api_key = excluded.gemini_api_key,
 		gemini_model = excluded.gemini_model,
@@ -154,6 +167,10 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		dynatrace_url = excluded.dynatrace_url,
 		dynatrace_token = excluded.dynatrace_token,
 		dynatrace_tag_filter = excluded.dynatrace_tag_filter,
+		elasticsearch_url = excluded.elasticsearch_url,
+		elasticsearch_username = excluded.elasticsearch_username,
+		elasticsearch_password = excluded.elasticsearch_password,
+		elasticsearch_index_pattern = excluded.elasticsearch_index_pattern,
 		metadata = excluded.metadata,
 		updated_at = excluded.updated_at
 	`
@@ -181,6 +198,10 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		tokens.DynatraceURL,
 		tokens.DynatraceToken,
 		tokens.DynatraceTagFilter,
+		tokens.ElasticsearchURL,
+		tokens.ElasticsearchUsername,
+		tokens.ElasticsearchPassword,
+		tokens.ElasticsearchIndexPattern,
 		metadataJSON,
 		tokens.UpdatedAt,
 	)
@@ -202,7 +223,9 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	SELECT user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
 	       gemini_service_account_json, gemini_refresh_token, gemini_wif_login_url, openai_api_key, openai_model, openai_base_url,
 	       claude_api_key, claude_model, copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model,
-	       preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter, metadata, updated_at, created_at
+	       preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter,
+	       elasticsearch_url, elasticsearch_username, elasticsearch_password, elasticsearch_index_pattern,
+	       metadata, updated_at, created_at
 	FROM user_ai_tokens
 	WHERE user_email = ?
 	`
@@ -218,6 +241,7 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	var copilotAPIKey, copilotEndpoint, copilotDeployment sql.NullString
 	var ollamaModel, preferredProvider sql.NullString
 	var dynatraceURL, dynatraceToken, dynatraceTagFilter sql.NullString
+	var elasticsearchURL, elasticsearchUsername, elasticsearchPassword, elasticsearchIndexPattern sql.NullString
 
 	// Bug real corrigido: linhas criadas por caminhos de INSERT parciais (SaveGitHubEditorProfiles,
 	// SaveCloudAccountHints — só preenchem user_email + a própria coluna + preferred_provider)
@@ -249,6 +273,10 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 		&dynatraceURL,
 		&dynatraceToken,
 		&dynatraceTagFilter,
+		&elasticsearchURL,
+		&elasticsearchUsername,
+		&elasticsearchPassword,
+		&elasticsearchIndexPattern,
 		&metadataJSON,
 		&tokens.UpdatedAt,
 		&tokens.CreatedAt,
@@ -274,6 +302,10 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	tokens.DynatraceURL = dynatraceURL.String
 	tokens.DynatraceToken = dynatraceToken.String
 	tokens.DynatraceTagFilter = dynatraceTagFilter.String
+	tokens.ElasticsearchURL = elasticsearchURL.String
+	tokens.ElasticsearchUsername = elasticsearchUsername.String
+	tokens.ElasticsearchPassword = elasticsearchPassword.String
+	tokens.ElasticsearchIndexPattern = elasticsearchIndexPattern.String
 
 	if err == sql.ErrNoRows {
 		return nil, nil // Usuário não tem tokens configurados

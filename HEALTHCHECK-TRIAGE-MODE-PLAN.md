@@ -7,11 +7,13 @@ Dynatrace/Prometheus reais, deployment/HPA checkers de fato confinados a esse es
 supressão de ruído (Fase 4) confirmada reduzindo o escopo na prática. Um bug real foi encontrado e
 corrigido nessa validação (`triage_summary` não sobrevivia ao Save/Get — commit `1d9d25df`). Só a
 UI React em si não foi clicada num navegador ainda (risco residual baixo — ver nota "O que ainda
-não foi clicado"). Fases 3 (Elasticsearch), 5 (Zabbix) e 6 (granularidade por workload) ainda não
-iniciadas. Fases 3/4 registradas em 2026-08-20 a partir da revisão de um script Python de
-referência de outra ferramenta interna — ver seção 0. **Fase 3 desbloqueada em 2026-08-20**:
-confirmado que esta empresa usa ELK/Kibana de verdade, pipeline Fluentd, credencial de leitura já
-existe, acesso é direto ao Elasticsearch (não via proxy Kibana) — ver seção 4 item 5.
+não foi clicado"). **Fase 3 (Elasticsearch) implementada em 2026-08-20** — convenção de campo
+assumida por decisão explícita do usuário ("assumir e ajustar depois"), validada só via
+`httptest` (5 testes) e build/type-check — **não confirmada contra um índice ELK real** (sessão
+Azure AD expirou no meio da implementação, sem JWT novo pro resto da sessão — ver "Validação até
+agora" da Fase 3 pro próximo passo exato). Fases 5 (Zabbix) e 6 (granularidade por workload) ainda
+não iniciadas. Fases 3/4 registradas em 2026-08-20 a partir da revisão de um script Python de
+referência de outra ferramenta interna — ver seção 0.
 **Origem:** conversa sobre `ZABBIX-INTEGRATION-PLAN.md` levou o usuário a propor repensar a
 arquitetura do Health Check: hoje ele varre o cluster ponto a ponto e devolve muita informação
 de erro/postura; a proposta é buscar primeiro em ferramentas de monitoramento (Dynatrace/
@@ -511,41 +513,81 @@ sugeria: ~39% do total real, não 66%). Como 12/31 < 50%, a linha extra de aviso
 **não apareceu** — confirma que o limiar condicional funciona nos dois sentidos, não só quando
 verdadeiro.
 
-### Fase 3 — `ElasticsearchTargetSource` — ✅ desbloqueada em 2026-08-20 (respostas na seção 4 item 5), código ainda não iniciado
+### Fase 3 — `ElasticsearchTargetSource` — ✅ implementada em 2026-08-20 (convenção assumida, não confirmada contra índice real)
 
-Confirmado com o usuário: esta empresa opera ELK de verdade, pipeline **Fluentd**, credencial de
-leitura **já existe** (forma exata — Basic Auth vs. API key — a confirmar ao começar o código,
-ver nota abaixo), acesso é **direto ao Elasticsearch** (não precisa do console proxy do Kibana,
-diferente do 2º modo que o script de referência da seção 0 tinha pra quando só o Kibana está
-acessível — esse modo fica descartado aqui, não é necessário).
+Usuário optou explicitamente por "assumir a convenção padrão e ajustar depois" em vez de bloquear
+o código até confirmar manualmente contra um índice real (ver `AskUserQuestion` da retomada desta
+fase). Acesso confirmado como **direto ao Elasticsearch** (sem proxy Kibana).
 
-Diferente das fontes da Fase 1, **não existe nenhum client Elasticsearch nesta app hoje**
-(confirmado por busca no código, 2026-08-20) — esta fase exige criar um pacote novo, não só
-reaproveitar um existente:
-- `internal/elasticsearch/client.go` (CRIAR) — client HTTP mínimo (mesmo padrão de
-  `internal/servicenow`/`internal/sreapproval` pra auth simples via `net/http`), método pra rodar
-  uma query de agregação por nível de log + janela de tempo (`now-15m` como padrão sugerido pelo
-  script de referência da seção 0) e devolver contagem por namespace. **Forma da credencial**
-  (Basic Auth usuário/senha vs. API key no header) precisa ser confirmada com quem administra o
-  ELK ao começar o código — "já existe" não especificou qual das duas.
-- `internal/healthcheck/target_source_elasticsearch.go` (CRIAR) — `ElasticsearchTargetSource`,
-  mesmo formato dos `TargetSource` da Fase 1: `Available=false` quando não configurado/inacessível,
-  `Reasons["<namespace>"]` com contagem de erro (ex: `"Elasticsearch: 42 erros em 15m (app checkout-api)"`).
-- **Credenciais**: seguir o padrão já usado por Dynatrace — novos campos em
-  `internal/storage/user_tokens_store.go` (`ElasticsearchURL`/`ElasticsearchUsername`/
-  `ElasticsearchPassword`, ou `ElasticsearchAPIKey` conforme a forma confirmada acima) + o mesmo
-  cuidado já corrigido na Fase 1 pro Dynatrace: o handler que popula essas credenciais na request
-  precisa considerar `req.TriageMode` desde o início, não só um eventual `CheckElasticsearch`
-  futuro — evita repetir o mesmo bug real já encontrado e corrigido na Fase 1
-  (`internal/web/handlers/healthcheck.go`).
-- **Mapeamento namespace**: pipeline confirmado como Fluentd (não Filebeat) — o plugin
-  `fluent-plugin-kubernetes_metadata_filter` (o mais comum pra esse enriquecimento) também usa a
-  chave `kubernetes.namespace_name` por padrão, mesma convenção assumida pro script de referência,
-  mas **isso ainda não foi confirmado contra um índice real desta empresa** — configs Fluentd
-  variam bastante entre instalações (alguns pipelines usam `kubernetes.namespace` sem sufixo, ou
-  achatam o campo de outro jeito). Primeiro passo real da implementação: uma query manual/`curl`
-  contra o índice real pra confirmar o nome exato do campo antes de escrever `client.go` — não
-  assumir a convenção do script de referência sem checar.
+**Arquivos criados:**
+- `internal/elasticsearch/client.go` — pacote novo (não existia nenhum client Elasticsearch nesta
+  app antes). `Client.NamespaceErrorCounts(ctx, cluster, timeWindow)` roda uma query de agregação
+  (`_search` com `size:0` + `aggs.by_namespace.terms`) filtrando por nível de log de erro
+  (`error`/`Error`/`ERROR`/`fatal`/`Fatal`/`FATAL`) + janela de tempo (`now-15m` default) + cluster,
+  devolve `map[namespace]count`. `Client.TestConnection` faz um `GET /` barato pro botão "Testar
+  Conexão" da UI, sem depender de nenhuma convenção de campo/índice. **Convenções assumidas,
+  marcadas como constantes exportadas pra fácil ajuste** (`DefaultTimestampField="@timestamp"`,
+  `DefaultLevelField="level"` — casa com o formato de log já documentado nesta app pro pipeline
+  FluentD+EventHub, ver seção "JSON Inspector" do CLAUDE.md —, `DefaultNamespaceField=
+  "kubernetes.namespace_name"` — a convenção que o usuário aprovou assumir).
+- **Achado de design durante a implementação, não coberto pelo desenho original**: a query
+  PRECISA filtrar por cluster (`DefaultClusterField="cluster_name"`, suposição adicional não
+  confirmada) — esta app gerencia ~26 clusters, um índice/pipeline de log compartilhado é o caso
+  comum, e sem esse filtro logs de clusters diferentes se misturariam na mesma contagem de
+  namespace (ex: dois clusters diferentes com um namespace `logging` cada um contaria junto).
+  Inspirado no script de referência da seção 0, que usava `cluster_name` pro mesmo propósito.
+  Falha segura se o campo não existir: o filtro por termo não acha nada, resultado vem vazio
+  (`Available=true`, `Namespaces=[]`) — nunca mistura dado de cluster errado, nunca fica fatal.
+- `internal/elasticsearch/client_test.go` — 5 testes via `httptest`: caminho feliz (endpoint
+  certo, Basic Auth correto, filtro de cluster presente na query, parse da agregação), resultado
+  vazio (sucesso, não erro), erro HTTP real (distinção crítica pro `Available=false`), index
+  pattern default quando não configurado, `TestConnection`.
+- `internal/healthcheck/target_source_elasticsearch.go` — `ElasticsearchTargetSource`, mesmo
+  formato dos `TargetSource` da Fase 1. Suporte a ignore-list (Fase 4) desde o início — diferente
+  de Dynatrace/Prometheus (que suprimem por nome de alerta/problem), aqui o "sinal" já é o próprio
+  namespace, então a supressão é por nome de namespace direto (`TriageIgnoreSourceElasticsearchApp`,
+  já existia como const desde a Fase 4, só não tinha consumidor real).
+- `internal/web/handlers/elasticsearch_config.go` — `ElasticsearchConfigHandler`
+  (`GetConfig`/`SaveConfig`/`TestConnection`), mesmo padrão exato de `dynatrace.go` (merge com
+  tokens existentes, identidade via `InjectUserEmail()`, senha só sobrescreve se vier não-vazia).
+- `internal/web/frontend/src/components/profile/ElasticsearchCredentialModal.tsx` — mesmo padrão
+  visual/estrutural de `DynatraceCredentialModal.tsx` (URL/usuário/senha/index pattern, botão
+  Testar Conexão, alerta explícito listando as convenções assumidas — usuário vê exatamente o que
+  ajustar se a fonte nunca achar nada).
+
+**Arquivos modificados:**
+- `internal/storage/user_tokens_store.go` — 4 campos novos (`ElasticsearchURL`/`Username`/
+  `Password`/`IndexPattern`), migração `ALTER TABLE`, `SaveTokens`/`GetTokens` atualizados —
+  mesma tabela `user_ai_tokens`, mesmo padrão de todas as outras credenciais.
+- `internal/healthcheck/models.go` — `HealthCheckRequest` ganha os 4 campos de credencial
+  (`json:"-"`, preenchidos só internamente, mesmo padrão de `DynatraceURL`/`DynatraceToken`).
+- `internal/healthcheck/orchestrator.go` — `buildTriageSources` inclui a 3ª fonte.
+- `internal/web/handlers/healthcheck.go` — o gate de credenciais (já corrigido na Fase 1 pro
+  Dynatrace) ganhou os campos Elasticsearch também, mesmo `if (...|| req.TriageMode)`, reaproveita
+  a mesma leitura de `GetTokens` — sem consulta extra ao SQLite.
+- `internal/web/server.go` — grupo `/api/v1/elasticsearch` (`config` GET/POST, `test` POST),
+  mesmo padrão do grupo `/dynatrace`.
+- `internal/web/handlers/triage_ignore.go` — `ListSources` marca `elasticsearch_pattern` como
+  `enabled: true` (era `false` desde a Fase 4, esperando esta fase); `field_label` ajustado pra
+  "Nome do namespace a ignorar" (mais preciso que o "Padrão/app" genérico anterior).
+- `internal/web/frontend/src/hooks/useUserProfile.ts` + `UserProfileMenu.tsx` +
+  `types/profile.ts` — item "Elasticsearch" no menu de perfil, mesmo padrão de status
+  (`configured`/`error`/`not_configured`/`validating`) das demais credenciais.
+- `internal/web/frontend/src/lib/api/client.ts` — 3 métodos novos (`getElasticsearchConfig`,
+  `saveElasticsearchConfig`, `testElasticsearchConnection`).
+
+**Validação até agora**: `go build`/`go vet`/`gofmt`, 5 testes unitários dedicados (client HTTP,
+via `httptest` — cobre a lógica da query/parse sem precisar de um Elasticsearch real),
+`tsc --noEmit`/`eslint` limpos, `./rebuild-web.sh -b` com sucesso, rotas confirmadas registradas
+(`401`, não `404`, sem token). **Não validado ao vivo contra um Elasticsearch real nem contra a UI
+num navegador** — a sessão Azure AD expirou no meio desta implementação (limite de 4h de
+"sign-in frequency" por conditional access, confirmado via `az account get-access-token`,
+`AADSTS70043`), impedindo gerar um JWT novo pro resto da sessão. **Pendente de validação real**:
+(1) confirmar as 4 convenções de campo assumidas (`@timestamp`/`level`/
+`kubernetes.namespace_name`/`cluster_name`) contra um índice real desta empresa — o próximo passo
+é literalmente uma query manual `curl` contra o Elasticsearch real antes de confiar no resultado
+da triagem; (2) testar o fluxo completo na UI (menu de perfil → credencial → Modo Triagem
+mostrando o badge "Elasticsearch" no painel farol).
 
 ### Fase 4 — Supressão de ruído (ignore-lists) — ✅ implementada (desenho original na seção 2.5)
 
@@ -683,9 +725,15 @@ internal/web/frontend/src/types/healthcheck.ts               ← ✅ MODIFICADO 
 internal/web/frontend/src/components/HealthCheckingTab.tsx    ← ✅ MODIFICADO (Fase 2 — toggle Triagem/Varredura)
 internal/web/frontend/src/components/HealthReportTab.tsx      ← ✅ MODIFICADO (Fase 2 — reduzido a 1 linha-lembrete, ver TriageScopeModal)
 internal/web/frontend/src/components/TriageScopeModal.tsx     ← ✅ CRIADO (Fase 2 round 2 — modal dedicado, badge "Triagem" sempre visível)
-internal/elasticsearch/client.go                        ← CRIAR (Fase 3, condicional — ver seção 4 item 5)
-internal/healthcheck/target_source_elasticsearch.go      ← CRIAR (Fase 3, condicional)
-internal/storage/user_tokens_store.go                    ← MODIFICAR (Fase 3 — credenciais Elasticsearch)
+internal/elasticsearch/client.go                        ← ✅ CRIADO (Fase 3)
+internal/elasticsearch/client_test.go                    ← ✅ CRIADO (Fase 3)
+internal/healthcheck/target_source_elasticsearch.go      ← ✅ CRIADO (Fase 3)
+internal/storage/user_tokens_store.go                    ← ✅ MODIFICADO (Fase 3 — credenciais Elasticsearch)
+internal/web/handlers/elasticsearch_config.go            ← ✅ CRIADO (Fase 3)
+internal/web/frontend/src/components/profile/ElasticsearchCredentialModal.tsx ← ✅ CRIADO (Fase 3)
+internal/web/frontend/src/hooks/useUserProfile.ts        ← ✅ MODIFICADO (Fase 3 — status Elasticsearch)
+internal/web/frontend/src/components/UserProfileMenu.tsx ← ✅ MODIFICADO (Fase 3 — item de menu)
+internal/web/frontend/src/types/profile.ts               ← ✅ MODIFICADO (Fase 3 — CredentialsState.elasticsearch)
 internal/healthcheck/triage_ignore.go                     ← ✅ CRIADO (Fase 4)
 internal/healthcheck/triage_ignore_test.go                ← ✅ CRIADO (Fase 4)
 internal/web/handlers/triage_ignore.go                    ← ✅ CRIADO (Fase 4)

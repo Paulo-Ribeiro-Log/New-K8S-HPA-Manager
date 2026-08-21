@@ -3995,6 +3995,50 @@ class APIClient {
     });
   }
 
+  // ===== ELASTICSEARCH (Modo Triagem, Fase 3 — HEALTHCHECK-TRIAGE-MODE-PLAN.md) =====
+  // Mesmo padrão do bloco Dynatrace acima — identidade via InjectUserEmail() (JWT/RBAC), sem
+  // e-mail explícito no payload.
+
+  async getElasticsearchConfig(): Promise<{
+    base_url: string;
+    username: string;
+    has_password: boolean;
+    index_pattern: string;
+    enabled: boolean;
+  }> {
+    return this.request(`/elasticsearch/config`);
+  }
+
+  async saveElasticsearchConfig(payload: {
+    elasticsearch_url?: string;
+    elasticsearch_username?: string;
+    elasticsearch_password?: string;
+    elasticsearch_index_pattern?: string;
+  }): Promise<{
+    base_url: string;
+    username: string;
+    has_password: boolean;
+    index_pattern: string;
+    enabled: boolean;
+  }> {
+    return this.request(`/elasticsearch/config`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async testElasticsearchConnection(): Promise<{
+    success: boolean;
+    latency_ms?: number;
+    base_url?: string;
+    error?: string;
+  }> {
+    return this.request("/elasticsearch/test", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
   async getDynatraceManagementZones(aiEmail: string): Promise<{
     zones: Array<{ id: string; name: string }>;
   }> {
