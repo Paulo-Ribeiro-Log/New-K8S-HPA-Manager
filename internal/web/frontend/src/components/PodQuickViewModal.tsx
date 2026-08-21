@@ -826,20 +826,31 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                 {pod.status || pod.phase}
               </Badge>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs gap-1"
-              onClick={handleDescribeClick}
-              disabled={describeLoading}
-            >
-              {describeLoading ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <FileText className="w-3 h-3" />
-              )}
-              Describe
-            </Button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1"
+                onClick={handleDescribeClick}
+                disabled={describeLoading}
+              >
+                {describeLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <FileText className="w-3 h-3" />
+                )}
+                Describe
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1"
+                onClick={() => setShowPortForward(true)}
+                title="Abrir um túnel de port-forward pra este pod"
+              >
+                <Network className="w-3 h-3" /> Port Forward
+              </Button>
+            </div>
           </div>
         </DialogHeader>
 
@@ -896,14 +907,6 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
             {activeTab === "details" && (
               <div className="flex items-center gap-2 pb-1.5 flex-wrap justify-end">
-                <Button
-                  size="sm" variant="outline"
-                  className="h-7 text-xs gap-1"
-                  onClick={() => setShowPortForward(true)}
-                  title="Abrir um túnel de port-forward pra este pod"
-                >
-                  <Network className="w-3 h-3" /> Port Forward
-                </Button>
                 <ProtectedAction showWarning={false} allowed={canWritePods}>
                   <Button
                     size="sm" variant="outline"

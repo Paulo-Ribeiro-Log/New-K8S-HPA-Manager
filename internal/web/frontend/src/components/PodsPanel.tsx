@@ -9,7 +9,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, XSquare } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, XSquare, Network } from "lucide-react";
+import { PortForwardModal } from "@/components/PortForwardModal";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -138,6 +139,7 @@ export const PodsPanel = ({
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   const [showFileTransferModal, setShowFileTransferModal] = useState(false);
+  const [showPortForward, setShowPortForward] = useState(false);
 
   // Estados para edição de YAML
   const [editedYaml, setEditedYaml] = useState("");
@@ -1053,6 +1055,15 @@ export const PodsPanel = ({
         )}
         Describe
       </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setShowPortForward(true)}
+        title="Abrir um túnel de port-forward pra este pod"
+      >
+        <Network className="w-4 h-4 mr-1" />
+        Port Forward
+      </Button>
       <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon">
@@ -1070,6 +1081,12 @@ export const PodsPanel = ({
         >
           <Terminal className="w-4 h-4 mr-2" />
           Abrir Shell
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => setShowPortForward(true)}
+        >
+          <Network className="w-4 h-4 mr-2" />
+          Port Forward
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => setShowFileTransferModal(true)}
@@ -2504,6 +2521,18 @@ export const PodsPanel = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Modal de Port Forward */}
+      {selectedPod && (
+        <PortForwardModal
+          open={showPortForward}
+          onOpenChange={setShowPortForward}
+          initialCluster={cluster}
+          initialNamespace={selectedPod.namespace}
+          initialPod={selectedPod.name}
+          initialWorkload={selectedPod.ownerWorkload}
+        />
+      )}
 
       {/* Modal de Transferência de Arquivos */}
       {selectedPod && (
