@@ -48,7 +48,6 @@ import { usePortForwardSessions, useStartPortForward, useStopPortForward } from 
 import { formatBytes } from "@/lib/monitorUtils";
 import { cn } from "@/lib/utils";
 import { ProtectedAction } from "@/components/rbac";
-import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
 import type { PortForwardSession, PortForwardStatus } from "@/lib/api/types";
 
 // Sugestões de porta comuns — puramente UX (o backend aceita qualquer porta 1-65535, não valida
@@ -318,16 +317,17 @@ export function PortForwardModal({
             <div>
               <Label className="text-xs">Cluster</Label>
               <div className="mt-1">
-                <ClusterSelectorForTab
-                  selectedCluster={cluster}
-                  onClusterChange={(v) => {
+                <SimpleSearchableSelect
+                  value={cluster}
+                  onChange={(v) => {
                     setCluster(v);
                     setNamespace("");
                     setPod("");
                   }}
-                  clusters={clusters.map((c) => c.context)}
-                  tabLabel="Port Forward"
-                  clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
+                  options={clusters.map((c) => c.context)}
+                  placeholder="Selecione..."
+                  searchPlaceholder="Buscar cluster..."
+                  emptyMessage="Nenhum cluster encontrado."
                 />
               </div>
             </div>
