@@ -2516,3 +2516,49 @@ export interface SecretDataRecord {
   truncated: boolean;
   last_seen: string;
 }
+
+// Port Forward — espelha portforward.SessionInfo (internal/portforward/manager.go). snake_case
+// porque vem direto do JSON do backend (não passa por transformação camelCase).
+export type PortForwardStatus = "starting" | "running" | "error" | "stopped";
+
+export interface PortForwardSession {
+  id: string;
+  cluster: string;
+  namespace: string;
+  pod: string;
+  workload?: string;
+  container?: string;
+  remote_port: number;
+  local_port: number;
+  bind_address: string;
+  label?: string;
+  status: PortForwardStatus;
+  error?: string;
+  created_at: string;
+  created_by?: string;
+  stopped_at?: string;
+  connections_total: number;
+  connections_active: number;
+  bytes_sent: number;
+  bytes_received: number;
+  last_activity?: string;
+}
+
+export interface PortForwardPodPort {
+  container: string;
+  port: number;
+  name?: string;
+  protocol: string;
+}
+
+export interface StartPortForwardRequest {
+  cluster: string;
+  namespace: string;
+  pod: string;
+  container?: string;
+  workload?: string;
+  remote_port: number;
+  local_port?: number;
+  bind_address?: string;
+  label?: string;
+}
