@@ -5366,6 +5366,7 @@ function RepoTerminal({ repoId, repoName, height, font, visible, onFontChange, o
 
   useEffect(() => {
     if (!divRef.current) return;
+    const container = divRef.current;
     const fontFamily = font
       ? `'${font}','Cascadia Code','Fira Code','Consolas',monospace`
       : "'Cascadia Code','Fira Code','Consolas',monospace";
@@ -5379,7 +5380,7 @@ function RepoTerminal({ repoId, repoName, height, font, visible, onFontChange, o
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(divRef.current);
+    term.open(container);
     fit.fit();
     xtermRef.current = term;
     fitRef.current = fit;
@@ -5409,13 +5410,54 @@ function RepoTerminal({ repoId, repoName, height, font, visible, onFontChange, o
     };
     ws.onclose = () => term.writeln("\r\n\x1b[2m[sessão encerrada]\x1b[0m");
 
-    term.onData(data => {
-      if (ws.readyState === WebSocket.OPEN) {
-        // Encode UTF-8 → base64 sem quebrar chars multibyte (btoa() falha com chars > 255)
-        const encoded = btoa(unescape(encodeURIComponent(data)));
-        ws.send(JSON.stringify({ type: "input", data: encoded }));
+    const sendRawInput = (data: string) => {
+      if (!data || ws.readyState !== WebSocket.OPEN) return;
+      // Encode UTF-8 → base64 sem quebrar chars multibyte (btoa() falha com chars > 255)
+      const encoded = btoa(unescape(encodeURIComponent(data)));
+      ws.send(JSON.stringify({ type: "input", data: encoded }));
+    };
+
+    term.onData(sendRawInput);
+
+    // Ctrl+C/Ctrl+V — copiar/colar de verdade, não a semântica crua de terminal (SIGINT/nada).
+    // Ctrl+C só vira "copiar" quando há seleção ativa no xterm (term.hasSelection(), seleção
+    // interna dele — não é a mesma coisa que window.getSelection()); sem seleção, continua
+    // mandando \x03 normalmente (comportamento padrão de terminal, cancela o comando em execução).
+    term.attachCustomKeyEventHandler(event => {
+      if (event.type !== "keydown") return true;
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod || event.altKey) return true;
+      const key = event.key.toLowerCase();
+      if (key === "c" && term.hasSelection()) {
+        event.preventDefault();
+        navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+        return false;
       }
+      // Ctrl+V não precisa de tratamento aqui — o listener de "paste" abaixo (capture phase)
+      // já intercepta o evento nativo de colar antes dele chegar na textarea interna do xterm.
+      return true;
     });
+
+    // BUG REAL CORRIGIDO — colar (Ctrl+V, botão direito ou menu Editar) inseria os marcadores de
+    // bracketed paste (ESC[200~.../ESC[201~) como TEXTO VISÍVEL (ex: "^[[200~ctrl+c~") em vez de
+    // colar só o conteúdo. xterm.js envolve o texto colado nesses marcadores quando o modo
+    // bracketed paste está ativo (ligado via DECSET 2004, que o bash do lado do backend liga
+    // sozinho ao iniciar uma sessão interativa) — o shell deveria consumir os marcadores
+    // silenciosamente, mas isso depende de versão/config do bash/readline, e nem sempre funciona
+    // de forma confiável através do PTY. Corrigido pulando esse mecanismo por completo: um listener
+    // de "paste" em capture phase no container (roda ANTES do handler interno do xterm.js, que fica
+    // na textarea escondida dentro dele) lê o texto direto do ClipboardEvent e manda cru pro PTY via
+    // sendRawInput — nunca gera bracketed paste, então nunca pode vazar os marcadores. Cobre
+    // Ctrl+V, colar por botão direito e pelo menu Editar do navegador (todos disparam o mesmo
+    // evento nativo "paste"), sem duplicar envio (stopPropagation impede o handler interno do
+    // xterm de processar o mesmo evento de novo).
+    const handleNativePaste = (event: ClipboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const text = event.clipboardData?.getData("text");
+      if (text) sendRawInput(text);
+    };
+    container.addEventListener("paste", handleNativePaste, true);
 
     const handleResize = () => {
       fit.fit();
@@ -5427,6 +5469,7 @@ function RepoTerminal({ repoId, repoName, height, font, visible, onFontChange, o
 
     return () => {
       window.removeEventListener("resize", handleResize);
+      container.removeEventListener("paste", handleNativePaste, true);
       ws.close();
       term.dispose();
     };
