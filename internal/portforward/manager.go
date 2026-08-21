@@ -35,6 +35,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
@@ -45,10 +46,11 @@ import (
 type Status string
 
 const (
-	StatusStarting Status = "starting"
-	StatusRunning  Status = "running"
-	StatusError    Status = "error"
-	StatusStopped  Status = "stopped"
+	StatusStarting     Status = "starting"
+	StatusRunning      Status = "running"
+	StatusReconnecting Status = "reconnecting"
+	StatusError        Status = "error"
+	StatusStopped      Status = "stopped"
 )
 
 const (
@@ -66,6 +68,13 @@ const (
 	retentionAfterStop = 15 * time.Minute
 	cleanupEvery       = 1 * time.Minute
 	readyTimeout       = 15 * time.Second
+	// reconnectInitialBackoff/reconnectMaxBackoff — quando o túnel SPDY cai sozinho (rede
+	// instável, timeout de proxy/API server na frente do cluster, etc. — o mesmo tipo de queda
+	// que faz um `kubectl port-forward` comum precisar ser reiniciado manualmente), a sessão
+	// tenta reconectar automaticamente em vez de simplesmente morrer, com backoff exponencial
+	// até o teto.
+	reconnectInitialBackoff = 1 * time.Second
+	reconnectMaxBackoff     = 30 * time.Second
 )
 
 // BindAddress — únicos dois valores aceitos, deliberadamente restrito (não aceita qualquer IP
@@ -140,6 +149,11 @@ type session struct {
 	stopOnce    sync.Once
 	listener    net.Listener
 	activeConns sync.Map // net.Conn -> struct{}
+
+	// tunnelPort é a porta LOCAL (127.0.0.1) do túnel SPDY interno vigente — mutável (atomic)
+	// porque uma reconexão troca esse valor em runtime sem precisar recriar o listener externo
+	// nem derrubar a sessão inteira; acceptLoop/proxyConn sempre leem o valor mais recente.
+	tunnelPort int32
 }
 
 func (s *session) touch() {
@@ -185,6 +199,37 @@ func (s *session) terminate(status Status, errMsg string) {
 		s.info.StoppedAt = &now
 		s.mu.Unlock()
 	})
+}
+
+// stopped reporta (sem bloquear) se a sessão já foi encerrada — usado pelo loop de reconexão pra
+// distinguir "o túnel caiu sozinho, tenta de novo" de "o usuário mandou parar, desiste".
+func (s *session) stopped() bool {
+	select {
+	case <-s.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// markReconnecting/markRunning são transições de estado NÃO-terminais (ao contrário de
+// terminate) — usadas pelo loop de reconexão do túnel, nunca fecham stopCh/listener.
+func (s *session) markReconnecting(cause error) {
+	s.mu.Lock()
+	s.info.Status = StatusReconnecting
+	if cause != nil {
+		s.info.Error = "túnel caiu, tentando reconectar: " + cause.Error()
+	} else {
+		s.info.Error = "túnel caiu, tentando reconectar"
+	}
+	s.mu.Unlock()
+}
+
+func (s *session) markRunning() {
+	s.mu.Lock()
+	s.info.Status = StatusRunning
+	s.info.Error = ""
+	s.mu.Unlock()
 }
 
 // Manager gerencia o ciclo de vida de todas as sessões de port-forward ativas no processo.
@@ -328,25 +373,8 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 		return SessionInfo{}, fmt.Errorf("falha ao criar port-forwarder: %w", err)
 	}
 
-	go func() {
-		fwErr := pf.ForwardPorts()
-		msg := ""
-		if fwErr != nil {
-			msg = fwErr.Error()
-		}
-		if stderr := strings.TrimSpace(errOut.String()); stderr != "" {
-			if msg != "" {
-				msg += " — "
-			}
-			msg += "stderr: " + stderr
-		}
-		if msg == "" {
-			msg = "túnel encerrado"
-		}
-		// Idempotente via sync.Once: se a sessão já foi parada explicitamente (Stop) ou nunca
-		// chegou a ficar Running (falha no listener local, ver abaixo), esta chamada é um no-op.
-		s.terminate(StatusError, msg)
-	}()
+	fwDone := make(chan error, 1)
+	go func() { fwDone <- pf.ForwardPorts() }()
 
 	select {
 	case <-readyCh:
@@ -363,7 +391,7 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 		s.terminate(StatusError, "falha ao obter porta local do túnel interno")
 		return SessionInfo{}, fmt.Errorf("falha ao obter porta local do túnel: %w", err)
 	}
-	tunnelPort := int(ports[0].Local)
+	atomic.StoreInt32(&s.tunnelPort, int32(ports[0].Local))
 
 	ln, err := net.Listen("tcp", net.JoinHostPort(bindAddr, strconv.Itoa(opts.LocalPort)))
 	if err != nil {
@@ -381,7 +409,17 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 	m.sessions[s.info.ID] = s
 	m.mu.Unlock()
 
-	go m.acceptLoop(s, tunnelPort)
+	go m.acceptLoop(s)
+	// BUG REAL CORRIGIDO — relatado ao vivo ("Erro: lost connection to pod"): o túnel SPDY pode
+	// cair sozinho por motivos de rede genuínos (timeout de proxy/API server na frente do
+	// cluster, blip de rede — o mesmo tipo de queda que faz um `kubectl port-forward` comum
+	// precisar ser reiniciado manualmente), e a versão anterior desistia de vez nesse caso,
+	// encerrando a sessão inteira (StatusError permanente) e exigindo clicar em "Iniciar" de
+	// novo. superviseTunnel assume a partir daqui: quando o túnel cai sem o usuário ter pedido
+	// Stop(), reconecta automaticamente com backoff exponencial, atualizando `tunnelPort` in
+	// loco (acceptLoop/proxyConn sempre leem o valor mais recente) — o listener local e a porta
+	// pro usuário NUNCA mudam, só a ponta interna do túnel é trocada por trás.
+	go m.superviseTunnel(s, dialer, opts.RemotePort, fwDone)
 
 	log.Info().
 		Str("id", s.info.ID).
@@ -396,7 +434,95 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 	return s.snapshot(), nil
 }
 
-func (m *Manager) acceptLoop(s *session, tunnelPort int) {
+// superviseTunnel acompanha o túnel SPDY durante toda a vida da sessão e reconecta
+// automaticamente quando ele cai sozinho (rede instável, timeout de proxy/API server na frente
+// do cluster — o mesmo tipo de queda que faz um `kubectl port-forward` comum parar e precisar ser
+// reiniciado manualmente à mão). `firstFwDone` é o canal da PRIMEIRA tentativa, já iniciada em
+// Start() antes do listener local existir — este loop só assume a partir da segunda queda em
+// diante. Nunca recria o listener local nem muda a porta que o usuário vê: só troca
+// `s.tunnelPort` (atomic) por trás, então conexões NOVAS no mesmo listener passam a usar o túnel
+// reconectado automaticamente — conexões já em andamento no momento da queda são perdidas (não
+// tem como recuperar um stream TCP que já quebrou), mas a sessão como um todo continua viva.
+func (m *Manager) superviseTunnel(s *session, dialer httpstream.Dialer, remotePort int, firstFwDone <-chan error) {
+	fwDone := firstFwDone
+	backoff := reconnectInitialBackoff
+
+	for {
+		fwErr := <-fwDone
+
+		if s.stopped() {
+			return // Stop() explícito já rodou terminate() — nada a fazer aqui
+		}
+
+		s.markReconnecting(fwErr)
+		log.Warn().
+			Err(fwErr).
+			Str("session", s.info.ID).
+			Str("cluster", s.info.Cluster).
+			Str("namespace", s.info.Namespace).
+			Str("pod", s.info.Pod).
+			Dur("retry_in", backoff).
+			Msg("Port-forward: túnel caiu, tentando reconectar")
+
+		select {
+		case <-time.After(backoff):
+		case <-s.stopCh:
+			return
+		}
+		if backoff < reconnectMaxBackoff {
+			backoff *= 2
+			if backoff > reconnectMaxBackoff {
+				backoff = reconnectMaxBackoff
+			}
+		}
+
+		readyCh := make(chan struct{})
+		var errOut strings.Builder
+		// Reusa o mesmo s.stopCh em cada tentativa nova — portforward.New só LÊ desse canal
+		// (nunca fecha/escreve), então é seguro passar o mesmo canal de sessão pra várias
+		// chamadas ao longo do tempo; Stop() continua interrompendo QUALQUER tentativa em
+		// andamento, mesmo as futuras que ainda nem existem.
+		pf, err := portforward.New(dialer, []string{fmt.Sprintf("0:%d", remotePort)}, s.stopCh, readyCh, io.Discard, &errOut)
+		if err != nil {
+			log.Warn().Err(err).Str("session", s.info.ID).Msg("Port-forward: falha ao recriar port-forwarder, tentando de novo")
+			fwDone = closedErrChan(err)
+			continue
+		}
+
+		newFwDone := make(chan error, 1)
+		go func() { newFwDone <- pf.ForwardPorts() }()
+
+		select {
+		case <-readyCh:
+			ports, err := pf.GetPorts()
+			if err != nil || len(ports) == 0 {
+				log.Warn().Err(err).Str("session", s.info.ID).Msg("Port-forward: reconectou mas falhou ao obter a porta do túnel, tentando de novo")
+				fwDone = newFwDone
+				continue
+			}
+			atomic.StoreInt32(&s.tunnelPort, int32(ports[0].Local))
+			s.markRunning()
+			backoff = reconnectInitialBackoff
+			log.Info().Str("session", s.info.ID).Msg("Port-forward: túnel reconectado com sucesso")
+			fwDone = newFwDone
+		case <-time.After(readyTimeout):
+			fwDone = newFwDone // segue observando essa tentativa (pode ainda completar) na próxima volta
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+// closedErrChan devolve um canal já fechado/pronto carregando err — usado quando uma tentativa de
+// reconexão falha antes mesmo de chegar a rodar ForwardPorts(), pra manter o loop de
+// superviseTunnel uniforme (sempre lendo de um `<-chan error` no topo do for).
+func closedErrChan(err error) <-chan error {
+	ch := make(chan error, 1)
+	ch <- err
+	return ch
+}
+
+func (m *Manager) acceptLoop(s *session) {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -405,7 +531,7 @@ func (m *Manager) acceptLoop(s *session, tunnelPort int) {
 		atomic.AddInt64(&s.connectionsTotal, 1)
 		atomic.AddInt64(&s.connectionsActive, 1)
 		s.touch()
-		go m.proxyConn(s, conn, tunnelPort)
+		go m.proxyConn(s, conn)
 	}
 	// Se o listener caiu sem passar por terminate() (ex: erro de I/O inesperado no listener em
 	// si, não coberto pelo caminho normal de Stop/queda do túnel), garante que a sessão não fique
@@ -413,7 +539,7 @@ func (m *Manager) acceptLoop(s *session, tunnelPort int) {
 	s.terminate(StatusError, "listener local encerrado inesperadamente")
 }
 
-func (m *Manager) proxyConn(s *session, localConn net.Conn, tunnelPort int) {
+func (m *Manager) proxyConn(s *session, localConn net.Conn) {
 	s.activeConns.Store(localConn, struct{}{})
 	defer func() {
 		s.activeConns.Delete(localConn)
@@ -421,6 +547,10 @@ func (m *Manager) proxyConn(s *session, localConn net.Conn, tunnelPort int) {
 		atomic.AddInt64(&s.connectionsActive, -1)
 	}()
 
+	// Lê a porta do túnel interno SEMPRE fresca (não capturada no início do acceptLoop) — pode
+	// ter mudado por trás via reconexão automática (superviseTunnel) entre uma conexão aceita e
+	// outra, sem que o listener/porta local vistos pelo usuário precisem mudar.
+	tunnelPort := atomic.LoadInt32(&s.tunnelPort)
 	remoteConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", tunnelPort), 10*time.Second)
 	if err != nil {
 		log.Warn().Err(err).Str("session", s.info.ID).Msg("Port-forward: falha ao conectar no túnel SPDY interno")

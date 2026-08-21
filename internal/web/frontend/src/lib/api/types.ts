@@ -2519,7 +2519,7 @@ export interface SecretDataRecord {
 
 // Port Forward — espelha portforward.SessionInfo (internal/portforward/manager.go). snake_case
 // porque vem direto do JSON do backend (não passa por transformação camelCase).
-export type PortForwardStatus = "starting" | "running" | "error" | "stopped";
+export type PortForwardStatus = "starting" | "running" | "reconnecting" | "error" | "stopped";
 
 export interface PortForwardSession {
   id: string;

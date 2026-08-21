@@ -148,6 +148,10 @@ function statusBadge(status: PortForwardStatus) {
       return <Badge className="gap-1 bg-blue-500/10 text-blue-400 border-blue-500/30" variant="outline">
         <Loader2 className="h-3 w-3 animate-spin" /> Iniciando
       </Badge>;
+    case "reconnecting":
+      return <Badge className="gap-1 bg-amber-500/10 text-amber-500 border-amber-500/30" variant="outline">
+        <Loader2 className="h-3 w-3 animate-spin" /> Reconectando
+      </Badge>;
     case "error":
       return <Badge className="gap-1 bg-red-500/10 text-red-500 border-red-500/30" variant="outline">
         <AlertTriangle className="h-3 w-3" /> Erro
@@ -293,7 +297,7 @@ export function PortForwardModal({
     navigator.clipboard.writeText(text).then(() => toast.success(`Copiado: ${text}`));
   };
 
-  const activeSessions = sessions.filter((s) => s.status === "running" || s.status === "starting");
+  const activeSessions = sessions.filter((s) => s.status === "running" || s.status === "starting" || s.status === "reconnecting");
   const inactiveSessions = sessions.filter((s) => s.status === "error" || s.status === "stopped");
 
   return (
@@ -496,6 +500,11 @@ export function PortForwardModal({
                             <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" /> {s.error}
                           </p>
                         )}
+                        {s.status === "reconnecting" && s.error && (
+                          <p className="text-amber-500 flex items-start gap-1 mt-1">
+                            <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" /> {s.error}
+                          </p>
+                        )}
                         {s.status === "stopped" && s.error && (
                           <p className="text-muted-foreground flex items-start gap-1 mt-1">
                             <Info className="h-3 w-3 flex-shrink-0 mt-0.5" /> {s.error}
@@ -503,7 +512,7 @@ export function PortForwardModal({
                         )}
                       </div>
                       <div className="flex items-center gap-1 flex-shrink-0">
-                        {(s.status === "running" || s.status === "starting") && (
+                        {(s.status === "running" || s.status === "starting" || s.status === "reconnecting") && (
                           <ProtectedAction>
                             <Button
                               variant="ghost"
@@ -520,7 +529,7 @@ export function PortForwardModal({
                       </div>
                     </div>
 
-                    {(s.status === "running" || s.status === "starting") && (
+                    {(s.status === "running" || s.status === "starting" || s.status === "reconnecting") && (
                       <>
                         <div className="flex items-center gap-2 flex-wrap">
                           <code className="px-1.5 py-0.5 rounded bg-muted text-foreground">
