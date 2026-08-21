@@ -912,6 +912,18 @@ func (s *Server) setupRoutes() {
 		pods.GET("/:cluster/:namespace/:name/browse", podHandler.BrowseFiles)
 		pods.GET("/:cluster/dynatrace-status", podHandler.GetDynatraceStatus)
 
+		// SFTP embutido (internal/podsftp) — servidor SFTP real rodando in-process (nunca expõe
+		// porta de rede), traduzindo cada operação pra kubectl exec/cp contra o pod. Ver
+		// SFTP-FILE-BROWSER-PLAN.md (não confundir com o mecanismo de port-forward). Listar/baixar são
+		// leitura (sem RBAC extra, mesmo padrão de /browse e /download); enviar/criar pasta/
+		// renomear/remover são escrita (RequireSREGroup).
+		pods.GET("/:cluster/:namespace/:name/sftp/list", podHandler.SFTPList)
+		pods.GET("/:cluster/:namespace/:name/sftp/download", podHandler.SFTPDownload)
+		pods.POST("/:cluster/:namespace/:name/sftp/upload", rbacMiddleware.RequireSREGroup(), podHandler.SFTPUpload)
+		pods.POST("/:cluster/:namespace/:name/sftp/mkdir", rbacMiddleware.RequireSREGroup(), podHandler.SFTPMkdir)
+		pods.POST("/:cluster/:namespace/:name/sftp/rename", rbacMiddleware.RequireSREGroup(), podHandler.SFTPRename)
+		pods.DELETE("/:cluster/:namespace/:name/sftp/remove", rbacMiddleware.RequireSREGroup(), podHandler.SFTPRemove)
+
 		// Pods - Write Operations (SRE-only)
 		pods.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Apply)
 		pods.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Delete)
