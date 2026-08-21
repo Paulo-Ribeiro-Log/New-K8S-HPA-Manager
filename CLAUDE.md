@@ -1300,6 +1300,26 @@ download, rename, remove (arquivo e pasta) — cada resultado conferido de forma
 `kubectl exec` direto (fora da aplicação), incluindo confirmação de que o conteúdo enviado batia
 byte a byte com o que o backend recebeu, e que a estrutura ficou limpa (nada órfão) após os testes.
 
+**Bug real corrigido — trocar de container ou navegar pra uma subpasta "voltava sozinho"
+(relatado ao vivo em pod com sidecar Istio: sempre reabria no `istio-proxy`, e mudar pro container
+da aplicação ou entrar numa pasta revertia pouco depois)**: `PodSFTPModal.tsx` tinha um
+`useEffect` que reseta `container`/`path` (`setContainer(containers[0])`, `setPath("/")`)
+dependendo de `[open, containers]` — mas `containers` é passado de `PodsPanel.tsx` como
+`selectedPod.containers.map(c => c.name)`, um array **recriado a cada render** do painel
+(inclusive os re-renders periódicos do polling da lista de pods, sem nenhuma ação do usuário). Um
+array recriado via `.map()` nunca é referencialmente igual ao anterior mesmo com conteúdo
+idêntico — o React via isso como "dependência mudou" a cada poll e reexecutava o efeito,
+resetando de volta pro primeiro container (`istio-proxy`, o sidecar sempre injetado antes do
+container da aplicação na maioria dos pods com Istio) e pra raiz, mesmo com o usuário já tendo
+trocado de container ou navegado pra dentro de uma pasta segundos antes. Corrigido trocando a
+dependência do efeito pra só `[open]` (primitivo estável, não muda a cada poll) — a lista de
+containers de um pod nunca muda de verdade durante a mesma sessão do modal, então não havia
+necessidade real de reagir a ela. **Lição geral pro projeto**: nunca colocar um array/objeto
+derivado via `.map()`/`.filter()` direto na dependência de um `useEffect` sem memoização
+(`useMemo`) ou sem reduzir pra um primitivo estável — o sintoma ("component reseta sozinho
+periodicamente") é sutil de diagnosticar porque parece um bug de rede/estado do servidor, não um
+bug de identidade de referência no React.
+
 ### Certificates
 
 `internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.
