@@ -1391,6 +1391,7 @@ func (s *Server) setupRoutes() {
 		teamsGroup.DELETE("/broadcast/templates/:filename", broadcastHandler.DeleteTemplate)
 		teamsGroup.POST("/broadcast/message/fetch", broadcastHandler.FetchMessage)
 		teamsGroup.POST("/broadcast/send", broadcastHandler.Send)
+		teamsGroup.POST("/broadcast/delete", broadcastHandler.DeleteMessages)
 		// SSE stream: EventSource não suporta headers → token via query param
 		s.router.GET("/api/v1/teams/broadcast/send/stream/:sessionId",
 			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),

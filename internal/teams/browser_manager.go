@@ -137,6 +137,46 @@ func minimizeWindow(page *rod.Page, logger *zerolog.Logger) {
 	browser.MinimizeWindow(page, logger)
 }
 
+// waitForTeamsUIReady espera a UI do Teams (barra lateral de conversas, `simple-collab-dnd-rail`)
+// renderizar de fato — sinal de "app React terminou de montar E usuário está autenticado", o mesmo
+// usado por FetchMessageByLink (message_fetch.go). Tenta auto-login SSO/bypass do form oculto do
+// MCAS/detecção de número MFA a cada iteração (mesmo mecanismo de RunDiscovery), e dispensa o
+// prompt "abrir no app ou continuar no navegador" caso apareça.
+//
+// Bug real corrigido — ScanConversations/SendBatch nunca tinham esse loop: minimizavam a janela
+// assim que a URL batia com teams.microsoft.com (sinal fraco — verdadeiro mesmo em telas de
+// login/MFA em andamento, ver comentário equivalente em RunDiscovery/FetchMessageByLink) e só
+// esperavam um sleep fixo (25s/20s) antes de varrer o DOM/enviar mensagens — sem dar tempo real de
+// completar um login pendente e sem nenhum sinal de que a UI de fato carregou. Resultado observado
+// ao vivo: scan retornando 0 conversas sem nenhum erro, indistinguível de "conta sem chats". Essas
+// duas operações (usadas pela aba Teams Broadcast) tinham ficado pra trás da correção já aplicada
+// em RunDiscovery/FetchMessageByLink — extraído aqui pra as três (mais FetchMessageByLink, que
+// pode ser migrada depois) pararem de duplicar a mesma lógica.
+//
+// Retorna false se o teto (teamsSkypeTokenWaitTimeout) estourar sem a UI ficar pronta — o chamador
+// deve manter a janela visível e desistir com um erro explícito nesse caso, nunca prosseguir como
+// se estivesse tudo certo (mascararia um login pendente atrás de um resultado vazio).
+func waitForTeamsUIReady(page *rod.Page, sessionDir string, logger *zerolog.Logger, logPrefix string) bool {
+	deadline := time.Now().Add(teamsSkypeTokenWaitTimeout)
+	for time.Now().Before(deadline) {
+		browser.AttemptSSOAutoLogin(page, sessionDir, logger)
+		browser.SubmitMCASHiddenForm(page)
+		detectMFANumber(page, logger)
+		if dismissAppLauncherPrompt(page, logger) {
+			logger.Info().Str("prefix", logPrefix).Msg("Prompt \"abrir no app ou navegador\" dispensado automaticamente")
+		}
+		readyRes, readyErr := page.Eval(`() => !!document.querySelector('[data-tid="simple-collab-dnd-rail"]')`)
+		if readyErr == nil && !readyRes.Value.Nil() && readyRes.Value.Bool() {
+			logger.Info().Str("prefix", logPrefix).Msg("UI do Teams pronta (barra lateral renderizada)")
+			SetTeamsDockerMFANumber("")
+			return true
+		}
+		time.Sleep(2 * time.Second)
+	}
+	SetTeamsDockerMFANumber("")
+	return false
+}
+
 // CloseBrowser encerra o Chrome persistente do Teams, se houver algum aberto — tanto o processo
 // local (Chrome do sistema/embed, via browserMgr) quanto o container Docker (se o modo Docker
 // tiver sido usado nesta execução, via CloseDockerBrowser). Chamado no shutdown do servidor para

@@ -86,6 +86,20 @@ type TeamsBroadcastHandler struct {
 	sendMu      sync.Mutex
 	fetchingMsg bool
 	fetchMsgMu  sync.Mutex
+	deleting    bool
+	deleteMu    sync.Mutex
+}
+
+// DeleteMessagesTarget identifica uma mensagem já enviada a apagar — thread_id + o message_id
+// REAL atribuído pelo servidor do Teams (retornado em SendResult.MessageID no momento do envio,
+// nunca o clientmessageid usado só pra compor a mensagem).
+type DeleteMessagesTarget struct {
+	ThreadID  string `json:"thread_id"`
+	MessageID string `json:"message_id"`
+}
+
+type DeleteMessagesRequest struct {
+	Targets []DeleteMessagesTarget `json:"targets"`
 }
 
 func NewTeamsBroadcastHandler(logger *zerolog.Logger) *TeamsBroadcastHandler {
@@ -303,6 +317,66 @@ func (h *TeamsBroadcastHandler) DeleteTemplate(c *gin.Context) {
 
 	h.logger.Info().Str("file", filename).Msg("[Broadcast] Template removido")
 	c.JSON(http.StatusOK, gin.H{"deleted": filename})
+}
+
+// DeleteMessages apaga uma ou mais mensagens já enviadas pelo broadcast (ex: mensagem mal
+// formatada enviada por engano). Síncrono — diferente de Send, o volume aqui é sempre pequeno
+// (os destinatários de UM envio já concluído), não precisa de progresso via SSE.
+func (h *TeamsBroadcastHandler) DeleteMessages(c *gin.Context) {
+	var req DeleteMessagesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.Targets) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "targets é obrigatório"})
+		return
+	}
+	for _, t := range req.Targets {
+		if strings.TrimSpace(t.ThreadID) == "" || strings.TrimSpace(t.MessageID) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cada target precisa de thread_id e message_id"})
+			return
+		}
+	}
+
+	h.deleteMu.Lock()
+	if h.deleting {
+		h.deleteMu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": "outra exclusão já está em andamento"})
+		return
+	}
+	h.deleting = true
+	h.deleteMu.Unlock()
+	defer func() {
+		h.deleteMu.Lock()
+		h.deleting = false
+		h.deleteMu.Unlock()
+	}()
+
+	homeDir, _ := os.UserHomeDir()
+	sessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "teams-session")
+
+	targets := make([]teams.DeleteTarget, len(req.Targets))
+	for i, t := range req.Targets {
+		targets[i] = teams.DeleteTarget{ThreadID: t.ThreadID, MessageID: t.MessageID}
+	}
+
+	h.logger.Info().Int("targets", len(targets)).Msg("[Broadcast] Apagando mensagens...")
+
+	results, err := teams.DeleteMessages(sessionDir, targets, h.logger)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("[Broadcast] Erro ao apagar mensagens")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	deleted := 0
+	for _, r := range results {
+		if r.OK {
+			deleted++
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted, "failed": len(results) - deleted, "results": results})
 }
 
 // FetchMessage carrega o texto de uma mensagem específica do Teams a partir do link de
@@ -598,7 +672,8 @@ func markdownToTeamsHTML(md string) string {
 		}
 	}
 
-	for _, line := range lines {
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		trimmed := strings.TrimRight(line, " \t")
 
 		// Linha vazia — vira um segmento vazio no corpo em andamento (ver comentário da função).
@@ -654,6 +729,38 @@ func markdownToTeamsHTML(md string) string {
 			continue
 		}
 
+		// Tabela Markdown (GFM): uma linha com "|" imediatamente seguida por uma linha
+		// separadora (só traços/dois-pontos/pipes, ex: "|---|:---:|---|") é sinal inequívoco de
+		// tabela — mesma regra do GFM que o preview em react-markdown/remark-gfm já usa.
+		//
+		// Bug real corrigido (relatado ao vivo: mensagem inteira chegando "sem formatação", com
+		// o exemplo mais visível sendo uma tabela ilegível, só os caracteres "|"/"-" crus dentro
+		// de um parágrafo): esta função nunca implementou tabelas — antes desta correção, cada
+		// linha de uma tabela caía no caminho de "corpo normal" abaixo e virava texto literal.
+		// Confirmado que o Teams aceita <table> de verdade no conteúdo da mensagem — é o mesmo
+		// elemento que o botão "Inserir tabela" da própria barra de formatação do Teams gera ao
+		// compor manualmente (diferente da limitação de mensagens de bot via Bot Framework/
+		// Connector API, que não é o protocolo usado aqui — ver comentário do payload em
+		// internal/teams/sender.go).
+		if strings.Contains(trimmed, "|") && i+1 < len(lines) && reTableSepRow.MatchString(strings.TrimSpace(lines[i+1])) {
+			flushBody()
+			closeList()
+			header := splitTableRow(trimmed)
+			i += 2 // pula a linha de cabeçalho (já lida) e a linha separadora
+			var rows [][]string
+			for i < len(lines) {
+				rowLine := strings.TrimRight(lines[i], " \t")
+				if strings.TrimSpace(rowLine) == "" || !strings.Contains(rowLine, "|") {
+					break
+				}
+				rows = append(rows, splitTableRow(rowLine))
+				i++
+			}
+			i-- // compensa o i++ do for — a próxima iteração precisa reprocessar a linha em que paramos
+			sb.WriteString(buildTeamsTableHTML(header, rows))
+			continue
+		}
+
 		// Linha de corpo normal — acumula; linhas de conteúdo E linhas em branco se intercalam
 		// no mesmo buffer, unidas por <br> ao fechar (ver comentário da função).
 		closeList()
@@ -705,7 +812,53 @@ var (
 	// Sem isso, um link carregado do Teams voltava como texto literal "[texto](url)" ao reenviar
 	// em vez de um link clicável de verdade — parte do mesmo bug de "formatação alterada".
 	reLink = regexp.MustCompile(`\[(.+?)\]\((.+?)\)`)
+	// reTableSepRow casa a linha separadora de uma tabela GFM (ex: "|---|:---:|---|",
+	// "---|---" ou "-|-|-") — só traços/dois-pontos/pipes/espaços, com pelo menos um traço.
+	// Ver comentário de detecção de tabela em markdownToTeamsHTML.
+	reTableSepRow = regexp.MustCompile(`^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$`)
 )
+
+// splitTableRow separa uma linha de tabela Markdown em células: remove os pipes externos
+// (opcionais em GFM) e respeita "\|" como pipe escapado dentro de uma célula.
+func splitTableRow(line string) []string {
+	s := strings.TrimSpace(line)
+	s = strings.TrimPrefix(s, "|")
+	s = strings.TrimSuffix(s, "|")
+	const escPipe = "\x00ESCPIPE\x00"
+	s = strings.ReplaceAll(s, `\|`, escPipe)
+	parts := strings.Split(s, "|")
+	cells := make([]string, len(parts))
+	for i, p := range parts {
+		cells[i] = strings.ReplaceAll(strings.TrimSpace(p), escPipe, "|")
+	}
+	return cells
+}
+
+// buildTeamsTableHTML monta um <table> HTML real a partir do cabeçalho e das linhas de dados já
+// separados em células. Linhas com menos colunas que o cabeçalho preenchem as células faltantes
+// com string vazia em vez de descartar a linha inteira — mais tolerante a tabelas digitadas à
+// mão com contagem de colunas inconsistente entre linhas.
+func buildTeamsTableHTML(header []string, rows [][]string) string {
+	var sb strings.Builder
+	sb.WriteString("<table><tr>")
+	for _, h := range header {
+		sb.WriteString("<th>" + applyInlineMarkdown(h) + "</th>")
+	}
+	sb.WriteString("</tr>")
+	for _, row := range rows {
+		sb.WriteString("<tr>")
+		for i := range header {
+			cell := ""
+			if i < len(row) {
+				cell = row[i]
+			}
+			sb.WriteString("<td>" + applyInlineMarkdown(cell) + "</td>")
+		}
+		sb.WriteString("</tr>")
+	}
+	sb.WriteString("</table>")
+	return sb.String()
+}
 
 func applyInlineMarkdown(s string) string {
 	s = reBold1.ReplaceAllString(s, "<b>$1</b>")

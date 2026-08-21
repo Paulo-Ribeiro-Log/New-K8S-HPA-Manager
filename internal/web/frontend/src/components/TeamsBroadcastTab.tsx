@@ -35,6 +35,10 @@ interface SendResult {
   ok: boolean;
   status: number;
   error?: string;
+  // message_id — ID real atribuído pelo servidor do Teams (não o clientmessageid usado só na
+  // hora de compor o envio). Necessário pra poder apagar a mensagem depois; vazio quando o envio
+  // falhou ou quando o servidor não expôs o ID (ver comentário em internal/teams/sender.go).
+  message_id?: string;
 }
 
 // ── Monaco theme ──────────────────────────────────────────────────────────────
@@ -895,7 +899,41 @@ export const TeamsBroadcastTab = () => {
   };
 
   const [sendResults, setSendResults] = useState<Map<string, SendResult>>(new Map());
+  const [deletingSent, setDeletingSent] = useState(false);
+  const [deletedThreads, setDeletedThreads] = useState<Set<string>>(new Set());
   const sseRef = useRef<EventSource | null>(null);
+
+  // Mensagens enviadas com sucesso E com message_id capturado (ver comentário em SendResult) —
+  // são as únicas que podem ser apagadas depois. Falhas de envio não geram mensagem no Teams, não
+  // há o que apagar.
+  const deletableResults = useMemo(
+    () => Array.from(sendResults.values()).filter(r => r.ok && r.message_id && !deletedThreads.has(r.thread_id)),
+    [sendResults, deletedThreads]
+  );
+
+  const handleDeleteSent = async () => {
+    if (deletableResults.length === 0) return;
+    setDeletingSent(true);
+    try {
+      const targets = deletableResults.map(r => ({ thread_id: r.thread_id, message_id: r.message_id! }));
+      const res = await apiClient.deleteBroadcastMessages(targets);
+      const okThreads = new Set(res.results.filter(r => r.ok).map(r => r.thread_id));
+      setDeletedThreads(prev => {
+        const next = new Set(prev);
+        okThreads.forEach(id => next.add(id));
+        return next;
+      });
+      if (res.failed === 0) {
+        toast.success(`${res.deleted} mensagem(ns) apagada(s) no Teams`);
+      } else {
+        toast.warning(`${res.deleted} apagada(s), ${res.failed} falharam — veja o resultado abaixo`);
+      }
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Falha ao apagar mensagens enviadas");
+    } finally {
+      setDeletingSent(false);
+    }
+  };
 
   const handleSend = async () => {
     if (selected.size === 0 || !content.trim()) return;
@@ -907,6 +945,7 @@ export const TeamsBroadcastTab = () => {
     setSendStatus(null);
     setSendProgress({ done: 0, total });
     setSendResults(new Map());
+    setDeletedThreads(new Set());
 
     // Fechar SSE anterior se existir.
     sseRef.current?.close();
@@ -1263,25 +1302,49 @@ export const TeamsBroadcastTab = () => {
       {/* Resultados por destinatário — atualizado em tempo real via SSE */}
       {sendResults.size > 0 && (
         <div className="flex-shrink-0 border-t border-border bg-card/50 px-3 py-2 max-h-40 overflow-y-auto">
-          <div className="text-[10px] text-muted-foreground mb-1 font-medium uppercase tracking-wide">
-            Resultado do envio
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+              Resultado do envio
+            </div>
+            {deletableResults.length > 0 && (
+              <Button
+                onClick={handleDeleteSent}
+                disabled={deletingSent}
+                variant="destructive"
+                size="sm"
+                className="h-6 text-[10px] gap-1 px-2"
+                title="Apaga estas mensagens diretamente no Teams (mensagem enviada por engano, formatação errada, etc.)"
+              >
+                {deletingSent
+                  ? <RefreshCw className="w-3 h-3 animate-spin" />
+                  : <Trash2 className="w-3 h-3" />}
+                {deletingSent ? "Apagando..." : `Apagar ${deletableResults.length} mensagem(ns) enviada(s)`}
+              </Button>
+            )}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {Array.from(selected.values()).map((chat) => {
               const r = sendResults.get(chat.id);
+              const deleted = deletedThreads.has(chat.id);
               return (
                 <span
                   key={chat.id}
-                  title={r ? (r.error || (r.ok ? "Enviado" : `HTTP ${r.status}`)) : "Aguardando..."}
+                  title={
+                    deleted
+                      ? "Mensagem apagada no Teams"
+                      : r ? (r.error || (r.ok ? "Enviado" : `HTTP ${r.status}`)) : "Aguardando..."
+                  }
                   className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
-                    !r
+                    deleted
+                      ? "bg-muted/30 border-border text-muted-foreground line-through"
+                      : !r
                       ? "bg-muted/30 border-border text-muted-foreground"
                       : r.ok
                       ? "bg-green-950/40 border-green-800/50 text-green-400"
                       : "bg-red-950/40 border-red-800/50 text-red-400"
                   }`}
                 >
-                  {!r ? "⋯" : r.ok ? "✓" : "✗"}
+                  {deleted ? "🗑" : !r ? "⋯" : r.ok ? "✓" : "✗"}
                   {" "}
                   <span className="max-w-[120px] truncate">{chat.display_name}</span>
                   {r && !r.ok && r.status > 0 && <span className="opacity-60">{r.status}</span>}
