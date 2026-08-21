@@ -45,6 +45,7 @@ import { LoadSessionModal } from "@/components/LoadSessionModal";
 import { LogViewer } from "@/components/LogViewer";
 import { HistoryViewer } from "@/components/HistoryViewer";
 import { NotesModal } from "@/components/NotesModal";
+import { PortForwardModal } from "@/components/PortForwardModal";
 import { Badge } from "@/components/ui/badge";
 import { GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB, useNotes } from "@/hooks/useNotes";
 import { StagingPanel } from "@/components/StagingPanel";
@@ -97,6 +98,7 @@ import {
   Shield,
   Code2,
   StickyNote,
+  Network,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -178,6 +180,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [showHistoryViewer, setShowHistoryViewer] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
+  const [showPortForwardModal, setShowPortForwardModal] = useState(false);
   const { data: notesForCurrentTab } = useNotes(selectedCluster, activeTab);
   // Lembretes gerais são globais (cluster-sentinela GENERAL_NOTES_CLUSTER) — não dependem do
   // selectedCluster do momento, ver comentário completo em useNotes.ts.
@@ -1629,6 +1632,15 @@ const Index = ({ onLogout }: IndexProps) => {
             </Badge>
           )}
         </button>
+        {/* Port Forward — abre modal com o gerenciador completo de sessões, não muda activeTab */}
+        <button
+          onClick={() => setShowPortForwardModal(true)}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium text-sm transition-all duration-200 text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Port Forward"
+        >
+          <Network className="w-4 h-4" />
+          Port Forward
+        </button>
       </TabNavigation>
 
       {/* Conteúdo Principal */}
@@ -1938,6 +1950,13 @@ const Index = ({ onLogout }: IndexProps) => {
         onOpenChange={setShowNotesModal}
         cluster={selectedCluster}
         tab={activeTab}
+      />
+
+      {/* Modal de Port Forward — sem pré-preenchimento (botão global); ver também a instância
+          contextual em PodQuickViewModal.tsx, pré-preenchida com o pod sendo visto. */}
+      <PortForwardModal
+        open={showPortForwardModal}
+        onOpenChange={setShowPortForwardModal}
       />
 
       {/* Sequence Progress Modal */}

@@ -47,18 +47,19 @@ var staticFiles embed.FS
 
 // Server representa o servidor HTTP
 type Server struct {
-	router         *gin.Engine
-	kubeManager    *config.KubeConfigManager
-	port           int
-	token          string
-	jwtManager     *auth.JWTManager // nil quando K8S_HPA_JWT_SECRET não configurado
-	disableADAuth  bool             // Flag para desabilitar verificação RBAC (emergências)
-	lastHeartbeat  time.Time
-	heartbeatMutex sync.RWMutex
-	shutdownTimer  *time.Timer
-	timerMutex     sync.Mutex // Protege operações no timer
-	logBuffer      *handlers.LogBuffer
-	historyTracker *history.HistoryTracker
+	router             *gin.Engine
+	kubeManager        *config.KubeConfigManager
+	port               int
+	token              string
+	jwtManager         *auth.JWTManager // nil quando K8S_HPA_JWT_SECRET não configurado
+	disableADAuth      bool             // Flag para desabilitar verificação RBAC (emergências)
+	lastHeartbeat      time.Time
+	heartbeatMutex     sync.RWMutex
+	shutdownTimer      *time.Timer
+	timerMutex         sync.Mutex // Protege operações no timer
+	logBuffer          *handlers.LogBuffer
+	historyTracker     *history.HistoryTracker
+	portForwardHandler *handlers.PortForwardHandler
 
 	// TODO: Remover após migração completa para V2
 	// monitoringEngine *engine.ScanEngine
@@ -605,6 +606,7 @@ func (s *Server) setupRoutes() {
 		go func() {
 			fmt.Println("\n🛑 Shutdown solicitado via API...")
 			teams.CloseBrowser()
+			s.portForwardHandler.Manager().StopAll()
 			fmt.Println("✅ Servidor encerrado")
 			os.Exit(0)
 		}()
@@ -1047,6 +1049,19 @@ func (s *Server) setupRoutes() {
 		kafkaTest.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.Cancel)
 		kafkaTest.POST("/topics", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.ListTopics)
 		kafkaTest.POST("/topics/overview", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.TopicsOverview)
+	}
+
+	// Port Forward — sessões de encaminhamento de porta reais (túnel SPDY do client-go, mesmo
+	// mecanismo do `kubectl port-forward`) gerenciadas pelo servidor, expostas via modal no
+	// frontend. Ver PORT-FORWARD-PLAN.md.
+	s.portForwardHandler = handlers.NewPortForwardHandler(s.kubeManager, s.historyTracker)
+	portForward := api.Group("/portforward")
+	{
+		portForward.GET("/pod-ports", s.portForwardHandler.GetPodPorts)
+		portForward.GET("/list", s.portForwardHandler.List)
+		portForward.GET("/:id", s.portForwardHandler.Get)
+		portForward.POST("/start", rbacMiddleware.RequireSREGroup(), s.portForwardHandler.Start)
+		portForward.POST("/stop/:id", rbacMiddleware.RequireSREGroup(), s.portForwardHandler.Stop)
 	}
 
 	// Teste de Banco de Dados sob demanda — ephemeral container (psql/mysql/mongosh/redis-cli
@@ -1921,6 +1936,7 @@ func (s *Server) autoShutdown() {
 	fmt.Println("✅ Servidor sendo encerrado...")
 
 	teams.CloseBrowser()
+	s.portForwardHandler.Manager().StopAll()
 	os.Exit(0)
 }
 
@@ -1986,6 +2002,12 @@ func (s *Server) Shutdown() error {
 	// 3. Encerrar Chrome persistente do Teams (browser_manager.go) — sem isso ficaria órfão
 	teams.CloseBrowser()
 	fmt.Println("✓ Browser persistente do Teams encerrado")
+
+	// 4. Encerrar todas as sessões de port-forward abertas
+	if s.portForwardHandler != nil {
+		s.portForwardHandler.Manager().StopAll()
+		fmt.Println("✓ Sessões de port-forward encerradas")
+	}
 
 	fmt.Println("\n✅ Shutdown concluído com sucesso!")
 	return nil

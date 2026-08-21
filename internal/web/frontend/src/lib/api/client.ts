@@ -115,6 +115,9 @@ import type {
   AccessCheckRulesResult,
   AccessCheckCanIResult,
   AccessCheckFleetScanResult,
+  PortForwardSession,
+  PortForwardPodPort,
+  StartPortForwardRequest,
 } from "./types";
 
 import type {
@@ -4600,6 +4603,35 @@ class APIClient {
       method: "POST",
       body: JSON.stringify({ title, body, head, base, ...(profileId ? { profile_id: profileId } : {}) }),
     });
+  }
+
+  // ─── Port Forward ─────────────────────────────────────────────────────
+
+  async getPortForwardPodPorts(cluster: string, namespace: string, pod: string): Promise<{ ports: PortForwardPodPort[]; phase: string }> {
+    const params = new URLSearchParams({ cluster, namespace, pod });
+    return this.request(`/portforward/pod-ports?${params.toString()}`);
+  }
+
+  async listPortForwards(): Promise<PortForwardSession[]> {
+    const response = await this.request<{ sessions: PortForwardSession[] }>("/portforward/list");
+    return response.sessions || [];
+  }
+
+  async getPortForward(id: string): Promise<PortForwardSession> {
+    const response = await this.request<{ session: PortForwardSession }>(`/portforward/${encodeURIComponent(id)}`);
+    return response.session;
+  }
+
+  async startPortForward(req: StartPortForwardRequest): Promise<PortForwardSession> {
+    const response = await this.request<{ session: PortForwardSession }>("/portforward/start", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+    return response.session;
+  }
+
+  async stopPortForward(id: string): Promise<void> {
+    await this.request(`/portforward/stop/${encodeURIComponent(id)}`, { method: "POST" });
   }
 }
 

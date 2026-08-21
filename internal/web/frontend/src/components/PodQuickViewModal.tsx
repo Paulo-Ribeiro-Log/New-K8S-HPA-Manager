@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon, Braces, AlertTriangle, Bell } from "lucide-react";
+import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon, Braces, AlertTriangle, Bell, Network } from "lucide-react";
+import { PortForwardModal } from "@/components/PortForwardModal";
 import type { PodSummary, PodMetricsSingle, EventSummary } from "@/lib/api/types";
 import { formatAge, formatMillicores, formatBytes, formatPercent } from "@/lib/monitorUtils";
 import { describeExitCode } from "@/lib/exitCodes";
@@ -478,6 +479,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
   // Action state
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const [showPortForward, setShowPortForward] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -824,20 +826,31 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                 {pod.status || pod.phase}
               </Badge>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs gap-1"
-              onClick={handleDescribeClick}
-              disabled={describeLoading}
-            >
-              {describeLoading ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <FileText className="w-3 h-3" />
-              )}
-              Describe
-            </Button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1"
+                onClick={handleDescribeClick}
+                disabled={describeLoading}
+              >
+                {describeLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <FileText className="w-3 h-3" />
+                )}
+                Describe
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1"
+                onClick={() => setShowPortForward(true)}
+                title="Abrir um túnel de port-forward pra este pod"
+              >
+                <Network className="w-3 h-3" /> Port Forward
+              </Button>
+            </div>
           </div>
         </DialogHeader>
 
@@ -1201,6 +1214,17 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
           open={jsonInspector.open}
           onClose={() => jsonInspector.setOpen(false)}
           initialText={jsonInspector.text}
+        />
+
+        {/* Port Forward — instância própria pré-preenchida com este pod (independente da
+            instância global de Index.tsx, que abre sem pré-preenchimento) */}
+        <PortForwardModal
+          open={showPortForward}
+          onOpenChange={setShowPortForward}
+          initialCluster={cluster}
+          initialNamespace={pod.namespace}
+          initialPod={pod.name}
+          initialWorkload={pod.ownerWorkload || workloadSearchTerm}
         />
 
         {/* Handles de resize */}
