@@ -2,10 +2,70 @@ package handlers
 
 import (
 	"testing"
+	"time"
 
 	"k8s-hpa-manager/internal/spinnaker"
 	"k8s-hpa-manager/internal/storage"
 )
+
+// TestApplyRegistryFreshness_* cobrem o achado real que motivou este mecanismo, em 2 rodadas:
+// (1) um Deployment Registry desatualizado (rec.LastSeen antigo) fazia DetectRollback cair num
+// Matched:false silencioso, indistinguível de "sem sinal nenhum" (usuário relatou "em hlg
+// simplesmente não funciona" — reproduzido ao vivo contra entrega-mais-bff/entrega-mais-hlg);
+// (2) a 1ª correção (limiar de 2h contra o relógio) super-generalizou — usuário relatou "todos
+// ficaram como dados desatualizados, até mesmo os que conhecidamente foram executados hoje" — a
+// maioria dos deployments não muda por dias/semanas e tinha last_seen "velho" com dado correto.
+// Corrigido comparando contra LatestKnownExecutionAt (preenchido por DetectRollback) em vez do
+// relógio — só marca stale quando existe uma execução Spinnaker conhecida mais nova que a última
+// leitura do registry.
+func TestApplyRegistryFreshness_SemExecucaoConhecidaNuncaMarcaComoDesatualizado(t *testing.T) {
+	// LatestKnownExecutionAt==0 (nunca preenchido, ex: DetectRollback nem achou execução nenhuma
+	// pra esse nameApp/namespace) — mesmo com rec.LastSeen bem antigo, não há nada pra comparar.
+	info := &spinnaker.RollbackInfo{}
+	rec := storage.DeploymentRecord{LastSeen: time.Now().Add(-30 * 24 * time.Hour)}
+	applyRegistryFreshness(info, rec)
+	if info.RegistryStale {
+		t.Error("sem LatestKnownExecutionAt não há base de comparação — nunca deveria marcar como desatualizado")
+	}
+	if info.RegistryLastSeen != rec.LastSeen.UnixMilli() {
+		t.Errorf("RegistryLastSeen = %d, esperava %d", info.RegistryLastSeen, rec.LastSeen.UnixMilli())
+	}
+}
+
+func TestApplyRegistryFreshness_DeploymentAntigoSemMudancaNaoMarcaComoDesatualizado(t *testing.T) {
+	// Acha o caso relatado na 2ª rodada: deployment que não muda há semanas — LatestKnownExecutionAt
+	// é antigo, mas ANTERIOR ao último scan do registry (que já viu esse estado). Não é desatualizado.
+	oldExecution := time.Now().Add(-60 * 24 * time.Hour)
+	lastSeen := time.Now().Add(-25 * time.Hour) // scan não roda toda hora, e tudo bem
+	info := &spinnaker.RollbackInfo{LatestKnownExecutionAt: oldExecution.UnixMilli()}
+	applyRegistryFreshness(info, storage.DeploymentRecord{LastSeen: lastSeen})
+	if info.RegistryStale {
+		t.Error("execução conhecida mais antiga que o último scan não deveria marcar como desatualizado, mesmo com last_seen \"velho\"")
+	}
+}
+
+func TestApplyRegistryFreshness_ExecucaoNovaQueRegistryAindaNaoViuMarcaComoDesatualizado(t *testing.T) {
+	// O caso real que motivou o mecanismo: Spinnaker já sabe de uma execução mais nova (ex: deploy
+	// de hoje) do que a última vez que o registry foi lido (ex: ontem).
+	newExecution := time.Now()
+	lastSeen := time.Now().Add(-24 * time.Hour)
+	info := &spinnaker.RollbackInfo{LatestKnownExecutionAt: newExecution.UnixMilli()}
+	applyRegistryFreshness(info, storage.DeploymentRecord{LastSeen: lastSeen})
+	if !info.RegistryStale {
+		t.Error("execução Spinnaker mais nova que o último scan do registry deveria marcar como desatualizado")
+	}
+}
+
+func TestApplyRegistryFreshness_LastSeenZeroNaoAlteraInfo(t *testing.T) {
+	// DeploymentRecord.LastSeen zero-value (nunca deveria acontecer num record real, mas
+	// applyRegistryFreshness não deve inventar um "desatualizado" a partir de um dado ausente —
+	// mesmo princípio de "nunca inferir por omissão" já documentado no resto do pacote.
+	info := &spinnaker.RollbackInfo{}
+	applyRegistryFreshness(info, storage.DeploymentRecord{})
+	if info.RegistryStale || info.RegistryLastSeen != 0 {
+		t.Errorf("LastSeen zero-value não deveria alterar info, veio %+v", info)
+	}
+}
 
 // TestToHistoryRecord_RoundTripsThroughFromHistoryRecord garante que persistir um RollbackInfo
 // e reconstruí-lo depois (fallback quando o Gate não devolve nada dentro da janela atual)

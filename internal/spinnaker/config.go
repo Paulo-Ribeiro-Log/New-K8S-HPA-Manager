@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Config é a configuração do usuário pra esta integração (seção 10 do plano) — tipo de login,
@@ -86,6 +87,27 @@ func (c Config) DeckURLForEnv(env string) (string, error) {
 		return "", fmt.Errorf("URL do Spinnaker (Deck) pra %q não configurada no perfil do usuário", env)
 	}
 	return url, nil
+}
+
+// DeriveEnv deriva o ambiente Spinnaker ("hlg"/"prd") a partir do nome do cluster, pela mesma
+// convenção de sufixo já usada em toda a app (remove "-admin" antes — ver CLAUDE.md "Suffix
+// -admin em Cluster Names"). Retorna "" quando não reconhece — clusters "sit"/"stg" não têm Gate
+// próprio (rodam dentro do Gate de hlg, ver comentário de envHLG/envPRD acima), mas não há como
+// saber isso só pelo nome do cluster quando ele não segue essa convenção de sufixo.
+//
+// Fonte única desta lógica — antes duplicada em 3 lugares (lib/spinnakerEnv.ts no frontend,
+// deriveSpinnakerEnvGo em internal/healthcheck/spinnaker_enricher.go, e o
+// SpinnakerFleetWatcher/internal/web/handlers/spinnaker_watcher.go). O frontend TS continua
+// necessariamente separado (runtime diferente); os dois usos em Go agora chamam esta função.
+func DeriveEnv(cluster string) string {
+	base := strings.TrimSuffix(cluster, "-admin")
+	if strings.HasSuffix(base, "-"+EnvHLG) {
+		return EnvHLG
+	}
+	if strings.HasSuffix(base, "-"+EnvPRD) {
+		return EnvPRD
+	}
+	return ""
 }
 
 // EffectiveLoginIdentifier devolve LoginIdentifier ou "email" como default — mesmo default de

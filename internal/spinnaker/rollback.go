@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // RollbackInfo é o contrato de dados final (seção 5 do plano) — o que a Fase 2 (handler HTTP)
@@ -69,6 +70,121 @@ type RollbackInfo struct {
 	PreviousVersionCHG        string `json:"previous_version_chg,omitempty"`
 	PreviousVersionCHGURL     string `json:"previous_version_chg_url,omitempty"`
 	PreviousVersionExecutedAt int64  `json:"previous_version_executed_at,omitempty"`
+
+	// RegistryStale/RegistryLastSeen — achado real (usuário relatou "em hlg simplesmente não
+	// funciona"): o Deployment Registry (fonte de currentLiveVersion, passado pra DetectRollback
+	// pelo chamador) pode estar desatualizado — scan da aba GitHub Releases não rodou de novo
+	// depois de um deploy novo. Nesse caso a versão comparada contra o Spinnaker está errada, e
+	// DetectRollback cai no fallback neutro Matched:false — indistinguível de "sem sinal nenhum"
+	// pro usuário (o badge simplesmente não aparece, sem nenhum aviso). DetectRollback em si não
+	// sabe de registry (só recebe currentLiveVersion como string) — estes dois campos são
+	// preenchidos pelo CHAMADOR (RolloutStatusBatch, internal/web/handlers/spinnaker.go) a partir
+	// do DeploymentRecord, sempre, matched ou não. Nunca persistido no SpinnakerHistoryStore
+	// (mesmo motivo de RecentExecutions/Stages — dado auxiliar de exibição, recalculado a cada
+	// request, não "o último status confirmado" que a persistência existe pra preservar).
+	RegistryStale    bool  `json:"registry_stale,omitempty"`
+	RegistryLastSeen int64 `json:"registry_last_seen,omitempty"` // epoch ms — DeploymentRecord.LastSeen
+
+	// LatestKnownExecutionAt — epoch ms da execução mais recente conhecida do Spinnaker pra esse
+	// nameApp/namespace (executionTime(matched[0]), ver DetectRollback), preenchido em TODO
+	// retorno onde `matched` (a lista interna de execuções filtradas) não é vazia — inclusive no
+	// fallback final Matched:false ("nenhuma execução corresponde à versão vigente"). É a peça que
+	// falta pro chamador decidir RegistryStale de forma precisa (ver applyRegistryFreshness,
+	// internal/web/handlers/spinnaker.go): comparar contra "agora" (1ª tentativa desse mecanismo)
+	// marcava como desatualizado QUALQUER deployment sem scan nas últimas 2h, mesmo os que
+	// genuinamente não mudam há semanas — a maioria da frota, gerando ruído generalizado (achado
+	// relatado ao vivo pelo usuário: "todos ficaram como dados desatualizados, até mesmo os que
+	// conhecidamente foram executados hoje" — o inverso do que fazia sentido, já que justamente
+	// esses deveriam continuar OK se o registry tivesse sido relido depois). Comparar contra a
+	// execução mais recente CONHECIDA (não contra o relógio) só acende quando existe prova de que
+	// o Spinnaker sabe de algo mais novo que a última leitura do registry — nunca por causa da
+	// simples passagem do tempo.
+	LatestKnownExecutionAt int64 `json:"-"` // uso interno do pacote handlers, não exposto na API
+
+	// RecentStageFailures — ver comentário de StageFailureSummary. Preenchido em TODO retorno
+	// onde matched não é vazio (mesmo padrão de LatestKnownExecutionAt) — é sinal complementar,
+	// ortogonal ao resultado principal (Matched/IsRollback): "houve um problema real recente,
+	// mesmo que autorresolvido", útil mesmo quando o resultado é "deploy normal" ou "não
+	// determinado".
+	RecentStageFailures []StageFailureSummary `json:"recent_stage_failures,omitempty"`
+}
+
+// StageFailureSummary é uma falha REAL (com log de exceção extraído por Stage.FailureLog) achada
+// numa etapa de alguma das últimas execuções desse nameApp/namespace — mesmo quando a execução
+// como um todo terminou SUCCEEDED. Achado real (usuário relatou "a pipeline teve erro e depois
+// sucesso, mas não houveram sinais nem os logs das exceptions"): confirmado ao vivo contra
+// entrega-mais-bff/entrega-mais-sit — 3 de 4 execuções recentes tinham o stage "deploy-helm" com
+// status FAILED_CONTINUE (Kubernetes Job com BackoffLimitExceeded, container saindo com código 1),
+// mas a execução como um todo terminava SUCCEEDED (o pipeline segue mesmo com essa etapa falha) —
+// invisível pro resto do sistema porque (1) DetectRollback só olha ex.Status no nível da
+// EXECUÇÃO, nunca por stage, e (2) mesmo quando os Stages de uma execução são expostos
+// (buildStageSummary), isso só acontecia pra execução "decisiva" (a mais recente) — uma falha 2h
+// atrás seguida de sucesso nunca tinha seus Stages processados. Ver StageFailureLogTruncateChars.
+type StageFailureSummary struct {
+	ExecutionID   string `json:"execution_id"`
+	ExecutionTime int64  `json:"execution_time"`
+	Version       string `json:"version,omitempty"`
+	CHG           string `json:"chg,omitempty"`
+	CHGUrl        string `json:"chg_url,omitempty"`
+	StageName     string `json:"stage_name"`
+	StageStatus   string `json:"stage_status"`
+	Log           string `json:"log"`
+}
+
+// StageFailureRecentWindow — NÃO usado pra filtrar RecentStageFailures (ver histórico de idas e
+// vindas abaixo) — usado só pelo chamador (SpinnakerFleetWatcher.notifyStageFailureIfNew,
+// internal/web/handlers/spinnaker_watcher.go) pra decidir se uma falha de etapa é "recente o
+// suficiente" pra JUSTIFICAR UMA NOTIFICAÇÃO — nunca pra decidir se ela aparece no badge/modal.
+// Exportado (mesmo padrão de DeriveEnv) pra não duplicar a decisão de "o que conta como recente"
+// com um número diferente do já usado em spinnakerRecentRollbackWindow
+// (internal/healthcheck/spinnaker_enricher.go) — mesmo valor, 48h.
+//
+// Histórico: uma 1ª versão desta função filtrava RecentStageFailures por essa janela — motivada
+// por um achado real (usuário apontou com print da própria app: uma falha de retry de 23/07
+// aparecia rotulada "Falha recente em etapa" numa investigação em 21/08, quase um mês depois).
+// Só que isso teve um efeito colateral não pedido: **removeu o indicador de atenção dos cards da
+// lista de Deployments** pra qualquer deployment cuja última falha conhecida fosse mais antiga
+// que 48h — usuário pediu explicitamente pra não tirar isso ("não era para retirar a indicação
+// de atenção por erros de execução da pipeline dos cards"). Revertido: RecentStageFailures volta
+// a mostrar TODO o histórico disponível (até recentExecutionsLimit execuções), sem filtro de
+// tempo — o indicador nos cards continua aparecendo independente da idade. O problema real
+// (rotular como "recente" algo de um mês atrás) é resolvido só na CAMADA DE APRESENTAÇÃO — o
+// texto do chip/modal não afirma mais "recente" incondicionalmente (ver DeploymentsTab.tsx/
+// SpinnakerRolloutModal.tsx), e cada item já carrega sua própria data (execution_time) pro
+// usuário julgar a idade — e na notificação do watcher, que continua só disparando dentro desta
+// janela (não faz sentido empurrar uma notificação sobre algo de um mês atrás).
+const StageFailureRecentWindow = 48 * time.Hour
+
+// findRecentStageFailures varre as recentExecutionsLimit execuções mais recentes de `matched`
+// (já ordenado desc por tempo) procurando stages com FailureLog() não-vazio — reaproveita 100% o
+// filtro já existente em Stage.FailureLog (só considera stage com Exception real, nunca history
+// solta) sem duplicar lógica. Retorna nil quando nada é achado (sem "achado nenhum recorde" —
+// omitempty no JSON já cobre isso). Sem filtro de tempo — ver comentário de StageFailureRecentWindow.
+func findRecentStageFailures(matched []Execution) []StageFailureSummary {
+	n := len(matched)
+	if n > recentExecutionsLimit {
+		n = recentExecutionsLimit
+	}
+	var out []StageFailureSummary
+	for _, ex := range matched[:n] {
+		for _, st := range ex.Stages {
+			log := st.FailureLog()
+			if log == "" {
+				continue
+			}
+			out = append(out, StageFailureSummary{
+				ExecutionID:   ex.ID,
+				ExecutionTime: executionTime(ex),
+				Version:       ex.Trigger.Version(),
+				CHG:           ex.Trigger.CHGNumber(),
+				CHGUrl:        ex.Trigger.CHGUrl(),
+				StageName:     st.Name,
+				StageStatus:   st.Status,
+				Log:           log,
+			})
+		}
+	}
+	return out
 }
 
 // ExecutionSummary é uma linha do histórico curto (RollbackInfo.RecentExecutions) — só os
@@ -263,6 +379,8 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 		return &RollbackInfo{Matched: false}
 	}
 	recent := buildRecentExecutions(matched)
+	latestKnownExecutionAt := executionTime(matched[0]) // matched já ordenado desc por tempo
+	recentStageFailures := findRecentStageFailures(matched)
 
 	// Regra (a) — explícita: procura uma execução de rollback cuja versão-alvo já é a vigente.
 	for i, ex := range matched {
@@ -274,22 +392,24 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 		}
 		isTrue := true
 		info := &RollbackInfo{
-			Matched:              true,
-			IsRollback:           &isTrue,
-			RollbackType:         "explicit",
-			LastCHGApplied:       ex.Trigger.CHGNumber(),
-			LastCHGAppliedURL:    ex.Trigger.CHGUrl(),
-			PipelineExecutedAt:   executionTime(ex),
-			ExecutionStatus:      ex.Status,
-			Version:              ex.Trigger.Version(),
-			RollbackStartedAt:    ex.StartTime,
-			RollbackEndedAt:      ex.EndTime,
-			FailedCHG:            ex.Trigger.CHGNumber(),
-			FailedCHGURL:         ex.Trigger.CHGUrl(),
-			RollbackPipelineName: ex.Name,
-			SpinnakerExecutionID: ex.ID,
-			RecentExecutions:     recent,
-			Stages:               buildStageSummary(ex.Stages),
+			Matched:                true,
+			IsRollback:             &isTrue,
+			RollbackType:           "explicit",
+			LastCHGApplied:         ex.Trigger.CHGNumber(),
+			LastCHGAppliedURL:      ex.Trigger.CHGUrl(),
+			PipelineExecutedAt:     executionTime(ex),
+			ExecutionStatus:        ex.Status,
+			Version:                ex.Trigger.Version(),
+			RollbackStartedAt:      ex.StartTime,
+			RollbackEndedAt:        ex.EndTime,
+			FailedCHG:              ex.Trigger.CHGNumber(),
+			FailedCHGURL:           ex.Trigger.CHGUrl(),
+			RollbackPipelineName:   ex.Name,
+			SpinnakerExecutionID:   ex.ID,
+			RecentExecutions:       recent,
+			Stages:                 buildStageSummary(ex.Stages),
+			LatestKnownExecutionAt: latestKnownExecutionAt,
+			RecentStageFailures:    recentStageFailures,
 		}
 		applyPreviousVersion(info, matched, i)
 		return info
@@ -301,21 +421,23 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 	if !successStatuses[latest.Status] && latest.Trigger.Version() != currentLiveVersion {
 		isTrue := true
 		info := &RollbackInfo{
-			Matched:              true,
-			IsRollback:           &isTrue,
-			RollbackType:         "implicit",
-			LastCHGApplied:       latest.Trigger.CHGNumber(),
-			LastCHGAppliedURL:    latest.Trigger.CHGUrl(),
-			PipelineExecutedAt:   executionTime(latest),
-			ExecutionStatus:      latest.Status,
-			Version:              latest.Trigger.Version(),
-			RollbackStartedAt:    latest.StartTime,
-			RollbackEndedAt:      latest.EndTime,
-			FailedCHG:            latest.Trigger.CHGNumber(),
-			FailedCHGURL:         latest.Trigger.CHGUrl(),
-			SpinnakerExecutionID: latest.ID,
-			RecentExecutions:     recent,
-			Stages:               buildStageSummary(latest.Stages),
+			Matched:                true,
+			IsRollback:             &isTrue,
+			RollbackType:           "implicit",
+			LastCHGApplied:         latest.Trigger.CHGNumber(),
+			LastCHGAppliedURL:      latest.Trigger.CHGUrl(),
+			PipelineExecutedAt:     executionTime(latest),
+			ExecutionStatus:        latest.Status,
+			Version:                latest.Trigger.Version(),
+			RollbackStartedAt:      latest.StartTime,
+			RollbackEndedAt:        latest.EndTime,
+			FailedCHG:              latest.Trigger.CHGNumber(),
+			FailedCHGURL:           latest.Trigger.CHGUrl(),
+			SpinnakerExecutionID:   latest.ID,
+			RecentExecutions:       recent,
+			Stages:                 buildStageSummary(latest.Stages),
+			LatestKnownExecutionAt: latestKnownExecutionAt,
+			RecentStageFailures:    recentStageFailures,
 		}
 		applyPreviousVersion(info, matched, 0)
 		return info
@@ -325,26 +447,31 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 	if latest.Trigger.Version() == currentLiveVersion {
 		isFalse := false
 		info := &RollbackInfo{
-			Matched:              true,
-			IsRollback:           &isFalse,
-			LastCHGApplied:       latest.Trigger.CHGNumber(),
-			LastCHGAppliedURL:    latest.Trigger.CHGUrl(),
-			PipelineExecutedAt:   executionTime(latest),
-			ExecutionStatus:      latest.Status,
-			Version:              latest.Trigger.Version(),
-			SpinnakerExecutionID: latest.ID,
-			RecentExecutions:     recent,
-			Stages:               buildStageSummary(latest.Stages),
+			Matched:                true,
+			IsRollback:             &isFalse,
+			LastCHGApplied:         latest.Trigger.CHGNumber(),
+			LastCHGAppliedURL:      latest.Trigger.CHGUrl(),
+			PipelineExecutedAt:     executionTime(latest),
+			ExecutionStatus:        latest.Status,
+			Version:                latest.Trigger.Version(),
+			SpinnakerExecutionID:   latest.ID,
+			RecentExecutions:       recent,
+			Stages:                 buildStageSummary(latest.Stages),
+			LatestKnownExecutionAt: latestKnownExecutionAt,
+			RecentStageFailures:    recentStageFailures,
 		}
 		applyPreviousVersion(info, matched, 0)
 		return info
 	}
 
 	// Nenhuma execução conhecida corresponde à versão vigente — não dá pra afirmar nada
-	// (ex: versão vigente é mais antiga que a janela de execuções buscada). Fraseologia
-	// neutra de propósito, mesmo padrão do resto da app (nunca inferir ausência por falta
-	// de dado) — ver TrustedByPublicCA/ChainValidationResult no CLAUDE.md.
-	return &RollbackInfo{Matched: false}
+	// (ex: versão vigente é mais antiga que a janela de execuções buscada, OU o registry ainda
+	// não viu a versão nova — ver LatestKnownExecutionAt). Fraseologia neutra de propósito, mesmo
+	// padrão do resto da app (nunca inferir ausência por falta de dado) — ver
+	// TrustedByPublicCA/ChainValidationResult no CLAUDE.md. LatestKnownExecutionAt SEMPRE
+	// preenchido aqui (matched não é vazio, checado no topo da função) — é o caso mais comum em
+	// que esse campo realmente importa pro chamador.
+	return &RollbackInfo{Matched: false, LatestKnownExecutionAt: latestKnownExecutionAt, RecentStageFailures: recentStageFailures}
 }
 
 // String — implementação auxiliar de debug, não usada em produção.

@@ -229,10 +229,53 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 			}
 		}
 
+		// Sempre por último, depois de qualquer troca por fromHistoryRecord acima — reflete a
+		// idade do Deployment Registry NESTA request, independente de qual ramo produziu `info`
+		// (ver comentário de applyRegistryFreshness).
+		applyRegistryFreshness(info, rec)
+
 		result[rec.DeploymentName+"/"+rec.Namespace] = info
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// applyRegistryFreshness preenche info.RegistryStale/RegistryLastSeen a partir de rec.LastSeen —
+// chamado incondicionalmente (matched ou não, veio do Gate ao vivo ou do SpinnakerHistoryStore)
+// por todo consumidor de DetectRollback que tem acesso ao DeploymentRecord original.
+//
+// Achado real, corrigido em 2 rodadas: um Deployment Registry desatualizado (scan da aba GitHub
+// Releases sem rodar de novo depois de um deploy novo) gera Matched:false silencioso —
+// DetectRollback compara a versão-alvo do Spinnaker contra uma versão que já não é mais a
+// vigente no cluster, nunca bate, e cai no fallback neutro; o badge (SpinnakerChip,
+// DeploymentsTab.tsx) simplesmente não aparece, sem nenhuma pista de que a causa é dado velho,
+// não ausência de sinal. Reproduzido ao vivo: entrega-mais-bff/entrega-mais-hlg tinha o registry
+// parado em "1.5.47-1" desde o dia anterior, enquanto o Spinnaker já reportava "1.5.48-2" — 19 de
+// 19 deployments do namespace saíam Matched:false.
+//
+// 1ª tentativa (revertida): marcar como "desatualizado" qualquer rec.LastSeen com mais de 2h.
+// Relatado ao vivo pelo usuário logo em seguida: "todos ficaram como dados desatualizados, até
+// mesmo os que conhecidamente foram executados hoje" — um limiar baseado só na passagem do tempo
+// pega a maioria da frota (deployments que genuinamente não mudam por dias/semanas têm um
+// last_seen "velho" com dado 100% correto) e ironicamente NÃO tem nada a ver com o caso que
+// motivou a correção (esse depende de existir um deploy NOVO que o registry ainda não viu, não
+// de "faz tempo que não olha").
+//
+// Corrigido comparando contra info.LatestKnownExecutionAt (a execução mais recente que o
+// Spinnaker CONHECE pra esse nameApp/namespace, preenchida por DetectRollback mesmo nos retornos
+// Matched:false — ver comentário do campo) em vez do relógio: só marca stale quando existe PROVA
+// de que o Spinnaker já sabe de algo mais novo que a última leitura do registry. Um deployment
+// sem nenhuma execução Spinnaker conhecida (LatestKnownExecutionAt==0) nunca é marcado —
+// "silêncio" nesse caso é o resultado normal (não há com o que comparar), não desatualização.
+func applyRegistryFreshness(info *spinnaker.RollbackInfo, rec storage.DeploymentRecord) {
+	if info == nil || rec.LastSeen.IsZero() {
+		return
+	}
+	info.RegistryLastSeen = rec.LastSeen.UnixMilli()
+	if info.LatestKnownExecutionAt == 0 {
+		return
+	}
+	info.RegistryStale = info.LatestKnownExecutionAt > info.RegistryLastSeen
 }
 
 // toHistoryRecord/fromHistoryRecord convertem entre o contrato de resposta (spinnaker.RollbackInfo)

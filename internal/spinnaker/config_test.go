@@ -54,6 +54,22 @@ func TestConfig_DeckURLForEnv(t *testing.T) {
 	}
 }
 
+func TestDeriveEnv(t *testing.T) {
+	cases := map[string]string{
+		"akspriv-logreversa-hlg":       EnvHLG,
+		"akspriv-ofertalogistica-prd":  EnvPRD,
+		"akspriv-logreversa-hlg-admin": EnvHLG, // sufixo "-admin" removido antes de checar
+		"akspriv-abastecimento-sit":    "",     // "sit" roda dentro do Gate de hlg, mas não dá pra saber só pelo nome
+		"akspriv-abastecimento-stg":    "",
+		"":                             "",
+	}
+	for cluster, want := range cases {
+		if got := DeriveEnv(cluster); got != want {
+			t.Errorf("DeriveEnv(%q) = %q, esperava %q", cluster, got, want)
+		}
+	}
+}
+
 func TestConfig_EffectiveLoginIdentifier(t *testing.T) {
 	if got := (Config{}).EffectiveLoginIdentifier(); got != "email" {
 		t.Errorf("default deveria ser \"email\" (mesmo default de BrowserConfig), veio %q", got)

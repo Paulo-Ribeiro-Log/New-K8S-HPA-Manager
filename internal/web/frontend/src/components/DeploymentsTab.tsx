@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw, FileWarning } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -70,7 +70,82 @@ import { SpinnakerRolloutModal } from "@/components/SpinnakerRolloutModal";
 // gatilho do modal (com onClick) no painel de visualização à direita. Deliberadamente um chip
 // compacto, não um botão de ação com label — não é uma ação, é uma informação de estado.
 function SpinnakerChip({ info, onClick }: { info: SpinnakerRollbackInfo | undefined; onClick?: () => void }) {
-  if (!info?.matched) return null;
+  // recent_stage_failures — achado real (usuário relatou: "eu sei que a aplicação teve a
+  // pipeline executada com erros e depois com sucesso, mas não houveram sinais nem os logs das
+  // exceptions"): pipelines com retry automático (etapa falha, Spinnaker tenta de novo,
+  // eventualmente sucede) terminam com a execução mais recente SUCCEEDED — invisível pro badge
+  // principal (rollback/deploy normal/dado desatualizado), que só reflete o estado FINAL. Uma
+  // bolinha âmbar sobreposta no canto do chip (qualquer que ele seja) sinaliza "houve um problema
+  // em etapa, mesmo que autorresolvido" sem esconder a informação principal — clique abre o modal
+  // com o detalhe/log (ver SpinnakerRolloutModal.tsx).
+  //
+  // Deliberadamente SEM filtro de idade nem palavra "recente" no texto (2º achado real, usuário
+  // pediu explicitamente pra não remover isso dos cards mesmo pra falhas antigas — o backend
+  // (spinnaker.StageFailureRecentWindow) não filtra mais RecentStageFailures por tempo, só a
+  // NOTIFICAÇÃO do watcher é que continua gateada; aqui, cada item carrega sua própria data
+  // (execution_time) no modal pra quem quiser julgar a idade, sem o chip afirmar "recente"
+  // incondicionalmente pra algo que pode ter semanas).
+  const stageFailureCount = info?.recent_stage_failures?.length ?? 0;
+  const stageFailureDot = stageFailureCount > 0 && (
+    <span
+      className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-500 ring-1 ring-background"
+      title={`${stageFailureCount} falha${stageFailureCount > 1 ? "s" : ""} em etapa (autorrecuperada${stageFailureCount > 1 ? "s" : ""}) no histórico — clique pra ver o log`}
+    />
+  );
+
+  // wrapClickable envolve `el` no mesmo botão-com-stopPropagation usado pelo chip principal
+  // abaixo — reaproveitado pelos 3 pontos de retorno desta função (dado desatualizado / falha
+  // recente / chip principal), agora que o modal (SpinnakerRolloutModal.tsx) tem conteúdo útil
+  // pra mostrar mesmo nos casos matched:false (registry_stale e/ou recent_stage_failures).
+  const wrapClickable = (el: JSX.Element) => {
+    if (!onClick) return el;
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        className="inline-flex"
+      >
+        {el}
+      </button>
+    );
+  };
+
+  if (!info?.matched) {
+    // matched:false cobre casos bem diferentes, hoje distinguíveis pelos avisos abaixo: (1)
+    // normal/esperado — deployment sem atividade recente no Spinnaker (a maioria dos casos,
+    // silencioso de propósito); (2) achado real relatado pelo usuário ("em hlg simplesmente não
+    // funciona") — o Deployment Registry está desatualizado; (3) achado real relatado em
+    // seguida — houve falha(s) de etapa recente(s) mesmo sem nenhum "rollback" caracterizado.
+    if (info?.registry_stale) {
+      return wrapClickable(
+        <span className="relative inline-flex">
+          <span
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border border-dashed border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400 ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
+            title={`Dado do Deployment Registry desatualizado (última leitura: ${info.registry_last_seen ? new Date(info.registry_last_seen).toLocaleString("pt-BR") : "?"}) — a comparação de versão com o Spinnaker pode estar errada ou ausente por causa disso. Rode um scan na aba GitHub Releases pra atualizar.`}
+          >
+            <TriangleAlert className="w-2.5 h-2.5 shrink-0" />
+            dado desatualizado
+          </span>
+          {stageFailureDot}
+        </span>
+      );
+    }
+    if (stageFailureCount > 0) {
+      return wrapClickable(
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400 ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
+          title={`${stageFailureCount} falha${stageFailureCount > 1 ? "s" : ""} em etapa (autorrecuperada) no histórico — a execução mais recente teve sucesso, mas houve retry. Ver data exata no detalhe.`}
+        >
+          <FileWarning className="w-2.5 h-2.5 shrink-0" />
+          falha em etapa
+        </span>
+      );
+    }
+    return null;
+  }
   const isRollback = info.is_rollback === true;
   const succeeded = !isRollback && info.execution_status === "SUCCEEDED";
   const Icon = isRollback ? RotateCcw : Rocket;
@@ -97,37 +172,26 @@ function SpinnakerChip({ info, onClick }: { info: SpinnakerRollbackInfo | undefi
     : "";
 
   const chip = (
-    <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors ${colorClass} ${info.from_cache ? "border-dashed" : ""} ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
-      title={
-        (isRollback
-          ? `Rollback (${info.rollback_type === "explicit" ? "manual" : "implícito"}) — CHG que falhou: ${info.failed_chg || "?"}`
-          : `Última CHG aplicada: ${info.last_chg_applied || "?"} (${info.execution_status || "status desconhecido"})`) + cacheNote
-      }
-    >
-      <Icon className="w-2.5 h-2.5 shrink-0" />
-      {label}
+    <span className="relative inline-flex">
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors ${colorClass} ${info.from_cache ? "border-dashed" : ""} ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
+        title={
+          (isRollback
+            ? `Rollback (${info.rollback_type === "explicit" ? "manual" : "implícito"}) — CHG que falhou: ${info.failed_chg || "?"}`
+            : `Última CHG aplicada: ${info.last_chg_applied || "?"} (${info.execution_status || "status desconhecido"})`) + cacheNote
+        }
+      >
+        <Icon className="w-2.5 h-2.5 shrink-0" />
+        {label}
+      </span>
+      {stageFailureDot}
     </span>
   );
 
-  if (!onClick) return chip;
-
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        // stopPropagation defensivo — o card da lista (item 6 da seção 9) envolve o chip num
-        // wrapper clicável próprio (não mais um <button>, pra evitar aninhar <button> dentro de
-        // <button>, HTML inválido); sem isso o clique no chip também dispararia a seleção do
-        // card por baixo dele.
-        e.stopPropagation();
-        onClick();
-      }}
-      className="inline-flex"
-    >
-      {chip}
-    </button>
-  );
+  // stopPropagation defensivo — o card da lista (item 6 da seção 9) envolve o chip num wrapper
+  // clicável próprio (não mais um <button>, pra evitar aninhar <button> dentro de <button>, HTML
+  // inválido); sem isso o clique no chip também dispararia a seleção do card por baixo dele.
+  return wrapClickable(chip);
 }
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
