@@ -3,9 +3,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Loader2, RotateCcw, CheckCircle2, HelpCircle, ExternalLink, Rocket, History, ChevronDown, FileWarning } from "lucide-react";
+import { Loader2, RotateCcw, CheckCircle2, HelpCircle, ExternalLink, Rocket, History, ChevronDown, FileWarning, Copy, Check, X } from "lucide-react";
 import type { SpinnakerRollbackInfo, SpinnakerStageSummary } from "@/lib/api/types";
-import { SpinnakerStageLogModal } from "@/components/SpinnakerStageLogModal";
 
 interface SpinnakerRolloutModalProps {
   open: boolean;
@@ -80,10 +79,34 @@ export function SpinnakerRolloutModal({
   // Etapa cujo log está aberto no modal de log (seção própria, gatilho a partir daqui) — null =
   // fechado. Guarda a etapa inteira (não só o texto) pra usar o nome dela no título do modal.
   const [logStage, setLogStage] = useState<SpinnakerStageSummary | null>(null);
+  const [logCopied, setLogCopied] = useState(false);
+
+  const handleCopyLog = async () => {
+    if (!logStage?.log) return;
+    try {
+      await navigator.clipboard.writeText(logStage.log);
+      setLogCopied(true);
+      setTimeout(() => setLogCopied(false), 1500);
+    } catch {
+      // clipboard indisponível (ex: contexto não-seguro) — sem feedback de erro, só não copia
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      {/* max-h-[85vh] + overflow-y-auto (+overflow-x-hidden) — sem isso o conteúdo (cresceu
+          bastante com a seção de "Falha em etapa" abaixo) ultrapassa o box do modal sem cortar/
+          rolar, deixando a página de fundo visível "vazando" através da área que deveria estar
+          coberta pelo modal (achado real, relatado com print pelo usuário). Mesmo padrão já
+          usado em ExternalEndpointDetailModal.tsx (mesmo max-w-lg) — ver CLAUDE.md "Modal
+          Describe do pod sem scroll — lição de max-height vs height". overflow-x-hidden é
+          necessário À PARTE — por spec CSS, setar só overflow-y (auto/hidden) faz o navegador
+          tratar overflow-x:visible como se fosse "auto" também, o que abriu uma barra de
+          scroll horizontal indesejada (2º achado real, relatado em seguida) mesmo sem nenhum
+          conteúdo genuinamente mais largo que o modal. Largura aumentada em 2 rodadas a pedido
+          do usuário — max-w-lg padrão (32rem) +15% = 36.8rem, depois +5% sobre esse valor =
+          38.64rem. */}
+      <DialogContent className="max-w-[38.64rem] max-h-[85vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Rocket className="h-5 w-5 text-indigo-500" />
@@ -93,6 +116,46 @@ export function SpinnakerRolloutModal({
         </DialogHeader>
 
         <div className="space-y-4 py-2">
+          {/* Log de falha de etapa — INLINE, contido dentro deste mesmo modal (não mais um
+              <Dialog> separado sobreposto, achado real: "o modal de log da exception está
+              tomando toda a tela"). Gatilho: botões "Ver log" tanto na seção "Falha em etapa"
+              quanto na tabela de "Etapas da execução" abaixo — os dois só setam `logStage`,
+              renderizado aqui uma única vez, sempre no topo do corpo rolável do modal (visível
+              de imediato independente de qual dos dois gatilhos foi clicado). max-h-64 +
+              overflow-y-auto próprios — um log de até ~20000 caracteres rola dentro da sua
+              própria caixa em vez de esticar o modal inteiro. */}
+          {logStage && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 overflow-hidden">
+              <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-amber-500/20 bg-amber-500/10">
+                <div className="flex items-center gap-2 text-xs font-mono font-medium text-amber-700 dark:text-amber-400 min-w-0">
+                  <FileWarning className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate" title={logStage.name}>{logStage.name}</span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleCopyLog}
+                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    {logCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                    {logCopied ? "Copiado" : "Copiar"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLogStage(null)}
+                    className="text-muted-foreground hover:text-foreground"
+                    title="Fechar log"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+              <pre className="text-[11px] font-mono whitespace-pre-wrap break-words text-foreground p-3 max-h-64 overflow-y-auto overflow-x-hidden">
+                {logStage.log}
+              </pre>
+            </div>
+          )}
+
           {loading && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -104,6 +167,64 @@ export function SpinnakerRolloutModal({
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
               <HelpCircle className="h-4 w-4 mt-0.5 shrink-0" />
               <span>{error}</span>
+            </div>
+          )}
+
+          {/* Falhas reais de etapa encontradas no histórico disponível (até 5 últimas execuções),
+              mesmo quando a execução como um todo terminou SUCCEEDED (retry automático do
+              Spinnaker) — achado real (usuário relatou: "eu sei que a pipeline teve erro e
+              depois sucesso, mas não houveram sinais nem os logs das exceptions"). Renderizado
+              FORA/ANTES do bloco matched/!matched abaixo, de propósito: é ortogonal ao resultado
+              principal — pode aparecer tanto com "deploy normal" quanto com "não determinado".
+              Deliberadamente sem "recente" no texto (2º achado real: uma falha de ~1 mês atrás
+              podia aparecer aqui pra applications sem redeploy recente — dizer "recente" seria
+              enganoso; cada item abaixo já mostra sua própria data). */}
+          {!loading && !error && info?.recent_stage_failures && info.recent_stage_failures.length > 0 && (
+            <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+                <FileWarning className="h-4 w-4 shrink-0" />
+                Falha{info.recent_stage_failures.length > 1 ? "s" : ""} em etapa no histórico (autorrecuperada{info.recent_stage_failures.length > 1 ? "s" : ""})
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A execução mais recente teve sucesso, mas ao menos uma etapa de uma execução
+                anterior falhou e foi retentada automaticamente pelo Spinnaker (ver data de cada
+                falha abaixo).
+              </p>
+              <div className="space-y-1.5">
+                {info.recent_stage_failures.map((f, i) => (
+                  <div
+                    key={`${f.execution_id}-${i}`}
+                    className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/60 px-2.5 py-1.5 text-xs"
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="font-mono truncate" title={f.stage_name}>
+                        {f.stage_name}
+                      </span>
+                      <Badge variant="outline" className="text-[10px] py-0 border-amber-500/40 text-amber-600 dark:text-amber-400">
+                        {f.stage_status}
+                      </Badge>
+                      {f.version && <span className="font-mono text-muted-foreground truncate">{f.version}</span>}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {f.chg && (
+                        <span className="font-mono">
+                          <ChgValue chg={f.chg} url={f.chg_url} />
+                        </span>
+                      )}
+                      <span className="text-muted-foreground whitespace-nowrap">{fmtDate(f.execution_time)}</span>
+                      <button
+                        type="button"
+                        onClick={() => setLogStage({ name: f.stage_name, status: f.stage_status, log: f.log })}
+                        className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400 hover:underline whitespace-nowrap"
+                        title="Ver detalhes da falha desta etapa"
+                      >
+                        <FileWarning className="h-3 w-3 shrink-0" />
+                        Ver log
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -356,16 +477,6 @@ export function SpinnakerRolloutModal({
           )}
         </div>
       </DialogContent>
-
-      {/* Modal de log — próprio, redimensionável, gatilho a partir da tabela de etapas acima
-          (só aparece em etapas com falha real). Fica fora do DialogContent principal, mesmo
-          padrão de modal-dentro-de-modal já usado em PodQuickViewModal.tsx (Describe). */}
-      <SpinnakerStageLogModal
-        open={logStage !== null}
-        onOpenChange={(o) => { if (!o) setLogStage(null); }}
-        stageName={logStage?.name ?? ""}
-        log={logStage?.log ?? ""}
-      />
     </Dialog>
   );
 }

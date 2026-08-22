@@ -435,6 +435,28 @@ func (r *DeploymentRegistry) GetStats() (map[string]interface{}, error) {
 	return stats, nil
 }
 
+// GetUniqueClusters retorna a lista de clusters distintos já escaneados no registry — usado pelo
+// SpinnakerFleetWatcher (internal/web/handlers/spinnaker_watcher.go) pra saber quais clusters têm
+// Deployments rastreados sem precisar de um DiscoverClusters() ao vivo (kubectl/az) a cada tick.
+// Mesmo padrão de DependencyRegistry.GetUniqueClusters (internal/storage/dependency_registry.go).
+func (r *DeploymentRegistry) GetUniqueClusters() ([]string, error) {
+	rows, err := r.db.Query(`SELECT DISTINCT cluster FROM deployments ORDER BY cluster`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var clusters []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		clusters = append(clusters, name)
+	}
+	return clusters, nil
+}
+
 // GetAll retorna todos os deployments do registry com filtros opcionais
 func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions bool) ([]DeploymentRecord, error) {
 	query := `

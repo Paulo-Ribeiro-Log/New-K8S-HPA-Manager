@@ -21,18 +21,11 @@ type SpinnakerEnricher struct {
 	executionsByApp map[string][]spinnaker.Execution
 }
 
-// deriveSpinnakerEnvGo espelha lib/spinnakerEnv.ts (frontend) — mesma convenção de sufixo de
-// nome de cluster ("-hlg"/"-prd", removendo "-admin" antes). Retorna "" quando não reconhece
-// (ex: clusters "sit"/"stg" não têm Gate Spinnaker próprio confirmado).
+// deriveSpinnakerEnvGo é um alias fino pra spinnaker.DeriveEnv — fonte única da lógica agora vive
+// lá (ver comentário em internal/spinnaker/config.go), mantido aqui só pra não precisar trocar
+// todos os call sites deste arquivo.
 func deriveSpinnakerEnvGo(cluster string) string {
-	base := strings.TrimSuffix(cluster, "-admin")
-	if strings.HasSuffix(base, "-"+spinnaker.EnvHLG) {
-		return spinnaker.EnvHLG
-	}
-	if strings.HasSuffix(base, "-"+spinnaker.EnvPRD) {
-		return spinnaker.EnvPRD
-	}
-	return ""
+	return spinnaker.DeriveEnv(cluster)
 }
 
 // NewSpinnakerEnricher faz login + busca as execuções de todas as applications do projeto

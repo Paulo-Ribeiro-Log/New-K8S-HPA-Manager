@@ -1581,6 +1581,32 @@ export interface SpinnakerRollbackInfo {
   previous_version_chg?: string;
   previous_version_chg_url?: string;
   previous_version_executed_at?: number;
+  // Achado real (usuário relatou "em hlg simplesmente não funciona"): quando o Deployment
+  // Registry está desatualizado (sem novo scan na aba GitHub Releases depois de um deploy novo),
+  // a comparação de versão nunca bate e o backend cai num Matched:false silencioso, indistinguível
+  // de "sem sinal nenhum". Sempre presente (matched ou não) quando o backend tem o
+  // DeploymentRecord — ver applyRegistryFreshness em internal/web/handlers/spinnaker.go.
+  registry_stale?: boolean;
+  registry_last_seen?: number; // epoch ms
+  // Achado real (usuário relatou: "eu sei que a aplicação teve a pipeline executada com erros e
+  // depois com sucesso, mas não houveram sinais nem os logs das exceptions"): pipelines com retry
+  // automático (etapa falha, Spinnaker tenta de novo, eventualmente sucede) nunca apareciam em
+  // nenhum lugar — o resultado principal (matched/is_rollback) só reflete o estado FINAL (que é
+  // sucesso, corretamente), nunca o que aconteceu no meio do caminho. Falhas reais de etapa (com
+  // log de exceção de verdade, não histórico solto) encontradas nas últimas execuções, mesmo
+  // quando essas execuções terminaram SUCCEEDED — mais recente primeiro.
+  recent_stage_failures?: SpinnakerStageFailure[];
+}
+
+export interface SpinnakerStageFailure {
+  execution_id: string;
+  execution_time: number; // epoch ms
+  version?: string;
+  chg?: string;
+  chg_url?: string;
+  stage_name: string;
+  stage_status: string;
+  log: string;
 }
 
 export interface SpinnakerExecutionSummary {

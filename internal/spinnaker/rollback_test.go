@@ -2,7 +2,9 @@ package spinnaker
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 )
 
 func mkTrigger(nameApp, namespace, version, chg string) Trigger {
@@ -157,6 +159,12 @@ func TestDetectRollback_VersaoVigenteForaDaJanela(t *testing.T) {
 
 	if got.Matched {
 		t.Fatal("esperava Matched=false — versão vigente não corresponde a nenhuma execução vista")
+	}
+	// LatestKnownExecutionAt precisa vir preenchido mesmo em Matched:false — é o que permite ao
+	// chamador (applyRegistryFreshness, internal/web/handlers/spinnaker.go) distinguir "sem sinal
+	// nenhum" de "o Deployment Registry está desatualizado" (achado real, ver comentário do campo).
+	if got.LatestKnownExecutionAt != 1000 {
+		t.Errorf("LatestKnownExecutionAt = %d, esperava 1000 (StartTime da única execução conhecida)", got.LatestKnownExecutionAt)
 	}
 }
 
@@ -379,6 +387,114 @@ func TestDetectRollback_PreviousVersion_TodoHistoricoMesmaVersao(t *testing.T) {
 
 	if got.PreviousVersion != "" {
 		t.Errorf("PreviousVersion = %q, esperava vazio (todo histórico disponível é da mesma versão 1.0.0)", got.PreviousVersion)
+	}
+}
+
+// TestDetectRollback_RecentStageFailures_ExecucaoRetryNaoAparecePerdida reproduz o achado real
+// (relatado ao vivo pelo usuário depois da correção de registry_stale: "eu sei que a aplicação
+// entrega-mais-bff teve a pipeline executada com erros e depois com sucesso, mas não houveram
+// sinais nem os logs das exceptions"): confirmado contra a instância real do usuário — 3 de 4
+// execuções recentes de entrega-mais-bff/entrega-mais-sit tinham o stage "deploy-helm" com status
+// FAILED_CONTINUE (Kubernetes Job com BackoffLimitExceeded) mas a EXECUÇÃO como um todo terminava
+// SUCCEEDED — invisível pro DetectRollback (só olha ex.Status) e pro resto do sistema (Stages só
+// eram processados pra execução "decisiva", nunca pras demais do histórico recente).
+func TestDetectRollback_RecentStageFailures_ExecucaoRetryNaoAparecePerdida(t *testing.T) {
+	failedStageContext := []byte(`{
+		"kato.tasks": [
+			{
+				"exception": {
+					"message": "Job 'helm-deploy-x' failed. Reason: BackoffLimitExceeded. Container 'helm-deploy' exited with code: 1.",
+					"operation": "waitOnJobCompletion"
+				}
+			}
+		]
+	}`)
+
+	now := time.Now()
+	executions := []Execution{
+		{
+			ID: "e-sucesso-final", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: now.UnixMilli(),
+			Trigger: mkTrigger("entrega-mais-bff", "entrega-mais-sit", "1.5.48-2", ""),
+			Stages:  []Stage{{Name: "deploy-helm", Status: "SUCCEEDED", Context: []byte(`{}`)}},
+		},
+		{
+			// Execução com retry: execução geral SUCCEEDED (o pipeline segue apesar da etapa
+			// falha), mas o stage "deploy-helm" tem status FAILED_CONTINUE com exceção real.
+			// StartTime há 1h — dentro de stageFailureRecentWindow (48h), precisa aparecer.
+			ID: "e-com-retry", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: now.Add(-1 * time.Hour).UnixMilli(),
+			Trigger: mkTrigger("entrega-mais-bff", "entrega-mais-sit", "1.5.48-2", ""),
+			Stages:  []Stage{{Name: "deploy-helm", Status: "FAILED_CONTINUE", Context: failedStageContext}},
+		},
+	}
+
+	got := DetectRollback(executions, "entrega-mais-bff", "entrega-mais-sit", "1.5.48-2")
+
+	// A execução mais recente bate com a versão vigente — "deploy normal" pela regra atual, o
+	// que é correto (é o estado final de verdade). O ponto do teste é que isso NÃO deve esconder
+	// a falha de retry encontrada na execução anterior.
+	if got.IsRollback == nil || *got.IsRollback {
+		t.Fatalf("esperava deploy normal (IsRollback=false) — o estado final É sucesso, isso não muda")
+	}
+	if len(got.RecentStageFailures) != 1 {
+		t.Fatalf("esperava 1 falha de stage recente, veio %d: %+v", len(got.RecentStageFailures), got.RecentStageFailures)
+	}
+	failure := got.RecentStageFailures[0]
+	if failure.ExecutionID != "e-com-retry" {
+		t.Errorf("ExecutionID = %q, esperava e-com-retry", failure.ExecutionID)
+	}
+	if failure.StageName != "deploy-helm" || failure.StageStatus != "FAILED_CONTINUE" {
+		t.Errorf("StageName/StageStatus = %q/%q, esperava deploy-helm/FAILED_CONTINUE", failure.StageName, failure.StageStatus)
+	}
+	if !strings.Contains(failure.Log, "BackoffLimitExceeded") {
+		t.Errorf("Log não contém o erro real: %q", failure.Log)
+	}
+}
+
+// TestDetectRollback_RecentStageFailures_ExecucaoAntigaAindaAparece garante que uma falha de
+// etapa antiga (semanas/meses) CONTINUA aparecendo em RecentStageFailures — 2ª rodada do achado
+// real: uma 1ª versão desta função filtrava por StageFailureRecentWindow (48h), mas isso teve o
+// efeito colateral não pedido de remover o indicador de atenção dos cards da lista de Deployments
+// pra qualquer app sem redeploy recente. Usuário pediu explicitamente pra não tirar isso — a
+// filtragem por tempo foi revertida aqui e movida só pra decisão de NOTIFICAR
+// (SpinnakerFleetWatcher.notifyStageFailureIfNew, internal/web/handlers/spinnaker_watcher_test.go).
+func TestDetectRollback_RecentStageFailures_ExecucaoAntigaAindaAparece(t *testing.T) {
+	failedStageContext := []byte(`{
+		"kato.tasks": [
+			{"exception": {"message": "falha antiga", "operation": "waitOnJobCompletion"}}
+		]
+	}`)
+	oldExecution := time.Now().Add(-30 * 24 * time.Hour) // ~1 mês atrás — bem além de StageFailureRecentWindow (48h)
+
+	executions := []Execution{
+		{
+			ID: "e-antiga-com-falha", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: oldExecution.UnixMilli(),
+			Trigger: mkTrigger("app-parado", "ns-x", "1.0.0", ""),
+			Stages:  []Stage{{Name: "deploy-helm", Status: "FAILED_CONTINUE", Context: failedStageContext}},
+		},
+	}
+
+	got := DetectRollback(executions, "app-parado", "ns-x", "1.0.0")
+	if len(got.RecentStageFailures) != 1 {
+		t.Fatalf("falha de ~1 mês atrás deveria continuar aparecendo (sem filtro de idade), veio %d: %+v", len(got.RecentStageFailures), got.RecentStageFailures)
+	}
+	if got.RecentStageFailures[0].ExecutionTime != oldExecution.UnixMilli() {
+		t.Errorf("ExecutionTime = %d, esperava %d", got.RecentStageFailures[0].ExecutionTime, oldExecution.UnixMilli())
+	}
+}
+
+// TestDetectRollback_RecentStageFailures_SemFalhaFicaVazio garante que o campo não aparece
+// quando não há nenhum stage com FailureLog real — nunca inferir falha por omissão.
+func TestDetectRollback_RecentStageFailures_SemFalhaFicaVazio(t *testing.T) {
+	executions := []Execution{
+		{
+			ID: "e1", Name: "deploy-aks-global", Status: "SUCCEEDED", StartTime: 1000,
+			Trigger: mkTrigger("app-x", "ns-x", "1.0.0", ""),
+			Stages:  []Stage{{Name: "deploy-helm", Status: "SUCCEEDED", Context: []byte(`{"kato.tasks":[{"history":[{"phase":"X","status":"Y"}]}]}`)}},
+		},
+	}
+	got := DetectRollback(executions, "app-x", "ns-x", "1.0.0")
+	if len(got.RecentStageFailures) != 0 {
+		t.Errorf("esperava RecentStageFailures vazio (history sem exception não é falha), veio %+v", got.RecentStageFailures)
 	}
 }
 

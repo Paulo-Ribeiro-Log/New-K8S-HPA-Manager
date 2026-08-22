@@ -127,6 +127,34 @@ func (m *NotificationManager) NotifyCustom(title, message, severity string) erro
 	})
 }
 
+// NotifySpinnakerRollout envia notificação (Windows + in-app) quando o SpinnakerFleetWatcher
+// (internal/web/handlers/spinnaker_watcher.go) detecta em background uma falha de pipeline ou
+// rollback via Spinnaker que ainda não tinha sido visto. Diferente de NotifyAlert, nunca seta
+// Cluster/Namespace/HPAName na notificação in-app — o Header.tsx usa esses 3 campos pra abrir o
+// AlertsDialog de alertas Prometheus por HPA ao clicar, o que abriria uma tela errada/vazia pra um
+// evento de pipeline Spinnaker (não é HPA nem alerta Prometheus); todo o contexto (cluster/
+// namespace/deployment/CHG/erro) vai só no corpo da mensagem, que a UI já renderiza com \n
+// preservados (whitespace-pre-wrap em NotificationDrawer.tsx). Deduplicação fica a cargo do
+// chamador (SpinnakerFleetWatcher compara contra o último SpinnakerRolloutRecord persistido) —
+// não usa o alertCache/cooldown de NotifyAlert, que é keyed por um esquema diferente.
+func (m *NotificationManager) NotifySpinnakerRollout(title, message, severity string) error {
+	if !m.enabled {
+		return nil
+	}
+
+	_ = m.windowsNotifier.SendNotification(NotificationOptions{
+		Title:    title,
+		Message:  message,
+		Severity: severity,
+		Duration: "Long",
+	})
+
+	if err := m.inAppNotifier.AddNotification(title, message, severity, "", "", ""); err != nil {
+		return fmt.Errorf("falha ao adicionar notificação in-app: %w", err)
+	}
+	return nil
+}
+
 // TestNotification envia uma notificação de teste
 func (m *NotificationManager) TestNotification() error {
 	return m.windowsNotifier.TestNotification()

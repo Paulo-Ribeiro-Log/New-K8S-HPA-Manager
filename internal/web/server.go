@@ -1338,6 +1338,18 @@ func (s *Server) setupRoutes() {
 	}
 	fmt.Println("✅ Spinnaker routes registradas (config + detecção de rollback)")
 
+	// Spinnaker Fleet Watcher — varredura em BACKGROUND, empurra notificação in-app/Windows na
+	// primeira vez que detecta falha/rollback ainda não visto. Achado real: até aqui a detecção
+	// só rodava "puxada" (badge em DeploymentsTab.tsx só com a aba aberta no cluster/namespace
+	// certo, ou dentro de um Health Check manual) — uma falha real de deploy (webhook TLS
+	// expirado) e um rollback real em PRD passaram completamente despercebidos porque ninguém
+	// estava olhando a tela certa. Mesmo padrão de goroutine de fundo de startDBTestContainerReaper
+	// (db_test_docker.go) — roda pela vida inteira do processo, no-op silencioso quando o
+	// Spinnaker não está configurado no perfil (caso comum).
+	spinnakerWatcher := handlers.NewSpinnakerFleetWatcher(baseDir, githubRegistry, spinnakerHistoryStore, s.notificationManager, &spinnakerLogger)
+	go spinnakerWatcher.Run()
+	fmt.Println("✅ Spinnaker Fleet Watcher iniciado (varredura em background a cada 10min, notifica falha/rollback não visto)")
+
 	// GitHub Tokens Management (gerenciamento de tokens individuais)
 	if githubTokenStore != nil {
 		githubTokensHandler := handlers.NewGitHubTokensHandler(githubTokenStore, &githubLogger)
