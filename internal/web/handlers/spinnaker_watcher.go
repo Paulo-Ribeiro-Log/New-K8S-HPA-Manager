@@ -145,7 +145,11 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 		return
 	}
 
-	var allExecutions []spinnaker.Execution
+	// executionsByApp (não só a lista achatada) é necessário pra montar o deep-link do Deck
+	// (buildExecutionURL/applicationForExecution, spinnaker.go — precisa saber de qual
+	// application veio cada execução) — pedido do usuário: "nas notificações, inclua o link para
+	// abrir o problema no spinnaker".
+	executionsByApp := map[string][]spinnaker.Execution{}
 	err = spinnaker.WithSession(ctx, gateURL, w.baseDir, cfg.EffectiveLoginIdentifier(), func(cl *spinnaker.Client) error {
 		projects, err := cl.ListProjects(ctx)
 		if err != nil {
@@ -163,13 +167,17 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 			if err != nil {
 				continue // uma application falhando não deve derrubar a varredura inteira
 			}
-			allExecutions = append(allExecutions, execs...)
+			executionsByApp[app] = execs
 		}
 		return nil
 	})
 	if err != nil {
 		w.logf("checar Spinnaker (env=%s): %v", env, err)
 		return
+	}
+	var allExecutions []spinnaker.Execution
+	for _, execs := range executionsByApp {
+		allExecutions = append(allExecutions, execs...)
 	}
 	if len(allExecutions) == 0 {
 		return
@@ -182,7 +190,7 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 			continue
 		}
 		for _, rec := range records {
-			w.checkDeployment(cluster, rec, allExecutions)
+			w.checkDeployment(cluster, rec, allExecutions, deckURL, cfg.SelectedProject, executionsByApp)
 		}
 	}
 }
@@ -190,7 +198,7 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 // checkDeployment aplica DetectRollback pra um Deployment específico e decide se o resultado é
 // "novidade" (ver isNewFailureSignal) — se for, notifica. Sempre persiste o estado mais recente no
 // history, novidade ou não, pra servir de baseline de comparação no próximo tick.
-func (w *SpinnakerFleetWatcher) checkDeployment(cluster string, rec storage.DeploymentRecord, executions []spinnaker.Execution) {
+func (w *SpinnakerFleetWatcher) checkDeployment(cluster string, rec storage.DeploymentRecord, executions []spinnaker.Execution, deckURL, project string, executionsByApp map[string][]spinnaker.Execution) {
 	// Mesma ordem de prioridade de RolloutStatusBatch (ImageTag antes de Version — ver comentário
 	// lá sobre o chart convair-helm sanitizar "." em "-" no label app.kubernetes.io/version).
 	version := rec.ImageTag
@@ -202,6 +210,10 @@ func (w *SpinnakerFleetWatcher) checkDeployment(cluster string, rec storage.Depl
 	}
 
 	info := spinnaker.DetectRollback(executions, rec.DeploymentName, rec.Namespace, version)
+	if info.Matched && info.SpinnakerExecutionID != "" {
+		info.SpinnakerExecutionURL = buildExecutionURL(deckURL, project, applicationForExecution(executionsByApp, info.SpinnakerExecutionID), info.SpinnakerExecutionID)
+	}
+	fillStageFailureURLs(info, deckURL, project, executionsByApp)
 	applyRegistryFreshness(info, rec) // mesma checagem de spinnaker.go — ver comentário lá
 
 	// RecentStageFailures é checado ANTES do early-return de `!info.Matched` abaixo — achado real
@@ -305,8 +317,11 @@ func (w *SpinnakerFleetWatcher) notify(cluster, spinnakerEnv, namespace, deploym
 		}
 		fmt.Fprintf(&b, "\n--- %s ---\n%s\n", stage.Name, log)
 	}
+	if info.SpinnakerExecutionURL != "" {
+		fmt.Fprintf(&b, "\nAbrir no Spinnaker: %s\n", info.SpinnakerExecutionURL)
+	}
 
-	if err := w.notifier.NotifySpinnakerRollout(title, b.String(), severity); err != nil {
+	if err := w.notifier.NotifySpinnakerRollout(title, b.String(), severity, info.SpinnakerExecutionURL); err != nil {
 		w.logf("notificar %s/%s: %v", deployment, namespace, err)
 	}
 }
@@ -368,8 +383,11 @@ func (w *SpinnakerFleetWatcher) notifyStageFailureIfNew(cluster, namespace, depl
 	}
 	fmt.Fprintf(&b, "Etapa: %s (%s)\n\n%s\n", newest.StageName, newest.StageStatus, log)
 	b.WriteString("\nA execução mais recente já teve sucesso — este aviso é sobre o retry, não um estado atual quebrado.")
+	if newest.ExecutionURL != "" {
+		fmt.Fprintf(&b, "\n\nAbrir no Spinnaker: %s\n", newest.ExecutionURL)
+	}
 
-	if err := w.notifier.NotifySpinnakerRollout(title, b.String(), severity); err != nil {
+	if err := w.notifier.NotifySpinnakerRollout(title, b.String(), severity, newest.ExecutionURL); err != nil {
 		w.logf("notificar falha de etapa %s/%s: %v", deployment, namespace, err)
 	}
 }

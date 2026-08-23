@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { Check, CheckCheck, Trash2, AlertCircle, AlertTriangle, Info } from "lucide-react";
+import { Check, CheckCheck, Trash2, AlertCircle, AlertTriangle, Info, ExternalLink } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -229,6 +229,23 @@ export function NotificationDrawer({
                         <p className="text-xs text-muted-foreground whitespace-pre-wrap mb-2">
                           {notification.message}
                         </p>
+
+                        {/* Link externo opcional (ex: execução no Deck do Spinnaker) — separado
+                            do onClick do card (que abre o AlertsDialog via cluster/namespace/
+                            hpaName) porque é um destino diferente; stopPropagation evita que o
+                            clique no link também dispare handleNotificationClick. */}
+                        {notification.link && (
+                          <a
+                            href={notification.link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 text-xs text-primary hover:underline mb-2"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Abrir no Spinnaker
+                          </a>
+                        )}
 
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-muted-foreground">

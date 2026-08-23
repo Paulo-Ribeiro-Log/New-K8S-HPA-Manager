@@ -212,6 +212,7 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 		if info.Matched && info.SpinnakerExecutionID != "" {
 			info.SpinnakerExecutionURL = buildExecutionURL(deckURL, cfg.SelectedProject, applicationForExecution(executionsByApp, info.SpinnakerExecutionID), info.SpinnakerExecutionID)
 		}
+		fillStageFailureURLs(info, deckURL, cfg.SelectedProject, executionsByApp)
 
 		if h.history != nil {
 			if info.Matched {
@@ -347,6 +348,22 @@ func buildExecutionURL(deckURL, project, application, executionID string) string
 	}
 	deckURL = strings.TrimRight(deckURL, "/")
 	return deckURL + "/#/projects/" + url.PathEscape(project) + "/applications/" + url.PathEscape(application) + "/executions/" + url.PathEscape(executionID)
+}
+
+// fillStageFailureURLs preenche StageFailureSummary.ExecutionURL de cada item de
+// info.RecentStageFailures — mesmo mecanismo de SpinnakerExecutionURL acima (o pacote spinnaker
+// não conhece deckURL/application, só o chamador HTTP sabe montar o deep-link). Chamado tanto por
+// RolloutStatusBatch (badge/modal) quanto por SpinnakerFleetWatcher (notificação de falha de
+// etapa) — pedido do usuário: "nas notificações, inclua o link para abrir o problema no
+// spinnaker".
+func fillStageFailureURLs(info *spinnaker.RollbackInfo, deckURL, project string, executionsByApp map[string][]spinnaker.Execution) {
+	if info == nil {
+		return
+	}
+	for i := range info.RecentStageFailures {
+		f := &info.RecentStageFailures[i]
+		f.ExecutionURL = buildExecutionURL(deckURL, project, applicationForExecution(executionsByApp, f.ExecutionID), f.ExecutionID)
+	}
 }
 
 // resolveGateForEnv carrega a config do usuário e resolve a URL real do Gate (via settings.js

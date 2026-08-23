@@ -28,6 +28,12 @@ type InAppNotification struct {
 	Cluster   string `json:"cluster,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	HPAName   string `json:"hpaName,omitempty"`
+	// Link — URL externa opcional pra "abrir a origem do problema" (ex: execução no Deck do
+	// Spinnaker, ver NotifySpinnakerRollout). Deliberadamente separado de Cluster/Namespace/
+	// HPAName: aqueles 3 campos disparam o clique-pra-abrir-AlertsDialog em Header.tsx, o que
+	// seria a tela errada pra um evento de pipeline; Link é só um link externo, renderizado à
+	// parte no NotificationDrawer.tsx.
+	Link string `json:"link,omitempty"`
 }
 
 // NewInAppNotifier cria um novo notificador in-app
@@ -39,7 +45,7 @@ func NewInAppNotifier() *InAppNotifier {
 }
 
 // AddNotification adiciona uma nova notificação ao buffer
-func (n *InAppNotifier) AddNotification(title, message, severity, cluster, namespace, hpaName string) error {
+func (n *InAppNotifier) AddNotification(title, message, severity, cluster, namespace, hpaName, link string) error {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 
@@ -53,6 +59,7 @@ func (n *InAppNotifier) AddNotification(title, message, severity, cluster, names
 		Cluster:   cluster,
 		Namespace: namespace,
 		HPAName:   hpaName,
+		Link:      link,
 	}
 
 	// Adicionar no início (mais recente primeiro)
