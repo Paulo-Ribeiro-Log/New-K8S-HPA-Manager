@@ -304,6 +304,29 @@ func (w *SpinnakerFleetWatcher) notify(cluster, spinnakerEnv, namespace, deploym
 	if info.ExecutionStatus != "" {
 		fmt.Fprintf(&b, "Status da execução: %s\n", info.ExecutionStatus)
 	}
+	// Data/hora da execução — pedido explícito do usuário: a notificação já mostrava "há quanto
+	// tempo foi notificado" (timestamp da própria InAppNotification, formatDistanceToNow no
+	// NotificationDrawer.tsx), mas não a data da execução da pipeline em si — as duas podem
+	// divergir bastante (o watcher só roda a cada 10min, e a 1ª varredura contra um deployment já
+	// quebrado há dias sempre notifica, ver isNewFailureSignal). Mesmo rótulo/formato de
+	// SpinnakerRolloutModal.tsx ("Data/hora da execução", fmtDate) pra não introduzir uma segunda
+	// convenção de data pro mesmo dado.
+	if s := formatSpinnakerTime(info.PipelineExecutedAt); s != "" {
+		fmt.Fprintf(&b, "Data/hora da execução: %s\n", s)
+	}
+	// Início/Fim do rollback só fazem sentido pro rollback EXPLÍCITO (pipeline dedicado
+	// rollback-aks-global) — é uma execução separada da execução que falhou (FailedCHG acima),
+	// mesma distinção já feita em SpinnakerRolloutModal.tsx ("Início"/"Fim" só aparecem nesse
+	// bloco). Rollback implícito (RollingUpdate do K8s, sem execução própria no Spinnaker) não
+	// tem esses dois campos preenchidos por DetectRollback.
+	if info.RollbackType == "explicit" {
+		if s := formatSpinnakerTime(info.RollbackStartedAt); s != "" {
+			fmt.Fprintf(&b, "Início do rollback: %s\n", s)
+		}
+		if s := formatSpinnakerTime(info.RollbackEndedAt); s != "" {
+			fmt.Fprintf(&b, "Fim do rollback: %s\n", s)
+		}
+	}
 	if info.FailedCHG != "" {
 		fmt.Fprintf(&b, "CHG: %s\n", info.FailedCHG)
 	}
@@ -378,6 +401,11 @@ func (w *SpinnakerFleetWatcher) notifyStageFailureIfNew(cluster, namespace, depl
 	if newest.Version != "" {
 		fmt.Fprintf(&b, "Versão: %s\n", newest.Version)
 	}
+	// Mesmo pedido/rótulo de notify() acima — a idade da notificação (timestamp da própria
+	// InAppNotification) não é a mesma coisa que quando a execução rodou de fato.
+	if s := formatSpinnakerTime(newest.ExecutionTime); s != "" {
+		fmt.Fprintf(&b, "Data/hora da execução: %s\n", s)
+	}
 	if newest.CHG != "" {
 		fmt.Fprintf(&b, "CHG: %s\n", newest.CHG)
 	}
@@ -397,4 +425,15 @@ func (w *SpinnakerFleetWatcher) logf(format string, args ...interface{}) {
 		return
 	}
 	w.logger.Warn().Msgf(format, args...)
+}
+
+// formatSpinnakerTime formata um epoch-ms (0 = ausente, retorna "") no mesmo formato usado pelo
+// resto da app pra esse tipo de timestamp em texto (ver healthcheck.go:814) — não o mesmo
+// formatador do frontend (fmtDate em SpinnakerRolloutModal.tsx usa toLocaleString, específico de
+// JS), já que aqui o texto é montado no backend e vai direto pro corpo da notificação.
+func formatSpinnakerTime(ms int64) string {
+	if ms == 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).Format("02/01/2006 15:04")
 }
