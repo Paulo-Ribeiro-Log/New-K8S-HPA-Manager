@@ -68,7 +68,7 @@ func (m *NotificationManager) NotifyAlert(alertName, severity, cluster, namespac
 	fullMessage := fmt.Sprintf("Cluster: %s\nNamespace: %s\nHPA: %s\n\n%s",
 		cluster, namespace, hpaName, message)
 
-	if err := m.inAppNotifier.AddNotification(title, fullMessage, severity, cluster, namespace, hpaName); err != nil {
+	if err := m.inAppNotifier.AddNotification(title, fullMessage, severity, cluster, namespace, hpaName, ""); err != nil {
 		return fmt.Errorf("falha ao adicionar notificação in-app: %w", err)
 	}
 
@@ -137,7 +137,11 @@ func (m *NotificationManager) NotifyCustom(title, message, severity string) erro
 // preservados (whitespace-pre-wrap em NotificationDrawer.tsx). Deduplicação fica a cargo do
 // chamador (SpinnakerFleetWatcher compara contra o último SpinnakerRolloutRecord persistido) —
 // não usa o alertCache/cooldown de NotifyAlert, que é keyed por um esquema diferente.
-func (m *NotificationManager) NotifySpinnakerRollout(title, message, severity string) error {
+//
+// link — URL da execução no Deck (pedido do usuário: "nas notificações, inclua o link para abrir
+// o problema no spinnaker"), pode vir vazia (deckURL não configurado pro ambiente, ou execução
+// sem ID) — nesse caso o campo Link simplesmente não é preenchido, sem erro.
+func (m *NotificationManager) NotifySpinnakerRollout(title, message, severity, link string) error {
 	if !m.enabled {
 		return nil
 	}
@@ -149,7 +153,7 @@ func (m *NotificationManager) NotifySpinnakerRollout(title, message, severity st
 		Duration: "Long",
 	})
 
-	if err := m.inAppNotifier.AddNotification(title, message, severity, "", "", ""); err != nil {
+	if err := m.inAppNotifier.AddNotification(title, message, severity, "", "", "", link); err != nil {
 		return fmt.Errorf("falha ao adicionar notificação in-app: %w", err)
 	}
 	return nil

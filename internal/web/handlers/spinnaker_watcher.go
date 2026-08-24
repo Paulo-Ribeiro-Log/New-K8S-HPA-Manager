@@ -145,7 +145,11 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 		return
 	}
 
-	var allExecutions []spinnaker.Execution
+	// executionsByApp (não só a lista achatada) é necessário pra montar o deep-link do Deck
+	// (buildExecutionURL/applicationForExecution, spinnaker.go — precisa saber de qual
+	// application veio cada execução) — pedido do usuário: "nas notificações, inclua o link para
+	// abrir o problema no spinnaker".
+	executionsByApp := map[string][]spinnaker.Execution{}
 	err = spinnaker.WithSession(ctx, gateURL, w.baseDir, cfg.EffectiveLoginIdentifier(), func(cl *spinnaker.Client) error {
 		projects, err := cl.ListProjects(ctx)
 		if err != nil {
@@ -163,13 +167,17 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 			if err != nil {
 				continue // uma application falhando não deve derrubar a varredura inteira
 			}
-			allExecutions = append(allExecutions, execs...)
+			executionsByApp[app] = execs
 		}
 		return nil
 	})
 	if err != nil {
 		w.logf("checar Spinnaker (env=%s): %v", env, err)
 		return
+	}
+	var allExecutions []spinnaker.Execution
+	for _, execs := range executionsByApp {
+		allExecutions = append(allExecutions, execs...)
 	}
 	if len(allExecutions) == 0 {
 		return
@@ -182,7 +190,7 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 			continue
 		}
 		for _, rec := range records {
-			w.checkDeployment(cluster, rec, allExecutions)
+			w.checkDeployment(cluster, rec, allExecutions, deckURL, cfg.SelectedProject, executionsByApp)
 		}
 	}
 }
@@ -190,7 +198,7 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 // checkDeployment aplica DetectRollback pra um Deployment específico e decide se o resultado é
 // "novidade" (ver isNewFailureSignal) — se for, notifica. Sempre persiste o estado mais recente no
 // history, novidade ou não, pra servir de baseline de comparação no próximo tick.
-func (w *SpinnakerFleetWatcher) checkDeployment(cluster string, rec storage.DeploymentRecord, executions []spinnaker.Execution) {
+func (w *SpinnakerFleetWatcher) checkDeployment(cluster string, rec storage.DeploymentRecord, executions []spinnaker.Execution, deckURL, project string, executionsByApp map[string][]spinnaker.Execution) {
 	// Mesma ordem de prioridade de RolloutStatusBatch (ImageTag antes de Version — ver comentário
 	// lá sobre o chart convair-helm sanitizar "." em "-" no label app.kubernetes.io/version).
 	version := rec.ImageTag
@@ -202,6 +210,10 @@ func (w *SpinnakerFleetWatcher) checkDeployment(cluster string, rec storage.Depl
 	}
 
 	info := spinnaker.DetectRollback(executions, rec.DeploymentName, rec.Namespace, version)
+	if info.Matched && info.SpinnakerExecutionID != "" {
+		info.SpinnakerExecutionURL = buildExecutionURL(deckURL, project, applicationForExecution(executionsByApp, info.SpinnakerExecutionID), info.SpinnakerExecutionID)
+	}
+	fillStageFailureURLs(info, deckURL, project, executionsByApp)
 	applyRegistryFreshness(info, rec) // mesma checagem de spinnaker.go — ver comentário lá
 
 	// RecentStageFailures é checado ANTES do early-return de `!info.Matched` abaixo — achado real
@@ -292,6 +304,29 @@ func (w *SpinnakerFleetWatcher) notify(cluster, spinnakerEnv, namespace, deploym
 	if info.ExecutionStatus != "" {
 		fmt.Fprintf(&b, "Status da execução: %s\n", info.ExecutionStatus)
 	}
+	// Data/hora da execução — pedido explícito do usuário: a notificação já mostrava "há quanto
+	// tempo foi notificado" (timestamp da própria InAppNotification, formatDistanceToNow no
+	// NotificationDrawer.tsx), mas não a data da execução da pipeline em si — as duas podem
+	// divergir bastante (o watcher só roda a cada 10min, e a 1ª varredura contra um deployment já
+	// quebrado há dias sempre notifica, ver isNewFailureSignal). Mesmo rótulo/formato de
+	// SpinnakerRolloutModal.tsx ("Data/hora da execução", fmtDate) pra não introduzir uma segunda
+	// convenção de data pro mesmo dado.
+	if s := formatSpinnakerTime(info.PipelineExecutedAt); s != "" {
+		fmt.Fprintf(&b, "Data/hora da execução: %s\n", s)
+	}
+	// Início/Fim do rollback só fazem sentido pro rollback EXPLÍCITO (pipeline dedicado
+	// rollback-aks-global) — é uma execução separada da execução que falhou (FailedCHG acima),
+	// mesma distinção já feita em SpinnakerRolloutModal.tsx ("Início"/"Fim" só aparecem nesse
+	// bloco). Rollback implícito (RollingUpdate do K8s, sem execução própria no Spinnaker) não
+	// tem esses dois campos preenchidos por DetectRollback.
+	if info.RollbackType == "explicit" {
+		if s := formatSpinnakerTime(info.RollbackStartedAt); s != "" {
+			fmt.Fprintf(&b, "Início do rollback: %s\n", s)
+		}
+		if s := formatSpinnakerTime(info.RollbackEndedAt); s != "" {
+			fmt.Fprintf(&b, "Fim do rollback: %s\n", s)
+		}
+	}
 	if info.FailedCHG != "" {
 		fmt.Fprintf(&b, "CHG: %s\n", info.FailedCHG)
 	}
@@ -305,8 +340,11 @@ func (w *SpinnakerFleetWatcher) notify(cluster, spinnakerEnv, namespace, deploym
 		}
 		fmt.Fprintf(&b, "\n--- %s ---\n%s\n", stage.Name, log)
 	}
+	if info.SpinnakerExecutionURL != "" {
+		fmt.Fprintf(&b, "\nAbrir no Spinnaker: %s\n", info.SpinnakerExecutionURL)
+	}
 
-	if err := w.notifier.NotifySpinnakerRollout(title, b.String(), severity); err != nil {
+	if err := w.notifier.NotifySpinnakerRollout(title, b.String(), severity, info.SpinnakerExecutionURL); err != nil {
 		w.logf("notificar %s/%s: %v", deployment, namespace, err)
 	}
 }
@@ -363,13 +401,21 @@ func (w *SpinnakerFleetWatcher) notifyStageFailureIfNew(cluster, namespace, depl
 	if newest.Version != "" {
 		fmt.Fprintf(&b, "Versão: %s\n", newest.Version)
 	}
+	// Mesmo pedido/rótulo de notify() acima — a idade da notificação (timestamp da própria
+	// InAppNotification) não é a mesma coisa que quando a execução rodou de fato.
+	if s := formatSpinnakerTime(newest.ExecutionTime); s != "" {
+		fmt.Fprintf(&b, "Data/hora da execução: %s\n", s)
+	}
 	if newest.CHG != "" {
 		fmt.Fprintf(&b, "CHG: %s\n", newest.CHG)
 	}
 	fmt.Fprintf(&b, "Etapa: %s (%s)\n\n%s\n", newest.StageName, newest.StageStatus, log)
 	b.WriteString("\nA execução mais recente já teve sucesso — este aviso é sobre o retry, não um estado atual quebrado.")
+	if newest.ExecutionURL != "" {
+		fmt.Fprintf(&b, "\n\nAbrir no Spinnaker: %s\n", newest.ExecutionURL)
+	}
 
-	if err := w.notifier.NotifySpinnakerRollout(title, b.String(), severity); err != nil {
+	if err := w.notifier.NotifySpinnakerRollout(title, b.String(), severity, newest.ExecutionURL); err != nil {
 		w.logf("notificar falha de etapa %s/%s: %v", deployment, namespace, err)
 	}
 }
@@ -379,4 +425,27 @@ func (w *SpinnakerFleetWatcher) logf(format string, args ...interface{}) {
 		return
 	}
 	w.logger.Warn().Msgf(format, args...)
+}
+
+// spinnakerNotifyTZ — horário de Brasília fixo (UTC-3). Bug real corrigido: formatSpinnakerTime
+// usava time.UnixMilli(ms).Format(...), que resolve a hora via time.Local — o timezone
+// CONFIGURADO NO HOST onde o processo roda, não necessariamente São Paulo (servidor sem TZ
+// setada, container sem /etc/localtime, etc. caem em UTC por padrão no Go, sem erro nem aviso).
+// Nesta máquina de dev o host já está em America/Sao_Paulo, então o bug não reproduzia aqui, mas
+// a notificação precisa mostrar -3 São Paulo sempre, independente de onde o servidor roda —
+// Brasil não usa mais horário de verão desde 2019, então um offset fixo é sempre correto, sem
+// depender de tzdata/LoadLocation (que também falharia num host sem o banco de zoneinfo).
+var spinnakerNotifyTZ = time.FixedZone("-03:00", -3*60*60)
+
+// formatSpinnakerTime formata um epoch-ms (0 = ausente, retorna "") em horário de Brasília fixo
+// (ver spinnakerNotifyTZ acima), no mesmo formato usado pelo resto da app pra esse tipo de
+// timestamp em texto (ver healthcheck.go:814) — não o mesmo formatador do frontend (fmtDate em
+// SpinnakerRolloutModal.tsx usa toLocaleString, específico de JS, resolvido pelo timezone do
+// BROWSER do usuário, não do servidor — não sofre desse bug), já que aqui o texto é montado no
+// backend e vai direto pro corpo da notificação.
+func formatSpinnakerTime(ms int64) string {
+	if ms == 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).In(spinnakerNotifyTZ).Format("02/01/2006 15:04")
 }

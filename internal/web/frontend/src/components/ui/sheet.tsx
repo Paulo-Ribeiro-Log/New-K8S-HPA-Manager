@@ -65,7 +65,12 @@ const SheetContent = React.forwardRef<React.ElementRef<typeof SheetPrimitive.Con
         {...props}
       >
         {children}
-        <SheetPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity data-[state=open]:bg-secondary hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
+        {/* Evidenciado (fundo + borda circular, em vez de um X sutil quase invisível) — pedido
+            explícito do usuário: no NotificationDrawer.tsx (único consumidor real deste
+            componente hoje — ui/sidebar.tsx é código órfão, nunca importado), o X original
+            (opacity-70, sem fundo) ficava perto demais do badge de não-lidas e difícil de
+            localizar de relance. */}
+        <SheetPrimitive.Close className="absolute right-4 top-4 flex h-7 w-7 items-center justify-center rounded-full border border-border bg-muted text-foreground opacity-90 ring-offset-background transition-colors hover:bg-destructive hover:text-destructive-foreground hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
         </SheetPrimitive.Close>

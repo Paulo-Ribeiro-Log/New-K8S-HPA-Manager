@@ -10,6 +10,7 @@ export interface InAppNotification {
   cluster?: string;
   namespace?: string;
   hpaName?: string;
+  link?: string;
 }
 
 export interface NotificationsResponse {

@@ -129,6 +129,11 @@ type StageFailureSummary struct {
 	StageName     string `json:"stage_name"`
 	StageStatus   string `json:"stage_status"`
 	Log           string `json:"log"`
+	// ExecutionURL — mesmo padrão de RollbackInfo.SpinnakerExecutionURL: este pacote não conhece
+	// a URL do Deck nem a application (precisa das duas pra montar o deep-link), preenchido pelo
+	// chamador HTTP (internal/web/handlers/spinnaker.go/spinnaker_watcher.go) depois de
+	// DetectRollback, nunca por findRecentStageFailures.
+	ExecutionURL string `json:"execution_url,omitempty"`
 }
 
 // StageFailureRecentWindow — NÃO usado pra filtrar RecentStageFailures (ver histórico de idas e
