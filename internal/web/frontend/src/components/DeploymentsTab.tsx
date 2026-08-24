@@ -63,6 +63,7 @@ import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { useUserPermissions } from "@/hooks/useUserPermissions";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { useSpinnakerRolloutStatus } from "@/hooks/useSpinnaker";
+import { deriveSpinnakerEnv } from "@/lib/spinnakerEnv";
 import { SpinnakerRolloutModal } from "@/components/SpinnakerRolloutModal";
 
 // Badge/chip do Spinnaker (SPINNAKER-INTEGRATION-PLAN.md, seção 8) — mesmo componente visual
@@ -756,6 +757,16 @@ export const DeploymentsTab = ({
     if (!cluster) return;
     refetch();
     refetchDtStatus();
+    // Rescan do Spinnaker junto — pedido explícito do usuário. staleTime de 2min do hook
+    // (useSpinnakerRolloutStatus) faz o badge só se atualizar sozinho depois desse tempo ou ao
+    // trocar de cluster/namespace; sem chamar refetch aqui, clicar em "Atualizar" na lista de
+    // Deployments não refletia rollback/falha detectados recentemente no Spinnaker mesmo com o
+    // badge já visível na tela. deriveSpinnakerEnv reproduz o mesmo gate do hook (enabled: !!env)
+    // — evita disparar refetch() pra um cluster sem ambiente Spinnaker reconhecido (sit/stg/etc.,
+    // sem Gate próprio), o que mandaria env=undefined pro backend sem necessidade.
+    if (deriveSpinnakerEnv(cluster)) {
+      spinnakerStatus.refetch();
+    }
   };
 
   const refreshManifest = async () => {
