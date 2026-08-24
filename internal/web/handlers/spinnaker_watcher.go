@@ -199,12 +199,10 @@ func (w *SpinnakerFleetWatcher) checkEnv(cfg spinnaker.Config, env string, clust
 // "novidade" (ver isNewFailureSignal) — se for, notifica. Sempre persiste o estado mais recente no
 // history, novidade ou não, pra servir de baseline de comparação no próximo tick.
 func (w *SpinnakerFleetWatcher) checkDeployment(cluster string, rec storage.DeploymentRecord, executions []spinnaker.Execution, deckURL, project string, executionsByApp map[string][]spinnaker.Execution) {
-	// Mesma ordem de prioridade de RolloutStatusBatch (ImageTag antes de Version — ver comentário
-	// lá sobre o chart convair-helm sanitizar "." em "-" no label app.kubernetes.io/version).
-	version := rec.ImageTag
-	if version == "" {
-		version = rec.Version
-	}
+	// registryVersion (spinnaker.go) — mesma ordem de prioridade (ImageTag antes de Version, ver
+	// comentário lá sobre o chart convair-helm sanitizar "." em "-" no label app.kubernetes.io/
+	// version), agora num único lugar em vez de duplicada nos dois call sites.
+	version := registryVersion(rec)
 	if version == "" {
 		return
 	}
@@ -214,6 +212,7 @@ func (w *SpinnakerFleetWatcher) checkDeployment(cluster string, rec storage.Depl
 		info.SpinnakerExecutionURL = buildExecutionURL(deckURL, project, applicationForExecution(executionsByApp, info.SpinnakerExecutionID), info.SpinnakerExecutionID)
 	}
 	fillStageFailureURLs(info, deckURL, project, executionsByApp)
+	fillLatestKnownExecutionURL(info, deckURL, project, executionsByApp)
 	applyRegistryFreshness(info, rec) // mesma checagem de spinnaker.go — ver comentário lá
 
 	// RecentStageFailures é checado ANTES do early-return de `!info.Matched` abaixo — achado real

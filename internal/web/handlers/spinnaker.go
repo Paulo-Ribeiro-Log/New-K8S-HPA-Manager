@@ -187,18 +187,6 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 	deckURL, _ := cfg.DeckURLForEnv(env)
 	result := make(map[string]*spinnaker.RollbackInfo, len(records))
 	for _, rec := range records {
-		// ImageTag primeiro, não Version — achado real: DeploymentRecord.Version
-		// (app.kubernetes.io/version) sai sanitizado por alguns Helm charts (ex: convair-helm,
-		// usado pelas apps da squad Reversa/Dat) trocando "." por "-" (ex: "0.0.2-6" vira
-		// "0-0-2-6"), enquanto o Spinnaker sempre usa o formato com ponto real
-		// (trigger.Parameters["Application Version"], confirmado ao vivo). Com Version primeiro,
-		// a comparação de versão em DetectRollback nunca batia pra nenhum deployment dessas
-		// squads — o badge nunca aparecia em lugar nenhum, silenciosamente (Matched sempre
-		// false). ImageTag é extraído direto da imagem do container, sem essa sanitização.
-		version := rec.ImageTag
-		if version == "" {
-			version = rec.Version
-		}
 		// DeploymentName, não AppName — 2º achado real do mesmo chart convair-helm: pelo menos
 		// 2 deployments reais (dat-documento-vendas-api, ms-dat-satex-core) têm
 		// app.kubernetes.io/name literalmente igual ao nome do CHART ("convair-helm"), não ao
@@ -208,11 +196,12 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 		// trigger.AppName() do Spinnaker (que sempre reporta o nome real do nameApp, confirmado
 		// ao vivo: "dat-documento-vendas-api"). DeploymentName é o nome do objeto Deployment no
 		// K8s — sempre único, sempre confiável, e é exatamente o valor que o Spinnaker usa.
-		info := spinnaker.DetectRollback(allExecutions, rec.DeploymentName, rec.Namespace, version)
+		info := spinnaker.DetectRollback(allExecutions, rec.DeploymentName, rec.Namespace, registryVersion(rec))
 		if info.Matched && info.SpinnakerExecutionID != "" {
 			info.SpinnakerExecutionURL = buildExecutionURL(deckURL, cfg.SelectedProject, applicationForExecution(executionsByApp, info.SpinnakerExecutionID), info.SpinnakerExecutionID)
 		}
 		fillStageFailureURLs(info, deckURL, cfg.SelectedProject, executionsByApp)
+		fillLatestKnownExecutionURL(info, deckURL, cfg.SelectedProject, executionsByApp)
 
 		if h.history != nil {
 			if info.Matched {
@@ -273,10 +262,34 @@ func applyRegistryFreshness(info *spinnaker.RollbackInfo, rec storage.Deployment
 		return
 	}
 	info.RegistryLastSeen = rec.LastSeen.UnixMilli()
+	// RegistryVersion — pedido explícito do usuário ("informações mais claras"): o badge/modal
+	// de "dado desatualizado" já dizia QUANDO o registry foi lido, mas nunca QUAL versão
+	// desatualizada ele carrega — preenchido sempre (não só quando RegistryStale acaba true
+	// abaixo), mesmo padrão incondicional de RegistryLastSeen.
+	info.RegistryVersion = registryVersion(rec)
 	if info.LatestKnownExecutionAt == 0 {
 		return
 	}
 	info.RegistryStale = info.LatestKnownExecutionAt > info.RegistryLastSeen
+}
+
+// registryVersion resolve a versão que o Deployment Registry conhece pra um deployment — mesma
+// prioridade usada como currentLiveVersion na chamada de DetectRollback (RolloutStatusBatch/
+// SpinnakerFleetWatcher.checkDeployment), extraída aqui pra um único lugar em vez de duplicada
+// nos dois call sites.
+//
+// ImageTag primeiro, não Version — achado real: DeploymentRecord.Version (app.kubernetes.io/
+// version) sai sanitizado por alguns Helm charts (ex: convair-helm, usado pelas apps da squad
+// Reversa/Dat) trocando "." por "-" (ex: "0.0.2-6" vira "0-0-2-6"), enquanto o Spinnaker sempre
+// usa o formato com ponto real (trigger.Parameters["Application Version"], confirmado ao vivo).
+// Com Version primeiro, a comparação de versão em DetectRollback nunca batia pra nenhum
+// deployment dessas squads — o badge nunca aparecia em lugar nenhum, silenciosamente (Matched
+// sempre false). ImageTag é extraído direto da imagem do container, sem essa sanitização.
+func registryVersion(rec storage.DeploymentRecord) string {
+	if rec.ImageTag != "" {
+		return rec.ImageTag
+	}
+	return rec.Version
 }
 
 // toHistoryRecord/fromHistoryRecord convertem entre o contrato de resposta (spinnaker.RollbackInfo)
@@ -364,6 +377,19 @@ func fillStageFailureURLs(info *spinnaker.RollbackInfo, deckURL, project string,
 		f := &info.RecentStageFailures[i]
 		f.ExecutionURL = buildExecutionURL(deckURL, project, applicationForExecution(executionsByApp, f.ExecutionID), f.ExecutionID)
 	}
+}
+
+// fillLatestKnownExecutionURL preenche info.LatestKnownExecution.ExecutionURL — mesmo mecanismo
+// de fillStageFailureURLs acima, mas pro campo LatestKnownExecution (ver comentário do campo em
+// internal/spinnaker/rollback.go). Pedido explícito do usuário: o badge "dado desatualizado"
+// (registry_stale) precisa mostrar não só QUAL execução do Spinnaker é mais nova que a última
+// leitura do registry, mas também dar um jeito de abri-la direto no Deck pra investigar.
+func fillLatestKnownExecutionURL(info *spinnaker.RollbackInfo, deckURL, project string, executionsByApp map[string][]spinnaker.Execution) {
+	if info == nil || info.LatestKnownExecution == nil {
+		return
+	}
+	ex := info.LatestKnownExecution
+	ex.ExecutionURL = buildExecutionURL(deckURL, project, applicationForExecution(executionsByApp, ex.ExecutionID), ex.ExecutionID)
 }
 
 // resolveGateForEnv carrega a config do usuário e resolve a URL real do Gate (via settings.js

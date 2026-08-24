@@ -120,11 +120,22 @@ function SpinnakerChip({ info, onClick }: { info: SpinnakerRollbackInfo | undefi
     // funciona") — o Deployment Registry está desatualizado; (3) achado real relatado em
     // seguida — houve falha(s) de etapa recente(s) mesmo sem nenhum "rollback" caracterizado.
     if (info?.registry_stale) {
+      // Tooltip nativo (title) não suporta link — a versão completa, com o botão "Ver esta
+      // execução no Spinnaker", vive na seção dedicada do SpinnakerRolloutModal.tsx (mesmo
+      // clique que abre este chip). Aqui, o objetivo é responder de relance QUAL versão diverge
+      // e DESDE QUANDO — pedido explícito do usuário ("app corporativa, informações devem ser
+      // mais claras"): a versão anterior do tooltip só dizia quando o registry foi lido, nunca
+      // qual versão desatualizada ele carrega nem qual versão o Spinnaker já conhece.
+      const registryVersionText = info.registry_version ? `"${info.registry_version}"` : "desconhecida";
+      const spinnakerVersionText = info.latest_known_execution?.version
+        ? `"${info.latest_known_execution.version}"`
+        : "uma versão mais nova";
+      const registryLastSeenText = info.registry_last_seen ? new Date(info.registry_last_seen).toLocaleString("pt-BR") : "?";
       return wrapClickable(
         <span className="relative inline-flex">
           <span
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border border-dashed border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400 ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
-            title={`Dado do Deployment Registry desatualizado (última leitura: ${info.registry_last_seen ? new Date(info.registry_last_seen).toLocaleString("pt-BR") : "?"}) — a comparação de versão com o Spinnaker pode estar errada ou ausente por causa disso. Rode um scan na aba GitHub Releases pra atualizar.`}
+            title={`Dado do Deployment Registry desatualizado: o registry ainda mostra a versão ${registryVersionText} (lido em ${registryLastSeenText}), mas o Spinnaker já registra ${spinnakerVersionText}. A comparação de rollback pode estar errada por causa disso. Clique pra ver o detalhe e rode um novo scan na aba GitHub Releases pra atualizar.`}
           >
             <TriangleAlert className="w-2.5 h-2.5 shrink-0" />
             dado desatualizado

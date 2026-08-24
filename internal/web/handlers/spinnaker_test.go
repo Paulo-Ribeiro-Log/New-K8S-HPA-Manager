@@ -56,6 +56,36 @@ func TestApplyRegistryFreshness_ExecucaoNovaQueRegistryAindaNaoViuMarcaComoDesat
 	}
 }
 
+// TestApplyRegistryFreshness_PreenceRegistryVersion cobre o pedido do usuário ("informações
+// devem ser mais claras", app corporativa): o badge/modal de "dado desatualizado" precisa mostrar
+// não só QUANDO o registry foi lido, mas QUAL versão desatualizada ele carrega — pra comparar
+// contra LatestKnownExecution.Version e confirmar a divergência sem sair da aplicação.
+func TestApplyRegistryFreshness_PreencheRegistryVersion(t *testing.T) {
+	info := &spinnaker.RollbackInfo{}
+	applyRegistryFreshness(info, storage.DeploymentRecord{LastSeen: time.Now(), ImageTag: "1.5.47-1"})
+	if info.RegistryVersion != "1.5.47-1" {
+		t.Errorf("esperava RegistryVersion=1.5.47-1, veio %q", info.RegistryVersion)
+	}
+}
+
+// TestRegistryVersion_PrefereImageTagSobreVersion — ImageTag primeiro, não Version: pelo menos
+// um Helm chart real (convair-helm) sanitiza "." em "-" no label app.kubernetes.io/version,
+// quebrando a comparação com o Spinnaker (que sempre usa o formato com ponto real). ImageTag é
+// extraído direto da imagem do container, sem essa sanitização.
+func TestRegistryVersion_PrefereImageTagSobreVersion(t *testing.T) {
+	got := registryVersion(storage.DeploymentRecord{ImageTag: "1.5.47-1", Version: "1-5-47-1"})
+	if got != "1.5.47-1" {
+		t.Errorf("esperava priorizar ImageTag, veio %q", got)
+	}
+}
+
+func TestRegistryVersion_CaiParaVersionQuandoImageTagVazio(t *testing.T) {
+	got := registryVersion(storage.DeploymentRecord{Version: "1-5-47-1"})
+	if got != "1-5-47-1" {
+		t.Errorf("esperava fallback pra Version, veio %q", got)
+	}
+}
+
 func TestApplyRegistryFreshness_LastSeenZeroNaoAlteraInfo(t *testing.T) {
 	// DeploymentRecord.LastSeen zero-value (nunca deveria acontecer num record real, mas
 	// applyRegistryFreshness não deve inventar um "desatualizado" a partir de um dado ausente —
