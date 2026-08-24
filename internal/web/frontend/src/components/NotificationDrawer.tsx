@@ -154,11 +154,14 @@ export function NotificationDrawer({
             onMouseDown={startResize}
             title="Arrastar para redimensionar"
           />
-          <SheetHeader>
-            <SheetTitle className="flex items-center justify-between">
+          {/* pr-9: reserva espaço pro botão fechar (absolute right-4 top-4 em ui/sheet.tsx,
+              ~28px + a margem) — sem isso o badge de não-lidas (antes empurrado até a borda
+              via justify-between) ficava colado nele. */}
+          <SheetHeader className="pr-9">
+            <SheetTitle className="flex items-center gap-2">
               <span>Notificações</span>
               {unreadCount > 0 && (
-                <Badge variant="destructive" className="ml-2">
+                <Badge variant="destructive">
                   {unreadCount} não lidas
                 </Badge>
               )}
