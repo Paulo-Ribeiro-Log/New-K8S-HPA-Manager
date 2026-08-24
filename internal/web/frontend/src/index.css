@@ -26,7 +26,14 @@ All colors MUST be HSL.
     --secondary-foreground: 240 10% 10%;
 
     --muted: 240 8% 95%;
-    --muted-foreground: 240 6% 45%;
+    /* Bug real corrigido — contraste insuficiente no tema claro (relatado pelo usuário: "os
+       elementos acabam por perder o contraste"). Calculado via fórmula WCAG 2.1 (razão de
+       luminância relativa): --muted-foreground em 45% de luminosidade tinha só ~4.6:1 contra
+       --muted (95%) — margem apertadíssima acima do mínimo de 4.5:1 pra texto normal, e é o
+       token usado em quase todo texto secundário da app (timestamps, descrições, ícones
+       "muted", texto de badge). Escurecido pra 38% → ~6.4-6.9:1 contra --background/--card/
+       --muted, folga confortável sem escurecer a ponto de virar texto "primário" por engano. */
+    --muted-foreground: 240 6% 38%;
 
     --accent: 250 70% 95%;
     --accent-foreground: 250 70% 30%;
@@ -40,8 +47,20 @@ All colors MUST be HSL.
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 240 8% 90%;
-    --input: 240 8% 90%;
+    /* Bug real corrigido — o achado mais grave da investigação: --border/--input em 90% de
+       luminosidade contra --background (98%)/--card (100%) davam só ~1.2:1 de contraste —
+       essencialmente invisíveis (WCAG recomenda mínimo de 3:1 pra contorno de componente de
+       UI, SC 1.4.11). Como `* { @apply border-border; }` (abaixo) torna --border a cor padrão
+       de TODA borda da aplicação (cards, dialogs, tabelas, divisores, tabs, badges com
+       `border`, botões `variant=outline`...), esse único token subdimensionado é a causa mais
+       provável do "tudo parece uma folha branca só, sem definição" relatado — cartões e
+       divisores não tinham NENHUMA borda perceptível. Escurecido pra 58% → ~3.1:1 contra
+       --background, ~3.4:1 contra --card, atingindo o mínimo recomendado sem virar um
+       contorno pesado/escuro demais. --input segue o mesmo valor (contorno de campos de
+       formulário sofria do mesmo problema). Tema escuro não tocado — não foi relatado e o
+       --border de lá já tem outra relação de contraste com o fundo escuro. */
+    --border: 240 8% 58%;
+    --input: 240 8% 58%;
     --ring: 250 70% 65%;
 
     --radius: 0.75rem;
@@ -66,7 +85,11 @@ All colors MUST be HSL.
     --sidebar-primary-foreground: 0 0% 98%;
     --sidebar-accent: 240 4.8% 95.9%;
     --sidebar-accent-foreground: 240 5.9% 10%;
-    --sidebar-border: 220 13% 91%;
+    /* Mesmo bug/correção de --border acima (~91% de luminosidade era ~1.2:1, quase invisível
+       contra --sidebar-background em 98%) — ui/sidebar.tsx é código órfão hoje (CLAUDE.md:
+       nunca importado por nada da app), mas mantido consistente com o resto do tema caso volte
+       a ser usado. */
+    --sidebar-border: 220 13% 58%;
     --sidebar-ring: 217.2 91.2% 59.8%;
   }
 
