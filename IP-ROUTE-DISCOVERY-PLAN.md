@@ -277,6 +277,13 @@ datacenter da Kyndryl (ou estiver caída), a ferramenta vai reportar isso com ho
 ("inalcançável a partir desta origem"), não vai inventar um caminho que não existe. Mesmo padrão
 já documentado nesta app pra VPN/conectividade de cluster (`checkReachability`).
 
+**Confirmado pelo usuário (ver seção 9, Pergunta 4)**: existe VPN até a Kyndryl, e é **a mesma VPN
+já usada pro AKS e pro GCP** — não uma rota nova/não testada, é a mesma infraestrutura de rede que
+toda troca de cluster desta app já depende pra funcionar. Isso valida com confiança maior a escolha
+de modo local como default (o host do backend, na mesma rede lógica dessa VPN, já prova
+diariamente que o caminho existe) — resta só o cuidado de segmentação/firewall específico do lado
+da Kyndryl por IP individual, que a VPN em si não garante (ver seção 9).
+
 Camadas que **não** dependem do modo pod/local (rodam sempre do backend, sem custo de spawnar
 container): DNS reverso (3.5), ASN/RDAP (3.6), faixas de nuvem (3.7), cross-reference interno
 (3.8) — só o traceroute em si (3.1) e o banner grab de portas (3.3, quando o alvo só é alcançável
@@ -439,6 +446,20 @@ de terceiros (ex: IBM Kyndryl). Isso eleva 3.2/3.3/3.4 (fingerprint de SO/servi�
 central e obrigatório, e reclassifica 3.8 (cross-reference K8s) como enriquecimento opcional — ver
 correção no início do documento e ajustes nas seções 3.8/4.1/7.
 
+**Pergunta 4 original já RESOLVIDA pelo usuário**: sim, há VPN até a IBM Kyndryl — e é **a mesma
+VPN já usada pro AKS e pro GCP**. Isso é uma confirmação forte, não só "existe uma rota genérica":
+o host onde este backend roda já prova, todo dia, que essa VPN funciona (é o mesmo caminho que
+`kubeconfig`/`GetRestConfig` usam pra falar com o `kube-apiserver` de qualquer cluster AKS, e que
+`GetFreshGKEToken`/etc. usam pro GCP) — não é uma rota nova e não testada, é a mesma infraestrutura
+de rede que a aplicação inteira já depende pra existir. Reforça com mais confiança ainda a decisão
+da seção 4.1: **modo local é o caminho certo pra alcançar a Kyndryl**, sem precisar rotear nada
+através de um pod específico — o host do backend já está, literalmente agora, na mesma rede lógica
+que os hosts remotos de terceiros. Único cuidado a manter: nada garante que TODA sub-rede da
+Kyndryl esteja alcançável por essa VPN (pode haver segmentação/firewall interno do lado deles pra
+IPs específicos que a VPN nunca tentou tocar até hoje) — a ferramenta ainda deve reportar
+"inalcançável" com honestidade quando um IP específico não responder, em vez de assumir que "a VPN
+existe" implica "todo IP daquela rede responde".
+
 Perguntas que continuam em aberto:
 
 1. **Cross-reference interno (seção 3.8, agora Fase 4, bônus): live query por cluster selecionado,
@@ -451,11 +472,5 @@ Perguntas que continuam em aberto:
 2. **Nome definitivo da ferramenta / onde entra no menu** — "Rota de Rede"? "Diagnóstico de IP"?
    Outro nome que já faça sentido pro time.
 3. **Confirma o modo dual pod/local como está usado nas outras 3 ferramentas de teste ativo desta
-   app, com modo local como default** (ver seção 4.1, ajustada), ou este caso tem alguma
-   particularidade que pede um mecanismo diferente (ex: rodar sempre a partir do host, nem
-   oferecer modo pod)?
-4. **Alcance de rede real até infraestrutura remota de terceiros (ex: IBM Kyndryl)**: o host onde
-   o backend roda (ou os nós dos clusters, no modo pod) tem rota de rede/VPN até essas redes hoje?
-   Não é uma decisão de design, é uma checagem de fato que vale confirmar antes de investir — sem
-   rota nenhuma, a ferramenta vai reportar "inalcançável" honestamente, mas não faz sentido só
-   descobrir isso depois de implementada.
+   app, com modo local como default** (ver seção 4.1, ajustada e agora reforçada pela resposta da
+   Pergunta 4), ou este caso tem alguma particularidade que pede um mecanismo diferente?
