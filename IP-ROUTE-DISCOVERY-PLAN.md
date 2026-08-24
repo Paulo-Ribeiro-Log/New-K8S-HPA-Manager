@@ -7,6 +7,15 @@
 etc. — com visualização **gráfica**, pensada pra facilitar a leitura de um operador/analista SRE.
 Pedido explícito: "pense em uma solução profissional e completa".
 
+**Correção explícita do usuário, essencial pro escopo (resolve a Pergunta 2 da seção 9 original)**:
+a ferramenta **não pode depender de o alvo estar dentro de um cluster do kubeconfig** — a empresa
+tem servidores e VMs em locais remotos fora de qualquer cluster K8s gerenciado por esta app (ex:
+infraestrutura hospedada na **IBM Kyndryl**). Isso muda a ênfase do plano: a identificação de
+SO/serviço (seções 3.2/3.3/3.4) é o mecanismo **primário e obrigatório**, precisa funcionar sozinha
+pra qualquer IP alcançável; o cross-reference contra a frota K8s (seção 3.8) vira um enriquecimento
+**opcional/bônus** — acende quando o IP por acaso bate com algo conhecido, nunca um pré-requisito.
+Ver seção 4.1 (modo de execução) pra como isso muda a arquitetura.
+
 Este documento responde três perguntas: (1) quais mecanismos técnicos existem pra cada tipo de
 informação pedida, verificados ao vivo nesta sessão (não é conhecimento de memória sem checagem);
 (2) o que a própria aplicação já tem pronto e deveria ser reaproveitado, não reinventado; (3) uma
@@ -22,12 +31,15 @@ Traduzindo o pedido em requisitos concretos:
 1. **Caminho de rede** — de onde a análise parte até o IP informado, hop a hop, com latência por
    salto quando disponível.
 2. **Classificação do destino** — é um servidor Web? Linux? Windows? Equipamento de rede (roteador/
-   firewall/load balancer)? Um recurso da própria frota K8s desta aplicação (nó/pod/service)?
+   firewall/load balancer)? **Precisa funcionar pra qualquer IP alcançável, dentro ou fora dos
+   clusters do kubeconfig** — servidor/VM em datacenter próprio, em terceiro (ex: IBM Kyndryl), em
+   nuvem pública fora desta app, etc. Se o IP também bater com um recurso da própria frota K8s
+   (nó/pod/service), isso é um enriquecimento a mais, não o mecanismo de identificação em si.
 3. **Contexto de origem/propriedade do IP** — a quem pertence (empresa/provedor), em qual
    ASN/rede, se é uma faixa de nuvem pública conhecida (Azure/AWS/GCP), se tem DNS reverso.
 4. **Visualização gráfica** — não uma lista de texto (`traceroute` cru já existe pra isso), um
    grafo navegável, com os nós identificados visualmente (ícone/cor por tipo), pensado pra reduzir
-   o tempo de leitura de um analista sob pressão (o mesmo motivo que already levou a esta app usar
+   o tempo de leitura de um analista sob pressão (o mesmo motivo que já levou esta app a usar
    Cytoscape.js em `LatencyTopologyGraph.tsx`/`ServiceMeshGraph.tsx`).
 
 ---
@@ -203,13 +215,20 @@ padrão de TTL diário já usado por `AzurePricer`/`GCPPricer` (`sqlite`, TTL 24
 faixas via `net.ParseCIDR`/`Contains` — puramente aritmético, sem custo de rede por consulta depois
 do cache aquecido.
 
-### 3.8 Cross-reference interno — o diferencial real desta ferramenta
+### 3.8 Cross-reference interno — enriquecimento bônus, NUNCA pré-requisito
 
-Nenhuma ferramenta de traceroute genérica (nem um `mtr` de terminal, nem um nmap) sabe responder
-"esse IP é o node `aks-pool1-xxxxx` do cluster `akspriv-abastecimento-prd`" ou "esse IP é o Pod do
-Deployment `checkout-api`". **Esta app já sabe** — é a única fonte de vantagem competitiva real
-que faz sentido investir aqui, porque é o que nenhuma ferramenta de mercado replica sem acesso ao
-mesmo inventário.
+**Importante (correção explícita do usuário)**: esta camada só acende quando o IP informado por
+acaso é um dos nós/pods/services dos clusters do kubeconfig — a maioria dos alvos reais (servidor
+on-prem, VM em datacenter de terceiro como IBM Kyndryl, host de nuvem fora desta app) **nunca vai
+bater aqui**, e a ferramenta precisa identificar SO/serviço igualmente bem nesse caso, usando só as
+seções 3.2/3.3/3.4 (heurística de TTL, banner grab de porta, HTTP/TLS). Esta seção nunca pode virar
+um gate — é estritamente um "se bater, ótimo, mostra o recurso; se não bater, segue normal com o
+resto do fingerprint".
+
+Dito isso, quando bate, nenhuma ferramenta de traceroute genérica (nem um `mtr` de terminal, nem um
+nmap) sabe responder "esse IP é o node `aks-pool1-xxxxx` do cluster `akspriv-abastecimento-prd`" ou
+"esse IP é o Pod do Deployment `checkout-api`" — **esta app já sabe**, e é um diferencial real que
+vale a pena entregar como bônus, só não como base da identificação.
 
 Fontes já existentes na app pra cruzar (sem persistir nada novo, ao menos na v1 — ver decisão em
 aberto na seção 9):
@@ -236,14 +255,33 @@ lugares desta app, ex: link CHG→ServiceNow, link execução→Spinnaker Deck).
 Reaproveitar o padrão dual já estabelecido (seção 2): **modo pod** (Ephemeral Container na imagem
 `nicolaka/netshoot:v0.12` já usada, via `resolvePodForDeployment`/seletor de cluster+namespace+
 deployment+pod já existente no Teste de Latência/Kafka/DB) e **modo local** (Docker no host via
-`db_test_docker.go`, pré-checagem + reaper já compartilhados). A escolha do modo muda de onde a
-"origem" do traceroute enxerga a rede — é uma decisão real do usuário em cada consulta, não algo
-pra esconder atrás de um automatismo.
+`db_test_docker.go`, pré-checagem + reaper já compartilhados).
+
+**Ajuste de ênfase pós-correção do usuário (ver início do documento)**: como o alvo típico é
+frequentemente **fora** de qualquer cluster gerenciado por esta app (servidor/VM remota, ex. IBM
+Kyndryl), o **modo local vira o caminho padrão/mais geral**, não uma alternativa secundária — o
+host onde o backend roda está na rede corporativa (VPN/rota já existente pra alcançar esses
+sistemas remotos, o mesmo caminho que um analista usaria manualmente), enquanto o modo pod só
+alcança o que o egress **daquele cluster específico** consegue rotear (que pode ou não incluir a
+rede da Kyndryl, dependendo de peering — não é garantido). Modo pod continua tendo valor real, só
+que num caso de uso mais específico: diagnosticar conectividade **a partir da perspectiva de um
+cluster específico** (ex: "por que o Pod X não consegue falar com o servidor Y" — aí importa
+literalmente rodar de dentro daquele cluster, não do host do backend). Os dois modos continuam
+valendo a pena, mas a UI/expectativa deveria deixar claro que **modo local é o default pra alvos
+genéricos fora do kubeconfig**, e modo pod é a escolha certa quando a pergunta é especificamente
+sobre a rede de um cluster.
+
+Mesma ressalva de sempre nesta app: o alcance de qualquer um dos dois modos depende da rede que o
+host (ou o cluster escolhido) realmente enxerga — se a VPN corporativa não tiver rota até o
+datacenter da Kyndryl (ou estiver caída), a ferramenta vai reportar isso com honestidade
+("inalcançável a partir desta origem"), não vai inventar um caminho que não existe. Mesmo padrão
+já documentado nesta app pra VPN/conectividade de cluster (`checkReachability`).
 
 Camadas que **não** dependem do modo pod/local (rodam sempre do backend, sem custo de spawnar
 container): DNS reverso (3.5), ASN/RDAP (3.6), faixas de nuvem (3.7), cross-reference interno
 (3.8) — só o traceroute em si (3.1) e o banner grab de portas (3.3, quando o alvo só é alcançável
-de dentro do cluster) precisam do container.
+de dentro de uma rede privada — cluster K8s ou a rede que o host do backend enxerga) precisam do
+container/host.
 
 ### 4.2 Endpoints REST propostos
 
@@ -349,16 +387,23 @@ Novo item no dropdown `ToolsMenu.tsx` (18º item) — nome de trabalho sugerido:
 
 ## 7. Fases de implementação propostas
 
+Reordenado depois da correção do usuário sobre escopo (fingerprint de SO precisa funcionar sozinho,
+sem depender de cross-reference K8s — por isso a Fase de fingerprint subiu antes da Fase de
+cross-reference, que agora é claramente marcada como bônus):
+
 1. **Fase 1 — traceroute básico + grafo** (mtr/traceroute via modo pod/local, sem nenhuma camada
    de enriquecimento ainda) — já entrega o "gráfico da rota", valor visível rápido.
-2. **Fase 2 — enriquecimento passivo** (DNS reverso, ASN/Cymru, RDAP, faixas de nuvem) — camadas
-   que não dependem do modo pod/local, adicionáveis sem re-arquitetar nada da Fase 1.
-3. **Fase 3 — cross-reference interno** (3.8) — a peça mais valiosa/diferenciada, mas também a que
-   mais depende de decidir "live query ou registry persistido" (seção 9).
-4. **Fase 4 — fingerprint do destino** (banner grab de portas + heurística de TTL + certificado
-   TLS via `CheckEndpointTLS` reaproveitado) — "é Web/Linux/Windows".
+2. **Fase 2 — fingerprint do destino** (banner grab de portas + heurística de TTL + certificado
+   TLS via `CheckEndpointTLS` reaproveitado) — "é Web/Linux/Windows", funciona pra qualquer IP
+   alcançável, dentro ou fora dos clusters do kubeconfig — é o requisito central do pedido
+   original, por isso vem logo depois do traceroute básico, antes de qualquer enriquecimento.
+3. **Fase 3 — enriquecimento passivo** (DNS reverso, ASN/Cymru, RDAP, faixas de nuvem) — camadas
+   que não dependem do modo pod/local, adicionáveis sem re-arquitetar nada das fases anteriores.
+4. **Fase 4 — cross-reference interno** (3.8) — **bônus**, não pré-requisito: acende quando o IP
+   bate com algo já conhecido nos clusters do kubeconfig; depende de decidir "live query ou
+   registry persistido" (seção 9).
 5. **Fase 5 — polimento de UI** (painel de detalhe completo, link pra abrir recurso interno na aba
-   certa, exportar/copiar resultado).
+   certa quando a Fase 4 encontrar algo, exportar/copiar resultado).
 
 ---
 
@@ -388,19 +433,29 @@ Novo item no dropdown `ToolsMenu.tsx` (18º item) — nome de trabalho sugerido:
 
 ## 9. Perguntas antes de começar (decisões do usuário, não assumidas)
 
-1. **Cross-reference interno (seção 3.8, Fase 3): live query por cluster selecionado, ou um
-   registry persistido (SQLite) tipo Node Pool Registry, alimentado por scan?** Live query é mais
-   simples (KISS) e sempre fresco, mas exige que o usuário informe/selecione contra qual(is)
-   cluster(s) cruzar (não dá pra cruzar contra a frota inteira a cada consulta sem custo). Registry
-   persistido permite cruzar contra TODA a frota já escaneada instantaneamente, mas herda a mesma
-   limitação já documentada do Node Pool Registry/Deployment Registry (só sabe o que já foi
-   escaneado, pode ficar desatualizado).
-2. **Escopo de alvo: só IPs internos/da própria infraestrutura, ou qualquer IP incluindo internet
-   pública?** Muda o peso relativo das camadas — se for só interno, RDAP/ASN/faixas de nuvem
-   (3.6/3.7) viram só um "bônus" e o foco real é 3.1+3.8; se for qualquer IP, essas camadas viram
-   centrais.
-3. **Nome definitivo da ferramenta / onde entra no menu** — "Rota de Rede"? "Diagnóstico de IP"?
+**Pergunta 2 original já RESOLVIDA pelo usuário** (registrada aqui por histórico): o escopo é
+qualquer IP alcançável, dentro ou fora dos clusters do kubeconfig — inclui servidores/VMs remotas
+de terceiros (ex: IBM Kyndryl). Isso eleva 3.2/3.3/3.4 (fingerprint de SO/serviço) a mecanismo
+central e obrigatório, e reclassifica 3.8 (cross-reference K8s) como enriquecimento opcional — ver
+correção no início do documento e ajustes nas seções 3.8/4.1/7.
+
+Perguntas que continuam em aberto:
+
+1. **Cross-reference interno (seção 3.8, agora Fase 4, bônus): live query por cluster selecionado,
+   ou um registry persistido (SQLite) tipo Node Pool Registry, alimentado por scan?** Menos urgente
+   agora que é enriquecimento opcional (não bloqueia nenhuma fase anterior), mas ainda precisa ser
+   decidido antes da Fase 4. Live query é mais simples (KISS) e sempre fresco, mas exige que o
+   usuário informe/selecione contra qual(is) cluster(s) cruzar. Registry persistido permite cruzar
+   contra TODA a frota já escaneada instantaneamente, mas herda a mesma limitação já documentada do
+   Node Pool Registry/Deployment Registry (só sabe o que já foi escaneado, pode ficar desatualizado).
+2. **Nome definitivo da ferramenta / onde entra no menu** — "Rota de Rede"? "Diagnóstico de IP"?
    Outro nome que já faça sentido pro time.
-4. **Confirma o modo dual pod/local como está usado nas outras 3 ferramentas de teste ativo desta
-   app**, ou este caso tem alguma particularidade que pede um mecanismo diferente (ex: rodar
-   sempre a partir do host, nunca de dentro de um pod)?
+3. **Confirma o modo dual pod/local como está usado nas outras 3 ferramentas de teste ativo desta
+   app, com modo local como default** (ver seção 4.1, ajustada), ou este caso tem alguma
+   particularidade que pede um mecanismo diferente (ex: rodar sempre a partir do host, nem
+   oferecer modo pod)?
+4. **Alcance de rede real até infraestrutura remota de terceiros (ex: IBM Kyndryl)**: o host onde
+   o backend roda (ou os nós dos clusters, no modo pod) tem rota de rede/VPN até essas redes hoje?
+   Não é uma decisão de design, é uma checagem de fato que vale confirmar antes de investir — sem
+   rota nenhuma, a ferramenta vai reportar "inalcançável" honestamente, mas não faz sentido só
+   descobrir isso depois de implementada.
