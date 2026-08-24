@@ -427,13 +427,25 @@ func (w *SpinnakerFleetWatcher) logf(format string, args ...interface{}) {
 	w.logger.Warn().Msgf(format, args...)
 }
 
-// formatSpinnakerTime formata um epoch-ms (0 = ausente, retorna "") no mesmo formato usado pelo
-// resto da app pra esse tipo de timestamp em texto (ver healthcheck.go:814) — não o mesmo
-// formatador do frontend (fmtDate em SpinnakerRolloutModal.tsx usa toLocaleString, específico de
-// JS), já que aqui o texto é montado no backend e vai direto pro corpo da notificação.
+// spinnakerNotifyTZ — horário de Brasília fixo (UTC-3). Bug real corrigido: formatSpinnakerTime
+// usava time.UnixMilli(ms).Format(...), que resolve a hora via time.Local — o timezone
+// CONFIGURADO NO HOST onde o processo roda, não necessariamente São Paulo (servidor sem TZ
+// setada, container sem /etc/localtime, etc. caem em UTC por padrão no Go, sem erro nem aviso).
+// Nesta máquina de dev o host já está em America/Sao_Paulo, então o bug não reproduzia aqui, mas
+// a notificação precisa mostrar -3 São Paulo sempre, independente de onde o servidor roda —
+// Brasil não usa mais horário de verão desde 2019, então um offset fixo é sempre correto, sem
+// depender de tzdata/LoadLocation (que também falharia num host sem o banco de zoneinfo).
+var spinnakerNotifyTZ = time.FixedZone("-03:00", -3*60*60)
+
+// formatSpinnakerTime formata um epoch-ms (0 = ausente, retorna "") em horário de Brasília fixo
+// (ver spinnakerNotifyTZ acima), no mesmo formato usado pelo resto da app pra esse tipo de
+// timestamp em texto (ver healthcheck.go:814) — não o mesmo formatador do frontend (fmtDate em
+// SpinnakerRolloutModal.tsx usa toLocaleString, específico de JS, resolvido pelo timezone do
+// BROWSER do usuário, não do servidor — não sofre desse bug), já que aqui o texto é montado no
+// backend e vai direto pro corpo da notificação.
 func formatSpinnakerTime(ms int64) string {
 	if ms == 0 {
 		return ""
 	}
-	return time.UnixMilli(ms).Format("02/01/2006 15:04")
+	return time.UnixMilli(ms).In(spinnakerNotifyTZ).Format("02/01/2006 15:04")
 }
