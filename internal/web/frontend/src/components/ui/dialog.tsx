@@ -49,7 +49,11 @@ const DialogContent = React.forwardRef<
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity data-[state=open]:bg-accent data-[state=open]:text-muted-foreground hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
+      {/* Evidenciado (fundo + borda circular, mesmo estilo de ui/sheet.tsx) — antes era só um X
+          sutil (opacity-70, sem fundo), difícil de localizar de relance; como DialogContent é o
+          primitivo compartilhado por praticamente todo modal da app (~90 arquivos), a mudança
+          aqui cobre todos de uma vez, sem precisar tocar cada modal individualmente. */}
+      <DialogPrimitive.Close className="absolute right-4 top-4 flex h-7 w-7 items-center justify-center rounded-full border border-border bg-muted text-foreground opacity-90 ring-offset-background transition-colors hover:bg-destructive hover:text-destructive-foreground hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
         <X className="h-4 w-4" />
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>
