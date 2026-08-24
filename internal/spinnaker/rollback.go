@@ -84,6 +84,15 @@ type RollbackInfo struct {
 	// request, não "o último status confirmado" que a persistência existe pra preservar).
 	RegistryStale    bool  `json:"registry_stale,omitempty"`
 	RegistryLastSeen int64 `json:"registry_last_seen,omitempty"` // epoch ms — DeploymentRecord.LastSeen
+	// RegistryVersion — versão que o Deployment Registry conhece pra este deployment (o mesmo
+	// valor usado como `currentLiveVersion` na chamada de DetectRollback que gerou este
+	// RollbackInfo — ImageTag com fallback Version, ver registryVersion() em
+	// internal/web/handlers/spinnaker.go). Preenchido pelo CHAMADOR junto de RegistryLastSeen —
+	// pedido explícito do usuário ("informações mais claras"): sem isso, o badge/modal de "dado
+	// desatualizado" dizia QUANDO o registry foi lido pela última vez, mas nunca QUAL versão
+	// desatualizada ele carrega — essencial pra comparar visualmente contra
+	// LatestKnownExecution.Version abaixo e confirmar que a divergência é real.
+	RegistryVersion string `json:"registry_version,omitempty"`
 
 	// LatestKnownExecutionAt — epoch ms da execução mais recente conhecida do Spinnaker pra esse
 	// nameApp/namespace (executionTime(matched[0]), ver DetectRollback), preenchido em TODO
@@ -100,6 +109,20 @@ type RollbackInfo struct {
 	// o Spinnaker sabe de algo mais novo que a última leitura do registry — nunca por causa da
 	// simples passagem do tempo.
 	LatestKnownExecutionAt int64 `json:"-"` // uso interno do pacote handlers, não exposto na API
+
+	// LatestKnownExecution — a MESMA execução que dá origem a LatestKnownExecutionAt acima
+	// (recent[0], já ordenado desc por tempo em executionsForTarget), agora exposta por completo
+	// (versão/status/CHG/pipeline/ExecutionURL), não só o timestamp. Pedido explícito do usuário
+	// (app corporativa, "informações devem ser mais claras"): o badge "dado desatualizado"
+	// (registry_stale) só dizia QUANDO o Deployment Registry foi lido pela última vez, nunca QUAL
+	// execução do Spinnaker é mais nova que essa leitura nem POR QUE ela diverge — sem isso, o
+	// usuário não tinha como julgar se a divergência é real (ex: deploy novo genuíno que o
+	// registry ainda não viu) ou investigar mais a fundo sem sair da aplicação. Mesmo padrão de
+	// "preenchido em TODO retorno onde matched não é vazio" de LatestKnownExecutionAt — nil só
+	// quando `matched` (a lista interna) está vazia. ExecutionURL preenchido pelo CHAMADOR (ver
+	// fillLatestKnownExecutionURL, internal/web/handlers/spinnaker.go), mesmo princípio de
+	// SpinnakerExecutionURL/StageFailureSummary.ExecutionURL.
+	LatestKnownExecution *ExecutionSummary `json:"latest_known_execution,omitempty"`
 
 	// RecentStageFailures — ver comentário de StageFailureSummary. Preenchido em TODO retorno
 	// onde matched não é vazio (mesmo padrão de LatestKnownExecutionAt) — é sinal complementar,
@@ -203,6 +226,10 @@ type ExecutionSummary struct {
 	CHG          string `json:"chg,omitempty"`
 	CHGUrl       string `json:"chg_url,omitempty"`
 	IsRollback   bool   `json:"is_rollback"`
+	// ExecutionURL — mesmo padrão de RollbackInfo.SpinnakerExecutionURL/StageFailureSummary.
+	// ExecutionURL: não preenchido aqui (este pacote não conhece deckURL/application), sempre
+	// preenchido pelo CHAMADOR (internal/web/handlers/spinnaker.go).
+	ExecutionURL string `json:"execution_url,omitempty"`
 }
 
 // StageSummary é uma etapa (stage) dentro de uma execução — ver comentário de RollbackInfo.Stages.
@@ -385,6 +412,15 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 	}
 	recent := buildRecentExecutions(matched)
 	latestKnownExecutionAt := executionTime(matched[0]) // matched já ordenado desc por tempo
+	// latestKnownExecution — mesma execução de latestKnownExecutionAt, exposta por completo (ver
+	// comentário de RollbackInfo.LatestKnownExecution). recent[0] == matched[0] resumido (mesma
+	// ordenação), reaproveitado em vez de reconstruir — cópia local (não ponteiro pro elemento do
+	// slice) pra segurança, já que `recent` pode ser usado/mutado por outros pontos do struct.
+	var latestKnownExecution *ExecutionSummary
+	if len(recent) > 0 {
+		c := recent[0]
+		latestKnownExecution = &c
+	}
 	recentStageFailures := findRecentStageFailures(matched)
 
 	// Regra (a) — explícita: procura uma execução de rollback cuja versão-alvo já é a vigente.
@@ -414,6 +450,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			RecentExecutions:       recent,
 			Stages:                 buildStageSummary(ex.Stages),
 			LatestKnownExecutionAt: latestKnownExecutionAt,
+			LatestKnownExecution:   latestKnownExecution,
 			RecentStageFailures:    recentStageFailures,
 		}
 		applyPreviousVersion(info, matched, i)
@@ -442,6 +479,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			RecentExecutions:       recent,
 			Stages:                 buildStageSummary(latest.Stages),
 			LatestKnownExecutionAt: latestKnownExecutionAt,
+			LatestKnownExecution:   latestKnownExecution,
 			RecentStageFailures:    recentStageFailures,
 		}
 		applyPreviousVersion(info, matched, 0)
@@ -463,6 +501,7 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 			RecentExecutions:       recent,
 			Stages:                 buildStageSummary(latest.Stages),
 			LatestKnownExecutionAt: latestKnownExecutionAt,
+			LatestKnownExecution:   latestKnownExecution,
 			RecentStageFailures:    recentStageFailures,
 		}
 		applyPreviousVersion(info, matched, 0)
@@ -476,7 +515,12 @@ func DetectRollback(executions []Execution, nameApp, namespace, currentLiveVersi
 	// TrustedByPublicCA/ChainValidationResult no CLAUDE.md. LatestKnownExecutionAt SEMPRE
 	// preenchido aqui (matched não é vazio, checado no topo da função) — é o caso mais comum em
 	// que esse campo realmente importa pro chamador.
-	return &RollbackInfo{Matched: false, LatestKnownExecutionAt: latestKnownExecutionAt, RecentStageFailures: recentStageFailures}
+	return &RollbackInfo{
+		Matched:                false,
+		LatestKnownExecutionAt: latestKnownExecutionAt,
+		LatestKnownExecution:   latestKnownExecution,
+		RecentStageFailures:    recentStageFailures,
+	}
 }
 
 // String — implementação auxiliar de debug, não usada em produção.

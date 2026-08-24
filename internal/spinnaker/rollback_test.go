@@ -166,6 +166,16 @@ func TestDetectRollback_VersaoVigenteForaDaJanela(t *testing.T) {
 	if got.LatestKnownExecutionAt != 1000 {
 		t.Errorf("LatestKnownExecutionAt = %d, esperava 1000 (StartTime da única execução conhecida)", got.LatestKnownExecutionAt)
 	}
+	// LatestKnownExecution — mesmo dado de LatestKnownExecutionAt acima, agora exposto por
+	// completo (pedido do usuário: o badge/modal de "dado desatualizado" precisa mostrar QUAL
+	// pipeline/versão motivou a divergência, não só QUANDO). Também precisa vir preenchido em
+	// Matched:false — é exatamente este caso (registry_stale) que mais precisa dele.
+	if got.LatestKnownExecution == nil {
+		t.Fatal("LatestKnownExecution não deveria ser nil em Matched:false — é o caso que mais precisa dele (ver registry_stale)")
+	}
+	if got.LatestKnownExecution.Version != "2.0.0" || got.LatestKnownExecution.ExecutionID != "e1" {
+		t.Errorf("LatestKnownExecution = %+v, esperava version=2.0.0 execution_id=e1", got.LatestKnownExecution)
+	}
 }
 
 // TestDetectRollback_ExplicitViaIsRollbackFlag_OutraSquad reproduz o achado da Fase 4

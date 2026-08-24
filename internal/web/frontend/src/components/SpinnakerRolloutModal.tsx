@@ -221,6 +221,18 @@ export function SpinnakerRolloutModal({
                         <FileWarning className="h-3 w-3 shrink-0" />
                         Ver log
                       </button>
+                      {f.execution_url && (
+                        <a
+                          href={f.execution_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-primary hover:underline whitespace-nowrap"
+                          title="Abrir esta execução no Spinnaker"
+                        >
+                          <ExternalLink className="h-3 w-3 shrink-0" />
+                          Spinnaker
+                        </a>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -228,7 +240,61 @@ export function SpinnakerRolloutModal({
             </div>
           )}
 
-          {!loading && !error && (!info || !info.matched) && (
+          {/* Dado do Deployment Registry desatualizado (registry_stale) — pedido explícito do
+              usuário: a mensagem genérica de "não determinado" abaixo (matched:false) era
+              factualmente incorreta pra este caso — o Spinnaker JÁ TEM uma execução conhecida
+              (latest_known_execution), só que mais nova do que a última leitura do registry.
+              Mostra lado a lado a versão que o registry ainda acredita ser a vigente e a versão
+              que o Spinnaker já sabe existir, pra qualquer analista confirmar a causa sem sair da
+              aplicação — app corporativa, informação precisa é o requisito, não só "algo mudou". */}
+          {!loading && !error && info?.registry_stale && (
+            <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+                <History className="h-4 w-4 shrink-0" />
+                Dado do Deployment Registry desatualizado
+              </div>
+              <p className="text-xs text-muted-foreground">
+                O Spinnaker já registra uma execução mais recente do que a última leitura deste
+                Deployment na aba GitHub Releases — a comparação de versão acima pode estar
+                incorreta ou ausente por causa disso. Rode um novo scan pra atualizar.
+              </p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs rounded-md border border-border bg-background/60 p-2">
+                <div>
+                  <span className="text-muted-foreground">Registry conhece a versão:</span>
+                  <p className="font-mono font-medium mt-0.5 text-foreground">{info.registry_version || "—"}</p>
+                  <p className="text-muted-foreground">(lido em {fmtDate(info.registry_last_seen)})</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Spinnaker já conhece a versão:</span>
+                  <p className="font-mono font-medium mt-0.5 text-foreground">
+                    {info.latest_known_execution?.version || "—"}
+                  </p>
+                  <p className="text-muted-foreground">
+                    (executada em {fmtDate(info.latest_known_execution?.executed_at)}, status{" "}
+                    {info.latest_known_execution?.status || "—"})
+                  </p>
+                </div>
+              </div>
+              {info.latest_known_execution?.chg && (
+                <p className="text-xs">
+                  <span className="text-muted-foreground">CHG dessa execução:</span>{" "}
+                  <span className="font-mono">
+                    <ChgValue chg={info.latest_known_execution.chg} url={info.latest_known_execution.chg_url} />
+                  </span>
+                </p>
+              )}
+              {info.latest_known_execution?.execution_url && (
+                <Button variant="outline" size="sm" asChild>
+                  <a href={info.latest_known_execution.execution_url} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                    Ver esta execução no Spinnaker
+                  </a>
+                </Button>
+              )}
+            </div>
+          )}
+
+          {!loading && !error && (!info || !info.matched) && !info?.registry_stale && (
             <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
               <HelpCircle className="h-4 w-4 mt-0.5 shrink-0" />
               <span>

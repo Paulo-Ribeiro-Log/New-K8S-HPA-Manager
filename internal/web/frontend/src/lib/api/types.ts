@@ -1588,6 +1588,16 @@ export interface SpinnakerRollbackInfo {
   // DeploymentRecord — ver applyRegistryFreshness em internal/web/handlers/spinnaker.go.
   registry_stale?: boolean;
   registry_last_seen?: number; // epoch ms
+  // Versão que o Deployment Registry conhece pra este deployment — pedido explícito do usuário
+  // ("informações mais claras", app corporativa): sem isso, o badge/modal de "dado desatualizado"
+  // dizia QUANDO o registry foi lido, mas nunca QUAL versão desatualizada ele carrega. Comparar
+  // contra latest_known_execution.version abaixo confirma visualmente a divergência real.
+  registry_version?: string;
+  // A execução do Spinnaker mais recente conhecida pra este deployment (mesma que dá origem ao
+  // registry_stale acima, se houver divergência) — sempre presente quando o Spinnaker já viu
+  // ALGUMA execução, mesmo com matched:false. Pedido explícito do usuário: o badge "dado
+  // desatualizado" não dizia qual pipeline motivou o aviso nem dava um jeito de investigá-lo.
+  latest_known_execution?: SpinnakerExecutionSummary;
   // Achado real (usuário relatou: "eu sei que a aplicação teve a pipeline executada com erros e
   // depois com sucesso, mas não houveram sinais nem os logs das exceptions"): pipelines com retry
   // automático (etapa falha, Spinnaker tenta de novo, eventualmente sucede) nunca apareciam em
@@ -1607,6 +1617,10 @@ export interface SpinnakerStageFailure {
   stage_name: string;
   stage_status: string;
   log: string;
+  // Link direto pra execução no Deck (preenchido pelo handler HTTP, fillStageFailureURLs em
+  // internal/web/handlers/spinnaker.go) — campo já existia no backend desde a integração do link
+  // nas notificações, mas nunca tinha sido consumido aqui no frontend até agora.
+  execution_url?: string;
 }
 
 export interface SpinnakerExecutionSummary {
@@ -1618,6 +1632,9 @@ export interface SpinnakerExecutionSummary {
   chg?: string;
   chg_url?: string;
   is_rollback: boolean;
+  // Link direto pra execução no Deck — preenchido pelo handler HTTP (buildExecutionURL), não
+  // presente em toda resposta (ex: dado vindo de FromCache/SpinnakerHistoryStore).
+  execution_url?: string;
 }
 
 export interface SpinnakerStageSummary {
