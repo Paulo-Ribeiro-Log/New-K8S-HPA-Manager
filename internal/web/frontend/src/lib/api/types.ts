@@ -2021,7 +2021,7 @@ export interface NetDiscoveryHop {
   reverse_dns?: string;
   asn?: string;
   asn_org?: string;
-  cloud_match?: 'aws' | 'gcp' | '';
+  cloud_match?: 'aws' | 'gcp' | 'azure' | '';
   cloud_region?: string;
   // Cross-reference K8s (Fase 4) — enriquecimento BÔNUS, preenchido só quando o IP bate com um
   // Node/Pod/Service conhecido (cache persistido, qualquer modo, ou busca ao vivo só no modo pod).

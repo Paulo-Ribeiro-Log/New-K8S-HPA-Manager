@@ -1,11 +1,12 @@
 # Estudo + Plano: Descoberta de Rede ("Descoberta de Rota e Identificação de Destino por IP")
 
-**Status:** ✅ Fases 1-5 (P1+P2) concluídas, validadas e mescladas — item real do `ToolsMenu.tsx`
+**Status:** ✅ Fases 1-5 (P1+P2+P3) concluídas, validadas e mescladas — item real do `ToolsMenu.tsx`
 hoje. Ver `CLAUDE.md`, seções "Descoberta de Rede (Fase 1)" a "(Fase 5)", pro detalhe completo de
 cada camada, achados reais e bugs corrigidos ao vivo (SNI/hostname atrás de bastion, porta/timeout
 de sonda configuráveis, etc.). **Trabalho em andamento: Fase 5 — roadmap de maturidade
 profissional**, ver seção 10 (checklist vivo, retomável em qualquer sessão nova) — próximo item:
-**P3 — faixas de IP da Azure no `cloud_match`**.
+**P4 — múltiplos alvos em lote** (maior esforço/risco arquitetural, deixado por último de
+propósito — confirmar com o usuário se ainda faz sentido antes de começar).
 
 **Nome decidido da ferramenta: "Descoberta de Rede"** (item do `ToolsMenu.tsx`).
 
@@ -478,14 +479,12 @@ investigação pontual. Prioridade combinada com o usuário (maior valor/menor r
       Exportar PDF". **Não validado clicando no navegador** (sem ferramenta de automação de browser
       nesta sessão) — validado por `tsc`/`eslint` limpos + reuso do mesmo padrão já comprovado em
       produção por FinOps/Health Check/Node Pool Predictions.
-- [ ] **P3 — Faixas de IP da Azure no `cloud_match`** — hoje só AWS/GCP (`net_discovery_enrich.go`,
-      seção 3.7 original já apontava a lacuna). Achado real da Fase 3: Azure **não tem uma URL JSON
-      pública fixa** como AWS (`ip-ranges.amazonaws.com`) e GCP (`gstatic.com/ipranges`) — o
-      caminho documentado é `az network list-service-tags`, que exige `az` CLI autenticado no
-      servidor (mesmo padrão já usado no SNAT/FinOps Azure pricing) em vez de um `http.Get` público
-      simples. **Antes de codar**: verificar ao vivo (`az network list-service-tags -l <region> -o
-      json`) o formato real do JSON retornado — mesma disciplina já usada nas Fases 1-4 (nunca
-      assumir schema de API de terceiro sem inspecionar o real primeiro).
+- [x] **P3 — Faixas de IP da Azure no `cloud_match`** ✅ **concluído, validado ao vivo** —
+      `fetchAzureRanges`/`parseAzureServiceTagsDoc` (`net_discovery_enrich.go`), via `az network
+      list-service-tags` (sem URL JSON pública fixa como AWS/GCP). Achado real confirmado ao vivo
+      ANTES de codar: o parâmetro `-l <região>` é cosmético pro CONTEÚDO — `-l brazilsouth` e
+      `-l eastus` devolveram os mesmos 1556 registros globais, só o campo `region` de CADA entrada
+      individual varia. Ver CLAUDE.md "Descoberta de Rede (Fase 5, item P3)".
 - [ ] **P4 — Múltiplos alvos em lote** — maior esforço/risco arquitetural do lote (hoje é 1 alvo
       por sessão SSE, com lock por usuário via `runningUsers`); exigiria repensar fila
       sequencial-vs-paralela e a UI (múltiplos grafos/resultados numa tela só). Deixado por último

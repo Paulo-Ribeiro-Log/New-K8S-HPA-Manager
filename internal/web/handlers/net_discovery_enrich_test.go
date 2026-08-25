@@ -77,6 +77,105 @@ func TestParseGCPDoc_RealFieldNames(t *testing.T) {
 	}
 }
 
+// TestParseAzureDoc_RealFieldNames — Fase 5, item P3 do roadmap. Schema real confirmado ao vivo
+// (`az network list-service-tags -l brazilsouth -o json`) antes de escrever qualquer parser —
+// trecho real capturado da entrada "ApiManagement.AustraliaCentral" (mistura IPv4+IPv6 no MESMO
+// array `addressPrefixes`, diferente de AWS/GCP que usam campos separados).
+func TestParseAzureDoc_RealFieldNames(t *testing.T) {
+	raw := `{"values":[{"id":"ApiManagement.AustraliaCentral","name":"ApiManagement.AustraliaCentral","properties":{"addressPrefixes":["20.36.106.68/31","20.36.107.176/28","20.37.52.67/32","20.213.226.240/28","2603:1010:304:2::690/124","2603:1010:304:402::140/124"],"changeNumber":"3","region":"australiacentral","state":"GA","systemService":"AzureApiManagement"},"serviceTagChangeNumber":"230"}]}`
+	var doc azureServiceTagsDoc
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(doc.Values) != 1 {
+		t.Fatalf("esperava 1 value, veio %d", len(doc.Values))
+	}
+	v := doc.Values[0]
+	if v.Name != "ApiManagement.AustraliaCentral" {
+		t.Errorf("Name = %q, inesperado", v.Name)
+	}
+	if v.Properties.Region != "australiacentral" {
+		t.Errorf("Region = %q, want australiacentral", v.Properties.Region)
+	}
+	if len(v.Properties.AddressPrefixes) != 6 {
+		t.Fatalf("esperava 6 prefixos (4 IPv4 + 2 IPv6) no array misto, veio %d", len(v.Properties.AddressPrefixes))
+	}
+}
+
+// TestParseAzureServiceTagsDoc_SkipsIPv6AndCapturesRegion cobre o parser de verdade (não só o
+// unmarshal) — confirma que entradas IPv6 (formato "2603:...") são puladas (mesmo padrão do GCP,
+// "fora de escopo por ora") e que IPv4 válido vira netDiscoveryCloudEntry com Provider="azure" e a
+// Region da própria entrada preservada.
+func TestParseAzureServiceTagsDoc_SkipsIPv6AndCapturesRegion(t *testing.T) {
+	doc := azureServiceTagsDoc{
+		Values: []struct {
+			Name       string `json:"name"`
+			Properties struct {
+				AddressPrefixes []string `json:"addressPrefixes"`
+				Region          string   `json:"region"`
+			} `json:"properties"`
+		}{
+			{
+				Name: "ApiManagement.AustraliaCentral",
+				Properties: struct {
+					AddressPrefixes []string `json:"addressPrefixes"`
+					Region          string   `json:"region"`
+				}{
+					AddressPrefixes: []string{"20.36.106.68/31", "2603:1010:304:2::690/124"},
+					Region:          "australiacentral",
+				},
+			},
+		},
+	}
+
+	entries := parseAzureServiceTagsDoc(doc)
+	if len(entries) != 1 {
+		t.Fatalf("esperava 1 entrada (só o IPv4 — IPv6 pulado), veio %d", len(entries))
+	}
+	e := entries[0]
+	if e.Provider != "azure" {
+		t.Errorf("Provider = %q, want azure", e.Provider)
+	}
+	if e.Region != "australiacentral" {
+		t.Errorf("Region = %q, want australiacentral", e.Region)
+	}
+	if !e.Net.Contains(net.ParseIP("20.36.106.68")) {
+		t.Errorf("Net %v deveria conter 20.36.106.68", e.Net)
+	}
+}
+
+// TestParseAzureServiceTagsDoc_MalformedPrefixSkippedNotFatal garante que um prefixo CIDR
+// malformado não derruba o parser inteiro — só aquele prefixo é pulado, o resto continua.
+func TestParseAzureServiceTagsDoc_MalformedPrefixSkippedNotFatal(t *testing.T) {
+	doc := azureServiceTagsDoc{
+		Values: []struct {
+			Name       string `json:"name"`
+			Properties struct {
+				AddressPrefixes []string `json:"addressPrefixes"`
+				Region          string   `json:"region"`
+			} `json:"properties"`
+		}{
+			{
+				Name: "Teste",
+				Properties: struct {
+					AddressPrefixes []string `json:"addressPrefixes"`
+					Region          string   `json:"region"`
+				}{
+					AddressPrefixes: []string{"nao-e-um-cidr", "10.0.0.0/8"},
+				},
+			},
+		},
+	}
+
+	entries := parseAzureServiceTagsDoc(doc)
+	if len(entries) != 1 {
+		t.Fatalf("esperava 1 entrada válida (prefixo malformado pulado), veio %d", len(entries))
+	}
+	if !entries[0].Net.Contains(net.ParseIP("10.1.2.3")) {
+		t.Errorf("Net %v deveria conter 10.1.2.3", entries[0].Net)
+	}
+}
+
 func TestEnrichHops_SkipsTimedOutAndEmptyIP(t *testing.T) {
 	hops := []NetDiscoveryHop{
 		{Index: 1, IP: "", TimedOut: true},

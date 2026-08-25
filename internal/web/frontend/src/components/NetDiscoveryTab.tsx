@@ -32,6 +32,14 @@ function osLabel(guess?: string): string {
   return "❓ SO não identificado";
 }
 
+// cloudBadgeClass — mesma paleta PROVIDER_COLORS já usada em LatencyTopologyGraph.tsx (aws=laranja,
+// gcp=verde, azure=azul) — Azure adicionado na Fase 5, item P3 do roadmap.
+function cloudBadgeClass(provider: string): string {
+  if (provider === "aws") return "border-orange-500/40 text-orange-600 dark:text-orange-400";
+  if (provider === "azure") return "border-blue-500/40 text-blue-600 dark:text-blue-400";
+  return "border-green-500/40 text-green-600 dark:text-green-400"; // gcp
+}
+
 // "Descoberta de Rede" — Fase 1 (IP-ROUTE-DISCOVERY-PLAN.md): traceroute básico + grafo ao vivo,
 // sem nenhuma camada de enriquecimento ainda (DNS reverso/ASN/nuvem/cross-reference K8s/
 // fingerprint de SO chegam nas Fases 2-4). Mesmo padrão dual pod/local já usado pelo Teste de
@@ -563,10 +571,7 @@ export default function NetDiscoveryTab() {
                           </Badge>
                         )}
                         {h.cloud_match && (
-                          <Badge
-                            variant="outline"
-                            className={`text-[10px] py-0 ${h.cloud_match === "aws" ? "border-orange-500/40 text-orange-600 dark:text-orange-400" : "border-green-500/40 text-green-600 dark:text-green-400"}`}
-                          >
+                          <Badge variant="outline" className={`text-[10px] py-0 ${cloudBadgeClass(h.cloud_match)}`}>
                             {h.cloud_match.toUpperCase()}{h.cloud_region ? ` · ${h.cloud_region}` : ""}
                           </Badge>
                         )}

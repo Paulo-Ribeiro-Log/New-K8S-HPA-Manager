@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -13,19 +14,18 @@ import (
 
 // ─── "Descoberta de Rede" — Fase 3 (IP-ROUTE-DISCOVERY-PLAN.md, seções 3.5/3.6/3.7):
 // enriquecimento PASSIVO por salto — DNS reverso, ASN/organização (Team Cymru), faixa de nuvem
-// pública (AWS/GCP). Roda inteiramente do BACKEND (nunca precisa de pod/container — são consultas
-// DNS/HTTP simples, sem depender da rede de um cluster específico), em paralelo pra todos os
-// saltos que responderam, depois do fingerprint do destino (Fase 2).
+// pública (AWS/GCP/Azure — Azure adicionado na Fase 5, item P3 do roadmap). Roda inteiramente do
+// BACKEND (nunca precisa de pod/container — são consultas DNS/HTTP/CLI simples, sem depender da
+// rede de um cluster específico), em paralelo pra todos os saltos que responderam, depois do
+// fingerprint do destino (Fase 2).
 //
-// RDAP (seção 3.6 do plano) e faixas Azure (seção 3.7 — sem URL JSON fixa, exigiria `az` CLI
-// autenticado, não implementado nesta rodada) ficam de fora por ora — RDAP é enriquecimento
-// opcional "sob demanda" no plano original, não uma camada sempre-ligada; Azure precisaria de um
-// mecanismo próprio (CLI) não verificado ao vivo ainda.
+// RDAP (seção 3.6 do plano) fica de fora por ora — é enriquecimento opcional "sob demanda" no
+// plano original, não uma camada sempre-ligada.
 
 // netDiscoveryCloudEntry é uma faixa de IP conhecida de um provedor de nuvem pública.
 type netDiscoveryCloudEntry struct {
 	Net      *net.IPNet
-	Provider string // "aws" | "gcp"
+	Provider string // "aws" | "gcp" | "azure"
 	Region   string
 }
 
@@ -76,6 +76,7 @@ func fetchCloudRanges(ctx context.Context) []netDiscoveryCloudEntry {
 	var entries []netDiscoveryCloudEntry
 	entries = append(entries, fetchAWSRanges(ctx)...)
 	entries = append(entries, fetchGCPRanges(ctx)...)
+	entries = append(entries, fetchAzureRanges(ctx)...)
 	return entries
 }
 
@@ -168,6 +169,77 @@ func fetchGCPRanges(ctx context.Context) []netDiscoveryCloudEntry {
 			continue
 		}
 		entries = append(entries, netDiscoveryCloudEntry{Net: ipnet, Provider: "gcp", Region: p.Scope})
+	}
+	return entries
+}
+
+// azureListServiceTagsRegion — parâmetro OBRIGATÓRIO da API (`az network list-service-tags -l
+// <região>` recusa rodar sem uma região válida), mas puramente COSMÉTICO pro CONTEÚDO da resposta
+// — achado real, verificado ao vivo ANTES de escrever este código (mesma disciplina das Fases
+// 1-4): comparando a saída de `-l brazilsouth` contra `-l eastus`, as duas chamadas devolveram
+// exatamente os mesmos 1556 registros (mesmo conjunto de nomes/prefixos, só o `changeNumber` do
+// topo do documento difere entre as duas chamadas — atualização periódica da Azure entre uma
+// chamada e outra, não uma diferença de conteúdo por região) — a API sempre devolve o catálogo
+// GLOBAL inteiro de service tags, com o campo `region` de CADA entrada individual (não o `-l` da
+// chamada) indicando a região real daquele prefixo específico. `brazilsouth` escolhida por ser a
+// região real desta empresa (mesma já usada nas outras integrações Azure do projeto — SNAT/FinOps
+// pricing), sem nenhum efeito prático sobre o resultado.
+const azureListServiceTagsRegion = "brazilsouth"
+
+// azureServiceTagsDoc — schema real confirmado ao vivo (não documentado formalmente pela Azure em
+// termos de contrato JSON estável, só inferido do output real). ~1556 entradas, ~3MB — bem maior
+// que os feeds AWS/GCP (texto puro, sem paginação).
+type azureServiceTagsDoc struct {
+	Values []struct {
+		Name       string `json:"name"`
+		Properties struct {
+			// AddressPrefixes mistura IPv4 e IPv6 no MESMO array (diferente de AWS — campos
+			// separados — e GCP — nomes de campo separados) — só descoberto inspecionando o JSON
+			// real antes de escrever o parser.
+			AddressPrefixes []string `json:"addressPrefixes"`
+			Region          string   `json:"region"` // pode vir vazio (tags sem região específica)
+		} `json:"properties"`
+	} `json:"values"`
+}
+
+// fetchAzureRanges busca via `az` CLI (não HTTP público como AWS/GCP — a Azure não publica um
+// feed JSON estável fora de autenticação) — mesmo padrão de timeout já documentado no CLAUDE.md
+// pra qualquer chamada `az` desta app (`exec.CommandContext` com contexto, nunca `exec.Command`
+// nu). Falha (CLI ausente, não autenticado, timeout) retorna nil silenciosamente — mesmo
+// tratamento best-effort de fetchAWSRanges/fetchGCPRanges, nunca propaga erro.
+func fetchAzureRanges(ctx context.Context) []netDiscoveryCloudEntry {
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(fetchCtx, "az", "network", "list-service-tags",
+		"-l", azureListServiceTagsRegion, "-o", "json").Output()
+	if err != nil {
+		return nil
+	}
+
+	var doc azureServiceTagsDoc
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return nil
+	}
+	return parseAzureServiceTagsDoc(doc)
+}
+
+// parseAzureServiceTagsDoc extraído de fetchAzureRanges pra ser testável sem precisar shellar pro
+// `az` CLI — recebe o doc já desserializado, devolve as entradas IPv4 (IPv6 pulado, mesmo padrão
+// já usado pro feed do GCP — "fora de escopo por ora").
+func parseAzureServiceTagsDoc(doc azureServiceTagsDoc) []netDiscoveryCloudEntry {
+	entries := make([]netDiscoveryCloudEntry, 0, len(doc.Values)*2)
+	for _, v := range doc.Values {
+		for _, prefix := range v.Properties.AddressPrefixes {
+			if strings.Contains(prefix, ":") {
+				continue // IPv6 — fora de escopo por ora, mesmo padrão já usado pro feed do GCP
+			}
+			_, ipnet, err := net.ParseCIDR(prefix)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, netDiscoveryCloudEntry{Net: ipnet, Provider: "azure", Region: v.Properties.Region})
+		}
 	}
 	return entries
 }

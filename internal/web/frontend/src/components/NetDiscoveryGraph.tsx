@@ -156,6 +156,9 @@ export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphPr
         // dois sinais coexistem sem conflito visual.
         { selector: 'node[cloudMatch = "aws"]', style: { "border-color": "#f97316", "border-width": 4 } },
         { selector: 'node[cloudMatch = "gcp"]', style: { "border-color": "#10b981", "border-width": 4 } },
+        // Azure adicionado na Fase 5 (item P3 do roadmap) — mesma cor já usada pro provider azure
+        // em LatencyTopologyGraph.tsx (PROVIDER_COLORS).
+        { selector: 'node[cloudMatch = "azure"]', style: { "border-color": "#3b82f6", "border-width": 4 } },
         // Cross-reference K8s (Fase 4) — borda roxa, mesma cor da Origem (kind="origin"), sinaliza
         // "isto é um recurso da nossa própria frota K8s conhecida". Tem prioridade visual sobre
         // cloudMatch (selector declarado depois vence em empate de especificidade no Cytoscape) —

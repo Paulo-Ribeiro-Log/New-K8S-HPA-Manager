@@ -114,7 +114,7 @@ type NetDiscoveryHop struct {
 	ReverseDNS  string `json:"reverse_dns,omitempty"`
 	ASN         string `json:"asn,omitempty"`
 	ASNOrg      string `json:"asn_org,omitempty"`
-	CloudMatch  string `json:"cloud_match,omitempty"` // "aws" | "gcp" | ""
+	CloudMatch  string `json:"cloud_match,omitempty"` // "aws" | "gcp" | "azure" | ""
 	CloudRegion string `json:"cloud_region,omitempty"`
 
 	// InternalRef — cross-reference com a frota K8s (Fase 4, net_discovery_crossref.go).
