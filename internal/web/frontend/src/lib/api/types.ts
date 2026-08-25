@@ -1987,6 +1987,150 @@ export interface LatencyTestSSEEvent {
   result?: LatencyTestResult; // presente só no evento "complete"
 }
 
+// ─── Descoberta de Rede (IP-ROUTE-DISCOVERY-PLAN.md, Fase 1) ─────────────────────────────────
+// Traceroute básico + grafo ao vivo — sem enriquecimento ainda (DNS reverso/ASN/nuvem/
+// cross-reference K8s/fingerprint de SO são Fases 2-4, campos novos entram aqui sem quebrar isto).
+
+export interface RunNetDiscoveryRequest {
+  target: string; // IP ou hostname/FQDN — bidirecional, o backend decide qual é qual
+  mode: 'pod' | 'local';
+  cluster?: string;   // obrigatório só no modo "pod"
+  namespace?: string; // obrigatório só no modo "pod"
+  // probe_port — porta TCP da sonda do tcptraceroute. Ausente/0 usa o default do backend (443) —
+  // bug real corrigido: 443 fixo nunca alcança um alvo Windows atrás de cofre PAM (Delinea etc.),
+  // que tipicamente só tem 3389/445/5985/5986 abertos, deixando 443 filtrado sem resposta nenhuma.
+  probe_port?: number;
+  // probe_timeout_sec — segundos de espera por resposta de CADA salto. Ausente/0 usa o default do
+  // backend (2s). Máximo 8 (netDiscoveryProbeTimeoutMaxSec) — pedido explícito do usuário pra
+  // descartar rede lenta/alta latência antes de aceitar que um alvo é bloqueado de verdade.
+  probe_timeout_sec?: number;
+  // client_cert_pem/client_key_pem — certificado de cliente opcional pra mTLS (pedido explícito
+  // do usuário: "termos o certificado em nossa máquina... ajuda?"). Só faz diferença quando o
+  // alvo exige certificado de cliente e rejeita TLS anônimo por completo. Os dois precisam vir
+  // juntos (ou nenhum) — nunca persistido em localStorage nem em nenhum outro lugar, transitório
+  // por natureza (só desta execução).
+  client_cert_pem?: string;
+  client_key_pem?: string;
+}
+
+export interface RunNetDiscoveryResponse {
+  session_id: string;
+}
+
+// Fase 5, item P4 do roadmap — lote de múltiplos alvos. Configurações de sonda/execução
+// compartilhadas por todo o lote (v1 deliberadamente simples, sem override por-alvo).
+export interface RunNetDiscoveryBatchRequest {
+  targets: string[]; // até 10 (netDiscoveryBatchMaxTargets no backend)
+  mode: 'pod' | 'local';
+  cluster?: string;
+  namespace?: string;
+  probe_port?: number;
+  probe_timeout_sec?: number;
+  client_cert_pem?: string; // mTLS, compartilhado por todo o lote — mesmo padrão de probe_port/timeout
+  client_key_pem?: string;
+}
+
+export interface RunNetDiscoveryBatchResponse {
+  batch_id: string;
+  session_ids: string[]; // mesma ordem de `targets` — frontend caminha pelos streams nessa ordem
+  targets: string[]; // eco já normalizado (trim, dedupe)
+}
+
+export interface NetDiscoveryHop {
+  index: number;
+  ip?: string; // ausente = salto não respondeu ("* * *")
+  rtt_ms?: number;
+  timed_out: boolean;
+  is_target: boolean; // true quando este salto é o próprio destino resolvido
+  // Enriquecimento passivo (Fase 3) — SEMPRE ausentes no evento SSE "hop" ao vivo (roda só
+  // depois de todos os saltos coletados); preenchidos na lista final de "complete".
+  reverse_dns?: string;
+  asn?: string;
+  asn_org?: string;
+  cloud_match?: 'aws' | 'gcp' | 'azure' | '';
+  cloud_region?: string;
+  // Cross-reference K8s (Fase 4) — enriquecimento BÔNUS, preenchido só quando o IP bate com um
+  // Node/Pod/Service conhecido (cache persistido, qualquer modo, ou busca ao vivo só no modo pod).
+  internal_ref?: NetDiscoveryInternalRef;
+}
+
+export interface NetDiscoveryInternalRef {
+  kind: 'node' | 'pod' | 'service';
+  name: string; // já formatado pra exibição — ex: "Deployment/checkout-api" quando kind=pod
+  pod_name?: string; // só quando kind=pod — nome literal do Pod object (name já é o owner)
+  namespace?: string;
+  cluster: string;
+  // from_cache/matched_at — transparência de frescor (pedido explícito do usuário: um match de
+  // cache até 24h de idade pode estar desatualizado — o IP pode ter mudado de dono desde então).
+  // from_cache=false só quando confirmado por uma busca AO VIVO nesta própria execução (sempre o
+  // caso em modo pod contra um IP sem cache válido ainda); matched_at é sempre presente. O
+  // veredito de SO (fingerprint.os_guess) só usa este ref como sinal quando from_cache=false — o
+  // badge em si continua aparecendo mesmo com cache, só com a idade sempre exposta.
+  from_cache: boolean;
+  matched_at: string; // ISO 8601
+}
+
+// Fase 2 — fingerprint do DESTINO (não por salto, só o alvo final): heurística de TTL, banner
+// grab de porta, HTTP/TLS. SEMPRE heurística, nunca certeza — os campos *_guess/*_confidence
+// devem ser exibidos junto (nunca só o veredito seco).
+export interface NetDiscoveryFingerprint {
+  ttl?: number;
+  os_guess?: 'linux' | 'windows' | '';
+  os_confidence?: string; // explica de onde veio o palpite — sempre presente quando há os_guess
+  open_ports?: number[];
+  is_web_server: boolean;
+  http_server?: string; // header Server: quando presente
+  tls_subject?: string;
+  tls_issuer?: string;
+  // probed_host — hostname REALMENTE usado como SNI/Host no HTTP(S)/TLS. Só presente quando
+  // difere do IP alvo (digitado pelo usuário OU descoberto via PTR pra uma busca por IP direto).
+  // Achado real: um IP pode ter dezenas de PTR diferentes (ingress compartilhado) — este campo
+  // deixa claro qual hostname foi usado, pra nunca parecer que o certificado "é do IP" sem mais
+  // contexto (pode ser de um serviço diferente do que o usuário pretendia investigar).
+  probed_host?: string;
+  // client_cert_used — true quando um certificado de cliente (mTLS) foi apresentado NESTA
+  // tentativa. Não confirma sucesso — só que o mecanismo foi acionado; sucesso/falha real já se
+  // reflete em tls_subject/tls_issuer presentes ou vazios.
+  client_cert_used?: boolean;
+}
+
+export interface NetDiscoveryResult {
+  target_input: string;
+  target_ip: string;
+  target_resolved: boolean; // false quando target_input já era um IP (nada pra resolver)
+  hops: NetDiscoveryHop[];
+  reached: boolean; // true se o último salto bateu com target_ip
+  fingerprint?: NetDiscoveryFingerprint; // ausente quando o probe falhou — best-effort, ver backend
+}
+
+// NetDiscoveryHistoryEntry — Fase 5 (Histórico de Descobertas). `result` já vem desserializado
+// pelo backend (não uma string JSON) — reaproveita direto os mesmos componentes que já sabem
+// renderizar um NetDiscoveryResult.
+export interface NetDiscoveryHistoryEntry {
+  target_input: string;
+  target_ip: string;
+  mode: 'pod' | 'local';
+  reached: boolean;
+  hops_count: number;
+  created_at: string; // ISO — formatar com toLocaleString no browser, nunca no backend
+  created_by?: string;
+  result?: NetDiscoveryResult;
+}
+
+export interface NetDiscoverySSEEvent {
+  id: string;
+  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'fingerprint' | 'enrich' | 'complete' | 'error';
+  phase: string;
+  message: string;
+  progress: number;
+  cluster?: string;
+  timestamp: string;
+  error?: string;
+  // Union: NetDiscoveryHop no evento "hop" (um salto por vez, ao vivo), NetDiscoveryResult no
+  // evento "complete" (lista inteira ordenada) — o `type` do evento decide qual dos dois ler.
+  result?: NetDiscoveryHop | NetDiscoveryResult;
+}
+
 // ─── Teste de Kafka sob Demanda ───────────────────────────────────────────────
 
 export interface KafkaSecretRef {

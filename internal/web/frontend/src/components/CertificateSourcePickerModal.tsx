@@ -36,6 +36,12 @@ interface CertificateSourcePickerModalProps {
   /** Chamado quando o usuário escolhe um backup — devolve o PEM bruto pra popular os campos de
    *  texto do fluxo manual, exatamente como se tivesse colado à mão. */
   onSelect: (tlsCrt: string, tlsKey: string) => void;
+  /** Aba inicial ao abrir — default "rollback" (comportamento existente, mantém retrocompat com
+   *  os chamadores que já editam um Secret K8s real). Chamadores SEM um secret de referência (ex:
+   *  campo de certificado de cliente/mTLS da Descoberta de Rede, que não edita Secret nenhum)
+   *  devem passar "manual" — a aba "Backup (Rollback)" ficaria sempre vazia sem cluster/namespace/
+   *  secretName reais pra escopar, então abrir nela por padrão seria confuso nesse contexto. */
+  defaultTab?: Tab;
 }
 
 type Tab = "rollback" | "manual" | "pfx";
@@ -54,6 +60,7 @@ export function CertificateSourcePickerModal({
   namespace,
   secretName,
   onSelect,
+  defaultTab = "rollback",
 }: CertificateSourcePickerModalProps) {
   const {
     listRollbacks,
@@ -70,7 +77,7 @@ export function CertificateSourcePickerModal({
     deletePFX,
   } = useCertificates();
 
-  const [tab, setTab] = useState<Tab>("rollback");
+  const [tab, setTab] = useState<Tab>(defaultTab);
 
   const [rollbacks, setRollbacks] = useState<RollbackBackupInfo[]>([]);
   const [loadingRollbacks, setLoadingRollbacks] = useState(false);
@@ -157,7 +164,7 @@ export function CertificateSourcePickerModal({
 
   useEffect(() => {
     if (!open) {
-      setTab("rollback");
+      setTab(defaultTab);
       setSelectedManualSecret(null);
       setSelectedPfxName(null);
       setRollbackSearch("");
@@ -188,7 +195,7 @@ export function CertificateSourcePickerModal({
       .then(setPfxNames)
       .catch(() => setPfxNames([]))
       .finally(() => setLoadingPfxNames(false));
-  }, [open, cluster, namespace, secretName, listRollbacks, listManualBackupSecrets, listPFXNames]);
+  }, [open, cluster, namespace, secretName, defaultTab, listRollbacks, listManualBackupSecrets, listPFXNames]);
 
   const openManualSecretFolder = (name: string) => {
     setSelectedManualSecret(name);

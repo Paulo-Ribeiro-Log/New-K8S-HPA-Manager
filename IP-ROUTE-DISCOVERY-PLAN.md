@@ -1,8 +1,11 @@
 # Estudo + Plano: Descoberta de Rede ("Descoberta de Rota e Identificação de Destino por IP")
 
-**Status:** 🔬 estudo/planejamento — nenhuma fase iniciada, nenhum código escrito. **Todas as
-decisões-chave já foram tomadas** (nome, mecanismo de cache do cross-reference, escopo, rota de
-rede confirmada) — ver histórico completo na seção 9. Falta só implementar.
+**Status:** ✅ Fases 1-5 (P1+P2+P3+P4) concluídas, validadas e mescladas — item real do
+`ToolsMenu.tsx` hoje. Ver `CLAUDE.md`, seções "Descoberta de Rede (Fase 1)" a "(Fase 5)", pro
+detalhe completo de cada camada, achados reais e bugs corrigidos ao vivo (SNI/hostname atrás de
+bastion, porta/timeout de sonda configuráveis, etc.). **Roadmap de maturidade profissional (seção
+10) completo — P1 a P4, todos concluídos.** Único item fora do roadmap por decisão já tomada: sonda
+ICMP/UDP (esbarra em `CAP_NET_RAW`, não contornável sem mudança de infraestrutura).
 
 **Nome decidido da ferramenta: "Descoberta de Rede"** (item do `ToolsMenu.tsx`).
 
@@ -428,25 +431,134 @@ justificativa na seção 9 (Pergunta 2, decisão do nome).
 
 ---
 
-## 7. Fases de implementação propostas
+## 7. Fases de implementação (1-4 concluídas)
 
 Reordenado depois da correção do usuário sobre escopo (fingerprint de SO precisa funcionar sozinho,
 sem depender de cross-reference K8s — por isso a Fase de fingerprint subiu antes da Fase de
 cross-reference, que agora é claramente marcada como bônus):
 
-1. **Fase 1 — traceroute básico + grafo** (mtr/traceroute via modo pod/local, sem nenhuma camada
-   de enriquecimento ainda) — já entrega o "gráfico da rota", valor visível rápido.
-2. **Fase 2 — fingerprint do destino** (banner grab de portas + heurística de TTL + certificado
-   TLS via `CheckEndpointTLS` reaproveitado) — "é Web/Linux/Windows", funciona pra qualquer IP
-   alcançável, dentro ou fora dos clusters do kubeconfig — é o requisito central do pedido
-   original, por isso vem logo depois do traceroute básico, antes de qualquer enriquecimento.
-3. **Fase 3 — enriquecimento passivo** (DNS reverso, ASN/Cymru, RDAP, faixas de nuvem) — camadas
-   que não dependem do modo pod/local, adicionáveis sem re-arquitetar nada das fases anteriores.
-4. **Fase 4 — cross-reference interno** (3.8) — **bônus**, não pré-requisito: acende quando o IP
-   bate com algo já conhecido nos clusters do kubeconfig; depende de decidir "live query ou
-   registry persistido" (seção 9).
-5. **Fase 5 — polimento de UI** (painel de detalhe completo, link pra abrir recurso interno na aba
-   certa quando a Fase 4 encontrar algo, exportar/copiar resultado).
+1. **✅ Fase 1 — traceroute básico + grafo** (mtr/traceroute via modo pod/local, sem nenhuma camada
+   de enriquecimento ainda) — já entrega o "gráfico da rota", valor visível rápido. **Concluída**:
+   `tcptraceroute` (não o `traceroute`/BusyBox), grafo Cytoscape com animação salto-a-salto ao vivo
+   via SSE. Ver CLAUDE.md "Descoberta de Rede (Fase 1)".
+2. **✅ Fase 2 — fingerprint do destino** (banner grab de portas + heurística de TTL + certificado
+   TLS) — "é Web/Linux/Windows", funciona pra qualquer IP alcançável, dentro ou fora dos clusters
+   do kubeconfig. Ver CLAUDE.md "Descoberta de Rede (Fase 2)".
+3. **✅ Fase 3 — enriquecimento passivo** (DNS reverso, ASN/Cymru, faixas de nuvem AWS/GCP — Azure
+   e RDAP ficaram de fora, ver seção 8 e o item P3 da seção 10). Ver CLAUDE.md "Descoberta de Rede
+   (Fase 3)".
+4. **✅ Fase 4 — cross-reference interno** (3.8) — bônus, cache-on-read persistido (SQLite),
+   busca ao vivo só no modo pod. Ver CLAUDE.md "Descoberta de Rede (Fase 4)".
+
+**Bugs reais corrigidos ao vivo depois das 4 fases** (todos documentados em detalhe no CLAUDE.md,
+seção "Descoberta de Rede", não repetidos aqui pra não duplicar fonte de verdade): label do grafo
+estourando o círculo do nó (3 rodadas de correção — texto flutuante separado, `text-max-width`
+generoso, emoji removido do canvas por renderizar corrompido), SNI/Host usando o IP cru em vez do
+hostname real (certificado "fake"/handshake falhando, hostname incorreto atrás de bastion/PAM), e
+porta+timeout de sonda fixos (443/2s) impedindo alcançar hosts atrás de cofres PAM como o Delinea —
+esse último **investigado a fundo e confirmado como bloqueio de rede genuíno** (firewall/boundary
+de segurança do próprio cofre, não bug), documentado como limitação estrutural aceita.
+
+---
+
+## 10. Fase 5 — Roadmap de maturidade profissional (checklist vivo, retomável entre sessões)
+
+Depois das Fases 1-4 (traceroute+fingerprint+enriquecimento+cross-reference, todas validadas ao
+vivo) e de uma rodada real de troubleshooting contra um host atrás de um cofre PAM (Delinea) que
+expôs a limitação mais dolorosa na prática — nenhuma memória entre buscas —, o usuário pediu uma
+priorização explícita do que falta pra esta ferramenta virar algo usado no dia a dia, não só numa
+investigação pontual. Prioridade combinada com o usuário (maior valor/menor risco primeiro):
+
+- [x] **P1 — Histórico de Descobertas** ✅ **concluído, validado ao vivo** (ver checklist
+      detalhado abaixo — CLAUDE.md "Descoberta de Rede (Fase 5)")
+- [x] **P2 — Exportar resultado (PDF)** ✅ **concluído** — `internal/web/frontend/src/lib/
+      netDiscoveryPdfExport.ts` (mesmo padrão de `nodePoolPdfGenerator.ts`: jsPDF+autoTable+
+      logoUtils, sem mudança de backend). Botão "Exportar PDF" no resultado ao vivo e em cada
+      execução do histórico expandido (Fase 5/P1). Ver CLAUDE.md "Descoberta de Rede (Fase 5) —
+      Exportar PDF". **Não validado clicando no navegador** (sem ferramenta de automação de browser
+      nesta sessão) — validado por `tsc`/`eslint` limpos + reuso do mesmo padrão já comprovado em
+      produção por FinOps/Health Check/Node Pool Predictions.
+- [x] **P3 — Faixas de IP da Azure no `cloud_match`** ✅ **concluído, validado ao vivo** —
+      `fetchAzureRanges`/`parseAzureServiceTagsDoc` (`net_discovery_enrich.go`), via `az network
+      list-service-tags` (sem URL JSON pública fixa como AWS/GCP). Achado real confirmado ao vivo
+      ANTES de codar: o parâmetro `-l <região>` é cosmético pro CONTEÚDO — `-l brazilsouth` e
+      `-l eastus` devolveram os mesmos 1556 registros globais, só o campo `region` de CADA entrada
+      individual varia. Ver CLAUDE.md "Descoberta de Rede (Fase 5, item P3)".
+- [x] **P4 — Múltiplos alvos em lote** ✅ **concluído, validado ao vivo** — decisão de design:
+      fila SEQUENCIAL (não paralela), reaproveitando `runDiscovery` (net_discovery.go) SEM
+      MODIFICAR NADA nele — cada alvo do lote é uma execução single-target normal, N delas em
+      sequência dentro da mesma goroutine, cada uma com seu próprio session_id. Histórico (P1) e
+      Exportar PDF (P2) funcionam de graça pra cada alvo, sem código extra. Frontend reaproveita
+      100% o painel de resultado já existente (grafo/tabela/fingerprint) pra mostrar sempre "o
+      alvo atualmente ativo na fila" — só uma faixa compacta de status acima mostra o progresso de
+      todos os alvos, sem duplicar a renderização pesada. Ver CLAUDE.md "Descoberta de Rede
+      (Fase 5, item P4)".
+- **Fora do roadmap, decisão já tomada**: sonda ICMP/UDP como alternativa ao TCP — esbarra na
+  mesma limitação de `CAP_NET_RAW` já documentada pro Teste de Latência (`internal/web/handlers/
+  latency_test_tool.go`), não contornável sem mudança de infraestrutura mais profunda (privileged
+  container). Não reabrir sem uma razão nova.
+
+### 10.1 Checklist detalhado — P1: Histórico de Descobertas
+
+**Objetivo**: persistir cada descoberta concluída (mesmo padrão já usado 4x neste projeto —
+`SNATHistoryStore`, `LatencyTestHistoryStore`, `NetDiscoveryRegistryStore` da própria Fase 4) pra
+que, ao buscar de novo o MESMO alvo, a ferramenta mostre o que já se sabe em vez de reinvestigar do
+zero. Resolve diretamente a dor observada ao vivo nesta sessão (reinvestigar o mesmo host atrás do
+Delinea do zero, múltiplas vezes, em conversas diferentes).
+
+**Backend**:
+- [x] `internal/storage/net_discovery_history_store.go` — novo store SQLite WAL (`net-discovery-
+      history.db`), mesmo padrão de `NewNetDiscoveryRegistryStore`/`NewNotesStore`. Tabela única
+      (schema achatado, sem normalizar em várias tabelas — o payload é auto-contido e só consultado
+      por alvo/data, mesmo princípio de outras stores desta app que guardam um blob JSON quando o
+      dado não precisa ser consultado por campo interno): `id, target_input, target_ip, mode,
+      reached, hops_count, result_json (TEXT, o NetDiscoveryResult inteiro serializado), created_at
+      DATETIME, created_by TEXT`.
+- [x] Métodos: `Save(record)`, `GetRecentByTarget(targetInputOrIP string, limit int)` — casa por
+      `target_input` (normalizado: trim+lowercase) OU `target_ip`, cobre o caso de o usuário
+      alternar entre digitar o hostname e o IP resolvido do mesmo host —, `GetRecent(limit int)`
+      (lista geral, usado só se a aba/lista de histórico completa entrar no escopo — opcional pro
+      P1 mínimo). Retenção: reaproveitar o mesmo padrão de 90 dias já usado no SNAT History (poda
+      automática, não deixar crescer sem limite).
+- [x] Wiring em `server.go`: criação do store (mesmo bloco `if store, err := storage.New...`, log
+      `✅ Net Discovery History Store inicializado`) + passagem pro `NewNetDiscoveryHandler` (mais
+      um parâmetro, mesmo padrão já usado pro `registry` da Fase 4).
+- [x] `runDiscovery` (`net_discovery.go`): chamar `h.historyStore.Save(...)` no fim, junto (não em
+      vez) do `h.logHistory(...)` já existente — são stores DIFERENTES com propósitos diferentes
+      (`HistoryTracker` é auditoria genérica da app inteira; este é específico pra "o que sei sobre
+      este alvo", consultável de volta).
+- [x] Endpoint novo: `GET /api/v1/net-discovery/history?target=<texto>` — devolve as últimas N
+      (ex: 3) execuções pra aquele alvo, mais recente primeiro. Sem `RequireSREGroup()` (é
+      consulta, não mutação — mesmo padrão de leitura do resto desta ferramenta).
+- [x] Testes: store (`Save`+`GetRecentByTarget` round-trip, match por IP quando buscado pelo
+      hostname e vice-versa, retenção/poda), handler (endpoint devolve JSON esperado, alvo nunca
+      visto devolve lista vazia — não erro).
+
+**Frontend**:
+- [x] `apiClient.getNetDiscoveryHistory(target)` (`client.ts`) + tipo `NetDiscoveryHistoryEntry`
+      (`types.ts`).
+- [x] `NetDiscoveryTab.tsx`: `useQuery` disparada quando `target` tem valor (debounce ~400ms, mesmo
+      padrão já usado noutras buscas desta app) — mostra um banner/card compacto ANTES mesmo de
+      clicar "Traçar rota" quando há histórico: "Última busca: DD/MM HH:MM — alcançado: sim/não —
+      SO: Linux/Windows/? — ver detalhes" (expansível, sem precisar rodar de novo). Nunca bloqueia
+      o fluxo normal — é só um atalho informativo.
+- [x] Formatação de data/hora: mesma convenção já usada no resto do frontend (`toLocaleString` no
+      browser do cliente — nunca formatar hora no backend pra exibição, lição já documentada nesta
+      app pro texto de notificação do Spinnaker).
+
+**Validação (mesma disciplina das Fases 1-4)**:
+- [x] `go build`/`go vet`/`gofmt` limpos; `npx tsc --noEmit -p tsconfig.app.json`/`eslint` limpos.
+- [x] Testes automatizados passando (`go test ./internal/storage/... ./internal/web/handlers/...`).
+- [x] `./rebuild-web.sh -b` + restart.
+- [x] Validação ao vivo: rodar uma descoberta contra um alvo, confirmar persistência (`sqlite3
+      ~/.k8s-hpa-manager/net-discovery-history.db "SELECT ..."`), rodar de novo contra o MESMO
+      alvo e confirmar que o banner de histórico aparece com o resultado anterior correto.
+- [x] `CLAUDE.md`: nova subseção "Descoberta de Rede (Fase 5) — Histórico de Descobertas", mesmo
+      estilo narrativo das Fases 1-4 (o que foi feito, achados reais, validação ao vivo).
+- [x] Commit + push na branch `feat/net-discovery-fase1` (mesma branch usada pra toda a ferramenta
+      até aqui — não abrir uma nova só pra isso).
+- [x] Marcar este checklist (P1) como concluído nesta própria seção do plano, e mover a atenção pro
+      P2 (ou parar aqui se o usuário decidir que já basta).
 
 ---
 
