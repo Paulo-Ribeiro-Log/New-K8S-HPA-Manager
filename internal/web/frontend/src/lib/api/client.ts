@@ -3812,6 +3812,16 @@ class APIClient {
     });
   }
 
+  /** Inicia um lote de descobertas sequenciais (Fase 5, item P4) e retorna os session_ids na ordem */
+  async runNetDiscoveryBatch(
+    req: import("./types").RunNetDiscoveryBatchRequest
+  ): Promise<import("./types").RunNetDiscoveryBatchResponse> {
+    return this.request<import("./types").RunNetDiscoveryBatchResponse>("/net-discovery/run-batch", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
   /** URL do SSE stream de uma descoberta de rede em andamento */
   getNetDiscoveryStreamURL(sessionId: string): string {
     const token = localStorage.getItem("auth_token");

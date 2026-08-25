@@ -572,6 +572,26 @@ const (
 	netDiscoveryModeLocal = "local"
 )
 
+// normalizeProbeSettings valida/normaliza probePort e probeTimeoutSec (0 = default) — extraída de
+// dentro de Run() na Fase 5 (item P4, lote de múltiplos alvos) pra ser reaproveitada por RunBatch
+// sem duplicar a mesma checagem de faixa nos dois handlers.
+func normalizeProbeSettings(probePort, probeTimeoutSec int) (port, timeoutSec int, errCode, errMsg string) {
+	port = probePort
+	if port == 0 {
+		port = netDiscoveryTCPPort
+	} else if port < 1 || port > 65535 {
+		return 0, 0, "INVALID_PROBE_PORT", "probe_port deve estar entre 1 e 65535"
+	}
+
+	timeoutSec = probeTimeoutSec
+	if timeoutSec == 0 {
+		timeoutSec = netDiscoveryProbeTimeoutSec
+	} else if timeoutSec < 1 || timeoutSec > netDiscoveryProbeTimeoutMaxSec {
+		return 0, 0, "INVALID_PROBE_TIMEOUT", fmt.Sprintf("probe_timeout_sec deve estar entre 1 e %d", netDiscoveryProbeTimeoutMaxSec)
+	}
+	return port, timeoutSec, "", ""
+}
+
 // Run inicia a descoberta e retorna um session_id pra streaming SSE.
 // POST /api/v1/net-discovery/run
 func (h *NetDiscoveryHandler) Run(c *gin.Context) {
@@ -595,19 +615,13 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster e namespace são obrigatórios no modo pod"))
 		return
 	}
-	if req.ProbePort == 0 {
-		req.ProbePort = netDiscoveryTCPPort
-	} else if req.ProbePort < 1 || req.ProbePort > 65535 {
-		c.JSON(http.StatusBadRequest, errorResponse("INVALID_PROBE_PORT", "probe_port deve estar entre 1 e 65535"))
+	probePort, probeTimeoutSec, errCode, errMsg := normalizeProbeSettings(req.ProbePort, req.ProbeTimeoutSec)
+	if errCode != "" {
+		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
 	}
-	if req.ProbeTimeoutSec == 0 {
-		req.ProbeTimeoutSec = netDiscoveryProbeTimeoutSec
-	} else if req.ProbeTimeoutSec < 1 || req.ProbeTimeoutSec > netDiscoveryProbeTimeoutMaxSec {
-		c.JSON(http.StatusBadRequest, errorResponse("INVALID_PROBE_TIMEOUT",
-			fmt.Sprintf("probe_timeout_sec deve estar entre 1 e %d", netDiscoveryProbeTimeoutMaxSec)))
-		return
-	}
+	req.ProbePort = probePort
+	req.ProbeTimeoutSec = probeTimeoutSec
 
 	userInfo := GetUserInfoForHistory(c)
 

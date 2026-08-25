@@ -1097,6 +1097,7 @@ func (s *Server) setupRoutes() {
 		netDiscovery.GET("/docker-status", netDiscoveryHandler.DockerStatus)
 		netDiscovery.GET("/history", netDiscoveryHandler.History)
 		netDiscovery.POST("/run", rbacMiddleware.RequireSREGroup(), netDiscoveryHandler.Run)
+		netDiscovery.POST("/run-batch", rbacMiddleware.RequireSREGroup(), netDiscoveryHandler.RunBatch)
 		netDiscovery.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), netDiscoveryHandler.Cancel)
 	}
 

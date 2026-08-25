@@ -1,12 +1,11 @@
 # Estudo + Plano: Descoberta de Rede ("Descoberta de Rota e Identificação de Destino por IP")
 
-**Status:** ✅ Fases 1-5 (P1+P2+P3) concluídas, validadas e mescladas — item real do `ToolsMenu.tsx`
-hoje. Ver `CLAUDE.md`, seções "Descoberta de Rede (Fase 1)" a "(Fase 5)", pro detalhe completo de
-cada camada, achados reais e bugs corrigidos ao vivo (SNI/hostname atrás de bastion, porta/timeout
-de sonda configuráveis, etc.). **Trabalho em andamento: Fase 5 — roadmap de maturidade
-profissional**, ver seção 10 (checklist vivo, retomável em qualquer sessão nova) — próximo item:
-**P4 — múltiplos alvos em lote** (maior esforço/risco arquitetural, deixado por último de
-propósito — confirmar com o usuário se ainda faz sentido antes de começar).
+**Status:** ✅ Fases 1-5 (P1+P2+P3+P4) concluídas, validadas e mescladas — item real do
+`ToolsMenu.tsx` hoje. Ver `CLAUDE.md`, seções "Descoberta de Rede (Fase 1)" a "(Fase 5)", pro
+detalhe completo de cada camada, achados reais e bugs corrigidos ao vivo (SNI/hostname atrás de
+bastion, porta/timeout de sonda configuráveis, etc.). **Roadmap de maturidade profissional (seção
+10) completo — P1 a P4, todos concluídos.** Único item fora do roadmap por decisão já tomada: sonda
+ICMP/UDP (esbarra em `CAP_NET_RAW`, não contornável sem mudança de infraestrutura).
 
 **Nome decidido da ferramenta: "Descoberta de Rede"** (item do `ToolsMenu.tsx`).
 
@@ -485,10 +484,15 @@ investigação pontual. Prioridade combinada com o usuário (maior valor/menor r
       ANTES de codar: o parâmetro `-l <região>` é cosmético pro CONTEÚDO — `-l brazilsouth` e
       `-l eastus` devolveram os mesmos 1556 registros globais, só o campo `region` de CADA entrada
       individual varia. Ver CLAUDE.md "Descoberta de Rede (Fase 5, item P3)".
-- [ ] **P4 — Múltiplos alvos em lote** — maior esforço/risco arquitetural do lote (hoje é 1 alvo
-      por sessão SSE, com lock por usuário via `runningUsers`); exigiria repensar fila
-      sequencial-vs-paralela e a UI (múltiplos grafos/resultados numa tela só). Deixado por último
-      de propósito — só começar depois de P1-P3 estarem concluídos e ainda fizer sentido.
+- [x] **P4 — Múltiplos alvos em lote** ✅ **concluído, validado ao vivo** — decisão de design:
+      fila SEQUENCIAL (não paralela), reaproveitando `runDiscovery` (net_discovery.go) SEM
+      MODIFICAR NADA nele — cada alvo do lote é uma execução single-target normal, N delas em
+      sequência dentro da mesma goroutine, cada uma com seu próprio session_id. Histórico (P1) e
+      Exportar PDF (P2) funcionam de graça pra cada alvo, sem código extra. Frontend reaproveita
+      100% o painel de resultado já existente (grafo/tabela/fingerprint) pra mostrar sempre "o
+      alvo atualmente ativo na fila" — só uma faixa compacta de status acima mostra o progresso de
+      todos os alvos, sem duplicar a renderização pesada. Ver CLAUDE.md "Descoberta de Rede
+      (Fase 5, item P4)".
 - **Fora do roadmap, decisão já tomada**: sonda ICMP/UDP como alternativa ao TCP — esbarra na
   mesma limitação de `CAP_NET_RAW` já documentada pro Teste de Latência (`internal/web/handlers/
   latency_test_tool.go`), não contornável sem mudança de infraestrutura mais profunda (privileged

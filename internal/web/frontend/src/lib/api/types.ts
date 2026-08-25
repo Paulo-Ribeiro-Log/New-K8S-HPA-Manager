@@ -2010,6 +2010,23 @@ export interface RunNetDiscoveryResponse {
   session_id: string;
 }
 
+// Fase 5, item P4 do roadmap — lote de múltiplos alvos. Configurações de sonda/execução
+// compartilhadas por todo o lote (v1 deliberadamente simples, sem override por-alvo).
+export interface RunNetDiscoveryBatchRequest {
+  targets: string[]; // até 10 (netDiscoveryBatchMaxTargets no backend)
+  mode: 'pod' | 'local';
+  cluster?: string;
+  namespace?: string;
+  probe_port?: number;
+  probe_timeout_sec?: number;
+}
+
+export interface RunNetDiscoveryBatchResponse {
+  batch_id: string;
+  session_ids: string[]; // mesma ordem de `targets` — frontend caminha pelos streams nessa ordem
+  targets: string[]; // eco já normalizado (trim, dedupe)
+}
+
 export interface NetDiscoveryHop {
   index: number;
   ip?: string; // ausente = salto não respondeu ("* * *")

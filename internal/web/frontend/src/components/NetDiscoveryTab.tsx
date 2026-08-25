@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -12,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown } from "lucide-react";
+import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, ListChecks } from "lucide-react";
 import { ProtectedAction } from "@/components/rbac";
 import NetDiscoveryGraph from "@/components/NetDiscoveryGraph";
 import { useClusters } from "@/hooks/useAPI";
@@ -71,6 +72,21 @@ export default function NetDiscoveryTab() {
   const [copied, setCopied] = useState(false);
   const esRef = useRef<EventSource | null>(null);
 
+  // Fase 5, item P4 — lote de múltiplos alvos. Decisão de design (ver IP-ROUTE-DISCOVERY-PLAN.md
+  // seção 10): fila SEQUENCIAL — reaproveita o MESMO painel de resultado (grafo/tabela/fingerprint,
+  // `result`/`hops`/`running`/`progress` acima) pra mostrar sempre "o alvo atualmente ativo na
+  // fila", sem duplicar nenhuma renderização — só uma faixa compacta de status acima mostra o
+  // progresso de TODOS os alvos do lote. `batchQueueRef` (não só state) evita o bug de stale
+  // closure já documentado nesta app (CLAUDE.md, Code Editor) — o handler de SSE abaixo lê sempre
+  // o valor mais recente da fila, nunca um capturado no momento em que o efeito foi criado.
+  const [inputMode, setInputMode] = useState<"single" | "batch">("single");
+  const [batchTargetsText, setBatchTargetsText] = useState("");
+  const [batchQueue, setBatchQueue] = useState<{ target: string; sessionId: string }[]>([]);
+  const batchQueueRef = useRef<{ target: string; sessionId: string }[]>([]);
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [batchStatuses, setBatchStatuses] = useState<Record<string, "queued" | "running" | "done" | "error">>({});
+  const [batchSummaries, setBatchSummaries] = useState<Record<string, { reached: boolean; osGuess?: string }>>({});
+
   // Fase 5 — Histórico de Descobertas: mostra "última busca: ..." pro alvo digitado ANTES mesmo
   // do usuário clicar "Traçar rota" (resolve a dor observada ao vivo nesta sessão — reinvestigar o
   // mesmo host atrás de um cofre PAM do zero, em conversas diferentes). Debounce de 400ms (mesmo
@@ -109,12 +125,15 @@ export default function NetDiscoveryTab() {
   const probeTimeoutSecNum = probeTimeoutSec.trim() ? Number(probeTimeoutSec.trim()) : undefined;
   const probeTimeoutSecValid = probeTimeoutSecNum === undefined || (Number.isInteger(probeTimeoutSecNum) && probeTimeoutSecNum >= 1 && probeTimeoutSecNum <= 8);
 
+  const batchTargetsParsed = batchTargetsText.split("\n").map((t) => t.trim()).filter(Boolean);
+  const batchTargetsValid = batchTargetsParsed.length > 0 && batchTargetsParsed.length <= 10;
+
   const canRun =
-    !!target.trim() &&
     !running &&
     probePortValid &&
     probeTimeoutSecValid &&
-    (mode === "local" ? dockerReady : !!cluster && !!namespace);
+    (mode === "local" ? dockerReady : !!cluster && !!namespace) &&
+    (inputMode === "single" ? !!target.trim() : batchTargetsValid);
 
   const run = async () => {
     setHops([]);
@@ -139,15 +158,55 @@ export default function NetDiscoveryTab() {
     }
   };
 
-  const cancel = async () => {
-    if (!sessionId) return;
+  // runBatch — Fase 5/P4. Reaproveita o MESMO estado `sessionId`/`hops`/`result`/`progress` já
+  // usado pelo modo single (nunca duplicado) — o handler de SSE mais abaixo detecta que está num
+  // lote (via `batchQueueRef`) e encadeia pro próximo alvo sozinho quando um termina.
+  const runBatch = async () => {
+    setHops([]);
+    setResult(null);
+    setRunError(null);
+    setProgress(0);
+    setPhaseMessage("Iniciando lote...");
+    setRunning(true);
+    setBatchStatuses({});
+    setBatchSummaries({});
+    setBatchQueue([]);
+    batchQueueRef.current = [];
+    setBatchId(null);
     try {
-      await apiClient.cancelNetDiscovery(sessionId);
+      const resp = await apiClient.runNetDiscoveryBatch({
+        targets: batchTargetsParsed,
+        mode,
+        cluster: mode === "pod" ? cluster : undefined,
+        namespace: mode === "pod" ? namespace : undefined,
+        probe_port: probePortNum,
+        probe_timeout_sec: probeTimeoutSecNum,
+      });
+      const queue = resp.targets.map((t, i) => ({ target: t, sessionId: resp.session_ids[i] }));
+      batchQueueRef.current = queue;
+      setBatchQueue(queue);
+      setBatchId(resp.batch_id);
+      const initialStatuses: Record<string, "queued" | "running"> = {};
+      queue.forEach((q, i) => { initialStatuses[q.target] = i === 0 ? "running" : "queued"; });
+      setBatchStatuses(initialStatuses);
+      setSessionId(queue[0].sessionId);
+    } catch (err) {
+      setRunning(false);
+      setRunError(err instanceof Error ? err.message : "Falha ao iniciar o lote");
+    }
+  };
+
+  const cancel = async () => {
+    const cancelTarget = batchId ?? sessionId;
+    if (!cancelTarget) return;
+    try {
+      await apiClient.cancelNetDiscovery(cancelTarget);
     } catch {
       /* ignore — o pod/container é limpo no servidor de qualquer forma */
     }
     esRef.current?.close();
     setRunning(false);
+    setBatchId(null);
     setPhaseMessage("Descoberta cancelada.");
   };
 
@@ -172,9 +231,52 @@ export default function NetDiscoveryTab() {
           // Lista final é a fonte de verdade (cobre o caso raro de um evento "hop" ter se perdido
           // no meio do stream) — NetDiscoveryGraph só adiciona a diferença, nunca duplica.
           setHops(finalResult.hops);
+
+          // Fase 5/P4 — lote: se este sessionId pertence a uma fila em andamento (batchQueueRef,
+          // não `batchQueue` — evita stale closure, mesmo cuidado já documentado nesta app pra
+          // callback assíncrono disparado por API de terceiro), encadeia pro próximo alvo em vez
+          // de encerrar. `finalResult` já dá o resumo (alcançado/SO) pra faixa de status.
+          const queue = batchQueueRef.current;
+          const idx = queue.findIndex((q) => q.sessionId === sessionId);
+          if (idx !== -1) {
+            const finishedTarget = queue[idx].target;
+            setBatchStatuses((prev) => ({ ...prev, [finishedTarget]: "done" }));
+            setBatchSummaries((prev) => ({
+              ...prev,
+              [finishedTarget]: { reached: finalResult.reached, osGuess: finalResult.fingerprint?.os_guess },
+            }));
+            if (idx + 1 < queue.length) {
+              const next = queue[idx + 1];
+              setBatchStatuses((prev) => ({ ...prev, [next.target]: "running" }));
+              setHops([]);
+              setResult(null);
+              setProgress(0);
+              setPhaseMessage(`Iniciando ${next.target}...`);
+              setSessionId(next.sessionId);
+              return; // lote continua — não encerra running ainda
+            }
+          }
           setRunning(false);
         }
         if (event.type === "error") {
+          // Mesmo encadeamento do "complete" acima — um alvo com erro no meio do lote não para
+          // tudo, só marca esse alvo como erro na faixa de status e segue pro próximo.
+          const queue = batchQueueRef.current;
+          const idx = queue.findIndex((q) => q.sessionId === sessionId);
+          if (idx !== -1) {
+            const failedTarget = queue[idx].target;
+            setBatchStatuses((prev) => ({ ...prev, [failedTarget]: "error" }));
+            if (idx + 1 < queue.length) {
+              const next = queue[idx + 1];
+              setBatchStatuses((prev) => ({ ...prev, [next.target]: "running" }));
+              setHops([]);
+              setResult(null);
+              setProgress(0);
+              setPhaseMessage(`Iniciando ${next.target}...`);
+              setSessionId(next.sessionId);
+              return; // lote continua — erro já registrado na faixa de status, sem poluir runError
+            }
+          }
           setRunError(event.error || event.message);
           setRunning(false);
         }
@@ -210,17 +312,52 @@ export default function NetDiscoveryTab() {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       <div className="px-6 py-3 bg-muted/30 border-b border-border flex flex-col gap-3">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[280px] flex-1">
-            <label className="text-xs text-muted-foreground block mb-1">IP ou hostname</label>
-            <Input
-              placeholder="ex: 8.8.8.8 ou servidor.dominio.com"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              disabled={running}
-              onKeyDown={(e) => { if (e.key === "Enter" && canRun) run(); }}
-            />
+        {/* Fase 5/P4 — toggle Alvo único / Lote. Trocar de modo com um lote em andamento não é
+            permitido (disabled={running}) — evita perder o encadeamento de sessões a meio caminho. */}
+        <div className="flex items-center gap-1.5">
+          <ListChecks className="w-3.5 h-3.5 text-muted-foreground" />
+          <div className="flex rounded-md border border-border overflow-hidden">
+            {(["single", "batch"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                disabled={running}
+                onClick={() => setInputMode(m)}
+                className={`text-xs px-2.5 py-1 ${inputMode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"} disabled:opacity-50`}
+              >
+                {m === "single" ? "Alvo único" : "Lote (até 10)"}
+              </button>
+            ))}
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3">
+          {inputMode === "single" ? (
+            <div className="min-w-[280px] flex-1">
+              <label className="text-xs text-muted-foreground block mb-1">IP ou hostname</label>
+              <Input
+                placeholder="ex: 8.8.8.8 ou servidor.dominio.com"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                disabled={running}
+                onKeyDown={(e) => { if (e.key === "Enter" && canRun) run(); }}
+              />
+            </div>
+          ) : (
+            <div className="min-w-[280px] flex-1">
+              <label className="text-xs text-muted-foreground block mb-1">
+                IPs ou hostnames (um por linha, até 10) — {batchTargetsParsed.length}/10
+              </label>
+              <Textarea
+                placeholder={"8.8.8.8\nservidor1.dominio.com\nservidor2.dominio.com"}
+                value={batchTargetsText}
+                onChange={(e) => setBatchTargetsText(e.target.value)}
+                disabled={running}
+                rows={3}
+                className="font-mono text-xs"
+              />
+            </div>
+          )}
 
           <div className="w-28">
             <label className="text-xs text-muted-foreground block mb-1">Porta da sonda</label>
@@ -254,9 +391,9 @@ export default function NetDiscoveryTab() {
 
           {!running ? (
             <ProtectedAction>
-              <Button onClick={run} disabled={!canRun}>
+              <Button onClick={inputMode === "single" ? run : runBatch} disabled={!canRun}>
                 <Play className="w-4 h-4 mr-1.5" />
-                Traçar rota
+                {inputMode === "single" ? "Traçar rota" : "Iniciar Lote"}
               </Button>
             </ProtectedAction>
           ) : (
@@ -443,6 +580,38 @@ export default function NetDiscoveryTab() {
                 <div className="h-full bg-primary transition-all" style={{ width: `${progress * 100}%` }} />
               </div>
             )}
+          </div>
+        )}
+
+        {/* Fase 5/P4 — faixa de status do lote. O painel de resultado abaixo (grafo/tabela/
+            fingerprint) sempre reflete o alvo ATUALMENTE ativo (via `hops`/`result`/`running`
+            reaproveitados) — esta faixa é só o panorama de todos os alvos, sem re-renderizar o
+            resultado completo de cada um. */}
+        {batchQueue.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {batchQueue.map(({ target: t }) => {
+              const status = batchStatuses[t] ?? "queued";
+              const summary = batchSummaries[t];
+              const icon =
+                status === "running" ? <Loader2 className="w-3 h-3 animate-spin" /> :
+                status === "done" ? <Check className="w-3 h-3 text-emerald-500" /> :
+                status === "error" ? <XCircle className="w-3 h-3 text-destructive" /> :
+                <span className="w-3 h-3 rounded-full border border-muted-foreground/40 inline-block" />;
+              return (
+                <span
+                  key={t}
+                  title={summary ? `${summary.reached ? "Alcançado" : "Não alcançado"}${summary.osGuess ? ` · ${osLabel(summary.osGuess)}` : ""}` : status}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-mono ${
+                    status === "running" ? "border-primary/40 bg-primary/5" :
+                    status === "error" ? "border-destructive/40 bg-destructive/5" :
+                    status === "done" ? "border-emerald-500/30" : "border-border text-muted-foreground"
+                  }`}
+                >
+                  {icon}
+                  {t}
+                </span>
+              );
+            })}
           </div>
         )}
 
