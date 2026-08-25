@@ -30,22 +30,44 @@ var netDiscoveryFingerprintPorts = []int{22, 80, 443, 445, 3389, 21, 25, 587, 53
 // linha de saída tornam o parsing em Go trivial e robusto, sem depender de posição/ordem (os
 // checks de porta rodam em paralelo via `&`+`wait`, a ordem de chegada não é determinística).
 //
-// "$1" é o IP-alvo, passado como argumento posicional (não interpolado na string do script) —
-// mesmo que targetIP já venha validado (net.ParseIP ou resolução DNS bem-sucedida, nunca texto
-// arbitrário do usuário sem passar por isso), continua sendo a forma mais segura de compor o
-// comando.
+// "$1" é o IP-alvo (onde conectar de fato) e "$2" é o HOST usado como SNI/Host header (pode ser
+// igual ao IP quando não há hostname real conhecido) — ambos passados como argumento posicional
+// (não interpolados na string do script), mesma prática de segurança de sempre, mesmo já vindo
+// validados (net.ParseIP ou resolução DNS bem-sucedida).
+//
+// Bug real corrigido, achado ao vivo pelo usuário testando contra um host atrás de um cofre
+// Delinea (bastion/PAM): "os certificados não são revelados e sempre retornam fake". Causa: a v1
+// deste script sempre usava o IP CRU como SNI (`-servername "$IP"`) e como Host virtual
+// (`http://$IP/`) — mas SNI é, por definição, sempre um NOME, nunca um endereço IP; qualquer
+// terminador TLS que roteia por SNI (ingress-nginx, ALB, CDN, o próprio proxy do cofre) não
+// reconhece um IP como SNI válido e cai no comportamento padrão pra SNI desconhecido — que pode
+// ser servir um certificado de placeholder (o "Kubernetes Ingress Controller Fake Certificate" já
+// documentado noutro lugar desta app, internal/certificates/parser.go) OU, em alguns terminadores,
+// simplesmente REJEITAR o handshake por completo. Confirmado ao vivo ANTES de escrever este
+// comentário (contra um host real por trás de Cloudflare, SNI-roteado): `-servername "$IP"` →
+// "Could not read certificate from <stdin>" (falha total, explica "certificados não são
+// revelados"); `-servername "example.com"` (o nome real) → certificado correto extraído sem
+// problema nenhum.
+//
+// Corrigido: quando o usuário buscou por HOSTNAME (não por IP — ver sniHost em net_discovery.go),
+// $2 carrega esse hostname original, usado como SNI (openssl `-servername`) e via `curl --resolve
+// "$HOST:porta:$IP"` (força a conexão TCP pro IP já resolvido, mas com Host/SNI corretos na
+// camada HTTP/TLS — sem depender de uma nova resolução DNS dentro do container, que poderia até
+// divergir do IP que o traceroute de fato alcançou). Quando a busca já era por IP direto, $2 == $1
+// e o comportamento é idêntico ao de antes (nada muda nesse caso — não há hostname real pra usar).
 const netDiscoveryFingerprintScript = `
 IP="$1"
+HOST="$2"
 echo "@@TTL $(ping -c 1 -W 2 "$IP" 2>&1 | grep -o 'ttl=[0-9]*' | cut -d= -f2)"
 for p in 22 80 443 445 3389 21 25 587 53 3306 5432 6379 27017 9200 8080 8443 5985 5986; do
   ( if nc -z -w1 "$IP" "$p" 2>/dev/null; then echo "@@PORT $p OPEN"; else echo "@@PORT $p CLOSED"; fi ) &
 done
 wait
-HTTP=$(curl -sI --max-time 3 "http://$IP/" 2>/dev/null | grep -i '^server:' | head -1 | tr -d '\r')
+HTTP=$(curl -sI --max-time 3 --resolve "$HOST:80:$IP" "http://$HOST/" 2>/dev/null | grep -i '^server:' | head -1 | tr -d '\r')
 echo "@@HTTP $HTTP"
-HTTPS=$(curl -skI --max-time 3 "https://$IP/" 2>/dev/null | grep -i '^server:' | head -1 | tr -d '\r')
+HTTPS=$(curl -skI --max-time 3 --resolve "$HOST:443:$IP" "https://$HOST/" 2>/dev/null | grep -i '^server:' | head -1 | tr -d '\r')
 echo "@@HTTPS $HTTPS"
-TLSOUT=$(echo | timeout 3 openssl s_client -connect "$IP:443" -servername "$IP" 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null | tr '\n' '|')
+TLSOUT=$(echo | timeout 3 openssl s_client -connect "$IP:443" -servername "$HOST" 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null | tr '\n' '|')
 echo "@@TLS $TLSOUT"
 `
 
@@ -65,12 +87,16 @@ type NetDiscoveryFingerprint struct {
 // runFingerprintInPod/runFingerprintLocal — mesmo padrão dual pod/local do traceroute (Fase 1),
 // mas AQUI sempre bloqueante (não streaming) — é um único resultado consolidado no final, não
 // uma sequência de saltos aparecendo ao vivo; não faz sentido animar porta a porta.
-func runFingerprintInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, targetIP string) (string, error) {
+//
+// `sniHost` — hostname original digitado pelo usuário (quando a busca foi por hostname) ou igual
+// a `targetIP` (quando a busca já era por IP direto, sem hostname real disponível) — ver
+// comentário completo em netDiscoveryFingerprintScript sobre por que isso importa pro HTTP/TLS.
+func runFingerprintInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, targetIP, sniHost string) (string, error) {
 	return execCmdInPod(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer,
-		[]string{"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP})
+		[]string{"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost})
 }
 
-func runFingerprintLocal(ctx context.Context, targetIP string) (string, error) {
+func runFingerprintLocal(ctx context.Context, targetIP, sniHost string) (string, error) {
 	// Nome explícito — mesmo achado real documentado em runTracerouteLocal (net_discovery.go):
 	// cancelamento no meio do fingerprint mataria o CLIENTE docker run sem garantir que o
 	// container remoto pare junto.
@@ -78,7 +104,7 @@ func runFingerprintLocal(ctx context.Context, targetIP string) (string, error) {
 	out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "--network=host",
 		"--name", containerName,
 		"--label", netDiscoveryDockerLabel, netDiscoveryPodImage,
-		"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP).CombinedOutput()
+		"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost).CombinedOutput()
 
 	if ctx.Err() != nil {
 		cleanupCancelledDockerContainer(containerName)

@@ -271,7 +271,23 @@ const netDiscoveryEnrichConcurrency = 8
 // mutando `hops` in-place — seguro porque cada goroutine escreve num ÍNDICE diferente do slice,
 // nunca faz append nem toca o mesmo elemento que outra goroutine. Chamado depois do fingerprint
 // do destino (Fase 2), antes de montar o NetDiscoveryResult final.
-func enrichHops(ctx context.Context, hops []NetDiscoveryHop) {
+//
+// `originalHostname` — string vazia quando o usuário buscou por IP direto (resolveTarget não
+// resolveu nada, não existe hostname "real" pra usar). Quando não-vazia (usuário buscou por
+// hostname/FQDN), é o valor ORIGINAL digitado — usado só pra sobrescrever o ReverseDNS do salto
+// que é o próprio destino (IsTarget), SEM sequer rodar o PTR pra esse salto específico.
+//
+// Achado real, relatado ao vivo pelo usuário contra um host atrás de um cofre Delinea (bastion/
+// PAM): "não retornou o hostname correto" — o PTR (DNS reverso) de um IP atrás de um jump host/
+// bastion frequentemente resolve pro nome DNS do PRÓPRIO bastion (o dono real daquele IP do ponto
+// de vista do DNS), não pro nome que o usuário efetivamente buscou — isso não é bug de parsing
+// nenhum, é a verdade da rede (o PTR aponta pra quem É dono do IP, que pode não ser "o serviço que
+// o usuário queria alcançar" quando há um proxy/bastion no meio). Mas pro salto ALVO
+// especificamente, já temos uma fonte de verdade estritamente melhor que qualquer PTR: o próprio
+// texto que o usuário digitou — se a busca começou por hostname, aquele nome É, por definição, o
+// nome correto do destino (é o que resolveu pro IP em primeiro lugar). Usar isso em vez do PTR
+// elimina a divergência nesse caso, sem inventar nenhuma heurística nova.
+func enrichHops(ctx context.Context, hops []NetDiscoveryHop, originalHostname string) {
 	ranges := getCloudRanges(ctx)
 
 	var wg sync.WaitGroup
@@ -296,6 +312,10 @@ func enrichHops(ctx context.Context, hops []NetDiscoveryHop) {
 			hops[idx].ASNOrg = enr.ASNOrg
 			hops[idx].CloudMatch = enr.CloudMatch
 			hops[idx].CloudRegion = enr.CloudRegion
+
+			if hops[idx].IsTarget && originalHostname != "" {
+				hops[idx].ReverseDNS = originalHostname
+			}
 		}(i)
 	}
 

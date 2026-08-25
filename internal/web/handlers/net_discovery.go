@@ -592,6 +592,19 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		return
 	}
 
+	// sniHost/originalHostname — hostname ORIGINAL digitado pelo usuário, quando a busca foi por
+	// hostname (não por IP direto). Usado em dois pontos que precisam de um nome real, não só o
+	// IP: o fingerprint HTTP/TLS (SNI/Host virtual-hosting, ver net_discovery_fingerprint.go — bug
+	// real corrigido, "certificados sempre fake") e o enriquecimento de DNS reverso do salto-alvo
+	// (ver enrichHops — bug real corrigido, "hostname incorreto atrás de bastion/cofre"). Vazio
+	// quando `resolved==false` (a busca já era por IP puro, sem hostname real disponível).
+	sniHost := targetIP
+	originalHostname := ""
+	if resolved {
+		originalHostname = strings.TrimSpace(req.Target)
+		sniHost = originalHostname
+	}
+
 	var hops []NetDiscoveryHop
 	var hopsMu sync.Mutex
 	onLine := func(line string) {
@@ -622,7 +635,9 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	var podClientset kubernetes.Interface
 
 	if req.Mode == netDiscoveryModeLocal {
-		fingerprintProbe = runFingerprintLocal
+		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
+			return runFingerprintLocal(ctx, ip, sniHost)
+		}
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local)...", targetIP), 0.2, nil)
 		if err := runTracerouteLocal(ctx, targetIP, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute local", err)
@@ -658,7 +673,7 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		}
 
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
-			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip)
+			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost)
 		}
 
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s...", targetIP), 0.2, nil)
@@ -689,7 +704,7 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	// in-place; roda mesmo se o fingerprint acima falhou (camadas independentes, uma não bloqueia
 	// a outra).
 	send("enrich", "in_progress", "Enriquecendo rota (DNS reverso, ASN, nuvem)...", 0.97, nil)
-	enrichHops(ctx, hops)
+	enrichHops(ctx, hops, originalHostname)
 
 	// Cross-reference K8s (Fase 4) — última camada, sempre best-effort. `podClientset` é nil no
 	// modo local; crossReferenceHops/crossReferenceIP tratam isso consultando só o cache

@@ -85,10 +85,34 @@ func TestEnrichHops_SkipsTimedOutAndEmptyIP(t *testing.T) {
 	// Não deve tentar nenhuma consulta de rede pra esses saltos — se tentasse, o teste ainda
 	// passaria (best-effort), mas o objetivo aqui é confirmar que os campos continuam vazios
 	// (nada foi escrito) sem precisar mockar rede.
-	enrichHops(context.Background(), hops)
+	enrichHops(context.Background(), hops, "")
 	for _, h := range hops {
 		if h.ReverseDNS != "" || h.ASN != "" || h.CloudMatch != "" {
 			t.Errorf("hop %+v não deveria ter sido enriquecido (timed_out ou sem IP)", h)
 		}
+	}
+}
+
+// TestEnrichHops_TargetHopGetsOriginalHostnameOverride cobre o bug real corrigido, relatado ao
+// vivo pelo usuário contra um host atrás de um bastion/cofre Delinea: "não retornou o hostname
+// correto". Quando a busca começou por hostname (originalHostname não-vazio), o salto ALVO
+// (IsTarget=true) deve exibir esse hostname original — que é a fonte de verdade mais confiável
+// disponível (foi literalmente o que resolveu pro IP) — em vez de depender só do PTR reverso, que
+// pode legitimamente resolver pro nome do bastion/proxy, não do serviço real por trás dele.
+func TestEnrichHops_TargetHopGetsOriginalHostnameOverride(t *testing.T) {
+	hops := []NetDiscoveryHop{
+		{Index: 1, IP: "127.0.0.1", IsTarget: false}, // não-alvo: PTR normal, sem override
+		{Index: 2, IP: "127.0.0.1", IsTarget: true},  // alvo: hostname original deve prevalecer
+	}
+	enrichHops(context.Background(), hops, "meuservico.interno.exemplo.com")
+
+	if hops[1].ReverseDNS != "meuservico.interno.exemplo.com" {
+		t.Errorf("hop alvo: ReverseDNS = %q, want o hostname original (override)", hops[1].ReverseDNS)
+	}
+	// Hop não-alvo não deve ser afetado pelo override — só o PTR real dele (ou vazio, já que
+	// 127.0.0.1 tipicamente não tem PTR configurado, mas o importante é NÃO ser o hostname
+	// original, que só se aplica ao alvo).
+	if hops[0].ReverseDNS == "meuservico.interno.exemplo.com" {
+		t.Errorf("hop NÃO-alvo não deveria receber o override do hostname original")
 	}
 }
