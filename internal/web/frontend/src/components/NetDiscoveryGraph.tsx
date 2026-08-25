@@ -12,7 +12,7 @@ import type { NetDiscoveryFingerprint, NetDiscoveryHop } from "@/lib/api/types";
 // um rebuild completo), preservando zoom/pan entre saltos e permitindo uma pequena animação de
 // pan/fit a cada salto novo — é isso que dá a sensação de "desenhando ao vivo".
 
-const NODE_SPACING = 150;
+const NODE_SPACING = 170; // nós um pouco maiores desde a v2 (84-100px) — espaçamento ajustado junto
 const ORIGIN_NODE_ID = "__origin__";
 
 // osEmoji — mesmo princípio de fraseologia neutra do resto da app: o próprio ícone já é
@@ -24,6 +24,32 @@ function osEmoji(fp: NetDiscoveryFingerprint | undefined): string {
   if (fp.os_guess === "windows") return "🪟";
   if (fp.is_web_server) return "🌐";
   return "❓";
+}
+
+// truncateHostname evita que um FQDN longo (comum em PTR corporativo/nuvem, ex:
+// "ord38s33-in-f14.1e100.net") estoure a largura fixa do nó (text-max-width: 80px) — o nome
+// completo continua disponível na tabela de saltos (NetDiscoveryTab.tsx), este é só um resumo
+// visual dentro do grafo.
+const HOSTNAME_LABEL_MAX = 20;
+function truncateHostname(host: string): string {
+  return host.length > HOSTNAME_LABEL_MAX ? `${host.slice(0, HOSTNAME_LABEL_MAX - 1)}…` : host;
+}
+
+// buildHopLabel monta o texto completo do nó — única fonte de verdade do label, usada tanto na
+// criação do nó (sem enriquecimento ainda, hop "cru" vindo do evento SSE "hop" ao vivo) quanto na
+// atualização pós-enriquecimento (DNS reverso/fingerprint/cross-reference K8s, todos chegando
+// juntos no evento "complete"). Existir como uma função só evita o bug de ordenação entre efeitos
+// que existiria se cada camada (emoji do fingerprint, hostname da Fase 3, K8s da Fase 4) escrevesse
+// o label separadamente — cada write anterior seria perdido pelo próximo.
+function buildHopLabel(hop: NetDiscoveryHop, fingerprint: NetDiscoveryFingerprint | undefined): string {
+  if (hop.timed_out) return `${hop.index}\n?`;
+  if (!hop.ip) return `${hop.index}`;
+
+  const emojiPrefix = hop.is_target ? osEmoji(fingerprint) : "";
+  let label = `${hop.index}\n${emojiPrefix ? `${emojiPrefix} ` : ""}${hop.ip}`;
+  if (hop.reverse_dns) label += `\n${truncateHostname(hop.reverse_dns)}`;
+  if (hop.internal_ref) label += `\n[${hop.internal_ref.name}]`;
+  return label;
 }
 
 interface NetDiscoveryGraphProps {
@@ -58,11 +84,14 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
             color: "#ffffff",
             "text-valign": "center",
             "text-halign": "center",
-            "font-size": "9px",
+            // font-size/tamanho reduzidos em relação à v1 (9px/70x70) — o label agora
+            // rotineiramente ganha uma 3ª linha (hostname resolvido, Fase 3) e às vezes uma 4ª
+            // (recurso K8s, Fase 4); 8px/84x84 dá espaço pras linhas extras sem estourar demais.
+            "font-size": "8px",
             "text-wrap": "wrap",
-            "text-max-width": "80px",
-            width: 70,
-            height: 70,
+            "text-max-width": "78px",
+            width: 84,
+            height: 84,
             "border-width": 2,
             "border-color": "#1e293b",
             "background-color": "#6b7280",
@@ -73,7 +102,7 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
         { selector: 'node[kind = "timeout"]', style: { "background-color": "#6b7280", "border-style": "dashed" } },
         {
           selector: 'node[kind = "target"]',
-          style: { "background-color": "#10b981", width: 90, height: 90, "font-size": "10px", "font-weight": "bold" },
+          style: { "background-color": "#10b981", width: 100, height: 100, "font-size": "9px", "font-weight": "bold" },
         },
         // Match de nuvem pública (Fase 3, enrichHops) — mesma paleta de cor já usada em
         // PROVIDER_COLORS (LatencyTopologyGraph.tsx: aws=laranja, gcp=verde). Só a BORDA, nunca o
@@ -141,7 +170,9 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
       const prevId = i === 0 ? ORIGIN_NODE_ID : `hop-${hops[i - 1].index}`;
 
       const kind = hop.timed_out ? "timeout" : hop.is_target ? "target" : "hop";
-      const label = hop.timed_out ? `${hop.index}\n?` : hop.ip ? `${hop.index}\n${hop.ip}` : `${hop.index}`;
+      // Sem fingerprint/reverse_dns ainda nesta fase (evento "hop" ao vivo chega antes do
+      // enriquecimento) — buildHopLabel já lida com isso sozinho (campos ausentes = omitidos).
+      const label = buildHopLabel(hop, undefined);
 
       cy.add({
         data: { id: nodeId, label, kind },
@@ -162,40 +193,38 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
     cy.animate({ fit: { eles: cy.elements(), padding: 40 } }, { duration: 300 });
   }, [hops]);
 
-  // Fingerprint (Fase 2) chega DEPOIS do nó de destino já existir (evento SSE separado, no final
-  // da descoberta) — atualiza o label do nó `kind="target"` já presente em vez de recriar nada.
-  useEffect(() => {
-    const cy = cyInstance.current;
-    if (!cy || !fingerprint) return;
-    const targetNode = cy.nodes('[kind = "target"]').first();
-    if (targetNode.empty()) return;
-    const emoji = osEmoji(fingerprint);
-    const currentLabel = String(targetNode.data("label") ?? "");
-    if (currentLabel.includes(emoji)) return; // já atualizado (evita re-append em re-render)
-    targetNode.data("label", `${emoji} ${currentLabel}`);
-  }, [fingerprint]);
-
-  // Enriquecimento por salto (Fases 3-4) chega junto da lista final de `hops` no evento "complete"
-  // — o efeito de cima (que adiciona NÓS NOVOS) já ignora esse update porque `hops.length` não
-  // muda (mesma contagem de saltos, só campos novos preenchidos). Este efeito roda À PARTE,
-  // sempre que `hops` muda, e só ATUALIZA nós já existentes (nunca adiciona/remove) com o dado de
-  // nuvem (Fase 3) e cross-reference K8s (Fase 4) — barato o bastante pra rodar incondicionalmente
-  // a cada mudança de `hops`.
+  // Enriquecimento por salto (Fases 2-4: fingerprint do destino, DNS reverso/nuvem, cross-reference
+  // K8s) chega junto da lista final de `hops`/`fingerprint` no evento "complete" — o efeito de cima
+  // (que adiciona NÓS NOVOS) já ignora esse update porque `hops.length` não muda (mesma contagem de
+  // saltos, só campos novos preenchidos). Este efeito roda À PARTE, sempre que `hops` OU
+  // `fingerprint` mudam, e só ATUALIZA nós já existentes (nunca adiciona/remove).
+  //
+  // Um único efeito (não um por camada) é deliberado: as três camadas de enriquecimento chegam
+  // juntas no mesmo evento SSE, e cada uma contribui pro MESMO label do nó (emoji do SO, hostname
+  // resolvido, nome do recurso K8s) — se cada camada escrevesse o label separadamente em efeitos
+  // distintos, a ordem de execução entre eles decidiria qual escrita sobrevive, sobrescrevendo as
+  // anteriores. `buildHopLabel` monta o texto completo de uma vez, sempre a partir do estado atual
+  // (`hops`/`fingerprint`), nunca a partir do label anterior do nó — idempotente e sem essa
+  // fragilidade de ordenação.
   useEffect(() => {
     const cy = cyInstance.current;
     if (!cy) return;
     for (const hop of hops) {
       const node = cy.getElementById(`hop-${hop.index}`);
       if (node.empty()) continue;
+
+      const newLabel = buildHopLabel(hop, hop.is_target ? fingerprint : undefined);
+      if (node.data("label") !== newLabel) {
+        node.data("label", newLabel);
+      }
       if (hop.cloud_match && node.data("cloudMatch") !== hop.cloud_match) {
         node.data("cloudMatch", hop.cloud_match);
       }
       if (hop.internal_ref && node.data("internalRefKind") !== hop.internal_ref.kind) {
         node.data("internalRefKind", hop.internal_ref.kind);
-        node.data("label", `${hop.index}\n${hop.ip}\n[${hop.internal_ref.name}]`);
       }
     }
-  }, [hops]);
+  }, [hops, fingerprint]);
 
   return (
     <div className="flex flex-col gap-2">
