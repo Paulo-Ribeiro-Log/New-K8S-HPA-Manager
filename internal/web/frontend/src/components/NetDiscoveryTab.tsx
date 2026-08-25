@@ -761,7 +761,7 @@ export default function NetDiscoveryTab() {
                             AS{h.asn}{h.asn_org ? ` — ${h.asn_org}` : ""}
                           </span>
                         )}
-                        {h.reverse_dns && <span className="text-muted-foreground truncate max-w-[220px]" title={h.reverse_dns}>{h.reverse_dns}</span>}
+                        {h.reverse_dns && <span className="text-muted-foreground break-all" title={h.reverse_dns}>{h.reverse_dns}</span>}
                       </div>
                     </td>
                   </tr>
