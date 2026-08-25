@@ -890,6 +890,33 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	send("crossref", "in_progress", "Cruzando com clusters K8s conhecidos...", 0.99, nil)
 	h.crossReferenceHops(ctx, hops, podClientset, req.Cluster)
 
+	// Bug real corrigido, relatado ao vivo: "testando contra um cluster AKS sabido que usa Linux,
+	// mas nunca é reconhecido". Causa: inferOSGuess (net_discovery_fingerprint.go) só enxerga TTL
+	// de ping e a lista curada de ~18 portas conhecidas (netDiscoveryFingerprintPorts) — nenhuma
+	// delas é específica de K8s (kubelet 10250, NodePort 30000-32767, ou a porta arbitrária da
+	// própria aplicação, ex: 5000/8000/9090). Contra um alvo K8s típico (Pod/Service expondo só a
+	// porta da app) as duas fontes de sinal ficam vazias na prática: ICMP costuma vir bloqueado por
+	// NSG (comum em AKS, mesmo dentro da VNet), e nenhuma porta curada bate — sem TTL e sem porta,
+	// inferOSGuess sempre cai no caso "sem sinal suficiente", mesmo o alvo sendo genuinamente K8s.
+	// Como o cross-reference acima (Fase 4) já SABE que esse IP é um Node/Pod/Service de um
+	// cluster desta app — e Nodes/Pods/Services K8s são, na prática, sempre Linux (node pools
+	// Windows existem, mas são exceção rara e explícita) — usa esse match como sinal de SO só
+	// quando o fingerprint não achou nenhum sinal próprio (nunca sobrescreve um veredito já
+	// derivado de porta/TTL real, que é mais direto). Mesmo princípio de fraseologia neutra do
+	// resto desta camada: nunca "confirmado", sempre explicando a origem do palpite.
+	if fingerprint != nil && fingerprint.OSGuess == "" {
+		for i := range hops {
+			if hops[i].IsTarget && hops[i].InternalRef != nil {
+				fingerprint.OSGuess = "linux"
+				fingerprint.OSConfidence = fmt.Sprintf(
+					"sem sinal de TTL/porta, mas o IP corresponde a um recurso K8s conhecido (%s: %s) — nós/pods/services K8s são majoritariamente Linux, mas não é garantia absoluta (node pools Windows existem, raros)",
+					hops[i].InternalRef.Kind, hops[i].InternalRef.Name,
+				)
+				break
+			}
+		}
+	}
+
 	result := NetDiscoveryResult{
 		TargetInput:    req.Target,
 		TargetIP:       targetIP,
