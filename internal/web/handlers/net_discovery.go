@@ -623,6 +623,24 @@ func validateClientCertPair(certPEM, keyPEM string) error {
 	return nil
 }
 
+// validateClientCertRequest — mesmo padrão de normalizeProbeSettings (extraída pra ser
+// reaproveitada por Run() e RunBatch() sem duplicar a mesma checagem nos dois handlers; achado
+// real de code review: essa checagem de mTLS estava duplicada byte-a-byte enquanto
+// normalizeProbeSettings já tinha sido extraída exatamente pra evitar esse padrão nos campos
+// vizinhos probe_port/probe_timeout_sec). Devolve errCode/errMsg vazios quando não há nada a
+// reportar (par vazio ou par válido).
+func validateClientCertRequest(certPEM, keyPEM string) (errCode, errMsg string) {
+	if (certPEM != "") != (keyPEM != "") {
+		return "INVALID_CLIENT_CERT", "certificado e chave de cliente (mTLS) devem ser fornecidos juntos, ou nenhum dos dois"
+	}
+	if certPEM != "" {
+		if err := validateClientCertPair(certPEM, keyPEM); err != nil {
+			return "INVALID_CLIENT_CERT", err.Error()
+		}
+	}
+	return "", ""
+}
+
 // buildMTLSStdinPayload monta o único stream de stdin entregue ao script (cert + marcador + chave)
 // — ver netDiscoveryFingerprintScript sobre por que o par nunca vai como argv. `certPEM == ""`
 // (mTLS não configurado, caso comum) devolve um leitor vazio — o exec recebe EOF imediato e o
@@ -667,15 +685,9 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 	req.ProbePort = probePort
 	req.ProbeTimeoutSec = probeTimeoutSec
 
-	if (req.ClientCertPEM != "") != (req.ClientKeyPEM != "") {
-		c.JSON(http.StatusBadRequest, errorResponse("INVALID_CLIENT_CERT", "certificado e chave de cliente (mTLS) devem ser fornecidos juntos, ou nenhum dos dois"))
+	if errCode, errMsg := validateClientCertRequest(req.ClientCertPEM, req.ClientKeyPEM); errCode != "" {
+		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
-	}
-	if req.ClientCertPEM != "" {
-		if err := validateClientCertPair(req.ClientCertPEM, req.ClientKeyPEM); err != nil {
-			c.JSON(http.StatusBadRequest, errorResponse("INVALID_CLIENT_CERT", err.Error()))
-			return
-		}
 	}
 
 	userInfo := GetUserInfoForHistory(c)
@@ -832,7 +844,13 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		ptrCancel()
 	}
 
-	var hops []NetDiscoveryHop
+	// hops := []NetDiscoveryHop{} — não "var hops []NetDiscoveryHop" (bug real achado em code
+	// review): tcptraceroute pode sair com exit 0 sem nenhuma linha reconhecida por
+	// parseTracerouteLine (o guard de falha abaixo só dispara com err != nil && len(hops) == 0
+	// simultaneamente) — um slice nil vira "hops":null no JSON (NetDiscoveryResult.Hops não tem
+	// omitempty), e o frontend faz result.hops.map(...) sem guard em 3 lugares (copyResult, a
+	// tabela, o export PDF), quebrando em runtime em vez de mostrar uma lista vazia.
+	hops := []NetDiscoveryHop{}
 	var hopsMu sync.Mutex
 	onLine := func(line string) {
 		hop, ok := parseTracerouteLine(line, targetIP)
@@ -955,39 +973,20 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	send("crossref", "in_progress", "Cruzando com clusters K8s conhecidos...", 0.99, nil)
 	h.crossReferenceHops(ctx, hops, podClientset, req.Cluster)
 
-	// Bug real corrigido, relatado ao vivo: "testando contra um cluster AKS sabido que usa Linux,
-	// mas nunca é reconhecido". Causa: inferOSGuess (net_discovery_fingerprint.go) só enxerga TTL
-	// de ping e a lista curada de ~18 portas conhecidas (netDiscoveryFingerprintPorts) — nenhuma
-	// delas é específica de K8s (kubelet 10250, NodePort 30000-32767, ou a porta arbitrária da
-	// própria aplicação, ex: 5000/8000/9090). Contra um alvo K8s típico (Pod/Service expondo só a
-	// porta da app) as duas fontes de sinal ficam vazias na prática: ICMP costuma vir bloqueado por
-	// NSG (comum em AKS, mesmo dentro da VNet), e nenhuma porta curada bate — sem TTL e sem porta,
-	// inferOSGuess sempre cai no caso "sem sinal suficiente", mesmo o alvo sendo genuinamente K8s.
-	// Como o cross-reference acima (Fase 4) já SABE que esse IP é um Node/Pod/Service de um
-	// cluster desta app — e Nodes/Pods/Services K8s são, na prática, sempre Linux (node pools
-	// Windows existem, mas são exceção rara e explícita) — usa esse match como sinal de SO só
-	// quando o fingerprint não achou nenhum sinal próprio (nunca sobrescreve um veredito já
-	// derivado de porta/TTL real, que é mais direto). Mesmo princípio de fraseologia neutra do
-	// resto desta camada: nunca "confirmado", sempre explicando a origem do palpite.
-	//
-	// 2ª rodada — corrigido depois de o usuário apontar um risco real: um match de CACHE (até 24h
-	// pra Node/Service) pode estar desatualizado — o IP pode ter mudado de dono desde então — e
-	// usar isso como sinal de SO faria a ferramenta apresentar uma inferência antiga como se fosse
-	// do cenário atual, "assumindo que nada mudou". Corrigido restringindo este fallback a
-	// `!hops[i].InternalRef.FromCache` — só confia num match AO VIVO, confirmado nesta própria
-	// execução (sempre o caso em modo pod contra um IP sem cache válido ainda). Em modo local
-	// (cross-reference só consulta cache, nunca faz busca ao vivo — ver net_discovery_crossref.go)
-	// isto significa que o fallback nunca dispara, mesmo com InternalRef presente — o badge de
-	// recurso K8s continua aparecendo na tabela/grafo (informativo, com a idade exposta via
-	// `MatchedAt`/`FromCache`), só o veredito de SO é que exige confirmação fresca.
+	// Fallback de SO via cross-reference K8s (Fase 4) — mesmo achado real de duas rodadas
+	// anteriores: (1) contra um alvo K8s típico (ICMP bloqueado por NSG, nenhuma das ~18 portas
+	// curadas é específica de K8s), inferOSGuess sempre ficava sem sinal, mesmo o alvo sendo
+	// genuinamente K8s/Linux; (2) um match de CACHE (até 24h de idade) pode estar desatualizado,
+	// então só um match AO VIVO desta própria execução conta como sinal — ver o comentário
+	// completo (com os dois achados) em inferOSGuess (net_discovery_fingerprint.go), que agora é o
+	// ÚNICO lugar que decide/explica o veredito (achado de code review: a versão anterior
+	// reimplementava essa decisão aqui, fora do mecanismo documentado). Aqui só resolve QUAL
+	// InternalRef (se algum) usar e reinvoca inferOSGuess com ele — nunca sobrescreve um veredito
+	// já derivado de porta/TTL (inferOSGuess já prioriza esses sinais internamente).
 	if fingerprint != nil && fingerprint.OSGuess == "" {
 		for i := range hops {
-			if hops[i].IsTarget && hops[i].InternalRef != nil && !hops[i].InternalRef.FromCache {
-				fingerprint.OSGuess = "linux"
-				fingerprint.OSConfidence = fmt.Sprintf(
-					"sem sinal de TTL/porta, mas o IP correspondeu, numa busca ao vivo desta própria execução, a um recurso K8s conhecido (%s: %s) — nós/pods/services K8s são majoritariamente Linux, mas não é garantia absoluta (node pools Windows existem, raros)",
-					hops[i].InternalRef.Kind, hops[i].InternalRef.Name,
-				)
+			if hops[i].IsTarget && hops[i].InternalRef != nil {
+				fingerprint.OSGuess, fingerprint.OSConfidence = inferOSGuess(fingerprint.TTL, fingerprint.OpenPorts, hops[i].InternalRef)
 				break
 			}
 		}

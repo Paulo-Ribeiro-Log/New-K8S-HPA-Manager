@@ -222,12 +222,24 @@ func containsInt(list []int, v int) bool {
 	return false
 }
 
-// inferOSGuess aplica a heurística da seção 3.2/3.3 do plano — portas conhecidas de Windows/Linux
-// são sinal MAIS confiável que TTL sozinho (checadas primeiro); TTL entra só como fallback quando
-// nenhuma porta característica foi encontrada aberta. Nunca retorna um veredito sem explicar a
-// origem em OSConfidence — mesmo princípio de fraseologia neutra usado no resto da app
-// (TrustedByPublicCA, ChainValidationResult): a UI não deve nunca apresentar isto como certeza.
-func inferOSGuess(ttl int, openPorts []int) (guess, confidence string) {
+// inferOSGuess é o ÚNICO mecanismo desta ferramenta que decide OSGuess/OSConfidence — aplica a
+// heurística da seção 3.2/3.3 do plano: portas conhecidas de Windows/Linux são sinal MAIS
+// confiável que TTL sozinho (checadas primeiro); TTL entra como fallback; cross-reference K8s
+// (`k8sMatch`, Fase 4 bônus) entra como ÚLTIMO fallback, só quando nem porta nem TTL deram sinal
+// nenhum. Nunca retorna um veredito sem explicar a origem em OSConfidence — mesmo princípio de
+// fraseologia neutra usado no resto da app (TrustedByPublicCA, ChainValidationResult): a UI não
+// deve nunca apresentar isto como certeza.
+//
+// `k8sMatch` — achado real de code review: antes, o fallback via cross-reference K8s vivia
+// hardcoded em runDiscovery() (net_discovery.go), reimplementando à mão uma 2ª cópia da lógica de
+// "explicar a origem do palpite" fora deste único mecanismo documentado — mudança futura na
+// prioridade dos sinais ou na redação da confiança tinha que ser replicada em dois lugares
+// desconectados. Corrigido roteando o sinal PRA DENTRO de inferOSGuess: o chamador (runDiscovery,
+// depois que crossReferenceHops já rodou) passa o match K8s do salto-alvo aqui, e só aqui é
+// decidido se ele conta como sinal. `k8sMatch.FromCache` é checado AQUI TAMBÉM (defesa em
+// profundidade, não só no chamador) — nunca confia num match de CACHE (pode estar desatualizado,
+// achado real anterior) pra afirmar o SO, só num match confirmado ao vivo na própria execução.
+func inferOSGuess(ttl int, openPorts []int, k8sMatch *NetDiscoveryInternalRef) (guess, confidence string) {
 	windowsPorts := []int{3389, 445, 5985, 5986}
 	for _, p := range windowsPorts {
 		if containsInt(openPorts, p) {
@@ -238,17 +250,25 @@ func inferOSGuess(ttl int, openPorts []int) (guess, confidence string) {
 		return "linux", "porta 22 (SSH) aberta — indício mais confiável que TTL sozinho"
 	}
 
-	if ttl <= 0 {
-		return "", "sem sinal suficiente pra inferir o sistema operacional"
+	if ttl > 0 {
+		switch {
+		case ttl <= 64:
+			return "linux", "heurística de TTL (observado " + strconv.Itoa(ttl) + ", TTL inicial provável 64) — Linux/Unix/macOS mais provável, mas é só heurística"
+		case ttl <= 128:
+			return "windows", "heurística de TTL (observado " + strconv.Itoa(ttl) + ", TTL inicial provável 128) — Windows mais provável, mas é só heurística"
+		default:
+			return "", "TTL observado (" + strconv.Itoa(ttl) + ") não bate com nenhum padrão conhecido de SO"
+		}
 	}
-	switch {
-	case ttl <= 64:
-		return "linux", "heurística de TTL (observado " + strconv.Itoa(ttl) + ", TTL inicial provável 64) — Linux/Unix/macOS mais provável, mas é só heurística"
-	case ttl <= 128:
-		return "windows", "heurística de TTL (observado " + strconv.Itoa(ttl) + ", TTL inicial provável 128) — Windows mais provável, mas é só heurística"
-	default:
-		return "", "TTL observado (" + strconv.Itoa(ttl) + ") não bate com nenhum padrão conhecido de SO"
+
+	if k8sMatch != nil && !k8sMatch.FromCache {
+		return "linux", fmt.Sprintf(
+			"sem sinal de TTL/porta, mas o IP correspondeu, numa busca ao vivo desta própria execução, a um recurso K8s conhecido (%s: %s) — nós/pods/services K8s são majoritariamente Linux, mas não é garantia absoluta (node pools Windows existem, raros)",
+			k8sMatch.Kind, k8sMatch.Name,
+		)
 	}
+
+	return "", "sem sinal suficiente pra inferir o sistema operacional"
 }
 
 // parseFingerprintOutput interpreta a saída do netDiscoveryFingerprintScript (marcadores @@TAG),
@@ -294,6 +314,9 @@ func parseFingerprintOutput(output string) NetDiscoveryFingerprint {
 
 	sort.Ints(fp.OpenPorts)
 	fp.IsWebServer = containsInt(fp.OpenPorts, 80) || containsInt(fp.OpenPorts, 443) || fp.TLSSubject != "" || fp.HTTPServer != ""
-	fp.OSGuess, fp.OSConfidence = inferOSGuess(fp.TTL, fp.OpenPorts)
+	// k8sMatch=nil aqui — o cross-reference K8s (Fase 4) só roda DEPOIS do fingerprint em
+	// runDiscovery (net_discovery.go); se este parse não achou sinal de porta/TTL, o chamador
+	// reinvoca inferOSGuess com o match (se houver) assim que ele estiver disponível.
+	fp.OSGuess, fp.OSConfidence = inferOSGuess(fp.TTL, fp.OpenPorts, nil)
 	return fp
 }

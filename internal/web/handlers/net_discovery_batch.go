@@ -116,15 +116,9 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
 	}
-	if (req.ClientCertPEM != "") != (req.ClientKeyPEM != "") {
-		c.JSON(http.StatusBadRequest, errorResponse("INVALID_CLIENT_CERT", "certificado e chave de cliente (mTLS) devem ser fornecidos juntos, ou nenhum dos dois"))
+	if errCode, errMsg := validateClientCertRequest(req.ClientCertPEM, req.ClientKeyPEM); errCode != "" {
+		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
-	}
-	if req.ClientCertPEM != "" {
-		if err := validateClientCertPair(req.ClientCertPEM, req.ClientKeyPEM); err != nil {
-			c.JSON(http.StatusBadRequest, errorResponse("INVALID_CLIENT_CERT", err.Error()))
-			return
-		}
 	}
 
 	userInfo := GetUserInfoForHistory(c)

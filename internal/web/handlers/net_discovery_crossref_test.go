@@ -3,14 +3,17 @@ package handlers
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"k8s-hpa-manager/internal/storage"
 )
@@ -225,5 +228,63 @@ func TestCrossReferenceHops_SkipsEmptyIPAndOnlyTouchesInternalRef(t *testing.T) 
 	}
 	if hops[2].InternalRef != nil {
 		t.Errorf("hop público não deveria ganhar InternalRef, got %+v", hops[2].InternalRef)
+	}
+}
+
+// TestCrossReferenceHops_FetchesFleetOnceRegardlessOfHopCount — achado real de code review: a
+// versão anterior chamava crossReferenceIP por salto, e cada cache-miss disparava 3 List() do
+// zero — numa descoberta com N saltos privados/cache-frio isso listava a mesma frota 3×N vezes.
+// Este teste conta as chamadas List() reais feitas ao fake clientset (via reactor) contra uma rota
+// com 3 saltos privados distintos, todos cache-frio — o resultado precisa ser exatamente 1 List()
+// por kind (Nodes/Services/Pods), nunca 3.
+func TestCrossReferenceHops_FetchesFleetOnceRegardlessOfHopCount(t *testing.T) {
+	h := newTestNetDiscoveryHandler(t)
+	clientset := fake.NewSimpleClientset(
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+			Status:     corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.1.10"}}},
+		},
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "checkout-api", Namespace: "prod"},
+			Spec:       corev1.ServiceSpec{ClusterIP: "10.96.0.20"},
+		},
+	)
+
+	var mu sync.Mutex
+	callCounts := map[string]int{}
+	countReactor := func(action k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		callCounts[action.GetResource().Resource]++
+		mu.Unlock()
+		return false, nil, nil // deixa o reactor padrão do fake seguir tratando a chamada
+	}
+	clientset.PrependReactor("list", "nodes", countReactor)
+	clientset.PrependReactor("list", "services", countReactor)
+	clientset.PrependReactor("list", "pods", countReactor)
+
+	hops := []NetDiscoveryHop{
+		{Index: 1, IP: "10.0.1.10"},  // bate no node
+		{Index: 2, IP: "10.96.0.20"}, // bate no service
+		{Index: 3, IP: "10.0.1.99"},  // não bate em nada, mas ainda é candidato (privado, cache-frio)
+	}
+
+	h.crossReferenceHops(context.Background(), hops, clientset, "meu-cluster")
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, kind := range []string{"nodes", "services", "pods"} {
+		if callCounts[kind] != 1 {
+			t.Errorf("List() de %s chamado %d vez(es), esperava exatamente 1 (independente de 3 saltos pendentes)", kind, callCounts[kind])
+		}
+	}
+
+	if hops[0].InternalRef == nil || hops[0].InternalRef.Kind != "node" {
+		t.Errorf("hop 1 deveria ter batido no node, got %+v", hops[0].InternalRef)
+	}
+	if hops[1].InternalRef == nil || hops[1].InternalRef.Kind != "service" {
+		t.Errorf("hop 2 deveria ter batido no service, got %+v", hops[1].InternalRef)
+	}
+	if hops[2].InternalRef != nil {
+		t.Errorf("hop 3 não deveria bater em nada, got %+v", hops[2].InternalRef)
 	}
 }
