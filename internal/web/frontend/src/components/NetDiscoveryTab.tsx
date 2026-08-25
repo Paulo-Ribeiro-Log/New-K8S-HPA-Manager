@@ -12,15 +12,24 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check } from "lucide-react";
+import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp } from "lucide-react";
 import { ProtectedAction } from "@/components/rbac";
 import NetDiscoveryGraph from "@/components/NetDiscoveryGraph";
 import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
-import type { NetDiscoveryHop, NetDiscoveryResult, NetDiscoverySSEEvent } from "@/lib/api/types";
+import type { NetDiscoveryHistoryEntry, NetDiscoveryHop, NetDiscoveryResult, NetDiscoverySSEEvent } from "@/lib/api/types";
 
 type NetDiscoveryMode = "pod" | "local";
+
+// osLabel — versão compacta (texto puro, pro banner de histórico) do mesmo veredito já mostrado
+// como badge no resultado ao vivo (ver bloco `result.fingerprint.os_guess` mais abaixo) — mesmo
+// princípio de nunca afirmar certeza (sempre "provável"/"?", nunca um nome seco).
+function osLabel(guess?: string): string {
+  if (guess === "linux") return "🐧 Linux provável";
+  if (guess === "windows") return "🪟 Windows provável";
+  return "❓ SO não identificado";
+}
 
 // "Descoberta de Rede" — Fase 1 (IP-ROUTE-DISCOVERY-PLAN.md): traceroute básico + grafo ao vivo,
 // sem nenhuma camada de enriquecimento ainda (DNS reverso/ASN/nuvem/cross-reference K8s/
@@ -52,6 +61,24 @@ export default function NetDiscoveryTab() {
   const [runError, setRunError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+
+  // Fase 5 — Histórico de Descobertas: mostra "última busca: ..." pro alvo digitado ANTES mesmo
+  // do usuário clicar "Traçar rota" (resolve a dor observada ao vivo nesta sessão — reinvestigar o
+  // mesmo host atrás de um cofre PAM do zero, em conversas diferentes). Debounce de 400ms (mesmo
+  // padrão já usado noutras buscas desta app) evita 1 request por tecla digitada.
+  const [debouncedTarget, setDebouncedTarget] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedTarget(target.trim()), 400);
+    return () => clearTimeout(t);
+  }, [target]);
+
+  const { data: historyData } = useQuery({
+    queryKey: ["net-discovery-history", debouncedTarget],
+    queryFn: () => apiClient.getNetDiscoveryHistory(debouncedTarget),
+    enabled: debouncedTarget.length > 2,
+  });
+  const historyEntries: NetDiscoveryHistoryEntry[] = historyData?.entries ?? [];
+  const [historyExpanded, setHistoryExpanded] = useState(false);
 
   const { data: namespaces = [] } = useQuery({
     queryKey: ["namespaces-net-discovery", cluster],
@@ -268,6 +295,59 @@ export default function NetDiscoveryTab() {
             </button>
           ))}
         </div>
+
+        {historyEntries.length > 0 && (() => {
+          const last = historyEntries[0];
+          return (
+            <div className="rounded border border-border bg-background/60 px-3 py-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setHistoryExpanded((v) => !v)}
+                className="flex items-center gap-2 w-full text-left"
+              >
+                <History className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                <span className="text-muted-foreground">
+                  Última busca: <span className="text-foreground">{new Date(last.created_at).toLocaleString("pt-BR")}</span>
+                  {" — "}
+                  {last.reached ? (
+                    <span className="text-emerald-600 dark:text-emerald-400">alcançado</span>
+                  ) : (
+                    <span className="text-amber-600 dark:text-amber-400">não alcançado</span>
+                  )}
+                  {" — "}
+                  {osLabel(last.result?.fingerprint?.os_guess)}
+                  {historyEntries.length > 1 && ` (+${historyEntries.length - 1} busca${historyEntries.length > 2 ? "s" : ""} anterior${historyEntries.length > 2 ? "es" : ""})`}
+                </span>
+                {historyExpanded ? (
+                  <ChevronUp className="w-3.5 h-3.5 text-muted-foreground ml-auto flex-shrink-0" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5 text-muted-foreground ml-auto flex-shrink-0" />
+                )}
+              </button>
+
+              {historyExpanded && (
+                <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
+                  {historyEntries.map((entry, i) => (
+                    <div key={i} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
+                      <span className="text-foreground">{new Date(entry.created_at).toLocaleString("pt-BR")}</span>
+                      <span>·</span>
+                      <span>modo {entry.mode === "local" ? "direto" : "cluster"}</span>
+                      <span>·</span>
+                      <span>{entry.hops_count} saltos</span>
+                      <span>·</span>
+                      <span>{entry.reached ? "alcançado" : "não alcançado"}</span>
+                      <span>·</span>
+                      <span>IP: {entry.target_ip}</span>
+                      {entry.result?.fingerprint?.os_confidence && (
+                        <span className="w-full text-[11px] italic">{entry.result.fingerprint.os_confidence}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         <div className="flex flex-wrap items-center gap-4">
           <RadioGroup

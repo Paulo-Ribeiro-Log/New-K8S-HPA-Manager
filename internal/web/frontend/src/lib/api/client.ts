@@ -3825,6 +3825,15 @@ class APIClient {
     });
   }
 
+  // ─── Descoberta de Rede (Fase 5 — Histórico de Descobertas) ────────────────
+
+  /** Últimas execuções conhecidas pra um alvo — banner "última busca: ..." antes de rodar de novo */
+  async getNetDiscoveryHistory(target: string): Promise<{ entries: import("./types").NetDiscoveryHistoryEntry[] }> {
+    return this.request<{ entries: import("./types").NetDiscoveryHistoryEntry[] }>(
+      `/net-discovery/history?target=${encodeURIComponent(target)}`
+    );
+  }
+
   // ─── Teste de Kafka sob Demanda ────────────────────────────────────────────
 
   /** Inicia o teste de Kafka (cria pod efêmero kcat) e retorna session_id para SSE */

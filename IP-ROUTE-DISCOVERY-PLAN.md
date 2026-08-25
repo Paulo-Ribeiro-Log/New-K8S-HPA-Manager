@@ -1,11 +1,11 @@
 # Estudo + Plano: Descoberta de Rede ("Descoberta de Rota e Identificação de Destino por IP")
 
-**Status:** ✅ Fases 1-4 concluídas, validadas ao vivo e mescladas — item real do `ToolsMenu.tsx`
-hoje. Ver `CLAUDE.md`, seções "Descoberta de Rede (Fase 1)" a "(Fase 4)", pro detalhe completo de
-cada camada, achados reais e bugs corrigidos ao vivo (SNI/hostname atrás de bastion, porta/timeout
-de sonda configuráveis, etc.). **Trabalho em andamento: Fase 5 — roadmap de maturidade
-profissional**, ver seção 10 (checklist vivo, retomável em qualquer sessão nova) — item ativo:
-**Histórico de Descobertas** (P1).
+**Status:** ✅ Fases 1-5 (P1) concluídas, validadas ao vivo e mescladas — item real do
+`ToolsMenu.tsx` hoje. Ver `CLAUDE.md`, seções "Descoberta de Rede (Fase 1)" a "(Fase 5)", pro
+detalhe completo de cada camada, achados reais e bugs corrigidos ao vivo (SNI/hostname atrás de
+bastion, porta/timeout de sonda configuráveis, etc.). **Trabalho em andamento: Fase 5 — roadmap de
+maturidade profissional**, ver seção 10 (checklist vivo, retomável em qualquer sessão nova) —
+próximo item: **P2 — Exportar resultado (texto/PDF)**.
 
 **Nome decidido da ferramenta: "Descoberta de Rede"** (item do `ToolsMenu.tsx`).
 
@@ -469,8 +469,8 @@ expôs a limitação mais dolorosa na prática — nenhuma memória entre buscas
 priorização explícita do que falta pra esta ferramenta virar algo usado no dia a dia, não só numa
 investigação pontual. Prioridade combinada com o usuário (maior valor/menor risco primeiro):
 
-- [ ] **P1 — Histórico de Descobertas** ⬅ **EM ANDAMENTO, prioridade atual** (ver checklist
-      detalhado abaixo)
+- [x] **P1 — Histórico de Descobertas** ✅ **concluído, validado ao vivo** (ver checklist
+      detalhado abaixo — CLAUDE.md "Descoberta de Rede (Fase 5)")
 - [ ] **P2 — Exportar resultado (texto/PDF)** — reaproveitar `jsPDF` (já usado em
       FinOps/Health Check/Certificados) pra gerar um documento anexável em CHG/ServiceNow a partir
       de um `NetDiscoveryResult` (rota + fingerprint + enriquecimento). Baixo risco, autocontido no
@@ -501,57 +501,57 @@ zero. Resolve diretamente a dor observada ao vivo nesta sessão (reinvestigar o 
 Delinea do zero, múltiplas vezes, em conversas diferentes).
 
 **Backend**:
-- [ ] `internal/storage/net_discovery_history_store.go` — novo store SQLite WAL (`net-discovery-
+- [x] `internal/storage/net_discovery_history_store.go` — novo store SQLite WAL (`net-discovery-
       history.db`), mesmo padrão de `NewNetDiscoveryRegistryStore`/`NewNotesStore`. Tabela única
       (schema achatado, sem normalizar em várias tabelas — o payload é auto-contido e só consultado
       por alvo/data, mesmo princípio de outras stores desta app que guardam um blob JSON quando o
       dado não precisa ser consultado por campo interno): `id, target_input, target_ip, mode,
       reached, hops_count, result_json (TEXT, o NetDiscoveryResult inteiro serializado), created_at
       DATETIME, created_by TEXT`.
-- [ ] Métodos: `Save(record)`, `GetRecentByTarget(targetInputOrIP string, limit int)` — casa por
+- [x] Métodos: `Save(record)`, `GetRecentByTarget(targetInputOrIP string, limit int)` — casa por
       `target_input` (normalizado: trim+lowercase) OU `target_ip`, cobre o caso de o usuário
       alternar entre digitar o hostname e o IP resolvido do mesmo host —, `GetRecent(limit int)`
       (lista geral, usado só se a aba/lista de histórico completa entrar no escopo — opcional pro
       P1 mínimo). Retenção: reaproveitar o mesmo padrão de 90 dias já usado no SNAT History (poda
       automática, não deixar crescer sem limite).
-- [ ] Wiring em `server.go`: criação do store (mesmo bloco `if store, err := storage.New...`, log
+- [x] Wiring em `server.go`: criação do store (mesmo bloco `if store, err := storage.New...`, log
       `✅ Net Discovery History Store inicializado`) + passagem pro `NewNetDiscoveryHandler` (mais
       um parâmetro, mesmo padrão já usado pro `registry` da Fase 4).
-- [ ] `runDiscovery` (`net_discovery.go`): chamar `h.historyStore.Save(...)` no fim, junto (não em
+- [x] `runDiscovery` (`net_discovery.go`): chamar `h.historyStore.Save(...)` no fim, junto (não em
       vez) do `h.logHistory(...)` já existente — são stores DIFERENTES com propósitos diferentes
       (`HistoryTracker` é auditoria genérica da app inteira; este é específico pra "o que sei sobre
       este alvo", consultável de volta).
-- [ ] Endpoint novo: `GET /api/v1/net-discovery/history?target=<texto>` — devolve as últimas N
+- [x] Endpoint novo: `GET /api/v1/net-discovery/history?target=<texto>` — devolve as últimas N
       (ex: 3) execuções pra aquele alvo, mais recente primeiro. Sem `RequireSREGroup()` (é
       consulta, não mutação — mesmo padrão de leitura do resto desta ferramenta).
-- [ ] Testes: store (`Save`+`GetRecentByTarget` round-trip, match por IP quando buscado pelo
+- [x] Testes: store (`Save`+`GetRecentByTarget` round-trip, match por IP quando buscado pelo
       hostname e vice-versa, retenção/poda), handler (endpoint devolve JSON esperado, alvo nunca
       visto devolve lista vazia — não erro).
 
 **Frontend**:
-- [ ] `apiClient.getNetDiscoveryHistory(target)` (`client.ts`) + tipo `NetDiscoveryHistoryEntry`
+- [x] `apiClient.getNetDiscoveryHistory(target)` (`client.ts`) + tipo `NetDiscoveryHistoryEntry`
       (`types.ts`).
-- [ ] `NetDiscoveryTab.tsx`: `useQuery` disparada quando `target` tem valor (debounce ~400ms, mesmo
+- [x] `NetDiscoveryTab.tsx`: `useQuery` disparada quando `target` tem valor (debounce ~400ms, mesmo
       padrão já usado noutras buscas desta app) — mostra um banner/card compacto ANTES mesmo de
       clicar "Traçar rota" quando há histórico: "Última busca: DD/MM HH:MM — alcançado: sim/não —
       SO: Linux/Windows/? — ver detalhes" (expansível, sem precisar rodar de novo). Nunca bloqueia
       o fluxo normal — é só um atalho informativo.
-- [ ] Formatação de data/hora: mesma convenção já usada no resto do frontend (`toLocaleString` no
+- [x] Formatação de data/hora: mesma convenção já usada no resto do frontend (`toLocaleString` no
       browser do cliente — nunca formatar hora no backend pra exibição, lição já documentada nesta
       app pro texto de notificação do Spinnaker).
 
 **Validação (mesma disciplina das Fases 1-4)**:
-- [ ] `go build`/`go vet`/`gofmt` limpos; `npx tsc --noEmit -p tsconfig.app.json`/`eslint` limpos.
-- [ ] Testes automatizados passando (`go test ./internal/storage/... ./internal/web/handlers/...`).
-- [ ] `./rebuild-web.sh -b` + restart.
-- [ ] Validação ao vivo: rodar uma descoberta contra um alvo, confirmar persistência (`sqlite3
+- [x] `go build`/`go vet`/`gofmt` limpos; `npx tsc --noEmit -p tsconfig.app.json`/`eslint` limpos.
+- [x] Testes automatizados passando (`go test ./internal/storage/... ./internal/web/handlers/...`).
+- [x] `./rebuild-web.sh -b` + restart.
+- [x] Validação ao vivo: rodar uma descoberta contra um alvo, confirmar persistência (`sqlite3
       ~/.k8s-hpa-manager/net-discovery-history.db "SELECT ..."`), rodar de novo contra o MESMO
       alvo e confirmar que o banner de histórico aparece com o resultado anterior correto.
-- [ ] `CLAUDE.md`: nova subseção "Descoberta de Rede (Fase 5) — Histórico de Descobertas", mesmo
+- [x] `CLAUDE.md`: nova subseção "Descoberta de Rede (Fase 5) — Histórico de Descobertas", mesmo
       estilo narrativo das Fases 1-4 (o que foi feito, achados reais, validação ao vivo).
-- [ ] Commit + push na branch `feat/net-discovery-fase1` (mesma branch usada pra toda a ferramenta
+- [x] Commit + push na branch `feat/net-discovery-fase1` (mesma branch usada pra toda a ferramenta
       até aqui — não abrir uma nova só pra isso).
-- [ ] Marcar este checklist (P1) como concluído nesta própria seção do plano, e mover a atenção pro
+- [x] Marcar este checklist (P1) como concluído nesta própria seção do plano, e mover a atenção pro
       P2 (ou parar aqui se o usuário decidir que já basta).
 
 ---

@@ -2059,6 +2059,20 @@ export interface NetDiscoveryResult {
   fingerprint?: NetDiscoveryFingerprint; // ausente quando o probe falhou — best-effort, ver backend
 }
 
+// NetDiscoveryHistoryEntry — Fase 5 (Histórico de Descobertas). `result` já vem desserializado
+// pelo backend (não uma string JSON) — reaproveita direto os mesmos componentes que já sabem
+// renderizar um NetDiscoveryResult.
+export interface NetDiscoveryHistoryEntry {
+  target_input: string;
+  target_ip: string;
+  mode: 'pod' | 'local';
+  reached: boolean;
+  hops_count: number;
+  created_at: string; // ISO — formatar com toLocaleString no browser, nunca no backend
+  created_by?: string;
+  result?: NetDiscoveryResult;
+}
+
 export interface NetDiscoverySSEEvent {
   id: string;
   type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'fingerprint' | 'enrich' | 'complete' | 'error';

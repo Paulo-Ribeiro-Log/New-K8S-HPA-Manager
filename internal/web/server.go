@@ -121,6 +121,9 @@ type Server struct {
 
 	// Net Discovery Registry Store (Fase 4 — cache-on-read do cross-reference K8s)
 	netDiscoveryRegistryStore *storage.NetDiscoveryRegistryStore
+
+	// Net Discovery History Store (Fase 5 — histórico de descobertas por alvo)
+	netDiscoveryHistoryStore *storage.NetDiscoveryHistoryStore
 }
 
 // ensureJWTSecret retorna o secret JWT a usar, em ordem de prioridade:
@@ -441,6 +444,18 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ Net Discovery Registry Store inicializado (cache de cross-reference K8s)")
 	}
 
+	// Net Discovery History Store (Fase 5 — histórico de descobertas por alvo, ver
+	// IP-ROUTE-DISCOVERY-PLAN.md seção 10.1). nil é seguro: runDiscovery só pula o Save/consulta
+	// de histórico quando o store não inicializou, sem afetar o fluxo principal da descoberta.
+	var netDiscoveryHistoryStore *storage.NetDiscoveryHistoryStore
+	netDiscoveryHistoryDBPath := filepath.Join(baseDir, "net-discovery-history.db")
+	if store, err := storage.NewNetDiscoveryHistoryStore(netDiscoveryHistoryDBPath); err != nil {
+		fmt.Printf("⚠️  Net Discovery History Store: falha ao criar store: %v\n", err)
+	} else {
+		netDiscoveryHistoryStore = store
+		fmt.Println("✅ Net Discovery History Store inicializado (histórico de descobertas por alvo)")
+	}
+
 	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
 	var latencyTestHistoryStore *storage.LatencyTestHistoryStore
 	latencyTestHistoryDBPath := filepath.Join(baseDir, "latency_test_history.db")
@@ -484,6 +499,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		snatHistoryStore:          snatHistoryStore,          // Histórico SNAT para projeção de crescimento
 		latencyTestHistoryStore:   latencyTestHistoryStore,   // Histórico de testes de latência (grafo Fase 6.4)
 		netDiscoveryRegistryStore: netDiscoveryRegistryStore, // Cache de cross-reference K8s da Descoberta de Rede (Fase 4)
+		netDiscoveryHistoryStore:  netDiscoveryHistoryStore,  // Histórico de descobertas por alvo da Descoberta de Rede (Fase 5)
 		notesHandler:              notesHandler,              // Anotações Markdown por cluster+aba
 		certEndpointsHandler:      certEndpointsHandler,      // Monitor de certificados de endpoints externos
 	}
@@ -1070,14 +1086,16 @@ func (s *Server) setupRoutes() {
 	// Descoberta de Rede — traceroute sob demanda (modo pod/local) com transmissão salto-a-salto
 	// via SSE, pra desenhar o grafo em tempo real no frontend (ver IP-ROUTE-DISCOVERY-PLAN.md).
 	// Fases 1-4 completas: traceroute + fingerprint de SO + DNS reverso/ASN/nuvem + cross-reference
-	// K8s (cache-on-read via netDiscoveryRegistryStore, nil-safe).
-	netDiscoveryHandler := handlers.NewNetDiscoveryHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.netDiscoveryRegistryStore)
+	// K8s (cache-on-read via netDiscoveryRegistryStore, nil-safe). Fase 5 em andamento: histórico
+	// de descobertas por alvo (netDiscoveryHistoryStore, nil-safe, mesmo princípio).
+	netDiscoveryHandler := handlers.NewNetDiscoveryHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.netDiscoveryRegistryStore, s.netDiscoveryHistoryStore)
 	s.router.GET("/api/v1/net-discovery/stream/:sessionId",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		netDiscoveryHandler.Stream)
 	netDiscovery := api.Group("/net-discovery")
 	{
 		netDiscovery.GET("/docker-status", netDiscoveryHandler.DockerStatus)
+		netDiscovery.GET("/history", netDiscoveryHandler.History)
 		netDiscovery.POST("/run", rbacMiddleware.RequireSREGroup(), netDiscoveryHandler.Run)
 		netDiscovery.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), netDiscoveryHandler.Cancel)
 	}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -357,6 +358,7 @@ type NetDiscoveryHandler struct {
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
 	registry       *storage.NetDiscoveryRegistryStore // Fase 4 — cache-on-read do cross-reference K8s; nil desabilita a camada sem quebrar nada (best-effort)
+	historyStore   *storage.NetDiscoveryHistoryStore  // Fase 5 — histórico de descobertas por alvo; nil desabilita persistência/consulta sem quebrar o fluxo principal (best-effort)
 	cancelFuncs    sync.Map                           // sessionID -> context.CancelFunc
 	runningUsers   sync.Map                           // userEmail -> struct{} — "uma descoberta por vez por usuário"
 	seenClusters   sync.Map                           // cluster -> struct{} — só varre órfãos onde este handler já criou pod
@@ -364,8 +366,8 @@ type NetDiscoveryHandler struct {
 
 // NewNetDiscoveryHandler cria o handler e inicia a varredura periódica de pods/containers órfãos
 // em background (mesmo padrão de NewLatencyTestHandler/NewDBTestHandler).
-func NewNetDiscoveryHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker, registry *storage.NetDiscoveryRegistryStore) *NetDiscoveryHandler {
-	h := &NetDiscoveryHandler{kubeManager: km, tracker: tracker, historyTracker: ht, registry: registry}
+func NewNetDiscoveryHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker, registry *storage.NetDiscoveryRegistryStore, historyStore *storage.NetDiscoveryHistoryStore) *NetDiscoveryHandler {
+	h := &NetDiscoveryHandler{kubeManager: km, tracker: tracker, historyTracker: ht, registry: registry, historyStore: historyStore}
 	go h.sweepOrphanPods()
 	go startNetDiscoveryContainerReaper()
 	return h
@@ -376,6 +378,65 @@ func NewNetDiscoveryHandler(km *config.KubeConfigManager, tracker *sse.ProgressT
 // tem nada específico desta ferramenta. Sem RequireSREGroup() (leitura informacional).
 func (h *NetDiscoveryHandler) DockerStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, checkDockerStatus(c.Request.Context()))
+}
+
+// netDiscoveryHistoryLimit — quantas execuções passadas devolver por consulta (seção 10.1 do
+// plano: "últimas N, ex: 3"). Suficiente pro banner de contexto sem virar uma listagem completa.
+const netDiscoveryHistoryLimit = 3
+
+// NetDiscoveryHistoryEntry é uma execução passada, pronta pro frontend — `Result` já vem
+// desserializado (não o JSON cru como string) pra reaproveitar direto os mesmos componentes que
+// já sabem renderizar um `NetDiscoveryResult` (fingerprint, tabela de saltos, etc.), sem o
+// frontend precisar fazer um segundo `JSON.parse`.
+type NetDiscoveryHistoryEntry struct {
+	TargetInput string              `json:"target_input"`
+	TargetIP    string              `json:"target_ip"`
+	Mode        string              `json:"mode"`
+	Reached     bool                `json:"reached"`
+	HopsCount   int                 `json:"hops_count"`
+	CreatedAt   time.Time           `json:"created_at"`
+	CreatedBy   string              `json:"created_by,omitempty"`
+	Result      *NetDiscoveryResult `json:"result,omitempty"`
+}
+
+// History — GET /api/v1/net-discovery/history?target=<texto>. Devolve as últimas execuções
+// conhecidas pra um alvo (Fase 5 — Histórico de Descobertas, IP-ROUTE-DISCOVERY-PLAN.md seção
+// 10.1) — pra que o frontend mostre "última busca: ..." antes mesmo do usuário rodar uma nova
+// descoberta. Sem RequireSREGroup() (é consulta, mesmo padrão de leitura do resto desta
+// ferramenta). `historyStore == nil` (falhou ao inicializar) ou alvo nunca visto devolvem lista
+// vazia — nunca erro, best-effort igual às outras camadas desta ferramenta.
+func (h *NetDiscoveryHandler) History(c *gin.Context) {
+	target := strings.TrimSpace(c.Query("target"))
+	if target == "" || h.historyStore == nil {
+		c.JSON(http.StatusOK, gin.H{"entries": []NetDiscoveryHistoryEntry{}})
+		return
+	}
+
+	records, err := h.historyStore.GetRecentByTarget(target, netDiscoveryHistoryLimit)
+	if err != nil {
+		log.Warn().Str("target", target).Err(err).Msg("NetDiscovery: falha ao consultar histórico (não bloqueia a UI)")
+		c.JSON(http.StatusOK, gin.H{"entries": []NetDiscoveryHistoryEntry{}})
+		return
+	}
+
+	entries := make([]NetDiscoveryHistoryEntry, 0, len(records))
+	for _, r := range records {
+		entry := NetDiscoveryHistoryEntry{
+			TargetInput: r.TargetInput,
+			TargetIP:    r.TargetIP,
+			Mode:        r.Mode,
+			Reached:     r.Reached,
+			HopsCount:   r.HopsCount,
+			CreatedAt:   r.CreatedAt,
+			CreatedBy:   r.CreatedBy,
+		}
+		var result NetDiscoveryResult
+		if jsonErr := json.Unmarshal([]byte(r.ResultJSON), &result); jsonErr == nil {
+			entry.Result = &result
+		}
+		entries = append(entries, entry)
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": entries})
 }
 
 const (
@@ -803,6 +864,36 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	}
 	send("complete", "completed", msg, 1.0, result)
 	h.logHistory(req, userInfo, start, &result, nil)
+	h.saveDiscoveryHistory(req, userInfo, result)
+}
+
+// saveDiscoveryHistory persiste a execução concluída no Histórico de Descobertas (Fase 5) — store
+// DIFERENTE de logHistory/HistoryTracker (auditoria genérica "quem fez o quê" da app inteira);
+// este é específico pra "o que já se sabe sobre este alvo", consultável de volta via History().
+// Best-effort: falha ou historyStore==nil só loga em Warn, nunca afeta o resultado já enviado ao
+// cliente (a descoberta em si já terminou com sucesso nesse ponto).
+func (h *NetDiscoveryHandler) saveDiscoveryHistory(req RunNetDiscoveryRequest, userInfo history.UserInfo, result NetDiscoveryResult) {
+	if h.historyStore == nil {
+		return
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		log.Warn().Err(err).Msg("NetDiscovery: falha ao serializar resultado pro histórico (não bloqueia)")
+		return
+	}
+	err = h.historyStore.Save(storage.NetDiscoveryHistoryRecord{
+		TargetInput: req.Target,
+		TargetIP:    result.TargetIP,
+		Mode:        req.Mode,
+		Reached:     result.Reached,
+		HopsCount:   len(result.Hops),
+		ResultJSON:  string(resultJSON),
+		CreatedAt:   time.Now(),
+		CreatedBy:   userInfo.Email,
+	})
+	if err != nil {
+		log.Warn().Err(err).Msg("NetDiscovery: falha ao salvar histórico (não bloqueia)")
+	}
 }
 
 // logHistory registra a execução no HistoryTracker — mesmo padrão de auditoria do Teste de
