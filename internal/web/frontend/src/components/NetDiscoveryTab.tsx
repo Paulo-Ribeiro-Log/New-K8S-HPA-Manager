@@ -267,7 +267,7 @@ export default function NetDiscoveryTab() {
         )}
 
         {(hops.length > 0 || running) && (
-          <NetDiscoveryGraph hops={hops} running={running} fingerprint={result?.fingerprint} />
+          <NetDiscoveryGraph hops={hops} running={running} />
         )}
 
         {/* Fingerprint do destino (Fase 2) — SEMPRE com a explicação da heurística junto do

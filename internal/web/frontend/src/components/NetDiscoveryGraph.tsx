@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import cytoscape, { Core } from "cytoscape";
 import { ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { NetDiscoveryFingerprint, NetDiscoveryHop } from "@/lib/api/types";
+import type { NetDiscoveryHop } from "@/lib/api/types";
 
 // Especialização LINEAR de LatencyTopologyGraph.tsx (cadeia Origem → Hop 1 → ... → Destino, não
 // um grafo geral) — pedido explícito do usuário: "desenhar na tela um fluxo da rota... ficaria
@@ -22,17 +22,6 @@ const TARGET_NODE_SIZE = 92;
 const INFO_LABEL_GAP = 10;
 const INFO_LABEL_KIND = "info-label";
 
-// osEmoji — mesmo princípio de fraseologia neutra do resto da app: o próprio ícone já é
-// deliberadamente ambíguo ("❓" sem sinal suficiente), nunca afirma com certeza o que é heurística
-// (ver NetDiscoveryFingerprint.os_confidence, sempre exibido por extenso no painel de detalhe).
-function osEmoji(fp: NetDiscoveryFingerprint | undefined): string {
-  if (!fp) return "";
-  if (fp.os_guess === "linux") return "🐧";
-  if (fp.os_guess === "windows") return "🪟";
-  if (fp.is_web_server) return "🌐";
-  return "❓";
-}
-
 // truncateHostname evita que um FQDN muito longo (comum em PTR corporativo/nuvem, ex:
 // "ord38s33-in-f14.1e100.net") deixe o texto flutuante abaixo do nó largo demais — o nome
 // completo continua disponível na tabela de saltos (NetDiscoveryTab.tsx), este é só um resumo
@@ -42,27 +31,22 @@ function truncateHostname(host: string): string {
   return host.length > HOSTNAME_LABEL_MAX ? `${host.slice(0, HOSTNAME_LABEL_MAX - 1)}…` : host;
 }
 
-// buildCenterLabel monta só o texto DENTRO do círculo do nó — nada além do IP (+ emoji do SO, em
-// linha própria, só no destino). Pedido explícito do usuário: hostname/recurso K8s (mais longos,
-// variáveis) NUNCA entram aqui — vão pro texto flutuante abaixo do nó (buildInfoLabel).
+// buildCenterLabel monta só o texto DENTRO do círculo do nó — pedido explícito do usuário:
+// "coloque APENAS os IPs descobertos dentro" (mais nada). Índice do salto, hostname e recurso K8s
+// vivem fora do círculo (rótulo da seta e texto flutuante abaixo, ver buildInfoLabel).
 //
-// 2ª rodada de correção, achado real via print do usuário: a v1 também colocava o ÍNDICE do salto
-// aqui ("N\nemoji IP") — combinado com o emoji, o texto ficava largo demais pro text-max-width do
-// círculo, forçando o Cytoscape a quebrar de novo em 3 linhas confusas (índice pequeno/rotacionado,
-// emoji sozinho, IP espremido) — exatamente o mesmo tipo de texto ilegível já corrigido uma vez
-// pro hostname, reintroduzido aqui sem perceber. O índice não é informação essencial dentro do
-// círculo (já implícito pela posição na cadeia, e disponível na tabela de saltos abaixo do grafo)
-// — movido pro rótulo da SETA que aponta pro nó (ver `edge label` no efeito de criação), sobrando
-// no círculo só o que realmente precisa estar ali.
-function buildCenterLabel(hop: NetDiscoveryHop, fingerprint: NetDiscoveryFingerprint | undefined): string {
+// 3ª rodada de correção, achado real via print do usuário: a v2 desviou dessa instrução original
+// adicionando o emoji do SO (Fase 2) dentro do círculo pro nó de destino — que quebrava de duas
+// formas: (1) texto maior demais forçando wrap de novo (2ª rodada), e (2) mesmo depois de resolver
+// a largura, o glifo do emoji renderizava CORROMPIDO (não como 🌐/🐧/🪟 de verdade, um ícone
+// ilegível qualquer) — <canvas> (como o Cytoscape desenha texto) não tem o mesmo suporte a emoji
+// colorido que renderização DOM normal tem; dependendo da fonte disponível no SO/browser, o
+// fillText() do canvas cai num fallback tosco pra glifos fora do alfabeto básico. Removido de vez:
+// o dado de SO/fingerprint já está disponível no painel de detalhe da aba (badges Linux/Windows/
+// Web), não precisa ser duplicado — e principalmente incorretamente — dentro do grafo.
+function buildCenterLabel(hop: NetDiscoveryHop): string {
   if (hop.timed_out) return "?";
-  if (!hop.ip) return "";
-
-  if (hop.is_target) {
-    const emoji = osEmoji(fingerprint);
-    return emoji ? `${emoji}\n${hop.ip}` : hop.ip;
-  }
-  return hop.ip;
+  return hop.ip ?? "";
 }
 
 // buildInfoLabel monta o texto flutuante ABAIXO do nó — hostname resolvido (Fase 3) e/ou nome do
@@ -78,10 +62,9 @@ function buildInfoLabel(hop: NetDiscoveryHop): string {
 interface NetDiscoveryGraphProps {
   hops: NetDiscoveryHop[];
   running: boolean;
-  fingerprint?: NetDiscoveryFingerprint; // Fase 2 — chega DEPOIS do nó de destino já existir no grafo
 }
 
-export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDiscoveryGraphProps) {
+export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyInstance = useRef<Core | null>(null);
 
@@ -238,9 +221,7 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
       const x = (i + 1) * NODE_SPACING;
 
       const kind = hop.timed_out ? "timeout" : hop.is_target ? "target" : "hop";
-      // Sem fingerprint/reverse_dns ainda nesta fase (evento "hop" ao vivo chega antes do
-      // enriquecimento) — buildCenterLabel já lida com isso sozinho (campos ausentes = omitidos).
-      const label = buildCenterLabel(hop, undefined);
+      const label = buildCenterLabel(hop);
 
       cy.add({
         data: { id: nodeId, label, kind },
@@ -274,19 +255,15 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
     cy.animate({ fit: { eles: cy.elements(), padding: 40 } }, { duration: 300 });
   }, [hops]);
 
-  // Enriquecimento por salto (Fases 2-4: fingerprint do destino, DNS reverso/nuvem, cross-reference
-  // K8s) chega junto da lista final de `hops`/`fingerprint` no evento "complete" — o efeito de cima
-  // (que adiciona NÓS NOVOS) já ignora esse update porque `hops.length` não muda (mesma contagem de
-  // saltos, só campos novos preenchidos). Este efeito roda À PARTE, sempre que `hops` OU
-  // `fingerprint` mudam, e só ATUALIZA nós já existentes (nunca adiciona/remove).
+  // Enriquecimento por salto (Fases 3-4: DNS reverso/nuvem, cross-reference K8s) chega junto da
+  // lista final de `hops` no evento "complete" — o efeito de cima (que adiciona NÓS NOVOS) já
+  // ignora esse update porque `hops.length` não muda (mesma contagem de saltos, só campos novos
+  // preenchidos). Este efeito roda À PARTE, sempre que `hops` muda, e só ATUALIZA nós já existentes
+  // (nunca adiciona/remove).
   //
-  // Um único efeito (não um por camada) é deliberado: as três camadas de enriquecimento chegam
-  // juntas no mesmo evento SSE, e cada uma contribui pro texto do nó (emoji do SO no centro,
-  // hostname/K8s no texto flutuante abaixo) — se cada camada escrevesse separadamente em efeitos
-  // distintos, a ordem de execução entre eles decidiria qual escrita sobrevive, sobrescrevendo as
-  // anteriores. `buildCenterLabel`/`buildInfoLabel` montam o texto de cada área do zero sempre a
-  // partir do estado atual (`hops`/`fingerprint`), nunca a partir do label anterior do nó —
-  // idempotente e sem essa fragilidade de ordenação.
+  // O label do CÍRCULO (buildCenterLabel) não depende mais de nada que chegue por enriquecimento
+  // (só IP/timeout, já conhecidos na criação) — o recálculo abaixo é defensivo/idempotente, nunca
+  // deveria de fato mudar nada; só o texto flutuante abaixo (buildInfoLabel) realmente muda aqui.
   useEffect(() => {
     const cy = cyInstance.current;
     if (!cy) return;
@@ -296,7 +273,7 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
       const node = cy.getElementById(`hop-${hop.index}`);
       if (node.empty()) continue;
 
-      const newCenterLabel = buildCenterLabel(hop, hop.is_target ? fingerprint : undefined);
+      const newCenterLabel = buildCenterLabel(hop);
       if (node.data("label") !== newCenterLabel) {
         node.data("label", newCenterLabel);
         changed = true;
@@ -329,7 +306,7 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
     if (changed) {
       cy.animate({ fit: { eles: cy.elements(), padding: 40 } }, { duration: 300 });
     }
-  }, [hops, fingerprint]);
+  }, [hops]);
 
   return (
     <div className="flex flex-col gap-2">
