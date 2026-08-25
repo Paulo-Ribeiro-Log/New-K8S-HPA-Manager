@@ -1051,6 +1051,20 @@ func (s *Server) setupRoutes() {
 		kafkaTest.POST("/topics/overview", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.TopicsOverview)
 	}
 
+	// Descoberta de Rede — traceroute sob demanda (modo pod/local) com transmissão salto-a-salto
+	// via SSE, pra desenhar o grafo em tempo real no frontend (ver IP-ROUTE-DISCOVERY-PLAN.md,
+	// Fase 1 — sem enriquecimento ainda, isso vem nas Fases 2-4)
+	netDiscoveryHandler := handlers.NewNetDiscoveryHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker)
+	s.router.GET("/api/v1/net-discovery/stream/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		netDiscoveryHandler.Stream)
+	netDiscovery := api.Group("/net-discovery")
+	{
+		netDiscovery.GET("/docker-status", netDiscoveryHandler.DockerStatus)
+		netDiscovery.POST("/run", rbacMiddleware.RequireSREGroup(), netDiscoveryHandler.Run)
+		netDiscovery.POST("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), netDiscoveryHandler.Cancel)
+	}
+
 	// Port Forward — sessões de encaminhamento de porta reais (túnel SPDY do client-go, mesmo
 	// mecanismo do `kubectl port-forward`) gerenciadas pelo servidor, expostas via modal no
 	// frontend. Ver PORT-FORWARD-PLAN.md.

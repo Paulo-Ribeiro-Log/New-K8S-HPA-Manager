@@ -3795,6 +3795,36 @@ class APIClient {
     return this.request<import("./types").LatencyTopologyResponse>("/latency-test/topology");
   }
 
+  // ─── Descoberta de Rede (Fase 1) ────────────────────────────────────────────
+
+  /** Verifica se o Docker do servidor está disponível pro modo "local" (mesmo checkDockerStatus compartilhado) */
+  async getNetDiscoveryDockerStatus(): Promise<import("./types").DBDockerStatus> {
+    return this.request<import("./types").DBDockerStatus>("/net-discovery/docker-status");
+  }
+
+  /** Inicia a descoberta de rede (traceroute) e retorna session_id para SSE */
+  async runNetDiscovery(
+    req: import("./types").RunNetDiscoveryRequest
+  ): Promise<import("./types").RunNetDiscoveryResponse> {
+    return this.request<import("./types").RunNetDiscoveryResponse>("/net-discovery/run", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** URL do SSE stream de uma descoberta de rede em andamento */
+  getNetDiscoveryStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/net-discovery/stream/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Cancela uma descoberta de rede em andamento */
+  async cancelNetDiscovery(sessionId: string): Promise<void> {
+    await this.request<void>(`/net-discovery/cancel/${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+    });
+  }
+
   // ─── Teste de Kafka sob Demanda ────────────────────────────────────────────
 
   /** Inicia o teste de Kafka (cria pod efêmero kcat) e retorna session_id para SSE */

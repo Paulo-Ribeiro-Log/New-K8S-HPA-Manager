@@ -1987,6 +1987,51 @@ export interface LatencyTestSSEEvent {
   result?: LatencyTestResult; // presente só no evento "complete"
 }
 
+// ─── Descoberta de Rede (IP-ROUTE-DISCOVERY-PLAN.md, Fase 1) ─────────────────────────────────
+// Traceroute básico + grafo ao vivo — sem enriquecimento ainda (DNS reverso/ASN/nuvem/
+// cross-reference K8s/fingerprint de SO são Fases 2-4, campos novos entram aqui sem quebrar isto).
+
+export interface RunNetDiscoveryRequest {
+  target: string; // IP ou hostname/FQDN — bidirecional, o backend decide qual é qual
+  mode: 'pod' | 'local';
+  cluster?: string;   // obrigatório só no modo "pod"
+  namespace?: string; // obrigatório só no modo "pod"
+}
+
+export interface RunNetDiscoveryResponse {
+  session_id: string;
+}
+
+export interface NetDiscoveryHop {
+  index: number;
+  ip?: string; // ausente = salto não respondeu ("* * *")
+  rtt_ms?: number;
+  timed_out: boolean;
+  is_target: boolean; // true quando este salto é o próprio destino resolvido
+}
+
+export interface NetDiscoveryResult {
+  target_input: string;
+  target_ip: string;
+  target_resolved: boolean; // false quando target_input já era um IP (nada pra resolver)
+  hops: NetDiscoveryHop[];
+  reached: boolean; // true se o último salto bateu com target_ip
+}
+
+export interface NetDiscoverySSEEvent {
+  id: string;
+  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'complete' | 'error';
+  phase: string;
+  message: string;
+  progress: number;
+  cluster?: string;
+  timestamp: string;
+  error?: string;
+  // Union: NetDiscoveryHop no evento "hop" (um salto por vez, ao vivo), NetDiscoveryResult no
+  // evento "complete" (lista inteira ordenada) — o `type` do evento decide qual dos dois ler.
+  result?: NetDiscoveryHop | NetDiscoveryResult;
+}
+
 // ─── Teste de Kafka sob Demanda ───────────────────────────────────────────────
 
 export interface KafkaSecretRef {

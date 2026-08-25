@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -359,6 +360,47 @@ func execCmdInPod(ctx context.Context, clientset kubernetes.Interface, restConfi
 		return stdout.String(), fmt.Errorf("stream: %v (stderr: %s)", err, stderr.String())
 	}
 	return stdout.String(), nil
+}
+
+// execCmdInPodStreaming é a variante de execCmdInPod que escreve o stdout do exec DIRETO num
+// io.Writer fornecido pelo chamador, em vez de bufferizar tudo numa bytes.Buffer só devolvida no
+// final — usado pela Descoberta de Rede (net_discovery.go) pra processar cada linha do traceroute
+// conforme ela chega (ver streamCommandLines lá), viabilizando o grafo do frontend se desenhar em
+// tempo real em vez de só aparecer inteiro quando o comando termina. stderr continua bufferizado
+// à parte (comandos desta ferramenta não precisam dele linha a linha, só como texto de erro caso
+// o exec falhe).
+func execCmdInPodStreaming(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
+	namespace, podName, containerName string, cmd []string, stdout io.Writer) error {
+
+	req := clientset.CoreV1().RESTClient().
+		Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   cmd,
+			Stdin:     false,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, scheme.ParameterCodec)
+
+	executor, err := remotecommand.NewSPDYExecutor(restConfig, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("SPDY executor: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: stdout,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		return fmt.Errorf("stream: %v (stderr: %s)", err, stderr.String())
+	}
+	return nil
 }
 
 func parseInt64(s string) int64 {
