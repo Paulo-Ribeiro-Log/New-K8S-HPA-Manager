@@ -29,6 +29,11 @@ type NetDiscoveryMode = "pod" | "local";
 export default function NetDiscoveryTab() {
   const { clusters } = useClusters();
   const [target, setTarget] = useState("");
+  // probePort — porta TCP da sonda do tcptraceroute, string vazia = usa o default do backend (443).
+  // Bug real corrigido: 443 fixo nunca alcança um alvo Windows atrás de cofre PAM (Delinea etc.),
+  // que tipicamente só tem 3389/445/5985/5986 abertos — dado ao usuário o controle explícito em
+  // vez de tentar adivinhar automaticamente uma topologia de rede que este código não observa.
+  const [probePort, setProbePort] = useState("");
   const [mode, setMode] = useState<NetDiscoveryMode>("local"); // local = default (ver seção 4.1 do plano: é a rede que o host do backend já enxerga, inclusive infra remota de terceiros)
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
@@ -57,9 +62,13 @@ export default function NetDiscoveryTab() {
   });
   const dockerReady = mode !== "local" || !!(dockerStatus?.installed && dockerStatus?.daemon_running);
 
+  const probePortNum = probePort.trim() ? Number(probePort.trim()) : undefined;
+  const probePortValid = probePortNum === undefined || (Number.isInteger(probePortNum) && probePortNum >= 1 && probePortNum <= 65535);
+
   const canRun =
     !!target.trim() &&
     !running &&
+    probePortValid &&
     (mode === "local" ? dockerReady : !!cluster && !!namespace);
 
   const run = async () => {
@@ -75,6 +84,7 @@ export default function NetDiscoveryTab() {
         mode,
         cluster: mode === "pod" ? cluster : undefined,
         namespace: mode === "pod" ? namespace : undefined,
+        probe_port: probePortNum,
       });
       setSessionId(session_id);
     } catch (err) {
@@ -166,6 +176,21 @@ export default function NetDiscoveryTab() {
             />
           </div>
 
+          <div className="w-28">
+            <label className="text-xs text-muted-foreground block mb-1">Porta da sonda</label>
+            <Input
+              type="number"
+              min={1}
+              max={65535}
+              placeholder="443"
+              value={probePort}
+              onChange={(e) => setProbePort(e.target.value)}
+              disabled={running}
+              className={!probePortValid ? "border-destructive" : undefined}
+              onKeyDown={(e) => { if (e.key === "Enter" && canRun) run(); }}
+            />
+          </div>
+
           {!running ? (
             <ProtectedAction>
               <Button onClick={run} disabled={!canRun}>
@@ -179,6 +204,27 @@ export default function NetDiscoveryTab() {
               Cancelar
             </Button>
           )}
+        </div>
+
+        <div className="flex items-center gap-2 -mt-1">
+          <span className="text-[10px] text-muted-foreground">
+            Padrão 443 (web). Alvo sem resposta e sem porta web? Tente:
+          </span>
+          {[
+            { port: "3389", label: "3389 · RDP/Windows" },
+            { port: "22", label: "22 · SSH" },
+            { port: "445", label: "445 · SMB" },
+          ].map((p) => (
+            <button
+              key={p.port}
+              type="button"
+              disabled={running}
+              onClick={() => setProbePort(p.port)}
+              className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 disabled:opacity-50"
+            >
+              {p.label}
+            </button>
+          ))}
         </div>
 
         <div className="flex flex-wrap items-center gap-4">

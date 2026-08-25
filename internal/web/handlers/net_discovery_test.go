@@ -23,6 +23,26 @@ func TestIsIPAddress(t *testing.T) {
 	}
 }
 
+// TestTracerouteArgs_UsesGivenPort cobre o bug real corrigido (porta de sonda configurável,
+// relatado ao vivo: "servidores windows dentro do delinea vault falha miseravelmente" — 443 fixo
+// nunca respondia contra um alvo Windows atrás de PAM, só 3389/445/5985/5986). O último argumento
+// posicional pro tcptraceroute deve ser a porta escolhida, nunca mais hardcoded.
+func TestTracerouteArgs_UsesGivenPort(t *testing.T) {
+	args := tracerouteArgs("10.0.0.5", 3389)
+	if got := args[len(args)-1]; got != "3389" {
+		t.Errorf("última posição dos args = %q, want \"3389\" (porta explícita)", got)
+	}
+	if got := args[len(args)-2]; got != "10.0.0.5" {
+		t.Errorf("penúltima posição = %q, want o IP alvo", got)
+	}
+
+	// Default (443) continua funcionando idêntico a antes desta correção.
+	argsDefault := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort)
+	if got := argsDefault[len(argsDefault)-1]; got != "443" {
+		t.Errorf("porta default = %q, want \"443\"", got)
+	}
+}
+
 // TestParseTracerouteLine_HeaderLineIgnored garante que a linha de cabeçalho do traceroute
 // ("traceroute to X (X), 30 hops max...") nunca é confundida com uma linha de salto — não começa
 // com dígitos, então tracerouteHopLineRegex não deveria casar.

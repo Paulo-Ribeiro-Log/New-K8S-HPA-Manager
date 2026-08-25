@@ -214,16 +214,33 @@ func streamCommandLines(ctx context.Context, run func(stdout io.Writer) error, o
 	return runErr
 }
 
-// netDiscoveryTCPPort — porta usada pelas sondas TCP do tcptraceroute. 443 escolhida como default
-// (HTTPS é o serviço mais universalmente exposto hoje) — não confirma nem descarta que o destino
-// tenha essa porta aberta de verdade; tcptraceroute mostra "[open]"/"[closed]" no salto final
-// quando consegue determinar, mas o CAMINHO em si (o que interessa nesta Fase 1) já é obtido
-// mesmo que a porta não esteja aberta — cada salto intermediário responde ao TTL expirado
-// independente do estado da porta final.
+// netDiscoveryTCPPort — porta DEFAULT usada pelas sondas TCP do tcptraceroute quando o usuário não
+// escolhe outra explicitamente. 443 escolhida como default (HTTPS é o serviço mais universalmente
+// exposto hoje) — não confirma nem descarta que o destino tenha essa porta aberta de verdade;
+// tcptraceroute mostra "[open]"/"[closed]" no salto final quando consegue determinar, mas o
+// CAMINHO em si (o que interessa nesta Fase 1) já é obtido mesmo que a porta não esteja aberta —
+// cada salto intermediário responde ao TTL expirado independente do estado da porta final.
+//
+// Bug real corrigido — relatado ao vivo pelo usuário: "rodando contra servidores windows dentro
+// do delinea vault falha miseravelmente" (traceroute nunca alcançava o destino, SO detectado
+// errado). Causa: 443 fixo funciona bem pra alvos web/Linux (a maioria), mas um servidor Windows
+// típico atrás de um cofre PAM (Delinea, CyberArk, etc.) raramente tem 443 aberto — só as portas
+// de acesso remoto (3389 RDP, 445 SMB, 5985/5986 WinRM), tipicamente com QUALQUER outra porta
+// filtrada/derrubada silenciosamente por firewall. Uma sonda TCP na porta 443 contra esse alvo
+// nunca recebe resposta (nem RST de "porta fechada", nem nada) — indistinguível de "hop
+// inexistente", então o ÚLTIMO salto (o próprio destino) aparece como timeout mesmo com o host
+// vivo e alcançável por outras portas; sem alcançar o destino via TCP, o fingerprint (Fase 2)
+// também fica sem sinal de porta pra confirmar Windows, caindo no fallback de TTL — que, se algo
+// no caminho (o próprio gateway do cofre, por exemplo) responder ao ping com uma TTL "tipo Linux",
+// produz um palpite de SO ERRADO em vez de simplesmente "sem sinal". Corrigido dando ao usuário
+// controle sobre a porta da sonda (nunca adivinhando automaticamente uma topologia de rede que
+// este código não tem como observar) — `RunNetDiscoveryRequest.ProbePort` (opcional, 0 = usa o
+// default 443 sem nenhuma mudança de comportamento pro caso comum).
 const netDiscoveryTCPPort = 443
 
 // tracerouteArgs monta os argumentos do tcptraceroute — mesmos nos dois modos (pod/local), só o
-// mecanismo de execução muda.
+// mecanismo de execução muda. `port` já vem resolvido pelo chamador (default ou escolha do
+// usuário, ver netDiscoveryTCPPort).
 //
 // Achado real, testado ao vivo contra a imagem netshoot: o `traceroute` de dentro dela é o applet
 // do BusyBox, que NÃO tem `-T` (modo TCP) — só UDP (default) ou `-I` (ICMP). `tcptraceroute` é um
@@ -233,13 +250,13 @@ const netDiscoveryTCPPort = 443
 // traceroute genérico. Confirmado ao vivo contra 8.8.8.8: alcançou o destino com sucesso; contra
 // um alvo inalcançável, devolve exit code 1 mas ainda assim imprime os hops que respondeu — por
 // isso o chamador (runDiscovery) só considera falha total quando NENHUM hop foi coletado.
-func tracerouteArgs(targetIP string) []string {
+func tracerouteArgs(targetIP string, port int) []string {
 	return []string{
 		"tcptraceroute", "-n",
 		"-w", strconv.Itoa(netDiscoveryProbeTimeoutSec),
 		"-q", "1", // 1 sonda por salto — favorece velocidade/fluidez da animação sobre riqueza estatística (Fase 1)
 		"-m", strconv.Itoa(netDiscoveryMaxHops),
-		targetIP, strconv.Itoa(netDiscoveryTCPPort),
+		targetIP, strconv.Itoa(port),
 	}
 }
 
@@ -249,10 +266,10 @@ func tracerouteArgs(targetIP string) []string {
 // também, herdada da necessidade de ler respostas ICMP Time-Exceeded via socket raw — não
 // contornável por este código.
 func runTracerouteInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
-	namespace, podName, targetIP string, onLine func(line string)) error {
+	namespace, podName, targetIP string, port int, onLine func(line string)) error {
 
 	return streamCommandLines(ctx, func(stdout io.Writer) error {
-		return execCmdInPodStreaming(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer, tracerouteArgs(targetIP), stdout)
+		return execCmdInPodStreaming(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer, tracerouteArgs(targetIP, port), stdout)
 	}, onLine)
 }
 
@@ -261,7 +278,7 @@ func runTracerouteInPod(ctx context.Context, clientset kubernetes.Interface, res
 // real do host pra alcançar destinos remotos (ex: infraestrutura na VPN corporativa até a Kyndryl,
 // confirmado pelo usuário como sendo a mesma VPN já usada pro AKS/GCP), um container isolado na
 // rede bridge padrão do Docker não teria essa rota.
-func runTracerouteLocal(ctx context.Context, targetIP string, onLine func(line string)) error {
+func runTracerouteLocal(ctx context.Context, targetIP string, port int, onLine func(line string)) error {
 	// Nome explícito (não só --rm) — achado real, testado ao vivo: cancelar a descoberta
 	// (context cancelado) mata o CLIENTE `docker run` via SIGKILL, mas isso não garante que o
 	// daemon pare o CONTAINER remoto (--rm só roda quando o cliente sai limpo, não quando é
@@ -274,7 +291,7 @@ func runTracerouteLocal(ctx context.Context, targetIP string, onLine func(line s
 		"--name", containerName,
 		"--label", netDiscoveryDockerLabel,
 		netDiscoveryPodImage,
-	}, tracerouteArgs(targetIP)...)
+	}, tracerouteArgs(targetIP, port)...)
 
 	err := streamCommandLines(ctx, func(stdout io.Writer) error {
 		cmd := exec.CommandContext(ctx, "docker", args...)
@@ -441,6 +458,11 @@ type RunNetDiscoveryRequest struct {
 	// Cluster/Namespace só fazem sentido (e são exigidos) no modo "pod".
 	Cluster   string `json:"cluster"`
 	Namespace string `json:"namespace"`
+	// ProbePort — porta TCP usada pelas sondas do tcptraceroute. 0 (ou ausente) usa o default
+	// netDiscoveryTCPPort=443, sem mudança de comportamento pro caso comum (web/Linux). Ver
+	// comentário completo em netDiscoveryTCPPort — override necessário pra alvos onde 443 está
+	// filtrado (ex: servidor Windows atrás de cofre PAM, só com 3389/445/5985/5986 abertos).
+	ProbePort int `json:"probe_port,omitempty"`
 }
 
 const (
@@ -469,6 +491,12 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 	}
 	if req.Mode == netDiscoveryModePod && (req.Cluster == "" || req.Namespace == "") {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster e namespace são obrigatórios no modo pod"))
+		return
+	}
+	if req.ProbePort == 0 {
+		req.ProbePort = netDiscoveryTCPPort
+	} else if req.ProbePort < 1 || req.ProbePort > 65535 {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_PROBE_PORT", "probe_port deve estar entre 1 e 65535"))
 		return
 	}
 
@@ -638,8 +666,8 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
 			return runFingerprintLocal(ctx, ip, sniHost)
 		}
-		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local)...", targetIP), 0.2, nil)
-		if err := runTracerouteLocal(ctx, targetIP, onLine); err != nil && len(hops) == 0 {
+		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local, porta %d)...", targetIP, req.ProbePort), 0.2, nil)
+		if err := runTracerouteLocal(ctx, targetIP, req.ProbePort, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute local", err)
 			return
 		}
@@ -676,8 +704,8 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost)
 		}
 
-		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s...", targetIP), 0.2, nil)
-		if err := runTracerouteInPod(ctx, clientset, restConfig, req.Namespace, podName, targetIP, onLine); err != nil && len(hops) == 0 {
+		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (porta %d)...", targetIP, req.ProbePort), 0.2, nil)
+		if err := runTracerouteInPod(ctx, clientset, restConfig, req.Namespace, podName, targetIP, req.ProbePort, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute", err)
 			return
 		}

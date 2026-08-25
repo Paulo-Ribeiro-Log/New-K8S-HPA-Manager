@@ -1996,6 +1996,10 @@ export interface RunNetDiscoveryRequest {
   mode: 'pod' | 'local';
   cluster?: string;   // obrigatório só no modo "pod"
   namespace?: string; // obrigatório só no modo "pod"
+  // probe_port — porta TCP da sonda do tcptraceroute. Ausente/0 usa o default do backend (443) —
+  // bug real corrigido: 443 fixo nunca alcança um alvo Windows atrás de cofre PAM (Delinea etc.),
+  // que tipicamente só tem 3389/445/5985/5986 abertos, deixando 443 filtrado sem resposta nenhuma.
+  probe_port?: number;
 }
 
 export interface RunNetDiscoveryResponse {
