@@ -1,6 +1,10 @@
-# Estudo + Plano: Descoberta de Rota e Identificação de Destino por IP
+# Estudo + Plano: Descoberta de Rede ("Descoberta de Rota e Identificação de Destino por IP")
 
-**Status:** 🔬 estudo/planejamento — nenhuma fase iniciada, nenhum código escrito.
+**Status:** 🔬 estudo/planejamento — nenhuma fase iniciada, nenhum código escrito. **Todas as
+decisões-chave já foram tomadas** (nome, mecanismo de cache do cross-reference, escopo, rota de
+rede confirmada) — ver histórico completo na seção 9. Falta só implementar.
+
+**Nome decidido da ferramenta: "Descoberta de Rede"** (item do `ToolsMenu.tsx`).
 
 **Pedido original do usuário:** uma ferramenta que, a partir de um IP informado, mostre a rota
 (hop-a-hop) até ele e identifique o destino — se é um endereço Web, um servidor Linux ou Windows,
@@ -230,8 +234,7 @@ nmap) sabe responder "esse IP é o node `aks-pool1-xxxxx` do cluster `akspriv-ab
 "esse IP é o Pod do Deployment `checkout-api`" — **esta app já sabe**, e é um diferencial real que
 vale a pena entregar como bônus, só não como base da identificação.
 
-Fontes já existentes na app pra cruzar (sem persistir nada novo, ao menos na v1 — ver decisão em
-aberto na seção 9):
+Fontes já existentes na app pra cruzar:
 - `Node.Status.Addresses` (InternalIP/ExternalIP) → nome do node, node pool, cluster.
 - `Pod.Status.PodIP`/`HostIP` → nome do pod, Deployment/DaemonSet/StatefulSet dono, namespace,
   cluster (mesmo padrão de resolução de owner já usado no badge de uso de ConfigMaps,
@@ -245,6 +248,33 @@ aberto na seção 9):
 Quando o IP bate com algo conhecido, o nó do grafo (seção 6) deveria virar clicável, levando direto
 pra aquele recurso noutra aba da app (mesmo espírito de "conectar as pontas" já usado em vários
 lugares desta app, ex: link CHG→ServiceNow, link execução→Spinnaker Deck).
+
+**Decisão (pedida explicitamente ao Claude Code pra decidir): cache-on-read persistido, leve —
+nem live query pura, nem scan periódico completo da frota.** Nem uma coisa nem outra sozinha
+respondia bem ao que o usuário pediu ("com a persistência a busca é mais rápida, indo em busca
+apenas dos itens que não se tem salvo... mas deve ser leve"). O mecanismo:
+
+- Um SQLite novo (mesmo padrão de todo `internal/storage/*_store.go` já existente nesta app — WAL
+  mode, mesma família de `notes_store.go`/`cert_endpoints_store.go` — não um arquivo texto/JSON solto:
+  consistência com o resto da app importa mais aqui do que a escolha específica de formato, e o
+  volume de dado real por linha é minúsculo de qualquer jeito, então SQLite não pesa mais que JSON
+  pra esse caso). Tabela única, ~5 colunas: `ip`, `kind` (node/pod/service), `name`, `namespace`,
+  `cluster`, `cached_at`.
+- **Nunca um scan de fundo/botão "Escanear frota" dedicado** (diferente do Node Pool Registry) — o
+  índice se popula sozinho, de leitura em leitura: toda vez que uma consulta busca um IP contra
+  os clusters do kubeconfig e encontra (ou não encontra) uma correspondência, o resultado é
+  gravado/atualizado no cache. Consultas futuras pro MESMO IP são instantâneas (cache hit, sem
+  tocar o K8s de novo); IPs nunca vistos custam a consulta live normal na primeira vez, e ficam
+  rápidos dali em diante — exatamente "busca só o que não tem salvo", como o usuário descreveu.
+- **TTL diferenciado por `kind`, não um único valor pra tudo** — cuidado real de corretude, não só
+  performance: IP de **Pod é efêmero** (reagendamento/restart reusa o mesmo IP pra um pod
+  completamente diferente em minutos/horas) — TTL curto (proposta: 2h, mesma ordem de grandeza já
+  usada em outros TTLs "sensíveis a mudança" desta app, ex: cache de `ListNodeGroups`). IP de
+  **Node/Service é muito mais estável** (raramente muda) — TTL bem mais longo (proposta: 24h, mesmo
+  valor já usado pro Node Pool Registry/pricers). Sem essa distinção, o cache viraria uma fonte de
+  **falso positivo perigoso** (afirmar com confiança que um IP "é o Pod X" quando na real já é
+  outro pod há horas) — pior que não ter cache nenhum, e contrário ao princípio desta app de nunca
+  afirmar com certeza o que não está mais confirmado.
 
 ---
 
@@ -358,9 +388,15 @@ type InternalResourceRef struct {
 
 ### 6.1 Entrada
 
-Campo de IP (ou hostname — resolve pra IP antes de traçar), seletor de modo (pod/local, reaproveita
-`ClusterSelectorForTab`/seletor de namespace+deployment+pod já existente nas outras ferramentas de
-teste ativo), botão "Traçar rota".
+**Confirmado pelo usuário: campo único, aceita IP OU hostname/FQDN, nos dois sentidos** — não é só
+"IP → identidade" (fluxo principal), é bidirecional: informar um IP resolve/identifica o destino
+(seções 3.2-3.8); informar um hostname resolve pro IP primeiro (`net.LookupHost`/`net.LookupIP`,
+padrão) e roda exatamente o mesmo pipeline dali em diante — as duas entradas convergem pro mesmo
+fluxo, sem tela/modo separado. Detecção automática de qual é qual (regex de IPv4/IPv6 vs. o resto
+tratado como hostname), sem precisar o usuário escolher um seletor "tipo de entrada" à parte.
+
+Seletor de modo (pod/local, reaproveita `ClusterSelectorForTab`/seletor de namespace+deployment+pod
+já existente nas outras ferramentas de teste ativo), botão "Traçar rota".
 
 ### 6.2 Grafo hop-a-hop (Cytoscape)
 
@@ -387,8 +423,8 @@ banner (só no nó de destino), certificado TLS quando aplicável.
 
 ### 6.4 Integração no ToolsMenu
 
-Novo item no dropdown `ToolsMenu.tsx` (18º item) — nome de trabalho sugerido: "Rota de Rede" ou
-"Diagnóstico de IP".
+Novo item no dropdown `ToolsMenu.tsx` (18º item). **Nome decidido: "Descoberta de Rede"** — ver
+justificativa na seção 9 (Pergunta 2, decisão do nome).
 
 ---
 
@@ -438,39 +474,49 @@ cross-reference, que agora é claramente marcada como bônus):
 
 ---
 
-## 9. Perguntas antes de começar (decisões do usuário, não assumidas)
+## 9. Decisões (histórico de perguntas → respostas)
 
-**Pergunta 2 original já RESOLVIDA pelo usuário** (registrada aqui por histórico): o escopo é
-qualquer IP alcançável, dentro ou fora dos clusters do kubeconfig — inclui servidores/VMs remotas
-de terceiros (ex: IBM Kyndryl). Isso eleva 3.2/3.3/3.4 (fingerprint de SO/serviço) a mecanismo
-central e obrigatório, e reclassifica 3.8 (cross-reference K8s) como enriquecimento opcional — ver
-correção no início do documento e ajustes nas seções 3.8/4.1/7.
+Todas as decisões que originalmente exigiam o usuário já foram tomadas. Registro histórico de cada
+uma, na ordem em que surgiram:
 
-**Pergunta 4 original já RESOLVIDA pelo usuário**: sim, há VPN até a IBM Kyndryl — e é **a mesma
-VPN já usada pro AKS e pro GCP**. Isso é uma confirmação forte, não só "existe uma rota genérica":
-o host onde este backend roda já prova, todo dia, que essa VPN funciona (é o mesmo caminho que
-`kubeconfig`/`GetRestConfig` usam pra falar com o `kube-apiserver` de qualquer cluster AKS, e que
-`GetFreshGKEToken`/etc. usam pro GCP) — não é uma rota nova e não testada, é a mesma infraestrutura
-de rede que a aplicação inteira já depende pra existir. Reforça com mais confiança ainda a decisão
-da seção 4.1: **modo local é o caminho certo pra alcançar a Kyndryl**, sem precisar rotear nada
-através de um pod específico — o host do backend já está, literalmente agora, na mesma rede lógica
-que os hosts remotos de terceiros. Único cuidado a manter: nada garante que TODA sub-rede da
-Kyndryl esteja alcançável por essa VPN (pode haver segmentação/firewall interno do lado deles pra
-IPs específicos que a VPN nunca tentou tocar até hoje) — a ferramenta ainda deve reportar
-"inalcançável" com honestidade quando um IP específico não responder, em vez de assumir que "a VPN
-existe" implica "todo IP daquela rede responde".
+**Pergunta 2 original (escopo) — RESOLVIDA pelo usuário**: o escopo é qualquer IP alcançável,
+dentro ou fora dos clusters do kubeconfig — inclui servidores/VMs remotas de terceiros (ex: IBM
+Kyndryl). Isso eleva 3.2/3.3/3.4 (fingerprint de SO/serviço) a mecanismo central e obrigatório, e
+reclassifica 3.8 (cross-reference K8s) como enriquecimento opcional — ver correção no início do
+documento e ajustes nas seções 3.8/4.1/7.
 
-Perguntas que continuam em aberto:
+**Pergunta 4 original (rota de rede até a Kyndryl) — RESOLVIDA pelo usuário**: sim, há VPN até a
+IBM Kyndryl — e é **a mesma VPN já usada pro AKS e pro GCP**. Confirmação forte, não só "existe uma
+rota genérica": o host onde este backend roda já prova, todo dia, que essa VPN funciona (é o mesmo
+caminho que `kubeconfig`/`GetRestConfig` usam pra falar com o `kube-apiserver` de qualquer cluster
+AKS, e que `GetFreshGKEToken`/etc. usam pro GCP) — não é uma rota nova e não testada, é a mesma
+infraestrutura de rede que a aplicação inteira já depende pra existir. Reforça com mais confiança
+ainda a decisão da seção 4.1: **modo local é o caminho certo pra alcançar a Kyndryl**, sem precisar
+rotear nada através de um pod específico. Único cuidado mantido: nada garante que TODA sub-rede da
+Kyndryl esteja alcançável por essa VPN (segmentação/firewall interno do lado deles pra IPs
+específicos que a VPN nunca tentou tocar até hoje) — a ferramenta ainda reporta "inalcançável" com
+honestidade quando um IP específico não responder.
 
-1. **Cross-reference interno (seção 3.8, agora Fase 4, bônus): live query por cluster selecionado,
-   ou um registry persistido (SQLite) tipo Node Pool Registry, alimentado por scan?** Menos urgente
-   agora que é enriquecimento opcional (não bloqueia nenhuma fase anterior), mas ainda precisa ser
-   decidido antes da Fase 4. Live query é mais simples (KISS) e sempre fresco, mas exige que o
-   usuário informe/selecione contra qual(is) cluster(s) cruzar. Registry persistido permite cruzar
-   contra TODA a frota já escaneada instantaneamente, mas herda a mesma limitação já documentada do
-   Node Pool Registry/Deployment Registry (só sabe o que já foi escaneado, pode ficar desatualizado).
-2. **Nome definitivo da ferramenta / onde entra no menu** — "Rota de Rede"? "Diagnóstico de IP"?
-   Outro nome que já faça sentido pro time.
-3. **Confirma o modo dual pod/local como está usado nas outras 3 ferramentas de teste ativo desta
-   app, com modo local como default** (ver seção 4.1, ajustada e agora reforçada pela resposta da
-   Pergunta 4), ou este caso tem alguma particularidade que pede um mecanismo diferente?
+**Pergunta 1 (cross-reference: live query vs. registry) — RESOLVIDA, decisão delegada ao Claude
+Code pelo usuário**: nem uma coisa nem outra sozinha — **cache-on-read persistido, leve** (SQLite,
+~5 colunas, TTL curto pra Pod/longo pra Node/Service, sem scan periódico de fundo). Ver mecanismo
+completo e justificativa na seção 3.8.
+
+**Pergunta sobre entrada bidirecional (IP↔hostname) — confirmada pelo usuário**: o campo de entrada
+aceita tanto IP quanto hostname/FQDN, nos dois sentidos, com detecção automática — não é preciso um
+seletor de "tipo de entrada" separado. Ver seção 6.1.
+
+**Nome da ferramenta — RESOLVIDO, decisão delegada ao Claude Code pelo usuário**: **"Descoberta de
+Rede"**. O usuário sugeriu "Net Discovery" como ponto de partida, mas deixando claro que não tinha
+certeza do nome ("qualquer solução de nome elegante") — todos os 18 itens hoje existentes no
+`ToolsMenu.tsx` (documentados no `CLAUDE.md`: "Verificar Acesso", "Editor de Código",
+"Dependências", "Teste de Latência", "Teste Kafka", "Teste de Banco de Dados", etc.) são nomeados
+em português puro, sem mistura de inglês — manter esse padrão importa mais do que a sonoridade
+específica de "Net Discovery" em si. "Descoberta de Rede" é a tradução direta da ideia original do
+usuário (descoberta + rede), preservando a intenção, só que consistente com a convenção de
+nomenclatura já estabelecida no menu inteiro.
+
+**Item que segue genuinamente sem resposta explícita** (não bloqueia nada, é só uma confirmação
+final antes de codificar): confirmar o padrão dual pod/local exatamente como nas outras 3
+ferramentas de teste ativo desta app, com modo local como default — reforçado com confiança pela
+resposta da Pergunta 4, mas nunca formalmente confirmado como "sim, é isso mesmo" pelo usuário.
