@@ -42,16 +42,27 @@ function truncateHostname(host: string): string {
   return host.length > HOSTNAME_LABEL_MAX ? `${host.slice(0, HOSTNAME_LABEL_MAX - 1)}…` : host;
 }
 
-// buildCenterLabel monta só o texto DENTRO do círculo do nó — índice + IP (+ emoji do SO no
-// destino). Pedido explícito do usuário: hostname/recurso K8s (mais longos, variáveis) NUNCA
-// entram aqui — vão pro texto flutuante abaixo do nó (buildInfoLabel) pra não estourar a largura
-// fixa do círculo e virar texto ilegível.
+// buildCenterLabel monta só o texto DENTRO do círculo do nó — nada além do IP (+ emoji do SO, em
+// linha própria, só no destino). Pedido explícito do usuário: hostname/recurso K8s (mais longos,
+// variáveis) NUNCA entram aqui — vão pro texto flutuante abaixo do nó (buildInfoLabel).
+//
+// 2ª rodada de correção, achado real via print do usuário: a v1 também colocava o ÍNDICE do salto
+// aqui ("N\nemoji IP") — combinado com o emoji, o texto ficava largo demais pro text-max-width do
+// círculo, forçando o Cytoscape a quebrar de novo em 3 linhas confusas (índice pequeno/rotacionado,
+// emoji sozinho, IP espremido) — exatamente o mesmo tipo de texto ilegível já corrigido uma vez
+// pro hostname, reintroduzido aqui sem perceber. O índice não é informação essencial dentro do
+// círculo (já implícito pela posição na cadeia, e disponível na tabela de saltos abaixo do grafo)
+// — movido pro rótulo da SETA que aponta pro nó (ver `edge label` no efeito de criação), sobrando
+// no círculo só o que realmente precisa estar ali.
 function buildCenterLabel(hop: NetDiscoveryHop, fingerprint: NetDiscoveryFingerprint | undefined): string {
-  if (hop.timed_out) return `${hop.index}\n?`;
-  if (!hop.ip) return `${hop.index}`;
+  if (hop.timed_out) return "?";
+  if (!hop.ip) return "";
 
-  const emojiPrefix = hop.is_target ? osEmoji(fingerprint) : "";
-  return `${hop.index}\n${emojiPrefix ? `${emojiPrefix} ` : ""}${hop.ip}`;
+  if (hop.is_target) {
+    const emoji = osEmoji(fingerprint);
+    return emoji ? `${emoji}\n${hop.ip}` : hop.ip;
+  }
+  return hop.ip;
 }
 
 // buildInfoLabel monta o texto flutuante ABAIXO do nó — hostname resolvido (Fase 3) e/ou nome do
@@ -98,7 +109,10 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
             "text-halign": "center",
             "font-size": "9px",
             "text-wrap": "wrap",
-            "text-max-width": "64px",
+            // 70px (não mais 64) — com o índice removido do label (ver buildCenterLabel), o texto
+            // aqui é só o IP puro (~13-15 chars) ou, no destino, emoji+IP em 2 linhas; nenhum dos
+            // dois deveria mais forçar um 3º wrap indesejado como acontecia na v1.
+            "text-max-width": "70px",
             width: HOP_NODE_SIZE,
             height: HOP_NODE_SIZE,
             "border-width": 2,
@@ -117,6 +131,7 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
             height: TARGET_NODE_SIZE,
             "font-size": "10px",
             "font-weight": "bold",
+            "text-max-width": "84px", // nó maior que o padrão (92 vs 72) — mais espaço pro emoji+IP em 2 linhas
           },
         },
         // Texto flutuante ABAIXO do nó (hostname/recurso K8s, ver buildInfoLabel) — nó próprio,
@@ -223,13 +238,12 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
         data: { id: nodeId, label, kind },
         position: { x, y: 0 },
       });
+      // Rótulo da seta carrega o índice do salto (removido de dentro do círculo, ver
+      // buildCenterLabel) + a latência quando disponível — "#N" sozinho pra saltos sem resposta
+      // (antes ficava sem rótulo nenhum, perdendo até a numeração nesse caso).
+      const edgeLabel = hop.rtt_ms ? `#${hop.index} · ${hop.rtt_ms.toFixed(0)}ms` : `#${hop.index}`;
       cy.add({
-        data: {
-          id: `edge-${nodeId}`,
-          source: prevId,
-          target: nodeId,
-          label: hop.timed_out ? "" : hop.rtt_ms ? `${hop.rtt_ms.toFixed(0)}ms` : "",
-        },
+        data: { id: `edge-${nodeId}`, source: prevId, target: nodeId, label: edgeLabel },
       });
 
       // Companheiro de texto flutuante (hostname/recurso K8s) — criado vazio de propósito aqui
