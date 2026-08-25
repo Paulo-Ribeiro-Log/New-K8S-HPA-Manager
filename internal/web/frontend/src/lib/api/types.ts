@@ -2000,6 +2000,10 @@ export interface RunNetDiscoveryRequest {
   // bug real corrigido: 443 fixo nunca alcança um alvo Windows atrás de cofre PAM (Delinea etc.),
   // que tipicamente só tem 3389/445/5985/5986 abertos, deixando 443 filtrado sem resposta nenhuma.
   probe_port?: number;
+  // probe_timeout_sec — segundos de espera por resposta de CADA salto. Ausente/0 usa o default do
+  // backend (2s). Máximo 8 (netDiscoveryProbeTimeoutMaxSec) — pedido explícito do usuário pra
+  // descartar rede lenta/alta latência antes de aceitar que um alvo é bloqueado de verdade.
+  probe_timeout_sec?: number;
 }
 
 export interface RunNetDiscoveryResponse {

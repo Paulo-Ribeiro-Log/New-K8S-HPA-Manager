@@ -34,6 +34,11 @@ export default function NetDiscoveryTab() {
   // que tipicamente só tem 3389/445/5985/5986 abertos — dado ao usuário o controle explícito em
   // vez de tentar adivinhar automaticamente uma topologia de rede que este código não observa.
   const [probePort, setProbePort] = useState("");
+  // probeTimeoutSec — segundos de espera por resposta de CADA salto, string vazia = default do
+  // backend (2s), máximo 8. Pedido explícito do usuário: descartar rede lenta/alta latência antes
+  // de aceitar que um alvo atrás de cofre PAM é bloqueado de verdade (visto ao vivo: 21 saltos em
+  // silêncio total mesmo trocando a porta — sinal de bloqueio de firewall, não de porta errada).
+  const [probeTimeoutSec, setProbeTimeoutSec] = useState("");
   const [mode, setMode] = useState<NetDiscoveryMode>("local"); // local = default (ver seção 4.1 do plano: é a rede que o host do backend já enxerga, inclusive infra remota de terceiros)
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
@@ -65,10 +70,14 @@ export default function NetDiscoveryTab() {
   const probePortNum = probePort.trim() ? Number(probePort.trim()) : undefined;
   const probePortValid = probePortNum === undefined || (Number.isInteger(probePortNum) && probePortNum >= 1 && probePortNum <= 65535);
 
+  const probeTimeoutSecNum = probeTimeoutSec.trim() ? Number(probeTimeoutSec.trim()) : undefined;
+  const probeTimeoutSecValid = probeTimeoutSecNum === undefined || (Number.isInteger(probeTimeoutSecNum) && probeTimeoutSecNum >= 1 && probeTimeoutSecNum <= 8);
+
   const canRun =
     !!target.trim() &&
     !running &&
     probePortValid &&
+    probeTimeoutSecValid &&
     (mode === "local" ? dockerReady : !!cluster && !!namespace);
 
   const run = async () => {
@@ -85,6 +94,7 @@ export default function NetDiscoveryTab() {
         cluster: mode === "pod" ? cluster : undefined,
         namespace: mode === "pod" ? namespace : undefined,
         probe_port: probePortNum,
+        probe_timeout_sec: probeTimeoutSecNum,
       });
       setSessionId(session_id);
     } catch (err) {
@@ -191,6 +201,21 @@ export default function NetDiscoveryTab() {
             />
           </div>
 
+          <div className="w-32">
+            <label className="text-xs text-muted-foreground block mb-1">Timeout/salto (s)</label>
+            <Input
+              type="number"
+              min={1}
+              max={8}
+              placeholder="2"
+              value={probeTimeoutSec}
+              onChange={(e) => setProbeTimeoutSec(e.target.value)}
+              disabled={running}
+              className={!probeTimeoutSecValid ? "border-destructive" : undefined}
+              onKeyDown={(e) => { if (e.key === "Enter" && canRun) run(); }}
+            />
+          </div>
+
           {!running ? (
             <ProtectedAction>
               <Button onClick={run} disabled={!canRun}>
@@ -206,9 +231,9 @@ export default function NetDiscoveryTab() {
           )}
         </div>
 
-        <div className="flex items-center gap-2 -mt-1">
+        <div className="flex flex-wrap items-center gap-2 -mt-1">
           <span className="text-[10px] text-muted-foreground">
-            Padrão 443 (web). Alvo sem resposta e sem porta web? Tente:
+            Padrão 443 (web), timeout 2s/salto. Alvo sem resposta? Tente:
           </span>
           {[
             { port: "3389", label: "3389 · RDP/Windows" },
@@ -223,6 +248,23 @@ export default function NetDiscoveryTab() {
               className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 disabled:opacity-50"
             >
               {p.label}
+            </button>
+          ))}
+          <span className="text-[10px] text-muted-foreground">·</span>
+          {/* Ainda sem resposta com a porta certa? Rede lenta/alta latência (ex: VPN até um cofre
+              PAM) pode precisar de mais tempo por salto antes de considerar bloqueado de verdade —
+              pedido explícito do usuário, achado ao vivo: 21 saltos em silêncio total mesmo
+              trocando de porta (sinal de firewall dropando tudo, não de porta errada — mas o
+              timeout maior descarta de vez a hipótese de rede lenta antes de aceitar isso). */}
+          {["5", "8"].map((t) => (
+            <button
+              key={t}
+              type="button"
+              disabled={running}
+              onClick={() => setProbeTimeoutSec(t)}
+              className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 disabled:opacity-50"
+            >
+              {t}s/salto
             </button>
           ))}
         </div>

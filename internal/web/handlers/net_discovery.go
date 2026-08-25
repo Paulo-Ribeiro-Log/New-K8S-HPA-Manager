@@ -53,14 +53,49 @@ const (
 
 	// netDiscoveryMaxHops — teto de saltos (mesmo default do traceroute clássico).
 	netDiscoveryMaxHops = 30
-	// netDiscoveryProbeTimeoutSec — quanto esperar por resposta de CADA salto antes de marcar
-	// como "não respondeu" e seguir pro próximo. 2s é generoso o bastante pra rede corporativa/VPN
-	// sem deixar um hop morto travar o traceroute inteiro por muito tempo.
+	// netDiscoveryProbeTimeoutSec — DEFAULT de quanto esperar por resposta de CADA salto antes de
+	// marcar como "não respondeu" e seguir pro próximo, quando o usuário não escolhe outro valor
+	// (ver RunNetDiscoveryRequest.ProbeTimeoutSec). 2s é generoso o bastante pra rede corporativa/
+	// VPN comum sem deixar um hop morto travar o traceroute inteiro por muito tempo.
 	netDiscoveryProbeTimeoutSec = 2
-	// netDiscoveryOverallTimeout — teto absoluto pro comando inteiro (30 hops × pior caso de
-	// espera), rede de segurança contra um traceroute que nunca termina sozinho.
+	// netDiscoveryProbeTimeoutMaxSec — teto pro override do usuário. Pedido explícito do usuário
+	// (descartar a hipótese de rede lenta/alta latência atrás de um cofre PAM antes de aceitar que
+	// é bloqueio de verdade) — nunca ilimitado, sempre um valor finito e razoável. 8, não 10: com
+	// netDiscoveryMaxHops=30, o pior caso (todos os saltos sem resposta) precisa caber dentro de
+	// netDiscoveryOverallTimeoutCap com folga pras fases seguintes — achado real via teste
+	// (TestComputeOverallTimeout_ExtendsForLargerProbeTimeout): 10s×30=300s já estoura o cap de
+	// 280s sozinho, sem sobrar nem o buffer de 30s — exatamente o bug que este mecanismo existe
+	// pra evitar, reintroduzido no próprio valor máximo permitido. 8s×30=240s+30s buffer=270s,
+	// cabe com margem.
+	netDiscoveryProbeTimeoutMaxSec = 8
+	// netDiscoveryOverallTimeout — teto absoluto DEFAULT pro comando inteiro (30 hops × pior caso
+	// de espera no timeout padrão), rede de segurança contra um traceroute que nunca termina
+	// sozinho. Ver computeOverallTimeout — estende dinamicamente quando o usuário aumenta
+	// ProbeTimeoutSec, senão um timeout de sonda maior faria o traceroute ser abortado no meio
+	// pelo teto ANTIGO antes mesmo de terminar de tentar todos os saltos.
 	netDiscoveryOverallTimeout = 90 * time.Second
+	// netDiscoveryOverallTimeoutCap — nunca ultrapassado, mesmo com ProbeTimeoutSec no máximo —
+	// fica abaixo de netDiscoveryPodActiveDeadline (300s) pra nunca deixar o contexto Go esperar
+	// mais tempo do que o pod de descoberta (modo pod) sobrevive de qualquer forma.
+	netDiscoveryOverallTimeoutCap = 280 * time.Second
 )
+
+// computeOverallTimeout estende o teto absoluto da descoberta quando o usuário pede um timeout de
+// sonda maior que o default — sem isso, um ProbeTimeoutSec alto faria o pior caso (todos os
+// netDiscoveryMaxHops saltos sem resposta) facilmente estourar o teto FIXO antigo (90s: 30×2s já
+// usa 60s, sobrando pouca margem pras fases seguintes), abortando o traceroute no meio pelo
+// contexto em vez de terminar normalmente com "não alcançado". +30s de folga cobre fingerprint/
+// enrich/crossref (fases que rodam depois, best-effort, mas ainda dentro do mesmo contexto).
+func computeOverallTimeout(probeTimeoutSec int) time.Duration {
+	worstCase := time.Duration(probeTimeoutSec*netDiscoveryMaxHops)*time.Second + 30*time.Second
+	if worstCase < netDiscoveryOverallTimeout {
+		return netDiscoveryOverallTimeout
+	}
+	if worstCase > netDiscoveryOverallTimeoutCap {
+		return netDiscoveryOverallTimeoutCap
+	}
+	return worstCase
+}
 
 // NetDiscoveryHop é um salto do caminho de rede — Fase 1 só tem o essencial (índice/IP/latência/
 // se respondeu); campos de enriquecimento (DNS reverso, ASN, cloud, recurso K8s conhecido,
@@ -250,10 +285,10 @@ const netDiscoveryTCPPort = 443
 // traceroute genérico. Confirmado ao vivo contra 8.8.8.8: alcançou o destino com sucesso; contra
 // um alvo inalcançável, devolve exit code 1 mas ainda assim imprime os hops que respondeu — por
 // isso o chamador (runDiscovery) só considera falha total quando NENHUM hop foi coletado.
-func tracerouteArgs(targetIP string, port int) []string {
+func tracerouteArgs(targetIP string, port, probeTimeoutSec int) []string {
 	return []string{
 		"tcptraceroute", "-n",
-		"-w", strconv.Itoa(netDiscoveryProbeTimeoutSec),
+		"-w", strconv.Itoa(probeTimeoutSec),
 		"-q", "1", // 1 sonda por salto — favorece velocidade/fluidez da animação sobre riqueza estatística (Fase 1)
 		"-m", strconv.Itoa(netDiscoveryMaxHops),
 		targetIP, strconv.Itoa(port),
@@ -266,10 +301,10 @@ func tracerouteArgs(targetIP string, port int) []string {
 // também, herdada da necessidade de ler respostas ICMP Time-Exceeded via socket raw — não
 // contornável por este código.
 func runTracerouteInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
-	namespace, podName, targetIP string, port int, onLine func(line string)) error {
+	namespace, podName, targetIP string, port, probeTimeoutSec int, onLine func(line string)) error {
 
 	return streamCommandLines(ctx, func(stdout io.Writer) error {
-		return execCmdInPodStreaming(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer, tracerouteArgs(targetIP, port), stdout)
+		return execCmdInPodStreaming(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer, tracerouteArgs(targetIP, port, probeTimeoutSec), stdout)
 	}, onLine)
 }
 
@@ -278,7 +313,7 @@ func runTracerouteInPod(ctx context.Context, clientset kubernetes.Interface, res
 // real do host pra alcançar destinos remotos (ex: infraestrutura na VPN corporativa até a Kyndryl,
 // confirmado pelo usuário como sendo a mesma VPN já usada pro AKS/GCP), um container isolado na
 // rede bridge padrão do Docker não teria essa rota.
-func runTracerouteLocal(ctx context.Context, targetIP string, port int, onLine func(line string)) error {
+func runTracerouteLocal(ctx context.Context, targetIP string, port, probeTimeoutSec int, onLine func(line string)) error {
 	// Nome explícito (não só --rm) — achado real, testado ao vivo: cancelar a descoberta
 	// (context cancelado) mata o CLIENTE `docker run` via SIGKILL, mas isso não garante que o
 	// daemon pare o CONTAINER remoto (--rm só roda quando o cliente sai limpo, não quando é
@@ -291,7 +326,7 @@ func runTracerouteLocal(ctx context.Context, targetIP string, port int, onLine f
 		"--name", containerName,
 		"--label", netDiscoveryDockerLabel,
 		netDiscoveryPodImage,
-	}, tracerouteArgs(targetIP, port)...)
+	}, tracerouteArgs(targetIP, port, probeTimeoutSec)...)
 
 	err := streamCommandLines(ctx, func(stdout io.Writer) error {
 		cmd := exec.CommandContext(ctx, "docker", args...)
@@ -463,6 +498,12 @@ type RunNetDiscoveryRequest struct {
 	// comentário completo em netDiscoveryTCPPort — override necessário pra alvos onde 443 está
 	// filtrado (ex: servidor Windows atrás de cofre PAM, só com 3389/445/5985/5986 abertos).
 	ProbePort int `json:"probe_port,omitempty"`
+	// ProbeTimeoutSec — segundos de espera por resposta de CADA salto antes de seguir pro
+	// próximo. 0 (ou ausente) usa o default netDiscoveryProbeTimeoutSec=2. Pedido explícito do
+	// usuário: descartar a hipótese de rede lenta/alta latência antes de aceitar que um alvo é
+	// genuinamente bloqueado (ver computeOverallTimeout — o teto geral da descoberta se estende
+	// automaticamente quando este valor sobe, pra não abortar o traceroute no meio).
+	ProbeTimeoutSec int `json:"probe_timeout_sec,omitempty"`
 }
 
 const (
@@ -499,6 +540,13 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("INVALID_PROBE_PORT", "probe_port deve estar entre 1 e 65535"))
 		return
 	}
+	if req.ProbeTimeoutSec == 0 {
+		req.ProbeTimeoutSec = netDiscoveryProbeTimeoutSec
+	} else if req.ProbeTimeoutSec < 1 || req.ProbeTimeoutSec > netDiscoveryProbeTimeoutMaxSec {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_PROBE_TIMEOUT",
+			fmt.Sprintf("probe_timeout_sec deve estar entre 1 e %d", netDiscoveryProbeTimeoutMaxSec)))
+		return
+	}
 
 	userInfo := GetUserInfoForHistory(c)
 
@@ -513,7 +561,7 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 	}
 
 	sessionID := uuid.New().String()
-	ctx, cancel := context.WithTimeout(context.Background(), netDiscoveryOverallTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), computeOverallTimeout(req.ProbeTimeoutSec))
 	h.cancelFuncs.Store(sessionID, cancel)
 
 	go func() {
@@ -666,8 +714,8 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
 			return runFingerprintLocal(ctx, ip, sniHost)
 		}
-		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local, porta %d)...", targetIP, req.ProbePort), 0.2, nil)
-		if err := runTracerouteLocal(ctx, targetIP, req.ProbePort, onLine); err != nil && len(hops) == 0 {
+		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local, porta %d, timeout %ds/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec), 0.2, nil)
+		if err := runTracerouteLocal(ctx, targetIP, req.ProbePort, req.ProbeTimeoutSec, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute local", err)
 			return
 		}
@@ -704,8 +752,8 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost)
 		}
 
-		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (porta %d)...", targetIP, req.ProbePort), 0.2, nil)
-		if err := runTracerouteInPod(ctx, clientset, restConfig, req.Namespace, podName, targetIP, req.ProbePort, onLine); err != nil && len(hops) == 0 {
+		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (porta %d, timeout %ds/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec), 0.2, nil)
+		if err := runTracerouteInPod(ctx, clientset, restConfig, req.Namespace, podName, targetIP, req.ProbePort, req.ProbeTimeoutSec, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute", err)
 			return
 		}

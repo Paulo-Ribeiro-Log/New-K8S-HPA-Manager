@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 )
 
 func TestIsIPAddress(t *testing.T) {
@@ -28,7 +29,7 @@ func TestIsIPAddress(t *testing.T) {
 // nunca respondia contra um alvo Windows atrás de PAM, só 3389/445/5985/5986). O último argumento
 // posicional pro tcptraceroute deve ser a porta escolhida, nunca mais hardcoded.
 func TestTracerouteArgs_UsesGivenPort(t *testing.T) {
-	args := tracerouteArgs("10.0.0.5", 3389)
+	args := tracerouteArgs("10.0.0.5", 3389, netDiscoveryProbeTimeoutSec)
 	if got := args[len(args)-1]; got != "3389" {
 		t.Errorf("última posição dos args = %q, want \"3389\" (porta explícita)", got)
 	}
@@ -37,9 +38,59 @@ func TestTracerouteArgs_UsesGivenPort(t *testing.T) {
 	}
 
 	// Default (443) continua funcionando idêntico a antes desta correção.
-	argsDefault := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort)
+	argsDefault := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort, netDiscoveryProbeTimeoutSec)
 	if got := argsDefault[len(argsDefault)-1]; got != "443" {
 		t.Errorf("porta default = %q, want \"443\"", got)
+	}
+}
+
+// TestTracerouteArgs_UsesGivenProbeTimeout cobre o override de timeout por salto (pedido explícito
+// do usuário: descartar rede lenta/alta latência antes de aceitar bloqueio de verdade atrás de um
+// cofre PAM). O valor de "-w" deve refletir o timeout escolhido, não o default hardcoded.
+func TestTracerouteArgs_UsesGivenProbeTimeout(t *testing.T) {
+	args := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort, 8)
+	// "-w" é seguido do valor — acha o índice de "-w" e confere o próximo elemento.
+	for i, a := range args {
+		if a == "-w" {
+			if args[i+1] != "8" {
+				t.Errorf("-w = %q, want \"8\"", args[i+1])
+			}
+			return
+		}
+	}
+	t.Fatal("flag -w não encontrada nos args")
+}
+
+// TestComputeOverallTimeout_DefaultUnaffected garante que o timeout de sonda default (2s) nunca
+// muda o teto geral da descoberta — comportamento idêntico ao de antes desta correção.
+func TestComputeOverallTimeout_DefaultUnaffected(t *testing.T) {
+	got := computeOverallTimeout(netDiscoveryProbeTimeoutSec)
+	if got != netDiscoveryOverallTimeout {
+		t.Errorf("computeOverallTimeout(%d) = %v, want o default %v (sem mudança pro caso comum)",
+			netDiscoveryProbeTimeoutSec, got, netDiscoveryOverallTimeout)
+	}
+}
+
+// TestComputeOverallTimeout_ExtendsForLargerProbeTimeout cobre o bug que este mecanismo evita: sem
+// estender o teto geral, um ProbeTimeoutSec maior faria o pior caso (todos os netDiscoveryMaxHops
+// saltos sem resposta) facilmente estourar o teto FIXO antigo, abortando o traceroute no meio pelo
+// contexto em vez de terminar normalmente com "não alcançado".
+func TestComputeOverallTimeout_ExtendsForLargerProbeTimeout(t *testing.T) {
+	got := computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec) // 10s/salto, o máximo permitido
+	worstCaseTraceroute := time.Duration(netDiscoveryProbeTimeoutMaxSec*netDiscoveryMaxHops) * time.Second
+	if got <= worstCaseTraceroute {
+		t.Errorf("computeOverallTimeout(%d) = %v, precisa ser MAIOR que o pior caso do traceroute (%v) — senão o contexto mata a descoberta no meio",
+			netDiscoveryProbeTimeoutMaxSec, got, worstCaseTraceroute)
+	}
+}
+
+// TestComputeOverallTimeout_NeverExceedsCap garante que o teto nunca ultrapassa
+// netDiscoveryOverallTimeoutCap, mesmo no timeout de sonda máximo — fica sempre abaixo do
+// ActiveDeadlineSeconds do pod de descoberta (modo pod), que mataria o pod de qualquer forma.
+func TestComputeOverallTimeout_NeverExceedsCap(t *testing.T) {
+	got := computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec)
+	if got > netDiscoveryOverallTimeoutCap {
+		t.Errorf("computeOverallTimeout(%d) = %v, excede o teto %v", netDiscoveryProbeTimeoutMaxSec, got, netDiscoveryOverallTimeoutCap)
 	}
 }
 
