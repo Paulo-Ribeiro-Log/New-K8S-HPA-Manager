@@ -2015,6 +2015,17 @@ export interface NetDiscoveryHop {
   asn_org?: string;
   cloud_match?: 'aws' | 'gcp' | '';
   cloud_region?: string;
+  // Cross-reference K8s (Fase 4) — enriquecimento BÔNUS, preenchido só quando o IP bate com um
+  // Node/Pod/Service conhecido (cache persistido, qualquer modo, ou busca ao vivo só no modo pod).
+  internal_ref?: NetDiscoveryInternalRef;
+}
+
+export interface NetDiscoveryInternalRef {
+  kind: 'node' | 'pod' | 'service';
+  name: string; // já formatado pra exibição — ex: "Deployment/checkout-api" quando kind=pod
+  pod_name?: string; // só quando kind=pod — nome literal do Pod object (name já é o owner)
+  namespace?: string;
+  cluster: string;
 }
 
 // Fase 2 — fingerprint do DESTINO (não por salto, só o alvo final): heurística de TTL, banner

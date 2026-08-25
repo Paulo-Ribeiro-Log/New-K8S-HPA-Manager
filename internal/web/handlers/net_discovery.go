@@ -26,6 +26,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
+	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/web/sse"
 )
 
@@ -79,6 +80,12 @@ type NetDiscoveryHop struct {
 	ASNOrg      string `json:"asn_org,omitempty"`
 	CloudMatch  string `json:"cloud_match,omitempty"` // "aws" | "gcp" | ""
 	CloudRegion string `json:"cloud_region,omitempty"`
+
+	// InternalRef — cross-reference com a frota K8s (Fase 4, net_discovery_crossref.go).
+	// Enriquecimento BÔNUS, nunca pré-requisito (seção 3.8 do plano): preenchido só quando o IP
+	// bate com um Node/Pod/Service conhecido — do cache persistido (qualquer modo) ou de uma
+	// busca ao vivo (só modo pod, onde já existe um clientset/cluster real em mãos).
+	InternalRef *NetDiscoveryInternalRef `json:"internal_ref,omitempty"`
 }
 
 // NetDiscoveryResult é o payload final do evento "complete".
@@ -297,15 +304,16 @@ type NetDiscoveryHandler struct {
 	kubeManager    *config.KubeConfigManager
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
-	cancelFuncs    sync.Map // sessionID -> context.CancelFunc
-	runningUsers   sync.Map // userEmail -> struct{} — "uma descoberta por vez por usuário"
-	seenClusters   sync.Map // cluster -> struct{} — só varre órfãos onde este handler já criou pod
+	registry       *storage.NetDiscoveryRegistryStore // Fase 4 — cache-on-read do cross-reference K8s; nil desabilita a camada sem quebrar nada (best-effort)
+	cancelFuncs    sync.Map                           // sessionID -> context.CancelFunc
+	runningUsers   sync.Map                           // userEmail -> struct{} — "uma descoberta por vez por usuário"
+	seenClusters   sync.Map                           // cluster -> struct{} — só varre órfãos onde este handler já criou pod
 }
 
 // NewNetDiscoveryHandler cria o handler e inicia a varredura periódica de pods/containers órfãos
 // em background (mesmo padrão de NewLatencyTestHandler/NewDBTestHandler).
-func NewNetDiscoveryHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker) *NetDiscoveryHandler {
-	h := &NetDiscoveryHandler{kubeManager: km, tracker: tracker, historyTracker: ht}
+func NewNetDiscoveryHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker, registry *storage.NetDiscoveryRegistryStore) *NetDiscoveryHandler {
+	h := &NetDiscoveryHandler{kubeManager: km, tracker: tracker, historyTracker: ht, registry: registry}
 	go h.sweepOrphanPods()
 	go startNetDiscoveryContainerReaper()
 	return h
@@ -607,6 +615,12 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	// alcançável de dentro daquele cluster específico).
 	var fingerprintProbe func(context.Context, string) (string, error)
 
+	// podClientset — capturado só no modo pod (Fase 4: cross-reference K8s). Permanece nil no
+	// modo local; crossReferenceHops trata nil como "só consultar o cache persistido, nunca
+	// disparar busca ao vivo" (ver comentário de crossReferenceIP em net_discovery_crossref.go) —
+	// por isso a mesma chamada, mais abaixo, cobre os dois modos sem precisar de um `if` extra.
+	var podClientset kubernetes.Interface
+
 	if req.Mode == netDiscoveryModeLocal {
 		fingerprintProbe = runFingerprintLocal
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local)...", targetIP), 0.2, nil)
@@ -627,6 +641,7 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		}
 
 		h.seenClusters.Store(req.Cluster, struct{}{})
+		podClientset = clientset
 
 		send("pod_create", "in_progress", "Criando pod de descoberta...", 0.1, nil)
 		podName, cleanup, err := createNetDiscoveryPod(ctx, clientset, req.Namespace)
@@ -675,6 +690,12 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	// a outra).
 	send("enrich", "in_progress", "Enriquecendo rota (DNS reverso, ASN, nuvem)...", 0.97, nil)
 	enrichHops(ctx, hops)
+
+	// Cross-reference K8s (Fase 4) — última camada, sempre best-effort. `podClientset` é nil no
+	// modo local; crossReferenceHops/crossReferenceIP tratam isso consultando só o cache
+	// persistido, nunca disparando uma busca ao vivo (ver net_discovery_crossref.go).
+	send("crossref", "in_progress", "Cruzando com clusters K8s conhecidos...", 0.99, nil)
+	h.crossReferenceHops(ctx, hops, podClientset, req.Cluster)
 
 	result := NetDiscoveryResult{
 		TargetInput:    req.Target,

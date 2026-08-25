@@ -364,6 +364,15 @@ export default function NetDiscoveryTab() {
                     <td className="px-2.5 py-1.5 font-mono">{h.rtt_ms ? `${h.rtt_ms.toFixed(1)} ms` : "—"}</td>
                     <td className="px-2.5 py-1.5">
                       <div className="flex items-center gap-1.5 flex-wrap">
+                        {h.internal_ref && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] py-0 border-purple-500/40 text-purple-600 dark:text-purple-400"
+                            title={`Cluster: ${h.internal_ref.cluster}${h.internal_ref.namespace ? ` · Namespace: ${h.internal_ref.namespace}` : ""}${h.internal_ref.pod_name ? ` · Pod: ${h.internal_ref.pod_name}` : ""}`}
+                          >
+                            K8s: {h.internal_ref.name}
+                          </Badge>
+                        )}
                         {h.cloud_match && (
                           <Badge
                             variant="outline"

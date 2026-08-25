@@ -81,6 +81,12 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
         // dois sinais coexistem sem conflito visual.
         { selector: 'node[cloudMatch = "aws"]', style: { "border-color": "#f97316", "border-width": 4 } },
         { selector: 'node[cloudMatch = "gcp"]', style: { "border-color": "#10b981", "border-width": 4 } },
+        // Cross-reference K8s (Fase 4) — borda roxa, mesma cor da Origem (kind="origin"), sinaliza
+        // "isto é um recurso da nossa própria frota K8s conhecida". Tem prioridade visual sobre
+        // cloudMatch (selector declarado depois vence em empate de especificidade no Cytoscape) —
+        // um hop nunca deveria bater nos dois ao mesmo tempo na prática (IP privado K8s vs. faixa
+        // pública de nuvem são mutuamente exclusivos), mas se acontecer, K8s é o sinal mais preciso.
+        { selector: 'node[internalRefKind]', style: { "border-color": "#8b5cf6", "border-width": 4 } },
         {
           selector: "edge",
           style: {
@@ -169,19 +175,25 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
     targetNode.data("label", `${emoji} ${currentLabel}`);
   }, [fingerprint]);
 
-  // Enriquecimento por salto (Fase 3) chega junto da lista final de `hops` no evento "complete"
+  // Enriquecimento por salto (Fases 3-4) chega junto da lista final de `hops` no evento "complete"
   // — o efeito de cima (que adiciona NÓS NOVOS) já ignora esse update porque `hops.length` não
   // muda (mesma contagem de saltos, só campos novos preenchidos). Este efeito roda À PARTE,
   // sempre que `hops` muda, e só ATUALIZA nós já existentes (nunca adiciona/remove) com o dado de
-  // nuvem — barato o bastante pra rodar incondicionalmente a cada mudança de `hops`.
+  // nuvem (Fase 3) e cross-reference K8s (Fase 4) — barato o bastante pra rodar incondicionalmente
+  // a cada mudança de `hops`.
   useEffect(() => {
     const cy = cyInstance.current;
     if (!cy) return;
     for (const hop of hops) {
-      if (!hop.cloud_match) continue;
       const node = cy.getElementById(`hop-${hop.index}`);
-      if (node.empty() || node.data("cloudMatch") === hop.cloud_match) continue;
-      node.data("cloudMatch", hop.cloud_match);
+      if (node.empty()) continue;
+      if (hop.cloud_match && node.data("cloudMatch") !== hop.cloud_match) {
+        node.data("cloudMatch", hop.cloud_match);
+      }
+      if (hop.internal_ref && node.data("internalRefKind") !== hop.internal_ref.kind) {
+        node.data("internalRefKind", hop.internal_ref.kind);
+        node.data("label", `${hop.index}\n${hop.ip}\n[${hop.internal_ref.name}]`);
+      }
     }
   }, [hops]);
 

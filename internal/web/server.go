@@ -118,6 +118,9 @@ type Server struct {
 
 	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
 	latencyTestHistoryStore *storage.LatencyTestHistoryStore
+
+	// Net Discovery Registry Store (Fase 4 — cache-on-read do cross-reference K8s)
+	netDiscoveryRegistryStore *storage.NetDiscoveryRegistryStore
 }
 
 // ensureJWTSecret retorna o secret JWT a usar, em ordem de prioridade:
@@ -426,6 +429,18 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ Cert Endpoints Store inicializado (monitor de endpoints externos)")
 	}
 
+	// Net Discovery Registry Store (Fase 4 — cache-on-read do cross-reference "esse IP é um
+	// node/pod/service K8s conhecido?"). nil é seguro: NewNetDiscoveryHandler/crossReferenceIP
+	// tratam registry==nil desabilitando só essa camada bônus, sem afetar traceroute/fingerprint.
+	var netDiscoveryRegistryStore *storage.NetDiscoveryRegistryStore
+	netDiscoveryRegistryDBPath := filepath.Join(baseDir, "net-discovery-registry.db")
+	if store, err := storage.NewNetDiscoveryRegistryStore(netDiscoveryRegistryDBPath); err != nil {
+		fmt.Printf("⚠️  Net Discovery Registry Store: falha ao criar store: %v\n", err)
+	} else {
+		netDiscoveryRegistryStore = store
+		fmt.Println("✅ Net Discovery Registry Store inicializado (cache de cross-reference K8s)")
+	}
+
 	// Latency Test History Store (fonte estruturada pro grafo de topologia da Fase 6.4)
 	var latencyTestHistoryStore *storage.LatencyTestHistoryStore
 	latencyTestHistoryDBPath := filepath.Join(baseDir, "latency_test_history.db")
@@ -454,22 +469,23 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		// stressResultChan:   stressResultChan,
 		// monitoringCtx:      monitoringCtx,
 		// monitoringCancel:   monitoringCancel,
-		monitoringEngineV2:       monitoringEngineV2,
-		aiHandler:                aiHandler,                // Pode ser nil se AI estiver desabilitado
-		aiTokensHandler:          aiTokensHandler,          // Gerencia tokens AI dos usuários
-		cloudAccountHintsHandler: cloudAccountHintsHandler, // Lembrete de conta .ca por provider
-		aiTokensStore:            aiTokensStore,            // Compartilhado com Dynatrace handler
-		aiHistoryStore:           aiHistoryStore,           // Compartilhado com Dynatrace handler
-		kubeManagerWrapper:       kubeManagerWrapper,       // Para predictions RBAC
-		awxHandler:               awxHandler,               // AWX Integration (certificados TLS)
-		ssoProfileHandler:        ssoProfileHandler,        // Perfil SSO corporativo
-		nodepoolRegistryHandler:  nodepoolRegistryHandler,  // Catálogo de node pools Dynatrace
-		npRegistryStore:          npRegistryStore,          // Usado pelo healthcheck orchestrator
-		finopsTimelineStore:      finopsTimelineStore,      // Snapshots históricos HPA para comparação
-		snatHistoryStore:         snatHistoryStore,         // Histórico SNAT para projeção de crescimento
-		latencyTestHistoryStore:  latencyTestHistoryStore,  // Histórico de testes de latência (grafo Fase 6.4)
-		notesHandler:             notesHandler,             // Anotações Markdown por cluster+aba
-		certEndpointsHandler:     certEndpointsHandler,     // Monitor de certificados de endpoints externos
+		monitoringEngineV2:        monitoringEngineV2,
+		aiHandler:                 aiHandler,                 // Pode ser nil se AI estiver desabilitado
+		aiTokensHandler:           aiTokensHandler,           // Gerencia tokens AI dos usuários
+		cloudAccountHintsHandler:  cloudAccountHintsHandler,  // Lembrete de conta .ca por provider
+		aiTokensStore:             aiTokensStore,             // Compartilhado com Dynatrace handler
+		aiHistoryStore:            aiHistoryStore,            // Compartilhado com Dynatrace handler
+		kubeManagerWrapper:        kubeManagerWrapper,        // Para predictions RBAC
+		awxHandler:                awxHandler,                // AWX Integration (certificados TLS)
+		ssoProfileHandler:         ssoProfileHandler,         // Perfil SSO corporativo
+		nodepoolRegistryHandler:   nodepoolRegistryHandler,   // Catálogo de node pools Dynatrace
+		npRegistryStore:           npRegistryStore,           // Usado pelo healthcheck orchestrator
+		finopsTimelineStore:       finopsTimelineStore,       // Snapshots históricos HPA para comparação
+		snatHistoryStore:          snatHistoryStore,          // Histórico SNAT para projeção de crescimento
+		latencyTestHistoryStore:   latencyTestHistoryStore,   // Histórico de testes de latência (grafo Fase 6.4)
+		netDiscoveryRegistryStore: netDiscoveryRegistryStore, // Cache de cross-reference K8s da Descoberta de Rede (Fase 4)
+		notesHandler:              notesHandler,              // Anotações Markdown por cluster+aba
+		certEndpointsHandler:      certEndpointsHandler,      // Monitor de certificados de endpoints externos
 	}
 
 	server.setupMiddleware()
@@ -1052,9 +1068,10 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Descoberta de Rede — traceroute sob demanda (modo pod/local) com transmissão salto-a-salto
-	// via SSE, pra desenhar o grafo em tempo real no frontend (ver IP-ROUTE-DISCOVERY-PLAN.md,
-	// Fase 1 — sem enriquecimento ainda, isso vem nas Fases 2-4)
-	netDiscoveryHandler := handlers.NewNetDiscoveryHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker)
+	// via SSE, pra desenhar o grafo em tempo real no frontend (ver IP-ROUTE-DISCOVERY-PLAN.md).
+	// Fases 1-4 completas: traceroute + fingerprint de SO + DNS reverso/ASN/nuvem + cross-reference
+	// K8s (cache-on-read via netDiscoveryRegistryStore, nil-safe).
+	netDiscoveryHandler := handlers.NewNetDiscoveryHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.netDiscoveryRegistryStore)
 	s.router.GET("/api/v1/net-discovery/stream/:sessionId",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		netDiscoveryHandler.Stream)
