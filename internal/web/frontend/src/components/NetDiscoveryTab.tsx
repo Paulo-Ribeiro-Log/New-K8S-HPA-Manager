@@ -16,6 +16,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, ListChecks, KeyRound } from "lucide-react";
 import { ProtectedAction } from "@/components/rbac";
 import NetDiscoveryGraph from "@/components/NetDiscoveryGraph";
+import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { exportNetDiscoveryPDF } from "@/lib/netDiscoveryPdfExport";
@@ -70,6 +71,13 @@ export default function NetDiscoveryTab() {
   const [clientCertPEM, setClientCertPEM] = useState("");
   const [clientKeyPEM, setClientKeyPEM] = useState("");
   const mtlsConfigured = clientCertPEM.trim() !== "" && clientKeyPEM.trim() !== "";
+  // Picker reaproveitado (Backup Apartado / Extraído de PFX / Rollback) — pedido explícito do
+  // usuário depois de perguntar se um certificado já existente ajudaria a descoberta: evita
+  // copiar/colar manual quando o certificado de cliente já está salvo em qualquer um dos 3
+  // repositórios que a aba Certificados TLS já mantém. defaultTab="manual" porque esta aba não
+  // edita nenhum Secret K8s real — a aba "Rollback" do picker (escopada por cluster/namespace/
+  // secretName) ficaria sempre vazia aqui, então não faz sentido como aba inicial.
+  const [certPickerOpen, setCertPickerOpen] = useState(false);
   const [mode, setMode] = useState<NetDiscoveryMode>("local"); // local = default (ver seção 4.1 do plano: é a rede que o host do backend já enxerga, inclusive infra remota de terceiros)
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
@@ -488,11 +496,24 @@ export default function NetDiscoveryTab() {
           </button>
           {mtlsExpanded && (
             <div className="px-3 pb-3 space-y-2">
-              <p className="text-[10px] text-muted-foreground">
-                Só faz diferença quando o servidor exige certificado de cliente — o ganho confirmado
-                é destravar a checagem HTTP (Server:/status), já que o certificado TLS em si costuma
-                ser lido mesmo sem apresentar um. Nunca salvo — vale só para esta execução.
-              </p>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-[10px] text-muted-foreground">
+                  Só faz diferença quando o servidor exige certificado de cliente — o ganho confirmado
+                  é destravar a checagem HTTP (Server:/status), já que o certificado TLS em si costuma
+                  ser lido mesmo sem apresentar um. Nunca salvo — vale só para esta execução.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[10px] px-2 flex-shrink-0"
+                  disabled={running}
+                  onClick={() => setCertPickerOpen(true)}
+                >
+                  <History className="w-3 h-3 mr-1" />
+                  Certificado salvo...
+                </Button>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs text-muted-foreground block mb-1">Certificado (PEM)</label>
@@ -865,6 +886,23 @@ export default function NetDiscoveryTab() {
           </div>
         )}
       </div>
+
+      {/* Picker reaproveitado da aba Certificados TLS — abre direto em "Backup Apartado"
+          (defaultTab="manual"), já que esta aba não edita nenhum Secret K8s real, então a aba
+          "Rollback" do picker (escopada por cluster/namespace/secretName) ficaria sempre vazia
+          aqui. onSelect popula os dois campos de mTLS de uma vez, como se tivesse colado à mão. */}
+      <CertificateSourcePickerModal
+        open={certPickerOpen}
+        onOpenChange={setCertPickerOpen}
+        cluster=""
+        namespace=""
+        secretName=""
+        defaultTab="manual"
+        onSelect={(crt, key) => {
+          setClientCertPEM(crt);
+          setClientKeyPEM(key);
+        }}
+      />
     </div>
   );
 }
