@@ -754,6 +754,27 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	if resolved {
 		originalHostname = strings.TrimSpace(req.Target)
 		sniHost = originalHostname
+	} else {
+		// Bug real corrigido, relatado ao vivo: "o certificado ainda não é reconhecido" contra um
+		// IP PRIVADO digitado diretamente (10.107.51.135, sem hostname nenhum) — mesmo depois da
+		// correção do SNI pro caso "busca por hostname", esse caso continuava travado no IP cru
+		// como SNI, porque não existe hostname NENHUM digitado pelo usuário pra usar aqui.
+		// Confirmado ao vivo: `tls_subject`/`tls_issuer` vinham como
+		// "Kubernetes Ingress Controller Fake Certificate" (mesmo placeholder de SNI desconhecido
+		// já documentado nesta app) contra um Ingress interno real. Corrigido tentando um DNS
+		// REVERSO antes do fingerprint (não confundir com o enrichHops da Fase 3, que roda DEPOIS
+		// — tarde demais, o SNI já foi usado) — é comum existir PTR mesmo pra IP privado quando a
+		// empresa tem zona DNS interna própria (split-horizon), alcançável pela mesma VPN que já
+		// resolve outros recursos internos. Só um palpite best-effort (não é a mesma garantia do
+		// texto que o usuário efetivamente digitou) — por isso NUNCA usado pra preencher
+		// `originalHostname` (que segue vazio nesse ramo); só ajuda o SNI/Host do fingerprint, o
+		// ReverseDNS final do salto-alvo continua vindo do PTR normal em enrichHops, sem
+		// tratamento especial.
+		ptrCtx, ptrCancel := context.WithTimeout(ctx, 3*time.Second)
+		if names, ptrErr := net.DefaultResolver.LookupAddr(ptrCtx, targetIP); ptrErr == nil && len(names) > 0 {
+			sniHost = strings.TrimSuffix(names[0], ".")
+		}
+		ptrCancel()
 	}
 
 	var hops []NetDiscoveryHop
@@ -847,6 +868,12 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		log.Warn().Str("target", targetIP).Err(fpErr).Msg("NetDiscovery: fingerprint do destino falhou (não bloqueia o resultado principal)")
 	} else {
 		fp := parseFingerprintOutput(fpOutput)
+		if sniHost != targetIP {
+			// Transparência sobre um achado real: um IP pode ter dezenas de PTR diferentes
+			// (ingress compartilhado) — expõe qual hostname foi de fato usado no SNI/Host, pra
+			// nunca deixar parecer que o certificado/HTTP encontrado "é do IP" sem mais contexto.
+			fp.ProbedHost = sniHost
+		}
 		fingerprint = &fp
 	}
 

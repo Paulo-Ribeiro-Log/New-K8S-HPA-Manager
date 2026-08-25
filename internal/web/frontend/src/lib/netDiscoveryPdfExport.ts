@@ -123,6 +123,25 @@ export const exportNetDiscoveryPDF = async (ctx: NetDiscoveryExportContext): Pro
     fpLines.forEach((line, i) => doc.text(removeEmojis(line), 16, y + i * 6));
     y += fpLines.length * 6 + 2;
 
+    // Achado real: um IP pode ter dezenas de PTR diferentes (ingress compartilhado) — sem esta
+    // nota, o certificado/HTTP acima pareceria "do IP", escondendo que pode ser de um serviço
+    // diferente do que o usuário pretendia investigar.
+    if (fp.probed_host) {
+      y = checkNewPage(doc, y, 14);
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(8.5);
+      doc.setTextColor(150, 100, 0);
+      const note = doc.splitTextToSize(
+        `HTTP/certificado acima checados usando o hostname "${fp.probed_host}"` +
+          (!result.target_resolved ? " (descoberto via DNS reverso, não digitado pelo usuário)" : "") +
+          " — este IP pode responder de forma diferente pra outros hostnames que também apontam pra ele (comum em ingress compartilhado).",
+        pageWidth - 32
+      );
+      doc.text(note, 16, y);
+      doc.setTextColor(0, 0, 0);
+      y += note.length * 5 + 4;
+    }
+
     if (fp.os_confidence) {
       y = checkNewPage(doc, y, 14);
       doc.setFont("helvetica", "italic");

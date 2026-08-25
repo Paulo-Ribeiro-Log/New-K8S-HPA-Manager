@@ -652,6 +652,18 @@ export default function NetDiscoveryTab() {
             {result.fingerprint.os_confidence && (
               <p className="text-xs text-muted-foreground">{result.fingerprint.os_confidence}</p>
             )}
+            {result.fingerprint.probed_host && (
+              <div className="flex items-start gap-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>
+                  HTTP/certificado abaixo foram checados usando o hostname{" "}
+                  <span className="font-mono">{result.fingerprint.probed_host}</span>
+                  {!result.target_resolved && " (descoberto via DNS reverso, não digitado por você)"} —
+                  este IP pode responder de forma diferente pra outros hostnames que também apontam pra ele
+                  (comum em ingress compartilhado).
+                </span>
+              </div>
+            )}
             {result.fingerprint.open_ports && result.fingerprint.open_ports.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-xs text-muted-foreground">Portas abertas:</span>

@@ -82,6 +82,15 @@ type NetDiscoveryFingerprint struct {
 	HTTPServer   string `json:"http_server,omitempty"` // header Server: quando presente (HTTP ou HTTPS, o que responder)
 	TLSSubject   string `json:"tls_subject,omitempty"`
 	TLSIssuer    string `json:"tls_issuer,omitempty"`
+	// ProbedHost — hostname REALMENTE usado como SNI/Host no HTTP(S)/TLS (ver sniHost em
+	// runDiscovery). Só preenchido quando difere do IP alvo (ou seja, quando algum hostname real
+	// foi usado — digitado pelo usuário OU descoberto via PTR pra um IP buscado direto). Existe
+	// pra deixar TRANSPARENTE um achado real: um IP pode ter DEZENAS de registros PTR diferentes
+	// (ingress compartilhado, um por serviço) — a ordem que o resolver DNS devolve é
+	// essencialmente arbitrária, então o certificado/HTTP aqui pode ser de um serviço DIFERENTE
+	// do que o usuário pretendia investigar quando buscou só pelo IP. Sem este campo, o
+	// certificado apareceria como se fosse "do IP", escondendo essa ambiguidade real.
+	ProbedHost string `json:"probed_host,omitempty"`
 }
 
 // runFingerprintInPod/runFingerprintLocal — mesmo padrão dual pod/local do traceroute (Fase 1),

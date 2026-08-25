@@ -2065,6 +2065,12 @@ export interface NetDiscoveryFingerprint {
   http_server?: string; // header Server: quando presente
   tls_subject?: string;
   tls_issuer?: string;
+  // probed_host — hostname REALMENTE usado como SNI/Host no HTTP(S)/TLS. Só presente quando
+  // difere do IP alvo (digitado pelo usuário OU descoberto via PTR pra uma busca por IP direto).
+  // Achado real: um IP pode ter dezenas de PTR diferentes (ingress compartilhado) — este campo
+  // deixa claro qual hostname foi usado, pra nunca parecer que o certificado "é do IP" sem mais
+  // contexto (pode ser de um serviço diferente do que o usuário pretendia investigar).
+  probed_host?: string;
 }
 
 export interface NetDiscoveryResult {
