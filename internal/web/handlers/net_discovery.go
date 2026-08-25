@@ -70,6 +70,15 @@ type NetDiscoveryHop struct {
 	RTTMs    float64 `json:"rtt_ms,omitempty"`
 	TimedOut bool    `json:"timed_out"`
 	IsTarget bool    `json:"is_target"` // true quando este hop é o próprio destino resolvido
+
+	// Enriquecimento passivo (Fase 3, net_discovery_enrich.go) — SEMPRE vazios no evento SSE
+	// "hop" ao vivo (enriquecimento roda só depois de todos os saltos coletados, best-effort);
+	// preenchidos só na lista final de NetDiscoveryResult.Hops, entregue no evento "complete".
+	ReverseDNS  string `json:"reverse_dns,omitempty"`
+	ASN         string `json:"asn,omitempty"`
+	ASNOrg      string `json:"asn_org,omitempty"`
+	CloudMatch  string `json:"cloud_match,omitempty"` // "aws" | "gcp" | ""
+	CloudRegion string `json:"cloud_region,omitempty"`
 }
 
 // NetDiscoveryResult é o payload final do evento "complete".
@@ -246,13 +255,21 @@ func runTracerouteInPod(ctx context.Context, clientset kubernetes.Interface, res
 // confirmado pelo usuário como sendo a mesma VPN já usada pro AKS/GCP), um container isolado na
 // rede bridge padrão do Docker não teria essa rota.
 func runTracerouteLocal(ctx context.Context, targetIP string, onLine func(line string)) error {
+	// Nome explícito (não só --rm) — achado real, testado ao vivo: cancelar a descoberta
+	// (context cancelado) mata o CLIENTE `docker run` via SIGKILL, mas isso não garante que o
+	// daemon pare o CONTAINER remoto (--rm só roda quando o cliente sai limpo, não quando é
+	// morto abruptamente) — mesma classe de bug já documentada pro Teste de Banco de Dados/Kafka
+	// (cleanupCancelledDockerContainer). Sem um nome conhecido, não haveria como limpar
+	// ativamente — só o reaper periódico (até 10min depois) resolveria.
+	containerName := fmt.Sprintf("net-discovery-trace-%s", uuid.New().String()[:8])
 	args := append([]string{
 		"run", "--rm", "--network=host",
+		"--name", containerName,
 		"--label", netDiscoveryDockerLabel,
 		netDiscoveryPodImage,
 	}, tracerouteArgs(targetIP)...)
 
-	return streamCommandLines(ctx, func(stdout io.Writer) error {
+	err := streamCommandLines(ctx, func(stdout io.Writer) error {
 		cmd := exec.CommandContext(ctx, "docker", args...)
 		cmd.Stdout = stdout
 		var stderr bytes.Buffer
@@ -265,6 +282,11 @@ func runTracerouteLocal(ctx context.Context, targetIP string, onLine func(line s
 		}
 		return nil
 	}, onLine)
+
+	if ctx.Err() != nil {
+		cleanupCancelledDockerContainer(containerName)
+	}
+	return err
 }
 
 // ─── Handler: endpoint SSE + rotas ─────────────────────────────────────────────
@@ -646,6 +668,13 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		fp := parseFingerprintOutput(fpOutput)
 		fingerprint = &fp
 	}
+
+	// Enriquecimento passivo por salto (Fase 3) — DNS reverso/ASN/faixa de nuvem, sempre do
+	// backend (nunca precisa do pod/container, são consultas DNS/HTTP simples). Muta `hops`
+	// in-place; roda mesmo se o fingerprint acima falhou (camadas independentes, uma não bloqueia
+	// a outra).
+	send("enrich", "in_progress", "Enriquecendo rota (DNS reverso, ASN, nuvem)...", 0.97, nil)
+	enrichHops(ctx, hops)
 
 	result := NetDiscoveryResult{
 		TargetInput:    req.Target,

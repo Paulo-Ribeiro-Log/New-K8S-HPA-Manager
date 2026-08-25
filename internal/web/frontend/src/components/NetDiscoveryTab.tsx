@@ -350,6 +350,7 @@ export default function NetDiscoveryTab() {
                   <th className="text-left font-medium px-2.5 py-1.5 w-12">#</th>
                   <th className="text-left font-medium px-2.5 py-1.5">IP</th>
                   <th className="text-left font-medium px-2.5 py-1.5">Latência</th>
+                  <th className="text-left font-medium px-2.5 py-1.5">Contexto (DNS/ASN/nuvem)</th>
                 </tr>
               </thead>
               <tbody>
@@ -361,6 +362,24 @@ export default function NetDiscoveryTab() {
                       {h.is_target && <Badge variant="outline" className="ml-2 text-[10px] py-0 border-emerald-500/40 text-emerald-600 dark:text-emerald-400">destino</Badge>}
                     </td>
                     <td className="px-2.5 py-1.5 font-mono">{h.rtt_ms ? `${h.rtt_ms.toFixed(1)} ms` : "—"}</td>
+                    <td className="px-2.5 py-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {h.cloud_match && (
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] py-0 ${h.cloud_match === "aws" ? "border-orange-500/40 text-orange-600 dark:text-orange-400" : "border-green-500/40 text-green-600 dark:text-green-400"}`}
+                          >
+                            {h.cloud_match.toUpperCase()}{h.cloud_region ? ` · ${h.cloud_region}` : ""}
+                          </Badge>
+                        )}
+                        {h.asn && (
+                          <span className="font-mono text-muted-foreground" title={h.asn_org || ""}>
+                            AS{h.asn}{h.asn_org ? ` — ${h.asn_org}` : ""}
+                          </span>
+                        )}
+                        {h.reverse_dns && <span className="text-muted-foreground truncate max-w-[220px]" title={h.reverse_dns}>{h.reverse_dns}</span>}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -75,6 +75,12 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
           selector: 'node[kind = "target"]',
           style: { "background-color": "#10b981", width: 90, height: 90, "font-size": "10px", "font-weight": "bold" },
         },
+        // Match de nuvem pública (Fase 3, enrichHops) — mesma paleta de cor já usada em
+        // PROVIDER_COLORS (LatencyTopologyGraph.tsx: aws=laranja, gcp=verde). Só a BORDA, nunca o
+        // background (que já carrega o sentido de "status do salto" — hop/timeout/target) — os
+        // dois sinais coexistem sem conflito visual.
+        { selector: 'node[cloudMatch = "aws"]', style: { "border-color": "#f97316", "border-width": 4 } },
+        { selector: 'node[cloudMatch = "gcp"]', style: { "border-color": "#10b981", "border-width": 4 } },
         {
           selector: "edge",
           style: {
@@ -162,6 +168,22 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
     if (currentLabel.includes(emoji)) return; // já atualizado (evita re-append em re-render)
     targetNode.data("label", `${emoji} ${currentLabel}`);
   }, [fingerprint]);
+
+  // Enriquecimento por salto (Fase 3) chega junto da lista final de `hops` no evento "complete"
+  // — o efeito de cima (que adiciona NÓS NOVOS) já ignora esse update porque `hops.length` não
+  // muda (mesma contagem de saltos, só campos novos preenchidos). Este efeito roda À PARTE,
+  // sempre que `hops` muda, e só ATUALIZA nós já existentes (nunca adiciona/remove) com o dado de
+  // nuvem — barato o bastante pra rodar incondicionalmente a cada mudança de `hops`.
+  useEffect(() => {
+    const cy = cyInstance.current;
+    if (!cy) return;
+    for (const hop of hops) {
+      if (!hop.cloud_match) continue;
+      const node = cy.getElementById(`hop-${hop.index}`);
+      if (node.empty() || node.data("cloudMatch") === hop.cloud_match) continue;
+      node.data("cloudMatch", hop.cloud_match);
+    }
+  }, [hops]);
 
   return (
     <div className="flex flex-col gap-2">

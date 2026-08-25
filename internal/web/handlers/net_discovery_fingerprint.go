@@ -2,12 +2,14 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -69,9 +71,18 @@ func runFingerprintInPod(ctx context.Context, clientset kubernetes.Interface, re
 }
 
 func runFingerprintLocal(ctx context.Context, targetIP string) (string, error) {
+	// Nome explícito — mesmo achado real documentado em runTracerouteLocal (net_discovery.go):
+	// cancelamento no meio do fingerprint mataria o CLIENTE docker run sem garantir que o
+	// container remoto pare junto.
+	containerName := fmt.Sprintf("net-discovery-fp-%s", uuid.New().String()[:8])
 	out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "--network=host",
+		"--name", containerName,
 		"--label", netDiscoveryDockerLabel, netDiscoveryPodImage,
 		"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP).CombinedOutput()
+
+	if ctx.Err() != nil {
+		cleanupCancelledDockerContainer(containerName)
+	}
 	return string(out), err
 }
 

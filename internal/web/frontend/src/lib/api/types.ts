@@ -2008,6 +2008,13 @@ export interface NetDiscoveryHop {
   rtt_ms?: number;
   timed_out: boolean;
   is_target: boolean; // true quando este salto é o próprio destino resolvido
+  // Enriquecimento passivo (Fase 3) — SEMPRE ausentes no evento SSE "hop" ao vivo (roda só
+  // depois de todos os saltos coletados); preenchidos na lista final de "complete".
+  reverse_dns?: string;
+  asn?: string;
+  asn_org?: string;
+  cloud_match?: 'aws' | 'gcp' | '';
+  cloud_region?: string;
 }
 
 // Fase 2 — fingerprint do DESTINO (não por salto, só o alvo final): heurística de TTL, banner
@@ -2035,7 +2042,7 @@ export interface NetDiscoveryResult {
 
 export interface NetDiscoverySSEEvent {
   id: string;
-  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'fingerprint' | 'complete' | 'error';
+  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'fingerprint' | 'enrich' | 'complete' | 'error';
   phase: string;
   message: string;
   progress: number;
