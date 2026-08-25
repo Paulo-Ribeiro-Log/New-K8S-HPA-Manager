@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,6 +79,10 @@ type NetDiscoveryResult struct {
 	TargetResolved bool              `json:"target_resolved"` // false só quando TargetInput já era um IP (nada pra resolver)
 	Hops           []NetDiscoveryHop `json:"hops"`
 	Reached        bool              `json:"reached"` // true se o último hop bateu com TargetIP
+	// Fingerprint — Fase 2 (net_discovery_fingerprint.go). Ponteiro nil quando o probe falhou
+	// (ex: timeout muito curto, alvo bloqueou tudo) — nunca bloqueia o resultado principal do
+	// traceroute, é um enriquecimento best-effort igual aos outros desta app.
+	Fingerprint *NetDiscoveryFingerprint `json:"fingerprint,omitempty"`
 }
 
 // isIPAddress detecta se `raw` já é um IPv4/IPv6 literal (net.ParseIP cobre os dois formatos).
@@ -574,7 +579,14 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		send("hop", "in_progress", fmt.Sprintf("Salto %d descoberto", hop.Index), progress, *hop)
 	}
 
+	// fingerprintProbe (Fase 2) roda depois do traceroute, no MESMO pod/container já em pé —
+	// evita criar um segundo pod/subir um segundo container só pra isso, e garante o mesmo
+	// vantage point de rede do traceroute (importante sobretudo no modo pod: o alvo pode só ser
+	// alcançável de dentro daquele cluster específico).
+	var fingerprintProbe func(context.Context, string) (string, error)
+
 	if req.Mode == netDiscoveryModeLocal {
+		fingerprintProbe = runFingerprintLocal
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local)...", targetIP), 0.2, nil)
 		if err := runTracerouteLocal(ctx, targetIP, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute local", err)
@@ -608,6 +620,10 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 			return
 		}
 
+		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
+			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip)
+		}
+
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s...", targetIP), 0.2, nil)
 		if err := runTracerouteInPod(ctx, clientset, restConfig, req.Namespace, podName, targetIP, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute", err)
@@ -617,9 +633,24 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 
 	reached := len(hops) > 0 && hops[len(hops)-1].IP == targetIP
 
+	// Fingerprint do destino (Fase 2) — best-effort, nunca bloqueia o resultado principal do
+	// traceroute (mesmo espírito de outras camadas opcionais desta app, ex: contexto histórico
+	// no Teste de Latência): uma falha aqui só significa "sem fingerprint", não "descoberta
+	// falhou". Roda mesmo quando o destino não foi alcançado pelo traceroute (reached=false) —
+	// TTL/portas/HTTP são checagens independentes, não dependem do traceroute ter completado.
+	send("fingerprint", "in_progress", "Identificando o destino (SO/serviço)...", 0.92, nil)
+	var fingerprint *NetDiscoveryFingerprint
+	if fpOutput, fpErr := fingerprintProbe(ctx, targetIP); fpErr != nil {
+		log.Warn().Str("target", targetIP).Err(fpErr).Msg("NetDiscovery: fingerprint do destino falhou (não bloqueia o resultado principal)")
+	} else {
+		fp := parseFingerprintOutput(fpOutput)
+		fingerprint = &fp
+	}
+
 	result := NetDiscoveryResult{
 		TargetInput:    req.Target,
 		TargetIP:       targetIP,
+		Fingerprint:    fingerprint,
 		TargetResolved: resolved,
 		Hops:           hops,
 		Reached:        reached,

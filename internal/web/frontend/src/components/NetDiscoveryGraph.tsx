@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import cytoscape, { Core } from "cytoscape";
 import { ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { NetDiscoveryHop } from "@/lib/api/types";
+import type { NetDiscoveryFingerprint, NetDiscoveryHop } from "@/lib/api/types";
 
 // Especialização LINEAR de LatencyTopologyGraph.tsx (cadeia Origem → Hop 1 → ... → Destino, não
 // um grafo geral) — pedido explícito do usuário: "desenhar na tela um fluxo da rota... ficaria
@@ -15,12 +15,24 @@ import type { NetDiscoveryHop } from "@/lib/api/types";
 const NODE_SPACING = 150;
 const ORIGIN_NODE_ID = "__origin__";
 
+// osEmoji — mesmo princípio de fraseologia neutra do resto da app: o próprio ícone já é
+// deliberadamente ambíguo ("❓" sem sinal suficiente), nunca afirma com certeza o que é heurística
+// (ver NetDiscoveryFingerprint.os_confidence, sempre exibido por extenso no painel de detalhe).
+function osEmoji(fp: NetDiscoveryFingerprint | undefined): string {
+  if (!fp) return "";
+  if (fp.os_guess === "linux") return "🐧";
+  if (fp.os_guess === "windows") return "🪟";
+  if (fp.is_web_server) return "🌐";
+  return "❓";
+}
+
 interface NetDiscoveryGraphProps {
   hops: NetDiscoveryHop[];
   running: boolean;
+  fingerprint?: NetDiscoveryFingerprint; // Fase 2 — chega DEPOIS do nó de destino já existir no grafo
 }
 
-export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphProps) {
+export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDiscoveryGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyInstance = useRef<Core | null>(null);
 
@@ -137,6 +149,19 @@ export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphPr
     // ao vivo" sem ser abrupto (duration curta, sempre a mesma).
     cy.animate({ fit: { eles: cy.elements(), padding: 40 } }, { duration: 300 });
   }, [hops]);
+
+  // Fingerprint (Fase 2) chega DEPOIS do nó de destino já existir (evento SSE separado, no final
+  // da descoberta) — atualiza o label do nó `kind="target"` já presente em vez de recriar nada.
+  useEffect(() => {
+    const cy = cyInstance.current;
+    if (!cy || !fingerprint) return;
+    const targetNode = cy.nodes('[kind = "target"]').first();
+    if (targetNode.empty()) return;
+    const emoji = osEmoji(fingerprint);
+    const currentLabel = String(targetNode.data("label") ?? "");
+    if (currentLabel.includes(emoji)) return; // já atualizado (evita re-append em re-render)
+    targetNode.data("label", `${emoji} ${currentLabel}`);
+  }, [fingerprint]);
 
   return (
     <div className="flex flex-col gap-2">

@@ -267,7 +267,59 @@ export default function NetDiscoveryTab() {
         )}
 
         {(hops.length > 0 || running) && (
-          <NetDiscoveryGraph hops={hops} running={running} />
+          <NetDiscoveryGraph hops={hops} running={running} fingerprint={result?.fingerprint} />
+        )}
+
+        {/* Fingerprint do destino (Fase 2) — SEMPRE com a explicação da heurística junto do
+            veredito (os_confidence), nunca só "Linux"/"Windows" seco — mesmo princípio de
+            fraseologia neutra já usado no resto da app pra inferências (nunca afirmar como fato
+            o que é heurística). */}
+        {result?.fingerprint && (
+          <div className="rounded-md border border-border p-3 flex flex-col gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              {result.fingerprint.os_guess === "linux" && (
+                <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">🐧 Linux provável</Badge>
+              )}
+              {result.fingerprint.os_guess === "windows" && (
+                <Badge variant="outline" className="border-blue-500/40 text-blue-600 dark:text-blue-400">🪟 Windows provável</Badge>
+              )}
+              {!result.fingerprint.os_guess && (
+                <Badge variant="outline" className="border-border text-muted-foreground">❓ SO não identificado</Badge>
+              )}
+              {result.fingerprint.is_web_server && (
+                <Badge variant="outline" className="border-purple-500/40 text-purple-600 dark:text-purple-400">🌐 Servidor Web</Badge>
+              )}
+              {result.fingerprint.ttl != null && (
+                <span className="text-xs text-muted-foreground font-mono">TTL {result.fingerprint.ttl}</span>
+              )}
+            </div>
+            {result.fingerprint.os_confidence && (
+              <p className="text-xs text-muted-foreground">{result.fingerprint.os_confidence}</p>
+            )}
+            {result.fingerprint.open_ports && result.fingerprint.open_ports.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs text-muted-foreground">Portas abertas:</span>
+                {result.fingerprint.open_ports.map((p) => (
+                  <Badge key={p} variant="outline" className="text-[10px] py-0 font-mono">{p}</Badge>
+                ))}
+              </div>
+            )}
+            {result.fingerprint.http_server && (
+              <div className="text-xs">
+                <span className="text-muted-foreground">Header Server:</span>{" "}
+                <span className="font-mono">{result.fingerprint.http_server}</span>
+              </div>
+            )}
+            {result.fingerprint.tls_subject && (
+              <div className="text-xs">
+                <span className="text-muted-foreground">Certificado TLS:</span>{" "}
+                <span className="font-mono">{result.fingerprint.tls_subject}</span>
+                {result.fingerprint.tls_issuer && (
+                  <span className="text-muted-foreground"> (emitido por {result.fingerprint.tls_issuer})</span>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         {result && (

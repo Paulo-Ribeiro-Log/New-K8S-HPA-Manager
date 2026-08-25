@@ -2010,17 +2010,32 @@ export interface NetDiscoveryHop {
   is_target: boolean; // true quando este salto é o próprio destino resolvido
 }
 
+// Fase 2 — fingerprint do DESTINO (não por salto, só o alvo final): heurística de TTL, banner
+// grab de porta, HTTP/TLS. SEMPRE heurística, nunca certeza — os campos *_guess/*_confidence
+// devem ser exibidos junto (nunca só o veredito seco).
+export interface NetDiscoveryFingerprint {
+  ttl?: number;
+  os_guess?: 'linux' | 'windows' | '';
+  os_confidence?: string; // explica de onde veio o palpite — sempre presente quando há os_guess
+  open_ports?: number[];
+  is_web_server: boolean;
+  http_server?: string; // header Server: quando presente
+  tls_subject?: string;
+  tls_issuer?: string;
+}
+
 export interface NetDiscoveryResult {
   target_input: string;
   target_ip: string;
   target_resolved: boolean; // false quando target_input já era um IP (nada pra resolver)
   hops: NetDiscoveryHop[];
   reached: boolean; // true se o último salto bateu com target_ip
+  fingerprint?: NetDiscoveryFingerprint; // ausente quando o probe falhou — best-effort, ver backend
 }
 
 export interface NetDiscoverySSEEvent {
   id: string;
-  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'complete' | 'error';
+  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'fingerprint' | 'complete' | 'error';
   phase: string;
   message: string;
   progress: number;
