@@ -136,14 +136,21 @@ func (s *NetDiscoveryHistoryStore) GetRecentByTarget(targetInputOrIP string, lim
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Achado real de code review: a comparação por target_ip usava o valor CRU (não normalizado),
+	// enquanto target_input já normalizava (lowercase) — SQLite '=' é case-sensitive por padrão,
+	// então um IPv6 digitado numa caixa diferente da persistida (ex: "2001:DB8::1" vs
+	// "2001:db8::1") nunca batia, mesmo havendo uma entrada real pro mesmo alvo. Corrigido
+	// normalizando os dois lados da comparação (LOWER() no SQL, mesmo valor `normalized` nos dois
+	// parâmetros) — consistente com o que o comentário desta função já promete ("casando por
+	// target_input normalizado OU target_ip").
 	normalized := normalizeTarget(targetInputOrIP)
 	rows, err := s.db.Query(
 		`SELECT id, target_input, target_ip, mode, reached, hops_count, result_json, created_at, created_by
 		 FROM net_discovery_history
-		 WHERE target_input = ? OR target_ip = ?
+		 WHERE target_input = ? OR LOWER(target_ip) = ?
 		 ORDER BY created_at DESC
 		 LIMIT ?`,
-		normalized, targetInputOrIP, limit,
+		normalized, normalized, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("consultar net_discovery_history: %w", err)

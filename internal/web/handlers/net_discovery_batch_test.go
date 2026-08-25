@@ -53,3 +53,19 @@ func TestComputeOverallTimeout_BatchWorstCaseCappedByBatchLimit(t *testing.T) {
 		t.Errorf("teto calculado deveria ser positivo, veio %v", batchTimeout)
 	}
 }
+
+// TestNetDiscoveryBatchOverallTimeoutCap_NeverSmallerThanDocumentedWorstCase — achado real de
+// code review: netDiscoveryBatchOverallTimeoutCap era uma constante FIXA (30min) menor que o
+// próprio pior caso documentado no comentário de netDiscoveryBatchMaxTargets (10 alvos no timeout
+// de sonda máximo ≈ 45min) — com um lote cheio genuinamente bloqueado, o contexto compartilhado
+// expirava ANTES de todos os alvos rodarem, sem nenhum evento SSE de erro pros alvos que nunca
+// chegaram a começar. Corrigido tornando o teto CALCULADO (não mais reafirmado como número fixo);
+// este teste trava essa invariante — se alguém reintroduzir um valor fixo no futuro sem manter em
+// sincronia com a fórmula, ele falha.
+func TestNetDiscoveryBatchOverallTimeoutCap_NeverSmallerThanDocumentedWorstCase(t *testing.T) {
+	documentedWorstCase := time.Duration(netDiscoveryBatchMaxTargets) * computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec)
+	if netDiscoveryBatchOverallTimeoutCap < documentedWorstCase {
+		t.Errorf("netDiscoveryBatchOverallTimeoutCap (%v) é menor que o pior caso documentado (%d alvos × timeout máximo = %v) — alvos no fim de um lote cheio podem nunca chegar a rodar",
+			netDiscoveryBatchOverallTimeoutCap, netDiscoveryBatchMaxTargets, documentedWorstCase)
+	}
+}

@@ -170,6 +170,15 @@ export default function NetDiscoveryTab() {
     setProgress(0);
     setPhaseMessage("Iniciando...");
     setRunning(true);
+    // Achado real de code review: run() (modo single) não limpava estado deixado por um LOTE
+    // anterior — a faixa de status do lote ficava vazando visualmente pra uma busca única
+    // seguinte, e um batchId desatualizado (já apagado no servidor) podia fazer cancel() mandar
+    // o ID errado, deixando a busca única real sem ser cancelada de verdade.
+    setBatchId(null);
+    setBatchQueue([]);
+    batchQueueRef.current = [];
+    setBatchStatuses({});
+    setBatchSummaries({});
     try {
       const { session_id } = await apiClient.runNetDiscovery({
         target: target.trim(),
@@ -247,6 +256,13 @@ export default function NetDiscoveryTab() {
     const es = new EventSource(apiClient.getNetDiscoveryStreamURL(sessionId));
     esRef.current = es;
 
+    // Achado real de code review — contexto completo no comentário de es.onerror mais abaixo:
+    // marcada true assim que este onmessage processa um evento terminal ("complete"/"error") pra
+    // ESTA sessão, seja encadeando pro próximo alvo do lote ou encerrando de vez. Variável local
+    // (não ref/state) — cada execução deste efeito (uma por sessionId) tem a sua própria, correta
+    // por construção.
+    let terminalReceived = false;
+
     es.onmessage = (e) => {
       try {
         const event: NetDiscoverySSEEvent = JSON.parse(e.data);
@@ -258,6 +274,7 @@ export default function NetDiscoveryTab() {
           setHops((prev) => [...prev, hop]);
         }
         if (event.type === "complete" && event.result) {
+          terminalReceived = true;
           const finalResult = event.result as NetDiscoveryResult;
           setResult(finalResult);
           // Lista final é a fonte de verdade (cobre o caso raro de um evento "hop" ter se perdido
@@ -289,8 +306,14 @@ export default function NetDiscoveryTab() {
             }
           }
           setRunning(false);
+          // Achado real de code review: batchId nunca era zerado quando o lote terminava
+          // NATURALMENTE (só em runBatch() ao iniciar um novo, e em cancel()) — um cancel()
+          // subsequente (numa busca única iniciada depois, se run() não limpasse — ver acima)
+          // podia mandar esse ID morto pro backend em vez do sessionId real.
+          setBatchId(null);
         }
         if (event.type === "error") {
+          terminalReceived = true;
           // Mesmo encadeamento do "complete" acima — um alvo com erro no meio do lote não para
           // tudo, só marca esse alvo como erro na faixa de status e segue pro próximo.
           const queue = batchQueueRef.current;
@@ -311,15 +334,34 @@ export default function NetDiscoveryTab() {
           }
           setRunError(event.error || event.message);
           setRunning(false);
+          setBatchId(null); // mesmo motivo do "complete" acima — lote terminou (com erro) naturalmente
         }
       } catch {
         /* ignore evento malformado */
       }
     };
 
+    // Achado real de code review: es.onerror sempre chamava setRunning(false) incondicionalmente
+    // — mas quando o servidor termina a resposta HTTP após um "complete"/"error" (Stream() retorna
+    // em net_discovery.go), o browser comumente dispara EventSource.onerror por causa disso (o
+    // encerramento normal da conexão, não uma falha de rede real), às vezes ANTES/JUNTO do cleanup
+    // do efeito React que fecharia este `es` de propósito. Em modo lote, o handler onmessage acima
+    // já tinha avançado sessionId pro PRÓXIMO alvo (setSessionId(next.sessionId), sem tocar
+    // running) — esse onerror tardio do stream ANTIGO então forçava running=false no meio do
+    // lote, fazendo a UI parecer "ociosa/concluída" enquanto o backend (ainda segurando o lock
+    // runningUsers) seguia processando os alvos restantes; qualquer nova busca iniciada pelo
+    // usuário nesse meio-tempo batia em 409 DISCOVERY_ALREADY_RUNNING sem explicação visível.
+    // A flag `terminalReceived` (declarada acima, setada dentro de onmessage) resolve o
+    // encadeamento: se onerror disparar DEPOIS de um evento terminal já processado, é só o
+    // fechamento normal da conexão — ignora (o estado já foi decidido pelo onmessage,
+    // running/batchId já estão corretos, seja encadeado pro próximo alvo ou finalizado). Só reage
+    // de verdade (encerra) quando a conexão cai ANTES de qualquer evento terminal ter chegado —
+    // aí sim é uma falha de rede genuína.
     es.onerror = () => {
       es.close();
+      if (terminalReceived) return; // conexão fechou depois de já sabermos o resultado — normal
       setRunning(false);
+      setBatchId(null);
     };
 
     return () => {

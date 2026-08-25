@@ -101,6 +101,37 @@ func TestNetDiscoveryHistoryStore_MatchesByResolvedIPToo(t *testing.T) {
 	}
 }
 
+// TestNetDiscoveryHistoryStore_MatchesByResolvedIPCaseInsensitive — achado real de code review:
+// target_ip era comparado sem normalização (SQLite '=' é case-sensitive), enquanto target_input já
+// normalizava — um IPv6 digitado numa caixa diferente da persistida nunca batia. IPv6 é o caso que
+// expõe isso (IPv4 não tem letras).
+func TestNetDiscoveryHistoryStore_MatchesByResolvedIPCaseInsensitive(t *testing.T) {
+	store := newTestNetDiscoveryHistoryStore(t)
+	if err := store.Save(NetDiscoveryHistoryRecord{
+		TargetInput: "meuservico.interno.com",
+		TargetIP:    "2001:db8::1",
+		Mode:        "pod",
+		Reached:     false,
+		HopsCount:   4,
+		ResultJSON:  "{}",
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Buscando pelo mesmo IP, mas em CAIXA DIFERENTE da persistida.
+	records, err := store.GetRecentByTarget("2001:DB8::1", 3)
+	if err != nil {
+		t.Fatalf("GetRecentByTarget: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("esperava 1 registro buscando pelo IPv6 em caixa diferente, veio %d", len(records))
+	}
+	if records[0].TargetInput != "meuservico.interno.com" {
+		t.Errorf("registro errado retornado: %+v", records[0])
+	}
+}
+
 // TestNetDiscoveryHistoryStore_OrdersNewestFirst confirma a ordem (mais recente primeiro) e o
 // respeito ao `limit`.
 func TestNetDiscoveryHistoryStore_OrdersNewestFirst(t *testing.T) {

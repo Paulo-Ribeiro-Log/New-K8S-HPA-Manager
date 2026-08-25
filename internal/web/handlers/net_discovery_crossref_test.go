@@ -288,3 +288,27 @@ func TestCrossReferenceHops_FetchesFleetOnceRegardlessOfHopCount(t *testing.T) {
 		t.Errorf("hop 3 não deveria bater em nada, got %+v", hops[2].InternalRef)
 	}
 }
+
+// TestCrossReferenceIP_DoesNotMislabelNodeAsPodViaHostIP — achado real de code review: um IP que é
+// genuinamente de um Node (mas que o Node não anuncia em Status.Addresses — cenário real, ex: só
+// ExternalIP anunciado) não deveria ser rotulado como "o Pod que por acaso está agendado ali" só
+// porque bate em Pod.Status.HostIP. O IP em si (10.0.9.9) não bate em NENHUM endereço do node
+// (que só anuncia 10.0.1.5) nem em nenhum Pod.Status.PodIP — o match correto é nil, não o pod.
+func TestCrossReferenceIP_DoesNotMislabelNodeAsPodViaHostIP(t *testing.T) {
+	h := newTestNetDiscoveryHandler(t)
+	clientset := fake.NewSimpleClientset(
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "aks-nodepool1-vmss0"},
+			Status:     corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.1.5"}}},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "checkout-api-abc123", Namespace: "prod"},
+			Status:     corev1.PodStatus{PodIP: "10.244.3.7", HostIP: "10.0.9.9"}, // HostIP != qualquer endereço anunciado do node
+		},
+	)
+
+	ref := h.crossReferenceIP(context.Background(), "10.0.9.9", clientset, "meu-cluster")
+	if ref != nil {
+		t.Fatalf("IP que só bate via Pod.Status.HostIP não deveria virar match nenhum, got %+v", ref)
+	}
+}

@@ -231,7 +231,14 @@ func matchIPInFleet(snap k8sFleetSnapshot, cluster, ip string) *NetDiscoveryInte
 	}
 
 	for _, p := range snap.pods {
-		if p.Status.PodIP == ip || p.Status.HostIP == ip {
+		// Achado real de code review: NÃO casar por p.Status.HostIP == ip — esse campo é o IP do
+		// NODE onde o pod está agendado, não do pod em si. Se o Node correspondente não expõe
+		// esse IP exato em Status.Addresses (ex: só ExternalIP anunciado enquanto o salto mostra o
+		// InternalIP, ou vice-versa), o match por HostIP rotulava um salto que é genuinamente um
+		// NODE como se fosse "o Pod que por acaso está agendado ali" — arbitrário e enganoso
+		// (depende só da ordem da lista de pods). Nodes já são checados PRIMEIRO acima; se o Node
+		// não bateu por lá, o mais honesto é não afirmar nada, não adivinhar via um pod vizinho.
+		if p.Status.PodIP == ip {
 			// resolveOwnerDisplayName (configmaps_usage.go) já resolve até o workload dono
 			// (Deployment/DaemonSet/StatefulSet/Job) — mesmo mecanismo já usado no badge de
 			// uso de ConfigMaps, reaproveitado sem duplicar lógica.

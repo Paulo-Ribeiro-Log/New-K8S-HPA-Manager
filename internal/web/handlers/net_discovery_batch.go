@@ -33,7 +33,18 @@ const netDiscoveryBatchMaxTargets = 10
 // netDiscoveryBatchOverallTimeoutCap — teto absoluto pro LOTE inteiro, independente da soma dos
 // tetos individuais — nunca deixa o contexto Go esperar indefinidamente mesmo no cenário mais
 // pessimista (todos os alvos no timeout de sonda máximo, todos genuinamente bloqueados).
-const netDiscoveryBatchOverallTimeoutCap = 30 * time.Minute
+//
+// Achado real de code review: esta era uma constante FIXA (30min) — menor que o próprio pior caso
+// já documentado no comentário de netDiscoveryBatchMaxTargets acima ("10 alvos no timeout máximo
+// (8s/salto) já soma ~45min"). Com 10 alvos genuinamente bloqueados no timeout de sonda máximo, o
+// contexto compartilhado do lote expirava ANTES de todos rodarem — e o loop em RunBatch (que
+// checa `ctx.Err()` antes de cada iteração) simplesmente RETORNAVA sem nenhum evento SSE pros
+// alvos restantes, deixando o frontend esperando indefinidamente um stream que nunca chegava a
+// abrir, sem nenhum erro visível. Corrigido: calculado a partir da MESMA fórmula que o comentário
+// de netDiscoveryBatchMaxTargets já usa (número máximo de alvos × pior caso individual no timeout
+// de sonda máximo) em vez de reafirmado como número fixo — nunca mais pode divergir
+// silenciosamente do que o comentário promete, porque é literalmente a mesma conta.
+var netDiscoveryBatchOverallTimeoutCap = time.Duration(netDiscoveryBatchMaxTargets) * computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec)
 
 // RunNetDiscoveryBatchRequest é o body do POST /run-batch. Configurações de sonda (porta/timeout)
 // e de execução (modo/cluster/namespace) são COMPARTILHADAS por todo o lote — v1 deliberadamente
