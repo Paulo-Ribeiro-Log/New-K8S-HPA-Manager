@@ -1,11 +1,11 @@
 # Estudo + Plano: Descoberta de Rede ("Descoberta de Rota e Identificação de Destino por IP")
 
-**Status:** ✅ Fases 1-5 (P1) concluídas, validadas ao vivo e mescladas — item real do
-`ToolsMenu.tsx` hoje. Ver `CLAUDE.md`, seções "Descoberta de Rede (Fase 1)" a "(Fase 5)", pro
-detalhe completo de cada camada, achados reais e bugs corrigidos ao vivo (SNI/hostname atrás de
-bastion, porta/timeout de sonda configuráveis, etc.). **Trabalho em andamento: Fase 5 — roadmap de
-maturidade profissional**, ver seção 10 (checklist vivo, retomável em qualquer sessão nova) —
-próximo item: **P2 — Exportar resultado (texto/PDF)**.
+**Status:** ✅ Fases 1-5 (P1+P2) concluídas, validadas e mescladas — item real do `ToolsMenu.tsx`
+hoje. Ver `CLAUDE.md`, seções "Descoberta de Rede (Fase 1)" a "(Fase 5)", pro detalhe completo de
+cada camada, achados reais e bugs corrigidos ao vivo (SNI/hostname atrás de bastion, porta/timeout
+de sonda configuráveis, etc.). **Trabalho em andamento: Fase 5 — roadmap de maturidade
+profissional**, ver seção 10 (checklist vivo, retomável em qualquer sessão nova) — próximo item:
+**P3 — faixas de IP da Azure no `cloud_match`**.
 
 **Nome decidido da ferramenta: "Descoberta de Rede"** (item do `ToolsMenu.tsx`).
 
@@ -471,10 +471,13 @@ investigação pontual. Prioridade combinada com o usuário (maior valor/menor r
 
 - [x] **P1 — Histórico de Descobertas** ✅ **concluído, validado ao vivo** (ver checklist
       detalhado abaixo — CLAUDE.md "Descoberta de Rede (Fase 5)")
-- [ ] **P2 — Exportar resultado (texto/PDF)** — reaproveitar `jsPDF` (já usado em
-      FinOps/Health Check/Certificados) pra gerar um documento anexável em CHG/ServiceNow a partir
-      de um `NetDiscoveryResult` (rota + fingerprint + enriquecimento). Baixo risco, autocontido no
-      frontend, sem mudança de backend.
+- [x] **P2 — Exportar resultado (PDF)** ✅ **concluído** — `internal/web/frontend/src/lib/
+      netDiscoveryPdfExport.ts` (mesmo padrão de `nodePoolPdfGenerator.ts`: jsPDF+autoTable+
+      logoUtils, sem mudança de backend). Botão "Exportar PDF" no resultado ao vivo e em cada
+      execução do histórico expandido (Fase 5/P1). Ver CLAUDE.md "Descoberta de Rede (Fase 5) —
+      Exportar PDF". **Não validado clicando no navegador** (sem ferramenta de automação de browser
+      nesta sessão) — validado por `tsc`/`eslint` limpos + reuso do mesmo padrão já comprovado em
+      produção por FinOps/Health Check/Node Pool Predictions.
 - [ ] **P3 — Faixas de IP da Azure no `cloud_match`** — hoje só AWS/GCP (`net_discovery_enrich.go`,
       seção 3.7 original já apontava a lacuna). Achado real da Fase 3: Azure **não tem uma URL JSON
       pública fixa** como AWS (`ip-ranges.amazonaws.com`) e GCP (`gstatic.com/ipranges`) — o

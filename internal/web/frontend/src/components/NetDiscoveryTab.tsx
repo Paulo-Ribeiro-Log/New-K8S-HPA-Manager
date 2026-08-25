@@ -12,11 +12,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown } from "lucide-react";
 import { ProtectedAction } from "@/components/rbac";
 import NetDiscoveryGraph from "@/components/NetDiscoveryGraph";
 import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { exportNetDiscoveryPDF } from "@/lib/netDiscoveryPdfExport";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
 import type { NetDiscoveryHistoryEntry, NetDiscoveryHop, NetDiscoveryResult, NetDiscoverySSEEvent } from "@/lib/api/types";
 
@@ -338,6 +339,16 @@ export default function NetDiscoveryTab() {
                       <span>{entry.reached ? "alcançado" : "não alcançado"}</span>
                       <span>·</span>
                       <span>IP: {entry.target_ip}</span>
+                      {entry.result && (
+                        <button
+                          type="button"
+                          onClick={() => exportNetDiscoveryPDF({ result: entry.result!, mode: entry.mode, generatedAt: entry.created_at })}
+                          className="inline-flex items-center gap-1 text-foreground hover:underline"
+                        >
+                          <FileDown className="w-3 h-3" />
+                          Exportar PDF
+                        </button>
+                      )}
                       {entry.result?.fingerprint?.os_confidence && (
                         <span className="w-full text-[11px] italic">{entry.result.fingerprint.os_confidence}</span>
                       )}
@@ -503,14 +514,24 @@ export default function NetDiscoveryTab() {
                   {result.reached ? "destino alcançado" : "destino não confirmado"}
                 </Badge>
               </div>
-              <button
-                type="button"
-                onClick={copyResult}
-                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-              >
-                {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                {copied ? "Copiado" : "Copiar"}
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={copyResult}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copied ? "Copiado" : "Copiar"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportNetDiscoveryPDF({ result, mode })}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <FileDown className="w-3 h-3" />
+                  Exportar PDF
+                </button>
+              </div>
             </div>
             <table className="w-full text-xs">
               <thead>
