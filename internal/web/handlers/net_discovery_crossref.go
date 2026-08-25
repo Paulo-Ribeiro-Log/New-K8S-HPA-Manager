@@ -46,6 +46,18 @@ type NetDiscoveryInternalRef struct {
 	PodName   string `json:"pod_name,omitempty"` // só quando Kind=pod — nome literal do Pod object (Name já é o owner)
 	Namespace string `json:"namespace,omitempty"`
 	Cluster   string `json:"cluster"`
+	// FromCache/MatchedAt — transparência de frescor, pedido explícito do usuário depois de
+	// apontar um risco real: um match vindo do cache (até 24h de idade pra Node/Service) pode
+	// estar DESATUALIZADO — o IP pode ter mudado de dono desde então — e apresentar isso sem
+	// indicar a idade faria a ferramenta parecer estar reportando o cenário atual quando na
+	// verdade é uma foto antiga. `FromCache=false` só quando o match veio de uma busca AO VIVO
+	// nesta própria execução (sempre o caso no modo pod, quando o registry ainda não tinha nada
+	// pra esse IP ou o registro estava vencido); `MatchedAt` é sempre preenchido (agora, pro caso
+	// live; o `CachedAt` original, pro caso cache) — mesmo princípio de transparência já usado em
+	// `RegistryStale`/`LatestKnownExecutionAt` (Spinnaker) e `ProbedHost` (Fase 3 desta própria
+	// ferramenta): nunca esconder a idade de um dado que pode ter mudado.
+	FromCache bool      `json:"from_cache"`
+	MatchedAt time.Time `json:"matched_at"`
 }
 
 // crossReferenceHops enriquece cada hop com InternalRef quando aplicável — chamado uma vez ao
@@ -85,7 +97,10 @@ func (h *NetDiscoveryHandler) crossReferenceIP(ctx context.Context, ip string, c
 			ttl = netDiscoveryPodCacheTTL
 		}
 		if time.Since(cached.CachedAt) < ttl {
-			return &NetDiscoveryInternalRef{Kind: cached.Kind, Name: cached.Name, Namespace: cached.Namespace, Cluster: cached.Cluster}
+			return &NetDiscoveryInternalRef{
+				Kind: cached.Kind, Name: cached.Name, Namespace: cached.Namespace, Cluster: cached.Cluster,
+				FromCache: true, MatchedAt: cached.CachedAt,
+			}
 		}
 	}
 
@@ -95,8 +110,11 @@ func (h *NetDiscoveryHandler) crossReferenceIP(ctx context.Context, ip string, c
 
 	ref := liveLookupIPInCluster(ctx, clientset, cluster, ip)
 	if ref != nil {
+		now := time.Now()
+		ref.FromCache = false
+		ref.MatchedAt = now
 		_ = h.registry.Upsert(storage.NetDiscoveryIPCacheEntry{
-			IP: ip, Kind: ref.Kind, Name: ref.Name, Namespace: ref.Namespace, Cluster: ref.Cluster, CachedAt: time.Now(),
+			IP: ip, Kind: ref.Kind, Name: ref.Name, Namespace: ref.Namespace, Cluster: ref.Cluster, CachedAt: now,
 		})
 	}
 	return ref

@@ -2060,6 +2060,14 @@ export interface NetDiscoveryInternalRef {
   pod_name?: string; // só quando kind=pod — nome literal do Pod object (name já é o owner)
   namespace?: string;
   cluster: string;
+  // from_cache/matched_at — transparência de frescor (pedido explícito do usuário: um match de
+  // cache até 24h de idade pode estar desatualizado — o IP pode ter mudado de dono desde então).
+  // from_cache=false só quando confirmado por uma busca AO VIVO nesta própria execução (sempre o
+  // caso em modo pod contra um IP sem cache válido ainda); matched_at é sempre presente. O
+  // veredito de SO (fingerprint.os_guess) só usa este ref como sinal quando from_cache=false — o
+  // badge em si continua aparecendo mesmo com cache, só com a idade sempre exposta.
+  from_cache: boolean;
+  matched_at: string; // ISO 8601
 }
 
 // Fase 2 — fingerprint do DESTINO (não por salto, só o alvo final): heurística de TTL, banner

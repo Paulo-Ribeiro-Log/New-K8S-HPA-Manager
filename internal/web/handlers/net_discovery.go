@@ -969,12 +969,23 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	// quando o fingerprint não achou nenhum sinal próprio (nunca sobrescreve um veredito já
 	// derivado de porta/TTL real, que é mais direto). Mesmo princípio de fraseologia neutra do
 	// resto desta camada: nunca "confirmado", sempre explicando a origem do palpite.
+	//
+	// 2ª rodada — corrigido depois de o usuário apontar um risco real: um match de CACHE (até 24h
+	// pra Node/Service) pode estar desatualizado — o IP pode ter mudado de dono desde então — e
+	// usar isso como sinal de SO faria a ferramenta apresentar uma inferência antiga como se fosse
+	// do cenário atual, "assumindo que nada mudou". Corrigido restringindo este fallback a
+	// `!hops[i].InternalRef.FromCache` — só confia num match AO VIVO, confirmado nesta própria
+	// execução (sempre o caso em modo pod contra um IP sem cache válido ainda). Em modo local
+	// (cross-reference só consulta cache, nunca faz busca ao vivo — ver net_discovery_crossref.go)
+	// isto significa que o fallback nunca dispara, mesmo com InternalRef presente — o badge de
+	// recurso K8s continua aparecendo na tabela/grafo (informativo, com a idade exposta via
+	// `MatchedAt`/`FromCache`), só o veredito de SO é que exige confirmação fresca.
 	if fingerprint != nil && fingerprint.OSGuess == "" {
 		for i := range hops {
-			if hops[i].IsTarget && hops[i].InternalRef != nil {
+			if hops[i].IsTarget && hops[i].InternalRef != nil && !hops[i].InternalRef.FromCache {
 				fingerprint.OSGuess = "linux"
 				fingerprint.OSConfidence = fmt.Sprintf(
-					"sem sinal de TTL/porta, mas o IP corresponde a um recurso K8s conhecido (%s: %s) — nós/pods/services K8s são majoritariamente Linux, mas não é garantia absoluta (node pools Windows existem, raros)",
+					"sem sinal de TTL/porta, mas o IP correspondeu, numa busca ao vivo desta própria execução, a um recurso K8s conhecido (%s: %s) — nós/pods/services K8s são majoritariamente Linux, mas não é garantia absoluta (node pools Windows existem, raros)",
 					hops[i].InternalRef.Kind, hops[i].InternalRef.Name,
 				)
 				break

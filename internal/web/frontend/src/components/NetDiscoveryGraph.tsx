@@ -165,6 +165,11 @@ export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphPr
         // um hop nunca deveria bater nos dois ao mesmo tempo na prática (IP privado K8s vs. faixa
         // pública de nuvem são mutuamente exclusivos), mas se acontecer, K8s é o sinal mais preciso.
         { selector: 'node[internalRefKind]', style: { "border-color": "#8b5cf6", "border-width": 4 } },
+        // Match de CACHE (até 24h de idade) — borda tracejada em vez de sólida, mesmo princípio
+        // de transparência de frescor do badge da tabela (NetDiscoveryTab.tsx): um match vindo do
+        // cache pode estar desatualizado (o IP pode ter mudado de dono desde então), então nunca
+        // deve parecer visualmente idêntico a um match confirmado ao vivo nesta própria execução.
+        { selector: 'node[internalRefKind][?internalRefFromCache]', style: { "border-style": "dashed" } },
         {
           selector: "edge",
           style: {
@@ -286,6 +291,7 @@ export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphPr
       }
       if (hop.internal_ref && node.data("internalRefKind") !== hop.internal_ref.kind) {
         node.data("internalRefKind", hop.internal_ref.kind);
+        node.data("internalRefFromCache", hop.internal_ref.from_cache);
       }
 
       const infoNode = cy.getElementById(`${node.id()}-info`);

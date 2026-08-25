@@ -70,6 +70,14 @@ func TestCrossReferenceIP_CacheHitSkipsLiveLookup(t *testing.T) {
 	if ref.Kind != "node" || ref.Name != "aks-nodepool1-12345678-vmss000000" {
 		t.Errorf("dado do cache não bateu: %+v", ref)
 	}
+	// FromCache precisa ser true — este é o sinal que impede o fallback de SO (net_discovery.go)
+	// de confiar num match potencialmente desatualizado, achado real relatado pelo usuário.
+	if !ref.FromCache {
+		t.Error("cache-hit deveria vir com FromCache=true")
+	}
+	if ref.MatchedAt.IsZero() {
+		t.Error("MatchedAt não deveria vir zerado num cache-hit")
+	}
 }
 
 func TestCrossReferenceIP_LiveLookupNodeMatch(t *testing.T) {
@@ -88,12 +96,25 @@ func TestCrossReferenceIP_LiveLookupNodeMatch(t *testing.T) {
 	if ref.Kind != "node" || ref.Name != "aks-nodepool1-12345678-vmss000001" || ref.Cluster != "meu-cluster" {
 		t.Errorf("resultado inesperado: %+v", ref)
 	}
+	// Match ao vivo — FromCache precisa ser false (é este sinal que o fallback de SO em
+	// net_discovery.go exige pra confiar no match; achado real: cache pode estar desatualizado).
+	if ref.FromCache {
+		t.Error("match ao vivo não deveria vir com FromCache=true")
+	}
+	if ref.MatchedAt.IsZero() {
+		t.Error("MatchedAt não deveria vir zerado num match ao vivo")
+	}
 
 	// Confirma que a busca ao vivo bem-sucedida grava no cache (cache-on-read) — segunda chamada
-	// com clientset nil (simulando modo local depois) ainda encontra o dado.
+	// com clientset nil (simulando modo local depois) ainda encontra o dado, mas agora como
+	// cache-hit (FromCache=true) — o mesmo dado, reconsultado depois, deixa de contar como sinal
+	// fresco pro fallback de SO, mesmo vindo originalmente de uma busca ao vivo.
 	ref2 := h.crossReferenceIP(context.Background(), "10.0.1.10", nil, "meu-cluster")
 	if ref2 == nil || ref2.Kind != "node" {
 		t.Fatalf("esperava que a busca ao vivo tivesse persistido no cache, got %+v", ref2)
+	}
+	if !ref2.FromCache {
+		t.Error("segunda consulta (via cache persistido pela busca ao vivo anterior) deveria vir com FromCache=true")
 	}
 }
 

@@ -13,7 +13,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, ListChecks, KeyRound } from "lucide-react";
+import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, ListChecks, KeyRound, Clock } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { ptBR } from "date-fns/locale";
 import { ProtectedAction } from "@/components/rbac";
 import NetDiscoveryGraph from "@/components/NetDiscoveryGraph";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
@@ -853,9 +855,18 @@ export default function NetDiscoveryTab() {
                         {h.internal_ref && (
                           <Badge
                             variant="outline"
-                            className="text-[10px] py-0 border-purple-500/40 text-purple-600 dark:text-purple-400"
-                            title={`Cluster: ${h.internal_ref.cluster}${h.internal_ref.namespace ? ` · Namespace: ${h.internal_ref.namespace}` : ""}${h.internal_ref.pod_name ? ` · Pod: ${h.internal_ref.pod_name}` : ""}`}
+                            className={`text-[10px] py-0 ${
+                              h.internal_ref.from_cache
+                                ? "border-dashed border-amber-500/50 text-amber-600 dark:text-amber-400"
+                                : "border-purple-500/40 text-purple-600 dark:text-purple-400"
+                            }`}
+                            title={`Cluster: ${h.internal_ref.cluster}${h.internal_ref.namespace ? ` · Namespace: ${h.internal_ref.namespace}` : ""}${h.internal_ref.pod_name ? ` · Pod: ${h.internal_ref.pod_name}` : ""} — ${
+                              h.internal_ref.from_cache
+                                ? `de um cache de ${formatDistanceToNow(new Date(h.internal_ref.matched_at), { locale: ptBR })} atrás — pode estar desatualizado, o IP pode ter mudado de dono desde então`
+                                : "confirmado ao vivo nesta própria busca"
+                            }`}
                           >
+                            {h.internal_ref.from_cache && <Clock className="w-2.5 h-2.5 mr-1" />}
                             K8s: {h.internal_ref.name}
                           </Badge>
                         )}
