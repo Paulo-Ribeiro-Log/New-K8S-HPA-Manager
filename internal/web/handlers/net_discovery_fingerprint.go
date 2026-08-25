@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -23,6 +24,14 @@ import (
 
 // netDiscoveryFingerprintPorts — mesma lista curada da seção 3.3 do plano.
 var netDiscoveryFingerprintPorts = []int{22, 80, 443, 445, 3389, 21, 25, 587, 53, 3306, 5432, 6379, 27017, 9200, 8080, 8443, 5985, 5986}
+
+// netDiscoveryMTLSSplitMarker — sentinela usado pra separar, dentro de UM ÚNICO stream de stdin,
+// os dois blocos PEM (certificado de cliente + chave privada) que netDiscoveryFingerprintScript
+// grava em dois arquivos temporários via `awk`. Precisa bater EXATAMENTE com a linha usada no
+// script abaixo — os dois são mantidos em sincronia manualmente (raw string Go não permite
+// interpolar uma const dentro de um literal de backtick). Ver comentário completo em
+// buildMTLSStdinPayload (net_discovery.go) sobre por que mTLS viaja só por stdin, nunca por argv.
+const netDiscoveryMTLSSplitMarker = "___NETDISC_MTLS_SPLIT___"
 
 // netDiscoveryFingerprintScript roda dentro do pod/container (nunca do backend — mesmo vantage
 // point da rede que o traceroute já usou, importante especialmente no modo pod, onde o alvo pode
@@ -55,20 +64,65 @@ var netDiscoveryFingerprintPorts = []int{22, 80, 443, 445, 3389, 21, 25, 587, 53
 // camada HTTP/TLS — sem depender de uma nova resolução DNS dentro do container, que poderia até
 // divergir do IP que o traceroute de fato alcançou). Quando a busca já era por IP direto, $2 == $1
 // e o comportamento é idêntico ao de antes (nada muda nesse caso — não há hostname real pra usar).
+//
+// mTLS (certificado de cliente) — pedido explícito do usuário depois de perguntar se ter o
+// certificado "que já existe nesses clusters/servidores" ajudaria a descoberta: útil quando o
+// servidor exige `ClientAuth: RequireAnyClientCert` (mesmo sintoma "certificate required" já
+// documentado no Monitor de Certificados Externos). "$3" é "1"/"0" (MTLS habilitado ou não —
+// nunca sensível, único dado que vai como argv). O PAR cert+chave em si NUNCA vai como argumento
+// de linha de comando (ficaria visível via `ps`/`/proc/<pid>/cmdline` dentro do próprio
+// container) — viaja só pelo STREAM de stdin do exec (ver execCmdInPodWithStdin/
+// buildMTLSStdinPayload), um bloco PEM depois do outro separados pela linha
+// netDiscoveryMTLSSplitMarker; `awk` grava os dois em arquivos temporários (`mktemp`, apagados no
+// fim do script, `trap` não usado de propósito — o `rm -f` final já cobre o caminho feliz, e o
+// pod/container inteiro é destruído ao fim da descoberta de qualquer forma, mesmo se o script for
+// interrompido no meio). Quando MTLS=0 (caso comum, sem mudança de comportamento), o script nunca
+// sequer tenta ler stdin.
+//
+// Achado real, verificado ao vivo ANTES de assumir o efeito óbvio ("sem cert, nada é lido"): o
+// certificado de cliente NÃO é pré-requisito pra `openssl s_client` extrair subject/issuer na
+// maioria dos casos — o servidor manda o PRÓPRIO certificado cedo na troca (ServerHello/
+// Certificate), ANTES de sequer checar se o cliente apresentou o dele; um `s_client` sem `-cert`
+// contra um servidor real com `tls.RequireAndVerifyClientCert` (Go stdlib) ainda recebe e exibe o
+// certificado do servidor normalmente, só a REQUISIÇÃO HTTP em si (`curl`) é que falha por
+// completo sem o cert (handshake nunca fecha o suficiente pra trocar dados de aplicação). Ou seja:
+// o ganho real e confirmado do mTLS aqui é destravar `@@HTTP`/`@@HTTPS` (Server: header, status),
+// não necessariamente `@@TLS` — que já costumava funcionar mesmo sem cert de cliente, na maioria
+// dos terminadores. Validado ao vivo, ponta a ponta via API real (não só o script isolado): contra
+// um servidor Go de teste com `tls.RequireAndVerifyClientCert` genuíno, `client_cert_used:true` +
+// `http_server` só apareceram COM o certificado; SEM ele, `tls_subject`/`tls_issuer` continuaram
+// batendo, mas `http_server` ficou ausente — confirma a distinção na prática, não só em teoria.
+// Pode haver terminadores mais estritos (WAF, proxy que derruba a conexão ANTES do ServerHello sem
+// certificado de cliente numa camada mais baixa) onde nem o certificado do servidor aparece sem
+// mTLS — não descarta o valor da feature, só evita prometer mais do que o mecanismo garante.
 const netDiscoveryFingerprintScript = `
 IP="$1"
 HOST="$2"
+MTLS="$3"
 echo "@@TTL $(ping -c 1 -W 2 "$IP" 2>&1 | grep -o 'ttl=[0-9]*' | cut -d= -f2)"
 for p in 22 80 443 445 3389 21 25 587 53 3306 5432 6379 27017 9200 8080 8443 5985 5986; do
   ( if nc -z -w1 "$IP" "$p" 2>/dev/null; then echo "@@PORT $p OPEN"; else echo "@@PORT $p CLOSED"; fi ) &
 done
 wait
-HTTP=$(curl -sI --max-time 3 --resolve "$HOST:80:$IP" "http://$HOST/" 2>/dev/null | grep -i '^server:' | head -1 | tr -d '\r')
+CERTFILE=""
+KEYFILE=""
+CURLCERT=""
+OPENSSLCERT=""
+if [ "$MTLS" = "1" ]; then
+  CERTFILE=$(mktemp)
+  KEYFILE=$(mktemp)
+  awk -v certf="$CERTFILE" -v keyf="$KEYFILE" 'BEGIN{target=certf} /^___NETDISC_MTLS_SPLIT___$/{target=keyf; next} {print > target}'
+  CURLCERT="--cert $CERTFILE --key $KEYFILE"
+  OPENSSLCERT="-cert $CERTFILE -key $KEYFILE"
+fi
+HTTP=$(curl -sI --max-time 3 $CURLCERT --resolve "$HOST:80:$IP" "http://$HOST/" 2>/dev/null | grep -i '^server:' | head -1 | tr -d '\r')
 echo "@@HTTP $HTTP"
-HTTPS=$(curl -skI --max-time 3 --resolve "$HOST:443:$IP" "https://$HOST/" 2>/dev/null | grep -i '^server:' | head -1 | tr -d '\r')
+HTTPS=$(curl -skI --max-time 3 $CURLCERT --resolve "$HOST:443:$IP" "https://$HOST/" 2>/dev/null | grep -i '^server:' | head -1 | tr -d '\r')
 echo "@@HTTPS $HTTPS"
-TLSOUT=$(echo | timeout 3 openssl s_client -connect "$IP:443" -servername "$HOST" 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null | tr '\n' '|')
+TLSOUT=$(echo | timeout 3 openssl s_client -connect "$IP:443" -servername "$HOST" $OPENSSLCERT 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null | tr '\n' '|')
 echo "@@TLS $TLSOUT"
+echo "@@MTLS_USED $MTLS"
+if [ -n "$CERTFILE" ]; then rm -f "$CERTFILE" "$KEYFILE"; fi
 `
 
 // NetDiscoveryFingerprint é o resultado da Fase 2 — sempre heurística, nunca certeza (ver seção
@@ -91,6 +145,11 @@ type NetDiscoveryFingerprint struct {
 	// do que o usuário pretendia investigar quando buscou só pelo IP. Sem este campo, o
 	// certificado apareceria como se fosse "do IP", escondendo essa ambiguidade real.
 	ProbedHost string `json:"probed_host,omitempty"`
+	// ClientCertUsed — true quando um certificado de cliente (mTLS) foi apresentado NESTA
+	// tentativa (ver RunNetDiscoveryRequest.ClientCertPEM). Não confirma sucesso — só que o
+	// mecanismo foi acionado; sucesso/falha real já se reflete em TLSSubject/TLSIssuer presentes
+	// ou vazios, mesmo princípio de nunca duplicar um veredito que já existe noutro campo.
+	ClientCertUsed bool `json:"client_cert_used,omitempty"`
 }
 
 // runFingerprintInPod/runFingerprintLocal — mesmo padrão dual pod/local do traceroute (Fase 1),
@@ -100,20 +159,27 @@ type NetDiscoveryFingerprint struct {
 // `sniHost` — hostname original digitado pelo usuário (quando a busca foi por hostname) ou igual
 // a `targetIP` (quando a busca já era por IP direto, sem hostname real disponível) — ver
 // comentário completo em netDiscoveryFingerprintScript sobre por que isso importa pro HTTP/TLS.
-func runFingerprintInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, targetIP, sniHost string) (string, error) {
-	return execCmdInPod(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer,
-		[]string{"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost})
+//
+// `mtlsStdin` — stream de stdin pro script (payload do certificado de cliente via
+// buildMTLSStdinPayload, ou um leitor vazio quando mTLS não foi configurado — ver
+// netDiscoveryFingerprintScript sobre por que o par cert+chave nunca vai como argv). `mtlsFlag`
+// é sempre "1" ou "0", nunca sensível.
+func runFingerprintInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, targetIP, sniHost, mtlsFlag string, mtlsStdin io.Reader) (string, error) {
+	return execCmdInPodWithStdin(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer,
+		[]string{"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost, mtlsFlag}, mtlsStdin)
 }
 
-func runFingerprintLocal(ctx context.Context, targetIP, sniHost string) (string, error) {
+func runFingerprintLocal(ctx context.Context, targetIP, sniHost, mtlsFlag string, mtlsStdin io.Reader) (string, error) {
 	// Nome explícito — mesmo achado real documentado em runTracerouteLocal (net_discovery.go):
 	// cancelamento no meio do fingerprint mataria o CLIENTE docker run sem garantir que o
 	// container remoto pare junto.
 	containerName := fmt.Sprintf("net-discovery-fp-%s", uuid.New().String()[:8])
-	out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "--network=host",
+	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "-i", "--network=host",
 		"--name", containerName,
 		"--label", netDiscoveryDockerLabel, netDiscoveryPodImage,
-		"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost).CombinedOutput()
+		"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost, mtlsFlag)
+	cmd.Stdin = mtlsStdin
+	out, err := cmd.CombinedOutput()
 
 	if ctx.Err() != nil {
 		cleanupCancelledDockerContainer(containerName)
@@ -221,6 +287,8 @@ func parseFingerprintOutput(output string) NetDiscoveryFingerprint {
 			if len(parts) >= 2 {
 				fp.TLSIssuer = extractOpenSSLField(parts[1])
 			}
+		case strings.HasPrefix(line, "@@MTLS_USED "):
+			fp.ClientCertUsed = strings.TrimSpace(strings.TrimPrefix(line, "@@MTLS_USED ")) == "1"
 		}
 	}
 

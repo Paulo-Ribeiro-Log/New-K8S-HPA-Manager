@@ -45,6 +45,11 @@ type RunNetDiscoveryBatchRequest struct {
 	Namespace       string   `json:"namespace,omitempty"`
 	ProbePort       int      `json:"probe_port,omitempty"`
 	ProbeTimeoutSec int      `json:"probe_timeout_sec,omitempty"`
+	// ClientCertPEM/ClientKeyPEM — mTLS opcional (ver RunNetDiscoveryRequest em net_discovery.go),
+	// mesmo padrão de configuração compartilhada por todo o lote das demais opções acima. Validado
+	// UMA vez em RunBatch (não por alvo) — o mesmo par é reaproveitado em cada iteração da fila.
+	ClientCertPEM string `json:"client_cert_pem,omitempty"`
+	ClientKeyPEM  string `json:"client_key_pem,omitempty"`
 }
 
 // RunNetDiscoveryBatchResponse — `SessionIDs`/`Targets` sempre na MESMA ordem e mesmo tamanho; o
@@ -111,6 +116,16 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
 	}
+	if (req.ClientCertPEM != "") != (req.ClientKeyPEM != "") {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_CLIENT_CERT", "certificado e chave de cliente (mTLS) devem ser fornecidos juntos, ou nenhum dos dois"))
+		return
+	}
+	if req.ClientCertPEM != "" {
+		if err := validateClientCertPair(req.ClientCertPEM, req.ClientKeyPEM); err != nil {
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_CLIENT_CERT", err.Error()))
+			return
+		}
+	}
 
 	userInfo := GetUserInfoForHistory(c)
 
@@ -157,6 +172,7 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 			subReq := RunNetDiscoveryRequest{
 				Target: target, Mode: req.Mode, Cluster: req.Cluster, Namespace: req.Namespace,
 				ProbePort: probePort, ProbeTimeoutSec: probeTimeoutSec,
+				ClientCertPEM: req.ClientCertPEM, ClientKeyPEM: req.ClientKeyPEM,
 			}
 			// runDiscovery (net_discovery.go) roda INALTERADA — mesmo fluxo de uma busca única
 			// (traceroute→fingerprint→enrich→crossref→histórico→SSE), incluindo seus próprios

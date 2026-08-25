@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, ListChecks } from "lucide-react";
+import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, ListChecks, KeyRound } from "lucide-react";
 import { ProtectedAction } from "@/components/rbac";
 import NetDiscoveryGraph from "@/components/NetDiscoveryGraph";
 import { useClusters } from "@/hooks/useAPI";
@@ -58,6 +58,18 @@ export default function NetDiscoveryTab() {
   // de aceitar que um alvo atrás de cofre PAM é bloqueado de verdade (visto ao vivo: 21 saltos em
   // silêncio total mesmo trocando a porta — sinal de bloqueio de firewall, não de porta errada).
   const [probeTimeoutSec, setProbeTimeoutSec] = useState("");
+  // Certificado de cliente (mTLS) — pedido explícito do usuário depois de perguntar se ter o
+  // certificado "que já existe nesses clusters/servidores" ajudaria a descoberta: útil quando o
+  // alvo exige certificado de cliente — o ganho confirmado ao vivo é destravar a checagem HTTP
+  // (Server:/status), não necessariamente o certificado TLS em si (que na maioria dos
+  // terminadores já é lido mesmo sem cert de cliente — ver net_discovery_fingerprint.go). Seção
+  // colapsada por padrão (caso raro) — os dois campos NUNCA são persistidos em localStorage nem
+  // em nenhum outro lugar, só vivem em memória durante esta sessão do formulário; ver
+  // ClientCertPEM/ClientKeyPEM em net_discovery.go.
+  const [mtlsExpanded, setMtlsExpanded] = useState(false);
+  const [clientCertPEM, setClientCertPEM] = useState("");
+  const [clientKeyPEM, setClientKeyPEM] = useState("");
+  const mtlsConfigured = clientCertPEM.trim() !== "" && clientKeyPEM.trim() !== "";
   const [mode, setMode] = useState<NetDiscoveryMode>("local"); // local = default (ver seção 4.1 do plano: é a rede que o host do backend já enxerga, inclusive infra remota de terceiros)
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
@@ -128,10 +140,16 @@ export default function NetDiscoveryTab() {
   const batchTargetsParsed = batchTargetsText.split("\n").map((t) => t.trim()).filter(Boolean);
   const batchTargetsValid = batchTargetsParsed.length > 0 && batchTargetsParsed.length <= 10;
 
+  // mTLS: os dois campos precisam vir juntos, ou nenhum dos dois — mesma checagem que o backend
+  // já faz (INVALID_CLIENT_CERT), espelhada aqui pra não gastar um round-trip com algo trivial de
+  // checar no cliente.
+  const mtlsPairValid = (clientCertPEM.trim() !== "") === (clientKeyPEM.trim() !== "");
+
   const canRun =
     !running &&
     probePortValid &&
     probeTimeoutSecValid &&
+    mtlsPairValid &&
     (mode === "local" ? dockerReady : !!cluster && !!namespace) &&
     (inputMode === "single" ? !!target.trim() : batchTargetsValid);
 
@@ -150,6 +168,8 @@ export default function NetDiscoveryTab() {
         namespace: mode === "pod" ? namespace : undefined,
         probe_port: probePortNum,
         probe_timeout_sec: probeTimeoutSecNum,
+        client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
+        client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
       });
       setSessionId(session_id);
     } catch (err) {
@@ -181,6 +201,8 @@ export default function NetDiscoveryTab() {
         namespace: mode === "pod" ? namespace : undefined,
         probe_port: probePortNum,
         probe_timeout_sec: probeTimeoutSecNum,
+        client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
+        client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
       });
       const queue = resp.targets.map((t, i) => ({ target: t, sessionId: resp.session_ids[i] }));
       batchQueueRef.current = queue;
@@ -442,6 +464,66 @@ export default function NetDiscoveryTab() {
           ))}
         </div>
 
+        {/* Certificado de cliente (mTLS) — colapsado por padrão (caso raro), pedido explícito do
+            usuário depois de perguntar se ter o certificado "que já existe nesses
+            clusters/servidores" ajudaria a descoberta. Útil só quando o alvo exige certificado
+            de cliente e rejeita TLS anônimo por completo (ver netDiscoveryFingerprintScript). Os
+            dois campos nunca são persistidos em localStorage nem enviados a nenhum outro lugar —
+            só vão no corpo do POST /net-discovery/run(-batch) desta execução. */}
+        <div className="rounded border border-border bg-background/60 text-xs">
+          <button
+            type="button"
+            onClick={() => setMtlsExpanded((v) => !v)}
+            className="flex items-center gap-2 w-full text-left px-3 py-2"
+          >
+            <KeyRound className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+            <span className="text-muted-foreground">Certificado de cliente (mTLS)</span>
+            {mtlsConfigured && (
+              <Badge variant="outline" className="text-[10px] py-0 border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
+                configurado
+              </Badge>
+            )}
+            <span className="text-[10px] text-muted-foreground ml-auto">opcional — só se o alvo exigir</span>
+            {mtlsExpanded ? <ChevronUp className="w-3.5 h-3.5 flex-shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 flex-shrink-0" />}
+          </button>
+          {mtlsExpanded && (
+            <div className="px-3 pb-3 space-y-2">
+              <p className="text-[10px] text-muted-foreground">
+                Só faz diferença quando o servidor exige certificado de cliente — o ganho confirmado
+                é destravar a checagem HTTP (Server:/status), já que o certificado TLS em si costuma
+                ser lido mesmo sem apresentar um. Nunca salvo — vale só para esta execução.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">Certificado (PEM)</label>
+                  <Textarea
+                    placeholder="-----BEGIN CERTIFICATE-----"
+                    value={clientCertPEM}
+                    onChange={(e) => setClientCertPEM(e.target.value)}
+                    disabled={running}
+                    rows={4}
+                    className="font-mono text-[10px]"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">Chave privada (PEM)</label>
+                  <Textarea
+                    placeholder="-----BEGIN PRIVATE KEY-----"
+                    value={clientKeyPEM}
+                    onChange={(e) => setClientKeyPEM(e.target.value)}
+                    disabled={running}
+                    rows={4}
+                    className="font-mono text-[10px]"
+                  />
+                </div>
+              </div>
+              {(clientCertPEM.trim() !== "") !== (clientKeyPEM.trim() !== "") && (
+                <p className="text-[10px] text-destructive">Certificado e chave precisam vir juntos, ou nenhum dos dois.</p>
+              )}
+            </div>
+          )}
+        </div>
+
         {historyEntries.length > 0 && (() => {
           const last = historyEntries[0];
           return (
@@ -647,6 +729,11 @@ export default function NetDiscoveryTab() {
               )}
               {result.fingerprint.ttl != null && (
                 <span className="text-xs text-muted-foreground font-mono">TTL {result.fingerprint.ttl}</span>
+              )}
+              {result.fingerprint.client_cert_used && (
+                <Badge variant="outline" className="text-[10px] py-0 border-cyan-500/40 text-cyan-600 dark:text-cyan-400" title="Um certificado de cliente foi apresentado durante o handshake TLS desta descoberta — não confirma sucesso por si só, veja o Certificado TLS abaixo.">
+                  <KeyRound className="w-3 h-3 mr-1" />mTLS apresentado
+                </Badge>
               )}
             </div>
             {result.fingerprint.os_confidence && (

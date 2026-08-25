@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -565,6 +566,19 @@ type RunNetDiscoveryRequest struct {
 	// genuinamente bloqueado (ver computeOverallTimeout — o teto geral da descoberta se estende
 	// automaticamente quando este valor sobe, pra não abortar o traceroute no meio).
 	ProbeTimeoutSec int `json:"probe_timeout_sec,omitempty"`
+	// ClientCertPEM/ClientKeyPEM — certificado de cliente opcional pra mTLS (Fase 2, pedido
+	// explícito do usuário depois de perguntar se ter o certificado "que já existe nesses
+	// clusters/servidores" ajudaria a descoberta). Só faz diferença quando o alvo exige
+	// `ClientAuth: RequireAnyClientCert` — achado real (ver comentário completo em
+	// netDiscoveryFingerprintScript): o ganho confirmado é destravar a checagem HTTP
+	// (header Server:/status), não necessariamente subject/issuer do TLS, que na maioria dos
+	// terminadores já vem antes do servidor checar o certificado do cliente. Deliberadamente NUNCA
+	// persistido em nenhum lugar (nem SQLite, nem localStorage no frontend) — transitório, só pra
+	// esta execução; ver validateClientCertPair/buildMTLSStdinPayload pra como o par viaja até o
+	// script sem tocar argv/log. Os dois vazios (caso comum) = sem mTLS, comportamento idêntico ao
+	// de antes desta feature.
+	ClientCertPEM string `json:"client_cert_pem,omitempty"`
+	ClientKeyPEM  string `json:"client_key_pem,omitempty"`
 }
 
 const (
@@ -590,6 +604,36 @@ func normalizeProbeSettings(probePort, probeTimeoutSec int) (port, timeoutSec in
 		return 0, 0, "INVALID_PROBE_TIMEOUT", fmt.Sprintf("probe_timeout_sec deve estar entre 1 e %d", netDiscoveryProbeTimeoutMaxSec)
 	}
 	return port, timeoutSec, "", ""
+}
+
+// validateClientCertPair confirma, ANTES de sequer iniciar a descoberta, que o par cert+chave
+// (mTLS opcional) forma um par TLS válido — falha rápido com erro claro em vez de deixar o erro
+// aparecer só dentro do script bash horas depois (ilegível pro usuário, indistinguível de "o
+// servidor não respondeu"). Também garante que nenhum dos dois PEMs contém, por acidente, uma
+// linha idêntica ao marcador usado pra separar os dois blocos no stdin
+// (netDiscoveryMTLSSplitMarker) — extremamente improvável (marcador só usado por esta ferramenta),
+// mas garantiria corrupção silenciosa do split se acontecesse.
+func validateClientCertPair(certPEM, keyPEM string) error {
+	if strings.Contains(certPEM, netDiscoveryMTLSSplitMarker) || strings.Contains(keyPEM, netDiscoveryMTLSSplitMarker) {
+		return fmt.Errorf("certificado ou chave contém uma linha reservada internamente — não deveria acontecer com um PEM normal")
+	}
+	if _, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM)); err != nil {
+		return fmt.Errorf("certificado/chave de cliente inválidos: %w", err)
+	}
+	return nil
+}
+
+// buildMTLSStdinPayload monta o único stream de stdin entregue ao script (cert + marcador + chave)
+// — ver netDiscoveryFingerprintScript sobre por que o par nunca vai como argv. `certPEM == ""`
+// (mTLS não configurado, caso comum) devolve um leitor vazio — o exec recebe EOF imediato e o
+// script sequer tenta ler stdin nesse caso.
+func buildMTLSStdinPayload(certPEM, keyPEM string) io.Reader {
+	if certPEM == "" || keyPEM == "" {
+		return strings.NewReader("")
+	}
+	cert := strings.TrimRight(certPEM, "\n")
+	key := strings.TrimRight(keyPEM, "\n")
+	return strings.NewReader(cert + "\n" + netDiscoveryMTLSSplitMarker + "\n" + key + "\n")
 }
 
 // Run inicia a descoberta e retorna um session_id pra streaming SSE.
@@ -622,6 +666,17 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 	}
 	req.ProbePort = probePort
 	req.ProbeTimeoutSec = probeTimeoutSec
+
+	if (req.ClientCertPEM != "") != (req.ClientKeyPEM != "") {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_CLIENT_CERT", "certificado e chave de cliente (mTLS) devem ser fornecidos juntos, ou nenhum dos dois"))
+		return
+	}
+	if req.ClientCertPEM != "" {
+		if err := validateClientCertPair(req.ClientCertPEM, req.ClientKeyPEM); err != nil {
+			c.JSON(http.StatusBadRequest, errorResponse("INVALID_CLIENT_CERT", err.Error()))
+			return
+		}
+	}
 
 	userInfo := GetUserInfoForHistory(c)
 
@@ -806,9 +861,19 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	// por isso a mesma chamada, mais abaixo, cobre os dois modos sem precisar de um `if` extra.
 	var podClientset kubernetes.Interface
 
+	// mTLS opcional (ver validateClientCertPair no Run() — já validado como par válido antes de
+	// chegar aqui). mtlsFlag nunca é sensível (só "1"/"0", vai como argv); o payload em si (cert+
+	// chave) vai só por stdin, construído uma vez e consumido uma única vez mais abaixo (o
+	// fingerprint roda uma única chamada por descoberta).
+	mtlsFlag := "0"
+	if req.ClientCertPEM != "" {
+		mtlsFlag = "1"
+	}
+	mtlsStdin := buildMTLSStdinPayload(req.ClientCertPEM, req.ClientKeyPEM)
+
 	if req.Mode == netDiscoveryModeLocal {
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
-			return runFingerprintLocal(ctx, ip, sniHost)
+			return runFingerprintLocal(ctx, ip, sniHost, mtlsFlag, mtlsStdin)
 		}
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local, porta %d, timeout %ds/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec), 0.2, nil)
 		if err := runTracerouteLocal(ctx, targetIP, req.ProbePort, req.ProbeTimeoutSec, onLine); err != nil && len(hops) == 0 {
@@ -845,7 +910,7 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		}
 
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
-			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost)
+			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost, mtlsFlag, mtlsStdin)
 		}
 
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (porta %d, timeout %ds/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec), 0.2, nil)

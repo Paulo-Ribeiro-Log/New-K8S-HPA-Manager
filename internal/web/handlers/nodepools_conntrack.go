@@ -403,6 +403,51 @@ func execCmdInPodStreaming(ctx context.Context, clientset kubernetes.Interface, 
 	return nil
 }
 
+// execCmdInPodWithStdin é a variante de execCmdInPod que também alimenta o STDIN do comando a
+// partir de um io.Reader — usado pela Descoberta de Rede (net_discovery_fingerprint.go) pra
+// entregar um certificado de cliente (mTLS) pro script dentro do pod sem que o conteúdo (e
+// principalmente a CHAVE PRIVADA) apareça em nenhum argv/cmdline visível via `ps`/`/proc` dentro
+// do próprio container — só o comando POSICIONAL "MTLS=1/0" (não sensível) vai como argumento;
+// o par cert+chave viaja só pelo stream de stdin do exec, lido uma única vez pelo script via
+// `awk` e gravado em arquivos temporários apagados no fim do próprio script. `stdin` pode ser um
+// `strings.NewReader("")` (sem cert) sem custo real — o exec recebe EOF imediato e o script,
+// nesse caso, nem chega a tentar ler stdin (ver netDiscoveryFingerprintScript). Reaproveita 100%
+// o resto da mecânica de execCmdInPod — não duplicado por completo, só a diferença de Stdin.
+func execCmdInPodWithStdin(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
+	namespace, podName, containerName string, cmd []string, stdin io.Reader) (string, error) {
+
+	req := clientset.CoreV1().RESTClient().
+		Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   cmd,
+			Stdin:     true,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, scheme.ParameterCodec)
+
+	executor, err := remotecommand.NewSPDYExecutor(restConfig, "POST", req.URL())
+	if err != nil {
+		return "", fmt.Errorf("SPDY executor: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  stdin,
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		return stdout.String(), fmt.Errorf("stream: %v (stderr: %s)", err, stderr.String())
+	}
+	return stdout.String(), nil
+}
+
 func parseInt64(s string) int64 {
 	s = strings.TrimSpace(s)
 	v, _ := strconv.ParseInt(s, 10, 64)

@@ -2004,6 +2004,13 @@ export interface RunNetDiscoveryRequest {
   // backend (2s). Máximo 8 (netDiscoveryProbeTimeoutMaxSec) — pedido explícito do usuário pra
   // descartar rede lenta/alta latência antes de aceitar que um alvo é bloqueado de verdade.
   probe_timeout_sec?: number;
+  // client_cert_pem/client_key_pem — certificado de cliente opcional pra mTLS (pedido explícito
+  // do usuário: "termos o certificado em nossa máquina... ajuda?"). Só faz diferença quando o
+  // alvo exige certificado de cliente e rejeita TLS anônimo por completo. Os dois precisam vir
+  // juntos (ou nenhum) — nunca persistido em localStorage nem em nenhum outro lugar, transitório
+  // por natureza (só desta execução).
+  client_cert_pem?: string;
+  client_key_pem?: string;
 }
 
 export interface RunNetDiscoveryResponse {
@@ -2019,6 +2026,8 @@ export interface RunNetDiscoveryBatchRequest {
   namespace?: string;
   probe_port?: number;
   probe_timeout_sec?: number;
+  client_cert_pem?: string; // mTLS, compartilhado por todo o lote — mesmo padrão de probe_port/timeout
+  client_key_pem?: string;
 }
 
 export interface RunNetDiscoveryBatchResponse {
@@ -2071,6 +2080,10 @@ export interface NetDiscoveryFingerprint {
   // deixa claro qual hostname foi usado, pra nunca parecer que o certificado "é do IP" sem mais
   // contexto (pode ser de um serviço diferente do que o usuário pretendia investigar).
   probed_host?: string;
+  // client_cert_used — true quando um certificado de cliente (mTLS) foi apresentado NESTA
+  // tentativa. Não confirma sucesso — só que o mecanismo foi acionado; sucesso/falha real já se
+  // reflete em tls_subject/tls_issuer presentes ou vazios.
+  client_cert_used?: boolean;
 }
 
 export interface NetDiscoveryResult {
