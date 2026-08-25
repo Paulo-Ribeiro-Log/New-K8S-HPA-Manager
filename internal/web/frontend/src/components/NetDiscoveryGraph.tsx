@@ -268,6 +268,8 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
   useEffect(() => {
     const cy = cyInstance.current;
     if (!cy) return;
+    let changed = false;
+
     for (const hop of hops) {
       const node = cy.getElementById(`hop-${hop.index}`);
       if (node.empty()) continue;
@@ -275,6 +277,7 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
       const newCenterLabel = buildCenterLabel(hop, hop.is_target ? fingerprint : undefined);
       if (node.data("label") !== newCenterLabel) {
         node.data("label", newCenterLabel);
+        changed = true;
       }
       if (hop.cloud_match && node.data("cloudMatch") !== hop.cloud_match) {
         node.data("cloudMatch", hop.cloud_match);
@@ -288,8 +291,21 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
         const newInfoLabel = buildInfoLabel(hop);
         if (infoNode.data("label") !== newInfoLabel) {
           infoNode.data("label", newInfoLabel);
+          changed = true; // texto flutuante nasce vazio (quase sem largura) e só ganha tamanho
+          // real aqui — sem reenquadrar a view, ele cresce fora da área já fixada pelo último
+          // cy.fit() (que rodou ANTES do enriquecimento existir, no efeito de cima) e fica
+          // cortado na borda do canvas. Achado real, relatado ao vivo: "os nomes ainda estão
+          // quebrados" depois da correção anterior (mover o hostname pra fora do círculo) — o
+          // texto em si já estava correto, só a viewport nunca acompanhava o novo tamanho.
         }
       }
+    }
+
+    // Reenquadra só quando algo de fato mudou (evita um fit "do nada" em re-renders sem
+    // enriquecimento novo) — mesma pequena animação já usada no efeito de adicionar saltos, pra
+    // não ser abrupto.
+    if (changed) {
+      cy.animate({ fit: { eles: cy.elements(), padding: 40 } }, { duration: 300 });
     }
   }, [hops, fingerprint]);
 
