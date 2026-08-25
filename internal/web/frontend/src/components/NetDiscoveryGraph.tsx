@@ -109,10 +109,18 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
             "text-halign": "center",
             "font-size": "9px",
             "text-wrap": "wrap",
-            // 70px (não mais 64) — com o índice removido do label (ver buildCenterLabel), o texto
-            // aqui é só o IP puro (~13-15 chars) ou, no destino, emoji+IP em 2 linhas; nenhum dos
-            // dois deveria mais forçar um 3º wrap indesejado como acontecia na v1.
-            "text-max-width": "70px",
+            // 3ª rodada de correção do mesmo bug, achado real via 2º print do usuário: "70px" ainda
+            // não bastava — um IPv4 tem até 15 caracteres ("255.255.255.255"), e a métrica real da
+            // fonte no canvas do navegador (~5.5-6px por caractere a 9px) passa fácil de 70px,
+            // forçando o Cytoscape a quebrar o IP no meio (sem espaço nenhum pra cortar, já que é
+            // um token sem espaços). Em vez de tentar acertar o valor exato de novo, usa uma
+            // margem generosa (140px, quase o dobro do diâmetro do círculo de 72px) — o IP nunca
+            // deveria se aproximar disso, então nunca mais deveria disparar wrap automático. O
+            // texto pode ultrapassar visualmente a borda do círculo nos dois lados (Cytoscape não
+            // recorta label pela forma do nó) — aceitável, é sempre melhor que um IP partido ao
+            // meio. `text-wrap: wrap` continua ligado só pra respeitar a quebra MANUAL (\n) entre
+            // emoji e IP no destino — não é isso que causa o wrap indevido, é só o max-width curto.
+            "text-max-width": "140px",
             width: HOP_NODE_SIZE,
             height: HOP_NODE_SIZE,
             "border-width": 2,
@@ -131,7 +139,7 @@ export default function NetDiscoveryGraph({ hops, running, fingerprint }: NetDis
             height: TARGET_NODE_SIZE,
             "font-size": "10px",
             "font-weight": "bold",
-            "text-max-width": "84px", // nó maior que o padrão (92 vs 72) — mais espaço pro emoji+IP em 2 linhas
+            "text-max-width": "160px", // mesma margem generosa do node base — nunca deve disparar wrap indevido no IP
           },
         },
         // Texto flutuante ABAIXO do nó (hostname/recurso K8s, ver buildInfoLabel) — nó próprio,
