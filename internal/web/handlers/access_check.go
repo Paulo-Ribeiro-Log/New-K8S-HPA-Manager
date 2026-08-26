@@ -17,13 +17,6 @@ import (
 	"k8s-hpa-manager/internal/rbac"
 )
 
-// vvCloudGroupPrefix é o prefixo dos grupos AAD que concedem acesso a workloads dos clusters.
-// Sem separador (nem "_" nem "-") de propósito: grupos como "VV_CLOUD-ADM" usam hífen em vez
-// de underscore, e ficavam de fora do filtro quando o prefixo era "VV_CLOUD_" — causava falso
-// negativo real no scan de frota (analista com RoleBinding via um grupo "VV_CLOUD-X" não tinha
-// esse grupo incluído no --as-group da impersonation, então o RBAC real não era detectado).
-const vvCloudGroupPrefix = "VV_CLOUD"
-
 // AccessCheckHandler verifica, via impersonation nativa do K8s, se um analista (e-mail)
 // tem acesso a um cluster/namespace — reproduz `kubectl auth can-i --as <email>`.
 type AccessCheckHandler struct {
@@ -36,7 +29,7 @@ type AccessCheckHandler struct {
 func NewAccessCheckHandler(kubeManager *config.KubeConfigManager, historyTracker *history.HistoryTracker) *AccessCheckHandler {
 	return &AccessCheckHandler{
 		kubeManager:    kubeManager,
-		aadLookup:      rbac.NewAADGroupLookup(vvCloudGroupPrefix),
+		aadLookup:      rbac.NewAADGroupLookup(),
 		historyTracker: historyTracker,
 	}
 }
@@ -49,14 +42,21 @@ type matchedGroupDTO struct {
 
 // groupResolution agrega tudo que veio da resolução de grupos AAD do e-mail — usado para
 // montar a impersonation e também para exibir ao SRE (aba "Todos os Grupos AAD").
+//
+// `matched`/`all` costumavam ser subconjuntos diferentes: só grupos com prefixo "VV_CLOUD"
+// entravam no `--as-group` da impersonation, e `all` era só informativo. Isso causava falso
+// negativo real — qualquer acesso concedido via RoleBinding referenciando um grupo AAD sem
+// esse prefixo (comum: grupos de squad/time específicos, não só os de nomenclatura de nuvem)
+// nunca era detectado, porque o grupo nem entrava na impersonation. Agora `matched == all`:
+// TODOS os grupos do e-mail são usados na impersonation, sem filtro de prefixo — os dois
+// campos continuam existindo separados no JSON só por compatibilidade com o frontend.
 type groupResolution struct {
-	matched []matchedGroupDTO // subconjunto com prefixo vvCloudGroupPrefix — usado no --as-group
-	all     []matchedGroupDTO // TODOS os grupos do e-mail, sem filtro — só para exibição
+	matched []matchedGroupDTO // == all — mantido só por compatibilidade de schema com o frontend
+	all     []matchedGroupDTO // TODOS os grupos do e-mail, sem filtro — usados na impersonation
 	err     string
 }
 
-// buildImpersonatedClient resolve os grupos do e-mail (filtrando o prefixo configurado
-// para a impersonation, mas retornando a lista completa também) e monta um clientset K8s
+// buildImpersonatedClient resolve TODOS os grupos AAD do e-mail e monta um clientset K8s
 // impersonando esse usuário (+ grupos), reaproveitando toda a lógica de auth por provider
 // já resolvida em kubeManager.GetRestConfig.
 func (h *AccessCheckHandler) buildImpersonatedClient(ctx context.Context, cluster, email string) (kubernetes.Interface, groupResolution) {
@@ -79,10 +79,8 @@ func (h *AccessCheckHandler) buildImpersonatedClient(ctx context.Context, cluste
 	for _, g := range allGroups {
 		dto := matchedGroupDTO{ID: g.ID, DisplayName: g.DisplayName}
 		resolution.all = append(resolution.all, dto)
-		if strings.HasPrefix(g.DisplayName, vvCloudGroupPrefix) {
-			groupIDs = append(groupIDs, g.ID)
-			resolution.matched = append(resolution.matched, dto)
-		}
+		resolution.matched = append(resolution.matched, dto)
+		groupIDs = append(groupIDs, g.ID)
 	}
 
 	cfg.Impersonate = rest.ImpersonationConfig{

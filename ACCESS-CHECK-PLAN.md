@@ -477,12 +477,108 @@ próximo passo antes de considerar concluída.
 
 Pontos que podem ser revisitados no futuro (não bloqueantes):
 - Cache de grupos AAD é por processo (memória) — reinicia a cada restart do servidor.
-- Não há fallback de input manual de GUID de grupo caso a resolução via `az cli` falhe — hoje
+- Não há fallback de input manual de GUID de grupo caso a resolução via Graph falhe — hoje
   degrada mostrando aviso e resultado só com `system:authenticated`.
-- O prefixo `VV_CLOUD` está hardcoded (`vvCloudGroupPrefix` em `access_check.go`) — se surgir
-  necessidade de outro prefixo/convenção, generalizar para parâmetro de query.
 - A checagem de IAM (Revisão 5) só cobre AKS — GKE (IAM do GCP) e EKS (IAM do AWS) têm
   equivalentes conceituais mas não implementados (escopo não pedido ainda).
 - Não checamos `enableAzureRbac=true` (Azure RBAC para autorização K8s) em nenhum cluster real
   até agora — se algum cluster usar esse modo, a authorização passa por um webhook pro ARM e o
   comportamento da impersonation nesse cenário específico não foi validado.
+
+## Revisão 8: scan do Entra ID falhando (CAE) + filtro `VV_CLOUD*` removido + contas `*.ca@via.com.br`
+
+Dois problemas relatados juntos: (1) "scan do Entra ID" falhando — usuário reportava só
+conseguir resultado pra e-mails `*@viavarejo.com.br`, e-mails `*.ca@via.com.br` (contas de
+nuvem secundárias, ver `CloudAccountHintField` no CLAUDE.md) nunca resolviam; (2) pedido
+explícito pra parar de restringir a ferramenta a grupos `VV_CLOUD*` — usar todos os grupos do
+analista.
+
+**Causa raiz do (1)**: `AADGroupLookup.fetchMemberGroups` chamava `az ad user
+get-member-groups --id <email>` — subcomando que internamente é uma Graph *action* (`POST
+/users/{id}/getMemberGroups`), sujeita ao mesmo bloqueio de CAE (Continuous Access
+Evaluation) do tenant já documentado e contornado em `internal/rbac/azure_ad.go`'s
+`GetUserGroups` (que usa `GET /me/memberOf` por esse motivo — mas só resolve o usuário
+*atual*, `/me` não aceita e-mail arbitrário, então esse fix antigo nunca cobriu o Access
+Checker). Reescrito para chamar a Graph API diretamente via token (mesma técnica de
+`GetUserGroups`: `az account get-access-token --resource https://graph.microsoft.com`),
+usando `GET /users/{id}/transitiveMemberOf/microsoft.graph.group` (endpoint de leitura
+simples, não uma *action* — mesma imunidade ao bloqueio).
+
+Isso sozinho não resolve contas `*.ca@via.com.br`: o segmento `{id}` do Graph só aceita
+Object ID ou userPrincipalName exato — se o e-mail digitado for um endereço secundário
+(`mail`/`otherMails`) diferente do UPN real da conta (plausível para essas contas de nuvem,
+que são identidades separadas da conta principal da mesma pessoa), a busca direta falha com
+404. Adicionado fallback (`resolveUserObjectID`): quando a busca direta por UPN falha, resolve
+o Object ID via `$filter=mail eq '...' or userPrincipalName eq '...' or
+otherMails/any(x:x eq '...')` (header `ConsistencyLevel: eventual`, exigido pela Graph API
+pra filtro sobre propriedade multi-valor) e tenta `transitiveMemberOf` de novo com o ID
+resolvido.
+
+**Correção do (2)**: o prefixo `VV_CLOUD` (`vvCloudGroupPrefix` em `access_check.go`) filtrava
+tanto os grupos exibidos quanto os GUIDs usados em `--as-group` da impersonation — qualquer
+acesso concedido via RoleBinding referenciando um grupo AAD sem esse prefixo (squad/time com
+nomenclatura própria, não só grupos de convenção "nuvem") nunca era detectado, porque o grupo
+nem entrava na impersonation. Removido: `buildImpersonatedClient`/`scanOneFleetCluster` agora
+usam **todos** os grupos do e-mail (`groupIDs = all group IDs`, sem filtro). `groupResolution
+.matched`/`.all` continuam existindo separados no JSON só por compatibilidade com o schema do
+frontend, mas com o mesmo conteúdo. `NewAADGroupLookup()` não recebe mais parâmetro de
+prefixo — `ResolveVVCloudGroups` (método morto, nunca chamado fora de si mesmo) foi removido.
+
+Frontend (`AccessCheckTab.tsx`): banner e aba "Todos os Grupos AAD" atualizados para não
+mencionar mais `VV_CLOUD*` como critério; coluna "Usado na verificação" da tabela de grupos
+removida (era sempre `true` agora que todos os grupos entram na impersonation, virou ruído).
+Placeholder do campo de e-mail passou a sugerir os dois formatos (`analista@viavarejo.com.br`
+ou `nome.ca@via.com.br`).
+
+Build (`go build ./...`, `go vet ./...`, `SKIP_AZURE_TESTS=1 go test ./internal/... -race`) e
+`./rebuild-web.sh -b` OK. **Não validado contra o Entra ID real nesta sessão** (sem `az login`
+disponível no ambiente onde o código foi editado) — validar testando um e-mail
+`*.ca@via.com.br` real e conferindo se a aba "Todos os Grupos AAD" passa a listar grupos que
+antes não apareciam (squads sem prefixo `VV_CLOUD`).
+
+## Revisão 9: falha na resolução de grupos era silenciosa — resultado parecia "travado"/cacheado
+
+Relatado pelo usuário logo após a Revisão 8: "parece que está gravando as informações do
+último scan e quando vamos repetir o scan retorna sempre a mesma informação. se o scan foi
+executado com erro, as informações exibidas sempre serão erradas e inválidas, mas é um erro
+silencioso."
+
+**Investigação**: não existe bug de cache aqui — `AADGroupLookup.GetAllGroups` só cacheia
+resultado de sucesso (nunca erro), TTL 10min. A causa real é comportamental:
+`buildImpersonatedClient` (`access_check.go`) e `scanOneFleetCluster`/`ScanFleet`
+(`access_check_scan.go`), ao falhar em `GetAllGroups`, gravam o erro em
+`resolution.err`/`groupsErr` mas **continuam** montando o client impersonado com `Groups: []`
+(zero grupos) e seguem com a checagem normalmente, em vez de abortar. Como a esmagadora
+maioria dos RoleBindings reais aponta pra um **grupo** AAD (não pro username cru), impersonar
+sem nenhum grupo produz, de forma praticamente determinística, "sem acesso a nada em nenhum
+cluster" — e uma falha *persistente* (ex: token Graph sem permissão suficiente) reproduz esse
+mesmo resultado "limpo" a cada nova tentativa, indistinguível pra quem está usando a ferramenta
+de um valor preso/cacheado.
+
+O sinal do erro (`groupsResolutionError`, `200 OK`) sempre existiu na resposta, mas o frontend
+não o expunha de forma consistente:
+- A variável derivada `groupsResolutionError` em `AccessCheckTab.tsx` **não incluía
+  `fleetResult?.groupsResolutionError`** — na aba "Todos os Clusters" (scan de frota, o mais
+  próximo de um botão "scan" nesta ferramenta) o erro nunca aparecia em NENHUM lugar da UI, nem
+  o banner nem a tabela de resultados o referenciavam. Caso genuinamente silencioso.
+- Nas abas "Visão Geral" e "Verificação Pontual" o banner amber existia, mas era pequeno e
+  ficava visualmente contradito pelo veredito grande (verde/vermelho "TEM/NÃO TEM acesso")
+  logo abaixo, que continuava afirmando um "NÃO" com a mesma confiança de um resultado real.
+
+**Corrigido** (só frontend — o backend já expunha o dado certo, faltava consumi-lo em todo
+lugar): (1) `groupsResolutionError` passou a incluir `fleetResult?.groupsResolutionError`; (2)
+quando o veredito seria negativo E a resolução de grupos falhou, os 3 pontos de veredito
+(Visão Geral, Verificação Pontual, banner no topo da aba "Todos os Clusters") mostram um
+estado amber explícito "INDETERMINADO — não foi possível confirmar os grupos AAD" em vez do
+vermelho/verde confiante, deixando claro que tanto o RBAC quanto a detecção de acesso admin
+via IAM (que também depende dos mesmos grupos) não puderam ser confirmados. Um "SIM"/acesso
+encontrado nessas condições continua tratado como confiável — é um positivo real mesmo sem
+grupos, não precisa de aviso.
+
+Build (`go build ./...`, `go vet ./...`), `npx tsc --noEmit -p tsconfig.app.json` (sem novos
+erros — só o TS2339 pré-existente em `AccessCheckHistoryEntry.resource`, não relacionado) e
+`npx eslint` limpos. `./rebuild-web.sh -b` OK. **Não validado contra uma falha real do Graph
+API nesta sessão** (não há como forçar essa falha sem acesso a um tenant real) — validar
+provocando uma falha de resolução de verdade (ex: revogar temporariamente a permissão do token,
+ou testar com uma sessão `az` não autenticada) e confirmar que os 3 avisos "INDETERMINADO"
+aparecem nos lugares certos.
