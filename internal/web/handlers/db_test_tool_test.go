@@ -362,6 +362,160 @@ func TestRedisConnStringHint(t *testing.T) {
 	})
 }
 
+// Regressão: usuário relatou `psql: error: invalid integer value
+// "sqlserver://sqlp-cargadireta.database.windows.net:5432" for connection option "port"` ao
+// testar um banco Postgres — connection string com esquema sqlserver:// (copiada por engano do
+// banco/engine errado) sendo repassada crua pro psql, sem nenhuma validação prévia de esquema
+// (diferente do Redis, que já tinha essa proteção). validateDBConnStringScheme cobre agora
+// postgres/mongodb/mysql com o mesmo padrão.
+func TestValidateDBConnStringScheme(t *testing.T) {
+	cases := []struct {
+		name       string
+		engine     string
+		in         string
+		wantCode   string
+		hintSubstr string
+	}{
+		{"postgres valid postgresql://", "postgres", "postgresql://user:pass@host:5432/db", "", ""},
+		{"postgres valid postgres://", "postgres", "postgres://user:pass@host:5432/db", "", ""},
+		{"postgres wrong scheme sqlserver:// (bug real relatado)", "postgres",
+			"sqlserver://sqlp-cargadireta.database.windows.net:5432", "INVALID_POSTGRES_CONNSTRING", `"sqlserver://"`},
+		{"mongodb valid", "mongodb", "mongodb://user:pass@host:27017/db", "", ""},
+		{"mongodb valid +srv", "mongodb", "mongodb+srv://user:pass@host/db", "", ""},
+		{"mongodb wrong scheme", "mongodb", "postgresql://host:5432/db", "INVALID_MONGO_CONNSTRING", `"postgresql://"`},
+		{"mysql valid", "mysql", "mysql://user:pass@host:3306/db", "", ""},
+		{"mysql wrong scheme", "mysql", "sqlserver://host:1433", "INVALID_MYSQL_CONNSTRING", `"sqlserver://"`},
+		{"redis still works via shared dispatcher", "redis", "redis://:pass@host:6379/0", "", ""},
+		{"engine sem checagem de esquema não bloqueia", "unknown-engine", "qualquer coisa", "", ""},
+		// Engine sqlserver adicionado depois do fix acima — a mesma string do relato do usuário
+		// (que corretamente falhava sob o engine "postgres") agora é VÁLIDA sob o engine
+		// "sqlserver", que é o que o usuário realmente precisava usar.
+		{"sqlserver valid sqlserver:// — string real do usuário", "sqlserver",
+			"sqlserver://sqlp-cargadireta.database.windows.net:5432", "", ""},
+		{"sqlserver valid mssql://", "sqlserver", "mssql://user:pass@host:1433/db", "", ""},
+		{"sqlserver valid jdbc:sqlserver:// (relatado ao vivo pelo usuário)", "sqlserver",
+			"jdbc:sqlserver://host.database.windows.net:1433;database=db;user=u;password=p;encrypt=true", "", ""},
+		{"sqlserver wrong scheme", "sqlserver", "postgresql://host:5432/db", "INVALID_SQLSERVER_CONNSTRING", `"postgresql://"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, hint := validateDBConnStringScheme(tc.engine, tc.in)
+			if code != tc.wantCode {
+				t.Errorf("code = %q, want %q (hint=%q)", code, tc.wantCode, hint)
+			}
+			if tc.hintSubstr != "" && !strings.Contains(hint, tc.hintSubstr) {
+				t.Errorf("hint = %q, want it to contain %q", hint, tc.hintSubstr)
+			}
+		})
+	}
+}
+
+// Regressão: `timeout Ns VAR=valor cmd` NÃO funciona como atribuição de variável de ambiente —
+// confirmado ao vivo contra um SQL Server/MariaDB reais (`timeout: failed to run command
+// 'VAR=valor': No such file or directory`). O prefixo de senha (MYSQL_PWD/SQLCMDPASSWORD)
+// precisa vir depois de um `env` explícito pra funcionar nessa posição.
+func TestEnvVarPrefix(t *testing.T) {
+	if got := envVarPrefix("MYSQL_PWD", ""); got != "" {
+		t.Errorf("prefixo vazio esperado sem senha, got %q", got)
+	}
+	got := envVarPrefix("MYSQL_PWD", "s3cret")
+	if !strings.HasPrefix(got, "env ") {
+		t.Errorf("prefixo deve começar com \"env \" — sem isso, `timeout Ns VAR=val cmd` trata "+
+			"VAR=val como o próprio comando a executar, não como atribuição de ambiente; got %q", got)
+	}
+	if !strings.Contains(got, "MYSQL_PWD=") {
+		t.Errorf("prefixo deve conter a variável, got %q", got)
+	}
+}
+
+func TestParseSQLServerConnString(t *testing.T) {
+	t.Run("string real relatada pelo usuário — sem usuário/senha/database", func(t *testing.T) {
+		host, port, user, pass, db := parseSQLServerConnString("sqlserver://sqlp-cargadireta.database.windows.net:5432")
+		if host != "sqlp-cargadireta.database.windows.net" || port != 5432 || user != "" || pass != "" || db != "" {
+			t.Errorf("got (%q, %d, %q, %q, %q)", host, port, user, pass, db)
+		}
+	})
+
+	t.Run("completa com usuário/senha/database", func(t *testing.T) {
+		host, port, user, pass, db := parseSQLServerConnString("sqlserver://sa:MyP%40ss@myserver.database.windows.net:1433/mydb")
+		if host != "myserver.database.windows.net" || port != 1433 || user != "sa" || pass != "MyP@ss" || db != "mydb" {
+			t.Errorf("got (%q, %d, %q, %q, %q)", host, port, user, pass, db)
+		}
+	})
+
+	t.Run("sem porta explícita cai no default 1433", func(t *testing.T) {
+		_, port, _, _, _ := parseSQLServerConnString("sqlserver://myserver.database.windows.net/mydb")
+		if port != sqlserverDefaultPort {
+			t.Errorf("port = %d, want %d", port, sqlserverDefaultPort)
+		}
+	})
+}
+
+// Regressão: usuário relatou usar exatamente esse formato (driver JDBC da Microsoft, comum em
+// config de app Java) — connection string em formato URI simples (o único suportado até então)
+// não cobria isso, gerando confusão. Formato/shape reproduzido a partir do relato real (valores
+// sintéticos, não os originais).
+func TestParseJDBCSQLServerParams(t *testing.T) {
+	raw := "jdbc:sqlserver://sqlp-cargadireta.database.windows.net:1433;database=db_prd_plano;" +
+		"user=svc-cabecalho-i-01@sqlp-cargadireta;password=Qc1234#56(ntJabcw123t;encrypt=true;" +
+		"trustServerCertificate=false;hostNameInCertificate=*.database.windows.net;loginTimeout=30"
+
+	host, port, user, pass, db, useTLS, skipTLSVerify, ok := parseJDBCSQLServerParams(raw)
+	if !ok {
+		t.Fatal("esperava ok=true pra uma string jdbc:sqlserver:// válida")
+	}
+	if host != "sqlp-cargadireta.database.windows.net" {
+		t.Errorf("host = %q", host)
+	}
+	if port != 1433 {
+		t.Errorf("port = %d, want 1433", port)
+	}
+	if user != "svc-cabecalho-i-01@sqlp-cargadireta" {
+		t.Errorf("user = %q — o '@' faz parte do login (formato user@servername do Azure SQL), não deve ser cortado", user)
+	}
+	if pass != "Qc1234#56(ntJabcw123t" {
+		t.Errorf("pass = %q — caracteres especiais (#, () não devem quebrar o parse", pass)
+	}
+	if db != "db_prd_plano" {
+		t.Errorf("db = %q", db)
+	}
+	if !useTLS {
+		t.Error("useTLS = false, want true (encrypt=true na string)")
+	}
+	if skipTLSVerify {
+		t.Error("skipTLSVerify = true, want false (trustServerCertificate=false na string)")
+	}
+
+	t.Run("chave case-insensitive e alias databaseName/username", func(t *testing.T) {
+		host, _, user, _, db, _, _, ok := parseJDBCSQLServerParams(
+			"jdbc:sqlserver://host:1433;DatabaseName=xyz;UserName=abc;Encrypt=TRUE")
+		if !ok || host != "host" || db != "xyz" || user != "abc" {
+			t.Errorf("got host=%q db=%q user=%q ok=%v", host, db, user, ok)
+		}
+	})
+
+	t.Run("sem porta explícita cai no default", func(t *testing.T) {
+		_, port, _, _, _, _, _, ok := parseJDBCSQLServerParams("jdbc:sqlserver://host;database=x")
+		if !ok || port != sqlserverDefaultPort {
+			t.Errorf("port = %d, ok=%v", port, ok)
+		}
+	})
+
+	t.Run("string não-jdbc devolve ok=false", func(t *testing.T) {
+		if _, _, _, _, _, _, _, ok := parseJDBCSQLServerParams("sqlserver://host:1433/db"); ok {
+			t.Error("esperava ok=false pra uma string que não começa com jdbc:sqlserver://")
+		}
+	})
+
+	t.Run("sqlserverEffectiveParams usa o parser certo em Mode=connstring", func(t *testing.T) {
+		p := dbConnParams{Mode: "connstring", ConnStr: raw}
+		h, po, u, pw, d, tls, trust := sqlserverEffectiveParams(p)
+		if h != host || po != port || u != user || pw != pass || d != db || tls != useTLS || trust != skipTLSVerify {
+			t.Errorf("sqlserverEffectiveParams não bateu com parseJDBCSQLServerParams direto")
+		}
+	})
+}
+
 // redisInfoFixture reproduz o formato REAL de `redis-cli INFO` (CRLF entre linhas, cabeçalhos de
 // seção "# Nome"), capturado contra um redis:7-alpine real — só os campos usados por
 // parseRedisServerInfo, pra manter o teste legível sem as ~200 linhas da saída completa.

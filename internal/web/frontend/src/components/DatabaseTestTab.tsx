@@ -580,6 +580,7 @@ const ENGINE_OPTIONS: { value: DBEngine; label: string; defaultPort: number }[] 
   { value: "mysql", label: "MySQL/MariaDB", defaultPort: 3306 },
   { value: "mongodb", label: "MongoDB", defaultPort: 27017 },
   { value: "redis", label: "Redis", defaultPort: 6379 },
+  { value: "sqlserver", label: "SQL Server (Azure SQL)", defaultPort: 1433 },
 ];
 
 export default function DatabaseTestTab() {
@@ -1291,6 +1292,7 @@ export default function DatabaseTestTab() {
                     engine === "postgres" ? "postgresql://user:pass@host:5432/db?sslmode=require" :
                     engine === "mysql" ? "mysql://user:pass@host:3306/db" :
                     engine === "mongodb" ? "mongodb+srv://user:pass@cluster.mongodb.net/db" :
+                    engine === "sqlserver" ? "sqlserver://user:pass@host:1433/db" :
                     "redis://:pass@host:6379/0"
                   }
                   value={connectionString}

@@ -671,9 +671,11 @@ kubectl describe pod <target_pod> -n <namespace>
 
 - Qualquer escrita real no banco (sem equivalente ao produce/consume do Kafka) — decisão de escopo
   deliberada, não uma limitação técnica.
-- Engines além de PostgreSQL/MySQL-MariaDB/MongoDB/Redis (MSSQL, Cassandra, Elasticsearch, DynamoDB
-  etc.) — arquitetura em registry (`dbEngines` em `db_test_tool.go`) deixa isso barato de adicionar
-  depois, um novo item no map sem mexer no resto do handler.
+- Engines além de PostgreSQL/MySQL-MariaDB/MongoDB/Redis/**SQL Server** (Cassandra, Elasticsearch,
+  DynamoDB etc.) — arquitetura em registry (`dbEngines` em `db_test_tool.go`) deixa isso barato de
+  adicionar depois, um novo item no map sem mexer no resto do handler. SQL Server (Azure SQL)
+  adicionado depois — ver "Bug real corrigido" no CLAUDE.md (seção "Teste de Banco de Dados —
+  validação de esquema da connection string"), `sqlcmd`/`mssql-tools18`, **não validado ao vivo**.
 - Execução de query arbitrária — viraria um console SQL/shell genérico, risco de segurança bem maior
   que listar databases/tabelas; fora do espírito de "teste de conectividade".
 - Deixar escolher qual pod (quando o Deployment tem várias réplicas) ou qual container (pods
