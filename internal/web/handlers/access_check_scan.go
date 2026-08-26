@@ -101,7 +101,9 @@ func (h *AccessCheckHandler) ScanFleet(c *gin.Context) {
 	defer cancel()
 
 	// Resolver grupos UMA única vez — reaproveitado por todos os clusters do scan (cache de
-	// 10min em ResolveVVCloudGroups/GetAllGroups já evita chamadas az repetidas).
+	// 10min em GetAllGroups já evita chamadas Graph repetidas). TODOS os grupos do e-mail
+	// entram na impersonation (sem filtro de prefixo) — ver comentário em
+	// access_check.go/groupResolution sobre o falso negativo que o filtro antigo causava.
 	allGroups, groupsErr := h.aadLookup.GetAllGroups(ctx, email)
 	// Slices vazios, não nil — nil vira `null` no JSON e engana checks tipo `campo &&` no
 	// frontend (ver comentário equivalente em access_check.go/buildImpersonatedClient).
@@ -111,10 +113,8 @@ func (h *AccessCheckHandler) ScanFleet(c *gin.Context) {
 	for _, g := range allGroups {
 		dto := matchedGroupDTO{ID: g.ID, DisplayName: g.DisplayName}
 		allGroupDTOs = append(allGroupDTOs, dto)
-		if strings.HasPrefix(g.DisplayName, vvCloudGroupPrefix) {
-			groupIDs = append(groupIDs, g.ID)
-			matched = append(matched, dto)
-		}
+		matched = append(matched, dto)
+		groupIDs = append(groupIDs, g.ID)
 	}
 	var groupsErrStr string
 	if groupsErr != nil {

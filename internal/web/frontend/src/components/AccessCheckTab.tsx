@@ -234,8 +234,16 @@ export default function AccessCheckTab() {
   const matchedGroups = pointCheckEmailStale ? undefined : (rulesResult?.matchedGroups ?? canIResult?.matchedGroups ?? fleetResult?.matchedGroups);
   const allGroups = pointCheckEmailStale ? undefined : (rulesResult?.allGroups ?? canIResult?.allGroups ?? fleetResult?.allGroups);
   const iamAdminAccess = pointCheckEmailStale ? undefined : (rulesResult?.iamAdminAccess ?? canIResult?.iamAdminAccess);
-  const groupsResolutionError = pointCheckEmailStale ? undefined : (rulesResult?.groupsResolutionError || canIResult?.groupsResolutionError);
-  const matchedGroupIds = new Set((matchedGroups ?? []).map((g) => g.id));
+  // Faltava `fleetResult?.groupsResolutionError` aqui — quando a resolução de grupos AAD
+  // falhava durante "Verificar em todos os clusters", o erro nunca aparecia em lugar nenhum
+  // da UI (nem o banner amber, nem a tabela de resultados da aba "Todos os Clusters"
+  // referenciam esse campo): o scan prosseguia impersonando com ZERO grupos — resultado quase
+  // sempre "sem acesso em nenhum cluster", indistinguível de um veredito real. Um erro
+  // persistente (ex: permissão do Graph API insuficiente) produzia sempre o mesmo resultado
+  // "limpo" a cada nova tentativa, dando a falsa impressão de um valor cacheado/travado.
+  const groupsResolutionError = pointCheckEmailStale
+    ? undefined
+    : (rulesResult?.groupsResolutionError || canIResult?.groupsResolutionError || fleetResult?.groupsResolutionError);
   const isImpersonationBlocked = (msg: string | null) =>
     !!msg && msg.toLowerCase().includes("impersonar");
 
@@ -274,7 +282,7 @@ export default function AccessCheckTab() {
         <div className="min-w-[260px] flex-1">
           <label className="text-xs text-muted-foreground block mb-1">E-mail do analista</label>
           <Input
-            placeholder="analista@viavarejo.com.br"
+            placeholder="analista@viavarejo.com.br ou nome.ca@via.com.br"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
@@ -312,16 +320,16 @@ export default function AccessCheckTab() {
         </div>
       )}
 
-      {(section === "overview" || section === "pointcheck" || section === "allgroups") && matchedGroups && (
+      {(section === "overview" || section === "pointcheck" || section === "allgroups" || section === "fleet") && matchedGroups && (
         <div className="px-6 py-3 border-b border-border">
-          <div className="text-xs font-medium text-muted-foreground mb-1.5">Grupos AAD (VV_CLOUD_*) usados na verificação</div>
+          <div className="text-xs font-medium text-muted-foreground mb-1.5">Grupos AAD usados na verificação (todos os grupos do analista, sem filtro de prefixo)</div>
           {groupsResolutionError ? (
             <div className="flex items-center gap-2 text-sm text-amber-500">
               <AlertTriangle className="w-4 h-4 shrink-0" />
               Falha ao resolver grupos AAD ({groupsResolutionError}) — resultado abaixo reflete só permissões genéricas de usuário autenticado, pode ser menos permissivo que a realidade.
             </div>
           ) : matchedGroups.length === 0 ? (
-            <div className="text-sm text-muted-foreground">Nenhum grupo VV_CLOUD_* encontrado para este e-mail.</div>
+            <div className="text-sm text-muted-foreground">Nenhum grupo AAD encontrado para este e-mail.</div>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {matchedGroups.map((g) => (
@@ -387,7 +395,27 @@ export default function AccessCheckTab() {
                     </div>
                   )}
 
-                  {/* Veredito direto — responde "tem ou não tem acesso" sem exigir leitura de regras técnicas */}
+                  {/* Veredito direto — responde "tem ou não tem acesso" sem exigir leitura de regras técnicas.
+                      Quando a resolução de grupos AAD falhou E o resultado seria "NÃO tem acesso", o veredito
+                      vira "INDETERMINADO" em vez de um NÃO confiante — a checagem rodou impersonando só o
+                      e-mail, sem nenhum grupo, então um "NÃO" aqui é um falso negativo garantido sempre que o
+                      acesso real do analista vier de um RoleBinding em grupo (o caso mais comum). Um "SIM"
+                      nessas condições continua confiável — é um positivo real mesmo sem grupos. */}
+                  {!anyAccess && rulesResult.groupsResolutionError ? (
+                    <div className="rounded-md border p-3 mb-4 text-sm border-amber-500/40 bg-amber-500/10">
+                      <div className="flex items-center gap-2 font-semibold text-amber-600">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        INDETERMINADO — não foi possível confirmar os grupos AAD de {email}
+                      </div>
+                      <div className="mt-1.5 text-muted-foreground">
+                        A checagem rodou sem nenhum grupo AAD (só o e-mail), então "sem acesso" aqui pode ser um
+                        falso negativo — se o acesso real do analista vier de um grupo (caso mais comum), este
+                        resultado não reflete a realidade. A detecção de acesso admin via IAM (banner vermelho,
+                        se algum dia aparecer) também depende dos mesmos grupos e não foi confirmada. Corrija a
+                        falha de resolução (ver aviso acima) e verifique de novo antes de confiar neste resultado.
+                      </div>
+                    </div>
+                  ) : (
                   <div className={`rounded-md border p-3 mb-4 text-sm ${
                     anyAccess ? "border-emerald-500/40 bg-emerald-500/10" : "border-red-500/40 bg-red-500/10"
                   }`}>
@@ -415,6 +443,7 @@ export default function AccessCheckTab() {
                       </div>
                     )}
                   </div>
+                  )}
 
                   {/* Grade por recurso — leitura e escrita separadas, nada omitido */}
                   <table className="w-full text-left mb-4">
@@ -537,7 +566,23 @@ export default function AccessCheckTab() {
               </div>
             )}
 
-            {canIResult && (
+            {canIResult && (canIResult.allowed === false && canIResult.groupsResolutionError ? (
+              // Mesmo raciocínio do veredito da Visão Geral: um "NÃO" aqui, sem grupos AAD
+              // resolvidos, é um falso negativo garantido sempre que o acesso vier de grupo.
+              <div className="rounded-md border p-4 flex items-start gap-3 border-amber-500/40 bg-amber-500/10">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-semibold text-amber-600">
+                    INDETERMINADO — não foi possível confirmar os grupos AAD de {email}
+                  </div>
+                  <div className="text-sm text-muted-foreground mt-1">
+                    A checagem rodou sem nenhum grupo AAD (só o e-mail) — este "NÃO" pode ser um falso negativo
+                    se o acesso real vier de um grupo. Corrija a falha de resolução (ver aviso acima) e verifique
+                    de novo antes de confiar neste resultado.
+                  </div>
+                </div>
+              </div>
+            ) : (
               <div className={`rounded-md border p-4 flex items-start gap-3 ${
                 canIResult.allowed ? "border-emerald-500/40 bg-emerald-500/10" : "border-red-500/40 bg-red-500/10"
               }`}>
@@ -555,7 +600,7 @@ export default function AccessCheckTab() {
                   {canIResult.reason && <div className="text-sm text-muted-foreground mt-1">{canIResult.reason}</div>}
                 </div>
               </div>
-            )}
+            ))}
           </>
         )}
 
@@ -586,9 +631,8 @@ export default function AccessCheckTab() {
                 <>
                   <div className="flex items-center justify-between mb-3 gap-3">
                     <p className="text-sm text-muted-foreground">
-                      Todos os {allGroups.length} grupos AAD de <span className="font-medium text-foreground">{email}</span>.
-                      Os marcados com <Badge variant="outline" className="border-primary/50 text-primary mx-1">usado</Badge>
-                      começam com <code className="text-xs bg-muted px-1 py-0.5 rounded">VV_CLOUD</code> e foram usados na impersonation acima.
+                      Todos os {allGroups.length} grupos AAD de <span className="font-medium text-foreground">{email}</span> —
+                      sem filtro de prefixo, todos foram usados na impersonation acima.
                     </p>
                     <div className="flex items-center gap-2 shrink-0">
                       <Input
@@ -608,7 +652,6 @@ export default function AccessCheckTab() {
                       <tr className="border-b border-border text-xs text-muted-foreground">
                         <th className="pb-2 font-medium">Nome do grupo</th>
                         <th className="pb-2 font-medium">Object ID</th>
-                        <th className="pb-2 font-medium">Usado na verificação</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -616,13 +659,6 @@ export default function AccessCheckTab() {
                         <tr key={g.id} className="border-b border-border last:border-0">
                           <td className="py-1.5 pr-4 text-sm">{g.displayName}</td>
                           <td className="py-1.5 pr-4 text-xs font-mono text-muted-foreground">{g.id}</td>
-                          <td className="py-1.5">
-                            {matchedGroupIds.has(g.id) ? (
-                              <Badge variant="outline" className="border-primary/50 text-primary">usado</Badge>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">—</span>
-                            )}
-                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -685,6 +721,27 @@ export default function AccessCheckTab() {
 
               return (
                 <>
+                  {fleetResult.groupsResolutionError && (
+                    // Grupos AAD não resolveram pra ESTE e-mail antes do scan começar — TODOS
+                    // os clusters abaixo foram verificados impersonando só o e-mail, sem nenhum
+                    // grupo. "Nenhum acesso real encontrado" nesse cenário é quase sempre falso
+                    // negativo (a maioria dos acessos reais vem de RoleBinding em grupo AAD, não
+                    // no username direto) — sem este aviso, o resultado abaixo parece um "sem
+                    // acesso em lugar nenhum" confiável quando na prática não checou nada de
+                    // verdade em nenhum cluster.
+                    <div className="rounded-md border p-3 mb-4 text-sm border-amber-500/40 bg-amber-500/10">
+                      <div className="flex items-center gap-2 font-semibold text-amber-600">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        INDETERMINADO — resolução de grupos AAD falhou antes do scan
+                      </div>
+                      <div className="mt-1 text-muted-foreground">
+                        Todos os clusters abaixo foram verificados sem nenhum grupo AAD (só o e-mail) —
+                        "sem acesso" é quase sempre um falso negativo neste cenário, e a detecção de acesso
+                        admin via IAM (coluna "Acesso Admin (IAM)") também não foi confirmada. Corrija a falha
+                        ({fleetResult.groupsResolutionError}) e rode o scan de novo antes de confiar nestes resultados.
+                      </div>
+                    </div>
+                  )}
                   <div className="text-sm text-muted-foreground mb-3">
                     {fleetResult.results.length} clusters verificados —{" "}
                     <span className="font-medium text-foreground">{withAccess.length} com acesso real do analista</span>
