@@ -26,7 +26,15 @@ import (
 )
 
 const (
-	dbTestEphemeralReadyTimeout = 30 * time.Second
+	// dbTestEphemeralReadyTimeout cobre TODO o tempo até o ephemeral container ficar Running —
+	// inclusive o pull da imagem, que os 30s originais não davam conta de esperar: em nós sem a
+	// imagem já cacheada (primeiro uso do engine, ou node novo do cluster autoscaler), puxar
+	// imagens como mongo:7/mariadb:11/mcr.microsoft.com/mssql-tools18 facilmente passa de 30s
+	// dependendo da rede/registry — a operação quebrava com "timeout esperando ephemeral
+	// container ficar pronto" mesmo com o pull ainda em andamento (`Waiting.Reason ==
+	// "ContainerCreating"`, que `waitDBEphemeralContainerRunning` já trata como "ainda esperando",
+	// não erro — só o deadline geral é que era curto demais). Bug real relatado pelo usuário.
+	dbTestEphemeralReadyTimeout = 120 * time.Second
 	dbTestEphemeralPollInterval = 500 * time.Millisecond
 
 	dbTestDefaultTimeoutMs = 5000
@@ -70,6 +78,11 @@ func quotePostgresIdentifier(s string) string {
 // MySQL/MariaDB pra identificadores).
 func quoteMySQLIdentifier(s string) string {
 	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
+}
+
+// quoteSQLServerIdentifier — mesma ideia, colchetes (sintaxe T-SQL pra identificadores).
+func quoteSQLServerIdentifier(s string) string {
+	return "[" + strings.ReplaceAll(s, "]", "]]") + "]"
 }
 
 // dbPreviewParams agrupa os parâmetros de uma consulta de amostra de dados paginada — evita uma
@@ -168,7 +181,7 @@ type RunDBTestRequest struct {
 	// (NetworkPolicy/Istio avaliam por label/service account do pod, não por namespace inteiro).
 	// Só usado/obrigatório quando ExecutionMode="pod".
 	Deployment string `json:"deployment"`
-	Engine     string `json:"engine"` // postgres | mysql | mongodb | redis
+	Engine     string `json:"engine"` // postgres | mysql | mongodb | redis | sqlserver
 	Host       string `json:"host"`
 	Port       int    `json:"port"`
 	// HostConfigMapRef, quando presente, resolve Host/Port a partir de um ConfigMap em vez dos
@@ -692,6 +705,21 @@ func connStringDatabase(raw string) string {
 	return strings.TrimPrefix(u.Path, "/")
 }
 
+// uriSchemeRegex casa o "esquema://" no início de uma string, se houver — usado só pra montar
+// mensagens de erro mais específicas (ver isValidPostgresConnString/isValidMongoConnString
+// abaixo), nunca pra decidir validade por si só.
+var uriSchemeRegex = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.-]*)://`)
+
+// extractURIScheme devolve o esquema (sem "://") de uma string no formato genérico de URI, ou
+// "" se não bater o padrão.
+func extractURIScheme(raw string) string {
+	m := uriSchemeRegex.FindStringSubmatch(strings.TrimSpace(raw))
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
 // effectiveDatabase resolve o banco alvo do estágio de navegação (Postgres/Mongo): o campo
 // Database explícito tem prioridade — permite sobrescrever ou navegar num banco diferente do que
 // está na connection string (Mongo: getSiblingDB troca de banco livremente dentro do mesmo
@@ -737,6 +765,38 @@ func buildPostgresURI(p dbConnParams) string {
 	return u.String()
 }
 
+// postgresConnStringSchemes são os únicos esquemas que `psql` reconhece como URI de conexão —
+// fora deles ele produz erros nativos do libpq difíceis de entender sem contexto nenhum. Ex real
+// relatado: usuário colou (ou leu de um Secret) uma connection string com esquema `sqlserver://`
+// (comum quando o host reaproveita o domínio *.database.windows.net do Azure, usado tanto por
+// Azure SQL Database quanto — via private endpoint com DNS customizado — por Azure Database for
+// PostgreSQL, fácil de confundir os dois na hora de copiar a string certa) — psql tentou
+// interpretar a URI inteira só como valor do host (buildPostgresURI embute p.Host cru dentro de
+// outra URI `postgresql://<p.Host>:<porta>`) e devolveu o cru
+// `psql: error: invalid integer value "sqlserver://host:5432" for connection option "port"`,
+// sem nenhuma pista de que o problema era o esquema errado. Validado ANTES de rodar o teste
+// (validateDBTestRequest/runTest), mesmo padrão de isValidRedisConnString/redisConnStringHint.
+var postgresConnStringSchemes = []string{"postgresql://", "postgres://"}
+
+func isValidPostgresConnString(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	for _, scheme := range postgresConnStringSchemes {
+		if strings.HasPrefix(lower, scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+// postgresConnStringHint nomeia o esquema errado quando reconhecível (ex: "sqlserver://") —
+// muito mais acionável do que deixar o erro cru do libpq chegar ao usuário sem contexto.
+func postgresConnStringHint(raw string) string {
+	if scheme := extractURIScheme(raw); scheme != "" {
+		return fmt.Sprintf("Essa connection string usa o esquema %q, que não é PostgreSQL — confira se copiou a string do banco certo. Esperado: postgresql:// ou postgres://", scheme+"://")
+	}
+	return "Connection string do PostgreSQL deve começar com postgresql:// ou postgres:// (ex: postgresql://usuario:senha@host:porta/banco)"
+}
+
 func buildMongoURI(p dbConnParams) string {
 	u := url.URL{Scheme: "mongodb", Host: fmt.Sprintf("%s:%d", p.Host, p.Port)}
 	if p.Username != "" {
@@ -761,6 +821,28 @@ func buildMongoURI(p dbConnParams) string {
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// mongoConnStringSchemes são os únicos esquemas que `mongosh` aceita como URI de conexão — mesmo
+// racional de postgresConnStringSchemes acima (evita repassar um esquema errado cru pro cliente
+// nativo e receber de volta um erro sem contexto).
+var mongoConnStringSchemes = []string{"mongodb://", "mongodb+srv://"}
+
+func isValidMongoConnString(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	for _, scheme := range mongoConnStringSchemes {
+		if strings.HasPrefix(lower, scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+func mongoConnStringHint(raw string) string {
+	if scheme := extractURIScheme(raw); scheme != "" {
+		return fmt.Sprintf("Essa connection string usa o esquema %q, que não é MongoDB — confira se copiou a string do banco certo. Esperado: mongodb:// ou mongodb+srv://", scheme+"://")
+	}
+	return "Connection string do MongoDB deve começar com mongodb:// ou mongodb+srv:// (ex: mongodb://usuario:senha@host:porta/banco)"
 }
 
 // dbValidMongoAuthMechanisms — mecanismos aceitos no campo AuthMechanism (modo "userpass" do
@@ -798,6 +880,217 @@ func mysqlEffectiveParams(p dbConnParams) (host string, port int, username, pass
 		return parseMySQLConnString(p.ConnStr)
 	}
 	return p.Host, p.Port, p.Username, p.Password, p.Database
+}
+
+// mysqlPasswordPrefix monta o prefixo de ambiente pra senha do mysql/mariadb (MYSQL_PWD) — ver
+// envVarPrefix pro porquê do `env` explícito (bug real: sem ele, a senha nunca era aplicada).
+func mysqlPasswordPrefix(p dbConnParams) string {
+	_, _, _, pass, _ := mysqlEffectiveParams(p)
+	return envVarPrefix("MYSQL_PWD", pass)
+}
+
+// mysqlConnStringSchemes: diferente de psql/mongosh, o cliente `mysql`/`mariadb` nunca recebe a
+// URI crua (parseMySQLConnString já decompõe em host/porta/usuário/senha antes de montar os
+// flags discretos, e `url.Parse` não valida o nome do esquema) — então um esquema errado aqui
+// não quebra com um erro cru de driver, só conecta silenciosamente usando host/porta extraídos
+// de uma string que pode não ser MySQL de verdade. Validado mesmo assim, mesmo racional de
+// postgresConnStringSchemes/mongoConnStringSchemes: falha cedo e com mensagem clara em vez de
+// tentar conectar num banco errado sem avisar.
+var mysqlConnStringSchemes = []string{"mysql://", "mariadb://"}
+
+func isValidMySQLConnString(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	for _, scheme := range mysqlConnStringSchemes {
+		if strings.HasPrefix(lower, scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+func mysqlConnStringHint(raw string) string {
+	if scheme := extractURIScheme(raw); scheme != "" {
+		return fmt.Sprintf("Essa connection string usa o esquema %q, que não é MySQL/MariaDB — confira se copiou a string do banco certo. Esperado: mysql:// ou mariadb://", scheme+"://")
+	}
+	return "Connection string do MySQL/MariaDB deve começar com mysql:// ou mariadb:// (ex: mysql://usuario:senha@host:porta/banco)"
+}
+
+// sqlserverDefaultPort — porta padrão do SQL Server/Azure SQL, usada quando a connection string
+// não especifica porta explicitamente (`sqlserver://host/db`, sem ":porta").
+const sqlserverDefaultPort = 1433
+
+// sqlserverCmdPath — caminho completo do binário, NÃO o nome bare "sqlcmd". BUG REAL confirmado
+// ao vivo: a imagem mcr.microsoft.com/mssql-tools NÃO tem `/opt/mssql-tools/bin` no PATH padrão
+// (`PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, confirmado via `docker
+// inspect`) — chamar só `sqlcmd` (como os outros engines chamam `psql`/`mariadb`/`mongosh`/
+// `redis-cli`, todos de fato no PATH das respectivas imagens) falha com
+// `env: 'sqlcmd': No such file or directory`, reproduzido rodando exatamente o `docker run`
+// que `execLocalDocker` monta (sem `--entrypoint`, sem override de PATH).
+const sqlserverCmdPath = "/opt/mssql-tools/bin/sqlcmd"
+
+// jdbcSQLServerPrefix — prefixo do formato de connection string do driver JDBC da Microsoft
+// (Java), MUITO comum em configs reais de aplicação (Java/Spring, ferramentas corporativas,
+// secrets copiados de docs internas) — descoberto ao vivo quando um usuário colou exatamente
+// esse formato (`jdbc:sqlserver://host:port;database=x;user=y;password=z;encrypt=true;
+// trustServerCertificate=false;...`) esperando que funcionasse. `strings.ToLower` na comparação,
+// mas o prefixo em si já é lowercase (o formato real do driver é sempre minúsculo).
+const jdbcSQLServerPrefix = "jdbc:sqlserver://"
+
+// parseJDBCSQLServerParams faz o parse do formato `jdbc:sqlserver://host[:porta][;chave=valor]*`
+// — bem diferente do formato URI simples (sqlserver://user:pass@host/db) que parseSQLServerConnString
+// cobre: aqui host/porta vêm antes do primeiro `;`, e credenciais/banco/TLS vêm como pares
+// chave=valor separados por `;` (não há um jeito de usar `url.Parse` pra isso — `;` e `=` livres
+// no meio da string não formam uma URI válida). Chaves reconhecidas (nomes reais do driver JDBC
+// da Microsoft, case-insensitive): database/databaseName, user, password, encrypt,
+// trustServerCertificate — outras chaves (hostNameInCertificate, loginTimeout, applicationName,
+// etc.) são ignoradas silenciosamente, não têm equivalente direto nos flags do sqlcmd usados
+// aqui. `ok=false` quando `raw` não começa com o prefixo JDBC (deixa o chamador cair pro parser
+// de URI simples).
+func parseJDBCSQLServerParams(raw string) (host string, port int, username, password, database string, useTLS, skipTLSVerify, ok bool) {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(strings.ToLower(trimmed), jdbcSQLServerPrefix) {
+		return "", 0, "", "", "", false, false, false
+	}
+	rest := trimmed[len(jdbcSQLServerPrefix):]
+	parts := strings.Split(rest, ";")
+
+	hostPort := parts[0]
+	port = sqlserverDefaultPort
+	if idx := strings.LastIndex(hostPort, ":"); idx >= 0 {
+		host = hostPort[:idx]
+		if p, err := strconv.Atoi(hostPort[idx+1:]); err == nil {
+			port = p
+		}
+	} else {
+		host = hostPort
+	}
+
+	for _, kv := range parts[1:] {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		eq := strings.Index(kv, "=")
+		if eq < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(kv[:eq]))
+		val := strings.TrimSpace(kv[eq+1:])
+		switch key {
+		case "database", "databasename":
+			database = val
+		case "user", "username":
+			username = val
+		case "password":
+			password = val
+		case "encrypt":
+			useTLS = strings.EqualFold(val, "true")
+		case "trustservercertificate":
+			skipTLSVerify = strings.EqualFold(val, "true")
+		}
+	}
+	return host, port, username, password, database, useTLS, skipTLSVerify, true
+}
+
+// parseSQLServerConnString extrai host/port/user/pass/db de uma connection string no formato URI
+// "sqlserver://user:pass@host:port/db" (também aceita mssql://, mesmo alias) — mesmo mecanismo de
+// parseMySQLConnString (o cliente `sqlcmd` também não aceita URI diretamente, precisa dos campos
+// discretos). Não cobre o formato ADO.NET (`Server=...;Database=...;`, sem prefixo reconhecível
+// que distinga de um erro de digitação qualquer) — só URI simples e JDBC (ver
+// parseJDBCSQLServerParams), os dois formatos reais já vistos em uso.
+func parseSQLServerConnString(raw string) (host string, port int, username, password, database string) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", 0, "", "", ""
+	}
+	host = u.Hostname()
+	port = sqlserverDefaultPort
+	if p := u.Port(); p != "" {
+		port, _ = strconv.Atoi(p)
+	}
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	database = strings.TrimPrefix(u.Path, "/")
+	return
+}
+
+// sqlserverConnStringParams resolve host/port/user/pass/db + dicas de TLS a partir de uma
+// connection string, tentando o formato JDBC primeiro (é o único dos dois que consegue expressar
+// TLS explicitamente via encrypt=/trustServerCertificate=) e caindo pro formato URI simples se
+// não bater (que não tem conceito de TLS embutido — useTLS/skipTLSVerify sempre false nesse caso,
+// mesmo comportamento de antes desta função existir).
+func sqlserverConnStringParams(raw string) (host string, port int, username, password, database string, useTLS, skipTLSVerify bool) {
+	if h, p, u, pw, db, tls, trust, ok := parseJDBCSQLServerParams(raw); ok {
+		return h, p, u, pw, db, tls, trust
+	}
+	h, p, u, pw, db := parseSQLServerConnString(raw)
+	return h, p, u, pw, db, false, false
+}
+
+// sqlserverEffectiveParams resolve os campos discretos efetivos (+ dicas de TLS, só relevantes em
+// Mode=="connstring" — fora desse modo, TLS vem sempre dos toggles discretos p.UseTLS/
+// p.SkipTLSVerify, sem mudança de comportamento).
+func sqlserverEffectiveParams(p dbConnParams) (host string, port int, username, password, database string, useTLS, skipTLSVerify bool) {
+	if p.Mode == "connstring" {
+		return sqlserverConnStringParams(p.ConnStr)
+	}
+	return p.Host, p.Port, p.Username, p.Password, p.Database, p.UseTLS, p.SkipTLSVerify
+}
+
+// envVarPrefix monta um prefixo `env VAR='valor' ` pra injetar uma variável de ambiente na frente
+// de um comando já embrulhado em `timeout Ns ...` (usado pra passar senha sem expô-la em
+// `ps`/histórico de shell — MYSQL_PWD, SQLCMDPASSWORD).
+//
+// BUG REAL corrigido — `timeout Ns VAR=valor cmd` (sem o `env`) NÃO funciona como atribuição de
+// variável de ambiente: a sintaxe `VAR=valor cmd` só é reconhecida pelo shell como atribuição
+// temporária quando é a PRIMEIRA palavra de um comando simples. Com `timeout` e a duração já
+// ocupando essa posição, `VAR=valor` vira só mais um argumento posicional pro próprio `timeout`,
+// que tenta executá-lo como se fosse o nome do programa a rodar — falha com
+// `timeout: failed to run command 'VAR=valor': No such file or directory`, confirmado ao vivo
+// rodando exatamente esse padrão. `env VAR=valor cmd` resolve isso (`env` lê pares VAR=valor
+// como seus próprios argumentos, em qualquer posição antes do comando real). Esse bug já existia
+// desde a implementação original do engine MySQL (`MYSQL_PWD=...` sem `env`) — nunca detectado
+// porque nenhum teste anterior exercitou autenticação com senha nesse caminho específico
+// (conectividade sem senha, ou com credenciais lidas de outro lugar, sempre "funcionava" porque
+// o prefixo vazio nunca acionava o bug). Achado ao validar o SQL Server (SQLCMDPASSWORD) contra
+// um servidor real — corrigido nos dois engines de uma vez.
+func envVarPrefix(name, value string) string {
+	if value == "" {
+		return ""
+	}
+	return "env " + name + "=" + quoteShellArg(value) + " "
+}
+
+// sqlserverPasswordPrefix monta o prefixo de ambiente pra senha do sqlcmd (SQLCMDPASSWORD).
+func sqlserverPasswordPrefix(p dbConnParams) string {
+	_, _, _, pass, _, _, _ := sqlserverEffectiveParams(p)
+	return envVarPrefix("SQLCMDPASSWORD", pass)
+}
+
+// sqlserverConnStringSchemes: mesmo racional de postgresConnStringSchemes/mongoConnStringSchemes
+// — evita repassar um esquema errado pro parser e conectar (ou falhar) sem contexto nenhum.
+// jdbc:sqlserver:// adicionado depois de um caso real: usuário colou a connection string exata
+// que usa no dia a dia (formato do driver JDBC da Microsoft, muito comum em config de app Java) e
+// esperava que funcionasse — só o formato URI simples era aceito antes disso.
+var sqlserverConnStringSchemes = []string{"sqlserver://", "mssql://", jdbcSQLServerPrefix}
+
+func isValidSQLServerConnString(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	for _, scheme := range sqlserverConnStringSchemes {
+		if strings.HasPrefix(lower, scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+func sqlserverConnStringHint(raw string) string {
+	if scheme := extractURIScheme(raw); scheme != "" {
+		return fmt.Sprintf("Essa connection string usa o esquema %q, que não é SQL Server — confira se copiou a string do banco certo. Esperado: sqlserver://, mssql:// ou jdbc:sqlserver://", scheme+"://")
+	}
+	return "Connection string do SQL Server deve começar com sqlserver://, mssql:// ou jdbc:sqlserver:// (ex: sqlserver://usuario:senha@host:1433/banco, ou jdbc:sqlserver://host:1433;database=banco;user=usuario;password=senha;encrypt=true) — formato ADO.NET (Server=...;) não é suportado aqui."
 }
 
 // redisEffectiveTarget devolve (true, uri, nil) quando dá pra usar `redis-cli -u <uri>`
@@ -851,6 +1144,38 @@ func isValidRedisConnString(s string) bool {
 // de teste) no campo de connection string, esperando que funcionasse como se estivesse rodando
 // redis-cli manualmente. Sem essa detecção, o único sinal que o usuário via era o "Invalid URI
 // scheme" cru devolvido pelo próprio redis-cli.
+// validateDBConnStringScheme checa se `raw` usa um esquema de URI reconhecido pelo cliente
+// nativo do engine selecionado — chamado nos dois pontos onde uma connection string chega
+// (digitada direto no formulário, ou lida de Secret/ConfigMap via ConnStringRef), pra nunca
+// deixar um esquema errado (ex: connection string copiada do banco/engine errado) chegar sem
+// aviso no psql/mongosh/mysql e produzir um erro cru de driver sem contexto nenhum. Devolve
+// (código, mensagem) não-vazios quando inválida; ("", "") quando ok.
+func validateDBConnStringScheme(engine, raw string) (code, hint string) {
+	switch engine {
+	case "redis":
+		if !isValidRedisConnString(raw) {
+			return "INVALID_REDIS_CONNSTRING", redisConnStringHint(raw)
+		}
+	case "postgres":
+		if !isValidPostgresConnString(raw) {
+			return "INVALID_POSTGRES_CONNSTRING", postgresConnStringHint(raw)
+		}
+	case "mongodb":
+		if !isValidMongoConnString(raw) {
+			return "INVALID_MONGO_CONNSTRING", mongoConnStringHint(raw)
+		}
+	case "mysql":
+		if !isValidMySQLConnString(raw) {
+			return "INVALID_MYSQL_CONNSTRING", mysqlConnStringHint(raw)
+		}
+	case "sqlserver":
+		if !isValidSQLServerConnString(raw) {
+			return "INVALID_SQLSERVER_CONNSTRING", sqlserverConnStringHint(raw)
+		}
+	}
+	return "", ""
+}
+
 func redisConnStringHint(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "-") || strings.Contains(trimmed, " -h ") || strings.Contains(trimmed, "--tls") {
@@ -1082,11 +1407,22 @@ var dbEngines = map[string]dbEngine{
 	},
 	"mysql": {
 		label: "MySQL/MariaDB",
-		// mariadb:11 — cliente mysql/mariadb compatível com servidores MySQL e MariaDB.
+		// mariadb:11 — cliente compatível com servidores MySQL e MariaDB.
+		//
+		// BUG REAL corrigido — binário chamado como `mysql`, que não existe mais nessa imagem: o
+		// pacote `mariadb-client` (MariaDB 10.6+, incluindo o 11.x usado aqui) renomeou o binário
+		// pra `mariadb` e NÃO mantém mais o symlink de compatibilidade `mysql` (confirmado ao vivo
+		// — `find / -iname mysql` na imagem `mariadb:11` não acha nenhum executável, só diretórios
+		// de dados/config com esse nome). Toda invocação (`docker run ... mysql ...`, tanto no
+		// modo local quanto no modo pod) falhava com "executable file not found" — o engine
+		// MySQL/MariaDB estava quebrado por completo, não só num caso de borda. Trocado `mysql`
+		// por `mariadb` (mesmo binário, mesma compatibilidade de protocolo com servidores MySQL de
+		// verdade — é justamente o propósito do fork) nos 3 pontos que montam o comando
+		// (buildConnectivity/buildBrowse/buildPreview).
 		image: "mariadb:11",
 		buildConnectivity: func(p dbConnParams, timeoutSec int) string {
-			host, port, user, pass, db := mysqlEffectiveParams(p)
-			args := []string{"mysql", "-h", quoteShellArg(host), "-P", strconv.Itoa(port)}
+			host, port, user, _, db := mysqlEffectiveParams(p)
+			args := []string{"mariadb", "-h", quoteShellArg(host), "-P", strconv.Itoa(port)}
 			if user != "" {
 				args = append(args, "-u", quoteShellArg(user))
 			}
@@ -1101,10 +1437,7 @@ var dbEngines = map[string]dbEngine{
 				args = append(args, quoteShellArg(db))
 			}
 			args = append(args, "-e", quoteShellArg("SELECT 1;"))
-			prefix := ""
-			if pass != "" {
-				prefix = "MYSQL_PWD=" + quoteShellArg(pass) + " "
-			}
+			prefix := mysqlPasswordPrefix(p)
 			return fmt.Sprintf("timeout %ds %s%s 2>&1", timeoutSec, prefix, strings.Join(args, " "))
 		},
 		// Sem Database informado: lista databases. Com Database informado: desce um nível e lista
@@ -1114,8 +1447,8 @@ var dbEngines = map[string]dbEngine{
 		// um scan): data_length ("Size"), data_length+index_length ("Storage Size" — equivalente
 		// ao Compass) e table_rows (estimativa de linhas, atualizada por ANALYZE TABLE).
 		buildBrowse: func(p dbConnParams, timeoutSec int) string {
-			host, port, user, pass, db := mysqlEffectiveParams(p)
-			args := []string{"mysql", "-h", quoteShellArg(host), "-P", strconv.Itoa(port)}
+			host, port, user, _, db := mysqlEffectiveParams(p)
+			args := []string{"mariadb", "-h", quoteShellArg(host), "-P", strconv.Itoa(port)}
 			if user != "" {
 				args = append(args, "-u", quoteShellArg(user))
 			}
@@ -1137,10 +1470,7 @@ var dbEngines = map[string]dbEngine{
 			}
 			// -N (--skip-column-names) evita ter que descartar a linha de cabeçalho no Go.
 			args = append(args, "-N", "-e", quoteShellArg(query))
-			prefix := ""
-			if pass != "" {
-				prefix = "MYSQL_PWD=" + quoteShellArg(pass) + " "
-			}
+			prefix := mysqlPasswordPrefix(p)
 			return fmt.Sprintf("timeout %ds %s%s 2>&1", timeoutSec, prefix, strings.Join(args, " "))
 		},
 		parseBrowseOutput: func(raw string, p dbConnParams) ([]DBBrowseObject, string, bool) {
@@ -1155,8 +1485,8 @@ var dbEngines = map[string]dbEngine{
 		// separada por tab COM linha de cabeçalho (sem o -N usado em buildBrowse) — dá pra montar
 		// os mapas coluna→valor sem precisar saber o schema de antemão.
 		buildPreview: func(p dbConnParams, pv dbPreviewParams, timeoutSec int) string {
-			host, port, user, pass, db := mysqlEffectiveParams(p)
-			args := []string{"mysql", "-h", quoteShellArg(host), "-P", strconv.Itoa(port)}
+			host, port, user, _, db := mysqlEffectiveParams(p)
+			args := []string{"mariadb", "-h", quoteShellArg(host), "-P", strconv.Itoa(port)}
 			if user != "" {
 				args = append(args, "-u", quoteShellArg(user))
 			}
@@ -1176,10 +1506,7 @@ var dbEngines = map[string]dbEngine{
 			}
 			query := fmt.Sprintf("SELECT * FROM %s%s LIMIT %d OFFSET %d;", quoteMySQLIdentifier(pv.Object), orderBy, pv.Limit, pv.Offset)
 			args = append(args, "--batch", "-e", quoteShellArg(query))
-			prefix := ""
-			if pass != "" {
-				prefix = "MYSQL_PWD=" + quoteShellArg(pass) + " "
-			}
+			prefix := mysqlPasswordPrefix(p)
 			return fmt.Sprintf("timeout %ds %s%s 2>&1", timeoutSec, prefix, strings.Join(args, " "))
 		},
 		parsePreviewOutput: parseTSVWithHeaderPreview,
@@ -1431,6 +1758,159 @@ var dbEngines = map[string]dbEngine{
 		networkErrorRegex: regexp.MustCompile(`(?i)(could not connect|connection refused|name or service not known)`),
 		authErrorRegex:    regexp.MustCompile(`(?i)(noauth|wrongpass|invalid username-password)`),
 		tlsErrorRegex:     regexp.MustCompile(`(?i)(tls|ssl).*(error|handshake)`),
+	},
+	"sqlserver": {
+		label: "SQL Server (Azure SQL)",
+		// mcr.microsoft.com/mssql-tools18 — usada na primeira versão desta feature — NÃO EXISTE
+		// como imagem standalone (bug real: `docker run` falhava com "not found" no modo local, e
+		// o mesmo aconteceria no modo pod). `mssql-tools18` é só um PACOTE (`/opt/mssql-tools18/
+		// bin/sqlcmd`, baseado no driver ODBC 18) embutido dentro da imagem completa do motor
+		// (`mcr.microsoft.com/mssql/server`, GBs, roda o SQL Server inteiro — não faz sentido só
+		// pra rodar um cliente) — não existe como imagem "só as ferramentas" nesse pacote mais
+		// novo. `mcr.microsoft.com/mssql-tools` (sem "18", confirmado pull público real) é a
+		// distribuição standalone oficial ainda publicada — sqlcmd (driver ODBC 17) já no PATH,
+		// mesma imagem usada por anos em CI/scripts pra conectar em Azure SQL antes do ODBC 18
+		// existir; sem exigência de flag de encriptação explícita pra funcionar contra Azure SQL
+		// (a própria Azure já negocia TLS no handshake TDS independente do client). `-C` (trust
+		// server certificate) continua condicionado a SkipTLSVerify, pro caso de a imagem não
+		// confiar na cadeia de CA do servidor (comum em containers mínimos).
+		image: "mcr.microsoft.com/mssql-tools:latest",
+		buildConnectivity: func(p dbConnParams, timeoutSec int) string {
+			host, port, user, _, db, useTLS, skipTLSVerify := sqlserverEffectiveParams(p)
+			args := []string{sqlserverCmdPath, "-S", quoteShellArg(fmt.Sprintf("%s,%d", host, port))}
+			if user != "" {
+				args = append(args, "-U", quoteShellArg(user))
+			}
+			if db != "" {
+				args = append(args, "-d", quoteShellArg(db))
+			}
+			if useTLS {
+				args = append(args, "-N")
+			}
+			if skipTLSVerify {
+				args = append(args, "-C")
+			}
+			args = append(args, "-Q", quoteShellArg("SET NOCOUNT ON; SELECT 1;"))
+			return fmt.Sprintf("timeout %ds %s%s 2>&1", timeoutSec, sqlserverPasswordPrefix(p), strings.Join(args, " "))
+		},
+		// Sem Database informado: lista databases (exclui as 4 de sistema: master/tempdb/model/
+		// msdb, database_id 1-4 — mesmo espírito do filtro NOT datistemplate do Postgres). Com
+		// Database informado: desce um nível e lista tabelas do schema dbo + colunas, no mesmo
+		// formato "tabela|coluna|tipo|size|storage_size|rowcount" do Postgres/MySQL (reaproveita
+		// groupColumnsToTablesWithStats sem precisar de parser novo). Estatísticas via
+		// sys.partitions + sys.allocation_units (VIEWS DE CATÁLOGO, não uma DMV — ver "Bug real
+		// corrigido" abaixo) — used_pages("Size"), total_pages ("Storage Size", heap+índices) e
+		// rows (contagem), ambos em páginas de 8KB. `-h -1` suprime cabeçalho; `SET NOCOUNT ON;`
+		// suprime a mensagem "(N rows affected)" que o sqlcmd imprime no stdout mesmo em modo
+		// não-interativo (sem isso, essa linha extra contaminaria a lista de databases — o parser
+		// de tabela já tolera linhas malformadas, mas a lista simples de nomes não). `-h -1` e
+		// `-y 0` (usado no Preview) são MUTUAMENTE EXCLUSIVOS no sqlcmd (`Sqlcmd: The -h and the
+		// -y 0 options are mutually exclusive.`, confirmado rodando de verdade) — Browse usa só
+		// `-h -1`; o risco residual de truncar uma linha >256 chars (o motivo de existir `-y 0`) é
+		// baixo aqui, já que cada linha é só tabela+coluna+tipo+3 números, não um valor de dado
+		// arbitrário como no Preview.
+		//
+		// BUG REAL corrigido — a versão original usava `sys.dm_db_partition_stats` (uma Dynamic
+		// Management View), que exige a permissão `VIEW DATABASE STATE`/`VIEW DATABASE
+		// PERFORMANCE STATE` (o nome mudou entre versões do SQL Server, mesma categoria de
+		// permissão) — NÃO concedida por padrão nem pela role `db_datareader`, a mais comum pra
+		// service accounts de leitura. Relatado ao vivo contra um Azure SQL real: `Msg 262 ...
+		// VIEW DATABASE PERFORMANCE STATE permission denied`. `sys.partitions`/
+		// `sys.allocation_units` são VIEWS DE CATÁLOGO (não DMVs) — visibilidade segue o modelo de
+		// permissão em nível de objeto (se o login pode ler a tabela, vê os metadados dela nessas
+		// views), sem exigir nenhuma permissão especial de "estado do servidor/banco". Reproduzido
+		// e confirmado ao vivo: criei um login só com `db_datareader` (sem VIEW DATABASE STATE) —
+		// a query antiga falhou com o EXATO erro relatado; a nova, com as views de catálogo, retornou
+		// os dados corretamente com esse mesmo login restrito. `au.type IN (1,3)` filtra
+		// IN_ROW_DATA/ROW_OVERFLOW_DATA (dados "normais"), evitando somar allocation units de
+		// LOB_DATA (type=2, semântica de container_id diferente) por engano.
+		buildBrowse: func(p dbConnParams, timeoutSec int) string {
+			host, port, user, _, db, useTLS, skipTLSVerify := sqlserverEffectiveParams(p)
+			args := []string{sqlserverCmdPath, "-S", quoteShellArg(fmt.Sprintf("%s,%d", host, port))}
+			if user != "" {
+				args = append(args, "-U", quoteShellArg(user))
+			}
+			if useTLS {
+				args = append(args, "-N")
+			}
+			if skipTLSVerify {
+				args = append(args, "-C")
+			}
+			query := "SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name;"
+			if db != "" {
+				args = append(args, "-d", quoteShellArg(db))
+				query = "SELECT c.TABLE_NAME + '|' + c.COLUMN_NAME + '|' + c.DATA_TYPE + '|' + " +
+					"CAST(ISNULL(SUM(DISTINCT au.used_pages) * 8 * 1024, 0) AS VARCHAR(20)) + '|' + " +
+					"CAST(ISNULL(SUM(DISTINCT au.total_pages) * 8 * 1024, 0) AS VARCHAR(20)) + '|' + " +
+					"CAST(ISNULL(MAX(p2.rows), 0) AS VARCHAR(20)) " +
+					"FROM INFORMATION_SCHEMA.COLUMNS c " +
+					"JOIN sys.tables t ON t.name = c.TABLE_NAME AND SCHEMA_NAME(t.schema_id) = c.TABLE_SCHEMA " +
+					"LEFT JOIN sys.partitions p2 ON p2.object_id = t.object_id AND p2.index_id IN (0,1) " +
+					"LEFT JOIN sys.allocation_units au ON au.container_id = p2.partition_id AND au.type IN (1,3) " +
+					"WHERE t.is_ms_shipped = 0 AND c.TABLE_SCHEMA = 'dbo' " +
+					"GROUP BY c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.ORDINAL_POSITION " +
+					"ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION;"
+			}
+			args = append(args, "-h", "-1", "-Q", quoteShellArg("SET NOCOUNT ON; "+query))
+			return fmt.Sprintf("timeout %ds %s%s 2>&1", timeoutSec, sqlserverPasswordPrefix(p), strings.Join(args, " "))
+		},
+		parseBrowseOutput: func(raw string, p dbConnParams) ([]DBBrowseObject, string, bool) {
+			lines := parseLineListOutput(raw, false)
+			_, _, _, _, db, _, _ := sqlserverEffectiveParams(p)
+			if db == "" {
+				return namesToObjects(lines), "database", false
+			}
+			return groupColumnsToTablesWithStats(lines), "table", false
+		},
+		// FOR JSON PATH, WITHOUT_ARRAY_WRAPPER numa subquery correlacionada (`(SELECT t.* FOR
+		// JSON ...) FROM (<query paginada>) t`) — o jeito documentado de obter "uma linha de
+		// output = um objeto JSON" no SQL Server, equivalente ao row_to_json do Postgres. `-y 0`
+		// desliga o truncamento de colunas de texto (default 256 chars) do sqlcmd — sem isso, um
+		// JSON longo sai quebrado em múltiplas linhas e corrompe o parse (cada linha vira um
+		// `json.Unmarshal` independente em parseJSONLinesPreview) — CONFIRMADO ao vivo contra um
+		// SQL Server real: um valor de 500 chars saiu em 3 linhas sem `-y 0`, 1 linha só com
+		// `-y 0`. Sem `-h -1` de propósito — mutuamente exclusivo com `-y 0`
+		// (`Sqlcmd: The -h and the -y 0 options are mutually exclusive.`) — mas testado ao vivo:
+		// essa query específica (uma única coluna sem nome, resultado de FOR JSON) não imprime
+		// nenhuma linha de cabeçalho/separador de qualquer forma, então a ausência de `-h -1` não
+		// contamina o parseJSONLinesPreview (que também tolera e descarta linhas não-JSON, rede de
+		// segurança extra caso esse comportamento mude em outra versão do SQL Server/sqlcmd).
+		// `ORDER BY (SELECT NULL)` é o truque padrão pra satisfazer a exigência de ORDER BY do
+		// OFFSET/FETCH quando nenhuma coluna de ordenação foi escolhida pelo usuário.
+		buildPreview: func(p dbConnParams, pv dbPreviewParams, timeoutSec int) string {
+			host, port, user, _, db, useTLS, skipTLSVerify := sqlserverEffectiveParams(p)
+			args := []string{sqlserverCmdPath, "-S", quoteShellArg(fmt.Sprintf("%s,%d", host, port))}
+			if user != "" {
+				args = append(args, "-U", quoteShellArg(user))
+			}
+			if db != "" {
+				args = append(args, "-d", quoteShellArg(db))
+			}
+			if useTLS {
+				args = append(args, "-N")
+			}
+			if skipTLSVerify {
+				args = append(args, "-C")
+			}
+			orderBy := "(SELECT NULL)"
+			if pv.SortColumn != "" {
+				orderBy = fmt.Sprintf("%s %s", quoteSQLServerIdentifier(pv.SortColumn), strings.ToUpper(pv.SortDir))
+			}
+			query := fmt.Sprintf(
+				"SET NOCOUNT ON; SELECT (SELECT t.* FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) "+
+					"FROM (SELECT * FROM %s ORDER BY %s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY) AS t;",
+				quoteSQLServerIdentifier(pv.Object), orderBy, pv.Offset, pv.Limit)
+			args = append(args, "-y", "0", "-Q", quoteShellArg(query))
+			return fmt.Sprintf("timeout %ds %s%s 2>&1", timeoutSec, sqlserverPasswordPrefix(p), strings.Join(args, " "))
+		},
+		parsePreviewOutput: parseJSONLinesPreview,
+		resolveDatabaseLabel: func(p dbConnParams) string {
+			_, _, _, _, db, _, _ := sqlserverEffectiveParams(p)
+			return db
+		},
+		networkErrorRegex: regexp.MustCompile(`(?i)(a network-related or instance-specific error|tcp provider|no such host is known|login timeout expired|connection timeout expired)`),
+		authErrorRegex:    regexp.MustCompile(`(?i)(login failed for user|cannot open server .* requested by the login)`),
+		tlsErrorRegex:     regexp.MustCompile(`(?i)(ssl provider|certificate verify failed|certificate chain was issued by an authority that is not trusted|encryption\(ssl/tls\) handshake failed)`),
 	},
 }
 
@@ -1861,7 +2341,7 @@ func validateDBTestRequest(c *gin.Context, req *RunDBTestRequest) (dbEngine, boo
 
 	engine, engineOk := dbEngines[req.Engine]
 	if !engineOk {
-		c.JSON(http.StatusBadRequest, errorResponse("INVALID_ENGINE", "engine deve ser postgres, mysql, mongodb ou redis"))
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_ENGINE", "engine deve ser postgres, mysql, mongodb, redis ou sqlserver"))
 		return dbEngine{}, false
 	}
 
@@ -1910,8 +2390,8 @@ func validateDBTestRequest(c *gin.Context, req *RunDBTestRequest) (dbEngine, boo
 				c.JSON(http.StatusBadRequest, errorResponse("MISSING_CONNSTRING", "auth.connection_string ou auth.connstring_ref é obrigatório quando auth.mode é connstring"))
 				return dbEngine{}, false
 			}
-			if req.Engine == "redis" && !isValidRedisConnString(req.Auth.ConnectionString) {
-				c.JSON(http.StatusBadRequest, errorResponse("INVALID_REDIS_CONNSTRING", redisConnStringHint(req.Auth.ConnectionString)))
+			if code, hint := validateDBConnStringScheme(req.Engine, req.Auth.ConnectionString); code != "" {
+				c.JSON(http.StatusBadRequest, errorResponse(code, hint))
 				return dbEngine{}, false
 			}
 		}
@@ -1928,6 +2408,18 @@ func validateDBTestRequest(c *gin.Context, req *RunDBTestRequest) (dbEngine, boo
 		}
 	} else if req.Host == "" || req.Port <= 0 {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_HOST_PORT", "host e port são obrigatórios quando auth.mode não é connstring e host_configmap_ref não foi informado"))
+		return dbEngine{}, false
+	} else if strings.Contains(req.Host, "://") {
+		// Proteção contra colar uma connection string inteira no campo "Host" (em vez de trocar
+		// pro modo "Connection String") — sem essa checagem, buildPostgresURI/buildMongoURI
+		// embutem o valor cru dentro de outra URI (`Host: fmt.Sprintf("%s:%d", p.Host, p.Port)`),
+		// produzindo uma URI duplamente aninhada (ex: "postgresql://sqlserver://host:5432/postgres")
+		// que psql/mongosh não conseguem parsear de forma sensata — o erro nativo do libpq nesse
+		// caso não menciona nada sobre o campo Host ou URI aninhada, só um "invalid integer value
+		// ... for connection option port" totalmente desconexo do problema real (bug real relatado
+		// pelo usuário, ver CLAUDE.md).
+		c.JSON(http.StatusBadRequest, errorResponse("HOST_LOOKS_LIKE_CONNSTRING",
+			fmt.Sprintf("O campo Host não deve conter uma connection string inteira (recebido: %q) — troque para o modo \"Connection String\" e cole ali, ou preencha aqui só o hostname/IP.", req.Host)))
 		return dbEngine{}, false
 	}
 
@@ -2086,8 +2578,8 @@ func (h *DBTestHandler) runTest(ctx context.Context, sessionID string, req RunDB
 			fail("falha ao resolver connection string", err)
 			return
 		}
-		if req.Engine == "redis" && !isValidRedisConnString(connStr) {
-			fail("connection string do Redis inválida", fmt.Errorf("%s", redisConnStringHint(connStr)))
+		if code, hint := validateDBConnStringScheme(req.Engine, connStr); code != "" {
+			fail("connection string inválida", fmt.Errorf("%s", hint))
 			return
 		}
 		conn.ConnStr = connStr

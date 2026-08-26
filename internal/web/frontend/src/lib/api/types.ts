@@ -2345,7 +2345,7 @@ export interface TopicsOverviewResponse {
 
 // ─── Teste de Banco de Dados sob demanda ───────────────────────────────────────
 
-export type DBEngine = 'postgres' | 'mysql' | 'mongodb' | 'redis';
+export type DBEngine = 'postgres' | 'mysql' | 'mongodb' | 'redis' | 'sqlserver';
 
 export type DBAuthMode = 'none' | 'userpass' | 'connstring';
 
