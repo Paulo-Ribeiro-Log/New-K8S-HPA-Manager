@@ -70,11 +70,29 @@ const (
 	// pra evitar, reintroduzido no próprio valor máximo permitido. 8s×30=240s+30s buffer=270s,
 	// cabe com margem.
 	netDiscoveryProbeTimeoutMaxSec = 8
+	// netDiscoveryProbeCount — DEFAULT de quantas sondas TCP por salto (-q do tcptraceroute) quando
+	// o usuário não escolhe outro valor. Fase A do roadmap de maturidade profissional
+	// (IP-ROUTE-DISCOVERY-PLAN.md): 1 sonda (valor original desta feature) não permite distinguir
+	// "hop lento" de "hop com perda intermitente de pacote" — o padrão de diagnóstico esperado em
+	// qualquer ferramenta de rede séria (mtr, ThousandEyes) é reportar perda % e variação de
+	// latência por hop, o que exige mais de 1 amostra. 3 é o mesmo valor convencional já usado por
+	// ping/mtr.
+	netDiscoveryProbeCount = 3
+	// netDiscoveryProbeCountMax — teto pro override do usuário. Mantido conservador (não maior): o
+	// pior caso do traceroute cresce LINEARMENTE com o número de sondas (ver
+	// computeOverallTimeout) — um valor mais alto combinado com ProbeTimeoutSec no máximo
+	// ultrapassaria netDiscoveryOverallTimeoutCap num cenário só moderadamente adverso, não só no
+	// pior caso patológico (todos os saltos 100% silenciosos). Aceito como trade-off: combos
+	// extremos (ProbeTimeoutSec E ProbeCount ambos no máximo) ainda podem bater no cap antes de
+	// esgotar o pior caso teórico — mesmo tipo de trade-off já aceito só para ProbeTimeoutSec antes
+	// desta fase (ver netDiscoveryOverallTimeoutCap abaixo), não uma classe nova de risco.
+	netDiscoveryProbeCountMax = 3
 	// netDiscoveryOverallTimeout — teto absoluto DEFAULT pro comando inteiro (30 hops × pior caso
-	// de espera no timeout padrão), rede de segurança contra um traceroute que nunca termina
-	// sozinho. Ver computeOverallTimeout — estende dinamicamente quando o usuário aumenta
-	// ProbeTimeoutSec, senão um timeout de sonda maior faria o traceroute ser abortado no meio
-	// pelo teto ANTIGO antes mesmo de terminar de tentar todos os saltos.
+	// de espera no timeout padrão × sondas por salto), rede de segurança contra um traceroute que
+	// nunca termina sozinho. Ver computeOverallTimeout — estende dinamicamente quando o usuário
+	// aumenta ProbeTimeoutSec/ProbeCount, senão um timeout/contagem de sonda maior faria o
+	// traceroute ser abortado no meio pelo teto ANTIGO antes mesmo de terminar de tentar todos os
+	// saltos.
 	netDiscoveryOverallTimeout = 90 * time.Second
 	// netDiscoveryOverallTimeoutCap — nunca ultrapassado, mesmo com ProbeTimeoutSec no máximo —
 	// fica abaixo de netDiscoveryPodActiveDeadline (300s) pra nunca deixar o contexto Go esperar
@@ -82,14 +100,14 @@ const (
 	netDiscoveryOverallTimeoutCap = 280 * time.Second
 )
 
-// computeOverallTimeout estende o teto absoluto da descoberta quando o usuário pede um timeout de
-// sonda maior que o default — sem isso, um ProbeTimeoutSec alto faria o pior caso (todos os
-// netDiscoveryMaxHops saltos sem resposta) facilmente estourar o teto FIXO antigo (90s: 30×2s já
-// usa 60s, sobrando pouca margem pras fases seguintes), abortando o traceroute no meio pelo
-// contexto em vez de terminar normalmente com "não alcançado". +30s de folga cobre fingerprint/
-// enrich/crossref (fases que rodam depois, best-effort, mas ainda dentro do mesmo contexto).
-func computeOverallTimeout(probeTimeoutSec int) time.Duration {
-	worstCase := time.Duration(probeTimeoutSec*netDiscoveryMaxHops)*time.Second + 30*time.Second
+// computeOverallTimeout estende o teto absoluto da descoberta quando o usuário pede um timeout ou
+// número de sondas por salto maior que o default — sem isso, um ProbeTimeoutSec/ProbeCount alto
+// faria o pior caso (todos os netDiscoveryMaxHops saltos, cada um com probeCount sondas, sem
+// resposta) facilmente estourar o teto FIXO antigo, abortando o traceroute no meio pelo contexto em
+// vez de terminar normalmente com "não alcançado". +30s de folga cobre fingerprint/enrich/crossref
+// (fases que rodam depois, best-effort, mas ainda dentro do mesmo contexto).
+func computeOverallTimeout(probeTimeoutSec, probeCount int) time.Duration {
+	worstCase := time.Duration(probeTimeoutSec*netDiscoveryMaxHops*probeCount)*time.Second + 30*time.Second
 	if worstCase < netDiscoveryOverallTimeout {
 		return netDiscoveryOverallTimeout
 	}
@@ -108,6 +126,18 @@ type NetDiscoveryHop struct {
 	RTTMs    float64 `json:"rtt_ms,omitempty"`
 	TimedOut bool    `json:"timed_out"`
 	IsTarget bool    `json:"is_target"` // true quando este hop é o próprio destino resolvido
+
+	// LossPct/RTTMinMs/RTTMaxMs/ProbesSent/ProbesReceived — Fase A do roadmap de maturidade
+	// profissional (IP-ROUTE-DISCOVERY-PLAN.md): com múltiplas sondas por salto (ver
+	// tracerouteArgs/RunNetDiscoveryRequest.ProbeCount), um hop passa a ter estatística real em vez
+	// de uma única amostra — distingue "hop lento" (RTT alto, LossPct=0) de "hop com perda
+	// intermitente" (LossPct>0 e <100, mesmo com RTT baixo nas sondas que responderam). LossPct
+	// omitido (zero value) quando não há perda — 0% é o caso comum, não vale poluir o JSON.
+	LossPct        float64 `json:"loss_pct,omitempty"`
+	RTTMinMs       float64 `json:"rtt_min_ms,omitempty"`
+	RTTMaxMs       float64 `json:"rtt_max_ms,omitempty"`
+	ProbesSent     int     `json:"probes_sent,omitempty"`
+	ProbesReceived int     `json:"probes_received,omitempty"`
 
 	// Enriquecimento passivo (Fase 3, net_discovery_enrich.go) — SEMPRE vazios no evento SSE
 	// "hop" ao vivo (enriquecimento roda só depois de todos os saltos coletados, best-effort);
@@ -176,12 +206,27 @@ func resolveTarget(ctx context.Context, raw string) (ip string, resolved bool, e
 // resolução ad-hoc e lenta do próprio traceroute por salto). Formato: " N  IP  X ms  Y ms  Z ms"
 // ou " N  * * *" quando o salto não respondeu a nenhuma sonda.
 var tracerouteHopLineRegex = regexp.MustCompile(`^\s*(\d+)\s+(.+)$`)
-var tracerouteRTTRegex = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*ms`)
+
+// tracerouteFloatToken casa um token de valor numérico isolado (ex: "1.234", sempre seguido de
+// "ms" como token separado na saída do tcptraceroute) — usado pelo parser token-a-token de
+// parseTracerouteLine (Fase A), não mais uma regex solta sobre a linha inteira (ver comentário
+// completo na função).
+var tracerouteFloatToken = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
 var tracerouteIPToken = regexp.MustCompile(`^([0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9a-fA-F:]+)$`)
 
-// parseTracerouteLine extrai um NetDiscoveryHop de uma linha de stdout do traceroute, ou
+// parseTracerouteLine extrai um NetDiscoveryHop de uma linha de stdout do tcptraceroute, ou
 // (nil, false) se a linha não for reconhecida como linha de salto (ex: o cabeçalho
 // "traceroute to X (X), 30 hops max..." que o comando imprime antes do primeiro salto).
+//
+// Fase A do roadmap de maturidade profissional (IP-ROUTE-DISCOVERY-PLAN.md): com -q > 1 (múltiplas
+// sondas por salto, ver tracerouteArgs), cada linha carrega N resultados de sonda em sequência — um
+// "X.Y ms" por sonda que respondeu, um "*" solto por sonda que não respondeu — precedidos, quando
+// ao menos uma sonda respondeu, pelo IP do salto (impresso uma única vez, não repetido a cada sonda
+// subsequente da mesma linha, confirmado pelo formato real já coberto pelos testes desta função:
+// TestParseTracerouteLine_MixedProbesInSameHop). O parser caminha TOKEN A TOKEN em vez de só somar
+// todos os valores "ms" soltos na linha inteira (como a v1 desta função fazia via regex —
+// tracerouteRTTRegex, removida) — sem isso não dá pra saber QUANTAS sondas foram de fato enviadas
+// (e portanto não dá pra calcular perda %), só a média das que responderam.
 func parseTracerouteLine(line string, targetIP string) (*NetDiscoveryHop, bool) {
 	m := tracerouteHopLineRegex.FindStringSubmatch(line)
 	if m == nil {
@@ -199,27 +244,70 @@ func parseTracerouteLine(line string, targetIP string) (*NetDiscoveryHop, bool) 
 	if len(fields) == 0 {
 		return nil, false
 	}
+
+	i := 0
 	if tracerouteIPToken.MatchString(fields[0]) {
 		hop.IP = fields[0]
 		hop.IsTarget = hop.IP == targetIP
-	} else {
-		// primeiro token não é IP (ex: "*") — hop não respondeu a nenhuma sonda.
-		hop.TimedOut = true
+		i = 1
 	}
 
-	// Média das amostras de RTT que responderam (traceroute manda -q sondas por salto; algumas
-	// podem individualmente virar "*" mesmo com outras respondendo — não é "hop todo perdido"
-	// nesse caso, só uma sonda específica).
-	rtts := tracerouteRTTRegex.FindAllStringSubmatch(rest, -1)
+	var rtts []float64
+	probesSent := 0
+	for i < len(fields) {
+		tok := fields[i]
+		switch {
+		case tok == "*":
+			// Sonda enviada, sem resposta.
+			probesSent++
+			i++
+		case tracerouteFloatToken.MatchString(tok) && i+1 < len(fields) && fields[i+1] == "ms":
+			// Sonda enviada, respondeu com este RTT.
+			if v, err := strconv.ParseFloat(tok, 64); err == nil {
+				rtts = append(rtts, v)
+				probesSent++
+			}
+			i += 2
+		case hop.IP == "" && tracerouteIPToken.MatchString(tok):
+			// Caso raro, não coberto pelos exemplos reais já testados: a 1ª sonda da linha não
+			// respondeu (sem IP ainda) mas uma sonda posterior respondeu — o IP só aparece na
+			// primeira sonda que de fato respondeu, não necessariamente na primeira da linha.
+			hop.IP = tok
+			hop.IsTarget = hop.IP == targetIP
+			i++
+		default:
+			// Token desconhecido (ex: sufixo "[open]"/"[closed]" que o tcptraceroute anexa no
+			// salto final quando consegue determinar o estado da porta, ver
+			// TestParseTracerouteLine_TcptracerouteOpenPortSuffix) — ignora sem interromper o
+			// parsing do restante da linha.
+			i++
+		}
+	}
+
+	hop.ProbesSent = probesSent
+	hop.ProbesReceived = len(rtts)
+	if probesSent > 0 {
+		hop.LossPct = 100 * float64(probesSent-len(rtts)) / float64(probesSent)
+	}
+	// TimedOut = nem o IP foi identificado, nem nenhuma sonda respondeu — mesma semântica de
+	// antes desta fase (hop "* * *" completo), preservada mesmo com perda parcial contando à parte
+	// via LossPct (um hop com 1 de 3 sondas respondendo NÃO é TimedOut, é um hop com 66% de perda).
+	hop.TimedOut = hop.IP == "" && len(rtts) == 0
+
 	if len(rtts) > 0 {
-		var sum float64
-		for _, r := range rtts {
-			v, _ := strconv.ParseFloat(r[1], 64)
+		sum, min, max := 0.0, rtts[0], rtts[0]
+		for _, v := range rtts {
 			sum += v
+			if v < min {
+				min = v
+			}
+			if v > max {
+				max = v
+			}
 		}
 		hop.RTTMs = sum / float64(len(rtts))
-	} else if hop.IP == "" {
-		hop.TimedOut = true
+		hop.RTTMinMs = min
+		hop.RTTMaxMs = max
 	}
 
 	return hop, true
@@ -287,11 +375,11 @@ const netDiscoveryTCPPort = 443
 // traceroute genérico. Confirmado ao vivo contra 8.8.8.8: alcançou o destino com sucesso; contra
 // um alvo inalcançável, devolve exit code 1 mas ainda assim imprime os hops que respondeu — por
 // isso o chamador (runDiscovery) só considera falha total quando NENHUM hop foi coletado.
-func tracerouteArgs(targetIP string, port, probeTimeoutSec int) []string {
+func tracerouteArgs(targetIP string, port, probeTimeoutSec, probeCount int) []string {
 	return []string{
 		"tcptraceroute", "-n",
 		"-w", strconv.Itoa(probeTimeoutSec),
-		"-q", "1", // 1 sonda por salto — favorece velocidade/fluidez da animação sobre riqueza estatística (Fase 1)
+		"-q", strconv.Itoa(probeCount), // Fase A: sondas/salto configuráveis (default 3, ver netDiscoveryProbeCount) — permite loss%/jitter reais, não mais fixo em 1
 		"-m", strconv.Itoa(netDiscoveryMaxHops),
 		targetIP, strconv.Itoa(port),
 	}
@@ -303,10 +391,10 @@ func tracerouteArgs(targetIP string, port, probeTimeoutSec int) []string {
 // também, herdada da necessidade de ler respostas ICMP Time-Exceeded via socket raw — não
 // contornável por este código.
 func runTracerouteInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config,
-	namespace, podName, targetIP string, port, probeTimeoutSec int, onLine func(line string)) error {
+	namespace, podName, targetIP string, port, probeTimeoutSec, probeCount int, onLine func(line string)) error {
 
 	return streamCommandLines(ctx, func(stdout io.Writer) error {
-		return execCmdInPodStreaming(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer, tracerouteArgs(targetIP, port, probeTimeoutSec), stdout)
+		return execCmdInPodStreaming(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer, tracerouteArgs(targetIP, port, probeTimeoutSec, probeCount), stdout)
 	}, onLine)
 }
 
@@ -315,7 +403,7 @@ func runTracerouteInPod(ctx context.Context, clientset kubernetes.Interface, res
 // real do host pra alcançar destinos remotos (ex: infraestrutura na VPN corporativa até a Kyndryl,
 // confirmado pelo usuário como sendo a mesma VPN já usada pro AKS/GCP), um container isolado na
 // rede bridge padrão do Docker não teria essa rota.
-func runTracerouteLocal(ctx context.Context, targetIP string, port, probeTimeoutSec int, onLine func(line string)) error {
+func runTracerouteLocal(ctx context.Context, targetIP string, port, probeTimeoutSec, probeCount int, onLine func(line string)) error {
 	// Nome explícito (não só --rm) — achado real, testado ao vivo: cancelar a descoberta
 	// (context cancelado) mata o CLIENTE `docker run` via SIGKILL, mas isso não garante que o
 	// daemon pare o CONTAINER remoto (--rm só roda quando o cliente sai limpo, não quando é
@@ -328,7 +416,7 @@ func runTracerouteLocal(ctx context.Context, targetIP string, port, probeTimeout
 		"--name", containerName,
 		"--label", netDiscoveryDockerLabel,
 		netDiscoveryPodImage,
-	}, tracerouteArgs(targetIP, port, probeTimeoutSec)...)
+	}, tracerouteArgs(targetIP, port, probeTimeoutSec, probeCount)...)
 
 	err := streamCommandLines(ctx, func(stdout io.Writer) error {
 		cmd := exec.CommandContext(ctx, "docker", args...)
@@ -566,6 +654,11 @@ type RunNetDiscoveryRequest struct {
 	// genuinamente bloqueado (ver computeOverallTimeout — o teto geral da descoberta se estende
 	// automaticamente quando este valor sobe, pra não abortar o traceroute no meio).
 	ProbeTimeoutSec int `json:"probe_timeout_sec,omitempty"`
+	// ProbeCount — quantas sondas TCP por salto (-q do tcptraceroute). 0 (ou ausente) usa o default
+	// netDiscoveryProbeCount=3. Fase A do roadmap de maturidade profissional: mais de 1 sonda
+	// permite calcular perda de pacote (%) e faixa de latência (min/max) por salto, não só uma
+	// única amostra — ver comentário completo em netDiscoveryProbeCount/parseTracerouteLine.
+	ProbeCount int `json:"probe_count,omitempty"`
 	// ClientCertPEM/ClientKeyPEM — certificado de cliente opcional pra mTLS (Fase 2, pedido
 	// explícito do usuário depois de perguntar se ter o certificado "que já existe nesses
 	// clusters/servidores" ajudaria a descoberta). Só faz diferença quando o alvo exige
@@ -579,6 +672,11 @@ type RunNetDiscoveryRequest struct {
 	// de antes desta feature.
 	ClientCertPEM string `json:"client_cert_pem,omitempty"`
 	ClientKeyPEM  string `json:"client_key_pem,omitempty"`
+	// ExtraPorts — Fase D do roadmap de maturidade profissional: portas extras que o usuário pede
+	// pra verificar no fingerprint do destino, além das ~18 portas curadas já checadas por padrão
+	// (netDiscoveryFingerprintPorts) — útil pra troubleshooting de uma aplicação específica cuja
+	// porta não está na lista fixa (ex: 8081, 9000). Opcional, no máximo netDiscoveryExtraPortsMax.
+	ExtraPorts []int `json:"extra_ports,omitempty"`
 }
 
 const (
@@ -586,24 +684,32 @@ const (
 	netDiscoveryModeLocal = "local"
 )
 
-// normalizeProbeSettings valida/normaliza probePort e probeTimeoutSec (0 = default) — extraída de
-// dentro de Run() na Fase 5 (item P4, lote de múltiplos alvos) pra ser reaproveitada por RunBatch
-// sem duplicar a mesma checagem de faixa nos dois handlers.
-func normalizeProbeSettings(probePort, probeTimeoutSec int) (port, timeoutSec int, errCode, errMsg string) {
+// normalizeProbeSettings valida/normaliza probePort, probeTimeoutSec e probeCount (0 = default) —
+// extraída de dentro de Run() na Fase 5 (item P4, lote de múltiplos alvos) pra ser reaproveitada
+// por RunBatch sem duplicar a mesma checagem de faixa nos dois handlers. probeCount adicionado na
+// Fase A do roadmap de maturidade profissional (múltiplas sondas por salto).
+func normalizeProbeSettings(probePort, probeTimeoutSec, probeCount int) (port, timeoutSec, count int, errCode, errMsg string) {
 	port = probePort
 	if port == 0 {
 		port = netDiscoveryTCPPort
 	} else if port < 1 || port > 65535 {
-		return 0, 0, "INVALID_PROBE_PORT", "probe_port deve estar entre 1 e 65535"
+		return 0, 0, 0, "INVALID_PROBE_PORT", "probe_port deve estar entre 1 e 65535"
 	}
 
 	timeoutSec = probeTimeoutSec
 	if timeoutSec == 0 {
 		timeoutSec = netDiscoveryProbeTimeoutSec
 	} else if timeoutSec < 1 || timeoutSec > netDiscoveryProbeTimeoutMaxSec {
-		return 0, 0, "INVALID_PROBE_TIMEOUT", fmt.Sprintf("probe_timeout_sec deve estar entre 1 e %d", netDiscoveryProbeTimeoutMaxSec)
+		return 0, 0, 0, "INVALID_PROBE_TIMEOUT", fmt.Sprintf("probe_timeout_sec deve estar entre 1 e %d", netDiscoveryProbeTimeoutMaxSec)
 	}
-	return port, timeoutSec, "", ""
+
+	count = probeCount
+	if count == 0 {
+		count = netDiscoveryProbeCount
+	} else if count < 1 || count > netDiscoveryProbeCountMax {
+		return 0, 0, 0, "INVALID_PROBE_COUNT", fmt.Sprintf("probe_count deve estar entre 1 e %d", netDiscoveryProbeCountMax)
+	}
+	return port, timeoutSec, count, "", ""
 }
 
 // validateClientCertPair confirma, ANTES de sequer iniciar a descoberta, que o par cert+chave
@@ -636,6 +742,24 @@ func validateClientCertRequest(certPEM, keyPEM string) (errCode, errMsg string) 
 	if certPEM != "" {
 		if err := validateClientCertPair(certPEM, keyPEM); err != nil {
 			return "INVALID_CLIENT_CERT", err.Error()
+		}
+	}
+	return "", ""
+}
+
+// validateExtraPorts — Fase D do roadmap de maturidade profissional: valida as portas extras
+// pedidas pelo usuário pro fingerprint (RunNetDiscoveryRequest.ExtraPorts) antes de sequer montar o
+// argv do script — cada porta precisa ser um TCP/UDP port válido (1-65535), e o total não pode
+// ultrapassar netDiscoveryExtraPortsMax (evita alongar demais o loop paralelo do script e limita
+// abuso). Mesmo padrão de normalizeProbeSettings/validateClientCertRequest — extraída pra ser
+// reaproveitada por Run() e RunBatch() sem duplicar a checagem.
+func validateExtraPorts(ports []int) (errCode, errMsg string) {
+	if len(ports) > netDiscoveryExtraPortsMax {
+		return "INVALID_EXTRA_PORTS", fmt.Sprintf("no máximo %d portas extras", netDiscoveryExtraPortsMax)
+	}
+	for _, p := range ports {
+		if p < 1 || p > 65535 {
+			return "INVALID_EXTRA_PORTS", fmt.Sprintf("porta extra inválida: %d (deve estar entre 1 e 65535)", p)
 		}
 	}
 	return "", ""
@@ -677,15 +801,20 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster e namespace são obrigatórios no modo pod"))
 		return
 	}
-	probePort, probeTimeoutSec, errCode, errMsg := normalizeProbeSettings(req.ProbePort, req.ProbeTimeoutSec)
+	probePort, probeTimeoutSec, probeCount, errCode, errMsg := normalizeProbeSettings(req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount)
 	if errCode != "" {
 		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
 	}
 	req.ProbePort = probePort
 	req.ProbeTimeoutSec = probeTimeoutSec
+	req.ProbeCount = probeCount
 
 	if errCode, errMsg := validateClientCertRequest(req.ClientCertPEM, req.ClientKeyPEM); errCode != "" {
+		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
+		return
+	}
+	if errCode, errMsg := validateExtraPorts(req.ExtraPorts); errCode != "" {
 		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
 	}
@@ -703,7 +832,7 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 	}
 
 	sessionID := uuid.New().String()
-	ctx, cancel := context.WithTimeout(context.Background(), computeOverallTimeout(req.ProbeTimeoutSec))
+	ctx, cancel := context.WithTimeout(context.Background(), computeOverallTimeout(req.ProbeTimeoutSec, req.ProbeCount))
 	h.cancelFuncs.Store(sessionID, cancel)
 
 	go func() {
@@ -888,13 +1017,16 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		mtlsFlag = "1"
 	}
 	mtlsStdin := buildMTLSStdinPayload(req.ClientCertPEM, req.ClientKeyPEM)
+	// extraPortsArg — Fase D do roadmap de maturidade profissional (ver validateExtraPorts em
+	// Run(), já validado antes de chegar aqui).
+	extraPortsArg := formatExtraPortsArg(req.ExtraPorts)
 
 	if req.Mode == netDiscoveryModeLocal {
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
-			return runFingerprintLocal(ctx, ip, sniHost, mtlsFlag, mtlsStdin)
+			return runFingerprintLocal(ctx, ip, sniHost, mtlsFlag, extraPortsArg, mtlsStdin)
 		}
-		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local, porta %d, timeout %ds/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec), 0.2, nil)
-		if err := runTracerouteLocal(ctx, targetIP, req.ProbePort, req.ProbeTimeoutSec, onLine); err != nil && len(hops) == 0 {
+		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local, porta %d, timeout %ds/salto, %d sondas/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount), 0.2, nil)
+		if err := runTracerouteLocal(ctx, targetIP, req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute local", err)
 			return
 		}
@@ -928,11 +1060,11 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		}
 
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
-			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost, mtlsFlag, mtlsStdin)
+			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost, mtlsFlag, extraPortsArg, mtlsStdin)
 		}
 
-		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (porta %d, timeout %ds/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec), 0.2, nil)
-		if err := runTracerouteInPod(ctx, clientset, restConfig, req.Namespace, podName, targetIP, req.ProbePort, req.ProbeTimeoutSec, onLine); err != nil && len(hops) == 0 {
+		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (porta %d, timeout %ds/salto, %d sondas/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount), 0.2, nil)
+		if err := runTracerouteInPod(ctx, clientset, restConfig, req.Namespace, podName, targetIP, req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount, onLine); err != nil && len(hops) == 0 {
 			fail("falha ao executar traceroute", err)
 			return
 		}

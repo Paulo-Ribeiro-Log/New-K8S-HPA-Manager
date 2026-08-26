@@ -64,6 +64,36 @@ func TestParseFingerprintOutput_RealCapture(t *testing.T) {
 	}
 }
 
+// TestFormatExtraPortsArg — Fase D do roadmap de maturidade profissional (portas de fingerprint
+// customizáveis). String espaço-separada, consumida pelo `for p in ... $EXTRAPORTS` do script via
+// word-split natural do shell — vazio quando não há portas extras (comportamento idêntico a antes
+// desta fase).
+func TestFormatExtraPortsArg(t *testing.T) {
+	if got := formatExtraPortsArg(nil); got != "" {
+		t.Errorf("formatExtraPortsArg(nil) = %q, want \"\"", got)
+	}
+	if got := formatExtraPortsArg([]int{}); got != "" {
+		t.Errorf("formatExtraPortsArg([]int{}) = %q, want \"\"", got)
+	}
+	if got := formatExtraPortsArg([]int{8081}); got != "8081" {
+		t.Errorf("formatExtraPortsArg([8081]) = %q, want \"8081\"", got)
+	}
+	if got := formatExtraPortsArg([]int{8081, 9000}); got != "8081 9000" {
+		t.Errorf("formatExtraPortsArg([8081, 9000]) = %q, want \"8081 9000\"", got)
+	}
+}
+
+// TestParseFingerprintOutput_ExtraPortRecognizedGenerically confirma que uma porta EXTRA (fora da
+// lista curada de 18) aparece em OpenPorts normalmente — parseFingerprintOutput já processa @@PORT
+// genericamente, sem precisar saber quais portas eram "extras" (achado documentado: portas extras
+// não influenciam inferOSGuess, só ExtraPorts em si é novo, o parser continua igual).
+func TestParseFingerprintOutput_ExtraPortRecognizedGenerically(t *testing.T) {
+	fp := parseFingerprintOutput("@@TTL 60\n@@PORT 9000 OPEN\n")
+	if len(fp.OpenPorts) != 1 || fp.OpenPorts[0] != 9000 {
+		t.Errorf("OpenPorts = %v, esperava [9000] (porta extra fora da lista curada)", fp.OpenPorts)
+	}
+}
+
 func TestParseFingerprintOutput_NoSignalAtAll(t *testing.T) {
 	// Nenhuma linha reconhecida (script falhou/timeout total) — não deveria panicar, só devolver
 	// um fingerprint vazio/neutro.

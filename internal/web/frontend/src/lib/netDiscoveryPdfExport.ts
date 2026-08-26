@@ -158,10 +158,14 @@ export const exportNetDiscoveryPDF = async (ctx: NetDiscoveryExportContext): Pro
   y = checkNewPage(doc, y, 30);
   y = sectionHeader(doc, "ROTA (SALTOS)", y);
 
+  // Fase A (múltiplas sondas por salto): coluna "Perda" — mesma amostragem que já alimenta a
+  // tabela ao vivo/copyResult desta aba, exposta também no PDF pra quem só olha o documento
+  // exportado (ex: anexado num CHG) sem nunca ter aberto a tela ao vivo.
   const hopRows = result.hops.map((h) => [
     String(h.index),
     h.timed_out ? "* * *" : `${h.ip ?? "—"}${h.is_target ? " (destino)" : ""}`,
     h.rtt_ms ? `${h.rtt_ms.toFixed(1)} ms` : "—",
+    h.loss_pct ? `${h.loss_pct.toFixed(0)}%` : "—",
     h.reverse_dns || "—",
     h.asn ? `AS${h.asn}${h.asn_org ? ` - ${h.asn_org}` : ""}` : "—",
     h.cloud_match ? `${h.cloud_match.toUpperCase()}${h.cloud_region ? ` (${h.cloud_region})` : ""}` : (h.internal_ref ? `K8s: ${h.internal_ref.name}` : "—"),
@@ -169,18 +173,19 @@ export const exportNetDiscoveryPDF = async (ctx: NetDiscoveryExportContext): Pro
 
   autoTable(doc, {
     startY: y,
-    head: [["#", "IP", "Latência", "Hostname (DNS reverso)", "ASN / Organização", "Nuvem / K8s"]],
+    head: [["#", "IP", "Latência", "Perda", "Hostname (DNS reverso)", "ASN / Organização", "Nuvem / K8s"]],
     body: hopRows,
     theme: "striped",
     headStyles: { fillColor: [59, 130, 246], fontStyle: "bold", fontSize: 8 },
     styles: { fontSize: 7.5, cellPadding: 1.5 },
     columnStyles: {
       0: { cellWidth: 8, halign: "center" },
-      1: { cellWidth: 32 },
+      1: { cellWidth: 28 },
       2: { cellWidth: 18, halign: "center" },
-      3: { cellWidth: 50 },
-      4: { cellWidth: 45 },
-      5: { cellWidth: 29 },
+      3: { cellWidth: 14, halign: "center" },
+      4: { cellWidth: 44 },
+      5: { cellWidth: 41 },
+      6: { cellWidth: 29 },
     },
     margin: { left: 14, right: 14 },
   });

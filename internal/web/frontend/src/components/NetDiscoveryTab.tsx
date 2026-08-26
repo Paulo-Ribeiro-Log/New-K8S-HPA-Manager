@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,15 +13,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, ListChecks, KeyRound, Clock } from "lucide-react";
+import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, FileJson, FileSpreadsheet, StickyNote, ListChecks, KeyRound, Clock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { toast } from "sonner";
 import { ProtectedAction } from "@/components/rbac";
 import NetDiscoveryGraph from "@/components/NetDiscoveryGraph";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { useClusters } from "@/hooks/useAPI";
+import { useCreateNote, GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB } from "@/hooks/useNotes";
 import { apiClient } from "@/lib/api/client";
 import { exportNetDiscoveryPDF } from "@/lib/netDiscoveryPdfExport";
+import { exportNetDiscoveryCSV, exportNetDiscoveryJSON, buildNoteMarkdown } from "@/lib/netDiscoveryExport";
+import { diffRoutes, formatRouteDiffSummary } from "@/lib/netDiscoveryRouteDiff";
+import { aggregateMonitorRounds } from "@/lib/netDiscoveryMonitor";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
 import type { NetDiscoveryHistoryEntry, NetDiscoveryHop, NetDiscoveryResult, NetDiscoverySSEEvent } from "@/lib/api/types";
 
@@ -44,12 +49,32 @@ function cloudBadgeClass(provider: string): string {
   return "border-green-500/40 text-green-600 dark:text-green-400"; // gcp
 }
 
+// formatLatencyCell — Fase A (múltiplas sondas por salto): mostra a faixa min–avg–max quando há
+// mais de 1 amostra recebida com valores diferentes (jitter real observável), mantendo o formato
+// simples "X.X ms" de antes desta fase quando só há 1 amostra (ou min==max, sem jitter pra mostrar).
+function formatLatencyCell(h: NetDiscoveryHop): string {
+  if (h.rtt_ms == null) return "—";
+  if (h.rtt_min_ms != null && h.rtt_max_ms != null && h.rtt_max_ms > h.rtt_min_ms) {
+    return `${h.rtt_min_ms.toFixed(1)}–${h.rtt_ms.toFixed(1)}–${h.rtt_max_ms.toFixed(1)} ms`;
+  }
+  return `${h.rtt_ms.toFixed(1)} ms`;
+}
+
+// lossBadgeClass — vermelho pra perda total (100%, hop nunca respondeu — já coberto por
+// timed_out, mas ainda vale sinalizar), âmbar pra perda parcial (instabilidade real: hop respondeu
+// mas nem sempre), sem badge nenhum quando não há perda (0% é o caso comum, não vale poluir a UI).
+function lossBadgeClass(lossPct: number): string {
+  if (lossPct >= 100) return "border-destructive/50 text-destructive";
+  return "border-amber-500/50 text-amber-600 dark:text-amber-400";
+}
+
 // "Descoberta de Rede" — Fase 1 (IP-ROUTE-DISCOVERY-PLAN.md): traceroute básico + grafo ao vivo,
 // sem nenhuma camada de enriquecimento ainda (DNS reverso/ASN/nuvem/cross-reference K8s/
 // fingerprint de SO chegam nas Fases 2-4). Mesmo padrão dual pod/local já usado pelo Teste de
 // Kafka/Banco de Dados/Latência — nunca um mecanismo novo.
 export default function NetDiscoveryTab() {
   const { clusters } = useClusters();
+  const queryClient = useQueryClient();
   const [target, setTarget] = useState("");
   // probePort — porta TCP da sonda do tcptraceroute, string vazia = usa o default do backend (443).
   // Bug real corrigido: 443 fixo nunca alcança um alvo Windows atrás de cofre PAM (Delinea etc.),
@@ -61,6 +86,15 @@ export default function NetDiscoveryTab() {
   // de aceitar que um alvo atrás de cofre PAM é bloqueado de verdade (visto ao vivo: 21 saltos em
   // silêncio total mesmo trocando a porta — sinal de bloqueio de firewall, não de porta errada).
   const [probeTimeoutSec, setProbeTimeoutSec] = useState("");
+  // probeCount — Fase A (roadmap de maturidade profissional): quantas sondas TCP por salto, string
+  // vazia = default do backend (3), máximo 3. Com 1 sonda só (valor original desta feature) não dá
+  // pra distinguir "hop lento" de "hop com perda intermitente de pacote" — mais de 1 amostra
+  // permite calcular perda% e faixa de latência (min/max) por salto, não só uma média solta.
+  const [probeCount, setProbeCount] = useState("");
+  // extraPorts — Fase D (roadmap de maturidade profissional): portas extras (separadas por
+  // vírgula) pra verificar no fingerprint do destino, além das ~18 portas curadas checadas por
+  // padrão — útil pra troubleshooting de uma aplicação específica (ex: 8081, 9000).
+  const [extraPorts, setExtraPorts] = useState("");
   // Certificado de cliente (mTLS) — pedido explícito do usuário depois de perguntar se ter o
   // certificado "que já existe nesses clusters/servidores" ajudaria a descoberta: útil quando o
   // alvo exige certificado de cliente — o ganho confirmado ao vivo é destravar a checagem HTTP
@@ -101,13 +135,31 @@ export default function NetDiscoveryTab() {
   // progresso de TODOS os alvos do lote. `batchQueueRef` (não só state) evita o bug de stale
   // closure já documentado nesta app (CLAUDE.md, Code Editor) — o handler de SSE abaixo lê sempre
   // o valor mais recente da fila, nunca um capturado no momento em que o efeito foi criado.
-  const [inputMode, setInputMode] = useState<"single" | "batch">("single");
+  // Fase C (roadmap de maturidade profissional) — modo "monitor": 3ª opção além de single/batch,
+  // reaproveitando 100% o MESMO mecanismo de lote (runBatch/RunBatch) com allow_duplicate_targets
+  // (o mesmo alvo repetido N vezes) — nunca um endpoint novo, "monitorar" é literalmente "lote com
+  // o mesmo alvo repetido".
+  const [inputMode, setInputMode] = useState<"single" | "batch" | "monitor">("single");
   const [batchTargetsText, setBatchTargetsText] = useState("");
+  // monitorRounds/monitorIntervalSec — só usados quando inputMode==="monitor".
+  const [monitorRounds, setMonitorRounds] = useState("3");
+  const [monitorIntervalSec, setMonitorIntervalSec] = useState("0");
   const [batchQueue, setBatchQueue] = useState<{ target: string; sessionId: string }[]>([]);
   const batchQueueRef = useRef<{ target: string; sessionId: string }[]>([]);
   const [batchId, setBatchId] = useState<string | null>(null);
+  // batchStatuses/batchSummaries — Achado real: no modo monitor todos os itens da fila têm o MESMO
+  // `target` (alvo repetido N vezes) — chavear por target (como o lote normal fazia) colapsaria
+  // todas as rodadas numa única entrada. Chaveado por `sessionId` (sempre único, mesmo no modo
+  // monitor) desde esta fase — generaliza corretamente os dois modos sem duas implementações.
   const [batchStatuses, setBatchStatuses] = useState<Record<string, "queued" | "running" | "done" | "error">>({});
   const [batchSummaries, setBatchSummaries] = useState<Record<string, { reached: boolean; osGuess?: string }>>({});
+  // isMonitorRun/batchRoundResults — só populados no modo monitor: batchRoundResults acumula o
+  // NetDiscoveryResult COMPLETO de cada rodada, na ordem de conclusão (== ordem das rodadas, já que
+  // a fila é estritamente sequencial) — necessário pra agregação (aggregateMonitorRounds), que
+  // precisa da rota/loss% inteiros de cada rodada, não só o resumo reached/osGuess já guardado em
+  // batchSummaries.
+  const [isMonitorRun, setIsMonitorRun] = useState(false);
+  const [batchRoundResults, setBatchRoundResults] = useState<NetDiscoveryResult[]>([]);
 
   // Fase 5 — Histórico de Descobertas: mostra "última busca: ..." pro alvo digitado ANTES mesmo
   // do usuário clicar "Traçar rota" (resolve a dor observada ao vivo nesta sessão — reinvestigar o
@@ -126,6 +178,38 @@ export default function NetDiscoveryTab() {
   });
   const historyEntries: NetDiscoveryHistoryEntry[] = historyData?.entries ?? [];
   const [historyExpanded, setHistoryExpanded] = useState(false);
+
+  // Fase B (roadmap de maturidade profissional) — diff de rota entre execuções: baselineHopsRef
+  // captura o último estado CONHECIDO (historyEntries[0], antes desta execução) no instante em que
+  // `run()` dispara — não lido direto de `historyEntries` no render, porque a query de histórico
+  // é invalidada assim que a execução termina (ver "complete" no efeito de SSE abaixo, pra manter
+  // o banner "Última busca" e o histórico expandido atualizados) e, sem esse snapshot capturado
+  // antecipadamente, uma 2ª execução consecutiva do mesmo alvo compararia contra si mesma. Só
+  // relevante no modo single (batch/monitor têm seus próprios alvos/mecanismos de agregação) —
+  // zerado em runBatch() pra nunca mostrar um diff equivocado durante lote/monitoramento.
+  const baselineHopsRef = useRef<NetDiscoveryHop[] | null>(null);
+  const liveRouteDiff = result && baselineHopsRef.current ? diffRoutes(result.hops, baselineHopsRef.current) : null;
+
+  // Fase E — "Salvar como Nota" (roadmap de maturidade profissional): reaproveita a feature de
+  // Notas já existente nesta app. Escopo: modo pod com cluster selecionado usa esse cluster + a
+  // aba "net-discovery" (mesmo `activeTab` desta ferramenta no ToolsMenu, convenção "escopado por
+  // cluster+aba" já usada pelas demais Notas); modo local (sem cluster real associado à
+  // investigação) usa os "Lembretes gerais" (GENERAL_NOTES_CLUSTER/GENERAL_NOTES_TAB, já
+  // exportados por useNotes.ts) — a investigação não pertence a nenhum cluster específico nesse
+  // caso. useCreateNote(cluster, tab) fecha sobre os argumentos recebidos NESTE render, então
+  // recalcular os dois a cada render mantém o destino sempre correto conforme o usuário alterna
+  // modo/cluster no formulário.
+  const noteScopeCluster = mode === "pod" && cluster ? cluster : GENERAL_NOTES_CLUSTER;
+  const noteScopeTab = mode === "pod" && cluster ? "net-discovery" : GENERAL_NOTES_TAB;
+  const createNote = useCreateNote(noteScopeCluster, noteScopeTab);
+
+  const saveResultAsNote = () => {
+    if (!result) return;
+    createNote.mutate(buildNoteMarkdown(result, mode), {
+      onSuccess: () => toast.success("Descoberta salva como Nota"),
+      onError: (err) => toast.error(err instanceof Error ? err.message : "Falha ao salvar a nota"),
+    });
+  };
 
   const { data: namespaces = [] } = useQuery({
     queryKey: ["namespaces-net-discovery", cluster],
@@ -147,8 +231,29 @@ export default function NetDiscoveryTab() {
   const probeTimeoutSecNum = probeTimeoutSec.trim() ? Number(probeTimeoutSec.trim()) : undefined;
   const probeTimeoutSecValid = probeTimeoutSecNum === undefined || (Number.isInteger(probeTimeoutSecNum) && probeTimeoutSecNum >= 1 && probeTimeoutSecNum <= 8);
 
+  const probeCountNum = probeCount.trim() ? Number(probeCount.trim()) : undefined;
+  const probeCountValid = probeCountNum === undefined || (Number.isInteger(probeCountNum) && probeCountNum >= 1 && probeCountNum <= 3);
+
+  // extraPorts — parse de "8081, 9000" pra [8081, 9000], tolerante a espaços/vírgulas extras.
+  // Inválido (não-número, fora de 1-65535, ou mais de 10) desabilita o botão de rodar, mesmo
+  // padrão dos demais campos de sonda desta aba — validação espelhada da do backend
+  // (validateExtraPorts) só pra evitar um round-trip com algo trivial de checar no cliente.
+  const extraPortsRaw = extraPorts.split(",").map((p) => p.trim()).filter(Boolean);
+  const extraPortsNums = extraPortsRaw.map((p) => Number(p));
+  const extraPortsValid =
+    extraPortsRaw.length <= 10 &&
+    extraPortsNums.every((n) => Number.isInteger(n) && n >= 1 && n <= 65535);
+
   const batchTargetsParsed = batchTargetsText.split("\n").map((t) => t.trim()).filter(Boolean);
   const batchTargetsValid = batchTargetsParsed.length > 0 && batchTargetsParsed.length <= 10;
+
+  // monitorRounds/monitorIntervalSec — Fase C. Rounds: 2-10 (mesmo teto de alvos por lote,
+  // netDiscoveryBatchMaxTargets no backend — reaproveitado, não duplicado). Interval: 0-60s
+  // (netDiscoveryMonitorIntervalMaxSec no backend).
+  const monitorRoundsNum = Number(monitorRounds.trim());
+  const monitorRoundsValid = Number.isInteger(monitorRoundsNum) && monitorRoundsNum >= 2 && monitorRoundsNum <= 10;
+  const monitorIntervalNum = monitorIntervalSec.trim() ? Number(monitorIntervalSec.trim()) : 0;
+  const monitorIntervalValid = Number.isInteger(monitorIntervalNum) && monitorIntervalNum >= 0 && monitorIntervalNum <= 60;
 
   // mTLS: os dois campos precisam vir juntos, ou nenhum dos dois — mesma checagem que o backend
   // já faz (INVALID_CLIENT_CERT), espelhada aqui pra não gastar um round-trip com algo trivial de
@@ -159,9 +264,15 @@ export default function NetDiscoveryTab() {
     !running &&
     probePortValid &&
     probeTimeoutSecValid &&
+    probeCountValid &&
+    extraPortsValid &&
     mtlsPairValid &&
     (mode === "local" ? dockerReady : !!cluster && !!namespace) &&
-    (inputMode === "single" ? !!target.trim() : batchTargetsValid);
+    (inputMode === "single"
+      ? !!target.trim()
+      : inputMode === "monitor"
+      ? !!target.trim() && monitorRoundsValid && monitorIntervalValid
+      : batchTargetsValid);
 
   const run = async () => {
     setHops([]);
@@ -170,6 +281,9 @@ export default function NetDiscoveryTab() {
     setProgress(0);
     setPhaseMessage("Iniciando...");
     setRunning(true);
+    // Fase B — captura o baseline ANTES de disparar a requisição (ver comentário completo em
+    // baselineHopsRef acima).
+    baselineHopsRef.current = historyEntries[0]?.result?.hops ?? null;
     // Achado real de code review: run() (modo single) não limpava estado deixado por um LOTE
     // anterior — a faixa de status do lote ficava vazando visualmente pra uma busca única
     // seguinte, e um batchId desatualizado (já apagado no servidor) podia fazer cancel() mandar
@@ -179,6 +293,8 @@ export default function NetDiscoveryTab() {
     batchQueueRef.current = [];
     setBatchStatuses({});
     setBatchSummaries({});
+    setIsMonitorRun(false);
+    setBatchRoundResults([]);
     try {
       const { session_id } = await apiClient.runNetDiscovery({
         target: target.trim(),
@@ -187,6 +303,8 @@ export default function NetDiscoveryTab() {
         namespace: mode === "pod" ? namespace : undefined,
         probe_port: probePortNum,
         probe_timeout_sec: probeTimeoutSecNum,
+        probe_count: probeCountNum,
+        extra_ports: extraPortsNums.length > 0 ? extraPortsNums : undefined,
         client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
         client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
       });
@@ -207,11 +325,17 @@ export default function NetDiscoveryTab() {
     setProgress(0);
     setPhaseMessage("Iniciando lote...");
     setRunning(true);
+    // Fase B — o diff de rota ao vivo (baselineHopsRef) só faz sentido no modo single, onde
+    // `debouncedTarget`/historyEntries seguem o campo de alvo único; zerado aqui pra nunca mostrar
+    // um diff equivocado durante lote/monitoramento (que têm seus próprios alvos/mecanismos).
+    baselineHopsRef.current = null;
     setBatchStatuses({});
     setBatchSummaries({});
     setBatchQueue([]);
     batchQueueRef.current = [];
     setBatchId(null);
+    setIsMonitorRun(false);
+    setBatchRoundResults([]);
     try {
       const resp = await apiClient.runNetDiscoveryBatch({
         targets: batchTargetsParsed,
@@ -220,6 +344,8 @@ export default function NetDiscoveryTab() {
         namespace: mode === "pod" ? namespace : undefined,
         probe_port: probePortNum,
         probe_timeout_sec: probeTimeoutSecNum,
+        probe_count: probeCountNum,
+        extra_ports: extraPortsNums.length > 0 ? extraPortsNums : undefined,
         client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
         client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
       });
@@ -227,13 +353,66 @@ export default function NetDiscoveryTab() {
       batchQueueRef.current = queue;
       setBatchQueue(queue);
       setBatchId(resp.batch_id);
+      // Chaveado por sessionId (único mesmo se dois alvos repetissem o mesmo texto — não deveria
+      // acontecer no lote normal, que dedupe, mas mantém o mesmo critério do modo monitor abaixo).
       const initialStatuses: Record<string, "queued" | "running"> = {};
-      queue.forEach((q, i) => { initialStatuses[q.target] = i === 0 ? "running" : "queued"; });
+      queue.forEach((q, i) => { initialStatuses[q.sessionId] = i === 0 ? "running" : "queued"; });
       setBatchStatuses(initialStatuses);
       setSessionId(queue[0].sessionId);
     } catch (err) {
       setRunning(false);
       setRunError(err instanceof Error ? err.message : "Falha ao iniciar o lote");
+    }
+  };
+
+  // runMonitor — Fase C (roadmap de maturidade profissional): reaproveita o MESMO endpoint de lote
+  // (apiClient.runNetDiscoveryBatch) com allow_duplicate_targets=true e um único alvo repetido
+  // `monitorRoundsNum` vezes — "monitorar" é literalmente "lote com o mesmo alvo repetido N vezes"
+  // (mesma decisão de design do próprio lote: reaproveitar runDiscovery/RunBatch sem modificar
+  // nada, zero risco de lógica nova no backend). O encadeamento SSE (batchQueueRef, useEffect
+  // abaixo) já funciona sem nenhuma mudança — só a agregação final (MonitorSummaryPanel) é nova.
+  const runMonitor = async () => {
+    setHops([]);
+    setResult(null);
+    setRunError(null);
+    setProgress(0);
+    setPhaseMessage("Iniciando monitoramento...");
+    setRunning(true);
+    baselineHopsRef.current = null;
+    setBatchStatuses({});
+    setBatchSummaries({});
+    setBatchQueue([]);
+    batchQueueRef.current = [];
+    setBatchId(null);
+    setIsMonitorRun(true);
+    setBatchRoundResults([]);
+    try {
+      const trimmedTarget = target.trim();
+      const resp = await apiClient.runNetDiscoveryBatch({
+        targets: Array(monitorRoundsNum).fill(trimmedTarget),
+        mode,
+        cluster: mode === "pod" ? cluster : undefined,
+        namespace: mode === "pod" ? namespace : undefined,
+        probe_port: probePortNum,
+        probe_timeout_sec: probeTimeoutSecNum,
+        probe_count: probeCountNum,
+        extra_ports: extraPortsNums.length > 0 ? extraPortsNums : undefined,
+        client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
+        client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
+        allow_duplicate_targets: true,
+        interval_sec: monitorIntervalNum,
+      });
+      const queue = resp.targets.map((t, i) => ({ target: t, sessionId: resp.session_ids[i] }));
+      batchQueueRef.current = queue;
+      setBatchQueue(queue);
+      setBatchId(resp.batch_id);
+      const initialStatuses: Record<string, "queued" | "running"> = {};
+      queue.forEach((q, i) => { initialStatuses[q.sessionId] = i === 0 ? "running" : "queued"; });
+      setBatchStatuses(initialStatuses);
+      setSessionId(queue[0].sessionId);
+    } catch (err) {
+      setRunning(false);
+      setRunError(err instanceof Error ? err.message : "Falha ao iniciar o monitoramento");
     }
   };
 
@@ -288,15 +467,21 @@ export default function NetDiscoveryTab() {
           const queue = batchQueueRef.current;
           const idx = queue.findIndex((q) => q.sessionId === sessionId);
           if (idx !== -1) {
-            const finishedTarget = queue[idx].target;
-            setBatchStatuses((prev) => ({ ...prev, [finishedTarget]: "done" }));
+            // Chaveado por sessionId (ver comentário em batchStatuses/batchSummaries acima) — no
+            // modo monitor, `target` se repete em TODA rodada, então chavear por ele colapsaria
+            // todas as rodadas numa única entrada.
+            setBatchStatuses((prev) => ({ ...prev, [sessionId]: "done" }));
             setBatchSummaries((prev) => ({
               ...prev,
-              [finishedTarget]: { reached: finalResult.reached, osGuess: finalResult.fingerprint?.os_guess },
+              [sessionId]: { reached: finalResult.reached, osGuess: finalResult.fingerprint?.os_guess },
             }));
+            // Fase C — acumula o resultado COMPLETO desta rodada, na ordem de conclusão (== ordem
+            // das rodadas, fila estritamente sequencial) — usado só pela agregação do modo
+            // monitor (aggregateMonitorRounds), sem custo pro lote normal (só mais um array).
+            setBatchRoundResults((prev) => [...prev, finalResult]);
             if (idx + 1 < queue.length) {
               const next = queue[idx + 1];
-              setBatchStatuses((prev) => ({ ...prev, [next.target]: "running" }));
+              setBatchStatuses((prev) => ({ ...prev, [next.sessionId]: "running" }));
               setHops([]);
               setResult(null);
               setProgress(0);
@@ -311,6 +496,14 @@ export default function NetDiscoveryTab() {
           // subsequente (numa busca única iniciada depois, se run() não limpasse — ver acima)
           // podia mandar esse ID morto pro backend em vez do sessionId real.
           setBatchId(null);
+          // Fase B — só invalida (refresca) o Histórico quando esta foi uma execução single-mode
+          // de verdade (idx === -1, nunca fez parte de uma fila de lote/monitor) — garante que o
+          // banner "Última busca"/histórico expandido reflitam esta execução recém-concluída sem
+          // precisar trocar de aba/recarregar, e sem invalidar uma query de alvo errado durante
+          // lote (onde `target`/debouncedTarget não correspondem ao alvo que de fato rodou).
+          if (idx === -1) {
+            queryClient.invalidateQueries({ queryKey: ["net-discovery-history", debouncedTarget] });
+          }
         }
         if (event.type === "error") {
           terminalReceived = true;
@@ -319,11 +512,10 @@ export default function NetDiscoveryTab() {
           const queue = batchQueueRef.current;
           const idx = queue.findIndex((q) => q.sessionId === sessionId);
           if (idx !== -1) {
-            const failedTarget = queue[idx].target;
-            setBatchStatuses((prev) => ({ ...prev, [failedTarget]: "error" }));
+            setBatchStatuses((prev) => ({ ...prev, [sessionId]: "error" }));
             if (idx + 1 < queue.length) {
               const next = queue[idx + 1];
-              setBatchStatuses((prev) => ({ ...prev, [next.target]: "running" }));
+              setBatchStatuses((prev) => ({ ...prev, [next.sessionId]: "running" }));
               setHops([]);
               setResult(null);
               setProgress(0);
@@ -373,9 +565,11 @@ export default function NetDiscoveryTab() {
 
   const copyResult = () => {
     if (!result) return;
-    const lines = result.hops.map((h) =>
-      h.timed_out ? `${h.index}  * * *` : `${h.index}  ${h.ip}  ${h.rtt_ms?.toFixed(1) ?? "?"} ms`
-    );
+    const lines = result.hops.map((h) => {
+      if (h.timed_out) return `${h.index}  * * *`;
+      const lossSuffix = h.loss_pct ? `  (perda ${h.loss_pct.toFixed(0)}%)` : "";
+      return `${h.index}  ${h.ip}  ${formatLatencyCell(h)}${lossSuffix}`;
+    });
     navigator.clipboard.writeText(
       `Rota até ${result.target_input} (${result.target_ip}):\n${lines.join("\n")}`
     );
@@ -386,12 +580,13 @@ export default function NetDiscoveryTab() {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       <div className="px-6 py-3 bg-muted/30 border-b border-border flex flex-col gap-3">
-        {/* Fase 5/P4 — toggle Alvo único / Lote. Trocar de modo com um lote em andamento não é
-            permitido (disabled={running}) — evita perder o encadeamento de sessões a meio caminho. */}
+        {/* Fase 5/P4 (single/batch) + Fase C (monitor) — toggle de 3 modos. Trocar de modo com uma
+            descoberta em andamento não é permitido (disabled={running}) — evita perder o
+            encadeamento de sessões a meio caminho. */}
         <div className="flex items-center gap-1.5">
           <ListChecks className="w-3.5 h-3.5 text-muted-foreground" />
           <div className="flex rounded-md border border-border overflow-hidden">
-            {(["single", "batch"] as const).map((m) => (
+            {(["single", "batch", "monitor"] as const).map((m) => (
               <button
                 key={m}
                 type="button"
@@ -399,25 +594,14 @@ export default function NetDiscoveryTab() {
                 onClick={() => setInputMode(m)}
                 className={`text-xs px-2.5 py-1 ${inputMode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"} disabled:opacity-50`}
               >
-                {m === "single" ? "Alvo único" : "Lote (até 10)"}
+                {m === "single" ? "Alvo único" : m === "batch" ? "Lote (até 10)" : "Monitorar (repetir)"}
               </button>
             ))}
           </div>
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
-          {inputMode === "single" ? (
-            <div className="min-w-[280px] flex-1">
-              <label className="text-xs text-muted-foreground block mb-1">IP ou hostname</label>
-              <Input
-                placeholder="ex: 8.8.8.8 ou servidor.dominio.com"
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                disabled={running}
-                onKeyDown={(e) => { if (e.key === "Enter" && canRun) run(); }}
-              />
-            </div>
-          ) : (
+          {inputMode === "batch" ? (
             <div className="min-w-[280px] flex-1">
               <label className="text-xs text-muted-foreground block mb-1">
                 IPs ou hostnames (um por linha, até 10) — {batchTargetsParsed.length}/10
@@ -431,6 +615,51 @@ export default function NetDiscoveryTab() {
                 className="font-mono text-xs"
               />
             </div>
+          ) : (
+            <div className="min-w-[280px] flex-1">
+              <label className="text-xs text-muted-foreground block mb-1">IP ou hostname</label>
+              <Input
+                placeholder="ex: 8.8.8.8 ou servidor.dominio.com"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                disabled={running}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || !canRun) return;
+                  if (inputMode === "monitor") runMonitor(); else run();
+                }}
+              />
+            </div>
+          )}
+
+          {/* Fase C — Rodadas/Intervalo, só no modo monitor. */}
+          {inputMode === "monitor" && (
+            <>
+              <div className="w-24">
+                <label className="text-xs text-muted-foreground block mb-1">Rodadas</label>
+                <Input
+                  type="number"
+                  min={2}
+                  max={10}
+                  value={monitorRounds}
+                  onChange={(e) => setMonitorRounds(e.target.value)}
+                  disabled={running}
+                  className={!monitorRoundsValid ? "border-destructive" : undefined}
+                />
+              </div>
+              <div className="w-32">
+                <label className="text-xs text-muted-foreground block mb-1">Intervalo (s)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={60}
+                  placeholder="0"
+                  value={monitorIntervalSec}
+                  onChange={(e) => setMonitorIntervalSec(e.target.value)}
+                  disabled={running}
+                  className={!monitorIntervalValid ? "border-destructive" : undefined}
+                />
+              </div>
+            </>
           )}
 
           <div className="w-28">
@@ -463,11 +692,29 @@ export default function NetDiscoveryTab() {
             />
           </div>
 
+          <div className="w-28">
+            <label className="text-xs text-muted-foreground block mb-1">Sondas/salto</label>
+            <Input
+              type="number"
+              min={1}
+              max={3}
+              placeholder="3"
+              value={probeCount}
+              onChange={(e) => setProbeCount(e.target.value)}
+              disabled={running}
+              className={!probeCountValid ? "border-destructive" : undefined}
+              onKeyDown={(e) => { if (e.key === "Enter" && canRun) run(); }}
+            />
+          </div>
+
           {!running ? (
             <ProtectedAction>
-              <Button onClick={inputMode === "single" ? run : runBatch} disabled={!canRun}>
+              <Button
+                onClick={inputMode === "single" ? run : inputMode === "monitor" ? runMonitor : runBatch}
+                disabled={!canRun}
+              >
                 <Play className="w-4 h-4 mr-1.5" />
-                {inputMode === "single" ? "Traçar rota" : "Iniciar Lote"}
+                {inputMode === "single" ? "Traçar rota" : inputMode === "monitor" ? "Iniciar Monitoramento" : "Iniciar Lote"}
               </Button>
             </ProtectedAction>
           ) : (
@@ -480,7 +727,7 @@ export default function NetDiscoveryTab() {
 
         <div className="flex flex-wrap items-center gap-2 -mt-1">
           <span className="text-[10px] text-muted-foreground">
-            Padrão 443 (web), timeout 2s/salto. Alvo sem resposta? Tente:
+            Padrão 443 (web), timeout 2s/salto, 3 sondas/salto (perda%/latência por amostragem). Alvo sem resposta? Tente:
           </span>
           {[
             { port: "3389", label: "3389 · RDP/Windows" },
@@ -514,6 +761,23 @@ export default function NetDiscoveryTab() {
               {t}s/salto
             </button>
           ))}
+        </div>
+
+        {/* Portas extras do fingerprint — Fase D (roadmap de maturidade profissional): além das
+            ~18 portas curadas checadas por padrão, deixa o usuário pedir portas específicas de uma
+            aplicação sob investigação (ex: 8081, 9000) sem precisar editar código. */}
+        <div className="flex items-center gap-2 -mt-1">
+          <label className="text-[10px] text-muted-foreground whitespace-nowrap">Portas extras do fingerprint:</label>
+          <Input
+            placeholder="ex: 8081, 9000"
+            value={extraPorts}
+            onChange={(e) => setExtraPorts(e.target.value)}
+            disabled={running}
+            className={`h-6 text-[10px] max-w-[220px] ${!extraPortsValid ? "border-destructive" : ""}`}
+          />
+          {!extraPortsValid && (
+            <span className="text-[10px] text-destructive">até 10 portas, cada uma entre 1 e 65535</span>
+          )}
         </div>
 
         {/* Certificado de cliente (mTLS) — colapsado por padrão (caso raro), pedido explícito do
@@ -620,7 +884,15 @@ export default function NetDiscoveryTab() {
 
               {historyExpanded && (
                 <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
-                  {historyEntries.map((entry, i) => (
+                  {historyEntries.map((entry, i) => {
+                    // Fase B — compara com a entrada SEGUINTE do array (mais antiga, já que
+                    // historyEntries vem ordenado mais-recente-primeiro) pra marcar "rota mudou"
+                    // entre uma execução e a imediatamente anterior a ela.
+                    const olderEntry = historyEntries[i + 1];
+                    const entryDiff = entry.result && olderEntry?.result
+                      ? diffRoutes(entry.result.hops, olderEntry.result.hops)
+                      : null;
+                    return (
                     <div key={i} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
                       <span className="text-foreground">{new Date(entry.created_at).toLocaleString("pt-BR")}</span>
                       <span>·</span>
@@ -631,6 +903,15 @@ export default function NetDiscoveryTab() {
                       <span>{entry.reached ? "alcançado" : "não alcançado"}</span>
                       <span>·</span>
                       <span>IP: {entry.target_ip}</span>
+                      {entryDiff?.changed && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] py-0 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                          title={formatRouteDiffSummary(entryDiff)}
+                        >
+                          rota mudou
+                        </Badge>
+                      )}
                       {entry.result && (
                         <button
                           type="button"
@@ -645,7 +926,8 @@ export default function NetDiscoveryTab() {
                         <span className="w-full text-[11px] italic">{entry.result.fingerprint.os_confidence}</span>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -736,9 +1018,11 @@ export default function NetDiscoveryTab() {
             resultado completo de cada um. */}
         {batchQueue.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
-            {batchQueue.map(({ target: t }) => {
-              const status = batchStatuses[t] ?? "queued";
-              const summary = batchSummaries[t];
+            {batchQueue.map(({ target: t, sessionId: qsid }, i) => {
+              // Chaveado por sessionId, não por target — no modo monitor, `t` se repete em TODA
+              // rodada (ver comentário completo em batchStatuses/batchSummaries acima).
+              const status = batchStatuses[qsid] ?? "queued";
+              const summary = batchSummaries[qsid];
               const icon =
                 status === "running" ? <Loader2 className="w-3 h-3 animate-spin" /> :
                 status === "done" ? <Check className="w-3 h-3 text-emerald-500" /> :
@@ -746,7 +1030,7 @@ export default function NetDiscoveryTab() {
                 <span className="w-3 h-3 rounded-full border border-muted-foreground/40 inline-block" />;
               return (
                 <span
-                  key={t}
+                  key={qsid}
                   title={summary ? `${summary.reached ? "Alcançado" : "Não alcançado"}${summary.osGuess ? ` · ${osLabel(summary.osGuess)}` : ""}` : status}
                   className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-mono ${
                     status === "running" ? "border-primary/40 bg-primary/5" :
@@ -756,10 +1040,19 @@ export default function NetDiscoveryTab() {
                 >
                   {icon}
                   {t}
+                  {/* Modo monitor: mesmo alvo em toda rodada — número da rodada distingue as bolhas */}
+                  {isMonitorRun && <span className="text-muted-foreground">#{i + 1}</span>}
                 </span>
               );
             })}
           </div>
+        )}
+
+        {/* Fase C — resumo de agregação do monitoramento, só quando TODAS as rodadas concluíram
+            (batchRoundResults.length === batchQueue.length garante isso — nunca aparece parcial,
+            inclusive se o usuário cancelar no meio). */}
+        {isMonitorRun && batchQueue.length > 0 && batchRoundResults.length === batchQueue.length && (
+          <MonitorSummaryPanel results={batchRoundResults} />
         )}
 
         {runError && (
@@ -771,6 +1064,16 @@ export default function NetDiscoveryTab() {
 
         {(hops.length > 0 || running) && (
           <NetDiscoveryGraph hops={hops} running={running} />
+        )}
+
+        {/* Fase B — diff de rota: sinaliza quando a rota atual diverge da última execução
+            registrada ANTES desta busca (ver baselineHopsRef) — indício de reroteamento/failover/
+            mudança de infraestrutura desde a última vez que este alvo foi investigado. */}
+        {result && liveRouteDiff?.changed && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+            <History className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>Rota mudou em relação à última busca registrada — {formatRouteDiffSummary(liveRouteDiff)}.</span>
+          </div>
         )}
 
         {/* Fingerprint do destino (Fase 2) — SEMPRE com a explicação da heurística junto do
@@ -872,6 +1175,34 @@ export default function NetDiscoveryTab() {
                   <FileDown className="w-3 h-3" />
                   Exportar PDF
                 </button>
+                {/* Fase E (roadmap de maturidade profissional) — CSV/JSON pra levar o dado bruto
+                    pra outra ferramenta, e "Salvar como Nota" reaproveitando a feature de Notas
+                    já existente (ver noteScopeCluster/noteScopeTab acima). */}
+                <button
+                  type="button"
+                  onClick={() => exportNetDiscoveryCSV(result)}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <FileSpreadsheet className="w-3 h-3" />
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportNetDiscoveryJSON(result)}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <FileJson className="w-3 h-3" />
+                  JSON
+                </button>
+                <button
+                  type="button"
+                  onClick={saveResultAsNote}
+                  disabled={createNote.isPending}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                >
+                  <StickyNote className="w-3 h-3" />
+                  {createNote.isPending ? "Salvando..." : "Salvar como Nota"}
+                </button>
               </div>
             </div>
             <table className="w-full text-xs">
@@ -880,6 +1211,7 @@ export default function NetDiscoveryTab() {
                   <th className="text-left font-medium px-2.5 py-1.5 w-12">#</th>
                   <th className="text-left font-medium px-2.5 py-1.5">IP</th>
                   <th className="text-left font-medium px-2.5 py-1.5">Latência</th>
+                  <th className="text-left font-medium px-2.5 py-1.5">Perda</th>
                   <th className="text-left font-medium px-2.5 py-1.5">Contexto (DNS/ASN/nuvem)</th>
                 </tr>
               </thead>
@@ -891,7 +1223,20 @@ export default function NetDiscoveryTab() {
                       {h.timed_out ? <span className="text-muted-foreground">* * *</span> : h.ip}
                       {h.is_target && <Badge variant="outline" className="ml-2 text-[10px] py-0 border-emerald-500/40 text-emerald-600 dark:text-emerald-400">destino</Badge>}
                     </td>
-                    <td className="px-2.5 py-1.5 font-mono">{h.rtt_ms ? `${h.rtt_ms.toFixed(1)} ms` : "—"}</td>
+                    <td className="px-2.5 py-1.5 font-mono">{formatLatencyCell(h)}</td>
+                    <td className="px-2.5 py-1.5 font-mono">
+                      {h.loss_pct ? (
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] py-0 ${lossBadgeClass(h.loss_pct)}`}
+                          title={h.probes_sent ? `${h.probes_received ?? 0}/${h.probes_sent} sondas responderam` : undefined}
+                        >
+                          {h.loss_pct.toFixed(0)}%
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
                     <td className="px-2.5 py-1.5">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         {h.internal_ref && (
@@ -956,6 +1301,60 @@ export default function NetDiscoveryTab() {
           setClientKeyPEM(key);
         }}
       />
+    </div>
+  );
+}
+
+// MonitorSummaryPanel — Fase C (roadmap de maturidade profissional). Renderizado só quando todas
+// as rodadas do monitoramento concluíram (ver o call site acima) — agrega os NetDiscoveryResult
+// completos de cada rodada via aggregateMonitorRounds (lib/netDiscoveryMonitor.ts), sem nenhuma
+// chamada nova ao backend.
+function MonitorSummaryPanel({ results }: { results: NetDiscoveryResult[] }) {
+  const { hopAggregates, routeDiff } = aggregateMonitorRounds(results);
+  const reachedCount = results.filter((r) => r.reached).length;
+
+  return (
+    <div className="rounded-md border border-border p-3 flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <ListChecks className="w-4 h-4 text-muted-foreground" />
+        Resumo do monitoramento ({results.length} rodadas)
+      </div>
+      <div className="text-xs text-muted-foreground">
+        Destino alcançado em {reachedCount}/{results.length} rodadas.
+      </div>
+      {routeDiff.changed ? (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>Rota mudou durante o monitoramento — {formatRouteDiffSummary(routeDiff)}.</span>
+        </div>
+      ) : (
+        <div className="text-xs text-emerald-600 dark:text-emerald-400">Rota estável durante todo o monitoramento.</div>
+      )}
+      <table className="w-full text-xs mt-1">
+        <thead>
+          <tr className="text-muted-foreground">
+            <th className="text-left font-medium px-2 py-1">Salto</th>
+            <th className="text-left font-medium px-2 py-1">Respondeu</th>
+            <th className="text-left font-medium px-2 py-1">Perda média</th>
+          </tr>
+        </thead>
+        <tbody>
+          {hopAggregates.map((h, i) => (
+            <tr key={h.index} className={i > 0 ? "border-t border-border" : ""}>
+              <td className="px-2 py-1 font-mono">{h.index}</td>
+              <td className="px-2 py-1 font-mono">
+                {h.respondedRounds}/{h.totalRounds}
+                {h.respondedRounds > 0 && h.respondedRounds < h.totalRounds && (
+                  <span className="ml-1.5 text-amber-600 dark:text-amber-400" title="Este salto não respondeu em todas as rodadas — instabilidade intermitente">
+                    instável
+                  </span>
+                )}
+              </td>
+              <td className="px-2 py-1 font-mono">{h.avgLossPct > 0 ? `${h.avgLossPct.toFixed(0)}%` : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

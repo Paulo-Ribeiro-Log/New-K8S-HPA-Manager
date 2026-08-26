@@ -125,6 +125,12 @@ export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphPr
             "text-max-width": "160px", // mesma margem generosa do node base — nunca deve disparar wrap indevido no IP
           },
         },
+        // Fase A (múltiplas sondas por salto) — perda PARCIAL (>0% e <100%, hop respondeu mas nem
+        // sempre — instabilidade real, diferente de "nunca respondeu" já coberto por kind=timeout)
+        // vira fundo âmbar. Declarado DEPOIS de TODOS os selectors de `kind` acima (inclusive
+        // target) pra ter prioridade em empate de especificidade no Cytoscape (seletores mais
+        // tardios vencem) — sinaliza instabilidade mesmo no próprio nó de destino.
+        { selector: "node[?lossPartial]", style: { "background-color": "#d97706" } },
         // Texto flutuante ABAIXO do nó (hostname/recurso K8s, ver buildInfoLabel) — nó próprio,
         // sem borda/fundo (só o texto em si), não-interativo (`events: "no"`, `grabbable`/
         // `selectable: false` no elemento — ver criação em cy.add), largura/altura calculadas a
@@ -288,6 +294,13 @@ export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphPr
       }
       if (hop.cloud_match && node.data("cloudMatch") !== hop.cloud_match) {
         node.data("cloudMatch", hop.cloud_match);
+      }
+      // Fase A — perda parcial (>0% e <100%) sinalizada por fundo âmbar (ver style selector
+      // node[?lossPartial]) — 100% de perda já é representado por kind="timeout", não precisa
+      // do sinal extra aqui.
+      const lossPartial = (hop.loss_pct ?? 0) > 0 && (hop.loss_pct ?? 0) < 100;
+      if (node.data("lossPartial") !== lossPartial) {
+        node.data("lossPartial", lossPartial);
       }
       if (hop.internal_ref && node.data("internalRefKind") !== hop.internal_ref.kind) {
         node.data("internalRefKind", hop.internal_ref.kind);

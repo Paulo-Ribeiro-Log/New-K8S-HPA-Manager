@@ -7,7 +7,7 @@ import (
 )
 
 func TestNormalizeBatchTargets_TrimsAndSkipsEmpty(t *testing.T) {
-	got := normalizeBatchTargets([]string{" 8.8.8.8 ", "", "   ", "example.com"})
+	got := normalizeBatchTargets([]string{" 8.8.8.8 ", "", "   ", "example.com"}, false)
 	want := []string{"8.8.8.8", "example.com"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -18,7 +18,7 @@ func TestNormalizeBatchTargets_TrimsAndSkipsEmpty(t *testing.T) {
 // comentário da função: "Foo.com" e "foo.com" não podem virar dois alvos diferentes no mesmo
 // lote — a PRIMEIRA grafia encontrada é a que sobrevive, ordem de entrada preservada.
 func TestNormalizeBatchTargets_DedupeCaseInsensitivePreservesOrder(t *testing.T) {
-	got := normalizeBatchTargets([]string{"Example.com", "8.8.8.8", "example.COM", "1.1.1.1"})
+	got := normalizeBatchTargets([]string{"Example.com", "8.8.8.8", "example.COM", "1.1.1.1"}, false)
 	want := []string{"Example.com", "8.8.8.8", "1.1.1.1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -26,12 +26,50 @@ func TestNormalizeBatchTargets_DedupeCaseInsensitivePreservesOrder(t *testing.T)
 }
 
 func TestNormalizeBatchTargets_EmptyInputReturnsEmptyNotNil(t *testing.T) {
-	got := normalizeBatchTargets(nil)
+	got := normalizeBatchTargets(nil, false)
 	if got == nil {
 		t.Fatal("esperava slice vazio, não nil")
 	}
 	if len(got) != 0 {
 		t.Errorf("esperava 0 alvos, veio %d", len(got))
+	}
+}
+
+// TestNormalizeBatchTargets_AllowDuplicatesKeepsRepeatedTarget — Fase C do roadmap de maturidade
+// profissional (modo de monitoramento contínuo): com allowDuplicates=true, o mesmo alvo repetido N
+// vezes deve sobreviver TODAS as N vezes, na ordem — é o mecanismo que viabiliza "monitorar" como
+// "lote com o mesmo alvo repetido", sem endpoint novo.
+func TestNormalizeBatchTargets_AllowDuplicatesKeepsRepeatedTarget(t *testing.T) {
+	got := normalizeBatchTargets([]string{"8.8.8.8", "8.8.8.8", "8.8.8.8"}, true)
+	want := []string{"8.8.8.8", "8.8.8.8", "8.8.8.8"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestNormalizeBatchTargets_AllowDuplicatesStillTrimsAndSkipsEmpty garante que allowDuplicates=true
+// não desliga as outras normalizações (trim/vazio) — só a dedupe.
+func TestNormalizeBatchTargets_AllowDuplicatesStillTrimsAndSkipsEmpty(t *testing.T) {
+	got := normalizeBatchTargets([]string{" 8.8.8.8 ", "", "  ", " 8.8.8.8 "}, true)
+	want := []string{"8.8.8.8", "8.8.8.8"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestNormalizeMonitorInterval — Fase C do roadmap de maturidade profissional.
+func TestNormalizeMonitorInterval(t *testing.T) {
+	if sec, errCode, _ := normalizeMonitorInterval(0); errCode != "" || sec != 0 {
+		t.Errorf("normalizeMonitorInterval(0) = (%d, %q), want (0, \"\")", sec, errCode)
+	}
+	if sec, errCode, _ := normalizeMonitorInterval(15); errCode != "" || sec != 15 {
+		t.Errorf("normalizeMonitorInterval(15) = (%d, %q), want (15, \"\")", sec, errCode)
+	}
+	if _, errCode, _ := normalizeMonitorInterval(-1); errCode != "INVALID_INTERVAL" {
+		t.Errorf("normalizeMonitorInterval(-1) errCode = %q, want INVALID_INTERVAL", errCode)
+	}
+	if _, errCode, _ := normalizeMonitorInterval(netDiscoveryMonitorIntervalMaxSec + 1); errCode != "INVALID_INTERVAL" {
+		t.Errorf("normalizeMonitorInterval(%d) errCode = %q, want INVALID_INTERVAL", netDiscoveryMonitorIntervalMaxSec+1, errCode)
 	}
 }
 
@@ -41,7 +79,7 @@ func TestNormalizeBatchTargets_EmptyInputReturnsEmptyNotNil(t *testing.T) {
 // lógica pura que delegam pra); só confirma a fórmula usada dentro dele.
 func TestComputeOverallTimeout_BatchWorstCaseCappedByBatchLimit(t *testing.T) {
 	numTargets := netDiscoveryBatchMaxTargets // pior caso: lote cheio
-	perTarget := computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec)
+	perTarget := computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec, netDiscoveryProbeCountMax)
 	batchTimeout := time.Duration(numTargets) * perTarget
 	if batchTimeout > netDiscoveryBatchOverallTimeoutCap {
 		batchTimeout = netDiscoveryBatchOverallTimeoutCap
@@ -63,7 +101,7 @@ func TestComputeOverallTimeout_BatchWorstCaseCappedByBatchLimit(t *testing.T) {
 // este teste trava essa invariante — se alguém reintroduzir um valor fixo no futuro sem manter em
 // sincronia com a fórmula, ele falha.
 func TestNetDiscoveryBatchOverallTimeoutCap_NeverSmallerThanDocumentedWorstCase(t *testing.T) {
-	documentedWorstCase := time.Duration(netDiscoveryBatchMaxTargets) * computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec)
+	documentedWorstCase := time.Duration(netDiscoveryBatchMaxTargets) * computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec, netDiscoveryProbeCountMax)
 	if netDiscoveryBatchOverallTimeoutCap < documentedWorstCase {
 		t.Errorf("netDiscoveryBatchOverallTimeoutCap (%v) é menor que o pior caso documentado (%d alvos × timeout máximo = %v) — alvos no fim de um lote cheio podem nunca chegar a rodar",
 			netDiscoveryBatchOverallTimeoutCap, netDiscoveryBatchMaxTargets, documentedWorstCase)
