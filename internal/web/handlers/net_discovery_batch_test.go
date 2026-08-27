@@ -57,6 +57,36 @@ func TestNormalizeBatchTargets_AllowDuplicatesStillTrimsAndSkipsEmpty(t *testing
 	}
 }
 
+// TestNormalizeConcurrency — Fase G do roadmap de maturidade profissional (paralelismo opcional).
+func TestNormalizeConcurrency(t *testing.T) {
+	if n, errCode, _ := normalizeConcurrency(0); errCode != "" || n != 1 {
+		t.Errorf("normalizeConcurrency(0) = (%d, %q), want (1, \"\") — default sequencial", n, errCode)
+	}
+	if n, errCode, _ := normalizeConcurrency(3); errCode != "" || n != 3 {
+		t.Errorf("normalizeConcurrency(3) = (%d, %q), want (3, \"\")", n, errCode)
+	}
+	if _, errCode, _ := normalizeConcurrency(-1); errCode != "INVALID_CONCURRENCY" {
+		t.Errorf("normalizeConcurrency(-1) errCode = %q, want INVALID_CONCURRENCY", errCode)
+	}
+	if _, errCode, _ := normalizeConcurrency(netDiscoveryBatchConcurrencyMax + 1); errCode != "INVALID_CONCURRENCY" {
+		t.Errorf("normalizeConcurrency(%d) errCode = %q, want INVALID_CONCURRENCY", netDiscoveryBatchConcurrencyMax+1, errCode)
+	}
+}
+
+// TestValidateConcurrencyWithMonitor_RejectsParallelMonitoring — Fase G: monitoramento é uma série
+// temporal, paralelismo não faz sentido semântico combinado com ele.
+func TestValidateConcurrencyWithMonitor_RejectsParallelMonitoring(t *testing.T) {
+	if errCode, _ := validateConcurrencyWithMonitor(true, 3); errCode != "INVALID_CONCURRENCY" {
+		t.Errorf("validateConcurrencyWithMonitor(true, 3) errCode = %q, want INVALID_CONCURRENCY", errCode)
+	}
+	if errCode, _ := validateConcurrencyWithMonitor(true, 1); errCode != "" {
+		t.Errorf("validateConcurrencyWithMonitor(true, 1) errCode = %q, want vazio (sequencial é compatível com monitoramento)", errCode)
+	}
+	if errCode, _ := validateConcurrencyWithMonitor(false, 3); errCode != "" {
+		t.Errorf("validateConcurrencyWithMonitor(false, 3) errCode = %q, want vazio (lote normal paralelo é válido)", errCode)
+	}
+}
+
 // TestNormalizeMonitorInterval — Fase C do roadmap de maturidade profissional.
 func TestNormalizeMonitorInterval(t *testing.T) {
 	if sec, errCode, _ := normalizeMonitorInterval(0); errCode != "" || sec != 0 {

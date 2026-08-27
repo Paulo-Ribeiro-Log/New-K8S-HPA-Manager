@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,15 +14,29 @@ import (
 
 // ─── "Descoberta de Rede" — Fase 5, item P4 do roadmap de maturidade profissional
 // (IP-ROUTE-DISCOVERY-PLAN.md, seção 10): múltiplos alvos em lote. Maior risco arquitetural do
-// roadmap — decisão de design registrada aqui e no plano: fila SEQUENCIAL (não paralela),
+// roadmap — decisão de design registrada aqui e no plano: fila SEQUENCIAL POR PADRÃO (não paralela),
 // reaproveitando `runDiscovery` (net_discovery.go) SEM MODIFICAR NADA nele — cada alvo do lote é
-// literalmente uma execução single-target normal, só que N delas em sequência dentro da MESMA
-// goroutine, cada uma com seu próprio session_id (o frontend caminha pelos streams SSE um de cada
-// vez, exatamente como já faz pra uma descoberta única). Motivos pra sequencial em vez de
-// paralelo: (1) zero risco na lógica já validada — nenhuma race condition nova pra descobrir;
-// (2) evita tempestade de rede/DNS/az-CLI simultânea contra N alvos de uma vez; (3) Histórico
-// (Fase 5/P1) e Exportar PDF (Fase 5/P2) funcionam de graça pra cada alvo do lote, sem nenhum
-// código extra — cada iteração já passa pelo mesmo `saveDiscoveryHistory` que uma busca única usa.
+// literalmente uma execução single-target normal, só que N delas dentro da MESMA goroutine
+// controladora, cada uma com seu próprio session_id (o frontend caminha pelos streams SSE um de cada
+// vez, exatamente como já faz pra uma descoberta única). Motivos pra sequencial ser o DEFAULT:
+// (1) zero risco na lógica já validada — nenhuma race condition nova pra descobrir; (2) evita
+// tempestade de rede/DNS/az-CLI simultânea contra N alvos de uma vez; (3) Histórico (Fase 5/P1) e
+// Exportar PDF (Fase 5/P2) funcionam de graça pra cada alvo do lote, sem nenhum código extra — cada
+// iteração já passa pelo mesmo `saveDiscoveryHistory` que uma busca única usa.
+//
+// Fase G do roadmap (paralelismo OPCIONAL, escopo reduzido confirmado com o usuário): `Concurrency`
+// no request liga um caminho alternativo dentro da mesma goroutine controladora — semáforo limitando
+// até `netDiscoveryBatchConcurrencyMax` alvos rodando ao mesmo tempo, cada um ainda chamando
+// `runDiscovery` sem nenhuma mudança nela (mesmo princípio "zero risco na lógica já validada" do
+// design original). `runDiscovery` é seguro de chamar concorrentemente pra sessionIDs diferentes:
+// todo estado mutável que ela usa é local à própria chamada (`hops`, closures) ou já é thread-safe
+// (o `h.tracker` de SSE é keyed por sessionID; `h.seenClusters` é um `sync.Map`); cada alvo cria seu
+// próprio pod (nome único via uuid)/container Docker (nome único via uuid), sem colisão entre
+// goroutines. Default `Concurrency=1` preserva 100% o caminho sequencial original — nada muda pro
+// caso comum. `AllowDuplicateTargets` (Fase C, monitoramento) e `Concurrency>1` são mutuamente
+// exclusivos (validado em RunBatch) — monitoramento é uma série TEMPORAL, rodadas paralelas não
+// fariam sentido semântico (perderiam a ordem que dá sentido a "rota mudou entre a 1ª e a última
+// rodada").
 
 // netDiscoveryBatchMaxTargets — teto de alvos por lote. Cada alvo pode levar até
 // computeOverallTimeout(probeTimeoutSec) no pior caso (tudo bloqueado) — um lote sem teto poderia
@@ -35,6 +50,15 @@ const netDiscoveryBatchMaxTargets = 10
 // espera entre uma rodada e a próxima. 60s é generoso o bastante pra espaçar rodadas de
 // monitoramento sem deixar o lote inteiro esperar por tempo morto desproporcional.
 const netDiscoveryMonitorIntervalMaxSec = 60
+
+// netDiscoveryBatchConcurrencyMax — Fase G do roadmap de maturidade profissional (paralelismo
+// opcional no modo lote, ESCOPO REDUZIDO — decisão registrada no plano e confirmada com o usuário):
+// teto de alvos rodando SIMULTANEAMENTE quando `Concurrency > 1` é escolhido explicitamente (default
+// continua 1 = sequencial, comportamento idêntico a antes desta fase). Mantido baixo (não maior)
+// pelo mesmo motivo já documentado no comentário de topo deste arquivo pra sequencial ter sido a
+// escolha original — "evita tempestade de rede/DNS/az-CLI simultânea" — um teto pequeno preserva
+// essa cautela mesmo com paralelismo habilitado.
+const netDiscoveryBatchConcurrencyMax = 3
 
 // netDiscoveryBatchOverallTimeoutCap — teto absoluto pro LOTE inteiro, independente da soma dos
 // tetos individuais — nunca deixa o contexto Go esperar indefinidamente mesmo no cenário mais
@@ -87,6 +111,12 @@ type RunNetDiscoveryBatchRequest struct {
 	// guardada por ctx.Done() — cancelar o lote também interrompe a espera entre rodadas
 	// imediatamente, sem esperar o intervalo terminar.
 	IntervalSec int `json:"interval_sec,omitempty"`
+	// Concurrency — Fase G do roadmap de maturidade profissional (paralelismo opcional, escopo
+	// reduzido): quantos alvos rodam SIMULTANEAMENTE. 0 ou 1 (default) = sequencial, comportamento
+	// idêntico a antes desta fase. Máximo netDiscoveryBatchConcurrencyMax. Mutuamente exclusivo com
+	// AllowDuplicateTargets (monitoramento é uma série temporal — rodadas paralelas não fariam
+	// sentido semântico).
+	Concurrency int `json:"concurrency,omitempty"`
 }
 
 // RunNetDiscoveryBatchResponse — `SessionIDs`/`Targets` sempre na MESMA ordem e mesmo tamanho; o
@@ -130,6 +160,28 @@ func normalizeMonitorInterval(intervalSec int) (sec int, errCode, errMsg string)
 		return 0, "INVALID_INTERVAL", fmt.Sprintf("interval_sec deve estar entre 0 e %d", netDiscoveryMonitorIntervalMaxSec)
 	}
 	return intervalSec, "", ""
+}
+
+// normalizeConcurrency valida/normaliza Concurrency (0 = default sequencial=1) — Fase G do roadmap
+// de maturidade profissional.
+func normalizeConcurrency(concurrency int) (n int, errCode, errMsg string) {
+	if concurrency == 0 {
+		return 1, "", ""
+	}
+	if concurrency < 1 || concurrency > netDiscoveryBatchConcurrencyMax {
+		return 0, "INVALID_CONCURRENCY", fmt.Sprintf("concurrency deve estar entre 1 e %d", netDiscoveryBatchConcurrencyMax)
+	}
+	return concurrency, "", ""
+}
+
+// validateConcurrencyWithMonitor — Fase G: monitoramento (AllowDuplicateTargets) e paralelismo
+// (Concurrency>1) são mutuamente exclusivos — extraída como função pura testável, mesmo padrão de
+// normalizeConcurrency/normalizeMonitorInterval.
+func validateConcurrencyWithMonitor(allowDuplicateTargets bool, concurrency int) (errCode, errMsg string) {
+	if allowDuplicateTargets && concurrency > 1 {
+		return "INVALID_CONCURRENCY", "monitoramento (allow_duplicate_targets) não pode ser paralelo — é uma série temporal, precisa rodar em ordem"
+	}
+	return "", ""
 }
 
 // RunBatch inicia um lote de descobertas sequenciais.
@@ -179,6 +231,15 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
 	}
+	concurrency, errCode, errMsg := normalizeConcurrency(req.Concurrency)
+	if errCode != "" {
+		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
+		return
+	}
+	if errCode, errMsg := validateConcurrencyWithMonitor(req.AllowDuplicateTargets, concurrency); errCode != "" {
+		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
+		return
+	}
 
 	userInfo := GetUserInfoForHistory(c)
 
@@ -203,10 +264,15 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 
 	// Teto do LOTE inteiro = soma do pior caso de cada alvo (mesma computeOverallTimeout já usada
 	// pra busca única) + o tempo de espera entre rodadas (Fase C, IntervalSec — (N-1) intervalos
-	// entre N rodadas), capado em netDiscoveryBatchOverallTimeoutCap. Um único cancelFunc
-	// registrado sob o batchID (não um por sessão) — cancelar o lote cancela o alvo em andamento E
-	// impede os alvos restantes de sequer começar (checado no loop abaixo); o endpoint Cancel()
-	// já existente funciona sem nenhuma mudança, só chamado com batchID em vez de um sessionID.
+	// entre N rodadas), capado em netDiscoveryBatchOverallTimeoutCap. Deliberadamente NÃO dividido
+	// por `concurrency` mesmo no caminho paralelo (Fase G) — usar a soma sequencial como teto é
+	// mais conservador (dá mais folga do que o estritamente necessário), e um cálculo mais justo
+	// (ex: ceil(N/concurrency) × pior caso) arriscaria cortar um lote paralelo genuinamente lento
+	// no meio por um erro de arredondamento; o único custo de ser conservador aqui é um teto de
+	// segurança maior do que precisaria, nunca um corte prematuro. Um único cancelFunc registrado
+	// sob o batchID (não um por sessão) — cancelar o lote cancela os alvos em andamento E impede os
+	// alvos restantes de sequer começar; o endpoint Cancel() já existente funciona sem nenhuma
+	// mudança, só chamado com batchID em vez de um sessionID.
 	batchTimeout := time.Duration(len(targets))*computeOverallTimeout(probeTimeoutSec, probeCount) +
 		time.Duration(len(targets)-1)*time.Duration(intervalSec)*time.Second
 	if batchTimeout > netDiscoveryBatchOverallTimeoutCap {
@@ -220,32 +286,68 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 		defer h.runningUsers.Delete(lockKey)
 		defer cancel()
 
+		if concurrency <= 1 {
+			// Caminho ORIGINAL, sequencial — inalterado por esta fase.
+			for i, target := range targets {
+				if ctx.Err() != nil {
+					return // lote cancelado (ou teto absoluto estourado) — não inicia os alvos restantes
+				}
+				// Fase C — espera entre rodadas (só a partir da 2ª, nunca antes da 1ª). Guardada por
+				// ctx.Done() — cancelar o lote interrompe a espera imediatamente, sem esperar o
+				// intervalo configurado terminar.
+				if i > 0 && intervalSec > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Duration(intervalSec) * time.Second):
+					}
+				}
+				subReq := RunNetDiscoveryRequest{
+					Target: target, Mode: req.Mode, Cluster: req.Cluster, Namespace: req.Namespace,
+					ProbePort: probePort, ProbeTimeoutSec: probeTimeoutSec, ProbeCount: probeCount,
+					ClientCertPEM: req.ClientCertPEM, ClientKeyPEM: req.ClientKeyPEM,
+					ExtraPorts: req.ExtraPorts,
+				}
+				// runDiscovery (net_discovery.go) roda INALTERADA — mesmo fluxo de uma busca única
+				// (traceroute→fingerprint→enrich→crossref→histórico→SSE), incluindo seus próprios
+				// fail()/send() internos por sessionIDs[i]. Bloqueante — a próxima iteração só
+				// começa depois desta terminar (fila sequencial).
+				h.runDiscovery(ctx, sessionIDs[i], subReq, userInfo)
+			}
+			return
+		}
+
+		// Fase G — caminho PARALELO (opt-in, escopo reduzido): semáforo limitando até
+		// `concurrency` alvos rodando ao mesmo tempo. IntervalSec não se aplica aqui (não tem
+		// sentido semântico "espaçar" lançamentos concorrentes — é um conceito do modo sequencial/
+		// monitoramento) e AllowDuplicateTargets já foi rejeitado em combinação com concurrency>1
+		// acima, então este caminho nunca lida com alvos repetidos.
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
 		for i, target := range targets {
 			if ctx.Err() != nil {
-				return // lote cancelado (ou teto absoluto estourado) — não inicia os alvos restantes
+				break // lote cancelado (ou teto absoluto estourado) — não inicia mais nenhum alvo
 			}
-			// Fase C — espera entre rodadas (só a partir da 2ª, nunca antes da 1ª). Guardada por
-			// ctx.Done() — cancelar o lote interrompe a espera imediatamente, sem esperar o
-			// intervalo configurado terminar.
-			if i > 0 && intervalSec > 0 {
-				select {
-				case <-ctx.Done():
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(i int, target string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if ctx.Err() != nil {
 					return
-				case <-time.After(time.Duration(intervalSec) * time.Second):
 				}
-			}
-			subReq := RunNetDiscoveryRequest{
-				Target: target, Mode: req.Mode, Cluster: req.Cluster, Namespace: req.Namespace,
-				ProbePort: probePort, ProbeTimeoutSec: probeTimeoutSec, ProbeCount: probeCount,
-				ClientCertPEM: req.ClientCertPEM, ClientKeyPEM: req.ClientKeyPEM,
-				ExtraPorts: req.ExtraPorts,
-			}
-			// runDiscovery (net_discovery.go) roda INALTERADA — mesmo fluxo de uma busca única
-			// (traceroute→fingerprint→enrich→crossref→histórico→SSE), incluindo seus próprios
-			// fail()/send() internos por sessionIDs[i]. Bloqueante — a próxima iteração só começa
-			// depois desta terminar (fila sequencial).
-			h.runDiscovery(ctx, sessionIDs[i], subReq, userInfo)
+				subReq := RunNetDiscoveryRequest{
+					Target: target, Mode: req.Mode, Cluster: req.Cluster, Namespace: req.Namespace,
+					ProbePort: probePort, ProbeTimeoutSec: probeTimeoutSec, ProbeCount: probeCount,
+					ClientCertPEM: req.ClientCertPEM, ClientKeyPEM: req.ClientKeyPEM,
+					ExtraPorts: req.ExtraPorts,
+				}
+				// Mesma runDiscovery, chamada concorrentemente pra um sessionID PRÓPRIO — seguro
+				// (ver comentário completo de justificativa no topo deste arquivo).
+				h.runDiscovery(ctx, sessionIDs[i], subReq, userInfo)
+			}(i, target)
 		}
+		wg.Wait()
 	}()
 
 	c.JSON(http.StatusOK, RunNetDiscoveryBatchResponse{BatchID: batchID, SessionIDs: sessionIDs, Targets: targets})
