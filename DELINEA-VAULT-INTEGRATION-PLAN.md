@@ -481,6 +481,30 @@ uma sem esperar a outra.
 10. **Escala aproximada** — dezenas ou centenas de servidores?
 11. **SSH Terminal está de fato habilitado** nesta instância Cloud (Admin > Proxying, licença
     Professional/Platinum)? Sem isso, a Fase 4 inteira não funciona, independente do nosso código.
+
+    **Como testar, em ordem de confiabilidade/esforço (sem escrever código):**
+    1. **Perguntar pra quem administra o Delinea** — é a via mais rápida e confiável. SSH Terminal
+       é config de admin (não visível/alterável por usuário comum): "SSH Terminal está habilitado?
+       Qual host/porta usar?" resolve isso mais rápido que qualquer teste técnico.
+    2. **Se você tiver acesso de Admin na própria UI**: menu Admin (engrenagem) → **Proxying** →
+       aba SSH Proxy/SSH Terminal — mostra diretamente status ligado/desligado e o "SSH Public
+       Host"/porta configurado. Fonte de verdade real, não precisa inferir de fora.
+    3. **Teste de conexão direto** (se já souber ou chutar a porta): `ssh
+       <seu-usuário-secretserver>@via.secretservercloud.com -p 22`. Três resultados possíveis:
+       prompt pedindo senha/negociando chave → está ativo (mesmo sem credencial válida, um
+       servidor SSH sempre manda o banner de negociação antes de checar auth — "recusou a senha"
+       já confirma que tem SSH ali); "Connection refused"/timeout → porta errada, desligado, ou
+       bloqueado antes de chegar no Delinea; erro de handshake TLS em vez de SSH → bateu na porta
+       do site normal (443), não numa porta SSH — 22 é só um chute razoável, precisa confirmar a
+       real com o admin. **Atenção pro caso desta empresa (login SSO-only, ver "Rodada 4"
+       acima)**: mesmo com SSH Terminal ligado, autenticar de verdade pode exigir cadastrar uma
+       chave pública SSH no perfil primeiro (pergunta 19) — mas isso não impede este teste de já
+       responder "está ligado?".
+    4. **Confirmar só que a porta responde, sem tentar autenticar**: `nc -zv
+       via.secretservercloud.com 22` (ou a porta real). Preferir isso — ou a tentativa de `ssh`
+       acima — a rodar a "Descoberta de Rede" desta própria aplicação contra o domínio: um scan de
+       portas contra o domínio de um fornecedor SaaS de terceiro (mesmo sendo cliente) é mais
+       ruído/risco do que uma tentativa simples de conexão, que é comportamento normal de cliente.
 12. **Qual credencial autentica a conexão SSH Terminal em si** — chave pública SSH por analista
     (recomendado) ou usuário/senha pessoal do Delinea (não recomendado)?
 13. ~~Como o aprovador é notificado quando um Approval Workflow é acionado~~ — **obsoleta**, não
