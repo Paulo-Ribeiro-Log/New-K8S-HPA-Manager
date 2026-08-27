@@ -8,9 +8,11 @@ respondidas, com impacto real na arquitetura (detalhado nas seções 2.1 e 5 aba
    muda o modelo de credencial de "um segredo compartilhado" (como Dynatrace/Zabbix hoje) para
    "um segredo por usuário" — o mesmo padrão já usado nesta app para `GitHubEditorProfile`/tokens
    de IA por usuário (`UserTokensStore` chaveado por `user_email`), não um padrão novo.
-3. Os secrets-alvo **exigem aprovação/checkout** (Approval Workflow ligado) — a ponte de terminal
-   não pode ser "clique e conecta instantaneamente" em todos os casos; precisa lidar com o estado
-   de espera de aprovação.
+3. Os secrets-alvo **exigem aprovação/checkout** — ⚠️ **revisado logo depois** (ver "Rodada 3"
+   abaixo): não é um humano aprovando a liberação da senha. No Linux é uma tela de **escolha de
+   launcher**; no Windows é **exclusão mútua entre analistas SRE** (não deixa dois conectados ao
+   mesmo tempo). O desenho de "aguardando aprovação" das seções 5/6 ficou mais brando do que a
+   primeira leitura sugeria — ver correção completa abaixo.
 4. Os servidores **só são alcançáveis através do SSH Proxy/bastion do próprio Delinea** — a
    "Opção A" (SSH direto do backend) do rascunho original está **descartada**; a arquitetura
    inteira da seção 5 foi reescrita em cima do mecanismo confirmado (`SSH Terminal`, comando
@@ -24,6 +26,33 @@ aplicação também. Seção 6 (nova) cobre esse levantamento — a conclusão p
 Code Editor (RDP é protocolo gráfico), e o mecanismo de "launch" documentado do lado Delinea para
 RDP é bem menos claro que o `launch <secret_id>` do SSH Terminal — ver seção 6 para o porquê e a
 arquitetura proposta (Apache Guacamole auto-hospedado como ponte).
+
+**Rodada 3 (mesma sessão) — correção real de entendimento sobre "Checkout/Approval"**: ao pedir
+uma lista de benefícios da integração, o usuário corrigiu a premissa da confirmação #3 acima —
+"Checkout/Approval Workflow só existe em servidores linux para escolher entre terminais a serem
+usado como o PuTTY. já em servidores windows é feito para travar o uso simultâneo por mais de um
+analista SRE." Ou seja: **não existe aprovação humana como a documentação genérica da Delinea
+descreve** (seção 3) — o que existe de fato nesta empresa é:
+- **Linux**: a tela que apareceu como "aprovação" é uma **escolha de launcher** — hoje há 3
+  configurados (**PuTTY, MobaXterm, WinSCP**), e só o PuTTY roda sem exigir configuração dedicada
+  na máquina do analista (confirmado pelo usuário: MobaXterm e WinSCP precisam de algum setup
+  local extra). Isso reforça ainda mais o valor da ponte via SSH Terminal (seção 5) — ela não é só
+  "melhor que PuTTY", é a única opção hoje que não depende de nenhuma configuração por analista.
+  **Bônus percebido, não escopado ainda**: como WinSCP (transferência de arquivo) também está na
+  lista de launchers, e esta aplicação já tem um navegador SFTP embutido pronto
+  (`SFTP-FILE-BROWSER-PLAN.md`, server+client do `pkg/sftp` conectados via `net.Pipe()` no mesmo
+  processo), uma fase futura poderia apontar essa mesma infraestrutura para os hosts do Delinea
+  via SSH Terminal — substituindo o WinSCP local do mesmo jeito que a Fase 4 substitui o PuTTY,
+  sem exigir nenhum protocolo novo (é o mesmo SSH Terminal, só outro subcomando/canal).
+- **Windows**: o Checkout ali é exclusão mútua de verdade — impede dois SREs conectados ao mesmo
+  servidor simultaneamente. Isso bate exatamente com a semântica documentada de `Checkout`/
+  `ForceCheckIn` (seção 3), só que sem aprovação humana no meio — é "ocupado agora" ou "livre
+  agora", não "aguardando alguém aprovar". Isso muda a Fase Windows-2 (seção 7): em vez de um
+  fluxo de espera de aprovação, o desenho precisa mostrar **ocupação em tempo real** ("em uso por
+  fulano desde HH:MM") e, com RBAC adequado, uma opção de liberar (`ForceCheckIn`) — nunca uma
+  tela de "aguarde a aprovação".
+
+Seções 5, 6 e 8 abaixo já refletem essa correção.
 
 **Pedido original do usuário:** o usuário tem uma API key do Delinea Vault e quer (1) listar
 servidores/IPs/SO/heartbeat/informações de cada host cadastrado no cofre, (2) filtrar os que são
@@ -120,7 +149,7 @@ seção 6).
 | **Secrets** (`/api/v1/secrets`) | CRUD completo, busca por texto (`filter.searchtext`), filtro por pasta/template/heartbeat (`filter.HeartbeatStatus`), leitura de campos (`fields[]`, nomes dependem do *template*), histórico de acesso | **Central** — fonte da "lista de servidores" e da credencial em si |
 | **Heartbeat** | Verifica, por secret, se a credencial armazenada ainda autentica de verdade contra o alvo. Desligado por padrão. Status: Success, Heartbeat Failed, Unable to Connect, Pending, Incompatible Host | **Central** — é o "heartbeat" pedido; mas é por-secret, não por-host genérico (seção 4.1) |
 | **RPC / Remote Password Changing** | Rotação automática — `Auto Change` (na expiração) ou `Auto Change Schedule` (`Rotate Password Every`). Aplicável a AD, Windows, Unix (SSH), MS SQL | **Central** — é o mecanismo de "senha renovada diariamente" |
-| **Checkout & Approval Workflows** | Acesso exclusivo (`Checkout`, com OTP) + aprovação opcional (`Approval Workflow`) antes da senha ser revelada | **Confirmado como ligado nesta empresa** — a ponte de terminal precisa lidar com "aguardando aprovação" |
+| **Checkout & Approval Workflows** | Acesso exclusivo (`Checkout`, com OTP) + aprovação opcional (`Approval Workflow`, humano aprova antes da senha ser revelada) — dois mecanismos distintos da documentação genérica | **Confirmado que esta empresa usa só o `Checkout`, sem `Approval Workflow` humano** — no Linux aparece como escolha de launcher (PuTTY/MobaXterm/WinSCP), no Windows como exclusão mútua entre SREs (ver "Rodada 3" no topo do documento) |
 | **Discovery** | Varredura de rede (AD, ESX/ESXi, AWS, GCP, Linux/Unix) que descobre contas/dependências e importa como secrets | Explica como os servidores entraram no cofre; sem endpoint limpo de "lista de computadores" separado dos secrets — **a confirmar** |
 | **Folders & Permissions** | Organização hierárquica, `GET /api/v1/folders?filter.searchText=...` | Útil para escopar a busca |
 | **Reports** | Relatórios pré-construídos ou customizados sobre qualquer dado do Secret Server, executáveis via API | **Atalho possível** se já existir um relatório de inventário com SO como coluna |
@@ -195,12 +224,13 @@ Fontes: [SSH Terminal Administration](https://docs.delinea.com/online-help/secre
 - Comando confirmado: `ssh <usuário_secret_server>@<host_ssh_terminal> -p <porta> -t launch
   <secret_id>` — conecta e já inicia a sessão proxiada até o alvo. Outros comandos: `man`, `search
   <termo>`, `cat <secret_id>` (detalhes do secret, captura erros de "requires approval").
-- **Checkout automático e silencioso** ao lançar via SSH Terminal. **Se o secret exige Approval
-  Workflow** (confirmado como o caso aqui), `launch`/`cat` retorna um erro de acesso em vez de
-  conectar — a ponte precisa: (1) detectar esse erro na saída inicial do canal (texto exato a
-  confirmar empiricamente na Fase 4), (2) opcionalmente reenviar com `-comment "<motivo>"`, (3)
-  mostrar ao usuário um estado claro de "aguardando aprovação no Delinea" em vez de travar
-  silenciosamente.
+- **Checkout automático e silencioso** ao lançar via SSH Terminal. Nesta empresa (confirmado —
+  "Rodada 3" no topo) **não há Approval Workflow humano nos secrets Linux** — a tela que parecia
+  aprovação é escolha de launcher (PuTTY/MobaXterm/WinSCP), então `launch <secret_id>` deveria
+  mesmo ser "clique e conecta", sem espera. Mesmo assim, vale manter uma detecção defensiva de
+  erro de acesso na saída inicial do canal (secrets individuais podem ter regra própria, e a
+  configuração pode mudar) — mas isso deixa de ser o desenho central da Fase 4, é só uma rede de
+  segurança.
 - **A senha do alvo nunca passa pelo nosso backend** — o Secret Server autentica no servidor final
   por conta própria; o backend só encaminha bytes entre o WebSocket do navegador e o canal SSH
   aberto contra o SSH Terminal.
@@ -304,6 +334,25 @@ realista e amplamente usada no mercado (outras ferramentas de bastion/PAM fazem 
 - **Nunca expor `guacd` diretamente à rede/usuário** — só nosso backend fala com ele, mesmo
   princípio de isolamento já usado no Port Forward/SFTP desta app.
 
+### Checkout no Windows = exclusão mútua entre SREs, não aprovação (confirmado — "Rodada 3")
+
+Diferente do que a documentação genérica da Delinea sugere (Checkout **+** Approval Workflow
+opcional), nesta empresa o Checkout nos secrets Windows serve só para **impedir dois analistas
+conectados ao mesmo servidor ao mesmo tempo** — sem humano aprovando nada, é "ocupado" ou "livre"
+agora. Isso muda o requisito de design da ponte RDP (Fase Windows-2): em vez de um fluxo de
+"solicitar acesso e esperar aprovação", o certo é:
+- Mostrar **ocupação em tempo real** na lista de servidores (seção 4/Fase 3) — "em uso por
+  `fulano` desde HH:MM", provavelmente lendo o status de checkout do secret via REST antes de
+  oferecer o botão "Conectar".
+- Se o secret já estiver checked-out por outro analista, `launch`/o fluxo de gateway
+  provavelmente vai falhar — a UI deveria refletir isso claramente, com uma opção de
+  **`ForceCheckIn`** (a API já suporta) só quando o analista tiver permissão/justificativa pra
+  liberar (não deveria ser um clique casual — é literalmente "tirar outro SRE de dentro do
+  servidor").
+- Ao encerrar a sessão RDP no nosso terminal, fazer o check-in de volta (mesmo princípio de
+  "silenciosamente checked-in" que o SSH Terminal já faz — a confirmar se o RDP Proxy se comporta
+  igual).
+
 ### Nível de confiança desta seção 6, comparado à seção 5
 
 Deliberadamente mais baixo — a seção 5 (SSH) tem uma fonte primária clara e um comando concreto e
@@ -384,7 +433,8 @@ uma sem esperar a outra.
 ### Já confirmado
 1. ✅ Instância é **Cloud (Delinea SaaS)**.
 2. ✅ Modelo de credencial REST é **uma API key por analista**, não conta de serviço compartilhada.
-5. ✅ Os secrets-alvo **exigem aprovação/checkout**.
+5. ✅ **Revisado** — não há Approval Workflow humano; Checkout no Linux é escolha de launcher
+   (PuTTY/MobaXterm/WinSCP, só PuTTY sem config dedicada), no Windows é exclusão mútua entre SREs.
 8. ✅ Servidores Linux **só alcançáveis via SSH Proxy/bastion do Delinea** — SSH Terminal
    (`launch`) é o único caminho confirmado.
 
@@ -401,9 +451,13 @@ uma sem esperar a outra.
     Professional/Platinum)? Sem isso, a Fase 4 inteira não funciona, independente do nosso código.
 12. **Qual credencial autentica a conexão SSH Terminal em si** — chave pública SSH por analista
     (recomendado) ou usuário/senha pessoal do Delinea (não recomendado)?
-13. **Como o aprovador é notificado** quando um Approval Workflow é acionado (e-mail, Teams,
-    ServiceNow)? Decide se vale tentar acompanhar status na nossa UI ou só apontar pro Secret
-    Server.
+13. ~~Como o aprovador é notificado quando um Approval Workflow é acionado~~ — **obsoleta**, não
+    há Approval Workflow humano nesta empresa (ver "Rodada 3" no topo). Substituída pela pergunta
+    18 abaixo.
+18. **Quem pode usar `ForceCheckIn`** pra liberar um servidor Windows ocupado por outro SRE — todo
+    analista, só líder de squad, algum grupo específico? Decide o RBAC do botão de liberação
+    forçada na Fase Windows-2 (seção 6) — não deveria ser um clique casual disponível a qualquer
+    um.
 
 ### Novas — trilha Windows (RDP)
 
