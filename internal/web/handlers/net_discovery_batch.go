@@ -30,6 +30,12 @@ import (
 // uso real (investigação de um punhado de hosts relacionados) sem abrir a porta pra abuso.
 const netDiscoveryBatchMaxTargets = 10
 
+// netDiscoveryMonitorIntervalMaxSec — Fase C do roadmap de maturidade profissional (modo de
+// monitoramento contínuo, ver AllowDuplicateTargets/IntervalSec abaixo): teto de segundos de
+// espera entre uma rodada e a próxima. 60s é generoso o bastante pra espaçar rodadas de
+// monitoramento sem deixar o lote inteiro esperar por tempo morto desproporcional.
+const netDiscoveryMonitorIntervalMaxSec = 60
+
 // netDiscoveryBatchOverallTimeoutCap — teto absoluto pro LOTE inteiro, independente da soma dos
 // tetos individuais — nunca deixa o contexto Go esperar indefinidamente mesmo no cenário mais
 // pessimista (todos os alvos no timeout de sonda máximo, todos genuinamente bloqueados).
@@ -44,7 +50,7 @@ const netDiscoveryBatchMaxTargets = 10
 // de netDiscoveryBatchMaxTargets já usa (número máximo de alvos × pior caso individual no timeout
 // de sonda máximo) em vez de reafirmado como número fixo — nunca mais pode divergir
 // silenciosamente do que o comentário promete, porque é literalmente a mesma conta.
-var netDiscoveryBatchOverallTimeoutCap = time.Duration(netDiscoveryBatchMaxTargets) * computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec)
+var netDiscoveryBatchOverallTimeoutCap = time.Duration(netDiscoveryBatchMaxTargets) * computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec, netDiscoveryProbeCountMax)
 
 // RunNetDiscoveryBatchRequest é o body do POST /run-batch. Configurações de sonda (porta/timeout)
 // e de execução (modo/cluster/namespace) são COMPARTILHADAS por todo o lote — v1 deliberadamente
@@ -56,11 +62,31 @@ type RunNetDiscoveryBatchRequest struct {
 	Namespace       string   `json:"namespace,omitempty"`
 	ProbePort       int      `json:"probe_port,omitempty"`
 	ProbeTimeoutSec int      `json:"probe_timeout_sec,omitempty"`
+	// ProbeCount — Fase A do roadmap de maturidade profissional (múltiplas sondas por salto), mesmo
+	// campo/validação de RunNetDiscoveryRequest.ProbeCount (net_discovery.go), compartilhado por
+	// todo o lote.
+	ProbeCount int `json:"probe_count,omitempty"`
 	// ClientCertPEM/ClientKeyPEM — mTLS opcional (ver RunNetDiscoveryRequest em net_discovery.go),
 	// mesmo padrão de configuração compartilhada por todo o lote das demais opções acima. Validado
 	// UMA vez em RunBatch (não por alvo) — o mesmo par é reaproveitado em cada iteração da fila.
 	ClientCertPEM string `json:"client_cert_pem,omitempty"`
 	ClientKeyPEM  string `json:"client_key_pem,omitempty"`
+	// ExtraPorts — Fase D do roadmap de maturidade profissional, mesmo campo/validação de
+	// RunNetDiscoveryRequest.ExtraPorts (net_discovery.go), compartilhado por todo o lote.
+	ExtraPorts []int `json:"extra_ports,omitempty"`
+	// AllowDuplicateTargets — Fase C do roadmap de maturidade profissional (modo de monitoramento
+	// contínuo): quando true, normalizeBatchTargets NÃO deduplica — permite o mesmo alvo aparecer
+	// N vezes na lista, viabilizando "rodar o mesmo alvo repetidas vezes em sequência" reaproveitando
+	// o mecanismo de lote já existente sem endpoint novo ("monitorar" é literalmente "lote com o
+	// mesmo alvo repetido N vezes"). Default false preserva 100% o comportamento normal do lote
+	// (alvos distintos, sem repetição, dedupe ligado).
+	AllowDuplicateTargets bool `json:"allow_duplicate_targets,omitempty"`
+	// IntervalSec — segundos de espera entre uma rodada e a próxima (0 = sem espera, rodadas
+	// imediatamente sequenciais — mesmo comportamento do lote normal). Útil pra detectar
+	// flakiness que não é constante (ex: "1 rodada a cada 10s" em vez de rajada). A espera é
+	// guardada por ctx.Done() — cancelar o lote também interrompe a espera entre rodadas
+	// imediatamente, sem esperar o intervalo terminar.
+	IntervalSec int `json:"interval_sec,omitempty"`
 }
 
 // RunNetDiscoveryBatchResponse — `SessionIDs`/`Targets` sempre na MESMA ordem e mesmo tamanho; o
@@ -71,11 +97,13 @@ type RunNetDiscoveryBatchResponse struct {
 	Targets    []string `json:"targets"` // eco já normalizado (trim, dedupe) — frontend não precisa recalcular
 }
 
-// normalizeBatchTargets — trim + remove vazios + dedupe (case-insensitive) preservando a ordem de
-// entrada, mesma normalização usada no Histórico (Fase 5/P1) pra não tratar "Foo.com" e "foo.com"
-// como alvos diferentes dentro do mesmo lote. Extraída como função pura pra ser testável sem
-// precisar de um `*gin.Context` (mesmo padrão de `parseAzureServiceTagsDoc`, Fase 5/P3).
-func normalizeBatchTargets(raw []string) []string {
+// normalizeBatchTargets — trim + remove vazios + dedupe (case-insensitive, a menos que
+// allowDuplicates seja true) preservando a ordem de entrada, mesma normalização usada no Histórico
+// (Fase 5/P1) pra não tratar "Foo.com" e "foo.com" como alvos diferentes dentro do mesmo lote.
+// Extraída como função pura pra ser testável sem precisar de um `*gin.Context` (mesmo padrão de
+// `parseAzureServiceTagsDoc`, Fase 5/P3). `allowDuplicates` — Fase C (modo de monitoramento
+// contínuo): pula a etapa de dedupe, permitindo o mesmo alvo repetido N vezes na lista.
+func normalizeBatchTargets(raw []string, allowDuplicates bool) []string {
 	seen := make(map[string]struct{}, len(raw))
 	targets := make([]string, 0, len(raw))
 	for _, t := range raw {
@@ -83,14 +111,25 @@ func normalizeBatchTargets(raw []string) []string {
 		if t == "" {
 			continue
 		}
-		key := strings.ToLower(t)
-		if _, dup := seen[key]; dup {
-			continue
+		if !allowDuplicates {
+			key := strings.ToLower(t)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
 		}
-		seen[key] = struct{}{}
 		targets = append(targets, t)
 	}
 	return targets
+}
+
+// normalizeMonitorInterval valida/normaliza IntervalSec (0 = sem espera entre rodadas, sempre
+// válido) — Fase C do roadmap de maturidade profissional.
+func normalizeMonitorInterval(intervalSec int) (sec int, errCode, errMsg string) {
+	if intervalSec < 0 || intervalSec > netDiscoveryMonitorIntervalMaxSec {
+		return 0, "INVALID_INTERVAL", fmt.Sprintf("interval_sec deve estar entre 0 e %d", netDiscoveryMonitorIntervalMaxSec)
+	}
+	return intervalSec, "", ""
 }
 
 // RunBatch inicia um lote de descobertas sequenciais.
@@ -102,7 +141,7 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 		return
 	}
 
-	targets := normalizeBatchTargets(req.Targets)
+	targets := normalizeBatchTargets(req.Targets, req.AllowDuplicateTargets)
 	if len(targets) == 0 {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "informe ao menos 1 alvo (IP ou hostname)"))
 		return
@@ -122,12 +161,21 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "cluster e namespace são obrigatórios no modo pod"))
 		return
 	}
-	probePort, probeTimeoutSec, errCode, errMsg := normalizeProbeSettings(req.ProbePort, req.ProbeTimeoutSec)
+	probePort, probeTimeoutSec, probeCount, errCode, errMsg := normalizeProbeSettings(req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount)
 	if errCode != "" {
 		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
 	}
 	if errCode, errMsg := validateClientCertRequest(req.ClientCertPEM, req.ClientKeyPEM); errCode != "" {
+		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
+		return
+	}
+	if errCode, errMsg := validateExtraPorts(req.ExtraPorts); errCode != "" {
+		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
+		return
+	}
+	intervalSec, errCode, errMsg := normalizeMonitorInterval(req.IntervalSec)
+	if errCode != "" {
 		c.JSON(http.StatusBadRequest, errorResponse(errCode, errMsg))
 		return
 	}
@@ -154,11 +202,13 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 	}
 
 	// Teto do LOTE inteiro = soma do pior caso de cada alvo (mesma computeOverallTimeout já usada
-	// pra busca única), capado em netDiscoveryBatchOverallTimeoutCap. Um único cancelFunc
+	// pra busca única) + o tempo de espera entre rodadas (Fase C, IntervalSec — (N-1) intervalos
+	// entre N rodadas), capado em netDiscoveryBatchOverallTimeoutCap. Um único cancelFunc
 	// registrado sob o batchID (não um por sessão) — cancelar o lote cancela o alvo em andamento E
 	// impede os alvos restantes de sequer começar (checado no loop abaixo); o endpoint Cancel()
 	// já existente funciona sem nenhuma mudança, só chamado com batchID em vez de um sessionID.
-	batchTimeout := time.Duration(len(targets)) * computeOverallTimeout(probeTimeoutSec)
+	batchTimeout := time.Duration(len(targets))*computeOverallTimeout(probeTimeoutSec, probeCount) +
+		time.Duration(len(targets)-1)*time.Duration(intervalSec)*time.Second
 	if batchTimeout > netDiscoveryBatchOverallTimeoutCap {
 		batchTimeout = netDiscoveryBatchOverallTimeoutCap
 	}
@@ -174,10 +224,21 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 			if ctx.Err() != nil {
 				return // lote cancelado (ou teto absoluto estourado) — não inicia os alvos restantes
 			}
+			// Fase C — espera entre rodadas (só a partir da 2ª, nunca antes da 1ª). Guardada por
+			// ctx.Done() — cancelar o lote interrompe a espera imediatamente, sem esperar o
+			// intervalo configurado terminar.
+			if i > 0 && intervalSec > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Duration(intervalSec) * time.Second):
+				}
+			}
 			subReq := RunNetDiscoveryRequest{
 				Target: target, Mode: req.Mode, Cluster: req.Cluster, Namespace: req.Namespace,
-				ProbePort: probePort, ProbeTimeoutSec: probeTimeoutSec,
+				ProbePort: probePort, ProbeTimeoutSec: probeTimeoutSec, ProbeCount: probeCount,
 				ClientCertPEM: req.ClientCertPEM, ClientKeyPEM: req.ClientKeyPEM,
+				ExtraPorts: req.ExtraPorts,
 			}
 			// runDiscovery (net_discovery.go) roda INALTERADA — mesmo fluxo de uma busca única
 			// (traceroute→fingerprint→enrich→crossref→histórico→SSE), incluindo seus próprios

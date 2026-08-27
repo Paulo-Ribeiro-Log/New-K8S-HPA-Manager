@@ -25,6 +25,29 @@ import (
 // netDiscoveryFingerprintPorts — mesma lista curada da seção 3.3 do plano.
 var netDiscoveryFingerprintPorts = []int{22, 80, 443, 445, 3389, 21, 25, 587, 53, 3306, 5432, 6379, 27017, 9200, 8080, 8443, 5985, 5986}
 
+// netDiscoveryExtraPortsMax — Fase D do roadmap de maturidade profissional: teto de portas extras
+// que o usuário pode pedir além da lista curada acima. Evita alongar demais o loop paralelo
+// `&`+`wait` do script (cada porta extra é mais um `nc -z -w1` disparado em paralelo, custo baixo
+// mas não zero) e limita abuso (esta ferramenta já gera tráfego de sondagem real contra hosts
+// arbitrários — ver RBAC/controle de abuso, item de decisão de política do roadmap).
+const netDiscoveryExtraPortsMax = 10
+
+// formatExtraPortsArg formata as portas extras já validadas como um único argv posicional
+// separado por espaço ("8081 9000") — consumido pelo `for p in ... $4` do script via word-split
+// natural do shell sobre um argumento não citado, mesmo mecanismo que já separa a lista curada
+// fixa em tokens individuais. Ports já vêm validados (1-65535, inteiros) por validateExtraPorts
+// antes de chegar aqui — nunca texto arbitrário do usuário.
+func formatExtraPortsArg(ports []int) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	parts := make([]string, len(ports))
+	for i, p := range ports {
+		parts[i] = strconv.Itoa(p)
+	}
+	return strings.Join(parts, " ")
+}
+
 // netDiscoveryMTLSSplitMarker — sentinela usado pra separar, dentro de UM ÚNICO stream de stdin,
 // os dois blocos PEM (certificado de cliente + chave privada) que netDiscoveryFingerprintScript
 // grava em dois arquivos temporários via `awk`. Precisa bater EXATAMENTE com a linha usada no
@@ -43,6 +66,14 @@ const netDiscoveryMTLSSplitMarker = "___NETDISC_MTLS_SPLIT___"
 // igual ao IP quando não há hostname real conhecido) — ambos passados como argumento posicional
 // (não interpolados na string do script), mesma prática de segurança de sempre, mesmo já vindo
 // validados (net.ParseIP ou resolução DNS bem-sucedida).
+//
+// "$4" (Fase D do roadmap de maturidade profissional) — portas extras que o usuário pediu pra
+// verificar além da lista curada de ~18 (netDiscoveryFingerprintPorts), formatadas como uma única
+// string espaço-separada (ver formatExtraPortsArg) — cada porta já validada como inteiro 1-65535
+// por validateExtraPorts ANTES de chegar aqui, então não há risco de injeção mesmo o loop `for p in
+// ... $4` fazendo word-split natural do shell sobre um argumento não citado (o mesmo mecanismo que
+// já separa a lista fixa em tokens). Quando vazio (caso comum, sem portas extras pedidas), o loop
+// se comporta idêntico a antes desta fase.
 //
 // Bug real corrigido, achado ao vivo pelo usuário testando contra um host atrás de um cofre
 // Delinea (bastion/PAM): "os certificados não são revelados e sempre retornam fake". Causa: a v1
@@ -99,8 +130,9 @@ const netDiscoveryFingerprintScript = `
 IP="$1"
 HOST="$2"
 MTLS="$3"
+EXTRAPORTS="$4"
 echo "@@TTL $(ping -c 1 -W 2 "$IP" 2>&1 | grep -o 'ttl=[0-9]*' | cut -d= -f2)"
-for p in 22 80 443 445 3389 21 25 587 53 3306 5432 6379 27017 9200 8080 8443 5985 5986; do
+for p in 22 80 443 445 3389 21 25 587 53 3306 5432 6379 27017 9200 8080 8443 5985 5986 $EXTRAPORTS; do
   ( if nc -z -w1 "$IP" "$p" 2>/dev/null; then echo "@@PORT $p OPEN"; else echo "@@PORT $p CLOSED"; fi ) &
 done
 wait
@@ -164,12 +196,12 @@ type NetDiscoveryFingerprint struct {
 // buildMTLSStdinPayload, ou um leitor vazio quando mTLS não foi configurado — ver
 // netDiscoveryFingerprintScript sobre por que o par cert+chave nunca vai como argv). `mtlsFlag`
 // é sempre "1" ou "0", nunca sensível.
-func runFingerprintInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, targetIP, sniHost, mtlsFlag string, mtlsStdin io.Reader) (string, error) {
+func runFingerprintInPod(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, targetIP, sniHost, mtlsFlag, extraPortsArg string, mtlsStdin io.Reader) (string, error) {
 	return execCmdInPodWithStdin(ctx, clientset, restConfig, namespace, podName, netDiscoveryPodContainer,
-		[]string{"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost, mtlsFlag}, mtlsStdin)
+		[]string{"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost, mtlsFlag, extraPortsArg}, mtlsStdin)
 }
 
-func runFingerprintLocal(ctx context.Context, targetIP, sniHost, mtlsFlag string, mtlsStdin io.Reader) (string, error) {
+func runFingerprintLocal(ctx context.Context, targetIP, sniHost, mtlsFlag, extraPortsArg string, mtlsStdin io.Reader) (string, error) {
 	// Nome explícito — mesmo achado real documentado em runTracerouteLocal (net_discovery.go):
 	// cancelamento no meio do fingerprint mataria o CLIENTE docker run sem garantir que o
 	// container remoto pare junto.
@@ -177,7 +209,7 @@ func runFingerprintLocal(ctx context.Context, targetIP, sniHost, mtlsFlag string
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "-i", "--network=host",
 		"--name", containerName,
 		"--label", netDiscoveryDockerLabel, netDiscoveryPodImage,
-		"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost, mtlsFlag)
+		"sh", "-c", netDiscoveryFingerprintScript, "sh", targetIP, sniHost, mtlsFlag, extraPortsArg)
 	cmd.Stdin = mtlsStdin
 	out, err := cmd.CombinedOutput()
 

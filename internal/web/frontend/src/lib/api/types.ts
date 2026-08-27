@@ -2004,6 +2004,16 @@ export interface RunNetDiscoveryRequest {
   // backend (2s). Máximo 8 (netDiscoveryProbeTimeoutMaxSec) — pedido explícito do usuário pra
   // descartar rede lenta/alta latência antes de aceitar que um alvo é bloqueado de verdade.
   probe_timeout_sec?: number;
+  // probe_count — Fase A do roadmap de maturidade profissional: quantas sondas TCP por salto
+  // (tcptraceroute -q). Ausente/0 usa o default do backend (3) — permite calcular perda de pacote
+  // (%) e faixa de latência (min/max) por salto, não só uma única amostra. Máximo 3
+  // (netDiscoveryProbeCountMax).
+  probe_count?: number;
+  // extra_ports — Fase D do roadmap de maturidade profissional: portas extras pra verificar no
+  // fingerprint do destino, além das ~18 portas curadas já checadas por padrão. Útil pra
+  // troubleshooting de uma aplicação específica cuja porta não está na lista fixa (ex: 8081, 9000).
+  // Opcional, no máximo 10 portas (netDiscoveryExtraPortsMax no backend).
+  extra_ports?: number[];
   // client_cert_pem/client_key_pem — certificado de cliente opcional pra mTLS (pedido explícito
   // do usuário: "termos o certificado em nossa máquina... ajuda?"). Só faz diferença quando o
   // alvo exige certificado de cliente e rejeita TLS anônimo por completo. Os dois precisam vir
@@ -2026,8 +2036,16 @@ export interface RunNetDiscoveryBatchRequest {
   namespace?: string;
   probe_port?: number;
   probe_timeout_sec?: number;
+  probe_count?: number; // Fase A — mesmo campo de RunNetDiscoveryRequest, compartilhado por todo o lote
+  extra_ports?: number[]; // Fase D — mesmo campo de RunNetDiscoveryRequest, compartilhado por todo o lote
   client_cert_pem?: string; // mTLS, compartilhado por todo o lote — mesmo padrão de probe_port/timeout
   client_key_pem?: string;
+  // allow_duplicate_targets/interval_sec — Fase C do roadmap de maturidade profissional (modo de
+  // monitoramento contínuo): "monitorar" é literalmente "lote com o mesmo alvo repetido N vezes" —
+  // allow_duplicate_targets desliga a dedupe normal do lote (senão N cópias do mesmo alvo virariam
+  // 1 só), interval_sec espaça as rodadas (0 = imediatamente sequencial, máx 60s).
+  allow_duplicate_targets?: boolean;
+  interval_sec?: number;
 }
 
 export interface RunNetDiscoveryBatchResponse {
@@ -2042,6 +2060,13 @@ export interface NetDiscoveryHop {
   rtt_ms?: number;
   timed_out: boolean;
   is_target: boolean; // true quando este salto é o próprio destino resolvido
+  // Fase A (maturidade profissional) — múltiplas sondas por salto: perda de pacote (%) e faixa de
+  // latência (min/max), não só uma única amostra. loss_pct ausente = 0% (sem perda, caso comum).
+  loss_pct?: number;
+  rtt_min_ms?: number;
+  rtt_max_ms?: number;
+  probes_sent?: number;
+  probes_received?: number;
   // Enriquecimento passivo (Fase 3) — SEMPRE ausentes no evento SSE "hop" ao vivo (roda só
   // depois de todos os saltos coletados); preenchidos na lista final de "complete".
   reverse_dns?: string;

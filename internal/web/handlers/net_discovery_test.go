@@ -29,7 +29,7 @@ func TestIsIPAddress(t *testing.T) {
 // nunca respondia contra um alvo Windows atrás de PAM, só 3389/445/5985/5986). O último argumento
 // posicional pro tcptraceroute deve ser a porta escolhida, nunca mais hardcoded.
 func TestTracerouteArgs_UsesGivenPort(t *testing.T) {
-	args := tracerouteArgs("10.0.0.5", 3389, netDiscoveryProbeTimeoutSec)
+	args := tracerouteArgs("10.0.0.5", 3389, netDiscoveryProbeTimeoutSec, netDiscoveryProbeCount)
 	if got := args[len(args)-1]; got != "3389" {
 		t.Errorf("última posição dos args = %q, want \"3389\" (porta explícita)", got)
 	}
@@ -38,7 +38,7 @@ func TestTracerouteArgs_UsesGivenPort(t *testing.T) {
 	}
 
 	// Default (443) continua funcionando idêntico a antes desta correção.
-	argsDefault := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort, netDiscoveryProbeTimeoutSec)
+	argsDefault := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort, netDiscoveryProbeTimeoutSec, netDiscoveryProbeCount)
 	if got := argsDefault[len(argsDefault)-1]; got != "443" {
 		t.Errorf("porta default = %q, want \"443\"", got)
 	}
@@ -48,7 +48,7 @@ func TestTracerouteArgs_UsesGivenPort(t *testing.T) {
 // do usuário: descartar rede lenta/alta latência antes de aceitar bloqueio de verdade atrás de um
 // cofre PAM). O valor de "-w" deve refletir o timeout escolhido, não o default hardcoded.
 func TestTracerouteArgs_UsesGivenProbeTimeout(t *testing.T) {
-	args := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort, 8)
+	args := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort, 8, netDiscoveryProbeCount)
 	// "-w" é seguido do valor — acha o índice de "-w" e confere o próximo elemento.
 	for i, a := range args {
 		if a == "-w" {
@@ -61,36 +61,72 @@ func TestTracerouteArgs_UsesGivenProbeTimeout(t *testing.T) {
 	t.Fatal("flag -w não encontrada nos args")
 }
 
-// TestComputeOverallTimeout_DefaultUnaffected garante que o timeout de sonda default (2s) nunca
-// muda o teto geral da descoberta — comportamento idêntico ao de antes desta correção.
-func TestComputeOverallTimeout_DefaultUnaffected(t *testing.T) {
-	got := computeOverallTimeout(netDiscoveryProbeTimeoutSec)
-	if got != netDiscoveryOverallTimeout {
-		t.Errorf("computeOverallTimeout(%d) = %v, want o default %v (sem mudança pro caso comum)",
-			netDiscoveryProbeTimeoutSec, got, netDiscoveryOverallTimeout)
+// TestTracerouteArgs_UsesGivenProbeCount cobre a Fase A (múltiplas sondas por salto) — "-q" deve
+// refletir o número de sondas escolhido, nunca mais fixo em "1".
+func TestTracerouteArgs_UsesGivenProbeCount(t *testing.T) {
+	args := tracerouteArgs("10.0.0.5", netDiscoveryTCPPort, netDiscoveryProbeTimeoutSec, 5)
+	for i, a := range args {
+		if a == "-q" {
+			if args[i+1] != "5" {
+				t.Errorf("-q = %q, want \"5\"", args[i+1])
+			}
+			return
+		}
+	}
+	t.Fatal("flag -q não encontrada nos args")
+}
+
+// TestComputeOverallTimeout_DefaultFormula cobre a fórmula com os defaults desta fase (2s/sonda,
+// 3 sondas/salto) — diferente do valor antigo (90s, calculado só para 1 sonda/salto): o próprio
+// default de ProbeCount agora produz um pior caso maior que o antigo teto fixo, então
+// computeOverallTimeout deve retornar o worstCase calculado (210s), não mais o floor
+// netDiscoveryOverallTimeout (90s, que fica vestigial nesse combo específico mas continua
+// protegendo combos menores, ver TestComputeOverallTimeout_NeverBelowFloor).
+func TestComputeOverallTimeout_DefaultFormula(t *testing.T) {
+	got := computeOverallTimeout(netDiscoveryProbeTimeoutSec, netDiscoveryProbeCount)
+	want := time.Duration(netDiscoveryProbeTimeoutSec*netDiscoveryMaxHops*netDiscoveryProbeCount)*time.Second + 30*time.Second
+	if got != want {
+		t.Errorf("computeOverallTimeout(%d, %d) = %v, want %v (fórmula: timeout×hops×sondas + 30s)",
+			netDiscoveryProbeTimeoutSec, netDiscoveryProbeCount, got, want)
 	}
 }
 
-// TestComputeOverallTimeout_ExtendsForLargerProbeTimeout cobre o bug que este mecanismo evita: sem
-// estender o teto geral, um ProbeTimeoutSec maior faria o pior caso (todos os netDiscoveryMaxHops
-// saltos sem resposta) facilmente estourar o teto FIXO antigo, abortando o traceroute no meio pelo
-// contexto em vez de terminar normalmente com "não alcançado".
+// TestComputeOverallTimeout_NeverBelowFloor garante que combos pequenos (timeout/sondas baixos)
+// continuam protegidos pelo floor netDiscoveryOverallTimeout — o mecanismo de floor da v1 desta
+// função (1 sonda/salto implícito) continua funcional para o caso explícito probeCount=1.
+func TestComputeOverallTimeout_NeverBelowFloor(t *testing.T) {
+	got := computeOverallTimeout(1, 1) // pior caso: 1×30×1+30 = 60s, abaixo do floor de 90s
+	if got != netDiscoveryOverallTimeout {
+		t.Errorf("computeOverallTimeout(1, 1) = %v, want o floor %v", got, netDiscoveryOverallTimeout)
+	}
+}
+
+// TestComputeOverallTimeout_ExtendsForLargerProbeTimeout cobre o bug original que este mecanismo
+// evita (probeCount=1, o comportamento desde a v1 desta função): sem estender o teto geral, um
+// ProbeTimeoutSec maior faria o pior caso (todos os netDiscoveryMaxHops saltos sem resposta)
+// facilmente estourar o teto FIXO antigo, abortando o traceroute no meio pelo contexto em vez de
+// terminar normalmente com "não alcançado".
 func TestComputeOverallTimeout_ExtendsForLargerProbeTimeout(t *testing.T) {
-	got := computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec) // 10s/salto, o máximo permitido
+	got := computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec, 1) // 8s/salto, o máximo permitido, 1 sonda
 	worstCaseTraceroute := time.Duration(netDiscoveryProbeTimeoutMaxSec*netDiscoveryMaxHops) * time.Second
 	if got <= worstCaseTraceroute {
-		t.Errorf("computeOverallTimeout(%d) = %v, precisa ser MAIOR que o pior caso do traceroute (%v) — senão o contexto mata a descoberta no meio",
+		t.Errorf("computeOverallTimeout(%d, 1) = %v, precisa ser MAIOR que o pior caso do traceroute (%v) — senão o contexto mata a descoberta no meio",
 			netDiscoveryProbeTimeoutMaxSec, got, worstCaseTraceroute)
 	}
 }
 
 // TestComputeOverallTimeout_NeverExceedsCap garante que o teto nunca ultrapassa
-// netDiscoveryOverallTimeoutCap, mesmo no timeout de sonda máximo — fica sempre abaixo do
-// ActiveDeadlineSeconds do pod de descoberta (modo pod), que mataria o pod de qualquer forma.
+// netDiscoveryOverallTimeoutCap, mesmo na combinação mais extrema (timeout E contagem de sondas no
+// máximo simultaneamente) — fica sempre abaixo do ActiveDeadlineSeconds do pod de descoberta (modo
+// pod), que mataria o pod de qualquer forma. Trade-off aceito e documentado em
+// netDiscoveryProbeCountMax: nesse combo extremo, o teto capado pode ficar ABAIXO do pior caso
+// teórico bruto (timeout×hops×sondas) — mesma classe de trade-off já aceita só para
+// ProbeTimeoutSec antes desta fase.
 func TestComputeOverallTimeout_NeverExceedsCap(t *testing.T) {
-	got := computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec)
+	got := computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec, netDiscoveryProbeCountMax)
 	if got > netDiscoveryOverallTimeoutCap {
-		t.Errorf("computeOverallTimeout(%d) = %v, excede o teto %v", netDiscoveryProbeTimeoutMaxSec, got, netDiscoveryOverallTimeoutCap)
+		t.Errorf("computeOverallTimeout(%d, %d) = %v, excede o teto %v",
+			netDiscoveryProbeTimeoutMaxSec, netDiscoveryProbeCountMax, got, netDiscoveryOverallTimeoutCap)
 	}
 }
 
@@ -176,6 +212,64 @@ func TestParseTracerouteLine_MixedProbesInSameHop(t *testing.T) {
 	}
 }
 
+// TestParseTracerouteLine_LossAndRTTRange cobre a Fase A (múltiplas sondas por salto): perda
+// parcial (1 de 3 sondas não respondeu) deve virar LossPct>0 sem virar TimedOut, e a faixa de RTT
+// (min/max) deve refletir só as sondas que de fato responderam, não incluir a perdida.
+func TestParseTracerouteLine_LossAndRTTRange(t *testing.T) {
+	hop, ok := parseTracerouteLine(" 6  172.217.0.1  10.000 ms  *  12.000 ms", "8.8.8.8")
+	if !ok {
+		t.Fatal("esperava reconhecer a linha como salto")
+	}
+	if hop.ProbesSent != 3 {
+		t.Errorf("ProbesSent = %d, want 3", hop.ProbesSent)
+	}
+	if hop.ProbesReceived != 2 {
+		t.Errorf("ProbesReceived = %d, want 2", hop.ProbesReceived)
+	}
+	wantLoss := 100.0 / 3.0
+	if hop.LossPct < wantLoss-0.01 || hop.LossPct > wantLoss+0.01 {
+		t.Errorf("LossPct = %f, want ~%f (1 de 3 sondas perdida)", hop.LossPct, wantLoss)
+	}
+	if hop.RTTMinMs != 10.0 || hop.RTTMaxMs != 12.0 {
+		t.Errorf("RTTMinMs/RTTMaxMs = %f/%f, want 10.0/12.0", hop.RTTMinMs, hop.RTTMaxMs)
+	}
+}
+
+// TestParseTracerouteLine_FullLossHopReportsSentProbes garante que um hop 100% silencioso (todas
+// as sondas sem resposta) continua marcado TimedOut=true (compatibilidade com o comportamento já
+// testado antes desta fase — TestParseTracerouteLine_TripleAsteriskTimedOut) E agora também expõe
+// quantas sondas foram de fato enviadas (perda 100%, não "sem dado nenhum").
+func TestParseTracerouteLine_FullLossHopReportsSentProbes(t *testing.T) {
+	hop, ok := parseTracerouteLine(" 4  * * *", "8.8.8.8")
+	if !ok {
+		t.Fatal("esperava reconhecer a linha como salto")
+	}
+	if hop.ProbesSent != 3 || hop.ProbesReceived != 0 {
+		t.Errorf("ProbesSent/ProbesReceived = %d/%d, want 3/0", hop.ProbesSent, hop.ProbesReceived)
+	}
+	if hop.LossPct != 100 {
+		t.Errorf("LossPct = %f, want 100 (hop totalmente silencioso)", hop.LossPct)
+	}
+}
+
+// TestParseTracerouteLine_NoLossHop garante que um hop onde TODAS as sondas responderam tem
+// LossPct=0 (não deveria acontecer perda calculada onde não há perda real).
+func TestParseTracerouteLine_NoLossHop(t *testing.T) {
+	hop, ok := parseTracerouteLine(" 2  10.0.0.1  5.000 ms  7.000 ms  6.000 ms", "8.8.8.8")
+	if !ok {
+		t.Fatal("esperava reconhecer a linha como salto")
+	}
+	if hop.LossPct != 0 {
+		t.Errorf("LossPct = %f, want 0 (todas as 3 sondas responderam)", hop.LossPct)
+	}
+	if hop.ProbesSent != 3 || hop.ProbesReceived != 3 {
+		t.Errorf("ProbesSent/ProbesReceived = %d/%d, want 3/3", hop.ProbesSent, hop.ProbesReceived)
+	}
+	if hop.RTTMinMs != 5.0 || hop.RTTMaxMs != 7.0 {
+		t.Errorf("RTTMinMs/RTTMaxMs = %f/%f, want 5.0/7.0", hop.RTTMinMs, hop.RTTMaxMs)
+	}
+}
+
 // TestParseTracerouteLine_TcptracerouteHeaderLinesIgnored cobre as duas linhas de cabeçalho reais
 // do tcptraceroute (confirmadas rodando ao vivo contra a imagem netshoot), diferentes das do
 // traceroute genérico — nenhuma começa com dígito, então não deveriam ser reconhecidas como salto.
@@ -208,6 +302,30 @@ func TestParseTracerouteLine_TcptracerouteOpenPortSuffix(t *testing.T) {
 	}
 	if !hop.IsTarget {
 		t.Error("hop deveria ser marcado como IsTarget")
+	}
+}
+
+// TestValidateExtraPorts — Fase D do roadmap de maturidade profissional (portas de fingerprint
+// customizáveis).
+func TestValidateExtraPorts(t *testing.T) {
+	if errCode, _ := validateExtraPorts(nil); errCode != "" {
+		t.Errorf("validateExtraPorts(nil) errCode = %q, want vazio (sem portas extras é válido)", errCode)
+	}
+	if errCode, _ := validateExtraPorts([]int{8081, 9000}); errCode != "" {
+		t.Errorf("validateExtraPorts([8081, 9000]) errCode = %q, want vazio", errCode)
+	}
+	if errCode, _ := validateExtraPorts([]int{0}); errCode != "INVALID_EXTRA_PORTS" {
+		t.Errorf("validateExtraPorts([0]) errCode = %q, want INVALID_EXTRA_PORTS", errCode)
+	}
+	if errCode, _ := validateExtraPorts([]int{65536}); errCode != "INVALID_EXTRA_PORTS" {
+		t.Errorf("validateExtraPorts([65536]) errCode = %q, want INVALID_EXTRA_PORTS", errCode)
+	}
+	tooMany := make([]int, netDiscoveryExtraPortsMax+1)
+	for i := range tooMany {
+		tooMany[i] = 1000 + i
+	}
+	if errCode, _ := validateExtraPorts(tooMany); errCode != "INVALID_EXTRA_PORTS" {
+		t.Errorf("validateExtraPorts(%d portas) errCode = %q, want INVALID_EXTRA_PORTS (excede o teto de %d)", len(tooMany), errCode, netDiscoveryExtraPortsMax)
 	}
 }
 
