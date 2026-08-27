@@ -95,16 +95,57 @@ próprio) e confirmou 3 fatos importantes:
 3. **A origem dessas credenciais é um botão na própria tela do secret** ("conectar via SSH" ou
    equivalente) — ao clicar, o Secret Server gera e mostra/copia usuário+senha efêmeros. E o mais
    importante: **essas credenciais já vêm amarradas àquele secret específico** — logar com elas
-   via `ssh <usuário_efêmero>@via.secretservercloud.com -p 22` **caiu direto no shell do
-   servidor-alvo, sem precisar rodar `launch <secret_id>` manualmente**.
+   **caiu direto no shell do servidor-alvo, sem precisar rodar `launch <secret_id>` manualmente**
+   (host exato do proxy corrigido na Rodada 6 abaixo — não é `via.secretservercloud.com`).
 
 Isso é estruturalmente mais simples e melhor que o `launch <secret_id>` genérico documentado
 publicamente (seção 5) — resolve de vez as perguntas 12 e 19 (não existe mais "qual credencial
 pessoal do analista autentica o SSH Terminal", porque a autenticação não usa a identidade
 persistente do analista de jeito nenhum, é sempre uma credencial nova gerada pelo Delinea) e
-elimina a necessidade de cadastro de chave pública SSH por analista. A peça que falta agora é
-achar o mecanismo (provavelmente uma chamada REST) por trás desse botão — ver seção 5 revisada e
-Fase 1 (seção 7).
+elimina a necessidade de cadastro de chave pública SSH por analista. A peça que faltava era achar
+o mecanismo REST por trás desse botão — **encontrada na Rodada 6 abaixo**.
+
+**Rodada 6 (mesma sessão) — endpoint real encontrado, e correção importante de host**: usuário
+localizou o caminho exato na UI (menu "Opções" → "Credenciais do proxy" → escolher "PuTTY" como
+launcher) e capturou a resposta real:
+
+```
+GET/POST https://via.secretservercloud.com/api/v1/secrets/sshproxy/{secretId}
+
+{
+    "host": "VAULT-EQX-01.dc.nova",
+    "port": 22,
+    "username": "35afc83d-625e-44a2-a764-...",
+    "password": "bPWrLlpj_C9U5SsPM3tMqfb..."
+}
+```
+
+Dois achados reais aqui, um deles corrige uma suposição errada da Rodada 5:
+
+1. **Endpoint confirmado**: `/api/v1/secrets/sshproxy/{secretId}` (ou nome de parâmetro
+   equivalente) — sob o mesmo prefixo `/api/v1/` de toda a REST API já mapeada na seção 2, **não**
+   um mecanismo separado tipo SSH Terminal interativo (`man`/`search`/`cat`/`launch`). É uma
+   chamada REST simples que devolve host/porta/usuário/senha efêmeros em JSON — exatamente o
+   padrão de "cliente HTTP fino" já usado no resto deste plano, nenhuma surpresa de protocolo.
+   **Ainda a confirmar** (perguntado ao usuário nesta rodada): método HTTP exato (GET ou POST),
+   como o `secretId` é passado (path param, como assumido acima, ou body), e se o header
+   `Authorization` desta chamada é a mesma API key/Bearer token pessoal já usada pro resto da REST
+   API (2.1) — se for, **o backend chama esse endpoint direto com a API key do analista, sem
+   nenhuma sessão de navegador envolvida**, o que seria o melhor cenário possível.
+2. **Correção de host — a suposição da Rodada 5 estava errada**: o host do proxy **não é**
+   `via.secretservercloud.com` — é `VAULT-EQX-01.dc.nova`, um **hostname interno** (padrão de nome
+   sugere um Distributed Engine da Delinea hospedado dentro de um datacenter da própria empresa —
+   possivelmente Equinix, "EQX" — não a instância SaaS pública). Isso explica melhor por que o
+   acesso só funciona dentro da VPN (seção 1): não é só uma regra de firewall na frente do SaaS, é
+   literalmente um componente de rede **interno** fazendo de proxy — o SaaS (`via.secretservercloud.com`)
+   coordena e autentica, mas o proxy SSH em si roda dentro da própria rede da empresa. **Host e
+   porta do proxy passam a ser dados retornados dinamicamente pela API por secret** (podem
+   inclusive variar entre secrets diferentes, se houver mais de um Distributed Engine) — o backend
+   nunca deveria hardcodear `via.secretservercloud.com:22` como fez a v1 da seção 5; deve sempre
+   usar o `host`/`port` devolvidos por esta chamada.
+
+Isso resolve a pergunta 20 na maior parte — falta só confirmar o método/formato exato da
+requisição e o tipo de autenticação aceito, antes de fechar de vez a Fase 1/4.
 
 **Pedido original do usuário:** o usuário tem uma API key do Delinea Vault e quer (1) listar
 servidores/IPs/SO/heartbeat/informações de cada host cadastrado no cofre, (2) filtrar os que são
@@ -275,21 +316,25 @@ Fontes documentais gerais: [SSH Terminal Administration](https://docs.delinea.co
 — mas o comportamento **testado ao vivo nesta instância** (Rodada 5, topo do documento) é mais
 simples e melhor do que essas fontes genéricas descrevem, e é o que este plano passa a assumir:
 
-- O Secret Server expõe um **servidor SSH próprio** em `via.secretservercloud.com:22` (porta 22
-  confirmada, alcançável de dentro da VPN corporativa). O backend conecta usando
-  `golang.org/x/crypto/ssh` (**já vendorizado como dependência indireta**, viraria direta).
-- **Sem `launch <secret_id>` manual**: na tela de um secret específico, um botão (algo como
-  "conectar via SSH") gera **usuário+senha efêmeros, escopados àquele secret** — logar com essas
-  credenciais via SSH normal cai **direto** no shell do servidor-alvo, confirmado ao vivo. O
-  comando `-t launch <secret_id>` documentado publicamente ainda pode existir como via alternativa
-  (login com identidade persistente + comando explícito), mas não é o caminho que esta instância
-  usa na prática — o plano prioriza reproduzir o botão "conectar via SSH", não o `launch` manual.
-- **Falta achar o mecanismo por trás do botão** — quase certamente uma chamada REST autenticada
-  (com a API key pessoal do analista, mesmo modelo de 2.1) que devolve `{usuário, senha, host,
-  porta}` efêmeros pra aquele `secret_id`. **Ação concreta pra Fase 1** (seção 7): abrir o
-  DevTools do navegador (aba Network), clicar em "conectar via SSH" num secret real, e inspecionar
-  a requisição disparada — mesma técnica já proposta pra descobrir o endpoint equivalente do RDP
-  Proxy (seção 6) — os dois trilhos convergem na mesma investigação.
+- **Endpoint confirmado (Rodada 6)**: `GET/POST /api/v1/secrets/sshproxy/{secretId}` (método
+  exato ainda a confirmar) — chamada REST simples, mesmo prefixo `/api/v1/` do resto da API,
+  devolve `{host, port, username, password}` efêmeros. **Host e porta NÃO são fixos/hardcodáveis**
+  — vêm dinamicamente nesta resposta, por secret (achado real: o host de teste foi
+  `VAULT-EQX-01.dc.nova:22`, um hostname **interno**, não `via.secretservercloud.com` — provável
+  Distributed Engine da Delinea hospedado dentro da rede da empresa, o que explica por que só é
+  alcançável via VPN). O backend deve sempre usar `host`/`port` da resposta desta chamada, nunca
+  assumir um valor fixo. Conexão via `golang.org/x/crypto/ssh` (**já vendorizado como dependência
+  indireta**, viraria direta).
+- **Sem `launch <secret_id>` manual**: as credenciais devolvidas já vêm **escopadas àquele secret
+  específico** — logar com elas via SSH normal cai **direto** no shell do servidor-alvo,
+  confirmado ao vivo. Não existe interação de shell interativo tipo `man`/`search`/`cat`/`launch`
+  documentado publicamente — é puramente REST → credencial → SSH direto.
+- **Ainda a confirmar** (perguntado ao usuário, Rodada 6): (1) método HTTP exato — GET ou POST;
+  (2) como `secretId` é passado — path param (como assumido acima) ou body; (3) se o header
+  `Authorization` desta chamada aceita a mesma API key/Bearer pessoal já usada pro resto da REST
+  API (2.1) — **se sim, o backend chama esse endpoint direto com a API key do analista, sem
+  nenhuma sessão de navegador envolvida**, o cenário ideal. Ação concreta pra Fase 1 (seção 7):
+  confirmar isso com um teste real via `curl`/Postman usando a API key, fora do navegador.
 - **Sem Approval Workflow humano** (confirmado — "Rodada 3" no topo) — a tela que antes parecia
   aprovação é escolha de launcher (PuTTY/MobaXterm/WinSCP). Combinado com a credencial já vir
   pré-autorizada e escopada ao secret, o fluxo real deveria ser sempre "clique e conecta", sem
@@ -312,8 +357,11 @@ pra credencial de SSH Terminal, só a API key REST já prevista.
 
 ### Verificação de host key
 
-Proposta: TOFU (trust-on-first-use) já na v1, não adiado — o host key do SSH Terminal é fixo e
-crítico (porta de entrada do cofre inteiro), diferente de N hosts variados.
+Proposta: TOFU (trust-on-first-use) por host retornado — como `host`/`port` podem variar por
+secret (não é mais um único endpoint fixo, ver achado acima), o cache de host key precisa ser
+chaveado por `host:porta`, não assumir um único valor global. Ainda crítico o suficiente pra não
+adiar — é a porta de entrada de cada Distributed Engine, não um host qualquer descoberto por
+scan.
 
 ### RBAC e auditoria
 
@@ -441,18 +489,23 @@ uma sem esperar a outra.
 
 ### Fase 1 — Pacote `internal/delinea/` (cliente REST + secrets, sem UI ainda)
 - `client.go`: `NewClient(baseURL, apiToken string)` — Bearer direto (API Token estático por
-  analista, ver 2.1).
-- `models.go`: `Secret`, `SecretField`, `HeartbeatStatus`, filtros de busca.
-- `SearchSecrets(filter)` e `GetSecret(id)` (nunca cacheado — 4.5).
+  analista, ver 2.1). `GetSSHProxyCredential(secretID) (host, port, username, password, error)` —
+  chama `/api/v1/secrets/sshproxy/{secretId}` (endpoint confirmado, Rodada 6).
+- `models.go`: `Secret`, `SecretField`, `HeartbeatStatus`, `SSHProxyCredential`, filtros de busca.
+- `SearchSecrets(filter)` e `GetSecret(id)` (nunca cacheado — 4.5). `SSHProxyCredential` idem —
+  nunca persistido, nem em memória além da conexão em andamento.
 - Testar autenticação com um API Token real contra a instância Cloud, mais uma busca
   `filter.searchtext` com `limit` pequeno.
-- **Nova ação concreta (Rodada 5)**: abrir DevTools (aba Network) na UI do Secret Server, clicar
-  em "conectar via SSH" num secret Linux real, e capturar a requisição disparada — método, URL,
-  payload, resposta. É essa chamada que a Fase 4 precisa reproduzir pra obter as credenciais SSH
-  efêmeras por secret (seção 5) — sem isso, a Fase 4 não tem como funcionar como desenhada.
+- **Ação concreta (Rodada 6 — reduzida)**: o endpoint em si já está identificado
+  (`/api/v1/secrets/sshproxy/{secretId}`) — falta só confirmar via teste direto (`curl`/Postman,
+  fora do navegador, usando só a API key pessoal) 3 detalhes: método HTTP exato (GET/POST), se
+  `secretId` vai no path ou no body, e se o `Authorization: Bearer <api_token>` da API key REST
+  funciona pra esta chamada específica (ou se ela exige algo ligado à sessão do navegador/SSO —
+  nesse caso a Fase 4 precisaria de um mecanismo de auth diferente do resto do plano). Esse teste
+  é o primeiro passo real da Fase 1, antes até do cliente Go.
 - **Objetivo desta fase**: confirmar empiricamente as perguntas 3, 4, 6 da seção 8 (nome real do
   campo de host, se Heartbeat está ligado, cadência real de rotação) e — Windows — o nome do
-  template usado para secrets RDP, além do endpoint acima.
+  template usado para secrets RDP, além dos 3 detalhes do endpoint SSH acima.
 
 ### Fase 2 — Credenciais por usuário + handler + rotas (comum às duas trilhas)
 - `UserTokensStore`: `DelineaAPIToken string` chaveado por `user_email` — **único campo
@@ -467,17 +520,17 @@ uma sem esperar a outra.
 
 ### Fase 4 (trilha Linux) — Ponte de terminal via credencial SSH efêmera por secret
 
-Fluxo confirmado ao vivo (Rodada 5, seção 5) — mais simples do que a v1 deste plano assumia:
-- `internal/web/handlers/delinea_terminal.go`: (1) chama o endpoint descoberto na Fase 1 (com a
-  API key pessoal do analista) pedindo credencial SSH efêmera pro `secret_id` escolhido; (2) abre
-  canal SSH contra `via.secretservercloud.com:22` com o usuário/senha efêmeros recebidos — cai
-  direto no shell do alvo, sem `launch` manual; (3) WebSocket handler espelhando o protocolo de
-  `code_editor_terminal.go` faz o bridge.
+Fluxo confirmado ao vivo (Rodada 5/6, seção 5) — mais simples do que a v1 deste plano assumia:
+- `internal/web/handlers/delinea_terminal.go`: (1) chama `GetSSHProxyCredential(secretID)` (API
+  key pessoal do analista) pedindo credencial SSH efêmera pro `secret_id` escolhido; (2) abre canal
+  SSH contra o `host:port` **retornado na resposta** (não fixo — Rodada 6, ex.:
+  `VAULT-EQX-01.dc.nova:22`) com o usuário/senha efêmeros recebidos — cai direto no shell do alvo,
+  sem `launch` manual; (3) WebSocket handler espelhando o protocolo de `code_editor_terminal.go`
+  faz o bridge.
 - Sem cadastro de chave pública por analista (perguntas 12/19 resolvidas — seção 5).
 - Detecção defensiva de erro de acesso mantida como rede de segurança, não mais o desenho central.
-- Botão "Conectar" na lista da Fase 3. Registro no `HistoryTracker`. TOFU do host-key
-  (`via.secretservercloud.com:22` é fixo — vale fixar/checar mesmo com credencial nova a cada
-  conexão).
+- Botão "Conectar" na lista da Fase 3. Registro no `HistoryTracker`. TOFU do host-key chaveado por
+  `host:porta` (pode variar por secret/Distributed Engine, não mais um único endpoint fixo).
 
 ### Fase Windows-1 — Investigação de viabilidade do RDP Proxy (bloqueante, antes de codar)
 - Confirmar se **PRA (Privileged Remote Access)** já está licenciado (pergunta 14) — se sim,
@@ -517,6 +570,11 @@ Fluxo confirmado ao vivo (Rodada 5, seção 5) — mais simples do que a v1 dest
    (`launch`) é o único caminho confirmado.
 11. ✅ **SSH está de fato habilitado e testado ao vivo** (Rodada 5) — porta 22, dentro da VPN
     corporativa, credencial efêmera por secret via botão "conectar via SSH". Ver seção 5.
+12/19/20. ✅ **Endpoint e mecanismo de credencial confirmados** (Rodada 6) —
+    `/api/v1/secrets/sshproxy/{secretId}`, host/porta dinâmicos por secret (não
+    `via.secretservercloud.com`, e sim um Distributed Engine interno como
+    `VAULT-EQX-01.dc.nova`). Só faltam 3 detalhes finos de implementação (método HTTP exato, path
+    vs. body do `secretId`, se aceita a API key Bearer) — ver seção 5.
 
 ### Ainda em aberto (trilha Linux)
 
@@ -570,10 +628,12 @@ Fluxo confirmado ao vivo (Rodada 5, seção 5) — mais simples do que a v1 dest
 19. ~~O SSH Terminal aceita contas SSO-only~~ — **✅ resolvida/obsoleta (Rodada 5)**: a pergunta
     partia da suposição de que o SSH Terminal usa a identidade do analista — não usa (pergunta 12
     acima). O login SSO-only deixou de ser um bloqueio.
-20. **Qual é exatamente a requisição REST por trás do botão "conectar via SSH"** (método, URL,
-    payload, formato da resposta com usuário/senha/host/porta efêmeros)? É a única peça que falta
-    pra Fase 4 funcionar de verdade — ação concreta já registrada na Fase 1 (seção 7): capturar via
-    DevTools. Bloqueante para a Fase 4, não bloqueante para as Fases 1-3.
+20. ~~Qual é exatamente a requisição REST por trás do botão "conectar via SSH"~~ — **✅
+    majoritariamente resolvida (Rodada 6)**: endpoint é `/api/v1/secrets/sshproxy/{secretId}`,
+    resposta `{host, port, username, password}`. Falta só confirmar 3 detalhes finos (método
+    HTTP, se `secretId` vai no path ou body, se aceita a API key Bearer do resto da REST API) —
+    teste direto via `curl` registrado como 1º passo da Fase 1 (seção 7). Bloqueante só pra esses
+    3 detalhes, não mais pro mecanismo como um todo.
 
 ### Novas — trilha Windows (RDP)
 
