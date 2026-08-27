@@ -81,6 +81,31 @@ sinal útil):
    SSH Terminal aceita contas SSO-only via chave pública, ou exige algum tipo de credencial local
    mesmo com SSO ativo no resto da instância?** — pergunta 19, seção 8.
 
+**Rodada 5 (mesma sessão) — teste real de SSH, achado que resolve as perguntas 12 e 19 e
+simplifica a Fase 4 inteira**: usuário testou a conexão de verdade (dentro da VPN, terminal
+próprio) e confirmou 3 fatos importantes:
+1. **Porta 22 confirmada**, alcançável de dentro da VPN corporativa (mesma VPN que já alcança
+   AKS/GCP — nenhuma infraestrutura de rede nova necessária pro backend, desde que ele já rode
+   nesse mesmo ambiente).
+2. **As credenciais são efêmeras nos dois lados — usuário E senha, não só a senha** — "para cada
+   sessão, sempre haverá um novo usuário e uma nova senha, só persistindo o host". Isso é diferente
+   do que a documentação genérica da Delinea descreve (login com usuário/senha **fixos** do Secret
+   Server, ou chave pública cadastrada) — esta instância Cloud usa um mecanismo mais moderno de
+   credencial descartável por sessão.
+3. **A origem dessas credenciais é um botão na própria tela do secret** ("conectar via SSH" ou
+   equivalente) — ao clicar, o Secret Server gera e mostra/copia usuário+senha efêmeros. E o mais
+   importante: **essas credenciais já vêm amarradas àquele secret específico** — logar com elas
+   via `ssh <usuário_efêmero>@via.secretservercloud.com -p 22` **caiu direto no shell do
+   servidor-alvo, sem precisar rodar `launch <secret_id>` manualmente**.
+
+Isso é estruturalmente mais simples e melhor que o `launch <secret_id>` genérico documentado
+publicamente (seção 5) — resolve de vez as perguntas 12 e 19 (não existe mais "qual credencial
+pessoal do analista autentica o SSH Terminal", porque a autenticação não usa a identidade
+persistente do analista de jeito nenhum, é sempre uma credencial nova gerada pelo Delinea) e
+elimina a necessidade de cadastro de chave pública SSH por analista. A peça que falta agora é
+achar o mecanismo (provavelmente uma chamada REST) por trás desse botão — ver seção 5 revisada e
+Fase 1 (seção 7).
+
 **Pedido original do usuário:** o usuário tem uma API key do Delinea Vault e quer (1) listar
 servidores/IPs/SO/heartbeat/informações de cada host cadastrado no cofre, (2) filtrar os que são
 Linux, (3) construir uma ponte que abra um terminal — reaproveitando o mesmo terminal já usado na
@@ -162,13 +187,13 @@ por usuário, `CloudAccountHints`).
 o **próprio RBAC do Delinea** já concede a ele — a aplicação nunca precisa replicar permissão
 nenhuma por conta própria.
 
-**Atenção — isso é uma credencial DIFERENTE da que autentica a sessão SSH/RDP em si (seções 5/6)**:
-o API Token pessoal serve para chamadas REST (listar/buscar secrets, ver heartbeat, etc.). A ponte
-de terminal SSH usa **SSH Terminal**, que se autentica com usuário/senha do Secret Server **ou**
-uma chave pública SSH cadastrada no perfil — não aceita o Bearer token da REST API para esse
-propósito (seção 7, pergunta 12). A ponte RDP (seção 6) provavelmente também depende de outro
-mecanismo (um token de curta duração emitido "no momento do launch", não o API Token REST — ver
-seção 6).
+**Atenção — a sessão SSH/RDP em si usa uma credencial diferente da API key REST (seções 5/6)**: o
+API Token pessoal serve para chamadas REST (listar/buscar secrets, ver heartbeat, etc.). A ponte
+de terminal SSH usa credenciais **efêmeras geradas pelo próprio Delinea por secret** (confirmado
+ao vivo, Rodada 5, seção 5) — não a identidade pessoal do analista nem nada cadastrado
+previamente. A ponte RDP (seção 6) provavelmente segue o mesmo espírito (um token/credencial de
+curta duração emitido "no momento do launch", não o API Token REST — ver seção 6), mas isso ainda
+não foi confirmado ao vivo como foi para SSH.
 
 ---
 
@@ -242,37 +267,48 @@ resize, atalhos de copiar/colar. A diferença é só o transporte: em vez de um 
 (`creack/pty` + `exec.Command(shell)`), o backend abre uma sessão SSH contra o **SSH Terminal do
 próprio Secret Server**, não contra o servidor Linux alvo diretamente.
 
-### Mecanismo confirmado: SSH Terminal do Secret Server (`launch <secret_id>`)
+### Mecanismo confirmado ao vivo (Rodada 5) — credencial SSH efêmera por secret, sem `launch` manual
 
-Fontes: [SSH Terminal Administration](https://docs.delinea.com/online-help/secret-server-11-6-x/networking/ssh-terminal/index.htm),
+Fontes documentais gerais: [SSH Terminal Administration](https://docs.delinea.com/online-help/secret-server-11-6-x/networking/ssh-terminal/index.htm),
 [SSH and Secret Server](https://docs.delinea.com/online-help/secret-server/networking/ssh/ssh-overview.htm),
-[SSH Proxy Configuration](https://docs.delinea.com/online-help/secret-server/networking/ssh/ssh-proxy-configuration/index.htm).
+[SSH Proxy Configuration](https://docs.delinea.com/online-help/secret-server/networking/ssh/ssh-proxy-configuration/index.htm)
+— mas o comportamento **testado ao vivo nesta instância** (Rodada 5, topo do documento) é mais
+simples e melhor do que essas fontes genéricas descrevem, e é o que este plano passa a assumir:
 
-- O Secret Server expõe um **servidor SSH próprio** (porta configurável pelo admin, "SSH Public
-  Host"/"SSH Bind IP Address" em Admin > Proxying). O backend conecta usando
+- O Secret Server expõe um **servidor SSH próprio** em `via.secretservercloud.com:22` (porta 22
+  confirmada, alcançável de dentro da VPN corporativa). O backend conecta usando
   `golang.org/x/crypto/ssh` (**já vendorizado como dependência indireta**, viraria direta).
-- Comando confirmado: `ssh <usuário_secret_server>@<host_ssh_terminal> -p <porta> -t launch
-  <secret_id>` — conecta e já inicia a sessão proxiada até o alvo. Outros comandos: `man`, `search
-  <termo>`, `cat <secret_id>` (detalhes do secret, captura erros de "requires approval").
-- **Checkout automático e silencioso** ao lançar via SSH Terminal. Nesta empresa (confirmado —
-  "Rodada 3" no topo) **não há Approval Workflow humano nos secrets Linux** — a tela que parecia
-  aprovação é escolha de launcher (PuTTY/MobaXterm/WinSCP), então `launch <secret_id>` deveria
-  mesmo ser "clique e conecta", sem espera. Mesmo assim, vale manter uma detecção defensiva de
-  erro de acesso na saída inicial do canal (secrets individuais podem ter regra própria, e a
-  configuração pode mudar) — mas isso deixa de ser o desenho central da Fase 4, é só uma rede de
-  segurança.
-- **A senha do alvo nunca passa pelo nosso backend** — o Secret Server autentica no servidor final
-  por conta própria; o backend só encaminha bytes entre o WebSocket do navegador e o canal SSH
-  aberto contra o SSH Terminal.
+- **Sem `launch <secret_id>` manual**: na tela de um secret específico, um botão (algo como
+  "conectar via SSH") gera **usuário+senha efêmeros, escopados àquele secret** — logar com essas
+  credenciais via SSH normal cai **direto** no shell do servidor-alvo, confirmado ao vivo. O
+  comando `-t launch <secret_id>` documentado publicamente ainda pode existir como via alternativa
+  (login com identidade persistente + comando explícito), mas não é o caminho que esta instância
+  usa na prática — o plano prioriza reproduzir o botão "conectar via SSH", não o `launch` manual.
+- **Falta achar o mecanismo por trás do botão** — quase certamente uma chamada REST autenticada
+  (com a API key pessoal do analista, mesmo modelo de 2.1) que devolve `{usuário, senha, host,
+  porta}` efêmeros pra aquele `secret_id`. **Ação concreta pra Fase 1** (seção 7): abrir o
+  DevTools do navegador (aba Network), clicar em "conectar via SSH" num secret real, e inspecionar
+  a requisição disparada — mesma técnica já proposta pra descobrir o endpoint equivalente do RDP
+  Proxy (seção 6) — os dois trilhos convergem na mesma investigação.
+- **Sem Approval Workflow humano** (confirmado — "Rodada 3" no topo) — a tela que antes parecia
+  aprovação é escolha de launcher (PuTTY/MobaXterm/WinSCP). Combinado com a credencial já vir
+  pré-autorizada e escopada ao secret, o fluxo real deveria ser sempre "clique e conecta", sem
+  nenhum estado de espera — mantemos só uma detecção defensiva de erro de acesso, como rede de
+  segurança, não como desenho central.
+- **A senha do alvo Linux nunca passa pelo nosso backend** — o Secret Server autentica no servidor
+  final por conta própria; o backend só encaminha bytes entre o WebSocket do navegador e o canal
+  SSH. A credencial efêmera do PROXY (não do alvo) passa brevemente pelo backend entre buscar via
+  REST e usar pra discar SSH — nunca persistida, vive só na memória da conexão em andamento.
 
-### Credencial para autenticar a conexão SSH Terminal em si (diferente da API key REST)
+### Credencial para autenticar a conexão SSH em si — resolvido (Rodada 5), sem cadastro por analista
 
-"Log in to the terminal with Secret Server user credentials" — usuário/senha do login do Secret
-Server — **ou** uma **chave pública SSH** cadastrada no perfil do usuário (o servidor valida a
-chave privada contra as públicas cadastradas). **Recomendação**: usar a via de chave SSH, nunca
-guardar a senha pessoal do Delinea nesta aplicação — cada analista cadastraria uma chave pública
-uma única vez no próprio perfil do Secret Server, e a privada correspondente ficaria em
-`UserTokensStore` por analista. Pergunta em aberto (seção 8, pergunta 12).
+A dúvida original (usuário/senha pessoal do Secret Server, ou chave pública SSH cadastrada por
+analista — perguntas 12 e 19) **fica resolvida**: como a credencial é gerada pelo Delinea, efêmera
+e escopada por secret (não a identidade persistente do analista), não há nada pra cadastrar nem
+guardar de forma duradoura por usuário. O fluxo vira: API key pessoal do analista (REST, já
+modelo 2.1) → chamada ao endpoint ainda-não-identificado → usuário/senha efêmeros → SSH direto.
+Isso também simplifica a Fase 2 (seção 7): não precisa mais de um campo novo em `UserTokensStore`
+pra credencial de SSH Terminal, só a API key REST já prevista.
 
 ### Verificação de host key
 
@@ -410,12 +446,18 @@ uma sem esperar a outra.
 - `SearchSecrets(filter)` e `GetSecret(id)` (nunca cacheado — 4.5).
 - Testar autenticação com um API Token real contra a instância Cloud, mais uma busca
   `filter.searchtext` com `limit` pequeno.
-- **Objetivo desta fase**: confirmar empiricamente as perguntas 3, 4, 6, 7 da seção 8 (nome real
-  do campo de host, se Heartbeat está ligado, cadência real de rotação, mix senha/chave, e —
-  Windows — o nome do template usado para secrets RDP).
+- **Nova ação concreta (Rodada 5)**: abrir DevTools (aba Network) na UI do Secret Server, clicar
+  em "conectar via SSH" num secret Linux real, e capturar a requisição disparada — método, URL,
+  payload, resposta. É essa chamada que a Fase 4 precisa reproduzir pra obter as credenciais SSH
+  efêmeras por secret (seção 5) — sem isso, a Fase 4 não tem como funcionar como desenhada.
+- **Objetivo desta fase**: confirmar empiricamente as perguntas 3, 4, 6 da seção 8 (nome real do
+  campo de host, se Heartbeat está ligado, cadência real de rotação) e — Windows — o nome do
+  template usado para secrets RDP, além do endpoint acima.
 
 ### Fase 2 — Credenciais por usuário + handler + rotas (comum às duas trilhas)
-- `UserTokensStore`: `DelineaAPIToken string` chaveado por `user_email`.
+- `UserTokensStore`: `DelineaAPIToken string` chaveado por `user_email` — **único campo
+  necessário** agora (a credencial de SSH em si é efêmera/gerada pelo Delinea a cada conexão,
+  Rodada 5 — não precisa de um segundo campo pra guardar chave/senha de SSH Terminal por usuário).
 - `internal/web/handlers/delinea.go`: `GET /api/v1/delinea/config`, `POST /api/v1/delinea/test`,
   `GET /api/v1/delinea/servers` (busca + normaliza template/host/heartbeat/SO-se-existir).
 
@@ -423,13 +465,19 @@ uma sem esperar a outra.
 - `DelineaVaultTab.tsx`: tabela de servidores, filtro "Somente Linux"/"Somente Windows", busca.
 - Configuração da API key pessoal.
 
-### Fase 4 (trilha Linux) — Ponte de terminal via SSH Terminal (`launch <secret_id>`)
-- `internal/web/handlers/delinea_terminal.go`: WebSocket handler espelhando o protocolo de
-  `code_editor_terminal.go`, abrindo canal SSH contra o SSH Terminal do Secret Server, executando
-  `launch <secret_id>`.
-- Autenticação via chave pública cadastrada por analista.
-- Detecção do estado "aguardando aprovação".
-- Botão "Conectar" na lista da Fase 3. Registro no `HistoryTracker`. TOFU do host-key.
+### Fase 4 (trilha Linux) — Ponte de terminal via credencial SSH efêmera por secret
+
+Fluxo confirmado ao vivo (Rodada 5, seção 5) — mais simples do que a v1 deste plano assumia:
+- `internal/web/handlers/delinea_terminal.go`: (1) chama o endpoint descoberto na Fase 1 (com a
+  API key pessoal do analista) pedindo credencial SSH efêmera pro `secret_id` escolhido; (2) abre
+  canal SSH contra `via.secretservercloud.com:22` com o usuário/senha efêmeros recebidos — cai
+  direto no shell do alvo, sem `launch` manual; (3) WebSocket handler espelhando o protocolo de
+  `code_editor_terminal.go` faz o bridge.
+- Sem cadastro de chave pública por analista (perguntas 12/19 resolvidas — seção 5).
+- Detecção defensiva de erro de acesso mantida como rede de segurança, não mais o desenho central.
+- Botão "Conectar" na lista da Fase 3. Registro no `HistoryTracker`. TOFU do host-key
+  (`via.secretservercloud.com:22` é fixo — vale fixar/checar mesmo com credencial nova a cada
+  conexão).
 
 ### Fase Windows-1 — Investigação de viabilidade do RDP Proxy (bloqueante, antes de codar)
 - Confirmar se **PRA (Privileged Remote Access)** já está licenciado (pergunta 14) — se sim,
@@ -467,6 +515,8 @@ uma sem esperar a outra.
    (PuTTY/MobaXterm/WinSCP, só PuTTY sem config dedicada), no Windows é exclusão mútua entre SREs.
 8. ✅ Servidores Linux **só alcançáveis via SSH Proxy/bastion do Delinea** — SSH Terminal
    (`launch`) é o único caminho confirmado.
+11. ✅ **SSH está de fato habilitado e testado ao vivo** (Rodada 5) — porta 22, dentro da VPN
+    corporativa, credencial efêmera por secret via botão "conectar via SSH". Ver seção 5.
 
 ### Ainda em aberto (trilha Linux)
 
@@ -479,8 +529,9 @@ uma sem esperar a outra.
 7. **Autenticação nos alvos é sempre por senha, ou parte usa Private Key**?
 9. **`tmux` está instalado nos servidores alvo?**
 10. **Escala aproximada** — dezenas ou centenas de servidores?
-11. **SSH Terminal está de fato habilitado** nesta instância Cloud (Admin > Proxying, licença
-    Professional/Platinum)? Sem isso, a Fase 4 inteira não funciona, independente do nosso código.
+11. ~~SSH Terminal está de fato habilitado~~ — **✅ resolvida (Rodada 5)**, testado ao vivo. Guia
+    de teste mantido abaixo como referência (útil se precisar reconfirmar depois de mudança na
+    instância, ou pra confirmar RDP na trilha Windows por analogia):
 
     **Como testar, em ordem de confiabilidade/esforço (sem escrever código):**
     1. **Perguntar pra quem administra o Delinea** — é a via mais rápida e confiável. SSH Terminal
@@ -505,8 +556,10 @@ uma sem esperar a outra.
        acima — a rodar a "Descoberta de Rede" desta própria aplicação contra o domínio: um scan de
        portas contra o domínio de um fornecedor SaaS de terceiro (mesmo sendo cliente) é mais
        ruído/risco do que uma tentativa simples de conexão, que é comportamento normal de cliente.
-12. **Qual credencial autentica a conexão SSH Terminal em si** — chave pública SSH por analista
-    (recomendado) ou usuário/senha pessoal do Delinea (não recomendado)?
+12. ~~Qual credencial autentica a conexão SSH Terminal em si — chave pública por analista ou
+    usuário/senha pessoal~~ — **✅ resolvida (Rodada 5)**: nenhuma das duas. A credencial é
+    efêmera e gerada pelo próprio Delinea por secret, sem identidade persistente do analista
+    envolvida. Ver seção 5.
 13. ~~Como o aprovador é notificado quando um Approval Workflow é acionado~~ — **obsoleta**, não
     há Approval Workflow humano nesta empresa (ver "Rodada 3" no topo). Substituída pela pergunta
     18 abaixo.
@@ -514,11 +567,13 @@ uma sem esperar a outra.
     analista, só líder de squad, algum grupo específico? Decide o RBAC do botão de liberação
     forçada na Fase Windows-2 (seção 6) — não deveria ser um clique casual disponível a qualquer
     um.
-19. **O SSH Terminal aceita contas SSO-only** (via chave pública SSH cadastrada no perfil), ou
-    exige algum tipo de credencial local mesmo com SSO ativo no resto da instância? Como o login
-    humano nesta empresa é 100% via SSO (Rodada 4), é bem possível que não exista senha local
-    nenhuma pra usar — reforça a via de chave pública como provável único caminho viável, mas
-    precisa confirmar que o SSH Terminal em si aceita esse tipo de conta.
+19. ~~O SSH Terminal aceita contas SSO-only~~ — **✅ resolvida/obsoleta (Rodada 5)**: a pergunta
+    partia da suposição de que o SSH Terminal usa a identidade do analista — não usa (pergunta 12
+    acima). O login SSO-only deixou de ser um bloqueio.
+20. **Qual é exatamente a requisição REST por trás do botão "conectar via SSH"** (método, URL,
+    payload, formato da resposta com usuário/senha/host/porta efêmeros)? É a única peça que falta
+    pra Fase 4 funcionar de verdade — ação concreta já registrada na Fase 1 (seção 7): capturar via
+    DevTools. Bloqueante para a Fase 4, não bloqueante para as Fases 1-3.
 
 ### Novas — trilha Windows (RDP)
 
