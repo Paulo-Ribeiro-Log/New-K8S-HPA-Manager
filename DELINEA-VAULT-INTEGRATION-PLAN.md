@@ -144,6 +144,20 @@ Dois achados reais aqui, um deles corrige uma suposição errada da Rodada 5:
    nunca deveria hardcodear `via.secretservercloud.com:22` como fez a v1 da seção 5; deve sempre
    usar o `host`/`port` devolvidos por esta chamada.
 
+**Esclarecimento do usuário, mesma rodada — duas ações distintas na UI do secret**: existe também
+um **"Launch"** genérico (não usado no teste) — o usuário evitou deliberadamente por achar que ele
+tentaria abrir o **PuTTY nativo instalado na própria máquina** (mesmo comportamento clássico do
+Secret Launcher/Protocol Handler já documentado na seção 3, "botão que abre PuTTY/mstsc.exe já
+preenchidos"). A opção usada ("Credenciais do proxy") é uma via **separada** que só expõe o JSON
+cru das credenciais, sem depender de nenhum app local. **Confirma que o caminho escolhido pra este
+plano é o certo**: chamar `sshproxy/{secretId}` direto via REST contorna de propósito o Launcher
+nativo — exatamente o que uma ponte de terminal embutida no navegador precisa (nenhuma dependência
+de PuTTY/app instalado em lugar nenhum, nem no servidor nem na máquina do analista). Também
+esclarece que o `launch <secret_id>` documentado publicamente (comando dentro de um shell SSH
+Terminal interativo) é plausivelmente um mecanismo **diferente** do "Launch" desta UI — não
+confirmado se são a mesma coisa por baixo, mas irrelevante pro plano: o caminho REST via
+`sshproxy/{secretId}` já funciona sozinho, sem precisar de nenhum dos dois.
+
 Isso resolve a pergunta 20 na maior parte — falta só confirmar o método/formato exato da
 requisição e o tipo de autenticação aceito, antes de fechar de vez a Fase 1/4.
 
