@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2, ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { cloudProviderBadge } from "@/hooks/useCloudProvider";
+import { isProdClusterName, isHlgClusterName } from "@/lib/clusterSafety";
 
 interface ClusterSelectorForTabProps {
   selectedCluster: string;
@@ -38,6 +39,18 @@ export const ClusterSelectorForTab = ({
   clusterProviders,
 }: ClusterSelectorForTabProps) => {
   const [open, setOpen] = useState(false);
+  // Mesma correção de segurança do combobox de cluster do Header.tsx (reaproveitando
+  // isProdClusterName/isHlgClusterName, mesma fonte única já usada nesta app) — analista
+  // sobrecarregado não deveria selecionar PRD por engano numa ferramenta de aba específica.
+  // isProdClusterName é uma detecção AMPLA (qualquer "produ*" no nome, não só o sufixo "-prd"
+  // exato) — pedido explícito do usuário pra cobrir clusters como um EKS "asaplog-production".
+  const [envFilter, setEnvFilter] = useState<"all" | "hlg" | "prd">("all");
+  const filteredClusters = clusters.filter((c) => {
+    if (envFilter === "all") return true;
+    if (envFilter === "prd") return isProdClusterName(c);
+    return isHlgClusterName(c);
+  });
+  const selectedIsProd = isProdClusterName(selectedCluster);
 
   return (
     <div className="px-6 py-3 bg-muted/30 border-b">
@@ -60,20 +73,41 @@ export const ClusterSelectorForTab = ({
               disabled={isLoading}
               className="w-[280px] justify-between"
             >
-              {selectedCluster || "Selecione ou busque um cluster..."}
+              <span className={cn("truncate", selectedIsProd && "text-amber-600 dark:text-amber-400 font-semibold")}>
+                {selectedCluster || "Selecione ou busque um cluster..."}
+              </span>
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-[280px] p-0">
+            {/* Filtro Todos/HLG/PRD — mesmo padrão do combobox principal (Header.tsx). */}
+            <div className="flex items-center gap-1 px-2 pt-2 pb-1.5 border-b border-border">
+              {(["all", "hlg", "prd"] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setEnvFilter(f)}
+                  className={cn(
+                    "text-xs px-2 py-1 rounded",
+                    envFilter === f
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  )}
+                >
+                  {f === "all" ? "Todos" : f.toUpperCase()}
+                </button>
+              ))}
+            </div>
             <Command>
               <CommandInput placeholder="Buscar cluster..." />
               <CommandList>
                 <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
                 <CommandGroup>
-                  {clusters.map((cluster) => {
+                  {filteredClusters.map((cluster) => {
                     const badge = clusterProviders
                       ? cloudProviderBadge(clusterProviders[cluster])
                       : null;
+                    const isProd = isProdClusterName(cluster);
                     return (
                       <CommandItem
                         key={cluster}
@@ -94,7 +128,9 @@ export const ClusterSelectorForTab = ({
                             {badge.label}
                           </span>
                         )}
-                        {cluster}
+                        <span className={isProd ? "text-amber-600 dark:text-amber-400 font-medium" : undefined}>
+                          {cluster}
+                        </span>
                       </CommandItem>
                     );
                   })}
