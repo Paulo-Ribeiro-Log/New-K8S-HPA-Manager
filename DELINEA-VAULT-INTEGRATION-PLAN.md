@@ -54,6 +54,33 @@ descreve** (seção 3) — o que existe de fato nesta empresa é:
 
 Seções 5, 6 e 8 abaixo já refletem essa correção.
 
+**Rodada 4 (mesma sessão) — URL real da instância + login humano é SSO**: usuário passou a URL
+real (corrigida numa segunda mensagem, a primeira era uma página de erro de sessão expirada, sem
+sinal útil):
+`https://via.secretservercloud.com/app/#/secrets/view/all?filterStates=[{"filterStateKey":"secret-grid-filter-state","filters":[{"filterItemId":"searchText","selectedDisplayOrder":1},{"filterItemId":"templates","selectedDisplayOrder":2}]}]`
+(decodificado). Três fatos confirmados daí:
+1. **Domínio Cloud real é `*.secretservercloud.com`**, não `*.delinea.app` como a seção 2 tinha
+   assumido por analogia de outras fontes — corrigido abaixo. Tenant é `via`, consistente com o
+   resto dos domínios corporativos já vistos nesta app (`via.com.br`/`viavarejo.com.br`/
+   `grupocasasbahia.com.br`).
+2. **A grade principal de secrets** vive em `/app/#/secrets/view/all` (SPA Angular com hash
+   routing) — e o `filterStates` da própria URL confirma que **`templates` é um filtro de primeira
+   classe da grade nativa** (`filterItemId: "templates"`, ao lado de `searchText`). Isso é uma
+   confirmação real, direto da UI, do caminho que a seção 4.2 já propunha como "mais realista":
+   filtrar por template do secret pra separar Linux (`Unix Account (SSH)`) de Windows (`Windows
+   Account`) — o próprio Secret Server já expõe esse filtro como conceito central, não é só uma
+   suposição nossa. Vale usar `filter.templateid`/equivalente na busca REST da Fase 1, refletindo
+   o mesmo filtro que a grade visual já usa.
+3. "hoje eu logo com SSO, mas tenho uma apikey" — confirma que o **login humano no navegador é
+   federado via SSO** (provavelmente Azure AD, mesmo IdP do resto desta empresa), separado da
+   **API Token pessoal** (mecanismo 2.1, já funciona independente de SSO — nenhuma mudança de
+   plano ali). O que fica em aberto: se a conta é **SSO-only** (sem senha local nenhuma no Secret
+   Server), o caminho "usuário/senha" pra autenticar o **SSH Terminal** (seção 5) pode nem existir
+   de verdade pra este usuário — reforça ainda mais a recomendação de usar chave pública SSH
+   cadastrada no perfil (única alternativa documentada), mas também levanta uma pergunta nova: **o
+   SSH Terminal aceita contas SSO-only via chave pública, ou exige algum tipo de credencial local
+   mesmo com SSO ativo no resto da instância?** — pergunta 19, seção 8.
+
 **Pedido original do usuário:** o usuário tem uma API key do Delinea Vault e quer (1) listar
 servidores/IPs/SO/heartbeat/informações de cada host cadastrado no cofre, (2) filtrar os que são
 Linux, (3) construir uma ponte que abra um terminal — reaproveitando o mesmo terminal já usado na
@@ -105,9 +132,12 @@ Fontes: [REST API Overview](https://docs.delinea.com/online-help/secret-server/a
 
 - **Protocolo**: REST puro sobre HTTP(S), JSON. Interface SOAP legada também existe, mas a
   documentação atual trata REST como o caminho recomendado.
-- **URL base** (confirmado Cloud): `https://<tenant>.delinea.app`, endpoints sob `/api/v1/...`
-  (e possivelmente `/api/v2/...` para algumas operações mais novas, típico de instâncias Cloud —
-  a confirmar caso a caso durante a Fase 1, tentando `v2` com fallback para `v1`).
+- **URL base — confirmada com a URL real da instância (Rodada 4)**: `https://via.secretservercloud.com`
+  (domínio real `*.secretservercloud.com`, não `*.delinea.app` — a suposição original desta seção
+  estava errada, corrigido aqui), endpoints REST sob `/api/v1/...` (e possivelmente `/api/v2/...`
+  para algumas operações mais novas — a confirmar caso a caso na Fase 1, tentando `v2` com
+  fallback para `v1`). A UI (SPA Angular) vive em `/app/#/...` na mesma origem (ex.:
+  `/app/#/secrets/view/all`) — não confundir com a base da API REST.
 - **Autenticação REST — dois mecanismos**:
   1. **OAuth2 Resource Owner Password Grant**: `POST /oauth2/token`, form-urlencoded, corpo
      `grant_type=password&username=<usuário>&password=<senha>` (+ header `OTP` se 2FA). Resposta
@@ -441,7 +471,9 @@ uma sem esperar a outra.
 ### Ainda em aberto (trilha Linux)
 
 3. **Nome real do campo de host/máquina e organização dos secrets Linux** — template exato, nome
-   do campo de host/IP, pasta(s), campo customizado de SO. Respondível na Fase 1.
+   do campo de host/IP, pasta(s), campo customizado de SO. Respondível na Fase 1 — o filtro por
+   `templates` em si já está confirmado como existente na grade nativa (Rodada 4), só falta o
+   nome exato do(s) template(s) Linux/Windows reais desta instância.
 4. **Heartbeat está habilitado** nesses secrets? Respondível na Fase 1.
 6. **A rotação (RPC) está de fato configurada como diária** para os secrets-alvo?
 7. **Autenticação nos alvos é sempre por senha, ou parte usa Private Key**?
@@ -458,6 +490,11 @@ uma sem esperar a outra.
     analista, só líder de squad, algum grupo específico? Decide o RBAC do botão de liberação
     forçada na Fase Windows-2 (seção 6) — não deveria ser um clique casual disponível a qualquer
     um.
+19. **O SSH Terminal aceita contas SSO-only** (via chave pública SSH cadastrada no perfil), ou
+    exige algum tipo de credencial local mesmo com SSO ativo no resto da instância? Como o login
+    humano nesta empresa é 100% via SSO (Rodada 4), é bem possível que não exista senha local
+    nenhuma pra usar — reforça a via de chave pública como provável único caminho viável, mas
+    precisa confirmar que o SSH Terminal em si aceita esse tipo de conta.
 
 ### Novas — trilha Windows (RDP)
 
