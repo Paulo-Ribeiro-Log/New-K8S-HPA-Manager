@@ -1,6 +1,10 @@
 # Estudo + Plano: Integração com Delinea Vault (Secret Server) — SSH (Linux) e RDP (Windows)
 
 **Status:** 🔬 estudo/planejamento — nenhuma fase iniciada, nenhum código escrito.
+**⚠️ Bloqueio arquitetural real em aberto (Rodada 7, pergunta 21)**: a API Token pessoal expira em
+~20 minutos na prática, sem refresh, exigindo login SSO completo pra renovar — invalida o modelo
+"cola a chave uma vez" assumido na seção 2.1. Decidir isso (existe token mais duradouro via
+admin? aceitar fluxo de reautenticação periódica?) antes de fechar o desenho final das Fases 2-4.
 **Confirmado com o usuário (2026-08-26)** — 4 das 10 perguntas originais da seção 8 já
 respondidas, com impacto real na arquitetura (detalhado nas seções 2.1 e 5 abaixo):
 1. Instância é **Cloud (Delinea SaaS)**, não on-prem.
@@ -161,6 +165,58 @@ confirmado se são a mesma coisa por baixo, mas irrelevante pro plano: o caminho
 Isso resolve a pergunta 20 na maior parte — falta só confirmar o método/formato exato da
 requisição e o tipo de autenticação aceito, antes de fechar de vez a Fase 1/4.
 
+**Rodada 7 (mesma sessão) — testes reais com `curl` acharam a rota certa, mas expuseram um
+problema estrutural real: TTL curto da API Token, sem refresh, exigindo SSO completo pra renovar**.
+Sequência de testes:
+
+1. `GET /api/v1/secrets/sshproxy/{secretId}` → **404 vazio** (rota não existe nesse formato —
+   confirma que `secretId` não vai no path via GET).
+2. `POST /api/v1/secrets/sshproxy` com `{"secretId": ...}` no corpo → **401** com corpo real
+   (`"Authentication failed or expired token."`) — a rota **existe** nesse formato (POST, ID no
+   body), mas o token usado no teste já tinha expirado.
+3. Usuário gerou um token novo (exigiu login SSO completo de novo pra acessar a tela de
+   Preferences) e testou num endpoint de leitura comum (`GET /api/v1/secrets?filter.searchtext=...`)
+   → **200 OK**, confirma que o token novo funciona normalmente como Bearer no resto da API REST
+   (não invalida o modelo 2.1 pra chamadas de leitura em geral).
+4. **Achado real e preocupante**: a API Token gerada em Preferences dura **~20 minutos na
+   prática**, sem campo de expiração configurável visível na tela de criação, e **quando expira,
+   a única forma de renovar é fazer o login SSO completo de novo** — não há refresh_token nem
+   nenhum mecanismo de renovação silenciosa acessível ao usuário.
+
+**Por que isso é um problema de arquitetura, não só um detalhe**: a seção 2.1 assumia que essa API
+Token funcionaria como um PAT tradicional — "cola uma vez, funciona por muito tempo", mesmo padrão
+já maduro nesta app (`GitHubEditorProfile`, tokens de IA por usuário). Um TTL de ~20min sem
+refresh quebra essa premissa: mesmo que a ponte de terminal (Fase 4) só precise da API Token no
+**momento do clique em "Conectar"** (não continuamente — o `sshproxy` é chamado uma vez por
+conexão, a sessão SSH em si não depende mais do Bearer token depois de aberta), qualquer analista
+que deixe a aba aberta por mais de ~20min sem reautenticar veria a chamada falhar com 401 bem no
+momento de tentar conectar — pior experiência do que "clique e conecta" prometido. Listagem de
+servidores (Fase 3, que fica visível/atualizada com frequência) sofreria ainda mais, exigindo
+reautenticação a cada ~20min só pra manter a tela útil.
+
+**Hipóteses, nenhuma confirmada ainda**:
+- O TTL curto pode ser uma **política específica desta instância** (config do admin do Delinea,
+  talvez propositalmente restritiva por segurança) — nesse caso, pode existir um tipo de
+  token diferente (ex.: "Application API user"/service account) com prazo configurável,
+  disponível só via administrador — pergunta nova, seção 8.
+- Pode ser que a **OAuth2 Resource Owner Password Grant** (mecanismo 1, seção 2) — que a
+  documentação promete vir com `refresh_token` — se comporte diferente, mas essa via exige
+  `grant_type=password` com usuário/senha, inviável pra contas SSO-only (mesmo bloqueio já
+  identificado nas Rodadas 4/5 para o SSH Terminal tradicional).
+- Pode existir um fluxo OAuth2 de Authorization Code federado com o Azure AD (mesmo padrão que
+  este projeto já implementa para outras integrações — WIF SSO do GCP, `StartWIFAppCallback`/
+  `StartGoogleInstallAuth`) que a Delinea talvez suporte para a própria instância Cloud, com
+  `refresh_token` de vida mais longa — não confirmado, nenhuma fonte encontrada até agora
+  descrevendo isso especificamente para Secret Server Cloud.
+
+**Consequência prática pro desenho da Fase 2/3/4** (a decidir, não implementado ainda): se o TTL
+curto se confirmar como definitivo (sem alternativa de token mais longo), a UX da aba "Delinea
+Vault" (Fase 3) precisaria de um estado explícito de "sua API Token do Delinea expirou — clique
+aqui para reautenticar" — mesmo princípio já usado nesta app pro evento `jwt-expired` (força
+relogin quando o JWT interno vence), só que aplicado a uma integração externa. Sem solução mais
+elegante confirmada, é a rede de segurança mínima viável — mas vale investir tempo tentando achar
+uma via de token mais duradouro antes de aceitar essa fricção como definitiva.
+
 **Pedido original do usuário:** o usuário tem uma API key do Delinea Vault e quer (1) listar
 servidores/IPs/SO/heartbeat/informações de cada host cadastrado no cofre, (2) filtrar os que são
 Linux, (3) construir uma ponte que abra um terminal — reaproveitando o mesmo terminal já usado na
@@ -225,7 +281,10 @@ Fontes: [REST API Overview](https://docs.delinea.com/online-help/secret-server/a
   2. **API Token estático gerado na UI** (Preferências do usuário) — a documentação da Delinea
      classifica isso como **"Deprecated Method"** no sentido de "prefira OAuth2 para automação
      genérica", mas é exatamente o mecanismo que se encaixa no modelo escolhido nesta rodada (ver
-     2.1 abaixo).
+     2.1 abaixo). ⚠️ **Achado real (Rodada 7)**: nesta instância, apesar do nome "estático", esse
+     token expira em **~20 minutos na prática**, sem campo de expiração configurável visível, e
+     renovar exige login SSO completo de novo — não é o PAT de longa duração que a documentação
+     genérica sugere. Ver seção 2.1 e Rodada 7 (acima) para a análise completa desse problema.
 - **Versionamento**: em Cloud, a Delinea controla isso centralmente (sempre a versão mais
   recente), diferente de on-prem onde pode ficar desatualizada por anos.
 
@@ -249,6 +308,14 @@ ao vivo, Rodada 5, seção 5) — não a identidade pessoal do analista nem nada
 previamente. A ponte RDP (seção 6) provavelmente segue o mesmo espírito (um token/credencial de
 curta duração emitido "no momento do launch", não o API Token REST — ver seção 6), mas isso ainda
 não foi confirmado ao vivo como foi para SSH.
+
+**⚠️ Problema real descoberto (Rodada 7) — TTL da API Token inviabiliza o modelo "cola uma vez"**:
+diferente de `GitHubEditorProfile`/tokens de IA (PATs de longa duração, colados uma única vez e
+esquecidos), a API Token deste Delinea expira em **~20 minutos**, sem refresh, exigindo login SSO
+completo pra renovar. Isso não invalida "uma API key por analista" como modelo de RBAC (continua
+correto — cada analista só vê o que o Delinea já permite a ele), mas invalida a expectativa de
+que o token, uma vez colado, "funciona por muito tempo sem manutenção". Ver análise completa e
+hipóteses de solução na Rodada 7 (mais abaixo neste documento) e pergunta 21 (seção 8).
 
 ---
 
@@ -643,11 +710,23 @@ Fluxo confirmado ao vivo (Rodada 5/6, seção 5) — mais simples do que a v1 de
     partia da suposição de que o SSH Terminal usa a identidade do analista — não usa (pergunta 12
     acima). O login SSO-only deixou de ser um bloqueio.
 20. ~~Qual é exatamente a requisição REST por trás do botão "conectar via SSH"~~ — **✅
-    majoritariamente resolvida (Rodada 6)**: endpoint é `/api/v1/secrets/sshproxy/{secretId}`,
-    resposta `{host, port, username, password}`. Falta só confirmar 3 detalhes finos (método
-    HTTP, se `secretId` vai no path ou body, se aceita a API key Bearer do resto da REST API) —
-    teste direto via `curl` registrado como 1º passo da Fase 1 (seção 7). Bloqueante só pra esses
-    3 detalhes, não mais pro mecanismo como um todo.
+    resolvida (Rodada 7)**: `POST /api/v1/secrets/sshproxy` com `{"secretId": <id>}` no corpo,
+    `Authorization: Bearer <api_token>`, resposta `{host, port, username, password}` (`200 OK`
+    confirmado num teste com token válido contra um endpoint de leitura equivalente — falta só
+    repetir o teste no `sshproxy` em si com token fresco, ver pergunta 22).
+21. **[BLOQUEANTE REAL, novo — Rodada 7] A API Token expira em ~20min sem refresh, exigindo login
+    SSO completo pra renovar** — inviabiliza o modelo "cola uma vez, funciona indefinidamente"
+    assumido em 2.1. Existe algum tipo de token/conta alternativo com prazo mais longo, disponível
+    via administrador (ex.: "Application API user"/service account), ou é uma política fixa desta
+    instância sem alternativa? Determina se a Fase 2/3 precisa de um fluxo de "reautenticação
+    periódica" (mesmo princípio do `jwt-expired` já existente nesta app) ou se há uma via de token
+    duradouro que evita esse problema por completo. **Bloqueia a decisão final de arquitetura das
+    Fases 2-4**, não bloqueia continuar validando o endpoint `sshproxy` isoladamente.
+22. Repetir o teste `curl` do `sshproxy` (pergunta 20) com um token **recém-gerado** — o teste que
+    obteve `401` usava um token já expirado; o teste que confirmou `200` foi noutro endpoint de
+    leitura. Ainda falta confirmar que o `sshproxy` especificamente aceita o mesmo Bearer token
+    (não é certo — pode ser uma rota mais sensível com exigência de auth diferente, já que gera
+    credencial de acesso a servidor).
 
 ### Novas — trilha Windows (RDP)
 
