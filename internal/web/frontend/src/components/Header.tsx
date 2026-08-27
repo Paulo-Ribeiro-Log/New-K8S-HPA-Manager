@@ -36,6 +36,7 @@ import type { VersionInfo } from "@/lib/api/types";
 import { toast } from "sonner";
 import { cloudProviderBadge } from "@/hooks/useCloudProvider";
 import { Loader2 } from "lucide-react";
+import { isProdClusterName, isHlgClusterName } from "@/lib/clusterSafety";
 
 interface HeaderProps {
   selectedCluster: string;
@@ -71,6 +72,20 @@ export const Header = ({
   onLogout,
 }: HeaderProps) => {
   const [open, setOpen] = useState(false);
+  // Correção de segurança pedida pelo usuário: um analista sobrecarregado pode selecionar o
+  // cluster errado (PRD em vez de HLG) sem perceber — filtro Todos/HLG/PRD reduz a lista visível
+  // na hora de escolher, e clusters PRD ganham destaque em laranja (na lista E no botão do
+  // cluster já selecionado, que fica sempre visível — o sinal mais importante pra não esquecer em
+  // qual ambiente está trabalhando). isProdClusterName/isHlgClusterName (lib/clusterSafety.ts)
+  // — detecção AMPLA do lado PRD (pedido explícito: pega qualquer "produ*" no nome, não só o
+  // sufixo "-prd" exato, pra cobrir clusters como um EKS "asaplog-production").
+  const [envFilter, setEnvFilter] = useState<"all" | "hlg" | "prd">("all");
+  const filteredClusters = clusters.filter((c) => {
+    if (envFilter === "all") return true;
+    if (envFilter === "prd") return isProdClusterName(c);
+    return isHlgClusterName(c);
+  });
+  const selectedIsProd = isProdClusterName(selectedCluster);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [updating, setUpdating] = useState(false);
   const [confirmUpdateOpen, setConfirmUpdateOpen] = useState(false);
@@ -214,22 +229,49 @@ export const Header = ({
               aria-expanded={open}
               className="w-[180px] sm:w-[240px] lg:w-[300px] xl:w-[400px] justify-between bg-white/20 border-white/30 text-white hover:bg-white/25 hover:text-white"
             >
-              {selectedCluster
-                ? (clusterDisplayNames?.[selectedCluster] ?? selectedCluster)
-                : "Selecione ou busque um cluster..."}
+              <span
+                className={cn(
+                  "truncate",
+                  selectedIsProd && "text-amber-300 font-semibold"
+                )}
+              >
+                {selectedCluster
+                  ? (clusterDisplayNames?.[selectedCluster] ?? selectedCluster)
+                  : "Selecione ou busque um cluster..."}
+              </span>
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-[300px] xl:w-[400px] p-0">
+            {/* Filtro Todos/HLG/PRD — reduz a lista antes mesmo da busca por texto, pra um
+                analista sobrecarregado não escolher o ambiente errado por engano. */}
+            <div className="flex items-center gap-1 px-2 pt-2 pb-1.5 border-b border-border">
+              {(["all", "hlg", "prd"] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setEnvFilter(f)}
+                  className={cn(
+                    "text-xs px-2 py-1 rounded",
+                    envFilter === f
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  )}
+                >
+                  {f === "all" ? "Todos" : f.toUpperCase()}
+                </button>
+              ))}
+            </div>
             <Command>
               <CommandInput placeholder="Buscar cluster..." />
               <CommandList>
                 <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
                 <CommandGroup>
-                  {clusters.map((cluster) => {
+                  {filteredClusters.map((cluster) => {
                     const badge = clusterProviders
                       ? cloudProviderBadge(clusterProviders[cluster])
                       : null;
+                    const isProd = isProdClusterName(cluster);
                     return (
                       <CommandItem
                         key={cluster}
@@ -250,7 +292,9 @@ export const Header = ({
                             {badge.label}
                           </span>
                         )}
-                        {clusterDisplayNames?.[cluster] ?? cluster}
+                        <span className={isProd ? "text-amber-600 dark:text-amber-400 font-medium" : undefined}>
+                          {clusterDisplayNames?.[cluster] ?? cluster}
+                        </span>
                       </CommandItem>
                     );
                   })}
