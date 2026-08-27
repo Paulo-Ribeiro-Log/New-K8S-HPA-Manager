@@ -2046,6 +2046,11 @@ export interface RunNetDiscoveryBatchRequest {
   // 1 só), interval_sec espaça as rodadas (0 = imediatamente sequencial, máx 60s).
   allow_duplicate_targets?: boolean;
   interval_sec?: number;
+  // concurrency — Fase G do roadmap de maturidade profissional (paralelismo opcional, escopo
+  // reduzido): quantos alvos rodam simultaneamente. Ausente/1 (default) = sequencial, comportamento
+  // idêntico a antes desta fase. Máximo 3. Mutuamente exclusivo com allow_duplicate_targets
+  // (monitoramento é uma série temporal, não faz sentido paralelo).
+  concurrency?: number;
 }
 
 export interface RunNetDiscoveryBatchResponse {

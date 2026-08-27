@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, FileJson, FileSpreadsheet, StickyNote, ListChecks, KeyRound, Clock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -31,6 +32,12 @@ import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
 import type { NetDiscoveryHistoryEntry, NetDiscoveryHop, NetDiscoveryResult, NetDiscoverySSEEvent } from "@/lib/api/types";
 
 type NetDiscoveryMode = "pod" | "local";
+
+// netDiscoveryBatchConcurrency — Fase G (roadmap de maturidade profissional): quantos alvos rodam
+// ao mesmo tempo quando o usuário liga "Paralelizar" no modo lote. Fixo em 3 (não configurável na
+// UI) — mesmo teto máximo já validado no backend (netDiscoveryBatchConcurrencyMax) — escopo
+// reduzido confirmado com o usuário: um único checkbox liga/desliga, sem campo numérico extra.
+const netDiscoveryBatchConcurrency = 3;
 
 // osLabel — versão compacta (texto puro, pro banner de histórico) do mesmo veredito já mostrado
 // como badge no resultado ao vivo (ver bloco `result.fingerprint.os_guess` mais abaixo) — mesmo
@@ -160,6 +167,25 @@ export default function NetDiscoveryTab() {
   // batchSummaries.
   const [isMonitorRun, setIsMonitorRun] = useState(false);
   const [batchRoundResults, setBatchRoundResults] = useState<NetDiscoveryResult[]>([]);
+
+  // Fase G (roadmap de maturidade profissional) — paralelismo opcional no modo lote, escopo
+  // reduzido confirmado com o usuário: até 3 alvos rodando ao mesmo tempo, SEM grafo/tabela ao
+  // vivo por item (só a faixa de status compacta já existente) — a UI de "um alvo ativo" (`hops`/
+  // `result`/`progress`) nunca é usada no caminho paralelo. `parallelStreamsRef` gerencia N
+  // EventSource simultâneas (uma por alvo), fora do mecanismo de encadeamento sequencial
+  // (`batchQueueRef`/`useEffect([sessionId])`) usado por single/batch-sequencial/monitor.
+  const [parallelBatch, setParallelBatch] = useState(false);
+  const parallelStreamsRef = useRef<Map<string, EventSource>>(new Map());
+  const [parallelResults, setParallelResults] = useState<Record<string, NetDiscoveryResult>>({});
+  const [expandedParallelItem, setExpandedParallelItem] = useState<string | null>(null);
+
+  // Fecha qualquer stream paralela remanescente se o componente desmontar no meio de um lote
+  // paralelo (troca de aba — ver achado colateral documentado no CLAUDE.md desta feature).
+  useEffect(() => {
+    return () => {
+      parallelStreamsRef.current.forEach((es) => es.close());
+    };
+  }, []);
 
   // Fase 5 — Histórico de Descobertas: mostra "última busca: ..." pro alvo digitado ANTES mesmo
   // do usuário clicar "Traçar rota" (resolve a dor observada ao vivo nesta sessão — reinvestigar o
@@ -295,6 +321,11 @@ export default function NetDiscoveryTab() {
     setBatchSummaries({});
     setIsMonitorRun(false);
     setBatchRoundResults([]);
+    // Fase G — fecha qualquer stream paralela remanescente de um lote anterior.
+    parallelStreamsRef.current.forEach((es) => es.close());
+    parallelStreamsRef.current = new Map();
+    setParallelResults({});
+    setExpandedParallelItem(null);
     try {
       const { session_id } = await apiClient.runNetDiscovery({
         target: target.trim(),
@@ -336,6 +367,10 @@ export default function NetDiscoveryTab() {
     setBatchId(null);
     setIsMonitorRun(false);
     setBatchRoundResults([]);
+    parallelStreamsRef.current.forEach((es) => es.close());
+    parallelStreamsRef.current = new Map();
+    setParallelResults({});
+    setExpandedParallelItem(null);
     try {
       const resp = await apiClient.runNetDiscoveryBatch({
         targets: batchTargetsParsed,
@@ -348,6 +383,7 @@ export default function NetDiscoveryTab() {
         extra_ports: extraPortsNums.length > 0 ? extraPortsNums : undefined,
         client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
         client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
+        concurrency: parallelBatch ? netDiscoveryBatchConcurrency : undefined,
       });
       const queue = resp.targets.map((t, i) => ({ target: t, sessionId: resp.session_ids[i] }));
       batchQueueRef.current = queue;
@@ -358,11 +394,88 @@ export default function NetDiscoveryTab() {
       const initialStatuses: Record<string, "queued" | "running"> = {};
       queue.forEach((q, i) => { initialStatuses[q.sessionId] = i === 0 ? "running" : "queued"; });
       setBatchStatuses(initialStatuses);
-      setSessionId(queue[0].sessionId);
+      if (parallelBatch) {
+        // Fase G — caminho paralelo: abre TODAS as streams de uma vez (o backend já as executa
+        // concorrentemente), sem passar por `sessionId`/o encadeamento sequencial existente. Nunca
+        // popula `hops`/`result` (sem grafo/tabela ao vivo por item, escopo reduzido confirmado).
+        setPhaseMessage(`Executando ${queue.length} alvos em paralelo...`);
+        startParallelStreams(queue);
+      } else {
+        setSessionId(queue[0].sessionId);
+      }
     } catch (err) {
       setRunning(false);
       setRunError(err instanceof Error ? err.message : "Falha ao iniciar o lote");
     }
+  };
+
+  // startParallelStreams — Fase G: abre uma EventSource por alvo (todas de uma vez, já que o
+  // backend já os executa concorrentemente — não há "vez" de cada um pra esperar). Cada stream só
+  // atualiza status/resultado daquele item específico (`batchStatuses`/`parallelResults`), nunca o
+  // estado "alvo ativo único" (`hops`/`result`/`progress`) usado pelos outros modos — por isso não
+  // há grafo/tabela ao vivo por item neste modo (escopo reduzido confirmado com o usuário).
+  const startParallelStreams = (queue: { target: string; sessionId: string }[]) => {
+    let pending = queue.length;
+    let completed = 0;
+    const total = queue.length;
+    const finishOne = () => {
+      pending -= 1;
+      completed += 1;
+      // Barra de progresso reaproveitada (mesmo elemento visual do modo sequencial) — aqui reflete
+      // % de alvos concluídos (com ou sem erro), já que não há um "salto atual" único pra basear o
+      // progresso nesse modo.
+      setProgress(completed / total);
+      if (pending <= 0) {
+        setRunning(false);
+        setBatchId(null);
+      }
+    };
+    queue.forEach((q) => {
+      const es = new EventSource(apiClient.getNetDiscoveryStreamURL(q.sessionId));
+      parallelStreamsRef.current.set(q.sessionId, es);
+      let terminalReceived = false;
+      es.onmessage = (e) => {
+        try {
+          const event: NetDiscoverySSEEvent = JSON.parse(e.data);
+          if (event.type === "complete" && event.result) {
+            terminalReceived = true;
+            const finalResult = event.result as NetDiscoveryResult;
+            setBatchStatuses((prev) => ({ ...prev, [q.sessionId]: "done" }));
+            setBatchSummaries((prev) => ({
+              ...prev,
+              [q.sessionId]: { reached: finalResult.reached, osGuess: finalResult.fingerprint?.os_guess },
+            }));
+            setParallelResults((prev) => ({ ...prev, [q.sessionId]: finalResult }));
+            es.close();
+            parallelStreamsRef.current.delete(q.sessionId);
+            finishOne();
+          }
+          if (event.type === "error") {
+            terminalReceived = true;
+            setBatchStatuses((prev) => ({ ...prev, [q.sessionId]: "error" }));
+            es.close();
+            parallelStreamsRef.current.delete(q.sessionId);
+            finishOne();
+          }
+        } catch {
+          /* ignore evento malformado */
+        }
+      };
+      // Mesmo achado real já documentado no useEffect single-stream (es.onerror mais abaixo): o
+      // encerramento normal da conexão após "complete"/"error" comumente dispara onerror também —
+      // só reage de verdade (conta como pendência resolvida) se a conexão caiu ANTES de qualquer
+      // evento terminal, senão o `finishOne()` já rodou dentro de onmessage.
+      es.onerror = () => {
+        es.close();
+        if (parallelStreamsRef.current.has(q.sessionId)) {
+          parallelStreamsRef.current.delete(q.sessionId);
+        }
+        if (!terminalReceived) {
+          setBatchStatuses((prev) => ({ ...prev, [q.sessionId]: "error" }));
+          finishOne();
+        }
+      };
+    });
   };
 
   // runMonitor — Fase C (roadmap de maturidade profissional): reaproveita o MESMO endpoint de lote
@@ -386,6 +499,12 @@ export default function NetDiscoveryTab() {
     setBatchId(null);
     setIsMonitorRun(true);
     setBatchRoundResults([]);
+    // Fase G — monitoramento nunca é paralelo (ver validateConcurrencyWithMonitor no backend), mas
+    // ainda limpa qualquer stream paralela remanescente de um lote anterior.
+    parallelStreamsRef.current.forEach((es) => es.close());
+    parallelStreamsRef.current = new Map();
+    setParallelResults({});
+    setExpandedParallelItem(null);
     try {
       const trimmedTarget = target.trim();
       const resp = await apiClient.runNetDiscoveryBatch({
@@ -425,6 +544,10 @@ export default function NetDiscoveryTab() {
       /* ignore — o pod/container é limpo no servidor de qualquer forma */
     }
     esRef.current?.close();
+    // Fase G — fecha todas as streams paralelas em andamento, se houver (cancelTarget=batchId já
+    // derrubou o contexto compartilhado no backend; aqui só limpa as conexões abertas no cliente).
+    parallelStreamsRef.current.forEach((es) => es.close());
+    parallelStreamsRef.current = new Map();
     setRunning(false);
     setBatchId(null);
     setPhaseMessage("Descoberta cancelada.");
@@ -628,6 +751,23 @@ export default function NetDiscoveryTab() {
                   if (inputMode === "monitor") runMonitor(); else run();
                 }}
               />
+            </div>
+          )}
+
+          {/* Fase G — paralelismo opcional, só no modo lote (não no monitor — série temporal, ver
+              validateConcurrencyWithMonitor no backend). Escopo reduzido confirmado com o usuário:
+              sem grafo/tabela ao vivo por item durante o paralelismo, só a faixa de status. */}
+          {inputMode === "batch" && (
+            <div className="flex items-center gap-2 pb-2">
+              <Checkbox
+                checked={parallelBatch}
+                onCheckedChange={(v) => setParallelBatch(!!v)}
+                disabled={running}
+                id="net-discovery-parallel"
+              />
+              <label htmlFor="net-discovery-parallel" className="text-xs text-muted-foreground cursor-pointer max-w-[220px]">
+                Paralelizar (até {netDiscoveryBatchConcurrency} simultâneos, sem grafo ao vivo por item)
+              </label>
             </div>
           )}
 
@@ -1028,14 +1168,25 @@ export default function NetDiscoveryTab() {
                 status === "done" ? <Check className="w-3 h-3 text-emerald-500" /> :
                 status === "error" ? <XCircle className="w-3 h-3 text-destructive" /> :
                 <span className="w-3 h-3 rounded-full border border-muted-foreground/40 inline-block" />;
+              // Fase G — no modo paralelo, um item com resultado já disponível pode ser expandido
+              // ("ver detalhes") — é o único jeito de inspecionar a rota daquele alvo, já que não
+              // há grafo/tabela ao vivo por item nesse modo (escopo reduzido confirmado).
+              const expandable = parallelBatch && !!parallelResults[qsid];
               return (
                 <span
                   key={qsid}
-                  title={summary ? `${summary.reached ? "Alcançado" : "Não alcançado"}${summary.osGuess ? ` · ${osLabel(summary.osGuess)}` : ""}` : status}
-                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-mono ${
+                  onClick={expandable ? () => setExpandedParallelItem((prev) => (prev === qsid ? null : qsid)) : undefined}
+                  title={
+                    expandable
+                      ? "Clique para ver a rota completa"
+                      : summary
+                      ? `${summary.reached ? "Alcançado" : "Não alcançado"}${summary.osGuess ? ` · ${osLabel(summary.osGuess)}` : ""}`
+                      : status
+                  }
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-mono ${expandable ? "cursor-pointer hover:border-foreground/40" : ""} ${
                     status === "running" ? "border-primary/40 bg-primary/5" :
                     status === "error" ? "border-destructive/40 bg-destructive/5" :
-                    status === "done" ? "border-emerald-500/30" : "border-border text-muted-foreground"
+                    status === "done" ? (expandedParallelItem === qsid ? "border-emerald-500/60 bg-emerald-500/10" : "border-emerald-500/30") : "border-border text-muted-foreground"
                   }`}
                 >
                   {icon}
@@ -1046,6 +1197,12 @@ export default function NetDiscoveryTab() {
               );
             })}
           </div>
+        )}
+
+        {/* Fase G — tabela de saltos do item paralelo expandido (ver expandable acima). Reaproveita
+            o mesmo formato compacto de linha da tabela principal, sem fingerprint/grafo. */}
+        {parallelBatch && expandedParallelItem && parallelResults[expandedParallelItem] && (
+          <ParallelItemResultTable result={parallelResults[expandedParallelItem]} />
         )}
 
         {/* Fase C — resumo de agregação do monitoramento, só quando TODAS as rodadas concluíram
@@ -1301,6 +1458,56 @@ export default function NetDiscoveryTab() {
           setClientKeyPEM(key);
         }}
       />
+    </div>
+  );
+}
+
+// ParallelItemResultTable — Fase G (roadmap de maturidade profissional): tabela de saltos de UM
+// item do lote paralelo, expandida sob demanda ("ver detalhes") — a única forma de inspecionar a
+// rota de um alvo nesse modo, já que não há grafo/tabela ao vivo por item (escopo reduzido). Mesmo
+// formato de coluna da tabela principal (Latência via formatLatencyCell, Perda via lossBadgeClass),
+// sem fingerprint (não é o foco do resumo em lote) nem grafo Cytoscape (custo de renderização N
+// instâncias simultâneas não vale a pena pra uma inspeção pontual).
+function ParallelItemResultTable({ result }: { result: NetDiscoveryResult }) {
+  return (
+    <div className="rounded-md border border-border overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 bg-muted/40 border-b border-border text-sm">
+        <Route className="w-4 h-4 text-muted-foreground" />
+        <span className="font-mono">{result.target_input}</span>
+        {result.target_resolved && <span className="text-xs text-muted-foreground">→ {result.target_ip}</span>}
+        <Badge variant="outline" className={result.reached ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400" : "border-amber-500/40 text-amber-600 dark:text-amber-400"}>
+          {result.reached ? "destino alcançado" : "destino não confirmado"}
+        </Badge>
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-muted-foreground">
+            <th className="text-left font-medium px-2.5 py-1.5 w-12">#</th>
+            <th className="text-left font-medium px-2.5 py-1.5">IP</th>
+            <th className="text-left font-medium px-2.5 py-1.5">Latência</th>
+            <th className="text-left font-medium px-2.5 py-1.5">Perda</th>
+          </tr>
+        </thead>
+        <tbody>
+          {result.hops.map((h) => (
+            <tr key={h.index} className={h.index > 1 ? "border-t border-border" : ""}>
+              <td className="px-2.5 py-1.5 font-mono">{h.index}</td>
+              <td className="px-2.5 py-1.5 font-mono">
+                {h.timed_out ? <span className="text-muted-foreground">* * *</span> : h.ip}
+                {h.is_target && <Badge variant="outline" className="ml-2 text-[10px] py-0 border-emerald-500/40 text-emerald-600 dark:text-emerald-400">destino</Badge>}
+              </td>
+              <td className="px-2.5 py-1.5 font-mono">{formatLatencyCell(h)}</td>
+              <td className="px-2.5 py-1.5 font-mono">
+                {h.loss_pct ? (
+                  <Badge variant="outline" className={`text-[10px] py-0 ${lossBadgeClass(h.loss_pct)}`}>{h.loss_pct.toFixed(0)}%</Badge>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
