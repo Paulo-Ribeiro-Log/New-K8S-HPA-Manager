@@ -68,6 +68,17 @@ func (h *SREApprovalHandler) Approve(c *gin.Context) {
 		return
 	}
 
+	// Bug real corrigido: o e-mail do aprovador é quem está de fato autenticado NESTA sessão web
+	// (via SSO/JWT) — nunca a identidade do Azure CLI rodando no processo do servidor (que pode
+	// divergir, ex: outra conta `az login` ativa por conta de uma operação de AKS/Node Pools no
+	// meio da sessão). O frontend já manda o e-mail obtido de `GET /current-user` (corrigido pelo
+	// mesmo motivo), mas aqui é reforçado como fonte de verdade caso o request chegue sem esse
+	// campo (ex: cliente HTTP direto) — só cai pro Azure CLI dentro de `client.Approve` como
+	// último recurso, mesmo padrão de `history.GetCurrentUserInfo`.
+	if req.ApproverEmail == "" {
+		req.ApproverEmail = c.GetString("user_email")
+	}
+
 	h.logger.Info().
 		Str("url", req.ApprovalURL).
 		Str("approver_email", req.ApproverEmail).
@@ -125,9 +136,25 @@ func (h *SREApprovalHandler) ExtractApprovalID(c *gin.Context) {
 	})
 }
 
-// GetCurrentUser obtém informações do usuário atual (email via Azure CLI)
+// GetCurrentUser obtém o e-mail do usuário autenticado NESTA sessão web (o aprovador de fato) —
 // GET /api/v1/sre-approval/current-user
+//
+// Bug real corrigido: sempre chamava `az account show` no processo do servidor, ignorando por
+// completo a identidade real de quem está logado na aplicação (via SSO/JWT) — a rota nunca tinha
+// `InjectUserEmail()` aplicada (única exceção entre rotas comparáveis deste arquivo), então
+// `user_email` nunca existia no contexto. Corrigido priorizando `c.GetString("user_email")`
+// (claims do JWT, populado pelo middleware agora aplicado em server.go) — o Azure CLI só entra
+// como fallback de último recurso (modo sem JWT/token estático), mesmo padrão já usado em
+// `history.GetCurrentUserInfo`.
 func (h *SREApprovalHandler) GetCurrentUser(c *gin.Context) {
+	if email := c.GetString("user_email"); email != "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"email":   email,
+		})
+		return
+	}
+
 	email, err := sreapproval.GetCurrentUserEmail(c.Request.Context())
 	if err != nil {
 		h.logger.Error().Err(err).Msg("Erro ao obter email do usuário")
