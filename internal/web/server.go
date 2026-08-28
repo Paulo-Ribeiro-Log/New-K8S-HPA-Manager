@@ -1462,13 +1462,24 @@ func (s *Server) setupRoutes() {
 	fmt.Println("✅ Teams Integration routes registradas")
 
 	// SRE Approval Integration (aprovação de deployments)
-	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
+	//
+	// Bug real corrigido — o e-mail submetido como "aprovador" pro devstartcd vinha do Azure CLI
+	// rodando no PROCESSO DO SERVIDOR (`sreapproval.GetCurrentUserEmail`, `az account show`), não
+	// do usuário de fato autenticado na sessão web via SSO/JWT — essas duas identidades podem
+	// divergir (o servidor pode estar com outra conta `az login` ativa por qualquer outro motivo,
+	// ex: operação de AKS/Node Pools no meio da sessão). `/current-user` e `/approve` eram as
+	// únicas rotas do arquivo sem `InjectUserEmail()` — por isso nunca tinham acesso ao
+	// `user_email` real (claims do JWT), só ao fallback de Azure CLI. Corrigido adicionando o
+	// mesmo middleware já usado por todas as outras rotas que precisam do e-mail do usuário —
+	// `GetCurrentUser`/`Approve` (sreapproval.go) agora priorizam `c.GetString("user_email")`
+	// antes de cair pro Azure CLI, mesmo padrão de `history.GetCurrentUserInfo`.
+	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger, baseDir)
 	sreApproval := api.Group("/sre-approval")
 	{
 		sreApproval.GET("/info", sreApprovalHandler.GetApprovalInfo)
-		sreApproval.POST("/approve", rbacMiddleware.RequireSREGroup(), sreApprovalHandler.Approve)
+		sreApproval.POST("/approve", rbacMiddleware.InjectUserEmail(), rbacMiddleware.RequireSREGroup(), sreApprovalHandler.Approve)
 		sreApproval.GET("/extract-id", sreApprovalHandler.ExtractApprovalID)
-		sreApproval.GET("/current-user", sreApprovalHandler.GetCurrentUser)
+		sreApproval.GET("/current-user", rbacMiddleware.InjectUserEmail(), sreApprovalHandler.GetCurrentUser)
 	}
 	fmt.Println("✅ SRE Approval Integration routes registradas")
 

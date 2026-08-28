@@ -64,6 +64,25 @@ func LoadSSOProfile(baseDir string) (*SSOProfileData, error) {
 	}, nil
 }
 
+// ssoProfileEmail lê só o e-mail cadastrado no Perfil SSO, sem exigir senha/decriptação — usado
+// por `SREApprovalHandler.resolveApproverEmail` (sreapproval.go), que só precisa do e-mail, nunca
+// da senha. Diferente de `LoadSSOProfile` (que falha se `EncryptedPassword` estiver vazio/não
+// decriptar — pensado pra auto-login de browser, onde a senha é obrigatória), este helper nunca
+// falha por causa da senha: um e-mail cadastrado deve continuar identificando o aprovador mesmo
+// que a decriptação da senha falhe por qualquer motivo. Retorna "" (nunca erro) quando o perfil não
+// existe/está vazio — mesmo padrão silencioso de `LoadSSOCredentials` (internal/browser).
+func ssoProfileEmail(baseDir string) string {
+	data, err := os.ReadFile(filepath.Join(baseDir, "sso_profile.json"))
+	if err != nil {
+		return ""
+	}
+	var p ssoProfileFile
+	if err := json.Unmarshal(data, &p); err != nil {
+		return ""
+	}
+	return p.Email
+}
+
 // GetProfile — GET /api/v1/sso/profile
 // Retorna email e matrícula configurados (nunca expõe senha).
 func (h *SSOProfileHandler) GetProfile(c *gin.Context) {
