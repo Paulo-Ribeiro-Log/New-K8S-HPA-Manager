@@ -126,6 +126,28 @@ export const exportNetDiscoveryPDF = async (ctx: NetDiscoveryExportContext): Pro
     fpLines.forEach((line, i) => doc.text(removeEmojis(line), 16, y + i * 6));
     y += fpLines.length * 6 + 2;
 
+    // Outras APIs/apps no mesmo IP (virtual hosting) — achado real: um IP de Load Balancer/
+    // Ingress compartilhado pode ter dezenas de PTRs diferentes, um por app.
+    if (fp.additional_hosts?.length) {
+      y = checkNewPage(doc, y, 14);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.5);
+      doc.text(`Outras ${fp.additional_hosts.length} API(s)/app(s) encontrada(s) neste mesmo IP:`, 16, y);
+      y += 5.5;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      for (const vh of fp.additional_hosts) {
+        y = checkNewPage(doc, y, 10);
+        const detail = [vh.http_server ? `Server: ${vh.http_server}` : undefined, vh.tls_subject]
+          .filter(Boolean)
+          .join(" — ") || "sem resposta HTTP/TLS";
+        const wrapped = doc.splitTextToSize(`- ${vh.host} (${detail})`, pageWidth - 34);
+        doc.text(wrapped, 18, y);
+        y += wrapped.length * 4.5;
+      }
+      y += 4;
+    }
+
     // Achado real: um IP pode ter dezenas de PTR diferentes (ingress compartilhado) — sem esta
     // nota, o certificado/HTTP acima pareceria "do IP", escondendo que pode ser de um serviço
     // diferente do que o usuário pretendia investigar.

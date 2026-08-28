@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, FileJson, FileSpreadsheet, StickyNote, ListChecks, KeyRound, Clock } from "lucide-react";
+import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, FileJson, FileSpreadsheet, StickyNote, ListChecks, KeyRound, Clock, Layers } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { toast } from "sonner";
@@ -1368,6 +1368,39 @@ export default function NetDiscoveryTab() {
                 {result.fingerprint.tls_issuer && (
                   <span className="text-muted-foreground"> (emitido por {result.fingerprint.tls_issuer})</span>
                 )}
+              </div>
+            )}
+            {/* Outras APIs/apps no mesmo IP (virtual hosting) — pedido explícito do usuário:
+                "colocando um IP de balance de um cluster com várias APIs respondendo ao mesmo IP,
+                apenas um é descoberto". Enumera TODOS os PTRs do IP (não só o primeiro, já usado
+                acima) e sonda cada hostname adicional via SNI/Host diferente. */}
+            {result.fingerprint.additional_hosts && result.fingerprint.additional_hosts.length > 0 && (
+              <div className="flex flex-col gap-1.5 rounded border border-purple-500/30 bg-purple-500/5 p-2">
+                <div className="flex items-center gap-1.5 text-xs text-purple-700 dark:text-purple-400">
+                  <Layers className="w-3.5 h-3.5 shrink-0" />
+                  <span className="font-medium">
+                    Outras {result.fingerprint.additional_hosts.length} API(s)/app(s) encontrada(s) neste mesmo IP
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {result.fingerprint.additional_hosts.map((vh) => (
+                    <div key={vh.host} className="text-xs border-t border-purple-500/20 pt-1.5 first:border-t-0 first:pt-0">
+                      <span className="font-mono font-medium">{vh.host}</span>
+                      {vh.http_server && (
+                        <span className="text-muted-foreground"> — Server: {vh.http_server}</span>
+                      )}
+                      {vh.tls_subject && (
+                        <div className="text-muted-foreground">
+                          Certificado: <span className="font-mono">{vh.tls_subject}</span>
+                          {vh.tls_issuer && <span> (emitido por {vh.tls_issuer})</span>}
+                        </div>
+                      )}
+                      {!vh.http_server && !vh.tls_subject && (
+                        <span className="text-muted-foreground"> — sem resposta HTTP/TLS neste hostname</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

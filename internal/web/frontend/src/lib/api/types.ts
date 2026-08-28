@@ -2135,12 +2135,28 @@ export interface NetDiscoveryFingerprint {
   // nmap dá serviço+versão reais, mas tem um piso fixo de ~7-25s por invocação — por isso nunca
   // roda por padrão, só quando o usuário liga explicitamente.
   service_versions?: NetDiscoveryServiceVersion[];
+  // additional_hosts — OUTROS hostnames/apps que respondem no MESMO IP alvo via SNI/Host diferente
+  // (virtual hosting), descobertos enumerando TODOS os registros PTR do IP (não só o primeiro,
+  // usado em probed_host) — pedido explícito do usuário: "colocando um IP de balance de um cluster
+  // com várias APIs respondendo ao mesmo IP, apenas um é descoberto. habilite a descoberta de
+  // todas as apis/app que respondem ao mesmo ip". Só populado numa busca por IP direto (não
+  // hostname) quando o PTR reverso devolveu mais de um nome.
+  additional_hosts?: NetDiscoveryVHostFingerprint[];
 }
 
 export interface NetDiscoveryServiceVersion {
   port: number;
   service?: string;
   version?: string;
+}
+
+// NetDiscoveryVHostFingerprint — resultado do probe de UM hostname adicional (ver
+// NetDiscoveryFingerprint.additional_hosts).
+export interface NetDiscoveryVHostFingerprint {
+  host: string;
+  http_server?: string;
+  tls_subject?: string;
+  tls_issuer?: string;
 }
 
 export interface NetDiscoveryResult {

@@ -204,3 +204,104 @@ func TestInferOSGuess_K8sMatchOnlyUsedAsLastResort(t *testing.T) {
 		}
 	})
 }
+
+// TestParseFingerprintOutput_AdditionalHostsRealCapture usa a saída REAL capturada rodando o
+// script estendido (com VHOSTS) ao vivo contra 1.1.1.1 dentro da imagem netshoot (as duas primeiras
+// entradas "@@VHOST" — o Cloudflare respondeu com o mesmo certificado default independente do SNI
+// pedido, o que é esperado desse endpoint específico, não uma falha do mecanismo) — confirma que
+// múltiplos hostnames adicionais (achado real: um IP de Load Balancer/Ingress compartilhado pode
+// ter dezenas de PTRs diferentes, um por app) são parseados corretamente, um por linha "@@VHOST",
+// mesmo rodando em paralelo (cada linha já sai atômica, com os 3 campos combinados). A 3ª entrada
+// (hostname sem NENHUMA resposta) é sintética — testa o caso de um vhost que não responde (curl/
+// openssl retornam vazio), garantindo que ainda assim entra na lista sem quebrar o parse.
+func TestParseFingerprintOutput_AdditionalHostsRealCapture(t *testing.T) {
+	output := `@@TTL 52
+@@PORT 443 OPEN
+@@PORT 80 OPEN
+@@HTTP Server: cloudflare
+@@HTTPS server: cloudflare
+@@TLS subject=CN = cloudflare-dns.com|issuer=CN = SSL.com SSL Intermediate CA ECC R2|
+@@MTLS_USED 0
+@@VHOST cloudflare-dns.com@@FS@@Server: cloudflare@@FS@@server: cloudflare@@FS@@subject=C = US, ST = California, L = San Francisco, O = "Cloudflare, Inc.", CN = cloudflare-dns.com|issuer=C = US, ST = Texas, L = Houston, O = SSL Corp, CN = SSL.com SSL Intermediate CA ECC R2|
+@@VHOST 1dot1dot1dot1.cloudflare-dns.com@@FS@@Server: cloudflare@@FS@@server: cloudflare@@FS@@subject=C = US, ST = California, L = San Francisco, O = "Cloudflare, Inc.", CN = cloudflare-dns.com|issuer=C = US, ST = Texas, L = Houston, O = SSL Corp, CN = SSL.com SSL Intermediate CA ECC R2|
+@@VHOST nonexistent-host-xyz123.invalid@@FS@@@@FS@@@@FS@@`
+
+	fp := parseFingerprintOutput(output)
+
+	if len(fp.AdditionalHosts) != 3 {
+		t.Fatalf("AdditionalHosts = %d entradas, esperava 3: %+v", len(fp.AdditionalHosts), fp.AdditionalHosts)
+	}
+	// Ordenado alfabeticamente por host — resultado determinístico independente da ordem de
+	// chegada das linhas (os probes rodam em paralelo dentro do script).
+	wantOrder := []string{"1dot1dot1dot1.cloudflare-dns.com", "cloudflare-dns.com", "nonexistent-host-xyz123.invalid"}
+	for i, h := range wantOrder {
+		if fp.AdditionalHosts[i].Host != h {
+			t.Errorf("AdditionalHosts[%d].Host = %q, esperava %q", i, fp.AdditionalHosts[i].Host, h)
+		}
+	}
+	found := fp.AdditionalHosts[1] // cloudflare-dns.com
+	if found.HTTPServer != "cloudflare" {
+		t.Errorf("HTTPServer = %q, esperava cloudflare", found.HTTPServer)
+	}
+	if found.TLSSubject == "" || found.TLSIssuer == "" {
+		t.Errorf("TLSSubject/TLSIssuer vazios, esperava valores extraídos: %+v", found)
+	}
+	// hostname sem resposta nenhuma (todos os 3 campos vazios) — entra na lista mesmo assim
+	// (o probe rodou, só não achou nada), mas sem nenhum campo populado.
+	empty := fp.AdditionalHosts[2] // nonexistent-host-xyz123.invalid
+	if empty.HTTPServer != "" || empty.TLSSubject != "" || empty.TLSIssuer != "" {
+		t.Errorf("esperava todos os campos vazios pra hostname sem resposta, obteve %+v", empty)
+	}
+}
+
+func TestParseVHostLine_MalformedIgnored(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		ok   bool
+	}{
+		{"formato completo", "host@@FS@@http@@FS@@https@@FS@@tls", true},
+		{"campos faltando", "host@@FS@@http", false},
+		{"host vazio", "@@FS@@http@@FS@@https@@FS@@tls", false},
+		{"sem separador nenhum", "hostsemcampos", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := parseVHostLine(tc.line)
+			if ok != tc.ok {
+				t.Errorf("parseVHostLine(%q) ok=%v, esperava %v", tc.line, ok, tc.ok)
+			}
+		})
+	}
+}
+
+func TestValidVHostName(t *testing.T) {
+	valid := []string{
+		"example.com",
+		"api.internal.company.com",
+		"1dot1dot1dot1.cloudflare-dns.com",
+		"a.b.c",
+		"xn--80ak6aa92e.com", // IDN punycode — labels ASCII válidos
+	}
+	for _, name := range valid {
+		if !validVHostName(name) {
+			t.Errorf("validVHostName(%q) = false, esperava true", name)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"host;rm -rf /",
+		"host with space",
+		"$(whoami)",
+		"host`id`",
+		"host|cat",
+		strings.Repeat("a", 254), // acima do limite de 253 chars
+		"-startswithhyphen.com",
+	}
+	for _, name := range invalid {
+		if validVHostName(name) {
+			t.Errorf("validVHostName(%q) = true, esperava false (não é um nome DNS seguro)", name)
+		}
+	}
+}

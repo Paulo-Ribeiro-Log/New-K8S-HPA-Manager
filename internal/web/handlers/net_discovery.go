@@ -100,6 +100,17 @@ const (
 	netDiscoveryOverallTimeoutCap = 280 * time.Second
 )
 
+// netDiscoveryPTRResolver — resolver DNS PURO do Go (PreferGo: true), usado só pra enumerar TODOS
+// os registros PTR de um IP (ver sniHost/vhostCandidates em runDiscovery, seção "descoberta de
+// múltiplos hostnames/apps no mesmo IP"). NUNCA usar `net.DefaultResolver`/um `net.Resolver{}` zero
+// aqui — bug real corrigido, achado validando esta própria feature ao vivo: nesta build (cgo
+// habilitado, padrão deste projeto), o resolver default usa `getnameinfo()` da libc por baixo, que
+// devolve só UM nome mesmo quando o IP tem vários PTRs reais (confirmado contra um IP público com 4
+// PTRs verdadeiros — default resolver via cgo devolvia só 1, `PreferGo: true` devolveu os 4). Só
+// afeta ESTA busca específica (enumeração de PTRs) — o resto do arquivo (enrichHops, ASN, etc.)
+// continua usando `net.DefaultResolver`, sem mudança de comportamento fora deste mecanismo novo.
+var netDiscoveryPTRResolver = &net.Resolver{PreferGo: true}
+
 // computeOverallTimeout estende o teto absoluto da descoberta quando o usuário pede um timeout ou
 // número de sondas por salto maior que o default — sem isso, um ProbeTimeoutSec/ProbeCount alto
 // faria o pior caso (todos os netDiscoveryMaxHops saltos, cada um com probeCount sondas, sem
@@ -971,6 +982,14 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	// quando `resolved==false` (a busca já era por IP puro, sem hostname real disponível).
 	sniHost := targetIP
 	originalHostname := ""
+	// vhostCandidates — OUTROS hostnames que respondem no MESMO IP alvo via SNI/Host diferente
+	// (virtual hosting), além do sniHost principal — ver NetDiscoveryFingerprint.AdditionalHosts.
+	// Pedido explícito do usuário: "colocando um IP de balance de um cluster com várias APIs
+	// respondendo ao mesmo IP, apenas um é descoberto. habilite a descoberta de todas as apis/app
+	// que respondem ao mesmo ip". Só populado no ramo `!resolved` (busca por IP direto) — quando o
+	// usuário já digitou um hostname específico, é esse o alvo pretendido; enumerar sibling apps
+	// nesse caso mudaria o escopo do que foi explicitamente pedido, então fica de fora por ora.
+	var vhostCandidates []string
 	if resolved {
 		originalHostname = strings.TrimSpace(req.Target)
 		sniHost = originalHostname
@@ -990,12 +1009,56 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		// `originalHostname` (que segue vazio nesse ramo); só ajuda o SNI/Host do fingerprint, o
 		// ReverseDNS final do salto-alvo continua vindo do PTR normal em enrichHops, sem
 		// tratamento especial.
+		//
+		// Feature nova: um IP de Load Balancer/Ingress compartilhado pode ter DEZENAS de PTRs
+		// diferentes (achado real já documentado, caso com 26 registros) — antes só o PRIMEIRO
+		// nome (`names[0]`) era usado, escondendo todas as outras apps/APIs que também respondem
+		// nesse mesmo IP. Os demais nomes (deduplicados, validados como DNS-safe, até
+		// netDiscoveryVHostMax) viram candidatos a sondagem adicional — ver vhostsArg abaixo.
+		//
+		// Bug real corrigido, achado ao validar esta própria feature ao vivo (não hipotético):
+		// `net.DefaultResolver.LookupAddr` — que sempre usava o resolver CGO/glibc nesta build
+		// (`CGO_ENABLED=1`, padrão deste projeto) — só devolve UM nome mesmo quando o IP tem
+		// vários registros PTR reais, porque `getnameinfo()` (a chamada libc por trás do resolver
+		// cgo) não expõe múltiplos PTRs, diferente do protocolo DNS em si. Confirmado ao vivo
+		// contra um IP público real com 4 PTRs verdadeiros (`208.67.222.222`, resolver da OpenDNS
+		// — `dig -x` retorna os 4; `net.DefaultResolver.LookupAddr` retornava só 1; um
+		// `net.Resolver{PreferGo: true}` — o resolver DNS puro do Go, que faz a query e parseia a
+		// resposta ele mesmo, sem depender do libc — retornou os 4 corretamente). Sem essa
+		// correção, a feature inteira desta seção ficaria sempre vazia em qualquer build com cgo
+		// habilitado (o caso comum), mesmo contra um IP com dezenas de PTRs reais.
 		ptrCtx, ptrCancel := context.WithTimeout(ctx, 3*time.Second)
-		if names, ptrErr := net.DefaultResolver.LookupAddr(ptrCtx, targetIP); ptrErr == nil && len(names) > 0 {
-			sniHost = strings.TrimSuffix(names[0], ".")
-		}
+		names, ptrErr := netDiscoveryPTRResolver.LookupAddr(ptrCtx, targetIP)
 		ptrCancel()
+		if ptrErr == nil && len(names) > 0 {
+			seen := make(map[string]struct{}, len(names))
+			cleaned := make([]string, 0, len(names))
+			for _, n := range names {
+				name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(n), "."))
+				if name == "" {
+					continue
+				}
+				if _, dup := seen[name]; dup {
+					continue
+				}
+				seen[name] = struct{}{}
+				cleaned = append(cleaned, name)
+			}
+			if len(cleaned) > 0 {
+				sniHost = cleaned[0]
+				for _, name := range cleaned[1:] {
+					if !validVHostName(name) {
+						continue
+					}
+					vhostCandidates = append(vhostCandidates, name)
+					if len(vhostCandidates) >= netDiscoveryVHostMax {
+						break
+					}
+				}
+			}
+		}
 	}
+	vhostsArg := strings.Join(vhostCandidates, " ")
 
 	// hops := []NetDiscoveryHop{} — não "var hops []NetDiscoveryHop" (bug real achado em code
 	// review): tcptraceroute pode sair com exit 0 sem nenhuma linha reconhecida por
@@ -1053,7 +1116,7 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 
 	if req.Mode == netDiscoveryModeLocal {
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
-			return runFingerprintLocal(ctx, ip, sniHost, mtlsFlag, extraPortsArg, mtlsStdin)
+			return runFingerprintLocal(ctx, ip, sniHost, mtlsFlag, extraPortsArg, vhostsArg, mtlsStdin)
 		}
 		advancedScanProbe = func(ctx context.Context, ip string, ports []int) (string, error) {
 			return runAdvancedScanLocal(ctx, ip, ports)
@@ -1093,7 +1156,7 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		}
 
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
-			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost, mtlsFlag, extraPortsArg, mtlsStdin)
+			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost, mtlsFlag, extraPortsArg, vhostsArg, mtlsStdin)
 		}
 		advancedScanProbe = func(ctx context.Context, ip string, ports []int) (string, error) {
 			return runAdvancedScanInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, ports)
