@@ -90,8 +90,18 @@ export function buildNoteMarkdown(result: NetDiscoveryResult, mode: "pod" | "loc
     const fp = result.fingerprint;
     lines.push(`- Identificação do destino: ${osLabelMarkdown(fp.os_guess)}${fp.os_confidence ? ` — ${fp.os_confidence}` : ""}`);
     if (fp.open_ports?.length) lines.push(`- Portas abertas: ${fp.open_ports.join(", ")}`);
+    if (fp.service_versions?.length) {
+      lines.push(`- Serviços detectados (nmap): ${fp.service_versions.map((sv) => `${sv.port}/${sv.service ?? "?"}${sv.version ? ` (${sv.version})` : ""}`).join(", ")}`);
+    }
     if (fp.http_server) lines.push(`- Header Server: ${fp.http_server}`);
     if (fp.tls_subject) lines.push(`- Certificado TLS: ${fp.tls_subject}${fp.tls_issuer ? ` (emitido por ${fp.tls_issuer})` : ""}`);
+    if (fp.additional_hosts?.length) {
+      lines.push(`- Outras ${fp.additional_hosts.length} API(s)/app(s) no mesmo IP:`);
+      for (const vh of fp.additional_hosts) {
+        const parts = [vh.http_server ? `Server: ${vh.http_server}` : undefined, vh.tls_subject].filter(Boolean).join(" — ");
+        lines.push(`  - ${vh.host}${parts ? ` (${parts})` : " (sem resposta)"}`);
+      }
+    }
   }
 
   lines.push("");
