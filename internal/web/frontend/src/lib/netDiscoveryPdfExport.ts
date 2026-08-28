@@ -117,11 +117,36 @@ export const exportNetDiscoveryPDF = async (ctx: NetDiscoveryExportContext): Pro
       fp.open_ports?.length ? `Portas abertas: ${fp.open_ports.join(", ")}` : "Portas abertas: nenhuma das ~18 verificadas respondeu",
       `Servidor web: ${fp.is_web_server ? "Sim" : "Não detectado"}`,
     ];
+    if (fp.service_versions?.length) {
+      fpLines.push(`Serviços detectados (nmap): ${fp.service_versions.map((sv) => `${sv.port}/${sv.service ?? "?"}${sv.version ? ` (${sv.version})` : ""}`).join(", ")}`);
+    }
     if (fp.http_server) fpLines.push(`Header Server: ${fp.http_server}`);
     if (fp.tls_subject) fpLines.push(`Certificado TLS — Subject: ${fp.tls_subject}`);
     if (fp.tls_issuer) fpLines.push(`Certificado TLS — Issuer: ${fp.tls_issuer}`);
     fpLines.forEach((line, i) => doc.text(removeEmojis(line), 16, y + i * 6));
     y += fpLines.length * 6 + 2;
+
+    // Outras APIs/apps no mesmo IP (virtual hosting) — achado real: um IP de Load Balancer/
+    // Ingress compartilhado pode ter dezenas de PTRs diferentes, um por app.
+    if (fp.additional_hosts?.length) {
+      y = checkNewPage(doc, y, 14);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.5);
+      doc.text(`Outras ${fp.additional_hosts.length} API(s)/app(s) encontrada(s) neste mesmo IP:`, 16, y);
+      y += 5.5;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      for (const vh of fp.additional_hosts) {
+        y = checkNewPage(doc, y, 10);
+        const detail = [vh.http_server ? `Server: ${vh.http_server}` : undefined, vh.tls_subject]
+          .filter(Boolean)
+          .join(" — ") || "sem resposta HTTP/TLS";
+        const wrapped = doc.splitTextToSize(`- ${vh.host} (${detail})`, pageWidth - 34);
+        doc.text(wrapped, 18, y);
+        y += wrapped.length * 4.5;
+      }
+      y += 4;
+    }
 
     // Achado real: um IP pode ter dezenas de PTR diferentes (ingress compartilhado) — sem esta
     // nota, o certificado/HTTP acima pareceria "do IP", escondendo que pode ser de um serviço

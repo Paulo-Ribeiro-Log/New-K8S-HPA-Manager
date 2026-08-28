@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, FileJson, FileSpreadsheet, StickyNote, ListChecks, KeyRound, Clock } from "lucide-react";
+import { Loader2, Play, XCircle, AlertTriangle, Route, Copy, Check, History, ChevronDown, ChevronUp, FileDown, FileJson, FileSpreadsheet, StickyNote, ListChecks, KeyRound, Clock, Layers } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { toast } from "sonner";
@@ -46,6 +46,21 @@ function osLabel(guess?: string): string {
   if (guess === "linux") return "🐧 Linux provável";
   if (guess === "windows") return "🪟 Windows provável";
   return "❓ SO não identificado";
+}
+
+// resolveTargetHostname — bug real corrigido: o hostname encontrado pro alvo (via DNS reverso)
+// nunca aparecia nos resumos compactos (banner "Última busca", lista expandida do histórico, nem
+// no cabeçalho do resultado ao vivo quando a busca era por IP direto) — o dado já existia (
+// enrichHops, Fase 3, preenche reverse_dns em TODO hop que respondeu, incluindo o hop-alvo), só
+// nunca era lido nesses pontos específicos; a tabela de saltos completa e os exports (PDF/CSV/
+// Nota) já mostravam via a coluna "Contexto (DNS/ASN/nuvem)". Prioriza o reverse_dns do PRÓPRIO
+// hop-alvo (mesma fonte já usada na tabela de saltos, sem ambiguidade de escolher outra); cai pro
+// fingerprint.probed_host (Fase 2 — hostname usado no SNI/HTTP, obtido via um PTR separado quando
+// a busca foi por IP direto) só se o hop-alvo não tiver reverse_dns preenchido.
+function resolveTargetHostname(result: NetDiscoveryResult | undefined | null): string | undefined {
+  if (!result) return undefined;
+  const targetHop = result.hops.find((h) => h.is_target);
+  return targetHop?.reverse_dns || result.fingerprint?.probed_host || undefined;
 }
 
 // cloudBadgeClass — mesma paleta PROVIDER_COLORS já usada em LatencyTopologyGraph.tsx (aws=laranja,
@@ -102,6 +117,13 @@ export default function NetDiscoveryTab() {
   // vírgula) pra verificar no fingerprint do destino, além das ~18 portas curadas checadas por
   // padrão — útil pra troubleshooting de uma aplicação específica (ex: 8081, 9000).
   const [extraPorts, setExtraPorts] = useState("");
+  // advancedServiceScan — detecção avançada de serviço (nmap -sT -sV), OPT-IN explícito. Avaliado
+  // e testado ao vivo antes de implementar (pedido do usuário: "avalie" incorporar nmap) — achado
+  // decisivo: nmap tem um piso fixo de ~7-25s por invocação, independente de quantas portas
+  // (nenhuma flag reduz isso), 3-4x mais lento que o fingerprint padrão (~2s) — por isso nunca
+  // ligado por padrão, sempre uma escolha explícita do usuário. Ver CLAUDE.md desta ferramenta
+  // pro racional completo.
+  const [advancedServiceScan, setAdvancedServiceScan] = useState(false);
   // Certificado de cliente (mTLS) — pedido explícito do usuário depois de perguntar se ter o
   // certificado "que já existe nesses clusters/servidores" ajudaria a descoberta: útil quando o
   // alvo exige certificado de cliente — o ganho confirmado ao vivo é destravar a checagem HTTP
@@ -336,6 +358,7 @@ export default function NetDiscoveryTab() {
         probe_timeout_sec: probeTimeoutSecNum,
         probe_count: probeCountNum,
         extra_ports: extraPortsNums.length > 0 ? extraPortsNums : undefined,
+        advanced_service_scan: advancedServiceScan || undefined,
         client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
         client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
       });
@@ -381,6 +404,7 @@ export default function NetDiscoveryTab() {
         probe_timeout_sec: probeTimeoutSecNum,
         probe_count: probeCountNum,
         extra_ports: extraPortsNums.length > 0 ? extraPortsNums : undefined,
+        advanced_service_scan: advancedServiceScan || undefined,
         client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
         client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
         concurrency: parallelBatch ? netDiscoveryBatchConcurrency : undefined,
@@ -516,6 +540,7 @@ export default function NetDiscoveryTab() {
         probe_timeout_sec: probeTimeoutSecNum,
         probe_count: probeCountNum,
         extra_ports: extraPortsNums.length > 0 ? extraPortsNums : undefined,
+        advanced_service_scan: advancedServiceScan || undefined,
         client_cert_pem: mtlsConfigured ? clientCertPEM : undefined,
         client_key_pem: mtlsConfigured ? clientKeyPEM : undefined,
         allow_duplicate_targets: true,
@@ -920,6 +945,22 @@ export default function NetDiscoveryTab() {
           )}
         </div>
 
+        {/* Detecção avançada de serviço (nmap) — OPT-IN explícito, avaliado e testado ao vivo
+            antes de implementar: dá serviço+versão reais nas portas abertas (ex: "OpenSSH
+            6.6.1p1 Ubuntu"), mas adiciona um piso fixo de ~7-25s à descoberta (achado real,
+            nenhuma flag do nmap reduz isso) — por isso nunca ligado por padrão. */}
+        <div className="flex items-center gap-2 -mt-1">
+          <Checkbox
+            checked={advancedServiceScan}
+            onCheckedChange={(v) => setAdvancedServiceScan(!!v)}
+            disabled={running}
+            id="net-discovery-nmap"
+          />
+          <label htmlFor="net-discovery-nmap" className="text-[10px] text-muted-foreground cursor-pointer">
+            Detecção avançada de serviço (nmap) — versão real dos serviços, adiciona ~7-25s à descoberta
+          </label>
+        </div>
+
         {/* Certificado de cliente (mTLS) — colapsado por padrão (caso raro), pedido explícito do
             usuário depois de perguntar se ter o certificado "que já existe nesses
             clusters/servidores" ajudaria a descoberta. Útil só quando o alvo exige certificado
@@ -1011,6 +1052,12 @@ export default function NetDiscoveryTab() {
                   ) : (
                     <span className="text-amber-600 dark:text-amber-400">não alcançado</span>
                   )}
+                  {resolveTargetHostname(last.result) && (
+                    <>
+                      {" — "}
+                      <span className="font-mono">{resolveTargetHostname(last.result)}</span>
+                    </>
+                  )}
                   {" — "}
                   {osLabel(last.result?.fingerprint?.os_guess)}
                   {historyEntries.length > 1 && ` (+${historyEntries.length - 1} busca${historyEntries.length > 2 ? "s" : ""} anterior${historyEntries.length > 2 ? "es" : ""})`}
@@ -1043,6 +1090,12 @@ export default function NetDiscoveryTab() {
                       <span>{entry.reached ? "alcançado" : "não alcançado"}</span>
                       <span>·</span>
                       <span>IP: {entry.target_ip}</span>
+                      {resolveTargetHostname(entry.result) && (
+                        <>
+                          <span>·</span>
+                          <span className="font-mono">Host: {resolveTargetHostname(entry.result)}</span>
+                        </>
+                      )}
                       {entryDiff?.changed && (
                         <Badge
                           variant="outline"
@@ -1284,6 +1337,24 @@ export default function NetDiscoveryTab() {
                 ))}
               </div>
             )}
+            {/* Detecção avançada de serviço (nmap), OPT-IN — só presente quando o usuário ligou
+                o checkbox e o fingerprint rápido achou ao menos 1 porta aberta pra investigar. */}
+            {result.fingerprint.service_versions && result.fingerprint.service_versions.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">Serviços detectados (nmap):</span>
+                <div className="flex flex-col gap-0.5">
+                  {result.fingerprint.service_versions.map((sv) => (
+                    <div key={sv.port} className="text-xs flex items-center gap-1.5">
+                      <Badge variant="outline" className="text-[10px] py-0 font-mono shrink-0">{sv.port}</Badge>
+                      <span className="font-mono">
+                        {sv.service}
+                        {sv.version && <span className="text-muted-foreground"> — {sv.version}</span>}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {result.fingerprint.http_server && (
               <div className="text-xs">
                 <span className="text-muted-foreground">Header Server:</span>{" "}
@@ -1299,6 +1370,39 @@ export default function NetDiscoveryTab() {
                 )}
               </div>
             )}
+            {/* Outras APIs/apps no mesmo IP (virtual hosting) — pedido explícito do usuário:
+                "colocando um IP de balance de um cluster com várias APIs respondendo ao mesmo IP,
+                apenas um é descoberto". Enumera TODOS os PTRs do IP (não só o primeiro, já usado
+                acima) e sonda cada hostname adicional via SNI/Host diferente. */}
+            {result.fingerprint.additional_hosts && result.fingerprint.additional_hosts.length > 0 && (
+              <div className="flex flex-col gap-1.5 rounded border border-purple-500/30 bg-purple-500/5 p-2">
+                <div className="flex items-center gap-1.5 text-xs text-purple-700 dark:text-purple-400">
+                  <Layers className="w-3.5 h-3.5 shrink-0" />
+                  <span className="font-medium">
+                    Outras {result.fingerprint.additional_hosts.length} API(s)/app(s) encontrada(s) neste mesmo IP
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {result.fingerprint.additional_hosts.map((vh) => (
+                    <div key={vh.host} className="text-xs border-t border-purple-500/20 pt-1.5 first:border-t-0 first:pt-0">
+                      <span className="font-mono font-medium">{vh.host}</span>
+                      {vh.http_server && (
+                        <span className="text-muted-foreground"> — Server: {vh.http_server}</span>
+                      )}
+                      {vh.tls_subject && (
+                        <div className="text-muted-foreground">
+                          Certificado: <span className="font-mono">{vh.tls_subject}</span>
+                          {vh.tls_issuer && <span> (emitido por {vh.tls_issuer})</span>}
+                        </div>
+                      )}
+                      {!vh.http_server && !vh.tls_subject && (
+                        <span className="text-muted-foreground"> — sem resposta HTTP/TLS neste hostname</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1310,6 +1414,14 @@ export default function NetDiscoveryTab() {
                 <span className="font-mono">{result.target_input}</span>
                 {result.target_resolved && (
                   <span className="text-xs text-muted-foreground">→ {result.target_ip}</span>
+                )}
+                {/* Bug real corrigido: busca por IP direto nunca mostrava o hostname encontrado
+                    via DNS reverso pro alvo em lugar nenhum do resumo — o dado já existia
+                    (hop-alvo.reverse_dns/fingerprint.probed_host), só nunca era lido aqui. Quando
+                    a busca já foi por hostname (target_resolved=true), target_input já É esse
+                    nome — não precisa repetir. */}
+                {!result.target_resolved && resolveTargetHostname(result) && (
+                  <span className="text-xs text-muted-foreground font-mono">({resolveTargetHostname(result)})</span>
                 )}
                 <Badge variant="outline" className={result.reached ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400" : "border-amber-500/40 text-amber-600 dark:text-amber-400"}>
                   {result.reached ? "destino alcançado" : "destino não confirmado"}
@@ -1475,6 +1587,9 @@ function ParallelItemResultTable({ result }: { result: NetDiscoveryResult }) {
         <Route className="w-4 h-4 text-muted-foreground" />
         <span className="font-mono">{result.target_input}</span>
         {result.target_resolved && <span className="text-xs text-muted-foreground">→ {result.target_ip}</span>}
+        {!result.target_resolved && resolveTargetHostname(result) && (
+          <span className="text-xs text-muted-foreground font-mono">({resolveTargetHostname(result)})</span>
+        )}
         <Badge variant="outline" className={result.reached ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400" : "border-amber-500/40 text-amber-600 dark:text-amber-400"}>
           {result.reached ? "destino alcançado" : "destino não confirmado"}
         </Badge>

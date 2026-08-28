@@ -2014,6 +2014,12 @@ export interface RunNetDiscoveryRequest {
   // troubleshooting de uma aplicação específica cuja porta não está na lista fixa (ex: 8081, 9000).
   // Opcional, no máximo 10 portas (netDiscoveryExtraPortsMax no backend).
   extra_ports?: number[];
+  // advanced_service_scan — detecção avançada de serviço via nmap (-sT -sV), OPT-IN explícito.
+  // Ausente/false (default) preserva 100% o fluxo rápido de sempre. Roda DEPOIS do fingerprint
+  // rápido, só nas portas já confirmadas abertas. Avaliação completa (testada ao vivo antes de
+  // implementar) no CLAUDE.md desta ferramenta — achado decisivo: nmap tem um piso fixo de
+  // ~7-25s por invocação, independente de quantas portas, então nunca é ligado por padrão.
+  advanced_service_scan?: boolean;
   // client_cert_pem/client_key_pem — certificado de cliente opcional pra mTLS (pedido explícito
   // do usuário: "termos o certificado em nossa máquina... ajuda?"). Só faz diferença quando o
   // alvo exige certificado de cliente e rejeita TLS anônimo por completo. Os dois precisam vir
@@ -2038,6 +2044,7 @@ export interface RunNetDiscoveryBatchRequest {
   probe_timeout_sec?: number;
   probe_count?: number; // Fase A — mesmo campo de RunNetDiscoveryRequest, compartilhado por todo o lote
   extra_ports?: number[]; // Fase D — mesmo campo de RunNetDiscoveryRequest, compartilhado por todo o lote
+  advanced_service_scan?: boolean; // mesmo campo de RunNetDiscoveryRequest, compartilhado por todo o lote/monitoramento
   client_cert_pem?: string; // mTLS, compartilhado por todo o lote — mesmo padrão de probe_port/timeout
   client_key_pem?: string;
   // allow_duplicate_targets/interval_sec — Fase C do roadmap de maturidade profissional (modo de
@@ -2122,6 +2129,34 @@ export interface NetDiscoveryFingerprint {
   // tentativa. Não confirma sucesso — só que o mecanismo foi acionado; sucesso/falha real já se
   // reflete em tls_subject/tls_issuer presentes ou vazios.
   client_cert_used?: boolean;
+  // service_versions — detecção avançada de serviço via nmap, OPT-IN explícito
+  // (RunNetDiscoveryRequest.advanced_service_scan) — ausente/vazio no fluxo padrão. Avaliação
+  // completa (testada ao vivo antes de implementar) registrada no CLAUDE.md desta ferramenta:
+  // nmap dá serviço+versão reais, mas tem um piso fixo de ~7-25s por invocação — por isso nunca
+  // roda por padrão, só quando o usuário liga explicitamente.
+  service_versions?: NetDiscoveryServiceVersion[];
+  // additional_hosts — OUTROS hostnames/apps que respondem no MESMO IP alvo via SNI/Host diferente
+  // (virtual hosting), descobertos enumerando TODOS os registros PTR do IP (não só o primeiro,
+  // usado em probed_host) — pedido explícito do usuário: "colocando um IP de balance de um cluster
+  // com várias APIs respondendo ao mesmo IP, apenas um é descoberto. habilite a descoberta de
+  // todas as apis/app que respondem ao mesmo ip". Só populado numa busca por IP direto (não
+  // hostname) quando o PTR reverso devolveu mais de um nome.
+  additional_hosts?: NetDiscoveryVHostFingerprint[];
+}
+
+export interface NetDiscoveryServiceVersion {
+  port: number;
+  service?: string;
+  version?: string;
+}
+
+// NetDiscoveryVHostFingerprint — resultado do probe de UM hostname adicional (ver
+// NetDiscoveryFingerprint.additional_hosts).
+export interface NetDiscoveryVHostFingerprint {
+  host: string;
+  http_server?: string;
+  tls_subject?: string;
+  tls_issuer?: string;
 }
 
 export interface NetDiscoveryResult {
@@ -2149,7 +2184,7 @@ export interface NetDiscoveryHistoryEntry {
 
 export interface NetDiscoverySSEEvent {
   id: string;
-  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'fingerprint' | 'enrich' | 'complete' | 'error';
+  type: 'init' | 'pod_create' | 'pod_wait' | 'probe_run' | 'hop' | 'fingerprint' | 'advanced_scan' | 'enrich' | 'crossref' | 'complete' | 'error';
   phase: string;
   message: string;
   progress: number;
