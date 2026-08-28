@@ -209,11 +209,26 @@ function generateCompactDiff(originalYaml: string, updatedYaml: string) {
 
 // ─── Painel de edição independente ───────────────────────────────────────────
 
+// PanelSnapshot — resumo do estado ATUAL de um ResourceEditPanel, reportado pro modal pai
+// (ResourceCompareModal) via onStateChange. Existe pra viabilizar o "Diff Esquerdo × Direito"
+// (botão ao lado do switch "Clusters diferentes"): os dois painéis são instâncias TOTALMENTE
+// independentes (cada um com seu próprio useState de tipo/namespace/nome/YAML) — sem isso, o
+// componente pai não tem como saber se os dois lados estão com o MESMO tipo de recurso carregado,
+// nem acesso ao conteúdo YAML de cada um pra montar o diff.
+export interface PanelSnapshot {
+  resourceType: ResourceType | "";
+  namespace: string;
+  resourceName: string;
+  yaml: string; // editorValue — reflete edições ao vivo no painel, não só o YAML original carregado
+  loaded: boolean;
+}
+
 interface ResourceEditPanelProps {
   label: "Esquerdo" | "Direito";
   cluster: string;
   initial?: CompareInitial;
   editorHeight: string;
+  onStateChange?: (snapshot: PanelSnapshot) => void;
 }
 
 function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
@@ -253,7 +268,7 @@ function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
   );
 }
 
-function ResourceEditPanel({ label, cluster, initial, editorHeight }: ResourceEditPanelProps) {
+function ResourceEditPanel({ label, cluster, initial, editorHeight, onStateChange }: ResourceEditPanelProps) {
   // Namespaces do cluster deste painel (buscados internamente)
   const [namespaces,       setNamespaces]       = useState<string[]>([]);
   const [nsLoading,        setNsLoading]        = useState(false);
@@ -538,6 +553,13 @@ function ResourceEditPanel({ label, cluster, initial, editorHeight }: ResourceEd
   // ── Render ────────────────────────────────────────────────────────────────
 
   const resourceLoaded = !!originalYaml;
+
+  // Reporta o estado atual pro modal pai (ver PanelSnapshot) — habilita o botão "Diff Esquerdo ×
+  // Direito" só quando os dois painéis têm o MESMO tipo de recurso carregado.
+  useEffect(() => {
+    onStateChange?.({ resourceType, namespace, resourceName, yaml: editorValue, loaded: resourceLoaded });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resourceType, namespace, resourceName, editorValue, resourceLoaded]);
 
   // Diff modal
   const diffDialogSizeClass = diffFullscreen
@@ -916,6 +938,20 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
   // Largura do painel esquerdo (resize dinâmico)
   const [leftWidth, setLeftWidth] = useState<number | null>(null);
 
+  // Diff entre os dois painéis (Esquerdo × Direito) — pedido explícito do usuário: habilitar um
+  // diff direto entre as duas janelas quando o TIPO de recurso selecionado é o mesmo nos dois
+  // lados (ex: os dois com Deployment carregado, mesmo que sejam nomes/namespaces/clusters
+  // diferentes — é justamente o caso de uso, comparar a mesma peça em dois lugares). Cada painel
+  // reporta seu estado (PanelSnapshot) via onStateChange sempre que tipo/namespace/nome/conteúdo
+  // mudam — os dois React.useState abaixo guardam o snapshot mais recente de cada lado.
+  const [leftPanelState,  setLeftPanelState]  = useState<PanelSnapshot | null>(null);
+  const [rightPanelState, setRightPanelState] = useState<PanelSnapshot | null>(null);
+  const [panelsDiffOpen,  setPanelsDiffOpen]  = useState(false);
+  const canDiffPanels = !!(
+    leftPanelState?.loaded && rightPanelState?.loaded &&
+    leftPanelState.resourceType && leftPanelState.resourceType === rightPanelState.resourceType
+  );
+
   // Altura dos editores dentro do modal fullscreen
   const EDITOR_HEIGHT = "calc(100vh - 310px)";
 
@@ -1028,6 +1064,25 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
                 </Popover>
               )}
             </div>
+
+            {/* Diff Esquerdo × Direito — só habilitado quando os dois painéis têm o MESMO tipo
+                de recurso carregado (ResourceEditPanel.onStateChange mantém leftPanelState/
+                rightPanelState sempre atualizados). */}
+            <div className="flex items-center gap-2 ml-2 pl-4 border-l border-border/50">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                disabled={!canDiffPanels}
+                onClick={() => setPanelsDiffOpen(true)}
+                title={canDiffPanels
+                  ? "Comparar o conteúdo dos dois painéis"
+                  : "Selecione o mesmo tipo de recurso, já carregado, nos dois painéis"}
+              >
+                <FileDiff className="w-3.5 h-3.5 mr-1" />
+                Diff Esquerdo × Direito
+              </Button>
+            </div>
           </div>
           <Button variant="ghost" size="sm" onClick={handleClose} title="Fechar">
             <X className="w-4 h-4" />
@@ -1052,6 +1107,7 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
                 cluster={cluster}
                 initial={initialLeft}
                 editorHeight={EDITOR_HEIGHT}
+                onStateChange={setLeftPanelState}
               />
             </div>
           </div>
@@ -1087,10 +1143,40 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
                 label="Direito"
                 cluster={crossCluster ? rightCluster : cluster}
                 editorHeight={EDITOR_HEIGHT}
+                onStateChange={setRightPanelState}
               />
             </div>
           </div>
         </div>
+
+        {/* ── Diff Esquerdo × Direito ─────────────────────── */}
+        <Dialog open={panelsDiffOpen} onOpenChange={setPanelsDiffOpen}>
+          <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none bg-background border-border flex flex-col">
+            <DialogHeader className="border-b border-border pb-4 pr-12 shrink-0">
+              <DialogTitle className="text-xl font-semibold text-primary">
+                Diff — Painel Esquerdo × Painel Direito
+              </DialogTitle>
+              <DialogDescription className="text-sm text-muted-foreground">
+                {leftPanelState?.resourceType && RESOURCE_LABELS[leftPanelState.resourceType as ResourceType]}
+                {" • "}
+                Esquerdo: {leftPanelState?.namespace ? `${leftPanelState.namespace}/` : ""}{leftPanelState?.resourceName} ({cluster})
+                {" vs "}
+                Direito: {rightPanelState?.namespace ? `${rightPanelState.namespace}/` : ""}{rightPanelState?.resourceName} ({crossCluster ? rightCluster : cluster})
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex-1 min-h-0 p-4">
+              {leftPanelState && rightPanelState && (
+                <MonacoYamlEditor
+                  mode="diff"
+                  originalValue={leftPanelState.yaml}
+                  value={rightPanelState.yaml}
+                  height="calc(100vh - 180px)"
+                  readOnly
+                />
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
 
       </DialogContent>
     </Dialog>
