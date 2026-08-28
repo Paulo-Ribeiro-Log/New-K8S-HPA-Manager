@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,22 +13,33 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// TestSREApprovalGetCurrentUser_PrefersJWTUserEmail — bug real corrigido: `GET /current-user`
-// sempre chamava `az account show` no processo do servidor, ignorando por completo a identidade
-// real de quem está logado na aplicação via SSO/JWT (`user_email` no contexto Gin, populado pelo
-// middleware `InjectUserEmail()`). Esse é o único caminho testável sem depender de `az` CLI real
-// (o fallback em si já é coberto pelo comportamento pré-existente de `sreapproval.GetCurrentUserEmail`,
-// inalterado por esta correção).
-func TestSREApprovalGetCurrentUser_PrefersJWTUserEmail(t *testing.T) {
+// TestSREApprovalResolveApproverEmail_PrefersSSOProfileOverJWT — bug real corrigido, relatado pelo
+// usuário logo depois de uma correção anterior desta mesma rotina: o e-mail de login da aplicação
+// (JWT/Azure AD, ex: uma conta de nuvem secundária `.ca@via.com.br`) NÃO é o e-mail que o
+// ServiceNow reconhece — quem loga lá é o e-mail cadastrado no Perfil SSO corporativo
+// (`~/.k8s-hpa-manager/sso_profile.json`), que pode ser (e no caso relatado é) um e-mail
+// corporativo diferente. `resolveApproverEmail` deve priorizar o Perfil SSO sobre o JWT.
+func TestSREApprovalResolveApproverEmail_PrefersSSOProfileOverJWT(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := zerolog.Nop()
-	h := NewSREApprovalHandler(&logger)
+	tmpDir := t.TempDir()
+
+	// Perfil SSO configurado com um e-mail — mesmo formato gravado por SaveProfile (sso_profile.go),
+	// sem senha (o ponto central desta correção: ssoProfileEmail nunca deveria exigir senha válida
+	// só pra devolver o e-mail já cadastrado).
+	profile := ssoProfileFile{Email: "paulo.gribeiro@viaverjo.com.br"}
+	raw, _ := json.Marshal(profile)
+	if err := os.WriteFile(filepath.Join(tmpDir, "sso_profile.json"), raw, 0600); err != nil {
+		t.Fatalf("falha ao escrever perfil SSO de teste: %v", err)
+	}
+
+	h := NewSREApprovalHandler(&logger, tmpDir)
 
 	router := gin.New()
 	router.GET("/current-user", func(c *gin.Context) {
-		// Simula o InjectUserEmail() real (server.go) — o dado que hoje só existe quando o
-		// middleware está de fato aplicado na rota.
-		c.Set("user_email", "aprovador.real@via.com.br")
+		// Simula o InjectUserEmail() real (server.go) — e-mail de login da aplicação, DIFERENTE
+		// do e-mail cadastrado no Perfil SSO acima.
+		c.Set("user_email", "4960023587.ca@via.com.br")
 		h.GetCurrentUser(c)
 	})
 
@@ -48,20 +61,54 @@ func TestSREApprovalGetCurrentUser_PrefersJWTUserEmail(t *testing.T) {
 	if !resp.Success {
 		t.Fatal("success = false, esperava true")
 	}
-	// O ponto central do bug: o e-mail devolvido precisa ser o do JWT (aprovador real logado na
-	// sessão web), NUNCA o de uma chamada `az account show` no servidor — que nem deveria rodar
-	// quando o contexto já tem `user_email`.
-	if resp.Email != "aprovador.real@via.com.br" {
-		t.Errorf("email = %q, esperava o e-mail do JWT (aprovador.real@via.com.br), não um fallback via Azure CLI", resp.Email)
+	if resp.Email != "paulo.gribeiro@viaverjo.com.br" {
+		t.Errorf("email = %q, esperava o e-mail do Perfil SSO, não o de login da aplicação (JWT)", resp.Email)
 	}
 }
 
-// TestSREApprovalApprove_DefaultsToJWTUserEmailWhenRequestOmitsIt — mesma correção, aplicada ao
-// endpoint de aprovação em si: quando o request chega sem `approver_email` explícito, o handler
-// deve preencher com o e-mail da sessão (JWT) ANTES de repassar pro client — nunca deixar o campo
-// vazio seguir adiante pra só então cair no fallback de Azure CLI dentro do client.
-func TestSREApprovalApprove_DefaultsToJWTUserEmailWhenRequestOmitsIt(t *testing.T) {
+// TestSREApprovalResolveApproverEmail_FallsBackToJWTWhenNoSSOProfile — sem Perfil SSO configurado
+// (arquivo inexistente), o e-mail do JWT ainda deve ser usado como fallback — melhor que nada, e
+// preserva o comportamento já corrigido numa rodada anterior desta mesma correção.
+func TestSREApprovalResolveApproverEmail_FallsBackToJWTWhenNoSSOProfile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	logger := zerolog.Nop()
+	h := NewSREApprovalHandler(&logger, t.TempDir()) // diretório vazio, sem sso_profile.json
+
+	router := gin.New()
+	router.GET("/current-user", func(c *gin.Context) {
+		c.Set("user_email", "aprovador.jwt@via.com.br")
+		h.GetCurrentUser(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/current-user", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, esperava 200 — body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Email string `json:"email"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Email != "aprovador.jwt@via.com.br" {
+		t.Errorf("email = %q, esperava o fallback do JWT quando não há Perfil SSO configurado", resp.Email)
+	}
+}
+
+// TestSREApprovalApprove_DefaultsToResolvedApproverEmailWhenRequestOmitsIt — mesma correção,
+// aplicada ao endpoint de aprovação em si: quando o request chega sem `approver_email` explícito,
+// o handler deve preencher com o e-mail resolvido (Perfil SSO > JWT) ANTES de repassar pro client.
+func TestSREApprovalApprove_DefaultsToResolvedApproverEmailWhenRequestOmitsIt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := zerolog.Nop()
+	tmpDir := t.TempDir()
+	profile := ssoProfileFile{Email: "paulo.gribeiro@viaverjo.com.br"}
+	raw, _ := json.Marshal(profile)
+	if err := os.WriteFile(filepath.Join(tmpDir, "sso_profile.json"), raw, 0600); err != nil {
+		t.Fatalf("falha ao escrever perfil SSO de teste: %v", err)
+	}
+	h := NewSREApprovalHandler(&logger, tmpDir)
 
 	// Reproduz só a parte do handler responsável pela prioridade de e-mail (sem chamar
 	// h.client.Approve de verdade, que faria uma requisição HTTP real pro devstartcd) — mesmo
@@ -70,7 +117,7 @@ func TestSREApprovalApprove_DefaultsToJWTUserEmailWhenRequestOmitsIt(t *testing.
 	router := gin.New()
 	var gotApproverEmail string
 	router.POST("/approve", func(c *gin.Context) {
-		c.Set("user_email", "aprovador.real@via.com.br")
+		c.Set("user_email", "4960023587.ca@via.com.br")
 
 		var req struct {
 			ApprovalURL   string `json:"approval_url"`
@@ -81,7 +128,7 @@ func TestSREApprovalApprove_DefaultsToJWTUserEmailWhenRequestOmitsIt(t *testing.
 			return
 		}
 		if req.ApproverEmail == "" {
-			req.ApproverEmail = c.GetString("user_email")
+			req.ApproverEmail = h.resolveApproverEmail(c)
 		}
 		gotApproverEmail = req.ApproverEmail
 		c.JSON(http.StatusOK, gin.H{"success": true})
@@ -96,7 +143,7 @@ func TestSREApprovalApprove_DefaultsToJWTUserEmailWhenRequestOmitsIt(t *testing.
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, esperava 200 — body: %s", w.Code, w.Body.String())
 	}
-	if gotApproverEmail != "aprovador.real@via.com.br" {
-		t.Errorf("approver_email = %q, esperava o e-mail do JWT preenchido automaticamente", gotApproverEmail)
+	if gotApproverEmail != "paulo.gribeiro@viaverjo.com.br" {
+		t.Errorf("approver_email = %q, esperava o e-mail do Perfil SSO preenchido automaticamente", gotApproverEmail)
 	}
 }

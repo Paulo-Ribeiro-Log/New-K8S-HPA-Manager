@@ -1473,7 +1473,7 @@ func (s *Server) setupRoutes() {
 	// mesmo middleware já usado por todas as outras rotas que precisam do e-mail do usuário —
 	// `GetCurrentUser`/`Approve` (sreapproval.go) agora priorizam `c.GetString("user_email")`
 	// antes de cair pro Azure CLI, mesmo padrão de `history.GetCurrentUserInfo`.
-	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
+	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger, baseDir)
 	sreApproval := api.Group("/sre-approval")
 	{
 		sreApproval.GET("/info", sreApprovalHandler.GetApprovalInfo)
