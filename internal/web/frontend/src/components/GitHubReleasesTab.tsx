@@ -742,8 +742,18 @@ export const GitHubReleasesTab = () => {
     // Fallback automático: quando ServiceNow não extrai o repo, usa o deploymentName
     const resolvedRepo = data.githubRepo || data.deploymentName || '';
 
+    // Bug real corrigido: reimportar a MESMA CHG (re-scan no ServiceNow + selecionar de novo pra
+    // comparação) sempre criava uma 2ª entrada duplicada na lista — este handler nunca checava se
+    // aquela CHG já estava no lote antes de dar `push`. Dedup por `chgNumber` (identidade estável
+    // de uma importação ServiceNow — sempre presente nos 4 pontos de entrada deste handler, ver
+    // ServiceNowImportModal.tsx) — reaproveita o MESMO `id` do item já existente em vez de criar
+    // um novo, então o resultado substitui a entrada antiga (dado atualizado) em vez de duplicar.
+    const existingId = data.changeNumber
+      ? comparisonBatch.find(i => i.chgNumber === data.changeNumber)?.id
+      : undefined;
+
     const newItem: ComparisonItem = {
-      id: `${Date.now()}-${resolvedRepo || 'snow'}`,
+      id: existingId ?? `${Date.now()}-${resolvedRepo || 'snow'}`,
       deploymentName: data.deploymentName || undefined,
       githubRepo: resolvedRepo,
       productionTag: prodTag,
@@ -755,7 +765,19 @@ export const GitHubReleasesTab = () => {
       status: 'pending',
     };
 
-    setComparisonBatch(prev => [...prev, newItem]);
+    setComparisonBatch(prev => {
+      const idx = prev.findIndex(i => i.id === newItem.id);
+      if (idx !== -1) {
+        const updated = [...prev];
+        updated[idx] = newItem;
+        return updated;
+      }
+      return [...prev, newItem];
+    });
+
+    if (existingId) {
+      toast.info(`CHG ${data.changeNumber} já estava na lista de comparações — dados atualizados.`);
+    }
 
     // Pré-verificar status de aprovação no devstartcd assim que a CHG é importada
     if (newItem.approvalUrl) {
