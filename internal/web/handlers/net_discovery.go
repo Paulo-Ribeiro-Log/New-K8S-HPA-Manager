@@ -117,6 +117,24 @@ func computeOverallTimeout(probeTimeoutSec, probeCount int) time.Duration {
 	return worstCase
 }
 
+// netDiscoveryTargetTimeout — teto pra UM alvo, já incorporando o orçamento extra da detecção
+// avançada de serviço (nmap, opt-in — ver net_discovery_nmap.go) quando ligada. O cap
+// (netDiscoveryOverallTimeoutCap) é reaplicado DEPOIS de somar o orçamento extra — nunca deixa o
+// total ultrapassar o mesmo teto absoluto já usado pras outras dimensões (garante que o contexto
+// Go nunca espera mais do que o pod de descoberta sobrevive, mesmo com AdvancedServiceScan
+// ligado). Extraída pra ser reaproveitada por Run() (net_discovery.go) e RunBatch()
+// (net_discovery_batch.go) sem duplicar a mesma soma+cap nos dois lugares.
+func netDiscoveryTargetTimeout(probeTimeoutSec, probeCount int, advancedServiceScan bool) time.Duration {
+	total := computeOverallTimeout(probeTimeoutSec, probeCount)
+	if advancedServiceScan {
+		total += netDiscoveryAdvancedScanBudget
+		if total > netDiscoveryOverallTimeoutCap {
+			total = netDiscoveryOverallTimeoutCap
+		}
+	}
+	return total
+}
+
 // NetDiscoveryHop é um salto do caminho de rede — Fase 1 só tem o essencial (índice/IP/latência/
 // se respondeu); campos de enriquecimento (DNS reverso, ASN, cloud, recurso K8s conhecido,
 // fingerprint de SO) chegam nas Fases 2-4 sem precisar mudar este contrato, só adicionar campos.
@@ -677,6 +695,12 @@ type RunNetDiscoveryRequest struct {
 	// (netDiscoveryFingerprintPorts) — útil pra troubleshooting de uma aplicação específica cuja
 	// porta não está na lista fixa (ex: 8081, 9000). Opcional, no máximo netDiscoveryExtraPortsMax.
 	ExtraPorts []int `json:"extra_ports,omitempty"`
+	// AdvancedServiceScan — detecção avançada de serviço via nmap (-sT -sV), OPT-IN explícito.
+	// Roda DEPOIS do fingerprint rápido de sempre, só nas portas que ele já confirmou abertas.
+	// Nunca ligado por padrão — ver avaliação/decisão completa em net_discovery_nmap.go (achado
+	// decisivo: nmap tem um piso fixo de ~7s por invocação, 3-4x mais lento que o fingerprint
+	// padrão, inaceitável como parte do fluxo rápido desta ferramenta).
+	AdvancedServiceScan bool `json:"advanced_service_scan,omitempty"`
 }
 
 const (
@@ -832,7 +856,7 @@ func (h *NetDiscoveryHandler) Run(c *gin.Context) {
 	}
 
 	sessionID := uuid.New().String()
-	ctx, cancel := context.WithTimeout(context.Background(), computeOverallTimeout(req.ProbeTimeoutSec, req.ProbeCount))
+	ctx, cancel := context.WithTimeout(context.Background(), netDiscoveryTargetTimeout(req.ProbeTimeoutSec, req.ProbeCount, req.AdvancedServiceScan))
 	h.cancelFuncs.Store(sessionID, cancel)
 
 	go func() {
@@ -1002,6 +1026,12 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	// alcançável de dentro daquele cluster específico).
 	var fingerprintProbe func(context.Context, string) (string, error)
 
+	// advancedScanProbe (nmap, opt-in) — mesmo princípio do fingerprintProbe: roda no MESMO pod/
+	// container já em pé, nunca cria um segundo. Só é de fato chamado mais abaixo quando
+	// req.AdvancedServiceScan==true E o fingerprint rápido achou ao menos 1 porta aberta — ver
+	// net_discovery_nmap.go pro racional completo dessa decisão.
+	var advancedScanProbe func(context.Context, string, []int) (string, error)
+
 	// podClientset — capturado só no modo pod (Fase 4: cross-reference K8s). Permanece nil no
 	// modo local; crossReferenceHops trata nil como "só consultar o cache persistido, nunca
 	// disparar busca ao vivo" (ver comentário de crossReferenceIP em net_discovery_crossref.go) —
@@ -1024,6 +1054,9 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 	if req.Mode == netDiscoveryModeLocal {
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
 			return runFingerprintLocal(ctx, ip, sniHost, mtlsFlag, extraPortsArg, mtlsStdin)
+		}
+		advancedScanProbe = func(ctx context.Context, ip string, ports []int) (string, error) {
+			return runAdvancedScanLocal(ctx, ip, ports)
 		}
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (modo local, porta %d, timeout %ds/salto, %d sondas/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount), 0.2, nil)
 		if err := runTracerouteLocal(ctx, targetIP, req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount, onLine); err != nil && len(hops) == 0 {
@@ -1062,6 +1095,9 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 		fingerprintProbe = func(ctx context.Context, ip string) (string, error) {
 			return runFingerprintInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, sniHost, mtlsFlag, extraPortsArg, mtlsStdin)
 		}
+		advancedScanProbe = func(ctx context.Context, ip string, ports []int) (string, error) {
+			return runAdvancedScanInPod(ctx, clientset, restConfig, req.Namespace, podName, ip, ports)
+		}
 
 		send("probe_run", "in_progress", fmt.Sprintf("Traçando rota até %s (porta %d, timeout %ds/salto, %d sondas/salto)...", targetIP, req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount), 0.2, nil)
 		if err := runTracerouteInPod(ctx, clientset, restConfig, req.Namespace, podName, targetIP, req.ProbePort, req.ProbeTimeoutSec, req.ProbeCount, onLine); err != nil && len(hops) == 0 {
@@ -1090,6 +1126,21 @@ func (h *NetDiscoveryHandler) runDiscovery(ctx context.Context, sessionID string
 			fp.ProbedHost = sniHost
 		}
 		fingerprint = &fp
+	}
+
+	// Detecção avançada de serviço (nmap), OPT-IN explícito — roda DEPOIS do fingerprint rápido
+	// de sempre e só nas portas que ELE já confirmou abertas (nunca varre de novo as fechadas, que
+	// só pagariam o piso fixo de ~7s do nmap sem adicionar informação nova). Best-effort: uma
+	// falha aqui não derruba o resultado principal, mesmo espírito das outras camadas opcionais.
+	// Ver net_discovery_nmap.go pro racional completo da decisão (avaliado e testado ao vivo antes
+	// de implementar).
+	if req.AdvancedServiceScan && fingerprint != nil && len(fingerprint.OpenPorts) > 0 {
+		send("advanced_scan", "in_progress", fmt.Sprintf("Detecção avançada de serviço (nmap) em %d porta(s)...", len(fingerprint.OpenPorts)), 0.94, nil)
+		if scanOutput, scanErr := advancedScanProbe(ctx, targetIP, fingerprint.OpenPorts); scanErr != nil {
+			log.Warn().Str("target", targetIP).Err(scanErr).Msg("NetDiscovery: detecção avançada de serviço (nmap) falhou (não bloqueia o resultado principal)")
+		} else {
+			fingerprint.ServiceVersions = parseNmapGreppableOutput(scanOutput)
+		}
 	}
 
 	// Enriquecimento passivo por salto (Fase 3) — DNS reverso/ASN/faixa de nuvem, sempre do

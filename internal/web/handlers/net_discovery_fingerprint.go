@@ -182,6 +182,10 @@ type NetDiscoveryFingerprint struct {
 	// mecanismo foi acionado; sucesso/falha real já se reflete em TLSSubject/TLSIssuer presentes
 	// ou vazios, mesmo princípio de nunca duplicar um veredito que já existe noutro campo.
 	ClientCertUsed bool `json:"client_cert_used,omitempty"`
+	// ServiceVersions — detecção avançada de serviço via nmap (net_discovery_nmap.go), OPT-IN
+	// explícito (RunNetDiscoveryRequest.AdvancedServiceScan) — nunca preenchido no fluxo padrão.
+	// Ver comentário completo de avaliação/decisão no topo de net_discovery_nmap.go.
+	ServiceVersions []NetDiscoveryServiceVersion `json:"service_versions,omitempty"`
 }
 
 // runFingerprintInPod/runFingerprintLocal — mesmo padrão dual pod/local do traceroute (Fase 1),

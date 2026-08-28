@@ -74,7 +74,7 @@ const netDiscoveryBatchConcurrencyMax = 3
 // de netDiscoveryBatchMaxTargets já usa (número máximo de alvos × pior caso individual no timeout
 // de sonda máximo) em vez de reafirmado como número fixo — nunca mais pode divergir
 // silenciosamente do que o comentário promete, porque é literalmente a mesma conta.
-var netDiscoveryBatchOverallTimeoutCap = time.Duration(netDiscoveryBatchMaxTargets) * computeOverallTimeout(netDiscoveryProbeTimeoutMaxSec, netDiscoveryProbeCountMax)
+var netDiscoveryBatchOverallTimeoutCap = time.Duration(netDiscoveryBatchMaxTargets) * netDiscoveryTargetTimeout(netDiscoveryProbeTimeoutMaxSec, netDiscoveryProbeCountMax, true)
 
 // RunNetDiscoveryBatchRequest é o body do POST /run-batch. Configurações de sonda (porta/timeout)
 // e de execução (modo/cluster/namespace) são COMPARTILHADAS por todo o lote — v1 deliberadamente
@@ -98,6 +98,9 @@ type RunNetDiscoveryBatchRequest struct {
 	// ExtraPorts — Fase D do roadmap de maturidade profissional, mesmo campo/validação de
 	// RunNetDiscoveryRequest.ExtraPorts (net_discovery.go), compartilhado por todo o lote.
 	ExtraPorts []int `json:"extra_ports,omitempty"`
+	// AdvancedServiceScan — mesmo campo/racional de RunNetDiscoveryRequest.AdvancedServiceScan
+	// (net_discovery.go/net_discovery_nmap.go), compartilhado por todo o lote/monitoramento.
+	AdvancedServiceScan bool `json:"advanced_service_scan,omitempty"`
 	// AllowDuplicateTargets — Fase C do roadmap de maturidade profissional (modo de monitoramento
 	// contínuo): quando true, normalizeBatchTargets NÃO deduplica — permite o mesmo alvo aparecer
 	// N vezes na lista, viabilizando "rodar o mesmo alvo repetidas vezes em sequência" reaproveitando
@@ -273,7 +276,7 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 	// sob o batchID (não um por sessão) — cancelar o lote cancela os alvos em andamento E impede os
 	// alvos restantes de sequer começar; o endpoint Cancel() já existente funciona sem nenhuma
 	// mudança, só chamado com batchID em vez de um sessionID.
-	batchTimeout := time.Duration(len(targets))*computeOverallTimeout(probeTimeoutSec, probeCount) +
+	batchTimeout := time.Duration(len(targets))*netDiscoveryTargetTimeout(probeTimeoutSec, probeCount, req.AdvancedServiceScan) +
 		time.Duration(len(targets)-1)*time.Duration(intervalSec)*time.Second
 	if batchTimeout > netDiscoveryBatchOverallTimeoutCap {
 		batchTimeout = netDiscoveryBatchOverallTimeoutCap
@@ -306,7 +309,7 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 					Target: target, Mode: req.Mode, Cluster: req.Cluster, Namespace: req.Namespace,
 					ProbePort: probePort, ProbeTimeoutSec: probeTimeoutSec, ProbeCount: probeCount,
 					ClientCertPEM: req.ClientCertPEM, ClientKeyPEM: req.ClientKeyPEM,
-					ExtraPorts: req.ExtraPorts,
+					ExtraPorts: req.ExtraPorts, AdvancedServiceScan: req.AdvancedServiceScan,
 				}
 				// runDiscovery (net_discovery.go) roda INALTERADA — mesmo fluxo de uma busca única
 				// (traceroute→fingerprint→enrich→crossref→histórico→SSE), incluindo seus próprios
@@ -340,7 +343,7 @@ func (h *NetDiscoveryHandler) RunBatch(c *gin.Context) {
 					Target: target, Mode: req.Mode, Cluster: req.Cluster, Namespace: req.Namespace,
 					ProbePort: probePort, ProbeTimeoutSec: probeTimeoutSec, ProbeCount: probeCount,
 					ClientCertPEM: req.ClientCertPEM, ClientKeyPEM: req.ClientKeyPEM,
-					ExtraPorts: req.ExtraPorts,
+					ExtraPorts: req.ExtraPorts, AdvancedServiceScan: req.AdvancedServiceScan,
 				}
 				// Mesma runDiscovery, chamada concorrentemente pra um sessionID PRÓPRIO — seguro
 				// (ver comentário completo de justificativa no topo deste arquivo).

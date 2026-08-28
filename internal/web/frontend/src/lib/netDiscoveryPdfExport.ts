@@ -117,6 +117,9 @@ export const exportNetDiscoveryPDF = async (ctx: NetDiscoveryExportContext): Pro
       fp.open_ports?.length ? `Portas abertas: ${fp.open_ports.join(", ")}` : "Portas abertas: nenhuma das ~18 verificadas respondeu",
       `Servidor web: ${fp.is_web_server ? "Sim" : "Não detectado"}`,
     ];
+    if (fp.service_versions?.length) {
+      fpLines.push(`Serviços detectados (nmap): ${fp.service_versions.map((sv) => `${sv.port}/${sv.service ?? "?"}${sv.version ? ` (${sv.version})` : ""}`).join(", ")}`);
+    }
     if (fp.http_server) fpLines.push(`Header Server: ${fp.http_server}`);
     if (fp.tls_subject) fpLines.push(`Certificado TLS — Subject: ${fp.tls_subject}`);
     if (fp.tls_issuer) fpLines.push(`Certificado TLS — Issuer: ${fp.tls_issuer}`);
