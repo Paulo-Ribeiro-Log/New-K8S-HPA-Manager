@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,7 +34,7 @@ func NewHTTPClient(config Config) *HTTPClient {
 func (c *HTTPClient) TestConnection() (*TestConnectionResponse, error) {
 	// Tenta acessar a API do Nexus para verificar a versão
 	url := fmt.Sprintf("%s/service/rest/v1/status", strings.TrimSuffix(c.config.BaseURL, "/"))
-	
+
 	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
 	if err != nil {
 		return &TestConnectionResponse{
@@ -136,7 +137,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 	// Constrói URL
 	url := c.BuildURL(req)
 	fmt.Printf("[Nexus] Downloading from URL: %s\n", url)
-	
+
 	// Cria requisição
 	httpReq, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
 	if err != nil {
@@ -157,7 +158,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := fmt.Sprintf("Request failed: %v", err)
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error: errMsg,
+			Error:   errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -170,7 +171,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := fmt.Sprintf("File not found: %s", url)
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error: errMsg,
+			Error:   errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -179,7 +180,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := "Authentication failed"
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error: errMsg,
+			Error:   errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -188,7 +189,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := fmt.Sprintf("Unexpected status code: %d", resp.StatusCode)
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error: errMsg,
+			Error:   errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -199,7 +200,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := fmt.Sprintf("Failed to read response: %v", err)
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error: errMsg,
+			Error:   errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -251,7 +252,7 @@ func (c *HTTPClient) saveToTemp(req ValuesFileRequest, content []byte) (string, 
 	// Salva arquivo
 	filename := fmt.Sprintf("%s-values.yaml", req.Type)
 	filePath := filepath.Join(tempDir, filename)
-	
+
 	if err := os.WriteFile(filePath, content, 0644); err != nil {
 		return "", err
 	}
@@ -278,7 +279,7 @@ func (c *HTTPClient) DownloadMultipleValues(reqs []ValuesFileRequest) ([]ValuesF
 	// Inicia downloads em paralelo
 	for i, req := range reqs {
 		go func(index int, request ValuesFileRequest) {
-			semaphore <- struct{}{} // Adquire slot
+			semaphore <- struct{}{}        // Adquire slot
 			defer func() { <-semaphore }() // Libera slot
 
 			resp, err := c.DownloadValues(request)
@@ -315,7 +316,7 @@ func (c *HTTPClient) DownloadMultipleValues(reqs []ValuesFileRequest) ([]ValuesF
 // Busca em TODOS os repositórios pelo nome da release
 // path="" → lista releases cujo nome contém query
 // path="meu-release" → lista versões desse release
-func (c *HTTPClient) BrowseRepository(path string, query string) (*BrowseResponse, error) {
+func (c *HTTPClient) BrowseRepository(path string, query string, repository string) (*BrowseResponse, error) {
 	baseURL := strings.TrimSuffix(c.config.BaseURL, "/")
 	path = strings.Trim(path, "/")
 
@@ -340,9 +341,16 @@ func (c *HTTPClient) BrowseRepository(path string, query string) (*BrowseRespons
 	maxPages := 5
 
 	for page := 0; page < maxPages; page++ {
-		// Usa /search (componentes) sem filtro de repository
-		// O campo "name" do componente contém o path completo: "release/version/file.yaml"
+		// /search (componentes) — repository opcional (achado real: sem esse filtro, a busca por
+		// nome de release cruza TODOS os repositórios que as credenciais alcançam, o que pode
+		// misturar resultados de repositórios sem relação nenhuma com o rollback — ex: um
+		// repositório genérico de artefatos vs. o repositório dedicado a histórico de deploy,
+		// "continuousdeploy-history" nesta empresa). O campo "name" do componente contém o path
+		// completo: "release/version/file.yaml"
 		apiURL := fmt.Sprintf("%s/service/rest/v1/search?q=%s", baseURL, searchTerm)
+		if repository != "" {
+			apiURL += "&repository=" + url.QueryEscape(repository)
+		}
 		if continuationToken != "" {
 			apiURL += "&continuationToken=" + continuationToken
 		}
@@ -446,6 +454,14 @@ func (c *HTTPClient) BrowseRepository(path string, query string) (*BrowseRespons
 		}
 
 		for _, comp := range result.Items {
+			// Filtro defensivo em cima do `&repository=` já mandado na URL acima — nunca
+			// confiar só no parâmetro da API pra excluir resultados de outro repositório (sem
+			// acesso a um Nexus real nesta sessão pra confirmar que a API sempre respeita o
+			// filtro; melhor rejeitar aqui do que arriscar misturar repositórios errados).
+			if repository != "" && comp.Repository != "" && !strings.EqualFold(comp.Repository, repository) {
+				continue
+			}
+
 			// Extrair release e versão do name ou group
 			if comp.Name != "" {
 				processPath(comp.Name, comp.Repository)

@@ -280,10 +280,11 @@ func (h *NexusHandler) CompareValues(c *gin.Context) {
 }
 
 // BrowseRepository navega o repositório Nexus e lista diretórios
-// GET /api/v1/nexus/browse?path=&q=comercial
+// GET /api/v1/nexus/browse?path=&q=comercial&repository=continuousdeploy-history
 func (h *NexusHandler) BrowseRepository(c *gin.Context) {
 	path := c.DefaultQuery("path", "")
 	query := c.DefaultQuery("q", "")
+	repository := c.DefaultQuery("repository", "")
 
 	client, err := h.getClient()
 	if err != nil {
@@ -293,7 +294,7 @@ func (h *NexusHandler) BrowseRepository(c *gin.Context) {
 		return
 	}
 
-	response, err := client.BrowseRepository(path, query)
+	response, err := client.BrowseRepository(path, query, repository)
 	if err != nil {
 		fmt.Printf("[NexusHandler] Browse error: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{

@@ -1124,8 +1124,9 @@ class APIClient {
   // Values (internal/web/handlers/nexus.go). Respostas SEM wrapper {success,data} (convenção
   // própria deste subsistema, diferente do resto do client) — repassadas cruas.
 
-  async nexusBrowse(path: string, query: string): Promise<NexusBrowseResponse> {
+  async nexusBrowse(path: string, query: string, repository?: string): Promise<NexusBrowseResponse> {
     const qs = new URLSearchParams({ path, q: query });
+    if (repository) qs.set("repository", repository);
     return this.request<NexusBrowseResponse>(`/nexus/browse?${qs}`);
   }
 

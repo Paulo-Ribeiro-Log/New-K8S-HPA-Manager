@@ -16,21 +16,21 @@ type Config struct {
 
 // ValuesFileRequest representa uma requisição para baixar um arquivo de values
 type ValuesFileRequest struct {
-	Release     string `json:"release" binding:"required"`      // Nome do release
-	Version     string `json:"version" binding:"required"`      // Versão (ex: v1.0.0)
-	Environment string `json:"environment,omitempty"`           // dev, sit, uat, hlg, prd (legado)
-	Type        string `json:"type,omitempty"`                  // base, sit, prd, hlg (legado)
-	Repository  string `json:"repository,omitempty"`             // Repositório (detectado via busca)
-	FilePath    string `json:"filePath,omitempty"`               // Path real do arquivo (release/version/file.yaml)
+	Release     string `json:"release" binding:"required"` // Nome do release
+	Version     string `json:"version" binding:"required"` // Versão (ex: v1.0.0)
+	Environment string `json:"environment,omitempty"`      // dev, sit, uat, hlg, prd (legado)
+	Type        string `json:"type,omitempty"`             // base, sit, prd, hlg (legado)
+	Repository  string `json:"repository,omitempty"`       // Repositório (detectado via busca)
+	FilePath    string `json:"filePath,omitempty"`         // Path real do arquivo (release/version/file.yaml)
 }
 
 // ValuesFileResponse representa a resposta com o conteúdo de um arquivo
 type ValuesFileResponse struct {
-	Content  string `json:"content"`            // Conteúdo YAML do arquivo
-	FilePath string `json:"filePath"`           // Path relativo no Nexus
-	FullURL  string `json:"fullUrl"`            // URL completa
-	Size     int64  `json:"size"`               // Tamanho em bytes
-	Error    string `json:"error,omitempty"`    // Mensagem de erro, se houver
+	Content  string `json:"content"`         // Conteúdo YAML do arquivo
+	FilePath string `json:"filePath"`        // Path relativo no Nexus
+	FullURL  string `json:"fullUrl"`         // URL completa
+	Size     int64  `json:"size"`            // Tamanho em bytes
+	Error    string `json:"error,omitempty"` // Mensagem de erro, se houver
 }
 
 // CompareValuesRequest representa requisição para comparar dois arquivos
@@ -41,9 +41,9 @@ type CompareValuesRequest struct {
 
 // CompareValuesResponse representa a resposta da comparação
 type CompareValuesResponse struct {
-	File1    ValuesFileResponse `json:"file1"`
-	File2    ValuesFileResponse `json:"file2"`
-	Error    string             `json:"error,omitempty"`
+	File1 ValuesFileResponse `json:"file1"`
+	File2 ValuesFileResponse `json:"file2"`
+	Error string             `json:"error,omitempty"`
 }
 
 // TestConnectionResponse representa a resposta do teste de conexão
@@ -105,8 +105,12 @@ type Client interface {
 	// CleanupTempFiles limpa arquivos temporários antigos
 	CleanupTempFiles(olderThan time.Duration) error
 
-	// BrowseRepository navega o repositório e lista diretórios em um dado path com filtro opcional
-	BrowseRepository(path string, query string) (*BrowseResponse, error)
+	// BrowseRepository navega o repositório e lista diretórios em um dado path com filtro opcional.
+	// `repository` (opcional) restringe a busca a UM repositório Nexus específico — sem isso, a
+	// busca cruza todos os repositórios que as credenciais alcançam, o que pode misturar
+	// resultados de repositórios sem relação com o que o chamador pretende (ex: rollback via
+	// Nexus deve olhar só o repositório dedicado a histórico de deploy).
+	BrowseRepository(path string, query string, repository string) (*BrowseResponse, error)
 }
 
 // ConfigManager interface define operações de gerenciamento de configuração

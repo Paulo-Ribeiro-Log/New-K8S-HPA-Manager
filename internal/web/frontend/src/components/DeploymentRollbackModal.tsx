@@ -70,6 +70,20 @@ function formatDate(v?: string): string {
   }
 }
 
+// compareVersionsDesc — ordena versões tipo "1.0.0-3"/"0.0.2-7" (formato real observado no Nexus
+// desta empresa) da mais recente pra mais antiga comparando os segmentos numéricos, não como
+// string pura (sort lexicográfico erraria "1.0.0-10" vindo ANTES de "1.0.0-2").
+function compareVersionsDesc(a: string, b: string): number {
+  const numsA = a.match(/\d+/g)?.map(Number) || [];
+  const numsB = b.match(/\d+/g)?.map(Number) || [];
+  const len = Math.max(numsA.length, numsB.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (numsB[i] ?? 0) - (numsA[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return b.localeCompare(a);
+}
+
 interface DeploymentRollbackModalProps {
   open: boolean;
   onClose: () => void;
@@ -447,16 +461,28 @@ function HelmRollbackSection({
 // aviso fixo e o diff obrigatório são ainda mais enfatizados aqui que nos outros 2 modos.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// NEXUS_ROLLBACK_REPOSITORY — repositório Nexus DEDICADO a histórico de deploy nesta empresa,
+// pedido explícito do usuário depois de relatar que a busca genérica (sem filtro de repositório)
+// ficava confusa — sem esse filtro, a busca cruza TODOS os repositórios que as credenciais
+// alcançam, misturando resultados sem relação nenhuma com rollback. Diferente do repositório
+// default configurado no Perfil do Usuário (usado pela aba "Nexus Values" pra comparação livre de
+// values entre versões/ambientes) — este é fixo, só pra este fluxo.
+const NEXUS_ROLLBACK_REPOSITORY = "continuousdeploy-history";
+
 function NexusRollbackSection({
   cluster, release, releaseNamespace, suggestedReleaseSearch, canUpdateDeployment, onDone,
 }: {
   cluster: string; release: string; releaseNamespace: string; suggestedReleaseSearch: string; canUpdateDeployment: boolean; onDone: () => void;
 }) {
-  const [searchTerm, setSearchTerm] = useState(suggestedReleaseSearch);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState("");
-  const [matches, setMatches] = useState<NexusBrowseItem[]>([]);
-  const [selectedItem, setSelectedItem] = useState<NexusBrowseItem | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [item, setItem] = useState<NexusBrowseItem | null>(null);
+  // candidates — só populado no caso raro de a busca automática achar MAIS de um nome batendo
+  // (a busca do Nexus é por substring, não por igualdade exata).
+  const [candidates, setCandidates] = useState<NexusBrowseItem[]>([]);
+  const [manualSearchOpen, setManualSearchOpen] = useState(false);
+  const [manualSearchTerm, setManualSearchTerm] = useState(suggestedReleaseSearch);
+
   const [selectedVersion, setSelectedVersion] = useState("");
   const [selectedFile, setSelectedFile] = useState("");
 
@@ -484,35 +510,55 @@ function NexusRollbackSection({
       .catch(() => { /* best-effort — diff/sugestão ficam vazios, não bloqueia o fluxo */ });
   }, [cluster, release, releaseNamespace]);
 
-  const handleSearch = async () => {
-    if (!searchTerm.trim()) return;
-    setSearching(true);
-    setSearchError("");
-    setMatches([]);
-    setSelectedItem(null);
+  const runSearch = useCallback((term: string) => {
+    if (!term.trim()) return;
+    setLoading(true);
+    setLoadError("");
+    setItem(null);
+    setCandidates([]);
     setSelectedVersion("");
     setSelectedFile("");
-    try {
-      const res = await apiClient.nexusBrowse("", searchTerm.trim());
-      setMatches(res.items || []);
-      if ((res.items || []).length === 0) setSearchError("Nenhum release encontrado no Nexus com esse nome.");
-    } catch (err) {
-      setSearchError(err instanceof Error ? err.message : "Erro ao buscar no Nexus (verifique se o Nexus está configurado no Perfil do Usuário)");
-    } finally {
-      setSearching(false);
-    }
-  };
+    apiClient.nexusBrowse("", term.trim(), NEXUS_ROLLBACK_REPOSITORY)
+      .then((res) => {
+        const items = res.items || [];
+        if (items.length === 0) {
+          setLoadError(`Nenhuma versão encontrada no Nexus (repositório "${NEXUS_ROLLBACK_REPOSITORY}") para "${term.trim()}".`);
+          return;
+        }
+        // Prioriza um match EXATO pelo nome — evita ambiguidade quando a busca (substring, via
+        // Nexus /search) casa com nomes parecidos de outras aplicações.
+        const exact = items.find((i) => i.name.toLowerCase() === term.trim().toLowerCase());
+        if (exact) setItem(exact);
+        else if (items.length === 1) setItem(items[0]);
+        else setCandidates(items);
+      })
+      .catch((err) => setLoadError(err instanceof Error ? err.message : "Erro ao buscar no Nexus (verifique se está configurado no Perfil do Usuário)"))
+      .finally(() => setLoading(false));
+  }, []);
 
-  const filesForVersion = selectedItem && selectedVersion ? (selectedItem.files?.[selectedVersion] || []) : [];
+  // Busca automática ao abrir o modal — pedido explícito do usuário: listar direto as versões
+  // possíveis, sem exigir buscar manualmente primeiro. Usa o nome do release Helm (identidade
+  // mais confiável que já temos) como termo inicial.
+  useEffect(() => { runSearch(release); }, [release, runSearch]);
+
+  const sortedVersions = [...(item?.versions || [])].sort(compareVersionsDesc);
+  const filesForVersion = item && selectedVersion ? (item.files?.[selectedVersion] || []) : [];
+
+  // Auto-seleciona o arquivo quando só há UM pra essa versão — só pede escolha explícita quando
+  // há ambiguidade real (ex: mais de um ambiente publicado na mesma versão).
+  useEffect(() => {
+    setSelectedFile(filesForVersion.length === 1 ? filesForVersion[0] : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item, selectedVersion]);
 
   useEffect(() => {
-    if (!selectedItem || !selectedVersion || !selectedFile) { setNexusValues(""); return; }
+    if (!item || !selectedVersion || !selectedFile) { setNexusValues(""); return; }
     setFetchingValues(true);
     apiClient.nexusDownloadValues({
-      release: selectedItem.name,
+      release: item.name,
       version: selectedVersion,
-      repository: selectedItem.repository,
-      filePath: `${selectedItem.name}/${selectedVersion}/${selectedFile}`,
+      repository: item.repository || NEXUS_ROLLBACK_REPOSITORY,
+      filePath: `${item.name}/${selectedVersion}/${selectedFile}`,
     })
       .then((res) => {
         if (res.error) { toast.error("Nexus retornou erro", { description: res.error }); setNexusValues(""); return; }
@@ -520,7 +566,7 @@ function NexusRollbackSection({
       })
       .catch((err) => toast.error("Erro ao baixar values do Nexus", { description: err instanceof Error ? err.message : "Erro" }))
       .finally(() => setFetchingValues(false));
-  }, [selectedItem, selectedVersion, selectedFile]);
+  }, [item, selectedVersion, selectedFile]);
 
   const canConfirm = !!nexusValues && !!chartRef.trim() && reason.trim().length > 0;
 
@@ -553,58 +599,73 @@ function NexusRollbackSection({
         </span>
       </div>
 
-      <div className="flex items-end gap-2">
-        <div className="flex-1">
-          <Label htmlFor="nexus-search" className="text-xs text-muted-foreground mb-1 block">Nome do release no Nexus</Label>
-          <Input id="nexus-search" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
+      {loading && (
+        <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
+          <Loader2 className="w-5 h-5 animate-spin mr-2" /> Buscando versões no Nexus ({NEXUS_ROLLBACK_REPOSITORY})...
         </div>
-        <Button variant="outline" onClick={handleSearch} disabled={searching || !searchTerm.trim()}>
-          {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-        </Button>
-      </div>
-      {searchError && <div className="text-xs text-destructive">{searchError}</div>}
+      )}
 
-      {matches.length > 0 && (
+      {!loading && loadError && (
+        <div className="text-sm text-destructive py-2 text-center">{loadError}</div>
+      )}
+
+      {!loading && candidates.length > 0 && (
         <div>
-          <Label className="text-xs text-muted-foreground mb-1 block">Release encontrado</Label>
+          <Label className="text-xs text-muted-foreground mb-1 block">Mais de uma aplicação encontrada — selecione a correta</Label>
           <div className="flex flex-wrap gap-1.5">
-            {matches.map((m) => (
-              <Badge
-                key={m.path}
-                variant={selectedItem?.path === m.path ? "default" : "outline"}
-                className="cursor-pointer font-mono text-xs"
-                onClick={() => { setSelectedItem(m); setSelectedVersion(""); setSelectedFile(""); }}
-              >
-                {m.name}
+            {candidates.map((c) => (
+              <Badge key={c.path} variant="outline" className="cursor-pointer font-mono text-xs" onClick={() => { setItem(c); setCandidates([]); }}>
+                {c.name}
               </Badge>
             ))}
           </div>
         </div>
       )}
 
-      {selectedItem && (selectedItem.versions?.length ?? 0) > 0 && (
-        <div>
-          <Label className="text-xs text-muted-foreground mb-1 block">Versão</Label>
-          <div className="flex flex-wrap gap-1.5">
-            {selectedItem.versions!.map((v) => (
-              <Badge key={v} variant={selectedVersion === v ? "default" : "outline"} className="cursor-pointer font-mono text-xs" onClick={() => { setSelectedVersion(v); setSelectedFile(""); }}>
-                {v}
-              </Badge>
-            ))}
+      {!loading && item && sortedVersions.length > 0 && (
+        <>
+          <div className="text-xs text-muted-foreground">
+            Aplicação <span className="font-mono font-semibold">{item.name}</span> — {sortedVersions.length} versão(ões) disponível(is)
           </div>
-        </div>
+          <RadioGroup value={selectedVersion} onValueChange={setSelectedVersion} className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+            {sortedVersions.map((v) => (
+              <div key={v} className="flex items-center gap-3 p-2.5 border rounded-lg hover:bg-accent">
+                <RadioGroupItem value={v} id={`nexusver-${v}`} />
+                <Label htmlFor={`nexusver-${v}`} className="flex-1 cursor-pointer font-mono text-sm">{v}</Label>
+              </div>
+            ))}
+          </RadioGroup>
+
+          {selectedVersion && filesForVersion.length > 1 && (
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Mais de um arquivo nessa versão — selecione qual usar</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {filesForVersion.map((f) => (
+                  <Badge key={f} variant={selectedFile === f ? "default" : "outline"} className="cursor-pointer font-mono text-xs" onClick={() => setSelectedFile(f)}>
+                    {f}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
-      {selectedVersion && filesForVersion.length > 0 && (
-        <div>
-          <Label className="text-xs text-muted-foreground mb-1 block">Arquivo de values</Label>
-          <div className="flex flex-wrap gap-1.5">
-            {filesForVersion.map((f) => (
-              <Badge key={f} variant={selectedFile === f ? "default" : "outline"} className="cursor-pointer font-mono text-xs" onClick={() => setSelectedFile(f)}>
-                {f}
-              </Badge>
-            ))}
+      {!loading && !manualSearchOpen && (
+        <button type="button" className="text-xs text-primary underline underline-offset-2" onClick={() => setManualSearchOpen(true)}>
+          Buscar por outro nome de aplicação
+        </button>
+      )}
+
+      {manualSearchOpen && (
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <Label htmlFor="nexus-manual-search" className="text-xs text-muted-foreground mb-1 block">Nome da aplicação no Nexus</Label>
+            <Input id="nexus-manual-search" value={manualSearchTerm} onChange={(e) => setManualSearchTerm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runSearch(manualSearchTerm)} />
           </div>
+          <Button variant="outline" onClick={() => runSearch(manualSearchTerm)} disabled={loading || !manualSearchTerm.trim()}>
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+          </Button>
         </div>
       )}
 
