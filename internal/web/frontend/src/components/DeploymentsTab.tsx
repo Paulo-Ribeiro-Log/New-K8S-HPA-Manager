@@ -36,6 +36,7 @@ import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { AITriggerButton } from "@/components/AITriggerButton";
+import { DeploymentRollbackModal } from "@/components/DeploymentRollbackModal";
 import { PredictionHistoryModal } from "@/components/PredictionHistoryModal";
 import { DeploymentBehaviorModal } from "@/components/DeploymentBehaviorModal";
 import { RolloutProgressGauge } from "@/components/RolloutProgressGauge";
@@ -299,6 +300,7 @@ export const DeploymentsTab = ({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [rolloutConfirmOpen, setRolloutConfirmOpen] = useState(false);
+  const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
   const [scaleModalOpen, setScaleModalOpen] = useState(false);
 
@@ -2678,6 +2680,14 @@ export const DeploymentsTab = ({
               >
                 <RotateCw className="w-4 h-4 mr-2" />
                 Rollout Restart
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setRollbackModalOpen(true)}
+                disabled={!k8sPerms.canUpdateDeployment}
+                title={!k8sPerms.canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}
+              >
+                <RotateCcw className="w-4 h-4 mr-2" />
+                Rollback Deployment
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -5806,6 +5816,20 @@ export const DeploymentsTab = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Rollback de Deployment — Modo Helm / K8s nativo / Nexus, ver DeploymentRollbackModal.tsx */}
+      {selectedDeployment && (
+        <DeploymentRollbackModal
+          open={rollbackModalOpen}
+          onClose={() => setRollbackModalOpen(false)}
+          cluster={selectedDeployment.cluster}
+          namespace={selectedDeployment.namespace}
+          deploymentName={selectedDeployment.name}
+          manifest={manifest}
+          canUpdateDeployment={k8sPerms.canUpdateDeployment}
+          onRolledBack={refreshManifest}
+        />
+      )}
 
       {/* Modal de Scale */}
       <Dialog open={scaleModalOpen} onOpenChange={setScaleModalOpen}>

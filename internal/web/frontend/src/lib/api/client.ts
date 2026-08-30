@@ -118,6 +118,12 @@ import type {
   PortForwardSession,
   PortForwardPodPort,
   StartPortForwardRequest,
+  DeploymentRevision,
+  HelmReleaseDetail,
+  HelmRevisionEntry,
+  NexusBrowseResponse,
+  NexusValuesFileRequest,
+  NexusValuesFileResponse,
 } from "./types";
 
 import type {
@@ -1026,6 +1032,108 @@ class APIClient {
       `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
     );
     return response;
+  }
+
+  // ─── Rollback de Deployment — "Modo K8s nativo" (equivalente a `kubectl rollout history/undo`,
+  // ver internal/kubernetes/deployment_rollback.go). Só pra Deployments NÃO gerenciados pelo Helm —
+  // pra esses, usa o caminho Helm (getHelmHistory/helmRollback abaixo), nunca este.
+
+  async listDeploymentRevisions(cluster: string, namespace: string, name: string): Promise<DeploymentRevision[]> {
+    const response = await this.request<APIResponse<{ revisions: DeploymentRevision[] }>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/revisions`
+    );
+    return response.data?.revisions || [];
+  }
+
+  async previewDeploymentRevision(cluster: string, namespace: string, name: string, revision: number): Promise<string> {
+    const response = await this.request<APIResponse<{ yaml: string }>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/revisions/${revision}/preview`
+    );
+    return response.data?.yaml || "";
+  }
+
+  async rollbackDeploymentNative(
+    cluster: string, namespace: string, name: string, targetRevision: number, reason: string
+  ): Promise<{ sessionId: string; images: string[] }> {
+    const response = await this.request<APIResponse<{ sessionId: string; images: string[] }>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/rollback`,
+      { method: "POST", body: JSON.stringify({ targetRevision, reason }) }
+    );
+    if (!response.data) throw new Error("Rollback sem retorno");
+    return response.data;
+  }
+
+  /** URL do stream SSE de progresso do rollout pós-rollback (Modo K8s nativo) — token via query
+   * param, mesmo motivo/padrão de getNetDiscoveryStreamURL (EventSource não aceita headers). */
+  getDeploymentRollbackStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/deployment-rollback/stream/${sessionId}?token=${encodeURIComponent(token || "")}`;
+  }
+
+  // ─── Helm (reutilizado pelo "Modo Helm" e pelo "Modo Nexus" da Edição de Rollback de
+  // Deployments) — mesmos endpoints já usados pela aba Helm (internal/web/handlers/helm.go), só
+  // com wrappers em pt-br consistentes com o resto deste client em vez do hook useHelm.ts
+  // separado (que depende de um Zustand store próprio, useHelmStore, sem relação com esta aba).
+
+  async getHelmRelease(cluster: string, release: string, namespace: string): Promise<HelmReleaseDetail> {
+    const qs = new URLSearchParams({ cluster, namespace });
+    const response = await this.request<{ success: boolean; data: HelmReleaseDetail }>(
+      `/helm/releases/${encodeURIComponent(release)}?${qs}`
+    );
+    return response.data;
+  }
+
+  async getHelmHistory(cluster: string, release: string, namespace: string): Promise<HelmRevisionEntry[]> {
+    const qs = new URLSearchParams({ cluster, namespace });
+    const response = await this.request<{ success: boolean; data: { revisions: HelmRevisionEntry[] } }>(
+      `/helm/releases/${encodeURIComponent(release)}/history?${qs}`
+    );
+    return response.data?.revisions || [];
+  }
+
+  async helmRollback(
+    cluster: string, release: string, namespace: string, targetRevision: number, force: boolean
+  ): Promise<{ operationId: string }> {
+    const qs = new URLSearchParams({ cluster });
+    const response = await this.request<{ success: boolean; data: { operationId: string } }>(
+      `/helm/releases/${encodeURIComponent(release)}/rollback?${qs}`,
+      { method: "POST", body: JSON.stringify({ namespace, targetRevision, force }) }
+    );
+    return response.data;
+  }
+
+  async helmUpgrade(
+    cluster: string, release: string, namespace: string, chartRef: string, version: string, valuesYaml: string, force: boolean
+  ): Promise<{ operationId: string }> {
+    const qs = new URLSearchParams({ cluster });
+    const response = await this.request<{ success: boolean; data: { operationId: string } }>(
+      `/helm/releases/${encodeURIComponent(release)}?${qs}`,
+      { method: "PUT", body: JSON.stringify({ namespace, chartRef, version, valuesYaml, force }) }
+    );
+    return response.data;
+  }
+
+  /** URL do stream SSE de uma operação Helm (install/upgrade/rollback) — evento nomeado
+   * "helm-operation" (Gin c.SSEvent), não o "message" default do resto da app. */
+  getHelmOperationStreamURL(operationId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/helm/operations/${operationId}/stream?token=${encodeURIComponent(token || "")}`;
+  }
+
+  // ─── Nexus (Modo Nexus da Edição de Rollback) — mesmos endpoints já usados pela aba Nexus
+  // Values (internal/web/handlers/nexus.go). Respostas SEM wrapper {success,data} (convenção
+  // própria deste subsistema, diferente do resto do client) — repassadas cruas.
+
+  async nexusBrowse(path: string, query: string): Promise<NexusBrowseResponse> {
+    const qs = new URLSearchParams({ path, q: query });
+    return this.request<NexusBrowseResponse>(`/nexus/browse?${qs}`);
+  }
+
+  async nexusDownloadValues(req: NexusValuesFileRequest): Promise<NexusValuesFileResponse> {
+    return this.request<NexusValuesFileResponse>(`/nexus/values/download`, {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
   }
 
   /** Gráfico de comportamento do Deployment (réplicas/CPU/mem/restarts) — Prometheus como fonte

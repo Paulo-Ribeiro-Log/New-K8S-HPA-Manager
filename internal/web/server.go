@@ -899,6 +899,7 @@ func (s *Server) setupRoutes() {
 
 	// Deployments
 	deploymentHandler := handlers.NewDeploymentHandler(s.kubeManager, s.historyTracker, s.aiTokensStore)
+	deploymentRollbackHandler := handlers.NewDeploymentRollbackHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker)
 	deployments := api.Group("/deployments")
 	{
 		deployments.GET("", deploymentHandler.List)
@@ -916,7 +917,20 @@ func (s *Server) setupRoutes() {
 		// Deployments - Batch Operations (SRE-only)
 		deployments.POST("/:cluster/batch/delete", rbacMiddleware.RequireSREGroup(), deploymentHandler.BatchDelete)
 		deployments.POST("/:cluster/batch/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.BatchRestart)
+
+		// Rollback "Modo K8s nativo" (equivalente a `kubectl rollout history/undo`) — só pra
+		// Deployments NÃO gerenciados pelo Helm (o frontend decide qual caminho oferecer via
+		// annotation meta.helm.sh/release-name; Deployments Helm-gerenciados usam
+		// POST /helm/releases/:release/rollback, já existente). Streaming de progresso do rollout
+		// fica numa rota própria fora deste grupo — ver deploymentRollback abaixo (precisa de
+		// WebSocketJWTAuthMiddleware, incompatível com o JWTAuthMiddleware já aplicado no grupo /api/v1).
+		deployments.GET("/:cluster/:namespace/:name/revisions", deploymentRollbackHandler.ListRevisions)
+		deployments.GET("/:cluster/:namespace/:name/revisions/:revision/preview", deploymentRollbackHandler.PreviewRevision)
+		deployments.POST("/:cluster/:namespace/:name/rollback", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.Rollback)
 	}
+	s.router.GET("/api/v1/deployment-rollback/stream/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		deploymentRollbackHandler.Stream)
 
 	// StatefulSets
 	statefulSetHandler := handlers.NewStatefulSetHandler(s.kubeManager, s.historyTracker)

@@ -2814,3 +2814,79 @@ export interface StartPortForwardRequest {
   bind_address?: string;
   label?: string;
 }
+
+// ─── Rollback de Deployment — "Modo K8s nativo" (ver internal/kubernetes/deployment_rollback.go).
+// camelCase — segue a convenção já usada por DeploymentSummary/DeploymentManifest (internal/models),
+// não o snake_case usado noutras partes mais recentes desta app (ex: Descoberta de Rede).
+export interface DeploymentRevision {
+  revision: number;
+  replicaSet: string;
+  changeCause?: string;
+  images: string[];
+  replicas: number;
+  createdAt: string; // ISO 8601
+  isCurrent: boolean;
+}
+
+// ─── Helm — subconjunto de internal/pkg/helm/types.go usado pelo modal de rollback (Modo Helm e
+// Modo Nexus). Tipos completos já existem em src/types/helm.ts (usados pela aba Helm em si) — não
+// duplicados aqui: só os campos que o modal de rollback de fato consome.
+export interface HelmRevisionEntry {
+  revision: number;
+  updatedAt: string;
+  status: string;
+  description: string;
+  valuesDigest: string;
+  executedBy: string;
+}
+
+export interface HelmChartMetadata {
+  name: string;
+  version: string;
+  description?: string;
+}
+
+export interface HelmReleaseDetail {
+  name: string;
+  namespace: string;
+  chart: string;
+  appVersion: string;
+  revision: number;
+  updatedAt: string;
+  status: string;
+  hasPendingUpgrade: boolean;
+  valuesRaw: string;
+  valuesRendered: string;
+  chartMetadata?: HelmChartMetadata;
+}
+
+// ─── Nexus — subconjunto de internal/pkg/nexus/types.go usado pelo Modo Nexus do rollback.
+export interface NexusBrowseItem {
+  name: string;
+  path: string;
+  versions?: string[];
+  repository?: string;
+  files?: Record<string, string[]>;
+}
+
+export interface NexusBrowseResponse {
+  items: NexusBrowseItem[];
+  path: string;
+}
+
+export interface NexusValuesFileRequest {
+  release: string;
+  version: string;
+  environment?: string;
+  type?: string;
+  repository?: string;
+  filePath?: string;
+}
+
+export interface NexusValuesFileResponse {
+  content: string;
+  filePath: string;
+  fullUrl: string;
+  size: number;
+  error?: string;
+}
