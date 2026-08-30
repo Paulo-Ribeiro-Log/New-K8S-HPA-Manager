@@ -23,6 +23,7 @@ import (
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/healthcheck"
 	"k8s-hpa-manager/internal/history"
+	"k8s-hpa-manager/internal/incidentkb"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/notifications"
 	"k8s-hpa-manager/internal/rbac"
@@ -59,6 +60,7 @@ type Server struct {
 	timerMutex         sync.Mutex // Protege operações no timer
 	logBuffer          *handlers.LogBuffer
 	historyTracker     *history.HistoryTracker
+	incidentKBStore    *incidentkb.Store
 	portForwardHandler *handlers.PortForwardHandler
 
 	// TODO: Remover após migração completa para V2
@@ -243,6 +245,14 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 	historyTracker, err := history.NewHistoryTracker(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create history tracker: %w", err)
+	}
+
+	// Base de conhecimento de incidentes — registros curados/confirmados por
+	// analista (sintoma, causa raiz, resolução real), separada do histórico
+	// bruto de execuções de IA (AIHistoryStore, que expira automaticamente).
+	incidentKBStore, err := incidentkb.NewStore(filepath.Join(baseDir, "incident-kb"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create incident knowledge base store: %w", err)
 	}
 
 	// Criar notification manager (Windows Toast via PowerShell/WSL2)
@@ -476,6 +486,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		lastHeartbeat:       time.Now(),
 		logBuffer:           logBuffer,
 		historyTracker:      historyTracker,
+		incidentKBStore:     incidentKBStore,
 		notificationManager: notificationManager,
 		// TODO: Remover após migração completa para V2
 		// monitoringEngine:   monitoringEngine,
@@ -689,6 +700,15 @@ func (s *Server) setupRoutes() {
 	api.GET("/access-check/rules", rbacMiddleware.RequireSREGroup(), accessCheckHandler.GetRules)
 	api.GET("/access-check/can-i", rbacMiddleware.RequireSREGroup(), accessCheckHandler.CanI)
 	api.GET("/access-check/scan-fleet", rbacMiddleware.RequireSREGroup(), accessCheckHandler.ScanFleet)
+
+	// Base de Conhecimento de Incidentes — registros de problemas/falhas reais
+	// de cluster, confirmados por analista (sintoma, causa raiz, resolução).
+	incidentKBHandler := handlers.NewIncidentKBHandler(s.incidentKBStore)
+	api.GET("/incident-kb", incidentKBHandler.List)
+	api.GET("/incident-kb/export-all", incidentKBHandler.ExportAll)
+	api.GET("/incident-kb/:id", incidentKBHandler.GetByID)
+	api.GET("/incident-kb/:id/export", incidentKBHandler.Export)
+	api.POST("/incident-kb", incidentKBHandler.Create)
 
 	// Clusters
 	clusterHandler := handlers.NewClusterHandler(s.kubeManager)
