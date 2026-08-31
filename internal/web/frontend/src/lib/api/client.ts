@@ -1144,6 +1144,23 @@ class APIClient {
     return response.data;
   }
 
+  /** "Modo Helm" do Rollback de Deployment — wrapper dedicado (POST .../helm-rollback, distinto
+   * de POST /helm/releases/:release/rollback usado pela aba Helm genérica) que aplica o bypass
+   * Kyverno automaticamente (label devops.k8s.io/kyverno-bypass=true no namespace, removida
+   * depois) e sempre força --force (obrigatório nesse cenário, confirmado pelo usuário — "é o
+   * próprio --force que permite alterações manuais em ambiente helm managed"). */
+  async helmRollbackWithBypass(
+    cluster: string, namespace: string, deploymentName: string,
+    release: string, releaseNamespace: string, targetRevision: number,
+    wait: boolean, recreatePods: boolean, reason: string
+  ): Promise<{ operationId: string }> {
+    const response = await this.request<{ success: boolean; data: { operationId: string } }>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(deploymentName)}/helm-rollback`,
+      { method: "POST", body: JSON.stringify({ release, releaseNamespace, targetRevision, wait, recreatePods, reason }) }
+    );
+    return response.data;
+  }
+
   async helmUpgrade(
     cluster: string, release: string, namespace: string, chartRef: string, version: string, valuesYaml: string, force: boolean
   ): Promise<{ operationId: string }> {
@@ -3938,6 +3955,19 @@ class APIClient {
     const params = new URLSearchParams({ cluster, env });
     if (namespace) params.set("namespace", namespace);
     return this.request(`/spinnaker/rollout-status/batch?${params.toString()}`);
+  }
+
+  /** Busca independente do histórico de execuções de UM deployment específico — Modo Spinnaker
+   * do Rollback de Deployment. `env` opcional: o backend deriva de `cluster` quando ausente. */
+  async getSpinnakerDeploymentExecutions(
+    cluster: string,
+    namespace: string,
+    deploymentName: string,
+    env?: "hlg" | "prd"
+  ): Promise<import("./types").SpinnakerDeploymentExecutions> {
+    const params = new URLSearchParams({ cluster, namespace, deployment: deploymentName });
+    if (env) params.set("env", env);
+    return this.request(`/spinnaker/deployment-executions?${params.toString()}`);
   }
 
   // ─── Command Runner ────────────────────────────────────────────────────────

@@ -299,6 +299,37 @@ func executionsForTarget(executions []Execution, nameApp, namespace string) []Ex
 	return matched
 }
 
+// ExecutionsForTarget expõe executionsForTarget (mesmo filtro/ordenação já usado internamente por
+// DetectRollback) pra consumidores que precisam da lista COMPLETA de execuções de um
+// nameApp/namespace, não só a que decide Matched/IsRollback — usado pelo Modo Spinnaker do
+// Rollback de Deployment (busca independente de execuções, pedido explícito do usuário: "um novo
+// modo de busca poderia ser usando o spinnaker, já que ele é o trigger da esteira CI").
+func ExecutionsForTarget(executions []Execution, nameApp, namespace string) []Execution {
+	return executionsForTarget(executions, nameApp, namespace)
+}
+
+// BuildExecutionSummaries resume TODAS as execuções de `matched` (já filtradas/ordenadas por
+// ExecutionsForTarget) — mesmo formato de buildRecentExecutions, mas sem o teto de
+// recentExecutionsLimit (5): o Modo Spinnaker existe justamente pra o usuário navegar o histórico
+// disponível pra escolher uma versão-alvo de rollback, não só ver as 5 mais recentes que bastam
+// pro badge da lista de Deployments.
+func BuildExecutionSummaries(matched []Execution) []ExecutionSummary {
+	out := make([]ExecutionSummary, 0, len(matched))
+	for _, ex := range matched {
+		out = append(out, ExecutionSummary{
+			ExecutionID:  ex.ID,
+			PipelineName: ex.Name,
+			Status:       ex.Status,
+			ExecutedAt:   executionTime(ex),
+			Version:      ex.Trigger.Version(),
+			CHG:          ex.Trigger.CHGNumber(),
+			CHGUrl:       ex.Trigger.CHGUrl(),
+			IsRollback:   isExplicitRollbackExecution(ex),
+		})
+	}
+	return out
+}
+
 // executionTime prioriza StartTime (mais preciso), caindo pra BuildTime quando ausente.
 func executionTime(ex Execution) int64 {
 	if ex.StartTime > 0 {

@@ -899,7 +899,8 @@ func (s *Server) setupRoutes() {
 
 	// Deployments
 	deploymentHandler := handlers.NewDeploymentHandler(s.kubeManager, s.historyTracker, s.aiTokensStore)
-	deploymentRollbackHandler := handlers.NewDeploymentRollbackHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker)
+	deploymentRollbackLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "deployment-rollback").Logger()
+	deploymentRollbackHandler := handlers.NewDeploymentRollbackHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, &deploymentRollbackLogger)
 	deployments := api.Group("/deployments")
 	{
 		deployments.GET("", deploymentHandler.List)
@@ -930,6 +931,12 @@ func (s *Server) setupRoutes() {
 		deployments.POST("/:cluster/:namespace/:name/rollback", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.Rollback)
 		deployments.POST("/:cluster/:namespace/:name/set-image", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.SetImage)
 		deployments.POST("/:cluster/:namespace/:name/apply-manifest", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.ApplyManifest)
+		// "Modo Helm" do Rollback de Deployment — wrapper dedicado com bypass Kyverno automático
+		// (ver kyverno_bypass.go/deployment_rollback.go), distinto de POST /helm/releases/:release/
+		// rollback (rota genérica da aba Helm, nunca tocada por este). deploymentRollbackHandler
+		// ganha a dependência do serviço Helm via SetHelmService logo abaixo, quando helmService é
+		// construído (ordem de inicialização deste arquivo).
+		deployments.POST("/:cluster/:namespace/:name/helm-rollback", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.HelmRollbackWithBypass)
 	}
 	s.router.GET("/api/v1/deployment-rollback/stream/:sessionId",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
@@ -1215,6 +1222,10 @@ func (s *Server) setupRoutes() {
 	helmCLI := helmclient.NewCLIClient(helmOptions...)
 	helmService := helmservice.NewService(s.kubeManager, helmCLI)
 	helmHandler := handlers.NewHelmHandler(helmService)
+	// deploymentRollbackHandler foi construído antes de helmService existir (ordem de
+	// inicialização deste arquivo) — injeta a dependência aqui, só usada pelo Modo Helm do
+	// Rollback de Deployment (HelmRollbackWithBypass).
+	deploymentRollbackHandler.SetHelmService(helmService)
 	helmRoutes := api.Group("/helm")
 	{
 		helmRoutes.GET("/releases", helmHandler.List)
@@ -1445,6 +1456,7 @@ func (s *Server) setupRoutes() {
 		spinnakerRoutes.POST("/config", spinnakerHandler.SaveConfig)
 		spinnakerRoutes.GET("/projects", spinnakerHandler.ListProjects)
 		spinnakerRoutes.GET("/rollout-status/batch", spinnakerHandler.RolloutStatusBatch)
+		spinnakerRoutes.GET("/deployment-executions", spinnakerHandler.ListDeploymentExecutions)
 	}
 	fmt.Println("✅ Spinnaker routes registradas (config + detecção de rollback)")
 

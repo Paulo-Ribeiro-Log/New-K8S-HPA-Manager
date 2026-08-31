@@ -11,11 +11,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	appsv1 "k8s.io/api/apps/v1"
 
 	"k8s-hpa-manager/internal/config"
+	helmservice "k8s-hpa-manager/internal/helm"
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
+	helm "k8s-hpa-manager/internal/pkg/helm"
 	"k8s-hpa-manager/internal/web/sse"
 )
 
@@ -27,24 +30,43 @@ import (
 // camada HTTP + streaming SSE (mesmo padrão de NetDiscoveryHandler/Helm operations: POST aplica e
 // retorna na hora, sessionId separado só pra acompanhar o "aguardando rollout" via SSE).
 //
-// Para Deployments Helm-gerenciados, o caminho correto é `POST /helm/releases/:release/rollback`
-// (já existente) — nunca este endpoint, que causaria drift do Helm. A decisão de qual caminho usar
-// é do FRONTEND (detecta via annotation meta.helm.sh/release-name do manifest já carregado); este
-// handler não valida isso — é o cliente da aplicação (React) quem nunca oferece este botão pra um
-// Deployment Helm-gerenciado.
+// Para Deployments Helm-gerenciados, o caminho equivalente pro Modo K8s nativo/Imagem/Nexus/
+// Arquivos (Rollback/SetImage/ApplyManifest abaixo) NUNCA é usado — causaria drift do Helm. A
+// decisão de qual caminho usar é do FRONTEND (detecta via annotation meta.helm.sh/release-name do
+// manifest já carregado). O Modo Helm em si (HelmRollbackWithBypass, mais abaixo) vive neste mesmo
+// arquivo/handler — wrapper dedicado em volta do `helmService.Execute` já usado pela aba Helm
+// genérica (POST /helm/releases/:release/rollback), só que com o bypass Kyverno (ver
+// kyverno_bypass.go) automatizado em volta, sem afetar o fluxo da aba Helm.
 
 // DeploymentRollbackHandler expõe o rollback via ReplicaSet history (equivalente a `kubectl
-// rollout undo`).
+// rollout undo`), o patch de imagem (Modo Imagem/Spinnaker), o apply de manifesto histórico (Modo
+// Nexus/Arquivos) e o wrapper de `helm rollback` com bypass Kyverno (Modo Helm).
 type DeploymentRollbackHandler struct {
 	kubeManager    *config.KubeConfigManager
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
+	logger         *zerolog.Logger
 	inProgress     sync.Map // "cluster/namespace/name" -> struct{} — bloqueia 2 rollbacks concorrentes no mesmo Deployment
+	// kyvernoBypassRefs — contador de referência por "cluster/namespace" (ver withKyvernoBypass,
+	// kyverno_bypass.go): evita remover a label de bypass no meio de outra mutação concorrente
+	// (Deployment DIFERENTE, mesmo namespace) que ainda depende dela.
+	kyvernoBypassRefs sync.Map
+	// helmService — opcional, injetado via SetHelmService depois da construção (ordem de init em
+	// server.go: helmService só existe depois deste handler já ter sido criado, evita reordenar um
+	// bloco grande de código só por essa dependência). nil-safe: HelmRollbackWithBypass responde
+	// 503 se ainda não foi injetado.
+	helmService *helmservice.Service
 }
 
 // NewDeploymentRollbackHandler cria o handler.
-func NewDeploymentRollbackHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker) *DeploymentRollbackHandler {
-	return &DeploymentRollbackHandler{kubeManager: km, tracker: tracker, historyTracker: ht}
+func NewDeploymentRollbackHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, ht *history.HistoryTracker, logger *zerolog.Logger) *DeploymentRollbackHandler {
+	return &DeploymentRollbackHandler{kubeManager: km, tracker: tracker, historyTracker: ht, logger: logger}
+}
+
+// SetHelmService injeta a dependência do serviço Helm — chamado uma vez em server.go, depois que
+// helmService é construído (ver comentário do campo helmService acima).
+func (h *DeploymentRollbackHandler) SetHelmService(hs *helmservice.Service) {
+	h.helmService = hs
 }
 
 func rollbackLockKey(cluster, namespace, name string) string {
@@ -156,7 +178,12 @@ func (h *DeploymentRollbackHandler) Rollback(c *gin.Context) {
 	start := time.Now()
 	before, _ := kubeClient.GetDeployment(ctx, namespace, name) // best-effort — só pra auditoria, nunca bloqueia o rollback
 
-	updated, err := kubeClient.RollbackDeploymentToRevision(ctx, namespace, name, req.TargetRevision, changeCause)
+	var updated *appsv1.Deployment
+	err = h.withKyvernoBypass(ctx, kubeClient, cluster, namespace, func() error {
+		var innerErr error
+		updated, innerErr = kubeClient.RollbackDeploymentToRevision(ctx, namespace, name, req.TargetRevision, changeCause)
+		return innerErr
+	})
 	if err != nil {
 		h.inProgress.Delete(lockKey)
 		status := http.StatusInternalServerError
@@ -254,7 +281,12 @@ func (h *DeploymentRollbackHandler) SetImage(c *gin.Context) {
 	start := time.Now()
 	before, _ := kubeClient.GetDeployment(ctx, namespace, name) // best-effort — só pra auditoria
 
-	updated, err := kubeClient.SetDeploymentContainerImages(ctx, namespace, name, req.Images)
+	var updated *appsv1.Deployment
+	err = h.withKyvernoBypass(ctx, kubeClient, cluster, namespace, func() error {
+		var innerErr error
+		updated, innerErr = kubeClient.SetDeploymentContainerImages(ctx, namespace, name, req.Images)
+		return innerErr
+	})
 	if err != nil {
 		h.inProgress.Delete(lockKey)
 		if h.historyTracker != nil {
@@ -351,7 +383,12 @@ func (h *DeploymentRollbackHandler) ApplyManifest(c *gin.Context) {
 	start := time.Now()
 	before, _ := kubeClient.GetDeployment(ctx, namespace, name) // best-effort — só pra auditoria
 
-	updated, err := kubeClient.ApplyDeployment(ctx, req.YAML, "k8s-hpa-manager-rollback-manifest", namespace, name, false, req.Force)
+	var updated *appsv1.Deployment
+	err = h.withKyvernoBypass(ctx, kubeClient, cluster, namespace, func() error {
+		var innerErr error
+		updated, innerErr = kubeClient.ApplyDeployment(ctx, req.YAML, "k8s-hpa-manager-rollback-manifest", namespace, name, false, req.Force)
+		return innerErr
+	})
 	if err != nil {
 		h.inProgress.Delete(lockKey)
 		if h.historyTracker != nil {
@@ -384,6 +421,118 @@ func (h *DeploymentRollbackHandler) ApplyManifest(c *gin.Context) {
 			"sessionId": sessionID,
 			"images":    deploymentImages(updated),
 		},
+	})
+}
+
+type deploymentHelmRollbackRequest struct {
+	Release          string `json:"release" binding:"required"`
+	ReleaseNamespace string `json:"releaseNamespace"`
+	TargetRevision   int    `json:"targetRevision" binding:"required"`
+	Wait             bool   `json:"wait"`
+	RecreatePods     bool   `json:"recreatePods"`
+	Reason           string `json:"reason" binding:"required"`
+}
+
+// HelmRollbackWithBypass — POST /api/v1/deployments/:cluster/:namespace/:name/helm-rollback
+// "Modo Helm" do Rollback de Deployment — wrapper DEDICADO em volta de helmService.Execute (o
+// mesmo motor já usado por POST /helm/releases/:release/rollback, a rota genérica da aba Helm) —
+// nunca toca essa rota genérica nem seu comportamento, só reaproveita o mesmo serviço.
+//
+// Achado real, relatado pelo usuário depois de testar contra um cluster real: "o kyverno bloqueia
+// qualquer tentativa de deployments fora da esteira, o que daria problema principalmente com o
+// modo manual... acredito que ele precisa ser usada em qualquer modo que for executar o rollback".
+// Confirmado também pelo usuário: em cluster Helm-gerenciado, `--force` é adicionalmente
+// obrigatório pra permitir a alteração manual ("é o próprio --force que permite alterações manuais
+// em ambiente helm managed") — por isso este endpoint SEMPRE manda Force:true, nunca aceita false
+// (diferente do checkbox opcional "Forçar" da rota genérica da aba Helm, que continua intocada).
+//
+// Kyverno intercepta a admissão da mutação (o que o `helm rollback` de fato aplica no cluster), não
+// o subprocesso em si — por isso basta envolver a chamada síncrona a helmService.Execute com o
+// mesmo withKyvernoBypass (ver kyverno_bypass.go) já usado por Rollback/SetImage/ApplyManifest.
+// helmService.Execute é SÍNCRONO (bloqueia até o subprocesso `helm rollback` terminar —
+// StreamOperation só replaya o resultado já concluído, não é streaming assíncrono de verdade, ver
+// internal/pkg/helm/cli_client.go) — não há fase de "aguardando rollout" separada como em
+// Rollback/SetImage/ApplyManifest (que watcham o rollout via ReplicaSet depois de retornar); o
+// lock (h.inProgress) é liberado no fim desta própria função, nunca passado pra streamRolloutStatus.
+func (h *DeploymentRollbackHandler) HelmRollbackWithBypass(c *gin.Context) {
+	cluster, namespace, name := c.Param("cluster"), c.Param("namespace"), c.Param("name")
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+	if h.helmService == nil {
+		c.JSON(http.StatusServiceUnavailable, errorResponse("HELM_UNAVAILABLE", "serviço Helm indisponível"))
+		return
+	}
+
+	var req deploymentHelmRollbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("REASON_REQUIRED", "motivo do rollback é obrigatório"))
+		return
+	}
+
+	releaseNamespace := strings.TrimSpace(req.ReleaseNamespace)
+	if releaseNamespace == "" {
+		releaseNamespace = namespace
+	}
+
+	lockKey := rollbackLockKey(cluster, namespace, name)
+	if _, alreadyRunning := h.inProgress.LoadOrStore(lockKey, struct{}{}); alreadyRunning {
+		c.JSON(http.StatusConflict, errorResponse("ROLLBACK_IN_PROGRESS", "já existe um rollback em andamento para este Deployment"))
+		return
+	}
+	defer h.inProgress.Delete(lockKey) // síncrono — nunca passa a bola pro streamRolloutStatus
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", err.Error()))
+		return
+	}
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	ctx := c.Request.Context()
+
+	start := time.Now()
+	var resp *helm.HelmActionResponse
+	err = h.withKyvernoBypass(ctx, kubeClient, cluster, releaseNamespace, func() error {
+		var innerErr error
+		resp, innerErr = h.helmService.Execute(ctx, cluster, helm.HelmActionRequest{
+			Namespace:      releaseNamespace,
+			ReleaseName:    req.Release,
+			Action:         helm.ActionRollback,
+			TargetRevision: req.TargetRevision,
+			Force:          true, // sempre — obrigatório neste cenário, confirmado pelo usuário
+			Wait:           req.Wait,
+			RecreatePods:   req.RecreatePods,
+		})
+		return innerErr
+	})
+
+	if err != nil {
+		if h.historyTracker != nil {
+			entry := CreateHistoryEntry(c, "rollback_deployment_helm", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
+			_ = h.historyTracker.Log(entry)
+		}
+		c.JSON(http.StatusInternalServerError, errorResponse("HELM_ROLLBACK_ERROR", err.Error()))
+		return
+	}
+
+	if h.historyTracker != nil {
+		afterMap := map[string]interface{}{
+			"release":        req.Release,
+			"targetRevision": req.TargetRevision,
+			"reason":         req.Reason,
+		}
+		entry := CreateHistoryEntry(c, "rollback_deployment_helm", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", nil, afterMap, time.Since(start).Milliseconds(), "")
+		_ = h.historyTracker.Log(entry)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    resp,
 	})
 }
 

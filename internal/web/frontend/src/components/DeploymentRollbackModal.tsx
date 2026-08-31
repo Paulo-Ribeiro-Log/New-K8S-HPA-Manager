@@ -33,6 +33,8 @@ import {
   Pencil,
   Save,
   Trash2,
+  Rocket,
+  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
@@ -45,34 +47,42 @@ import type {
   HelmReleaseDetail,
   NexusFlatArtifact,
   RollbackFileEntry,
+  SpinnakerExecutionSummary,
 } from "@/lib/api/types";
 
-// ─── Rollback de Deployment — 5 modos ──────────────────────────────────────────
+// ─── Rollback de Deployment — 6 modos ──────────────────────────────────────────
 //
 // Pedido explícito do usuário, com o passo a passo `kubectl rollout history/undo/status` como
-// referência, mais quatro opções adicionais: Helm (quando o Deployment é gerenciado por Helm — nunca
+// referência, mais cinco opções adicionais: Helm (quando o Deployment é gerenciado por Helm — nunca
 // usa o caminho cru, que causaria drift), Nexus (manifesto histórico publicado pelo pipeline de
 // CI/CD, ver NexusRollbackSection), Imagem (troca só a tag no Deployment ao vivo, sem tocar em
 // mais nada do manifesto — item 1 do procedimento interno de rollback manual desta empresa, o
-// método mais simples/rápido, só válido quando NENHUM manifesto foi alterado desde a versão-alvo) e
-// Arquivos (rollback manual a partir de um YAML já salvo — pasta gerenciada de artefatos baixados
-// do Nexus ou qualquer outro diretório do servidor, ver FileRollbackSection).
+// método mais simples/rápido, só válido quando NENHUM manifesto foi alterado desde a versão-alvo),
+// Spinnaker (busca independente no histórico de execuções do Spinnaker — pedido explícito do
+// usuário: "um novo modo de busca poderia ser usando o spinnaker, já que ele é o trigger da esteira
+// CI" — ver SpinnakerRollbackSection) e Arquivos (rollback manual a partir de um YAML já salvo —
+// pasta gerenciada de artefatos baixados do Nexus ou qualquer outro diretório do servidor, ver
+// FileRollbackSection).
 //
 // Detecção de modo: automática, a partir do manifest já carregado pela aba Deployments —
 // `meta.helm.sh/release-name` + `app.kubernetes.io/managed-by: Helm` identificam um Deployment
-// Helm-gerenciado (oferece Modo Helm e Modo Nexus, nunca os outros 2 — evita drift). Sem esses
-// marcadores, oferece Modo K8s nativo e Modo Imagem — com aviso se detectar labels de GitOps
-// conhecidos (Flux/ArgoCD), já que um reconcile automático pode reverter o rollback pouco depois.
-// Modo Arquivos é o único disponível nos dois casos (Helm-gerenciado ou não) — a escolha do arquivo
-// é sempre manual e explícita, com aviso de drift condicional quando Helm-gerenciado.
+// Helm-gerenciado (oferece Modo Helm e Modo Nexus, nunca os outros 3 — evita drift). Sem esses
+// marcadores, oferece Modo K8s nativo, Modo Imagem e Modo Spinnaker — com aviso se detectar labels
+// de GitOps conhecidos (Flux/ArgoCD), já que um reconcile automático pode reverter o rollback pouco
+// depois. Modo Spinnaker aplica via o MESMO endpoint de patch de imagem do Modo Imagem (troca só a
+// tag) — por isso segue a mesma restrição de drift (só oferecido pra Deployments NÃO
+// Helm-gerenciados). Modo Arquivos é o único disponível nos dois casos (Helm-gerenciado ou não) — a
+// escolha do arquivo é sempre manual e explícita, com aviso de drift condicional quando
+// Helm-gerenciado.
 //
-// Segurança comum aos 5 modos: diff obrigatório antes de liberar a confirmação (Modo Imagem usa um
-// diff textual simples do campo image, não um YAML completo — não há mais nada mudando), motivo
-// obrigatório (vira change-cause/anotação de auditoria), confirmação em 2 cliques (mesmo padrão já
-// usado em SreApprovalButton.tsx — nunca um modal empilhado sobre modal), progresso via SSE nunca
-// silencioso, nunca reverter pra um estado idêntico ao atual.
+// Segurança comum aos 6 modos: diff/resumo obrigatório antes de liberar a confirmação (Modo Imagem
+// e Modo Spinnaker usam um resumo textual simples do campo image por container, não um YAML
+// completo — não há mais nada mudando), motivo obrigatório (vira change-cause/anotação de
+// auditoria), confirmação em 2 cliques (mesmo padrão já usado em SreApprovalButton.tsx — nunca um
+// modal empilhado sobre modal), progresso via SSE nunca silencioso, nunca reverter pra um estado
+// idêntico ao atual.
 
-type RollbackMode = "helm" | "k8s" | "nexus" | "image" | "files";
+type RollbackMode = "helm" | "k8s" | "nexus" | "image" | "spinnaker" | "files";
 
 const GITOPS_LABEL_MARKERS = [
   "kustomize.toolkit.fluxcd.io/name",
@@ -87,6 +97,13 @@ function formatDate(v?: string): string {
   } catch {
     return v;
   }
+}
+
+// fmtEpochMs — mesma formatação de formatDate, mas pra timestamps epoch ms (formato do Gate do
+// Spinnaker) em vez de string ISO — mesmo padrão já usado em SpinnakerRolloutModal.tsx.
+function fmtEpochMs(ms?: number): string {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 // formatVersion — mesma lógica de DeploymentsTab.tsx (não exportada de lá, duplicada aqui de
@@ -226,6 +243,17 @@ export function DeploymentRollbackModal({
           </div>
         )}
 
+        {/* Bypass Kyverno automático — pedido explícito do usuário depois de relatar que o Kyverno
+            bloqueia mutações manuais fora da esteira CI nesta empresa: "acredito que ele precisa
+            ser usada em qualquer modo que for executar o rollback". Aplicado server-side (label
+            devops.k8s.io/kyverno-bypass=true no namespace, sempre removida depois — ver
+            withKyvernoBypass/internal/web/handlers/kyverno_bypass.go) nos 6 modos, sem exigir
+            nenhuma ação do usuário — esta linha existe só pra transparência. */}
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+          <CheckCircle2 className="w-3.5 h-3.5" />
+          Bypass Kyverno (<span className="font-mono">devops.k8s.io/kyverno-bypass</span>) aplicado e removido automaticamente durante o rollback, em qualquer modo.
+        </div>
+
         {isHelmManaged ? (
           <div className="flex items-center gap-1 border-b border-border shrink-0">
             <button
@@ -268,6 +296,13 @@ export function DeploymentRollbackModal({
             </button>
             <button
               type="button"
+              onClick={() => setMode("spinnaker")}
+              className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "spinnaker" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
+            >
+              <Rocket className="w-3.5 h-3.5" /> Spinnaker (execuções CI)
+            </button>
+            <button
+              type="button"
               onClick={() => setMode("files")}
               className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "files" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
             >
@@ -280,6 +315,8 @@ export function DeploymentRollbackModal({
           {mode === "helm" && isHelmManaged && (
             <HelmRollbackSection
               cluster={cluster}
+              namespace={namespace}
+              deploymentName={deploymentName}
               release={helmReleaseName}
               releaseNamespace={helmReleaseNamespace}
               canUpdateDeployment={canUpdateDeployment}
@@ -309,6 +346,16 @@ export function DeploymentRollbackModal({
           )}
           {mode === "image" && !isHelmManaged && (
             <ImageRollbackSection
+              cluster={cluster}
+              namespace={namespace}
+              deploymentName={deploymentName}
+              currentYaml={manifest?.yaml || ""}
+              canUpdateDeployment={canUpdateDeployment}
+              onDone={handleDone}
+            />
+          )}
+          {mode === "spinnaker" && !isHelmManaged && (
+            <SpinnakerRollbackSection
               cluster={cluster}
               namespace={namespace}
               deploymentName={deploymentName}
@@ -502,6 +549,124 @@ function parseContainersFromYaml(currentYaml: string): ParsedContainer[] {
   }
 }
 
+// applyTagToImage — substitui só a TAG (parte depois do último ':' que vem depois da última '/',
+// pra não confundir com a porta de um registry privado tipo "registry.com:5000/app") de uma
+// referência de imagem, preservando registry/repositório intactos. Usada pelo Modo Spinnaker (e
+// pela sugestão embutida no Modo Imagem) pra aplicar a versão-alvo resolvida de uma execução do
+// Spinnaker (Trigger.Version(), ex: "1.5.48-2") sem precisar que o usuário digite a imagem inteira.
+function applyTagToImage(image: string, tag: string): string {
+  const lastSlash = image.lastIndexOf("/");
+  const lastColon = image.lastIndexOf(":");
+  if (lastColon > lastSlash) return image.slice(0, lastColon) + ":" + tag;
+  return image + ":" + tag;
+}
+
+// useSpinnakerExecutions — busca o histórico de execuções do Spinnaker pra um deployment
+// específico (GET /spinnaker/deployment-executions), compartilhado entre o Modo Spinnaker
+// standalone (SpinnakerRollbackSection) e a sugestão embutida dentro do Modo Imagem
+// (ImageRollbackSection) — um único ponto de busca/estado pra não duplicar a lógica de
+// loading/erro entre os dois usos.
+function useSpinnakerExecutions(cluster: string, namespace: string, deploymentName: string, enabled: boolean) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [env, setEnv] = useState<"hlg" | "prd" | null>(null);
+  const [executions, setExecutions] = useState<SpinnakerExecutionSummary[]>([]);
+  const [fetched, setFetched] = useState(false);
+
+  const refetch = useCallback(() => {
+    setLoading(true);
+    setError("");
+    apiClient.getSpinnakerDeploymentExecutions(cluster, namespace, deploymentName)
+      .then((res) => { setEnv(res.env); setExecutions(res.executions); setFetched(true); })
+      .catch((err) => setError(err instanceof Error ? err.message : "Erro ao buscar execuções no Spinnaker"))
+      .finally(() => setLoading(false));
+  }, [cluster, namespace, deploymentName]);
+
+  useEffect(() => {
+    if (enabled && !fetched && !loading) refetch();
+  }, [enabled, fetched, loading, refetch]);
+
+  return { loading, error, env, executions, refetch };
+}
+
+// SpinnakerExecutionPicker — lista de execuções do Spinnaker pra um deployment, com filtro
+// padrão só-sucesso (rollback quase sempre quer uma versão que rodou com sucesso; "mostrar
+// todas" existe pra investigar uma falha específica) e um clique por linha pra escolher.
+// Componente compartilhado entre o Modo Spinnaker standalone e a sugestão embutida no Modo Imagem.
+function SpinnakerExecutionPicker({
+  cluster, namespace, deploymentName, onPick, compact,
+}: {
+  cluster: string; namespace: string; deploymentName: string; onPick: (ex: SpinnakerExecutionSummary) => void; compact?: boolean;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const { loading, error, env, executions, refetch } = useSpinnakerExecutions(cluster, namespace, deploymentName, true);
+  const visible = showAll ? executions : executions.filter((ex) => ex.status === "SUCCEEDED");
+
+  return (
+    <div className="space-y-2">
+      {loading && (
+        <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Buscando execuções no Spinnaker...
+        </div>
+      )}
+      {!loading && error && (
+        <div className="text-xs text-destructive flex items-center gap-2">
+          {error}
+          <button type="button" onClick={refetch} className="underline shrink-0">tentar de novo</button>
+        </div>
+      )}
+      {!loading && !error && (
+        <>
+          {env && !compact && (
+            <div className="text-[11px] text-muted-foreground">Ambiente Spinnaker: <span className="font-mono">{env}</span></div>
+          )}
+          {executions.length === 0 ? (
+            <div className="text-xs text-muted-foreground">
+              Nenhuma execução encontrada no Spinnaker pra este deployment — o Gate só cobre uma janela de tempo limitada
+              (~10 execuções por application, compartilhadas entre vários microsserviços; ver CLAUDE.md), então histórico
+              antigo pode já ter rolado pra fora dessa janela.
+            </div>
+          ) : (
+            <>
+              <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
+                <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} className="rounded" />
+                Mostrar todas (incluindo falhas/canceladas)
+              </label>
+              {visible.length === 0 ? (
+                <div className="text-xs text-muted-foreground">Nenhuma execução com status SUCEEDED — marque "mostrar todas" pra ver o histórico completo.</div>
+              ) : (
+                <div className={`space-y-1 overflow-y-auto rounded-md border p-1.5 ${compact ? "max-h-40" : "max-h-64"}`}>
+                  {visible.map((ex) => (
+                    <button
+                      key={ex.execution_id}
+                      type="button"
+                      onClick={() => onPick(ex)}
+                      className="w-full text-left rounded px-2 py-1.5 text-xs hover:bg-accent flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-mono truncate">{ex.version || "(sem versão)"}</div>
+                        <div className="text-[10px] text-muted-foreground truncate">
+                          {ex.pipeline_name} · {fmtEpochMs(ex.executed_at)}{ex.chg && <> · {ex.chg}</>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {ex.is_rollback && (
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 border-amber-500/40 text-amber-600 dark:text-amber-400">rollback</Badge>
+                        )}
+                        <Badge variant={ex.status === "SUCCEEDED" ? "outline" : "destructive"} className="text-[9px] px-1 py-0">{ex.status}</Badge>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ImageRollbackSection({
   cluster, namespace, deploymentName, currentYaml, canUpdateDeployment, onDone,
 }: {
@@ -512,6 +677,15 @@ function ImageRollbackSection({
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [applying, setApplying] = useState(false);
+
+  // Sugestão de versão via Spinnaker — pedido explícito do usuário ("um novo modo de busca
+  // poderia ser usando o spinnaker, já que ele é o trigger da esteira CI"): o Spinnaker conhece a
+  // tag-alvo REAL de cada execução (trigger.parameters), fonte mais autoritativa que digitar a
+  // tag manualmente. Painel colapsável e opt-in — nunca sobrescreve um campo sozinho, só oferece
+  // um botão "Usar" por container quando uma execução é escolhida (evita aplicar a mesma tag num
+  // sidecar com imagem completamente diferente, ex: istio-proxy).
+  const [spinnakerOpen, setSpinnakerOpen] = useState(false);
+  const [spinnakerPick, setSpinnakerPick] = useState<SpinnakerExecutionSummary | null>(null);
 
   const progress = useRollbackProgress();
 
@@ -566,6 +740,32 @@ function ImageRollbackSection({
         </span>
       </div>
 
+      <div>
+        <button
+          type="button"
+          onClick={() => setSpinnakerOpen((v) => !v)}
+          className="flex items-center gap-1.5 text-xs text-primary hover:underline"
+        >
+          <Rocket className="w-3.5 h-3.5" /> {spinnakerOpen ? "Ocultar busca no Spinnaker" : "Buscar versão no Spinnaker"}
+        </button>
+        {spinnakerOpen && (
+          <div className="mt-2 rounded-md border p-2.5">
+            <SpinnakerExecutionPicker
+              cluster={cluster}
+              namespace={namespace}
+              deploymentName={deploymentName}
+              compact
+              onPick={(ex) => { setSpinnakerPick(ex); toast.info(`Versão ${ex.version || "?"} selecionada — clique em "Usar" no container desejado`); }}
+            />
+          </div>
+        )}
+        {spinnakerPick?.version && (
+          <div className="mt-1.5 text-[11px] text-muted-foreground">
+            Selecionado: <span className="font-mono text-foreground">{spinnakerPick.version}</span> ({spinnakerPick.pipeline_name}, {fmtEpochMs(spinnakerPick.executed_at)})
+          </div>
+        )}
+      </div>
+
       <div className="space-y-3">
         {containers.map((c) => (
           <div key={c.name} className="space-y-1">
@@ -573,13 +773,27 @@ function ImageRollbackSection({
               Container <span className="font-mono font-semibold text-foreground">{c.name}</span>
             </Label>
             <div className="text-[11px] font-mono text-muted-foreground truncate">Atual: {c.image}</div>
-            <Input
-              id={`img-${c.name}`}
-              value={newImages[c.name] ?? ""}
-              onChange={(e) => setNewImages((prev) => ({ ...prev, [c.name]: e.target.value }))}
-              placeholder={c.image}
-              className="font-mono text-xs"
-            />
+            <div className="flex items-center gap-1.5">
+              <Input
+                id={`img-${c.name}`}
+                value={newImages[c.name] ?? ""}
+                onChange={(e) => setNewImages((prev) => ({ ...prev, [c.name]: e.target.value }))}
+                placeholder={c.image}
+                className="font-mono text-xs"
+              />
+              {spinnakerPick?.version && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 h-8 text-xs"
+                  onClick={() => setNewImages((prev) => ({ ...prev, [c.name]: applyTagToImage(c.image, spinnakerPick.version!) }))}
+                  title={`Aplicar a tag ${spinnakerPick.version} neste container`}
+                >
+                  Usar
+                </Button>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -629,26 +843,226 @@ function ImageRollbackSection({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Modo Spinnaker — busca INDEPENDENTE no histórico de execuções do Spinnaker (o próprio trigger
+// da esteira CI) pra escolher a versão-alvo de um rollback — pedido explícito do usuário: "um
+// novo modo de busca poderia ser usando o spinnaker, já que ele é o trigger da esteira CI".
+//
+// Diferente do Modo Nexus/Arquivos (que aplicam um MANIFESTO completo), o Spinnaker não expõe um
+// manifesto renderizado pronto via API — só o pipeline de rollback explícito em PRD referencia um
+// manifestArtifact, e mesmo esse é o Job de rollback em si, não necessariamente o Deployment alvo
+// (ver Stage.ManifestReference, internal/spinnaker/models.go). O dado autoritativo que o Gate
+// devolve é a TAG-ALVO de cada execução (Trigger.Version(), lido de trigger.parameters — a mesma
+// fonte que decide o resultado de DetectRollback). Por isso este modo aplica exatamente como o
+// Modo Imagem (mesmo endpoint apiClient.setDeploymentImage/SetDeploymentContainerImages — patch
+// estratégico só no campo .image), só que a origem da tag vem de uma execução escolhida no
+// histórico do Spinnaker (SpinnakerExecutionPicker, GET /spinnaker/deployment-executions) em vez
+// de digitada manualmente. Mesma restrição de drift do Modo Imagem: só oferecido pra Deployments
+// NÃO Helm-gerenciados (ver DeploymentRollbackModal).
+// ═══════════════════════════════════════════════════════════════════════════
+
+function SpinnakerRollbackSection({
+  cluster, namespace, deploymentName, currentYaml, canUpdateDeployment, onDone,
+}: {
+  cluster: string; namespace: string; deploymentName: string; currentYaml: string; canUpdateDeployment: boolean; onDone: () => void;
+}) {
+  const containers = useMemo(() => parseContainersFromYaml(currentYaml), [currentYaml]);
+  const [selectedExecution, setSelectedExecution] = useState<SpinnakerExecutionSummary | null>(null);
+  const [newImages, setNewImages] = useState<Record<string, string>>({});
+  const [reason, setReason] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const progress = useRollbackProgress();
+
+  // Reseta os campos com a imagem ATUAL sempre que uma execução é (re)escolhida — nunca
+  // pré-preenche automaticamente com a tag da execução: o usuário aplica explicitamente por
+  // container via o botão "Usar" (mesmo racional de segurança da sugestão embutida em
+  // ImageRollbackSection — evita corromper um sidecar com uma tag que não é dele).
+  useEffect(() => {
+    const initial: Record<string, string> = {};
+    containers.forEach((c) => { initial[c.name] = c.image; });
+    setNewImages(initial);
+  }, [containers, selectedExecution]);
+
+  const changedImages = useMemo(() => {
+    const changed: Record<string, string> = {};
+    containers.forEach((c) => {
+      const v = (newImages[c.name] ?? "").trim();
+      if (v && v !== c.image) changed[c.name] = v;
+    });
+    return changed;
+  }, [containers, newImages]);
+
+  const canConfirm = Object.keys(changedImages).length > 0 && reason.trim().length > 0;
+
+  const handleConfirm = async () => {
+    setApplying(true);
+    setConfirming(false);
+    try {
+      const { sessionId } = await apiClient.setDeploymentImage(cluster, namespace, deploymentName, changedImages, reason.trim());
+      toast.success("Imagem revertida via Spinnaker — acompanhando o rollout...");
+      progress.start(apiClient.getDeploymentRollbackStreamURL(sessionId), onDone);
+    } catch (err) {
+      toast.error("Falha ao trocar a imagem", { description: err instanceof Error ? err.message : "Erro" });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  if (progress.active || progress.done) {
+    return <RolloutProgressPanel progress={progress} />;
+  }
+
+  if (containers.length === 0) {
+    return <div className="text-sm text-destructive py-8 text-center">Não foi possível ler os containers do manifesto atual.</div>;
+  }
+
+  return (
+    <div className="space-y-4 py-2">
+      <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-700 dark:text-blue-400">
+        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+        <span>
+          Este modo busca o histórico REAL de execuções do Spinnaker (o trigger da esteira CI) pra achar a versão-alvo de um
+          deploy anterior, e aplica <strong>só a tag da imagem</strong> — equivalente ao Modo Imagem, mas sem digitar a tag à
+          mão. Só use quando tiver certeza de que <strong>nenhum outro manifesto</strong> mudou desde essa execução.
+        </span>
+      </div>
+
+      {!selectedExecution ? (
+        <SpinnakerExecutionPicker
+          cluster={cluster}
+          namespace={namespace}
+          deploymentName={deploymentName}
+          onPick={setSelectedExecution}
+        />
+      ) : (
+        <>
+          <div className="flex items-center justify-between rounded-md border p-2.5 text-xs gap-2">
+            <div className="min-w-0">
+              <div className="font-mono font-semibold truncate">{selectedExecution.version || "(sem versão)"}</div>
+              <div className="text-muted-foreground mt-0.5 truncate">
+                {selectedExecution.pipeline_name} · {fmtEpochMs(selectedExecution.executed_at)}
+                {selectedExecution.chg && <> · {selectedExecution.chg}</>}{" "}
+                <Badge variant="outline" className="text-[9px] px-1 py-0 align-middle">{selectedExecution.status}</Badge>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {selectedExecution.execution_url && (
+                <a href={selectedExecution.execution_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
+                  Ver no Spinnaker <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+              <Button type="button" size="sm" variant="ghost" onClick={() => setSelectedExecution(null)}>
+                <Search className="w-3.5 h-3.5 mr-1" /> Trocar execução
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {containers.map((c) => (
+              <div key={c.name} className="space-y-1">
+                <Label htmlFor={`spimg-${c.name}`} className="text-xs text-muted-foreground block">
+                  Container <span className="font-mono font-semibold text-foreground">{c.name}</span>
+                </Label>
+                <div className="text-[11px] font-mono text-muted-foreground truncate">Atual: {c.image}</div>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    id={`spimg-${c.name}`}
+                    value={newImages[c.name] ?? ""}
+                    onChange={(e) => setNewImages((prev) => ({ ...prev, [c.name]: e.target.value }))}
+                    placeholder={c.image}
+                    className="font-mono text-xs"
+                  />
+                  {selectedExecution.version && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="shrink-0 h-8 text-xs"
+                      onClick={() => setNewImages((prev) => ({ ...prev, [c.name]: applyTagToImage(c.image, selectedExecution.version!) }))}
+                      title={`Aplicar a tag ${selectedExecution.version} neste container`}
+                    >
+                      Usar
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {Object.keys(changedImages).length > 0 && (
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Mudanças a aplicar</Label>
+              <div className="space-y-1 rounded-md border p-2.5 text-xs">
+                {Object.entries(changedImages).map(([name, image]) => {
+                  const original = containers.find((c) => c.name === name)?.image ?? "";
+                  return (
+                    <div key={name} className="font-mono">
+                      <span className="text-muted-foreground">{name}:</span>{" "}
+                      <span className="text-red-500 line-through">{original}</span>{" "}
+                      → <span className="text-green-600 dark:text-green-400">{image}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <Label htmlFor="spinnaker-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório — vira annotation change-cause)</Label>
+            <Textarea id="spinnaker-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: revertendo para a versão da execução Spinnaker anterior" rows={2} />
+          </div>
+
+          <div className="flex items-center gap-2 pt-2 border-t">
+            {!confirming ? (
+              <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
+                <RotateCcw className="w-4 h-4 mr-2" /> Aplicar versão do Spinnaker
+              </Button>
+            ) : (
+              <>
+                <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar troca de imagem?</span>
+                <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
+                  {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, aplicar
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={applying}>
+                  <XCircle className="w-4 h-4 mr-1" /> Cancelar
+                </Button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Modo Helm — `helm rollback` nativo, reaproveita os mesmos endpoints já usados pela aba Helm
 // ═══════════════════════════════════════════════════════════════════════════
 
 function HelmRollbackSection({
-  cluster, release, releaseNamespace, canUpdateDeployment, onDone,
+  cluster, namespace, deploymentName, release, releaseNamespace, canUpdateDeployment, onDone,
 }: {
-  cluster: string; release: string; releaseNamespace: string; canUpdateDeployment: boolean; onDone: () => void;
+  cluster: string; namespace: string; deploymentName: string; release: string; releaseNamespace: string; canUpdateDeployment: boolean; onDone: () => void;
 }) {
   const [detail, setDetail] = useState<HelmReleaseDetail | null>(null);
   const [revisions, setRevisions] = useState<HelmRevisionEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [target, setTarget] = useState<number | null>(null);
-  const [force, setForce] = useState(false);
   // wait/recreatePods — pedido explícito do usuário depois de analisar a documentação interna de
   // rollback manual desta empresa, que recomenda sempre `helm rollback ... --wait --force
   // --recreate-pods` no cenário de emergência (rollback automático indisponível/falhou). Nenhum
   // dos dois era passado antes — `buildRollbackArgs` (internal/pkg/helm/cli_client.go) só
-  // suportava --force. Desligados por padrão (mesmo padrão de `force`, opt-in explícito) — o
-  // usuário liga quando está de fato no cenário de emergência descrito na documentação.
+  // suportava --force. Desligados por padrão (mesmo padrão de opt-in explícito) — o usuário liga
+  // quando está de fato no cenário de emergência descrito na documentação.
+  //
+  // "Forçar" (--force) deixou de ser um checkbox opcional — achado real, relatado pelo usuário
+  // depois de testar contra um cluster protegido por Kyverno: "para cluster gerenciados por helm
+  // é preciso ter a flag --force... é o próprio --force que permite alterações manuais em
+  // ambiente helm managed". apiClient.helmRollbackWithBypass (POST .../helm-rollback, backend em
+  // HelmRollbackWithBypass) sempre manda Force:true, nunca aceita false — sem checkbox pra não
+  // sugerir que é opcional quando não é.
   const [wait, setWait] = useState(false);
   const [recreatePods, setRecreatePods] = useState(false);
   const [reason, setReason] = useState("");
@@ -680,8 +1094,10 @@ function HelmRollbackSection({
     setApplying(true);
     setConfirming(false);
     try {
-      const { operationId } = await apiClient.helmRollback(cluster, release, releaseNamespace, target, force, wait, recreatePods);
-      toast.success(`helm rollback iniciado para a revisão ${target} — acompanhando...`);
+      const { operationId } = await apiClient.helmRollbackWithBypass(
+        cluster, namespace, deploymentName, release, releaseNamespace, target, wait, recreatePods, reason.trim()
+      );
+      toast.success(`helm rollback iniciado para a revisão ${target} (bypass Kyverno aplicado automaticamente) — acompanhando...`);
       progress.startHelm(operationId, onDone);
     } catch (err) {
       toast.error("Falha ao reverter release Helm", { description: err instanceof Error ? err.message : "Erro" });
@@ -729,11 +1145,16 @@ function HelmRollbackSection({
 
       {target != null && (
         <>
+          <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-400">
+            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              Bypass Kyverno (<span className="font-mono">devops.k8s.io/kyverno-bypass=true</span>) e <span className="font-mono">--force</span> são aplicados
+              automaticamente pra esta operação — necessários em clusters com a política que bloqueia mutações fora da esteira CI. A label é removida do
+              namespace assim que o `helm rollback` terminar.
+            </span>
+          </div>
+
           <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <input type="checkbox" id="helm-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
-              <Label htmlFor="helm-force" className="text-xs cursor-pointer">Forçar (recria recursos se necessário — <span className="font-mono">--force</span>)</Label>
-            </div>
             <div className="flex items-center gap-2">
               <input type="checkbox" id="helm-wait" checked={wait} onChange={(e) => setWait(e.target.checked)} className="rounded" />
               <Label htmlFor="helm-wait" className="text-xs cursor-pointer">Aguardar pods ficarem prontos antes de reportar sucesso (<span className="font-mono">--wait</span>)</Label>
@@ -743,7 +1164,7 @@ function HelmRollbackSection({
               <Label htmlFor="helm-recreate-pods" className="text-xs cursor-pointer">Recriar pods mesmo sem mudança de template (<span className="font-mono">--recreate-pods</span>)</Label>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              As 3 opções acima juntas são a recomendação do procedimento interno de rollback manual desta empresa pro cenário de emergência (rollback automático indisponível/falhou).
+              As opções acima são a recomendação do procedimento interno de rollback manual desta empresa pro cenário de emergência (rollback automático indisponível/falhou).
             </p>
           </div>
 
@@ -798,8 +1219,12 @@ function HelmRollbackSection({
 // sanitizado com timestamp+versão embutidos), sem hierarquia release/version/arquivo nenhuma.
 // BrowseRepository descartava esses componentes em silêncio — corrigido com SearchFlatArtifacts.
 //
-// Sem streaming de progresso de rollout (diferente do Modo K8s nativo): apiClient.applyDeployment
-// é síncrono e não abre sessão SSE — mesmo comportamento do botão "Aplicar" normal da aba.
+// Streaming de progresso de rollout: aplica via apiClient.applyDeploymentManifest (endpoint
+// dedicado, "POST .../apply-manifest") em vez do apiClient.applyDeployment genérico usado pelo
+// botão "Aplicar" normal da aba — reaproveita o mesmo lock+auditoria+streaming de rollout já usado
+// por Rollback/SetImage (ver ApplyManifest, internal/web/handlers/deployment_rollback.go). Achado
+// real, relatado pelo usuário: aplicar um manifesto histórico É um rollback de verdade, merece a
+// mesma visibilidade de rollout dos outros modos — não devia ter ficado "cego" depois de aplicar.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // NEXUS_ROLLBACK_REPOSITORY — repositório Nexus DEDICADO a histórico de deploy nesta empresa,

@@ -230,6 +230,100 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// ListDeploymentExecutions — GET /api/v1/spinnaker/deployment-executions?cluster=&namespace=&
+// deployment=&env=. Busca INDEPENDENTE de execuções do Spinnaker pra um nameApp/namespace
+// específico — pedido explícito do usuário ("um novo modo de busca poderia ser usando o
+// spinnaker, já que ele é o trigger da esteira CI"): alimenta o Modo Spinnaker do Rollback de
+// Deployment (`DeploymentRollbackModal.tsx`), que lista o histórico de execuções pra escolher uma
+// versão-alvo de rollback — mesma busca por application/projeto já usada por RolloutStatusBatch,
+// mas devolvendo o histórico completo (`spinnaker.BuildExecutionSummaries`, sem o teto de 5 de
+// `RollbackInfo.RecentExecutions`) de UM deployment só, em vez do lote inteiro do cluster.
+// `env` é opcional — quando ausente, deriva de `cluster` via `spinnaker.DeriveEnv` (mesma
+// convenção já usada pelo frontend, `lib/spinnakerEnv.ts`).
+func (h *SpinnakerHandler) ListDeploymentExecutions(c *gin.Context) {
+	cluster := c.Query("cluster")
+	namespace := c.Query("namespace")
+	deployment := c.Query("deployment")
+	env := c.Query("env")
+
+	if cluster == "" || namespace == "" || deployment == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetros 'cluster', 'namespace' e 'deployment' são obrigatórios"})
+		return
+	}
+	if env == "" {
+		env = spinnaker.DeriveEnv(cluster)
+	}
+	if env != spinnaker.EnvHLG && env != spinnaker.EnvPRD {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "não foi possível derivar o ambiente Spinnaker (hlg/prd) a partir do nome do cluster '" + cluster + "' — informe 'env' explicitamente"})
+		return
+	}
+
+	cfg, gateURL, err := h.resolveGateForEnv(c.Request.Context(), env)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if cfg.SelectedProject == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nenhum projeto Spinnaker selecionado no perfil do usuário"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	var applications []string
+	executionsByApp := map[string][]spinnaker.Execution{}
+	err = spinnaker.WithSession(ctx, gateURL, h.baseDir, cfg.EffectiveLoginIdentifier(), func(cl *spinnaker.Client) error {
+		projects, err := cl.ListProjects(ctx)
+		if err != nil {
+			return err
+		}
+		for _, p := range projects {
+			if strings.EqualFold(p.Name, cfg.SelectedProject) {
+				applications = p.Config.Applications
+				break
+			}
+		}
+		if len(applications) == 0 {
+			return nil
+		}
+		for _, app := range applications {
+			// Mesmo Limit de RolloutStatusBatch (30) — o Gate capa por janela de tempo própria,
+			// não por esse parâmetro (ver comentário lá).
+			execs, err := cl.SearchExecutions(ctx, app, spinnaker.SearchOptions{Limit: 30})
+			if err != nil {
+				h.logf("SearchExecutions falhou pra application %s: %v", app, err)
+				continue
+			}
+			executionsByApp[app] = execs
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "falha ao consultar o Spinnaker: " + err.Error()})
+		return
+	}
+	if len(applications) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "projeto '" + cfg.SelectedProject + "' não encontrado (ou sem applications) no Spinnaker"})
+		return
+	}
+
+	var allExecutions []spinnaker.Execution
+	for _, execs := range executionsByApp {
+		allExecutions = append(allExecutions, execs...)
+	}
+
+	matched := spinnaker.ExecutionsForTarget(allExecutions, deployment, namespace)
+	summaries := spinnaker.BuildExecutionSummaries(matched)
+
+	deckURL, _ := cfg.DeckURLForEnv(env)
+	for i := range summaries {
+		summaries[i].ExecutionURL = buildExecutionURL(deckURL, cfg.SelectedProject, applicationForExecution(executionsByApp, summaries[i].ExecutionID), summaries[i].ExecutionID)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"env": env, "executions": summaries})
+}
+
 // applyRegistryFreshness preenche info.RegistryStale/RegistryLastSeen a partir de rec.LastSeen —
 // chamado incondicionalmente (matched ou não, veio do Gate ao vivo ou do SpinnakerHistoryStore)
 // por todo consumidor de DetectRollback que tem acesso ao DeploymentRecord original.

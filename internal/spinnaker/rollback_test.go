@@ -508,6 +508,41 @@ func TestDetectRollback_RecentStageFailures_SemFalhaFicaVazio(t *testing.T) {
 	}
 }
 
+// TestBuildExecutionSummaries_SemTeto garante que ExecutionsForTarget/BuildExecutionSummaries
+// (usadas pelo Modo Spinnaker do Rollback de Deployment — busca independente) devolvem TODAS as
+// execuções, sem o teto de recentExecutionsLimit (5) que RollbackInfo.RecentExecutions tem —
+// diferença deliberada: o badge da lista de Deployments só precisa de "as últimas poucas", mas o
+// Modo Spinnaker existe pra o usuário navegar o histórico inteiro disponível.
+func TestBuildExecutionSummaries_SemTeto(t *testing.T) {
+	var executions []Execution
+	for i := 0; i < 8; i++ {
+		executions = append(executions, Execution{
+			ID: fmt.Sprintf("e%d", i), Name: "deploy-aks-global", Status: "SUCCEEDED",
+			StartTime: int64(i * 1000), Trigger: mkTrigger("app-x", "ns-x", fmt.Sprintf("1.0.%d", i), "CHG0000001"),
+		})
+	}
+	// execuções de outro nameApp/namespace nunca devem aparecer no resultado.
+	executions = append(executions, Execution{ID: "outro", Status: "SUCCEEDED", StartTime: 9000, Trigger: mkTrigger("app-y", "ns-y", "9.9.9", "")})
+
+	matched := ExecutionsForTarget(executions, "app-x", "ns-x")
+	got := BuildExecutionSummaries(matched)
+
+	if len(got) != 8 {
+		t.Fatalf("BuildExecutionSummaries devolveu %d itens, esperava 8 (sem teto de recentExecutionsLimit=%d)", len(got), recentExecutionsLimit)
+	}
+	if got[0].ExecutionID != "e7" {
+		t.Errorf("got[0].ExecutionID = %q, esperava e7 (mais recente primeiro)", got[0].ExecutionID)
+	}
+	if got[7].ExecutionID != "e0" {
+		t.Errorf("got[7].ExecutionID = %q, esperava e0 (mais antiga por último)", got[7].ExecutionID)
+	}
+	for _, s := range got {
+		if s.ExecutionID == "outro" {
+			t.Fatalf("execução de outro nameApp/namespace vazou pro resultado: %+v", s)
+		}
+	}
+}
+
 // TestManifestReference_ContextInvalido garante que Stage.ManifestReference nunca panica nem
 // retorna erro fatal com um context malformado/ausente — dado best-effort.
 func TestManifestReference_ContextInvalido(t *testing.T) {
