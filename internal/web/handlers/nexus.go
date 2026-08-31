@@ -344,6 +344,36 @@ func (h *NexusHandler) BrowseRepository(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// SearchFlatArtifacts busca artefatos SEM hierarquia release/version/arquivo (ver
+// nexus.FlatArtifact) — repositórios como "continuousdeploy-history" desta empresa publicam cada
+// deploy de PRD como um YAML solto na raiz, nome sanitizado com timestamp+versão embutidos, sem
+// pasta nenhuma; BrowseRepository pressupõe hierarquia e descarta esses componentes em silêncio.
+// GET /api/v1/nexus/search-flat?repository=continuousdeploy-history&q=nome&allRepos=true|false
+func (h *NexusHandler) SearchFlatArtifacts(c *gin.Context) {
+	repository := c.DefaultQuery("repository", "")
+	query := c.DefaultQuery("q", "")
+	allRepos := c.DefaultQuery("allRepos", "false") == "true"
+
+	client, err := h.getClient()
+	if err != nil {
+		c.JSON(http.StatusPreconditionFailed, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	artifacts, err := client.SearchFlatArtifacts(repository, query, allRepos)
+	if err != nil {
+		fmt.Printf("[NexusHandler] SearchFlatArtifacts error: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Search failed: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"artifacts": artifacts})
+}
+
 // CheckStatus verifica se o Nexus está configurado — cobre os dois pré-requisitos separadamente
 // (BaseURL/Repository salvos E Perfil SSO configurado), já que agora são duas coisas
 // independentes: o usuário pode ter configurado só uma delas.

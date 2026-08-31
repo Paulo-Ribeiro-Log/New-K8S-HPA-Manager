@@ -1247,6 +1247,7 @@ func (s *Server) setupRoutes() {
 			nexusRoutes.POST("/values/download", nexusHandler.DownloadValues)
 			nexusRoutes.POST("/values/compare", nexusHandler.CompareValues)
 			nexusRoutes.GET("/browse", nexusHandler.BrowseRepository)
+			nexusRoutes.GET("/search-flat", nexusHandler.SearchFlatArtifacts)
 		}
 	}
 

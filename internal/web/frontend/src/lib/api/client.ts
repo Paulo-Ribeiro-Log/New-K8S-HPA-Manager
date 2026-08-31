@@ -125,6 +125,7 @@ import type {
   NexusBrowseResponse,
   NexusValuesFileRequest,
   NexusValuesFileResponse,
+  NexusFlatArtifact,
 } from "./types";
 
 import type {
@@ -1146,6 +1147,16 @@ class APIClient {
       method: "POST",
       body: JSON.stringify(req),
     });
+  }
+
+  /** Busca artefatos SEM hierarquia release/version/arquivo (ver NexusFlatArtifact) — usado pelo
+   * Modo Nexus do Rollback contra "continuousdeploy-history". Ordenado por lastModified
+   * decrescente pelo backend (mais recente primeiro). */
+  async nexusSearchFlat(repository: string, query: string, allRepos = false): Promise<NexusFlatArtifact[]> {
+    const qs = new URLSearchParams({ q: query, allRepos: String(allRepos) });
+    if (repository) qs.set("repository", repository);
+    const response = await this.request<{ artifacts: NexusFlatArtifact[] }>(`/nexus/search-flat?${qs}`);
+    return response.artifacts || [];
   }
 
   /** Gráfico de comportamento do Deployment (réplicas/CPU/mem/restarts) — Prometheus como fonte

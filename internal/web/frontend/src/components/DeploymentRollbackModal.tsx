@@ -28,6 +28,7 @@ import {
   Search,
 } from "lucide-react";
 import { toast } from "sonner";
+import yaml from "js-yaml";
 import { apiClient } from "@/lib/api/client";
 import type {
   DeploymentManifest,
@@ -35,7 +36,7 @@ import type {
   DeploymentRuntimeInsights,
   HelmRevisionEntry,
   HelmReleaseDetail,
-  NexusBrowseItem,
+  NexusFlatArtifact,
 } from "@/lib/api/types";
 
 // ─── Rollback de Deployment — 3 modos ──────────────────────────────────────────
@@ -87,18 +88,23 @@ function revisionWasCreatedByRestart(restartedAt?: string, createdAt?: string): 
   return diffMs < 60_000;
 }
 
-// compareVersionsDesc — ordena versões tipo "1.0.0-3"/"0.0.2-7" (formato real observado no Nexus
-// desta empresa) da mais recente pra mais antiga comparando os segmentos numéricos, não como
-// string pura (sort lexicográfico erraria "1.0.0-10" vindo ANTES de "1.0.0-2").
-function compareVersionsDesc(a: string, b: string): number {
-  const numsA = a.match(/\d+/g)?.map(Number) || [];
-  const numsB = b.match(/\d+/g)?.map(Number) || [];
-  const len = Math.max(numsA.length, numsB.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (numsB[i] ?? 0) - (numsA[i] ?? 0);
-    if (diff !== 0) return diff;
+// extractDeploymentDoc — o artefato baixado do Nexus (continuousdeploy-history) é o manifesto K8s
+// INTEIRO já renderizado (multi-documento: ConfigMap+Service+Deployment+Ingress, confirmado ao
+// vivo contra um artefato real desta empresa) — não um values.yaml. Extrai só o documento
+// `kind: Deployment`, que é o único escopo deste modal (rollback de UM Deployment, nunca dos
+// recursos vizinhos empacotados junto no mesmo snapshot).
+function extractDeploymentDoc(multiDocYaml: string): { yaml: string; error?: string } {
+  let docs: unknown[];
+  try {
+    docs = yaml.loadAll(multiDocYaml);
+  } catch (err) {
+    return { yaml: "", error: err instanceof Error ? err.message : "YAML inválido" };
   }
-  return b.localeCompare(a);
+  const deploymentDoc = docs.find((d) => d && typeof d === "object" && (d as Record<string, unknown>).kind === "Deployment");
+  if (!deploymentDoc) {
+    return { yaml: "", error: "Este artefato não contém um documento kind: Deployment (só " + docs.map((d) => (d && typeof d === "object" ? (d as Record<string, unknown>).kind : "?")).join(", ") + ")" };
+  }
+  return { yaml: yaml.dump(deploymentDoc) };
 }
 
 interface DeploymentRollbackModalProps {
@@ -202,7 +208,7 @@ export function DeploymentRollbackModal({
               onClick={() => setMode("nexus")}
               className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "nexus" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
             >
-              <Database className="w-3.5 h-3.5" /> Nexus (values histórico)
+              <Database className="w-3.5 h-3.5" /> Nexus (manifesto histórico)
             </button>
           </div>
         ) : (
@@ -235,8 +241,9 @@ export function DeploymentRollbackModal({
           {mode === "nexus" && isHelmManaged && (
             <NexusRollbackSection
               cluster={cluster}
-              release={helmReleaseName}
-              releaseNamespace={helmReleaseNamespace}
+              namespace={namespace}
+              deploymentName={deploymentName}
+              currentYaml={manifest?.yaml || ""}
               suggestedReleaseSearch={labels["app.kubernetes.io/name"] || helmReleaseName}
               canUpdateDeployment={canUpdateDeployment}
               onDone={handleDone}
@@ -511,10 +518,30 @@ function HelmRollbackSection({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Modo Nexus — values histórico publicado pelo pipeline de CI/CD, aplicado via `helm upgrade`
-// (mesmos endpoints da aba "Nexus Values" pra navegar/baixar; endpoint Helm Upgrade já existente
-// pra aplicar). NÃO é uma reversão nativa do Helm — é um upgrade com valores antigos, por isso o
-// aviso fixo e o diff obrigatório são ainda mais enfatizados aqui que nos outros 2 modos.
+// Modo Nexus — manifesto histórico publicado pelo pipeline de CI/CD, aplicado via kubectl apply
+// (reaproveita apiClient.applyDeployment, o mesmo endpoint genérico usado pelo botão "Aplicar" do
+// editor YAML normal da aba Deployments).
+//
+// Achado real, crítico, que mudou o desenho original deste modo (o usuário compartilhou o trecho
+// real do pipeline Jenkins desta empresa que publica esses artefatos): o arquivo publicado em
+// "continuousdeploy-history" NÃO é um values.yaml — é o manifesto K8s INTEIRO já renderizado
+// (multi-documento: ConfigMap+Service+Deployment+Ingress, confirmado baixando um artefato real —
+// é literalmente o `deploy.yaml` que o pipeline aplicou naquele deploy). A 1ª versão deste modo
+// tratava o conteúdo como values pra um `helm upgrade`, o que teria aplicado um manifesto K8s
+// inteiro como se fosse a seção `values:` de um chart — falharia ou corromperia o release.
+// Corrigido: extrai só o documento `kind: Deployment` (extractDeploymentDoc) e aplica via
+// apiClient.applyDeployment — mesmo mecanismo do Modo K8s nativo, mas usando o Nexus como fonte de
+// manifesto histórico em vez do ReplicaSet ao vivo (útil quando revisionHistoryLimit já podou a
+// revisão desejada do próprio cluster). Nunca reaplica ConfigMap/Service/Ingress do mesmo
+// snapshot — fora do escopo deste modal, que é rollback de UM Deployment.
+//
+// O repositório em si TAMBÉM é diferente do que BrowseRepository (aba Nexus Values) espera:
+// "continuousdeploy-history" é achatado — cada componente é um arquivo solto na raiz (nome
+// sanitizado com timestamp+versão embutidos), sem hierarquia release/version/arquivo nenhuma.
+// BrowseRepository descartava esses componentes em silêncio — corrigido com SearchFlatArtifacts.
+//
+// Sem streaming de progresso de rollout (diferente do Modo K8s nativo): apiClient.applyDeployment
+// é síncrono e não abre sessão SSE — mesmo comportamento do botão "Aplicar" normal da aba.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // NEXUS_ROLLBACK_REPOSITORY — repositório Nexus DEDICADO a histórico de deploy nesta empresa,
@@ -526,151 +553,117 @@ function HelmRollbackSection({
 const NEXUS_ROLLBACK_REPOSITORY = "continuousdeploy-history";
 
 function NexusRollbackSection({
-  cluster, release, releaseNamespace, suggestedReleaseSearch, canUpdateDeployment, onDone,
+  cluster, namespace, deploymentName, currentYaml, suggestedReleaseSearch, canUpdateDeployment, onDone,
 }: {
-  cluster: string; release: string; releaseNamespace: string; suggestedReleaseSearch: string; canUpdateDeployment: boolean; onDone: () => void;
+  cluster: string; namespace: string; deploymentName: string; currentYaml: string; suggestedReleaseSearch: string; canUpdateDeployment: boolean; onDone: () => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [item, setItem] = useState<NexusBrowseItem | null>(null);
-  // candidates — só populado no caso raro de a busca automática achar MAIS de um nome batendo
-  // (a busca do Nexus é por substring, não por igualdade exata).
-  const [candidates, setCandidates] = useState<NexusBrowseItem[]>([]);
+  const [artifacts, setArtifacts] = useState<NexusFlatArtifact[]>([]);
+  const [selectedArtifact, setSelectedArtifact] = useState<NexusFlatArtifact | null>(null);
+
   const [manualSearchOpen, setManualSearchOpen] = useState(false);
   const [manualSearchTerm, setManualSearchTerm] = useState(suggestedReleaseSearch);
   // Busca automática (ao abrir o modal) continua restrita a NEXUS_ROLLBACK_REPOSITORY — pedido
   // explícito anterior do usuário, pra não misturar resultados de repositórios sem relação com
-  // rollback. Mas a busca MANUAL ("Buscar por outro nome de aplicação") ganhou este toggle —
-  // pedido explícito do usuário: "habilite a busca também para o search, pois agora está apenas
-  // para o asset continuousdeploy-history" — cobre o caso real de um release cuja versão
-  // desejada nunca foi publicada nesse repositório específico (ex: publicada só em `releases`,
-  // como o próprio teste ao vivo desta feature confirmou pra "faturamento").
+  // rollback. Busca MANUAL ganha este toggle — pedido explícito do usuário: "habilite a busca
+  // também para o search, pois agora está apenas para o asset continuousdeploy-history".
   const [manualSearchAllRepos, setManualSearchAllRepos] = useState(false);
   // Escopo da última busca disparada (automática ou manual) — só pra exibir a mensagem de
   // loading/erro com o escopo certo, nunca usado como decisão de fluxo.
   const [lastSearchScopeLabel, setLastSearchScopeLabel] = useState(`repositório "${NEXUS_ROLLBACK_REPOSITORY}"`);
 
-  const [selectedVersion, setSelectedVersion] = useState("");
-  const [selectedFile, setSelectedFile] = useState("");
+  const [nexusManifest, setNexusManifest] = useState("");
+  const [extractError, setExtractError] = useState("");
+  const [fetchingContent, setFetchingContent] = useState(false);
 
-  const [currentValues, setCurrentValues] = useState("");
-  const [nexusValues, setNexusValues] = useState("");
-  const [fetchingValues, setFetchingValues] = useState(false);
-
-  const [chartRef, setChartRef] = useState("");
-  const [chartVersion, setChartVersion] = useState("");
   const [force, setForce] = useState(false);
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [applying, setApplying] = useState(false);
 
-  const progress = useRollbackProgress();
-
-  // Carrega valores/chart atuais do release Helm (pra diff + sugestão de chartRef/version).
-  useEffect(() => {
-    apiClient.getHelmRelease(cluster, release, releaseNamespace)
-      .then((d) => {
-        setCurrentValues(d.valuesRaw || "");
-        if (d.chartMetadata?.name) setChartRef((v) => v || d.chartMetadata!.name);
-        if (d.chartMetadata?.version) setChartVersion((v) => v || d.chartMetadata!.version);
-      })
-      .catch(() => { /* best-effort — diff/sugestão ficam vazios, não bloqueia o fluxo */ });
-  }, [cluster, release, releaseNamespace]);
-
   const runSearch = useCallback((term: string, allRepos = false) => {
     if (!term.trim()) return;
     setLoading(true);
     setLoadError("");
-    setItem(null);
-    setCandidates([]);
-    setSelectedVersion("");
-    setSelectedFile("");
+    setArtifacts([]);
+    setSelectedArtifact(null);
+    setNexusManifest("");
+    setExtractError("");
     const scopeLabel = allRepos ? "todos os repositórios" : `repositório "${NEXUS_ROLLBACK_REPOSITORY}"`;
     setLastSearchScopeLabel(scopeLabel);
-    apiClient.nexusBrowse("", term.trim(), allRepos ? undefined : NEXUS_ROLLBACK_REPOSITORY)
+    apiClient.nexusSearchFlat(NEXUS_ROLLBACK_REPOSITORY, term.trim(), allRepos)
       .then((res) => {
-        const items = res.items || [];
-        if (items.length === 0) {
-          setLoadError(`Nenhuma versão encontrada no Nexus (${scopeLabel}) para "${term.trim()}".`);
+        if (res.length === 0) {
+          setLoadError(`Nenhum artefato encontrado no Nexus (${scopeLabel}) para "${term.trim()}".`);
           return;
         }
-        // Prioriza um match EXATO pelo nome — evita ambiguidade quando a busca (substring, via
-        // Nexus /search) casa com nomes parecidos de outras aplicações.
-        const exact = items.find((i) => i.name.toLowerCase() === term.trim().toLowerCase());
-        if (exact) setItem(exact);
-        else if (items.length === 1) setItem(items[0]);
-        else setCandidates(items);
+        setArtifacts(res);
       })
       .catch((err) => setLoadError(err instanceof Error ? err.message : "Erro ao buscar no Nexus (verifique se está configurado no Perfil do Usuário)"))
       .finally(() => setLoading(false));
   }, []);
 
-  // Busca automática ao abrir o modal — pedido explícito do usuário: listar direto as versões
-  // possíveis, sem exigir buscar manualmente primeiro. Usa o nome do release Helm (identidade
-  // mais confiável que já temos) como termo inicial.
-  useEffect(() => { runSearch(release); }, [release, runSearch]);
+  // Busca automática ao abrir o modal — pedido explícito do usuário: listar direto o histórico,
+  // sem exigir buscar manualmente primeiro. Usa o nome sugerido (labels do Deployment, ver
+  // DeploymentRollbackModal) como termo inicial — na convenção real desta empresa, o nome do
+  // projeto aparece embutido no nome do arquivo (ex: "...faturamento-gateway-adc...").
+  useEffect(() => { runSearch(suggestedReleaseSearch); }, [suggestedReleaseSearch, runSearch]);
 
-  const sortedVersions = [...(item?.versions || [])].sort(compareVersionsDesc);
-  const filesForVersion = item && selectedVersion ? (item.files?.[selectedVersion] || []) : [];
-
-  // Auto-seleciona o arquivo quando só há UM pra essa versão — só pede escolha explícita quando
-  // há ambiguidade real (ex: mais de um ambiente publicado na mesma versão).
+  // Ao selecionar um artefato: baixa o conteúdo bruto (multi-documento) e extrai só o Deployment.
   useEffect(() => {
-    setSelectedFile(filesForVersion.length === 1 ? filesForVersion[0] : "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item, selectedVersion]);
-
-  useEffect(() => {
-    if (!item || !selectedVersion || !selectedFile) { setNexusValues(""); return; }
-    setFetchingValues(true);
+    if (!selectedArtifact) { setNexusManifest(""); setExtractError(""); return; }
+    setFetchingContent(true);
+    setExtractError("");
     apiClient.nexusDownloadValues({
-      release: item.name,
-      version: selectedVersion,
-      repository: item.repository || NEXUS_ROLLBACK_REPOSITORY,
-      filePath: `${item.name}/${selectedVersion}/${selectedFile}`,
+      repository: selectedArtifact.repository,
+      filePath: selectedArtifact.name,
     })
       .then((res) => {
-        if (res.error) { toast.error("Nexus retornou erro", { description: res.error }); setNexusValues(""); return; }
-        setNexusValues(res.content || "");
+        if (res.error) { toast.error("Nexus retornou erro", { description: res.error }); setNexusManifest(""); return; }
+        const extracted = extractDeploymentDoc(res.content || "");
+        if (extracted.error) { setExtractError(extracted.error); setNexusManifest(""); return; }
+        setNexusManifest(extracted.yaml);
       })
-      .catch((err) => toast.error("Erro ao baixar values do Nexus", { description: err instanceof Error ? err.message : "Erro" }))
-      .finally(() => setFetchingValues(false));
-  }, [item, selectedVersion, selectedFile]);
+      .catch((err) => toast.error("Erro ao baixar artefato do Nexus", { description: err instanceof Error ? err.message : "Erro" }))
+      .finally(() => setFetchingContent(false));
+  }, [selectedArtifact]);
 
-  const canConfirm = !!nexusValues && !!chartRef.trim() && reason.trim().length > 0;
+  const canConfirm = !!nexusManifest && reason.trim().length > 0;
 
   const handleConfirm = async () => {
     setApplying(true);
     setConfirming(false);
     try {
-      const { operationId } = await apiClient.helmUpgrade(cluster, release, releaseNamespace, chartRef.trim(), chartVersion.trim(), nexusValues, force);
-      toast.success("helm upgrade com values do Nexus iniciado — acompanhando...");
-      progress.startHelm(operationId, onDone);
+      await apiClient.applyDeployment(cluster, namespace, deploymentName, {
+        yaml: nexusManifest,
+        fieldManager: "k8s-hpa-manager-rollback-nexus",
+        force,
+      });
+      toast.success("Manifesto histórico do Nexus aplicado com sucesso");
+      onDone();
     } catch (err) {
-      toast.error("Falha ao aplicar values do Nexus", { description: err instanceof Error ? err.message : "Erro" });
+      toast.error("Falha ao aplicar manifesto do Nexus", { description: err instanceof Error ? err.message : "Erro" });
     } finally {
       setApplying(false);
     }
   };
-
-  if (progress.active || progress.done) {
-    return <RolloutProgressPanel progress={progress} />;
-  }
 
   return (
     <div className="space-y-4 py-2">
       <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-700 dark:text-blue-400">
         <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
         <span>
-          Este modo faz um <span className="font-mono">helm upgrade</span> usando um values.yaml histórico do Nexus — <strong>não</strong> é
-          uma reversão nativa do Helm (<span className="font-mono">helm rollback</span>). Pode haver incompatibilidade entre o values antigo e o
-          chart atual (chaves renomeadas/novas obrigatórias). Use quando o `helm history` já não tiver mais a revisão desejada.
+          Este modo aplica (<span className="font-mono">kubectl apply</span>) um manifesto Deployment histórico publicado pelo pipeline de
+          CI/CD no Nexus — útil quando o histórico de revisões do próprio cluster (Modo K8s nativo) já foi podado
+          (<span className="font-mono">revisionHistoryLimit</span>). Revise o diff com atenção: este manifesto pode ter divergido do chart
+          atual desde então.
         </span>
       </div>
 
       {loading && (
         <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
-          <Loader2 className="w-5 h-5 animate-spin mr-2" /> Buscando versões no Nexus ({lastSearchScopeLabel})...
+          <Loader2 className="w-5 h-5 animate-spin mr-2" /> Buscando artefatos no Nexus ({lastSearchScopeLabel})...
         </div>
       )}
 
@@ -678,46 +671,31 @@ function NexusRollbackSection({
         <div className="text-sm text-destructive py-2 text-center">{loadError}</div>
       )}
 
-      {!loading && candidates.length > 0 && (
+      {!loading && artifacts.length > 0 && (
         <div>
-          <Label className="text-xs text-muted-foreground mb-1 block">Mais de uma aplicação encontrada — selecione a correta</Label>
-          <div className="flex flex-wrap gap-1.5">
-            {candidates.map((c) => (
-              <Badge key={c.path} variant="outline" className="cursor-pointer font-mono text-xs" onClick={() => { setItem(c); setCandidates([]); }}>
-                {c.name}
-              </Badge>
-            ))}
+          <div className="text-xs text-muted-foreground mb-1.5">
+            {artifacts.length} artefato(s) encontrado(s) — mais recente primeiro
           </div>
-        </div>
-      )}
-
-      {!loading && item && sortedVersions.length > 0 && (
-        <>
-          <div className="text-xs text-muted-foreground">
-            Aplicação <span className="font-mono font-semibold">{item.name}</span> — {sortedVersions.length} versão(ões) disponível(is)
-          </div>
-          <RadioGroup value={selectedVersion} onValueChange={setSelectedVersion} className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-            {sortedVersions.map((v) => (
-              <div key={v} className="flex items-center gap-3 p-2.5 border rounded-lg hover:bg-accent">
-                <RadioGroupItem value={v} id={`nexusver-${v}`} />
-                <Label htmlFor={`nexusver-${v}`} className="flex-1 cursor-pointer font-mono text-sm">{v}</Label>
+          <RadioGroup
+            value={selectedArtifact?.name ?? ""}
+            onValueChange={(v) => setSelectedArtifact(artifacts.find((a) => a.name === v) ?? null)}
+            className="space-y-1.5 max-h-64 overflow-y-auto pr-1"
+          >
+            {artifacts.map((a) => (
+              <div key={a.name} className="flex items-start gap-3 p-2.5 border rounded-lg hover:bg-accent">
+                <RadioGroupItem value={a.name} id={`nexusart-${a.name}`} className="mt-1" />
+                <Label htmlFor={`nexusart-${a.name}`} className="flex-1 cursor-pointer">
+                  <div className="font-mono text-xs break-all">{a.name}</div>
+                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-0.5">
+                    <span>{formatDate(a.lastModified)}</span>
+                    {a.uploader && <Badge variant="outline" className="text-[10px]">{a.uploader}</Badge>}
+                    {a.repository !== NEXUS_ROLLBACK_REPOSITORY && <Badge variant="outline" className="text-[10px]">{a.repository}</Badge>}
+                  </div>
+                </Label>
               </div>
             ))}
           </RadioGroup>
-
-          {selectedVersion && filesForVersion.length > 1 && (
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1 block">Mais de um arquivo nessa versão — selecione qual usar</Label>
-              <div className="flex flex-wrap gap-1.5">
-                {filesForVersion.map((f) => (
-                  <Badge key={f} variant={selectedFile === f ? "default" : "outline"} className="cursor-pointer font-mono text-xs" onClick={() => setSelectedFile(f)}>
-                    {f}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          )}
-        </>
+        </div>
       )}
 
       {!loading && !manualSearchOpen && (
@@ -746,28 +724,18 @@ function NexusRollbackSection({
         </div>
       )}
 
-      {fetchingValues && <div className="flex items-center justify-center py-6 text-muted-foreground text-sm"><Loader2 className="w-4 h-4 animate-spin mr-2" /> Baixando values do Nexus...</div>}
+      {fetchingContent && <div className="flex items-center justify-center py-6 text-muted-foreground text-sm"><Loader2 className="w-4 h-4 animate-spin mr-2" /> Baixando manifesto do Nexus...</div>}
 
-      {nexusValues && (
+      {extractError && (
+        <div className="text-sm text-destructive py-2 text-center">{extractError}</div>
+      )}
+
+      {nexusManifest && (
         <>
           <div>
-            <Label className="text-xs text-muted-foreground mb-1 block">Diff — values atual do release vs. values do Nexus (revise antes de confirmar)</Label>
-            <MonacoYamlEditor mode="diff" originalValue={currentValues} value={nexusValues} height={240} readOnly />
+            <Label className="text-xs text-muted-foreground mb-1 block">Diff — Deployment atual vs. manifesto histórico do Nexus (revise antes de confirmar)</Label>
+            <MonacoYamlEditor mode="diff" originalValue={currentYaml} value={nexusManifest} height={280} readOnly />
           </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <Label htmlFor="nexus-chartref" className="text-xs text-muted-foreground mb-1 block">Referência do chart (mesmo formato da aba Helm → Instalar/Atualizar)</Label>
-              <Input id="nexus-chartref" value={chartRef} onChange={(e) => setChartRef(e.target.value)} placeholder="repo/nome-do-chart" className="font-mono text-xs" />
-            </div>
-            <div>
-              <Label htmlFor="nexus-chartversion" className="text-xs text-muted-foreground mb-1 block">Versão do chart (opcional — vazio usa a mais recente)</Label>
-              <Input id="nexus-chartversion" value={chartVersion} onChange={(e) => setChartVersion(e.target.value)} className="font-mono text-xs" />
-            </div>
-          </div>
-          <p className="text-[11px] text-muted-foreground -mt-2">
-            Pré-preenchido com o chart/versão atuais do release, quando disponíveis — o Helm não guarda de onde o chart original veio (repo/URL), então confirme antes de aplicar.
-          </p>
 
           <div className="flex items-center gap-2">
             <input type="checkbox" id="nexus-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
@@ -776,17 +744,17 @@ function NexusRollbackSection({
 
           <div>
             <Label htmlFor="nexus-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório)</Label>
-            <Textarea id="nexus-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: versão X.Y do Nexus é a última confirmada estável" rows={2} />
+            <Textarea id="nexus-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: manifesto de DD/MM é o último confirmado estável" rows={2} />
           </div>
 
           <div className="flex items-center gap-2 pt-2 border-t">
             {!confirming ? (
               <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
-                <RotateCcw className="w-4 h-4 mr-2" /> Aplicar values do Nexus
+                <RotateCcw className="w-4 h-4 mr-2" /> Aplicar manifesto do Nexus
               </Button>
             ) : (
               <>
-                <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar helm upgrade com values antigos?</span>
+                <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar aplicação do manifesto histórico?</span>
                 <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
                   {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, aplicar
                 </Button>

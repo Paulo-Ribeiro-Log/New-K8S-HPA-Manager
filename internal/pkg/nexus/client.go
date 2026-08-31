@@ -119,8 +119,14 @@ func (c *HTTPClient) BuildURL(req ValuesFileRequest) string {
 
 // DownloadValues baixa um arquivo de values do Nexus
 func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse, error) {
-	// Valida inputs apenas no modo legado (sem FilePath)
+	// Valida inputs apenas no modo legado (sem FilePath) — com FilePath, a URL é direta
+	// (baseURL/repository/FilePath) e não depende de Release/Version/Environment/Type.
 	if req.FilePath == "" {
+		if req.Release == "" || req.Version == "" {
+			return &ValuesFileResponse{
+				Error: "release e version são obrigatórios quando filePath não é informado",
+			}, nil
+		}
 		if req.Environment != "" && !IsValidEnvironment(req.Environment) {
 			return &ValuesFileResponse{
 				Error: fmt.Sprintf("Invalid environment: %s. Valid values: %v", req.Environment, ValidEnvironments),
@@ -528,6 +534,107 @@ func (c *HTTPClient) BrowseRepository(path string, query string, repository stri
 	fmt.Printf("[Nexus] Found %d unique items (path='%s', query='%s')\n", len(items), path, query)
 
 	return &BrowseResponse{Items: items, Path: path}, nil
+}
+
+// SearchFlatArtifacts busca componentes num repositório SEM hierarquia release/version/arquivo —
+// ver comentário de FlatArtifact (types.go). Reaproveita a mesma API de busca/paginação de
+// BrowseRepository, mas sem nenhuma tentativa de agrupar por segmentos de path (que é justamente o
+// que fazia BrowseRepository descartar esses componentes em silêncio).
+func (c *HTTPClient) SearchFlatArtifacts(repository, query string, allRepos bool) ([]FlatArtifact, error) {
+	baseURL := strings.TrimSuffix(c.config.BaseURL, "/")
+	if query == "" {
+		return []FlatArtifact{}, nil
+	}
+
+	artifacts := []FlatArtifact{}
+	continuationToken := ""
+	maxPages := 5
+
+	for page := 0; page < maxPages; page++ {
+		apiURL := fmt.Sprintf("%s/service/rest/v1/search?q=%s", baseURL, url.QueryEscape(query))
+		if !allRepos && repository != "" {
+			apiURL += "&repository=" + url.QueryEscape(repository)
+		}
+		if continuationToken != "" {
+			apiURL += "&continuationToken=" + continuationToken
+		}
+
+		fmt.Printf("[Nexus] SearchFlat: %s (page %d)\n", apiURL, page+1)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.SetBasicAuth(c.config.Username, c.config.Password)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			cancel()
+			return nil, fmt.Errorf("search failed with status %d", resp.StatusCode)
+		}
+
+		var result struct {
+			Items []struct {
+				Repository string `json:"repository"`
+				Assets     []struct {
+					Path         string `json:"path"`
+					Repository   string `json:"repository"`
+					DownloadURL  string `json:"downloadUrl"`
+					LastModified string `json:"lastModified"`
+					Uploader     string `json:"uploader"`
+				} `json:"assets"`
+			} `json:"items"`
+			ContinuationToken string `json:"continuationToken"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			cancel()
+			return nil, fmt.Errorf("failed to decode: %w", err)
+		}
+		resp.Body.Close()
+		cancel()
+
+		for _, comp := range result.Items {
+			repo := comp.Repository
+			for _, asset := range comp.Assets {
+				assetRepo := asset.Repository
+				if assetRepo == "" {
+					assetRepo = repo
+				}
+				if !allRepos && repository != "" && !strings.EqualFold(assetRepo, repository) {
+					continue // defesa em profundidade, mesmo padrão de BrowseRepository
+				}
+				lastMod, _ := time.Parse(time.RFC3339, asset.LastModified)
+				artifacts = append(artifacts, FlatArtifact{
+					Name:         asset.Path,
+					Repository:   assetRepo,
+					DownloadURL:  asset.DownloadURL,
+					LastModified: lastMod,
+					Uploader:     asset.Uploader,
+				})
+			}
+		}
+
+		if result.ContinuationToken == "" {
+			break
+		}
+		continuationToken = result.ContinuationToken
+	}
+
+	sort.Slice(artifacts, func(i, j int) bool {
+		return artifacts[i].LastModified.After(artifacts[j].LastModified)
+	})
+
+	fmt.Printf("[Nexus] SearchFlat found %d artifacts (query='%s', repository='%s', allRepos=%v)\n", len(artifacts), query, repository, allRepos)
+
+	return artifacts, nil
 }
 
 // CleanupTempFiles remove arquivos temporários mais antigos que a duração especificada

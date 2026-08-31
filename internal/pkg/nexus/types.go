@@ -14,14 +14,20 @@ type Config struct {
 	// Padrão: {baseUrl}/repository/{repository}/{release}/{version}/{environment}/values/{type}-values.yaml
 }
 
-// ValuesFileRequest representa uma requisição para baixar um arquivo de values
+// ValuesFileRequest representa uma requisição para baixar um arquivo de values.
+//
+// Release/Version deixaram de ser `binding:"required"` — achado real: um FlatArtifact (ver
+// SearchFlatArtifacts) não tem release/version separáveis do nome do arquivo (sanitizado, sem
+// hierarquia de pasta), então baixá-lo só tem FilePath preenchido. DownloadValues valida a
+// combinação certa por conta própria (FilePath sozinho é suficiente; sem ele, Release+Version
+// continuam exigidos — modo legado por pattern).
 type ValuesFileRequest struct {
-	Release     string `json:"release" binding:"required"` // Nome do release
-	Version     string `json:"version" binding:"required"` // Versão (ex: v1.0.0)
-	Environment string `json:"environment,omitempty"`      // dev, sit, uat, hlg, prd (legado)
-	Type        string `json:"type,omitempty"`             // base, sit, prd, hlg (legado)
-	Repository  string `json:"repository,omitempty"`       // Repositório (detectado via busca)
-	FilePath    string `json:"filePath,omitempty"`         // Path real do arquivo (release/version/file.yaml)
+	Release     string `json:"release,omitempty"`     // Nome do release (vazio quando FilePath já identifica o arquivo)
+	Version     string `json:"version,omitempty"`     // Versão, ex: v1.0.0 (idem)
+	Environment string `json:"environment,omitempty"` // dev, sit, uat, hlg, prd (legado)
+	Type        string `json:"type,omitempty"`        // base, sit, prd, hlg (legado)
+	Repository  string `json:"repository,omitempty"`  // Repositório (detectado via busca)
+	FilePath    string `json:"filePath,omitempty"`    // Path real do arquivo (release/version/file.yaml, ou nome solto quando flat)
 }
 
 // ValuesFileResponse representa a resposta com o conteúdo de um arquivo
@@ -88,6 +94,19 @@ type BrowseItem struct {
 	Files      map[string][]string `json:"files,omitempty"`      // versão → lista de arquivos reais
 }
 
+// FlatArtifact representa um artefato num repositório Nexus SEM hierarquia release/version/arquivo
+// — cada componente é um único arquivo solto na raiz do repositório (achado real: o pipeline de
+// deploy desta empresa publica cada YAML de PRD assim em "continuousdeploy-history", nome
+// sanitizado com timestamp+versão embutidos — BrowseItem/BrowseRepository pressupõem hierarquia
+// "release/version/arquivo" e descartam esses componentes silenciosamente, sem nenhum erro).
+type FlatArtifact struct {
+	Name         string    `json:"name"`       // path completo do asset — é o próprio nome do arquivo, sem pasta
+	Repository   string    `json:"repository"` // repositório onde foi encontrado (relevante quando a busca cruza vários)
+	DownloadURL  string    `json:"downloadUrl"`
+	LastModified time.Time `json:"lastModified"`
+	Uploader     string    `json:"uploader,omitempty"` // ex: "spinnaker"/"svc_devops" — origem do upload, quando disponível
+}
+
 // Client interface define as operações disponíveis para o Nexus
 type Client interface {
 	// TestConnection verifica se a conexão e autenticação estão funcionando
@@ -111,6 +130,12 @@ type Client interface {
 	// resultados de repositórios sem relação com o que o chamador pretende (ex: rollback via
 	// Nexus deve olhar só o repositório dedicado a histórico de deploy).
 	BrowseRepository(path string, query string, repository string) (*BrowseResponse, error)
+
+	// SearchFlatArtifacts busca componentes num repositório SEM hierarquia release/version/arquivo
+	// (ver FlatArtifact) — `repository` é obrigatório quando `allRepos` é false, ignorado (busca
+	// cruzando tudo que as credenciais alcançam) quando `allRepos` é true. Ordenado por
+	// LastModified decrescente (mais recente primeiro).
+	SearchFlatArtifacts(repository, query string, allRepos bool) ([]FlatArtifact, error)
 }
 
 // ConfigManager interface define operações de gerenciamento de configuração

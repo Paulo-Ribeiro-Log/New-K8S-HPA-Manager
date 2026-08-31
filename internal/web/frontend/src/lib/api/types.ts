@@ -2892,8 +2892,10 @@ export interface NexusBrowseResponse {
 }
 
 export interface NexusValuesFileRequest {
-  release: string;
-  version: string;
+  // release/version deixaram de ser obrigatórios — um NexusFlatArtifact (ver abaixo) não tem
+  // release/version separáveis do nome do arquivo, baixar exige só filePath+repository.
+  release?: string;
+  version?: string;
   environment?: string;
   type?: string;
   repository?: string;
@@ -2906,4 +2908,16 @@ export interface NexusValuesFileResponse {
   fullUrl: string;
   size: number;
   error?: string;
+}
+
+// NexusFlatArtifact — componente Nexus SEM hierarquia release/version/arquivo (ver
+// internal/pkg/nexus/types.go:FlatArtifact). Repositórios como "continuousdeploy-history" desta
+// empresa publicam cada deploy de PRD como um YAML solto na raiz, nome sanitizado com
+// timestamp+versão embutidos — NexusBrowseItem pressupõe hierarquia e não encontra nada aqui.
+export interface NexusFlatArtifact {
+  name: string;
+  repository: string;
+  downloadUrl: string;
+  lastModified: string; // ISO 8601
+  uploader?: string;
 }
