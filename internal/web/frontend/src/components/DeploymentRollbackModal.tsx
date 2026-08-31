@@ -482,6 +482,17 @@ function NexusRollbackSection({
   const [candidates, setCandidates] = useState<NexusBrowseItem[]>([]);
   const [manualSearchOpen, setManualSearchOpen] = useState(false);
   const [manualSearchTerm, setManualSearchTerm] = useState(suggestedReleaseSearch);
+  // Busca automática (ao abrir o modal) continua restrita a NEXUS_ROLLBACK_REPOSITORY — pedido
+  // explícito anterior do usuário, pra não misturar resultados de repositórios sem relação com
+  // rollback. Mas a busca MANUAL ("Buscar por outro nome de aplicação") ganhou este toggle —
+  // pedido explícito do usuário: "habilite a busca também para o search, pois agora está apenas
+  // para o asset continuousdeploy-history" — cobre o caso real de um release cuja versão
+  // desejada nunca foi publicada nesse repositório específico (ex: publicada só em `releases`,
+  // como o próprio teste ao vivo desta feature confirmou pra "faturamento").
+  const [manualSearchAllRepos, setManualSearchAllRepos] = useState(false);
+  // Escopo da última busca disparada (automática ou manual) — só pra exibir a mensagem de
+  // loading/erro com o escopo certo, nunca usado como decisão de fluxo.
+  const [lastSearchScopeLabel, setLastSearchScopeLabel] = useState(`repositório "${NEXUS_ROLLBACK_REPOSITORY}"`);
 
   const [selectedVersion, setSelectedVersion] = useState("");
   const [selectedFile, setSelectedFile] = useState("");
@@ -510,7 +521,7 @@ function NexusRollbackSection({
       .catch(() => { /* best-effort — diff/sugestão ficam vazios, não bloqueia o fluxo */ });
   }, [cluster, release, releaseNamespace]);
 
-  const runSearch = useCallback((term: string) => {
+  const runSearch = useCallback((term: string, allRepos = false) => {
     if (!term.trim()) return;
     setLoading(true);
     setLoadError("");
@@ -518,11 +529,13 @@ function NexusRollbackSection({
     setCandidates([]);
     setSelectedVersion("");
     setSelectedFile("");
-    apiClient.nexusBrowse("", term.trim(), NEXUS_ROLLBACK_REPOSITORY)
+    const scopeLabel = allRepos ? "todos os repositórios" : `repositório "${NEXUS_ROLLBACK_REPOSITORY}"`;
+    setLastSearchScopeLabel(scopeLabel);
+    apiClient.nexusBrowse("", term.trim(), allRepos ? undefined : NEXUS_ROLLBACK_REPOSITORY)
       .then((res) => {
         const items = res.items || [];
         if (items.length === 0) {
-          setLoadError(`Nenhuma versão encontrada no Nexus (repositório "${NEXUS_ROLLBACK_REPOSITORY}") para "${term.trim()}".`);
+          setLoadError(`Nenhuma versão encontrada no Nexus (${scopeLabel}) para "${term.trim()}".`);
           return;
         }
         // Prioriza um match EXATO pelo nome — evita ambiguidade quando a busca (substring, via
@@ -601,7 +614,7 @@ function NexusRollbackSection({
 
       {loading && (
         <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
-          <Loader2 className="w-5 h-5 animate-spin mr-2" /> Buscando versões no Nexus ({NEXUS_ROLLBACK_REPOSITORY})...
+          <Loader2 className="w-5 h-5 animate-spin mr-2" /> Buscando versões no Nexus ({lastSearchScopeLabel})...
         </div>
       )}
 
@@ -658,14 +671,22 @@ function NexusRollbackSection({
       )}
 
       {manualSearchOpen && (
-        <div className="flex items-end gap-2">
-          <div className="flex-1">
-            <Label htmlFor="nexus-manual-search" className="text-xs text-muted-foreground mb-1 block">Nome da aplicação no Nexus</Label>
-            <Input id="nexus-manual-search" value={manualSearchTerm} onChange={(e) => setManualSearchTerm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runSearch(manualSearchTerm)} />
+        <div className="space-y-1.5">
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <Label htmlFor="nexus-manual-search" className="text-xs text-muted-foreground mb-1 block">Nome da aplicação no Nexus</Label>
+              <Input id="nexus-manual-search" value={manualSearchTerm} onChange={(e) => setManualSearchTerm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runSearch(manualSearchTerm, manualSearchAllRepos)} />
+            </div>
+            <Button variant="outline" onClick={() => runSearch(manualSearchTerm, manualSearchAllRepos)} disabled={loading || !manualSearchTerm.trim()}>
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            </Button>
           </div>
-          <Button variant="outline" onClick={() => runSearch(manualSearchTerm)} disabled={loading || !manualSearchTerm.trim()}>
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-          </Button>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="nexus-manual-search-allrepos" checked={manualSearchAllRepos} onChange={(e) => setManualSearchAllRepos(e.target.checked)} className="rounded" />
+            <Label htmlFor="nexus-manual-search-allrepos" className="text-xs text-muted-foreground cursor-pointer">
+              Buscar em todos os repositórios do Nexus (não só "{NEXUS_ROLLBACK_REPOSITORY}")
+            </Label>
+          </div>
         </div>
       )}
 
