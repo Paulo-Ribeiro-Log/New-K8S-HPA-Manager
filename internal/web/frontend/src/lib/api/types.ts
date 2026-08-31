@@ -2814,3 +2814,110 @@ export interface StartPortForwardRequest {
   bind_address?: string;
   label?: string;
 }
+
+// ─── Rollback de Deployment — "Modo K8s nativo" (ver internal/kubernetes/deployment_rollback.go).
+// camelCase — segue a convenção já usada por DeploymentSummary/DeploymentManifest (internal/models),
+// não o snake_case usado noutras partes mais recentes desta app (ex: Descoberta de Rede).
+export interface DeploymentRevision {
+  revision: number;
+  replicaSet: string;
+  changeCause?: string;
+  images: string[];
+  replicas: number;
+  createdAt: string; // ISO 8601
+  isCurrent: boolean;
+  // restartedAt — presente quando ESTA revisão foi criada por um `kubectl rollout restart`/
+  // "Rollout Restart" (annotation do PodTemplateSpec daquela revisão específica, não a atual).
+  restartedAt?: string; // ISO 8601
+}
+
+// DeploymentRuntimeInsights — enriquecimento sob demanda (ver internal/kubernetes/
+// deployment_insights.go), usado no painel de visualização (DeploymentsTab.tsx) e no modal de
+// Rollback. Motivado por uma investigação real: um Deployment com spec.replicas=0 há anos, cujo
+// Service/Ingress continuavam existindo e roteando pra um backend sem nenhum pod.
+export interface DeploymentRuntimeInsights {
+  restartedAt?: string; // ISO 8601 — último kubectl rollout restart (annotation ATUAL, não por revisão)
+  danglingRoutes?: DanglingRoute[];
+}
+
+export interface DanglingRoute {
+  serviceName: string;
+  hosts?: string[];
+}
+
+// ─── Helm — subconjunto de internal/pkg/helm/types.go usado pelo modal de rollback (Modo Helm e
+// Modo Nexus). Tipos completos já existem em src/types/helm.ts (usados pela aba Helm em si) — não
+// duplicados aqui: só os campos que o modal de rollback de fato consome.
+export interface HelmRevisionEntry {
+  revision: number;
+  updatedAt: string;
+  status: string;
+  description: string;
+  valuesDigest: string;
+  executedBy: string;
+}
+
+export interface HelmChartMetadata {
+  name: string;
+  version: string;
+  description?: string;
+}
+
+export interface HelmReleaseDetail {
+  name: string;
+  namespace: string;
+  chart: string;
+  appVersion: string;
+  revision: number;
+  updatedAt: string;
+  status: string;
+  hasPendingUpgrade: boolean;
+  valuesRaw: string;
+  valuesRendered: string;
+  chartMetadata?: HelmChartMetadata;
+}
+
+// ─── Nexus — subconjunto de internal/pkg/nexus/types.go usado pelo Modo Nexus do rollback.
+export interface NexusBrowseItem {
+  name: string;
+  path: string;
+  versions?: string[];
+  repository?: string;
+  files?: Record<string, string[]>;
+}
+
+export interface NexusBrowseResponse {
+  items: NexusBrowseItem[];
+  path: string;
+}
+
+export interface NexusValuesFileRequest {
+  // release/version deixaram de ser obrigatórios — um NexusFlatArtifact (ver abaixo) não tem
+  // release/version separáveis do nome do arquivo, baixar exige só filePath+repository.
+  release?: string;
+  version?: string;
+  environment?: string;
+  type?: string;
+  repository?: string;
+  filePath?: string;
+}
+
+export interface NexusValuesFileResponse {
+  content: string;
+  filePath: string;
+  fullUrl: string;
+  size: number;
+  error?: string;
+}
+
+// NexusFlatArtifact — componente Nexus SEM hierarquia release/version/arquivo (ver
+// internal/pkg/nexus/types.go:FlatArtifact). Repositórios como "continuousdeploy-history" desta
+// empresa publicam cada deploy de PRD como um YAML solto na raiz, nome sanitizado com
+// timestamp+versão embutidos — NexusBrowseItem pressupõe hierarquia e não encontra nada aqui.
+export interface NexusFlatArtifact {
+  name: string;
+  repository: string;
+  downloadUrl: string;
+  lastModified: string; // ISO 8601
+  uploader?: string;
+}

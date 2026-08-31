@@ -1,9 +1,11 @@
 // Types for Nexus integration
+//
+// NexusConfig NÃO tem username/senha — o login do Nexus é sempre resolvido a partir do Perfil
+// SSO corporativo (mesma identidade já usada por ServiceNow/Teams/Spinnaker), nunca digitado
+// separadamente aqui. Ver internal/web/handlers/nexus.go para o mecanismo.
 export interface NexusConfig {
   baseUrl: string;
   repository: string;
-  username: string;
-  password: string;
   tempDir: string;
   urlPattern?: string; // Padrão de URL customizado
   // Placeholders: {baseUrl}, {repository}, {release}, {version}, {environment}, {type}
@@ -50,9 +52,10 @@ export interface NexusStatus {
   configured: boolean;
   baseUrl?: string;
   repository?: string;
-  username?: string;
   tempDir?: string;
   urlPattern?: string;
+  ssoConfigured?: boolean; // Perfil SSO corporativo configurado (fonte real do login do Nexus)
+  ssoUsername?: string; // email/matrícula resolvido do Perfil SSO, só para exibição
 }
 
 export const VALID_ENVIRONMENTS = ['default', 'dev', 'sit', 'uat', 'hlg', 'prd'] as const;

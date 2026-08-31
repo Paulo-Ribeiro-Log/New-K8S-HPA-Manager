@@ -5,17 +5,35 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"k8s-hpa-manager/internal/browser"
 	"k8s-hpa-manager/internal/pkg/nexus"
 )
+
+// ─── Nexus — login unificado com o Perfil SSO ────────────────────────────────────────────────
+//
+// Bug real corrigido: o login do Nexus (Menu de Perfil → Nexus) exigia um usuário/senha PRÓPRIOS,
+// digitados e salvos à parte — mas o Nexus desta empresa é autenticado via SSO corporativo, a
+// MESMA identidade (email OU matrícula, conforme o Perfil SSO já configurado — ver
+// browser.SSOLoginIdentifier) já usada por ServiceNow/Teams/Spinnaker. Manter uma senha separada
+// e desatualizada é exatamente a causa do 401 relatado — nada garante que a senha Nexus salva
+// meses atrás ainda bata com a senha corporativa atual, enquanto o Perfil SSO é o lugar único que
+// o usuário já mantém atualizado. Corrigido: username/senha NUNCA mais são pedidos nem
+// persistidos pra este handler — sempre resolvidos em tempo real a partir do Perfil SSO
+// (`browser.LoadSSOCredentials`, `~/.k8s-hpa-manager/sso_profile.json`, mesmo arquivo/mecanismo já
+// usado pela automação de browser). `nexus.Config` mantém os campos Username/Password na struct
+// (compatibilidade de schema com configs antigas em disco, nunca mais escritos por este handler)
+// só BaseURL/Repository/TempDir/URLPattern continuam sendo configuração de fato do usuário.
 
 // NexusHandler gerencia requisições relacionadas ao Nexus
 type NexusHandler struct {
 	configManager nexus.ConfigManager
-	client        nexus.Client
+	baseDir       string // ~/.k8s-hpa-manager — mesmo diretório do Perfil SSO (sso_profile.json)
 }
 
-// NewNexusHandler cria uma nova instância do NexusHandler
-func NewNexusHandler() (*NexusHandler, error) {
+// NewNexusHandler cria uma nova instância do NexusHandler. baseDir é ~/.k8s-hpa-manager (mesmo
+// diretório do Perfil SSO usado por ServiceNow/Teams/Spinnaker).
+func NewNexusHandler(baseDir string) (*NexusHandler, error) {
 	configManager, err := nexus.NewFileConfigManager()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config manager: %w", err)
@@ -23,62 +41,92 @@ func NewNexusHandler() (*NexusHandler, error) {
 
 	return &NexusHandler{
 		configManager: configManager,
+		baseDir:       baseDir,
 	}, nil
 }
 
-// getClient obtém o cliente Nexus com a configuração atual
-func (h *NexusHandler) getClient() (nexus.Client, error) {
-	if h.client != nil {
-		return h.client, nil
+// resolveSSOCredentials obtém username+senha do Perfil SSO corporativo (mesma fonte usada por
+// ServiceNow/Teams/Spinnaker) — nunca de um campo próprio do Nexus.
+//
+// Achado real, confirmado ao vivo contra o Nexus real desta empresa (Basic Auth em
+// /service/rest/v1/status): o login do Nexus exige a MATRÍCULA, não o email — email devolve 401
+// mesmo com a senha certa, matrícula devolve 200. Por isso este handler NUNCA usa
+// browser.SSOLoginIdentifier() (o identificador global "email"/"matricula" configurável em
+// Browser Config, que rege o preenchimento automático do formulário Azure AD/SAML usado por
+// ServiceNow/Teams — um mecanismo de login completamente diferente, sem relação com o formato que
+// o Nexus REST API exige) — é sempre "matricula" aqui, incondicional. Erro claro e acionável
+// quando o Perfil SSO ainda não foi configurado OU não tem matrícula preenchida, em vez de deixar
+// a chamada HTTP falhar com um 401 sem contexto nenhum sobre o que fazer.
+func (h *NexusHandler) resolveSSOCredentials() (username, password string, err error) {
+	username, password, ok := browser.LoadSSOCredentials(h.baseDir, "matricula")
+	if !ok {
+		return "", "", fmt.Errorf("perfil SSO não configurado (ou sem matrícula preenchida) — o login do Nexus exige a matrícula; configure em Menu de Perfil → Perfil SSO antes de usar o Nexus")
 	}
+	return username, password, nil
+}
 
+// getClient monta o cliente Nexus com a configuração (BaseURL/Repository/etc) salva + as
+// credenciais do Perfil SSO resolvidas NA HORA (nunca cacheadas por muito tempo — se o usuário
+// trocar a senha no Perfil SSO, a próxima chamada já usa a senha nova, sem precisar de nenhum
+// "refresh" manual).
+func (h *NexusHandler) getClient() (nexus.Client, error) {
 	config, err := h.configManager.Load()
 	if err != nil {
-		return nil, fmt.Errorf("no configuration found. Please configure Nexus connection first")
+		return nil, fmt.Errorf("Nexus não configurado — informe a URL base e o repositório em Menu de Perfil → Nexus")
 	}
 
-	h.client = nexus.NewHTTPClient(*config)
-	return h.client, nil
+	username, password, err := h.resolveSSOCredentials()
+	if err != nil {
+		return nil, err
+	}
+	config.Username = username
+	config.Password = password
+
+	return nexus.NewHTTPClient(*config), nil
 }
 
-// refreshClient força a recriação do cliente com nova configuração
-func (h *NexusHandler) refreshClient() {
-	h.client = nil
+// nexusConfigRequest — payload de configuração do Nexus, SEM username/senha (ver comentário no
+// topo do arquivo). Usado por TestConnection e SaveConfig.
+type nexusConfigRequest struct {
+	BaseURL    string `json:"baseUrl"`
+	Repository string `json:"repository"`
+	TempDir    string `json:"tempDir"`
+	URLPattern string `json:"urlPattern"`
 }
 
-// TestConnection testa a conexão com o Nexus
+// TestConnection testa a conexão com o Nexus usando as credenciais do Perfil SSO
 // POST /api/v1/nexus/test
 func (h *NexusHandler) TestConnection(c *gin.Context) {
-	var config nexus.Config
-	if err := c.ShouldBindJSON(&config); err != nil {
+	var req nexusConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": fmt.Sprintf("Invalid request: %v", err),
 		})
 		return
 	}
 
-	// Valida campos obrigatórios
-	if config.BaseURL == "" || config.Repository == "" || config.Username == "" {
+	if req.BaseURL == "" || req.Repository == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "BaseURL, Repository and Username are required",
+			"error": "BaseURL and Repository are required",
 		})
 		return
 	}
 
-	// Se senha veio vazia, usar a existente
-	if config.Password == "" {
-		existingConfig, err := h.configManager.Load()
-		if err != nil || existingConfig.Password == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Password is required",
-			})
-			return
-		}
-		config.Password = existingConfig.Password
+	username, password, err := h.resolveSSOCredentials()
+	if err != nil {
+		c.JSON(http.StatusPreconditionFailed, gin.H{
+			"error": err.Error(),
+		})
+		return
 	}
 
-	// Cria cliente temporário para teste
-	client := nexus.NewHTTPClient(config)
+	// Cliente temporário só pra este teste — nunca persistido.
+	client := nexus.NewHTTPClient(nexus.Config{
+		BaseURL:    req.BaseURL,
+		Repository: req.Repository,
+		Username:   username,
+		Password:   password,
+	})
 
 	response, err := client.TestConnection()
 	if err != nil {
@@ -91,52 +139,42 @@ func (h *NexusHandler) TestConnection(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// SaveConfig salva a configuração do Nexus
+// SaveConfig salva a configuração do Nexus (BaseURL/Repository/TempDir/URLPattern — nunca
+// username/senha, sempre resolvidos do Perfil SSO em tempo real)
 // POST /api/v1/nexus/config
 func (h *NexusHandler) SaveConfig(c *gin.Context) {
-	var config nexus.Config
-	if err := c.ShouldBindJSON(&config); err != nil {
+	var req nexusConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": fmt.Sprintf("Invalid request: %v", err),
 		})
 		return
 	}
 
-	// Valida campos obrigatórios (exceto senha que pode vir do config existente)
-	if config.BaseURL == "" || config.Repository == "" || config.Username == "" {
+	if req.BaseURL == "" || req.Repository == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "BaseURL, Repository and Username are required",
+			"error": "BaseURL and Repository are required",
 		})
 		return
 	}
 
-	// Se senha veio vazia, manter a existente
-	if config.Password == "" {
-		existingConfig, err := h.configManager.Load()
-		if err != nil || existingConfig.Password == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Password is required",
-			})
-			return
-		}
-		config.Password = existingConfig.Password
+	if req.TempDir == "" {
+		req.TempDir = "/tmp/k8s-hpa-nexus"
 	}
 
-	// Define diretório temporário padrão se não fornecido
-	if config.TempDir == "" {
-		config.TempDir = "/tmp/k8s-hpa-nexus"
+	config := nexus.Config{
+		BaseURL:    req.BaseURL,
+		Repository: req.Repository,
+		TempDir:    req.TempDir,
+		URLPattern: req.URLPattern,
 	}
 
-	// Salva configuração
 	if err := h.configManager.Save(config); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Failed to save configuration: %v", err),
 		})
 		return
 	}
-
-	// Atualiza cliente
-	h.refreshClient()
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Configuration saved successfully",
@@ -161,10 +199,12 @@ func (h *NexusHandler) LoadConfig(c *gin.Context) {
 		return
 	}
 
-	// Remove senha da resposta por segurança
-	config.Password = ""
-
-	c.JSON(http.StatusOK, config)
+	c.JSON(http.StatusOK, nexusConfigRequest{
+		BaseURL:    config.BaseURL,
+		Repository: config.Repository,
+		TempDir:    config.TempDir,
+		URLPattern: config.URLPattern,
+	})
 }
 
 // DeleteConfig remove a configuração do Nexus
@@ -176,8 +216,6 @@ func (h *NexusHandler) DeleteConfig(c *gin.Context) {
 		})
 		return
 	}
-
-	h.refreshClient()
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Configuration deleted successfully",
@@ -280,10 +318,11 @@ func (h *NexusHandler) CompareValues(c *gin.Context) {
 }
 
 // BrowseRepository navega o repositório Nexus e lista diretórios
-// GET /api/v1/nexus/browse?path=&q=comercial
+// GET /api/v1/nexus/browse?path=&q=comercial&repository=continuousdeploy-history
 func (h *NexusHandler) BrowseRepository(c *gin.Context) {
 	path := c.DefaultQuery("path", "")
 	query := c.DefaultQuery("q", "")
+	repository := c.DefaultQuery("repository", "")
 
 	client, err := h.getClient()
 	if err != nil {
@@ -293,7 +332,7 @@ func (h *NexusHandler) BrowseRepository(c *gin.Context) {
 		return
 	}
 
-	response, err := client.BrowseRepository(path, query)
+	response, err := client.BrowseRepository(path, query, repository)
 	if err != nil {
 		fmt.Printf("[NexusHandler] Browse error: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -305,7 +344,39 @@ func (h *NexusHandler) BrowseRepository(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// CheckStatus verifica se o Nexus está configurado
+// SearchFlatArtifacts busca artefatos SEM hierarquia release/version/arquivo (ver
+// nexus.FlatArtifact) — repositórios como "continuousdeploy-history" desta empresa publicam cada
+// deploy de PRD como um YAML solto na raiz, nome sanitizado com timestamp+versão embutidos, sem
+// pasta nenhuma; BrowseRepository pressupõe hierarquia e descarta esses componentes em silêncio.
+// GET /api/v1/nexus/search-flat?repository=continuousdeploy-history&q=nome&allRepos=true|false
+func (h *NexusHandler) SearchFlatArtifacts(c *gin.Context) {
+	repository := c.DefaultQuery("repository", "")
+	query := c.DefaultQuery("q", "")
+	allRepos := c.DefaultQuery("allRepos", "false") == "true"
+
+	client, err := h.getClient()
+	if err != nil {
+		c.JSON(http.StatusPreconditionFailed, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	artifacts, err := client.SearchFlatArtifacts(repository, query, allRepos)
+	if err != nil {
+		fmt.Printf("[NexusHandler] SearchFlatArtifacts error: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Search failed: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"artifacts": artifacts})
+}
+
+// CheckStatus verifica se o Nexus está configurado — cobre os dois pré-requisitos separadamente
+// (BaseURL/Repository salvos E Perfil SSO configurado), já que agora são duas coisas
+// independentes: o usuário pode ter configurado só uma delas.
 // GET /api/v1/nexus/status
 func (h *NexusHandler) CheckStatus(c *gin.Context) {
 	configured := h.configManager.Exists()
@@ -319,10 +390,17 @@ func (h *NexusHandler) CheckStatus(c *gin.Context) {
 		if err == nil {
 			status["baseUrl"] = config.BaseURL
 			status["repository"] = config.Repository
-			status["username"] = config.Username
 			status["tempDir"] = config.TempDir
 			status["urlPattern"] = config.URLPattern
 		}
+	}
+
+	// Sempre "matricula" aqui — ver comentário de resolveSSOCredentials.
+	if username, _, ok := browser.LoadSSOCredentials(h.baseDir, "matricula"); ok {
+		status["ssoConfigured"] = true
+		status["ssoUsername"] = username
+	} else {
+		status["ssoConfigured"] = false
 	}
 
 	c.JSON(http.StatusOK, status)
