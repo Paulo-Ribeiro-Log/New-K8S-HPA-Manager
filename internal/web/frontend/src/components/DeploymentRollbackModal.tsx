@@ -164,10 +164,23 @@ function extractDeploymentDoc(multiDocYaml: string): { yaml: string; error?: str
     return { yaml: "", error: err instanceof Error ? err.message : "YAML inválido" };
   }
   const deploymentDoc = docs.find((d) => d && typeof d === "object" && (d as Record<string, unknown>).kind === "Deployment");
-  if (!deploymentDoc) {
-    return { yaml: "", error: "Este artefato não contém um documento kind: Deployment (só " + docs.map((d) => (d && typeof d === "object" ? (d as Record<string, unknown>).kind : "?")).join(", ") + ")" };
+  if (deploymentDoc) return { yaml: yaml.dump(deploymentDoc) };
+
+  const kinds = docs.map((d) => (d && typeof d === "object" ? (d as Record<string, unknown>).kind : undefined));
+  const anyKind = kinds.some((k) => typeof k === "string" && k);
+  if (!anyKind) {
+    // Achado real, relatado pelo usuário: nem toda squad publica o manifesto K8s renderizado
+    // (continuousdeploy-history) — algumas usam um repositório próprio com estrutura hierárquica
+    // release/versão/ambiente/helm-values (ex: "workspace" nesta empresa) contendo Helm VALUES
+    // puros por ambiente, nunca um manifesto (sem apiVersion/kind nenhum). Mensagem distinta e
+    // acionável, em vez do erro genérico de "kind errado" (que sugeriria — incorretamente — que só
+    // faltou o documento certo no meio de outros).
+    return {
+      yaml: "",
+      error: "Este artefato parece ser um arquivo de values do Helm (sem apiVersion/kind), não um manifesto K8s renderizado — o Modo Nexus só aplica manifestos completos. Pra usar esses values, tente a aba \"Nexus Values\" ou o Modo Helm (se o release ainda estiver no `helm history`).",
+    };
   }
-  return { yaml: yaml.dump(deploymentDoc) };
+  return { yaml: "", error: "Este artefato não contém um documento kind: Deployment (só " + kinds.filter(Boolean).join(", ") + ")" };
 }
 
 interface DeploymentRollbackModalProps {
@@ -1448,11 +1461,25 @@ function NexusRollbackSection({
     setLastSearchScopeLabel(scopeLabel);
     apiClient.nexusSearchFlat(NEXUS_ROLLBACK_REPOSITORY, term.trim(), allRepos)
       .then((res) => {
-        if (res.length === 0) {
+        if (res.length > 0) { setArtifacts(res); return; }
+        if (allRepos) {
           setLoadError(`Nenhum artefato encontrado no Nexus (${scopeLabel}) para "${term.trim()}".`);
           return;
         }
-        setArtifacts(res);
+        // Fallback automático — achado real, relatado pelo usuário: buscou por um deployment
+        // realmente publicado no dia e "não foi encontrado", porque a squad dele não usa o
+        // repositório "continuousdeploy-history" (algumas publicam num repositório próprio, ex:
+        // "workspace" nesta empresa, com Helm values por ambiente em vez do manifesto achatado).
+        // Refaz em todos os repositórios ANTES de reportar "não encontrado" — sem exigir que o
+        // usuário descubra manualmente o checkbox "buscar em todos os repositórios".
+        setLastSearchScopeLabel(`todos os repositórios (nada em "${NEXUS_ROLLBACK_REPOSITORY}")`);
+        return apiClient.nexusSearchFlat(NEXUS_ROLLBACK_REPOSITORY, term.trim(), true).then((res2) => {
+          if (res2.length === 0) {
+            setLoadError(`Nenhum artefato encontrado no Nexus (nem em "${NEXUS_ROLLBACK_REPOSITORY}", nem em outros repositórios) para "${term.trim()}".`);
+            return;
+          }
+          setArtifacts(res2);
+        });
       })
       .catch((err) => setLoadError(err instanceof Error ? err.message : "Erro ao buscar no Nexus (verifique se está configurado no Perfil do Usuário)"))
       .finally(() => setLoading(false));
