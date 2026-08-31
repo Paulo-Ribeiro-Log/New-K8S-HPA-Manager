@@ -906,6 +906,7 @@ func (s *Server) setupRoutes() {
 		deployments.GET("/:cluster/:namespace/:name", deploymentHandler.Get)
 		deployments.GET("/:cluster/:namespace/:name/describe", deploymentHandler.Describe)
 		deployments.GET("/:cluster/:namespace/:name/behavior", rbacMiddleware.InjectUserEmail(), deploymentHandler.GetDeploymentBehavior)
+		deployments.GET("/:cluster/:namespace/:name/insights", deploymentHandler.Insights)
 		deployments.POST("/diff", deploymentHandler.Diff)
 		deployments.POST("/validate", deploymentHandler.Validate)
 

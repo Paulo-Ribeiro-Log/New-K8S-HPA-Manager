@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw, FileWarning } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, CheckCircle2, TriangleAlert, AlertOctagon, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw, FileWarning } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -24,6 +24,7 @@ import type {
   Namespace,
   DeploymentSummary,
   DeploymentManifest,
+  DeploymentRuntimeInsights,
   PodSummary,
   BatchPodMetrics,
   SpinnakerRollbackInfo,
@@ -275,6 +276,19 @@ export const DeploymentsTab = ({
   // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<DeploymentManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
+  // Insights sob demanda (último kubectl rollout restart + rotas Service/Ingress sem endpoint
+  // pronto) — pedido explícito do usuário depois de uma investigação real
+  // (ms-faturamento-nf-legado: spec.replicas=0 há anos, Service/Ingress "fachada" ainda apontando
+  // pra ele). Efeito próprio (não dentro de handleSelectDeployment) — cobre tanto a seleção manual
+  // quanto o caso de selectedDeployment já vir restaurado de usePersistedTabState no mount.
+  const [deploymentInsights, setDeploymentInsights] = useState<DeploymentRuntimeInsights | null>(null);
+  useEffect(() => {
+    if (!selectedDeployment) { setDeploymentInsights(null); return; }
+    setDeploymentInsights(null);
+    apiClient.getDeploymentInsights(selectedDeployment.cluster, selectedDeployment.namespace, selectedDeployment.name)
+      .then(setDeploymentInsights)
+      .catch(() => setDeploymentInsights(null)); // best-effort — nunca bloqueia a visualização
+  }, [selectedDeployment?.cluster, selectedDeployment?.namespace, selectedDeployment?.name]);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
   const [isValidating, setIsValidating] = useState(false);
@@ -3073,6 +3087,30 @@ export const DeploymentsTab = ({
             </div>
           );
         })()}
+
+        {/* Insights sob demanda — último rollout restart + rotas Service/Ingress sem endpoint
+            pronto (ver internal/kubernetes/deployment_insights.go). Ausência de qualquer um dos
+            dois campos não gera nada aqui (nunca mostra "sem dados"). */}
+        {deploymentInsights?.danglingRoutes && deploymentInsights.danglingRoutes.length > 0 && (
+          <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-700 dark:text-red-400">
+            <AlertOctagon className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">Rota sem backend — nenhum pod respondendo atrás deste Deployment</p>
+              {deploymentInsights.danglingRoutes.map((r) => (
+                <p key={r.serviceName} className="font-mono mt-0.5">
+                  Service <span className="font-semibold">{r.serviceName}</span>
+                  {r.hosts && r.hosts.length > 0 && <> — {r.hosts.join(", ")}</>}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+        {deploymentInsights?.restartedAt && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <RefreshCw className="w-3.5 h-3.5" />
+            Último restart (kubectl rollout restart): {new Date(deploymentInsights.restartedAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+          </div>
+        )}
 
         <div className="space-y-3">
           <div className="flex flex-col gap-2">

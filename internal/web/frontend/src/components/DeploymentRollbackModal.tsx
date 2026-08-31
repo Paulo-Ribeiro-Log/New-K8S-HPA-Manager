@@ -18,6 +18,8 @@ import {
   Loader2,
   RotateCcw,
   AlertTriangle,
+  AlertOctagon,
+  RefreshCw,
   CheckCircle2,
   XCircle,
   Package,
@@ -30,6 +32,7 @@ import { apiClient } from "@/lib/api/client";
 import type {
   DeploymentManifest,
   DeploymentRevision,
+  DeploymentRuntimeInsights,
   HelmRevisionEntry,
   HelmReleaseDetail,
   NexusBrowseItem,
@@ -68,6 +71,20 @@ function formatDate(v?: string): string {
   } catch {
     return v;
   }
+}
+
+// revisionWasCreatedByRestart — achado real validando ao vivo contra ms-faturamento-nf-legado: a
+// annotation kubectl.kubernetes.io/restartedAt NÃO é limpa pelo K8s quando um deploy normal
+// acontece depois de um restart — ela só é SOBRESCRITA por um restart novo, então uma revisão
+// criada por um deploy de imagem real pode carregar (e mostrar) o restartedAt de uma revisão
+// restart-only anterior, sem nenhuma relação com a criação dela mesma (confirmado: a revisão 4
+// desse Deployment real tinha restartedAt herdado da revisão 3, criada ~48 dias antes). Só
+// consideramos "esta revisão foi criada por um restart" quando restartedAt e createdAt praticamente
+// coincidem — o controller cria o ReplicaSet segundos depois do patch que grava a annotation.
+function revisionWasCreatedByRestart(restartedAt?: string, createdAt?: string): boolean {
+  if (!restartedAt || !createdAt) return false;
+  const diffMs = Math.abs(new Date(restartedAt).getTime() - new Date(createdAt).getTime());
+  return diffMs < 60_000;
 }
 
 // compareVersionsDesc — ordena versões tipo "1.0.0-3"/"0.0.2-7" (formato real observado no Nexus
@@ -110,6 +127,18 @@ export function DeploymentRollbackModal({
     if (open) setMode(isHelmManaged ? "helm" : "k8s");
   }, [open, isHelmManaged]);
 
+  // Insights sob demanda (último kubectl rollout restart + rotas Service/Ingress sem endpoint
+  // pronto) — pedido explícito do usuário depois de uma investigação real (ms-faturamento-nf-legado:
+  // spec.replicas=0 há anos, Service/Ingress "fachada" ainda apontando pra ele). Independente do
+  // modo escolhido — reflete o estado ATUAL do Deployment, relevante nos 3 modos.
+  const [insights, setInsights] = useState<DeploymentRuntimeInsights | null>(null);
+  useEffect(() => {
+    if (!open) { setInsights(null); return; }
+    apiClient.getDeploymentInsights(cluster, namespace, deploymentName)
+      .then(setInsights)
+      .catch(() => setInsights(null)); // best-effort — nunca bloqueia o fluxo de rollback
+  }, [open, cluster, namespace, deploymentName]);
+
   const handleDone = useCallback(() => {
     onRolledBack();
     onClose();
@@ -134,6 +163,28 @@ export function DeploymentRollbackModal({
               um reconcile automático pode reverter este rollback pouco depois de aplicado. Considere pausar o
               controller antes de continuar, se possível.
             </span>
+          </div>
+        )}
+
+        {insights?.danglingRoutes && insights.danglingRoutes.length > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-400 shrink-0">
+            <AlertOctagon className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">Rota sem backend — nenhum pod respondendo atrás deste Deployment</p>
+              {insights.danglingRoutes.map((r) => (
+                <p key={r.serviceName} className="text-xs font-mono mt-0.5">
+                  Service <span className="font-semibold">{r.serviceName}</span>
+                  {r.hosts && r.hosts.length > 0 && <> — {r.hosts.join(", ")}</>}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {insights?.restartedAt && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+            <RefreshCw className="w-3.5 h-3.5" />
+            Último restart (kubectl rollout restart): {formatDate(insights.restartedAt)}
           </div>
         )}
 
@@ -284,6 +335,11 @@ function NativeRollbackSection({
               <div className="text-xs font-mono text-muted-foreground truncate">{r.images.join(", ")}</div>
               {r.changeCause && <div className="text-xs text-muted-foreground mt-1">{r.changeCause}</div>}
               <div className="text-xs text-muted-foreground mt-0.5">{r.replicas} réplica(s) desejadas nessa revisão</div>
+              {revisionWasCreatedByRestart(r.restartedAt, r.createdAt) && (
+                <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
+                  <RefreshCw className="w-3 h-3" /> Criada por rollout restart
+                </div>
+              )}
             </Label>
           </div>
         ))}

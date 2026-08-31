@@ -41,6 +41,11 @@ type DeploymentRevision struct {
 	Replicas    int32     `json:"replicas"` // spec.replicas do ReplicaSet — desejado NAQUELA revisão, não o atual
 	CreatedAt   time.Time `json:"createdAt"`
 	IsCurrent   bool      `json:"isCurrent"`
+	// RestartedAt — annotation kubectl.kubernetes.io/restartedAt do PodTemplateSpec DESTA revisão
+	// (ver deployment_insights.go). Um valor presente indica que essa revisão especificamente foi
+	// criada por um `kubectl rollout restart`/"Rollout Restart" da aplicação, não por mudança de
+	// imagem/config — útil pra distinguir "revisão de restart" de "revisão de deploy" na lista.
+	RestartedAt *time.Time `json:"restartedAt,omitempty"`
 }
 
 // findOwnedReplicaSets lista os ReplicaSets do namespace cujo OwnerReference aponta pro Deployment
@@ -109,6 +114,7 @@ func (c *Client) ListDeploymentRevisions(ctx context.Context, namespace, name st
 			Replicas:    replicas,
 			CreatedAt:   rs.CreationTimestamp.Time,
 			IsCurrent:   rev == currentRevision,
+			RestartedAt: parsePodRestartedAt(rs.Spec.Template.Annotations),
 		})
 	}
 	sort.Slice(revisions, func(i, j int) bool { return revisions[i].Revision > revisions[j].Revision })

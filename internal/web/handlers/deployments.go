@@ -151,6 +151,64 @@ func (h *DeploymentHandler) Get(c *gin.Context) {
 	})
 }
 
+// Insights retorna enriquecimento sob demanda de um Deployment específico — último
+// kubectl.kubernetes.io/restartedAt e rotas "fachada" (Service/Ingress sem nenhum endpoint
+// pronto). Nunca chamado no hot path da listagem — só quando um Deployment é selecionado no
+// painel de visualização ou o modal de Rollback é aberto (ver DeploymentRuntimeInsights).
+// GET /api/v1/deployments/:cluster/:namespace/:name/insights
+func (h *DeploymentHandler) Insights(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster, namespace and name must be provided",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	insights, err := kubeClient.GetDeploymentRuntimeInsights(c.Request.Context(), namespace, name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		errorCode := "INSIGHTS_ERROR"
+		if apierrors.IsNotFound(err) {
+			status = http.StatusNotFound
+			errorCode = "NOT_FOUND"
+		}
+		c.JSON(status, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    errorCode,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    insights,
+	})
+}
+
 // Diff retornará o diff textual antes do apply
 // Diff gera diff texto simples entre YAMLs
 func (h *DeploymentHandler) Diff(c *gin.Context) {

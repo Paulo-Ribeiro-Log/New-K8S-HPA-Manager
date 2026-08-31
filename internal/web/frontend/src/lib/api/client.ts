@@ -119,6 +119,7 @@ import type {
   PortForwardPodPort,
   StartPortForwardRequest,
   DeploymentRevision,
+  DeploymentRuntimeInsights,
   HelmReleaseDetail,
   HelmRevisionEntry,
   NexusBrowseResponse,
@@ -1050,6 +1051,16 @@ class APIClient {
       `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/revisions/${revision}/preview`
     );
     return response.data?.yaml || "";
+  }
+
+  /** Enriquecimento sob demanda (último kubectl rollout restart + rotas Service/Ingress sem
+   * nenhum endpoint pronto) — usado tanto no painel de visualização (DeploymentsTab.tsx) quanto
+   * no modal de Rollback. Ver internal/kubernetes/deployment_insights.go. */
+  async getDeploymentInsights(cluster: string, namespace: string, name: string): Promise<DeploymentRuntimeInsights> {
+    const response = await this.request<APIResponse<DeploymentRuntimeInsights>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/insights`
+    );
+    return response.data || {};
   }
 
   async rollbackDeploymentNative(

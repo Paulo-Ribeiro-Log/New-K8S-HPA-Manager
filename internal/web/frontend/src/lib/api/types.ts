@@ -2826,6 +2826,23 @@ export interface DeploymentRevision {
   replicas: number;
   createdAt: string; // ISO 8601
   isCurrent: boolean;
+  // restartedAt — presente quando ESTA revisão foi criada por um `kubectl rollout restart`/
+  // "Rollout Restart" (annotation do PodTemplateSpec daquela revisão específica, não a atual).
+  restartedAt?: string; // ISO 8601
+}
+
+// DeploymentRuntimeInsights — enriquecimento sob demanda (ver internal/kubernetes/
+// deployment_insights.go), usado no painel de visualização (DeploymentsTab.tsx) e no modal de
+// Rollback. Motivado por uma investigação real: um Deployment com spec.replicas=0 há anos, cujo
+// Service/Ingress continuavam existindo e roteando pra um backend sem nenhum pod.
+export interface DeploymentRuntimeInsights {
+  restartedAt?: string; // ISO 8601 — último kubectl rollout restart (annotation ATUAL, não por revisão)
+  danglingRoutes?: DanglingRoute[];
+}
+
+export interface DanglingRoute {
+  serviceName: string;
+  hosts?: string[];
 }
 
 // ─── Helm — subconjunto de internal/pkg/helm/types.go usado pelo modal de rollback (Modo Helm e
