@@ -17,13 +17,13 @@ type ReleaseSummary struct {
 // ReleaseDetail enriches ReleaseSummary with values, manifests and hooks information.
 type ReleaseDetail struct {
 	ReleaseSummary
-	ValuesRaw      string              `json:"valuesRaw"`
-	ValuesRendered string              `json:"valuesRendered"`
-	Manifest       string              `json:"manifest"`
-	Notes          string              `json:"notes"`
-	Hooks          []Hook              `json:"hooks"`
-	Resources      []Resource          `json:"resources"`
-	ChartMetadata  *ChartMetadata      `json:"chartMetadata,omitempty"`
+	ValuesRaw      string         `json:"valuesRaw"`
+	ValuesRendered string         `json:"valuesRendered"`
+	Manifest       string         `json:"manifest"`
+	Notes          string         `json:"notes"`
+	Hooks          []Hook         `json:"hooks"`
+	Resources      []Resource     `json:"resources"`
+	ChartMetadata  *ChartMetadata `json:"chartMetadata,omitempty"`
 }
 
 // ChartMetadata contains extended information about the chart
@@ -103,6 +103,14 @@ type HelmActionRequest struct {
 	TargetRevision int           `json:"targetRevision"`
 	Force          bool          `json:"force"`
 	DryRun         bool          `json:"dryRun"`
+	// Wait/RecreatePods — só usados por ActionRollback (ver buildRollbackArgs). Documentação
+	// interna de rollback manual desta empresa recomenda sempre `helm rollback ... --wait --force
+	// --recreate-pods` no cenário de emergência (rollback automático indisponível) — --wait faz o
+	// helm só reportar sucesso depois dos pods ficarem prontos de fato, --recreate-pods força a
+	// recriação mesmo quando o PodTemplateSpec não muda o suficiente pra disparar um rollout novo
+	// sozinho (ex: rollback que só reverte um valor de recurso/env que não altera o hash do template).
+	Wait         bool `json:"wait"`
+	RecreatePods bool `json:"recreatePods"`
 }
 
 // HelmActionResponse wraps execution metadata to feed UX feedback loops.

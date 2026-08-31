@@ -1075,6 +1075,20 @@ class APIClient {
     return response.data;
   }
 
+  /** "Modo Imagem" do Rollback — troca só a imagem de um ou mais containers (equivalente a
+   * `kubectl set image`), sem tocar em mais nada do manifesto. Mesmo sessionId de rollout SSE do
+   * Modo K8s nativo (getDeploymentRollbackStreamURL). */
+  async setDeploymentImage(
+    cluster: string, namespace: string, name: string, images: Record<string, string>, reason: string
+  ): Promise<{ sessionId: string; images: string[] }> {
+    const response = await this.request<APIResponse<{ sessionId: string; images: string[] }>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/set-image`,
+      { method: "POST", body: JSON.stringify({ images, reason }) }
+    );
+    if (!response.data) throw new Error("Rollback de imagem sem retorno");
+    return response.data;
+  }
+
   /** URL do stream SSE de progresso do rollout pós-rollback (Modo K8s nativo) — token via query
    * param, mesmo motivo/padrão de getNetDiscoveryStreamURL (EventSource não aceita headers). */
   getDeploymentRollbackStreamURL(sessionId: string): string {
@@ -1104,12 +1118,13 @@ class APIClient {
   }
 
   async helmRollback(
-    cluster: string, release: string, namespace: string, targetRevision: number, force: boolean
+    cluster: string, release: string, namespace: string, targetRevision: number, force: boolean,
+    wait = false, recreatePods = false
   ): Promise<{ operationId: string }> {
     const qs = new URLSearchParams({ cluster });
     const response = await this.request<{ success: boolean; data: { operationId: string } }>(
       `/helm/releases/${encodeURIComponent(release)}/rollback?${qs}`,
-      { method: "POST", body: JSON.stringify({ namespace, targetRevision, force }) }
+      { method: "POST", body: JSON.stringify({ namespace, targetRevision, force, wait, recreatePods }) }
     );
     return response.data;
   }
