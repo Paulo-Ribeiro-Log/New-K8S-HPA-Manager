@@ -74,6 +74,16 @@ function formatDate(v?: string): string {
   }
 }
 
+// formatVersion — mesma lógica de DeploymentsTab.tsx (não exportada de lá, duplicada aqui de
+// propósito: função pequena, autocontida, mesmo padrão de pequenos helpers locais já usado em
+// vários arquivos deste projeto): "1-0-1-13" (formato de label K8s) → "1.0.1-13" (leitura semver).
+function formatVersion(version: string | undefined): string {
+  if (!version) return "";
+  const parts = version.split("-");
+  if (parts.length === 4 && parts.every((p) => /^\d+$/.test(p))) return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
+  return version;
+}
+
 // revisionWasCreatedByRestart — achado real validando ao vivo contra ms-faturamento-nf-legado: a
 // annotation kubectl.kubernetes.io/restartedAt NÃO é limpa pelo K8s quando um deploy normal
 // acontece depois de um restart — ela só é SOBRESCRITA por um restart novo, então uma revisão
@@ -123,6 +133,10 @@ export function DeploymentRollbackModal({
 }: DeploymentRollbackModalProps) {
   const annotations = manifest?.metadata.annotations || {};
   const labels = manifest?.metadata.labels || {};
+  // appVersion — mesma convenção/labels já usados no header do painel de visualização
+  // (DeploymentsTab.tsx) — pedido explícito do usuário pra também aparecer aqui no header do
+  // modal de Rollback, onde é ainda mais relevante (contexto de "de qual versão estou saindo").
+  const appVersion = labels["app.kubernetes.io/version"] || labels["version"] || labels["app.version"];
   const helmReleaseName = annotations["meta.helm.sh/release-name"] || "";
   const helmReleaseNamespace = annotations["meta.helm.sh/release-namespace"] || namespace;
   const isHelmManaged = !!helmReleaseName && labels["app.kubernetes.io/managed-by"] === "Helm";
@@ -158,7 +172,10 @@ export function DeploymentRollbackModal({
             <RotateCcw className="w-5 h-5" />
             Rollback: {deploymentName}
           </DialogTitle>
-          <DialogDescription className="font-mono text-xs">{namespace} · {cluster}</DialogDescription>
+          <DialogDescription className="font-mono text-xs">
+            {namespace} · {cluster}
+            {appVersion && <> · versão atual: <span className="text-primary">{formatVersion(appVersion)}</span></>}
+          </DialogDescription>
         </DialogHeader>
 
         {gitopsMarker && (
