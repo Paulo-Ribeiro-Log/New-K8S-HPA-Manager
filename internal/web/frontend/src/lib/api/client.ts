@@ -3940,6 +3940,19 @@ class APIClient {
     return this.request(`/spinnaker/rollout-status/batch?${params.toString()}`);
   }
 
+  /** Busca independente do histórico de execuções de UM deployment específico — Modo Spinnaker
+   * do Rollback de Deployment. `env` opcional: o backend deriva de `cluster` quando ausente. */
+  async getSpinnakerDeploymentExecutions(
+    cluster: string,
+    namespace: string,
+    deploymentName: string,
+    env?: "hlg" | "prd"
+  ): Promise<import("./types").SpinnakerDeploymentExecutions> {
+    const params = new URLSearchParams({ cluster, namespace, deployment: deploymentName });
+    if (env) params.set("env", env);
+    return this.request(`/spinnaker/deployment-executions?${params.toString()}`);
+  }
+
   // ─── Command Runner ────────────────────────────────────────────────────────
 
   /** Inicia execução em lote e retorna session_id para streaming SSE */

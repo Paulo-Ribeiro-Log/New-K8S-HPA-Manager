@@ -1651,6 +1651,14 @@ export interface SpinnakerStageSummary {
 // Chave do mapa devolvido por /spinnaker/rollout-status/batch: "appName/namespace"
 export type SpinnakerRolloutStatusBatch = Record<string, SpinnakerRollbackInfo>;
 
+// Resposta de GET /spinnaker/deployment-executions — busca independente do histórico de
+// execuções de UM deployment (Modo Spinnaker do Rollback de Deployment), sem o teto de 5 que
+// SpinnakerRollbackInfo.recent_executions tem.
+export interface SpinnakerDeploymentExecutions {
+  env: "hlg" | "prd";
+  executions: SpinnakerExecutionSummary[];
+}
+
 export interface AWXStatus {
   configured: boolean;
   reachable: boolean;

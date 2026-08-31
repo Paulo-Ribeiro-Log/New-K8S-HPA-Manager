@@ -1445,6 +1445,7 @@ func (s *Server) setupRoutes() {
 		spinnakerRoutes.POST("/config", spinnakerHandler.SaveConfig)
 		spinnakerRoutes.GET("/projects", spinnakerHandler.ListProjects)
 		spinnakerRoutes.GET("/rollout-status/batch", spinnakerHandler.RolloutStatusBatch)
+		spinnakerRoutes.GET("/deployment-executions", spinnakerHandler.ListDeploymentExecutions)
 	}
 	fmt.Println("✅ Spinnaker routes registradas (config + detecção de rollback)")
 
