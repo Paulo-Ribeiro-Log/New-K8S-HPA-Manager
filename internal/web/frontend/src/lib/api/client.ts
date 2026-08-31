@@ -126,6 +126,7 @@ import type {
   NexusValuesFileRequest,
   NexusValuesFileResponse,
   NexusFlatArtifact,
+  RollbackFileEntry,
 } from "./types";
 
 import type {
@@ -1075,6 +1076,34 @@ class APIClient {
     return response.data;
   }
 
+  /** "Modo Imagem" do Rollback — troca só a imagem de um ou mais containers (equivalente a
+   * `kubectl set image`), sem tocar em mais nada do manifesto. Mesmo sessionId de rollout SSE do
+   * Modo K8s nativo (getDeploymentRollbackStreamURL). */
+  async setDeploymentImage(
+    cluster: string, namespace: string, name: string, images: Record<string, string>, reason: string
+  ): Promise<{ sessionId: string; images: string[] }> {
+    const response = await this.request<APIResponse<{ sessionId: string; images: string[] }>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/set-image`,
+      { method: "POST", body: JSON.stringify({ images, reason }) }
+    );
+    if (!response.data) throw new Error("Rollback de imagem sem retorno");
+    return response.data;
+  }
+
+  /** Usado pelos Modos Nexus e Arquivos — aplica um manifesto Deployment já extraído (kubectl
+   * apply via server-side apply) com o mesmo lock+auditoria+streaming de rollout dos outros
+   * modos (mesmo sessionId de rollout SSE do Modo K8s nativo/Imagem). */
+  async applyDeploymentManifest(
+    cluster: string, namespace: string, name: string, yaml: string, reason: string, force: boolean
+  ): Promise<{ sessionId: string; images: string[] }> {
+    const response = await this.request<APIResponse<{ sessionId: string; images: string[] }>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/apply-manifest`,
+      { method: "POST", body: JSON.stringify({ yaml, reason, force }) }
+    );
+    if (!response.data) throw new Error("Aplicação de manifesto sem retorno");
+    return response.data;
+  }
+
   /** URL do stream SSE de progresso do rollout pós-rollback (Modo K8s nativo) — token via query
    * param, mesmo motivo/padrão de getNetDiscoveryStreamURL (EventSource não aceita headers). */
   getDeploymentRollbackStreamURL(sessionId: string): string {
@@ -1104,12 +1133,13 @@ class APIClient {
   }
 
   async helmRollback(
-    cluster: string, release: string, namespace: string, targetRevision: number, force: boolean
+    cluster: string, release: string, namespace: string, targetRevision: number, force: boolean,
+    wait = false, recreatePods = false
   ): Promise<{ operationId: string }> {
     const qs = new URLSearchParams({ cluster });
     const response = await this.request<{ success: boolean; data: { operationId: string } }>(
       `/helm/releases/${encodeURIComponent(release)}/rollback?${qs}`,
-      { method: "POST", body: JSON.stringify({ namespace, targetRevision, force }) }
+      { method: "POST", body: JSON.stringify({ namespace, targetRevision, force, wait, recreatePods }) }
     );
     return response.data;
   }
@@ -1157,6 +1187,59 @@ class APIClient {
     if (repository) qs.set("repository", repository);
     const response = await this.request<{ artifacts: NexusFlatArtifact[] }>(`/nexus/search-flat?${qs}`);
     return response.artifacts || [];
+  }
+
+  // ─── Biblioteca de arquivos de rollback (pasta gerenciada + diretórios externos do servidor) —
+  // ver internal/rollbackfiles/store.go. Usada pelo botão "Baixar" do Modo Nexus e pelo Modo
+  // Arquivos (rollback manual a partir de YAMLs já salvos).
+
+  async listRollbackFiles(): Promise<{ files: RollbackFileEntry[]; baseDir: string }> {
+    const response = await this.request<APIResponse<{ files: RollbackFileEntry[]; baseDir: string }>>(`/rollback-files`);
+    return response.data || { files: [], baseDir: "" };
+  }
+
+  async saveRollbackFile(name: string, content: string): Promise<RollbackFileEntry> {
+    const response = await this.request<APIResponse<RollbackFileEntry>>(`/rollback-files`, {
+      method: "POST",
+      body: JSON.stringify({ name, content }),
+    });
+    if (!response.data) throw new Error("Salvar arquivo sem retorno");
+    return response.data;
+  }
+
+  async readRollbackFile(name: string): Promise<string> {
+    const response = await this.request<APIResponse<{ content: string }>>(`/rollback-files/${encodeURIComponent(name)}`);
+    return response.data?.content || "";
+  }
+
+  async writeRollbackFile(name: string, content: string): Promise<void> {
+    await this.request(`/rollback-files/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  async deleteRollbackFile(name: string): Promise<void> {
+    await this.request(`/rollback-files/${encodeURIComponent(name)}`, { method: "DELETE" });
+  }
+
+  async browseRollbackDirectory(dir: string): Promise<RollbackFileEntry[]> {
+    const qs = new URLSearchParams({ dir });
+    const response = await this.request<APIResponse<{ files: RollbackFileEntry[] }>>(`/rollback-files/browse?${qs}`);
+    return response.data?.files || [];
+  }
+
+  async readExternalRollbackFile(path: string): Promise<string> {
+    const qs = new URLSearchParams({ path });
+    const response = await this.request<APIResponse<{ content: string }>>(`/rollback-files/external?${qs}`);
+    return response.data?.content || "";
+  }
+
+  async writeExternalRollbackFile(path: string, content: string): Promise<void> {
+    await this.request(`/rollback-files/external`, {
+      method: "PUT",
+      body: JSON.stringify({ path, content }),
+    });
   }
 
   /** Gráfico de comportamento do Deployment (réplicas/CPU/mem/restarts) — Prometheus como fonte

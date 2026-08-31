@@ -928,6 +928,8 @@ func (s *Server) setupRoutes() {
 		deployments.GET("/:cluster/:namespace/:name/revisions", deploymentRollbackHandler.ListRevisions)
 		deployments.GET("/:cluster/:namespace/:name/revisions/:revision/preview", deploymentRollbackHandler.PreviewRevision)
 		deployments.POST("/:cluster/:namespace/:name/rollback", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.Rollback)
+		deployments.POST("/:cluster/:namespace/:name/set-image", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.SetImage)
+		deployments.POST("/:cluster/:namespace/:name/apply-manifest", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.ApplyManifest)
 	}
 	s.router.GET("/api/v1/deployment-rollback/stream/:sessionId",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
@@ -1248,6 +1250,28 @@ func (s *Server) setupRoutes() {
 			nexusRoutes.POST("/values/compare", nexusHandler.CompareValues)
 			nexusRoutes.GET("/browse", nexusHandler.BrowseRepository)
 			nexusRoutes.GET("/search-flat", nexusHandler.SearchFlatArtifacts)
+		}
+	}
+
+	// Biblioteca de arquivos de rollback — pasta gerenciada + navegação em diretórios externos do
+	// servidor (ver internal/rollbackfiles/store.go). Leitura/listagem sem RBAC extra (mesmo
+	// padrão de leitura de outras ferramentas desta app); escrita/exclusão atrás de
+	// RequireSREGroup() — mesmo nível de confiança já dado a outras ferramentas com acesso ao
+	// filesystem do host do servidor (ex: Command Runner).
+	rollbackFilesHandler, err := handlers.NewRollbackFilesHandler()
+	if err != nil {
+		fmt.Printf("⚠️  Failed to initialize Rollback Files handler: %v\n", err)
+	} else {
+		rollbackFilesRoutes := api.Group("/rollback-files")
+		{
+			rollbackFilesRoutes.GET("", rollbackFilesHandler.List)
+			rollbackFilesRoutes.GET("/browse", rollbackFilesHandler.Browse)
+			rollbackFilesRoutes.GET("/external", rollbackFilesHandler.ReadExternal)
+			rollbackFilesRoutes.PUT("/external", rbacMiddleware.RequireSREGroup(), rollbackFilesHandler.WriteExternal)
+			rollbackFilesRoutes.GET("/:name", rollbackFilesHandler.Read)
+			rollbackFilesRoutes.POST("", rbacMiddleware.RequireSREGroup(), rollbackFilesHandler.Save)
+			rollbackFilesRoutes.PUT("/:name", rbacMiddleware.RequireSREGroup(), rollbackFilesHandler.Write)
+			rollbackFilesRoutes.DELETE("/:name", rbacMiddleware.RequireSREGroup(), rollbackFilesHandler.Delete)
 		}
 	}
 

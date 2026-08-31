@@ -203,6 +203,190 @@ func (h *DeploymentRollbackHandler) Rollback(c *gin.Context) {
 	})
 }
 
+type deploymentSetImageRequest struct {
+	Images map[string]string `json:"images" binding:"required"` // containerName -> image:tag
+	Reason string            `json:"reason" binding:"required"`
+}
+
+// SetImage — POST /api/v1/deployments/:cluster/:namespace/:name/set-image
+// "Modo Imagem" do Rollback — troca só a imagem de um ou mais containers (equivalente a `kubectl
+// set image`), sem tocar em mais nada do manifesto. Item 1 do procedimento interno de rollback
+// manual desta empresa: o método mais simples/rápido, só válido quando NENHUM manifesto
+// (ConfigMap/Ingress/Deployment/Service) foi alterado desde a versão-alvo. Mesmo padrão de
+// lock+auditoria+streaming de rollout de Rollback acima — reaproveita streamRolloutStatus, já que
+// trocar a imagem dispara um rollout de verdade (novo ReplicaSet), igual a um rollback nativo.
+func (h *DeploymentRollbackHandler) SetImage(c *gin.Context) {
+	cluster, namespace, name := c.Param("cluster"), c.Param("namespace"), c.Param("name")
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+
+	var req deploymentSetImageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+	if len(req.Images) == 0 {
+		c.JSON(http.StatusBadRequest, errorResponse("IMAGES_REQUIRED", "informe ao menos uma imagem"))
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("REASON_REQUIRED", "motivo do rollback é obrigatório"))
+		return
+	}
+
+	lockKey := rollbackLockKey(cluster, namespace, name)
+	if _, alreadyRunning := h.inProgress.LoadOrStore(lockKey, struct{}{}); alreadyRunning {
+		c.JSON(http.StatusConflict, errorResponse("ROLLBACK_IN_PROGRESS", "já existe um rollback em andamento para este Deployment"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		h.inProgress.Delete(lockKey)
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", err.Error()))
+		return
+	}
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	ctx := c.Request.Context()
+
+	start := time.Now()
+	before, _ := kubeClient.GetDeployment(ctx, namespace, name) // best-effort — só pra auditoria
+
+	updated, err := kubeClient.SetDeploymentContainerImages(ctx, namespace, name, req.Images)
+	if err != nil {
+		h.inProgress.Delete(lockKey)
+		if h.historyTracker != nil {
+			entry := CreateHistoryEntry(c, "rollback_deployment_image", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
+			_ = h.historyTracker.Log(entry)
+		}
+		c.JSON(http.StatusInternalServerError, errorResponse("SET_IMAGE_ERROR", err.Error()))
+		return
+	}
+
+	if h.historyTracker != nil {
+		var beforeMap map[string]interface{}
+		if before != nil {
+			beforeMap = deploymentManifestToHistoryMap(before)
+		}
+		afterMap := map[string]interface{}{
+			"images": req.Images,
+			"reason": req.Reason,
+		}
+		entry := CreateHistoryEntry(c, "rollback_deployment_image", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", beforeMap, afterMap, time.Since(start).Milliseconds(), "")
+		_ = h.historyTracker.Log(entry)
+	}
+
+	sessionID := fmt.Sprintf("deploy-rollback-%s", uuid.New().String())
+	go h.streamRolloutStatus(context.Background(), kubeClient, lockKey, cluster, namespace, name, sessionID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"sessionId": sessionID,
+			"images":    deploymentImages(updated),
+		},
+	})
+}
+
+type deploymentApplyManifestRequest struct {
+	YAML   string `json:"yaml" binding:"required"`
+	Reason string `json:"reason" binding:"required"`
+	Force  bool   `json:"force"`
+}
+
+// ApplyManifest — POST /api/v1/deployments/:cluster/:namespace/:name/apply-manifest
+// Usado pelos Modos Nexus e Arquivos — aplica um manifesto Deployment já extraído (kubectl apply
+// via server-side apply, mesmo ApplyDeployment genérico já usado pelo editor YAML normal da aba
+// Deployments), mas com o mesmo lock+auditoria+streaming de rollout dos outros modos.
+//
+// Achado real, relatado pelo usuário: "essas opções [--wait/--recreate-pods] não existem para
+// nexus ou para o modo manual?" — antes desta correção, NexusRollbackSection nem chamava
+// useRollbackProgress() (aplicava e simplesmente esperava dar certo, sem visibilidade nenhuma se
+// os pods ficaram saudáveis), e FileRollbackSection já tinha o guard progress.active/progress.done
+// mas nunca chamava progress.start() de fato (código morto). --wait/--recreate-pods são flags
+// específicas do `helm rollback` sem equivalente direto num kubectl apply cru — --recreate-pods
+// não faz sentido aqui (um apply que muda o PodTemplateSpec já dispara rollout sozinho, sem
+// precisar forçar) — mas o VALOR real por trás de --wait (saber se os pods realmente ficaram
+// prontos antes de considerar sucesso) é igualmente válido aqui. Corrigido reaproveitando
+// streamRolloutStatus (a mesma função já usada por Rollback/SetImage) — reaplicar um manifesto
+// histórico É um rollback de verdade, merece a mesma visibilidade de rollout que os outros modos.
+func (h *DeploymentRollbackHandler) ApplyManifest(c *gin.Context) {
+	cluster, namespace, name := c.Param("cluster"), c.Param("namespace"), c.Param("name")
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+
+	var req deploymentApplyManifestRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("YAML_REQUIRED", "yaml é obrigatório"))
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("REASON_REQUIRED", "motivo do rollback é obrigatório"))
+		return
+	}
+
+	lockKey := rollbackLockKey(cluster, namespace, name)
+	if _, alreadyRunning := h.inProgress.LoadOrStore(lockKey, struct{}{}); alreadyRunning {
+		c.JSON(http.StatusConflict, errorResponse("ROLLBACK_IN_PROGRESS", "já existe um rollback em andamento para este Deployment"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		h.inProgress.Delete(lockKey)
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", err.Error()))
+		return
+	}
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	ctx := c.Request.Context()
+
+	start := time.Now()
+	before, _ := kubeClient.GetDeployment(ctx, namespace, name) // best-effort — só pra auditoria
+
+	updated, err := kubeClient.ApplyDeployment(ctx, req.YAML, "k8s-hpa-manager-rollback-manifest", namespace, name, false, req.Force)
+	if err != nil {
+		h.inProgress.Delete(lockKey)
+		if h.historyTracker != nil {
+			entry := CreateHistoryEntry(c, "rollback_deployment_manifest", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
+			_ = h.historyTracker.Log(entry)
+		}
+		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
+		return
+	}
+
+	if h.historyTracker != nil {
+		var beforeMap map[string]interface{}
+		if before != nil {
+			beforeMap = deploymentManifestToHistoryMap(before)
+		}
+		afterMap := map[string]interface{}{
+			"images": deploymentImages(updated),
+			"reason": req.Reason,
+		}
+		entry := CreateHistoryEntry(c, "rollback_deployment_manifest", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", beforeMap, afterMap, time.Since(start).Milliseconds(), "")
+		_ = h.historyTracker.Log(entry)
+	}
+
+	sessionID := fmt.Sprintf("deploy-rollback-%s", uuid.New().String())
+	go h.streamRolloutStatus(context.Background(), kubeClient, lockKey, cluster, namespace, name, sessionID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"sessionId": sessionID,
+			"images":    deploymentImages(updated),
+		},
+	})
+}
+
 func deploymentImages(dep *appsv1.Deployment) []string {
 	images := make([]string, 0, len(dep.Spec.Template.Spec.Containers))
 	for _, ctr := range dep.Spec.Template.Spec.Containers {

@@ -308,6 +308,8 @@ func (h *HelmHandler) Rollback(c *gin.Context) {
 			Action:         helm.ActionRollback,
 			TargetRevision: payload.TargetRevision,
 			Force:          payload.Force,
+			Wait:           payload.Wait,
+			RecreatePods:   payload.RecreatePods,
 		},
 	)
 	if err != nil {
@@ -406,6 +408,8 @@ type helmRollbackPayload struct {
 	Namespace      string `json:"namespace"`
 	TargetRevision int    `json:"targetRevision"`
 	Force          bool   `json:"force"`
+	Wait           bool   `json:"wait"`
+	RecreatePods   bool   `json:"recreatePods"`
 }
 
 func splitCSV(raw string) []string {

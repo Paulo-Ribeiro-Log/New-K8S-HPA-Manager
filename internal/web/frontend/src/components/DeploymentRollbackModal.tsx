@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +26,13 @@ import {
   Database,
   GitBranch,
   Search,
+  Image,
+  Download,
+  FolderOpen,
+  FolderSearch,
+  Pencil,
+  Save,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
@@ -37,27 +44,35 @@ import type {
   HelmRevisionEntry,
   HelmReleaseDetail,
   NexusFlatArtifact,
+  RollbackFileEntry,
 } from "@/lib/api/types";
 
-// ─── Rollback de Deployment — 3 modos ──────────────────────────────────────────
+// ─── Rollback de Deployment — 5 modos ──────────────────────────────────────────
 //
 // Pedido explícito do usuário, com o passo a passo `kubectl rollout history/undo/status` como
-// referência, mais duas opções adicionais: Helm (quando o Deployment é gerenciado por Helm — nunca
-// usa o caminho cru, que causaria drift) e Nexus (values histórico publicado pelo pipeline de
-// CI/CD, reaproveitando os mesmos endpoints já usados pela aba "Nexus Values").
+// referência, mais quatro opções adicionais: Helm (quando o Deployment é gerenciado por Helm — nunca
+// usa o caminho cru, que causaria drift), Nexus (manifesto histórico publicado pelo pipeline de
+// CI/CD, ver NexusRollbackSection), Imagem (troca só a tag no Deployment ao vivo, sem tocar em
+// mais nada do manifesto — item 1 do procedimento interno de rollback manual desta empresa, o
+// método mais simples/rápido, só válido quando NENHUM manifesto foi alterado desde a versão-alvo) e
+// Arquivos (rollback manual a partir de um YAML já salvo — pasta gerenciada de artefatos baixados
+// do Nexus ou qualquer outro diretório do servidor, ver FileRollbackSection).
 //
 // Detecção de modo: automática, a partir do manifest já carregado pela aba Deployments —
 // `meta.helm.sh/release-name` + `app.kubernetes.io/managed-by: Helm` identificam um Deployment
-// Helm-gerenciado (oferece Modo Helm e Modo Nexus, nunca o cru). Sem esses marcadores, só o Modo
-// K8s nativo é oferecido — com aviso se detectar labels de GitOps conhecidos (Flux/ArgoCD), já que
-// um reconcile automático pode reverter o rollback pouco depois.
+// Helm-gerenciado (oferece Modo Helm e Modo Nexus, nunca os outros 2 — evita drift). Sem esses
+// marcadores, oferece Modo K8s nativo e Modo Imagem — com aviso se detectar labels de GitOps
+// conhecidos (Flux/ArgoCD), já que um reconcile automático pode reverter o rollback pouco depois.
+// Modo Arquivos é o único disponível nos dois casos (Helm-gerenciado ou não) — a escolha do arquivo
+// é sempre manual e explícita, com aviso de drift condicional quando Helm-gerenciado.
 //
-// Segurança comum aos 3 modos: diff obrigatório antes de liberar a confirmação, motivo obrigatório
-// (vira change-cause/anotação de auditoria), confirmação em 2 cliques (mesmo padrão já usado em
-// SreApprovalButton.tsx — nunca um modal empilhado sobre modal), progresso via SSE nunca silencioso,
-// nunca reverter pra um estado idêntico ao atual.
+// Segurança comum aos 5 modos: diff obrigatório antes de liberar a confirmação (Modo Imagem usa um
+// diff textual simples do campo image, não um YAML completo — não há mais nada mudando), motivo
+// obrigatório (vira change-cause/anotação de auditoria), confirmação em 2 cliques (mesmo padrão já
+// usado em SreApprovalButton.tsx — nunca um modal empilhado sobre modal), progresso via SSE nunca
+// silencioso, nunca reverter pra um estado idêntico ao atual.
 
-type RollbackMode = "helm" | "k8s" | "nexus";
+type RollbackMode = "helm" | "k8s" | "nexus" | "image" | "files";
 
 const GITOPS_LABEL_MARKERS = [
   "kustomize.toolkit.fluxcd.io/name",
@@ -227,11 +242,37 @@ export function DeploymentRollbackModal({
             >
               <Database className="w-3.5 h-3.5" /> Nexus (manifesto histórico)
             </button>
+            <button
+              type="button"
+              onClick={() => setMode("files")}
+              className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "files" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
+            >
+              <FolderOpen className="w-3.5 h-3.5" /> Arquivos (manual)
+            </button>
           </div>
         ) : (
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
-            <GitBranch className="w-3.5 h-3.5" />
-            Deployment não gerenciado pelo Helm — rollback via histórico de revisões do Kubernetes.
+          <div className="flex items-center gap-1 border-b border-border shrink-0">
+            <button
+              type="button"
+              onClick={() => setMode("k8s")}
+              className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "k8s" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
+            >
+              <GitBranch className="w-3.5 h-3.5" /> K8s nativo (revisões)
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("image")}
+              className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "image" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
+            >
+              <Image className="w-3.5 h-3.5" /> Imagem (Harbor)
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("files")}
+              className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "files" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
+            >
+              <FolderOpen className="w-3.5 h-3.5" /> Arquivos (manual)
+            </button>
           </div>
         )}
 
@@ -262,6 +303,27 @@ export function DeploymentRollbackModal({
               deploymentName={deploymentName}
               currentYaml={manifest?.yaml || ""}
               suggestedReleaseSearch={labels["app.kubernetes.io/name"] || helmReleaseName}
+              canUpdateDeployment={canUpdateDeployment}
+              onDone={handleDone}
+            />
+          )}
+          {mode === "image" && !isHelmManaged && (
+            <ImageRollbackSection
+              cluster={cluster}
+              namespace={namespace}
+              deploymentName={deploymentName}
+              currentYaml={manifest?.yaml || ""}
+              canUpdateDeployment={canUpdateDeployment}
+              onDone={handleDone}
+            />
+          )}
+          {mode === "files" && (
+            <FileRollbackSection
+              cluster={cluster}
+              namespace={namespace}
+              deploymentName={deploymentName}
+              currentYaml={manifest?.yaml || ""}
+              isHelmManaged={isHelmManaged}
               canUpdateDeployment={canUpdateDeployment}
               onDone={handleDone}
             />
@@ -409,6 +471,164 @@ function NativeRollbackSection({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Modo Imagem — troca só a tag da imagem de um ou mais containers (equivalente a `kubectl set
+// image`), sem tocar em mais nada do manifesto. Item 1 do procedimento interno de rollback manual
+// desta empresa, o método mais simples/rápido dos 4 modos — mas só válido quando NENHUM outro
+// manifesto (ConfigMap/Ingress/Deployment/Service) foi alterado desde a versão-alvo. Nunca
+// oferecido pra Deployments Helm-gerenciados (mesmo risco de drift já documentado pro Modo K8s
+// nativo — a doc interna trata um caso especial pra 1º deploy Helm via `--reuse-values --set
+// deployment.image.tag`, mas esse caminho assume o schema de values do chart `convair-helm`
+// específico desta empresa, não generalizável a qualquer chart — deliberadamente não implementado).
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface ParsedContainer {
+  name: string;
+  image: string;
+}
+
+// parseContainersFromYaml — lê spec.template.spec.containers do YAML do Deployment ATUAL (já
+// single-documento, diferente do multi-documento do Modo Nexus) via js-yaml, mesma dependência já
+// usada em extractDeploymentDoc.
+function parseContainersFromYaml(currentYaml: string): ParsedContainer[] {
+  try {
+    const doc = yaml.load(currentYaml) as { spec?: { template?: { spec?: { containers?: unknown[] } } } } | undefined;
+    const containers = doc?.spec?.template?.spec?.containers;
+    if (!Array.isArray(containers)) return [];
+    return containers
+      .filter((c): c is { name: string; image: string } => !!c && typeof c === "object" && typeof (c as Record<string, unknown>).name === "string" && typeof (c as Record<string, unknown>).image === "string")
+      .map((c) => ({ name: c.name, image: c.image }));
+  } catch {
+    return [];
+  }
+}
+
+function ImageRollbackSection({
+  cluster, namespace, deploymentName, currentYaml, canUpdateDeployment, onDone,
+}: {
+  cluster: string; namespace: string; deploymentName: string; currentYaml: string; canUpdateDeployment: boolean; onDone: () => void;
+}) {
+  const containers = useMemo(() => parseContainersFromYaml(currentYaml), [currentYaml]);
+  const [newImages, setNewImages] = useState<Record<string, string>>({});
+  const [reason, setReason] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const progress = useRollbackProgress();
+
+  // Inicializa os campos com a imagem atual — reseta se o manifesto mudar (troca de Deployment).
+  useEffect(() => {
+    const initial: Record<string, string> = {};
+    containers.forEach((c) => { initial[c.name] = c.image; });
+    setNewImages(initial);
+  }, [containers]);
+
+  const changedImages = useMemo(() => {
+    const changed: Record<string, string> = {};
+    containers.forEach((c) => {
+      const v = (newImages[c.name] ?? "").trim();
+      if (v && v !== c.image) changed[c.name] = v;
+    });
+    return changed;
+  }, [containers, newImages]);
+
+  const canConfirm = Object.keys(changedImages).length > 0 && reason.trim().length > 0;
+
+  const handleConfirm = async () => {
+    setApplying(true);
+    setConfirming(false);
+    try {
+      const { sessionId } = await apiClient.setDeploymentImage(cluster, namespace, deploymentName, changedImages, reason.trim());
+      toast.success("Imagem revertida — acompanhando o rollout...");
+      progress.start(apiClient.getDeploymentRollbackStreamURL(sessionId), onDone);
+    } catch (err) {
+      toast.error("Falha ao trocar a imagem", { description: err instanceof Error ? err.message : "Erro" });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  if (progress.active || progress.done) {
+    return <RolloutProgressPanel progress={progress} />;
+  }
+
+  if (containers.length === 0) {
+    return <div className="text-sm text-destructive py-8 text-center">Não foi possível ler os containers do manifesto atual.</div>;
+  }
+
+  return (
+    <div className="space-y-4 py-2">
+      <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-700 dark:text-blue-400">
+        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+        <span>
+          Este modo troca <strong>só a imagem</strong> do(s) container(s) abaixo — equivalente a <span className="font-mono">kubectl set image</span>.
+          Só use quando tiver certeza de que <strong>nenhum outro manifesto</strong> (ConfigMap/Ingress/Deployment/Service) mudou desde a
+          versão pra qual está revertendo — caso contrário, use o Modo K8s nativo (revisões completas).
+        </span>
+      </div>
+
+      <div className="space-y-3">
+        {containers.map((c) => (
+          <div key={c.name} className="space-y-1">
+            <Label htmlFor={`img-${c.name}`} className="text-xs text-muted-foreground block">
+              Container <span className="font-mono font-semibold text-foreground">{c.name}</span>
+            </Label>
+            <div className="text-[11px] font-mono text-muted-foreground truncate">Atual: {c.image}</div>
+            <Input
+              id={`img-${c.name}`}
+              value={newImages[c.name] ?? ""}
+              onChange={(e) => setNewImages((prev) => ({ ...prev, [c.name]: e.target.value }))}
+              placeholder={c.image}
+              className="font-mono text-xs"
+            />
+          </div>
+        ))}
+      </div>
+
+      {Object.keys(changedImages).length > 0 && (
+        <div>
+          <Label className="text-xs text-muted-foreground mb-1 block">Mudanças a aplicar</Label>
+          <div className="space-y-1 rounded-md border p-2.5 text-xs">
+            {Object.entries(changedImages).map(([name, image]) => {
+              const original = containers.find((c) => c.name === name)?.image ?? "";
+              return (
+                <div key={name} className="font-mono">
+                  <span className="text-muted-foreground">{name}:</span>{" "}
+                  <span className="text-red-500 line-through">{original}</span>{" "}
+                  → <span className="text-green-600 dark:text-green-400">{image}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <Label htmlFor="image-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório — vira annotation change-cause)</Label>
+        <Textarea id="image-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: revertendo para a tag estável anterior via Harbor" rows={2} />
+      </div>
+
+      <div className="flex items-center gap-2 pt-2 border-t">
+        {!confirming ? (
+          <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
+            <RotateCcw className="w-4 h-4 mr-2" /> Aplicar troca de imagem
+          </Button>
+        ) : (
+          <>
+            <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar troca de imagem?</span>
+            <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
+              {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, aplicar
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={applying}>
+              <XCircle className="w-4 h-4 mr-1" /> Cancelar
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Modo Helm — `helm rollback` nativo, reaproveita os mesmos endpoints já usados pela aba Helm
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -423,6 +643,14 @@ function HelmRollbackSection({
   const [loadError, setLoadError] = useState("");
   const [target, setTarget] = useState<number | null>(null);
   const [force, setForce] = useState(false);
+  // wait/recreatePods — pedido explícito do usuário depois de analisar a documentação interna de
+  // rollback manual desta empresa, que recomenda sempre `helm rollback ... --wait --force
+  // --recreate-pods` no cenário de emergência (rollback automático indisponível/falhou). Nenhum
+  // dos dois era passado antes — `buildRollbackArgs` (internal/pkg/helm/cli_client.go) só
+  // suportava --force. Desligados por padrão (mesmo padrão de `force`, opt-in explícito) — o
+  // usuário liga quando está de fato no cenário de emergência descrito na documentação.
+  const [wait, setWait] = useState(false);
+  const [recreatePods, setRecreatePods] = useState(false);
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -452,7 +680,7 @@ function HelmRollbackSection({
     setApplying(true);
     setConfirming(false);
     try {
-      const { operationId } = await apiClient.helmRollback(cluster, release, releaseNamespace, target, force);
+      const { operationId } = await apiClient.helmRollback(cluster, release, releaseNamespace, target, force, wait, recreatePods);
       toast.success(`helm rollback iniciado para a revisão ${target} — acompanhando...`);
       progress.startHelm(operationId, onDone);
     } catch (err) {
@@ -501,9 +729,22 @@ function HelmRollbackSection({
 
       {target != null && (
         <>
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="helm-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
-            <Label htmlFor="helm-force" className="text-xs cursor-pointer">Forçar (recria recursos se necessário — mesma opção do `helm rollback --force`)</Label>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="helm-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
+              <Label htmlFor="helm-force" className="text-xs cursor-pointer">Forçar (recria recursos se necessário — <span className="font-mono">--force</span>)</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="helm-wait" checked={wait} onChange={(e) => setWait(e.target.checked)} className="rounded" />
+              <Label htmlFor="helm-wait" className="text-xs cursor-pointer">Aguardar pods ficarem prontos antes de reportar sucesso (<span className="font-mono">--wait</span>)</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="helm-recreate-pods" checked={recreatePods} onChange={(e) => setRecreatePods(e.target.checked)} className="rounded" />
+              <Label htmlFor="helm-recreate-pods" className="text-xs cursor-pointer">Recriar pods mesmo sem mudança de template (<span className="font-mono">--recreate-pods</span>)</Label>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              As 3 opções acima juntas são a recomendação do procedimento interno de rollback manual desta empresa pro cenário de emergência (rollback automático indisponível/falhou).
+            </p>
           </div>
 
           <div>
@@ -593,11 +834,35 @@ function NexusRollbackSection({
   const [nexusManifest, setNexusManifest] = useState("");
   const [extractError, setExtractError] = useState("");
   const [fetchingContent, setFetchingContent] = useState(false);
+  // Pedido explícito do usuário: "habilite a opção de download dos itens e crie uma pasta para
+  // guarda-los" — persiste o artefato na pasta gerenciada ~/.k8s-hpa-manager/rollback-artifacts/
+  // (ver internal/rollbackfiles/store.go), reaproveitável depois pelo Modo Arquivos sem precisar
+  // buscar no Nexus de novo. `downloadingName` rastreia qual linha está baixando (nunca mais de
+  // uma por vez, mas por nome — permite feedback visual só no botão certo).
+  const [downloadingName, setDownloadingName] = useState<string | null>(null);
+  const [downloadedNames, setDownloadedNames] = useState<Set<string>>(new Set());
+
+  const handleDownloadArtifact = async (a: NexusFlatArtifact) => {
+    setDownloadingName(a.name);
+    try {
+      const res = await apiClient.nexusDownloadValues({ repository: a.repository, filePath: a.name });
+      if (res.error) throw new Error(res.error);
+      await apiClient.saveRollbackFile(a.name, res.content || "");
+      setDownloadedNames((prev) => new Set(prev).add(a.name));
+      toast.success(`${a.name} salvo na pasta de rollback do servidor`);
+    } catch (err) {
+      toast.error("Falha ao baixar artefato", { description: err instanceof Error ? err.message : "Erro" });
+    } finally {
+      setDownloadingName(null);
+    }
+  };
 
   const [force, setForce] = useState(false);
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [applying, setApplying] = useState(false);
+
+  const progress = useRollbackProgress();
 
   const runSearch = useCallback((term: string, allRepos = false) => {
     if (!term.trim()) return;
@@ -652,19 +917,19 @@ function NexusRollbackSection({
     setApplying(true);
     setConfirming(false);
     try {
-      await apiClient.applyDeployment(cluster, namespace, deploymentName, {
-        yaml: nexusManifest,
-        fieldManager: "k8s-hpa-manager-rollback-nexus",
-        force,
-      });
-      toast.success("Manifesto histórico do Nexus aplicado com sucesso");
-      onDone();
+      const { sessionId } = await apiClient.applyDeploymentManifest(cluster, namespace, deploymentName, nexusManifest, reason.trim(), force);
+      toast.success("Manifesto histórico do Nexus aplicado — acompanhando o rollout...");
+      progress.start(apiClient.getDeploymentRollbackStreamURL(sessionId), onDone);
     } catch (err) {
       toast.error("Falha ao aplicar manifesto do Nexus", { description: err instanceof Error ? err.message : "Erro" });
     } finally {
       setApplying(false);
     }
   };
+
+  if (progress.active || progress.done) {
+    return <RolloutProgressPanel progress={progress} />;
+  }
 
   return (
     <div className="space-y-4 py-2">
@@ -688,6 +953,18 @@ function NexusRollbackSection({
         <div className="text-sm text-destructive py-2 text-center">{loadError}</div>
       )}
 
+      {!loading && artifacts.length > 1 && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>
+            Segundo o procedimento interno de rollback manual: se este deploy foi feito <strong>por artefato</strong> (Spinnaker/GitHub CD
+            via render-helm ou render-kustomize), o artefato <strong>mais recente</strong> costuma ser justamente a versão com problema —
+            prefira o 2º item da lista (marcado abaixo). Se este foi o <strong>1º deploy via Helm</strong> em produção, use o mais recente
+            (1º item) mesmo. Reveja o diff antes de confirmar, de qualquer forma.
+          </span>
+        </div>
+      )}
+
       {!loading && artifacts.length > 0 && (
         <div>
           <div className="text-xs text-muted-foreground mb-1.5">
@@ -698,7 +975,7 @@ function NexusRollbackSection({
             onValueChange={(v) => setSelectedArtifact(artifacts.find((a) => a.name === v) ?? null)}
             className="space-y-1.5 max-h-64 overflow-y-auto pr-1"
           >
-            {artifacts.map((a) => (
+            {artifacts.map((a, idx) => (
               <div key={a.name} className="flex items-start gap-3 p-2.5 border rounded-lg hover:bg-accent">
                 <RadioGroupItem value={a.name} id={`nexusart-${a.name}`} className="mt-1" />
                 <Label htmlFor={`nexusart-${a.name}`} className="flex-1 cursor-pointer">
@@ -707,8 +984,21 @@ function NexusRollbackSection({
                     <span>{formatDate(a.lastModified)}</span>
                     {a.uploader && <Badge variant="outline" className="text-[10px]">{a.uploader}</Badge>}
                     {a.repository !== NEXUS_ROLLBACK_REPOSITORY && <Badge variant="outline" className="text-[10px]">{a.repository}</Badge>}
+                    {idx === 1 && <Badge variant="outline" className="text-[10px] border-amber-500/50 text-amber-600 dark:text-amber-400">2º mais recente</Badge>}
+                    {downloadedNames.has(a.name) && <Badge variant="outline" className="text-[10px] border-green-500/50 text-green-600 dark:text-green-400">baixado</Badge>}
                   </div>
                 </Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="mt-0.5 h-7 px-2 shrink-0"
+                  title="Baixar (salva na pasta de rollback do servidor, pro Modo Arquivos)"
+                  disabled={downloadingName === a.name}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDownloadArtifact(a); }}
+                >
+                  {downloadingName === a.name ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                </Button>
               </div>
             ))}
           </RadioGroup>
@@ -788,8 +1078,328 @@ function NexusRollbackSection({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Progresso via SSE — compartilhado pelos 3 modos (fontes de evento diferentes: stream próprio de
-// rollout do Modo K8s nativo vs. stream de operação Helm dos Modos Helm/Nexus — mesma UI).
+// Modo Arquivos — rollback manual a partir de um YAML já salvo: seja na pasta gerenciada de
+// artefatos de rollback (~/.k8s-hpa-manager/rollback-artifacts/, alimentada pelo botão "Baixar" do
+// Modo Nexus) ou em qualquer outro diretório do servidor onde o usuário já tenha arquivos salvos de
+// ações de rollback anteriores. Pedido explícito do usuário: "inclua uma função de rollback manual
+// onde poderemos selecionar um ou mais itens dentro desse diretório, ou busca em outro diretório...
+// inclua a opção de editar os yamls desses diretórios usando nossa solução do monaco editor".
+//
+// Disponível independente de o Deployment ser Helm-gerenciado ou não — ao contrário do Modo Imagem
+// (restrito a não-Helm), aqui é o próprio usuário quem escolhe manualmente o arquivo a aplicar, e
+// pode ser exatamente o tipo de emergência que o procedimento interno de rollback descreve (rollback
+// automático indisponível); por isso mostra o mesmo aviso de risco de drift quando Helm-gerenciado,
+// mas nunca bloqueia a ação — a decisão final é do usuário.
+// ═══════════════════════════════════════════════════════════════════════════
+
+type FileSource = "default" | "external";
+
+function FileRollbackSection({
+  cluster, namespace, deploymentName, currentYaml, isHelmManaged, canUpdateDeployment, onDone,
+}: {
+  cluster: string; namespace: string; deploymentName: string; currentYaml: string; isHelmManaged: boolean; canUpdateDeployment: boolean; onDone: () => void;
+}) {
+  const [source, setSource] = useState<FileSource>("default");
+  const [files, setFiles] = useState<RollbackFileEntry[]>([]);
+  const [baseDir, setBaseDir] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+
+  const [externalDir, setExternalDir] = useState("");
+  const [externalSearched, setExternalSearched] = useState(false);
+
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
+  const [deletingName, setDeletingName] = useState<string | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const [activeFile, setActiveFile] = useState<RollbackFileEntry | null>(null);
+  const [activeContent, setActiveContent] = useState("");
+  const [loadingActiveContent, setLoadingActiveContent] = useState(false);
+  const [savingActiveContent, setSavingActiveContent] = useState(false);
+
+  const [force, setForce] = useState(false);
+  const [reason, setReason] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const progress = useRollbackProgress();
+
+  const loadDefaultFiles = useCallback(() => {
+    setLoading(true);
+    setLoadError("");
+    apiClient.listRollbackFiles()
+      .then((res) => { setFiles(res.files); setBaseDir(res.baseDir); })
+      .catch((err) => setLoadError(err instanceof Error ? err.message : "Erro ao listar arquivos"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (source === "default") loadDefaultFiles();
+  }, [source, loadDefaultFiles]);
+
+  const handleBrowseExternal = () => {
+    if (!externalDir.trim()) return;
+    setLoading(true);
+    setLoadError("");
+    setExternalSearched(true);
+    apiClient.browseRollbackDirectory(externalDir.trim())
+      .then(setFiles)
+      .catch((err) => { setFiles([]); setLoadError(err instanceof Error ? err.message : "Erro ao navegar no diretório"); })
+      .finally(() => setLoading(false));
+  };
+
+  const toggleSelect = (name: string) => {
+    setSelectedNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    setBulkDeleting(true);
+    try {
+      for (const name of selectedNames) {
+        await apiClient.deleteRollbackFile(name);
+      }
+      toast.success(`${selectedNames.size} arquivo(s) excluído(s)`);
+      setSelectedNames(new Set());
+      if (activeFile && selectedNames.has(activeFile.name)) { setActiveFile(null); setActiveContent(""); }
+      loadDefaultFiles();
+    } catch (err) {
+      toast.error("Falha ao excluir alguns arquivos", { description: err instanceof Error ? err.message : "Erro" });
+      loadDefaultFiles();
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const handleDeleteFile = async (file: RollbackFileEntry) => {
+    setDeletingName(file.name);
+    try {
+      await apiClient.deleteRollbackFile(file.name);
+      toast.success(`${file.name} excluído`);
+      if (activeFile?.name === file.name) { setActiveFile(null); setActiveContent(""); }
+      loadDefaultFiles();
+    } catch (err) {
+      toast.error("Falha ao excluir arquivo", { description: err instanceof Error ? err.message : "Erro" });
+    } finally {
+      setDeletingName(null);
+    }
+  };
+
+  const handleSelectFile = (file: RollbackFileEntry) => {
+    setActiveFile(file);
+    setActiveContent("");
+    setReason("");
+    setConfirming(false);
+    setLoadingActiveContent(true);
+    const read = source === "default" ? apiClient.readRollbackFile(file.name) : apiClient.readExternalRollbackFile(file.path);
+    read
+      .then(setActiveContent)
+      .catch((err) => toast.error("Erro ao ler arquivo", { description: err instanceof Error ? err.message : "Erro" }))
+      .finally(() => setLoadingActiveContent(false));
+  };
+
+  const handleSaveActiveContent = async () => {
+    if (!activeFile) return;
+    setSavingActiveContent(true);
+    try {
+      if (source === "default") await apiClient.writeRollbackFile(activeFile.name, activeContent);
+      else await apiClient.writeExternalRollbackFile(activeFile.path, activeContent);
+      toast.success("Arquivo salvo");
+      if (source === "default") loadDefaultFiles();
+    } catch (err) {
+      toast.error("Falha ao salvar arquivo", { description: err instanceof Error ? err.message : "Erro" });
+    } finally {
+      setSavingActiveContent(false);
+    }
+  };
+
+  // extractDeploymentDoc é puro e barato — recalcular a cada tecla digitada no editor é seguro,
+  // sem chamada de rede nenhuma (mesma função já usada pelo Modo Nexus).
+  const extracted = useMemo(() => extractDeploymentDoc(activeContent), [activeContent]);
+  const canConfirm = !!extracted.yaml && !extracted.error && reason.trim().length > 0;
+
+  const handleConfirm = async () => {
+    setApplying(true);
+    setConfirming(false);
+    try {
+      const { sessionId } = await apiClient.applyDeploymentManifest(cluster, namespace, deploymentName, extracted.yaml, reason.trim(), force);
+      toast.success("Manifesto do arquivo aplicado — acompanhando o rollout...");
+      progress.start(apiClient.getDeploymentRollbackStreamURL(sessionId), onDone);
+    } catch (err) {
+      toast.error("Falha ao aplicar manifesto", { description: err instanceof Error ? err.message : "Erro" });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  if (progress.active || progress.done) {
+    return <RolloutProgressPanel progress={progress} />;
+  }
+
+  return (
+    <div className="space-y-4 py-2">
+      <div className="flex items-center gap-1 border-b border-border">
+        <button
+          type="button"
+          onClick={() => { setSource("default"); setActiveFile(null); setActiveContent(""); setSelectedNames(new Set()); }}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${source === "default" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
+        >
+          <FolderOpen className="w-3.5 h-3.5" /> Pasta padrão
+        </button>
+        <button
+          type="button"
+          onClick={() => { setSource("external"); setActiveFile(null); setActiveContent(""); setSelectedNames(new Set()); setFiles([]); setExternalSearched(false); }}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${source === "external" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
+        >
+          <FolderSearch className="w-3.5 h-3.5" /> Outro diretório
+        </button>
+      </div>
+
+      {source === "default" && baseDir && (
+        <div className="text-[11px] text-muted-foreground font-mono">Pasta no servidor: {baseDir}</div>
+      )}
+
+      {source === "external" && (
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <Label htmlFor="files-external-dir" className="text-xs text-muted-foreground mb-1 block">Caminho absoluto no servidor</Label>
+            <Input id="files-external-dir" value={externalDir} onChange={(e) => setExternalDir(e.target.value)} placeholder="/caminho/absoluto/da/pasta" className="font-mono text-xs" onKeyDown={(e) => e.key === "Enter" && handleBrowseExternal()} />
+          </div>
+          <Button variant="outline" onClick={handleBrowseExternal} disabled={loading || !externalDir.trim()}>
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+          </Button>
+        </div>
+      )}
+
+      {loading && (
+        <div className="flex items-center justify-center py-8 text-muted-foreground text-sm"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Carregando...</div>
+      )}
+
+      {!loading && loadError && (
+        <div className="text-sm text-destructive py-2 text-center">{loadError}</div>
+      )}
+
+      {!loading && !loadError && source === "external" && externalSearched && files.length === 0 && (
+        <div className="text-sm text-muted-foreground py-4 text-center">Nenhum arquivo .yaml/.yml encontrado nesse diretório.</div>
+      )}
+
+      {!loading && !loadError && source === "default" && files.length === 0 && (
+        <div className="text-sm text-muted-foreground py-4 text-center">
+          Nenhum arquivo salvo ainda — use o botão de download na lista do Modo Nexus, ou salve manualmente em {baseDir || "~/.k8s-hpa-manager/rollback-artifacts"}.
+        </div>
+      )}
+
+      {!loading && files.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-xs text-muted-foreground">{files.length} arquivo(s) — mais recente primeiro</div>
+            {source === "default" && selectedNames.size > 0 && (
+              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-destructive hover:text-destructive" onClick={handleBulkDelete} disabled={bulkDeleting}>
+                {bulkDeleting ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1" />} Excluir {selectedNames.size} selecionado(s)
+              </Button>
+            )}
+          </div>
+          <RadioGroup value={activeFile?.name ?? ""} className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+            {files.map((f) => (
+              <div key={f.path} className="flex items-center gap-2 p-2.5 border rounded-lg hover:bg-accent">
+                {source === "default" && (
+                  <input type="checkbox" checked={selectedNames.has(f.name)} onChange={() => toggleSelect(f.name)} onClick={(e) => e.stopPropagation()} className="rounded" />
+                )}
+                <RadioGroupItem value={f.name} id={`file-${f.path}`} onClick={() => handleSelectFile(f)} />
+                <Label htmlFor={`file-${f.path}`} className="flex-1 cursor-pointer min-w-0" onClick={() => handleSelectFile(f)}>
+                  <div className="font-mono text-xs break-all">{f.name}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">{formatDate(f.modifiedAt)} · {(f.size / 1024).toFixed(1)} KB</div>
+                </Label>
+                {source === "default" && (
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2 shrink-0 text-destructive hover:text-destructive" title="Excluir" disabled={deletingName === f.name} onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteFile(f); }}>
+                    {deletingName === f.name ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                  </Button>
+                )}
+              </div>
+            ))}
+          </RadioGroup>
+        </div>
+      )}
+
+      {activeFile && (
+        <>
+          <div className="flex items-center justify-between">
+            <Label className="text-xs text-muted-foreground flex items-center gap-1.5"><Pencil className="w-3.5 h-3.5" /> Editando: <span className="font-mono text-foreground">{activeFile.name}</span></Label>
+            <Button size="sm" variant="outline" onClick={handleSaveActiveContent} disabled={savingActiveContent || loadingActiveContent}>
+              {savingActiveContent ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Save className="w-3.5 h-3.5 mr-1.5" />} Salvar alterações
+            </Button>
+          </div>
+          {loadingActiveContent ? (
+            <div className="flex items-center justify-center h-40 border rounded-md text-muted-foreground text-sm"><Loader2 className="w-4 h-4 animate-spin mr-2" /> Carregando conteúdo...</div>
+          ) : (
+            <MonacoYamlEditor mode="editor" value={activeContent} onChange={setActiveContent} height={260} />
+          )}
+
+          {isHelmManaged && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <span>
+                Este Deployment é gerenciado por Helm — aplicar um manifesto manual aqui causa <strong>drift</strong> (o Helm nunca fica
+                sabendo dessa mudança). Prefira o Modo Helm/Nexus quando possível; use este modo só se estiver de fato no cenário de
+                emergência do procedimento de rollback manual.
+              </span>
+            </div>
+          )}
+
+          {extracted.error && (
+            <div className="text-sm text-destructive py-2 text-center">{extracted.error}</div>
+          )}
+
+          {extracted.yaml && (
+            <>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1 block">Diff — Deployment atual vs. arquivo selecionado (revise antes de confirmar)</Label>
+                <MonacoYamlEditor mode="diff" originalValue={currentYaml} value={extracted.yaml} height={240} readOnly />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="files-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
+                <Label htmlFor="files-force" className="text-xs cursor-pointer">Forçar (recria recursos se necessário)</Label>
+              </div>
+
+              <div>
+                <Label htmlFor="files-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório — vira annotation change-cause)</Label>
+                <Textarea id="files-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: aplicando manifesto salvo manualmente de rollback anterior" rows={2} />
+              </div>
+
+              <div className="flex items-center gap-2 pt-2 border-t">
+                {!confirming ? (
+                  <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
+                    <RotateCcw className="w-4 h-4 mr-2" /> Aplicar arquivo selecionado
+                  </Button>
+                ) : (
+                  <>
+                    <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar aplicação deste arquivo?</span>
+                    <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
+                      {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, aplicar
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={applying}>
+                      <XCircle className="w-4 h-4 mr-1" /> Cancelar
+                    </Button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Progresso via SSE — compartilhado pelos 4 modos (fontes de evento diferentes: stream próprio de
+// rollout do Modo K8s nativo/Imagem vs. stream de operação Helm dos Modos Helm/Nexus — mesma UI;
+// Nexus/Arquivos aplicam via kubectl apply síncrono, sem streaming de rollout — ver comentário no
+// topo de cada seção).
 // ═══════════════════════════════════════════════════════════════════════════
 
 interface RollbackProgressState {
