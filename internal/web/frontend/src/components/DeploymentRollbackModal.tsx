@@ -78,9 +78,16 @@ import type {
 // Segurança comum aos 6 modos: diff/resumo obrigatório antes de liberar a confirmação (Modo Imagem
 // e Modo Spinnaker usam um resumo textual simples do campo image por container, não um YAML
 // completo — não há mais nada mudando), motivo obrigatório (vira change-cause/anotação de
-// auditoria), confirmação em 2 cliques (mesmo padrão já usado em SreApprovalButton.tsx — nunca um
-// modal empilhado sobre modal), progresso via SSE nunca silencioso, nunca reverter pra um estado
-// idêntico ao atual.
+// auditoria), confirmação em 2 cliques (mesmo padrão já usado em SreApprovalButton.tsx), progresso
+// via SSE nunca silencioso, nunca reverter pra um estado idêntico ao atual.
+//
+// Revisão final num modal PRÓPRIO (RollbackConfirmModal, sobreposto ao modal principal) — pedido
+// explícito do usuário: "as opções abrem no final do modal, crie um modal que ficará sobre o outros
+// para as opções e input do motivo do rollback". Antes desta mudança, diff+opções+motivo+confirmar
+// renderizavam INLINE no final de cada seção, exigindo scroll depois de escolher um item numa lista
+// longa — decisão original documentada aqui era deliberadamente evitar "modal empilhado sobre
+// modal" (mesmo padrão do SreApprovalButton.tsx), mas o usuário pediu explicitamente o oposto pra
+// este fluxo específico. Ver comentário de RollbackConfirmModal pra detalhe de cada modo.
 
 type RollbackMode = "helm" | "k8s" | "nexus" | "image" | "spinnaker" | "files";
 
@@ -385,6 +392,97 @@ export function DeploymentRollbackModal({
 // Modo K8s nativo — equivalente a `kubectl rollout history/undo/status`
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RollbackConfirmModal — modal COMPARTILHADO entre os modos K8s nativo/Helm/Nexus/Spinnaker/
+// Arquivos pra revisão final (diff/resumo + opções específicas do modo + motivo do rollback +
+// confirmação em 2 cliques) — pedido explícito do usuário: "as opções abrem no final do modal,
+// crie um modal que ficará sobre o outros para as opções e input do motivo do rollback". Antes,
+// esse bloco renderizava INLINE no final de cada seção, exigindo scroll pra achar depois de
+// escolher um item numa lista potencialmente longa (revisões/artefatos/execuções/arquivos) — agora
+// abre automaticamente (mesmo gatilho de antes: assim que algo é escolhido) sobreposto ao modal
+// principal (Radix Portal — nesting já usado sem problema por outros modais desta app, ver
+// CLAUDE.md "Edição Lado a Lado — Diff Esquerdo × Direito").
+//
+// Cada seção continua dona do próprio estado (motivo, opções específicas tipo force/wait/
+// recreatePods, handleConfirm) — este componente só empresta a apresentação (Dialog + a
+// confirmação em 2 passos que já existia duplicada em cada seção antes desta mudança).
+//
+// Modo Imagem (ImageRollbackSection) NÃO usa este modal — não tem uma etapa discreta de "escolher
+// um item numa lista" (o usuário edita os campos de imagem direto na tela principal), então o
+// problema de scroll que motivou esta mudança não se aplica da mesma forma lá.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function RollbackConfirmModal({
+  open, onClose, title, description, children,
+  reason, onReasonChange, reasonPlaceholder,
+  confirming, onRequestConfirm, onConfirm, onCancelConfirm,
+  applying, canConfirm, canUpdateDeployment, confirmLabel, confirmQuestion,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: React.ReactNode;
+  description?: React.ReactNode;
+  children?: React.ReactNode;
+  reason: string;
+  onReasonChange: (v: string) => void;
+  reasonPlaceholder?: string;
+  confirming: boolean;
+  onRequestConfirm: () => void;
+  onConfirm: () => void;
+  onCancelConfirm: () => void;
+  applying: boolean;
+  canConfirm: boolean;
+  canUpdateDeployment: boolean;
+  confirmLabel: React.ReactNode;
+  confirmQuestion: React.ReactNode;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !applying) onClose(); }}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><RotateCcw className="w-4 h-4" />{title}</DialogTitle>
+          {description && <DialogDescription>{description}</DialogDescription>}
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          {children}
+
+          <div>
+            <Label className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório — vira annotation change-cause)</Label>
+            <Textarea value={reason} onChange={(e) => onReasonChange(e.target.value)} placeholder={reasonPlaceholder} rows={2} autoFocus />
+          </div>
+
+          <div className="flex items-center gap-2 pt-2 border-t">
+            {!confirming ? (
+              <>
+                <Button
+                  variant="default"
+                  disabled={!canConfirm || !canUpdateDeployment || applying}
+                  onClick={onRequestConfirm}
+                  title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}
+                >
+                  <RotateCcw className="w-4 h-4 mr-2" /> {confirmLabel}
+                </Button>
+                <Button variant="ghost" onClick={onClose} disabled={applying}>Voltar</Button>
+              </>
+            ) : (
+              <>
+                <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> {confirmQuestion}</span>
+                <Button size="sm" onClick={onConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
+                  {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, aplicar
+                </Button>
+                <Button size="sm" variant="ghost" onClick={onCancelConfirm} disabled={applying}>
+                  <XCircle className="w-4 h-4 mr-1" /> Cancelar
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function NativeRollbackSection({
   cluster, namespace, name, currentYaml, canUpdateDeployment, onDone,
 }: {
@@ -479,7 +577,23 @@ function NativeRollbackSection({
       </RadioGroup>
 
       {target != null && !targetEntry?.isCurrent && (
-        <>
+        <RollbackConfirmModal
+          open
+          onClose={() => setTarget(null)}
+          title={`Confirmar rollback — revisão ${target}`}
+          reason={reason}
+          onReasonChange={setReason}
+          reasonPlaceholder="Ex: instabilidade após deploy da revisão atual"
+          confirming={confirming}
+          onRequestConfirm={() => setConfirming(true)}
+          onConfirm={handleConfirm}
+          onCancelConfirm={() => setConfirming(false)}
+          applying={applying}
+          canConfirm={canConfirm}
+          canUpdateDeployment={canUpdateDeployment}
+          confirmLabel={`Reverter para revisão ${target}`}
+          confirmQuestion={`Confirmar reversão para a revisão ${target}?`}
+        >
           <div>
             <Label className="text-xs text-muted-foreground mb-1 block">Diff — atual vs. revisão {target} (revise antes de confirmar)</Label>
             {previewLoading ? (
@@ -488,30 +602,7 @@ function NativeRollbackSection({
               <MonacoYamlEditor mode="diff" originalValue={currentYaml} value={preview} height={280} readOnly />
             )}
           </div>
-
-          <div>
-            <Label htmlFor="native-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório — vira annotation change-cause)</Label>
-            <Textarea id="native-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: instabilidade após deploy da revisão atual" rows={2} />
-          </div>
-
-          <div className="flex items-center gap-2 pt-2 border-t">
-            {!confirming ? (
-              <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
-                <RotateCcw className="w-4 h-4 mr-2" /> Reverter para revisão {target}
-              </Button>
-            ) : (
-              <>
-                <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar reversão para a revisão {target}?</span>
-                <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
-                  {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, reverter
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={applying}>
-                  <XCircle className="w-4 h-4 mr-1" /> Cancelar
-                </Button>
-              </>
-            )}
-          </div>
-        </>
+        </RollbackConfirmModal>
       )}
     </div>
   );
@@ -871,6 +962,14 @@ function SpinnakerRollbackSection({
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [applying, setApplying] = useState(false);
+  // reviewOpen — controla o modal de confirmação (RollbackConfirmModal) DE FORMA INDEPENDENTE de
+  // changedImages: diferente dos modos com lista somente-leitura (K8s nativo/Helm/Nexus), aqui a
+  // edição por container (campos + botão "Usar") continua acontecendo DEPOIS de abrir o modal pela
+  // 1ª vez — se onClose resetasse changedImages (a única forma de "fechar" o modal se `open` fosse
+  // derivado direto dele), o usuário perderia as escolhas já feitas por container. reviewOpen
+  // liga automaticamente na 1ª mudança e pode ser fechado sem perder nada — reabre com o botão
+  // "Revisar e confirmar".
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const progress = useRollbackProgress();
 
@@ -882,6 +981,7 @@ function SpinnakerRollbackSection({
     const initial: Record<string, string> = {};
     containers.forEach((c) => { initial[c.name] = c.image; });
     setNewImages(initial);
+    setReviewOpen(false);
   }, [containers, selectedExecution]);
 
   const changedImages = useMemo(() => {
@@ -892,6 +992,16 @@ function SpinnakerRollbackSection({
     });
     return changed;
   }, [containers, newImages]);
+
+  // Abre o modal de revisão automaticamente na 1ª mudança (mesmo gatilho "assim que algo é
+  // escolhido" dos demais modos) — só na transição vazio→não-vazio, nunca de novo a cada edição
+  // subsequente (senão fechar o modal pra ajustar um container reabriria sozinho a cada tecla).
+  const prevChangedCountRef = useRef(0);
+  useEffect(() => {
+    const count = Object.keys(changedImages).length;
+    if (count > 0 && prevChangedCountRef.current === 0) setReviewOpen(true);
+    prevChangedCountRef.current = count;
+  }, [changedImages]);
 
   const canConfirm = Object.keys(changedImages).length > 0 && reason.trim().length > 0;
 
@@ -990,46 +1100,49 @@ function SpinnakerRollbackSection({
             ))}
           </div>
 
-          {Object.keys(changedImages).length > 0 && (
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1 block">Mudanças a aplicar</Label>
-              <div className="space-y-1 rounded-md border p-2.5 text-xs">
-                {Object.entries(changedImages).map(([name, image]) => {
-                  const original = containers.find((c) => c.name === name)?.image ?? "";
-                  return (
-                    <div key={name} className="font-mono">
-                      <span className="text-muted-foreground">{name}:</span>{" "}
-                      <span className="text-red-500 line-through">{original}</span>{" "}
-                      → <span className="text-green-600 dark:text-green-400">{image}</span>
-                    </div>
-                  );
-                })}
-              </div>
+          {Object.keys(changedImages).length > 0 && !reviewOpen && (
+            <div className="flex justify-end">
+              <Button type="button" variant="outline" size="sm" onClick={() => setReviewOpen(true)}>
+                Revisar e confirmar
+              </Button>
             </div>
           )}
 
-          <div>
-            <Label htmlFor="spinnaker-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório — vira annotation change-cause)</Label>
-            <Textarea id="spinnaker-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: revertendo para a versão da execução Spinnaker anterior" rows={2} />
-          </div>
-
-          <div className="flex items-center gap-2 pt-2 border-t">
-            {!confirming ? (
-              <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
-                <RotateCcw className="w-4 h-4 mr-2" /> Aplicar versão do Spinnaker
-              </Button>
-            ) : (
-              <>
-                <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar troca de imagem?</span>
-                <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
-                  {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, aplicar
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={applying}>
-                  <XCircle className="w-4 h-4 mr-1" /> Cancelar
-                </Button>
-              </>
-            )}
-          </div>
+          {Object.keys(changedImages).length > 0 && (
+            <RollbackConfirmModal
+              open={reviewOpen}
+              onClose={() => setReviewOpen(false)}
+              title="Confirmar troca de imagem — versão do Spinnaker"
+              reason={reason}
+              onReasonChange={setReason}
+              reasonPlaceholder="Ex: revertendo para a versão da execução Spinnaker anterior"
+              confirming={confirming}
+              onRequestConfirm={() => setConfirming(true)}
+              onConfirm={handleConfirm}
+              onCancelConfirm={() => setConfirming(false)}
+              applying={applying}
+              canConfirm={canConfirm}
+              canUpdateDeployment={canUpdateDeployment}
+              confirmLabel="Aplicar versão do Spinnaker"
+              confirmQuestion="Confirmar troca de imagem?"
+            >
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1 block">Mudanças a aplicar</Label>
+                <div className="space-y-1 rounded-md border p-2.5 text-xs">
+                  {Object.entries(changedImages).map(([name, image]) => {
+                    const original = containers.find((c) => c.name === name)?.image ?? "";
+                    return (
+                      <div key={name} className="font-mono">
+                        <span className="text-muted-foreground">{name}:</span>{" "}
+                        <span className="text-red-500 line-through">{original}</span>{" "}
+                        → <span className="text-green-600 dark:text-green-400">{image}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </RollbackConfirmModal>
+          )}
         </>
       )}
     </div>
@@ -1144,7 +1257,23 @@ function HelmRollbackSection({
       )}
 
       {target != null && (
-        <>
+        <RollbackConfirmModal
+          open
+          onClose={() => setTarget(null)}
+          title={`Confirmar rollback Helm — revisão ${target}`}
+          reason={reason}
+          onReasonChange={setReason}
+          reasonPlaceholder="Ex: instabilidade após deploy da revisão atual"
+          confirming={confirming}
+          onRequestConfirm={() => setConfirming(true)}
+          onConfirm={handleConfirm}
+          onCancelConfirm={() => setConfirming(false)}
+          applying={applying}
+          canConfirm={canConfirm}
+          canUpdateDeployment={canUpdateDeployment}
+          confirmLabel={`helm rollback para revisão ${target}`}
+          confirmQuestion={`Confirmar \`helm rollback ${release} ${target}\`?`}
+        >
           <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-400">
             <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
             <span>
@@ -1167,30 +1296,7 @@ function HelmRollbackSection({
               As opções acima são a recomendação do procedimento interno de rollback manual desta empresa pro cenário de emergência (rollback automático indisponível/falhou).
             </p>
           </div>
-
-          <div>
-            <Label htmlFor="helm-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório)</Label>
-            <Textarea id="helm-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: instabilidade após deploy da revisão atual" rows={2} />
-          </div>
-
-          <div className="flex items-center gap-2 pt-2 border-t">
-            {!confirming ? (
-              <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
-                <RotateCcw className="w-4 h-4 mr-2" /> helm rollback para revisão {target}
-              </Button>
-            ) : (
-              <>
-                <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar `helm rollback {release} {target}`?</span>
-                <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
-                  {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, reverter
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={applying}>
-                  <XCircle className="w-4 h-4 mr-1" /> Cancelar
-                </Button>
-              </>
-            )}
-          </div>
-        </>
+        </RollbackConfirmModal>
       )}
     </div>
   );
@@ -1463,7 +1569,23 @@ function NexusRollbackSection({
       )}
 
       {nexusManifest && (
-        <>
+        <RollbackConfirmModal
+          open
+          onClose={() => setSelectedArtifact(null)}
+          title="Confirmar rollback — manifesto histórico do Nexus"
+          reason={reason}
+          onReasonChange={setReason}
+          reasonPlaceholder="Ex: manifesto de DD/MM é o último confirmado estável"
+          confirming={confirming}
+          onRequestConfirm={() => setConfirming(true)}
+          onConfirm={handleConfirm}
+          onCancelConfirm={() => setConfirming(false)}
+          applying={applying}
+          canConfirm={canConfirm}
+          canUpdateDeployment={canUpdateDeployment}
+          confirmLabel="Aplicar manifesto do Nexus"
+          confirmQuestion="Confirmar aplicação do manifesto histórico?"
+        >
           <div>
             <Label className="text-xs text-muted-foreground mb-1 block">Diff — Deployment atual vs. manifesto histórico do Nexus (revise antes de confirmar)</Label>
             <MonacoYamlEditor mode="diff" originalValue={currentYaml} value={nexusManifest} height={280} readOnly />
@@ -1473,30 +1595,7 @@ function NexusRollbackSection({
             <input type="checkbox" id="nexus-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
             <Label htmlFor="nexus-force" className="text-xs cursor-pointer">Forçar (recria recursos se necessário)</Label>
           </div>
-
-          <div>
-            <Label htmlFor="nexus-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório)</Label>
-            <Textarea id="nexus-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: manifesto de DD/MM é o último confirmado estável" rows={2} />
-          </div>
-
-          <div className="flex items-center gap-2 pt-2 border-t">
-            {!confirming ? (
-              <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
-                <RotateCcw className="w-4 h-4 mr-2" /> Aplicar manifesto do Nexus
-              </Button>
-            ) : (
-              <>
-                <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar aplicação do manifesto histórico?</span>
-                <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
-                  {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, aplicar
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={applying}>
-                  <XCircle className="w-4 h-4 mr-1" /> Cancelar
-                </Button>
-              </>
-            )}
-          </div>
-        </>
+        </RollbackConfirmModal>
       )}
     </div>
   );
@@ -1546,6 +1645,11 @@ function FileRollbackSection({
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [applying, setApplying] = useState(false);
+  // reviewOpen — controla o modal de confirmação de forma independente do conteúdo extraído
+  // (diferente do resto dos modos com lista somente-leitura): aqui o usuário EDITA o conteúdo no
+  // Monaco antes de decidir revisar/confirmar, então nunca auto-abre — sempre exige o clique
+  // explícito em "Revisar e confirmar", só depois de já ter visto/ajustado o arquivo carregado.
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const progress = useRollbackProgress();
 
@@ -1618,6 +1722,7 @@ function FileRollbackSection({
     setActiveContent("");
     setReason("");
     setConfirming(false);
+    setReviewOpen(false);
     setLoadingActiveContent(true);
     const read = source === "default" ? apiClient.readRollbackFile(file.name) : apiClient.readExternalRollbackFile(file.path);
     read
@@ -1778,8 +1883,32 @@ function FileRollbackSection({
             <div className="text-sm text-destructive py-2 text-center">{extracted.error}</div>
           )}
 
+          {extracted.yaml && !reviewOpen && (
+            <div className="flex justify-end">
+              <Button type="button" variant="outline" size="sm" onClick={() => setReviewOpen(true)}>
+                Revisar e confirmar
+              </Button>
+            </div>
+          )}
+
           {extracted.yaml && (
-            <>
+            <RollbackConfirmModal
+              open={reviewOpen}
+              onClose={() => setReviewOpen(false)}
+              title={`Confirmar rollback — ${activeFile.name}`}
+              reason={reason}
+              onReasonChange={setReason}
+              reasonPlaceholder="Ex: aplicando manifesto salvo manualmente de rollback anterior"
+              confirming={confirming}
+              onRequestConfirm={() => setConfirming(true)}
+              onConfirm={handleConfirm}
+              onCancelConfirm={() => setConfirming(false)}
+              applying={applying}
+              canConfirm={canConfirm}
+              canUpdateDeployment={canUpdateDeployment}
+              confirmLabel="Aplicar arquivo selecionado"
+              confirmQuestion="Confirmar aplicação deste arquivo?"
+            >
               <div>
                 <Label className="text-xs text-muted-foreground mb-1 block">Diff — Deployment atual vs. arquivo selecionado (revise antes de confirmar)</Label>
                 <MonacoYamlEditor mode="diff" originalValue={currentYaml} value={extracted.yaml} height={240} readOnly />
@@ -1789,30 +1918,7 @@ function FileRollbackSection({
                 <input type="checkbox" id="files-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
                 <Label htmlFor="files-force" className="text-xs cursor-pointer">Forçar (recria recursos se necessário)</Label>
               </div>
-
-              <div>
-                <Label htmlFor="files-reason" className="text-xs text-muted-foreground mb-1 block">Motivo do rollback (obrigatório — vira annotation change-cause)</Label>
-                <Textarea id="files-reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex: aplicando manifesto salvo manualmente de rollback anterior" rows={2} />
-              </div>
-
-              <div className="flex items-center gap-2 pt-2 border-t">
-                {!confirming ? (
-                  <Button variant="default" disabled={!canConfirm || !canUpdateDeployment || applying} onClick={() => setConfirming(true)} title={!canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}>
-                    <RotateCcw className="w-4 h-4 mr-2" /> Aplicar arquivo selecionado
-                  </Button>
-                ) : (
-                  <>
-                    <span className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Confirmar aplicação deste arquivo?</span>
-                    <Button size="sm" onClick={handleConfirm} disabled={applying} className="bg-amber-600 hover:bg-amber-700">
-                      {applying ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Sim, aplicar
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={applying}>
-                      <XCircle className="w-4 h-4 mr-1" /> Cancelar
-                    </Button>
-                  </>
-                )}
-              </div>
-            </>
+            </RollbackConfirmModal>
           )}
         </>
       )}
@@ -1821,10 +1927,10 @@ function FileRollbackSection({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Progresso via SSE — compartilhado pelos 4 modos (fontes de evento diferentes: stream próprio de
-// rollout do Modo K8s nativo/Imagem vs. stream de operação Helm dos Modos Helm/Nexus — mesma UI;
-// Nexus/Arquivos aplicam via kubectl apply síncrono, sem streaming de rollout — ver comentário no
-// topo de cada seção).
+// Progresso via SSE — compartilhado pelos 6 modos (fontes de evento diferentes: stream próprio de
+// rollout do Modo K8s nativo/Imagem/Spinnaker vs. stream de operação Helm do Modo Helm — mesma UI;
+// Nexus/Arquivos aplicam via apiClient.applyDeploymentManifest, que também abre sessão de streaming
+// de rollout — ver comentário no topo de cada seção).
 // ═══════════════════════════════════════════════════════════════════════════
 
 interface RollbackProgressState {
