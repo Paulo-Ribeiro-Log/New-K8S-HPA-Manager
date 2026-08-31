@@ -1232,7 +1232,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Nexus
-	nexusHandler, err := handlers.NewNexusHandler()
+	nexusHandler, err := handlers.NewNexusHandler(baseDir)
 	if err != nil {
 		fmt.Printf("⚠️  Failed to initialize Nexus handler: %v\n", err)
 	} else {

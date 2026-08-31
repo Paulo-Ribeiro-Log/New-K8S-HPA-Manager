@@ -11,31 +11,37 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Loader2, CheckCircle2, AlertCircle, Database, Trash2 } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertCircle, Database, Trash2, UserCircle2 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import type { NexusConfig } from '@/types/nexus';
+import type { NexusConfig, NexusStatus } from '@/types/nexus';
 import { DEFAULT_URL_PATTERN } from '@/types/nexus';
 import type { CredentialModalProps } from '@/types/profile';
 
-export function NexusCredentialModal({ open, onOpenChange, onSaved }: CredentialModalProps) {
-  const { testConnection, saveConfig, loadConfig, deleteConfig, loading, error } = useNexusConfig();
+const DEFAULT_CONFIG: NexusConfig = {
+  baseUrl: 'https://nexus.viavarejo.com.br',
+  repository: 'workspace',
+  tempDir: '/tmp/k8s-hpa-nexus',
+  urlPattern: '',
+};
 
-  const [config, setConfig] = useState<NexusConfig>({
-    baseUrl: 'https://nexus.viavarejo.com.br',
-    repository: 'workspace',
-    username: '',
-    password: '',
-    tempDir: '/tmp/k8s-hpa-nexus',
-    urlPattern: '',
-  });
+interface NexusCredentialModalProps extends CredentialModalProps {
+  // Abre o modal de Perfil SSO corporativo — usado quando o Nexus ainda não consegue resolver
+  // credencial nenhuma (login do Nexus é sempre feito com essa mesma identidade).
+  onOpenSSOProfile?: () => void;
+}
+
+export function NexusCredentialModal({ open, onOpenChange, onSaved, onOpenSSOProfile }: NexusCredentialModalProps) {
+  const { testConnection, saveConfig, loadConfig, deleteConfig, checkStatus, loading, error } = useNexusConfig();
+
+  const [config, setConfig] = useState<NexusConfig>(DEFAULT_CONFIG);
+  const [ssoStatus, setSsoStatus] = useState<NexusStatus | null>(null);
 
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [hasSavedPassword, setHasSavedPassword] = useState(false);
 
-  // Carrega configuracao existente ao abrir
+  // Carrega configuracao existente + status do Perfil SSO ao abrir
   useEffect(() => {
     if (open) {
       loadExistingConfig();
@@ -45,28 +51,24 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
 
   const loadExistingConfig = async () => {
     try {
-      const existingConfig = await loadConfig();
+      const [existingConfig, status] = await Promise.all([
+        loadConfig().catch(() => null),
+        checkStatus().catch(() => null),
+      ]);
       if (existingConfig) {
-        // Backend retorna password vazio por segurança
-        // Se config existe com username, a senha está salva no servidor
-        const passwordSaved = !!existingConfig.username;
-        setHasSavedPassword(passwordSaved);
-        setConfig({
-          ...existingConfig,
-          password: '', // Não temos a senha real, usuário re-digita se quiser alterar
-        });
+        setConfig({ ...DEFAULT_CONFIG, ...existingConfig });
       }
-    } catch (err) {
+      setSsoStatus(status);
+    } catch {
       // Config nao existe ainda, use valores padrao
-      setHasSavedPassword(false);
     }
   };
 
   const handleTestConnection = async () => {
-    if (!config.baseUrl || !config.repository || !config.username || (!config.password && !hasSavedPassword)) {
+    if (!config.baseUrl || !config.repository) {
       setTestResult({
         success: false,
-        message: 'Preencha todos os campos obrigatorios',
+        message: 'Preencha a URL Base e o Repository',
       });
       return;
     }
@@ -88,10 +90,10 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
   };
 
   const handleSave = async () => {
-    if (!config.baseUrl || !config.repository || !config.username || (!config.password && !hasSavedPassword)) {
+    if (!config.baseUrl || !config.repository) {
       setTestResult({
         success: false,
-        message: 'Preencha todos os campos obrigatorios',
+        message: 'Preencha a URL Base e o Repository',
       });
       return;
     }
@@ -125,14 +127,7 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
     setDeleting(true);
     try {
       await deleteConfig();
-      setConfig({
-        baseUrl: 'https://nexus.viavarejo.com.br',
-        repository: 'workspace',
-        username: '',
-        password: '',
-        tempDir: '/tmp/k8s-hpa-nexus',
-        urlPattern: '',
-      });
+      setConfig(DEFAULT_CONFIG);
       setTestResult({
         success: true,
         message: 'Configuracao removida com sucesso!',
@@ -148,7 +143,7 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
     }
   };
 
-  const isProcessing = testing || saving || deleting;
+  const isProcessing = testing || saving || deleting || loading;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -159,11 +154,44 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
             Nexus Repository
           </DialogTitle>
           <DialogDescription>
-            Configure a conexao com o Nexus para comparar arquivos values.yaml
+            Configure o endereço do Nexus para comparar arquivos values.yaml
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
+          {/* Identidade usada no login — sempre o Perfil SSO, nunca credencial própria do Nexus */}
+          {ssoStatus?.ssoConfigured ? (
+            <Alert>
+              <UserCircle2 className="h-4 w-4" />
+              <AlertDescription>
+                Login via Perfil SSO corporativo (matrícula): <span className="font-medium">{ssoStatus.ssoUsername}</span>
+              </AlertDescription>
+            </Alert>
+          ) : (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription className="space-y-2">
+                <p>
+                  O login do Nexus usa a matrícula + senha do Perfil SSO corporativo (mesma
+                  identidade já usada por ServiceNow/Teams/Spinnaker) — o Nexus exige a matrícula,
+                  não o email. Preencha o campo Matrícula no Perfil SSO antes de continuar.
+                </p>
+                {onOpenSSOProfile && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      onOpenChange(false);
+                      onOpenSSOProfile();
+                    }}
+                  >
+                    Configurar Perfil SSO
+                  </Button>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             {/* Base URL */}
             <div className="space-y-2">
@@ -187,36 +215,6 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
                 placeholder="workspace"
                 disabled={isProcessing}
               />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {/* Username */}
-            <div className="space-y-2">
-              <Label htmlFor="nexus-username">Usuario *</Label>
-              <Input
-                id="nexus-username"
-                value={config.username}
-                onChange={(e) => setConfig({ ...config, username: e.target.value })}
-                placeholder="seu.usuario"
-                disabled={isProcessing}
-              />
-            </div>
-
-            {/* Password */}
-            <div className="space-y-2">
-              <Label htmlFor="nexus-password">Senha *</Label>
-              <Input
-                id="nexus-password"
-                type="password"
-                value={config.password}
-                onChange={(e) => setConfig({ ...config, password: e.target.value })}
-                placeholder={hasSavedPassword ? '(senha salva - digite para alterar)' : 'Digite sua senha'}
-                disabled={isProcessing}
-              />
-              {hasSavedPassword && !config.password && (
-                <p className="text-xs text-green-500">Senha ja salva no servidor</p>
-              )}
             </div>
           </div>
 

@@ -345,6 +345,7 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
         open={nexusModalOpen}
         onOpenChange={setNexusModalOpen}
         onSaved={refreshCredentials}
+        onOpenSSOProfile={() => setSsoProfileModalOpen(true)}
       />
       <GitHubCredentialModal
         open={githubModalOpen}
