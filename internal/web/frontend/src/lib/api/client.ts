@@ -1090,6 +1090,20 @@ class APIClient {
     return response.data;
   }
 
+  /** Usado pelos Modos Nexus e Arquivos — aplica um manifesto Deployment já extraído (kubectl
+   * apply via server-side apply) com o mesmo lock+auditoria+streaming de rollout dos outros
+   * modos (mesmo sessionId de rollout SSE do Modo K8s nativo/Imagem). */
+  async applyDeploymentManifest(
+    cluster: string, namespace: string, name: string, yaml: string, reason: string, force: boolean
+  ): Promise<{ sessionId: string; images: string[] }> {
+    const response = await this.request<APIResponse<{ sessionId: string; images: string[] }>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/apply-manifest`,
+      { method: "POST", body: JSON.stringify({ yaml, reason, force }) }
+    );
+    if (!response.data) throw new Error("Aplicação de manifesto sem retorno");
+    return response.data;
+  }
+
   /** URL do stream SSE de progresso do rollout pós-rollback (Modo K8s nativo) — token via query
    * param, mesmo motivo/padrão de getNetDiscoveryStreamURL (EventSource não aceita headers). */
   getDeploymentRollbackStreamURL(sessionId: string): string {

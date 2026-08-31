@@ -929,6 +929,7 @@ func (s *Server) setupRoutes() {
 		deployments.GET("/:cluster/:namespace/:name/revisions/:revision/preview", deploymentRollbackHandler.PreviewRevision)
 		deployments.POST("/:cluster/:namespace/:name/rollback", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.Rollback)
 		deployments.POST("/:cluster/:namespace/:name/set-image", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.SetImage)
+		deployments.POST("/:cluster/:namespace/:name/apply-manifest", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.ApplyManifest)
 	}
 	s.router.GET("/api/v1/deployment-rollback/stream/:sessionId",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),

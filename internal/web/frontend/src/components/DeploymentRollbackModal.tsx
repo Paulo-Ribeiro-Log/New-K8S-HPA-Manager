@@ -862,6 +862,8 @@ function NexusRollbackSection({
   const [confirming, setConfirming] = useState(false);
   const [applying, setApplying] = useState(false);
 
+  const progress = useRollbackProgress();
+
   const runSearch = useCallback((term: string, allRepos = false) => {
     if (!term.trim()) return;
     setLoading(true);
@@ -915,19 +917,19 @@ function NexusRollbackSection({
     setApplying(true);
     setConfirming(false);
     try {
-      await apiClient.applyDeployment(cluster, namespace, deploymentName, {
-        yaml: nexusManifest,
-        fieldManager: "k8s-hpa-manager-rollback-nexus",
-        force,
-      });
-      toast.success("Manifesto histórico do Nexus aplicado com sucesso");
-      onDone();
+      const { sessionId } = await apiClient.applyDeploymentManifest(cluster, namespace, deploymentName, nexusManifest, reason.trim(), force);
+      toast.success("Manifesto histórico do Nexus aplicado — acompanhando o rollout...");
+      progress.start(apiClient.getDeploymentRollbackStreamURL(sessionId), onDone);
     } catch (err) {
       toast.error("Falha ao aplicar manifesto do Nexus", { description: err instanceof Error ? err.message : "Erro" });
     } finally {
       setApplying(false);
     }
   };
+
+  if (progress.active || progress.done) {
+    return <RolloutProgressPanel progress={progress} />;
+  }
 
   return (
     <div className="space-y-4 py-2">
@@ -1223,13 +1225,9 @@ function FileRollbackSection({
     setApplying(true);
     setConfirming(false);
     try {
-      await apiClient.applyDeployment(cluster, namespace, deploymentName, {
-        yaml: extracted.yaml,
-        fieldManager: "k8s-hpa-manager-rollback-files",
-        force,
-      });
-      toast.success("Manifesto do arquivo aplicado com sucesso");
-      onDone();
+      const { sessionId } = await apiClient.applyDeploymentManifest(cluster, namespace, deploymentName, extracted.yaml, reason.trim(), force);
+      toast.success("Manifesto do arquivo aplicado — acompanhando o rollout...");
+      progress.start(apiClient.getDeploymentRollbackStreamURL(sessionId), onDone);
     } catch (err) {
       toast.error("Falha ao aplicar manifesto", { description: err instanceof Error ? err.message : "Erro" });
     } finally {
