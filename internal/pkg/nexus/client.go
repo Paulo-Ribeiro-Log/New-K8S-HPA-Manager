@@ -537,21 +537,34 @@ func (c *HTTPClient) BrowseRepository(path string, query string, repository stri
 }
 
 // SearchFlatArtifacts busca componentes num repositório SEM hierarquia release/version/arquivo —
-// ver comentário de FlatArtifact (types.go). Reaproveita a mesma API de busca/paginação de
-// BrowseRepository, mas sem nenhuma tentativa de agrupar por segmentos de path (que é justamente o
-// que fazia BrowseRepository descartar esses componentes em silêncio).
+// ver comentário de FlatArtifact (types.go).
+//
+// Achado real, crítico, relatado pelo usuário e confirmado ao vivo: a 1ª versão usava `q=<query>`
+// (Search API padrão do Nexus, mesma usada por BrowseRepository) — só que esse parâmetro faz busca
+// por TOKEN solto (tokeniza a query e casa qualquer termo separadamente), não por substring. Pra
+// esse repositório achatado, com nomes de arquivo compostos (namespace+projeto+timestamp+versão),
+// isso é desastroso: buscar "ms-faturamento-nf-estoque" batia em QUALQUER componente contendo só
+// "ms" ou só "estoque" — confirmado ao vivo trazendo 250 resultados, quase todos de aplicações sem
+// nenhuma relação (`cdccorp-prd-cdc-ms-kafka-...`, `estoque-admin-prd-...`). Corrigido trocando pro
+// parâmetro `name=` (não documentado formalmente pela API pública do Nexus, mas confirmado ao vivo
+// contra a instância real desta empresa) — faz glob matching de verdade sobre o campo nome do
+// componente; `*<query>*` (wildcard nos dois lados) é o formato que replica "contains" sem exigir
+// conhecer o prefixo completo (`spinnaker-<namespace>-`) que a query sozinha não tem. Validado ao
+// vivo: a mesma busca que antes trazia 250 falsos-positivos passou a trazer exatamente 1 resultado
+// certo (ou zero, honestamente, quando o Deployment nunca passou por este pipeline/repositório).
 func (c *HTTPClient) SearchFlatArtifacts(repository, query string, allRepos bool) ([]FlatArtifact, error) {
 	baseURL := strings.TrimSuffix(c.config.BaseURL, "/")
 	if query == "" {
 		return []FlatArtifact{}, nil
 	}
+	nameGlob := "*" + query + "*"
 
 	artifacts := []FlatArtifact{}
 	continuationToken := ""
 	maxPages := 5
 
 	for page := 0; page < maxPages; page++ {
-		apiURL := fmt.Sprintf("%s/service/rest/v1/search?q=%s", baseURL, url.QueryEscape(query))
+		apiURL := fmt.Sprintf("%s/service/rest/v1/search?name=%s", baseURL, url.QueryEscape(nameGlob))
 		if !allRepos && repository != "" {
 			apiURL += "&repository=" + url.QueryEscape(repository)
 		}
