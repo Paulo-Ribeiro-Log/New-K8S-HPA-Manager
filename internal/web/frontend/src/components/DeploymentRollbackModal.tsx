@@ -243,6 +243,17 @@ export function DeploymentRollbackModal({
           </div>
         )}
 
+        {/* Bypass Kyverno automático — pedido explícito do usuário depois de relatar que o Kyverno
+            bloqueia mutações manuais fora da esteira CI nesta empresa: "acredito que ele precisa
+            ser usada em qualquer modo que for executar o rollback". Aplicado server-side (label
+            devops.k8s.io/kyverno-bypass=true no namespace, sempre removida depois — ver
+            withKyvernoBypass/internal/web/handlers/kyverno_bypass.go) nos 6 modos, sem exigir
+            nenhuma ação do usuário — esta linha existe só pra transparência. */}
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+          <CheckCircle2 className="w-3.5 h-3.5" />
+          Bypass Kyverno (<span className="font-mono">devops.k8s.io/kyverno-bypass</span>) aplicado e removido automaticamente durante o rollback, em qualquer modo.
+        </div>
+
         {isHelmManaged ? (
           <div className="flex items-center gap-1 border-b border-border shrink-0">
             <button
@@ -304,6 +315,8 @@ export function DeploymentRollbackModal({
           {mode === "helm" && isHelmManaged && (
             <HelmRollbackSection
               cluster={cluster}
+              namespace={namespace}
+              deploymentName={deploymentName}
               release={helmReleaseName}
               releaseNamespace={helmReleaseNamespace}
               canUpdateDeployment={canUpdateDeployment}
@@ -1028,22 +1041,28 @@ function SpinnakerRollbackSection({
 // ═══════════════════════════════════════════════════════════════════════════
 
 function HelmRollbackSection({
-  cluster, release, releaseNamespace, canUpdateDeployment, onDone,
+  cluster, namespace, deploymentName, release, releaseNamespace, canUpdateDeployment, onDone,
 }: {
-  cluster: string; release: string; releaseNamespace: string; canUpdateDeployment: boolean; onDone: () => void;
+  cluster: string; namespace: string; deploymentName: string; release: string; releaseNamespace: string; canUpdateDeployment: boolean; onDone: () => void;
 }) {
   const [detail, setDetail] = useState<HelmReleaseDetail | null>(null);
   const [revisions, setRevisions] = useState<HelmRevisionEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [target, setTarget] = useState<number | null>(null);
-  const [force, setForce] = useState(false);
   // wait/recreatePods — pedido explícito do usuário depois de analisar a documentação interna de
   // rollback manual desta empresa, que recomenda sempre `helm rollback ... --wait --force
   // --recreate-pods` no cenário de emergência (rollback automático indisponível/falhou). Nenhum
   // dos dois era passado antes — `buildRollbackArgs` (internal/pkg/helm/cli_client.go) só
-  // suportava --force. Desligados por padrão (mesmo padrão de `force`, opt-in explícito) — o
-  // usuário liga quando está de fato no cenário de emergência descrito na documentação.
+  // suportava --force. Desligados por padrão (mesmo padrão de opt-in explícito) — o usuário liga
+  // quando está de fato no cenário de emergência descrito na documentação.
+  //
+  // "Forçar" (--force) deixou de ser um checkbox opcional — achado real, relatado pelo usuário
+  // depois de testar contra um cluster protegido por Kyverno: "para cluster gerenciados por helm
+  // é preciso ter a flag --force... é o próprio --force que permite alterações manuais em
+  // ambiente helm managed". apiClient.helmRollbackWithBypass (POST .../helm-rollback, backend em
+  // HelmRollbackWithBypass) sempre manda Force:true, nunca aceita false — sem checkbox pra não
+  // sugerir que é opcional quando não é.
   const [wait, setWait] = useState(false);
   const [recreatePods, setRecreatePods] = useState(false);
   const [reason, setReason] = useState("");
@@ -1075,8 +1094,10 @@ function HelmRollbackSection({
     setApplying(true);
     setConfirming(false);
     try {
-      const { operationId } = await apiClient.helmRollback(cluster, release, releaseNamespace, target, force, wait, recreatePods);
-      toast.success(`helm rollback iniciado para a revisão ${target} — acompanhando...`);
+      const { operationId } = await apiClient.helmRollbackWithBypass(
+        cluster, namespace, deploymentName, release, releaseNamespace, target, wait, recreatePods, reason.trim()
+      );
+      toast.success(`helm rollback iniciado para a revisão ${target} (bypass Kyverno aplicado automaticamente) — acompanhando...`);
       progress.startHelm(operationId, onDone);
     } catch (err) {
       toast.error("Falha ao reverter release Helm", { description: err instanceof Error ? err.message : "Erro" });
@@ -1124,11 +1145,16 @@ function HelmRollbackSection({
 
       {target != null && (
         <>
+          <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-400">
+            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              Bypass Kyverno (<span className="font-mono">devops.k8s.io/kyverno-bypass=true</span>) e <span className="font-mono">--force</span> são aplicados
+              automaticamente pra esta operação — necessários em clusters com a política que bloqueia mutações fora da esteira CI. A label é removida do
+              namespace assim que o `helm rollback` terminar.
+            </span>
+          </div>
+
           <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <input type="checkbox" id="helm-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
-              <Label htmlFor="helm-force" className="text-xs cursor-pointer">Forçar (recria recursos se necessário — <span className="font-mono">--force</span>)</Label>
-            </div>
             <div className="flex items-center gap-2">
               <input type="checkbox" id="helm-wait" checked={wait} onChange={(e) => setWait(e.target.checked)} className="rounded" />
               <Label htmlFor="helm-wait" className="text-xs cursor-pointer">Aguardar pods ficarem prontos antes de reportar sucesso (<span className="font-mono">--wait</span>)</Label>
@@ -1138,7 +1164,7 @@ function HelmRollbackSection({
               <Label htmlFor="helm-recreate-pods" className="text-xs cursor-pointer">Recriar pods mesmo sem mudança de template (<span className="font-mono">--recreate-pods</span>)</Label>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              As 3 opções acima juntas são a recomendação do procedimento interno de rollback manual desta empresa pro cenário de emergência (rollback automático indisponível/falhou).
+              As opções acima são a recomendação do procedimento interno de rollback manual desta empresa pro cenário de emergência (rollback automático indisponível/falhou).
             </p>
           </div>
 
