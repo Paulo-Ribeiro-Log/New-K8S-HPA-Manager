@@ -2921,3 +2921,13 @@ export interface NexusFlatArtifact {
   lastModified: string; // ISO 8601
   uploader?: string;
 }
+
+// RollbackFileEntry — arquivo YAML na biblioteca de rollback (pasta gerenciada
+// ~/.k8s-hpa-manager/rollback-artifacts/ OU um diretório externo arbitrário do servidor). Ver
+// internal/rollbackfiles/store.go.
+export interface RollbackFileEntry {
+  name: string;
+  path: string; // caminho absoluto real no disco do servidor
+  size: number;
+  modifiedAt: string; // ISO 8601
+}
