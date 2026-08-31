@@ -66,14 +66,28 @@ import type {
 //
 // Detecção de modo: automática, a partir do manifest já carregado pela aba Deployments —
 // `meta.helm.sh/release-name` + `app.kubernetes.io/managed-by: Helm` identificam um Deployment
-// Helm-gerenciado (oferece Modo Helm e Modo Nexus, nunca os outros 3 — evita drift). Sem esses
-// marcadores, oferece Modo K8s nativo, Modo Imagem e Modo Spinnaker — com aviso se detectar labels
-// de GitOps conhecidos (Flux/ArgoCD), já que um reconcile automático pode reverter o rollback pouco
-// depois. Modo Spinnaker aplica via o MESMO endpoint de patch de imagem do Modo Imagem (troca só a
-// tag) — por isso segue a mesma restrição de drift (só oferecido pra Deployments NÃO
-// Helm-gerenciados). Modo Arquivos é o único disponível nos dois casos (Helm-gerenciado ou não) — a
-// escolha do arquivo é sempre manual e explícita, com aviso de drift condicional quando
-// Helm-gerenciado.
+// Helm-gerenciado (oferece Modo Helm/Nexus/Spinnaker, nunca K8s nativo/Imagem — esses 2 aplicam
+// patch cru sem consultar nenhuma fonte de verdade externa, causando drift). Sem esses marcadores,
+// oferece Modo K8s nativo, Modo Imagem e Modo Spinnaker — com aviso se detectar labels de GitOps
+// conhecidos (Flux/ArgoCD), já que um reconcile automático pode reverter o rollback pouco depois.
+//
+// Modo Spinnaker é o ÚNICO dos "modos de patch de imagem" oferecido nos DOIS casos (Helm-gerenciado
+// ou não) — achado real, relatado pelo usuário com evidência concreta: um Deployment com
+// `app.kubernetes.io/managed-by: Helm` (portanto classificado `isHelmManaged`) também carregava
+// `app.kubernetes.io/deployed-by: spinnaker-artifact-nexus`, e o Modo Spinnaker simplesmente não
+// aparecia pra esse caso. Causa: labels de Helm no manifesto NÃO garantem um release Helm de
+// verdade rastreando o recurso — pipelines que renderizam o chart via Spinnaker (`helm template`)
+// e aplicam o resultado direto (`kubectl apply`, nunca `helm install/upgrade`) produzem essas
+// mesmas labels sem nenhum release real por trás (mesmo achado já documentado no aviso do Modo
+// Nexus sobre "deploy por artefato" vs. "1º deploy Helm" — a app não tem como distinguir os dois
+// só pelas labels). Diferente do Modo Imagem (tag digitada à mão, mantido restrito a não-Helm — o
+// risco de digitar errado é maior e não há dado externo confirmando a versão-alvo), o Modo
+// Spinnaker é alimentado por execuções REAIS do Spinnaker (dado autoritativo, não um palpite) —
+// por isso é seguro liberá-lo mesmo quando as labels sugerem Helm, com um aviso (não bloqueio)
+// sugerindo checar se o Modo Helm de fato encontra revisões antes de usá-lo.
+//
+// Modo Arquivos é o único OUTRO disponível nos dois casos (Helm-gerenciado ou não) — a escolha do
+// arquivo é sempre manual e explícita, com aviso de drift condicional quando Helm-gerenciado.
 //
 // Segurança comum aos 6 modos: diff/resumo obrigatório antes de liberar a confirmação (Modo Imagem
 // e Modo Spinnaker usam um resumo textual simples do campo image por container, não um YAML
@@ -279,6 +293,13 @@ export function DeploymentRollbackModal({
             </button>
             <button
               type="button"
+              onClick={() => setMode("spinnaker")}
+              className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "spinnaker" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
+            >
+              <Rocket className="w-3.5 h-3.5" /> Spinnaker (execuções CI)
+            </button>
+            <button
+              type="button"
               onClick={() => setMode("files")}
               className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px flex items-center gap-1.5 ${mode === "files" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}
             >
@@ -361,12 +382,13 @@ export function DeploymentRollbackModal({
               onDone={handleDone}
             />
           )}
-          {mode === "spinnaker" && !isHelmManaged && (
+          {mode === "spinnaker" && (
             <SpinnakerRollbackSection
               cluster={cluster}
               namespace={namespace}
               deploymentName={deploymentName}
               currentYaml={manifest?.yaml || ""}
+              isHelmManaged={isHelmManaged}
               canUpdateDeployment={canUpdateDeployment}
               onDone={handleDone}
             />
@@ -947,14 +969,20 @@ function ImageRollbackSection({
 // Modo Imagem (mesmo endpoint apiClient.setDeploymentImage/SetDeploymentContainerImages — patch
 // estratégico só no campo .image), só que a origem da tag vem de uma execução escolhida no
 // histórico do Spinnaker (SpinnakerExecutionPicker, GET /spinnaker/deployment-executions) em vez
-// de digitada manualmente. Mesma restrição de drift do Modo Imagem: só oferecido pra Deployments
-// NÃO Helm-gerenciados (ver DeploymentRollbackModal).
+// de digitada manualmente.
+//
+// ÚNICO dos modos de patch de imagem oferecido em Deployments Helm-gerenciados também — achado
+// real, relatado pelo usuário: labels de Helm (app.kubernetes.io/managed-by: Helm) não garantem um
+// release Helm de verdade rastreando o recurso quando o chart foi só renderizado (helm template) e
+// aplicado direto por um pipeline Spinnaker (label observada no caso real: app.kubernetes.io/
+// deployed-by: spinnaker-artifact-nexus) — ver DeploymentRollbackModal pro comentário completo.
+// isHelmManaged aqui só controla um AVISO (nunca bloqueia), diferente do Modo Imagem/K8s nativo.
 // ═══════════════════════════════════════════════════════════════════════════
 
 function SpinnakerRollbackSection({
-  cluster, namespace, deploymentName, currentYaml, canUpdateDeployment, onDone,
+  cluster, namespace, deploymentName, currentYaml, isHelmManaged, canUpdateDeployment, onDone,
 }: {
-  cluster: string; namespace: string; deploymentName: string; currentYaml: string; canUpdateDeployment: boolean; onDone: () => void;
+  cluster: string; namespace: string; deploymentName: string; currentYaml: string; isHelmManaged: boolean; canUpdateDeployment: boolean; onDone: () => void;
 }) {
   const containers = useMemo(() => parseContainersFromYaml(currentYaml), [currentYaml]);
   const [selectedExecution, setSelectedExecution] = useState<SpinnakerExecutionSummary | null>(null);
@@ -1037,6 +1065,19 @@ function SpinnakerRollbackSection({
           mão. Só use quando tiver certeza de que <strong>nenhum outro manifesto</strong> mudou desde essa execução.
         </span>
       </div>
+
+      {isHelmManaged && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>
+            Este Deployment tem labels de Helm (<span className="font-mono">app.kubernetes.io/managed-by: Helm</span>), mas isso não garante
+            que exista um release Helm de verdade rastreando-o — pipelines que renderizam o chart via Spinnaker (<span className="font-mono">helm template</span>)
+            e aplicam o manifesto direto (ex: label <span className="font-mono">app.kubernetes.io/deployed-by: spinnaker-artifact-nexus</span>)
+            produzem essas mesmas labels sem nenhum release real por trás. Confira se o Modo Helm (<span className="font-mono">helm history</span>) realmente
+            encontra revisões antes de usá-lo — se não encontrar, este modo (baseado em execuções reais do Spinnaker) é o caminho certo.
+          </span>
+        </div>
+      )}
 
       {!selectedExecution ? (
         <SpinnakerExecutionPicker
