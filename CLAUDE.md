@@ -2,7 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**New K8s HPA Manager** é uma ferramenta de gerenciamento de recursos Kubernetes/Azure AKS (com suporte também a EKS/GKE) em larga escala, com duas interfaces: **TUI** (Bubble Tea) e **Web** (Go/Gin API + React/TypeScript SPA). Cobre desde edição de HPAs/Node Pools em lote até Health Check com IA, FinOps, Access Checker, Code Editor com integração Git/LSP, e integrações com Dynatrace/ServiceNow/Teams.
+**New K8s HPA Manager** é uma ferramenta de gerenciamento de recursos Kubernetes/Azure AKS (com suporte também a EKS/GKE) em larga escala, com interface **Web** (Go/Gin API + React/TypeScript SPA). Cobre desde edição de HPAs/Node Pools em lote até Health Check com IA, FinOps, Access Checker, Code Editor com integração Git/LSP, e integrações com Dynatrace/ServiceNow/Teams.
+
+**A TUI (Bubble Tea) foi removida do projeto** — `cmd/root.go` documenta isso explicitamente ("Since TUI was removed, default behavior is to start web server"); `internal/tui/` não existe mais, `bubbletea` não está no `go.mod`, e `new-k8s-hpa` (sem subcomando) hoje só sobe o servidor web. Qualquer referência a TUI/Bubble Tea encontrada em código morto de doc antigo (`README.md`, scripts) é resquício — não reintroduzir padrões de TUI (goroutines/`tea.Cmd`, `AppModel`) achando que ainda se aplicam.
 
 **IMPORTANTE**: Responda sempre em português brasileiro (pt-br).
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
@@ -145,13 +147,12 @@ make build-web                # Build completo (frontend + backend)
 ./build/new-k8s-hpa web       # Servidor web (porta 8080)
 ./build/new-k8s-hpa web -f    # Foreground mode (logs no terminal)
 ./build/new-k8s-hpa web --ad  # EMERGÊNCIA: Bypass RBAC (flag oculta)
-./build/new-k8s-hpa           # TUI padrão
+./build/new-k8s-hpa           # Sem subcomando = mesmo que `web` (default desde a remoção da TUI, ver cmd/root.go)
 ./build/new-k8s-hpa version   # Versão + updates disponíveis
-# Atalhos TUI: F1 Ajuda · F3 Logs · F5 Reload · F8 Prometheus · F9 CronJobs · Ctrl+S Salvar sessão · Ctrl+L Carregar sessão · ESC Voltar
 
 # Dev
 make web-dev                  # Frontend dev server (Vite HMR - porta 5173)
-make run-dev                  # TUI com debug
+make run-dev                  # go run com --debug (sobe o servidor web via root.go, não é mais TUI)
 
 # Tests
 go test -v ./internal/... -race              # Todos os testes com race detector
@@ -174,8 +175,8 @@ make version                  # Mostra versão detectada via git describe + comm
 make test-coverage            # Testes com cobertura HTML
 make web-install              # npm install no frontend
 make web-clean                # Limpa arquivos de build frontend
-make run-test                 # Builda e roda cmd/k8s-teste (ferramenta isolada de teste de layout TUI)
-make run-test-debug           # Idem, com --debug
+# make run-test / run-test-debug: QUEBRADOS — ./cmd/k8s-teste não existe mais no worktree atual
+# (só sobrevive em backups/*, resquício de quando havia layout de TUI pra testar isoladamente)
 
 # Lint frontend
 cd internal/web/frontend && npm run lint   # eslint .
@@ -215,9 +216,8 @@ ls -lh internal/web/static/assets/ | grep -E "\.(js|css)$"  # Verificar assets
 
 ```
 k8s-hpa-manager/
-├── cmd/                      # CLI commands (Cobra): web.go, autodiscover.go, diagnose.go
+├── cmd/                      # CLI commands (Cobra): web.go, autodiscover.go, diagnose.go, root.go (default = web)
 ├── internal/
-│   ├── tui/                  # Terminal UI (Bubble Tea)
 │   ├── web/
 │   │   ├── frontend/         # React SPA (src/components/, src/hooks/, src/lib/api/)
 │   │   ├── handlers/         # Go REST API handlers (um arquivo por recurso)
@@ -231,11 +231,11 @@ k8s-hpa-manager/
 │   │                         # + eks_discovery.go (AutoDiscoverEKSClusters via AWS CLI)
 │   ├── cloudprovider/        # Interface NodeGroupProvider + impls por cloud
 │   │   ├── interface.go      # NodeGroupProvider: List/Scale/SetAutoscaling/AbortOperation
-│   │   ├── azure/            # AzureNodeGroupProvider (az CLI)
+│   │   ├── azure/            # AzureNodeGroupProvider (az CLI) — inclui a ordenação enable/disable-autoscaler→scale
 │   │   └── aws/              # AWSNodeGroupProvider (aws CLI, normaliza ARN → nome curto)
 │   ├── collectors/           # Coletores K8s: deployment, HPA, pod, node, investigator
 │   ├── metrics/              # Cliente Prometheus (prometheus.go)
-│   ├── session/              # Sessions TUI ↔ Web (formato JSON compatível)
+│   ├── session/              # Sessions (formato JSON, herdado da era TUI, hoje só usado pela Web)
 │   ├── monitoring/           # Prometheus, predictions/, nodepoolpredictions/
 │   │   └── engine/           # monitoring_v2.go — discovery automático sem port-forwards
 │   ├── auth/                 # JWT: JWTManager (Generate/Validate/IsConfigured/TTL), claims email/name/is_sre
@@ -243,27 +243,36 @@ k8s-hpa-manager/
 │   ├── ai/                   # AI Diagnostics (Ollama/Claude/Gemini), reports/
 │   ├── aierrors/             # Tipos de erro normalizados para AI providers
 │   ├── sanitizer/            # Sanitização de logs antes de enviar para IA
-│   ├── storage/              # SQLite: predictions.db, health_check.db, ai_diagnostics.db
+│   ├── storage/              # SQLite: predictions.db, health_check.db, ai_diagnostics.db, notes.db, etc.
 │   │                         # + ai_history_store.go, dependency_registry.go, user_tokens_store.go
-│   ├── certificates/         # Gerenciamento de certificados TLS
+│   ├── certificates/         # Gerenciamento de certificados TLS (K8s + endpoints externos)
 │   ├── dynatrace/            # Integração Dynatrace API v2 (problems, entities, metrics)
 │   ├── servicenow/           # Integração ServiceNow
 │   ├── healthcheck/          # Health checking: orchestrator, deployment/hpa/event/pv checkers
-│   ├── history/              # History tracker
-│   ├── logs/                 # Gerenciamento de logs da aplicação
+│   ├── history/              # History tracker (audit trail)
+│   ├── incidentkb/           # Base de conhecimento local de incidentes (sintoma/causa raiz/resolução curados)
 │   ├── notifications/        # Notificações in-app e Windows (WSL2)
+│   ├── browser/              # Chromium/CDP compartilhado (ServiceNow/Teams — Launch/Manager/FindSystemChrome)
+│   ├── finops/               # Pricers (Azure/GCP), storage calculator, enriquecimento Prometheus/DT/NR
+│   ├── helm/                 # Serviço Helm (SSE/progresso) usado pelo handler da aba Helm
+│   ├── podsftp/              # Servidor SFTP in-process (server+client via net.Pipe) sobre kubectl exec/cp
+│   ├── portforward/          # Manager de túneis SPDY genéricos (proxy TCP com estatísticas)
+│   ├── rollbackfiles/        # Biblioteca de arquivos de rollback em disco (Modo Arquivos do Rollback)
+│   ├── spinnaker/            # Cliente Gate + detecção de rollback (DetectRollback)
 │   ├── sreapproval/          # Integração com sistema SRE Approval (devstartcd.via.com.br)
 │   ├── teams/                # Extração de CHGs do Mr.ViaBot via browser automation (go-rod)
 │   ├── updater/              # Auto-update: verificação de versão no GitHub
 │   ├── validation/           # Validação de recursos K8s
 │   └── pkg/
-│       ├── helm/             # Cliente Helm via CLI
+│       ├── helm/             # Cliente Helm via CLI (subprocess, distinto de internal/helm acima)
 │       └── nexus/            # Cliente Nexus (artefatos)
 ├── build/                    # Binários compilados
 ├── vendor/                   # Go modules vendored (go build -mod=vendor)
 ├── scripts/                  # Scripts de diagnóstico e utilitários
 └── docs/                     # Documentação modular
 ```
+
+> A lista acima cobre os pacotes de nível superior; vários deles (`finops/`, `spinnaker/`, `podsftp/`, `portforward/`, `rollbackfiles/`, etc.) têm documentação extensa e específica nas seções `##`/`###` correspondentes deste arquivo.
 
 **Tech Stack:**
 | Categoria | Tecnologia |
@@ -308,21 +317,9 @@ Corrigido: `EvictClientsByAWSProfile` agora varre `k.clients` **e** `k.restConfi
 
 **Bug real corrigido — TLS handshake timeout contra endpoints privados (EKS) atrás de VPN**: relatado como erros de rede intermitentes contra clusters EKS, mesmo com VPN ativa e autenticação válida — sintoma diferente dos dois bugs acima (que são sobre token/cache), aqui o handshake TLS em si nunca completa. Causa raiz: a partir do Go 1.24, o `ClientHello` do TLS 1.3 passou a incluir por padrão o key share híbrido pós-quântico `X25519MLKEM768` — isso engorda o pacote além do MTU efetivo de túneis VPN corporativos, provocando fragmentação IP que o caminho de rede usado por este projeto derruba ou perde silenciosamente, travando o handshake até estourar o timeout do client. `curl`/`openssl` não sofrem disso (stack TLS própria, sem esse key share) — só clients Go (`client-go`, `net/http` desta app) são afetados, o que explica o padrão observado de "kubectl funciona, a app não". Corrigido via diretiva `godebug tlsmlkem=0` no `go.mod` — desativa o key share pós-quântico para todo o binário, mantendo os grupos clássicos (X25519/P-256/P-384/P-521), ainda seguros contra ataques não-quânticos. Validado com `go version -m` no binário compilado, confirmando `DefaultGODEBUG=tlsmlkem=0` embutido.
 
-**Bubble Tea — NUNCA usar goroutines diretas:**
-```go
-// ❌ ERRADO - Race condition
-go func() { result := applyHPA() }()
+### Tipos Compartilhados
 
-// ✅ CORRETO - Retornar tea.Cmd
-return func() tea.Msg {
-    err := applyHPA()
-    return HPAAppliedMsg{err: err}
-}
-```
-
-### Estado Global
-
-`internal/models/types.go` é a **única** fonte de verdade. `AppModel` contém todo o estado da aplicação. Nunca criar estado local em handlers ou views — sempre modificar `AppModel` e retornar mensagem.
+`internal/models/types.go` é a **única** fonte de verdade para os tipos de domínio compartilhados entre `internal/kubernetes`, `internal/web/handlers` e o restante do backend — não redefinir um tipo equivalente em outro pacote. Estado da aplicação em si não é mais centralizado num struct único (não há mais `AppModel`/loop de update — isso era da TUI Bubble Tea, removida do projeto, ver nota no topo deste arquivo): no backend, estado por-request vive nos handlers via DI (`ClientCache`, stores SQLite); no frontend, vive em `Index.tsx`/Contexts (`StagingContext`, `TabContext`) e React Query — ver seções "Frontend — Sistema de Tabs" e "Frontend — Contexts" abaixo.
 
 ### Handlers HTTP (Padrão Gin + DI)
 
@@ -483,7 +480,7 @@ Todas as chamadas `exec.Command("az", ...)` devem usar `exec.CommandContext` com
 
 ### Azure CLI — Ordem de Operações para Node Pools
 
-Azure CLI **rejeita** `az aks nodepool scale` se autoscaling estiver habilitado. Implementação em `internal/tui/app.go:buildNodePoolCommands()` lida com 4 cenários:
+Azure CLI **rejeita** `az aks nodepool scale` se autoscaling estiver habilitado. Implementação em `internal/cloudprovider/azure/nodegroup.go` lida com 4 cenários:
 - Apenas autoscaling (min/max): um `update --enable-cluster-autoscaler`
 - Apenas node count: `disable-cluster-autoscaler` → `scale`
 - Ambos: enable → disable → scale → enable novamente
@@ -506,10 +503,6 @@ Sem isso, `kubectl apply` falha com "apiVersion not set, kind not set".
 ### Dynamic Client (CRDs)
 
 O dynamic client **não está no vendor**. Para recursos CRD (VPAs, recursos do Explorer, etc.), usar kubectl shell: `kubectl get/apply/delete -o yaml`. O Discovery API (`clientset.Discovery().ServerPreferredResources()`) está disponível e é usado no Resource Explorer.
-
-### Bubble Tea — Texto Unicode-Safe
-
-Sempre usar `[]rune` ao invés de `string` para manipulação de texto no TUI. Cursor position em runes, não bytes.
 
 ### Audit Trail (History Tracking)
 
@@ -2044,7 +2037,7 @@ Os problemas mais críticos/surpreendentes:
 
 ## Fluxo de Desenvolvimento
 
-### Backend (TUI ou API)
+### Backend (Go)
 ```bash
 # Editar → testar → build
 go test -v ./internal/... -race

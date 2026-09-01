@@ -19,9 +19,18 @@ export function isProdClusterName(cluster: string | undefined | null): boolean {
   return /produ/i.test(cluster);
 }
 
-// isHlgClusterName — mesmo espírito do filtro, mas o usuário só pediu pra ampliar a detecção do
-// lado PRD; HLG continua na convenção estrita de sufixo (sem pedido explícito de ampliar esse
-// lado, e sem exemplo real de nome de cluster HLG fora dessa convenção neste projeto).
+// isHlgClusterName — usada pelo filtro Todos/HLG/PRD dos seletores (Header.tsx/
+// ClusterSelectorForTab.tsx). Bug real corrigido: a versão anterior checava só a convenção
+// estrita de sufixo "-hlg" (via deriveSpinnakerEnv) — qualquer cluster sem esse sufixo exato
+// (ex: nomenclatura fora do padrão, clusters "sit"/"stg", EKS/GKE com nome livre) não batia
+// nem em "-hlg" nem em `isProdClusterName`, e sumia do filtro "HLG" mesmo sendo, de fato, um
+// cluster não-produtivo — ficava visível só em "Todos". Pedido explícito do usuário: "a lógica
+// é tudo que não tiver prd/prod* é hlg" — corrigido invertendo o critério: HLG passa a ser
+// "não é PRD" (usa a mesma detecção AMPLA de `isProdClusterName`), em vez de uma detecção
+// própria e estrita. Mesma ressalva de `isProdClusterName`: deliberadamente NÃO usada pra
+// roteamento Spinnaker (Gate URL por ambiente) — lá a convenção precisa continuar estrita
+// (`deriveSpinnakerEnv` sozinha, sem passar por aqui).
 export function isHlgClusterName(cluster: string | undefined | null): boolean {
-  return deriveSpinnakerEnv(cluster) === "hlg";
+  if (!cluster) return false;
+  return !isProdClusterName(cluster);
 }

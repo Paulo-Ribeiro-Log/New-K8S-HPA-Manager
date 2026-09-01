@@ -813,7 +813,11 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
             <span className="text-muted-foreground text-xs">{pod.namespace}/</span>
             <span className="text-foreground">{pod.name}</span>
           </DialogTitle>
-          <div className="flex items-center justify-between mt-1">
+          {/* pr-8: reserva espaço pro botão fechar (absolute right-4 top-4 em ui/dialog.tsx,
+              ~28px + margem) — sem isso os botões Describe/Port Forward (empurrados até a borda
+              via justify-between) ficavam colados/sob o X. Mesmo padrão já usado em
+              ContainersTab.tsx/PodsPanel.tsx/NotificationDrawer.tsx. */}
+          <div className="flex items-center justify-between mt-1 pr-8">
             <div className="flex items-center gap-2 flex-wrap min-w-0">
               {/* pod.status é sempre curto (reason/phase, ex: "CrashLoopBackOff") — pod.statusReason
                   pode ser uma mensagem longa de evento (ex: "back-off 5m0s restarting failed
