@@ -713,6 +713,17 @@ function useSpinnakerExecutions(cluster: string, namespace: string, deploymentNa
   const [executions, setExecutions] = useState<SpinnakerExecutionSummary[]>([]);
   const [fetched, setFetched] = useState(false);
 
+  // Busca profunda (opt-in) — pedido explícito do usuário, depois de validar ao vivo que o Gate
+  // devolve só 10 execuções por "application" Spinnaker (grupo de nível superior, compartilhado
+  // entre 15-18 microsserviços de verdade — não por deployment) — um microsserviço específico
+  // frequentemente fica com 0-4 desses 10 slots. `deepDone` trava a busca profunda numa única
+  // rodada (nunca reoferece o botão depois de rodar, mesmo padrão de "1 tentativa" de outras
+  // ferramentas desta app) — reiniciar exige fechar/reabrir o modal.
+  const [deepLoading, setDeepLoading] = useState(false);
+  const [deepDone, setDeepDone] = useState(false);
+  const [deepError, setDeepError] = useState("");
+  const [pagesFetched, setPagesFetched] = useState<number | null>(null);
+
   const refetch = useCallback(() => {
     setLoading(true);
     setError("");
@@ -722,11 +733,20 @@ function useSpinnakerExecutions(cluster: string, namespace: string, deploymentNa
       .finally(() => setLoading(false));
   }, [cluster, namespace, deploymentName]);
 
+  const searchDeeper = useCallback(() => {
+    setDeepLoading(true);
+    setDeepError("");
+    apiClient.getSpinnakerDeploymentExecutions(cluster, namespace, deploymentName, undefined, true)
+      .then((res) => { setEnv(res.env); setExecutions(res.executions); setPagesFetched(res.pages_fetched ?? null); setDeepDone(true); })
+      .catch((err) => setDeepError(err instanceof Error ? err.message : "Erro ao buscar histórico profundo no Spinnaker"))
+      .finally(() => setDeepLoading(false));
+  }, [cluster, namespace, deploymentName]);
+
   useEffect(() => {
     if (enabled && !fetched && !loading) refetch();
   }, [enabled, fetched, loading, refetch]);
 
-  return { loading, error, env, executions, refetch };
+  return { loading, error, env, executions, refetch, deepLoading, deepDone, deepError, pagesFetched, searchDeeper };
 }
 
 // SpinnakerExecutionPicker — lista de execuções do Spinnaker pra um deployment, com filtro
@@ -739,7 +759,10 @@ function SpinnakerExecutionPicker({
   cluster: string; namespace: string; deploymentName: string; onPick: (ex: SpinnakerExecutionSummary) => void; compact?: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
-  const { loading, error, env, executions, refetch } = useSpinnakerExecutions(cluster, namespace, deploymentName, true);
+  const {
+    loading, error, env, executions, refetch,
+    deepLoading, deepDone, deepError, pagesFetched, searchDeeper,
+  } = useSpinnakerExecutions(cluster, namespace, deploymentName, true);
   const visible = showAll ? executions : executions.filter((ex) => ex.status === "SUCCEEDED");
 
   return (
@@ -760,11 +783,37 @@ function SpinnakerExecutionPicker({
           {env && !compact && (
             <div className="text-[11px] text-muted-foreground">Ambiente Spinnaker: <span className="font-mono">{env}</span></div>
           )}
+          {/* Busca profunda (opt-in) — pedido explícito do usuário: o Gate só devolve 10
+              execuções por "application" Spinnaker (grupo compartilhado por 15-18 microsserviços,
+              não por deployment), então um deployment específico às vezes fica com 0 ou poucos
+              matches mesmo com deploys recentes de OUTROS microsserviços do mesmo grupo ocupando
+              os 10 slots. Nunca automático — cada rodada faz várias chamadas a mais ao Gate
+              (compartilhado com outros times), só dispara sob clique explícito. Trava numa única
+              rodada (deepDone) — reiniciar exige fechar/reabrir o modal. */}
+          {!deepDone && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={searchDeeper}
+                disabled={deepLoading}
+                className="text-[11px] underline text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:no-underline flex items-center gap-1"
+              >
+                {deepLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+                {deepLoading ? "Buscando mais histórico (pode demorar até ~1-2min)..." : "Buscar mais no histórico"}
+              </button>
+            </div>
+          )}
+          {deepError && <div className="text-[11px] text-destructive">{deepError}</div>}
+          {deepDone && pagesFetched !== null && (
+            <div className="text-[11px] text-muted-foreground">
+              Histórico expandido — {pagesFetched} chamada(s) ao Gate no total.
+            </div>
+          )}
           {executions.length === 0 ? (
             <div className="text-xs text-muted-foreground">
               Nenhuma execução encontrada no Spinnaker pra este deployment — o Gate só cobre uma janela de tempo limitada
               (~10 execuções por application, compartilhadas entre vários microsserviços; ver CLAUDE.md), então histórico
-              antigo pode já ter rolado pra fora dessa janela.
+              antigo pode já ter rolado pra fora dessa janela.{!deepDone && " Tente \"Buscar mais no histórico\" acima."}
             </div>
           ) : (
             <>

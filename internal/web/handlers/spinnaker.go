@@ -240,11 +240,32 @@ func (h *SpinnakerHandler) RolloutStatusBatch(c *gin.Context) {
 // `RollbackInfo.RecentExecutions`) de UM deployment só, em vez do lote inteiro do cluster.
 // `env` é opcional — quando ausente, deriva de `cluster` via `spinnaker.DeriveEnv` (mesma
 // convenção já usada pelo frontend, `lib/spinnakerEnv.ts`).
+// Busca profunda (opt-in) — pedido explícito do usuário, depois de validar ao vivo (leitura pura,
+// sem mutação) que a filtragem por nameApp/namespace é 100% correta (zero leakage de outra
+// aplicação), mas o Gate devolve só 10 execuções por "application" Spinnaker (grupo de nível
+// superior, ex: "entregamais" — cobre 15-18 microsserviços de verdade) — um microsserviço
+// específico frequentemente fica com 0-4 desses 10 slots compartilhados, dependendo de quando ele
+// deployou em relação aos vizinhos do mesmo grupo (confirmado ao vivo: entrega-mais-bff/hlg com 0
+// matches enquanto entrega-mais-inventario/hlg, mesmo grupo "entregamais", tinha 3). Deliberadamente
+// NUNCA automático — cada página extra é 1 chamada a mais ao Gate POR application do projeto (12
+// applications observadas ao vivo no projeto "SRE Logistica" = até 60 chamadas no pior caso com 5
+// páginas), custo real num Gate compartilhado por outros times; só roda quando o usuário pede
+// explicitamente (botão "Buscar mais no histórico" no picker), nunca no fluxo padrão de abrir o
+// modal. spinnakerDeepSearchTargetMatches é um early-stop GLOBAL (across applications) — assim que
+// já achamos histórico suficiente pro deployment-alvo, paramos de paginar as demais applications,
+// mesmo dentro de uma busca "deep".
+const (
+	spinnakerDeepSearchExtraPages    = 4  // + a página 1 já buscada = até 5 páginas por application
+	spinnakerDeepSearchTargetMatches = 10 // early-stop global: já achamos histórico suficiente pro alvo
+	spinnakerDeepSearchPageLimit     = 30
+)
+
 func (h *SpinnakerHandler) ListDeploymentExecutions(c *gin.Context) {
 	cluster := c.Query("cluster")
 	namespace := c.Query("namespace")
 	deployment := c.Query("deployment")
 	env := c.Query("env")
+	deep := c.Query("deep") == "true"
 
 	if cluster == "" || namespace == "" || deployment == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetros 'cluster', 'namespace' e 'deployment' são obrigatórios"})
@@ -268,11 +289,17 @@ func (h *SpinnakerHandler) ListDeploymentExecutions(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	// Timeout maior no modo deep — até (1+4 páginas) × N applications chamadas sequenciais.
+	timeout := 30 * time.Second
+	if deep {
+		timeout = 120 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 
 	var applications []string
 	executionsByApp := map[string][]spinnaker.Execution{}
+	pagesFetched := 0
 	err = spinnaker.WithSession(ctx, gateURL, h.baseDir, cfg.EffectiveLoginIdentifier(), func(cl *spinnaker.Client) error {
 		projects, err := cl.ListProjects(ctx)
 		if err != nil {
@@ -287,15 +314,75 @@ func (h *SpinnakerHandler) ListDeploymentExecutions(c *gin.Context) {
 		if len(applications) == 0 {
 			return nil
 		}
+	appsLoop:
 		for _, app := range applications {
-			// Mesmo Limit de RolloutStatusBatch (30) — o Gate capa por janela de tempo própria,
-			// não por esse parâmetro (ver comentário lá).
-			execs, err := cl.SearchExecutions(ctx, app, spinnaker.SearchOptions{Limit: 30})
-			if err != nil {
-				h.logf("SearchExecutions falhou pra application %s: %v", app, err)
-				continue
+			var boundary int64
+			for page := 0; page <= spinnakerDeepSearchExtraPages; page++ {
+				if page > 0 && !deep {
+					break
+				}
+				opts := spinnaker.SearchOptions{Limit: spinnakerDeepSearchPageLimit}
+				if page > 0 {
+					opts.TriggerTimeEndBoundary = boundary
+				}
+				execs, err := cl.SearchExecutions(ctx, app, opts)
+				pagesFetched++
+				if err != nil {
+					h.logf("SearchExecutions falhou pra application %s (página %d): %v", app, page, err)
+					break
+				}
+				if len(execs) == 0 {
+					break // fim do histórico dessa application
+				}
+				executionsByApp[app] = append(executionsByApp[app], execs...)
+
+				// não-deep: só 1 página mesmo. Achado real (confirmado ao vivo): o Gate SEMPRE
+				// devolve exatamente 10 execuções por chamada, independente do `Limit` pedido —
+				// "len(execs) < spinnakerDeepSearchPageLimit" nunca seria um sinal confiável de
+				// fim de histórico aqui (seria sempre verdadeiro, 10 < 30, matando a paginação
+				// logo na página 1). O único sinal confiável de fim de histórico é uma página
+				// genuinamente VAZIA (checado acima); em modo deep, sempre seguimos até
+				// spinnakerDeepSearchExtraPages ou até uma página vazia.
+				if !deep {
+					break
+				}
+
+				// próxima página: um instante antes da execução mais antiga desta página.
+				var oldest int64
+				for _, ex := range execs {
+					t := ex.StartTime
+					if t == 0 {
+						t = ex.BuildTime
+					}
+					if t > 0 && (oldest == 0 || t < oldest) {
+						oldest = t
+					}
+				}
+				if oldest == 0 {
+					break // sem timestamp confiável pra paginar mais
+				}
+				nextBoundary := oldest - 1
+				// Achado real (confirmado ao vivo): perto do fim do histórico de uma application,
+				// o Gate às vezes reenvia a MESMA última execução esparsa página após página sem
+				// avançar o boundary de fato (ex: "envias"/"tracking" ficaram 2-3 páginas repetindo
+				// a mesma 1 execução) — sem essa guarda, o loop gastava as páginas restantes
+				// (spinnakerDeepSearchExtraPages) sem nenhum progresso real, só desperdiçando
+				// chamadas ao Gate. Se o boundary não avançou, não há mais o que buscar aqui.
+				if nextBoundary >= boundary && page > 0 {
+					break
+				}
+				boundary = nextBoundary
+
+				// Early-stop global — já achamos histórico suficiente pro deployment-alvo,
+				// não vale a pena continuar paginando as demais applications.
+				var flat []spinnaker.Execution
+				for _, ee := range executionsByApp {
+					flat = append(flat, ee...)
+				}
+				if len(spinnaker.ExecutionsForTarget(flat, deployment, namespace)) >= spinnakerDeepSearchTargetMatches {
+					break appsLoop
+				}
 			}
-			executionsByApp[app] = execs
 		}
 		return nil
 	})
@@ -321,7 +408,7 @@ func (h *SpinnakerHandler) ListDeploymentExecutions(c *gin.Context) {
 		summaries[i].ExecutionURL = buildExecutionURL(deckURL, cfg.SelectedProject, applicationForExecution(executionsByApp, summaries[i].ExecutionID), summaries[i].ExecutionID)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"env": env, "executions": summaries})
+	c.JSON(http.StatusOK, gin.H{"env": env, "executions": summaries, "deep": deep, "pages_fetched": pagesFetched})
 }
 
 // applyRegistryFreshness preenche info.RegistryStale/RegistryLastSeen a partir de rec.LastSeen —

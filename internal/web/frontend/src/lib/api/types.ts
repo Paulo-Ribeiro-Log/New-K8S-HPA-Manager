@@ -1657,6 +1657,13 @@ export type SpinnakerRolloutStatusBatch = Record<string, SpinnakerRollbackInfo>;
 export interface SpinnakerDeploymentExecutions {
   env: "hlg" | "prd";
   executions: SpinnakerExecutionSummary[];
+  // Busca profunda (opt-in) — pedido explícito do usuário. Sem `deep=true`, o Gate só cobre 1
+  // página por application (10 execuções, sempre — cap fixo do Gate independente do Limit
+  // pedido). Com `deep=true`, o backend pagina via TriggerTimeEndBoundary (até 5 páginas por
+  // application, com early-stop assim que acha histórico suficiente pro deployment-alvo) — mais
+  // lento e mais chamadas ao Gate, por isso nunca automático.
+  deep?: boolean;
+  pages_fetched?: number;
 }
 
 export interface AWXStatus {

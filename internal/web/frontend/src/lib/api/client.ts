@@ -3975,15 +3975,21 @@ class APIClient {
   }
 
   /** Busca independente do histórico de execuções de UM deployment específico — Modo Spinnaker
-   * do Rollback de Deployment. `env` opcional: o backend deriva de `cluster` quando ausente. */
+   * do Rollback de Deployment. `env` opcional: o backend deriva de `cluster` quando ausente.
+   * `deep` opcional (default false) — busca profunda opt-in, pagina o Gate via
+   * TriggerTimeEndBoundary (até 5 páginas por application Spinnaker) em vez de só a 1ª página
+   * (10 execuções, teto fixo do Gate). Mais lenta e com mais chamadas ao Gate — nunca chamar
+   * automaticamente, só sob ação explícita do usuário. */
   async getSpinnakerDeploymentExecutions(
     cluster: string,
     namespace: string,
     deploymentName: string,
-    env?: "hlg" | "prd"
+    env?: "hlg" | "prd",
+    deep?: boolean
   ): Promise<import("./types").SpinnakerDeploymentExecutions> {
     const params = new URLSearchParams({ cluster, namespace, deployment: deploymentName });
     if (env) params.set("env", env);
+    if (deep) params.set("deep", "true");
     return this.request(`/spinnaker/deployment-executions?${params.toString()}`);
   }
 
