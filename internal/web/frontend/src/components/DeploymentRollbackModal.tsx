@@ -381,7 +381,18 @@ export function DeploymentRollbackModal({
               namespace={namespace}
               deploymentName={deploymentName}
               currentYaml={manifest?.yaml || ""}
-              suggestedReleaseSearch={labels["app.kubernetes.io/name"] || helmReleaseName}
+              // deploymentName primeiro — achado real, relatado pelo usuário: "deixou de procurar
+              // pela aplicação e só busca pelo convair-helm". Bug pré-existente (não introduzido
+              // nesta sessão): o chart "convair-helm" desta empresa nunca sobrescreve
+              // app.kubernetes.io/name com um valor por-instância — a label sempre vem literalmente
+              // "convair-helm" pra QUALQUER deployment que use esse chart, então a busca automática
+              // nunca usava o nome real da aplicação (o `||` só cai pro próximo valor quando o da
+              // esquerda vem VAZIO, e essa label nunca vem vazia, só errada). Mesmo achado já
+              // documentado e corrigido noutro lugar desta app (RolloutStatusBatch do Spinnaker,
+              // ver CLAUDE.md "DeploymentName, não AppName") — deploymentName é o nome do objeto
+              // Deployment no K8s, sempre único e confiável, e é o valor que bate com a convenção
+              // real de nome de artefato no Nexus (PROJECT_NAME do pipeline).
+              suggestedReleaseSearch={deploymentName || labels["app.kubernetes.io/name"] || helmReleaseName}
               release={helmReleaseName}
               releaseNamespace={helmReleaseNamespace}
               canUpdateDeployment={canUpdateDeployment}
