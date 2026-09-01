@@ -536,6 +536,122 @@ func (h *DeploymentRollbackHandler) HelmRollbackWithBypass(c *gin.Context) {
 	})
 }
 
+type deploymentHelmValuesUpgradeRequest struct {
+	Release          string `json:"release" binding:"required"`
+	ReleaseNamespace string `json:"releaseNamespace"`
+	ValuesYAML       string `json:"valuesYaml" binding:"required"`
+	// ChartVersion — opcional, pré-preenchida pelo frontend a partir do release ATUAL
+	// (getHelmRelease().chartMetadata.version) antes de confirmar. Nunca deixa o Helm resolver a
+	// versão sozinho contra um repo configurado quando o chart cai no fallback "só nome" (ver
+	// buildUpgradeArgs) — fixar a versão atual evita bump de chart não intencional, já que o
+	// objetivo deste modo é só trocar VALUES, nunca o template.
+	ChartVersion string `json:"chartVersion"`
+	Reason       string `json:"reason" binding:"required"`
+}
+
+// HelmUpgradeWithBypass — POST /api/v1/deployments/:cluster/:namespace/:name/helm-upgrade-values
+// "Modo Nexus" aplicando um Helm VALUES histórico (não um manifesto) via `helm upgrade --values
+// <historico>` — wrapper DEDICADO em volta de helmService.Execute (mesmo motor de
+// HelmRollbackWithBypass acima), distinto de PUT /helm/releases/:release (rota genérica da aba
+// Helm, nunca tocada por este).
+//
+// Achado real, relatado pelo usuário: buscando no Nexus por um deployment publicado no mesmo dia,
+// o artefato encontrado era um Helm values.yaml genuíno (sem apiVersion/kind, estrutura
+// release/versão/ambiente/helm-values de um repositório Nexus próprio — "workspace" nesta empresa),
+// não o manifesto K8s achatado que o resto do Modo Nexus (ApplyManifest, kubectl apply) espera.
+// Esse tipo de artefato só pode ser aplicado de verdade via `helm upgrade`, nunca `kubectl apply`.
+//
+// ChartRef é deixado VAZIO de propósito — buildUpgradeArgs (internal/pkg/helm/cli_client.go) já
+// resolve automaticamente o chart do release ATUAL (via `helm list`, com fallback pra um .tgz local
+// em ~/.k8s-hpa-manager/storaged-helm/ se existir) quando ChartRef vem vazio — é exatamente o
+// comportamento certo aqui: manter o MESMO chart/template já instalado, só trocando os values pelo
+// histórico do Nexus. ChartVersion (opcional, pré-preenchida pelo frontend a partir do release
+// atual) é passada como --version só como reforço pro caso do fallback "só nome" (sem .tgz local
+// cacheado, dependendo de um repo Helm configurado) — nunca deixa o Helm buscar a versão MAIS
+// RECENTE do repo, que seria uma mudança de chart não pedida por este fluxo.
+//
+// Mesmo tratamento de --force/bypass Kyverno de HelmRollbackWithBypass — ver comentário lá.
+func (h *DeploymentRollbackHandler) HelmUpgradeWithBypass(c *gin.Context) {
+	cluster, namespace, name := c.Param("cluster"), c.Param("namespace"), c.Param("name")
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+	if h.helmService == nil {
+		c.JSON(http.StatusServiceUnavailable, errorResponse("HELM_UNAVAILABLE", "serviço Helm indisponível"))
+		return
+	}
+
+	var req deploymentHelmValuesUpgradeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("REASON_REQUIRED", "motivo do rollback é obrigatório"))
+		return
+	}
+
+	releaseNamespace := strings.TrimSpace(req.ReleaseNamespace)
+	if releaseNamespace == "" {
+		releaseNamespace = namespace
+	}
+
+	lockKey := rollbackLockKey(cluster, namespace, name)
+	if _, alreadyRunning := h.inProgress.LoadOrStore(lockKey, struct{}{}); alreadyRunning {
+		c.JSON(http.StatusConflict, errorResponse("ROLLBACK_IN_PROGRESS", "já existe um rollback em andamento para este Deployment"))
+		return
+	}
+	defer h.inProgress.Delete(lockKey) // síncrono — nunca passa a bola pro streamRolloutStatus
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", err.Error()))
+		return
+	}
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	ctx := c.Request.Context()
+
+	start := time.Now()
+	var resp *helm.HelmActionResponse
+	err = h.withKyvernoBypass(ctx, kubeClient, cluster, releaseNamespace, func() error {
+		var innerErr error
+		resp, innerErr = h.helmService.Execute(ctx, cluster, helm.HelmActionRequest{
+			Namespace:   releaseNamespace,
+			ReleaseName: req.Release,
+			Action:      helm.ActionUpgrade,
+			ChartRef:    "", // deliberado — ver comentário da função
+			Version:     req.ChartVersion,
+			ValuesYAML:  req.ValuesYAML,
+			Force:       true, // sempre — mesmo racional de HelmRollbackWithBypass
+		})
+		return innerErr
+	})
+
+	if err != nil {
+		if h.historyTracker != nil {
+			entry := CreateHistoryEntry(c, "rollback_deployment_helm_values", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
+			_ = h.historyTracker.Log(entry)
+		}
+		c.JSON(http.StatusInternalServerError, errorResponse("HELM_UPGRADE_ERROR", err.Error()))
+		return
+	}
+
+	if h.historyTracker != nil {
+		afterMap := map[string]interface{}{
+			"release": req.Release,
+			"reason":  req.Reason,
+		}
+		entry := CreateHistoryEntry(c, "rollback_deployment_helm_values", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", nil, afterMap, time.Since(start).Milliseconds(), "")
+		_ = h.historyTracker.Log(entry)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    resp,
+	})
+}
+
 func deploymentImages(dep *appsv1.Deployment) []string {
 	images := make([]string, 0, len(dep.Spec.Template.Spec.Containers))
 	for _, ctr := range dep.Spec.Template.Spec.Containers {

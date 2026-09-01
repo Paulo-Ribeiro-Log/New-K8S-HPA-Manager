@@ -582,6 +582,33 @@ func (c *CLIClient) buildInstallArgs(req HelmActionRequest) ([]string, func(), e
 	return args, cleanup, err
 }
 
+// resolveChartRefFromRepos busca `chartName` (sem prefixo de repositório) entre os repositórios
+// Helm JÁ CONFIGURADOS no host (via `helm repo add`, fora do controle desta app — ver `helm repo
+// list`) usando `helm search repo`, devolvendo a referência completa "repoAlias/chartName" pronta
+// pra usar como chartRef de um `helm upgrade`/`install`. `helm search repo <termo>` faz busca
+// fuzzy (pode devolver múltiplos charts cujo nome só CONTÉM o termo, ex: buscar "prometheus"
+// também acha "kube-prometheus-stack") — só um match cujo componente depois da última "/" bate
+// EXATAMENTE com chartName é aceito, evitando pegar um chart errado por coincidência de substring.
+func (c *CLIClient) resolveChartRefFromRepos(ctx context.Context, cluster ClusterTarget, chartName string) (string, error) {
+	stdout, stderr, err := c.runCommand(ctx, cluster, "search", "repo", chartName, "--output", "json")
+	if err != nil {
+		return "", fmt.Errorf("helm search repo failed: %w (stderr: %s)", err, strings.TrimSpace(stderr))
+	}
+	type searchEntry struct {
+		Name string `json:"name"` // formato "repoAlias/chartName"
+	}
+	var entries []searchEntry
+	if err := json.Unmarshal(stdout, &entries); err != nil {
+		return "", fmt.Errorf("failed to parse helm search repo output: %w", err)
+	}
+	for _, e := range entries {
+		if idx := strings.LastIndex(e.Name, "/"); idx >= 0 && e.Name[idx+1:] == chartName {
+			return e.Name, nil
+		}
+	}
+	return "", fmt.Errorf("chart %q not found in any configured helm repository", chartName)
+}
+
 func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), error) {
 	if req.ReleaseName == "" {
 		return nil, nil, errors.New("releaseName is required for upgrade")
@@ -632,15 +659,33 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 				Str("chartPath", localChartPath).
 				Str("releaseName", req.ReleaseName).
 				Msg("using local chart from storaged-helm directory")
+		} else if resolved, searchErr := c.resolveChartRefFromRepos(context.Background(), req.Cluster, chartName); searchErr == nil {
+			// Achado real (usuário perguntou "e o download do convair-helm para fazer o rollback,
+			// como fica?"): o comentário antigo abaixo ("Fallback to chart name (will require
+			// configured repo)") estava incorreto — `helm upgrade <release> <nome-bare>` NUNCA
+			// resolve sozinho contra um repo configurado, mesmo com `helm repo add` já feito. Helm
+			// só aceita um caminho local OU o formato "repoAlias/chartName" — um nome bare sem "/"
+			// é tratado só como candidato a caminho local, nunca busca em repos. Confirmado ao vivo
+			// nesta máquina: `helm search repo <chartName>` encontra o repositório certo (ex:
+			// "nexus/convair-helm") entre os já configurados (`helm repo list`) — usar essa
+			// referência completa é o que realmente funciona.
+			chartRef = resolved
+			c.logger.Info().
+				Str("chartRef", resolved).
+				Str("releaseName", req.ReleaseName).
+				Msg("resolved chart from configured helm repository via helm search repo")
 		} else {
-			// Fallback to chart name (will require configured repo)
+			// Último recurso — preserva o comportamento antigo (nunca bloqueia a chamada aqui,
+			// deixa o erro real do `helm upgrade` aparecer pro usuário) pro caso raro de
+			// `helm search repo` em si falhar (ex: nenhum repo configurado, ou binário sem rede).
 			chartRef = chartName
 			c.logger.Warn().
 				Str("originalChart", fullChart).
 				Str("extractedChart", chartName).
 				Str("localChartPath", localChartPath).
-				Str("suggestion", "Place chart .tgz in ~/.k8s-hpa-manager/storaged-helm/ or configure helm repository").
-				Msg("local chart not found - attempting to use chart name from existing release (may fail if repo not configured)")
+				Err(searchErr).
+				Str("suggestion", "Place chart .tgz in ~/.k8s-hpa-manager/storaged-helm/ or run 'helm repo add' with a repository that has this chart").
+				Msg("local chart not found and could not resolve from configured helm repos - attempting bare chart name (will likely fail)")
 		}
 	}
 

@@ -937,6 +937,9 @@ func (s *Server) setupRoutes() {
 		// ganha a dependência do serviço Helm via SetHelmService logo abaixo, quando helmService é
 		// construído (ordem de inicialização deste arquivo).
 		deployments.POST("/:cluster/:namespace/:name/helm-rollback", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.HelmRollbackWithBypass)
+		// Modo Nexus aplicando Helm VALUES históricos (não manifesto) via `helm upgrade --values` —
+		// mesmo wrapper de bypass Kyverno, mesma dependência de helmService.
+		deployments.POST("/:cluster/:namespace/:name/helm-upgrade-values", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), deploymentRollbackHandler.HelmUpgradeWithBypass)
 	}
 	s.router.GET("/api/v1/deployment-rollback/stream/:sessionId",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
