@@ -43,7 +43,17 @@ func (h *VPNHandler) CheckStatus(c *gin.Context) {
 		return
 	}
 
-	const tcpTimeout = 5 * time.Second
+	// tcpTimeout — 8s (era 5s). Achado real, relatado pelo usuário ("não reconhece a vpn e não
+	// habilita ajustes"), confirmado ao vivo: em momentos de instabilidade/perda de pacote
+	// intermitente na VPN corporativa, o mesmo TestClusterTCPConnection alterna entre conectar
+	// rápido (~2s) ou não receber resposta nenhuma até estourar o timeout — nunca "meio lento".
+	// 5s bastava só nos momentos bons; 5 chamadas idênticas seguidas deram timeout nos 5s exatos
+	// enquanto o mesmo teste com timeout maior (6-8s) às vezes conectava. Aumentar pra 8s não
+	// resolve a instabilidade de fundo (é rede real, fora do controle desta app), só dá mais
+	// margem pro caso comum de a VPN responder um pouco mais devagar sem estar genuinamente fora
+	// do ar — reduz falso-negativo sem custo perceptível (usuário só nota esse tempo quando a VPN
+	// já está degradada mesmo).
+	const tcpTimeout = 8 * time.Second
 	reachable := h.kubeManager.TestClusterTCPConnection(clusterName, tcpTimeout)
 
 	serverURL := h.kubeManager.GetServerURL(clusterName)
