@@ -156,7 +156,7 @@ function revisionWasCreatedByRestart(restartedAt?: string, createdAt?: string): 
 // vivo contra um artefato real desta empresa) — não um values.yaml. Extrai só o documento
 // `kind: Deployment`, que é o único escopo deste modal (rollback de UM Deployment, nunca dos
 // recursos vizinhos empacotados junto no mesmo snapshot).
-function extractDeploymentDoc(multiDocYaml: string): { yaml: string; error?: string } {
+function extractDeploymentDoc(multiDocYaml: string): { yaml: string; error?: string; looksLikeValues?: boolean } {
   let docs: unknown[];
   try {
     docs = yaml.loadAll(multiDocYaml);
@@ -172,12 +172,13 @@ function extractDeploymentDoc(multiDocYaml: string): { yaml: string; error?: str
     // Achado real, relatado pelo usuário: nem toda squad publica o manifesto K8s renderizado
     // (continuousdeploy-history) — algumas usam um repositório próprio com estrutura hierárquica
     // release/versão/ambiente/helm-values (ex: "workspace" nesta empresa) contendo Helm VALUES
-    // puros por ambiente, nunca um manifesto (sem apiVersion/kind nenhum). Mensagem distinta e
-    // acionável, em vez do erro genérico de "kind errado" (que sugeriria — incorretamente — que só
-    // faltou o documento certo no meio de outros).
+    // puros por ambiente, nunca um manifesto (sem apiVersion/kind nenhum). `looksLikeValues` sinaliza
+    // isso pro chamador oferecer o sub-fluxo de apply via `helm upgrade --values` em vez de tentar
+    // (e sempre falhar) o caminho de kubectl apply — ver NexusRollbackSection.
     return {
       yaml: "",
-      error: "Este artefato parece ser um arquivo de values do Helm (sem apiVersion/kind), não um manifesto K8s renderizado — o Modo Nexus só aplica manifestos completos. Pra usar esses values, tente a aba \"Nexus Values\" ou o Modo Helm (se o release ainda estiver no `helm history`).",
+      looksLikeValues: true,
+      error: "Este artefato parece ser um arquivo de values do Helm (sem apiVersion/kind), não um manifesto K8s renderizado — o Modo Nexus só aplica manifestos completos por kubectl apply.",
     };
   }
   return { yaml: "", error: "Este artefato não contém um documento kind: Deployment (só " + kinds.filter(Boolean).join(", ") + ")" };
@@ -381,6 +382,8 @@ export function DeploymentRollbackModal({
               deploymentName={deploymentName}
               currentYaml={manifest?.yaml || ""}
               suggestedReleaseSearch={labels["app.kubernetes.io/name"] || helmReleaseName}
+              release={helmReleaseName}
+              releaseNamespace={helmReleaseNamespace}
               canUpdateDeployment={canUpdateDeployment}
               onDone={handleDone}
             />
@@ -1396,9 +1399,9 @@ function HelmRollbackSection({
 const NEXUS_ROLLBACK_REPOSITORY = "continuousdeploy-history";
 
 function NexusRollbackSection({
-  cluster, namespace, deploymentName, currentYaml, suggestedReleaseSearch, canUpdateDeployment, onDone,
+  cluster, namespace, deploymentName, currentYaml, suggestedReleaseSearch, release, releaseNamespace, canUpdateDeployment, onDone,
 }: {
-  cluster: string; namespace: string; deploymentName: string; currentYaml: string; suggestedReleaseSearch: string; canUpdateDeployment: boolean; onDone: () => void;
+  cluster: string; namespace: string; deploymentName: string; currentYaml: string; suggestedReleaseSearch: string; release: string; releaseNamespace: string; canUpdateDeployment: boolean; onDone: () => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -1419,6 +1422,19 @@ function NexusRollbackSection({
   const [nexusManifest, setNexusManifest] = useState("");
   const [extractError, setExtractError] = useState("");
   const [fetchingContent, setFetchingContent] = useState(false);
+  // Sub-fluxo de apply via `helm upgrade --values` — pedido explícito do usuário: "desenha esse
+  // sub-fluxo de apply via helm upgrade --values". Ativado quando o artefato baixado é um Helm
+  // values.yaml genuíno (extractDeploymentDoc detecta via looksLikeValues — sem apiVersion/kind
+  // nenhum, ex: repositório "workspace" desta empresa, release/versão/ambiente/helm-values/*.yaml)
+  // em vez do manifesto achatado que o resto deste modo espera. valuesContent guarda o conteúdo
+  // BRUTO (não extraído — não há nada de K8s pra extrair, é o values inteiro); valuesReleaseDetail
+  // busca o release Helm ATUAL (getHelmRelease) só quando há um values detectado, pra (a) montar o
+  // diff contra os values AO VIVO do release e (b) pinar a versão do chart atual no apply (nunca
+  // deixa o Helm resolver sozinho uma versão mais nova de um repo configurado).
+  const [valuesContent, setValuesContent] = useState("");
+  const [valuesReleaseDetail, setValuesReleaseDetail] = useState<HelmReleaseDetail | null>(null);
+  const [valuesReleaseLoading, setValuesReleaseLoading] = useState(false);
+  const [valuesReleaseError, setValuesReleaseError] = useState("");
   // Pedido explícito do usuário: "habilite a opção de download dos itens e crie uma pasta para
   // guarda-los" — persiste o artefato na pasta gerenciada ~/.k8s-hpa-manager/rollback-artifacts/
   // (ver internal/rollbackfiles/store.go), reaproveitável depois pelo Modo Arquivos sem precisar
@@ -1491,18 +1507,28 @@ function NexusRollbackSection({
   // projeto aparece embutido no nome do arquivo (ex: "...faturamento-gateway-adc...").
   useEffect(() => { runSearch(suggestedReleaseSearch); }, [suggestedReleaseSearch, runSearch]);
 
-  // Ao selecionar um artefato: baixa o conteúdo bruto (multi-documento) e extrai só o Deployment.
+  // Ao selecionar um artefato: baixa o conteúdo bruto e ramifica em 2 fluxos — manifesto completo
+  // (extractDeploymentDoc encontra kind: Deployment, fluxo original) ou Helm values genuíno
+  // (looksLikeValues, novo sub-fluxo de helm upgrade abaixo).
   useEffect(() => {
-    if (!selectedArtifact) { setNexusManifest(""); setExtractError(""); return; }
+    if (!selectedArtifact) {
+      setNexusManifest(""); setExtractError(""); setValuesContent(""); setValuesReleaseDetail(null); setValuesReleaseError("");
+      return;
+    }
     setFetchingContent(true);
     setExtractError("");
+    setValuesContent("");
+    setValuesReleaseDetail(null);
+    setValuesReleaseError("");
     apiClient.nexusDownloadValues({
       repository: selectedArtifact.repository,
       filePath: selectedArtifact.name,
     })
       .then((res) => {
         if (res.error) { toast.error("Nexus retornou erro", { description: res.error }); setNexusManifest(""); return; }
-        const extracted = extractDeploymentDoc(res.content || "");
+        const raw = res.content || "";
+        const extracted = extractDeploymentDoc(raw);
+        if (extracted.looksLikeValues) { setValuesContent(raw); return; }
         if (extracted.error) { setExtractError(extracted.error); setNexusManifest(""); return; }
         setNexusManifest(extracted.yaml);
       })
@@ -1510,7 +1536,22 @@ function NexusRollbackSection({
       .finally(() => setFetchingContent(false));
   }, [selectedArtifact]);
 
+  // Busca o release Helm ATUAL só quando um values genuíno foi detectado — usado pro diff (values
+  // ao vivo vs. histórico do Nexus) e pra pinar a versão do chart atual no apply (nunca deixa o
+  // Helm resolver uma versão mais nova sozinho contra um repo configurado, ver comentário do
+  // backend em HelmUpgradeWithBypass).
+  useEffect(() => {
+    if (!valuesContent || !release) return;
+    setValuesReleaseLoading(true);
+    setValuesReleaseError("");
+    apiClient.getHelmRelease(cluster, release, releaseNamespace || namespace)
+      .then(setValuesReleaseDetail)
+      .catch((err) => setValuesReleaseError(err instanceof Error ? err.message : "Erro ao carregar release Helm atual"))
+      .finally(() => setValuesReleaseLoading(false));
+  }, [valuesContent, release, releaseNamespace, cluster, namespace]);
+
   const canConfirm = !!nexusManifest && reason.trim().length > 0;
+  const canConfirmValues = !!valuesContent && !!valuesReleaseDetail && reason.trim().length > 0;
 
   const handleConfirm = async () => {
     setApplying(true);
@@ -1521,6 +1562,27 @@ function NexusRollbackSection({
       progress.start(apiClient.getDeploymentRollbackStreamURL(sessionId), onDone);
     } catch (err) {
       toast.error("Falha ao aplicar manifesto do Nexus", { description: err instanceof Error ? err.message : "Erro" });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  // handleConfirmValues — aplica o sub-fluxo de values via `helm upgrade --values` (distinto de
+  // handleConfirm acima, que faz kubectl apply de um manifesto completo). Mesmo padrão de
+  // streaming de progresso do Modo Helm (progress.startHelm, não progress.start — a resposta é um
+  // helm.HelmActionResponse com operationId, não um sessionId de rollout).
+  const handleConfirmValues = async () => {
+    setApplying(true);
+    setConfirming(false);
+    try {
+      const { operationId } = await apiClient.helmUpgradeWithBypass(
+        cluster, namespace, deploymentName, release, releaseNamespace || namespace,
+        valuesContent, valuesReleaseDetail?.chartMetadata?.version || "", reason.trim()
+      );
+      toast.success("Values históricos do Nexus aplicados via helm upgrade (bypass Kyverno aplicado automaticamente) — acompanhando...");
+      progress.startHelm(operationId, onDone);
+    } catch (err) {
+      toast.error("Falha ao aplicar values via Helm", { description: err instanceof Error ? err.message : "Erro" });
     } finally {
       setApplying(false);
     }
@@ -1662,6 +1724,68 @@ function NexusRollbackSection({
           <div className="flex items-center gap-2">
             <input type="checkbox" id="nexus-force" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded" />
             <Label htmlFor="nexus-force" className="text-xs cursor-pointer">Forçar (recria recursos se necessário)</Label>
+          </div>
+        </RollbackConfirmModal>
+      )}
+
+      {/* Sub-fluxo de values Helm (artefato SEM apiVersion/kind — ver looksLikeValues/
+          extractDeploymentDoc) — aplica via `helm upgrade --values`, nunca `kubectl apply`, já que
+          não há nenhum manifesto K8s neste artefato pra aplicar dessa forma. */}
+      {valuesContent && !release && (
+        <div className="text-sm text-destructive py-2 text-center">
+          Este artefato é um arquivo de values do Helm, mas não há um release Helm conhecido pra este Deployment — não é possível aplicar via `helm upgrade`.
+        </div>
+      )}
+
+      {valuesContent && release && valuesReleaseLoading && (
+        <div className="flex items-center justify-center py-6 text-muted-foreground text-sm">
+          <Loader2 className="w-4 h-4 animate-spin mr-2" /> Carregando release Helm atual (pra diff e pra pinar a versão do chart)...
+        </div>
+      )}
+
+      {valuesContent && release && !valuesReleaseLoading && valuesReleaseError && (
+        <div className="text-sm text-destructive py-2 text-center">{valuesReleaseError}</div>
+      )}
+
+      {valuesContent && release && valuesReleaseDetail && (
+        <RollbackConfirmModal
+          open
+          onClose={() => setSelectedArtifact(null)}
+          title="Confirmar rollback — values históricos do Nexus (helm upgrade)"
+          reason={reason}
+          onReasonChange={setReason}
+          reasonPlaceholder="Ex: values de DD/MM é a última configuração estável"
+          confirming={confirming}
+          onRequestConfirm={() => setConfirming(true)}
+          onConfirm={handleConfirmValues}
+          onCancelConfirm={() => setConfirming(false)}
+          applying={applying}
+          canConfirm={canConfirmValues}
+          canUpdateDeployment={canUpdateDeployment}
+          confirmLabel="Aplicar values via helm upgrade"
+          confirmQuestion="Confirmar `helm upgrade` com os values históricos?"
+        >
+          <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-700 dark:text-blue-400">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              Este artefato é um arquivo de <strong>values do Helm</strong> (não um manifesto) — aplicado via <span className="font-mono">helm upgrade --values</span>,
+              mantendo o MESMO chart/versão já instalado
+              (<span className="font-mono">{valuesReleaseDetail.chartMetadata?.name || valuesReleaseDetail.chart} {valuesReleaseDetail.chartMetadata?.version || ""}</span>),
+              só trocando a configuração.
+            </span>
+          </div>
+
+          <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-400">
+            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              Bypass Kyverno (<span className="font-mono">devops.k8s.io/kyverno-bypass=true</span>) e <span className="font-mono">--force</span> são aplicados
+              automaticamente pra esta operação — necessários em clusters com a política que bloqueia mutações fora da esteira CI.
+            </span>
+          </div>
+
+          <div>
+            <Label className="text-xs text-muted-foreground mb-1 block">Diff — values atuais do release vs. values históricos do Nexus (revise antes de confirmar)</Label>
+            <MonacoYamlEditor mode="diff" originalValue={valuesReleaseDetail.valuesRaw} value={valuesContent} height={280} readOnly />
           </div>
         </RollbackConfirmModal>
       )}

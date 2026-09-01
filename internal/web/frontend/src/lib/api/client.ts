@@ -1172,6 +1172,23 @@ class APIClient {
     return response.data;
   }
 
+  /** Modo Nexus aplicando Helm VALUES históricos (não manifesto) via `helm upgrade --values` —
+   * wrapper dedicado (POST .../helm-upgrade-values, distinto de PUT /helm/releases/:release usado
+   * pela aba Helm genérica) que aplica o bypass Kyverno automaticamente e sempre força --force
+   * (mesmo racional de helmRollbackWithBypass). ChartRef nunca é enviado — o backend deixa o Helm
+   * resolver o chart do release ATUAL sozinho (mantém o mesmo template, só troca os values);
+   * chartVersion é opcional, só reforça a versão atual como pin de segurança. */
+  async helmUpgradeWithBypass(
+    cluster: string, namespace: string, deploymentName: string,
+    release: string, releaseNamespace: string, valuesYaml: string, chartVersion: string, reason: string
+  ): Promise<{ operationId: string }> {
+    const response = await this.request<{ success: boolean; data: { operationId: string } }>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(deploymentName)}/helm-upgrade-values`,
+      { method: "POST", body: JSON.stringify({ release, releaseNamespace, valuesYaml, chartVersion, reason }) }
+    );
+    return response.data;
+  }
+
   /** URL do stream SSE de uma operação Helm (install/upgrade/rollback) — evento nomeado
    * "helm-operation" (Gin c.SSEvent), não o "message" default do resto da app. */
   getHelmOperationStreamURL(operationId: string): string {
