@@ -45,6 +45,7 @@ import type { Namespace, PodSummary, BatchPodMetrics } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
 import { isPodImmutableFieldsError, POD_IMMUTABLE_FIELDS_HINT } from "@/lib/podErrors";
 import { PodMonitorTable } from "@/components/PodMonitorTable";
+import { usePodsWatch } from "@/hooks/usePodsWatch";
 import { PodLogsPanel } from "@/components/PodLogsPanel";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
 
@@ -577,11 +578,45 @@ export const PodsPanel = ({
     }
   };
 
+  // Watch ao vivo de Pods (piloto — eventos empurrados pelo kube-apiserver via Watch/Informer,
+  // mesmo mecanismo do k9s, em vez de List() repetido). Pedido explícito do usuário depois de
+  // comparar como esta app atualiza Pods (polling) com o k9s (Watch). `watchNamespace` vazio =
+  // cluster inteiro, mesma convenção já usada por fetchPods/namespaceFilter acima.
+  //
+  // Nunca substitui fetchPods por completo — enquanto o Watch não conecta (ou falha), `pods`
+  // continua 100% dirigido pelo polling já existente, sem nenhuma mudança de comportamento.
+  // Fallback automático e silencioso: watchFailed nunca vira um erro visível pro usuário.
+  const watchNamespace = selectedNamespace && selectedNamespace !== "__all__" ? selectedNamespace : "";
+  const { pods: watchedPods, connected: watchConnected } = usePodsWatch(cluster, watchNamespace, showSystemNamespaces, !!cluster);
+
+  // Ref (não o valor fechado do render) — mesmo padrão de currentClusterRef acima, necessário
+  // porque o setInterval de 30s e o onRequestRefresh do PodMonitorTable (abaixo) precisam
+  // sempre ler o estado de conexão MAIS RECENTE do Watch, não o valor congelado do render em que
+  // o efeito/callback foi criado.
+  const watchConnectedRef = useRef(false);
+  watchConnectedRef.current = watchConnected;
+
+  useEffect(() => {
+    // Só assume os dados do Watch depois da 1ª leva chegar — evita um flash pra lista vazia no
+    // instante em que a conexão SSE abre (onopen) mas antes do 1º lote de eventos ser processado.
+    // Efeito colateral aceito: um namespace genuinamente vazio nunca troca pro Watch (fica no
+    // polling pra sempre nesse caso raro) — mais seguro que arriscar mostrar "sem pods" por engano.
+    if (!watchConnected || watchedPods.length === 0) return;
+    setPods(watchedPods);
+    setSelectedPod((prev) => {
+      if (!prev) return prev;
+      const updated = watchedPods.find((p) => p.name === prev.name && p.namespace === prev.namespace);
+      return updated ?? prev;
+    });
+  }, [watchedPods, watchConnected, setSelectedPod]);
+
   useEffect(() => {
     fetchPods();
-    // Auto-refresh silencioso a cada 30 segundos
-    const interval = setInterval(() => fetchPods(true), 30000);
+    // Auto-refresh silencioso a cada 30 segundos — vira no-op enquanto o Watch está saudável,
+    // mantido como rede de segurança pro caso dele cair sem reconectar.
+    const interval = setInterval(() => { if (!watchConnectedRef.current) fetchPods(true); }, 30000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cluster, selectedNamespace, showSystemNamespaces]);
 
   useEffect(() => {
@@ -1350,7 +1385,7 @@ export const PodsPanel = ({
               { label: selectedNamespace && selectedNamespace !== "__all__" ? selectedNamespace : "Todos os namespaces" },
               { label: `Pods (${filteredPods.length})` },
             ]}
-            onRequestRefresh={() => fetchPods(true)}
+            onRequestRefresh={() => { if (!watchConnectedRef.current) fetchPods(true); }}
           />
         </div>
       );

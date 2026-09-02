@@ -127,8 +127,6 @@ func (cdp *Client) Event() <-chan *Event {
 	return cdp.event
 }
 
-// Consume messages coming from the browser via the websocket.
-//
 // PATCH MANUAL (k8s-hpa-manager, ver CLAUDE.md "Notas de Build" > patch vendor go-rod): os 3
 // utils.E(err) originais deste loop PANICAVAM o processo inteiro sempre que um frame do
 // websocket vinha com JSON malformado/truncado (ex: "unexpected end of JSON input") — como esta

@@ -1994,6 +1994,30 @@ class APIClient {
     });
   }
 
+  /** Inicia o Watch ao vivo de Pods (eventos empurrados pelo kube-apiserver, mesmo mecanismo do
+   * k9s) — piloto restrito à aba Pods (usePodsWatch.ts). `namespace` vazio = cluster inteiro.
+   * Retorna session_id pra conectar via SSE (getPodWatchStreamURL). Mesmo padrão de
+   * startPodLogsStreamAll. */
+  async startPodWatch(cluster: string, namespace: string, showSystem: boolean): Promise<{ session_id: string }> {
+    return this.request<{ session_id: string }>("/pod-watch", {
+      method: "POST",
+      body: JSON.stringify({ cluster, namespace, show_system: showSystem }),
+    });
+  }
+
+  /** URL do SSE stream de um Watch de Pods em andamento */
+  getPodWatchStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/pod-watch/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Cancela um Watch de Pods em andamento */
+  async cancelPodWatch(sessionId: string): Promise<void> {
+    await this.request<void>(`/pod-watch/${encodeURIComponent(sessionId)}/cancel`, {
+      method: "POST",
+    });
+  }
+
   async getBatchPodMetrics(cluster: string, namespace: string): Promise<BatchPodMetrics> {
     try {
       const params = new URLSearchParams({ cluster, namespace });

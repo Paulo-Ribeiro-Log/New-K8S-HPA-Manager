@@ -1035,6 +1035,20 @@ func (s *Server) setupRoutes() {
 		podLogsStream.POST("/:sessionId/cancel", podLogsStreamHandler.Cancel)
 	}
 
+	// Watch de Pods (piloto — aba Pods principal, PodsPanel.tsx): eventos empurrados pelo
+	// kube-apiserver via Watch/Informer em vez de List() a cada 5s (mesmo mecanismo do k9s).
+	// Mesmo padrão de rota do pod-logs-stream acima (grupo próprio, evita colisão com as rotas
+	// wildcard /pods/:cluster/:namespace/:name).
+	podWatchHandler := handlers.NewPodWatchHandler(s.kubeManager, handlers.GetProgressTracker(), podHandler)
+	s.router.GET("/api/v1/pod-watch/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		podWatchHandler.Stream)
+	podWatch := api.Group("/pod-watch")
+	{
+		podWatch.POST("", podWatchHandler.Start)
+		podWatch.POST("/:sessionId/cancel", podWatchHandler.Cancel)
+	}
+
 	// Events
 	eventHandler := handlers.NewEventHandler(s.kubeManager)
 	events := api.Group("/events")
