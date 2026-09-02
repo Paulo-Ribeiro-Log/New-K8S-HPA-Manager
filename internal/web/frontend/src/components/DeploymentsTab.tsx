@@ -30,6 +30,7 @@ import type {
   SpinnakerRollbackInfo,
 } from "@/lib/api/types";
 import { useDeployments, useDynatracePodStatus } from "@/hooks/useAPI";
+import { useDeploymentsWatch, pickDeploymentHotFields } from "@/hooks/useDeploymentsWatch";
 import { DeploymentMonitorTable } from "@/components/DeploymentMonitorTable";
 import { PodMonitorTable } from "@/components/PodMonitorTable";
 import { usePodsWatch } from "@/hooks/usePodsWatch";
@@ -569,11 +570,43 @@ export const DeploymentsTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { deployments, loading, error, refetch, silentRefetch } = useDeployments(
+  const { deployments: polledDeployments, loading, error, refetch, silentRefetch } = useDeployments(
     cluster,
     namespaceFilter,
     showSystemNamespaces
   );
+
+  // Watch ao vivo de Deployments (piloto promovido de Pods, a pedido do usuário) — mesma lógica
+  // de merge campo-a-campo já usada em HPATab.tsx: displayDeployments sincroniza com o polling
+  // sempre que ele atualiza, e recebe só os campos "quentes" (ver pickDeploymentHotFields) dos
+  // eventos de Watch por cima — nunca troca o objeto inteiro, preserva UnhealthyPodCount/
+  // PodIssueReason/serviceClusterIPs/serviceExternalIPs, que só o polling de 60s enriquece.
+  const [displayDeployments, setDisplayDeployments] = useState<DeploymentSummary[]>(polledDeployments);
+  useEffect(() => setDisplayDeployments(polledDeployments), [polledDeployments]);
+
+  // Mesmo escopo (cluster+namespace) do polling acima — useDeployments é um hook COMPARTILHADO
+  // (useAPI.ts), não dá pra gatear o poll de 60s dele por fora sem tocar o hook em si (fora do
+  // escopo desta fase). Ganho aqui é de LATÊNCIA (campos quentes chegam na hora), não de redução
+  // de chamadas ao cluster — mesmo trade-off aceito em HPATab.tsx.
+  const { items: deploymentWatchItems } = useDeploymentsWatch(cluster, selectedNamespace || "", !!cluster);
+
+  useEffect(() => {
+    if (deploymentWatchItems.length === 0) return;
+    setDisplayDeployments((prev) => {
+      const byKey = new Map(prev.map((d) => [`${d.namespace}/${d.name}`, d]));
+      for (const watched of deploymentWatchItems) {
+        const key = `${watched.namespace}/${watched.name}`;
+        const existing = byKey.get(key);
+        if (existing) {
+          byKey.set(key, { ...existing, ...pickDeploymentHotFields(watched) });
+        }
+        // Deployment visto pelo Watch mas ainda não presente no polling (ex: criado agora
+        // mesmo) — deliberadamente ignorado, mesmo motivo de HPATab.tsx: sem UnhealthyPodCount/
+        // serviceClusterIPs, um item parcial confundiria mais do que ajudaria.
+      }
+      return Array.from(byKey.values());
+    });
+  }, [deploymentWatchItems]);
 
   useEffect(() => {
     if (error) {
@@ -674,7 +707,7 @@ export const DeploymentsTab = ({
 
   useEffect(() => {
     if (!selectedDeployment) return;
-    const latest = deployments.find(
+    const latest = displayDeployments.find(
       (dep) =>
         dep.cluster === selectedDeployment.cluster &&
         dep.namespace === selectedDeployment.namespace &&
@@ -689,12 +722,12 @@ export const DeploymentsTab = ({
     if (hasChanged) {
       setSelectedDeployment(latest);
     }
-  }, [deployments, selectedDeployment, setSelectedDeployment]);
+  }, [displayDeployments, selectedDeployment, setSelectedDeployment]);
 
   const filteredDeployments = useMemo(() => {
-    if (!searchQuery) return deployments;
+    if (!searchQuery) return displayDeployments;
     const query = searchQuery.toLowerCase();
-    return deployments.filter((dep) => {
+    return displayDeployments.filter((dep) => {
       return (
         dep.name.toLowerCase().includes(query) ||
         dep.namespace.toLowerCase().includes(query) ||
@@ -703,7 +736,7 @@ export const DeploymentsTab = ({
         )
       );
     });
-  }, [deployments, searchQuery]);
+  }, [displayDeployments, searchQuery]);
 
   const handleSelectDeployment = async (summary: DeploymentSummary) => {
     // Salvar histórico atual no cache antes de trocar
@@ -2771,7 +2804,7 @@ export const DeploymentsTab = ({
     if (filteredDeployments.length === 0) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          {deployments.length === 0
+          {displayDeployments.length === 0
             ? "Nenhum Deployment encontrado"
             : "Nenhum Deployment corresponde à busca"}
         </div>

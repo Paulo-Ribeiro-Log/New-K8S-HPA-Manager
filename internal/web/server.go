@@ -1049,6 +1049,31 @@ func (s *Server) setupRoutes() {
 		podWatch.POST("/:sessionId/cancel", podWatchHandler.Cancel)
 	}
 
+	// Watch de Deployments e HPAs — mesmo mecanismo do Watch de Pods acima, promovido pra esses
+	// 2 recursos a pedido do usuário. Só entrega os campos "quentes" (spec/status, sem o
+	// enriquecimento caro de UnhealthyPodCount/DeploymentName — ver comentário em
+	// deployments_watch.go/hpas_watch.go), que o frontend faz merge por cima do que já tem do
+	// polling existente.
+	deploymentWatchHandler := handlers.NewDeploymentWatchHandler(s.kubeManager, handlers.GetProgressTracker())
+	s.router.GET("/api/v1/deployment-watch/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		deploymentWatchHandler.Stream)
+	deploymentWatch := api.Group("/deployment-watch")
+	{
+		deploymentWatch.POST("", deploymentWatchHandler.Start)
+		deploymentWatch.POST("/:sessionId/cancel", deploymentWatchHandler.Cancel)
+	}
+
+	hpaWatchHandler := handlers.NewHPAWatchHandler(s.kubeManager, handlers.GetProgressTracker())
+	s.router.GET("/api/v1/hpa-watch/:sessionId",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		hpaWatchHandler.Stream)
+	hpaWatch := api.Group("/hpa-watch")
+	{
+		hpaWatch.POST("", hpaWatchHandler.Start)
+		hpaWatch.POST("/:sessionId/cancel", hpaWatchHandler.Cancel)
+	}
+
 	// Events
 	eventHandler := handlers.NewEventHandler(s.kubeManager)
 	events := api.Group("/events")
