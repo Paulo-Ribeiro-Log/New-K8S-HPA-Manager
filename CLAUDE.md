@@ -990,6 +990,38 @@ O campo "Buscar nos logs..." (abas Logs e Logs Anteriores, mesmo `LogsViewer` re
 
 **Botões de ação (Rollout Restart/Kill/Deletar) na linha das abas, não no conteúdo rolável**: esses 3 botões — e a barra de confirmação inline que aparece ao clicar um deles — ficam na mesma linha da tab bar (lado direito, só quando `activeTab === "details"`), não mais dentro da área `overflow-y-auto` da aba Detalhes. Motivo: pods com muitos containers/labels empurravam os botões para fora da tela, exigindo scroll para agir. O seletor de container + botão "Atualizar" da aba "Mesma Imagem" segue o mesmo padrão (lado direito da tab bar, visível só nessa aba) — ambos os grupos de controle coexistem na mesma linha, cada um condicionado ao `activeTab` ativo.
 
+### PodQuickViewModal — aba Logs sempre abre no container da APLICAÇÃO, nunca um sidecar arbitrário
+
+**Bug real corrigido, relatado pelo usuário**: em pods com múltiplos containers (ex: app +
+`istio-proxy`), o `useEffect` de reset ao trocar de pod sempre fazia `setSelectedContainer(pod.
+containers?.[0]?.name ?? "")` — a ordem de `pod.containers` é a ordem do **Pod Spec**, não
+alfabética nem "app primeiro": um sidecar injetado por webhook (Istio, Linkerd, Vault Agent,
+Dsv-injector, etc.) pode legitimamente aparecer ANTES do container da aplicação nessa lista. Como
+a aba "Logs" é o motivo mais óbvio de abrir este modal, o usuário é levado por osmose a acreditar
+que está vendo o log da aplicação assim que clica na aba — mesmo quando na real está vendo o log
+de um sidecar, levando a análises erradas durante troubleshooting sem nenhum aviso.
+
+Corrigido com `pickApplicationContainerName(pod)` (`PodQuickViewModal.tsx`), chamado no lugar do
+`containers[0]` cru: (1) descarta containers `type !== "container"` (init já terminou de rodar,
+ephemeral é um container de debug — nenhum dos dois é candidato a default); (2) deriva o nome da
+aplicação via `deriveAppNameFromPod` — prioriza `pod.ownerWorkload.split("/")[1]` (ex:
+`"Deployment/legacydata-api"` → `"legacydata-api"`, mesmo campo/convenção já usado por
+`workloadSearchTerm` nesta página, resolvido no backend via `resolveOwnerDisplayName()` — mais
+confiável que tentar decifrar hashes de novo no frontend), com fallback só quando `ownerWorkload`
+não resolveu: descasca o sufixo de hash do ReplicaSet (~8-10 chars) + hash do pod (5 chars) do
+nome do pod (`legacydata-api-84f579f8b6-5225g` → `legacydata-api`), ou só o hash do pod
+(DaemonSet/ReplicaSet direto, sem hash de ReplicaSet) — heurística sugerida pelo próprio usuário
+no relato do bug; (3) procura um container com esse nome exato, depois um match parcial
+(substring nos dois sentidos); (4) se nada bateu, cai numa lista negra de nomes de sidecar
+conhecidos (`KNOWN_SIDECAR_CONTAINER_NAMES` — istio-proxy/istio-init/linkerd-proxy/envoy/
+vault-agent/dsv-injector/cloudsql-proxy/filebeat/fluentd/fluent-bit/datadog-agent/
+otel-collector) e escolhe o primeiro container que não está nela; (5) só cai no `containers[0]`
+puro e simples se tudo isso falhar (pod com um único container, ou só sidecars conhecidos e
+nenhum nome batendo — nunca deveria acontecer na prática). Só altera o DEFAULT — o seletor de
+container continua permitindo trocar manualmente pra qualquer container (inclusive sidecars), e
+essa escolha manual do usuário nunca é sobrescrita enquanto o mesmo pod continuar aberto (o reset
+só roda quando `pod.namespace`/`pod.name` mudam, ou seja, ao abrir um pod diferente).
+
 ### PodQuickViewModal — Causa real de crash/reinício (Exit Code, Last State, Eventos do workload)
 
 A aba "Logs Anteriores" fazia só `kubectl logs --previous` do **Pod object atualmente selecionado**, bloqueando totalmente quando `restartCount === 0` nesse pod — inútil no caso mais comum de troubleshooting: depois de um rollout, o Deployment tem um Pod **novo** (hash diferente, `restartCount = 0`); o pod antigo que crashou (ex: OOMKilled/137, SIGTERM/143) já foi deletado, e nem `kubectl logs --previous` nem `kubectl describe pod` conseguem ver um Pod object que não existe mais — limitação real do Kubernetes (esta app não tem backend de agregação de logs externo tipo Loki/ELK). A mudança maximiza o que **é** tecnicamente recuperável em vez de prometer logs brutos impossíveis de obter:
