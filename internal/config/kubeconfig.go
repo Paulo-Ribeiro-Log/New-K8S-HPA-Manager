@@ -64,11 +64,33 @@ const clientCleanupInterval = 15 * time.Minute
 
 // reachabilityCacheTTL define por quanto tempo o resultado do probe TCP é reaproveitado.
 // Evita dialar a cada requisição, mas garante detecção rápida de VPN/rede fora do ar.
-const reachabilityCacheTTL = 15 * time.Second
+//
+// Estudo real (pedido do usuário: "faça um estudo para que o travamento de vpn não aconteça
+// mais... hoje mais cedo nossa aplicação sofreu com um travamento da vpn que não existia para
+// kubectl e nem para o K9S, mesmo usando dos mesmo recursos"): confirmado que `kubectl`/`k9s`
+// NUNCA fazem um pré-check TCP separado antes da requisição K8s real — eles tentam a operação
+// direto, com o timeout generoso default do client-go (~30s, o mesmo valor de restConfig.Timeout
+// nesta app). Só esta aplicação insere essa camada extra de probe, com timeout/cache bem mais
+// curtos — um blip de rede de poucos segundos (RTT elevado momentâneo, comum em VPN corporativa
+// sob carga) que `kubectl`/`k9s` absorvem sem problema (a conexão real só demora um pouco mais e
+// sucede) fazia o probe desta app falhar e ficar cacheado como "inacessível" bem além da duração
+// real do blip — autoinfligindo uma "queda" maior do que a rede de fato teve. TTL reduzido de 15s
+// pra 5s: um falso-negativo se autocorrige rápido (a próxima requisição real do usuário já
+// re-testa), sem exigir esperar o TTL inteiro — custo é só mais 1 dial TCP ocasional, barato.
+const reachabilityCacheTTL = 5 * time.Second
 
-// reachabilityProbeTimeout é o timeout do dial TCP usado para o probe de conectividade.
-// Bem menor que restConfig.Timeout (30s) para que a falha apareça rápido ao usuário.
-const reachabilityProbeTimeout = 3 * time.Second
+// reachabilityProbeTimeout é o timeout de CADA tentativa do dial TCP usado pelo probe de
+// conectividade (ver TestClusterTCPConnection — até 2 tentativas). Aumentado de 3s pra 10s no
+// mesmo estudo acima: 3s era mais curto que o RTT ocasional de rede que kubectl/k9s (timeout
+// ~30s) toleram sem sequer notar — um probe tão mais rígido que a operação real que ele existe
+// pra "proteger" acaba sendo o próprio ponto de falha. 10s ainda garante falha rápida (bem menor
+// que os 30s do restConfig.Timeout) quando o cluster está genuinamente inacessível.
+const reachabilityProbeTimeout = 10 * time.Second
+
+// reachabilityProbeRetryDelay é a pausa entre as 2 tentativas do dial TCP em
+// TestClusterTCPConnection — dá tempo pra um pacote perdido isolado (não uma queda genuína) se
+// resolver sozinho antes da 2ª tentativa.
+const reachabilityProbeRetryDelay = 300 * time.Millisecond
 
 // eksTokenTimeout limita a execução do subprocesso `aws eks get-token`. O exec credential
 // plugin nativo do client-go (vendor/k8s.io/client-go/plugin/pkg/client/auth/exec/exec.go)
@@ -620,7 +642,9 @@ func (k *KubeConfigManager) TestClusterConnection(ctx context.Context, clusterNa
 
 // TestClusterTCPConnection testa conectividade TCP pura com o API server do cluster.
 // Não requer autenticação — apenas verifica se o endpoint está acessível via rede/VPN.
-// Retorna true se a conexão TCP foi estabelecida dentro do timeout.
+// Retorna true se a conexão TCP foi estabelecida dentro do timeout (até 2 tentativas — ver
+// reachabilityProbeRetryDelay: um pacote perdido isolado não deveria virar "cluster inacessível"
+// sozinho, mesmo achado do estudo de VPN documentado junto às constantes acima).
 func (k *KubeConfigManager) TestClusterTCPConnection(clusterName string, timeout time.Duration) bool {
 	serverURL := k.getServerURL(clusterName)
 	if serverURL == "" {
@@ -641,6 +665,19 @@ func (k *KubeConfigManager) TestClusterTCPConnection(clusterName string, timeout
 		return false
 	}
 
+	if dialOnce(host, timeout) {
+		return true
+	}
+	// 1ª tentativa falhou — pausa curta e tenta de novo antes de declarar inacessível. Cobre o
+	// caso comum de um pacote perdido isolado (não uma queda genuína de VPN/rede), que uma
+	// segunda tentativa resolve sozinha na prática.
+	time.Sleep(reachabilityProbeRetryDelay)
+	return dialOnce(host, timeout)
+}
+
+// dialOnce faz uma única tentativa de conexão TCP, extraída pra ser reaproveitada pelas 2
+// tentativas de TestClusterTCPConnection sem duplicar a chamada.
+func dialOnce(host string, timeout time.Duration) bool {
 	conn, err := net.DialTimeout("tcp", host, timeout)
 	if err != nil {
 		return false
