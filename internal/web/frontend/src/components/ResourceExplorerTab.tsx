@@ -88,12 +88,37 @@ interface ResourceExplorerTabProps {
   onToggleSystemNamespaces: () => void;
 }
 
+// Grupos flat (sem ".k8s.io") que ainda são recursos NATIVOS do Kubernetes — legado de antes da
+// convenção atual de nomear grupos de extensão como "<algo>.k8s.io".
+const NATIVE_FLAT_API_GROUPS = new Set(["apps", "batch", "autoscaling", "policy", "extensions"]);
+
+// isNativeKubernetesGroup — bug real corrigido, relatado pelo usuário: "a aba explorer está
+// pegando tudo mesmo ou está com definições seletivas? era pra funcionar como no K9S. tipo se eu
+// digito hpa ele me traz o yaml do horizontalpodautoscaler total". Investigado: o Discovery API
+// já é usado de forma genérica e completa (`ListAPIResources`, backend) — nenhum recurso é
+// excluído por tipo, só por não ter os verbos `list`/`get`. O bug real estava aqui, na UI:
+// `groupResources` classificava QUALQUER recurso com `group` não-vazio como "CRD" — mas a MAIORIA
+// dos recursos nativos do Kubernetes tem grupo não-vazio (HPA é `autoscaling`, Deployment/Job/
+// CronJob são `apps`/`batch`, Ingress/NetworkPolicy são `networking.k8s.io`, ClusterRole é
+// `rbac.authorization.k8s.io`, StorageClass é `storage.k8s.io`, etc.) — só o recurso "core" puro
+// (Pod, Service, ConfigMap, Secret, Namespace...) tem grupo vazio. Isso jogava praticamente tudo
+// que não é core pra dentro da seção "CRDs", misturado com CRDs de verdade (ExternalSecret,
+// Certificate, etc.) — HPA nunca aparecia em "Recursos Built-in", só (incorretamente) em "CRDs".
+// Corrigido reconhecendo os grupos de extensão nativos do K8s (convenção "<algo>.k8s.io", mesma
+// usada por `kubectl api-resources`/k9s pra decidir "é do core do Kubernetes ou é CRD de
+// terceiro") + os grupos flat legados (apps/batch/autoscaling/policy/extensions).
+function isNativeKubernetesGroup(group: string): boolean {
+  if (!group) return true; // core (v1) — Pod, Service, ConfigMap, Secret, Namespace, Node...
+  if (group.endsWith(".k8s.io")) return true;
+  return NATIVE_FLAT_API_GROUPS.has(group);
+}
+
 // Agrupa recursos: first built-in, then CRDs
 function groupResources(resources: APIResourceInfo[]) {
   const builtIn: APIResourceInfo[] = [];
   const crds: APIResourceInfo[] = [];
   for (const r of resources) {
-    if (!r.group || r.group === "") {
+    if (isNativeKubernetesGroup(r.group)) {
       builtIn.push(r);
     } else {
       crds.push(r);
