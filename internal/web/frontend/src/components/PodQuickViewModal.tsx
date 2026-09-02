@@ -439,6 +439,53 @@ interface Props {
   onRefresh?: () => void;
 }
 
+// Sidecars conhecidos que costumam vir ANTES do container da aplicação na ordem do Pod Spec
+// (ordem de injeção do webhook, não alfabética) — nunca devem ser o default da aba Logs.
+const KNOWN_SIDECAR_CONTAINER_NAMES = new Set([
+  "istio-proxy", "istio-init", "linkerd-proxy", "envoy", "envoy-sidecar",
+  "vault-agent", "vault-agent-init", "dsv-injector", "cloudsql-proxy",
+  "filebeat", "fluentd", "fluent-bit", "datadog-agent", "otel-collector",
+]);
+
+// Deriva o nome do container da APLICAÇÃO a partir do nome do workload dono (pod.ownerWorkload,
+// ex: "Deployment/legacydata-api" → "legacydata-api") — mesma convenção já usada por
+// workloadSearchTerm nesta página. Fallback (ownerWorkload ausente/não resolvido) tenta a mesma
+// heurística "na unha" sugerida pelo usuário: descasca o sufixo de hash do ReplicaSet
+// (~8-10 chars) + hash do pod (5 chars) de um nome tipo "legacydata-api-84f579f8b6-5225g", ou só
+// o hash do pod (DaemonSet/ReplicaSet direto, sem hash de ReplicaSet).
+function deriveAppNameFromPod(pod: PodSummary): string {
+  const fromOwner = pod.ownerWorkload?.split("/")[1]?.trim();
+  if (fromOwner) return fromOwner;
+  return pod.name
+    .replace(/-[a-z0-9]{8,10}-[a-z0-9]{5}$/, "")
+    .replace(/-[a-z0-9]{5}$/, "");
+}
+
+// Escolhe o container a exibir por padrão na aba Logs — sempre o da APLICAÇÃO, nunca um sidecar
+// arbitrário (istio-proxy, etc.) só porque ele apareceu primeiro na ordem do Pod Spec. Sem isso,
+// o usuário é levado por osmose a acreditar que está vendo o log da app (é o motivo óbvio de
+// abrir a aba Logs) quando na real está vendo outro container qualquer.
+function pickApplicationContainerName(pod: PodSummary | null): string {
+  // init/ephemeral nunca são candidatos a default — init já terminou de rodar, ephemeral é um
+  // container de debug (kubectl debug) que só existe se alguém o adicionou explicitamente.
+  const containers = (pod?.containers ?? []).filter(c => c.type === "container");
+  if (containers.length === 0) return pod?.containers?.[0]?.name ?? "";
+  if (containers.length === 1) return containers[0].name;
+
+  const appName = pod ? deriveAppNameFromPod(pod) : "";
+  if (appName) {
+    const exact = containers.find(c => c.name === appName);
+    if (exact) return exact.name;
+    const partial = containers.find(c => c.name.includes(appName) || appName.includes(c.name));
+    if (partial) return partial.name;
+  }
+
+  const nonSidecar = containers.filter(c => !KNOWN_SIDECAR_CONTAINER_NAMES.has(c.name.toLowerCase()));
+  if (nonSidecar.length > 0) return nonSidecar[0].name;
+
+  return containers[0].name;
+}
+
 export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }: Props) {
   const { permissions: k8sPerms } = useK8sPermissions(cluster, pod?.namespace || '');
   const canWritePods = pod?.namespace ? k8sPerms.canWritePods : undefined;
@@ -528,7 +575,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     // novo).
     setAutoRefresh(true);
     setPendingAction(null);
-    setSelectedContainer(pod.containers?.[0]?.name ?? "");
+    setSelectedContainer(pickApplicationContainerName(pod));
     setDescribe("");
     setShowDescribe(false);
     setLogLevelFilter(new Set());
