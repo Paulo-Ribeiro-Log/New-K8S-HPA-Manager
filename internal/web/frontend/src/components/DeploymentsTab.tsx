@@ -701,6 +701,28 @@ export const DeploymentsTab = ({
     setMonitorPods(filterPodsForDeployment(watchedNamespacePods, monitorDeployment));
   }, [watchedNamespacePods, monitorWatchConnected, monitorDeployment, filterPodsForDeployment]);
 
+  // Bug real corrigido — CPU/mem sumiam pra pods novos de um rollout até o usuário sair e voltar
+  // do drill-down: `batchMetrics` só era buscado em `handleMonitorDeployment` (abertura) e
+  // `refreshMonitorPods` (fallback de polling, gateado por `!monitorWatchConnectedRef.current`).
+  // Com o Watch conectado (o caso normal), esse fallback nunca mais rodava — a lista de pods
+  // continuava viva via Watch (efeito acima), mas `batchMetrics` ficava congelado no snapshot de
+  // quando o drill-down abriu, sem entrada nenhuma pro pod novo. Métricas vêm do metrics-server
+  // (metrics.k8s.io), uma API totalmente separada do Pod core/v1 que o Watch observa — nunca fazem
+  // parte do payload de um evento de Watch, então precisam de um refresh PRÓPRIO, independente do
+  // Watch estar conectado ou não. Mesmo padrão já usado em PodsPanel.tsx (aba Pods principal).
+  useEffect(() => {
+    if (!monitorDeployment) return;
+    const fetchMonitorMetrics = async () => {
+      try {
+        const m = await apiClient.getBatchPodMetrics(monitorDeployment.cluster, monitorDeployment.namespace);
+        setBatchMetrics(m);
+      } catch { /* graceful degradation */ }
+    };
+    fetchMonitorMetrics();
+    const id = setInterval(fetchMonitorMetrics, 10000);
+    return () => clearInterval(id);
+  }, [monitorDeployment]);
+
   useEffect(() => {
     selectedDeploymentRef.current = selectedDeployment;
   }, [selectedDeployment]);
