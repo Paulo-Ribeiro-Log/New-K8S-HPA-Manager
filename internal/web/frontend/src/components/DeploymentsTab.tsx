@@ -32,6 +32,7 @@ import type {
 import { useDeployments, useDynatracePodStatus } from "@/hooks/useAPI";
 import { DeploymentMonitorTable } from "@/components/DeploymentMonitorTable";
 import { PodMonitorTable } from "@/components/PodMonitorTable";
+import { usePodsWatch } from "@/hooks/usePodsWatch";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
@@ -596,6 +597,19 @@ export const DeploymentsTab = ({
     setBatchMetrics(null);
   }, [cluster, selectedNamespace]);
 
+  // Heurística de filtro "pods deste Deployment" — extraída pra ser reaproveitada tanto pelo
+  // fetch via polling (getPods com search=dep.name) quanto pelos dados vindos do Watch (que
+  // trazem o namespace INTEIRO, sem filtro server-side por deployment). Sem selector confiável
+  // único em toda a frota, por isso o fallback: se nada bater, mostra tudo em vez de uma lista
+  // vazia enganosa.
+  const filterPodsForDeployment = useCallback((pods: PodSummary[], dep: DeploymentSummary) => {
+    const deploymentPods = pods.filter((p) =>
+      p.labels?.["app"] === dep.labels?.["app"] ||
+      p.name.startsWith(dep.name + "-")
+    );
+    return deploymentPods.length > 0 ? deploymentPods : pods;
+  }, []);
+
   // Fetch pods for a specific deployment (for monitoring)
   const handleMonitorDeployment = useCallback(async (dep: DeploymentSummary) => {
     setRightView({ kind: "pod-table", deployment: dep });
@@ -604,11 +618,7 @@ export const DeploymentsTab = ({
     setBatchMetrics(null);
     try {
       const pods = await apiClient.getPods(dep.cluster, [dep.namespace], dep.name, false, true);
-      const deploymentPods = pods.filter((p) =>
-        p.labels?.["app"] === dep.labels?.["app"] ||
-        p.name.startsWith(dep.name + "-")
-      );
-      setMonitorPods(deploymentPods.length > 0 ? deploymentPods : pods);
+      setMonitorPods(filterPodsForDeployment(pods, dep));
       // Fetch batch metrics
       const m = await apiClient.getBatchPodMetrics(dep.cluster, dep.namespace);
       setBatchMetrics(m);
@@ -617,24 +627,46 @@ export const DeploymentsTab = ({
     } finally {
       setMonitorPodsLoading(false);
     }
-  }, []);
+  }, [filterPodsForDeployment]);
 
   const refreshMonitorPods = useCallback(async () => {
     if (rightView.kind !== "pod-table") return;
     const dep = rightView.deployment;
     try {
       const pods = await apiClient.getPods(dep.cluster, [dep.namespace], dep.name, false, true);
-      const deploymentPods = pods.filter((p) =>
-        p.labels?.["app"] === dep.labels?.["app"] ||
-        p.name.startsWith(dep.name + "-")
-      );
-      setMonitorPods(deploymentPods.length > 0 ? deploymentPods : pods);
+      setMonitorPods(filterPodsForDeployment(pods, dep));
       const m = await apiClient.getBatchPodMetrics(dep.cluster, dep.namespace);
       setBatchMetrics(m);
     } catch {
       // silently ignore
     }
-  }, [rightView]);
+  }, [rightView, filterPodsForDeployment]);
+
+  // Watch ao vivo de Pods no drill-down de um Deployment (mesmo piloto já em produção na aba
+  // Pods principal — PodsPanel.tsx — estendido a pedido explícito do usuário). Reaproveita o
+  // MESMO hook/endpoint genérico (escopado por cluster+namespace, não por deployment) — nenhuma
+  // mudança de backend foi necessária. `active` só fica true com o drill-down de fato aberto
+  // (rightView.kind === "pod-table"), pra não abrir um Watch à toa enquanto o usuário está vendo
+  // a lista de Deployments.
+  const monitorDeployment = rightView.kind === "pod-table" ? rightView.deployment : null;
+  const {
+    pods: watchedNamespacePods,
+    connected: monitorWatchConnected,
+  } = usePodsWatch(monitorDeployment?.cluster ?? "", monitorDeployment?.namespace ?? "", false, !!monitorDeployment);
+
+  // Mesmo padrão de ref de PodsPanel.tsx — o polling de fallback (onRequestRefresh do
+  // PodMonitorTable) precisa sempre ler o estado de conexão MAIS RECENTE, não o valor congelado
+  // do render em que o callback foi criado.
+  const monitorWatchConnectedRef = useRef(false);
+  monitorWatchConnectedRef.current = monitorWatchConnected;
+
+  useEffect(() => {
+    // Mesma guarda de PodsPanel.tsx — só assume os dados do Watch depois da 1ª leva chegar, pra
+    // não piscar pra lista vazia no instante em que a conexão SSE abre mas antes do 1º lote de
+    // eventos ser processado.
+    if (!monitorDeployment || !monitorWatchConnected || watchedNamespacePods.length === 0) return;
+    setMonitorPods(filterPodsForDeployment(watchedNamespacePods, monitorDeployment));
+  }, [watchedNamespacePods, monitorWatchConnected, monitorDeployment, filterPodsForDeployment]);
 
   useEffect(() => {
     selectedDeploymentRef.current = selectedDeployment;
@@ -2955,7 +2987,7 @@ export const DeploymentsTab = ({
                   { label: rightView.deployment.name, onClick: backToDeployments },
                   { label: `Pods (${monitorPods.length})` },
                 ]}
-                onRequestRefresh={refreshMonitorPods}
+                onRequestRefresh={() => { if (!monitorWatchConnectedRef.current) refreshMonitorPods(); }}
                 onBack={backToDeployments}
                 backLabel="Deployments"
               />
