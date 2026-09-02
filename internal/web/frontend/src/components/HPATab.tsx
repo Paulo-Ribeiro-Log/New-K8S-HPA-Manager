@@ -19,6 +19,7 @@ import { HPAListItem } from "@/components/HPAListItem";
 import { HPAEditor } from "@/components/HPAEditor";
 import { HPATableView } from "@/components/HPATableView";
 import { useClusters, useNamespaces, useHPAs } from "@/hooks/useAPI";
+import { useHPAsWatch, pickHPAHotFields } from "@/hooks/useHPAsWatch";
 import type { HPA } from "@/lib/api/types";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
@@ -43,7 +44,42 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
   const { clusters } = useClusters();
   const { namespaces } = useNamespaces(selectedCluster);
   // Buscar TODOS os HPAs do cluster (sem filtro de namespace)
-  const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, false);
+  const { hpas: polledHPAs, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, false);
+
+  // Watch ao vivo de HPAs (piloto promovido de Pods, a pedido do usuário) — mesmo cluster
+  // inteiro do polling acima (sem filtro de namespace, mesma convenção). `displayHPAs` é a base
+  // renderizada: sincroniza com o polling sempre que ele atualiza (refetch manual, ou o poll
+  // periódico dentro de useHPAs), e recebe merges campo-a-campo dos eventos de Watch por cima —
+  // nunca troca o objeto inteiro, só os campos "quentes" (ver pickHPAHotFields), preservando
+  // DeploymentName/ImageVersion/recursos que só o polling enriquece.
+  const [displayHPAs, setDisplayHPAs] = useState<HPA[]>(polledHPAs);
+  useEffect(() => setDisplayHPAs(polledHPAs), [polledHPAs]);
+
+  // Diferente de PodsPanel.tsx (fetch 100% local), useHPAs é um hook COMPARTILHADO (useAPI.ts) —
+  // não dá pra gatear o poll de 30s dele por fora sem tocar o hook em si (fora do escopo desta
+  // fase, ver plano). `connected` aqui só é usado indiretamente (o merge abaixo já só acontece
+  // quando há itens no Watch); o ganho nesta tela é de LATÊNCIA (campos quentes chegam na hora),
+  // não de redução de chamadas ao cluster — trade-off aceito explicitamente.
+  const { items: hpaWatchItems } = useHPAsWatch(selectedCluster, "", !!selectedCluster);
+
+  useEffect(() => {
+    if (hpaWatchItems.length === 0) return;
+    setDisplayHPAs((prev) => {
+      const byKey = new Map(prev.map((h) => [`${h.namespace}/${h.name}`, h]));
+      for (const watched of hpaWatchItems) {
+        const key = `${watched.namespace}/${watched.name}`;
+        const existing = byKey.get(key);
+        if (existing) {
+          byKey.set(key, { ...existing, ...pickHPAHotFields(watched) });
+        }
+        // HPA visto pelo Watch mas ainda não presente no polling (ex: criado agora mesmo) —
+        // deliberadamente ignorado aqui: sem os campos de enriquecimento (DeploymentName etc.),
+        // mostrar um item parcial confundiria mais do que ajudaria. Aparece assim que o próximo
+        // poll (ou refetch manual) trouxer o HPA completo.
+      }
+      return Array.from(byKey.values());
+    });
+  }, [hpaWatchItems]);
 
   // Auto-select first cluster
   useEffect(() => {
@@ -188,7 +224,7 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
               <div className="flex items-center justify-center h-64 text-muted-foreground">
                 Loading HPAs...
               </div>
-            ) : hpas.length === 0 ? (
+            ) : displayHPAs.length === 0 ? (
               <div className="flex items-center justify-center h-64 text-muted-foreground">
                 {selectedCluster
                   ? "No HPAs found in this cluster/namespace"
@@ -196,7 +232,7 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
               </div>
             ) : (
               <div className="space-y-2">
-                {hpas.map((hpa) => (
+                {displayHPAs.map((hpa) => (
                   <HPAListItem
                     key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
                     name={hpa.name}
@@ -232,7 +268,7 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
             ) : (
               <div className="p-4 overflow-auto">
                 <HPATableView
-                  hpas={hpas}
+                  hpas={displayHPAs}
                   onSelectHPA={(hpa) => setSelectedHPA(hpa)}
                 />
               </div>

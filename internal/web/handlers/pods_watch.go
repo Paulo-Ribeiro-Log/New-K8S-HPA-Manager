@@ -3,11 +3,9 @@ package handlers
 import (
 	"context"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,25 +20,25 @@ import (
 
 // PodWatchHandler transmite ao vivo (via Watch do K8s, mesmo mecanismo do k9s) as mudanças de
 // estado dos Pods de um cluster/namespace, empurradas pro navegador via SSE — piloto restrito à
-// aba Pods (PodsPanel.tsx), com fallback automático pro polling de 5s já existente se o Watch não
-// conectar ou cair. Ver plano em docs internos da sessão que motivou esta feature: substitui o
-// "List() a cada 5s" por eventos empurrados pelo kube-apiserver assim que algo muda de verdade.
+// aba Pods (PodsPanel.tsx) e ao drill-down de pods da aba Deployments, com fallback automático
+// pro polling já existente se o Watch não conectar ou cair. Ver plano em docs internos da sessão
+// que motivou esta feature: substitui o "List() a cada 5s" por eventos empurrados pelo
+// kube-apiserver assim que algo muda de verdade.
 //
 // Mesmo padrão de pods_logs_stream.go (session_id + context.CancelFunc + goroutine publicando no
-// ProgressTracker compartilhado) — copiado quase literalmente, só troca "linha de log" por
-// "evento de pod". Usa cache.NewInformer (Reflector do client-go) em vez de um Watch() cru feito
-// à mão — o Reflector já resolve sozinho reconexão e o caso "resourceVersion expirado (410 Gone),
-// precisa re-listar do zero", relevante dado o histórico real de instabilidade de VPN já
-// documentado nesta app.
+// ProgressTracker compartilhado) — a parte de sessão/Stream/Cancel foi extraída pro esqueleto
+// compartilhado watchSession (watch_common.go, reaproveitado também por Deployments e HPAs). Usa
+// cache.NewInformer (Reflector do client-go) em vez de um Watch() cru feito à mão — o Reflector já
+// resolve sozinho reconexão e o caso "resourceVersion expirado (410 Gone), precisa re-listar do
+// zero", relevante dado o histórico real de instabilidade de VPN já documentado nesta app.
 type PodWatchHandler struct {
 	kubeManager *config.KubeConfigManager
-	tracker     *sse.ProgressTracker
+	session     *watchSession
 	podHandler  *PodHandler
-	cancelFuncs sync.Map // sessionID -> context.CancelFunc
 }
 
 func NewPodWatchHandler(km *config.KubeConfigManager, tracker *sse.ProgressTracker, podHandler *PodHandler) *PodWatchHandler {
-	return &PodWatchHandler{kubeManager: km, tracker: tracker, podHandler: podHandler}
+	return &PodWatchHandler{kubeManager: km, session: newWatchSession(tracker), podHandler: podHandler}
 }
 
 type startPodWatchRequest struct {
@@ -79,11 +77,9 @@ func (h *PodWatchHandler) Start(c *gin.Context) {
 		return
 	}
 
-	sessionID := uuid.New().String()
-	ctx, cancel := context.WithCancel(context.Background())
-	h.cancelFuncs.Store(sessionID, cancel)
-
-	go h.runWatch(ctx, clientset, sessionID, req.Cluster, req.Namespace, req.ShowSystem)
+	sessionID := h.session.start(func(ctx context.Context, sessionID string) {
+		h.runWatch(ctx, clientset, sessionID, req.Cluster, req.Namespace, req.ShowSystem)
+	})
 
 	c.JSON(http.StatusOK, gin.H{"session_id": sessionID})
 }
@@ -114,14 +110,6 @@ func (h *PodWatchHandler) runWatch(ctx context.Context, clientset kubernetes.Int
 	})
 
 	informer.Run(ctx.Done()) // bloqueia até cancelamento
-
-	// Contexto cancelado (usuário fechou a aba, ou Cancel() explícito) — sinaliza fim pro handler
-	// de Stream fechar a conexão HTTP em vez de ficar pendurado (mesmo padrão de
-	// pods_logs_stream.go).
-	h.tracker.SendToClient(sessionID, sse.ProgressEvent{
-		ID: sessionID, Type: "complete", Phase: "completed", Timestamp: time.Now(),
-	})
-	h.cancelFuncs.Delete(sessionID)
 }
 
 // publish converte o objeto do evento (sempre *corev1.Pod, exceto em DeletedFinalStateUnknown —
@@ -146,77 +134,14 @@ func (h *PodWatchHandler) publish(sessionID, eventType, cluster string, obj inte
 	}
 
 	summary := h.podHandler.convertToPodSummary(cluster, pod, nil)
-	h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+	h.session.tracker.SendToClient(sessionID, sse.ProgressEvent{
 		ID: sessionID, Type: "pod_" + eventType, Phase: "in_progress", Timestamp: time.Now(),
 		Result: summary,
 	})
 }
 
-// Stream conecta o cliente ao fluxo SSE de um Watch em andamento — mesmo formato de
-// pods_logs_stream.go's Stream, exceto que aqui o loop NUNCA para sozinho em eventos "pod_*" (só
-// em "complete"/"error"), já que o Watch é contínuo por natureza.
-//
 // GET /api/v1/pod-watch/:sessionId
-func (h *PodWatchHandler) Stream(c *gin.Context) {
-	sessionID := c.Param("sessionId")
-	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_SESSION", "sessionId obrigatório"))
-		return
-	}
+func (h *PodWatchHandler) Stream(c *gin.Context) { h.session.Stream(c) }
 
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	for _, evt := range h.tracker.GetReplayEvents(sessionID) {
-		if _, err := c.Writer.WriteString(sse.FormatSSE(evt)); err != nil {
-			return
-		}
-		c.Writer.Flush()
-	}
-
-	client := sse.NewClient(sessionID)
-	h.tracker.AddClient(client)
-	defer h.tracker.RemoveClient(sessionID)
-
-	ctx := c.Request.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case event, ok := <-client.Channel:
-			if !ok {
-				return
-			}
-			if _, err := c.Writer.WriteString(sse.FormatSSE(event)); err != nil {
-				return
-			}
-			c.Writer.Flush()
-			if event.Type == "complete" || event.Type == "error" {
-				return
-			}
-		}
-	}
-}
-
-// Cancel para o Watch de uma sessão — chamado quando a aba fecha ou o hook detecta que precisa
-// desligar o Watch (ex: troca de cluster/namespace). Cancela o contexto compartilhado pelo
-// Informer daquela sessão, que desbloqueia sozinho o Run(ctx.Done()).
-//
 // POST /api/v1/pod-watch/:sessionId/cancel
-func (h *PodWatchHandler) Cancel(c *gin.Context) {
-	sessionID := c.Param("sessionId")
-	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, errorResponse("MISSING_SESSION", "sessionId obrigatório"))
-		return
-	}
-
-	if val, ok := h.cancelFuncs.Load(sessionID); ok {
-		val.(context.CancelFunc)()
-		h.cancelFuncs.Delete(sessionID)
-		c.JSON(http.StatusOK, gin.H{"cancelled": true})
-	} else {
-		c.JSON(http.StatusNotFound, gin.H{"cancelled": false, "message": "sessão não encontrada ou já finalizada"})
-	}
-}
+func (h *PodWatchHandler) Cancel(c *gin.Context) { h.session.Cancel(c) }
