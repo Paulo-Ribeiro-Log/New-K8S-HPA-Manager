@@ -1058,7 +1058,7 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 		if search != "" && !matchesDeploymentSearch(&dep, search) {
 			continue
 		}
-		summary := buildDeploymentSummary(c.cluster, &dep)
+		summary := BuildDeploymentSummary(c.cluster, &dep)
 		ips := serviceIPsForLabels(nsSvcMap[dep.Namespace], dep.Spec.Template.Labels)
 		summary.ServiceClusterIPs = ips.clusterIPs
 		summary.ServiceExternalIPs = ips.externalIPs
@@ -1121,7 +1121,12 @@ func matchesDeploymentSearch(dep *appsv1.Deployment, search string) bool {
 	return false
 }
 
-func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.DeploymentSummary {
+// BuildDeploymentSummary converte um *appsv1.Deployment cru pro modelo exposto pela API — função
+// pura, sem chamada de rede (o enriquecimento com UnhealthyPodCount/PodIssueReason acontece
+// DEPOIS, num loop separado em ListDeployments, nunca aqui dentro). Exportada pra ser reaproveitada
+// por internal/web/handlers/deployments_watch.go, que precisa da MESMA conversão barata (sem
+// cross-reference de Pods) reagindo a cada evento de Watch.
+func BuildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.DeploymentSummary {
 	replicas := int32(0)
 	if dep.Spec.Replicas != nil {
 		replicas = *dep.Spec.Replicas
@@ -2611,12 +2616,24 @@ func (c *Client) TestConnection(ctx context.Context) error {
 }
 
 // CountHPAs conta o número de HPAs em um namespace
-// convertHPAToModel converte um HPA do Kubernetes para o modelo interno
+// convertHPAToModel converte um HPA do Kubernetes para o modelo interno — wrapper fino sobre
+// ConvertHPAToModel, só resolve `c.cluster`.
 func (c *Client) convertHPAToModel(hpa *autoscalingv2.HorizontalPodAutoscaler) models.HPA {
+	return ConvertHPAToModel(c.cluster, hpa)
+}
+
+// ConvertHPAToModel converte um HPA cru do Kubernetes pro modelo interno — função pura, sem
+// chamada de rede (o enriquecimento com DeploymentName/ImageVersion/recursos configurados é feito
+// à parte por EnrichHPAWithDeploymentResources, que SIM faz uma chamada extra — um Get() no
+// Deployment associado). Extraída do método (c *Client) convertHPAToModel, que virou um wrapper
+// de 1 linha — a única coisa que o receiver fornecia era `c.cluster`, agora parâmetro explícito.
+// Reaproveitada por internal/web/handlers/hpas_watch.go, que precisa da MESMA conversão barata
+// reagindo a cada evento de Watch (sem pagar o Get() extra a cada mudança de status do HPA).
+func ConvertHPAToModel(cluster string, hpa *autoscalingv2.HorizontalPodAutoscaler) models.HPA {
 	modelHPA := models.HPA{
 		Name:            hpa.Name,
 		Namespace:       hpa.Namespace,
-		Cluster:         c.cluster,
+		Cluster:         cluster,
 		MinReplicas:     hpa.Spec.MinReplicas,
 		MaxReplicas:     hpa.Spec.MaxReplicas,
 		CurrentReplicas: hpa.Status.CurrentReplicas,

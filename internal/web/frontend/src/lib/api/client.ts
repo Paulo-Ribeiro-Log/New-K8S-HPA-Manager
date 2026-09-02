@@ -2018,6 +2018,49 @@ class APIClient {
     });
   }
 
+  /** Watch ao vivo de Deployments — mesmo mecanismo do Watch de Pods, promovido a pedido do
+   * usuário. Só entrega campos "quentes" (spec/status) — sem UnhealthyPodCount/PodIssueReason,
+   * ver deployments_watch.go; o merge com o que já veio do polling é feito no frontend
+   * (useDeploymentsWatch.ts). */
+  async startDeploymentWatch(cluster: string, namespace: string): Promise<{ session_id: string }> {
+    return this.request<{ session_id: string }>("/deployment-watch", {
+      method: "POST",
+      body: JSON.stringify({ cluster, namespace }),
+    });
+  }
+
+  getDeploymentWatchStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/deployment-watch/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  async cancelDeploymentWatch(sessionId: string): Promise<void> {
+    await this.request<void>(`/deployment-watch/${encodeURIComponent(sessionId)}/cancel`, {
+      method: "POST",
+    });
+  }
+
+  /** Watch ao vivo de HPAs — mesmo mecanismo. Só entrega campos "quentes" (réplicas/targets) —
+   * sem DeploymentName/ImageVersion/recursos, ver hpas_watch.go; merge feito em
+   * useHPAsWatch.ts. */
+  async startHPAWatch(cluster: string, namespace: string): Promise<{ session_id: string }> {
+    return this.request<{ session_id: string }>("/hpa-watch", {
+      method: "POST",
+      body: JSON.stringify({ cluster, namespace }),
+    });
+  }
+
+  getHPAWatchStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/hpa-watch/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  async cancelHPAWatch(sessionId: string): Promise<void> {
+    await this.request<void>(`/hpa-watch/${encodeURIComponent(sessionId)}/cancel`, {
+      method: "POST",
+    });
+  }
+
   async getBatchPodMetrics(cluster: string, namespace: string): Promise<BatchPodMetrics> {
     try {
       const params = new URLSearchParams({ cluster, namespace });
