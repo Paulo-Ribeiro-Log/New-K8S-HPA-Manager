@@ -10,6 +10,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Play, X, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { useClusters } from "@/hooks/useAPI";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { isProdClusterName, isHlgClusterName } from "@/lib/clusterSafety";
+import { cn } from "@/lib/utils";
 
 interface DeploymentScanModalProps {
   open: boolean;
@@ -30,10 +32,27 @@ export const DeploymentScanModal = ({ open, onOpenChange }: DeploymentScanModalP
   const [scanProgress, setScanProgress] = useState<ScanProgress[]>([]);
   const [isScanning, setIsScanning] = useState(false);
 
-  // ✅ Filtrar apenas clusters de produção (com "-prd" no nome)
-  const productionClusters = clusters.filter(c =>
-    c.context.toLowerCase().includes('-prd')
-  );
+  // Filtro Todos/HLG/PRD — pedido explícito do usuário: "não estão listados todos os clusters
+  // novos que tenha prd ou prod* no nome... deveríamos ter uma seleção para todos, prd(prd/prod*)
+  // e hlg seguindo a mesma lógica da seleção dos clusters". Bug real corrigido: a versão anterior
+  // filtrava só via `c.context.toLowerCase().includes('-prd')` — uma convenção de sufixo estrita
+  // que não pega clusters fora desse padrão (ex: nomenclatura EKS "asaplog-production", ou
+  // qualquer variação de "produ*" que não seja literalmente "-prd") — esses clusters
+  // desapareciam do modal inteiro, nem apareciam pra seleção. Corrigido reaproveitando
+  // isProdClusterName/isHlgClusterName (lib/clusterSafety.ts) — a MESMA detecção ampla já
+  // corrigida pro filtro Todos/HLG/PRD do Header.tsx/ClusterSelectorForTab.tsx (HLG = "não é
+  // PRD"), em vez de duplicar uma 2ª lógica de classificação divergente aqui.
+  const [envFilter, setEnvFilter] = useState<"all" | "hlg" | "prd">("prd");
+  const filteredClusters = clusters.filter((c) => {
+    if (envFilter === "all") return true;
+    if (envFilter === "prd") return isProdClusterName(c.context);
+    return isHlgClusterName(c.context);
+  });
+  const emptyStateLabel: Record<typeof envFilter, string> = {
+    all: "Nenhum cluster disponível",
+    hlg: "Nenhum cluster HLG disponível",
+    prd: "Nenhum cluster de produção (prd/prod*) disponível",
+  };
 
   const scanMutation = useMutation({
     mutationFn: async (clusters: string[]) => {
@@ -82,13 +101,19 @@ export const DeploymentScanModal = ({ open, onOpenChange }: DeploymentScanModalP
     }
   });
 
+  // Opera só sobre os clusters VISÍVEIS no filtro atual (união/remoção, nunca substitui o array
+  // inteiro) — com o filtro Todos/HLG/PRD, o usuário pode selecionar alguns em HLG, trocar pro
+  // filtro PRD e selecionar mais, sem perder a seleção anterior ao alternar entre filtros.
   const handleSelectAll = (checked: boolean) => {
+    const visible = filteredClusters.map(c => c.context);
     if (checked) {
-      setSelectedClusters(productionClusters.map(c => c.context));
+      setSelectedClusters(prev => Array.from(new Set([...prev, ...visible])));
     } else {
-      setSelectedClusters([]);
+      setSelectedClusters(prev => prev.filter(c => !visible.includes(c)));
     }
   };
+  const allVisibleSelected = filteredClusters.length > 0 &&
+    filteredClusters.every(c => selectedClusters.includes(c.context));
 
   const handleClusterToggle = (clusterName: string, checked: boolean) => {
     if (checked) {
@@ -136,20 +161,44 @@ export const DeploymentScanModal = ({ open, onOpenChange }: DeploymentScanModalP
                 <Button
                   variant="link"
                   size="sm"
-                  onClick={() => handleSelectAll(selectedClusters.length !== productionClusters.length)}
+                  onClick={() => handleSelectAll(!allVisibleSelected)}
                 >
-                  {selectedClusters.length === productionClusters.length ? "Desmarcar todos" : "Selecionar todos"}
+                  {allVisibleSelected ? "Desmarcar todos" : "Selecionar todos"}
                 </Button>
+              </div>
+
+              {/* Filtro Todos/HLG/PRD — mesmo padrão visual do Header.tsx/ClusterSelectorForTab.tsx */}
+              <div className="flex items-center gap-1 pb-1">
+                {(["all", "hlg", "prd"] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => setEnvFilter(f)}
+                    className={cn(
+                      "text-xs px-2 py-1 rounded",
+                      envFilter === f
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                    )}
+                  >
+                    {f === "all" ? "Todos" : f.toUpperCase()}
+                  </button>
+                ))}
+                {selectedClusters.length > 0 && (
+                  <span className="text-xs text-muted-foreground ml-1">
+                    {selectedClusters.length} selecionado(s) no total
+                  </span>
+                )}
               </div>
 
               <ScrollArea className="h-[300px] border rounded-md p-4">
                 <div className="space-y-3">
-                  {productionClusters.length === 0 ? (
+                  {filteredClusters.length === 0 ? (
                     <div className="text-sm text-muted-foreground text-center py-8">
-                      Nenhum cluster de produção (-prd) disponível
+                      {emptyStateLabel[envFilter]}
                     </div>
                   ) : (
-                    productionClusters.map((cluster) => (
+                    filteredClusters.map((cluster) => (
                       <div key={cluster.context} className="flex items-center space-x-2">
                         <Checkbox
                           id={cluster.context}

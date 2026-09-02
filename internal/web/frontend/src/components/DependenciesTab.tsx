@@ -71,6 +71,7 @@ import {
 import { ResyncAkvModal } from "@/components/ResyncAkvModal";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
+import { isProdClusterName } from "@/lib/clusterSafety";
 import { apiClient } from "@/lib/api/client";
 import type { SecretDataRecord } from "@/lib/api/types";
 import { SecretDataResultsTable } from "@/components/SecretDataResultsTable";
@@ -310,14 +311,29 @@ export const DependenciesTab = () => {
   });
 
   // Filtrar dependências do registry
-  // Extrair ambiente do nome do cluster (ex: "akspriv-faturamento-prd-admin" → "prd")
+  // Extrair ambiente do nome do cluster (ex: "akspriv-faturamento-prd-admin" → "prd").
+  //
+  // Bug real corrigido — pedido do usuário: "o scan da aba dependencies tbm deve procurar por
+  // tudo". Investigado: o SCAN em si (runAutoScan, abaixo) já iterava `allClusters` sem nenhum
+  // filtro — nenhum cluster fica de fora do scan. O bug real era aqui, no agrupamento por
+  // ambiente usado pelos 2 filtros desta aba (Registry e Busca Reversa): a detecção só checava a
+  // convenção estrita de sufixo `-prd`/`-hlg`/etc — um cluster com "prd"/"prod*" fora desse
+  // padrão exato (ex: nomenclatura EKS "asaplog-production", já documentada alhures nesta app)
+  // caía no bucket genérico "outro" em vez de "prd" — os dados dele CONTINUAVAM no registry
+  // (nunca foram excluídos do scan), só ficavam escondidos do usuário ao filtrar por "PRD"
+  // especificamente, dando a falsa impressão de que o scan "não procurou tudo". Corrigido
+  // reaproveitando `isProdClusterName` (lib/clusterSafety.ts, mesma detecção AMPLA já usada nos
+  // 2 fixes anteriores desta sessão) como 1º critério — só cai nos buckets mais finos
+  // (hlg/dev/sit/stg) quando não é produção; sem bater em nenhum desses, o fallback vira "hlg"
+  // (mesma lógica "não é PRD, logo é HLG" de `isHlgClusterName`), nunca mais "outro".
   const extractEnv = (cluster: string): string => {
+    if (isProdClusterName(cluster)) return "prd";
     const lower = cluster.toLowerCase();
-    const envs = ["prd", "hlg", "dev", "sit", "stg"];
-    for (const env of envs) {
+    const finerEnvs = ["hlg", "dev", "sit", "stg"];
+    for (const env of finerEnvs) {
       if (lower.includes(`-${env}`) || lower.includes(`_${env}`)) return env;
     }
-    return "outro";
+    return "hlg";
   };
 
   // Ambientes únicos disponíveis no registry
