@@ -38,6 +38,9 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 	// vale a pena pedir `gcloud auth login` interativo (só faz sentido oferecer login quando já
 	// sabemos, pelo próprio kubeconfig, que existem clusters GKE a alcançar).
 	foundViaKubeconfig := len(configs) > 0
+	if logFunc != nil {
+		logFunc(fmt.Sprintf("[GKE] Fonte 1 (kubeconfig): %d cluster(s) com contexto gke_* encontrado(s)", len(configs)))
+	}
 
 	// Fonte 2: gcloud CLI (requer autenticação)
 	if _, err := exec.LookPath("gcloud"); err != nil {
@@ -47,27 +50,10 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 		return configs, nil
 	}
 
-	// Mesmo padrão de `ensureAWSSSOAuth` (EKS): sessão expirada/ausente é renovada
-	// interativamente ANTES de listar, em vez de só logar a sugestão e seguir sem dado nenhum.
-	// Gateado por `foundViaKubeconfig` — sem isso, todo usuário rodando autodiscover (mesmo quem
-	// só usa AKS/EKS) seria interrompido pedindo login GCP à toa.
-	//
-	// Roda ANTES de `EnsureGKEAuthPlugin` de propósito: o plugin só é necessário depois, pro
-	// kubectl/client-go autenticar contra a API do cluster — `gcloud projects list`/`gcloud
-	// container clusters list` (usados aqui embaixo) não dependem dele. A versão anterior
-	// tentava o plugin primeiro e retornava cedo se ele falhasse (comum em WSL2/Linux com
-	// `gcloud` instalado via `apt`, que desabilita o component manager) — isso abortava a
-	// função inteira ANTES de sequer chegar no login, fazendo o prompt nunca aparecer mesmo
-	// com clusters GKE já achados via kubeconfig.
-	if foundViaKubeconfig {
-		if err := ensureGCPAuth(logFunc); err != nil && logFunc != nil {
-			logFunc(fmt.Sprintf("[GKE] ⚠️  %v", err))
-		}
-	}
-
 	// Garantir que o plugin de autenticação GKE está instalado — best-effort, nunca bloqueia a
 	// listagem de projetos/clusters abaixo (só afeta uma conexão de fato contra o cluster
-	// depois, via kubectl/client-go — fora do escopo deste discovery).
+	// depois, via kubectl/client-go — fora do escopo deste discovery). Roda antes só porque é
+	// rápido e não depende de nada abaixo, não porque a ordem importe para o login.
 	if err := gcpprovider.EnsureGKEAuthPlugin(logFunc); err != nil && logFunc != nil {
 		logFunc(fmt.Sprintf("[GKE] ⚠️  %v", err))
 	}
@@ -77,6 +63,29 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 	}
 
 	projects, err := listGCPProjectsGcloud()
+	if err != nil && foundViaKubeconfig {
+		// A 1ª versão desta correção decidia ANTES de listar, via `gcloud auth list`, se valia
+		// pedir login — mas esse comando só reflete um estado LOCAL ("qual conta está marcada
+		// como ativa" no arquivo de credenciais do gcloud), não se a sessão de fato ainda é
+		// válida: uma conta marcada como ativa com refresh token expirado/revogado passa batido
+		// por `gcloud auth list` sem erro nenhum, e só a tentativa REAL de listar (`gcloud
+		// projects list`, acima) revela isso — foi exatamente esse falso-negativo que fez o
+		// login nunca ser disparado mesmo depois da 1ª correção. Corrigido reagindo à falha real
+		// da operação que precisamos (mesmo espírito de `checkAWSCredentials` no EKS, que já
+		// faz uma chamada de rede de verdade, `aws sts get-caller-identity`, em vez de confiar
+		// num estado local) — se listar falhar E já sabemos (Fonte 1) que há clusters GKE a
+		// alcançar, abre `gcloud auth login` e tenta listar de novo uma única vez.
+		if logFunc != nil {
+			logFunc(fmt.Sprintf("[GKE] ℹ️  gcloud projects list falhou (%v) — tentando gcloud auth login...", err))
+		}
+		if loginErr := ensureGCPAuth(logFunc); loginErr != nil {
+			if logFunc != nil {
+				logFunc(fmt.Sprintf("[GKE] ⚠️  %v", loginErr))
+			}
+		} else {
+			projects, err = listGCPProjectsGcloud()
+		}
+	}
 	if err != nil {
 		if logFunc != nil {
 			if len(configs) == 0 {
@@ -114,26 +123,26 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 	return configs, allErrors
 }
 
-// ensureGCPAuth verifica (via `gcloud auth list`) se há sessão GCP ativa; se não houver, abre
-// `gcloud auth login` interativamente (stdin/stdout ligados ao terminal do chamador) — mesmo
-// padrão/motivo de `ensureAWSSSOAuth` (EKS): sem essa credencial, o app até acha o cluster (via
-// kubeconfig, Fonte 1) mas não consegue de fato ler workloads nele depois — `GetRestConfig`
-// depende de `GetFreshGKEToken`, que por sua vez cai no fallback `gcloud auth print-access-token`
-// quando não há ADC salvo (ver seção "GKE — Autenticação e Leitura de Workloads" no CLAUDE.md).
-// Diferente do AWS (múltiplos profiles possíveis, cada um testado individualmente), GCP aqui é
-// tratado como uma única sessão ativa — não itera "profiles" (`gcloud config configurations`
-// nomeadas são um caso avançado, fora de escopo).
+// ensureGCPAuth abre `gcloud auth login` interativamente (stdin/stdout ligados ao terminal do
+// chamador) — mesmo padrão/motivo de `ensureAWSSSOAuth` (EKS): sem essa credencial, o app até
+// acha o cluster (via kubeconfig, Fonte 1) mas não consegue de fato ler workloads nele depois —
+// `GetRestConfig` depende de `GetFreshGKEToken`, que por sua vez cai no fallback `gcloud auth
+// print-access-token` quando não há ADC salvo (ver seção "GKE — Autenticação e Leitura de
+// Workloads" no CLAUDE.md). Diferente do AWS (múltiplos profiles possíveis, cada um testado
+// individualmente), GCP aqui é tratado como uma única sessão ativa — não itera "profiles"
+// (`gcloud config configurations` nomeadas são um caso avançado, fora de escopo).
+//
+// Chamada só depois que o CHAMADOR já tentou a operação real (`gcloud projects list`) e ela
+// falhou — nunca decide por conta própria via `gcloud auth list` (só reflete um estado LOCAL,
+// "qual conta está marcada como ativa", sem validar se a sessão de fato ainda funciona — ver
+// comentário em `AutoDiscoverGKEClusters`).
 func ensureGCPAuth(logFunc func(string)) error {
-	ctx := context.Background()
-	if gcpprovider.IsGcloudAuthActive(ctx) == nil {
-		return nil
-	}
 	if logFunc != nil {
-		logFunc("[GKE] 🔑 gcloud sem sessão ativa — iniciando gcloud auth login...")
+		logFunc("[GKE] 🔑 iniciando gcloud auth login...")
 	}
 	interactiveCloudLoginMu.Lock()
 	defer interactiveCloudLoginMu.Unlock()
-	loginCmd := exec.CommandContext(ctx, "gcloud", "auth", "login")
+	loginCmd := exec.CommandContext(context.Background(), "gcloud", "auth", "login")
 	loginCmd.Stdin = os.Stdin
 	loginCmd.Stdout = os.Stdout
 	loginCmd.Stderr = os.Stderr
