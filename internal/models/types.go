@@ -186,6 +186,11 @@ type DeploymentSummary struct {
 	// Replicas no instante da consulta mesmo com um pod passando por crash loop. Ver ListDeployments.
 	UnhealthyPodCount int32  `json:"unhealthyPodCount,omitempty"`
 	PodIssueReason    string `json:"podIssueReason,omitempty"`
+	// IsCompanyApp é um palpite heurístico — não uma verdade absoluta — de que este Deployment
+	// passou pela esteira CI/CD sancionada da empresa (registry interno, labels/annotations de
+	// convenção própria), em vez de ser uma ferramenta de terceiro ou algo aplicado manualmente.
+	// Ver isCompanyManagedDeployment em internal/kubernetes/client.go.
+	IsCompanyApp bool `json:"isCompanyApp,omitempty"`
 }
 
 // DeploymentMetadata consolida metadados relevantes do Deployment

@@ -198,6 +198,11 @@ export interface DeploymentSummary {
   // readyReplicas pode não capturar — ver comentário em models.DeploymentSummary no backend.
   unhealthyPodCount?: number;
   podIssueReason?: string;
+  // Palpite heurístico (não uma verdade absoluta) de que este Deployment passou pela esteira
+  // CI/CD sancionada da empresa (registry interno, labels/annotations de convenção própria) — ver
+  // isCompanyManagedDeployment em internal/kubernetes/client.go. Usado só pra diferenciar
+  // visualmente "aplicação da empresa" de ferramenta/sistema na lista de Deployments.
+  isCompanyApp?: boolean;
 }
 
 // Nota: statusCondition/statusReason/statusMessage vêm das Conditions do Deployment K8s

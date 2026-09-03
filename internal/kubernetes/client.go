@@ -1183,7 +1183,73 @@ func BuildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 		StatusMessage:       statusMessage,
 		ResourceVersion:     dep.ResourceVersion,
 		UpdatedAt:           updatedAt,
+		IsCompanyApp:        isCompanyManagedDeployment(dep),
 	}
+}
+
+// companyRegistryImagePrefixes/companyLabelKeyPrefixes/companyAnnotationKeyPrefixes replicam,
+// literalmente, os mesmos valores usados na política Kyverno "deployment-restrictions" desta
+// empresa (preconditions.any, compartilhada pelo usuário) — não é uma convenção genérica do
+// projeto, é específica desta organização (registries harbor/gcbregistry, prefixos de label/
+// annotation devops.k8s.io e app.via.com.br, annotation do Spinnaker artifact).
+var (
+	companyRegistryImagePrefixes = []string{"harbor", "gcbregistry"}
+	companyLabelKeyPrefixes      = []string{"devops.k8s.io/", "app.via.com.br/"}
+	companyAnnotationKeyPrefixes = []string{"artifact.spinnaker.io/"}
+)
+
+// isCompanyManagedDeployment é um PALPITE heurístico — nunca uma verdade absoluta — de que este
+// Deployment passou pela esteira CI/CD sancionada da empresa, espelhando o mesmo
+// preconditions.any: da política Kyverno que isenta deployments "confiáveis" de restrições
+// manuais. Um Deployment de terceiro que por acaso usa uma dessas convenções entraria como
+// "empresa" mesmo assim; uma app real aplicada fora da esteira (raro) ficaria sem o sinal — serve
+// só pra diferenciar visualmente na UI (badge), nunca pra decisão de RBAC/segurança.
+//
+// Zero chamadas extras ao K8s: todo dado usado aqui (imagens, labels/annotations do workload e
+// do pod template) já está no objeto *appsv1.Deployment que ListDeployments/o Watch já têm em
+// mãos — mesmo princípio de custo zero de BuildDeploymentSummary como um todo.
+func isCompanyManagedDeployment(dep *appsv1.Deployment) bool {
+	for _, c := range dep.Spec.Template.Spec.InitContainers {
+		if hasAnyPrefix(c.Image, companyRegistryImagePrefixes) {
+			return true
+		}
+	}
+	for _, c := range dep.Spec.Template.Spec.Containers {
+		if hasAnyPrefix(c.Image, companyRegistryImagePrefixes) {
+			return true
+		}
+	}
+	if mapHasKeyWithAnyPrefix(dep.Labels, companyLabelKeyPrefixes) {
+		return true
+	}
+	if mapHasKeyWithAnyPrefix(dep.Spec.Template.Labels, companyLabelKeyPrefixes) {
+		return true
+	}
+	if mapHasKeyWithAnyPrefix(dep.Annotations, companyAnnotationKeyPrefixes) {
+		return true
+	}
+	if mapHasKeyWithAnyPrefix(dep.Spec.Template.Annotations, companyAnnotationKeyPrefixes) {
+		return true
+	}
+	return false
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func mapHasKeyWithAnyPrefix(m map[string]string, prefixes []string) bool {
+	for k := range m {
+		if hasAnyPrefix(k, prefixes) {
+			return true
+		}
+	}
+	return false
 }
 
 type serviceIPResult struct {
