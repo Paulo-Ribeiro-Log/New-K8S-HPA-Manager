@@ -1373,6 +1373,69 @@ Validado: `tsc --noEmit`/`eslint`/`vite build` limpos (mesmos 79 erros pré-exis
 
 **Frontend**: `isDeploymentHealthy()` (`DeploymentMonitorTable.tsx`) e `isDeploymentProblematic`/`getDeploymentSeverity`/`getDeploymentStatusInfo` (`DeploymentsTab.tsx`) passam a considerar `unhealthyPodCount` além dos campos agregados — cobre tanto a cor da linha/card quanto o filtro "Saudável/Degradado". Reasons de crash "duro" (`CrashLoopBackOff`/`Error`/`ImagePullBackOff`/`ErrImagePull`/`Failed`) contam como severidade `error` (vermelho); os demais (`Pending`, containers not-ready) como `degraded` (amarelo). Ícone de alerta com tooltip na coluna READY da `DeploymentMonitorTable`.
 
+### Deployments — Badge "aplicação da empresa" (lista + combobox de namespaces)
+
+Pedido explícito do usuário: diferenciar visualmente, na lista de Deployments e no combobox de
+namespaces do painel esquerdo (aba Deployments), o que é uma **aplicação real da empresa**
+(passou pela esteira CI/CD sancionada) do que é uma **ferramenta/sistema** (Grafana, cert-manager,
+ingress-controller, etc.) — sem exigir nenhuma consulta nova ao cluster. O usuário compartilhou o
+`preconditions.any:` de uma política Kyverno real desta empresa (`deployment-restrictions`) que já
+usa exatamente esse sinal pra isentar deployments "confiáveis" de restrições manuais — a
+implementação **reaproveita literalmente os mesmos valores** dessa política, não uma convenção
+nova do projeto.
+
+**Backend** (`isCompanyManagedDeployment`, `internal/kubernetes/client.go`) — heurística OR entre
+5 sinais, espelhando o `preconditions.any:` do Kyverno: (1) qualquer imagem de container/
+initContainer começando com `harbor`/`gcbregistry`; (2) qualquer chave de label do workload
+(`dep.Labels`) começando com `devops.k8s.io/`/`app.via.com.br/`; (3) mesma checagem nas labels do
+**pod template** (`dep.Spec.Template.Labels`) — labels do workload e do pod template são objetos
+K8s DISTINTOS, o Kyverno original checa os dois separadamente e a implementação replica isso; (4)
+qualquer chave de annotation do workload começando com `artifact.spinnaker.io/`; (5) mesma
+checagem nas annotations do pod template. **Custo zero**: todo dado usado (imagens, labels/
+annotations) já está no objeto `*appsv1.Deployment` que `ListDeployments`/o Watch já têm em mãos —
+nenhuma chamada extra ao K8s, mesmo princípio de `BuildDeploymentSummary` como um todo. Populado
+em `DeploymentSummary.IsCompanyApp` (`json:"isCompanyApp,omitempty"`), computado dentro da própria
+`BuildDeploymentSummary` — cobre tanto o polling (`ListDeployments`) quanto o Watch
+(`deployments_watch.go`, que usa a mesma função) automaticamente, sem duplicar lógica.
+
+**Fraseologia deliberada, mesmo espírito de `TrustedByPublicCA`/`ChainValidationResult` nesta
+app**: é um PALPITE heurístico, nunca uma verdade absoluta — um Deployment de terceiro que por
+acaso usa uma dessas convenções entraria como "empresa" mesmo assim; uma app real aplicada fora da
+esteira (raro) ficaria sem o sinal. Serve só pra diferenciar visualmente na UI, nunca pra decisão
+de RBAC/segurança.
+
+**Frontend** (`DeploymentsTab.tsx`): `CompanyAppBadge` — badge pequeno e SILENCIOSO no caso
+negativo (ícone `Building2`, ao lado do nome no card da lista) — só aparece quando
+`dep.isCompanyApp`, nunca um badge "não é empresa" nos dois sentidos; decisão deliberada a pedido
+do próprio usuário ("um pequeno badge... o que for muito mais elegante") — marcar só o caso
+especial evita poluir a lista, já que a maioria dos itens tende a ser "empresa" mesmo (ferramentas/
+sistemas costumam concentrar-se em poucos namespaces próprios). `pickDeploymentHotFields`
+(`useDeploymentsWatch.ts`) inclui `isCompanyApp` entre os campos "quentes" — diferente de
+`unhealthyPodCount`/`serviceClusterIPs` (que exigem enriquecimento e nunca vêm de um evento de
+Watch), este campo é derivado só do próprio objeto Deployment, então é seguro sobrescrever via
+Watch sem risco de regredir pra um valor vazio.
+
+**Combobox de namespaces**: `namespaceCompanyMap` (`Record<string, boolean>`) é um mapa
+CUMULATIVO — nunca resetado ao trocar de namespace/cluster, só GANHA entradas conforme mais
+deployments são vistos (navegar em "Todos" preenche tudo de uma vez, já que o backend devolve a
+frota inteira do cluster sem filtro de namespace nesse caso; navegar namespace a namespace vai
+completando aos poucos). Cada `<SelectItem>` de namespace ganha o mesmo ícone `Building2` quando
+`namespaceCompanyMap[ns.name]` é true. Puramente um hint visual — um namespace sem nenhum
+deployment ainda carregado fica sem badge, nunca "sem apps da empresa" (silêncio ≠ negativo, só
+"ainda não sabemos").
+
+Validado ao vivo, ponta a ponta, contra um cluster de produção real (`akspriv-abastecimento-prd-
+admin`, JWT de debug a partir do `jwt.secret` real, `cmd/_debugjwt` temporário removido depois —
+mesmo padrão já documentado nesta página): dos 32 Deployments do cluster, 19 aplicações reais da
+empresa (`supply-*`, `comercial-sortimento-*`, `advicer-*`, `order-request-api`) classificadas
+corretamente como `isCompanyApp:true`, e as 13 ferramentas/sistemas (`external-secrets*`,
+`nginx-ingress-controller`, `kyverno-*`, `prometheus-*`, `falcon-*`) corretamente como
+`false`/ausente — divisão exata do que o usuário pediu pra diferenciar. Teste unitário novo
+(`TestIsCompanyManagedDeployment`, `internal/kubernetes/company_app_test.go`, 9 casos) cobre os 5
+sinais individualmente + um caso negativo real (Grafana). `go build`/`go vet`/`gofmt`/`go test
+./internal/kubernetes/... ./internal/web/handlers/... -race` limpos; `tsc --noEmit`/`eslint`/
+`vite build` sem nenhum erro novo (baseline idêntico).
+
 ### Rollback de Deployment (6 modos: Helm nativo, K8s nativo, Nexus, Imagem, Spinnaker, Arquivos)
 
 Item novo no menu "⋮" da aba Deployments (painel direito, ao lado de "Rollout Restart") — pedido explícito do usuário, com o passo a passo `kubectl rollout history/undo/status` como referência de partida, mais duas opções adicionais levantadas na conversa (Helm nativo e Nexus). `DeploymentRollbackModal.tsx` — a detecção de modo é automática, a partir do manifest já carregado pela própria aba (`meta.helm.sh/release-name` + label `app.kubernetes.io/managed-by: Helm` identificam um Deployment Helm-gerenciado): Helm-gerenciado oferece **Modo Helm** e **Modo Nexus** (nunca o caminho cru, que causaria *drift* — o Helm nunca ficaria sabendo do patch); sem esses marcadores, só o **Modo K8s nativo** é oferecido, com aviso se detectar labels de GitOps conhecidos (`kustomize.toolkit.fluxcd.io/name`, `helm.toolkit.fluxcd.io/name`, `argocd.argoproj.io/instance`) — um reconcile automático pode reverter o rollback pouco depois.
