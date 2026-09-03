@@ -114,8 +114,13 @@ export const DaemonSetsTab = ({
     setBatchMetrics(null);
     try {
       const pods = await apiClient.getPods(ds.cluster, [ds.namespace], ds.name, false, true);
+      // Guarda contra dep.labels?.["app"] indefinido — mesmo bug real corrigido em
+      // DeploymentsTab.tsx's filterPodsForDeployment (DaemonSets do chart convair-helm também
+      // não setam a label plana "app"); dormant aqui porque `pods` já vem pré-filtrado pelo
+      // servidor (search=ds.name), mas corrigido por consistência/prevenção.
+      const dsApp = ds.labels?.["app"];
       const dsPods = pods.filter((p) =>
-        p.labels?.["app"] === ds.labels?.["app"] ||
+        (dsApp !== undefined && p.labels?.["app"] === dsApp) ||
         p.name.startsWith(ds.name + "-")
       );
       setMonitorPods(dsPods.length > 0 ? dsPods : pods);
@@ -133,8 +138,9 @@ export const DaemonSetsTab = ({
     const ds = rightView.daemonSet;
     try {
       const pods = await apiClient.getPods(ds.cluster, [ds.namespace], ds.name, false, true);
+      const dsApp = ds.labels?.["app"];
       const dsPods = pods.filter((p) =>
-        p.labels?.["app"] === ds.labels?.["app"] ||
+        (dsApp !== undefined && p.labels?.["app"] === dsApp) ||
         p.name.startsWith(ds.name + "-")
       );
       setMonitorPods(dsPods.length > 0 ? dsPods : pods);
