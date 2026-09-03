@@ -1,6 +1,6 @@
 # New K8s HPA Manager
 
-**Ferramenta completa de gerenciamento de recursos Kubernetes e Azure AKS com interface Web e TUI.**
+**Ferramenta completa de gerenciamento de recursos Kubernetes e Azure AKS com interface Web.**
 
 [![Release](https://img.shields.io/github/v/release/Paulo-Ribeiro-Log/New-K8S-HPA-Manager?style=flat-square)](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases)
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat-square&logo=go)](https://go.dev/)
@@ -10,9 +10,9 @@
 
 ## Visão Geral
 
-**New K8s HPA Manager** é uma solução para gerenciar recursos Kubernetes em larga escala, com suporte a múltiplos clusters, Azure AKS e análise preditiva com IA. Oferece duas interfaces: **TUI** (terminal) e **Web** (React/TypeScript).
+**New K8s HPA Manager** é uma solução para gerenciar recursos Kubernetes em larga escala, com suporte a múltiplos clusters (AKS/EKS/GKE) e análise preditiva com IA. Interface **Web** (Go/Gin API + React/TypeScript SPA).
 
-**Última release estável:** `v1.3.32`
+**Última release estável:** `v1.3.40`
 
 ---
 
@@ -112,8 +112,8 @@
 ### Integração ServiceNow
 
 - Importação de incidentes e CIs via ServiceNow API
-- **Autenticação SAML/SSO via Chrome/Edge do Windows** (WSL CDP): reutiliza sessão autenticada do navegador sem reinserir credenciais
-- Abertura direta de URLs do ServiceNow no Chrome Windows a partir do WSL2
+- **Autenticação SAML/SSO via browser automation** (go-rod, Chromium embutido gerenciado pela própria aplicação — sem depender de Chrome do sistema): sessão persistida em disco, reaproveitada entre extrações
+- Importação de CHGs de aprovação SRE a partir de mensagens do Microsoft Teams (Mr.ViaBot)
 
 ### Infraestrutura e Segurança
 
@@ -122,8 +122,8 @@
   - Cache de permissões com TTL de 1 hora
 
 - **Audit Log**: Rastreabilidade completa de operações Cordon/Drain e Rollouts
-- **Sessions**: Save/Load/Edit de sessões compatíveis entre TUI e Web
-- **Auto-Discover**: Busca paralela de subscriptions Azure (10x mais rápido)
+- **Sessions**: Save/Load/Edit de sessões de cluster/namespace
+- **Auto-Discover**: Busca paralela de clusters AKS/EKS/GKE
 - **Auto-Update**: Detecção e instalação automática de novas versões
 - **Certificates**: Visualização de certificados TLS do cluster
 - **Dependencies**: Mapa de dependências entre serviços
@@ -138,24 +138,26 @@
 curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash
 ```
 
-### Método 2: Binários pré-compilados (v1.3.32)
+### Método 2: Binários pré-compilados
+
+Substitua `vX.Y.Z` pela [última release](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases) (atualmente `v1.3.40`).
 
 **Linux (amd64)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.32/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/vX.Y.Z/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 **macOS (Intel)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.32/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/vX.Y.Z/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa && sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 **macOS (Apple Silicon)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.32/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/vX.Y.Z/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
 chmod +x new-k8s-hpa && sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
@@ -165,9 +167,8 @@ chmod +x new-k8s-hpa && sudo mv new-k8s-hpa /usr/local/bin/
 
 ## Uso
 
-### Interface Web (Recomendada)
-
 ```bash
+new-k8s-hpa                  # Sem subcomando = mesmo que `web` (inicia em background, porta 8080)
 new-k8s-hpa web              # Inicia em background (porta 8080)
 new-k8s-hpa web -f           # Foreground mode (logs no terminal)
 new-k8s-hpa web --port 9000  # Porta customizada
@@ -178,20 +179,12 @@ new-k8s-hpa web --ai-provider ollama --ollama-model llama3.2:3b
 # Com AI Diagnostics (Claude API)
 export ANTHROPIC_API_KEY=sk-ant-...
 new-k8s-hpa web --ai-provider claude
-```
 
-Acesse: `http://localhost:8080`
-
-### Interface TUI
-
-```bash
-new-k8s-hpa                  # TUI padrão
-new-k8s-hpa --debug          # Debug mode
-new-k8s-hpa autodiscover     # Auto-descobrir clusters
+new-k8s-hpa autodiscover     # Auto-descobrir clusters AKS/EKS/GKE
 new-k8s-hpa version          # Ver versão e updates disponíveis
 ```
 
-**Atalhos TUI:** `F1` Ajuda · `F3` Logs · `F5` Reload · `F8` Prometheus · `F9` CronJobs · `Ctrl+S` Salvar sessão · `Ctrl+L` Carregar sessão · `ESC` Voltar
+Acesse: `http://localhost:8080`
 
 ---
 
@@ -199,11 +192,11 @@ new-k8s-hpa version          # Ver versão e updates disponíveis
 
 | Obrigatório | Opcional |
 |-------------|----------|
-| Go 1.25+ (compilação) | Azure CLI (Node Pools) |
+| Go 1.25+ (compilação) | Azure CLI / AWS CLI / gcloud (Node Pools AKS/EKS/GKE) |
 | kubectl configurado | Prometheus (métricas + Conntrack histórico) |
-| Git | Ollama ou API key Claude (AI) |
+| Git | Ollama local ou API key Claude/Gemini/OpenAI (AI Diagnostics) |
 | | Kiali/Istio (Service Mesh) |
-| | Chrome/Edge Windows (ServiceNow SSO via CDP) |
+| | Google Chrome/Chromium no WSL2 (Teams — usa o Chrome do sistema; ServiceNow roda 100% no Chromium embutido do go-rod, não depende disso) |
 
 ---
 
