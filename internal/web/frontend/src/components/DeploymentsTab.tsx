@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, CheckCircle2, TriangleAlert, AlertOctagon, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw, FileWarning } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, CheckCircle2, TriangleAlert, AlertOctagon, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw, FileWarning, Building2 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -69,6 +69,24 @@ import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { useSpinnakerRolloutStatus } from "@/hooks/useSpinnaker";
 import { deriveSpinnakerEnv } from "@/lib/spinnakerEnv";
 import { SpinnakerRolloutModal } from "@/components/SpinnakerRolloutModal";
+
+// Badge que diferencia visualmente "aplicação da empresa" (passou pela esteira CI/CD sancionada,
+// ver isCompanyManagedDeployment no backend — mesma heurística da política Kyverno
+// deployment-restrictions, compartilhada pelo usuário) de uma ferramenta/sistema deployado à
+// parte (Grafana, cert-manager, etc.). Deliberadamente SILENCIOSO no caso negativo — o próprio
+// usuário pediu "um pequeno badge... o que for muito mais elegante": marcar só o caso especial
+// (empresa) em vez de badges nos dois sentidos evita poluir a lista, já que a maioria dos itens
+// tende a ser "empresa" mesmo (ferramentas/sistemas costumam ficar em namespaces próprios).
+function CompanyAppBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 flex-shrink-0"
+      title="Aplicação da empresa (imagem de registry interno ou labels/annotations da esteira CI/CD) — heurística, não uma verdade absoluta"
+    >
+      <Building2 className="w-2.5 h-2.5" />
+    </span>
+  );
+}
 
 // Badge/chip do Spinnaker (SPINNAKER-INTEGRATION-PLAN.md, seção 8) — mesmo componente visual
 // usado nos dois lugares pedidos: informativo (sem onClick) na lista à esquerda, e como
@@ -607,6 +625,29 @@ export const DeploymentsTab = ({
       return Array.from(byKey.values());
     });
   }, [deploymentWatchItems]);
+
+  // Mapa namespace → "tem pelo menos 1 deployment da empresa" (ver CompanyAppBadge/isCompanyApp)
+  // pro combobox de namespaces do painel esquerdo. CUMULATIVO — nunca é resetado ao trocar de
+  // namespace/cluster, só GANHA entradas conforme mais deployments são vistos: navegar em "Todos"
+  // preenche tudo de uma vez (o backend já devolve a frota inteira do cluster sem filtro de
+  // namespace); navegar namespace a namespace vai completando aos poucos. Puramente um hint
+  // visual — um namespace sem nenhum deployment carregado ainda fica sem badge (nunca "sem apps
+  // da empresa", só "ainda não sabemos").
+  const [namespaceCompanyMap, setNamespaceCompanyMap] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (displayDeployments.length === 0) return;
+    setNamespaceCompanyMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const dep of displayDeployments) {
+        if (dep.isCompanyApp && !next[dep.namespace]) {
+          next[dep.namespace] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [displayDeployments]);
 
   useEffect(() => {
     if (error) {
@@ -2623,7 +2664,12 @@ export const DeploymentsTab = ({
         <SelectItem value="__all__">Todos</SelectItem>
         {filteredNamespaces.map((ns) => (
           <SelectItem key={ns.name} value={ns.name}>
-            {ns.name}
+            <span className="inline-flex items-center gap-1.5">
+              {ns.name}
+              {namespaceCompanyMap[ns.name] && (
+                <Building2 className="w-3 h-3 text-blue-400 flex-shrink-0" aria-label="Namespace tem app(s) da empresa" />
+              )}
+            </span>
           </SelectItem>
         ))}
       </SelectContent>
@@ -2946,6 +2992,7 @@ export const DeploymentsTab = ({
                 )}
                 <div className="flex items-center gap-2">
                   <div className="font-semibold text-sm">{dep.name}</div>
+                  {dep.isCompanyApp && <CompanyAppBadge />}
                   {severity !== "ok" && (
                     <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${severity === "error" ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400"}`}>
                       !

@@ -29,6 +29,9 @@ export function pickDeploymentHotFields(dep: DeploymentSummary): Partial<Deploym
     statusMessage: dep.statusMessage,
     resourceVersion: dep.resourceVersion,
     updatedAt: dep.updatedAt,
+    // isCompanyApp é derivado só do próprio objeto Deployment (imagem/labels/annotations) — zero
+    // custo extra, igual aos demais campos quentes acima, então é seguro sobrescrever via Watch.
+    isCompanyApp: dep.isCompanyApp,
   };
 }
 
