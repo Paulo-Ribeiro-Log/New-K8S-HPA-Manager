@@ -47,23 +47,29 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 		return configs, nil
 	}
 
-	// Garantir que o plugin de autenticação GKE está instalado antes de qualquer operação
-	if err := gcpprovider.EnsureGKEAuthPlugin(logFunc); err != nil {
-		if logFunc != nil {
-			logFunc(fmt.Sprintf("[GKE] ⚠️  %v", err))
-		}
-		// Não bloquear o discovery por causa do plugin — continuar com kubeconfig
-		return configs, nil
-	}
-
 	// Mesmo padrão de `ensureAWSSSOAuth` (EKS): sessão expirada/ausente é renovada
 	// interativamente ANTES de listar, em vez de só logar a sugestão e seguir sem dado nenhum.
 	// Gateado por `foundViaKubeconfig` — sem isso, todo usuário rodando autodiscover (mesmo quem
 	// só usa AKS/EKS) seria interrompido pedindo login GCP à toa.
+	//
+	// Roda ANTES de `EnsureGKEAuthPlugin` de propósito: o plugin só é necessário depois, pro
+	// kubectl/client-go autenticar contra a API do cluster — `gcloud projects list`/`gcloud
+	// container clusters list` (usados aqui embaixo) não dependem dele. A versão anterior
+	// tentava o plugin primeiro e retornava cedo se ele falhasse (comum em WSL2/Linux com
+	// `gcloud` instalado via `apt`, que desabilita o component manager) — isso abortava a
+	// função inteira ANTES de sequer chegar no login, fazendo o prompt nunca aparecer mesmo
+	// com clusters GKE já achados via kubeconfig.
 	if foundViaKubeconfig {
 		if err := ensureGCPAuth(logFunc); err != nil && logFunc != nil {
 			logFunc(fmt.Sprintf("[GKE] ⚠️  %v", err))
 		}
+	}
+
+	// Garantir que o plugin de autenticação GKE está instalado — best-effort, nunca bloqueia a
+	// listagem de projetos/clusters abaixo (só afeta uma conexão de fato contra o cluster
+	// depois, via kubectl/client-go — fora do escopo deste discovery).
+	if err := gcpprovider.EnsureGKEAuthPlugin(logFunc); err != nil && logFunc != nil {
+		logFunc(fmt.Sprintf("[GKE] ⚠️  %v", err))
 	}
 
 	if logFunc != nil {
@@ -125,6 +131,8 @@ func ensureGCPAuth(logFunc func(string)) error {
 	if logFunc != nil {
 		logFunc("[GKE] 🔑 gcloud sem sessão ativa — iniciando gcloud auth login...")
 	}
+	interactiveCloudLoginMu.Lock()
+	defer interactiveCloudLoginMu.Unlock()
 	loginCmd := exec.CommandContext(ctx, "gcloud", "auth", "login")
 	loginCmd.Stdin = os.Stdin
 	loginCmd.Stdout = os.Stdout

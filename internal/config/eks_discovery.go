@@ -12,6 +12,15 @@ import (
 	"time"
 )
 
+// interactiveCloudLoginMu serializa qualquer login interativo de CLI cloud (aws sso login,
+// gcloud auth login) disparado durante o autodiscover. `cmd/autodiscover.go` roda a descoberta
+// AKS/EKS/GKE em goroutines paralelas — sem esse mutex, `ensureAWSSSOAuth` (EKS) e
+// `ensureGCPAuth` (GKE) podiam competir pelo mesmo stdin/stdout do terminal ao mesmo tempo,
+// fazendo um dos dois prompts "sumir" atrás do outro (o usuário só percebia um pedido de login,
+// nunca os dois). O login em si pode levar de segundos a minutos (usuário completando o fluxo
+// no browser) — vale a pena serializar por correção, não por velocidade.
+var interactiveCloudLoginMu sync.Mutex
+
 // regiões AWS padrão a escanear no autodiscover EKS
 var eksDefaultRegions = []string{
 	"us-east-1",
@@ -150,6 +159,8 @@ func ensureAWSSSOAuth(profile string, logFunc func(string)) error {
 	if logFunc != nil {
 		logFunc(fmt.Sprintf("[EKS] 🔑 Credenciais expiradas para profile %q — iniciando aws sso login...", profile))
 	}
+	interactiveCloudLoginMu.Lock()
+	defer interactiveCloudLoginMu.Unlock()
 	loginCmd := exec.CommandContext(context.Background(), "aws", "sso", "login", "--profile", profile)
 	loginCmd.Stdin = os.Stdin
 	loginCmd.Stdout = os.Stdout
