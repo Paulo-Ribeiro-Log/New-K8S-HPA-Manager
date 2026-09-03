@@ -258,6 +258,10 @@ export const DeploymentsTab = ({
 }: DeploymentsTabProps) => {
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('deployments', 'searchQuery', "");
+  // Filtro Todos/APPs/Sistema — pedido explícito do usuário, mesma ideia do badge isCompanyApp
+  // (ver CompanyAppBadge), mas como filtro de verdade na lista: "APPs" mostra só aplicações da
+  // empresa (isCompanyApp), "Sistema" mostra só o resto (ferramentas/infra), sem misturar.
+  const [appFilter, setAppFilter] = usePersistedTabState<"all" | "company" | "system">('deployments', 'appFilter', "all");
   const [selectedDeployment, setSelectedDeployment] = usePersistedTabState<DeploymentSummary | null>('deployments', 'selectedDeployment', null);
   const [showLabels, setShowLabels] = usePersistedTabState<boolean>('deployments', 'showLabels', false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('deployments', 'isSidebarCollapsed', false);
@@ -803,9 +807,15 @@ export const DeploymentsTab = ({
   }, [displayDeployments, selectedDeployment, setSelectedDeployment]);
 
   const filteredDeployments = useMemo(() => {
-    if (!searchQuery) return displayDeployments;
+    let result = displayDeployments;
+    if (appFilter === "company") {
+      result = result.filter((dep) => dep.isCompanyApp);
+    } else if (appFilter === "system") {
+      result = result.filter((dep) => !dep.isCompanyApp);
+    }
+    if (!searchQuery) return result;
     const query = searchQuery.toLowerCase();
-    return displayDeployments.filter((dep) => {
+    return result.filter((dep) => {
       return (
         dep.name.toLowerCase().includes(query) ||
         dep.namespace.toLowerCase().includes(query) ||
@@ -814,7 +824,7 @@ export const DeploymentsTab = ({
         )
       );
     });
-  }, [displayDeployments, searchQuery]);
+  }, [displayDeployments, searchQuery, appFilter]);
 
   const handleSelectDeployment = async (summary: DeploymentSummary) => {
     // Salvar histórico atual no cache antes de trocar
@@ -3437,6 +3447,28 @@ export const DeploymentsTab = ({
           className="pl-10 pr-8"
         />
       </div>
+
+      {/* Filtro Todos/APPs/Sistema — pedido explícito do usuário: deixa listar só as aplicações
+          da empresa (isCompanyApp) sem misturar ferramentas/infra (Grafana, cert-manager, etc.),
+          ou o inverso. Combobox, não segmented buttons — mesma convenção já usada pro seletor de
+          namespace logo acima dele no header desta aba. */}
+      <Select value={appFilter} onValueChange={(value) => setAppFilter(value as "all" | "company" | "system")}>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">Todos ({displayDeployments.length})</SelectItem>
+          <SelectItem value="company">
+            <span className="inline-flex items-center gap-1.5">
+              <Building2 className="w-3 h-3 text-blue-400 flex-shrink-0" />
+              APPs ({displayDeployments.filter((d) => d.isCompanyApp).length})
+            </span>
+          </SelectItem>
+          <SelectItem value="system">
+            Sistema ({displayDeployments.filter((d) => !d.isCompanyApp).length})
+          </SelectItem>
+        </SelectContent>
+      </Select>
 
       {renderDeploymentList()}
     </div>

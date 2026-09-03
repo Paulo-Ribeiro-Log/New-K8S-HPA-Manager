@@ -1440,6 +1440,19 @@ sinais individualmente + um caso negativo real (Grafana). `go build`/`go vet`/`g
 ./internal/kubernetes/... ./internal/web/handlers/... -race` limpos; `tsc --noEmit`/`eslint`/
 `vite build` sem nenhum erro novo (baseline idêntico).
 
+**Filtro Todos/APPs/Sistema (combobox, não só o badge)** — pedido explícito do usuário, na
+sequência do badge acima: "no combobox poderia ter uma seleção, todos, APPs, sistema. assim os
+que são app da empresa poderiam ser listados sem que fosse listados os app de sistema". Novo
+estado `appFilter` (`usePersistedTabState<"all"|"company"|"system">`, mesmo padrão de persistência
+por-aba já usado por `searchQuery`) filtra `filteredDeployments` por `dep.isCompanyApp` ANTES do
+filtro de busca por texto — os dois filtros combinam (AND), igual ao padrão já estabelecido em
+`PodMonitorTable.tsx`'s `TopNFilter`. Combobox (`<Select>`, mesma convenção do seletor de
+namespace logo acima dele no mesmo header) com contagem em cada opção (`Todos (N)` / `APPs (N)`
+com o mesmo ícone `Building2` do badge / `Sistema (N)`) — contagens sempre sobre
+`displayDeployments` (o total antes do filtro de busca), não sobre `filteredDeployments`, pra não
+criar um efeito circular confuso (a contagem de "APPs" não deveria encolher só porque o usuário
+também digitou algo na busca).
+
 ### Rollback de Deployment (6 modos: Helm nativo, K8s nativo, Nexus, Imagem, Spinnaker, Arquivos)
 
 Item novo no menu "⋮" da aba Deployments (painel direito, ao lado de "Rollout Restart") — pedido explícito do usuário, com o passo a passo `kubectl rollout history/undo/status` como referência de partida, mais duas opções adicionais levantadas na conversa (Helm nativo e Nexus). `DeploymentRollbackModal.tsx` — a detecção de modo é automática, a partir do manifest já carregado pela própria aba (`meta.helm.sh/release-name` + label `app.kubernetes.io/managed-by: Helm` identificam um Deployment Helm-gerenciado): Helm-gerenciado oferece **Modo Helm** e **Modo Nexus** (nunca o caminho cru, que causaria *drift* — o Helm nunca ficaria sabendo do patch); sem esses marcadores, só o **Modo K8s nativo** é oferecido, com aviso se detectar labels de GitOps conhecidos (`kustomize.toolkit.fluxcd.io/name`, `helm.toolkit.fluxcd.io/name`, `argocd.argoproj.io/instance`) — um reconcile automático pode reverter o rollback pouco depois.
