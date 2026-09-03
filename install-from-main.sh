@@ -375,8 +375,10 @@ print_usage() {
 
     echo -e "${BLUE}⚙️ Configuração Inicial:${NC}"
     echo "  1. Configurar kubeconfig: ~/.kube/config"
-    echo "  2. Azure login: az login"
+    echo "  2. Azure login (AKS): az login"
     echo "  3. Auto-descobrir clusters: $BINARY_NAME autodiscover"
+    echo "     (para AWS/EKS e GCP/GKE, o autodiscover pede login — aws sso login /"
+    echo "     gcloud auth login — automaticamente, se necessário)"
     echo "  4. Iniciar aplicação: $BINARY_NAME"
     echo ""
 

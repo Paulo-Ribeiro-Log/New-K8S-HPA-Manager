@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -33,6 +34,10 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 			}
 		}
 	}
+	// Achado via kubeconfig antes da Fonte 2 mexer em `configs` — usado abaixo para decidir se
+	// vale a pena pedir `gcloud auth login` interativo (só faz sentido oferecer login quando já
+	// sabemos, pelo próprio kubeconfig, que existem clusters GKE a alcançar).
+	foundViaKubeconfig := len(configs) > 0
 
 	// Fonte 2: gcloud CLI (requer autenticação)
 	if _, err := exec.LookPath("gcloud"); err != nil {
@@ -49,6 +54,16 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 		}
 		// Não bloquear o discovery por causa do plugin — continuar com kubeconfig
 		return configs, nil
+	}
+
+	// Mesmo padrão de `ensureAWSSSOAuth` (EKS): sessão expirada/ausente é renovada
+	// interativamente ANTES de listar, em vez de só logar a sugestão e seguir sem dado nenhum.
+	// Gateado por `foundViaKubeconfig` — sem isso, todo usuário rodando autodiscover (mesmo quem
+	// só usa AKS/EKS) seria interrompido pedindo login GCP à toa.
+	if foundViaKubeconfig {
+		if err := ensureGCPAuth(logFunc); err != nil && logFunc != nil {
+			logFunc(fmt.Sprintf("[GKE] ⚠️  %v", err))
+		}
 	}
 
 	if logFunc != nil {
@@ -91,6 +106,36 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 	}
 
 	return configs, allErrors
+}
+
+// ensureGCPAuth verifica (via `gcloud auth list`) se há sessão GCP ativa; se não houver, abre
+// `gcloud auth login` interativamente (stdin/stdout ligados ao terminal do chamador) — mesmo
+// padrão/motivo de `ensureAWSSSOAuth` (EKS): sem essa credencial, o app até acha o cluster (via
+// kubeconfig, Fonte 1) mas não consegue de fato ler workloads nele depois — `GetRestConfig`
+// depende de `GetFreshGKEToken`, que por sua vez cai no fallback `gcloud auth print-access-token`
+// quando não há ADC salvo (ver seção "GKE — Autenticação e Leitura de Workloads" no CLAUDE.md).
+// Diferente do AWS (múltiplos profiles possíveis, cada um testado individualmente), GCP aqui é
+// tratado como uma única sessão ativa — não itera "profiles" (`gcloud config configurations`
+// nomeadas são um caso avançado, fora de escopo).
+func ensureGCPAuth(logFunc func(string)) error {
+	ctx := context.Background()
+	if gcpprovider.IsGcloudAuthActive(ctx) == nil {
+		return nil
+	}
+	if logFunc != nil {
+		logFunc("[GKE] 🔑 gcloud sem sessão ativa — iniciando gcloud auth login...")
+	}
+	loginCmd := exec.CommandContext(ctx, "gcloud", "auth", "login")
+	loginCmd.Stdin = os.Stdin
+	loginCmd.Stdout = os.Stdout
+	loginCmd.Stderr = os.Stderr
+	if err := loginCmd.Run(); err != nil {
+		return fmt.Errorf("gcloud auth login falhou: %w", err)
+	}
+	if logFunc != nil {
+		logFunc("[GKE] ✅ Autenticação gcloud concluída")
+	}
+	return nil
 }
 
 // discoverGKEFromKubeconfig extrai clusters GKE dos contexts do kubeconfig (sem credenciais).
