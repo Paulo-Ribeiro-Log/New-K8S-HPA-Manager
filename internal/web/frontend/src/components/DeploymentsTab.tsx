@@ -680,9 +680,24 @@ export const DeploymentsTab = ({
   // trazem o namespace INTEIRO, sem filtro server-side por deployment). Sem selector confiável
   // único em toda a frota, por isso o fallback: se nada bater, mostra tudo em vez de uma lista
   // vazia enganosa.
+  //
+  // Bug real corrigido — relatado pelo usuário: drill-down de "entrega-mais-transporte" também
+  // listava pods de "entrega-mais-api" (qualquer Deployment da mesma família de nome). Causa:
+  // `p.labels?.["app"] === dep.labels?.["app"]` sem guarda contra os dois lados serem
+  // `undefined` — Deployments publicados pelo chart `convair-helm` (usado por dezenas de
+  // microsserviços nesta empresa, ver CLAUDE.md) nunca setam a label plana "app", só
+  // `app.kubernetes.io/*` — então `dep.labels?.["app"]` é `undefined` pra praticamente toda a
+  // frota, e `undefined === undefined` batia como `true` pra QUALQUER pod que também não tivesse
+  // essa label, efetivamente ignorando o filtro. Inofensivo enquanto só o polling inicial
+  // (`search=dep.name`, já pré-filtrado pelo servidor) chamava esta função — o bug só aparecia de
+  // verdade quando o Watch passou a alimentar esta mesma função com o NAMESPACE INTEIRO (ver
+  // comentário acima), sem nenhum pré-filtro do servidor pra mascarar a falha. Corrigido exigindo
+  // que a label "app" do Deployment exista de fato antes de usá-la como critério — sem ela, só o
+  // prefixo de nome (`dep.name + "-"`) decide.
   const filterPodsForDeployment = useCallback((pods: PodSummary[], dep: DeploymentSummary) => {
+    const depApp = dep.labels?.["app"];
     const deploymentPods = pods.filter((p) =>
-      p.labels?.["app"] === dep.labels?.["app"] ||
+      (depApp !== undefined && p.labels?.["app"] === depApp) ||
       p.name.startsWith(dep.name + "-")
     );
     return deploymentPods.length > 0 ? deploymentPods : pods;
