@@ -1,10 +1,12 @@
 import { Card } from "@/components/ui/card";
-import { Activity, Server, Cpu, HardDrive, Monitor, Package } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Activity, Server, Cpu, HardDrive, Monitor, Package, Search } from "lucide-react";
 import { useEffect, useState, useRef } from "react";
 import { apiClient } from "@/lib/api/client";
 import { ClusterInfo } from "@/lib/api/types";
 import { MetricsGauge } from "@/components/MetricsGauge";
 import { TopNamespacesCard } from "@/components/TopNamespacesCard";
+import { AutoDiscoverDialog } from "@/components/AutoDiscoverDialog";
 import { useQueryClient } from "@tanstack/react-query";
 
 
@@ -17,6 +19,7 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
   const [clusterInfo, setClusterInfo] = useState<ClusterInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showAutoDiscover, setShowAutoDiscover] = useState(false);
   const queryClient = useQueryClient();
   const previousClusterRef = useRef<string | undefined>();
 
@@ -184,21 +187,38 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
 
   return (
     <div className="p-6 h-full bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 animate-in fade-in duration-500 overflow-y-auto">
+      <AutoDiscoverDialog
+        open={showAutoDiscover}
+        onOpenChange={setShowAutoDiscover}
+        onComplete={() => fetchClusterInfo(true)}
+      />
+
       {/* Cluster Info Card */}
       <Card className="mb-6 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg hover:shadow-xl transition-all duration-300">
         <div className="p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="p-3 bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl shadow-lg">
-              <Server className="w-6 h-6 text-white" />
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl shadow-lg">
+                <Server className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold text-slate-800 dark:text-slate-100">
+                  Informações do Cluster
+                </h2>
+                <p className="text-sm text-slate-600 dark:text-slate-400">
+                  Monitoramento em tempo real dos recursos do Kubernetes
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-xl font-semibold text-slate-800 dark:text-slate-100">
-                Informações do Cluster
-              </h2>
-              <p className="text-sm text-slate-600 dark:text-slate-400">
-                Monitoramento em tempo real dos recursos do Kubernetes
-              </p>
-            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAutoDiscover(true)}
+              className="gap-2 shrink-0 bg-white/60 dark:bg-slate-800/60"
+            >
+              <Search className="w-4 h-4" />
+              Auto-Descobrir Clusters
+            </Button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mt-6">

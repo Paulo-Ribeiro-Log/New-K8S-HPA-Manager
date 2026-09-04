@@ -123,9 +123,12 @@ func (h *AutoDiscoverHandler) HandleAutoDiscover(c *gin.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// allowInteractiveLogin=false: disparado por um clique no browser, sem ninguém no
+			// terminal do servidor pra responder um prompt de `aws sso login` (ver comentário em
+			// AutoDiscoverEKSClusters, internal/config/eks_discovery.go).
 			eksConfigs, eksErrors := manager.AutoDiscoverEKSClusters(func(msg string) {
 				progressChan <- AutoDiscoverProgress{Phase: "processing", Message: msg, Provider: "eks"}
-			})
+			}, false)
 			mu.Lock()
 			pr.eksConfigs = eksConfigs
 			pr.eksErrors = eksErrors
@@ -136,9 +139,10 @@ func (h *AutoDiscoverHandler) HandleAutoDiscover(c *gin.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// allowInteractiveLogin=false — mesmo motivo do EKS acima.
 			gkeConfigs, gkeErrors := manager.AutoDiscoverGKEClusters(func(msg string) {
 				progressChan <- AutoDiscoverProgress{Phase: "processing", Message: msg, Provider: "gke"}
-			})
+			}, false)
 			mu.Lock()
 			pr.gkeConfigs = gkeConfigs
 			pr.gkeErrors = gkeErrors
@@ -236,14 +240,17 @@ func (h *AutoDiscoverHandler) HandleAutoDiscoverSync(c *gin.Context) {
 	}()
 	go func() {
 		defer wg.Done()
-		cfgs, errs := manager.AutoDiscoverEKSClusters(nil)
+		// allowInteractiveLogin=false — mesmo motivo do handler SSE acima (chamado por um clique
+		// no browser, sem humano no terminal do servidor).
+		cfgs, errs := manager.AutoDiscoverEKSClusters(nil, false)
 		mu.Lock()
 		eksConfigs, eksErrors = cfgs, errs
 		mu.Unlock()
 	}()
 	go func() {
 		defer wg.Done()
-		cfgs, errs := manager.AutoDiscoverGKEClusters(nil)
+		// allowInteractiveLogin=false — mesmo motivo acima.
+		cfgs, errs := manager.AutoDiscoverGKEClusters(nil, false)
 		mu.Lock()
 		gkeConfigs, gkeErrors = cfgs, errs
 		mu.Unlock()

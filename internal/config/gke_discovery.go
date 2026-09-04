@@ -15,7 +15,11 @@ import (
 // AutoDiscoverGKEClusters descobre clusters GKE de duas fontes em ordem de prioridade:
 //  1. Contexts do kubeconfig com prefixo gke_ — sem credenciais, sempre disponível
 //  2. gcloud CLI — lista projetos e clusters ativos (requer gcloud auth login)
-func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKEClusterConfig, []error) {
+//
+// allowInteractiveLogin: true só quando o CHAMADOR sabe que há um humano de fato olhando um
+// terminal (o comando CLI `new-k8s-hpa autodiscover`) — mesmo racional/motivo de
+// `AutoDiscoverEKSClusters`, ver o comentário lá (não repetido aqui pra não divergir).
+func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string), allowInteractiveLogin bool) ([]GKEClusterConfig, []error) {
 	if logFunc != nil {
 		logFunc("[GKE] Descobrindo clusters GKE...")
 	}
@@ -78,7 +82,7 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 		if logFunc != nil {
 			logFunc(fmt.Sprintf("[GKE] ℹ️  gcloud projects list falhou (%v) — tentando gcloud auth login...", err))
 		}
-		if loginErr := ensureGCPAuth(logFunc); loginErr != nil {
+		if loginErr := ensureGCPAuth(logFunc, allowInteractiveLogin); loginErr != nil {
 			if logFunc != nil {
 				logFunc(fmt.Sprintf("[GKE] ⚠️  %v", loginErr))
 			}
@@ -136,7 +140,13 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 // falhou — nunca decide por conta própria via `gcloud auth list` (só reflete um estado LOCAL,
 // "qual conta está marcada como ativa", sem validar se a sessão de fato ainda funciona — ver
 // comentário em `AutoDiscoverGKEClusters`).
-func ensureGCPAuth(logFunc func(string)) error {
+func ensureGCPAuth(logFunc func(string), allowInteractiveLogin bool) error {
+	if !allowInteractiveLogin {
+		// Chamado pelo handler web (sem humano no terminal do processo) — nunca tenta abrir um
+		// prompt que ninguém vai responder, só avisa o comando manual (ver comentário de
+		// `allowInteractiveLogin` em `AutoDiscoverEKSClusters`, eks_discovery.go).
+		return fmt.Errorf("gcloud sem sessão válida — execute manualmente: gcloud auth login")
+	}
 	if logFunc != nil {
 		logFunc("[GKE] 🔑 iniciando gcloud auth login...")
 	}

@@ -77,7 +77,8 @@ GKE: parseia contexts gke_* do kubeconfig + gcloud container clusters list
 
 		go func() {
 			defer wg.Done()
-			cfgs, errs := manager.AutoDiscoverEKSClusters(log)
+			// allowInteractiveLogin=true: CLI, há um humano de fato olhando este terminal.
+			cfgs, errs := manager.AutoDiscoverEKSClusters(log, true)
 			mu.Lock()
 			eksConfigs, eksErrors = cfgs, errs
 			mu.Unlock()
@@ -85,7 +86,8 @@ GKE: parseia contexts gke_* do kubeconfig + gcloud container clusters list
 
 		go func() {
 			defer wg.Done()
-			cfgs, errs := manager.AutoDiscoverGKEClusters(log)
+			// allowInteractiveLogin=true: CLI, há um humano de fato olhando este terminal.
+			cfgs, errs := manager.AutoDiscoverGKEClusters(log, true)
 			mu.Lock()
 			gkeConfigs, gkeErrors = cfgs, errs
 			mu.Unlock()
