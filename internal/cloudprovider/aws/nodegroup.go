@@ -22,16 +22,30 @@ type AWSNodeGroupProvider struct {
 }
 
 // NewAWSNodeGroupProvider cria um provider AWS para um cluster EKS.
-// Normaliza automaticamente ARNs (arn:aws:eks:REGION:ACCOUNT:cluster/NAME → NAME).
-// Se a região não for fornecida mas puder ser extraída do ARN, usa a do ARN.
-func NewAWSNodeGroupProvider(clusterName, region, profile string) *AWSNodeGroupProvider {
-	name, arnRegion := parseEKSClusterName(clusterName)
+//
+// awsClusterName: nome usado em TODAS as chamadas `aws eks ...` (list/describe/scale-nodegroup) —
+// precisa ser o nome real do cluster na AWS. Normalizado automaticamente se vier como ARN
+// (arn:aws:eks:REGION:ACCOUNT:cluster/NAME → NAME); se a região não for fornecida mas puder ser
+// extraída do ARN, usa a do ARN.
+//
+// contextName: nome/context do lado K8s, preservado verbatim — só populado no campo
+// `NodePool.ClusterName` (usado pelo frontend/K8s API), nunca passado pro AWS CLI. Pode divergir
+// do nome real na AWS quando o kubeconfig usa um alias amigável pro context (ex: context
+// "cluster-apis-prd" apontando pro cluster AWS real "cluster-apis") — usar o context como
+// `awsClusterName` nesse caso faria toda chamada `aws eks` falhar com `ResourceNotFoundException`
+// (bug real: cluster "cluster-apis"/"cluster-tools" nunca mostravam node group nenhum, porque o
+// context tinha sufixo "-prd" que não existe do lado da AWS). Se vazio, usa `awsClusterName`.
+func NewAWSNodeGroupProvider(awsClusterName, contextName, region, profile string) *AWSNodeGroupProvider {
+	name, arnRegion := parseEKSClusterName(awsClusterName)
 	if region == "" && arnRegion != "" {
 		region = arnRegion
 	}
+	if contextName == "" {
+		contextName = awsClusterName
+	}
 	return &AWSNodeGroupProvider{
 		clusterName: name,
-		contextName: clusterName, // preserva o ARN original como context
+		contextName: contextName,
 		region:      region,
 		profile:     profile,
 	}
@@ -100,12 +114,23 @@ type awsDescribeNodegroupResponse struct {
 }
 
 type awsNodegroup struct {
-	NodegroupName string            `json:"nodegroupName"`
-	Status        string            `json:"status"`
-	ScalingConfig awsScalingConfig  `json:"scalingConfig"`
-	InstanceTypes []string          `json:"instanceTypes"`
-	CapacityType  string            `json:"capacityType"` // ON_DEMAND | SPOT
-	Labels        map[string]string `json:"labels"`
+	NodegroupName  string                `json:"nodegroupName"`
+	Status         string                `json:"status"`
+	ScalingConfig  awsScalingConfig      `json:"scalingConfig"`
+	InstanceTypes  []string              `json:"instanceTypes"`
+	CapacityType   string                `json:"capacityType"` // ON_DEMAND | SPOT
+	Labels         map[string]string     `json:"labels"`
+	LaunchTemplate *awsLaunchTemplateRef `json:"launchTemplate"`
+}
+
+// awsLaunchTemplateRef referencia o launch template de um node group que não expõe
+// `instanceTypes` diretamente — quando um managed node group é criado com launch template
+// próprio, a AWS deixa `instanceTypes` como null/vazio no describe-nodegroup (o tipo de
+// instância fica definido DENTRO do launch template, não duplicado no node group).
+type awsLaunchTemplateRef struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	ID      string `json:"id"`
 }
 
 type awsScalingConfig struct {
@@ -123,7 +148,7 @@ func (p *AWSNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 	listArgs := p.baseArgs("eks", "list-nodegroups", "--cluster-name", p.clusterName)
 	out, err := p.run(listCtx, listArgs)
 	if err != nil {
-		return nil, classifyAWSError(err, p.profile)
+		return nil, classifyAWSError(err, p.clusterName, p.profile)
 	}
 
 	var listResp awsListNodegroupsResponse
@@ -169,6 +194,12 @@ func (p *AWSNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 			instanceType := ""
 			if len(ng.InstanceTypes) > 0 {
 				instanceType = ng.InstanceTypes[0]
+			} else if ng.LaunchTemplate != nil {
+				// Node group criado com launch template próprio — `instanceTypes` vem vazio,
+				// mas o tipo de instância está definido dentro do template (`ec2 describe-
+				// launch-template-versions`). Best-effort: uma falha aqui não descarta o node
+				// group inteiro, só deixa VMSize vazio (mesmo comportamento de antes).
+				instanceType = p.resolveInstanceTypeFromLaunchTemplate(descCtx, ng.LaunchTemplate)
 			}
 
 			// Autoscaling considerado ativo se min != max
@@ -189,7 +220,7 @@ func (p *AWSNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 					MaxNodeCount:       ng.ScalingConfig.MaxSize,
 					AutoscalingEnabled: autoscaling,
 					Status:             status,
-					IsSystemPool:       false, // EKS não tem conceito de system pool
+					IsSystemPool:       false,         // EKS não tem conceito de system pool
 					ClusterName:        p.contextName, // ARN completo para K8s API (resolveContext)
 				},
 			}
@@ -209,6 +240,37 @@ func (p *AWSNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 	}
 
 	return pools, nil
+}
+
+// resolveInstanceTypeFromLaunchTemplate busca o InstanceType real de um launch template — usado
+// quando `describe-nodegroup` não expõe `instanceTypes` (node group com launch template próprio,
+// ver comentário em `awsLaunchTemplateRef`). Best-effort: qualquer falha (permissão, template
+// deletado, parse) retorna "" em vez de propagar erro — um node group sem VMSize é aceitável,
+// descartar o node group inteiro por causa disso não seria.
+func (p *AWSNodeGroupProvider) resolveInstanceTypeFromLaunchTemplate(ctx context.Context, lt *awsLaunchTemplateRef) string {
+	if lt == nil || lt.ID == "" {
+		return ""
+	}
+	args := p.baseArgs("ec2", "describe-launch-template-versions", "--launch-template-id", lt.ID)
+	if lt.Version != "" {
+		args = append(args, "--versions", lt.Version)
+	}
+	out, err := p.run(ctx, args)
+	if err != nil {
+		return ""
+	}
+
+	var resp struct {
+		LaunchTemplateVersions []struct {
+			LaunchTemplateData struct {
+				InstanceType string `json:"instanceType"`
+			} `json:"launchTemplateData"`
+		} `json:"launchTemplateVersions"`
+	}
+	if json.Unmarshal(out, &resp) != nil || len(resp.LaunchTemplateVersions) == 0 {
+		return ""
+	}
+	return resp.LaunchTemplateVersions[0].LaunchTemplateData.InstanceType
 }
 
 // ScaleNodeGroup define o desiredSize do node group.
@@ -264,7 +326,7 @@ func (p *AWSNodeGroupProvider) AbortOperation(_ context.Context, _, _ string) er
 }
 
 // classifyAWSError transforma erros brutos do AWS CLI em mensagens acionáveis.
-func classifyAWSError(err error, profile string) error {
+func classifyAWSError(err error, clusterName, profile string) error {
 	msg := err.Error()
 	profileHint := ""
 	if profile != "" {
@@ -280,7 +342,10 @@ func classifyAWSError(err error, profile string) error {
 	case strings.Contains(msg, "executable file not found") || strings.Contains(msg, "aws: command not found"):
 		return fmt.Errorf("AWS CLI não encontrado no PATH do servidor. Instale: https://aws.amazon.com/cli/")
 	case strings.Contains(msg, "cluster not found") || strings.Contains(msg, "ResourceNotFoundException"):
-		return fmt.Errorf("cluster '%s' não encontrado na AWS. Verifique se a VPN AWS está ativa", profile)
+		// Bug real corrigido: essa mensagem usava `profile` no lugar do cluster — nunca ajudava a
+		// diagnosticar (ex: "cluster 'cnt' não encontrado", quando "cnt" é só o profile AWS, não
+		// um nome de cluster). Reflete o nome que de fato foi usado na chamada AWS CLI.
+		return fmt.Errorf("cluster '%s' não encontrado na AWS (profile %s). Verifique se a VPN AWS está ativa ou se o nome do cluster está correto", clusterName, profile)
 	default:
 		return fmt.Errorf("falha ao listar EKS node groups: %w", err)
 	}
