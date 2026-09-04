@@ -1832,6 +1832,15 @@ type NodeInfo struct {
 	MemoryUsagePercent float64 `json:"memory_usage_percent"` // 0-100
 	DiskUsagePercent   float64 `json:"disk_usage_percent"`   // 0-100
 
+	// MetricsAvailable/MetricsError — mesmo padrão de BatchPodMetricsResult (client.go): antes,
+	// quando o Metrics Server não estava disponível (comum em EKS, que não vem com metrics-server
+	// por padrão, diferente de AKS), CPUUsed/MemoryUsed ficavam com o zero-value (string vazia) e
+	// o frontend mostrava só "N/A" sem explicar o motivo — indistinguível de "nunca tentou buscar".
+	// Bug real relatado pelo usuário contra clusters EKS reais sem metrics-server; corrigido
+	// expondo o motivo real, mesmo padrão já usado pela aba Pods ("⚠ Métricas indisponíveis").
+	MetricsAvailable bool   `json:"metrics_available"`
+	MetricsError     string `json:"metrics_error,omitempty"`
+
 	// Pods count
 	PodsRunning int `json:"pods_running"`
 	PodsTotal   int `json:"pods_total"`

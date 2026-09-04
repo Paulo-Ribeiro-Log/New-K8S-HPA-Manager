@@ -1462,6 +1462,13 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                                   <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(node.cpu_usage_percent, 100)}%`, backgroundColor: resourceColor(node.cpu_usage_percent) }} />
                                 </div>
                               </div>
+                            ) : node.metrics_available === false ? (
+                              <span
+                                className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1 cursor-help"
+                                title={node.metrics_error || "Métricas indisponíveis"}
+                              >
+                                ⚠ Métricas indisponíveis
+                              </span>
                             ) : (
                               <span className="text-muted-foreground text-sm">N/A</span>
                             )}
@@ -1477,6 +1484,13 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                                   <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(node.memory_usage_percent, 100)}%`, backgroundColor: resourceColor(node.memory_usage_percent) }} />
                                 </div>
                               </div>
+                            ) : node.metrics_available === false ? (
+                              <span
+                                className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1 cursor-help"
+                                title={node.metrics_error || "Métricas indisponíveis"}
+                              >
+                                ⚠ Métricas indisponíveis
+                              </span>
                             ) : (
                               <span className="text-muted-foreground text-sm">N/A</span>
                             )}
