@@ -38,7 +38,20 @@ var eksDefaultRegions = []string{
 //     aws eks list-clusters → lista clusters
 //     aws eks describe-cluster → extrai ARN, accountId, VPC
 //  3. Retorna []EKSClusterConfig deduplicado por (profile, region, name)
-func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKSClusterConfig, []error) {
+//
+// allowInteractiveLogin: true só quando o CHAMADOR sabe que há um humano de fato olhando um
+// terminal (o comando CLI `new-k8s-hpa autodiscover`) — controla se `ensureAWSSSOAuth` pode
+// tentar abrir `aws sso login` interativo. Sempre `false` quando chamado pelo handler web
+// (`POST /clusters/autodiscover`, `internal/web/handlers/autodiscover.go`): mesmo que o
+// PROCESSO do servidor tenha sido iniciado num terminal interativo (`--foreground`), a
+// requisição em si veio de um clique no browser — não há ninguém ali pra responder um prompt
+// que apareceria no terminal do servidor, não na tela de quem clicou. Sem essa distinção
+// explícita (uma checagem de TTY do processo não basta — o servidor pode ter sido iniciado
+// interativamente mesmo assim), `loginCmd.Run()` ficaria esperando indefinidamente uma
+// interação que nunca chega (sem timeout nenhum), segurando `interactiveCloudLoginMu` e
+// travando qualquer outro autodiscover — CLI ou web, de qualquer usuário — que dependesse do
+// mesmo mutex.
+func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string), allowInteractiveLogin bool) ([]EKSClusterConfig, []error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -71,7 +84,7 @@ func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKS
 
 	// Verificar e renovar credenciais SSO para cada profile antes do discovery paralelo
 	for _, profile := range profiles {
-		if err := ensureAWSSSOAuth(profile, logFunc); err != nil {
+		if err := ensureAWSSSOAuth(profile, logFunc, allowInteractiveLogin); err != nil {
 			if logFunc != nil {
 				logFunc(fmt.Sprintf("[EKS] ⚠️  Autenticação falhou para profile %s: %v", profile, err))
 			}
@@ -148,13 +161,19 @@ func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKS
 // ensureAWSSSOAuth verifica se as credenciais do profile AWS estão válidas.
 // Se o profile não for SSO (sem sso_start_url), ignora silenciosamente.
 // Se as credenciais estiverem expiradas e for SSO, abre aws sso login interativamente.
-func ensureAWSSSOAuth(profile string, logFunc func(string)) error {
+func ensureAWSSSOAuth(profile string, logFunc func(string), allowInteractiveLogin bool) error {
 	if checkAWSCredentials(profile) {
 		return nil
 	}
 	if !isAWSSSOProfile(profile) {
 		// Profile sem SSO (credenciais estáticas, env vars, etc.) — não há como renovar
 		return nil
+	}
+	if !allowInteractiveLogin {
+		// Chamado pelo handler web (sem humano no terminal do processo) — nunca tenta abrir um
+		// prompt que ninguém vai responder, só avisa o comando manual (ver comentário de
+		// `allowInteractiveLogin` em `AutoDiscoverEKSClusters`).
+		return fmt.Errorf("credenciais SSO expiradas para profile %q — execute manualmente: aws sso login --profile %s", profile, profile)
 	}
 	if logFunc != nil {
 		logFunc(fmt.Sprintf("[EKS] 🔑 Credenciais expiradas para profile %q — iniciando aws sso login...", profile))

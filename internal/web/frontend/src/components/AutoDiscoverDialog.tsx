@@ -215,7 +215,10 @@ export function AutoDiscoverDialog({
     try {
       const response = await fetch("/api/v1/clusters/autodiscover", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+        },
       });
 
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
