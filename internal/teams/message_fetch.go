@@ -1,8 +1,10 @@
 package teams
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -43,6 +45,47 @@ type FetchedMessage struct {
 	Text        string     `json:"text"`
 	PostedAt    *time.Time `json:"posted_at,omitempty"`
 	Approximate bool       `json:"approximate"` // true quando nenhuma mensagem bateu dentro da tolerância — retornado o candidato mais próximo encontrado
+	// ImagesSaved — quantas imagens (TODAS as <img> da mensagem, exceto avatar do remetente —
+	// ver isAvatarImg no extractJS) foram baixadas com sucesso pra pasta temporária (ver
+	// image_temp_store.go) e referenciadas em Text como "![imagem](teams-temp:<filename>)". Zero
+	// não significa necessariamente que a mensagem não tinha imagem — pode ter falhado o download
+	// (best-effort, ver resolveMessageImages).
+	ImagesSaved int `json:"images_saved,omitempty"`
+	// ImagesDetected — quantas <img> foram ENCONTRADAS no DOM (excluindo avatar) antes de sequer
+	// tentar baixar. ImagesDetected > 0 && ImagesSaved == 0 aponta pra falha no DOWNLOAD
+	// (provável CORS/autenticação no domínio de mídia do Teams); ImagesDetected == 0 aponta pra
+	// falha na DETECÇÃO (ver ImgTagsSeen abaixo).
+	ImagesDetected int `json:"images_detected,omitempty"`
+	// ImgTagsSeen — diagnóstico de detecção: quantas tags <img> (incluindo avatar excluído)
+	// existiam no elemento da mensagem escolhida. ImgTagsSeen == 0 indica que a imagem não é uma
+	// <img> — layout do Teams diferente do esperado, ou a mensagem escolhida não é a certa.
+	ImgTagsSeen int `json:"img_tags_seen,omitempty"`
+	// DebugDumpPath — caminho do arquivo com o HTML real do elemento de mensagem, salvo só quando
+	// a requisição pediu debug=true (ver saveMessageImageDebugDump). Vazio no caminho normal.
+	DebugDumpPath string `json:"debug_dump_path,omitempty"`
+	// ImgCandidates — só populado quando debug=true: um registro por <img> encontrada na mensagem
+	// (avatar incluso, com ExcludedAsAvatar=true), com os atributos reais que decidiram se ela
+	// virou uma imagem baixada ou foi excluída. Existe pra permitir diagnosticar precisamente
+	// qual <img> foi capturada sem precisar abrir o dump de HTML completo (DebugDumpPath).
+	ImgCandidates []ImgCandidateDebug `json:"img_candidates,omitempty"`
+}
+
+// ImgCandidateDebug — um <img> candidato encontrado durante a extração, com os atributos reais
+// que decidiram inclusão/exclusão (ver isAvatarImg no extractJS). Só populado em FetchedMessage
+// quando a requisição pediu debug=true.
+type ImgCandidateDebug struct {
+	// Src — a URL efetivamente ESCOLHIDA pra download (ver pickImageSrc no extractJS): prioriza
+	// data-src/data-original/srcset (lazy-load JS-based) sobre o "src" bruto.
+	Src              string `json:"src"`
+	RawSrcAttr       string `json:"raw_src_attr"` // valor cru do atributo "src" — comparar com Src ajuda a confirmar se havia lazy-load
+	DataSrc          string `json:"data_src"`
+	Srcset           string `json:"srcset"`
+	Width            string `json:"width"`
+	Height           string `json:"height"`
+	Alt              string `json:"alt"`
+	ClassName        string `json:"class_name"`
+	DataTid          string `json:"data_tid"`
+	ExcludedAsAvatar bool   `json:"excluded_as_avatar"`
 }
 
 // toTeamsHashRoute converte um link "Copiar link" no formato path
@@ -108,7 +151,11 @@ func ParseTeamsMessageLink(link string) (threadID, messageID string, err error) 
 // diferente da aba "Chat" da reunião (ex: "Detalhes"), enquanto a URL original já carrega o
 // parâmetro `context: {"contextType":"chat"}` que sinaliza pro próprio Teams abrir direto na aba
 // de chat — daí a Tentativa 1 ser a primária agora.
-func FetchMessageByLink(sessionDir, link string, logger *zerolog.Logger) (*FetchedMessage, error) {
+// FetchMessageByLink — debug, quando true, faz a extração incluir um dump do HTML real do
+// elemento de mensagem localizado (ver saveMessageImageDebugDump), pra investigar por que uma
+// imagem esperada não foi detectada. Nunca ligado por padrão (custo de serializar HTML potencial-
+// mente grande em toda extração comum) — ver checkbox "Modo diagnóstico" no LoadFromLinkModal.
+func FetchMessageByLink(sessionDir, link string, debug bool, logger *zerolog.Logger) (*FetchedMessage, error) {
 	threadID, messageID, err := ParseTeamsMessageLink(link)
 	if err != nil {
 		return nil, err
@@ -120,6 +167,20 @@ func FetchMessageByLink(sessionDir, link string, logger *zerolog.Logger) (*Fetch
 	}
 	targetTime := time.UnixMilli(msgIDMs)
 
+	// Destrói qualquer imagem salva por uma coleta ANTERIOR antes de começar esta — pedido
+	// explícito do usuário ("destruída na próxima coleta"). Roda no início da chamada pública
+	// (não em fetchMessageAttempt, chamada até 2x por aqui — tentativa direta + fallback — o que
+	// resetaria a pasta no meio de uma mesma coleta e perderia o resultado da 1ª tentativa se a
+	// 2ª também encontrar imagem). Best-effort: uma falha aqui não deveria impedir a extração de
+	// texto em si, só o reaproveitamento das imagens desta coleta.
+	if homeDir, homeErr := os.UserHomeDir(); homeErr == nil {
+		if _, resetErr := ResetTeamsBroadcastImagesDir(homeDir); resetErr != nil {
+			logger.Warn().Err(resetErr).Msg("[MessageFetch] Falha ao limpar pasta temporária de imagens da coleta anterior")
+		}
+	} else {
+		logger.Warn().Err(homeErr).Msg("[MessageFetch] Não foi possível resolver $HOME — pasta temporária de imagens não será limpa")
+	}
+
 	operationMu.Lock()
 	defer operationMu.Unlock()
 
@@ -128,14 +189,14 @@ func FetchMessageByLink(sessionDir, link string, logger *zerolog.Logger) (*Fetch
 		return nil, err
 	}
 
-	result, directErr := fetchMessageAttempt(browser, sessionDir, threadID, messageID, targetTime, link, logger)
+	result, directErr := fetchMessageAttempt(browser, sessionDir, threadID, messageID, targetTime, link, debug, logger)
 	if directErr == nil {
 		return result, nil
 	}
 	logger.Warn().Err(directErr).Str("thread", threadID).
 		Msg("[MessageFetch] Tentativa via link direto falhou — tentando navegar por dentro do app (barra lateral)")
 
-	result, fallbackErr := fetchMessageAttempt(browser, sessionDir, threadID, messageID, targetTime, "", logger)
+	result, fallbackErr := fetchMessageAttempt(browser, sessionDir, threadID, messageID, targetTime, "", debug, logger)
 	if fallbackErr == nil {
 		return result, nil
 	}
@@ -146,7 +207,7 @@ func FetchMessageByLink(sessionDir, link string, logger *zerolog.Logger) (*Fetch
 // a mensagem. Se `directLink` não for vazio, a aba já nasce navegada pra URL completa do link
 // (deep-link oficial do Teams); se vazio, nasce em `/v2/` e localiza a conversa clicando na barra
 // lateral (mecanismo de fallback, ver comentário de FetchMessageByLink).
-func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID string, targetTime time.Time, directLink string, logger *zerolog.Logger) (*FetchedMessage, error) {
+func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID string, targetTime time.Time, directLink string, debug bool, logger *zerolog.Logger) (*FetchedMessage, error) {
 	mode := "direct-link"
 	initialURL := directLink
 	if directLink == "" {
@@ -367,7 +428,13 @@ func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID s
 		time.Sleep(1 * time.Second)
 	}
 
-	extractJS := `() => {
+	extractJS := fmt.Sprintf(`() => {
+		// DEBUG_MODE — ligado via FetchMessageRequest.Debug (frontend, checkbox "Modo
+		// diagnóstico"). Quando true, cada mensagem candidata carrega o outerHTML do próprio
+		// elemento — usado só pra investigar por que uma imagem não foi detectada (ver
+		// saveMessageImageDebugDump abaixo); NUNCA ligado por padrão, pra não pagar o custo de
+		// serializar/transportar HTML potencialmente grande em toda extração comum sem imagem.
+		const DEBUG_MODE = %t;
 		// Bug real corrigido (relatado ao vivo, confirmado via dump de data-tid salvo por
 		// saveDebugDiagnostics): o layout atual do Teams v2 (pelo menos pra chat de reunião,
 		// possivelmente mais amplo) usa data-tid="chat-pane-message" como container de cada
@@ -389,6 +456,53 @@ func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID s
 		// código) porque este bloco inteiro está dentro de um raw string Go delimitado por
 		// backtick — um backtick literal aqui fecharia a string Go no lugar errado.
 		const BT = String.fromCharCode(96);
+		// currentImages acumula as URLs de TODA imagem (emoji incluso — pedido explícito do
+		// usuário: "todas as imagens contidas na mensagem devem ser carregadas independente de ser
+		// emoji ou não") encontrada na mensagem sendo processada no momento — resetada a cada
+		// elemento de mensagem no loop "els.forEach" abaixo. O índice de cada URL nesta lista casa
+		// com o marcador "@@TEAMS_IMG_i@@" deixado no texto (substituído depois, já com os bytes
+		// reais baixados, por resolveMessageImages em FetchMessageByLink).
+		let currentImages = [];
+		// currentImgTagsTotal — contador de diagnóstico (quantas <img> existiam no elemento),
+		// resetado junto com currentImages a cada elemento de mensagem. Exposto até o Go
+		// (domMsg.imgTagsTotal) pra distinguir "não havia nenhuma <img>" de "havia <img> mas o
+		// download/decodificação falhou depois".
+		let currentImgTagsTotal = 0;
+		// isAvatarImg — ÚNICA exclusão que sobrevive nesta versão: a foto de perfil do remetente
+		// (renderizada como <img> dentro do mesmo elemento de mensagem em vários layouts de chat)
+		// não é conteúdo da mensagem, é identidade visual de quem enviou — incluí-la produziria
+		// literalmente o sintoma relatado ao vivo ("a única imagem gerada foi um quadro preto sem
+		// nenhum elemento que nada tem a ver com a imagem original": o placeholder de avatar sem
+		// foto customizada do Teams é uma silhueta escura/preta sólida). Só exclui com um sinal
+		// FORTE e específico (a palavra inteira "avatar" em itemtype/classe/data-tid/data-testid),
+		// nunca por heurística de tamanho — diferente da extinta isEmojiImg, aqui um falso-negativo
+		// (avatar não reconhecido) é aceitável, um falso-positivo (foto real excluída) não.
+		const isAvatarImg = (img) => {
+			const marker = ((img.getAttribute('itemtype') || '') + ' ' + (img.className || '') + ' ' + (img.getAttribute('data-testid') || '') + ' ' + (img.getAttribute('data-tid') || '')).toLowerCase();
+			// "persona" cobre o componente de avatar do Fluent UI (usado pelo Teams v2) —
+			// nomenclatura própria da Microsoft pra esse componente, além do termo genérico
+			// "avatar" que outros frameworks de chat costumam usar.
+			return /\bavatar\b|\bpersona\b/.test(marker);
+		};
+		// isReactionImg — CONFIRMADO via dump de HTML real (Modo diagnóstico): reações (👍/❤️/etc.)
+		// de OUTRAS pessoas à mensagem são renderizadas como <img itemtype="http://schema.skype.
+		// com/Emoji"> dentro de um bloco [data-tid="diverse-reaction-summary"] — que é FILHO
+		// DIRETO do mesmo elemento "chat-pane-message" que os seletores capturam (irmão do bloco
+		// de texto/conteúdo, não um ancestral separado). Sem essa exclusão, o texto/imagens da
+		// mensagem reenviada ganhariam as reações de terceiros como se fossem conteúdo original —
+		// nunca é isso que "imagens contidas na mensagem" deveria significar. closest() sobe a
+		// árvore de ancestrais procurando esse data-tid específico.
+		const isReactionImg = (img) => !!img.closest('[data-tid="diverse-reaction-summary"], [class*="ChatMessage__reactions"]');
+		// currentImgCandidates — diagnóstico detalhado, só populado quando DEBUG_MODE (custo de
+		// serializar atributos de CADA <img> visto, não só as incluídas): um registro por <img>
+		// encontrada no elemento, com os atributos que decidiram inclusão/exclusão. Existe porque
+		// duas rodadas de heurística "às cegas" (sem acesso a uma sessão real do Teams) já erraram
+		// — a 1ª descartou uma foto real classificando como emoji; a 2ª (fallback de
+		// background-image, já removido) capturou uma imagem completamente errada ("quadro preto
+		// que nada tem a ver com a original", quase certamente o placeholder de avatar sem foto).
+		// Com isso, o usuário pode compartilhar exatamente o que cada <img> real da mensagem
+		// carregava (src/classe/data-tid) sem precisar abrir um dump de HTML inteiro.
+		let currentImgCandidates = [];
 		const htmlToMarkdown = (node) => {
 			let out = '';
 			for (const child of node.childNodes) {
@@ -434,15 +548,73 @@ func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID s
 					case 'blockquote':
 						out += '> ' + htmlToMarkdown(child).trim().replace(/\n/g, '\n> ') + '\n'; break;
 					case 'img': {
-						// Teams frequentemente renderiza emoji como <img alt="😀"> (não como
-						// caractere Unicode solto no texto) — o alt JÁ é o emoji real. Embrulhar
-						// isso em sintaxe de imagem Markdown incompleta (sem a parte "(url)") não
-						// renderiza como imagem nem preserva o emoji como texto — aparecia
-						// literalmente com colchetes ao redor no preview. Emitir o alt puro
-						// resolve os dois problemas de uma vez (e é o motivo mais provável do
-						// relato de "emoji/caracteres estranhos" — não é bem um bug de
-						// codificação UTF-8 em si).
-						out += child.getAttribute('alt') || '';
+						currentImgTagsTotal++;
+						const isAvatar = isAvatarImg(child);
+						const isReaction = isReactionImg(child);
+						// pickImageSrc — bug real CONFIRMADO via dump de HTML real capturado ao
+						// vivo (Modo diagnóstico): o Teams v2 (componente "AMSImage" do Fluent UI,
+						// itemtype="http://schema.skype.com/AMSImage") usa lazy-loading real —
+						// "src" sempre carrega um GIF 1x1 PRETO/transparente
+						// ("data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=", confirmado
+						// byte-a-byte batendo com o arquivo baixado nas tentativas anteriores) como
+						// placeholder — a URL real está em "data-orig-src" (visualização "imgo",
+						// provavelmente resolução original) ou "data-gallery-src" (visualização
+						// "imgpsh_fullsize", a galeria em tela cheia) — nomes de atributo
+						// específicos do Teams, nunca confirmáveis sem essa captura real (as
+						// tentativas anteriores tentaram "data-src"/"data-original", nomes comuns
+						// em outras libs de lazy-load, mas não os usados aqui).
+						const pickImageSrc = (img) => {
+							for (const attr of ['data-orig-src', 'data-gallery-src', 'data-src', 'data-original', 'data-lazy-src', 'data-fallback-src']) {
+								const v = img.getAttribute(attr);
+								if (v) return v;
+							}
+							const srcset = img.getAttribute('srcset') || img.getAttribute('data-srcset');
+							if (srcset) {
+								const parts = srcset.split(',').map(s => s.trim()).filter(Boolean);
+								if (parts.length > 0) {
+									const last = parts[parts.length - 1].split(/\s+/)[0];
+									if (last) return last;
+								}
+							}
+							return img.currentSrc || img.getAttribute('src') || '';
+						};
+						const pickedSrc = pickImageSrc(child);
+						if (DEBUG_MODE) {
+							currentImgCandidates.push({
+								src: pickedSrc.slice(0, 300),
+								rawSrcAttr: (child.getAttribute('src') || '').slice(0, 150),
+								dataSrc: (child.getAttribute('data-orig-src') || child.getAttribute('data-gallery-src') || child.getAttribute('data-src') || '').slice(0, 150),
+								srcset: (child.getAttribute('srcset') || '').slice(0, 150),
+								width: child.getAttribute('width') || String(child.naturalWidth || ''),
+								height: child.getAttribute('height') || String(child.naturalHeight || ''),
+								alt: (child.getAttribute('alt') || '').slice(0, 100),
+								className: String(child.className || '').slice(0, 200),
+								dataTid: child.getAttribute('data-tid') || '',
+								excludedAsAvatar: isAvatar || isReaction,
+							});
+						}
+						if (isAvatar || isReaction) {
+							// Avatar (foto de perfil do remetente) ou reação (👍 de OUTRAS pessoas
+							// à mensagem, confirmado via dump real: vive dentro de
+							// [data-tid="diverse-reaction-summary"], irmão do bloco de texto,
+							// dentro do MESMO elemento "chat-pane-message" que os seletores
+							// capturam) — nenhum dos dois é "imagem contida na mensagem" no
+							// sentido do que a pessoa escreveu/anexou (ver isAvatarImg/
+							// isReactionImg acima).
+							out += child.getAttribute('alt') || '';
+						} else {
+							// TODA imagem (emoji incluso, pedido explícito do usuário) vira um
+							// marcador de posição único; o Go substitui pelo Markdown de imagem
+							// real ("![imagem](teams-temp:<filename>)") depois de baixar os bytes
+							// de verdade (ver resolveMessageImages em FetchMessageByLink) —
+							// precisa ser feito no Go porque só ele tem acesso ao disco.
+							if (pickedSrc) {
+								out += '@@TEAMS_IMG_' + currentImages.length + '@@';
+								currentImages.push(pickedSrc);
+							} else {
+								out += child.getAttribute('alt') || '';
+							}
+						}
 						break;
 					}
 					case 'p': case 'div':
@@ -487,17 +659,34 @@ func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID s
 			const els = document.querySelectorAll(sel);
 			if (els.length > 0) {
 				els.forEach(el => {
+					currentImages = [];
+					currentImgTagsTotal = 0;
+					currentImgCandidates = [];
 					// Preferir a conversão pra Markdown; cair pro innerText puro só se ela vier
-					// vazia (ex: elemento sem nenhum childNode reconhecido pelo conversor).
+					// vazia (ex: elemento sem nenhum childNode reconhecido pelo conversor) — nesse
+					// fallback os marcadores "@@TEAMS_IMG_i@@" (que só existem no resultado de
+					// htmlToMarkdown) não sobrevivem, então as imagens coletadas também são
+					// descartadas — sem posição no texto pra reinserir, guardá-las seria
+					// inconsistente.
 					let text = htmlToMarkdown(el).trim();
-					if (!text) text = (el.innerText || el.textContent || '').trim();
-					if (text.length > 0) messages.push({ text, postedAt: findTimestamp(el) });
+					if (!text) {
+						text = (el.innerText || el.textContent || '').trim();
+						currentImages = [];
+					}
+					if (text.length > 0) {
+						messages.push({
+							text, postedAt: findTimestamp(el), imageUrls: currentImages.slice(),
+							imgTagsTotal: currentImgTagsTotal,
+							imgCandidates: DEBUG_MODE ? currentImgCandidates.slice() : [],
+							debugHtml: DEBUG_MODE ? (el.outerHTML || '').slice(0, 30000) : '',
+						});
+					}
 				});
 				if (messages.length > 0) break;
 			}
 		}
 		return JSON.stringify(messages);
-	}`
+	}`, debug)
 
 	// Sobe até o topo da conversa repetidamente até achar uma mensagem dentro da tolerância do
 	// timestamp alvo, ou até o histórico acabar (scrollHeight parar de crescer por 3 rodadas
@@ -522,9 +711,37 @@ func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID s
 		return { scrolled: false, scrollHeight: 0 };
 	}`
 
+	// domImgCandidate — mirror de ImgCandidateDebug (tipo exportado, usado na resposta HTTP) com
+	// tags JSON em camelCase, pra bater com o que o próprio extractJS produz (JSON.stringify de
+	// objeto JS usa as chaves literais, sempre camelCase neste arquivo) — a resposta HTTP em si
+	// segue snake_case (convenção do resto deste pacote), daí os dois tipos separados em vez de
+	// um só reaproveitado direto.
+	type domImgCandidate struct {
+		Src              string `json:"src"`
+		RawSrcAttr       string `json:"rawSrcAttr"`
+		DataSrc          string `json:"dataSrc"`
+		Srcset           string `json:"srcset"`
+		Width            string `json:"width"`
+		Height           string `json:"height"`
+		Alt              string `json:"alt"`
+		ClassName        string `json:"className"`
+		DataTid          string `json:"dataTid"`
+		ExcludedAsAvatar bool   `json:"excludedAsAvatar"`
+	}
 	type domMsg struct {
-		Text     string `json:"text"`
-		PostedAt string `json:"postedAt"`
+		Text      string   `json:"text"`
+		PostedAt  string   `json:"postedAt"`
+		ImageURLs []string `json:"imageUrls"`
+		// ImgTagsTotal — diagnóstico (nunca usado pra decidir nada, só logado/exposto): quantas
+		// <img> existiam no elemento (incluindo avatar excluído) — distingue "não havia nenhuma
+		// <img>" de "havia <img>, mas algo falhou depois (download/decodificação)".
+		ImgTagsTotal int    `json:"imgTagsTotal"`
+		DebugHTML    string `json:"debugHtml"`
+		// ImgCandidates — só populado quando debug=true (ver DEBUG_MODE no extractJS): um registro
+		// por <img> encontrada no elemento, com os atributos reais que decidiram inclusão/
+		// exclusão. Permite compartilhar exatamente o que cada <img> carregava sem precisar abrir
+		// o dump de HTML inteiro.
+		ImgCandidates []domImgCandidate `json:"imgCandidates"`
 	}
 
 	var best *domMsg
@@ -636,20 +853,67 @@ func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID s
 		return nil, fmt.Errorf("mensagem não encontrada na conversa (modo %s) — verifique se você tem acesso a ela ou se o histórico ainda está disponível", mode)
 	}
 
+	text := normalizeExtractedText(best.Text)
+	imagesSaved := 0
+	if len(best.ImageURLs) > 0 {
+		text, imagesSaved = resolveMessageImages(page, text, best.ImageURLs, logger)
+	}
+
 	result := &FetchedMessage{
 		ThreadID:  threadID,
 		MessageID: messageID,
-		Text:      normalizeExtractedText(best.Text),
+		Text:      text,
 		// bestDiff == -1 cobre o fallback acima (nenhum timestamp reconhecível — best veio do
 		// firstSnapshot, sem diff calculado nenhum).
-		Approximate: bestDiff == -1 || bestDiff > teamsMessageMatchToleranceMs,
+		Approximate:    bestDiff == -1 || bestDiff > teamsMessageMatchToleranceMs,
+		ImagesSaved:    imagesSaved,
+		ImagesDetected: len(best.ImageURLs),
+		ImgTagsSeen:    best.ImgTagsTotal,
 	}
 	if postedAt, perr := time.Parse(time.RFC3339, best.PostedAt); perr == nil {
 		result.PostedAt = &postedAt
 	}
+	if debug {
+		if best.DebugHTML != "" {
+			result.DebugDumpPath = saveMessageImageDebugDump(best.DebugHTML, logger)
+		}
+		for _, c := range best.ImgCandidates {
+			result.ImgCandidates = append(result.ImgCandidates, ImgCandidateDebug{
+				Src: c.Src, RawSrcAttr: c.RawSrcAttr, DataSrc: c.DataSrc, Srcset: c.Srcset,
+				Width: c.Width, Height: c.Height, Alt: c.Alt,
+				ClassName: c.ClassName, DataTid: c.DataTid, ExcludedAsAvatar: c.ExcludedAsAvatar,
+			})
+		}
+	}
 	logger.Info().Str("thread", threadID).Str("mode", mode).Int64("diff_ms", bestDiff).Bool("approx", result.Approximate).
+		Int("images_detected", result.ImagesDetected).Int("images_saved", result.ImagesSaved).
+		Int("img_tags_seen", result.ImgTagsSeen).
 		Msg("[MessageFetch] Mensagem carregada")
 	return result, nil
+}
+
+// saveMessageImageDebugDump grava o outerHTML (já capturado pelo extractJS, ver DEBUG_MODE) do
+// elemento de mensagem localizado num arquivo em ~/.k8s-hpa-manager/teams-debug/ — só chamada
+// quando FetchMessageByLink recebeu debug=true (checkbox "Modo diagnóstico" no frontend). Permite
+// inspecionar a estrutura DOM real por trás de uma imagem que não foi detectada, sem precisar de
+// acesso direto a uma sessão do Teams. Best-effort: falha aqui nunca derruba a extração em si.
+func saveMessageImageDebugDump(html string, logger *zerolog.Logger) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(homeDir, ".k8s-hpa-manager", "teams-debug")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		logger.Debug().Err(err).Msg("[MessageFetch] Falha ao criar diretório de diagnóstico de imagem")
+		return ""
+	}
+	path := filepath.Join(dir, "message-image-debug-"+time.Now().Format("20060102-150405")+".html")
+	if err := os.WriteFile(path, []byte(html), 0600); err != nil {
+		logger.Debug().Err(err).Msg("[MessageFetch] Falha ao salvar dump de diagnóstico de imagem")
+		return ""
+	}
+	logger.Info().Str("path", path).Msg("[MessageFetch] Dump de diagnóstico da mensagem salvo (Modo diagnóstico)")
+	return path
 }
 
 // saveDebugDiagnostics captura um screenshot da página + um inventário dos atributos `data-tid`
@@ -744,4 +1008,135 @@ func saveDebugDiagnostics(page *rod.Page, logger *zerolog.Logger) string {
 func normalizeExtractedText(s string) string {
 	s = strings.ReplaceAll(s, "\u00A0", " ")
 	return strings.ToValidUTF8(s, "")
+}
+
+// teamsImagePlaceholderRe casa o marcador "@@TEAMS_IMG_i@@" deixado no texto pelo extractJS de
+// fetchMessageAttempt (ver case 'img' dentro de htmlToMarkdown) — usado por resolveMessageImages
+// pra saber qual índice de currentImages/best.ImageURLs cada marcador representa.
+var teamsImagePlaceholderRe = regexp.MustCompile(`@@TEAMS_IMG_(\d+)@@`)
+
+// resolveMessageImages baixa cada URL de imagem encontrada na mensagem escolhida, salva os bytes
+// reais na pasta temporária (ver image_temp_store.go) e substitui os marcadores "@@TEAMS_IMG_i@@"
+// deixados no texto pela sintaxe Markdown de imagem apontando pro arquivo salvo
+// ("![imagem](teams-temp:<filename>)") — esse esquema "teams-temp:" nunca sai desta aplicação: o
+// frontend resolve pra uma URL real do endpoint que serve a pasta temporária ao exibir o preview,
+// e o backend resolve pros bytes reais (embutidos como data URI) na hora do envio (ver
+// resolveLocalImagePlaceholders em internal/web/handlers/teams_broadcast.go).
+//
+// Best-effort em cada etapa — uma imagem que falhar ao baixar/decodificar/salvar vira um aviso
+// textual em vez de derrubar a extração inteira (a mensagem já foi localizada com sucesso nesse
+// ponto; perder só a imagem é preferível a perder tudo).
+func resolveMessageImages(page *rod.Page, text string, urls []string, logger *zerolog.Logger) (string, int) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		logger.Warn().Err(err).Msg("[MessageFetch] Não foi possível resolver $HOME — imagens da mensagem não serão salvas")
+		return stripImagePlaceholders(text, len(urls)), 0
+	}
+	dir := TeamsBroadcastImagesDir(homeDir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		logger.Warn().Err(err).Msg("[MessageFetch] Falha ao preparar pasta temporária de imagens")
+		return stripImagePlaceholders(text, len(urls)), 0
+	}
+
+	saved := 0
+	resolved := teamsImagePlaceholderRe.ReplaceAllStringFunc(text, func(match string) string {
+		sub := teamsImagePlaceholderRe.FindStringSubmatch(match)
+		idx, convErr := strconv.Atoi(sub[1])
+		if convErr != nil || idx < 0 || idx >= len(urls) {
+			return "[imagem indisponível]"
+		}
+		data, mimeType, fetchErr := fetchImageBytes(page, urls[idx], logger)
+		if fetchErr != nil || len(data) == 0 {
+			logger.Warn().Err(fetchErr).Int("index", idx).Msg("[MessageFetch] Falha ao obter bytes da imagem")
+			return "[imagem indisponível]"
+		}
+		filename, saveErr := SaveTeamsBroadcastImage(dir, idx, mimeType, data)
+		if saveErr != nil {
+			logger.Warn().Err(saveErr).Int("index", idx).Msg("[MessageFetch] Falha ao salvar imagem no disco")
+			return "[imagem indisponível]"
+		}
+		saved++
+		return "![imagem](teams-temp:" + filename + ")"
+	})
+	logger.Info().Int("found", len(urls)).Int("saved", saved).Msg("[MessageFetch] Imagens da mensagem processadas")
+	return resolved, saved
+}
+
+// fetchImageBytes obtém os bytes reais de uma URL de imagem já visível na página, em 2 camadas:
+//
+//  1. page.GetResource (CDP "Page.getResourceContent") — lê o conteúdo que o PRÓPRIO Chrome já
+//     baixou pra exibir a tag <img> na tela, sem fazer nenhuma requisição de rede nova.
+//
+// Bug real corrigido (relatado ao vivo: toda imagem virava "[imagem indisponível]" mesmo com a
+// foto claramente visível na mensagem original): a 1ª versão desta função fazia um fetch()
+// MANUAL da mesma URL dentro do JS da página — e um fetch() explícito passa pela checagem de
+// CORS do navegador, mesmo quando a MESMA URL carrega normalmente como <img src> (exibir uma tag
+// <img> nunca é sujeito a CORS, só um fetch()/XHR explícito é). O domínio de mídia do Teams
+// provavelmente não libera CORS pra chamadas fetch() de terceiros, então a imagem aparecia
+// normalmente na tela mas o fetch() sempre falhava silenciosamente (capturado pelo catch,
+// virando `null`). page.GetResource usa o comando de debug do Chrome (CDP) pra ler o conteúdo já
+// em memória do browser pra aquele recurso — não é uma requisição JS, não está sujeito a CORS
+// nenhum, porque o CDP tem acesso privilegiado ao processo do browser.
+//
+//  2. Fallback: fetch() autenticado via JS (mecanismo antigo) — mantido só pro caso raro de
+//     GetResource não achar o recurso (ex: já saiu do cache do Chrome), sem custo extra quando a
+//     camada 1 já funciona (que deve ser a maioria dos casos).
+func fetchImageBytes(page *rod.Page, url string, logger *zerolog.Logger) ([]byte, string, error) {
+	if data, err := page.GetResource(url); err == nil && len(data) > 0 {
+		return data, http.DetectContentType(data), nil
+	} else if err != nil {
+		logger.Debug().Err(err).Msg("[MessageFetch] GetResource (CDP) não encontrou o recurso — tentando fetch via JS")
+	}
+
+	urlJSON, _ := json.Marshal(url)
+	fetchJS := fmt.Sprintf(`async () => {
+		const bytesToBase64 = (bytes) => {
+			let binary = '';
+			const chunkSize = 0x8000;
+			for (let i = 0; i < bytes.length; i += chunkSize) {
+				binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+			}
+			return btoa(binary);
+		};
+		try {
+			const resp = await fetch(%s, { credentials: 'include' });
+			if (!resp.ok) return JSON.stringify(null);
+			const buf = await resp.arrayBuffer();
+			const mime = (resp.headers.get('content-type') || '').split(';')[0].trim();
+			return JSON.stringify({ mime, base64: bytesToBase64(new Uint8Array(buf)) });
+		} catch (e) {
+			return JSON.stringify(null);
+		}
+	}`, string(urlJSON))
+
+	res, evalErr := page.Eval(fetchJS)
+	if evalErr != nil {
+		return nil, "", evalErr
+	}
+	var out *struct {
+		Mime   string `json:"mime"`
+		Base64 string `json:"base64"`
+	}
+	if err := json.Unmarshal([]byte(res.Value.String()), &out); err != nil || out == nil {
+		return nil, "", fmt.Errorf("fetch via JS (fallback) também não retornou dados — provável CORS/autenticação do domínio de mídia")
+	}
+	data, decErr := base64.StdEncoding.DecodeString(out.Base64)
+	if decErr != nil {
+		return nil, "", decErr
+	}
+	mimeType := out.Mime
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	return data, mimeType, nil
+}
+
+// stripImagePlaceholders substitui todo marcador "@@TEAMS_IMG_i@@" por um aviso textual — usada
+// quando resolveMessageImages falha antes mesmo de tentar o download (ex: $HOME não resolvido),
+// pra nunca deixar o marcador cru vazando pro texto final da mensagem.
+func stripImagePlaceholders(text string, count int) string {
+	if count == 0 {
+		return text
+	}
+	return teamsImagePlaceholderRe.ReplaceAllString(text, "[imagem indisponível]")
 }

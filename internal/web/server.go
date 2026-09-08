@@ -1572,6 +1572,12 @@ func (s *Server) setupRoutes() {
 		s.router.GET("/api/v1/teams/broadcast/send/stream/:sessionId",
 			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 			broadcastHandler.StreamSend)
+		// Imagens da pasta temporária de broadcast (ver internal/teams/image_temp_store.go) — o
+		// <img src> do preview desta aba também não manda headers customizados, mesmo motivo do
+		// stream acima.
+		s.router.GET("/api/v1/teams/broadcast/images/:filename",
+			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+			broadcastHandler.ServeBroadcastImage)
 	}
 	fmt.Println("✅ Teams Integration routes registradas")
 

@@ -910,10 +910,14 @@ class APIClient {
     return response;
   }
 
-  async resyncAkv(cluster: string, namespace: string): Promise<AkvResyncResult> {
+  // secretName — opcional, usado pelo backend só como critério de descoberta quando o nome fixo
+  // do ExternalSecret por convenção ("sre-tools-external-secrets-<namespace>") não existe nesse
+  // cluster (ver discoverAkvExternalSecretName em internal/web/handlers/secrets.go) — casa pelo
+  // spec.target.name do ExternalSecret, o nome do Secret que ele de fato gera.
+  async resyncAkv(cluster: string, namespace: string, secretName?: string): Promise<AkvResyncResult> {
     const response = await this.request<AkvResyncResult>(
       `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/resync-akv`,
-      { method: "POST" }
+      { method: "POST", body: JSON.stringify({ secret_name: secretName ?? "" }) }
     );
     return response;
   }
@@ -4590,17 +4594,51 @@ class APIClient {
     return this.request(`/teams/broadcast/templates/${encodeURIComponent(filename)}`, { method: "DELETE" });
   }
 
-  async fetchTeamsMessageByLink(link: string): Promise<{
+  async fetchTeamsMessageByLink(link: string, debug?: boolean): Promise<{
     thread_id: string;
     message_id: string;
     text: string;
     posted_at?: string;
     approximate?: boolean;
+    // images_saved — quantas imagens (TODAS, emoji incluso — exceto avatar do remetente) da
+    // mensagem original foram baixadas com sucesso pra pasta temporária e já referenciadas em
+    // `text` como "![imagem](teams-temp:<filename>)" (ver internal/teams/message_fetch.go).
+    images_saved?: number;
+    // images_detected — quantas <img> foram ENCONTRADAS no DOM (excluindo avatar) antes de tentar
+    // baixar. > 0 com images_saved == 0 aponta pra falha no DOWNLOAD (provável CORS/autenticação
+    // no domínio de mídia do Teams); == 0 aponta pra falha na DETECÇÃO (ver img_tags_seen).
+    images_detected?: number;
+    // img_tags_seen — diagnóstico de detecção: quantas tags <img> existiam no elemento da
+    // mensagem (incluindo avatar excluído). 0 indica que a imagem não é uma <img> — layout do
+    // Teams diferente do esperado, ou a mensagem escolhida não é a certa.
+    img_tags_seen?: number;
+    // debug_dump_path — só preenchido quando `debug: true` foi enviado; caminho (no servidor) do
+    // HTML real do elemento de mensagem localizado, pra investigar por que a imagem não apareceu.
+    debug_dump_path?: string;
+    // img_candidates — só preenchido quando `debug: true`; um registro por <img> encontrada na
+    // mensagem (avatar incluso, com excluded_as_avatar=true), com os atributos reais que
+    // decidiram inclusão/exclusão. `src` é a URL efetivamente ESCOLHIDA (prioriza data-src/
+    // srcset sobre o "src" bruto, ver pickImageSrc em internal/teams/message_fetch.go) —
+    // `raw_src_attr` é o valor cru do atributo "src", útil pra confirmar se havia lazy-load.
+    img_candidates?: {
+      src: string; raw_src_attr: string; data_src: string; srcset: string;
+      width: string; height: string; alt: string;
+      class_name: string; data_tid: string; excluded_as_avatar: boolean;
+    }[];
   }> {
     return this.request("/teams/broadcast/message/fetch", {
       method: "POST",
-      body: JSON.stringify({ link }),
+      body: JSON.stringify({ link, debug: debug ?? false }),
     });
+  }
+
+  /** URL (com token via query — <img src> não manda headers customizados, mesmo motivo de
+   *  getNetDiscoveryStreamURL) de uma imagem salva na pasta temporária de broadcast do Teams.
+   *  Resolve o esquema interno "teams-temp:<filename>" usado por FetchedMessage.text — ver
+   *  MD_COMPONENTS.img em TeamsBroadcastTab.tsx. */
+  getTeamsBroadcastImageURL(filename: string): string {
+    const token = localStorage.getItem("auth_token") ?? "";
+    return `/api/v1/teams/broadcast/images/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}`;
   }
 
   async sendBroadcastMessage(payload: {
