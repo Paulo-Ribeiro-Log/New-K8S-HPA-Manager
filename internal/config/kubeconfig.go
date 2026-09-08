@@ -1432,6 +1432,14 @@ func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovid
 	case CloudProviderEKS:
 		region := ExtractRegionFromEKSURL(serverURL)
 		profile := k.getAWSProfileFromKubeconfig(clusterName)
+		// awsClusterName: nome real do cluster na AWS, usado em toda chamada `aws eks ...`.
+		// Default = normalizedName (context, ARN-safe via parseEKSClusterName); sobrescrito por
+		// eksConfig.Name quando o kubeconfig usa um alias amigável pro context (ex: contexts
+		// "cluster-apis-prd"/"cluster-tools-prd" apontando pros clusters reais "cluster-apis"/
+		// "cluster-tools" — sem esse "Name" do registry, list-nodegroups/describe-nodegroup/
+		// update-nodegroup-config falhavam com ResourceNotFoundException pra qualquer cluster
+		// nessa convenção, porque tentavam o alias como se fosse o nome real na AWS).
+		awsClusterName := normalizedName
 		if eksConfig := k.GetEKSClusterConfig(clusterName); eksConfig != nil {
 			if eksConfig.AwsRegion != "" {
 				region = eksConfig.AwsRegion
@@ -1439,8 +1447,23 @@ func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovid
 			if eksConfig.AwsProfile != "" {
 				profile = eksConfig.AwsProfile
 			}
+			if eksConfig.Name != "" {
+				awsClusterName = eksConfig.Name
+			}
+		} else if realName := k.awsClusterNameFromKubeconfigARN(clusterName); realName != "" {
+			// 2º bug real, achado depois do fix acima: GetEKSClusterConfig compara por
+			// IGUALDADE EXATA de nome (c.Name == context normalizado) — nunca bate quando o
+			// context tem um alias amigável (o caso exato de "cluster-apis-prd"/
+			// "cluster-tools-prd" acima), então `eksConfig` vem `nil` e o ramo acima nunca
+			// executa. Fallback: o campo `cluster` do context no kubeconfig sempre guarda o ARN
+			// completo (arn:aws:eks:REGION:ACCOUNT:cluster/NAME), mesmo quando o CONTEXT em si
+			// foi renomeado — `aws eks update-kubeconfig` nunca muda esse campo. Confirmado ao
+			// vivo (`kubectl config view --raw`): context "cluster-apis-prd" tem
+			// `cluster: arn:aws:eks:sa-east-1:...:cluster/cluster-apis` — fonte de verdade
+			// independente do registry, sempre presente pra qualquer cluster EKS no kubeconfig.
+			awsClusterName = realName
 		}
-		return awsprovider.NewAWSNodeGroupProvider(normalizedName, region, profile)
+		return awsprovider.NewAWSNodeGroupProvider(awsClusterName, normalizedName, region, profile)
 
 	case CloudProviderGKE:
 		// gke-clusters-config.json tem prioridade; fallback: parsear context name
@@ -1464,7 +1487,7 @@ func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovid
 				return azureprovider.NewAzureNodeGroupProvider(c.Name, c.ResourceGroup, c.Subscription)
 			}
 		}
-		return awsprovider.NewAWSNodeGroupProvider(normalizedName, "", "")
+		return awsprovider.NewAWSNodeGroupProvider(normalizedName, normalizedName, "", "")
 	}
 }
 
@@ -1532,6 +1555,27 @@ func (k *KubeConfigManager) getAWSProfileFromKubeconfig(clusterName string) stri
 	}
 
 	return ""
+}
+
+// awsClusterNameFromKubeconfigARN extrai o nome real do cluster EKS a partir do campo `cluster`
+// do context no kubeconfig — `aws eks update-kubeconfig` sempre preenche esse campo com o ARN
+// completo (arn:aws:eks:REGION:ACCOUNT:cluster/NAME), mesmo quando o CONTEXT em si foi renomeado
+// pra um alias amigável (ex: context "cluster-apis-prd" com `cluster: arn:...:cluster/cluster-apis`).
+// Fonte independente de `eks-clusters-config.json` — usada como fallback em `GetNodeGroupProvider`
+// quando `GetEKSClusterConfig` não encontra entrada correspondente (comparação por nome exato,
+// que nunca bate pra esse tipo de alias). Retorna "" se o context não existir ou o campo `cluster`
+// não for um ARN reconhecível (sem "/") — nunca um palpite, só extração determinística.
+func (k *KubeConfigManager) awsClusterNameFromKubeconfigARN(clusterName string) string {
+	resolvedCtx := k.resolveContext(clusterName)
+	ctx, ok := k.config.Contexts[resolvedCtx]
+	if !ok {
+		return ""
+	}
+	idx := strings.LastIndex(ctx.Cluster, "/")
+	if idx < 0 {
+		return ""
+	}
+	return ctx.Cluster[idx+1:]
 }
 
 // inferAWSProfileFromEKSUserName extrai o perfil AWS do nome de usuário no formato "eks_<cluster>".

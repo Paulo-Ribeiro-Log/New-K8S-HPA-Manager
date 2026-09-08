@@ -766,6 +766,8 @@ export interface NodeInfo {
   cpu_usage_percent: number;
   memory_usage_percent: number;
   disk_usage_percent: number;
+  metrics_available: boolean;
+  metrics_error?: string;
 
   // Pods count
   pods_running: number;

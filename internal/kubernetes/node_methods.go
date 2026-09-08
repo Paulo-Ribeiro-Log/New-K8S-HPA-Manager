@@ -237,15 +237,23 @@ func (c *Client) enrichNodeWithMetrics(ctx context.Context, nodeInfo *models.Nod
 	// Tentar obter do Metrics Server primeiro
 	if c.metricsClient == nil {
 		log.Warn().Str("node", nodeName).Msg("Metrics client is nil - skipping metrics collection")
+		nodeInfo.MetricsError = "cliente de métricas não inicializado"
 		return nil
 	}
 
 	nodeMetrics, err := c.metricsClient.MetricsV1beta1().NodeMetricses().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		log.Warn().Err(err).Str("node", nodeName).Msg("Failed to get node metrics from Metrics Server")
+		// Bug real corrigido: antes esse erro era só logado no servidor e descartado — o
+		// frontend via CPUUsed/MemoryUsed vazios (zero-value) e mostrava "N/A" sem explicar o
+		// motivo, indistinguível de "ainda não tentou". Comum em clusters EKS, que não vêm com
+		// metrics-server por padrão (diferente de AKS) — expõe o erro real pro usuário decidir
+		// se é preciso instalar o metrics-server, mesmo padrão já usado na aba Pods.
+		nodeInfo.MetricsError = fmt.Sprintf("metrics-server indisponível: %v", err)
 		return nil
 	}
 
+	nodeInfo.MetricsAvailable = true
 	log.Info().Str("node", nodeName).Msg("Successfully fetched node metrics from Metrics Server")
 
 	// CPU
