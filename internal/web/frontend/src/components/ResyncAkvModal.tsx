@@ -27,16 +27,23 @@ export const ResyncAkvModal = ({ open, onOpenChange, cluster, namespace, secretN
   const [output, setOutput] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [finishedAt, setFinishedAt] = useState<string | null>(null);
+  // resolvedResourceName — o nome REAL do ExternalSecret usado pelo backend, que pode divergir
+  // do nome fixo por convenção quando o cluster usa outra convenção (ver
+  // discoverAkvExternalSecretName em internal/web/handlers/secrets.go) — só conhecido depois da
+  // resposta; antes disso a UI mostra o nome fixo só como estimativa.
+  const [resolvedResourceName, setResolvedResourceName] = useState<string | null>(null);
 
   const runResync = useCallback(async () => {
     setStatus("running");
     setOutput("");
     setErrorMessage("");
     setFinishedAt(null);
+    setResolvedResourceName(null);
     try {
-      const result = await apiClient.resyncAkv(cluster, namespace);
+      const result = await apiClient.resyncAkv(cluster, namespace, secretName);
       setCommand(result.command || "");
       setOutput(result.output || "");
+      setResolvedResourceName(result.resourceName || null);
       setStatus("success");
       setFinishedAt(new Date().toLocaleString());
       toast.success("Resync AKV disparado", {
@@ -48,9 +55,14 @@ export const ResyncAkvModal = ({ open, onOpenChange, cluster, namespace, secretN
       setErrorMessage(msg);
       setStatus("error");
       setFinishedAt(new Date().toLocaleString());
+      // details.resourceName — último nome de ExternalSecret tentado pelo backend (já reflete o
+      // fallback de descoberta, se houve) — anexado a todo erro via Object.assign em client.ts.
+      const details = (err as { details?: { resourceName?: string; command?: string } } | undefined)?.details;
+      if (details?.resourceName) setResolvedResourceName(details.resourceName);
+      if (details?.command) setCommand(details.command);
       toast.error("Falha ao disparar Resync AKV", { description: msg });
     }
-  }, [cluster, namespace, onResyncSuccess]);
+  }, [cluster, namespace, secretName, onResyncSuccess]);
 
   useEffect(() => {
     if (open) {
@@ -59,7 +71,10 @@ export const ResyncAkvModal = ({ open, onOpenChange, cluster, namespace, secretN
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const externalSecretName = `sre-tools-external-secrets-${namespace}`;
+  // Nome fixo por convenção — só uma ESTIMATIVA exibida antes da primeira resposta; o backend
+  // pode descobrir e usar um nome diferente quando esse não existir no cluster (ver
+  // discoverAkvExternalSecretName), refletido em resolvedResourceName assim que disponível.
+  const externalSecretName = resolvedResourceName ?? `sre-tools-external-secrets-${namespace}`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

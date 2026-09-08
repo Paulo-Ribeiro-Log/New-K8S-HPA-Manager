@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Editor, { BeforeMount, OnMount } from "@monaco-editor/react";
 import type * as MonacoNS from "monaco-editor";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
@@ -69,6 +69,22 @@ const beforeMount: BeforeMount = (monaco) => {
     ],
     colors: { "editor.background": "#0D1117" },
   });
+};
+
+// teamsUrlTransform — bug real corrigido (relatado ao vivo: a imagem extraída via link do Teams
+// nunca aparecia nem no PREVIEW, mesmo com o componente `img` customizado abaixo resolvendo o
+// esquema "teams-temp:"): react-markdown v10 sanitiza toda URL de link/imagem por padrão
+// (defaultUrlTransform, node_modules/react-markdown/lib/index.js) permitindo só os protocolos
+// http/https/irc(s)/mailto/xmpp — qualquer outro "protocolo" (aqui, o nosso esquema interno
+// "teams-temp:") é silenciosamente trocado por string vazia ANTES do componente `img` sequer
+// receber o valor. Por isso `![imagem](teams-temp:img-0.jpg)` nunca tinha chance de renderizar —
+// o `src` já chegava vazio no componente customizado. Corrigido preservando esse esquema
+// específico (o único "protocolo" fora do padrão usado por esta aba) e delegando qualquer outra
+// URL pro comportamento padrão da biblioteca (mantém a mesma proteção de segurança contra
+// "javascript:"/outros esquemas perigosos para tudo que não seja nossa referência interna).
+const teamsUrlTransform = (url: string): string => {
+  if (url.startsWith("teams-temp:")) return url;
+  return defaultUrlTransform(url);
 };
 
 // ── ReactMarkdown components com estilos distintos ────────────────────────────
@@ -151,6 +167,23 @@ const MD_COMPONENTS: Components = {
   td: ({ children }) => (
     <td className="border border-slate-700 px-3 py-1.5 text-slate-300">{children}</td>
   ),
+  // img — resolve o esquema interno "teams-temp:<filename>" (imagem de conteúdo baixada da
+  // mensagem original ao carregar via link, ver internal/teams/message_fetch.go) pra uma URL real
+  // do endpoint que serve a pasta temporária; qualquer outra URL (colada manualmente via botão
+  // "Imagem" da toolbar) renderiza como está, sem mudança.
+  img: ({ src, alt }) => {
+    const resolvedSrc =
+      typeof src === "string" && src.startsWith("teams-temp:")
+        ? apiClient.getTeamsBroadcastImageURL(src.slice("teams-temp:".length))
+        : src;
+    return (
+      <img
+        src={resolvedSrc}
+        alt={alt ?? ""}
+        className="max-w-full rounded-md border border-slate-700 my-2"
+      />
+    );
+  },
 };
 
 // ── Toolbar ───────────────────────────────────────────────────────────────────
@@ -667,11 +700,22 @@ function LoadFromLinkModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onLoaded: (text: string, meta: { threadId: string; messageId: string; approximate: boolean }) => void;
+  onLoaded: (text: string, meta: {
+    threadId: string; messageId: string; approximate: boolean; imagesSaved: number;
+    imagesDetected: number; imgTagsSeen: number; debugDumpPath?: string;
+    imgCandidates?: {
+      src: string; raw_src_attr: string; data_src: string; srcset: string;
+      width: string; height: string; alt: string; class_name: string; data_tid: string; excluded_as_avatar: boolean;
+    }[];
+  }) => void;
 }) {
   const [link, setLink] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // debugMode — "Modo diagnóstico": só liga quando o usuário já tentou uma vez e a imagem não
+  // veio, pra investigar por que sem precisar de acesso direto a uma sessão do Teams. Desligado
+  // por padrão (custo extra de serializar/salvar o HTML real do elemento de mensagem).
+  const [debugMode, setDebugMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -688,12 +732,22 @@ function LoadFromLinkModal({
     setLoading(true);
     setErr(null);
     try {
-      const res = await apiClient.fetchTeamsMessageByLink(trimmed);
+      const res = await apiClient.fetchTeamsMessageByLink(trimmed, debugMode);
       onLoaded(res.text, {
         threadId: res.thread_id,
         messageId: res.message_id,
         approximate: !!res.approximate,
+        imagesSaved: res.images_saved ?? 0,
+        imagesDetected: res.images_detected ?? 0,
+        imgTagsSeen: res.img_tags_seen ?? 0,
+        debugDumpPath: res.debug_dump_path,
+        imgCandidates: res.img_candidates,
       });
+      // Modo diagnóstico: lista cada <img> candidata direto no console do navegador — mais
+      // rápido de inspecionar/copiar do que abrir o arquivo de dump no servidor.
+      if (debugMode && res.img_candidates) {
+        console.table(res.img_candidates);
+      }
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "Erro ao carregar mensagem");
     } finally {
@@ -728,6 +782,16 @@ function LoadFromLinkModal({
           }}
           disabled={loading}
         />
+        <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={debugMode}
+            onChange={(e) => setDebugMode(e.target.checked)}
+            disabled={loading}
+            className="h-3 w-3"
+          />
+          Modo diagnóstico (a mensagem tem imagem mas ela não apareceu numa tentativa anterior)
+        </label>
         {err && <p className="text-[11px] text-destructive">{err}</p>}
         <div className="flex justify-end gap-2 mt-1">
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onClose} disabled={loading}>
@@ -1213,7 +1277,7 @@ export const TeamsBroadcastTab = () => {
                 {content}
               </pre>
             ) : (
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS} urlTransform={teamsUrlTransform}>
                 {content}
               </ReactMarkdown>
             )}
@@ -1397,11 +1461,26 @@ export const TeamsBroadcastTab = () => {
           setCurrentFilename(null);
           setIsDirty(true);
           setLoadLinkOpen(false);
-          toast.success(
-            meta.approximate
-              ? "Mensagem carregada (correspondência aproximada — confira o conteúdo)"
-              : "Mensagem carregada do Teams"
-          );
+          const baseMsg = meta.approximate
+            ? "Mensagem carregada (correspondência aproximada — confira o conteúdo)"
+            : "Mensagem carregada do Teams";
+          if (meta.imagesSaved > 0) {
+            const plural = meta.imagesSaved > 1;
+            toast.success(`${baseMsg} (${meta.imagesSaved} imag${plural ? "ens" : "em"} inclu${plural ? "ídas" : "ída"})`);
+          } else if (meta.imagesDetected > 0) {
+            // Detectou fonte(s) de imagem no DOM mas o download falhou (provável CORS/
+            // autenticação no domínio de mídia do Teams) — ver resolveMessageImages no backend.
+            toast.warning(`${baseMsg} — ${meta.imagesDetected} imagem(ns) detectada(s) mas não foi possível baixar (veja o log do servidor: "[MessageFetch]")`);
+          } else if (meta.imgTagsSeen > 0) {
+            // Havia <img> no elemento, mas TODAS foram excluídas como avatar do remetente (ver
+            // isAvatarImg) — nenhuma imagem de conteúdo real encontrada.
+            toast.warning(`${baseMsg} — ${meta.imgTagsSeen} figura(s) encontrada(s) na mensagem, mas identificada(s) como avatar do remetente (não baixada). Se era uma foto real, marque "Modo diagnóstico" e veja o console do navegador (F12).`);
+          } else {
+            toast.success(baseMsg);
+          }
+          if (meta.debugDumpPath) {
+            toast.info(`Dump de diagnóstico salvo em: ${meta.debugDumpPath}. Detalhes das imagens candidatas: veja o console do navegador (F12).`, { duration: 20000 });
+          }
         }}
       />
     </div>

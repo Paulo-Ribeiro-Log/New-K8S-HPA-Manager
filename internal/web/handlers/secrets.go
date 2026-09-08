@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -732,6 +733,85 @@ func akvExternalSecretName(namespace string) string {
 	return fmt.Sprintf("sre-tools-external-secrets-%s", namespace)
 }
 
+// externalSecretListItem — só os campos que discoverAkvExternalSecretName precisa da saída de
+// "kubectl get externalsecrets -o json".
+type externalSecretListItem struct {
+	Metadata struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Spec struct {
+		Target struct {
+			Name string `json:"name"`
+		} `json:"target"`
+	} `json:"spec"`
+}
+
+// discoverAkvExternalSecretName lista os ExternalSecrets do namespace e escolhe o candidato certo
+// pra anotar quando o nome fixo por convenção (akvExternalSecretName) não existe.
+//
+// Bug real corrigido (relatado ao vivo: "Error from server (NotFound):
+// externalsecrets.external-secrets.io \"sre-tools-external-secrets-<namespace>\" not found") —
+// nem todo cluster/namespace segue essa convenção fixa de nome. Confirmado ao vivo contra um
+// cluster real (akspriv-entregamais-prd-admin, namespace entrega-mais-prd): o ExternalSecret de
+// fato existe, só que com outro nome (akv-entregamais-prd-entrega-mais-prd, convenção
+// "<ClusterSecretStore>-<namespace>") — gerado automaticamente por uma policy Kyverno
+// ("generate.kyverno.io/policy-name: generate-external-secret" nas labels do recurso), não criado
+// manualmente seguindo o padrão "sre-tools-external-secrets-".
+//
+// Critério de escolha, em ordem de confiança:
+//  1. spec.target.name == secretName — o ExternalSecret que de fato GERA o Secret selecionado na
+//     UI (o external-secrets operator escreve o Secret resultante nesse nome). Mais preciso
+//     possível — confirmado ao vivo que bate exatamente pro caso investigado.
+//  2. Só existe 1 ExternalSecret no namespace — usa esse, sem ambiguidade possível mesmo sem
+//     secretName informado (chamador antigo, sem essa informação).
+//  3. Sem nenhum critério decisivo — retorna erro listando os candidatos encontrados, pra nunca
+//     anotar o recurso errado silenciosamente.
+func discoverAkvExternalSecretName(ctx context.Context, cluster, namespace, secretName string) (string, error) {
+	args := []string{"get", "externalsecrets", "-n", namespace, "--context", cluster, "-o", "json"}
+	output, err := exec.CommandContext(ctx, "kubectl", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("falha ao listar externalsecrets no namespace %s: %w", namespace, err)
+	}
+
+	var list struct {
+		Items []externalSecretListItem `json:"items"`
+	}
+	if err := json.Unmarshal(output, &list); err != nil {
+		return "", fmt.Errorf("falha ao parsear lista de externalsecrets: %w", err)
+	}
+	return pickExternalSecretCandidate(list.Items, namespace, secretName)
+}
+
+// pickExternalSecretCandidate implementa o critério de escolha descrito em
+// discoverAkvExternalSecretName, separado numa função pura pra ser testável sem depender de um
+// cluster real / subprocesso kubectl.
+func pickExternalSecretCandidate(items []externalSecretListItem, namespace, secretName string) (string, error) {
+	if len(items) == 0 {
+		return "", fmt.Errorf("nenhum ExternalSecret encontrado no namespace %s", namespace)
+	}
+
+	if secretName != "" {
+		for _, item := range items {
+			if item.Spec.Target.Name == secretName {
+				return item.Metadata.Name, nil
+			}
+		}
+	}
+
+	if len(items) == 1 {
+		return items[0].Metadata.Name, nil
+	}
+
+	names := make([]string, len(items))
+	for i, item := range items {
+		names[i] = item.Metadata.Name
+	}
+	return "", fmt.Errorf(
+		"múltiplos ExternalSecrets encontrados no namespace %s e nenhum bate com o Secret %q — candidatos: %s",
+		namespace, secretName, strings.Join(names, ", "),
+	)
+}
+
 // ResyncAKV força o external-secrets operator a ressincronizar imediatamente com o
 // Azure Key Vault, anotando o ExternalSecret com force-sync=<unix timestamp> --overwrite.
 // Aproveita o cluster/namespace já selecionados na UI — não precisa do nome do Secret,
@@ -744,22 +824,49 @@ func (h *SecretHandler) ResyncAKV(c *gin.Context) {
 		return
 	}
 
+	// secret_name — opcional, corpo pode vir vazio (chamador antigo/nenhum body enviado). Usado
+	// só como critério de descoberta quando o nome fixo por convenção não existe (ver
+	// discoverAkvExternalSecretName) — nunca obrigatório, nunca usado diretamente no comando.
+	var req struct {
+		SecretName string `json:"secret_name"`
+	}
+	_ = c.ShouldBindJSON(&req) // corpo vazio/ausente é válido aqui — ignora erro de bind
+
 	resourceName := akvExternalSecretName(namespace)
 	timestamp := time.Now().Unix()
 	annotation := fmt.Sprintf("force-sync=%d", timestamp)
 
-	args := []string{
-		"annotate", "externalsecret", resourceName,
-		annotation,
-		"-n", namespace,
-		"--context", cluster,
-		"--overwrite",
+	buildArgs := func(name string) []string {
+		return []string{
+			"annotate", "externalsecret", name,
+			annotation,
+			"-n", namespace,
+			"--context", cluster,
+			"--overwrite",
+		}
 	}
-	command := "kubectl " + strings.Join(args, " ")
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
+
+	args := buildArgs(resourceName)
+	command := "kubectl " + strings.Join(args, " ")
 	output, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
+
+	// Bug real corrigido (relatado ao vivo: "Error from server (NotFound):
+	// externalsecrets.external-secrets.io \"sre-tools-external-secrets-<namespace>\" not found")
+	// — nem todo cluster/namespace segue a convenção fixa de nome (ver discoverAkvExternalSecretName
+	// pro caso real confirmado). Só tenta o fallback quando o erro é especificamente "not found"
+	// (nunca em erro de permissão/rede/timeout, onde reexecutar com outro nome não ajudaria e só
+	// mascararia a causa real).
+	if err != nil && strings.Contains(strings.ToLower(string(output)), "not found") {
+		if discovered, discErr := discoverAkvExternalSecretName(ctx, cluster, namespace, req.SecretName); discErr == nil && discovered != resourceName {
+			resourceName = discovered
+			args = buildArgs(resourceName)
+			command = "kubectl " + strings.Join(args, " ")
+			output, err = exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
+		}
+	}
 
 	status := "success"
 	if err != nil {
@@ -780,9 +887,10 @@ func (h *SecretHandler) ResyncAKV(c *gin.Context) {
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"command": command,
-			"output":  strings.TrimSpace(string(output)),
+			"success":      false,
+			"command":      command,
+			"output":       strings.TrimSpace(string(output)),
+			"resourceName": resourceName, // último nome tentado (já reflete o fallback, se houve)
 			"error": gin.H{
 				"code":    "ANNOTATE_ERROR",
 				"message": fmt.Sprintf("%v - %s", err, strings.TrimSpace(string(output))),

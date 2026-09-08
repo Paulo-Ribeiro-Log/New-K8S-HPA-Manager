@@ -221,6 +221,16 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 		defer stopExpose() //nolint:errcheck
 	}
 
+	// Bug real corrigido (relatado ao vivo: "a mensagem foi enviada sem a imagem" — confirmado
+	// que o Teams aceita a requisição de texto com sucesso mas descarta/sanitiza qualquer
+	// "<img src="data:...">" embutido): antes de montar o payload de texto, faz upload real de
+	// cada imagem embutida (ver uploadImagesInHTML/uploadImageToAMS) pro serviço de mídia AMS do
+	// Teams — mesmo protocolo usado pelo cliente nativo, descoberto capturando o tráfego de um
+	// upload manual real (scripts/teams-spy-upload). Upload único, compartilhado entre todos os
+	// destinatários deste envio (permissions inclui todos os threadIDs) — best-effort, se falhar
+	// mantém o data URI original (nunca pior que o comportamento anterior).
+	htmlContent = uploadImagesInHTML(page, htmlContent, threadIDs, logger)
+
 	escapedHTML := escapeJSString(htmlContent)
 	threadIDsJSON, _ := json.Marshal(threadIDs)
 

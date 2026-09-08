@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -75,6 +77,11 @@ type SaveTemplateRequest struct {
 
 type FetchMessageRequest struct {
 	Link string `json:"link"`
+	// Debug — "Modo diagnóstico" do LoadFromLinkModal. Quando true, a resposta ganha
+	// debug_dump_path apontando pra um arquivo com o HTML real do elemento de mensagem localizado
+	// — usado só pra investigar por que uma imagem esperada não foi detectada (ver
+	// internal/teams/message_fetch.go, saveMessageImageDebugDump). Nunca ligado por padrão.
+	Debug bool `json:"debug,omitempty"`
 }
 
 type TeamsBroadcastHandler struct {
@@ -413,13 +420,42 @@ func (h *TeamsBroadcastHandler) FetchMessage(c *gin.Context) {
 
 	h.logger.Info().Str("link", req.Link).Msg("[Broadcast] Carregando mensagem via link do Teams...")
 
-	msg, err := teams.FetchMessageByLink(sessionDir, req.Link, h.logger)
+	msg, err := teams.FetchMessageByLink(sessionDir, req.Link, req.Debug, h.logger)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, msg)
+}
+
+// ServeBroadcastImage serve uma imagem da pasta temporária de imagens de broadcast — populada por
+// FetchMessage (extração via link, ver internal/teams/message_fetch.go) e destruída por completo
+// a cada nova coleta (ver ResetTeamsBroadcastImagesDir). Usada tanto pelo <img src> do preview
+// Markdown desta aba (resolvendo o esquema "teams-temp:<filename>") quanto — indiretamente, via
+// leitura direta do arquivo — por resolveLocalImagePlaceholders na hora do envio.
+//
+// Sem RBAC extra: é dado local e efêmero desta própria sessão de trabalho, sem nenhuma informação
+// de cluster. `filename` é validado contra o único formato que SaveTeamsBroadcastImage gera
+// (IsValidTeamsBroadcastImageFilename) antes de montar o caminho no disco — defesa contra path
+// traversal mesmo que o valor venha de um link editado à mão pelo usuário no editor Markdown.
+func (h *TeamsBroadcastHandler) ServeBroadcastImage(c *gin.Context) {
+	filename := c.Param("filename")
+	if !teams.IsValidTeamsBroadcastImageFilename(filename) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nome de arquivo inválido"})
+		return
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "falha ao resolver diretório home"})
+		return
+	}
+	path := filepath.Join(teams.TeamsBroadcastImagesDir(homeDir), filename)
+	if _, statErr := os.Stat(path); statErr != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "imagem não encontrada — pode ter sido descartada por uma coleta mais recente"})
+		return
+	}
+	c.File(path)
 }
 
 // Send inicia o envio em lote de forma assíncrona e retorna 202 imediatamente.
@@ -448,6 +484,16 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 	h.sending = true
 	h.sendMu.Unlock()
 
+	// Diagnóstico (relatado ao vivo: "a imagem aparece na visualização mas não é enviada") —
+	// confirma, sem adivinhar, se o payload que o FRONTEND de fato mandou já veio com o campo
+	// legado `html` preenchido (o que reintroduziria o bug histórico documentado no struct
+	// SendBroadcastRequest: o preview via CommonMark nunca conseguiu representar a imagem
+	// corretamente) ou se é o campo `markdown` normal contendo a referência "teams-temp:".
+	h.logger.Info().Bool("has_html_field", req.HTML != "").Int("markdown_len", len(req.Markdown)).
+		Bool("markdown_has_teams_temp_ref", strings.Contains(req.Markdown, "teams-temp:")).
+		Bool("is_plain_text", req.IsPlainText).
+		Msg("[Broadcast] Send: payload recebido do frontend")
+
 	// req.HTML só tem prioridade se vier preenchido explicitamente (compatibilidade — a UI atual
 	// nunca mais envia esse campo, ver comentário no struct SendBroadcastRequest). Caminho normal:
 	// reconstrói o HTML aqui a partir de Markdown/IsPlainText, preservando a contagem exata de
@@ -462,11 +508,20 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 			return
 		}
 		if req.IsPlainText {
+			// Texto simples nunca interpreta sintaxe nenhuma (nem "![alt](teams-temp:...)") — um
+			// blob base64 de imagem embutido cru como texto visível poluiria a mensagem inteira.
 			htmlContent = plainTextToTeamsHTML(req.Markdown)
 		} else {
-			htmlContent = markdownToTeamsHTML(req.Markdown)
+			// Resolve "![alt](teams-temp:<filename>)" (imagens de conteúdo baixadas da mensagem
+			// original ao carregar via link, ver internal/teams/message_fetch.go) pros bytes reais
+			// embutidos como data URI ANTES de converter pra HTML — sem endpoint de upload de
+			// mídia pro Teams implementado nesta app, embutir a imagem diretamente no HTML da
+			// mensagem é a única forma de reenviá-la de verdade.
+			htmlContent = markdownToTeamsHTML(resolveLocalImagePlaceholders(req.Markdown, h.logger))
 		}
 	}
+	h.logger.Info().Bool("html_has_img_tag", strings.Contains(htmlContent, "<img ")).Int("html_len", len(htmlContent)).
+		Msg("[Broadcast] Send: HTML final montado, prestes a chamar SendBatch")
 
 	sessionID := req.SessionID
 	total := len(req.ThreadIDs)
@@ -812,11 +867,81 @@ var (
 	// Sem isso, um link carregado do Teams voltava como texto literal "[texto](url)" ao reenviar
 	// em vez de um link clicável de verdade — parte do mesmo bug de "formatação alterada".
 	reLink = regexp.MustCompile(`\[(.+?)\]\((.+?)\)`)
+	// reImage casa a sintaxe de imagem do Markdown (![alt](url)) — produzida por htmlToMarkdown a
+	// partir de <img> real (não-emoji) ao carregar uma mensagem via link (ver
+	// internal/teams/message_fetch.go), ou digitada manualmente via botão "Imagem" da toolbar.
+	// Aplicada em applyInlineMarkdown ANTES de reLink: sem essa ordem, reLink casaria a
+	// subsequência "[alt](url)" de dentro de "![alt](url)" primeiro, sobrando um "!" solto na
+	// frente de um link comum em vez de virar uma imagem de verdade — bug pré-existente (nunca
+	// havia suporte real de imagem no envio, só no preview local via react-markdown).
+	reImage = regexp.MustCompile(`!\[(.*?)\]\((.+?)\)`)
+	// reTeamsTempImage casa especificamente uma referência "![alt](teams-temp:<filename>)" — o
+	// esquema interno usado por FetchedMessage.Text pra apontar pra um arquivo já salvo na pasta
+	// temporária de imagens (ver internal/teams/image_temp_store.go). Usada só por
+	// resolveLocalImagePlaceholders, ANTES de applyInlineMarkdown rodar — nunca sai da aplicação.
+	reTeamsTempImage = regexp.MustCompile(`!\[([^\]]*)\]\(teams-temp:([a-zA-Z0-9_.\-]+)\)`)
 	// reTableSepRow casa a linha separadora de uma tabela GFM (ex: "|---|:---:|---|",
 	// "---|---" ou "-|-|-") — só traços/dois-pontos/pipes/espaços, com pelo menos um traço.
 	// Ver comentário de detecção de tabela em markdownToTeamsHTML.
 	reTableSepRow = regexp.MustCompile(`^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$`)
 )
+
+// resolveLocalImagePlaceholders substitui toda referência "![alt](teams-temp:<filename>)" (imagem
+// de conteúdo baixada da pasta temporária ao carregar uma mensagem via link — ver
+// internal/teams/message_fetch.go) por uma imagem embutida como data URI. Esta aplicação não tem
+// nenhum endpoint de upload de mídia pro Teams implementado — o protocolo de envio real (ver
+// internal/teams/sender.go) manda só HTML puro pro chatsvcagg, então embutir os bytes diretamente
+// no HTML é a única forma de reenviar a imagem de verdade sem depender de hospedagem externa.
+//
+// Best-effort: se o arquivo já não existir mais (uma coleta mais recente já destruiu a pasta
+// temporária inteira — ver ResetTeamsBroadcastImagesDir — e o usuário demorou pra enviar), a
+// referência vira um aviso textual em vez de quebrar o envio inteiro.
+func resolveLocalImagePlaceholders(markdown string, logger *zerolog.Logger) string {
+	if !strings.Contains(markdown, "teams-temp:") {
+		if logger != nil {
+			logger.Info().Msg("[Broadcast] resolveLocalImagePlaceholders: nenhuma referência \"teams-temp:\" encontrada no markdown a enviar")
+		}
+		return markdown
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		if logger != nil {
+			logger.Warn().Err(err).Msg("[Broadcast] resolveLocalImagePlaceholders: falha ao resolver $HOME — imagem(ns) não serão embutidas")
+		}
+		return reTeamsTempImage.ReplaceAllString(markdown, "[imagem indisponível]")
+	}
+	dir := teams.TeamsBroadcastImagesDir(homeDir)
+	return reTeamsTempImage.ReplaceAllStringFunc(markdown, func(match string) string {
+		m := reTeamsTempImage.FindStringSubmatch(match)
+		alt, filename := m[1], m[2]
+		path := filepath.Join(dir, filename)
+		if !teams.IsValidTeamsBroadcastImageFilename(filename) {
+			if logger != nil {
+				logger.Warn().Str("filename", filename).Str("path", path).
+					Msg("[Broadcast] resolveLocalImagePlaceholders: filename fora do formato esperado — imagem NÃO será enviada")
+			}
+			return "[imagem indisponível]"
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			if logger != nil {
+				logger.Warn().Err(readErr).Str("path", path).
+					Msg("[Broadcast] resolveLocalImagePlaceholders: falha ao ler arquivo da imagem — imagem NÃO será enviada")
+			}
+			return "[imagem indisponível]"
+		}
+		mimeType := mime.TypeByExtension(filepath.Ext(filename))
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		encoded := base64.StdEncoding.EncodeToString(data)
+		if logger != nil {
+			logger.Info().Str("path", path).Int("bytes", len(data)).Str("mime", mimeType).Int("base64_len", len(encoded)).
+				Msg("[Broadcast] resolveLocalImagePlaceholders: imagem local resolvida e embutida como data URI")
+		}
+		return "![" + alt + "](data:" + mimeType + ";base64," + encoded + ")"
+	})
+}
 
 // splitTableRow separa uma linha de tabela Markdown em células: remove os pipes externos
 // (opcionais em GFM) e respeita "\|" como pipe escapado dentro de uma célula.
@@ -861,6 +986,8 @@ func buildTeamsTableHTML(header []string, rows [][]string) string {
 }
 
 func applyInlineMarkdown(s string) string {
+	// reImage roda ANTES de reLink de propósito — ver comentário na declaração do regex acima.
+	s = reImage.ReplaceAllString(s, `<img src="$2" alt="$1">`)
 	s = reBold1.ReplaceAllString(s, "<b>$1</b>")
 	s = reBold2.ReplaceAllString(s, "<b>$1</b>")
 	s = reItalic1.ReplaceAllString(s, "<i>$1</i>")
