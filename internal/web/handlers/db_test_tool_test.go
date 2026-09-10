@@ -395,6 +395,12 @@ func TestValidateDBConnStringScheme(t *testing.T) {
 		{"sqlserver valid mssql://", "sqlserver", "mssql://user:pass@host:1433/db", "", ""},
 		{"sqlserver valid jdbc:sqlserver:// (relatado ao vivo pelo usuário)", "sqlserver",
 			"jdbc:sqlserver://host.database.windows.net:1433;database=db;user=u;password=p;encrypt=true", "", ""},
+		// Formato ADO.NET adicionado depois do relato de um usuário testando servidor Windows via
+		// IP+porta com a connection string exata da aplicação .NET dona do banco.
+		{"sqlserver valid ADO.NET — string real do usuário (valores sintéticos)", "sqlserver",
+			"MultipleActiveResultSets=True;server=10.128.65.179,1311;database=DB_PRD_OMS_X;" +
+				"user id=svc_oms_x;password=hk+y!senha;Persist Security Info=True;TrustServerCertificate=True",
+			"", ""},
 		{"sqlserver wrong scheme", "sqlserver", "postgresql://host:5432/db", "INVALID_SQLSERVER_CONNSTRING", `"postgresql://"`},
 	}
 	for _, tc := range cases {
@@ -512,6 +518,87 @@ func TestParseJDBCSQLServerParams(t *testing.T) {
 		h, po, u, pw, d, tls, trust := sqlserverEffectiveParams(p)
 		if h != host || po != port || u != user || pw != pass || d != db || tls != useTLS || trust != skipTLSVerify {
 			t.Errorf("sqlserverEffectiveParams não bateu com parseJDBCSQLServerParams direto")
+		}
+	})
+}
+
+// Regressão: usuário relatou querer testar SQL Server em servidor Windows via IP+porta usando a
+// connection string exata da Secret/aplicação .NET dona do banco — formato ADO.NET
+// (Server=...;Database=...;User Id=...;Password=...;), que até então era explicitamente rejeitado
+// ("formato ADO.NET não é suportado aqui"). String reproduzida a partir do shape real relatado
+// (valores sintéticos, não os originais) — inclui a ordem real das chaves (server= não vem
+// primeiro) e um caractere especial na senha (+ e !).
+func TestParseADONetSQLServerParams(t *testing.T) {
+	raw := "MultipleActiveResultSets=True;server=10.128.65.179,1311;database=DB_PRD_OMS_X;" +
+		"user id=svc_oms_x;password=hk+y!senha;Persist Security Info=True;TrustServerCertificate=True"
+
+	host, port, user, pass, db, useTLS, skipTLSVerify, ok := parseADONetSQLServerParams(raw)
+	if !ok {
+		t.Fatal("esperava ok=true pra uma connection string ADO.NET válida")
+	}
+	if host != "10.128.65.179" {
+		t.Errorf("host = %q, want %q", host, "10.128.65.179")
+	}
+	if port != 1311 {
+		t.Errorf("port = %d, want 1311 (separado do host por vírgula, não por dois-pontos)", port)
+	}
+	if user != "svc_oms_x" {
+		t.Errorf("user = %q — chave \"user id\" (com espaço) deve ser reconhecida", user)
+	}
+	if pass != "hk+y!senha" {
+		t.Errorf("pass = %q — caracteres especiais (+, !) não devem quebrar o parse", pass)
+	}
+	if db != "DB_PRD_OMS_X" {
+		t.Errorf("db = %q", db)
+	}
+	if useTLS {
+		t.Error("useTLS = true, want false (a string não tem Encrypt= explícito)")
+	}
+	if !skipTLSVerify {
+		t.Error("skipTLSVerify = false, want true (TrustServerCertificate=True na string)")
+	}
+
+	t.Run("chave server no meio da string (não primeiro) ainda é reconhecida", func(t *testing.T) {
+		if !looksLikeADONetSQLServerConnString(raw) {
+			t.Error("looksLikeADONetSQLServerConnString deveria reconhecer mesmo com server= no meio")
+		}
+	})
+
+	t.Run("Data Source + Initial Catalog + Uid + Pwd (aliases legados)", func(t *testing.T) {
+		host, _, user, pass, db, _, _, ok := parseADONetSQLServerParams(
+			"Data Source=myhost,1433;Initial Catalog=mydb;Uid=abc;Pwd=xyz")
+		if !ok || host != "myhost" || db != "mydb" || user != "abc" || pass != "xyz" {
+			t.Errorf("got host=%q db=%q user=%q pass=%q ok=%v", host, db, user, pass, ok)
+		}
+	})
+
+	t.Run("sem porta explícita cai no default", func(t *testing.T) {
+		_, port, _, _, _, _, _, ok := parseADONetSQLServerParams("server=myhost;database=x")
+		if !ok || port != sqlserverDefaultPort {
+			t.Errorf("port = %d, ok=%v", port, ok)
+		}
+	})
+
+	t.Run("string com esquema URI nunca é tratada como ADO.NET", func(t *testing.T) {
+		if looksLikeADONetSQLServerConnString("sqlserver://host:1433/db") {
+			t.Error("uma URI com \"://\" nunca deve ser detectada como ADO.NET")
+		}
+		if _, _, _, _, _, _, _, ok := parseADONetSQLServerParams("sqlserver://host:1433/db"); ok {
+			t.Error("esperava ok=false pra uma URI")
+		}
+	})
+
+	t.Run("string sem nenhuma chave de host reconhecida devolve ok=false", func(t *testing.T) {
+		if _, _, _, _, _, _, _, ok := parseADONetSQLServerParams("database=x;user=y"); ok {
+			t.Error("esperava ok=false sem nenhuma chave server/data source/addr/address")
+		}
+	})
+
+	t.Run("sqlserverEffectiveParams usa o parser ADO.NET em Mode=connstring", func(t *testing.T) {
+		p := dbConnParams{Mode: "connstring", ConnStr: raw}
+		h, po, u, pw, d, tls, trust := sqlserverEffectiveParams(p)
+		if h != host || po != port || u != user || pw != pass || d != db || tls != useTLS || trust != skipTLSVerify {
+			t.Errorf("sqlserverEffectiveParams não bateu com parseADONetSQLServerParams direto")
 		}
 	})
 }

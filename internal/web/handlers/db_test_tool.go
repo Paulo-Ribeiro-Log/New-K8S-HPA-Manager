@@ -995,9 +995,8 @@ func parseJDBCSQLServerParams(raw string) (host string, port int, username, pass
 // parseSQLServerConnString extrai host/port/user/pass/db de uma connection string no formato URI
 // "sqlserver://user:pass@host:port/db" (também aceita mssql://, mesmo alias) — mesmo mecanismo de
 // parseMySQLConnString (o cliente `sqlcmd` também não aceita URI diretamente, precisa dos campos
-// discretos). Não cobre o formato ADO.NET (`Server=...;Database=...;`, sem prefixo reconhecível
-// que distinga de um erro de digitação qualquer) — só URI simples e JDBC (ver
-// parseJDBCSQLServerParams), os dois formatos reais já vistos em uso.
+// discretos). Formato ADO.NET (`Server=...;Database=...;`) tem parser próprio, ver
+// parseADONetSQLServerParams — este cobre só URI simples (JDBC tem o seu, parseJDBCSQLServerParams).
 func parseSQLServerConnString(raw string) (host string, port int, username, password, database string) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -1016,13 +1015,104 @@ func parseSQLServerConnString(raw string) (host string, port int, username, pass
 	return
 }
 
+// adoNetSQLServerHostKeys — nomes de chave reconhecidos pelo formato ADO.NET
+// (Microsoft.Data.SqlClient/System.Data.SqlClient, o driver .NET nativo) pra identificar o
+// host/instância — "Server"/"Data Source" são os mais comuns, "Addr"/"Address"/
+// "Network Address" são aliases legados do mesmo provider ainda aceitos hoje. Usado tanto pra
+// detectar o formato (looksLikeADONetSQLServerConnString) quanto pra extrair o valor
+// (parseADONetSQLServerParams) — mesma lista nos dois lugares, sem duplicar.
+var adoNetSQLServerHostKeys = map[string]bool{
+	"server": true, "data source": true, "addr": true, "address": true, "network address": true,
+}
+
+// looksLikeADONetSQLServerConnString detecta o formato ADO.NET — BUG REAL corrigido: relatado ao
+// vivo por um usuário colando exatamente a string usada pela aplicação .NET dona do banco
+// (`MultipleActiveResultSets=True;server=10.128.65.179,1311;database=...;user id=...;
+// password=...;Persist Security Info=True;TrustServerCertificate=True`) contra um SQL Server em
+// servidor Windows via IP+porta — até então o formato era EXPLICITAMENTE rejeitado (ver comentário
+// antigo de sqlserverConnStringHint), apesar de ser o formato mais comum de connection string em
+// configs de aplicação .NET/C# corporativa (appsettings.json, web.config, secrets copiados de doc
+// interna) — mais comum, na prática, do que o URI simples ou o JDBC já suportados.
+//
+// Diferente dos outros dois formatos (sempre têm um prefixo reconhecível, "sqlserver://"/
+// "jdbc:sqlserver://"), o ADO.NET não tem prefixo nenhum — é só uma lista de pares chave=valor
+// separados por ";", em QUALQUER ordem (a chave "server" pode vir no meio da string, não
+// necessariamente primeiro — confirmado no caso real relatado, onde "MultipleActiveResultSets"
+// vem antes). Detecção: presença de uma chave reconhecida como host (adoNetSQLServerHostKeys) E
+// ausência de "://" na string inteira (evita colidir com URI/JDBC, que sempre têm esquema).
+func looksLikeADONetSQLServerConnString(raw string) bool {
+	if strings.Contains(raw, "://") {
+		return false
+	}
+	for _, kv := range strings.Split(raw, ";") {
+		key := strings.ToLower(strings.TrimSpace(strings.SplitN(kv, "=", 2)[0]))
+		if adoNetSQLServerHostKeys[key] {
+			return true
+		}
+	}
+	return false
+}
+
+// parseADONetSQLServerParams faz o parse do formato ADO.NET — mesmo racional de
+// parseJDBCSQLServerParams (pares chave=valor separados por ";", sem jeito de usar url.Parse),
+// mas com nomes de chave e sintaxe de host:porta DIFERENTES do JDBC: porta vem separada do host
+// por VÍRGULA (`server=host,porta`, não `host:porta`) — convenção real do driver .NET nativo, TDS
+// —, e usuário/senha usam "User Id"/"Password" (aliases "Uid"/"Pwd" também aceitos), não "user"/
+// "password" do JDBC. Prefixo opcional `tcp:` no valor do host (raro, mas válido nesse provider) é
+// descartado antes do parse da porta. `ok=false` quando `raw` não bate com
+// looksLikeADONetSQLServerConnString (deixa o chamador cair pro parser de URI simples).
+func parseADONetSQLServerParams(raw string) (host string, port int, username, password, database string, useTLS, skipTLSVerify, ok bool) {
+	if !looksLikeADONetSQLServerConnString(raw) {
+		return "", 0, "", "", "", false, false, false
+	}
+	port = sqlserverDefaultPort
+	for _, kv := range strings.Split(raw, ";") {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		eq := strings.Index(kv, "=")
+		if eq < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(kv[:eq]))
+		val := strings.TrimSpace(kv[eq+1:])
+		switch key {
+		case "server", "data source", "addr", "address", "network address":
+			hostPart := strings.TrimPrefix(val, "tcp:")
+			if idx := strings.LastIndex(hostPart, ","); idx >= 0 {
+				host = strings.TrimSpace(hostPart[:idx])
+				if p, err := strconv.Atoi(strings.TrimSpace(hostPart[idx+1:])); err == nil {
+					port = p
+				}
+			} else {
+				host = hostPart
+			}
+		case "database", "initial catalog":
+			database = val
+		case "user id", "uid", "user":
+			username = val
+		case "password", "pwd":
+			password = val
+		case "encrypt":
+			useTLS = strings.EqualFold(val, "true")
+		case "trustservercertificate":
+			skipTLSVerify = strings.EqualFold(val, "true")
+		}
+	}
+	return host, port, username, password, database, useTLS, skipTLSVerify, true
+}
+
 // sqlserverConnStringParams resolve host/port/user/pass/db + dicas de TLS a partir de uma
-// connection string, tentando o formato JDBC primeiro (é o único dos dois que consegue expressar
-// TLS explicitamente via encrypt=/trustServerCertificate=) e caindo pro formato URI simples se
-// não bater (que não tem conceito de TLS embutido — useTLS/skipTLSVerify sempre false nesse caso,
-// mesmo comportamento de antes desta função existir).
+// connection string, tentando JDBC primeiro, depois ADO.NET (os dois conseguem expressar TLS
+// explicitamente via encrypt=/trustServerCertificate=) e caindo pro formato URI simples por
+// último (sem conceito de TLS embutido — useTLS/skipTLSVerify sempre false nesse caso, mesmo
+// comportamento de antes desta função existir).
 func sqlserverConnStringParams(raw string) (host string, port int, username, password, database string, useTLS, skipTLSVerify bool) {
 	if h, p, u, pw, db, tls, trust, ok := parseJDBCSQLServerParams(raw); ok {
+		return h, p, u, pw, db, tls, trust
+	}
+	if h, p, u, pw, db, tls, trust, ok := parseADONetSQLServerParams(raw); ok {
 		return h, p, u, pw, db, tls, trust
 	}
 	h, p, u, pw, db := parseSQLServerConnString(raw)
@@ -1073,7 +1163,9 @@ func sqlserverPasswordPrefix(p dbConnParams) string {
 // — evita repassar um esquema errado pro parser e conectar (ou falhar) sem contexto nenhum.
 // jdbc:sqlserver:// adicionado depois de um caso real: usuário colou a connection string exata
 // que usa no dia a dia (formato do driver JDBC da Microsoft, muito comum em config de app Java) e
-// esperava que funcionasse — só o formato URI simples era aceito antes disso.
+// esperava que funcionasse — só o formato URI simples era aceito antes disso. Formato ADO.NET
+// (Server=...;Database=...;) não tem prefixo/esquema, então NÃO entra nesta lista — validado à
+// parte via looksLikeADONetSQLServerConnString em isValidSQLServerConnString.
 var sqlserverConnStringSchemes = []string{"sqlserver://", "mssql://", jdbcSQLServerPrefix}
 
 func isValidSQLServerConnString(s string) bool {
@@ -1083,14 +1175,14 @@ func isValidSQLServerConnString(s string) bool {
 			return true
 		}
 	}
-	return false
+	return looksLikeADONetSQLServerConnString(s)
 }
 
 func sqlserverConnStringHint(raw string) string {
 	if scheme := extractURIScheme(raw); scheme != "" {
-		return fmt.Sprintf("Essa connection string usa o esquema %q, que não é SQL Server — confira se copiou a string do banco certo. Esperado: sqlserver://, mssql:// ou jdbc:sqlserver://", scheme+"://")
+		return fmt.Sprintf("Essa connection string usa o esquema %q, que não é SQL Server — confira se copiou a string do banco certo. Esperado: sqlserver://, mssql://, jdbc:sqlserver:// ou o formato ADO.NET (Server=...;Database=...;)", scheme+"://")
 	}
-	return "Connection string do SQL Server deve começar com sqlserver://, mssql:// ou jdbc:sqlserver:// (ex: sqlserver://usuario:senha@host:1433/banco, ou jdbc:sqlserver://host:1433;database=banco;user=usuario;password=senha;encrypt=true) — formato ADO.NET (Server=...;) não é suportado aqui."
+	return "Connection string do SQL Server deve começar com sqlserver://, mssql://, jdbc:sqlserver:// ou estar no formato ADO.NET (ex: Server=host,1433;Database=banco;User Id=usuario;Password=senha;TrustServerCertificate=True) — nenhum desses formatos foi reconhecido."
 }
 
 // redisEffectiveTarget devolve (true, uri, nil) quando dá pra usar `redis-cli -u <uri>`
