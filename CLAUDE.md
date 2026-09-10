@@ -2233,6 +2233,31 @@ o pod real que motivou a feature: `ListArchives` priorizando corretamente o jar 
 `eslint`/`vite build` sem nenhum erro novo (36 erros pré-existentes de `no-explicit-any` em
 `client.ts`/`types.ts`, confirmados idênticos com/sem o diff via `git stash`).
 
+**3 ajustes reais no modal, pedidos explicitamente pelo usuário logo após o primeiro uso**:
+
+1. **Bug real corrigido — colar um nome exato copiado da própria lista não retornava resultado
+   nenhum na busca**: `filteredEntries` só chamava `.trim()` no `entrySearch` pra decidir SE o
+   filtro estava ativo (`if (!entrySearch.trim()) return entries;`), mas a comparação em si
+   (`entrySearch.toLowerCase()`) usava o valor CRU — um espaço/quebra de linha invisível colado
+   junto (comum ao copiar texto de um botão/lista renderizada, ex: `title={entry.name}` guarda o
+   nome limpo, mas a seleção visual do texto na tela pode incluir espaço de padding do elemento)
+   nunca batia com `.includes()`. Corrigido normalizando o termo (`trim()` + `toLowerCase()` +
+   barra invertida → normal, cobre copy-paste de um path exibido em estilo Windows) **antes** de
+   comparar, não só antes de decidir se o filtro está "ligado".
+2. **Fundo do editor "brando"**: o `<Editor>` do `@monaco-editor/react` não tinha `theme`
+   especificado, caindo no padrão `"light"` (fundo branco) — destoando do resto da aplicação, que
+   **sempre** usa `theme="vs-dark"` em todo outro uso de Monaco (`CodeEditorTab.tsx`,
+   `MonacoYamlEditor.tsx`). Corrigido adicionando `theme="vs-dark"`, mesma convenção do resto do
+   projeto.
+3. **Modal e painel esquerdo (lista de entradas) redimensionáveis**: modal ganhou os mesmos 3
+   handles de resize (borda direita/inferior/canto) já usados em `PodQuickViewModal.tsx` — `style`
+   controlado por `modalSize` state em vez de `className="max-w-5xl h-[80vh]"` fixo (`className`
+   permanece **sem** `relative` — mesma lição já documentada nesta página sobre `tailwind-merge`
+   trocar silenciosamente o `fixed` do `DialogContent` base por qualquer classe de `position`
+   adicionada via `className`). Painel esquerdo ganhou um `ResizeDivider` local (mesma cópia
+   pequena sem componente compartilhado já usada em `CommandRunnerTab.tsx`/`CodeEditorTab.tsx`) —
+   largura controlada por `leftPanelWidth` state (180–600px) em vez de `w-72` fixo.
+
 ### Certificates
 
 `internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.

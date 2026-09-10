@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import {
   Dialog,
@@ -59,6 +59,46 @@ function entryDisplayName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+// ResizeDivider — arrasta a borda entre a lista de entradas e o editor. Mesmo padrão (sem
+// componente compartilhado — cada tela duplica sua própria cópia pequena, ver CommandRunnerTab.tsx/
+// CodeEditorTab.tsx) já usado no resto da app.
+function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
+  const dragging = useRef(false);
+  const lastX = useRef(0);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      onDrag(e.clientX - lastX.current);
+      lastX.current = e.clientX;
+    };
+    const onUp = () => {
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [onDrag]);
+
+  return (
+    <div
+      className="w-1 flex-shrink-0 bg-border/40 hover:bg-primary/60 active:bg-primary cursor-col-resize transition-colors"
+      onMouseDown={(e) => {
+        dragging.current = true;
+        lastX.current = e.clientX;
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+      }}
+    />
+  );
+}
+
 export function PodArchiveExtractModal({
   open,
   onOpenChange,
@@ -82,6 +122,40 @@ export function PodArchiveExtractModal({
   const [content, setContent] = useState<string>("");
   const [contentLoading, setContentLoading] = useState(false);
   const [contentError, setContentError] = useState<string | null>(null);
+
+  // Modal redimensionável (bordas direita/inferior/canto) — mesmo padrão de PodQuickViewModal.tsx.
+  const [modalSize, setModalSize] = useState({ width: 1024, height: 640 });
+  const resizing = useRef(false);
+  const resizeDir = useRef<"se" | "e" | "s">("se");
+  const lastResizePos = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizing.current) return;
+      const dx = e.clientX - lastResizePos.current.x;
+      const dy = e.clientY - lastResizePos.current.y;
+      lastResizePos.current = { x: e.clientX, y: e.clientY };
+      setModalSize((prev) => ({
+        width: resizeDir.current !== "s" ? Math.max(640, prev.width + dx) : prev.width,
+        height: resizeDir.current !== "e" ? Math.max(420, prev.height + dy) : prev.height,
+      }));
+    };
+    const onUp = () => {
+      if (!resizing.current) return;
+      resizing.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  // Painel esquerdo (lista de entradas) redimensionável via ResizeDivider.
+  const [leftPanelWidth, setLeftPanelWidth] = useState(288);
 
   useEffect(() => {
     if (!open) return;
@@ -155,9 +229,16 @@ export function PodArchiveExtractModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedArchive]);
 
+  // BUG REAL corrigido — relatado ao vivo: colar um nome exato copiado de outro lugar (ex:
+  // "BOOT-INF/classes/application.yaml" copiado da própria lista) não retornava resultado nenhum.
+  // Causa: só o CHECK de "está vazio" usava `.trim()` — a comparação em si usava `entrySearch`
+  // cru, então um espaço/quebra de linha invisível colado junto (comum ao copiar texto de uma
+  // lista/tabela renderizada) nunca batia com `includes()`. Corrigido normalizando o termo (trim +
+  // barra invertida → normal, cobre copy-paste vindo de um path exibido em estilo Windows) ANTES
+  // de comparar, não só antes de decidir se o filtro está "ativo".
   const filteredEntries = useMemo(() => {
-    if (!entrySearch.trim()) return entries;
-    const q = entrySearch.toLowerCase();
+    const q = entrySearch.trim().toLowerCase().replace(/\\/g, "/");
+    if (!q) return entries;
     return entries.filter((e) => e.name.toLowerCase().includes(q));
   }, [entries, entrySearch]);
 
@@ -197,7 +278,10 @@ export function PodArchiveExtractModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl h-[80vh] flex flex-col overflow-hidden">
+      <DialogContent
+        className="flex flex-col overflow-hidden"
+        style={{ width: modalSize.width, height: modalSize.height, maxWidth: "96vw", maxHeight: "96vh" }}
+      >
         <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <FileArchive className="w-5 h-5" />
@@ -253,8 +337,11 @@ export function PodArchiveExtractModal({
           <p className="text-xs text-destructive flex-shrink-0">{archivesError}</p>
         )}
 
-        <div className="flex-1 min-h-0 flex gap-3">
-          <div className="w-72 flex-shrink-0 flex flex-col border border-border rounded-md overflow-hidden">
+        <div className="flex-1 min-h-0 flex">
+          <div
+            className="flex-shrink-0 flex flex-col border border-border rounded-md overflow-hidden"
+            style={{ width: leftPanelWidth }}
+          >
             <div className="p-2 border-b border-border flex-shrink-0">
               <Input
                 placeholder="Buscar entrada..."
@@ -290,7 +377,9 @@ export function PodArchiveExtractModal({
             </div>
           </div>
 
-          <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md overflow-hidden">
+          <ResizeDivider onDrag={(d) => setLeftPanelWidth((w) => Math.max(180, Math.min(600, w + d)))} />
+
+          <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md overflow-hidden ml-3">
             <div className="p-2 border-b border-border flex items-center justify-between flex-shrink-0">
               <span className="text-xs text-muted-foreground truncate">
                 {selectedEntry || "Selecione uma entrada à esquerda para visualizar o conteúdo"}
@@ -321,6 +410,7 @@ export function PodArchiveExtractModal({
                   language={monacoLanguageForEntry(selectedEntry)}
                   value={content}
                   height="100%"
+                  theme="vs-dark"
                   options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, wordWrap: "on" }}
                 />
               )}
@@ -331,6 +421,45 @@ export function PodArchiveExtractModal({
               )}
             </div>
           </div>
+        </div>
+
+        {/* Handles de resize do modal — mesmo padrão de PodQuickViewModal.tsx */}
+        <div
+          className="absolute top-0 right-0 w-1.5 h-full cursor-e-resize hover:bg-primary/20 transition-colors z-50"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "e";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "e-resize";
+            document.body.style.userSelect = "none";
+          }}
+        />
+        <div
+          className="absolute bottom-0 left-0 w-full h-1.5 cursor-s-resize hover:bg-primary/20 transition-colors z-50"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "s";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "s-resize";
+            document.body.style.userSelect = "none";
+          }}
+        />
+        <div
+          className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-50 flex items-end justify-end pr-0.5 pb-0.5"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "se";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "se-resize";
+            document.body.style.userSelect = "none";
+          }}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted-foreground/40 hover:text-primary/60">
+            <path d="M9 1 L9 9 L1 9" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+          </svg>
         </div>
       </DialogContent>
     </Dialog>
