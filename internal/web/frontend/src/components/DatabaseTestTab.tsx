@@ -1298,6 +1298,12 @@ export default function DatabaseTestTab() {
                   value={connectionString}
                   onChange={setConnectionString}
                 />
+                {engine === "sqlserver" && (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Aceita URI (<code>sqlserver://user:pass@host:1433/db</code>), JDBC (<code>jdbc:sqlserver://host:1433;database=db;user=u;password=p;encrypt=true</code>)
+                    ou ADO.NET/.NET (<code>Server=host,1433;Database=db;User Id=u;Password=p;TrustServerCertificate=True</code>) — cole a string exata da sua aplicação/Secret.
+                  </p>
+                )}
                 {engine === "redis" && (() => {
                   const parsed = parseRedisCliLikeString(connectionString);
                   if (!parsed) return null;
