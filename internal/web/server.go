@@ -1005,6 +1005,14 @@ func (s *Server) setupRoutes() {
 		pods.POST("/:cluster/:namespace/:name/sftp/rename", rbacMiddleware.RequireSREGroup(), podHandler.SFTPRename)
 		pods.DELETE("/:cluster/:namespace/:name/sftp/remove", rbacMiddleware.RequireSREGroup(), podHandler.SFTPRemove)
 
+		// Extrator de .jar/.war/.zip (pod_archive_extract.go) — genérico, motivado por apps Spring
+		// Boot (chart convair-helm) que empacotam o application.yml dentro do jar em vez de expor
+		// via ConfigMap. Só leitura (exec via kubectl exec, extração num tmpdir sempre apagado
+		// dentro do próprio container) — sem RequireSREGroup, mesmo padrão de leitura do SFTP acima.
+		pods.GET("/:cluster/:namespace/:name/archives", podHandler.ListArchives)
+		pods.GET("/:cluster/:namespace/:name/archive-entries", podHandler.ListArchiveEntries)
+		pods.GET("/:cluster/:namespace/:name/archive-content", podHandler.GetArchiveEntryContent)
+
 		// Pods - Write Operations (SRE-only)
 		pods.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Apply)
 		pods.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Delete)

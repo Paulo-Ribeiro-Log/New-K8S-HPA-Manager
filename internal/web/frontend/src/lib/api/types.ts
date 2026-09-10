@@ -2837,6 +2837,18 @@ export interface StartPortForwardRequest {
   label?: string;
 }
 
+// ─── Extrator de Arquivos de .jar/.war/.zip (Pods) — ver internal/web/handlers/pod_archive_extract.go
+
+export interface PodArchiveCandidate {
+  path: string;
+  size_bytes: number; // -1 quando desconhecido (fallback BusyBox `find` sem -printf)
+}
+
+export interface PodArchiveEntry {
+  name: string;
+  size_bytes: number; // -1 quando a ferramenta usada pra listar não expõe tamanho (jar tf)
+}
+
 // ─── Rollback de Deployment — "Modo K8s nativo" (ver internal/kubernetes/deployment_rollback.go).
 // camelCase — segue a convenção já usada por DeploymentSummary/DeploymentManifest (internal/models),
 // não o snake_case usado noutras partes mais recentes desta app (ex: Descoberta de Rede).

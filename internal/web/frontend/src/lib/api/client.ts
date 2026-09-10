@@ -118,6 +118,8 @@ import type {
   PortForwardSession,
   PortForwardPodPort,
   StartPortForwardRequest,
+  PodArchiveCandidate,
+  PodArchiveEntry,
   DeploymentRevision,
   DeploymentRuntimeInsights,
   HelmReleaseDetail,
@@ -5064,6 +5066,29 @@ class APIClient {
 
   async stopPortForward(id: string): Promise<void> {
     await this.request(`/portforward/stop/${encodeURIComponent(id)}`, { method: "POST" });
+  }
+
+  // ─── Extrator de Arquivos de .jar/.war/.zip (Pods) ───────────────────
+
+  async getPodArchives(cluster: string, namespace: string, pod: string, container: string): Promise<{ archives: PodArchiveCandidate[] }> {
+    const params = new URLSearchParams({ container });
+    return this.request(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/archives?${params.toString()}`
+    );
+  }
+
+  async getPodArchiveEntries(cluster: string, namespace: string, pod: string, container: string, path: string): Promise<{ entries: PodArchiveEntry[]; tool: string }> {
+    const params = new URLSearchParams({ container, path });
+    return this.request(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/archive-entries?${params.toString()}`
+    );
+  }
+
+  async getPodArchiveContent(cluster: string, namespace: string, pod: string, container: string, path: string, entry: string): Promise<{ content: string; tool: string }> {
+    const params = new URLSearchParams({ container, path, entry });
+    return this.request(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/archive-content?${params.toString()}`
+    );
   }
 }
 

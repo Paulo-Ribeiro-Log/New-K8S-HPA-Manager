@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, XSquare, Network } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, XSquare, Network, FileArchive } from "lucide-react";
 import { PortForwardModal } from "@/components/PortForwardModal";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
@@ -31,6 +31,7 @@ import { useDynatracePodStatus } from "@/hooks/useAPI";
 import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
 import { PodTerminal } from "@/components/PodTerminal";
 import { PodSFTPModal } from "@/components/PodSFTPModal";
+import { PodArchiveExtractModal } from "@/components/PodArchiveExtractModal";
 import ResourceGauge from "@/components/ResourceGauge";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -140,6 +141,7 @@ export const PodsPanel = ({
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   const [showFileTransferModal, setShowFileTransferModal] = useState(false);
+  const [showArchiveExtractModal, setShowArchiveExtractModal] = useState(false);
   const [showPortForward, setShowPortForward] = useState(false);
 
   // Estados para edição de YAML
@@ -1128,6 +1130,12 @@ export const PodsPanel = ({
         >
           <Download className="w-4 h-4 mr-2" />
           Arquivos (SFTP)
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => setShowArchiveExtractModal(true)}
+        >
+          <FileArchive className="w-4 h-4 mr-2" />
+          Extrair de .jar/.war/.zip
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <ProtectedAction showWarning={false} allowed={canWritePods}>
@@ -2575,6 +2583,19 @@ export const PodsPanel = ({
         <PodSFTPModal
           open={showFileTransferModal}
           onOpenChange={setShowFileTransferModal}
+          cluster={cluster}
+          namespace={selectedPod.namespace}
+          podName={selectedPod.name}
+          containers={selectedPod.containers.map(c => c.name)}
+        />
+      )}
+
+      {/* Extrator de .jar/.war/.zip — ver pod_archive_extract.go. Reaproveita o mesmo padrão de
+          props (cluster/namespace/podName/containers) do PodSFTPModal acima. */}
+      {selectedPod && (
+        <PodArchiveExtractModal
+          open={showArchiveExtractModal}
+          onOpenChange={setShowArchiveExtractModal}
           cluster={cluster}
           namespace={selectedPod.namespace}
           podName={selectedPod.name}

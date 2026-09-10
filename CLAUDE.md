@@ -2150,6 +2150,114 @@ derivado via `.map()`/`.filter()` direto na dependência de um `useEffect` sem m
 periodicamente") é sutil de diagnosticar porque parece um bug de rede/estado do servidor, não um
 bug de identidade de referência no React.
 
+### Extrator de Arquivos de .jar/.war/.zip (Pods)
+
+Botão **"Extrair de .jar/.war/.zip"** no menu de 3 pontos da aba Pods (`PodsPanel.tsx`), ao lado de
+"Arquivos (SFTP)". Pedido explícito do usuário depois de uma investigação real: aplicações Spring
+Boot desta empresa (chart `convair-helm`) frequentemente **não** expõem o `application.yml` via
+ConfigMap — o `Deployment` só injeta variáveis via `envFrom` (Secrets/ConfigMap com chaves soltas),
+e o arquivo de config real vem compilado dentro do próprio jar
+(`BOOT-INF/classes/application.yaml`, convenção padrão do Spring Boot) — confirmado ao vivo contra
+um pod real (`tms-integration-order-tms-api`, cluster `akspriv-tms-hlg-admin`) via `kubectl exec` +
+`jar tf`/`jar xf` manuais antes de existir qualquer ferramenta na app pra isso. Deliberadamente
+**genérico** (não hardcoded pra "application.yml") — funciona pra qualquer entrada de texto de
+qualquer `.jar`/`.war`/`.zip` achado no pod, reaproveitável pra outros tipos de app empacotada.
+
+**Mecanismo** (`internal/web/handlers/pod_archive_extract.go`): reaproveita `execCmdInPod`
+(`nodepools_conntrack.go`, já usado por Conntrack/DB Test/Kafka Test) — nenhum mecanismo de exec
+novo. Três endpoints, todos só LEITURA (sem `RequireSREGroup()`, mesmo padrão do list/download do
+SFTP): `GET .../archives` localiza candidatos via `find / -xdev -maxdepth 6 ... -iname '*.jar'`
+(`-xdev` evita cruzar pontos de montagem — mantém a busca fora de `/proc`/`/sys`/volumes montados
+na prática; `-prune` nesses 3 caminhos é defesa em profundidade); `GET .../archive-entries` lista o
+conteúdo interno; `GET .../archive-content` extrai uma entrada específica.
+
+**Cascata de 3 ferramentas, detectada uma vez por chamada via `command -v`** (`detectArchiveTool`):
+`unzip` (mais universal, único que extrai direto pro stdout via `unzip -p` sem tocar disco) → `jar`
+(do JDK, comum nesta frota Spring Boot — mas SEM comando de extração pra stdout, então
+`GetArchiveEntryContent` usa `mktemp -d && jar xf ... && cat ...; rm -rf` num diretório temporário
+sempre apagado no fim, mesmo em caso de falha) → `python3` (`zipfile` da stdlib, último recurso).
+**Achado real, confirmado ao vivo ANTES de escrever o código de produção**: a imagem do pod de
+teste real não tinha `unzip` (`exit code 1`), só `jar` — validado o comando exato
+(`d=$(mktemp -d) && cd "$d" && jar xf ... && cat ...`) direto via `kubectl exec` antes de
+implementar em Go, mesma disciplina já documentada noutras ferramentas desta app.
+
+**Achado real, também confirmado ao vivo — ruído de jars de sistema/ferramenta**: a mesma imagem
+tinha Maven instalado, então a busca sem filtro trouxe ~50 jars de dependência
+(`/usr/share/maven/lib/*.jar`) junto do único jar relevante (`/app/*.jar`, o artefato da própria
+aplicação) — 82MB vs. no máximo poucos MB cada um dos jars de dependência, mas enterrado no meio da
+lista pela ordem arbitrária do `find`. Corrigido com `sortArchiveCandidates`/
+`isLikelyApplicationArchivePath` — nunca ESCONDE nenhum candidato (informação nunca omitida, só
+reordenada), prioriza caminhos fora de `/usr/`, `/opt/`, `/lib/`, `/lib64/`, `/var/`, `/root/.m2/`
+(prefixos tipicamente cheios de jar de runtime/ferramenta, não do artefato em si), e dentro de cada
+grupo ordena por tamanho decrescente (o jar da aplicação tende a ser bem maior que uma lib isolada).
+Validado ao vivo: `/app/tms-integration-order-tms-api.jar` (82MB) corretamente em 1º lugar, à
+frente de `guava-33.6.0-jre.jar` (3MB) e dos demais ~50 jars do Maven.
+
+**Parsers testáveis, com fixtures reais capturadas ao vivo** (`pod_archive_extract_test.go`):
+`parseUnzipListOutput` (formato Info-ZIP/BusyBox — mesmo layout de colunas nos dois, cabeçalho/
+separadores "---"/rodapé "N files" descartados automaticamente por não baterem no regex de linha de
+dado, não por parsing posicional frágil) e `parseJarTfOutput` (uma entrada por linha, sem tamanho —
+`SizeBytes: -1` sinaliza isso ao frontend) testados com a saída REAL capturada do jar do pod
+investigado (278 entradas reais, confirmado que diretórios — terminam em `/` — são filtrados
+corretamente e `BOOT-INF/classes/application.yaml` aparece intacto).
+
+**Detecção de binário/tamanho antes de expor conteúdo**: `archiveExtractMaxContentBytes` (2MB) e
+`utf8.ValidString(out)` — uma entrada `.class`/binária qualquer é rejeitada com `ARCHIVE_ENTRY_
+BINARY` em vez de despejar lixo no Monaco Editor do frontend; validado ao vivo tentando extrair a
+própria classe principal da aplicação (`TmsIntegrationApplication.class`) e confirmando a rejeição.
+
+**Frontend** (`PodArchiveExtractModal.tsx`): 3 chamadas encadeadas via `useEffect` (abrir → lista
+arquivos → escolher arquivo → lista entradas → escolher entrada → extrai conteúdo), lista de
+entradas com busca client-side (jars reais têm centenas de entradas — 278 no caso investigado,
+gerenciável sem paginação server-side) e Monaco Editor **read-only via `@monaco-editor/react`
+direto** (não `MonacoYamlEditor.tsx`, que força `language="yaml"` fixo — mesmo padrão já usado por
+`CodeEditorTab.tsx`: aqui a linguagem é detectada pela extensão do NOME DA ENTRADA dentro do jar,
+já que o conteúdo pode ser `.properties`/`.xml`/`.json`/texto puro, não só YAML).
+
+**Bug evitado antes de escrever qualquer linha de produção** (não introduzido, mas quase repetido):
+`internal/web/handlers/pod_archive_extract.go` inicialmente guardava `clientset`/`restConfig`
+resolvidos em campos do `*PodHandler` pra evitar repassar como parâmetro — corrigido antes de
+compilar/commitar, porque `PodHandler` é um **singleton compartilhado por todas as requisições HTTP
+concorrentes** (injetado uma vez em `server.go`); guardar estado por-request nesses campos seria uma
+race condition real entre duas chamadas simultâneas (dois usuários, ou até duas abas do mesmo
+usuário). Corrigido retornando `clientset`/`restConfig` como valores de `resolvePodExecTarget`,
+nunca como campo do handler — mesmo princípio já seguido pelo resto da app (nenhum handler deste
+projeto guarda estado de request em si mesmo).
+
+Validado ao vivo, ponta a ponta, via API HTTP real (JWT de debug a partir do `jwt.secret` real,
+`cmd/_debugjwt` temporário, removido depois — mesmo padrão documentado alhures nesta página) contra
+o pod real que motivou a feature: `ListArchives` priorizando corretamente o jar da aplicação,
+`ListArchiveEntries` achando `BOOT-INF/classes/application.yaml` entre 235 entradas, e
+`GetArchiveEntryContent` extraindo o YAML completo e rejeitando corretamente uma entrada binária.
+`go build`/`go vet`/`gofmt`/`go test ./internal/web/handlers/... -race` limpos; `tsc --noEmit`/
+`eslint`/`vite build` sem nenhum erro novo (36 erros pré-existentes de `no-explicit-any` em
+`client.ts`/`types.ts`, confirmados idênticos com/sem o diff via `git stash`).
+
+**3 ajustes reais no modal, pedidos explicitamente pelo usuário logo após o primeiro uso**:
+
+1. **Bug real corrigido — colar um nome exato copiado da própria lista não retornava resultado
+   nenhum na busca**: `filteredEntries` só chamava `.trim()` no `entrySearch` pra decidir SE o
+   filtro estava ativo (`if (!entrySearch.trim()) return entries;`), mas a comparação em si
+   (`entrySearch.toLowerCase()`) usava o valor CRU — um espaço/quebra de linha invisível colado
+   junto (comum ao copiar texto de um botão/lista renderizada, ex: `title={entry.name}` guarda o
+   nome limpo, mas a seleção visual do texto na tela pode incluir espaço de padding do elemento)
+   nunca batia com `.includes()`. Corrigido normalizando o termo (`trim()` + `toLowerCase()` +
+   barra invertida → normal, cobre copy-paste de um path exibido em estilo Windows) **antes** de
+   comparar, não só antes de decidir se o filtro está "ligado".
+2. **Fundo do editor "brando"**: o `<Editor>` do `@monaco-editor/react` não tinha `theme`
+   especificado, caindo no padrão `"light"` (fundo branco) — destoando do resto da aplicação, que
+   **sempre** usa `theme="vs-dark"` em todo outro uso de Monaco (`CodeEditorTab.tsx`,
+   `MonacoYamlEditor.tsx`). Corrigido adicionando `theme="vs-dark"`, mesma convenção do resto do
+   projeto.
+3. **Modal e painel esquerdo (lista de entradas) redimensionáveis**: modal ganhou os mesmos 3
+   handles de resize (borda direita/inferior/canto) já usados em `PodQuickViewModal.tsx` — `style`
+   controlado por `modalSize` state em vez de `className="max-w-5xl h-[80vh]"` fixo (`className`
+   permanece **sem** `relative` — mesma lição já documentada nesta página sobre `tailwind-merge`
+   trocar silenciosamente o `fixed` do `DialogContent` base por qualquer classe de `position`
+   adicionada via `className`). Painel esquerdo ganhou um `ResizeDivider` local (mesma cópia
+   pequena sem componente compartilhado já usada em `CommandRunnerTab.tsx`/`CodeEditorTab.tsx`) —
+   largura controlada por `leftPanelWidth` state (180–600px) em vez de `w-72` fixo.
+
 ### Certificates
 
 `internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.
