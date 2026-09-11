@@ -4184,6 +4184,58 @@ class APIClient {
     );
   }
 
+  // ─── Descoberta AKV (Tools menu) ────────────────────────────────────────────
+
+  /** ExternalSecrets já existentes no namespace — pra pré-preencher o secretStoreRef/regex sugerido */
+  async listAKVExternalSecrets(
+    cluster: string,
+    namespace: string
+  ): Promise<{ external_secrets: import("./types").AKVExternalSecretSummary[] }> {
+    return this.request<{ external_secrets: import("./types").AKVExternalSecretSummary[] }>(
+      `/akv-discovery/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/external-secrets`
+    );
+  }
+
+  /** Cria o ExternalSecret de descoberta (apartado, nunca altera o original) */
+  async startAKVDiscovery(
+    req: import("./types").StartAKVDiscoveryRequest
+  ): Promise<import("./types").StartAKVDiscoveryResponse> {
+    return this.request<import("./types").StartAKVDiscoveryResponse>("/akv-discovery/start", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** Status de sincronização do ExternalSecret de descoberta (poll até ready/erro) */
+  async getAKVDiscoveryStatus(
+    cluster: string,
+    namespace: string,
+    name: string
+  ): Promise<import("./types").AKVDiscoveryStatus> {
+    return this.request<import("./types").AKVDiscoveryStatus>(
+      `/akv-discovery/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/status`
+    );
+  }
+
+  /** Dados reais (chaves/valores) do Secret sincronizado pelo ExternalSecret de descoberta */
+  async getAKVDiscoveryData(
+    cluster: string,
+    namespace: string,
+    name: string
+  ): Promise<{ keys: import("./types").AKVDiscoveredKey[] }> {
+    return this.request<{ keys: import("./types").AKVDiscoveredKey[] }>(
+      `/akv-discovery/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/data`
+    );
+  }
+
+  /** Apaga o ExternalSecret de descoberta — o Secret gerado é recolhido automaticamente (ownerReference) */
+  async stopAKVDiscovery(cluster: string, namespace: string, name: string): Promise<void> {
+    await this.request<void>(
+      `/akv-discovery/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+  }
+
   // ─── Teste de Kafka sob Demanda ────────────────────────────────────────────
 
   /** Inicia o teste de Kafka (cria pod efêmero kcat) e retorna session_id para SSE */
