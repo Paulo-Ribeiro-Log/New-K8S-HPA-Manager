@@ -25,7 +25,21 @@ func TestManager_IdleReap_ClosesRealBrowser(t *testing.T) {
 
 	sessionDir := t.TempDir()
 	logger := zerolog.Nop()
-	opts := LaunchOptions{SessionDir: sessionDir, Headless: true}
+	// Mesmas flags de estabilidade já usadas em produção (internal/servicenow/rod_extractor.go's
+	// rodLaunchFlags) — sem "no-sandbox", o Chromium se recusa a iniciar em ambientes sem sandbox
+	// utilizável do kernel (confirmado ao vivo: CI do GitHub Actions falha com "FATAL:
+	// zygote_host_impl_linux.cc(126)] No usable sandbox!" sem essa flag; WSL2 local não expôs o
+	// problema porque o sandbox funciona normalmente lá).
+	opts := LaunchOptions{
+		SessionDir: sessionDir,
+		Headless:   true,
+		Flags: map[string]string{
+			"no-sandbox":             "",
+			"disable-setuid-sandbox": "",
+			"disable-dev-shm-usage":  "",
+			"disable-gpu":            "",
+		},
+	}
 
 	var m Manager
 	b, err := m.Get(opts, nil, nil, &logger)
