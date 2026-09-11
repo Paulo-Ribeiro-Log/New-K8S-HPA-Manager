@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -162,13 +164,33 @@ func MinimizeWindow(page *rod.Page, logger *zerolog.Logger) {
 	}
 }
 
+// idleTimeout — tempo sem nenhuma chamada a Get() até o reaper fechar o browser persistente
+// sozinho. Mesmo valor já usado como padrão de "ferramenta ociosa" nesta app (timeout de sessão
+// LSP, code_editor_lsp.go) — equilíbrio entre não fechar no meio de um uso real (as operações que
+// passam por aqui — extração de CHG do ServiceNow, discovery/scan/send do Teams — são serializadas
+// por mutex própria de cada chamador e levam segundos a no máximo ~1-2min, bem abaixo desta janela)
+// e não deixar um Chrome inteiro (com processo de GPU/rede/storage/áudio próprios — ~800MB-900MB
+// de RSS cada, confirmado ao vivo) parado consumindo memória e CPU por horas depois do último uso
+// real. TestSession (login visível) não passa por Get()/este reaper — gerencia o próprio browser
+// via launchBrowser, fora do Manager.
+// var, não const — testes reduzem os dois pra validar o reaper contra um Chrome real em segundos,
+// sem esperar 10 minutos de verdade (sempre restaurados ao valor de produção ao final do teste).
+var (
+	idleTimeout       = 10 * time.Minute
+	idleCheckInterval = 1 * time.Minute
+)
+
 // Manager mantém um *rod.Browser persistente e reutilizável entre chamadas — lança um processo
 // novo só na primeira chamada, se o processo anterior morreu, ou se o SessionDir pedido mudou
 // (mesma checagem que ServiceNow e Teams já faziam cada um com sua própria cópia da lógica).
+// Fecha o browser sozinho após idleTimeout sem uso (ver idleReapLoop) — nenhum chamador precisa
+// fazer nada a mais para se beneficiar disso, o reaper nasce junto com o primeiro Get() real.
 type Manager struct {
 	mu         sync.Mutex
 	sessionDir string
 	browser    *rod.Browser
+	lastUsed   time.Time
+	reapOnce   sync.Once
 }
 
 // Get retorna o browser persistente atual se ainda estiver vivo e opts.SessionDir bater com o da
@@ -180,6 +202,9 @@ type Manager struct {
 func (m *Manager) Get(opts LaunchOptions, beforeLaunch, afterLaunch func(), logger *zerolog.Logger) (*rod.Browser, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	m.lastUsed = time.Now()
+	m.reapOnce.Do(func() { go m.idleReapLoop(logger) })
 
 	if m.browser != nil && m.sessionDir == opts.SessionDir {
 		if _, err := m.browser.Pages(); err == nil {
@@ -207,8 +232,42 @@ func (m *Manager) Get(opts LaunchOptions, beforeLaunch, afterLaunch func(), logg
 	return b, nil
 }
 
+// idleReapLoop roda pela vida inteira do processo — iniciada uma única vez (reapOnce) pelo
+// primeiro Get() real, nunca antes disso (uma sessão que nunca usa ServiceNow/Teams não paga o
+// custo de nenhuma goroutine extra). Fecha o browser sozinho quando ninguém chama Get() há
+// idleTimeout — mesmo padrão de reaper em background já usado nesta app (startDBTestContainerReaper,
+// SpinnakerFleetWatcher.Run).
+func (m *Manager) idleReapLoop(logger *zerolog.Logger) {
+	ticker := time.NewTicker(idleCheckInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		m.mu.Lock()
+		if m.browser != nil && time.Since(m.lastUsed) >= idleTimeout {
+			if logger != nil {
+				logger.Info().
+					Dur("idle_for", time.Since(m.lastUsed).Round(time.Second)).
+					Msg("[browser] Fechando browser persistente por ociosidade — próxima chamada relança do zero")
+			}
+			m.browser.Close() //nolint:errcheck
+			m.browser = nil
+			// Despejo de memória: matar o processo do Chrome já devolve ao SO, de forma imediata e
+			// completa, os ~800MB-900MB de RSS da árvore inteira (renderer/GPU/rede/storage/áudio)
+			// — isso é automático, o SO reclama a memória de qualquer processo assim que ele
+			// termina, não depende de nenhuma ação nossa. O runtime.GC()+FreeOSMemory() aqui cobre
+			// só o lado (bem menor) desta própria aplicação Go — o estado do cliente CDP/rod
+			// mantido em memória enquanto o browser existia — devolvendo essa parte ao SO
+			// proativamente também, em vez de esperar o próximo ciclo natural do GC.
+			runtime.GC()
+			debug.FreeOSMemory()
+		}
+		m.mu.Unlock()
+	}
+}
+
 // Close encerra o browser persistente, se houver algum aberto. A próxima chamada a Get relança
-// do zero.
+// do zero. Usado tanto pelo shutdown do servidor quanto por fluxos que precisam de sessão limpa
+// (ex: TestSession do ServiceNow, antes de um login visível) — nunca faz o despejo de memória
+// extra de idleReapLoop, que só faz sentido quando o PROCESSO continua rodando depois.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
