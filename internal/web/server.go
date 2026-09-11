@@ -1353,6 +1353,17 @@ func (s *Server) setupRoutes() {
 		secrets.POST("/:cluster/:namespace/resync-akv", rbacMiddleware.RequireSREGroup(), secretHandler.ResyncAKV)
 	}
 
+	// Descoberta AKV (Tools menu) — ver AKV-SECRET-VIEWER-STUDY.md
+	akvDiscoveryHandler := handlers.NewAKVDiscoveryHandler(s.historyTracker)
+	akvDiscovery := api.Group("/akv-discovery")
+	{
+		akvDiscovery.GET("/:cluster/:namespace/external-secrets", akvDiscoveryHandler.ListExternalSecrets)
+		akvDiscovery.GET("/:cluster/:namespace/:name/status", akvDiscoveryHandler.Status)
+		akvDiscovery.POST("/start", rbacMiddleware.RequireSREGroup(), akvDiscoveryHandler.Start)
+		akvDiscovery.GET("/:cluster/:namespace/:name/data", rbacMiddleware.RequireSREGroup(), akvDiscoveryHandler.Data)
+		akvDiscovery.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), akvDiscoveryHandler.Stop)
+	}
+
 	// Certificates TLS
 	certificatesHandler := handlers.NewCertificatesHandler(s.kubeManager, s.historyTracker)
 	certGroup := api.Group("/certificates")

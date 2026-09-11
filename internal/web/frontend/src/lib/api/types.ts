@@ -2965,3 +2965,52 @@ export interface RollbackFileEntry {
   size: number;
   modifiedAt: string; // ISO 8601
 }
+
+// ─── Descoberta AKV (Tools menu) ────────────────────────────────────────────
+// Ver AKV-SECRET-VIEWER-STUDY.md e internal/web/handlers/akv_discovery.go — cria um
+// ExternalSecret apartado (find.name.regexp livre, escolhido pelo usuário) pra visualizar o
+// conteúdo real de um Azure Key Vault sem depender do find/rewrite do ExternalSecret oficial do
+// namespace, sem alterar esse ExternalSecret original em nada.
+
+export interface AKVExternalSecretSummary {
+  name: string;
+  secret_store_kind: string;
+  secret_store_name: string;
+  find_regexp?: string;
+  rewrite_source?: string;
+  rewrite_target?: string;
+  target_name: string;
+  ready: boolean;
+  status_reason?: string;
+  status_message?: string;
+}
+
+export interface StartAKVDiscoveryRequest {
+  cluster: string;
+  namespace: string;
+  secret_store_kind: string;
+  secret_store_name: string;
+  regexp: string;
+  reason: string;
+}
+
+export interface StartAKVDiscoveryResponse {
+  name: string;
+  target_name: string;
+  cluster: string;
+  namespace: string;
+}
+
+export interface AKVDiscoveryStatus {
+  ready: boolean;
+  status_reason?: string;
+  status_message?: string;
+  target_name: string;
+}
+
+export interface AKVDiscoveredKey {
+  key: string;
+  value_base64: string;
+  value_decoded?: string;
+  is_binary: boolean;
+}

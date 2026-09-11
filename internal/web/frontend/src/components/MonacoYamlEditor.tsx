@@ -367,7 +367,12 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
   };
 
   return (
-    <div className="border border-border/60 rounded-lg overflow-hidden">
+    // h-full: sem isso, um `height="100%"` passado pelo chamador (ex: dentro de um `flex-1
+    // min-h-0`) nunca resolve — a % só funciona se ESTE wrapper também tiver altura própria.
+    // Inofensivo para chamadores com altura fixa em pixels (ex: height={320}): o <Editor> interno
+    // já define sua própria altura absoluta nesse caso, então a altura deste wrapper (resolvida
+    // ou não) não afeta o resultado — ele só encolhe/cresce pra caber o conteúdo do filho.
+    <div className="border border-border/60 rounded-lg overflow-hidden h-full">
       {mode === "diff" ? (
         <DiffEditor
           height={height}

@@ -24,6 +24,7 @@ import {
   Waypoints,
   Database,
   Route,
+  ScanEye,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -56,6 +57,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "kafka-test", label: "Teste Kafka", icon: Waypoints },
   { id: "db-test", label: "Teste de Banco de Dados", icon: Database },
   { id: "net-discovery", label: "Descoberta de Rede", icon: Route },
+  { id: "akv-discovery", label: "Descoberta AKV", icon: ScanEye },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {
