@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"k8s-hpa-manager/internal/config"
@@ -26,9 +27,27 @@ func (h *ClusterHandler) List(c *gin.Context) {
 	// Descobrir clusters (reutilizar código existente)
 	clusters := h.kubeManager.DiscoverClusters()
 
+	// Tags (ex: "jornada") vêm de clusters-config.json, carregado uma única vez aqui — nunca
+	// dentro de DiscoverClusters(), que é chamada em vários outros pontos que não precisam desse
+	// dado e pagariam uma leitura de arquivo desnecessária. Chave normalizada (sem sufixo -admin,
+	// lowercase) para casar com o nome do cluster do kubeconfig independente de variação de caixa.
+	configByName := make(map[string]config.ClusterConfig)
+	for _, cfg := range h.kubeManager.GetAllClusterConfigs() {
+		key := strings.ToLower(strings.TrimSuffix(cfg.Name, "-admin"))
+		configByName[key] = cfg
+	}
+
 	// Formatar resposta
 	response := make([]gin.H, len(clusters))
 	for i, cluster := range clusters {
+		journey := ""
+		if cluster.CloudProvider == config.CloudProviderAKS {
+			key := strings.ToLower(strings.TrimSuffix(cluster.Name, "-admin"))
+			if cfg, ok := configByName[key]; ok {
+				journey = cfg.Journey()
+			}
+		}
+
 		response[i] = gin.H{
 			"name":           cluster.Name,
 			"context":        cluster.Context,
@@ -36,6 +55,7 @@ func (h *ClusterHandler) List(c *gin.Context) {
 			"cloud_provider": cluster.CloudProvider,
 			"region":         cluster.Region,
 			"aws_profile":    cluster.AWSProfile,
+			"journey":        journey,
 		}
 	}
 

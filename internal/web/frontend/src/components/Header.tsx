@@ -36,7 +36,10 @@ import type { VersionInfo } from "@/lib/api/types";
 import { toast } from "sonner";
 import { cloudProviderBadge } from "@/hooks/useCloudProvider";
 import { Loader2 } from "lucide-react";
-import { isProdClusterName, isHlgClusterName } from "@/lib/clusterSafety";
+import { isProdClusterName } from "@/lib/clusterSafety";
+import { useClusterEnvFilter } from "@/hooks/useClusterEnvFilter";
+import { ClusterFilterBar } from "@/components/ClusterFilterBar";
+import { ClusterJourneyCombobox } from "@/components/ClusterJourneyCombobox";
 
 interface HeaderProps {
   selectedCluster: string;
@@ -46,6 +49,8 @@ interface HeaderProps {
   clusterProviders?: Record<string, string>;
   /** Mapa de context → nome de exibição (normaliza ARNs EKS) */
   clusterDisplayNames?: Record<string, string>;
+  /** Mapa de context → valor da tag Azure "jornada" (ex: "logistica", "backoffice") */
+  clusterJourneys?: Record<string, string>;
   modifiedCount: number;
   onApplyAll: () => void;
   onApplySequential?: () => void;
@@ -62,6 +67,7 @@ export const Header = ({
   clusters,
   clusterProviders,
   clusterDisplayNames,
+  clusterJourneys,
   modifiedCount,
   onApplyAll,
   onApplySequential,
@@ -78,13 +84,11 @@ export const Header = ({
   // cluster já selecionado, que fica sempre visível — o sinal mais importante pra não esquecer em
   // qual ambiente está trabalhando). isProdClusterName/isHlgClusterName (lib/clusterSafety.ts)
   // — detecção AMPLA do lado PRD (pedido explícito: pega qualquer "produ*" no nome, não só o
-  // sufixo "-prd" exato, pra cobrir clusters como um EKS "asaplog-production").
-  const [envFilter, setEnvFilter] = useState<"all" | "hlg" | "prd">("all");
-  const filteredClusters = clusters.filter((c) => {
-    if (envFilter === "all") return true;
-    if (envFilter === "prd") return isProdClusterName(c);
-    return isHlgClusterName(c);
-  });
+  // sufixo "-prd" exato, pra cobrir clusters como um EKS "asaplog-production"). Extraído junto do
+  // filtro por jornada (tag Azure) pro hook useClusterEnvFilter — mesma lógica que antes vivia
+  // duplicada aqui e em ClusterSelectorForTab.tsx.
+  const { envFilter, setEnvFilter, journeyOptions, selectedJourneys, toggleJourney, filteredClusters } =
+    useClusterEnvFilter(clusters, clusterJourneys);
   const selectedIsProd = isProdClusterName(selectedCluster);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -245,23 +249,7 @@ export const Header = ({
           <PopoverContent className="w-[300px] xl:w-[400px] p-0">
             {/* Filtro Todos/HLG/PRD — reduz a lista antes mesmo da busca por texto, pra um
                 analista sobrecarregado não escolher o ambiente errado por engano. */}
-            <div className="flex items-center gap-1 px-2 pt-2 pb-1.5 border-b border-border">
-              {(["all", "hlg", "prd"] as const).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => setEnvFilter(f)}
-                  className={cn(
-                    "text-xs px-2 py-1 rounded",
-                    envFilter === f
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  )}
-                >
-                  {f === "all" ? "Todos" : f.toUpperCase()}
-                </button>
-              ))}
-            </div>
+            <ClusterFilterBar envFilter={envFilter} onEnvFilterChange={setEnvFilter} />
             <Command>
               <CommandInput placeholder="Buscar cluster..." />
               <CommandList>
@@ -303,6 +291,16 @@ export const Header = ({
             </Command>
           </PopoverContent>
         </Popover>
+
+        {/* Combobox próprio pra jornada — ao lado do combobox de cluster, só existe quando há
+            2+ valores distintos entre os clusters (ClusterJourneyCombobox retorna null caso
+            contrário, então não sobra espaço vazio no header). */}
+        <ClusterJourneyCombobox
+          variant="header"
+          journeyOptions={journeyOptions}
+          selectedJourneys={selectedJourneys}
+          onToggleJourney={toggleJourney}
+        />
       </div>
 
       <div className="flex items-center gap-3">

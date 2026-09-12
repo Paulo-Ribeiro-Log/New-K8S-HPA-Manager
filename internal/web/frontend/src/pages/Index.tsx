@@ -421,6 +421,12 @@ const Index = ({ onLogout }: IndexProps) => {
     [clusters]
   );
 
+  // Mapa context → valor da tag Azure "jornada" (filtro dinâmico no seletor de cluster)
+  const clusterJourneys = useMemo(
+    () => Object.fromEntries(clusters.map((c) => [c.context, c.journey ?? ""])),
+    [clusters]
+  );
+
   const { namespaces, loading: namespacesLoading, refetch: refetchNamespaces } = useNamespaces(selectedCluster);
   // Para HPAs: sempre buscar de TODOS os namespaces (passar undefined ao invés de selectedNamespace)
   const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
@@ -1508,6 +1514,7 @@ const Index = ({ onLogout }: IndexProps) => {
         clusters={clusters.map((c) => c.context)}
         clusterProviders={clusterProviders}
         clusterDisplayNames={clusterDisplayNames}
+        clusterJourneys={clusterJourneys}
         modifiedCount={staging.getChangesCount().total}
         onApplyAll={() => {
           const changesCount = staging.getChangesCount();

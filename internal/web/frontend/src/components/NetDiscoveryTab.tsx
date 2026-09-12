@@ -1173,6 +1173,7 @@ export default function NetDiscoveryTab() {
                 clusters={clusters.map((c) => c.context)}
                 tabLabel="Descoberta de Rede"
                 clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
+                clusterJourneys={Object.fromEntries(clusters.map((c) => [c.context, c.journey || ""]))}
               />
             </div>
             <div className="min-w-[180px]">
