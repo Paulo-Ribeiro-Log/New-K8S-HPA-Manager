@@ -1165,6 +1165,7 @@ export default function DatabaseTestTab() {
                 clusters={clusters.map((c) => c.context)}
                 tabLabel="Teste de Banco de Dados"
                 clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
+                clusterJourneys={Object.fromEntries(clusters.map((c) => [c.context, c.journey || ""]))}
               />
             </div>
           )}

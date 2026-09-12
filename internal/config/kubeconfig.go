@@ -54,6 +54,28 @@ type ClusterConfig struct {
 	PrometheusInClusterNamespace string `json:"prometheusInClusterNamespace,omitempty"`
 	PrometheusInClusterService   string `json:"prometheusInClusterService,omitempty"`
 	PrometheusInClusterPort      int    `json:"prometheusInClusterPort,omitempty"`
+
+	// Tags são as tags de recurso do Azure (az aks show/list --query tags), capturadas durante o
+	// autodiscover (buildAKSClusterIndex) — usadas hoje só para o filtro de "jornada" na seleção
+	// de cluster (ver Journey()). Ausente em entradas antigas até o usuário rodar autodiscover de
+	// novo (SaveClusterConfigs faz merge por nome, então isso repopula clusters já cadastrados).
+	Tags map[string]string `json:"tags,omitempty"`
+}
+
+// azureJourneyTagKey é o nome da tag de recurso Azure usada para agrupar clusters por "jornada"
+// (squad/domínio de negócio, ex: "logistica"/"backoffice") — único lugar a trocar se o nome da
+// tag mudar no futuro.
+const azureJourneyTagKey = "jornada"
+
+// Journey retorna o valor da tag "jornada" do cluster (lookup case-insensitive — tags do Azure
+// podem variar de caixa dependendo de quem criou o recurso), ou "" se a tag não existir.
+func (c ClusterConfig) Journey() string {
+	for k, v := range c.Tags {
+		if strings.EqualFold(k, azureJourneyTagKey) {
+			return v
+		}
+	}
+	return ""
 }
 
 // clientTTL define por quanto tempo um client inativo é mantido em memória
@@ -605,6 +627,14 @@ func (k *KubeConfigManager) GetClusterConfig(clusterName string) *ClusterConfig 
 		}
 	}
 	return nil
+}
+
+// GetAllClusterConfigs retorna todas as entradas de clusters-config.json (AKS). Usado quando o
+// chamador precisa enriquecer uma listagem inteira (ex: filtro de jornada em GET /clusters) —
+// carrega o arquivo uma única vez em vez de repetir GetClusterConfig (que relê o arquivo a cada
+// chamada) por cluster.
+func (k *KubeConfigManager) GetAllClusterConfigs() []ClusterConfig {
+	return k.loadClustersFromConfig()
 }
 
 // TestClusterConnection testa a conectividade com um cluster
@@ -1736,9 +1766,10 @@ func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFu
 
 // aksListEntry representa um cluster retornado por "az aks list".
 type aksListEntry struct {
-	Name          string `json:"name"`
-	ResourceGroup string `json:"resourceGroup"`
-	ID            string `json:"id"`
+	Name          string            `json:"name"`
+	ResourceGroup string            `json:"resourceGroup"`
+	ID            string            `json:"id"`
+	Tags          map[string]string `json:"tags"`
 }
 
 // buildAKSClusterIndex chama "az aks list --subscription X" uma vez por subscription
@@ -1773,7 +1804,7 @@ func (k *KubeConfigManager) buildAKSClusterIndex(
 
 			out, err := exec.CommandContext(cmdCtx, "az", "aks", "list",
 				"--subscription", sID,
-				"--query", "[].{name:name,resourceGroup:resourceGroup,id:id}",
+				"--query", "[].{name:name,resourceGroup:resourceGroup,id:id,tags:tags}",
 				"-o", "json",
 				"--only-show-errors",
 			).Output()
@@ -1819,6 +1850,7 @@ func (k *KubeConfigManager) buildAKSClusterIndex(
 				ResourceGroup:  e.ResourceGroup,
 				Subscription:   subName,
 				SubscriptionID: subID,
+				Tags:           e.Tags,
 			}
 		}
 	}

@@ -16,6 +16,8 @@ export interface Cluster {
   resourceGroup?: string;
   subscription?: string;
   aws_profile?: string; // EKS: perfil AWS real do kubeconfig (não inferido)
+  /** Valor da tag Azure "jornada" (ex: "logistica", "backoffice") — só AKS, "" quando ausente. */
+  journey?: string;
 }
 
 export interface ClusterInfo {

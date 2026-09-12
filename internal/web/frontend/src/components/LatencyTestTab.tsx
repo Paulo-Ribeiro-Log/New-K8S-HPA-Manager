@@ -270,6 +270,7 @@ export default function LatencyTestTab() {
             clusters={clusters.map((c) => c.context)}
             tabLabel="Teste de Latência"
             clusterProviders={Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider || "unknown"]))}
+            clusterJourneys={Object.fromEntries(clusters.map((c) => [c.context, c.journey || ""]))}
           />
         </div>
 
