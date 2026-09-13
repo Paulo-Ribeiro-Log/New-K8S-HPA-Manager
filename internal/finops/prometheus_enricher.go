@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
@@ -92,6 +93,18 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 		fmt.Sprintf(`avg_over_time(container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
 		"mem_avg",
 	)
+	// Pico real de memória — usado só pra Mem Limit recomendado (ver recommendedLimits), nunca
+	// pro request (que continua baseado em P95×1.20, mais estável que o pico isolado).
+	memMaxMap := e.queryContainerMetric(ctx,
+		fmt.Sprintf(`max_over_time(container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+		"mem_max",
+	)
+	// Pico real de CPU (espelha memMaxMap) — só exibido como "top" na UI, nunca usado na
+	// recomendação de CPU Limit (que segue baseada na proporção limit/request, ver recommendedLimits).
+	cpuMaxMap := e.queryContainerMetric(ctx,
+		fmt.Sprintf(`max_over_time(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+		"cpu_max",
+	)
 
 	// ── 2. Métricas HPA (por namespace/hpa-name) ──────────────────────────────
 	hpaAvgMap := e.queryHPAMetric(ctx,
@@ -118,6 +131,8 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 	wlCPUAvg := e.aggregatePodToWorkload(cpuAvgMap, false)
 	wlMemP95 := e.aggregatePodToWorkload(memP95Map, true)
 	wlMemAvg := e.aggregatePodToWorkload(memAvgMap, false)
+	wlMemMax := e.aggregatePodToWorkload(memMaxMap, true) // pior caso (maior pico) entre pods
+	wlCPUMax := e.aggregatePodToWorkload(cpuMaxMap, true) // pior caso (maior pico) entre pods
 
 	// ── 4. Enriquecer cada workload ───────────────────────────────────────────
 	enriched := 0
@@ -129,13 +144,17 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 		cpuAvg := wlCPUAvg[key]
 		memP95 := wlMemP95[key]
 		memAvg := wlMemAvg[key]
+		memMax := wlMemMax[key]
+		cpuMax := wlCPUMax[key]
 		hasUsage := cpuP95 > 0 || memP95 > 0
 
 		if hasUsage {
 			wl.CPUP95Millis = round2(cpuP95)
 			wl.CPUAvgMillis = round2(cpuAvg)
+			wl.CPUMaxMillis = round2(cpuMax)
 			wl.MemP95Mi = round2(memP95)
 			wl.MemAvgMi = round2(memAvg)
+			wl.MemMaxMi = round2(memMax)
 
 			// Recomendação com margem de segurança SRE de 20%
 			if cpuP95 > 0 {
@@ -144,6 +163,11 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 			if memP95 > 0 {
 				wl.MemRecommendedMi = round2(memP95 * SafetyMargin)
 			}
+
+			wl.CPULimitRecommendedMillis, wl.MemLimitRecommendedMi = recommendedLimits(
+				wl.CPURecommendedMillis, wl.MemRecommendedMi, wl.MemP95Mi, wl.MemMaxMi,
+				wl.CPULimitMillis, wl.CPURequestMillis, wl.MemLimitMi,
+			)
 
 			// Desperdício = custo proporcional à fração de request além do recomendado
 			wl.WasteBRL = calculateWaste(wl)
@@ -255,6 +279,75 @@ func (e *PrometheusEnricher) queryHPAMetric(ctx context.Context, query, label st
 			continue
 		}
 		m[ns+"/"+hpa] = float64(sample.Value)
+	}
+	return m
+}
+
+// nodeTopUsage retorna, por node, o pico histórico (max_over_time da janela e.window) de CPU
+// (millicores) e Mem (MiB) — "top" de verdade, não uma média. Correlaciona por substring no
+// label "instance" do node-exporter contra o nome literal do node K8s, mesmo padrão já usado e
+// validado em internal/monitoring/predictions/collector.go. Valores brutos (não %) — o chamador
+// (ComputeNodeUsage, live_metrics.go) calcula o percentual usando a capacidade real do node via
+// API K8s, evitando uma query correlacionada extra de capacidade (kube-state-metrics nem sempre
+// instalado). Best-effort: node ausente no resultado = sem dado, nunca erro.
+func (e *PrometheusEnricher) nodeTopUsage(ctx context.Context, nodeNames []string) (cpuMillis, memMi map[string]float64) {
+	cpuMillis = make(map[string]float64)
+	memMi = make(map[string]float64)
+	if len(nodeNames) == 0 {
+		return
+	}
+	w := e.window
+
+	cpuVec := e.queryInstanceMetric(ctx,
+		fmt.Sprintf(`max_over_time((sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) * 1000)[%dd:5m])`, w),
+		"node_cpu_top",
+	)
+	memVec := e.queryInstanceMetric(ctx,
+		fmt.Sprintf(`max_over_time((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)[%dd:5m]) / 1048576`, w),
+		"node_mem_top",
+	)
+
+	for _, name := range nodeNames {
+		for instance, v := range cpuVec {
+			if strings.Contains(instance, name) {
+				cpuMillis[name] = v
+				break
+			}
+		}
+		for instance, v := range memVec {
+			if strings.Contains(instance, name) {
+				memMi[name] = v
+				break
+			}
+		}
+	}
+	return cpuMillis, memMi
+}
+
+// queryInstanceMetric executa uma query cujo resultado é agrupado pelo label "instance"
+// (node-exporter) e retorna map[instance] → valor.
+func (e *PrometheusEnricher) queryInstanceMetric(ctx context.Context, query, label string) map[string]float64 {
+	qctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	result, _, err := e.api.Query(qctx, query, time.Now())
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query de node falhou")
+		return nil
+	}
+
+	vec, ok := result.(model.Vector)
+	if !ok {
+		return nil
+	}
+
+	m := make(map[string]float64)
+	for _, sample := range vec {
+		instance := string(sample.Metric["instance"])
+		if instance == "" {
+			continue
+		}
+		m[instance] = float64(sample.Value)
 	}
 	return m
 }

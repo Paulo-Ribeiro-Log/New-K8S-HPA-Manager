@@ -88,9 +88,9 @@ func TestResolveManagedDiskTier(t *testing.T) {
 		{"Standard SSD", 129, "E15"},
 
 		// Standard HDD (começa em S4=32GB)
-		{"Standard HDD", 1, "S4"},   // abaixo do mínimo → S4
-		{"Standard HDD", 32, "S4"},  // exato S4
-		{"Standard HDD", 33, "S6"},  // acima de S4 → S6
+		{"Standard HDD", 1, "S4"},  // abaixo do mínimo → S4
+		{"Standard HDD", 32, "S4"}, // exato S4
+		{"Standard HDD", 33, "S6"}, // acima de S4 → S6
 		{"Standard HDD", 128, "S10"},
 
 		// Tipo desconhecido → fallback para Standard SSD
@@ -114,12 +114,12 @@ func TestPVCCostMath(t *testing.T) {
 	rate := 5.20 // taxa USD→BRL do teste
 
 	cases := []struct {
-		desc        string
-		azureType   string
-		capacityGB  float64
-		wantTier    string
-		wantUSD     float64 // preço do tier no fallback
-		wantBRL     float64 // wantUSD * rate, arredondado 2 casas
+		desc       string
+		azureType  string
+		capacityGB float64
+		wantTier   string
+		wantUSD    float64 // preço do tier no fallback
+		wantBRL    float64 // wantUSD * rate, arredondado 2 casas
 	}{
 		{
 			desc:       "Premium SSD 100GB → P10",

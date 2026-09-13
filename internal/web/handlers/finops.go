@@ -21,15 +21,16 @@ import (
 
 // FinOpsHandler expõe análise de custo real de clusters AKS/GKE/EKS.
 type FinOpsHandler struct {
-	kubeManager     *config.KubeConfigManager
-	npRegistryStore *storage.NodePoolRegistryStore
-	timelineStore   *storage.FinOpsTimelineStore // pode ser nil se DB não disponível
-	pricer          *finops.AzurePricer          // AKS — também usado como fallback pra providers sem pricer próprio
-	gcpPricer       *finops.GCPPricer            // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
-	diskPricer      *finops.DiskPricer           // nil = análise de storage omitida (Azure only)
-	exchange        *finops.ExchangeRateProvider
-	aiHandler       *AIDiagnosticsHandler // opcional — nil se AI não configurado
-	dtTokenStore    dtTokenReader         // para criar DTEnricher sob demanda
+	kubeManager      *config.KubeConfigManager
+	npRegistryStore  *storage.NodePoolRegistryStore
+	timelineStore    *storage.FinOpsTimelineStore    // pode ser nil se DB não disponível
+	rightsizingStore *storage.FinOpsRightsizingStore // pode ser nil se DB não disponível — ver finops_rightsizing.go
+	pricer           *finops.AzurePricer             // AKS — também usado como fallback pra providers sem pricer próprio
+	gcpPricer        *finops.GCPPricer               // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
+	diskPricer       *finops.DiskPricer              // nil = análise de storage omitida (Azure only)
+	exchange         *finops.ExchangeRateProvider
+	aiHandler        *AIDiagnosticsHandler // opcional — nil se AI não configurado
+	dtTokenStore     dtTokenReader         // para criar DTEnricher sob demanda
 
 	// awsPricers cacheia um *finops.AWSPricer por (region, profile) — diferente de
 	// AzurePricer/GCPPricer (uma única região/instância pra todo o servidor), EKS pode ter
@@ -46,7 +47,7 @@ type dtTokenReader interface {
 
 // NewFinOpsHandler cria o handler com as dependências compartilhadas.
 // AzurePricer, GCPPricer e DiskPricer são inicializados uma única vez (cache SQLite interno).
-func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, aiHandler *AIDiagnosticsHandler, dtTokens dtTokenReader) *FinOpsHandler {
+func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, rightsizingStore *storage.FinOpsRightsizingStore, aiHandler *AIDiagnosticsHandler, dtTokens dtTokenReader) *FinOpsHandler {
 	pricer, err := finops.NewAzurePricer("")
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar AzurePricer, usando apenas fallback")
@@ -60,16 +61,17 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar DiskPricer, análise de storage omitida")
 	}
 	return &FinOpsHandler{
-		kubeManager:     kubeManager,
-		npRegistryStore: npRegistryStore,
-		timelineStore:   timelineStore,
-		pricer:          pricer,
-		gcpPricer:       gcpPricer,
-		diskPricer:      diskPricer,
-		exchange:        finops.NewExchangeRateProvider(),
-		aiHandler:       aiHandler,
-		dtTokenStore:    dtTokens,
-		awsPricers:      make(map[string]*finops.AWSPricer),
+		kubeManager:      kubeManager,
+		npRegistryStore:  npRegistryStore,
+		timelineStore:    timelineStore,
+		rightsizingStore: rightsizingStore,
+		pricer:           pricer,
+		gcpPricer:        gcpPricer,
+		diskPricer:       diskPricer,
+		exchange:         finops.NewExchangeRateProvider(),
+		aiHandler:        aiHandler,
+		dtTokenStore:     dtTokens,
+		awsPricers:       make(map[string]*finops.AWSPricer),
 	}
 }
 
@@ -228,7 +230,14 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		storageRequiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
 	calc := finops.NewCalculator(h.pricerForCluster(cluster), h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
-	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher)
+	// metrics-server é opcional/best-effort (ex: EKS sem metrics-server instalado) — nil aqui só
+	// significa que os campos "current" (live) do relatório ficam vazios, nunca bloqueia o resto.
+	metricsClient, metricsErr := h.kubeManager.GetMetricsClient(cluster)
+	if metricsErr != nil {
+		log.Debug().Err(metricsErr).Str("cluster", cluster).Msg("FinOps: metrics-server indisponível, uso 'current' ao vivo ficará vazio")
+		metricsClient = nil
+	}
+	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher, metricsClient)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()})
@@ -518,15 +527,24 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 }
 
 // GetVMAlternatives godoc
-// GET /api/v1/finops/vm-alternatives?sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3
+// GET /api/v1/finops/vm-alternatives?cluster=X&sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3
 //
-// Retorna até 3 SKUs alternativos sugeridos para o VM SKU informado, levando em conta
-// os percentuais de utilização de CPU e Memória do cluster para identificar o gargalo.
+// Retorna até 3 SKUs/instance types alternativos sugeridos para o VM size informado, levando em
+// conta os percentuais de utilização de CPU e Memória do pool para identificar o gargalo.
 // Se cpu_pct e mem_pct forem 0, nenhuma sugestão de troca de família é emitida.
+//
+// cluster é obrigatório — decide qual CloudPricer usar (Azure/GCP/AWS) via pricerForCluster.
+// Antes deste parâmetro, o endpoint sempre usava h.pricer (AzurePricer) incondicionalmente —
+// funcionava só pra AKS; SKUs/instance types de GKE/EKS nunca batiam em nada.
 func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
 	sku := c.Query("sku")
 	if sku == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'sku' é obrigatório"})
+		return
+	}
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
 		return
 	}
 
@@ -538,15 +556,18 @@ func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
 	}
 
 	rate, _ := h.exchange.Get()
+	pricer := h.pricerForCluster(cluster)
+	provider := config.DetectCloudProvider(h.kubeManager.GetServerURL(cluster), cluster)
 
-	alternatives := finops.SuggestAlternatives(sku, cpuPct, memPct, h.pricer, rate, nodeCount)
+	alternatives := finops.SuggestVMTier(provider, sku, float64(cpuPct), float64(memPct), pricer, rate, nodeCount)
 	if alternatives == nil {
 		alternatives = []finops.VMAlternative{}
 	}
 
-	cpu, mem := finops.GetVMSpecs(sku)
+	cpu, mem := pricer.GetVMSpecs(sku)
 	c.JSON(http.StatusOK, gin.H{
 		"sku":          sku,
+		"provider":     provider,
 		"cpu_cores":    cpu,
 		"memory_gb":    mem,
 		"cpu_pct":      cpuPct,

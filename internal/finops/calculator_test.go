@@ -57,7 +57,7 @@ func TestCalculatePoolCosts(t *testing.T) {
 
 	pools := []storage.NodePoolRegistryEntry{
 		{Cluster: "test", NodePool: "system", VMSize: "Standard_D4s_v3", NodeCount: 2, Mode: "System"},
-		{Cluster: "test", NodePool: "user",   VMSize: "Standard_D8s_v3", NodeCount: 3, Mode: "User"},
+		{Cluster: "test", NodePool: "user", VMSize: "Standard_D8s_v3", NodeCount: 3, Mode: "User"},
 	}
 
 	finOpsPools, cap, totalUSD, err := calc.calculatePoolCosts(pools, rate)
@@ -97,8 +97,8 @@ func TestAllocateCosts(t *testing.T) {
 
 	workloads := []rawWorkload{
 		{Namespace: "ns-a", Workload: "app-a", Pods: 3, CPURequestMillis: 3000, MemRequestMi: 3072, HPAMin: 2, HPAMax: 10, HPACurrent: 3},
-		{Namespace: "ns-a", Workload: "app-b", Pods: 1, CPURequestMillis: 500,  MemRequestMi: 512},
-		{Namespace: "ns-b", Workload: "app-c", Pods: 2, CPURequestMillis: 0,    MemRequestMi: 0},
+		{Namespace: "ns-a", Workload: "app-b", Pods: 1, CPURequestMillis: 500, MemRequestMi: 512},
+		{Namespace: "ns-b", Workload: "app-c", Pods: 2, CPURequestMillis: 0, MemRequestMi: 0},
 	}
 
 	result := allocateCosts(workloads, cap, clusterCostUSD, rate)
@@ -138,7 +138,7 @@ func TestAllocateCosts(t *testing.T) {
 func TestAggregateNamespaces(t *testing.T) {
 	workloads := []FinOpsWorkload{
 		{Namespace: "ns-a", Workload: "w1", CostShareUSD: 100, CostShareBRL: 520},
-		{Namespace: "ns-a", Workload: "w2", CostShareUSD: 50,  CostShareBRL: 260},
+		{Namespace: "ns-a", Workload: "w2", CostShareUSD: 50, CostShareBRL: 260},
 		{Namespace: "ns-b", Workload: "w3", CostShareUSD: 200, CostShareBRL: 1040},
 	}
 

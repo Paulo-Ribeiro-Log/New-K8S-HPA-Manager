@@ -17,8 +17,10 @@ const (
 type WorkloadMetrics struct {
 	CPUAvgMillicores float64
 	CPUP95Millicores float64
+	CPUMaxMillicores float64 // pico observado — espelha MemMaxBytes, usado pro "top" de CPU na UI
 	MemAvgBytes      float64
 	MemP95Bytes      float64
+	MemMaxBytes      float64 // pico observado — usado só pra Mem Limit recomendado (ver finops.recommendedLimits)
 }
 
 // GetAllWorkloadMetrics consulta CPU e memória de todos os workloads monitorados pelo DT
@@ -48,20 +50,43 @@ func (c *Client) GetAllWorkloadMetrics(ctx context.Context, windowDays int) (map
 	if err != nil {
 		return nil, fmt.Errorf("DT finops mem p95: %w", err)
 	}
+	// Pico real de memória (mesmo papel do max_over_time do Prometheus) — usado só pra Mem Limit
+	// recomendado, nunca pro request. Best-effort: se a query falhar, memMax fica vazio e a
+	// recomendação de Mem Limit cai pra P95×margem sem o benefício extra do pico real (ver
+	// finops.recommendedLimits) — não derruba o enriquecimento inteiro por causa disso.
+	memMax, err := c.queryWorkloadBatch(ctx, metricMemBytes, "max", from)
+	if err != nil {
+		memMax = map[string]float64{}
+	}
+	// Pico real de CPU (espelha memMax acima) — best-effort, mesma tolerância a falha.
+	cpuMax, err := c.queryWorkloadBatch(ctx, metricCPUMillicores, "max", from)
+	if err != nil {
+		cpuMax = map[string]float64{}
+	}
 
-	// Merge nos 4 mapas usando chave "namespace/workload"
+	// Merge nos mapas usando chave "namespace/workload"
 	keys := make(map[string]struct{})
-	for k := range cpuAvg { keys[k] = struct{}{} }
-	for k := range cpuP95 { keys[k] = struct{}{} }
-	for k := range memAvg { keys[k] = struct{}{} }
-	for k := range memP95 { keys[k] = struct{}{} }
+	for k := range cpuAvg {
+		keys[k] = struct{}{}
+	}
+	for k := range cpuP95 {
+		keys[k] = struct{}{}
+	}
+	for k := range memAvg {
+		keys[k] = struct{}{}
+	}
+	for k := range memP95 {
+		keys[k] = struct{}{}
+	}
 
 	for k := range keys {
 		result[k] = WorkloadMetrics{
 			CPUAvgMillicores: cpuAvg[k],
 			CPUP95Millicores: cpuP95[k],
+			CPUMaxMillicores: cpuMax[k],
 			MemAvgBytes:      memAvg[k],
 			MemP95Bytes:      memP95[k],
+			MemMaxBytes:      memMax[k],
 		}
 	}
 	return result, nil

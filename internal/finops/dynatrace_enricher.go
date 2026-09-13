@@ -54,8 +54,10 @@ func (e *DTEnricher) EnrichWorkloads(ctx context.Context, workloads []FinOpsWork
 
 		wl.CPUAvgMillis = round2(m.CPUAvgMillicores)
 		wl.CPUP95Millis = round2(m.CPUP95Millicores)
+		wl.CPUMaxMillis = round2(m.CPUMaxMillicores)
 		wl.MemAvgMi = round2(m.MemAvgBytes / bytesPerMi)
 		wl.MemP95Mi = round2(m.MemP95Bytes / bytesPerMi)
+		wl.MemMaxMi = round2(m.MemMaxBytes / bytesPerMi)
 
 		if wl.CPUP95Millis > 0 {
 			wl.CPURecommendedMillis = round2(wl.CPUP95Millis * SafetyMargin)
@@ -63,6 +65,11 @@ func (e *DTEnricher) EnrichWorkloads(ctx context.Context, workloads []FinOpsWork
 		if wl.MemP95Mi > 0 {
 			wl.MemRecommendedMi = round2(wl.MemP95Mi * SafetyMargin)
 		}
+
+		wl.CPULimitRecommendedMillis, wl.MemLimitRecommendedMi = recommendedLimits(
+			wl.CPURecommendedMillis, wl.MemRecommendedMi, wl.MemP95Mi, wl.MemMaxMi,
+			wl.CPULimitMillis, wl.CPURequestMillis, wl.MemLimitMi,
+		)
 
 		wl.WasteBRL = calculateWaste(wl)
 		wl.Verdict = verdictFromPrometheus(wl) // mesmas regras de verdict

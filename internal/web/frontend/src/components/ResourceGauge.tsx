@@ -7,6 +7,10 @@ interface ResourceGaugeProps {
   limit: number;
   unit: string;
   formatValue?: (value: number) => string;
+  /** Valor sugerido (rightsizing) — desenha uma marca fina no ângulo correspondente, além dos 3
+   *  arcos já existentes. Opcional e aditivo: omitir mantém o gauge idêntico ao comportamento
+   *  anterior a esta prop (usado por FinOps → Rightsizing, ver RightsizingTab.tsx). */
+  recommended?: number;
 }
 
 const ResourceGauge: React.FC<ResourceGaugeProps> = ({
@@ -16,12 +20,14 @@ const ResourceGauge: React.FC<ResourceGaugeProps> = ({
   limit,
   unit,
   formatValue,
+  recommended,
 }) => {
   // Calcular percentuais em relação ao limit
-  const maxValue = Math.max(limit, request, current) * 1.1; // 10% de margem
+  const maxValue = Math.max(limit, request, current, recommended ?? 0) * 1.1; // 10% de margem
   const requestPercent = (request / maxValue) * 100;
   const currentPercent = (current / maxValue) * 100;
   const limitPercent = (limit / maxValue) * 100;
+  const recommendedPercent = recommended !== undefined ? (recommended / maxValue) * 100 : undefined;
 
   // Configurações do gauge
   const size = 100;
@@ -62,6 +68,22 @@ const ResourceGauge: React.FC<ResourceGaugeProps> = ({
   const requestColor = "#3b82f6"; // blue
   const currentColor = getColorForPercent(currentPercent);
   const limitColor = "#64748b"; // slate
+  const recommendedColor = "#a855f7"; // roxo — distinto de request(azul)/limit(cinza)/current(faixa de cor)
+
+  // Marca radial fina (não um arco) no ângulo do valor recomendado — cruza a faixa dos 3 arcos
+  // existentes, servindo de "aqui" sem competir visualmente com eles.
+  const getTickLine = (percent: number) => {
+    const angle = startAngle + (angleRange * percent) / 100;
+    const angleRad = (angle * Math.PI) / 180;
+    const inner = radius - strokeWidth / 2 - 3;
+    const outer = radius + strokeWidth / 2 + 3;
+    return {
+      x1: center + inner * Math.cos(angleRad),
+      y1: center + inner * Math.sin(angleRad),
+      x2: center + outer * Math.cos(angleRad),
+      y2: center + outer * Math.sin(angleRad),
+    };
+  };
 
   // Formatar valores
   const format = formatValue || ((v: number) => v.toFixed(0));
@@ -113,6 +135,16 @@ const ResourceGauge: React.FC<ResourceGaugeProps> = ({
               strokeLinecap="round"
             />
           )}
+
+          {/* Marca do valor recomendado (rightsizing) — sempre por cima, nunca some atrás dos arcos */}
+          {recommendedPercent !== undefined && recommendedPercent > 0 && (
+            <line
+              {...getTickLine(recommendedPercent)}
+              stroke={recommendedColor}
+              strokeWidth={2}
+              strokeLinecap="round"
+            />
+          )}
         </svg>
 
         {/* Center value */}
@@ -125,10 +157,18 @@ const ResourceGauge: React.FC<ResourceGaugeProps> = ({
       {/* Title */}
       <div className="text-xs font-medium mt-0.5 text-center">{title}</div>
 
-      {/* Legend - Only current value */}
-      <div className="flex items-center justify-center gap-1 mt-1 text-[10px]">
-        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: currentColor }} />
-        <span className="text-muted-foreground">Cur: {format(current)}</span>
+      {/* Legend - valor atual (+ recomendado, quando a prop é passada) */}
+      <div className="flex items-center justify-center gap-2 mt-1 text-[10px]">
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: currentColor }} />
+          <span className="text-muted-foreground">Cur: {format(current)}</span>
+        </div>
+        {recommended !== undefined && recommended > 0 && (
+          <div className="flex items-center gap-1">
+            <div className="w-2 h-0.5 rounded-full" style={{ backgroundColor: recommendedColor }} />
+            <span className="text-muted-foreground">Rec: {format(recommended)}</span>
+          </div>
+        )}
       </div>
     </div>
   );
