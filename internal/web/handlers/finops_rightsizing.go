@@ -249,6 +249,9 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			HPAMinObserved:            wl.HPAMinObserved,
 			HPAScaleEvents:            wl.HPAScaleEvents,
 			HPANeverScaled:            wl.HPANeverScaled,
+			CPUMaxAt:                  wl.CPUMaxAt,
+			MemMaxAt:                  wl.MemMaxAt,
+			OldestPodStartedAt:        wl.OldestPodStartedAt,
 			Verdict:                   wl.Verdict,
 			WasteBRL:                  wl.WasteBRL,
 			MetricsSource:             wl.MetricsSource,
@@ -294,27 +297,42 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 	}
 
 	tierSuggestions := make([]storage.NodePoolTierSuggestion, 0, len(report.NodePools))
+	coveredPools := make(map[string]bool, len(report.NodePools))
 	for _, pool := range report.NodePools {
 		if pool.Mode == "System" {
 			continue // mesma exclusão já usada hoje pelo PoolSKUAlternatives do frontend
 		}
+		coveredPools[pool.Name] = true
+
+		// Node count "atual": prefere o valor AO VIVO (chamada real à API do cloud provider,
+		// já buscada acima em liveNodeGroups) em vez do snapshot do Node Pool Registry
+		// (pool.NodeCount) — esse snapshot só reflete a contagem de objetos K8s Node no
+		// momento do último "Escanear Clusters" MANUAL, o que é especialmente errado pra
+		// pools spot/preemptible, que oscilam por eviction/replacement entre um scan e outro
+		// (bug relatado: "um node spot não tem o seus node count coletados"). Só cai de
+		// volta pro registry quando a chamada ao vivo falhou pro cluster inteiro ou esse pool
+		// específico não veio na resposta (ex: provider sem suporte, erro pontual).
+		live, liveOK := liveNodeGroups[pool.Name]
+		currentNodeCount := pool.NodeCount
+		if liveOK && live.NodeCount > 0 {
+			currentNodeCount = int(live.NodeCount)
+		}
+
 		agg := poolAgg[pool.Name]
 		var cpuUtilPct, memUtilPct float64
 		var workloadCount int
 		if agg != nil {
 			workloadCount = agg.n
-			if pool.VMCPUCores > 0 && pool.NodeCount > 0 {
-				cpuUtilPct = agg.cpu / (float64(pool.VMCPUCores) * 1000 * float64(pool.NodeCount)) * 100
+			if pool.VMCPUCores > 0 && currentNodeCount > 0 {
+				cpuUtilPct = agg.cpu / (float64(pool.VMCPUCores) * 1000 * float64(currentNodeCount)) * 100
 			}
-			if pool.VMMemoryGB > 0 && pool.NodeCount > 0 {
-				memUtilPct = agg.mem / (float64(pool.VMMemoryGB) * 1024 * float64(pool.NodeCount)) * 100
+			if pool.VMMemoryGB > 0 && currentNodeCount > 0 {
+				memUtilPct = agg.mem / (float64(pool.VMMemoryGB) * 1024 * float64(currentNodeCount)) * 100
 			}
 		}
 
-		alts := finops.SuggestVMTier(provider, pool.VMSize, cpuUtilPct, memUtilPct, pricer, rate, pool.NodeCount)
+		alts := finops.SuggestVMTier(provider, pool.VMSize, cpuUtilPct, memUtilPct, pricer, rate, currentNodeCount)
 		altJSON, _ := json.Marshal(alts)
-
-		live := liveNodeGroups[pool.Name]
 
 		tierSuggestions = append(tierSuggestions, storage.NodePoolTierSuggestion{
 			NodePool:           pool.Name,
@@ -322,7 +340,7 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			CPUUtilPct:         rightsizingRound2(cpuUtilPct),
 			MemUtilPct:         rightsizingRound2(memUtilPct),
 			WorkloadCount:      workloadCount,
-			NodeCount:          pool.NodeCount,
+			NodeCount:          currentNodeCount,
 			MinNodeCount:       int(live.MinNodeCount),
 			MaxNodeCount:       int(live.MaxNodeCount),
 			AutoscalingEnabled: live.AutoscalingEnabled,
@@ -331,6 +349,53 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			AlternativesJSON:   string(altJSON),
 			GeneratedAt:        now,
 		})
+	}
+
+	// Pools que existem AO VIVO (confirmados via API real do cloud provider) mas nunca
+	// apareceram em report.NodePools — calculatePoolCosts (calculator.go) descarta
+	// silenciosamente qualquer pool cujo NodeCount do REGISTRY seja 0 (snapshot stale — ex:
+	// pool spot totalmente evictado no instante do último "Escanear Clusters" manual) ou cujo
+	// VMSize esteja vazio. Sem isto, um pool spot genuinamente ativo agora nunca ganharia
+	// sequer um card na aba, mesmo aparecendo corretamente na chamada ao vivo — adicionamos
+	// uma entrada sintética usando as specs do próprio pricer (sem depender do registry).
+	for name, live := range liveNodeGroups {
+		if coveredPools[name] || live.IsSystemPool || live.NodeCount == 0 || live.VMSize == "" {
+			continue
+		}
+		cpuCores, memGB := pricer.GetVMSpecs(live.VMSize)
+		agg := poolAgg[name]
+		var cpuUtilPct, memUtilPct float64
+		var workloadCount int
+		if agg != nil {
+			workloadCount = agg.n
+			if cpuCores > 0 {
+				cpuUtilPct = agg.cpu / (float64(cpuCores) * 1000 * float64(live.NodeCount)) * 100
+			}
+			if memGB > 0 {
+				memUtilPct = agg.mem / (float64(memGB) * 1024 * float64(live.NodeCount)) * 100
+			}
+		}
+
+		alts := finops.SuggestVMTier(provider, live.VMSize, cpuUtilPct, memUtilPct, pricer, rate, int(live.NodeCount))
+		altJSON, _ := json.Marshal(alts)
+
+		tierSuggestions = append(tierSuggestions, storage.NodePoolTierSuggestion{
+			NodePool:           name,
+			CurrentSKU:         live.VMSize,
+			CPUUtilPct:         rightsizingRound2(cpuUtilPct),
+			MemUtilPct:         rightsizingRound2(memUtilPct),
+			WorkloadCount:      workloadCount,
+			NodeCount:          int(live.NodeCount),
+			MinNodeCount:       int(live.MinNodeCount),
+			MaxNodeCount:       int(live.MaxNodeCount),
+			AutoscalingEnabled: live.AutoscalingEnabled,
+			VMCPUCores:         cpuCores,
+			VMMemoryGB:         memGB,
+			AlternativesJSON:   string(altJSON),
+			GeneratedAt:        now,
+		})
+		log.Info().Str("cluster", cluster).Str("node_pool", name).
+			Msg("FinOps/Rightsizing: pool presente ao vivo mas ausente do relatório (registry stale) — entrada sintética adicionada")
 	}
 
 	if err := h.rightsizingStore.ReplaceNodePoolTierSuggestions(cluster, tierSuggestions); err != nil {
@@ -352,6 +417,9 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			MemCurrentPct:    nu.MemCurrentPct,
 			CPUTopPct:        nu.CPUTopPct,
 			MemTopPct:        nu.MemTopPct,
+			CPUTopAt:         nu.CPUTopAt,
+			MemTopAt:         nu.MemTopAt,
+			NodeCreatedAt:    nu.NodeCreatedAt,
 			MetricsAvailable: nu.MetricsAvailable,
 			MetricsError:     nu.MetricsError,
 			GeneratedAt:      now,

@@ -96,6 +96,17 @@ type FinOpsWorkload struct {
 	MemP95Mi             float64 `json:"mem_p95_mi,omitempty"`
 	MemRecommendedMi     float64 `json:"mem_recommended_mi,omitempty"` // P95 × 1.20
 	MemMaxMi             float64 `json:"mem_max_mi,omitempty"`         // pico observado (max_over_time) — só usado pra MemLimitRecommendedMi
+	// Data/hora em que o pico (CPUMaxMillis/MemMaxMi) foi observado — sem isso, um "top" sozinho
+	// não diz se é de ontem ou de 29 dias atrás. nil quando a fonte é Dynatrace (a API de métricas
+	// usada aqui só devolve um valor agregado por janela, sem timestamp do ponto exato — só
+	// Prometheus, via QueryRange, tem esse dado) ou quando não há amostra no período.
+	CPUMaxAt *time.Time `json:"cpu_max_at,omitempty"`
+	MemMaxAt *time.Time `json:"mem_max_at,omitempty"`
+	// OldestPodStartedAt é o CreationTimestamp do pod mais antigo ATUALMENTE rodando deste
+	// workload — contextualiza o "tempo de vida" pra interpretar o pico: um pico observado há 20
+	// dias não significa muito se todos os pods de hoje têm só 2h de vida (rollout recente, pod
+	// que gerou o pico já não existe mais). nil se não houver nenhum pod Running no momento do scan.
+	OldestPodStartedAt *time.Time `json:"oldest_pod_started_at,omitempty"`
 
 	// ── Live (metrics-server): uso instantâneo agregado dos pods do workload ──
 	// Diferente de CPUAvgMillis/CPUP95Millis (histórico via Prometheus/Dynatrace), estes vêm de
@@ -149,6 +160,16 @@ type NodeUsage struct {
 	MemTopPct        float64 `json:"mem_top_pct,omitempty"`
 	MetricsAvailable bool    `json:"metrics_available"`
 	MetricsError     string  `json:"metrics_error,omitempty"`
+	// Data/hora em que CPUTopPct/MemTopPct foram observados — crítico pra nodes efêmeros (ex:
+	// spot, que podem ser evictados e recriados com outro nome a qualquer momento): sem isso,
+	// não dá pra saber se o "top" é de agora ou de um momento qualquer nos últimos N dias.
+	CPUTopAt *time.Time `json:"cpu_top_at,omitempty"`
+	MemTopAt *time.Time `json:"mem_top_at,omitempty"`
+	// NodeCreatedAt é o CreationTimestamp do node (K8s Node object) — "desde quando ele existe".
+	// Nodes spot/preemptible costumam ser recriados com frequência (eviction); um node muito
+	// jovem explica por que o "top" pode estar ausente/limitado — não há histórico suficiente no
+	// Prometheus pra aquele nome de node específico ainda.
+	NodeCreatedAt *time.Time `json:"node_created_at,omitempty"`
 }
 
 // ClusterCapacity guarda a capacidade total do cluster (exportada para uso no enricher)

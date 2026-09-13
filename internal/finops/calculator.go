@@ -40,6 +40,10 @@ type rawWorkload struct {
 	// usado pra popular FinOpsWorkload.NodeName, que correlaciona o workload com NodeUsage
 	// (ver live_metrics.go) na aba Rightsizing.
 	NodePodCounts map[string]int
+	// OldestPodStartedAt é o CreationTimestamp do pod Running mais antigo deste workload —
+	// contextualiza "há quanto tempo o workload está no ar sem reiniciar" pra interpretar um pico
+	// histórico (ver FinOpsWorkload.OldestPodStartedAt em models.go).
+	OldestPodStartedAt time.Time
 }
 
 // nodePoolLabelFromNode retorna o nome do node pool a partir dos labels de um node K8s
@@ -505,6 +509,11 @@ func collectWorkloads(
 		if pod.Spec.NodeName != "" {
 			wl.NodePodCounts[pod.Spec.NodeName]++
 		}
+		if podCreated := pod.CreationTimestamp.Time; !podCreated.IsZero() {
+			if wl.OldestPodStartedAt.IsZero() || podCreated.Before(wl.OldestPodStartedAt) {
+				wl.OldestPodStartedAt = podCreated
+			}
+		}
 	}
 
 	result := make([]rawWorkload, 0, len(workloadMap))
@@ -557,7 +566,7 @@ func allocateCosts(
 			hpaMax = wl.Pods
 		}
 
-		result = append(result, FinOpsWorkload{
+		fw := FinOpsWorkload{
 			Namespace:         wl.Namespace,
 			Workload:          wl.Workload,
 			Pods:              wl.Pods,
@@ -576,7 +585,12 @@ func allocateCosts(
 			HPACostMaxBRL:     round2(podCostUSD * float64(hpaMax) * rate),
 			HPACostCurrentBRL: round2(podCostUSD * float64(hpaCurrent) * rate),
 			Verdict:           determineVerdict(wl),
-		})
+		}
+		if !wl.OldestPodStartedAt.IsZero() {
+			started := wl.OldestPodStartedAt
+			fw.OldestPodStartedAt = &started
+		}
+		result = append(result, fw)
 	}
 
 	// Ordenar por maior custo primeiro

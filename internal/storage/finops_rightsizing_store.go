@@ -49,6 +49,16 @@ type WorkloadRecommendation struct {
 	CPULimitRecommendedMillis float64 `json:"cpu_limit_recommended_millis,omitempty"`
 	MemLimitRecommendedMi     float64 `json:"mem_limit_recommended_mi,omitempty"`
 
+	// Data/hora em que CPUMaxMillis/MemMaxMi foram observados — sem isso, um "top" sozinho não
+	// diz se é de ontem ou de 29 dias atrás. nil quando a fonte é Dynatrace (sem timestamp por
+	// ponto, ver finops.FinOpsWorkload.CPUMaxAt) ou quando não há amostra no período.
+	CPUMaxAt *time.Time `json:"cpu_max_at,omitempty"`
+	MemMaxAt *time.Time `json:"mem_max_at,omitempty"`
+	// OldestPodStartedAt é o CreationTimestamp do pod Running mais antigo deste workload no
+	// momento do scan — contextualiza "tempo de vida sem reiniciar" pra interpretar um pico
+	// histórico (ver finops.FinOpsWorkload.OldestPodStartedAt). nil se não havia pod Running.
+	OldestPodStartedAt *time.Time `json:"oldest_pod_started_at,omitempty"`
+
 	// ── HPA/réplicas: configurado (min/max/current) + observado no período (via Prometheus) ──
 	// Usado pro modal de detalhe (cenário de resize de réplicas), mesmos campos já calculados
 	// por FinOpsWorkload — só persistidos aqui pra não precisar re-escanear pra exibir.
@@ -73,18 +83,27 @@ type WorkloadRecommendation struct {
 // pode importar finops (ciclo, ver NodePoolTierSuggestion acima), então os campos são duplicados
 // aqui e o chamador (finops_rightsizing.go) converte na hora de persistir/ler.
 type NodeUsage struct {
-	Cluster          string    `json:"cluster"`
-	NodeName         string    `json:"node_name"`
-	NodePool         string    `json:"node_pool,omitempty"`
-	CPUCapMillis     float64   `json:"cpu_cap_millis,omitempty"`
-	MemCapMi         float64   `json:"mem_cap_mi,omitempty"`
-	CPUCurrentPct    float64   `json:"cpu_current_pct,omitempty"`
-	MemCurrentPct    float64   `json:"mem_current_pct,omitempty"`
-	CPUTopPct        float64   `json:"cpu_top_pct,omitempty"`
-	MemTopPct        float64   `json:"mem_top_pct,omitempty"`
-	MetricsAvailable bool      `json:"metrics_available"`
-	MetricsError     string    `json:"metrics_error,omitempty"`
-	GeneratedAt      time.Time `json:"generated_at"`
+	Cluster       string  `json:"cluster"`
+	NodeName      string  `json:"node_name"`
+	NodePool      string  `json:"node_pool,omitempty"`
+	CPUCapMillis  float64 `json:"cpu_cap_millis,omitempty"`
+	MemCapMi      float64 `json:"mem_cap_mi,omitempty"`
+	CPUCurrentPct float64 `json:"cpu_current_pct,omitempty"`
+	MemCurrentPct float64 `json:"mem_current_pct,omitempty"`
+	CPUTopPct     float64 `json:"cpu_top_pct,omitempty"`
+	MemTopPct     float64 `json:"mem_top_pct,omitempty"`
+	// Data/hora em que CPUTopPct/MemTopPct foram observados — crítico pra nodes efêmeros (ex:
+	// spot, evictados/recriados a qualquer momento): sem isso não dá pra saber se o "top" é de
+	// agora ou de um momento qualquer nos últimos N dias (ver finops.NodeUsage.CPUTopAt).
+	CPUTopAt *time.Time `json:"cpu_top_at,omitempty"`
+	MemTopAt *time.Time `json:"mem_top_at,omitempty"`
+	// NodeCreatedAt é o CreationTimestamp do node (K8s Node object) — "desde quando ele
+	// existe". Nodes spot/preemptible costumam ser recriados com frequência; um node muito
+	// jovem explica por que o "top" pode estar ausente/limitado (ver finops.NodeUsage.NodeCreatedAt).
+	NodeCreatedAt    *time.Time `json:"node_created_at,omitempty"`
+	MetricsAvailable bool       `json:"metrics_available"`
+	MetricsError     string     `json:"metrics_error,omitempty"`
+	GeneratedAt      time.Time  `json:"generated_at"`
 }
 
 // NodePoolTierSuggestion é o snapshot persistido de sugestão de troca de tier de VM de um pool.
@@ -207,6 +226,12 @@ var finopsRightsizingMigrations = []string{
 	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN autoscaling_enabled INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN vm_cpu_cores INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN vm_memory_gb INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN cpu_max_at DATETIME`,
+	`ALTER TABLE workload_recommendations ADD COLUMN mem_max_at DATETIME`,
+	`ALTER TABLE workload_recommendations ADD COLUMN oldest_pod_started_at DATETIME`,
+	`ALTER TABLE node_usage ADD COLUMN cpu_top_at DATETIME`,
+	`ALTER TABLE node_usage ADD COLUMN mem_top_at DATETIME`,
+	`ALTER TABLE node_usage ADD COLUMN node_created_at DATETIME`,
 }
 
 // NewFinOpsRightsizingStore abre (ou cria) o banco SQLite de análises de rightsizing.
@@ -261,8 +286,9 @@ INSERT INTO workload_recommendations (
     cpu_recommended_millis, mem_recommended_mi, cpu_limit_recommended_millis, mem_limit_recommended_mi,
     hpa_min, hpa_max, hpa_current, hpa_avg_replicas, hpa_max_observed, hpa_min_observed,
     hpa_scale_events, hpa_never_scaled,
+    cpu_max_at, mem_max_at, oldest_pod_started_at,
     verdict, waste_brl, metrics_source, window_days, generated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -277,12 +303,32 @@ INSERT INTO workload_recommendations (
 			r.CPURecommendedMillis, r.MemRecommendedMi, r.CPULimitRecommendedMillis, r.MemLimitRecommendedMi,
 			r.HPAMin, r.HPAMax, r.HPACurrent, r.HPAAvgReplicas, r.HPAMaxObserved, r.HPAMinObserved,
 			r.HPAScaleEvents, r.HPANeverScaled,
+			nullTimeFromPtr(r.CPUMaxAt), nullTimeFromPtr(r.MemMaxAt), nullTimeFromPtr(r.OldestPodStartedAt),
 			r.Verdict, r.WasteBRL, r.MetricsSource, r.WindowDays, r.GeneratedAt,
 		); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// nullTimeFromPtr/ptrFromNullTime convertem entre *time.Time (shape usado pelos structs de
+// domínio, mais idiomático em Go) e sql.NullTime (necessário pro driver escanear/gravar
+// colunas DATETIME que podem ser NULL) — mesmo padrão usado pelos campos string opcionais
+// deste pacote (sql.NullString), só que pra time.Time.
+func nullTimeFromPtr(t *time.Time) sql.NullTime {
+	if t == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *t, Valid: true}
+}
+
+func ptrFromNullTime(t sql.NullTime) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	v := t.Time
+	return &v
 }
 
 // GetWorkloadRecommendations retorna as recomendações de workload persistidas para um cluster.
@@ -298,6 +344,7 @@ SELECT cluster, namespace, workload, node_pool, node_name, pods,
        cpu_recommended_millis, mem_recommended_mi, cpu_limit_recommended_millis, mem_limit_recommended_mi,
        hpa_min, hpa_max, hpa_current, hpa_avg_replicas, hpa_max_observed, hpa_min_observed,
        hpa_scale_events, hpa_never_scaled,
+       cpu_max_at, mem_max_at, oldest_pod_started_at,
        verdict, waste_brl, metrics_source, window_days, generated_at
 FROM workload_recommendations WHERE cluster = ? ORDER BY waste_brl DESC`, cluster)
 	if err != nil {
@@ -309,6 +356,7 @@ FROM workload_recommendations WHERE cluster = ? ORDER BY waste_brl DESC`, cluste
 	for rows.Next() {
 		var r WorkloadRecommendation
 		var nodePool, nodeName, verdict, metricsSource sql.NullString
+		var cpuMaxAt, memMaxAt, oldestPodStartedAt sql.NullTime
 		if err := rows.Scan(
 			&r.Cluster, &r.Namespace, &r.Workload, &nodePool, &nodeName, &r.Pods,
 			&r.CPURequestMillis, &r.MemRequestMi, &r.CPULimitMillis, &r.MemLimitMi,
@@ -317,6 +365,7 @@ FROM workload_recommendations WHERE cluster = ? ORDER BY waste_brl DESC`, cluste
 			&r.CPURecommendedMillis, &r.MemRecommendedMi, &r.CPULimitRecommendedMillis, &r.MemLimitRecommendedMi,
 			&r.HPAMin, &r.HPAMax, &r.HPACurrent, &r.HPAAvgReplicas, &r.HPAMaxObserved, &r.HPAMinObserved,
 			&r.HPAScaleEvents, &r.HPANeverScaled,
+			&cpuMaxAt, &memMaxAt, &oldestPodStartedAt,
 			&verdict, &r.WasteBRL, &metricsSource, &r.WindowDays, &r.GeneratedAt,
 		); err != nil {
 			return nil, err
@@ -325,6 +374,9 @@ FROM workload_recommendations WHERE cluster = ? ORDER BY waste_brl DESC`, cluste
 		r.NodeName = nodeName.String
 		r.Verdict = verdict.String
 		r.MetricsSource = metricsSource.String
+		r.CPUMaxAt = ptrFromNullTime(cpuMaxAt)
+		r.MemMaxAt = ptrFromNullTime(memMaxAt)
+		r.OldestPodStartedAt = ptrFromNullTime(oldestPodStartedAt)
 		recs = append(recs, r)
 	}
 	return recs, rows.Err()
@@ -425,8 +477,9 @@ func (s *FinOpsRightsizingStore) ReplaceNodeUsage(cluster string, usage []NodeUs
 INSERT INTO node_usage (
     cluster, node_name, node_pool, cpu_cap_millis, mem_cap_mi,
     cpu_current_pct, mem_current_pct, cpu_top_pct, mem_top_pct,
+    cpu_top_at, mem_top_at, node_created_at,
     metrics_available, metrics_error, generated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -436,6 +489,7 @@ INSERT INTO node_usage (
 		if _, err := stmt.Exec(
 			cluster, u.NodeName, u.NodePool, u.CPUCapMillis, u.MemCapMi,
 			u.CPUCurrentPct, u.MemCurrentPct, u.CPUTopPct, u.MemTopPct,
+			nullTimeFromPtr(u.CPUTopAt), nullTimeFromPtr(u.MemTopAt), nullTimeFromPtr(u.NodeCreatedAt),
 			u.MetricsAvailable, u.MetricsError, u.GeneratedAt,
 		); err != nil {
 			return err
@@ -452,6 +506,7 @@ func (s *FinOpsRightsizingStore) GetNodeUsage(cluster string) ([]NodeUsage, erro
 	rows, err := s.db.Query(`
 SELECT cluster, node_name, node_pool, cpu_cap_millis, mem_cap_mi,
        cpu_current_pct, mem_current_pct, cpu_top_pct, mem_top_pct,
+       cpu_top_at, mem_top_at, node_created_at,
        metrics_available, metrics_error, generated_at
 FROM node_usage WHERE cluster = ? ORDER BY node_name`, cluster)
 	if err != nil {
@@ -463,15 +518,20 @@ FROM node_usage WHERE cluster = ? ORDER BY node_name`, cluster)
 	for rows.Next() {
 		var u NodeUsage
 		var nodePool, metricsError sql.NullString
+		var cpuTopAt, memTopAt, nodeCreatedAt sql.NullTime
 		if err := rows.Scan(
 			&u.Cluster, &u.NodeName, &nodePool, &u.CPUCapMillis, &u.MemCapMi,
 			&u.CPUCurrentPct, &u.MemCurrentPct, &u.CPUTopPct, &u.MemTopPct,
+			&cpuTopAt, &memTopAt, &nodeCreatedAt,
 			&u.MetricsAvailable, &metricsError, &u.GeneratedAt,
 		); err != nil {
 			return nil, err
 		}
 		u.NodePool = nodePool.String
 		u.MetricsError = metricsError.String
+		u.CPUTopAt = ptrFromNullTime(cpuTopAt)
+		u.MemTopAt = ptrFromNullTime(memTopAt)
+		u.NodeCreatedAt = ptrFromNullTime(nodeCreatedAt)
 		result = append(result, u)
 	}
 	return result, rows.Err()

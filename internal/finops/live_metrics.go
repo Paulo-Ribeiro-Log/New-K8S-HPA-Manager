@@ -2,6 +2,7 @@ package finops
 
 import (
 	"context"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	corev1 "k8s.io/api/core/v1"
@@ -80,8 +81,11 @@ func ComputeNodeUsage(
 	}
 
 	// Capacidade real por node — já vem do K8s, sem precisar de PromQL/kube-state-metrics pra isso.
+	// CreationTimestamp (idade do node) vem de graça do mesmo List — contextualiza "top"
+	// ausente/limitado em nodes muito jovens (ex: spot recém-recriado após eviction).
 	capCPU := make(map[string]float64)
 	capMem := make(map[string]float64)
+	createdAt := make(map[string]time.Time)
 	if nodeList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{}); err == nil {
 		for _, n := range nodeList.Items {
 			if cpu, ok := n.Status.Capacity[corev1.ResourceCPU]; ok {
@@ -89,6 +93,9 @@ func ComputeNodeUsage(
 			}
 			if mem, ok := n.Status.Capacity[corev1.ResourceMemory]; ok {
 				capMem[n.Name] = float64(mem.Value()) / (1024 * 1024)
+			}
+			if !n.CreationTimestamp.IsZero() {
+				createdAt[n.Name] = n.CreationTimestamp.Time
 			}
 		}
 	} else {
@@ -121,8 +128,10 @@ func ComputeNodeUsage(
 	}
 
 	// Pico histórico (top) via Prometheus — best-effort, correlacionado por substring no label
-	// "instance" do node-exporter (ver PrometheusEnricher.nodeTopUsage).
-	var topCPU, topMem map[string]float64
+	// "instance" do node-exporter (ver PrometheusEnricher.nodeTopUsage). Cada pico já vem com o
+	// timestamp exato em que ocorreu — crítico pra nodes efêmeros (spot), onde "sem top" pode só
+	// significar "node jovem demais, sem histórico ainda" (ver NodeCreatedAt abaixo).
+	var topCPU, topMem map[string]promPeakSample
 	if promEnricher != nil {
 		topCPU, topMem = promEnricher.nodeTopUsage(ctx, nodeNames)
 	}
@@ -139,16 +148,24 @@ func ComputeNodeUsage(
 			MetricsAvailable: metricsAvailable,
 			MetricsError:     metricsErr,
 		}
+		if t, ok := createdAt[name]; ok {
+			created := t
+			nu.NodeCreatedAt = &created
+		}
 		if cap := capCPU[name]; cap > 0 {
 			nu.CPUCurrentPct = round2(liveCPU[name] / cap * 100)
-			if v, ok := topCPU[name]; ok {
-				nu.CPUTopPct = round2(v / cap * 100)
+			if peak, ok := topCPU[name]; ok {
+				nu.CPUTopPct = round2(peak.Value / cap * 100)
+				at := peak.At
+				nu.CPUTopAt = &at
 			}
 		}
 		if cap := capMem[name]; cap > 0 {
 			nu.MemCurrentPct = round2(liveMem[name] / cap * 100)
-			if v, ok := topMem[name]; ok {
-				nu.MemTopPct = round2(v / cap * 100)
+			if peak, ok := topMem[name]; ok {
+				nu.MemTopPct = round2(peak.Value / cap * 100)
+				at := peak.At
+				nu.MemTopAt = &at
 			}
 		}
 		result = append(result, nu)

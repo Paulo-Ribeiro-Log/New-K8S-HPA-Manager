@@ -29,11 +29,20 @@ interface WorkloadRecommendation {
   // Pico histórico (top) — max_over_time (Prometheus) ou "max" (Dynatrace), distinto de P95.
   cpu_max_millis?: number;
   mem_max_mi?: number;
+  // Data/hora em que o pico acima foi observado — sem isso, um "top" sozinho não diz se é de
+  // ontem ou de 29 dias atrás. Ausente quando a fonte é Dynatrace (sem timestamp por ponto) ou
+  // quando não há amostra no período.
+  cpu_max_at?: string;
+  mem_max_at?: string;
   // Uso "current" (live, via metrics-server) — snapshot do instante do scan, distinto de P95
   // (agregação histórica de uma janela de dias). Ausente quando o metrics-server não está
   // disponível no cluster.
   cpu_current_millis?: number;
   mem_current_mi?: number;
+  // CreationTimestamp do pod Running mais antigo deste workload no momento do scan —
+  // contextualiza "tempo de vida sem reiniciar" pra interpretar um pico histórico (um pico de
+  // 20d atrás não diz muito se todos os pods de hoje têm só 2h de vida).
+  oldest_pod_started_at?: string;
   cpu_recommended_millis?: number;
   mem_recommended_mi?: number;
   cpu_limit_recommended_millis?: number;
@@ -67,6 +76,15 @@ interface NodeUsageInfo {
   mem_current_pct?: number;
   cpu_top_pct?: number;
   mem_top_pct?: number;
+  // Data/hora em que CPUTopPct/MemTopPct foram observados — crítico pra nodes efêmeros (spot),
+  // que podem ser evictados e recriados a qualquer momento: sem isso não dá pra saber se o
+  // "top" é de agora ou de um momento qualquer nos últimos N dias.
+  cpu_top_at?: string;
+  mem_top_at?: string;
+  // CreationTimestamp do node (objeto K8s Node) — "desde quando ele existe". Nodes spot
+  // costumam ser recriados com frequência; um node muito jovem explica por que o "top" pode
+  // estar ausente/limitado — ainda não há histórico suficiente no Prometheus pra esse nome.
+  node_created_at?: string;
   metrics_available: boolean;
   metrics_error?: string;
 }
@@ -128,6 +146,38 @@ function timeAgo(iso: string): string {
   return `${days}d atrás`;
 }
 
+/** Data/hora curta (DD/MM HH:MM, timezone do browser) de quando um "top"/pico foi observado —
+ *  o usuário pediu explicitamente "data e hora das ocorrências" pros valores de top, não só um
+ *  número solto (que não diz se é de ontem ou de 29 dias atrás). undefined quando a fonte não
+ *  traz timestamp (ex: Dynatrace, que só devolve um valor agregado por janela). */
+function fmtOccurredAt(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+/** Data/hora completa (usada em tooltip) — complementa fmtOccurredAt, que é deliberadamente
+ *  curto pra caber inline ao lado do valor de "top". */
+function fmtOccurredAtFull(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  return new Date(iso).toLocaleString("pt-BR");
+}
+
+/** "Tempo de vida" — há quanto tempo um node existe (CreationTimestamp) ou um workload está no
+ *  ar sem reiniciar (CreationTimestamp do pod Running mais antigo) — pedido explícito do
+ *  usuário ("periodo de tempo de vida de sua existencia"), contextualiza se um "top" ausente é
+ *  genuinamente "sem uso" ou só "recurso jovem demais pra ter histórico ainda". */
+function fmtLifetime(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (diffMs < 0) return undefined;
+  const days = Math.floor(diffMs / 86400000);
+  if (days >= 1) return `${days}d`;
+  const hours = Math.floor(diffMs / 3600000);
+  if (hours >= 1) return `${hours}h`;
+  const mins = Math.max(1, Math.floor(diffMs / 60000));
+  return `${mins}min`;
+}
+
 /** Comando kubectl cobrindo requests E limits juntos (diferente do comando da aba Oportunidades,
  *  que hoje só mexe em --requests). Só inclui um recurso quando há delta real (>15%) — mesmo
  *  limiar já usado no resto do FinOps. */
@@ -179,17 +229,34 @@ function NodeUsageBadge({ node }: { node?: NodeUsageInfo }) {
   const memNow = node.mem_current_pct ?? 0;
   const cpuTop = node.cpu_top_pct ?? 0;
   const memTop = node.mem_top_pct ?? 0;
+  const cpuTopAt = fmtOccurredAt(node.cpu_top_at);
+  const memTopAt = fmtOccurredAt(node.mem_top_at);
+  const age = fmtLifetime(node.node_created_at);
   return (
     <p className="text-[10px] text-muted-foreground flex flex-wrap items-center gap-x-1.5" title={`Node ${node.node_name}`}>
       <Server className="h-3 w-3" /> Node <span className="font-mono">{node.node_name}</span>
+      {age && <span title={fmtOccurredAtFull(node.node_created_at)}>(existe há {age})</span>}
       <span>
         CPU agora <span className={`font-semibold ${pctColorClass(cpuNow)}`}>{cpuNow.toFixed(0)}%</span>
-        {cpuTop > 0 && <> (pico <span className={`font-semibold ${pctColorClass(cpuTop)}`}>{cpuTop.toFixed(0)}%</span>)</>}
+        {cpuTop > 0 && (
+          <>
+            {" "}(pico <span className={`font-semibold ${pctColorClass(cpuTop)}`}>{cpuTop.toFixed(0)}%</span>
+            {cpuTopAt && <> em {cpuTopAt}</>})
+          </>
+        )}
       </span>
       <span>
         Mem agora <span className={`font-semibold ${pctColorClass(memNow)}`}>{memNow.toFixed(0)}%</span>
-        {memTop > 0 && <> (pico <span className={`font-semibold ${pctColorClass(memTop)}`}>{memTop.toFixed(0)}%</span>)</>}
+        {memTop > 0 && (
+          <>
+            {" "}(pico <span className={`font-semibold ${pctColorClass(memTop)}`}>{memTop.toFixed(0)}%</span>
+            {memTopAt && <> em {memTopAt}</>})
+          </>
+        )}
       </span>
+      {cpuTop === 0 && memTop === 0 && age && (
+        <span className="italic">sem pico registrado — pode ser dado genuinamente ausente ou o node não ter histórico suficiente ainda</span>
+      )}
     </p>
   );
 }
@@ -348,20 +415,29 @@ function WorkloadNodeDetailModal({
                 {poolNodes.length > 0 && (
                   <div className="space-y-1 pt-1 border-t">
                     <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Por node ({poolNodes.length})</p>
-                    {poolNodes.map((n) => (
-                      <div key={n.node_name} className="text-[11px] flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                        <Server className="h-3 w-3 text-muted-foreground shrink-0" />
-                        <span className="font-mono">{n.node_name}</span>
-                        {n.metrics_available ? (
-                          <>
-                            <span>CPU <span className={`font-semibold ${pctColorClass(n.cpu_current_pct ?? 0)}`}>{(n.cpu_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.cpu_top_pct ?? 0).toFixed(0)}%)</span>
-                            <span>Mem <span className={`font-semibold ${pctColorClass(n.mem_current_pct ?? 0)}`}>{(n.mem_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.mem_top_pct ?? 0).toFixed(0)}%)</span>
-                          </>
-                        ) : (
-                          <span className="text-amber-600 dark:text-amber-400" title={n.metrics_error}>⚠ métricas indisponíveis</span>
-                        )}
-                      </div>
-                    ))}
+                    {poolNodes.map((n) => {
+                      const age = fmtLifetime(n.node_created_at);
+                      const cpuTopAt = fmtOccurredAt(n.cpu_top_at);
+                      const memTopAt = fmtOccurredAt(n.mem_top_at);
+                      return (
+                        <div key={n.node_name} className="text-[11px] flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <Server className="h-3 w-3 text-muted-foreground shrink-0" />
+                          <span className="font-mono">{n.node_name}</span>
+                          {age && <span className="text-muted-foreground" title={fmtOccurredAtFull(n.node_created_at)}>(existe há {age})</span>}
+                          {n.metrics_available ? (
+                            <>
+                              <span>CPU <span className={`font-semibold ${pctColorClass(n.cpu_current_pct ?? 0)}`}>{(n.cpu_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.cpu_top_pct ?? 0).toFixed(0)}%{cpuTopAt ? ` em ${cpuTopAt}` : ""})</span>
+                              <span>Mem <span className={`font-semibold ${pctColorClass(n.mem_current_pct ?? 0)}`}>{(n.mem_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.mem_top_pct ?? 0).toFixed(0)}%{memTopAt ? ` em ${memTopAt}` : ""})</span>
+                              {(n.cpu_top_pct ?? 0) === 0 && (n.mem_top_pct ?? 0) === 0 && (
+                                <span className="italic text-muted-foreground">sem pico registrado{age ? " (node jovem, ou genuinamente sem uso no período)" : ""}</span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-amber-600 dark:text-amber-400" title={n.metrics_error}>⚠ métricas indisponíveis</span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -424,6 +500,15 @@ function WorkloadNodeDetailModal({
                 )}
               </div>
 
+              {(() => {
+                const podAge = fmtLifetime(workload.oldest_pod_started_at);
+                return podAge ? (
+                  <p className="text-[10px] text-muted-foreground" title={fmtOccurredAtFull(workload.oldest_pod_started_at)}>
+                    Pod mais antigo (Running) no ar há {podAge} sem reiniciar — contextualiza se um pico histórico abaixo ainda é relevante (pods de hoje podem já não ser os mesmos que geraram o pico).
+                  </p>
+                ) : null;
+              })()}
+
               <div className="grid grid-cols-2 gap-4 py-1">
                 <ResourceGauge
                   title={(workload.cpu_current_millis ?? 0) > 0 ? "CPU (agora)" : "CPU (P95)"}
@@ -449,12 +534,22 @@ function WorkloadNodeDetailModal({
                 <div className="space-x-2">
                   {(workload.cpu_current_millis ?? 0) > 0 && <span>agora: <span className="font-mono">{fmtMillis(workload.cpu_current_millis!)}</span></span>}
                   {(workload.cpu_p95_millis ?? 0) > 0 && <span>P95: <span className="font-mono">{fmtMillis(workload.cpu_p95_millis!)}</span></span>}
-                  {(workload.cpu_max_millis ?? 0) > 0 && <span>top: <span className="font-mono">{fmtMillis(workload.cpu_max_millis!)}</span></span>}
+                  {(workload.cpu_max_millis ?? 0) > 0 && (
+                    <span>
+                      top: <span className="font-mono">{fmtMillis(workload.cpu_max_millis!)}</span>
+                      {fmtOccurredAt(workload.cpu_max_at) && <span title={fmtOccurredAtFull(workload.cpu_max_at)}> em {fmtOccurredAt(workload.cpu_max_at)}</span>}
+                    </span>
+                  )}
                 </div>
                 <div className="space-x-2">
                   {(workload.mem_current_mi ?? 0) > 0 && <span>agora: <span className="font-mono">{fmtMi(workload.mem_current_mi!)}</span></span>}
                   {(workload.mem_p95_mi ?? 0) > 0 && <span>P95: <span className="font-mono">{fmtMi(workload.mem_p95_mi!)}</span></span>}
-                  {(workload.mem_max_mi ?? 0) > 0 && <span>top: <span className="font-mono">{fmtMi(workload.mem_max_mi!)}</span></span>}
+                  {(workload.mem_max_mi ?? 0) > 0 && (
+                    <span>
+                      top: <span className="font-mono">{fmtMi(workload.mem_max_mi!)}</span>
+                      {fmtOccurredAt(workload.mem_max_at) && <span title={fmtOccurredAtFull(workload.mem_max_at)}> em {fmtOccurredAt(workload.mem_max_at)}</span>}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -576,14 +671,30 @@ function WorkloadCard({
           <div className="space-x-2">
             {hasLiveCPU && <span>agora: <span className="font-mono">{fmtMillis(w.cpu_current_millis!)}</span></span>}
             {(w.cpu_p95_millis ?? 0) > 0 && <span>P95: <span className="font-mono">{fmtMillis(w.cpu_p95_millis!)}</span></span>}
-            {(w.cpu_max_millis ?? 0) > 0 && <span>top: <span className="font-mono">{fmtMillis(w.cpu_max_millis!)}</span></span>}
+            {(w.cpu_max_millis ?? 0) > 0 && (
+              <span>
+                top: <span className="font-mono">{fmtMillis(w.cpu_max_millis!)}</span>
+                {fmtOccurredAt(w.cpu_max_at) && <span title={fmtOccurredAtFull(w.cpu_max_at)}> em {fmtOccurredAt(w.cpu_max_at)}</span>}
+              </span>
+            )}
           </div>
           <div className="space-x-2">
             {hasLiveMem && <span>agora: <span className="font-mono">{fmtMi(w.mem_current_mi!)}</span></span>}
             {(w.mem_p95_mi ?? 0) > 0 && <span>P95: <span className="font-mono">{fmtMi(w.mem_p95_mi!)}</span></span>}
-            {(w.mem_max_mi ?? 0) > 0 && <span>top: <span className="font-mono">{fmtMi(w.mem_max_mi!)}</span></span>}
+            {(w.mem_max_mi ?? 0) > 0 && (
+              <span>
+                top: <span className="font-mono">{fmtMi(w.mem_max_mi!)}</span>
+                {fmtOccurredAt(w.mem_max_at) && <span title={fmtOccurredAtFull(w.mem_max_at)}> em {fmtOccurredAt(w.mem_max_at)}</span>}
+              </span>
+            )}
           </div>
         </div>
+
+        {fmtLifetime(w.oldest_pod_started_at) && (
+          <p className="text-[10px] text-muted-foreground -mt-1" title={fmtOccurredAtFull(w.oldest_pod_started_at)}>
+            Pod mais antigo no ar há {fmtLifetime(w.oldest_pod_started_at)} sem reiniciar
+          </p>
+        )}
 
         <NodeUsageBadge node={node} />
 
