@@ -13,6 +13,7 @@ import (
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/dynatrace"
 	"k8s-hpa-manager/internal/finops"
+	"k8s-hpa-manager/internal/models"
 	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/storage"
 )
@@ -20,13 +21,19 @@ import (
 // nodePoolTierResponse é o shape de resposta de um pool com alternativas já decodificadas (o
 // store guarda AlternativesJSON como string — nunca expõe isso cru pro frontend).
 type nodePoolTierResponse struct {
-	NodePool      string                 `json:"node_pool"`
-	CurrentSKU    string                 `json:"current_sku"`
-	CPUUtilPct    float64                `json:"cpu_util_pct"`
-	MemUtilPct    float64                `json:"mem_util_pct"`
-	WorkloadCount int                    `json:"workload_count"`
-	Alternatives  []finops.VMAlternative `json:"alternatives"`
-	GeneratedAt   time.Time              `json:"generated_at"`
+	NodePool           string                 `json:"node_pool"`
+	CurrentSKU         string                 `json:"current_sku"`
+	CPUUtilPct         float64                `json:"cpu_util_pct"`
+	MemUtilPct         float64                `json:"mem_util_pct"`
+	WorkloadCount      int                    `json:"workload_count"`
+	NodeCount          int                    `json:"node_count,omitempty"`
+	MinNodeCount       int                    `json:"min_node_count,omitempty"`
+	MaxNodeCount       int                    `json:"max_node_count,omitempty"`
+	AutoscalingEnabled bool                   `json:"autoscaling_enabled,omitempty"`
+	VMCPUCores         int                    `json:"vm_cpu_cores,omitempty"`
+	VMMemoryGB         int                    `json:"vm_memory_gb,omitempty"`
+	Alternatives       []finops.VMAlternative `json:"alternatives"`
+	GeneratedAt        time.Time              `json:"generated_at"`
 }
 
 func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion) []nodePoolTierResponse {
@@ -40,13 +47,19 @@ func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion) []nodePoolTierR
 			alts = []finops.VMAlternative{}
 		}
 		out = append(out, nodePoolTierResponse{
-			NodePool:      r.NodePool,
-			CurrentSKU:    r.CurrentSKU,
-			CPUUtilPct:    r.CPUUtilPct,
-			MemUtilPct:    r.MemUtilPct,
-			WorkloadCount: r.WorkloadCount,
-			Alternatives:  alts,
-			GeneratedAt:   r.GeneratedAt,
+			NodePool:           r.NodePool,
+			CurrentSKU:         r.CurrentSKU,
+			CPUUtilPct:         r.CPUUtilPct,
+			MemUtilPct:         r.MemUtilPct,
+			WorkloadCount:      r.WorkloadCount,
+			NodeCount:          r.NodeCount,
+			MinNodeCount:       r.MinNodeCount,
+			MaxNodeCount:       r.MaxNodeCount,
+			AutoscalingEnabled: r.AutoscalingEnabled,
+			VMCPUCores:         r.VMCPUCores,
+			VMMemoryGB:         r.VMMemoryGB,
+			Alternatives:       alts,
+			GeneratedAt:        r.GeneratedAt,
 		})
 	}
 	return out
@@ -228,6 +241,14 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			MemRecommendedMi:          wl.MemRecommendedMi,
 			CPULimitRecommendedMillis: wl.CPULimitRecommendedMillis,
 			MemLimitRecommendedMi:     wl.MemLimitRecommendedMi,
+			HPAMin:                    wl.HPAMin,
+			HPAMax:                    wl.HPAMax,
+			HPACurrent:                wl.HPACurrent,
+			HPAAvgReplicas:            wl.HPAAvgReplicas,
+			HPAMaxObserved:            wl.HPAMaxObserved,
+			HPAMinObserved:            wl.HPAMinObserved,
+			HPAScaleEvents:            wl.HPAScaleEvents,
+			HPANeverScaled:            wl.HPANeverScaled,
 			Verdict:                   wl.Verdict,
 			WasteBRL:                  wl.WasteBRL,
 			MetricsSource:             wl.MetricsSource,
@@ -256,6 +277,22 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 	provider := config.DetectCloudProvider(h.kubeManager.GetServerURL(cluster), cluster)
 	rate, _ := h.exchange.Get()
 
+	// Min/max de node count + autoscaling — só disponível via chamada ao cloud provider (az/
+	// gcloud/aws CLI), não vem do Node Pool Registry (snapshot leve, só nome/vm_size/node_count).
+	// Best-effort: falha aqui (VPN/CLI indisponível) não aborta o scan — o modal de detalhe só
+	// fica sem min/max/autoscaling pra esse pool, tudo o mais continua funcionando.
+	liveNodeGroups := make(map[string]models.NodePool)
+	if npProvider := h.kubeManager.GetNodeGroupProvider(cluster); npProvider != nil {
+		groups, npErr := npProvider.ListNodeGroups(c.Request.Context(), cluster)
+		if npErr != nil {
+			log.Warn().Err(npErr).Str("cluster", cluster).Msg("FinOps/Rightsizing: falha ao buscar min/max de node count ao vivo — cenário de resize de node count ficará incompleto")
+		} else {
+			for _, g := range groups {
+				liveNodeGroups[g.Name] = g
+			}
+		}
+	}
+
 	tierSuggestions := make([]storage.NodePoolTierSuggestion, 0, len(report.NodePools))
 	for _, pool := range report.NodePools {
 		if pool.Mode == "System" {
@@ -277,14 +314,22 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 		alts := finops.SuggestVMTier(provider, pool.VMSize, cpuUtilPct, memUtilPct, pricer, rate, pool.NodeCount)
 		altJSON, _ := json.Marshal(alts)
 
+		live := liveNodeGroups[pool.Name]
+
 		tierSuggestions = append(tierSuggestions, storage.NodePoolTierSuggestion{
-			NodePool:         pool.Name,
-			CurrentSKU:       pool.VMSize,
-			CPUUtilPct:       rightsizingRound2(cpuUtilPct),
-			MemUtilPct:       rightsizingRound2(memUtilPct),
-			WorkloadCount:    workloadCount,
-			AlternativesJSON: string(altJSON),
-			GeneratedAt:      now,
+			NodePool:           pool.Name,
+			CurrentSKU:         pool.VMSize,
+			CPUUtilPct:         rightsizingRound2(cpuUtilPct),
+			MemUtilPct:         rightsizingRound2(memUtilPct),
+			WorkloadCount:      workloadCount,
+			NodeCount:          pool.NodeCount,
+			MinNodeCount:       int(live.MinNodeCount),
+			MaxNodeCount:       int(live.MaxNodeCount),
+			AutoscalingEnabled: live.AutoscalingEnabled,
+			VMCPUCores:         pool.VMCPUCores,
+			VMMemoryGB:         pool.VMMemoryGB,
+			AlternativesJSON:   string(altJSON),
+			GeneratedAt:        now,
 		})
 	}
 

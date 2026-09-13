@@ -49,6 +49,18 @@ type WorkloadRecommendation struct {
 	CPULimitRecommendedMillis float64 `json:"cpu_limit_recommended_millis,omitempty"`
 	MemLimitRecommendedMi     float64 `json:"mem_limit_recommended_mi,omitempty"`
 
+	// ── HPA/réplicas: configurado (min/max/current) + observado no período (via Prometheus) ──
+	// Usado pro modal de detalhe (cenário de resize de réplicas), mesmos campos já calculados
+	// por FinOpsWorkload — só persistidos aqui pra não precisar re-escanear pra exibir.
+	HPAMin         int     `json:"hpa_min,omitempty"`
+	HPAMax         int     `json:"hpa_max,omitempty"`
+	HPACurrent     int     `json:"hpa_current,omitempty"`
+	HPAAvgReplicas float64 `json:"hpa_avg_replicas,omitempty"`
+	HPAMaxObserved int     `json:"hpa_max_observed,omitempty"`
+	HPAMinObserved int     `json:"hpa_min_observed,omitempty"`
+	HPAScaleEvents int     `json:"hpa_scale_events,omitempty"`
+	HPANeverScaled bool    `json:"hpa_never_scaled,omitempty"`
+
 	Verdict       string    `json:"verdict"`
 	WasteBRL      float64   `json:"waste_brl,omitempty"`
 	MetricsSource string    `json:"metrics_source,omitempty"`
@@ -80,12 +92,27 @@ type NodeUsage struct {
 // storage não pode importar finops (finops já importa storage, ver calculator.go:BuildReport),
 // então quem monta/lê esse JSON é sempre o chamador (internal/web/handlers/finops_rightsizing.go).
 type NodePoolTierSuggestion struct {
-	Cluster          string    `json:"cluster"`
-	NodePool         string    `json:"node_pool"`
-	CurrentSKU       string    `json:"current_sku"`
-	CPUUtilPct       float64   `json:"cpu_util_pct"`
-	MemUtilPct       float64   `json:"mem_util_pct"`
-	WorkloadCount    int       `json:"workload_count"` // nº de workloads que embasaram o cálculo de util%
+	Cluster       string  `json:"cluster"`
+	NodePool      string  `json:"node_pool"`
+	CurrentSKU    string  `json:"current_sku"`
+	CPUUtilPct    float64 `json:"cpu_util_pct"`
+	MemUtilPct    float64 `json:"mem_util_pct"`
+	WorkloadCount int     `json:"workload_count"` // nº de workloads que embasaram o cálculo de util%
+
+	// ── Node count: atual (live) + min/max de autoscaling (live, via cloudprovider) ───────────
+	// Best-effort — 0 quando a chamada ao provider (az/gcloud/aws CLI) falhou; nesse caso o
+	// modal de detalhe mostra só o que tem (NodeCount sempre vem de report.NodePools, que não
+	// depende do provider). Usado pro cenário de resize de node count.
+	NodeCount          int  `json:"node_count,omitempty"`
+	MinNodeCount       int  `json:"min_node_count,omitempty"`
+	MaxNodeCount       int  `json:"max_node_count,omitempty"`
+	AutoscalingEnabled bool `json:"autoscaling_enabled,omitempty"`
+
+	// Capacidade por node (vCPUs/GB) — persistido pra o modal computar capacidade total do pool
+	// sem precisar re-chamar o pricer/specs.
+	VMCPUCores int `json:"vm_cpu_cores,omitempty"`
+	VMMemoryGB int `json:"vm_memory_gb,omitempty"`
+
 	AlternativesJSON string    `json:"-"`
 	GeneratedAt      time.Time `json:"generated_at"`
 }
@@ -166,6 +193,20 @@ var finopsRightsizingMigrations = []string{
 	`ALTER TABLE workload_recommendations ADD COLUMN mem_max_mi REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE workload_recommendations ADD COLUMN cpu_current_millis REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE workload_recommendations ADD COLUMN mem_current_mi REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN hpa_min INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN hpa_max INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN hpa_current INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN hpa_avg_replicas REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN hpa_max_observed INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN hpa_min_observed INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN hpa_scale_events INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN hpa_never_scaled INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN node_count INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN min_node_count INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN max_node_count INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN autoscaling_enabled INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN vm_cpu_cores INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN vm_memory_gb INTEGER NOT NULL DEFAULT 0`,
 }
 
 // NewFinOpsRightsizingStore abre (ou cria) o banco SQLite de análises de rightsizing.
@@ -218,8 +259,10 @@ INSERT INTO workload_recommendations (
     cpu_p95_millis, mem_p95_mi, cpu_max_millis, mem_max_mi,
     cpu_current_millis, mem_current_mi,
     cpu_recommended_millis, mem_recommended_mi, cpu_limit_recommended_millis, mem_limit_recommended_mi,
+    hpa_min, hpa_max, hpa_current, hpa_avg_replicas, hpa_max_observed, hpa_min_observed,
+    hpa_scale_events, hpa_never_scaled,
     verdict, waste_brl, metrics_source, window_days, generated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -232,6 +275,8 @@ INSERT INTO workload_recommendations (
 			r.CPUP95Millis, r.MemP95Mi, r.CPUMaxMillis, r.MemMaxMi,
 			r.CPUCurrentMillis, r.MemCurrentMi,
 			r.CPURecommendedMillis, r.MemRecommendedMi, r.CPULimitRecommendedMillis, r.MemLimitRecommendedMi,
+			r.HPAMin, r.HPAMax, r.HPACurrent, r.HPAAvgReplicas, r.HPAMaxObserved, r.HPAMinObserved,
+			r.HPAScaleEvents, r.HPANeverScaled,
 			r.Verdict, r.WasteBRL, r.MetricsSource, r.WindowDays, r.GeneratedAt,
 		); err != nil {
 			return err
@@ -251,6 +296,8 @@ SELECT cluster, namespace, workload, node_pool, node_name, pods,
        cpu_p95_millis, mem_p95_mi, cpu_max_millis, mem_max_mi,
        cpu_current_millis, mem_current_mi,
        cpu_recommended_millis, mem_recommended_mi, cpu_limit_recommended_millis, mem_limit_recommended_mi,
+       hpa_min, hpa_max, hpa_current, hpa_avg_replicas, hpa_max_observed, hpa_min_observed,
+       hpa_scale_events, hpa_never_scaled,
        verdict, waste_brl, metrics_source, window_days, generated_at
 FROM workload_recommendations WHERE cluster = ? ORDER BY waste_brl DESC`, cluster)
 	if err != nil {
@@ -268,6 +315,8 @@ FROM workload_recommendations WHERE cluster = ? ORDER BY waste_brl DESC`, cluste
 			&r.CPUP95Millis, &r.MemP95Mi, &r.CPUMaxMillis, &r.MemMaxMi,
 			&r.CPUCurrentMillis, &r.MemCurrentMi,
 			&r.CPURecommendedMillis, &r.MemRecommendedMi, &r.CPULimitRecommendedMillis, &r.MemLimitRecommendedMi,
+			&r.HPAMin, &r.HPAMax, &r.HPACurrent, &r.HPAAvgReplicas, &r.HPAMaxObserved, &r.HPAMinObserved,
+			&r.HPAScaleEvents, &r.HPANeverScaled,
 			&verdict, &r.WasteBRL, &metricsSource, &r.WindowDays, &r.GeneratedAt,
 		); err != nil {
 			return nil, err
@@ -299,8 +348,10 @@ func (s *FinOpsRightsizingStore) ReplaceNodePoolTierSuggestions(cluster string, 
 
 	stmt, err := tx.Prepare(`
 INSERT INTO nodepool_tier_suggestions (
-    cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, workload_count, alternatives_json, generated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, workload_count,
+    node_count, min_node_count, max_node_count, autoscaling_enabled, vm_cpu_cores, vm_memory_gb,
+    alternatives_json, generated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -309,7 +360,9 @@ INSERT INTO nodepool_tier_suggestions (
 	for _, sug := range suggestions {
 		if _, err := stmt.Exec(
 			cluster, sug.NodePool, sug.CurrentSKU, sug.CPUUtilPct, sug.MemUtilPct,
-			sug.WorkloadCount, sug.AlternativesJSON, sug.GeneratedAt,
+			sug.WorkloadCount,
+			sug.NodeCount, sug.MinNodeCount, sug.MaxNodeCount, sug.AutoscalingEnabled, sug.VMCPUCores, sug.VMMemoryGB,
+			sug.AlternativesJSON, sug.GeneratedAt,
 		); err != nil {
 			return err
 		}
@@ -323,7 +376,9 @@ func (s *FinOpsRightsizingStore) GetNodePoolTierSuggestions(cluster string) ([]N
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-SELECT cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, workload_count, alternatives_json, generated_at
+SELECT cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, workload_count,
+       node_count, min_node_count, max_node_count, autoscaling_enabled, vm_cpu_cores, vm_memory_gb,
+       alternatives_json, generated_at
 FROM nodepool_tier_suggestions WHERE cluster = ? ORDER BY node_pool`, cluster)
 	if err != nil {
 		return nil, err
@@ -336,7 +391,9 @@ FROM nodepool_tier_suggestions WHERE cluster = ? ORDER BY node_pool`, cluster)
 		var currentSKU, altJSON sql.NullString
 		if err := rows.Scan(
 			&sug.Cluster, &sug.NodePool, &currentSKU, &sug.CPUUtilPct, &sug.MemUtilPct,
-			&sug.WorkloadCount, &altJSON, &sug.GeneratedAt,
+			&sug.WorkloadCount,
+			&sug.NodeCount, &sug.MinNodeCount, &sug.MaxNodeCount, &sug.AutoscalingEnabled, &sug.VMCPUCores, &sug.VMMemoryGB,
+			&altJSON, &sug.GeneratedAt,
 		); err != nil {
 			return nil, err
 		}

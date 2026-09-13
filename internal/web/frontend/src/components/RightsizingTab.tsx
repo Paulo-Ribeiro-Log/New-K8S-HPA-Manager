@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Loader2, RefreshCw, Server, Search, Sparkles } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Loader2, RefreshCw, Server, Search, Sparkles, Boxes, Gauge, Info } from "lucide-react";
 import ResourceGauge from "@/components/ResourceGauge";
 import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard } from "@/lib/finopsFormat";
 import { DollarSign, TrendingDown, Layers } from "lucide-react";
@@ -37,6 +38,17 @@ interface WorkloadRecommendation {
   mem_recommended_mi?: number;
   cpu_limit_recommended_millis?: number;
   mem_limit_recommended_mi?: number;
+  // Réplicas — configurado (min/max/current, HPA ou fixo) + observado no período (via
+  // Prometheus). hpa_max === hpa_min é o sinal de "sem HPA de verdade" (réplicas fixas) — ver
+  // allocateCosts em calculator.go, que preenche os 3 com Pods quando não há HPA.
+  hpa_min?: number;
+  hpa_max?: number;
+  hpa_current?: number;
+  hpa_avg_replicas?: number;
+  hpa_max_observed?: number;
+  hpa_min_observed?: number;
+  hpa_scale_events?: number;
+  hpa_never_scaled?: boolean;
   verdict: string;
   waste_brl?: number;
   metrics_source?: string;
@@ -78,6 +90,14 @@ interface NodePoolTierSuggestion {
   cpu_util_pct: number;
   mem_util_pct: number;
   workload_count: number;
+  // Node count — atual (sempre presente) + min/max de autoscaling (best-effort, via cloud
+  // provider ao vivo — 0/0 quando a chamada falhou no scan, ver ScanRightsizing).
+  node_count?: number;
+  min_node_count?: number;
+  max_node_count?: number;
+  autoscaling_enabled?: boolean;
+  vm_cpu_cores?: number;
+  vm_memory_gb?: number;
   alternatives: VMAlternative[];
   generated_at: string;
 }
@@ -174,13 +194,326 @@ function NodeUsageBadge({ node }: { node?: NodeUsageInfo }) {
   );
 }
 
+/** Uso agregado do pool inteiro (não só 1 node) — soma ponderada pela capacidade de cada node,
+ *  não uma média simples de percentuais (um node maior pesa mais no total do pool). Mesmo
+ *  princípio de "current" (live)/"top" (pico) já usado por workload, agora por pool. */
+function poolAggregateUsage(nodes: NodeUsageInfo[]): {
+  cpuNowPct: number; cpuTopPct: number; memNowPct: number; memTopPct: number;
+  cpuCapMillis: number; memCapMi: number; anyMetricsUnavailable: boolean;
+} {
+  let capCPU = 0, capMem = 0, curCPU = 0, curMem = 0, topCPU = 0, topMem = 0;
+  let anyMetricsUnavailable = false;
+  for (const n of nodes) {
+    if (!n.metrics_available) { anyMetricsUnavailable = true; continue; }
+    const capC = n.cpu_cap_millis ?? 0;
+    const capM = n.mem_cap_mi ?? 0;
+    capCPU += capC;
+    capMem += capM;
+    curCPU += (capC * (n.cpu_current_pct ?? 0)) / 100;
+    curMem += (capM * (n.mem_current_pct ?? 0)) / 100;
+    topCPU += (capC * (n.cpu_top_pct ?? 0)) / 100;
+    topMem += (capM * (n.mem_top_pct ?? 0)) / 100;
+  }
+  return {
+    cpuNowPct: capCPU > 0 ? (curCPU / capCPU) * 100 : 0,
+    cpuTopPct: capCPU > 0 ? (topCPU / capCPU) * 100 : 0,
+    memNowPct: capMem > 0 ? (curMem / capMem) * 100 : 0,
+    memTopPct: capMem > 0 ? (topMem / capMem) * 100 : 0,
+    cpuCapMillis: capCPU,
+    memCapMi: capMem,
+    anyMetricsUnavailable,
+  };
+}
+
+/** Cenário de resize de NODE COUNT — heurística clara, baseada no uso agregado do pool (que já
+ *  vem do uso RECOMENDADO real dos workloads, não do request nominal — ver poolAgg em
+ *  ScanRightsizing). Nunca afirma com certeza, só orienta — mesma fraseologia neutra do resto
+ *  da app quando o dado é parcial (min/max ausente = falha ao consultar o cloud provider). */
+function nodeCountScenarioText(pool: NodePoolTierSuggestion): string {
+  const nodeCount = pool.node_count ?? 0;
+  const minCount = pool.min_node_count ?? 0;
+  const maxCount = pool.max_node_count ?? 0;
+  const worstUtil = Math.max(pool.cpu_util_pct, pool.mem_util_pct);
+  const haveRange = minCount > 0 || maxCount > 0;
+
+  if (!haveRange) {
+    return `Node count atual: ${nodeCount}. Não foi possível confirmar o min/max de autoscaling ao vivo neste scan (falha ao consultar o cloud provider) — sem esse dado não dá pra sugerir um range com segurança.`;
+  }
+
+  const autoscalePart = pool.autoscaling_enabled
+    ? `autoscaling ligado, faixa ${minCount}–${maxCount}`
+    : `autoscaling desligado, fixo em ${nodeCount}`;
+
+  if (worstUtil >= 80) {
+    const suggestedMin = Math.min(maxCount || nodeCount + 1, (minCount || nodeCount) + 1);
+    return `Uso agregado do pool está ALTO (${worstUtil.toFixed(0)}% do pior recurso entre CPU/Mem, baseado no uso recomendado real dos workloads) — hoje ${autoscalePart}. Considere aumentar o mínimo de nodes${pool.autoscaling_enabled ? ` de ${minCount} para pelo menos ${suggestedMin}` : ` (ligar autoscaling ajudaria a absorver picos automaticamente)`}.`;
+  }
+  if (worstUtil > 0 && worstUtil < 30 && minCount > 1) {
+    const suggestedMin = Math.max(1, minCount - 1);
+    return `Uso agregado do pool está BAIXO (${worstUtil.toFixed(0)}%) — hoje ${autoscalePart}. Considere reduzir o mínimo de nodes de ${minCount} para ${suggestedMin}, se essa folga não for necessária pra absorver picos de tráfego.`;
+  }
+  return `Uso agregado do pool está numa faixa saudável (${worstUtil.toFixed(0)}%) — ${autoscalePart} parece adequado pro padrão de uso atual.`;
+}
+
+/** Cenário de resize de RÉPLICAS — heurística clara, usando min/max configurado (HPA) vs.
+ *  observado (via Prometheus, quando disponível). hpa_max===hpa_min é o sinal de workload sem
+ *  HPA de verdade (réplicas fixas — ver allocateCosts em calculator.go). */
+function replicaScenarioText(w: WorkloadRecommendation): string {
+  const min = w.hpa_min ?? w.pods;
+  const max = w.hpa_max ?? w.pods;
+  const current = w.hpa_current ?? w.pods;
+  const hasRealHPA = max !== min;
+
+  if (!hasRealHPA) {
+    return `Sem HPA configurado — réplicas fixas em ${current}. Sem histórico de escala pra sugerir um range de min/max.`;
+  }
+  if (w.hpa_never_scaled) {
+    const peak = w.hpa_max_observed ?? min;
+    return `O HPA nunca escalou além do mínimo (${min}) nos últimos ${w.window_days}d — pico observado de réplicas: ${peak}. Considere reduzir o máximo configurado (hoje ${max}) pra algo próximo de ${peak}, ou remover o HPA se o tráfego é sempre estável.`;
+  }
+  if (w.hpa_max_observed !== undefined && w.hpa_max_observed > 0) {
+    if (w.hpa_max_observed < max) {
+      return `Pico observado de réplicas (${w.hpa_max_observed}) ficou abaixo do máximo configurado (${max}) nos últimos ${w.window_days}d. Considere reduzir o máximo pra algo próximo de ${w.hpa_max_observed}, com uma margem de segurança.`;
+    }
+    return `O workload já escalou até perto do máximo configurado (${max}) nos últimos ${w.window_days}d (pico observado: ${w.hpa_max_observed}) — se picos de tráfego maiores são esperados, considere aumentar o máximo.`;
+  }
+  return `Min/max configurado: ${min}–${max} (atual: ${current}). Sem dado observado de réplicas no período (Prometheus indisponível ou sem histórico de HPA) pra confirmar se o range está adequado.`;
+}
+
+/** Modal de detalhe combinado — aberto ao clicar no nome de uma aplicação dentro do card do
+ *  Node Pool/Node Group (pedido explícito do usuário: informação completa de node+app+cenários
+ *  de resize num só lugar, sem precisar caçar em vários cards). */
+function WorkloadNodeDetailModal({
+  workload, pool, poolNodes, onClose,
+}: {
+  workload: WorkloadRecommendation;
+  pool: NodePoolTierSuggestion | undefined;
+  poolNodes: NodeUsageInfo[];
+  onClose: () => void;
+}) {
+  const agg = useMemo(() => poolAggregateUsage(poolNodes), [poolNodes]);
+  const resizeCmd = buildResizeCommand(workload);
+  const totalCPUCores = (pool?.vm_cpu_cores ?? 0) * (pool?.node_count ?? 0);
+  const totalMemGB = (pool?.vm_memory_gb ?? 0) * (pool?.node_count ?? 0);
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <Sparkles className="h-4 w-4 text-purple-500" />
+            {workload.workload}
+            <span className="text-xs font-normal text-muted-foreground">— {workload.namespace}</span>
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          {/* ── Node / Node Pool ──────────────────────────────────────────────────────────── */}
+          <section className="space-y-2">
+            <h4 className="text-xs font-semibold flex items-center gap-1.5 text-muted-foreground uppercase tracking-wide">
+              <Boxes className="h-3.5 w-3.5" /> Node Pool — {pool?.node_pool ?? workload.node_pool ?? "desconhecido"}
+            </h4>
+            {!pool ? (
+              <Alert variant="destructive">
+                <AlertDescription>Sem dado de node pool persistido pra este workload — reanalise o cluster.</AlertDescription>
+              </Alert>
+            ) : (
+              <div className="border rounded-lg p-3 space-y-3 bg-muted/20">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                  <div><span className="text-muted-foreground">Tier (SKU) atual:</span> <span className="font-mono font-medium">{pool.current_sku || "—"}</span></div>
+                  <div><span className="text-muted-foreground">Autoscaling:</span> <span className="font-medium">{pool.autoscaling_enabled ? "Ligado" : "Desligado"}</span></div>
+                  <div><span className="text-muted-foreground">Node count — mínimo:</span> <span className="font-mono font-medium">{pool.min_node_count || "—"}</span></div>
+                  <div><span className="text-muted-foreground">Node count — máximo:</span> <span className="font-mono font-medium">{pool.max_node_count || "—"}</span></div>
+                  <div><span className="text-muted-foreground">Node count — atual:</span> <span className="font-mono font-medium">{pool.node_count ?? "—"}</span></div>
+                  <div><span className="text-muted-foreground">Capacidade por node:</span> <span className="font-mono font-medium">{pool.vm_cpu_cores ?? "?"} vCPU / {pool.vm_memory_gb ?? "?"} GB</span></div>
+                  <div className="col-span-2"><span className="text-muted-foreground">Capacidade total do pool:</span> <span className="font-mono font-medium">{totalCPUCores || "?"} vCPU / {totalMemGB || "?"} GB</span></div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 pt-1 border-t">
+                  <div className="text-xs">
+                    <p className="text-muted-foreground mb-0.5">CPU do pool (agregado, ponderado por node)</p>
+                    <p>agora: <span className={`font-semibold font-mono ${pctColorClass(agg.cpuNowPct)}`}>{agg.cpuNowPct.toFixed(0)}%</span>
+                      {" "}· pico: <span className={`font-semibold font-mono ${pctColorClass(agg.cpuTopPct)}`}>{agg.cpuTopPct.toFixed(0)}%</span></p>
+                  </div>
+                  <div className="text-xs">
+                    <p className="text-muted-foreground mb-0.5">Mem do pool (agregado, ponderado por node)</p>
+                    <p>agora: <span className={`font-semibold font-mono ${pctColorClass(agg.memNowPct)}`}>{agg.memNowPct.toFixed(0)}%</span>
+                      {" "}· pico: <span className={`font-semibold font-mono ${pctColorClass(agg.memTopPct)}`}>{agg.memTopPct.toFixed(0)}%</span></p>
+                  </div>
+                </div>
+                {agg.anyMetricsUnavailable && (
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400">⚠ Métricas ao vivo indisponíveis em pelo menos 1 node do pool — agregado acima considera só os nodes com dado.</p>
+                )}
+
+                {poolNodes.length > 0 && (
+                  <div className="space-y-1 pt-1 border-t">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Por node ({poolNodes.length})</p>
+                    {poolNodes.map((n) => (
+                      <div key={n.node_name} className="text-[11px] flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <Server className="h-3 w-3 text-muted-foreground shrink-0" />
+                        <span className="font-mono">{n.node_name}</span>
+                        {n.metrics_available ? (
+                          <>
+                            <span>CPU <span className={`font-semibold ${pctColorClass(n.cpu_current_pct ?? 0)}`}>{(n.cpu_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.cpu_top_pct ?? 0).toFixed(0)}%)</span>
+                            <span>Mem <span className={`font-semibold ${pctColorClass(n.mem_current_pct ?? 0)}`}>{(n.mem_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.mem_top_pct ?? 0).toFixed(0)}%)</span>
+                          </>
+                        ) : (
+                          <span className="text-amber-600 dark:text-amber-400" title={n.metrics_error}>⚠ métricas indisponíveis</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="pt-1 border-t">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 flex items-center gap-1"><Gauge className="h-3 w-3" /> Cenário de resize — node count</p>
+                  <p className="text-[11px]">{nodeCountScenarioText(pool)}</p>
+                </div>
+
+                <div className="pt-1 border-t">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 flex items-center gap-1"><Gauge className="h-3 w-3" /> Cenário de resize — tier de VM</p>
+                  {pool.alternatives.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground">Nenhuma alternativa de tier identificada para o padrão de uso atual.</p>
+                  ) : (
+                    <div className="grid gap-2">
+                      {pool.alternatives.map((alt) => {
+                        const cfg = tierVerdictCfg[alt.verdict] ?? tierVerdictCfg.consider;
+                        return (
+                          <div key={alt.vm_size} className="border rounded-lg p-2 space-y-1 bg-background">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-mono font-semibold">{alt.vm_size}</span>
+                              <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${cfg.cls}`}>{cfg.label}</span>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground">
+                              {alt.cpu_cores} vCPU · {alt.memory_gb} GB RAM · ${alt.price_usd_hour.toFixed(3)}/hora ({alt.cost_delta_pct > 0 ? "+" : ""}{alt.cost_delta_pct}%)
+                            </p>
+                            {alt.monthly_savings_brl > 10 && <p className="text-[11px] font-semibold text-green-600">-{fmtBRL(alt.monthly_savings_brl)}/mês na frota do pool</p>}
+                            {alt.monthly_savings_brl < -10 && <p className="text-[11px] font-semibold text-orange-600">+{fmtBRL(Math.abs(alt.monthly_savings_brl))}/mês na frota do pool</p>}
+                            <p className="text-[11px] italic text-muted-foreground">{alt.reason}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* ── Aplicação ─────────────────────────────────────────────────────────────────── */}
+          <section className="space-y-2">
+            <h4 className="text-xs font-semibold flex items-center gap-1.5 text-muted-foreground uppercase tracking-wide">
+              <Info className="h-3.5 w-3.5" /> Aplicação
+            </h4>
+            <div className="border rounded-lg p-3 space-y-3 bg-muted/20">
+              <div className="flex items-center justify-between">
+                <VerdictBadge verdict={workload.verdict} />
+                {(workload.waste_brl ?? 0) > 0 && <span className="text-xs font-semibold text-red-500">-{fmtBRL(workload.waste_brl!)}/mês de desperdício</span>}
+              </div>
+
+              <div className="grid grid-cols-3 gap-x-4 gap-y-1.5 text-xs">
+                <div><span className="text-muted-foreground">Réplicas — mínimo:</span> <span className="font-mono font-medium">{workload.hpa_min ?? workload.pods}</span></div>
+                <div><span className="text-muted-foreground">Réplicas — máximo:</span> <span className="font-mono font-medium">{workload.hpa_max ?? workload.pods}</span></div>
+                <div><span className="text-muted-foreground">Réplicas — atual:</span> <span className="font-mono font-medium">{workload.hpa_current ?? workload.pods}</span></div>
+                {(workload.hpa_avg_replicas ?? 0) > 0 && (
+                  <>
+                    <div><span className="text-muted-foreground">Observado — mín:</span> <span className="font-mono">{workload.hpa_min_observed ?? "—"}</span></div>
+                    <div><span className="text-muted-foreground">Observado — méd:</span> <span className="font-mono">{workload.hpa_avg_replicas!.toFixed(1)}</span></div>
+                    <div><span className="text-muted-foreground">Observado — máx:</span> <span className="font-mono">{workload.hpa_max_observed ?? "—"}</span></div>
+                  </>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 py-1">
+                <ResourceGauge
+                  title={(workload.cpu_current_millis ?? 0) > 0 ? "CPU (agora)" : "CPU (P95)"}
+                  current={(workload.cpu_current_millis ?? 0) > 0 ? workload.cpu_current_millis! : (workload.cpu_p95_millis ?? 0)}
+                  request={workload.cpu_request_millis}
+                  limit={workload.cpu_limit_millis ?? 0}
+                  recommended={workload.cpu_recommended_millis}
+                  unit="millicores"
+                  formatValue={fmtMillis}
+                />
+                <ResourceGauge
+                  title={(workload.mem_current_mi ?? 0) > 0 ? "Memória (agora)" : "Memória (P95)"}
+                  current={(workload.mem_current_mi ?? 0) > 0 ? workload.mem_current_mi! : (workload.mem_p95_mi ?? 0)}
+                  request={workload.mem_request_mi}
+                  limit={workload.mem_limit_mi ?? 0}
+                  recommended={workload.mem_recommended_mi}
+                  unit="Mi"
+                  formatValue={fmtMi}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 text-[10px] text-muted-foreground">
+                <div className="space-x-2">
+                  {(workload.cpu_current_millis ?? 0) > 0 && <span>agora: <span className="font-mono">{fmtMillis(workload.cpu_current_millis!)}</span></span>}
+                  {(workload.cpu_p95_millis ?? 0) > 0 && <span>P95: <span className="font-mono">{fmtMillis(workload.cpu_p95_millis!)}</span></span>}
+                  {(workload.cpu_max_millis ?? 0) > 0 && <span>top: <span className="font-mono">{fmtMillis(workload.cpu_max_millis!)}</span></span>}
+                </div>
+                <div className="space-x-2">
+                  {(workload.mem_current_mi ?? 0) > 0 && <span>agora: <span className="font-mono">{fmtMi(workload.mem_current_mi!)}</span></span>}
+                  {(workload.mem_p95_mi ?? 0) > 0 && <span>P95: <span className="font-mono">{fmtMi(workload.mem_p95_mi!)}</span></span>}
+                  {(workload.mem_max_mi ?? 0) > 0 && <span>top: <span className="font-mono">{fmtMi(workload.mem_max_mi!)}</span></span>}
+                </div>
+              </div>
+
+              <div className="text-[11px] text-muted-foreground space-y-0.5 pt-1 border-t">
+                {workload.cpu_recommended_millis ? (
+                  <p>
+                    CPU — request: <span className="font-mono">{fmtMillis(workload.cpu_request_millis)}</span>
+                    {workload.cpu_limit_millis ? <> · limit: <span className="font-mono">{fmtMillis(workload.cpu_limit_millis)}</span></> : null}
+                    {" → "}
+                    recomendado: <span className="font-mono text-purple-600 dark:text-purple-400">{fmtMillis(workload.cpu_recommended_millis)}</span>
+                    {workload.cpu_limit_recommended_millis ? <> / <span className="font-mono text-purple-600 dark:text-purple-400">{fmtMillis(workload.cpu_limit_recommended_millis)}</span></> : null}
+                  </p>
+                ) : null}
+                {workload.mem_recommended_mi ? (
+                  <p>
+                    Mem — request: <span className="font-mono">{fmtMi(workload.mem_request_mi)}</span>
+                    {workload.mem_limit_mi ? <> · limit: <span className="font-mono">{fmtMi(workload.mem_limit_mi)}</span></> : null}
+                    {" → "}
+                    recomendado: <span className="font-mono text-purple-600 dark:text-purple-400">{fmtMi(workload.mem_recommended_mi)}</span>
+                    {workload.mem_limit_recommended_mi ? <> / <span className="font-mono text-purple-600 dark:text-purple-400">{fmtMi(workload.mem_limit_recommended_mi)}</span></> : null}
+                  </p>
+                ) : null}
+                {workload.metrics_source && (
+                  <p>fonte: <span className="font-mono">{workload.metrics_source === "dynatrace" ? "Dynatrace" : "Prometheus"}</span> · janela {workload.window_days}d</p>
+                )}
+              </div>
+
+              <div className="pt-1 border-t">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 flex items-center gap-1"><Gauge className="h-3 w-3" /> Cenário de resize — réplicas</p>
+                <p className="text-[11px]">{replicaScenarioText(workload)}</p>
+              </div>
+
+              {resizeCmd && (
+                <div>
+                  <p className="text-[10px] text-muted-foreground mb-1">Ação recomendada (request + limit):</p>
+                  <KubectlBlock cmd={resizeCmd} />
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 const tierVerdictCfg: Record<string, { label: string; cls: string }> = {
   recommended: { label: "Recomendado", cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
   consider: { label: "Considerar", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
   cheaper: { label: "Mais barato", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
 };
 
-function WorkloadCard({ w, node }: { w: WorkloadRecommendation; node?: NodeUsageInfo }) {
+function WorkloadCard({
+  w, node, onOpenDetail,
+}: {
+  w: WorkloadRecommendation;
+  node?: NodeUsageInfo;
+  onOpenDetail: (w: WorkloadRecommendation) => void;
+}) {
   const resizeCmd = buildResizeCommand(w);
   // Gauge mostra o "current" de verdade (live, metrics-server) quando disponível — fallback pro
   // P95 histórico quando o metrics-server não está acessível (mesmo padrão de graceful
@@ -193,7 +526,14 @@ function WorkloadCard({ w, node }: { w: WorkloadRecommendation; node?: NodeUsage
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="text-[10px] text-muted-foreground truncate">{w.namespace}</p>
-            <p className="font-medium truncate">{w.workload}</p>
+            <button
+              type="button"
+              className="font-medium truncate underline decoration-dotted hover:text-primary text-left"
+              title="Ver detalhe completo (node + app + cenários de resize)"
+              onClick={() => onOpenDetail(w)}
+            >
+              {w.workload}
+            </button>
             {w.node_pool && (
               <p className="text-[10px] text-muted-foreground mt-0.5">
                 <Server className="h-3 w-3 inline mr-1" />
@@ -284,7 +624,14 @@ function WorkloadCard({ w, node }: { w: WorkloadRecommendation; node?: NodeUsage
   );
 }
 
-function NodePoolTierCard({ pool, relatedWorkloads }: { pool: NodePoolTierSuggestion; relatedWorkloads: WorkloadRecommendation[] }) {
+function NodePoolTierCard({
+  pool, relatedWorkloads, onSelectWorkload,
+}: {
+  pool: NodePoolTierSuggestion;
+  relatedWorkloads: WorkloadRecommendation[];
+  onSelectWorkload: (w: WorkloadRecommendation) => void;
+}) {
+  const hasNodeRange = (pool.min_node_count ?? 0) > 0 || (pool.max_node_count ?? 0) > 0;
   return (
     <Card>
       <CardContent className="p-4 space-y-3">
@@ -292,6 +639,10 @@ function NodePoolTierCard({ pool, relatedWorkloads }: { pool: NodePoolTierSugges
           <div>
             <p className="font-medium">{pool.node_pool}</p>
             <p className="text-[11px] text-muted-foreground font-mono">{pool.current_sku}</p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">
+              {pool.node_count ?? "?"} node(s)
+              {hasNodeRange && <> · min {pool.min_node_count} / máx {pool.max_node_count}{pool.autoscaling_enabled ? " (autoscaling)" : " (fixo)"}</>}
+            </p>
           </div>
           <div className="text-right text-[11px] text-muted-foreground">
             <p>CPU: {pool.cpu_util_pct.toFixed(0)}%</p>
@@ -301,14 +652,14 @@ function NodePoolTierCard({ pool, relatedWorkloads }: { pool: NodePoolTierSugges
 
         {relatedWorkloads.length > 0 && (
           <p className="text-[10px] text-muted-foreground">
-            Baseado no uso real de {pool.workload_count} workload(s):{" "}
+            Baseado no uso real de {pool.workload_count} workload(s) — clique num nome pra ver o detalhe completo (node + app + cenários de resize):{" "}
             {relatedWorkloads.map((w, i) => (
               <span key={`${w.namespace}/${w.workload}`}>
                 {i > 0 && ", "}
                 <button
                   type="button"
-                  className="underline hover:text-foreground"
-                  onClick={() => document.getElementById(workloadCardId(w))?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                  className="underline hover:text-foreground font-medium"
+                  onClick={() => onSelectWorkload(w)}
                 >
                   {w.workload}
                 </button>
@@ -356,6 +707,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   const [namespaceFilter, setNamespaceFilter] = useState<string>("all");
   const [verdictFilter, setVerdictFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [detailWorkload, setDetailWorkload] = useState<WorkloadRecommendation | null>(null);
 
   const { data, isLoading, error } = useQuery<RightsizingResponse>({
     queryKey: ["finops-rightsizing", cluster],
@@ -404,6 +756,22 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   const nodesByName = useMemo(() => {
     const m = new Map<string, NodeUsageInfo>();
     for (const n of data?.nodes ?? []) m.set(n.node_name, n);
+    return m;
+  }, [data]);
+
+  const poolsByName = useMemo(() => {
+    const m = new Map<string, NodePoolTierSuggestion>();
+    for (const p of data?.node_pools ?? []) m.set(p.node_pool, p);
+    return m;
+  }, [data]);
+
+  const nodesByPool = useMemo(() => {
+    const m = new Map<string, NodeUsageInfo[]>();
+    for (const n of data?.nodes ?? []) {
+      const key = n.node_pool ?? "";
+      if (!m.has(key)) m.set(key, []);
+      m.get(key)!.push(n);
+    }
     return m;
   }, [data]);
 
@@ -500,6 +868,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
                     key={pool.node_pool}
                     pool={pool}
                     relatedWorkloads={workloads.filter((w) => w.node_pool === pool.node_pool)}
+                    onSelectWorkload={setDetailWorkload}
                   />
                 ))}
               </div>
@@ -542,11 +911,25 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
           ) : (
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
               {filtered.map((w) => (
-                <WorkloadCard key={`${w.namespace}/${w.workload}`} w={w} node={w.node_name ? nodesByName.get(w.node_name) : undefined} />
+                <WorkloadCard
+                  key={`${w.namespace}/${w.workload}`}
+                  w={w}
+                  node={w.node_name ? nodesByName.get(w.node_name) : undefined}
+                  onOpenDetail={setDetailWorkload}
+                />
               ))}
             </div>
           )}
         </>
+      )}
+
+      {detailWorkload && (
+        <WorkloadNodeDetailModal
+          workload={detailWorkload}
+          pool={detailWorkload.node_pool ? poolsByName.get(detailWorkload.node_pool) : undefined}
+          poolNodes={detailWorkload.node_pool ? (nodesByPool.get(detailWorkload.node_pool) ?? []) : []}
+          onClose={() => setDetailWorkload(null)}
+        />
       )}
     </div>
   );
