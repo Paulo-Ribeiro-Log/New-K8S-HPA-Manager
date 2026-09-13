@@ -471,18 +471,42 @@ func (e *PrometheusEnricher) queryHPAMetric(ctx context.Context, query, label st
 // (MiB) — "top" de verdade, não uma média — E a data/hora em que esse pico ocorreu (promPeakSample.At).
 // Timestamp é crítico pra nodes efêmeros (spot/preemptible, recriados a cada eviction): sem ele
 // não dá pra saber se o "top" reflete agora ou um momento qualquer dos últimos N dias, nem
-// explicar por que um node muito jovem tem pouco (ou nenhum) histórico de pico. Correlaciona por
-// substring no label "instance" do node-exporter contra o nome literal do node K8s, mesmo padrão
-// já usado e validado em internal/monitoring/predictions/collector.go. Valores brutos (não %) —
-// o chamador (ComputeNodeUsage, live_metrics.go) calcula o percentual usando a capacidade real do
-// node via API K8s. Best-effort: node ausente no resultado = sem dado, nunca erro.
+// explicar por que um node muito jovem tem pouco (ou nenhum) histórico de pico. Valores brutos
+// (não %) — o chamador (ComputeNodeUsage, live_metrics.go) calcula o percentual usando a
+// capacidade real do node via API K8s. Best-effort: node ausente no resultado = sem dado, nunca
+// erro.
+//
+// Correlação Prometheus↔node K8s em 2 estratégias (bug real corrigido — "pico" vinha
+// consistentemente 0% em TODOS os nodes de um cluster real, mesmo com uso "agora" — via
+// metrics-server, nunca depende do que segue — mostrando valores reais 6-25% CPU/46-68% Mem):
+//  1. (preferida) join com node_uname_info, correlacionando por "nodename" EXATO — coletor
+//     default do node-exporter (raramente desabilitado), cujo label "nodename" é o hostname do
+//     SO e coincide com Node.metadata.name na esmagadora maioria dos clusters (AKS/EKS/GKE
+//     inclusos, mesmo em nodes com nome tipo "aks-pool-xxx-vmssNNNNNN").
+//  2. (fallback) substring no label "instance" contra o nome do node — mesmo padrão já usado em
+//     internal/monitoring/predictions/collector.go, mas que SÓ funciona quando o scrape usa o
+//     hostname como "instance"; falha (sem erro, só resultado vazio) quando "instance" é o
+//     IP:porta do scrape target — exatamente o cenário real que motivou esta correção, já que
+//     "aks-...-vmssNNNNNN" nunca é substring de um IP.
 func (e *PrometheusEnricher) nodeTopUsage(ctx context.Context, nodeNames []string) (cpu, mem map[string]promPeakSample) {
 	if len(nodeNames) == 0 {
 		return make(map[string]promPeakSample), make(map[string]promPeakSample)
 	}
 
 	// Valor confiável (instant/subquery, mesmo custo já comprovado do P95 de workload) — fonte
-	// PRIMÁRIA do valor do pico, nunca depende da QueryRange (mais pesada, abaixo) ter sucesso.
+	// PRIMÁRIA do valor do pico, nunca depende de nenhuma QueryRange (mais pesada) ter sucesso.
+	cpuValueByNodename := e.queryNodenameMetricPeakValue(ctx,
+		fmt.Sprintf(`max_over_time((sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info))[%dd:5m]) * 1000`, e.window),
+		"node_cpu_top_value_by_nodename",
+	)
+	memValueByNodenameRaw := e.queryNodenameMetricPeakValue(ctx,
+		fmt.Sprintf(`max_over_time((sum by (nodename) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info))[%dd:5m])`, e.window),
+		"node_mem_top_value_by_nodename",
+	)
+	memValueByNodename := make(map[string]float64, len(memValueByNodenameRaw))
+	for k, v := range memValueByNodenameRaw {
+		memValueByNodename[k] = v / 1048576
+	}
 	cpuValueByInstance := e.queryInstanceMetricPeakValue(ctx,
 		fmt.Sprintf(`max_over_time((sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])))[%dd:5m]) * 1000`, e.window),
 		"node_cpu_top_value",
@@ -499,6 +523,19 @@ func (e *PrometheusEnricher) nodeTopUsage(ctx context.Context, nodeNames []strin
 	// Timestamp best-effort (QueryRange, resolução completa — uma série por node; ver
 	// rangeStepForWindow/queryPodMetricRangeMax pro porquê disso poder falhar silenciosamente em
 	// clusters com muitos nodes e nunca zerar o valor por causa disso).
+	cpuRangeByNodename := e.queryNodenameMetricRangeMax(ctx,
+		`sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info) * 1000`,
+		"node_cpu_top_range_by_nodename",
+	)
+	memRangeByNodenameRaw := e.queryNodenameMetricRangeMax(ctx,
+		`sum by (nodename) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info)`,
+		"node_mem_top_range_by_nodename",
+	)
+	memRangeByNodename := make(map[string]promPeakSample, len(memRangeByNodenameRaw))
+	for k, v := range memRangeByNodenameRaw {
+		v.Value = v.Value / 1048576
+		memRangeByNodename[k] = v
+	}
 	cpuByInstance := e.queryInstanceMetricRangeMax(ctx,
 		`sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) * 1000`,
 		"node_cpu_top",
@@ -513,15 +550,16 @@ func (e *PrometheusEnricher) nodeTopUsage(ctx context.Context, nodeNames []strin
 		memByInstance[k] = v
 	}
 
-	return mergeInstancePeak(nodeNames, cpuValueByInstance, cpuByInstance),
-		mergeInstancePeak(nodeNames, memValueByInstance, memByInstance)
+	return mergeNodeTopPeaks(nodeNames, cpuValueByNodename, cpuRangeByNodename, cpuValueByInstance, cpuByInstance),
+		mergeNodeTopPeaks(nodeNames, memValueByNodename, memRangeByNodename, memValueByInstance, memByInstance)
 }
 
 // mergeInstancePeak combina o valor confiável (subquery instant) com o timestamp best-effort
 // (QueryRange) por node, correlacionando por substring no label "instance" (node-exporter)
-// contra o nome literal do node K8s — mesmo critério já usado antes desta correção. O valor
-// NUNCA depende da query de timestamp ter tido sucesso (é isso que resolve o "top sempre
-// zerado"); o timestamp é anexado só quando essa query de fato retorna algo pra esse node.
+// contra o nome literal do node K8s — estratégia de FALLBACK (ver nodeTopUsage), usada quando o
+// join por "nodename" (mergeNodeTopPeaks) não encontrou nada pra esse node. O valor NUNCA
+// depende da query de timestamp ter tido sucesso; o timestamp é anexado só quando essa query de
+// fato retorna algo pra esse node.
 func mergeInstancePeak(nodeNames []string, valueByInstance map[string]float64, rangeByInstance map[string]promPeakSample) map[string]promPeakSample {
 	out := make(map[string]promPeakSample, len(nodeNames))
 	for _, name := range nodeNames {
@@ -547,6 +585,38 @@ func mergeInstancePeak(nodeNames []string, valueByInstance map[string]float64, r
 		if found {
 			out[name] = sample
 		}
+	}
+	return out
+}
+
+// mergeNodeTopPeaks combina as 2 estratégias de correlação documentadas em nodeTopUsage: roda o
+// fallback (substring de "instance", via mergeInstancePeak) primeiro, preenchendo o que
+// conseguir; depois a estratégia preferida (join exato por "nodename") SOBRESCREVE cada node em
+// que encontrou dado — nunca o contrário, pra sempre priorizar a correlação mais confiável
+// quando ela está disponível.
+func mergeNodeTopPeaks(
+	nodeNames []string,
+	valueByNodename map[string]float64, rangeByNodename map[string]promPeakSample,
+	valueByInstance map[string]float64, rangeByInstance map[string]promPeakSample,
+) map[string]promPeakSample {
+	out := mergeInstancePeak(nodeNames, valueByInstance, rangeByInstance)
+	for _, name := range nodeNames {
+		v, hasValue := valueByNodename[name]
+		r, hasRange := rangeByNodename[name]
+		if !hasValue && !hasRange {
+			continue
+		}
+		sample := out[name] // zero-value se o fallback não tinha achado nada pra este node
+		switch {
+		case hasValue:
+			sample.Value = v
+		case hasRange:
+			sample.Value = r.Value
+		}
+		if hasRange {
+			sample.At = r.At
+		}
+		out[name] = sample
 	}
 	return out
 }
@@ -609,6 +679,66 @@ func (e *PrometheusEnricher) queryInstanceMetricRangeMax(ctx context.Context, qu
 			continue
 		}
 		m[instance] = peakOf(series.Values)
+	}
+	return m
+}
+
+// queryNodenameMetricPeakValue é o equivalente de queryInstanceMetricPeakValue, mas keyed pelo
+// label "nodename" (via join com node_uname_info na própria query — ver nodeTopUsage) em vez de
+// "instance" — resultado já vem correlacionável por IGUALDADE EXATA contra o nome do node K8s,
+// sem precisar do fallback de substring que mergeInstancePeak usa.
+func (e *PrometheusEnricher) queryNodenameMetricPeakValue(ctx context.Context, query, label string) map[string]float64 {
+	qctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	result, _, err := e.api.Query(qctx, query, time.Now())
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query de pico de node por nodename (valor) falhou")
+		return nil
+	}
+	vec, ok := result.(model.Vector)
+	if !ok {
+		return nil
+	}
+	m := make(map[string]float64, len(vec))
+	for _, sample := range vec {
+		nodename := string(sample.Metric["nodename"])
+		if nodename == "" {
+			continue
+		}
+		m[nodename] = float64(sample.Value)
+	}
+	return m
+}
+
+// queryNodenameMetricRangeMax é o equivalente de queryInstanceMetricRangeMax, mas keyed por
+// "nodename" — ver queryNodenameMetricPeakValue e nodeTopUsage pro porquê dessa correlação ser
+// preferível à de "instance" (substring, mais frágil).
+func (e *PrometheusEnricher) queryNodenameMetricRangeMax(ctx context.Context, query, label string) map[string]promPeakSample {
+	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	end := time.Now()
+	start := end.Add(-time.Duration(e.window) * 24 * time.Hour)
+	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(e.window)}
+
+	result, _, err := e.api.QueryRange(qctx, query, r)
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query range de node por nodename (com timestamp) falhou")
+		return nil
+	}
+	mat, ok := result.(model.Matrix)
+	if !ok {
+		return nil
+	}
+
+	m := make(map[string]promPeakSample)
+	for _, series := range mat {
+		nodename := string(series.Metric["nodename"])
+		if nodename == "" || len(series.Values) == 0 {
+			continue
+		}
+		m[nodename] = peakOf(series.Values)
 	}
 	return m
 }

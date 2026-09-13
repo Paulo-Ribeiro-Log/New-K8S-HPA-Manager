@@ -218,3 +218,125 @@ func TestMergeInstancePeak(t *testing.T) {
 		}
 	})
 }
+
+// TestMergeNodeTopPeaks cobre a regressão real relatada pelo usuário: "pico 0%" em TODOS os
+// nodes de um cluster real (17/17), apesar de "agora" (metrics-server, nunca passa por aqui)
+// mostrar uso real. Causa: o label "instance" do node-exporter nesse cluster não contém o nome
+// literal do node K8s (ex: é um IP:porta do scrape target) — a correlação por substring
+// (mergeInstancePeak) nunca bate, silenciosamente, pra NENHUM node. A correlação por "nodename"
+// (join com node_uname_info, IGUALDADE exata) é a estratégia preferida justamente por não
+// depender desse formato.
+func TestMergeNodeTopPeaks(t *testing.T) {
+	t.Run("nodename encontra quando instance (substring) não acha nada — bug real corrigido", func(t *testing.T) {
+		// "instance" é um IP:porta que nunca contém o nome do node — cenário real relatado.
+		valueByInstance := map[string]float64{"10.244.3.5:9100": 999}
+		valueByNodename := map[string]float64{"aks-calculofrete-22930315-vmss000055": 25}
+
+		out := mergeNodeTopPeaks([]string{"aks-calculofrete-22930315-vmss000055"},
+			valueByNodename, nil, valueByInstance, nil)
+
+		p, ok := out["aks-calculofrete-22930315-vmss000055"]
+		if !ok {
+			t.Fatalf("esperava o node no resultado via correlação por nodename")
+		}
+		if p.Value != 25 {
+			t.Fatalf("esperava valor 25 (da correlação por nodename, não 999 do fallback), veio %v", p.Value)
+		}
+	})
+
+	t.Run("cai pro fallback (instance) quando nodename não tem dado pro node", func(t *testing.T) {
+		valueByInstance := map[string]float64{"node-a:9100": 42}
+		out := mergeNodeTopPeaks([]string{"node-a"}, nil, nil, valueByInstance, nil)
+		p, ok := out["node-a"]
+		if !ok {
+			t.Fatalf("esperava node-a via fallback de instance")
+		}
+		if p.Value != 42 {
+			t.Fatalf("esperava valor 42, veio %v", p.Value)
+		}
+	})
+
+	t.Run("nodename sobrescreve instance quando os dois têm dado (prioridade da correlação mais confiável)", func(t *testing.T) {
+		valueByInstance := map[string]float64{"node-a:9100": 111}
+		valueByNodename := map[string]float64{"node-a": 222}
+		out := mergeNodeTopPeaks([]string{"node-a"}, valueByNodename, nil, valueByInstance, nil)
+		if out["node-a"].Value != 222 {
+			t.Fatalf("esperava 222 (nodename tem prioridade), veio %v", out["node-a"].Value)
+		}
+	})
+
+	t.Run("timestamp de nodename também sobrescreve o de instance", func(t *testing.T) {
+		valueByNodename := map[string]float64{"node-a": 42}
+		rangeByNodename := map[string]promPeakSample{"node-a": {Value: 42, At: time.Unix(1800000000, 0)}}
+		valueByInstance := map[string]float64{"node-a:9100": 42}
+		rangeByInstance := map[string]promPeakSample{"node-a:9100": {Value: 42, At: time.Unix(1700000000, 0)}}
+
+		out := mergeNodeTopPeaks([]string{"node-a"}, valueByNodename, rangeByNodename, valueByInstance, rangeByInstance)
+		if out["node-a"].At.Unix() != 1800000000 {
+			t.Fatalf("esperava timestamp da correlação por nodename (1800000000), veio %v", out["node-a"].At.Unix())
+		}
+	})
+
+	t.Run("nenhuma estratégia encontra dado", func(t *testing.T) {
+		out := mergeNodeTopPeaks([]string{"node-z"}, nil, nil, nil, nil)
+		if _, ok := out["node-z"]; ok {
+			t.Fatalf("node-z não deveria aparecer no resultado")
+		}
+	})
+}
+
+// TestQueryNodenameMetric_ParsesNodenameLabel confirma que as duas queries por "nodename" (join
+// com node_uname_info) parseiam corretamente uma resposta real do Prometheus, keyed pelo label
+// certo — nunca "instance" (que é o que a correlação antiga usava e o que motivou este ajuste).
+func TestQueryNodenameMetric_ParsesNodenameLabel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/query":
+			resp := map[string]interface{}{
+				"status": "success",
+				"data": map[string]interface{}{
+					"resultType": "vector",
+					"result": []map[string]interface{}{
+						{
+							"metric": map[string]string{"nodename": "aks-calculofrete-22930315-vmss000055"},
+							"value":  []interface{}{1700000000, "321"},
+						},
+					},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/api/v1/query_range":
+			resp := map[string]interface{}{
+				"status": "success",
+				"data": map[string]interface{}{
+					"resultType": "matrix",
+					"result": []map[string]interface{}{
+						{
+							"metric": map[string]string{"nodename": "aks-calculofrete-22930315-vmss000055"},
+							"values": [][]interface{}{{1700000000, "321"}},
+						},
+					},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+	}))
+	defer srv.Close()
+
+	e, err := NewPrometheusEnricher(srv.URL, 3, false)
+	if err != nil {
+		t.Fatalf("NewPrometheusEnricher: %v", err)
+	}
+
+	valueMap := e.queryNodenameMetricPeakValue(t.Context(), `whatever`, "test")
+	if valueMap["aks-calculofrete-22930315-vmss000055"] != 321 {
+		t.Fatalf("esperava 321 keyed por nodename, veio %+v", valueMap)
+	}
+
+	rangeMap := e.queryNodenameMetricRangeMax(t.Context(), `whatever`, "test")
+	p, ok := rangeMap["aks-calculofrete-22930315-vmss000055"]
+	if !ok || p.Value != 321 {
+		t.Fatalf("esperava 321 keyed por nodename, veio %+v", rangeMap)
+	}
+}
