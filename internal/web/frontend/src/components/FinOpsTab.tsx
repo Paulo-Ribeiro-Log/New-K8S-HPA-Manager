@@ -4152,6 +4152,42 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     retry: false,
   });
 
+  // Dispara o scan de Rightsizing (request/limit + tier de VM, ver RightsizingTab.tsx) junto da
+  // análise principal do cluster — pedido explícito do usuário: antes só rodava sob clique manual
+  // em "Analisar agora" dentro da própria aba Rightsizing, exigindo visitar a aba pra ter dado
+  // algum. Roda DEPOIS do relatório principal terminar (nunca em paralelo) — os dois disparam
+  // várias queries pesadas ao Prometheus/Dynatrace, rodar junto dobraria a carga concorrente
+  // justamente no momento em que picos de uso (CPUMaxMillis/MemMaxMi) já se provaram sensíveis a
+  // isso. Usa queryClient.fetchQuery (não um fetch cru) na MESMA queryKey que RightsizingTab.tsx
+  // já observa (["finops-rightsizing", cluster]) — se o usuário estiver com essa aba aberta, o
+  // próprio hook dela reflete "carregando"/dado novo automaticamente, sem nenhuma prop nova ou
+  // estado compartilhado explícito. Best-effort: nunca bloqueia nem suja a análise principal —
+  // uma falha aqui (ex: node pools nunca escaneados) só avisa via toast discreto, e o botão
+  // "Reanalisar agora" dentro da aba Rightsizing continua funcionando pra tentar de novo na mão.
+  const triggerRightsizingScan = useCallback(async () => {
+    try {
+      await queryClient.fetchQuery({
+        queryKey: ["finops-rightsizing", cluster],
+        queryFn: async () => {
+          const url = `/api/v1/finops/rightsizing/scan?cluster=${encodeURIComponent(cluster)}&window_days=${windowDays}`;
+          const r = await fetch(url, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+          });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
+          }
+          return r.json();
+        },
+      });
+    } catch (e) {
+      toast.warning("Rightsizing não pôde ser reanalisado automaticamente: " + (e as Error).message, {
+        description: "Abra a aba Rightsizing e use \"Reanalisar agora\" pra tentar de novo.",
+      });
+    }
+  }, [queryClient, cluster, windowDays]);
+
   const exportCSV = () => {
     if (!report) return;
     const hasP95 = report.workloads.some(w => (w.cpu_p95_millis ?? 0) > 0);
@@ -4272,12 +4308,15 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               </PopoverContent>
             </Popover>
             <Button size="sm" variant={isLoading ? "destructive" : "outline"} className="h-8 gap-1"
-              onClick={() => {
+              onClick={async () => {
                 if (isLoading) {
                   queryClient.cancelQueries({ queryKey: ["finops-report", cluster] });
                 } else {
                   setAiAnalysis(null);
-                  refetch();
+                  const result = await refetch();
+                  if (result.isSuccess) {
+                    void triggerRightsizingScan();
+                  }
                 }
               }}>
               {isLoading
