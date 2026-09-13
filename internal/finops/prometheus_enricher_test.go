@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -338,5 +339,112 @@ func TestQueryNodenameMetric_ParsesNodenameLabel(t *testing.T) {
 	p, ok := rangeMap["aks-calculofrete-22930315-vmss000055"]
 	if !ok || p.Value != 321 {
 		t.Fatalf("esperava 321 keyed por nodename, veio %+v", rangeMap)
+	}
+}
+
+// countingNodeQueryServer conta quantas vezes cada "família" de query (nodename vs. instance) foi
+// disparada — usado pra provar o short-circuit de nodeMetricTopUsage (bug real corrigido: a
+// versão anterior sempre rodava as duas estratégias incondicionalmente, dobrando os round-trips
+// ao Prometheus e deixando o scan "horrores" mais lento, a ponto de derrubar VPN/túnel instável).
+type countingNodeQueryServer struct {
+	nodenameQueries int
+	instanceQueries int
+	nodenameEmpty   bool // se true, toda query "by nodename" volta vazia (simula ausência de node_uname_info)
+}
+
+func queryParam(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		_ = r.ParseForm()
+		return r.PostFormValue("query")
+	}
+	return r.URL.Query().Get("query")
+}
+
+func (s *countingNodeQueryServer) handler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	q := queryParam(r)
+	isNodename := strings.Contains(q, "nodename")
+
+	var resultMetric map[string]string
+	if isNodename {
+		s.nodenameQueries++
+		if s.nodenameEmpty {
+			resultMetric = nil
+		} else {
+			resultMetric = map[string]string{"nodename": "node-a"}
+		}
+	} else {
+		s.instanceQueries++
+		// "instance" precisa conter o nome do node como substring — mesmo critério de correlação
+		// do fallback (mergeInstancePeak); usar um IP aqui faria o fallback também "falhar",
+		// mascarando o que este teste quer provar (contagem de queries, não a correlação em si —
+		// essa já é coberta por TestMergeNodeTopPeaks).
+		resultMetric = map[string]string{"instance": "node-a:9100"}
+	}
+
+	switch r.URL.Path {
+	case "/api/v1/query":
+		result := []map[string]interface{}{}
+		if resultMetric != nil {
+			result = append(result, map[string]interface{}{"metric": resultMetric, "value": []interface{}{1700000000, "50"}})
+		}
+		resp := map[string]interface{}{"status": "success", "data": map[string]interface{}{"resultType": "vector", "result": result}}
+		_ = json.NewEncoder(w).Encode(resp)
+	case "/api/v1/query_range":
+		result := []map[string]interface{}{}
+		if resultMetric != nil {
+			result = append(result, map[string]interface{}{"metric": resultMetric, "values": [][]interface{}{{1700000000, "50"}}})
+		}
+		resp := map[string]interface{}{"status": "success", "data": map[string]interface{}{"resultType": "matrix", "result": result}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// TestNodeMetricTopUsage_ShortCircuitsWhenNodenameCoversEverything confirma que, quando a
+// correlação por nodename já cobre 100% dos nodes pedidos, a estratégia de fallback (substring de
+// "instance") NUNCA é disparada — 2 queries no total (valor + timestamp), não 4.
+func TestNodeMetricTopUsage_ShortCircuitsWhenNodenameCoversEverything(t *testing.T) {
+	s := &countingNodeQueryServer{}
+	srv := httptest.NewServer(http.HandlerFunc(s.handler))
+	defer srv.Close()
+	e, err := NewPrometheusEnricher(srv.URL, 3, false)
+	if err != nil {
+		t.Fatalf("NewPrometheusEnricher: %v", err)
+	}
+
+	out := e.nodeMetricTopUsage(t.Context(), []string{"node-a"}, nodeCPUTopQueries(3), 1, "cpu")
+	if out["node-a"].Value != 50 {
+		t.Fatalf("esperava valor 50, veio %+v", out["node-a"])
+	}
+	if s.nodenameQueries != 2 {
+		t.Fatalf("esperava exatamente 2 queries por nodename (valor+timestamp), veio %d", s.nodenameQueries)
+	}
+	if s.instanceQueries != 0 {
+		t.Fatalf("fallback por instance NUNCA deveria ter sido chamado quando nodename já cobriu tudo, veio %d chamada(s)", s.instanceQueries)
+	}
+}
+
+// TestNodeMetricTopUsage_FallsBackAndSkipsUnnecessaryRangeQueries confirma que, quando a
+// correlação por nodename não encontra NADA (node_uname_info ausente), o fallback por instance é
+// disparado — mas a QueryRange (timestamp) de nodename NUNCA roda nesse caso (não há valor
+// nenhum pra anexar timestamp), evitando a 4ª query desnecessária.
+func TestNodeMetricTopUsage_FallsBackAndSkipsUnnecessaryRangeQueries(t *testing.T) {
+	s := &countingNodeQueryServer{nodenameEmpty: true}
+	srv := httptest.NewServer(http.HandlerFunc(s.handler))
+	defer srv.Close()
+	e, err := NewPrometheusEnricher(srv.URL, 3, false)
+	if err != nil {
+		t.Fatalf("NewPrometheusEnricher: %v", err)
+	}
+
+	out := e.nodeMetricTopUsage(t.Context(), []string{"node-a"}, nodeCPUTopQueries(3), 1, "cpu")
+	if out["node-a"].Value != 50 {
+		t.Fatalf("esperava valor 50 (via fallback), veio %+v", out["node-a"])
+	}
+	if s.nodenameQueries != 1 {
+		t.Fatalf("esperava exatamente 1 query por nodename (só o valor — a de timestamp deve ser pulada, sem dado pra anexar), veio %d", s.nodenameQueries)
+	}
+	if s.instanceQueries != 2 {
+		t.Fatalf("esperava exatamente 2 queries de fallback por instance (valor+timestamp), veio %d", s.instanceQueries)
 	}
 }

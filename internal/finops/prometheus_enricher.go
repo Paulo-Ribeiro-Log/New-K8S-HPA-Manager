@@ -467,6 +467,31 @@ func (e *PrometheusEnricher) queryHPAMetric(ctx context.Context, query, label st
 	return m
 }
 
+// nodeMetricQuerySet agrupa as 4 variantes de query (valor/timestamp × nodename/instance) de UMA
+// métrica de node (CPU ou Mem) — ver nodeTopUsage/nodeMetricTopUsage.
+type nodeMetricQuerySet struct {
+	valueByNodename, rangeByNodename string
+	valueByInstance, rangeByInstance string
+}
+
+func nodeCPUTopQueries(windowDays int) nodeMetricQuerySet {
+	return nodeMetricQuerySet{
+		valueByNodename: fmt.Sprintf(`max_over_time((sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info))[%dd:5m]) * 1000`, windowDays),
+		rangeByNodename: `sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info) * 1000`,
+		valueByInstance: fmt.Sprintf(`max_over_time((sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])))[%dd:5m]) * 1000`, windowDays),
+		rangeByInstance: `sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) * 1000`,
+	}
+}
+
+func nodeMemTopQueries(windowDays int) nodeMetricQuerySet {
+	return nodeMetricQuerySet{
+		valueByNodename: fmt.Sprintf(`max_over_time((sum by (nodename) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info))[%dd:5m])`, windowDays),
+		rangeByNodename: `sum by (nodename) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info)`,
+		valueByInstance: fmt.Sprintf(`max_over_time((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)[%dd:5m])`, windowDays),
+		rangeByInstance: `node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes`,
+	}
+}
+
 // nodeTopUsage retorna, por node, o pico histórico (janela e.window) de CPU (millicores) e Mem
 // (MiB) — "top" de verdade, não uma média — E a data/hora em que esse pico ocorreu (promPeakSample.At).
 // Timestamp é crítico pra nodes efêmeros (spot/preemptible, recriados a cada eviction): sem ele
@@ -474,84 +499,99 @@ func (e *PrometheusEnricher) queryHPAMetric(ctx context.Context, query, label st
 // explicar por que um node muito jovem tem pouco (ou nenhum) histórico de pico. Valores brutos
 // (não %) — o chamador (ComputeNodeUsage, live_metrics.go) calcula o percentual usando a
 // capacidade real do node via API K8s. Best-effort: node ausente no resultado = sem dado, nunca
-// erro.
-//
-// Correlação Prometheus↔node K8s em 2 estratégias (bug real corrigido — "pico" vinha
-// consistentemente 0% em TODOS os nodes de um cluster real, mesmo com uso "agora" — via
-// metrics-server, nunca depende do que segue — mostrando valores reais 6-25% CPU/46-68% Mem):
-//  1. (preferida) join com node_uname_info, correlacionando por "nodename" EXATO — coletor
-//     default do node-exporter (raramente desabilitado), cujo label "nodename" é o hostname do
-//     SO e coincide com Node.metadata.name na esmagadora maioria dos clusters (AKS/EKS/GKE
-//     inclusos, mesmo em nodes com nome tipo "aks-pool-xxx-vmssNNNNNN").
-//  2. (fallback) substring no label "instance" contra o nome do node — mesmo padrão já usado em
-//     internal/monitoring/predictions/collector.go, mas que SÓ funciona quando o scrape usa o
-//     hostname como "instance"; falha (sem erro, só resultado vazio) quando "instance" é o
-//     IP:porta do scrape target — exatamente o cenário real que motivou esta correção, já que
-//     "aks-...-vmssNNNNNN" nunca é substring de um IP.
+// erro. Ver nodeMetricTopUsage pro detalhe da correlação (2 estratégias, com short-circuit).
 func (e *PrometheusEnricher) nodeTopUsage(ctx context.Context, nodeNames []string) (cpu, mem map[string]promPeakSample) {
 	if len(nodeNames) == 0 {
 		return make(map[string]promPeakSample), make(map[string]promPeakSample)
 	}
+	cpu = e.nodeMetricTopUsage(ctx, nodeNames, nodeCPUTopQueries(e.window), 1, "cpu")
+	mem = e.nodeMetricTopUsage(ctx, nodeNames, nodeMemTopQueries(e.window), 1.0/1048576, "mem")
+	return cpu, mem
+}
 
-	// Valor confiável (instant/subquery, mesmo custo já comprovado do P95 de workload) — fonte
-	// PRIMÁRIA do valor do pico, nunca depende de nenhuma QueryRange (mais pesada) ter sucesso.
-	cpuValueByNodename := e.queryNodenameMetricPeakValue(ctx,
-		fmt.Sprintf(`max_over_time((sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info))[%dd:5m]) * 1000`, e.window),
-		"node_cpu_top_value_by_nodename",
+// nodeMetricTopUsage roda a correlação Prometheus↔node K8s em 2 estratégias, SEM disparar as
+// duas incondicionalmente — bug real corrigido: a versão anterior sempre rodava as 4 queries
+// (valor+timestamp × nodename+instance) pra CADA métrica (8 no total, CPU+Mem), o que tornou o
+// scan de Rightsizing muito mais lento e, em clusters acessados via VPN/túnel, chegou a derrubar
+// a conexão — puro efeito colateral de multiplicar round-trips (e o join com node_uname_info é
+// mais caro pro Prometheus avaliar numa QueryRange do que uma simples agregação). Agora:
+//  1. (preferida) join com node_uname_info, correlacionando por "nodename" EXATO — coletor
+//     default do node-exporter (raramente desabilitado), cujo label "nodename" é o hostname do SO
+//     e coincide com Node.metadata.name na esmagadora maioria dos clusters (AKS/EKS/GKE inclusos,
+//     mesmo em nodes com nome tipo "aks-pool-xxx-vmssNNNNNN") — SEMPRE tentada primeiro (1 query
+//     de valor, barata).
+//  2. (fallback) substring no label "instance" contra o nome do node — SÓ disparada se a
+//     estratégia #1 não cobriu TODOS os nodes pedidos (node_uname_info ausente, ou correlação não
+//     bateu pra algum node específico).
+//
+// O timestamp (QueryRange, a query mais cara) só roda pra CADA estratégia que de fato achou pelo
+// menos 1 node via a query de valor correspondente — nunca "no escuro", nunca as duas ao mesmo
+// tempo por padrão. No caso comum (node_uname_info existe e correlaciona 100% dos nodes — cenário
+// já confirmado nesta sessão), isso cai pra 2 queries totais por métrica (1 valor + 1 timestamp),
+// igual ao custo de antes desta correlação por nodename ter sido introduzida.
+func (e *PrometheusEnricher) nodeMetricTopUsage(ctx context.Context, nodeNames []string, q nodeMetricQuerySet, scale float64, label string) map[string]promPeakSample {
+	valueByNodename := scaleFloatMap(
+		e.queryNodenameMetricPeakValue(ctx, q.valueByNodename, label+"_top_value_by_nodename"),
+		scale,
 	)
-	memValueByNodenameRaw := e.queryNodenameMetricPeakValue(ctx,
-		fmt.Sprintf(`max_over_time((sum by (nodename) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info))[%dd:5m])`, e.window),
-		"node_mem_top_value_by_nodename",
-	)
-	memValueByNodename := make(map[string]float64, len(memValueByNodenameRaw))
-	for k, v := range memValueByNodenameRaw {
-		memValueByNodename[k] = v / 1048576
-	}
-	cpuValueByInstance := e.queryInstanceMetricPeakValue(ctx,
-		fmt.Sprintf(`max_over_time((sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])))[%dd:5m]) * 1000`, e.window),
-		"node_cpu_top_value",
-	)
-	memValueByInstanceRaw := e.queryInstanceMetricPeakValue(ctx,
-		fmt.Sprintf(`max_over_time((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)[%dd:5m])`, e.window),
-		"node_mem_top_value",
-	)
-	memValueByInstance := make(map[string]float64, len(memValueByInstanceRaw))
-	for k, v := range memValueByInstanceRaw {
-		memValueByInstance[k] = v / 1048576
-	}
 
-	// Timestamp best-effort (QueryRange, resolução completa — uma série por node; ver
-	// rangeStepForWindow/queryPodMetricRangeMax pro porquê disso poder falhar silenciosamente em
-	// clusters com muitos nodes e nunca zerar o valor por causa disso).
-	cpuRangeByNodename := e.queryNodenameMetricRangeMax(ctx,
-		`sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info) * 1000`,
-		"node_cpu_top_range_by_nodename",
-	)
-	memRangeByNodenameRaw := e.queryNodenameMetricRangeMax(ctx,
-		`sum by (nodename) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info)`,
-		"node_mem_top_range_by_nodename",
-	)
-	memRangeByNodename := make(map[string]promPeakSample, len(memRangeByNodenameRaw))
-	for k, v := range memRangeByNodenameRaw {
-		v.Value = v.Value / 1048576
-		memRangeByNodename[k] = v
-	}
-	cpuByInstance := e.queryInstanceMetricRangeMax(ctx,
-		`sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) * 1000`,
-		"node_cpu_top",
-	)
-	memByInstanceRaw := e.queryInstanceMetricRangeMax(ctx,
-		`node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes`,
-		"node_mem_top",
-	)
-	memByInstance := make(map[string]promPeakSample, len(memByInstanceRaw))
-	for k, v := range memByInstanceRaw {
-		v.Value = v.Value / 1048576
-		memByInstance[k] = v
+	allCoveredByNodename := len(nodeNames) > 0
+	for _, name := range nodeNames {
+		if _, ok := valueByNodename[name]; !ok {
+			allCoveredByNodename = false
+			break
+		}
 	}
 
-	return mergeNodeTopPeaks(nodeNames, cpuValueByNodename, cpuRangeByNodename, cpuValueByInstance, cpuByInstance),
-		mergeNodeTopPeaks(nodeNames, memValueByNodename, memRangeByNodename, memValueByInstance, memByInstance)
+	var valueByInstance map[string]float64
+	if !allCoveredByNodename {
+		valueByInstance = scaleFloatMap(
+			e.queryInstanceMetricPeakValue(ctx, q.valueByInstance, label+"_top_value"),
+			scale,
+		)
+	}
+
+	var rangeByNodename, rangeByInstance map[string]promPeakSample
+	if len(valueByNodename) > 0 {
+		rangeByNodename = scalePeakMap(
+			e.queryNodenameMetricRangeMax(ctx, q.rangeByNodename, label+"_top_range_by_nodename"),
+			scale,
+		)
+	}
+	if len(valueByInstance) > 0 {
+		rangeByInstance = scalePeakMap(
+			e.queryInstanceMetricRangeMax(ctx, q.rangeByInstance, label+"_top_range"),
+			scale,
+		)
+	}
+
+	return mergeNodeTopPeaks(nodeNames, valueByNodename, rangeByNodename, valueByInstance, rangeByInstance)
+}
+
+// scaleFloatMap/scalePeakMap aplicam um fator de conversão (ex: bytes→MiB) sem mutar o mapa de
+// entrada — usados só pra Mem (scale=1/1048576); CPU já sai em millicores direto da query
+// (multiplicação embutida no PromQL), scale=1 é passthrough sem alocação.
+func scaleFloatMap(m map[string]float64, scale float64) map[string]float64 {
+	if scale == 1 || m == nil {
+		return m
+	}
+	out := make(map[string]float64, len(m))
+	for k, v := range m {
+		out[k] = v * scale
+	}
+	return out
+}
+
+func scalePeakMap(m map[string]promPeakSample, scale float64) map[string]promPeakSample {
+	if scale == 1 || m == nil {
+		return m
+	}
+	out := make(map[string]promPeakSample, len(m))
+	for k, v := range m {
+		v.Value *= scale
+		out[k] = v
+	}
+	return out
 }
 
 // mergeInstancePeak combina o valor confiável (subquery instant) com o timestamp best-effort
