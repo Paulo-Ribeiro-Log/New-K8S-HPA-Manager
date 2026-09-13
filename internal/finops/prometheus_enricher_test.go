@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -446,5 +447,60 @@ func TestNodeMetricTopUsage_FallsBackAndSkipsUnnecessaryRangeQueries(t *testing.
 	}
 	if s.instanceQueries != 2 {
 		t.Fatalf("esperava exatamente 2 queries de fallback por instance (valor+timestamp), veio %d", s.instanceQueries)
+	}
+}
+
+// TestEnrichWorkloads_RunsQueriesConcurrently é a regressão real do relato "demora horrores...
+// coisas de minutos": as 12 queries de EnrichWorkloads eram disparadas sequencialmente, uma atrás
+// da outra — cada uma pagando o RTT completa antes da próxima nem começar. Este teste usa um
+// servidor fake que atrasa CADA request em latencyPerQuery e mede o tempo total: se as 12 queries
+// ainda rodassem em série, o teste levaria pelo menos 12×latencyPerQuery; rodando em paralelo,
+// leva pouco mais que 1×latencyPerQuery (todas competem pela mesma janela de tempo).
+func TestEnrichWorkloads_RunsQueriesConcurrently(t *testing.T) {
+	const latencyPerQuery = 80 * time.Millisecond
+	const expectedQueries = 12 // 4 container + 2 valor de pico + 2 range de pico + 4 HPA
+
+	var mu sync.Mutex
+	seen := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen++
+		mu.Unlock()
+		time.Sleep(latencyPerQuery)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/query":
+			resp := map[string]interface{}{"status": "success", "data": map[string]interface{}{"resultType": "vector", "result": []interface{}{}}}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/api/v1/query_range":
+			resp := map[string]interface{}{"status": "success", "data": map[string]interface{}{"resultType": "matrix", "result": []interface{}{}}}
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+	}))
+	defer srv.Close()
+
+	e, err := NewPrometheusEnricher(srv.URL, 3, false)
+	if err != nil {
+		t.Fatalf("NewPrometheusEnricher: %v", err)
+	}
+	e.SetPodMapping(map[string]string{"ns1/pod1": "ns1/wl1"})
+
+	start := time.Now()
+	e.EnrichWorkloads(t.Context(), []FinOpsWorkload{{Namespace: "ns1", Workload: "wl1"}})
+	elapsed := time.Since(start)
+
+	mu.Lock()
+	total := seen
+	mu.Unlock()
+	if total != expectedQueries {
+		t.Fatalf("esperava %d requests ao fake server, veio %d — contagem de queries mudou? atualize expectedQueries", expectedQueries, total)
+	}
+
+	// Sequencial custaria >= 12×80ms = 960ms; em paralelo, pouco mais que 80ms. Limiar
+	// generoso (metade do tempo sequencial) pra não ficar flaky em CI mais lento.
+	sequentialWorstCase := time.Duration(expectedQueries) * latencyPerQuery
+	if elapsed >= sequentialWorstCase/2 {
+		t.Fatalf("EnrichWorkloads levou %v pra %d queries de %v cada — parece sequencial, não paralelo (esperava bem menos que %v)",
+			elapsed, expectedQueries, latencyPerQuery, sequentialWorstCase/2)
 	}
 }

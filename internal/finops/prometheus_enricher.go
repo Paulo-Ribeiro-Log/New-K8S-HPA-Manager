@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
@@ -122,23 +123,55 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 	log.Info().Int("window_days", w).Int("workloads", len(workloads)).
 		Msg("FinOps/Prom: iniciando enriquecimento batch")
 
-	// ── 1. Métricas de container (por pod, depois agrega ao workload) ──────────
-	cpuP95Map := e.queryContainerMetric(ctx,
-		fmt.Sprintf(`quantile_over_time(0.95, rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
-		"cpu_p95",
+	// ── 1./2. Métricas de container (por pod) + HPA (por namespace/hpa-name) ───────────────────
+	// As 12 queries abaixo são TOTALMENTE independentes entre si (nenhuma usa o resultado de
+	// outra) — disparadas em paralelo, não mais sequencialmente uma atrás da outra. Bug real
+	// corrigido/relatado: "demora horrores... coisas de minutos" tanto no relatório principal
+	// (GET /finops/report?with_prometheus=true, que chama esta mesma função) quanto no scan de
+	// Rightsizing — 12 round-trips sequenciais ao Prometheus, cada um levando alguns segundos,
+	// somavam bastante tempo de parede mesmo sem nenhuma query individualmente lenta ou travada.
+	// Prometheus lida bem com um punhado de queries concorrentes da mesma sessão (limite default
+	// --query.max-concurrency=20, bem acima das 12 daqui); nenhuma delas muta e.api nem qualquer
+	// outro campo do enricher, só HTTP GET/POST independentes — seguro chamar concorrentemente.
+	var (
+		cpuP95Map, cpuAvgMap, memP95Map, memAvgMap    map[string]float64
+		cpuMaxValueMap, memMaxValueMap                map[string]float64
+		cpuMaxRange, memMaxRange                      map[string]promPeakSample
+		hpaAvgMap, hpaMaxMap, hpaMinMap, hpaEventsMap map[string]float64
 	)
-	cpuAvgMap := e.queryContainerMetric(ctx,
-		fmt.Sprintf(`avg_over_time(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
-		"cpu_avg",
-	)
-	memP95Map := e.queryContainerMetric(ctx,
-		fmt.Sprintf(`quantile_over_time(0.95, container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
-		"mem_p95",
-	)
-	memAvgMap := e.queryContainerMetric(ctx,
-		fmt.Sprintf(`avg_over_time(container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
-		"mem_avg",
-	)
+	var wg sync.WaitGroup
+	run := func(fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn()
+		}()
+	}
+
+	run(func() {
+		cpuP95Map = e.queryContainerMetric(ctx,
+			fmt.Sprintf(`quantile_over_time(0.95, rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+			"cpu_p95",
+		)
+	})
+	run(func() {
+		cpuAvgMap = e.queryContainerMetric(ctx,
+			fmt.Sprintf(`avg_over_time(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+			"cpu_avg",
+		)
+	})
+	run(func() {
+		memP95Map = e.queryContainerMetric(ctx,
+			fmt.Sprintf(`quantile_over_time(0.95, container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+			"mem_p95",
+		)
+	})
+	run(func() {
+		memAvgMap = e.queryContainerMetric(ctx,
+			fmt.Sprintf(`avg_over_time(container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+			"mem_avg",
+		)
+	})
 	// Pico real de CPU/Mem — CPU só exibido como "top" na UI (nunca usado na recomendação de CPU
 	// Limit, que segue baseada na proporção limit/request, ver recommendedLimits); Mem também
 	// alimenta o Mem Limit recomendado (ver recommendedLimits). Duas queries por métrica,
@@ -154,40 +187,55 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 	//      — falhando SILENCIOSAMENTE (só um log.Warn) e zerando o "top" inteiro quando o valor
 	//      dependia só dela. Por isso o valor NUNCA depende dela ter sucesso — o timestamp é
 	//      best-effort, anexado só quando essa query de fato retorna algo pro pod/workload.
-	cpuMaxValueMap := e.queryPodMetricPeakValue(ctx,
-		fmt.Sprintf(`max_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
-		"cpu_max_value",
-	)
-	memMaxValueMap := e.queryPodMetricPeakValue(ctx,
-		fmt.Sprintf(`max_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
-		"mem_max_value",
-	)
-	cpuMaxRange := e.queryPodMetricRangeMax(ctx,
-		`sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])) * 1000`,
-		"cpu_max_range",
-	)
-	memMaxRange := e.queryPodMetricRangeMax(ctx,
-		`sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}) / 1048576`,
-		"mem_max_range",
-	)
-
-	// ── 2. Métricas HPA (por namespace/hpa-name) ──────────────────────────────
-	hpaAvgMap := e.queryHPAMetric(ctx,
-		fmt.Sprintf(`avg_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
-		"hpa_avg",
-	)
-	hpaMaxMap := e.queryHPAMetric(ctx,
-		fmt.Sprintf(`max_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
-		"hpa_max",
-	)
-	hpaMinMap := e.queryHPAMetric(ctx,
-		fmt.Sprintf(`min_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
-		"hpa_min",
-	)
-	hpaEventsMap := e.queryHPAMetric(ctx,
-		fmt.Sprintf(`changes(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
-		"hpa_changes",
-	)
+	run(func() {
+		cpuMaxValueMap = e.queryPodMetricPeakValue(ctx,
+			fmt.Sprintf(`max_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
+			"cpu_max_value",
+		)
+	})
+	run(func() {
+		memMaxValueMap = e.queryPodMetricPeakValue(ctx,
+			fmt.Sprintf(`max_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
+			"mem_max_value",
+		)
+	})
+	run(func() {
+		cpuMaxRange = e.queryPodMetricRangeMax(ctx,
+			`sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])) * 1000`,
+			"cpu_max_range",
+		)
+	})
+	run(func() {
+		memMaxRange = e.queryPodMetricRangeMax(ctx,
+			`sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}) / 1048576`,
+			"mem_max_range",
+		)
+	})
+	run(func() {
+		hpaAvgMap = e.queryHPAMetric(ctx,
+			fmt.Sprintf(`avg_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
+			"hpa_avg",
+		)
+	})
+	run(func() {
+		hpaMaxMap = e.queryHPAMetric(ctx,
+			fmt.Sprintf(`max_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
+			"hpa_max",
+		)
+	})
+	run(func() {
+		hpaMinMap = e.queryHPAMetric(ctx,
+			fmt.Sprintf(`min_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
+			"hpa_min",
+		)
+	})
+	run(func() {
+		hpaEventsMap = e.queryHPAMetric(ctx,
+			fmt.Sprintf(`changes(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
+			"hpa_changes",
+		)
+	})
+	wg.Wait()
 
 	// ── 3. Agrega métricas de container: pod → workload ───────────────────────
 	// P95: max entre pods (pior caso do workload)
@@ -504,8 +552,20 @@ func (e *PrometheusEnricher) nodeTopUsage(ctx context.Context, nodeNames []strin
 	if len(nodeNames) == 0 {
 		return make(map[string]promPeakSample), make(map[string]promPeakSample)
 	}
-	cpu = e.nodeMetricTopUsage(ctx, nodeNames, nodeCPUTopQueries(e.window), 1, "cpu")
-	mem = e.nodeMetricTopUsage(ctx, nodeNames, nodeMemTopQueries(e.window), 1.0/1048576, "mem")
+	// CPU e Mem são cadeias de correlação totalmente independentes — rodadas em paralelo (mesmo
+	// racional de EnrichWorkloads) pra reduzir tempo de parede sem aumentar o número de queries
+	// (o short-circuit por métrica, ver nodeMetricTopUsage, continua intacto dentro de cada uma).
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		cpu = e.nodeMetricTopUsage(ctx, nodeNames, nodeCPUTopQueries(e.window), 1, "cpu")
+	}()
+	go func() {
+		defer wg.Done()
+		mem = e.nodeMetricTopUsage(ctx, nodeNames, nodeMemTopQueries(e.window), 1.0/1048576, "mem")
+	}()
+	wg.Wait()
 	return cpu, mem
 }
 
