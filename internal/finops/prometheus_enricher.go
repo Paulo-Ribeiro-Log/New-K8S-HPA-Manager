@@ -914,9 +914,20 @@ func verdictFromPrometheus(wl *FinOpsWorkload) string {
 		return "no_request"
 	}
 
-	// OOM/Throttling: P95 >= 95% do request em CPU ou Mem
-	cpuRisk := wl.CPUP95Millis > 0 && wl.CPURequestMillis > 0 && wl.CPUP95Millis >= 0.95*wl.CPURequestMillis
-	memRisk := wl.MemP95Mi > 0 && wl.MemRequestMi > 0 && wl.MemP95Mi >= 0.95*wl.MemRequestMi
+	// OOM/Throttling: P95 >= 95% do request em CPU ou Mem. Quando P95 não está disponível (ex:
+	// Dynatrace nesta família de métrica, que nunca supre percentile — ver finops_metrics.go),
+	// cai pro pico real (Max) como sinal — sem isso, todo workload enriquecido via DT teria
+	// "oom_risk" permanentemente inalcançável, mesmo genuinamente perto do limite.
+	cpuRiskBasis := wl.CPUP95Millis
+	if cpuRiskBasis == 0 {
+		cpuRiskBasis = wl.CPUMaxMillis
+	}
+	memRiskBasis := wl.MemP95Mi
+	if memRiskBasis == 0 {
+		memRiskBasis = wl.MemMaxMi
+	}
+	cpuRisk := cpuRiskBasis > 0 && wl.CPURequestMillis > 0 && cpuRiskBasis >= 0.95*wl.CPURequestMillis
+	memRisk := memRiskBasis > 0 && wl.MemRequestMi > 0 && memRiskBasis >= 0.95*wl.MemRequestMi
 	if cpuRisk || memRisk {
 		return "oom_risk"
 	}
