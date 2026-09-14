@@ -158,3 +158,38 @@ func TestAggregateNamespaces(t *testing.T) {
 		t.Errorf("ns-a custo esperado 780 (520+260), got %.2f", namespaces[1].MonthlyCostBRL)
 	}
 }
+
+// TestBuildSummary_MetricsWorkloadsEnriched cobre o bug real relatado pelo usuário: um scan onde
+// TODOS os workloads/pools vieram com desperdício R$0, CPU/Mem 0%, "Com Oportunidade 0" — sinal
+// indistinguível, sem esse campo, de "cluster genuinamente sem desperdício algum" (quando na
+// real era falha silenciosa de coleta Prometheus/Dynatrace). Confirma que MetricsWorkloadsEnriched
+// conta corretamente os workloads com MetricsSource preenchido (por qualquer fonte).
+func TestBuildSummary_MetricsWorkloadsEnriched(t *testing.T) {
+	workloads := []FinOpsWorkload{
+		{Namespace: "ns-a", Workload: "w1", MetricsSource: "prometheus"},
+		{Namespace: "ns-a", Workload: "w2", MetricsSource: "dynatrace"},
+		{Namespace: "ns-b", Workload: "w3", MetricsSource: ""}, // sem enriquecimento
+	}
+
+	summary := buildSummary(workloads, nil, 0, 5.2)
+	if summary.MetricsWorkloadsEnriched != 2 {
+		t.Errorf("esperava MetricsWorkloadsEnriched=2, got %d", summary.MetricsWorkloadsEnriched)
+	}
+	if summary.WorkloadsAnalyzed != 3 {
+		t.Errorf("esperava WorkloadsAnalyzed=3, got %d", summary.WorkloadsAnalyzed)
+	}
+}
+
+// TestBuildSummary_MetricsWorkloadsEnriched_AllEmpty cobre o cenário exato do bug real — nenhum
+// workload recebeu enriquecimento (o sinal de falha silenciosa que BuildReport usa junto de
+// MetricsAttempted pra decidir se avisa o usuário).
+func TestBuildSummary_MetricsWorkloadsEnriched_AllEmpty(t *testing.T) {
+	workloads := []FinOpsWorkload{
+		{Namespace: "ns-a", Workload: "w1"},
+		{Namespace: "ns-a", Workload: "w2"},
+	}
+	summary := buildSummary(workloads, nil, 0, 5.2)
+	if summary.MetricsWorkloadsEnriched != 0 {
+		t.Errorf("esperava MetricsWorkloadsEnriched=0, got %d", summary.MetricsWorkloadsEnriched)
+	}
+}

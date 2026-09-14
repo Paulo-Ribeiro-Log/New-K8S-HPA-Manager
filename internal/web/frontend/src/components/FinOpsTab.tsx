@@ -119,6 +119,17 @@ interface FinOpsSummary {
   os_disk_cost_brl?: number;
   orphaned_storage_cost_brl?: number;
   total_with_storage_brl?: number;
+  // Cobertura de métricas reais (Dynatrace/Prometheus) — usado pra distinguir "cluster sem
+  // desperdício" de "falha silenciosa de coleta" (ver internal/finops/models.go).
+  metrics_attempted?: boolean;
+  metrics_workloads_enriched?: number;
+}
+
+/** true quando Prometheus/Dynatrace foram tentados mas NENHUM workload recebeu dado real de uso
+ *  — sinal de falha de coleta (VPN/rede/API indisponível no momento do scan), não de "cluster
+ *  genuinamente sem desperdício nenhum". Compartilhado entre FinOpsTab e RightsizingTab. */
+function metricsCollectionLikelyFailed(summary: FinOpsSummary): boolean {
+  return !!summary.metrics_attempted && (summary.metrics_workloads_enriched ?? 0) === 0 && summary.workloads_analyzed > 0;
 }
 
 interface PVCCostItem {
@@ -4405,6 +4416,17 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       {/* Relatório */}
       {report && !isLoading && (
         <>
+          {metricsCollectionLikelyFailed(report.summary) && (
+            <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
+              <AlertTriangle className="h-4 w-4 text-red-600" />
+              <AlertDescription className="text-sm text-red-700 dark:text-red-400">
+                <strong>Nenhum dos {report.summary.workloads_analyzed} workloads recebeu dado real de uso</strong> (Dynatrace/Prometheus) nesta análise —
+                os valores de desperdício, CPU/Mem e "Com Oportunidade" abaixo (e na aba Rightsizing) provavelmente não refletem a realidade, é mais provável
+                que seja uma falha de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente não ter desperdício em lugar
+                nenhum. Reanalise em alguns minutos; se persistir, verifique a conectividade com Prometheus/Dynatrace.
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="flex items-center gap-2 text-xs text-muted-foreground -mb-1 flex-wrap">
             <Server className="h-3.5 w-3.5 shrink-0" />
             <span>

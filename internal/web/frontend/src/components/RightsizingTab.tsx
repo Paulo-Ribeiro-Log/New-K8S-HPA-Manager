@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Loader2, RefreshCw, Server, Search, Sparkles, Boxes, Gauge, Info } from "lucide-react";
+import { Loader2, RefreshCw, Server, Search, Sparkles, Boxes, Gauge, Info, AlertTriangle } from "lucide-react";
 import ResourceGauge from "@/components/ResourceGauge";
 import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard } from "@/lib/finopsFormat";
 import { DollarSign, TrendingDown, Layers } from "lucide-react";
@@ -897,6 +897,14 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
 
   const totalWaste = workloads.reduce((sum, w) => sum + (w.waste_brl ?? 0), 0);
 
+  // Rightsizing SEMPRE exige uso real (ScanRightsizing só roda se Dynatrace ou Prometheus foi
+  // configurado — sem isso o scan já falha com 400 antes de chegar aqui, ver ScanRightsizing),
+  // então nenhum workload com metrics_source é sempre um sinal de falha de coleta (VPN/rede/API
+  // indisponível no momento do scan), nunca "cluster genuinamente sem desperdício algum" — bug
+  // real corrigido, relatado pelo usuário com um scan real onde TODOS os pools vieram com CPU/
+  // Mem 0%, "baseado no uso real de 0 workload(s)" e Desperdício Total R$0 ao mesmo tempo.
+  const metricsFailureLikely = workloads.length > 0 && workloads.every((w) => !w.metrics_source);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20 text-muted-foreground gap-2">
@@ -937,6 +945,18 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
       {scanError && (
         <Alert variant="destructive">
           <AlertDescription>{scanError}</AlertDescription>
+        </Alert>
+      )}
+
+      {data?.scanned && metricsFailureLikely && (
+        <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
+          <AlertTriangle className="h-4 w-4 text-red-600" />
+          <AlertDescription className="text-sm text-red-700 dark:text-red-400">
+            <strong>Nenhum dos {workloads.length} workloads recebeu dado real de uso</strong> (Dynatrace/Prometheus) nesta análise —
+            os valores de CPU/Mem, desperdício e "Com Oportunidade" abaixo provavelmente não refletem a realidade, é mais provável
+            que seja uma falha de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente não ter
+            desperdício em lugar nenhum. Clique em "Reanalisar agora" em alguns minutos.
+          </AlertDescription>
         </Alert>
       )}
 

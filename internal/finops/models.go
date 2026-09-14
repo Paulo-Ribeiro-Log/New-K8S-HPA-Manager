@@ -197,6 +197,21 @@ type FinOpsSummary struct {
 	OSDiskCostBRL          float64 `json:"os_disk_cost_brl,omitempty"`
 	OrphanedStorageCostBRL float64 `json:"orphaned_storage_cost_brl,omitempty"`
 	TotalWithStorageBRL    float64 `json:"total_with_storage_brl,omitempty"`
+
+	// MetricsAttempted/MetricsWorkloadsEnriched — bug real corrigido, relatado pelo usuário via
+	// um scan onde TODOS os workloads e node pools vieram com desperdício R$0, CPU/Mem 0%, "Com
+	// Oportunidade 0" — indistinguível, na UI, de "cluster genuinamente sem nenhum desperdício",
+	// quando na real era falha SILENCIOSA de coleta (Prometheus/Dynatrace indisponível ou erro de
+	// rede no momento do scan — antes só logada como Warn no servidor, nunca chegava na resposta
+	// da API). MetricsAttempted=true (DT ou Prometheus configurado/tentado) combinado com
+	// MetricsWorkloadsEnriched==0 e WorkloadsAnalyzed>0 é o sinal de falha — extremamente
+	// improvável que TODOS os workloads de um cluster real tenham uso zero ao mesmo tempo; o
+	// frontend usa essa combinação pra mostrar um aviso em vez de fingir que os números (0%,
+	// R$0, "Com Oportunidade 0") são confiáveis. MetricsAttempted=false é o caso normal/
+	// deliberado de "sem Prometheus" (with_prometheus=false e sem Dynatrace configurado) — não
+	// deve gerar aviso nenhum.
+	MetricsAttempted         bool `json:"metrics_attempted"`
+	MetricsWorkloadsEnriched int  `json:"metrics_workloads_enriched"`
 }
 
 // ── Storage types ─────────────────────────────────────────────────────────────

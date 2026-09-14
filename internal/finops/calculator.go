@@ -198,6 +198,21 @@ func (c *Calculator) BuildReport(
 
 	// 6. Montar summary base (compute)
 	summary := buildSummary(workloads, nsMap, clusterCostUSD, rate)
+	summary.MetricsAttempted = dtEnricher != nil || enricher != nil
+	// Bug real corrigido — relatado pelo usuário com um scan real onde TODOS os workloads/pools
+	// vieram com desperdício R$0, CPU/Mem 0%, "Com Oportunidade 0", e a suspeita certa dele foi
+	// "a falha está em tentar buscar informações e falhar silenciosamente". Confirmado: DT/
+	// Prometheus enrichment tinha essa exata falha — erro de query vira só log.Warn, nunca chega
+	// na resposta da API, e "0 workloads com uso" é visualmente idêntico a "cluster sem
+	// desperdício nenhum". summary.MetricsAttempted/MetricsWorkloadsEnriched (ver models.go) dão
+	// ao frontend o sinal pra distinguir os dois casos; este log torna o mesmo sinal visível
+	// direto no servidor, sem precisar abrir a UI pra perceber.
+	if summary.MetricsAttempted && summary.MetricsWorkloadsEnriched == 0 && len(workloads) > 0 {
+		log.Warn().Str("cluster", cluster).Int("workloads", len(workloads)).
+			Bool("dynatrace_configured", dtEnricher != nil).
+			Bool("prometheus_configured", enricher != nil).
+			Msg("FinOps: NENHUM workload recebeu dado real de uso (Dynatrace/Prometheus) nesta análise — provável falha de coleta (VPN/rede/API indisponível no momento do scan), não ausência genuína de desperdício. Verifique os logs 'FinOps/Prom'/'FinOps/DT' acima pra causa raiz.")
+	}
 
 	// 7. Storage: PVCs + disco OS por pool (não fatal — relatório retorna mesmo sem dados de storage)
 	var pvcs []PVCCostItem
@@ -730,6 +745,9 @@ func buildSummary(workloads []FinOpsWorkload, namespaces []FinOpsNamespace, clus
 	}
 
 	for _, wl := range workloads {
+		if wl.MetricsSource != "" {
+			s.MetricsWorkloadsEnriched++
+		}
 		switch wl.Verdict {
 		case "superprovisioned":
 			s.SuperprovisionedCount++
