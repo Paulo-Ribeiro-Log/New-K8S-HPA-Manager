@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	DefaultExchangeRate  = 5.50         // fallback quando API falha
+	DefaultExchangeRate  = 5.50 // fallback quando API falha
 	exchangeRateCacheTTL = 1 * time.Hour
 	exchangeRateAPIURL   = "https://economia.awesomeapi.com.br/json/last/USD-BRL"
 )

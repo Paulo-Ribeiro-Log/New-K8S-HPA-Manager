@@ -1,7 +1,18 @@
 package finops
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	resource "k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ─── MapStorageClassToAzureType ───────────────────────────────────────────────
@@ -88,9 +99,9 @@ func TestResolveManagedDiskTier(t *testing.T) {
 		{"Standard SSD", 129, "E15"},
 
 		// Standard HDD (começa em S4=32GB)
-		{"Standard HDD", 1, "S4"},   // abaixo do mínimo → S4
-		{"Standard HDD", 32, "S4"},  // exato S4
-		{"Standard HDD", 33, "S6"},  // acima de S4 → S6
+		{"Standard HDD", 1, "S4"},  // abaixo do mínimo → S4
+		{"Standard HDD", 32, "S4"}, // exato S4
+		{"Standard HDD", 33, "S6"}, // acima de S4 → S6
 		{"Standard HDD", 128, "S10"},
 
 		// Tipo desconhecido → fallback para Standard SSD
@@ -114,12 +125,12 @@ func TestPVCCostMath(t *testing.T) {
 	rate := 5.20 // taxa USD→BRL do teste
 
 	cases := []struct {
-		desc        string
-		azureType   string
-		capacityGB  float64
-		wantTier    string
-		wantUSD     float64 // preço do tier no fallback
-		wantBRL     float64 // wantUSD * rate, arredondado 2 casas
+		desc       string
+		azureType  string
+		capacityGB float64
+		wantTier   string
+		wantUSD    float64 // preço do tier no fallback
+		wantBRL    float64 // wantUSD * rate, arredondado 2 casas
 	}{
 		{
 			desc:       "Premium SSD 100GB → P10",
@@ -335,5 +346,111 @@ func TestOrphanDetectionWithRetain(t *testing.T) {
 	}
 	if retainOrphans != 1 {
 		t.Errorf("orfãos com Retain = %d, quer 1", retainOrphans)
+	}
+}
+
+// TestPrefetchVolumeUsage_RunsInParallel cobre o mesmo bug real de performance já corrigido no
+// Prometheus (top de workload/node) e no Dynatrace (GetAllWorkloadMetrics) nesta mesma
+// investigação de lentidão ("os scans ainda estão levando 2 minutos cada"): calculatePVCCost
+// fazia uma query kubelet_volume_stats_used_bytes por PVC de capacidade placeholder (Blob/
+// Files), DENTRO do loop sequencial de Calculate — N round-trips em série, um de cada vez, N
+// sendo o número de PVCs desse tipo no cluster (potencialmente muitos, não um valor fixo
+// pequeno). Confirma que prefetchVolumeUsage dispara todas as queries necessárias em paralelo.
+func TestPrefetchVolumeUsage_RunsInParallel(t *testing.T) {
+	const numPVCs = 8
+	const perRequestDelay = 80 * time.Millisecond
+
+	var inFlight int32
+	var peakInFlight int32
+	var mu sync.Mutex
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := atomic.AddInt32(&inFlight, 1)
+		mu.Lock()
+		if cur > peakInFlight {
+			peakInFlight = cur
+		}
+		mu.Unlock()
+		defer atomic.AddInt32(&inFlight, -1)
+
+		time.Sleep(perRequestDelay)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1700000000,"1073741824"]}]}}`))
+	}))
+	defer srv.Close()
+
+	sc := NewStorageCalculator(nil)
+	sc.WithPrometheus(srv.URL, false)
+
+	pvcs := make([]corev1.PersistentVolumeClaim, numPVCs)
+	for i := 0; i < numPVCs; i++ {
+		name := fmt.Sprintf("blob-pvc-%d", i)
+		pvcs[i] = corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: name},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				VolumeName: "pv-" + name,
+				// Sem Requests preenchido → capacidade desconhecida, força o fallback de Prometheus
+				// (mesmo cenário real de Blob/Files, ver pvcKnownCapacityGB).
+			},
+		}
+	}
+
+	start := time.Now()
+	usage := sc.prefetchVolumeUsage(context.Background(), pvcs, map[string]corev1.PersistentVolume{})
+	elapsed := time.Since(start)
+
+	if len(usage) != numPVCs {
+		t.Fatalf("esperava uso pré-buscado pras %d PVCs, veio %d", numPVCs, len(usage))
+	}
+	for i := 0; i < numPVCs; i++ {
+		key := fmt.Sprintf("ns1/blob-pvc-%d", i)
+		if usage[key] <= 0 {
+			t.Errorf("esperava uso > 0 pra %s, veio %v", key, usage[key])
+		}
+	}
+
+	if peakInFlight < 3 {
+		t.Errorf("esperava pelo menos 3 queries simultâneas ao Prometheus, pico observado foi %d", peakInFlight)
+	}
+
+	sequentialCost := time.Duration(numPVCs) * perRequestDelay
+	if elapsed > sequentialCost/2 {
+		t.Errorf("execução levou %s — esperava bem menos que a metade do custo sequencial (%s), indicando que não está paralelizando", elapsed, sequentialCost)
+	}
+}
+
+// TestPrefetchVolumeUsage_SkipsPVCsWithKnownCapacity confirma que PVCs com capacidade real
+// conhecida (via request, não placeholder) NUNCA disparam uma query ao Prometheus — só os
+// genuinamente sem capacidade conhecida (Blob/Files) precisam do fallback.
+func TestPrefetchVolumeUsage_SkipsPVCsWithKnownCapacity(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+	}))
+	defer srv.Close()
+
+	sc := NewStorageCalculator(nil)
+	sc.WithPrometheus(srv.URL, false)
+
+	pvcs := []corev1.PersistentVolumeClaim{
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "normal-pvc"},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("100Gi")},
+				},
+			},
+		},
+	}
+
+	usage := sc.prefetchVolumeUsage(context.Background(), pvcs, map[string]corev1.PersistentVolume{})
+	if len(usage) != 0 {
+		t.Fatalf("esperava mapa vazio (PVC com capacidade conhecida não precisa de Prometheus), veio %+v", usage)
+	}
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Fatalf("esperava 0 chamadas ao Prometheus, veio %d", calls)
 	}
 }

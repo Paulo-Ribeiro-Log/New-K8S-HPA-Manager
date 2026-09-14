@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -21,15 +22,17 @@ import (
 
 // FinOpsHandler expõe análise de custo real de clusters AKS/GKE/EKS.
 type FinOpsHandler struct {
-	kubeManager     *config.KubeConfigManager
-	npRegistryStore *storage.NodePoolRegistryStore
-	timelineStore   *storage.FinOpsTimelineStore // pode ser nil se DB não disponível
-	pricer          *finops.AzurePricer          // AKS — também usado como fallback pra providers sem pricer próprio
-	gcpPricer       *finops.GCPPricer            // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
-	diskPricer      *finops.DiskPricer           // nil = análise de storage omitida (Azure only)
-	exchange        *finops.ExchangeRateProvider
-	aiHandler       *AIDiagnosticsHandler // opcional — nil se AI não configurado
-	dtTokenStore    dtTokenReader         // para criar DTEnricher sob demanda
+	kubeManager      *config.KubeConfigManager
+	npRegistryStore  *storage.NodePoolRegistryStore
+	timelineStore    *storage.FinOpsTimelineStore    // pode ser nil se DB não disponível
+	rightsizingStore *storage.FinOpsRightsizingStore // pode ser nil se DB não disponível — ver finops_rightsizing.go
+	reportCacheStore *storage.FinOpsReportCacheStore // pode ser nil se DB não disponível — cache do último GET /finops/report por cluster, ver GetLastReport
+	pricer           *finops.AzurePricer             // AKS — também usado como fallback pra providers sem pricer próprio
+	gcpPricer        *finops.GCPPricer               // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
+	diskPricer       *finops.DiskPricer              // nil = análise de storage omitida (Azure only)
+	exchange         *finops.ExchangeRateProvider
+	aiHandler        *AIDiagnosticsHandler // opcional — nil se AI não configurado
+	dtTokenStore     dtTokenReader         // para criar DTEnricher sob demanda
 
 	// awsPricers cacheia um *finops.AWSPricer por (region, profile) — diferente de
 	// AzurePricer/GCPPricer (uma única região/instância pra todo o servidor), EKS pode ter
@@ -46,7 +49,7 @@ type dtTokenReader interface {
 
 // NewFinOpsHandler cria o handler com as dependências compartilhadas.
 // AzurePricer, GCPPricer e DiskPricer são inicializados uma única vez (cache SQLite interno).
-func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, aiHandler *AIDiagnosticsHandler, dtTokens dtTokenReader) *FinOpsHandler {
+func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, rightsizingStore *storage.FinOpsRightsizingStore, reportCacheStore *storage.FinOpsReportCacheStore, aiHandler *AIDiagnosticsHandler, dtTokens dtTokenReader) *FinOpsHandler {
 	pricer, err := finops.NewAzurePricer("")
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar AzurePricer, usando apenas fallback")
@@ -60,16 +63,18 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar DiskPricer, análise de storage omitida")
 	}
 	return &FinOpsHandler{
-		kubeManager:     kubeManager,
-		npRegistryStore: npRegistryStore,
-		timelineStore:   timelineStore,
-		pricer:          pricer,
-		gcpPricer:       gcpPricer,
-		diskPricer:      diskPricer,
-		exchange:        finops.NewExchangeRateProvider(),
-		aiHandler:       aiHandler,
-		dtTokenStore:    dtTokens,
-		awsPricers:      make(map[string]*finops.AWSPricer),
+		kubeManager:      kubeManager,
+		npRegistryStore:  npRegistryStore,
+		timelineStore:    timelineStore,
+		rightsizingStore: rightsizingStore,
+		reportCacheStore: reportCacheStore,
+		pricer:           pricer,
+		gcpPricer:        gcpPricer,
+		diskPricer:       diskPricer,
+		exchange:         finops.NewExchangeRateProvider(),
+		aiHandler:        aiHandler,
+		dtTokenStore:     dtTokens,
+		awsPricers:       make(map[string]*finops.AWSPricer),
 	}
 }
 
@@ -134,6 +139,7 @@ func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
 // cenários HPA e resumo de oportunidades de saving.
 // Com with_prometheus=true, enriquece workloads com P95 CPU/Mem real (mais lento).
 func (h *FinOpsHandler) GetReport(c *gin.Context) {
+	handlerStart := time.Now()
 	cluster := c.Query("cluster")
 	if cluster == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
@@ -227,12 +233,54 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		storagePromURL = discovery.GetPrometheusURL(cluster)
 		storageRequiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
-	calc := finops.NewCalculator(h.pricerForCluster(cluster), h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
-	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher)
+	pricer := h.pricerForCluster(cluster)
+	calc := finops.NewCalculator(pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
+	// metrics-server é opcional/best-effort (ex: EKS sem metrics-server instalado) — nil aqui só
+	// significa que os campos "current" (live) do relatório ficam vazios, nunca bloqueia o resto.
+	metricsClient, metricsErr := h.kubeManager.GetMetricsClient(cluster)
+	if metricsErr != nil {
+		log.Debug().Err(metricsErr).Str("cluster", cluster).Msg("FinOps: metrics-server indisponível, uso 'current' ao vivo ficará vazio")
+		metricsClient = nil
+	}
+	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher, metricsClient)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()})
 		return
+	}
+
+	// Rightsizing reaproveitando o MESMO relatório — bug real corrigido, relatado pelo usuário:
+	// "o que me leva a crer que está fazendo o mesmo scan 2 vezes" (o "Analisar" principal do
+	// FinOps disparava GetReport completo e, em seguida, o frontend chamava POST /rightsizing/
+	// scan, que refazia TODO o pipeline Dynatrace/Prometheus/K8s/storage do zero — dobrando o
+	// tempo total, cada scan já levando ~2min sozinho). Best-effort e opt-in via
+	// persist_rightsizing=true (só o "Analisar" principal do FinOps manda isso — ver
+	// triggerRightsizingScan em FinOpsTab.tsx); nunca falha a resposta principal do relatório.
+	// Só roda sem filtro de namespace (persistir um relatório PARCIAL sobrescreveria a análise
+	// completa do cluster no store) e só quando há alguma fonte de uso real (mesma exigência já
+	// documentada em ScanRightsizing — "rightsizing exige uso real histórico").
+	if c.Query("persist_rightsizing") == "true" && h.rightsizingStore != nil && len(namespaces) == 0 && (dtEnricher != nil || enricher != nil) {
+		if _, _, _, perr := h.persistRightsizingFromReport(c.Request.Context(), cluster, report, windowDays, pricer); perr != nil {
+			log.Warn().Err(perr).Str("cluster", cluster).
+				Msg("FinOps: falha ao persistir rightsizing a partir do relatório principal (best-effort, não afeta o relatório em si)")
+		} else {
+			log.Info().Str("cluster", cluster).Msg("FinOps: rightsizing persistido a partir do relatório principal (sem re-scan)")
+		}
+	}
+
+	// Cacheia o relatório recém-gerado como "último scan" deste cluster — bug real corrigido,
+	// relatado pelo usuário: "sempre que chamamos a aba finops, ela vem vazia... ajuste para que
+	// venha com a exibição do último scan". Antes o relatório só existia no cache em memória do
+	// React Query (nada sobrevive a um reload de página ou a uma troca de aba que desmonte o
+	// componente e deixe o cache expirar) — GET /finops/report/last (ver GetLastReport) lê daqui
+	// pra restaurar a última tela vista sem exigir um novo clique em "Analisar". Best-effort:
+	// nunca falha a resposta principal do relatório se o cache não puder ser escrito.
+	if h.reportCacheStore != nil {
+		if reportJSON, merr := json.Marshal(report); merr != nil {
+			log.Warn().Err(merr).Str("cluster", cluster).Msg("FinOps: falha ao serializar relatório pro cache de último scan")
+		} else if serr := h.reportCacheStore.Save(cluster, reportJSON, report.GeneratedAt); serr != nil {
+			log.Warn().Err(serr).Str("cluster", cluster).Msg("FinOps: falha ao persistir cache de último scan (best-effort, não afeta o relatório em si)")
+		}
 	}
 
 	log.Info().
@@ -242,9 +290,43 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		Float64("waste_brl", report.Summary.PotentialSavingsBRL).
 		Bool("dynatrace", dtEnricher != nil).
 		Bool("prometheus", enricher != nil).
+		Dur("elapsed_total_handler", time.Since(handlerStart)).
 		Msg("FinOps: relatório gerado")
 
 	c.JSON(http.StatusOK, report)
+}
+
+// GetLastReport godoc
+// GET /api/v1/finops/report/last?cluster=X
+//
+// Devolve o ÚLTIMO relatório com sucesso (GET /finops/report) já persistido em cache pra este
+// cluster — sem NUNCA consultar Dynatrace/Prometheus/K8s de novo, só lê o JSON já pronto do
+// SQLite. Existe pra que abrir/reabrir a aba FinOps mostre a última análise feita, em vez de vir
+// vazia até o usuário clicar "Analisar" manualmente de novo. scanned=false (200, nunca 404 —
+// mais simples de consumir no frontend) quando o cluster nunca foi analisado ainda.
+func (h *FinOpsHandler) GetLastReport(c *gin.Context) {
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
+		return
+	}
+	if h.reportCacheStore == nil {
+		c.JSON(http.StatusOK, gin.H{"scanned": false})
+		return
+	}
+
+	reportJSON, generatedAt, found, err := h.reportCacheStore.Get(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao ler cache do último relatório: " + err.Error()})
+		return
+	}
+	if !found {
+		c.JSON(http.StatusOK, gin.H{"scanned": false})
+		return
+	}
+
+	log.Debug().Str("cluster", cluster).Time("generated_at", generatedAt).Msg("FinOps: último relatório restaurado do cache (sem re-scan)")
+	c.Data(http.StatusOK, "application/json; charset=utf-8", reportJSON)
 }
 
 // GetPricing godoc
@@ -518,15 +600,24 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 }
 
 // GetVMAlternatives godoc
-// GET /api/v1/finops/vm-alternatives?sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3
+// GET /api/v1/finops/vm-alternatives?cluster=X&sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3
 //
-// Retorna até 3 SKUs alternativos sugeridos para o VM SKU informado, levando em conta
-// os percentuais de utilização de CPU e Memória do cluster para identificar o gargalo.
+// Retorna até 3 SKUs/instance types alternativos sugeridos para o VM size informado, levando em
+// conta os percentuais de utilização de CPU e Memória do pool para identificar o gargalo.
 // Se cpu_pct e mem_pct forem 0, nenhuma sugestão de troca de família é emitida.
+//
+// cluster é obrigatório — decide qual CloudPricer usar (Azure/GCP/AWS) via pricerForCluster.
+// Antes deste parâmetro, o endpoint sempre usava h.pricer (AzurePricer) incondicionalmente —
+// funcionava só pra AKS; SKUs/instance types de GKE/EKS nunca batiam em nada.
 func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
 	sku := c.Query("sku")
 	if sku == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'sku' é obrigatório"})
+		return
+	}
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
 		return
 	}
 
@@ -538,15 +629,18 @@ func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
 	}
 
 	rate, _ := h.exchange.Get()
+	pricer := h.pricerForCluster(cluster)
+	provider := config.DetectCloudProvider(h.kubeManager.GetServerURL(cluster), cluster)
 
-	alternatives := finops.SuggestAlternatives(sku, cpuPct, memPct, h.pricer, rate, nodeCount)
+	alternatives := finops.SuggestVMTier(provider, sku, float64(cpuPct), float64(memPct), pricer, rate, nodeCount)
 	if alternatives == nil {
 		alternatives = []finops.VMAlternative{}
 	}
 
-	cpu, mem := finops.GetVMSpecs(sku)
+	cpu, mem := pricer.GetVMSpecs(sku)
 	c.JSON(http.StatusOK, gin.H{
 		"sku":          sku,
+		"provider":     provider,
 		"cpu_cores":    cpu,
 		"memory_gb":    mem,
 		"cpu_pct":      cpuPct,

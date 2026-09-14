@@ -5,12 +5,14 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"k8s-hpa-manager/internal/storage"
 )
@@ -30,6 +32,41 @@ type rawWorkload struct {
 	HPAMin           int
 	HPAMax           int
 	HPACurrent       int
+	// PoolPodCounts conta quantos pods deste workload rodam em cada node pool — na prática quase
+	// sempre 1 pool só (afinidade/taint), mas cobre o caso raro de split sem quebrar. Usado só pra
+	// escolher o NodePool "principal" do workload (allocateCosts) — nunca pra ratear custo, que
+	// continua sendo por fração do cluster inteiro (allocateCosts, inalterado).
+	PoolPodCounts map[string]int
+	// NodePodCounts é o mesmo critério de PoolPodCounts, mas por nome literal de node (não pool) —
+	// usado pra popular FinOpsWorkload.NodeName, que correlaciona o workload com NodeUsage
+	// (ver live_metrics.go) na aba Rightsizing.
+	NodePodCounts map[string]int
+	// OldestPodStartedAt é o CreationTimestamp do pod Running mais antigo deste workload —
+	// contextualiza "há quanto tempo o workload está no ar sem reiniciar" pra interpretar um pico
+	// histórico (ver FinOpsWorkload.OldestPodStartedAt em models.go).
+	OldestPodStartedAt time.Time
+}
+
+// nodePoolLabelFromNode retorna o nome do node pool a partir dos labels de um node K8s
+// (multi-cloud: AKS/EKS/GKE). Duplica de propósito a mesma lógica de
+// internal/web/handlers/nodepools_snat.go::nodePoolLabel — não dá pra importar de lá
+// (handlers já importa finops, importar de volta criaria ciclo); mesma classe de duplicação
+// pequena/estável já aceita neste projeto por motivo de fronteira de pacote (ver
+// internal/healthcheck/resource_enricher.go, que duplica verdictFromPrometheus pelo mesmo motivo).
+func nodePoolLabelFromNode(labels map[string]string) string {
+	if v := labels["kubernetes.azure.com/agentpool"]; v != "" { // AKS
+		return v
+	}
+	if v := labels["agentpool"]; v != "" {
+		return v
+	}
+	if v := labels["eks.amazonaws.com/nodegroup"]; v != "" { // EKS
+		return v
+	}
+	if v := labels["cloud.google.com/gke-nodepool"]; v != "" { // GKE
+		return v
+	}
+	return ""
 }
 
 // Calculator realiza a análise FinOps de um cluster
@@ -63,6 +100,10 @@ func (c *Calculator) WithPrometheusURL(url string, requiresGCPAuth bool) *Calcul
 // dtEnricher: fonte primária de métricas históricas (Dynatrace). Pode ser nil.
 // enricher:   fonte secundária (Prometheus). Usado como fallback quando DT não tem dados
 //             para um workload, ou quando dtEnricher é nil.
+// metricsClient: opcional (pode ser nil) — quando presente, popula CPUCurrentMillis/MemCurrentMi
+//                por workload (live, via metrics-server) e FinOpsReport.NodeUsage (current+top
+//                por node, ver live_metrics.go). Sem ele, o relatório funciona exatamente como
+//                antes (só uso histórico via Prometheus/Dynatrace), sem os campos "current".
 func (c *Calculator) BuildReport(
 	ctx context.Context,
 	cluster string,
@@ -71,20 +112,43 @@ func (c *Calculator) BuildReport(
 	namespaces []string,
 	dtEnricher *DTEnricher,
 	enricher *PrometheusEnricher,
+	metricsClient metricsclientset.Interface,
 ) (*FinOpsReport, error) {
+	// Timing por fase — bug real relatado pelo usuário: "definitivamente depois dos ajuste...
+	// o que temos é um scan de 2 minutos... não parece haver nenhum paralelismo". As rodadas
+	// anteriores desta investigação já paralelizaram as queries do Prometheus, do Dynatrace e o
+	// pré-fetch de uso de PVC — mas sem NENHUMA telemetria real de qual fase é de fato a
+	// dominante, cada rodada foi um chute (ainda que fundamentado) sobre código nunca visto
+	// rodando ao vivo. Esses logs eliminam o chute: a próxima vez que "ainda está lento" for
+	// relatado, o log do servidor já mostra o tempo exato de cada fase, sem precisar de mais uma
+	// rodada de "acho que pode ser X".
+	overallStart := time.Now()
+	logTiming := func(step string, start time.Time, extra map[string]interface{}) {
+		ev := log.Info().Str("cluster", cluster).Str("step", step).Dur("elapsed", time.Since(start))
+		for k, v := range extra {
+			ev = ev.Interface(k, v)
+		}
+		ev.Msg("FinOps/timing")
+	}
+
 	rate, rateDate := c.exchange.Get()
 
 	// 1. Calcular custo e capacidade dos node pools
+	stepStart := time.Now()
 	finOpsPools, capacity, clusterCostUSD, err := c.calculatePoolCosts(pools, rate)
 	if err != nil {
 		return nil, err
 	}
+	logTiming("calculatePoolCosts", stepStart, map[string]interface{}{"pools": len(finOpsPools)})
 
-	// 2. Coletar workloads do cluster (pods + HPAs) + mapa pod→workload para o enricher
-	rawWorkloads, podToWorkload, err := collectWorkloads(ctx, client, namespaces)
+	// 2. Coletar workloads do cluster (pods + HPAs) + mapa pod→workload para o enricher +
+	// mapa node→pool (reaproveitado abaixo pra NodeUsage).
+	stepStart = time.Now()
+	rawWorkloads, podToWorkload, nodeToPool, err := collectWorkloads(ctx, client, namespaces)
 	if err != nil {
 		return nil, err
 	}
+	logTiming("collectWorkloads", stepStart, map[string]interface{}{"workloads": len(rawWorkloads)})
 
 	// 3. Alocar custo proporcional a cada workload
 	workloads := allocateCosts(rawWorkloads, capacity, clusterCostUSD, rate)
@@ -94,21 +158,39 @@ func (c *Calculator) BuildReport(
 	var dtEnriched map[string]bool
 
 	if dtEnricher != nil {
+		stepStart = time.Now()
 		dtEnriched = dtEnricher.EnrichWorkloads(ctx, workloads)
 		windowDays = dtEnricher.windowDays
+		logTiming("dtEnricher.EnrichWorkloads", stepStart, nil)
 	}
 
 	if enricher != nil {
 		enricher.SetPodMapping(podToWorkload)
+		stepStart = time.Now()
 		if len(dtEnriched) > 0 {
 			// Aplicar Prometheus apenas nos workloads sem dados DT
 			enricher.EnrichWorkloadsPartial(ctx, workloads, dtEnriched)
 		} else {
 			enricher.EnrichWorkloads(ctx, workloads)
 		}
+		logTiming("prometheusEnricher.EnrichWorkloads", stepStart, nil)
 		if windowDays == 0 {
 			windowDays = enricher.window
 		}
+	}
+
+	// 4b. Live (metrics-server): uso "current" de verdade por workload + por node — best-effort,
+	// nunca bloqueia o relatório se o metrics-server não estiver disponível (ver live_metrics.go).
+	var nodeUsage []NodeUsage
+	if metricsClient != nil {
+		stepStart = time.Now()
+		EnrichWorkloadsLiveMetrics(ctx, metricsClient, workloads, podToWorkload)
+		logTiming("EnrichWorkloadsLiveMetrics", stepStart, nil)
+	}
+	if uniqueNodes := uniqueNonEmptyNodeNames(workloads); len(uniqueNodes) > 0 {
+		stepStart = time.Now()
+		nodeUsage = ComputeNodeUsage(ctx, client, metricsClient, uniqueNodes, nodeToPool, enricher)
+		logTiming("ComputeNodeUsage", stepStart, map[string]interface{}{"nodes": len(uniqueNodes)})
 	}
 
 	// 5. Agregar por namespace
@@ -116,6 +198,21 @@ func (c *Calculator) BuildReport(
 
 	// 6. Montar summary base (compute)
 	summary := buildSummary(workloads, nsMap, clusterCostUSD, rate)
+	summary.MetricsAttempted = dtEnricher != nil || enricher != nil
+	// Bug real corrigido — relatado pelo usuário com um scan real onde TODOS os workloads/pools
+	// vieram com desperdício R$0, CPU/Mem 0%, "Com Oportunidade 0", e a suspeita certa dele foi
+	// "a falha está em tentar buscar informações e falhar silenciosamente". Confirmado: DT/
+	// Prometheus enrichment tinha essa exata falha — erro de query vira só log.Warn, nunca chega
+	// na resposta da API, e "0 workloads com uso" é visualmente idêntico a "cluster sem
+	// desperdício nenhum". summary.MetricsAttempted/MetricsWorkloadsEnriched (ver models.go) dão
+	// ao frontend o sinal pra distinguir os dois casos; este log torna o mesmo sinal visível
+	// direto no servidor, sem precisar abrir a UI pra perceber.
+	if summary.MetricsAttempted && summary.MetricsWorkloadsEnriched == 0 && len(workloads) > 0 {
+		log.Warn().Str("cluster", cluster).Int("workloads", len(workloads)).
+			Bool("dynatrace_configured", dtEnricher != nil).
+			Bool("prometheus_configured", enricher != nil).
+			Msg("FinOps: NENHUM workload recebeu dado real de uso (Dynatrace/Prometheus) nesta análise — provável falha de coleta (VPN/rede/API indisponível no momento do scan), não ausência genuína de desperdício. Verifique os logs 'FinOps/Prom'/'FinOps/DT' acima pra causa raiz.")
+	}
 
 	// 7. Storage: PVCs + disco OS por pool (não fatal — relatório retorna mesmo sem dados de storage)
 	var pvcs []PVCCostItem
@@ -133,36 +230,60 @@ func (c *Calculator) BuildReport(
 			storageCalc.WithAWSPricer(awsPricer)
 		}
 
+		stepStart = time.Now()
 		pvcs, storageSummary, err = storageCalc.Calculate(ctx, client, cluster, rate)
 		if err != nil {
 			log.Warn().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao calcular storage (relatório retorna sem dados de storage)")
 		}
+		logTiming("storageCalc.Calculate", stepStart, map[string]interface{}{"pvcs": len(pvcs)})
 
-		// 7a. Custo de disco OS por node pool
+		// 7a. Custo de disco OS por node pool — bug real corrigido: pra AKS (o caminho padrão de
+		// osDiskCostForPool, ver comentário da função) isso é uma chamada K8s AO VIVO (Nodes List
+		// por pool, via OSDiskForNodePool) — rodava sequencial, UMA por pool, aqui dentro deste
+		// loop. Num cluster com muitos pools, isso sozinho já pagava N round-trips ao kube-
+		// apiserver em série, mesma classe de problema já corrigida (Prometheus, Dynatrace, PVC)
+		// nas rodadas anteriores desta mesma investigação, só que nunca olhada até agora. GKE/EKS
+		// não sofrem disso (osDiskCostForPool só consulta pricer em cache pra esses providers),
+		// mas paraleliza sempre — sem custo extra nesse caso, cada goroutine só lê de um cache.
+		stepStart = time.Now()
 		poolRegistryByName := make(map[string]storage.NodePoolRegistryEntry, len(pools))
 		for _, p := range pools {
 			poolRegistryByName[p.NodePool] = p
 		}
 
+		var wg sync.WaitGroup
+		for i := range finOpsPools {
+			i := i
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sku, tier, sizeGB, priceUSD, ok := c.osDiskCostForPool(ctx, client, cluster, finOpsPools[i].Name, poolRegistryByName[finOpsPools[i].Name], storageCalc)
+				if !ok {
+					log.Debug().Str("pool", finOpsPools[i].Name).Msg("FinOps: preço de OS disk não encontrado")
+					return
+				}
+				osDiskCostUSD := round2(priceUSD * float64(finOpsPools[i].NodeCount))
+				finOpsPools[i].OSDiskSKU = sku
+				finOpsPools[i].OSDiskTier = tier
+				finOpsPools[i].OSDiskGB = sizeGB
+				finOpsPools[i].OSDiskCostUSD = osDiskCostUSD
+				finOpsPools[i].OSDiskCostBRL = round2(osDiskCostUSD * rate)
+				finOpsPools[i].TotalCostUSD = round2(finOpsPools[i].MonthlyCostUSD + osDiskCostUSD)
+				finOpsPools[i].TotalCostBRL = round2(finOpsPools[i].MonthlyCostBRL + finOpsPools[i].OSDiskCostBRL)
+			}()
+		}
+		wg.Wait()
+
+		// Soma sequencial DEPOIS de todas as goroutines terminarem — nunca dentro delas (evita
+		// precisar de mutex pras variáveis compartilhadas abaixo, cada goroutine só escreve no
+		// seu próprio índice finOpsPools[i], nunca em totalOSDiskCostBRL/storageSummary).
 		var totalOSDiskCostBRL float64
 		for i := range finOpsPools {
-			sku, tier, sizeGB, priceUSD, ok := c.osDiskCostForPool(ctx, client, cluster, finOpsPools[i].Name, poolRegistryByName[finOpsPools[i].Name], storageCalc)
-			if !ok {
-				log.Debug().Str("pool", finOpsPools[i].Name).Msg("FinOps: preço de OS disk não encontrado")
-				continue
-			}
-			osDiskCostUSD := round2(priceUSD * float64(finOpsPools[i].NodeCount))
-			finOpsPools[i].OSDiskSKU = sku
-			finOpsPools[i].OSDiskTier = tier
-			finOpsPools[i].OSDiskGB = sizeGB
-			finOpsPools[i].OSDiskCostUSD = osDiskCostUSD
-			finOpsPools[i].OSDiskCostBRL = round2(osDiskCostUSD * rate)
-			finOpsPools[i].TotalCostUSD = round2(finOpsPools[i].MonthlyCostUSD + osDiskCostUSD)
-			finOpsPools[i].TotalCostBRL = round2(finOpsPools[i].MonthlyCostBRL + finOpsPools[i].OSDiskCostBRL)
 			totalOSDiskCostBRL = round2(totalOSDiskCostBRL + finOpsPools[i].OSDiskCostBRL)
-			storageSummary.OSDiskCostUSD = round2(storageSummary.OSDiskCostUSD + osDiskCostUSD)
+			storageSummary.OSDiskCostUSD = round2(storageSummary.OSDiskCostUSD + finOpsPools[i].OSDiskCostUSD)
 			storageSummary.OSDiskCostBRL = round2(storageSummary.OSDiskCostBRL + finOpsPools[i].OSDiskCostBRL)
 		}
+		logTiming("osDiskCostForPool (todos os pools, em paralelo)", stepStart, map[string]interface{}{"pools": len(finOpsPools)})
 
 		// 7b. Enriquecer workloads com custo de PVCs correlacionados
 		pvcByWorkload := groupPVCsByWorkload(pvcs)
@@ -186,6 +307,8 @@ func (c *Calculator) BuildReport(
 		summary.TotalWithStorageBRL = round2(summary.TotalMonthlyCostBRL + storageSummary.TotalMonthlyCostBRL + totalOSDiskCostBRL)
 	}
 
+	logTiming("BuildReport TOTAL", overallStart, map[string]interface{}{"workloads": len(workloads), "node_pools": len(finOpsPools)})
+
 	return &FinOpsReport{
 		Cluster:      cluster,
 		GeneratedAt:  time.Now(),
@@ -198,7 +321,27 @@ func (c *Calculator) BuildReport(
 		PVCs:         pvcs,
 		Storage:      storageSummary,
 		Summary:      summary,
+		NodeUsage:    nodeUsage,
 	}, nil
+}
+
+// uniqueNonEmptyNodeNames extrai os NodeName distintos e não-vazios dos workloads já alocados —
+// usado pra saber quais nodes computar em ComputeNodeUsage sem repetir o mesmo node várias vezes
+// (workloads costumam compartilhar node dentro do mesmo pool).
+func uniqueNonEmptyNodeNames(workloads []FinOpsWorkload) []string {
+	seen := make(map[string]struct{})
+	var names []string
+	for _, wl := range workloads {
+		if wl.NodeName == "" {
+			continue
+		}
+		if _, ok := seen[wl.NodeName]; ok {
+			continue
+		}
+		seen[wl.NodeName] = struct{}{}
+		names = append(names, wl.NodeName)
+	}
+	return names
 }
 
 // Defaults usados quando o registry não tem o disco real do pool GKE (cluster nunca escaneado
@@ -330,16 +473,18 @@ func (c *Calculator) calculatePoolCosts(
 }
 
 // collectWorkloads lista pods Running e HPAs do cluster.
-// Retorna: lista de rawWorkload + mapa "ns/pod" → "ns/workload" para o enricher Prometheus.
+// Retorna: lista de rawWorkload + mapa "ns/pod" → "ns/workload" para o enricher Prometheus +
+// mapa "node" → "pool" (usado tanto pro NodePool dos workloads quanto pra NodeUsage, ver
+// Calculator.BuildReport).
 func collectWorkloads(
 	ctx context.Context,
 	client kubernetes.Interface,
 	namespaces []string,
-) ([]rawWorkload, map[string]string, error) {
+) ([]rawWorkload, map[string]string, map[string]string, error) {
 	// 1. Listar todos os ReplicaSets para resolver RS → Deployment
 	rsList, err := client.AppsV1().ReplicaSets("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	rsOwner := make(map[string]string) // "ns/rs-name" → deployment name
 	for _, rs := range rsList.Items {
@@ -353,7 +498,7 @@ func collectWorkloads(
 	// 2. Listar HPAs (todos os namespaces)
 	hpaList, err := client.AutoscalingV2().HorizontalPodAutoscalers("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	type hpaInfo struct{ min, max, current int }
 	hpaMap := make(map[string]hpaInfo)
@@ -376,7 +521,22 @@ func collectWorkloads(
 		FieldSelector: "status.phase=Running",
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+
+	// 3b. Listar Nodes (uma única vez) e resolver node → pool — necessário pra saber em qual pool
+	// cada workload roda (usado pela sugestão de tier de VM, ver SuggestVMTier em vm_tiers.go).
+	// Best-effort: falha aqui não aborta o relatório inteiro, só deixa NodePool vazio nos
+	// workloads (a sugestão de tier fica sem dado pro pool afetado, resto do relatório intacto).
+	nodeToPool := make(map[string]string)
+	if nodeList, nodeErr := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{}); nodeErr == nil {
+		for _, n := range nodeList.Items {
+			if pool := nodePoolLabelFromNode(n.Labels); pool != "" {
+				nodeToPool[n.Name] = pool
+			}
+		}
+	} else {
+		log.Warn().Err(nodeErr).Msg("FinOps: falha ao listar nodes — sugestão de tier de VM ficará sem dado de uso real por pool")
 	}
 
 	// 4. Agregar por workload + construir mapa pod→workload para o enricher Prometheus
@@ -398,11 +558,13 @@ func collectWorkloads(
 		if _, ok := workloadMap[key]; !ok {
 			h := hpaMap[key]
 			workloadMap[key] = &rawWorkload{
-				Namespace:  pod.Namespace,
-				Workload:   workloadName,
-				HPAMin:     h.min,
-				HPAMax:     h.max,
-				HPACurrent: h.current,
+				Namespace:     pod.Namespace,
+				Workload:      workloadName,
+				HPAMin:        h.min,
+				HPAMax:        h.max,
+				HPACurrent:    h.current,
+				PoolPodCounts: make(map[string]int),
+				NodePodCounts: make(map[string]int),
 			}
 		}
 
@@ -412,13 +574,24 @@ func collectWorkloads(
 		wl.MemRequestMi += sumMemRequestsMi(pod)
 		wl.CPULimitMillis += sumCPULimitsMillis(pod)
 		wl.MemLimitMi += sumMemLimitsMi(pod)
+		if pool := nodeToPool[pod.Spec.NodeName]; pool != "" {
+			wl.PoolPodCounts[pool]++
+		}
+		if pod.Spec.NodeName != "" {
+			wl.NodePodCounts[pod.Spec.NodeName]++
+		}
+		if podCreated := pod.CreationTimestamp.Time; !podCreated.IsZero() {
+			if wl.OldestPodStartedAt.IsZero() || podCreated.Before(wl.OldestPodStartedAt) {
+				wl.OldestPodStartedAt = podCreated
+			}
+		}
 	}
 
 	result := make([]rawWorkload, 0, len(workloadMap))
 	for _, wl := range workloadMap {
 		result = append(result, *wl)
 	}
-	return result, podToWorkload, nil
+	return result, podToWorkload, nodeToPool, nil
 }
 
 // allocateCosts distribui o custo do cluster proporcionalmente entre os workloads.
@@ -464,7 +637,7 @@ func allocateCosts(
 			hpaMax = wl.Pods
 		}
 
-		result = append(result, FinOpsWorkload{
+		fw := FinOpsWorkload{
 			Namespace:         wl.Namespace,
 			Workload:          wl.Workload,
 			Pods:              wl.Pods,
@@ -472,6 +645,8 @@ func allocateCosts(
 			MemRequestMi:      round2(wl.MemRequestMi),
 			CPULimitMillis:    round2(wl.CPULimitMillis),
 			MemLimitMi:        round2(wl.MemLimitMi),
+			NodePool:          dominantPool(wl.PoolPodCounts),
+			NodeName:          dominantPool(wl.NodePodCounts),
 			CostShareUSD:      round2(costShareUSD),
 			CostShareBRL:      round2(costShareUSD * rate),
 			HPAMin:            hpaMin,
@@ -481,7 +656,12 @@ func allocateCosts(
 			HPACostMaxBRL:     round2(podCostUSD * float64(hpaMax) * rate),
 			HPACostCurrentBRL: round2(podCostUSD * float64(hpaCurrent) * rate),
 			Verdict:           determineVerdict(wl),
-		})
+		}
+		if !wl.OldestPodStartedAt.IsZero() {
+			started := wl.OldestPodStartedAt
+			fw.OldestPodStartedAt = &started
+		}
+		result = append(result, fw)
 	}
 
 	// Ordenar por maior custo primeiro
@@ -513,6 +693,20 @@ func allocateCosts(
 	}
 
 	return result
+}
+
+// dominantPool retorna a chave com mais pods do workload (best-effort — cobre o caso raro de um
+// workload com pods espalhados por mais de uma chave, escolhendo a predominante). Genérica o
+// bastante pra ser usada tanto com PoolPodCounts (→ NodePool) quanto NodePodCounts (→ NodeName).
+// Vazia se nenhum pod resolveu pra uma chave conhecida.
+func dominantPool(counts map[string]int) string {
+	best, bestCount := "", 0
+	for pool, n := range counts {
+		if n > bestCount {
+			best, bestCount = pool, n
+		}
+	}
+	return best
 }
 
 // aggregateNamespaces agrupa workloads por namespace e soma os custos
@@ -551,6 +745,9 @@ func buildSummary(workloads []FinOpsWorkload, namespaces []FinOpsNamespace, clus
 	}
 
 	for _, wl := range workloads {
+		if wl.MetricsSource != "" {
+			s.MetricsWorkloadsEnriched++
+		}
 		switch wl.Verdict {
 		case "superprovisioned":
 			s.SuperprovisionedCount++

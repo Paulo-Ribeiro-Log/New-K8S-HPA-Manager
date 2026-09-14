@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	azurePricingAPIURL  = "https://prices.azure.com/api/retail/prices"
-	pricingCacheTTL     = 24 * time.Hour
+	azurePricingAPIURL   = "https://prices.azure.com/api/retail/prices"
+	pricingCacheTTL      = 24 * time.Hour
 	defaultPricingRegion = "brazilsouth"
 )
 
@@ -88,12 +88,12 @@ var fallbackPrices = map[string]float64{
 
 // azurePriceItem representa um item da resposta da Azure Pricing API
 type azurePriceItem struct {
-	SKUName      string  `json:"skuName"`
-	RetailPrice  float64 `json:"retailPrice"`
-	UnitOfMeasure string `json:"unitOfMeasure"`
-	ArmRegionName string `json:"armRegionName"`
-	ProductName  string  `json:"productName"`
-	MeterName    string  `json:"meterName"`
+	SKUName       string  `json:"skuName"`
+	RetailPrice   float64 `json:"retailPrice"`
+	UnitOfMeasure string  `json:"unitOfMeasure"`
+	ArmRegionName string  `json:"armRegionName"`
+	ProductName   string  `json:"productName"`
+	MeterName     string  `json:"meterName"`
 }
 
 type azurePricingResponse struct {
@@ -374,10 +374,10 @@ func inferSpecsFromName(vmSize string) (cpuCores, memGB int) {
 
 	// Estimativa de RAM por família
 	familyMemRatio := map[byte]int{
-		'D': 4,  // D-series: 4 GB por vCPU
-		'E': 8,  // E-series: 8 GB por vCPU (memory-optimized)
-		'F': 2,  // F-series: 2 GB por vCPU (compute-optimized)
-		'B': 2,  // B-series: varia, usar 2 GB como base
+		'D': 4, // D-series: 4 GB por vCPU
+		'E': 8, // E-series: 8 GB por vCPU (memory-optimized)
+		'F': 2, // F-series: 2 GB por vCPU (compute-optimized)
+		'B': 2, // B-series: varia, usar 2 GB como base
 	}
 
 	family := byte(strings.ToUpper(name)[0])

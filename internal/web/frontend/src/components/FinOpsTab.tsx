@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +23,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
+import {
+  fmtBRL, fmtUSD, fmtMillis, fmtMi, verdictConfig, POOL_COLORS,
+  KubectlBlock, SummaryCard, VerdictBadge,
+} from "@/lib/finopsFormat";
+import { RightsizingTab } from "@/components/RightsizingTab";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -114,6 +119,17 @@ interface FinOpsSummary {
   os_disk_cost_brl?: number;
   orphaned_storage_cost_brl?: number;
   total_with_storage_brl?: number;
+  // Cobertura de métricas reais (Dynatrace/Prometheus) — usado pra distinguir "cluster sem
+  // desperdício" de "falha silenciosa de coleta" (ver internal/finops/models.go).
+  metrics_attempted?: boolean;
+  metrics_workloads_enriched?: number;
+}
+
+/** true quando Prometheus/Dynatrace foram tentados mas NENHUM workload recebeu dado real de uso
+ *  — sinal de falha de coleta (VPN/rede/API indisponível no momento do scan), não de "cluster
+ *  genuinamente sem desperdício nenhum". Compartilhado entre FinOpsTab e RightsizingTab. */
+function metricsCollectionLikelyFailed(summary: FinOpsSummary): boolean {
+  return !!summary.metrics_attempted && (summary.metrics_workloads_enriched ?? 0) === 0 && summary.workloads_analyzed > 0;
 }
 
 interface PVCCostItem {
@@ -228,15 +244,9 @@ interface TimelineSnapshotMeta {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const fmtBRL = (v: number) =>
-  v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
-
-const fmtUSD = (v: number) =>
-  v.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-
-/** Formata millicores: 1500 → "1.5" (cores), 250 → "250m" */
-const fmtMillis = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}` : `${Math.round(v)}m`;
+// fmtBRL/fmtUSD/fmtMillis/fmtMi/verdictConfig/POOL_COLORS/KubectlBlock/SummaryCard/VerdictBadge
+// foram extraídos pra @/lib/finopsFormat (ver import no topo do arquivo) — reaproveitados também
+// por RightsizingTab.tsx (8ª aba, arquivo próprio), sem duplicar.
 
 /**
  * Rótulo do cloud provider + fonte de preço real usada pelo backend pra este cluster
@@ -425,76 +435,7 @@ function buildRecommendation(w: FinOpsWorkload, windowDays: number): Recommendat
   return { lines, safeMin, safeMax, savingBRL, exposureBRL, needsPrometheus, kubectlList };
 }
 
-const verdictConfig: Record<string, { label: string; color: string; fill: string; icon: typeof CheckCircle2 }> = {
-  superprovisioned: { label: "Desperdício",    fill: "#ef4444", color: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",       icon: TrendingDown },
-  oom_risk:         { label: "Risco OOM",      fill: "#f59e0b", color: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400", icon: AlertTriangle },
-  ok:               { label: "Eficiente",      fill: "#10b981", color: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",   icon: CheckCircle2 },
-  no_request:       { label: "Sem Request",    fill: "#9ca3af", color: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",       icon: Info },
-  hpa_removable:    { label: "Remover HPA",    fill: "#8b5cf6", color: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400", icon: Info },
-  fixed_high_cost:  { label: "Sem HPA",        fill: "#f97316", color: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",   icon: TrendingUp },
-};
-
-const POOL_COLORS = ["#6366f1", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", "#ec4899"];
-
 // ─── Componentes Auxiliares ───────────────────────────────────────────────────
-
-/** Exibe um comando kubectl com botão de copiar */
-function KubectlBlock({ cmd }: { cmd: string }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(cmd).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [cmd]);
-  return (
-    <div className="flex items-center gap-1.5">
-      <code className="flex-1 text-[10px] font-mono bg-background border rounded px-2 py-1 break-all">
-        {cmd}
-      </code>
-      <button
-        onClick={handleCopy}
-        title={copied ? "Copiado!" : "Copiar"}
-        className="shrink-0 p-1 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-      >
-        {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
-    </div>
-  );
-}
-
-function SummaryCard({ icon: Icon, label, value, sub, color }: {
-  icon: typeof DollarSign; label: string; value: string; sub?: string; color: string;
-}) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <p className="text-xs text-muted-foreground">{label}</p>
-            <p className={`text-xl font-bold ${color}`}>{value}</p>
-            {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
-          </div>
-          <Icon className={`h-5 w-5 mt-0.5 ${color}`} />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function VerdictBadge({ verdict }: { verdict: FinOpsWorkload["verdict"] }) {
-  const cfg = verdictConfig[verdict] ?? verdictConfig.ok;
-  const Icon = cfg.icon;
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${cfg.color}`}>
-      <Icon className="h-3 w-3" />
-      {cfg.label}
-    </span>
-  );
-}
-
-
-const fmtMi = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(1)}Gi` : `${Math.round(v)}Mi`;
 
 const LINE_COLORS = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#84cc16","#f97316","#14b8a6"];
 
@@ -4205,7 +4146,13 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     queryFn: async ({ signal }) => {
       let url = `/api/v1/finops/report?cluster=${encodeURIComponent(cluster)}`;
       if (withPrometheus) {
-        url += `&with_prometheus=true&window_days=${windowDays}`;
+        // persist_rightsizing=true: o MESMO relatório que esta chamada já constrói (Dynatrace/
+        // Prometheus/K8s/storage) também alimenta a aba Rightsizing (ver RightsizingTab.tsx) — o
+        // backend persiste as tabelas de rightsizing como efeito colateral, sem nenhum re-scan.
+        // Bug real corrigido, relatado pelo usuário ("o que me leva a crer que está fazendo o
+        // mesmo scan 2 vezes" — cada "Analisar" chegou a levar ~2min + mais ~2min de rightsizing
+        // logo em seguida, porque a versão anterior disparava um 2º scan completo do zero).
+        url += `&with_prometheus=true&window_days=${windowDays}&persist_rightsizing=true`;
       }
       const r = await fetch(url, {
         signal,
@@ -4221,6 +4168,48 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     staleTime: Infinity,   // cache permanece válido indefinidamente
     retry: false,
   });
+
+  // Restaura o último scan já feito (sem NUNCA disparar um re-scan) sempre que o cluster muda ou
+  // a aba monta — bug real corrigido, relatado pelo usuário: "sempre que chamamos a aba finops,
+  // ela vem vazia só com as seleções de cluster e os botões... ajuste para que venha com a
+  // exibição do último scan". Antes, `enabled: false` acima significava que NADA aparecia até um
+  // clique manual em "Analisar" — mesmo que o cluster já tivesse sido analisado minutos antes,
+  // bastava trocar de aba (desmontando este componente) ou recarregar a página pra perder tudo.
+  // GET /finops/report/last só lê um cache já persistido no backend (SQLite) — nunca consulta
+  // Dynatrace/Prometheus/K8s. Só busca se a queryKey ainda não tiver dado (evita sobrescrever um
+  // relatório recém-buscado ao vivo nesta mesma sessão, e evita rebuscar à toa).
+  useEffect(() => {
+    if (!cluster) return;
+    if (queryClient.getQueryData(["finops-report", cluster])) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/v1/finops/report/last?cluster=${encodeURIComponent(cluster)}`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+        });
+        if (!r.ok || cancelled) return;
+        const data = await r.json();
+        if (cancelled || data?.scanned === false) return;
+        queryClient.setQueryData(["finops-report", cluster], data);
+      } catch {
+        // best-effort e silencioso — sem cache, a tela simplesmente fica no estado vazio já
+        // existente ("Selecione um cluster e clique em Analisar"), nunca um erro visível.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cluster, queryClient]);
+
+  // Depois que o relatório principal (já persistindo rightsizing como efeito colateral, acima)
+  // termina, só invalida a query de leitura (["finops-rightsizing", cluster], mesma chave que
+  // RightsizingTab.tsx observa) — invalidateQueries refaz automaticamente o fetch se a aba
+  // Rightsizing estiver aberta no momento (React Query só refetcha queries ativas/montadas) e
+  // marca como stale pra quando o usuário for lá depois; como GET /rightsizing só lê do SQLite
+  // (rápido, sem Prometheus/Dynatrace), isso nunca reintroduz o custo do 2º scan completo.
+  const refreshRightsizingCache = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["finops-rightsizing", cluster] });
+  }, [queryClient, cluster]);
 
   const exportCSV = () => {
     if (!report) return;
@@ -4342,12 +4331,15 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               </PopoverContent>
             </Popover>
             <Button size="sm" variant={isLoading ? "destructive" : "outline"} className="h-8 gap-1"
-              onClick={() => {
+              onClick={async () => {
                 if (isLoading) {
                   queryClient.cancelQueries({ queryKey: ["finops-report", cluster] });
                 } else {
                   setAiAnalysis(null);
-                  refetch();
+                  const result = await refetch();
+                  if (result.isSuccess) {
+                    refreshRightsizingCache();
+                  }
                 }
               }}>
               {isLoading
@@ -4424,6 +4416,17 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       {/* Relatório */}
       {report && !isLoading && (
         <>
+          {metricsCollectionLikelyFailed(report.summary) && (
+            <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
+              <AlertTriangle className="h-4 w-4 text-red-600" />
+              <AlertDescription className="text-sm text-red-700 dark:text-red-400">
+                <strong>Nenhum dos {report.summary.workloads_analyzed} workloads recebeu dado real de uso</strong> (Dynatrace/Prometheus) nesta análise —
+                os valores de desperdício, CPU/Mem e "Com Oportunidade" abaixo (e na aba Rightsizing) provavelmente não refletem a realidade, é mais provável
+                que seja uma falha de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente não ter desperdício em lugar
+                nenhum. Reanalise em alguns minutos; se persistir, verifique a conectividade com Prometheus/Dynatrace.
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="flex items-center gap-2 text-xs text-muted-foreground -mb-1 flex-wrap">
             <Server className="h-3.5 w-3.5 shrink-0" />
             <span>
@@ -4502,6 +4505,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                   </Badge>
                 )}
               </TabsTrigger>
+              <TabsTrigger value="rightsizing">Rightsizing</TabsTrigger>
             </TabsList>
 
             <div className="flex-1 overflow-auto mt-3">
@@ -4527,6 +4531,9 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               </TabsContent>
               <TabsContent value="report" className="mt-0 h-full">
                 <RelatorioTab report={report} windowDays={report.window_days || windowDays} cluster={cluster} />
+              </TabsContent>
+              <TabsContent value="rightsizing" className="mt-0 h-full">
+                <RightsizingTab cluster={cluster} />
               </TabsContent>
             </div>
           </Tabs>

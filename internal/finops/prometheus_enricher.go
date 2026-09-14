@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
@@ -22,6 +24,52 @@ type PrometheusEnricher struct {
 	api           v1.API
 	window        int               // janela de histórico em dias
 	podToWorkload map[string]string // "ns/pod" → "ns/workload" (preenchido pelo calculator)
+}
+
+// promPeakSample é um valor de pico + o instante em que ocorreu — usado por qualquer "top"
+// (CPU/Mem de workload ou de node) que precise dizer QUANDO o pico aconteceu, não só QUANTO foi.
+// Necessário pra recursos efêmeros (nodes spot, pods de rollouts recentes): um pico sem
+// timestamp é inútil pra julgar se ainda é relevante ou se já ficou obsoleto.
+type promPeakSample struct {
+	Value float64
+	At    time.Time
+}
+
+// rangeStepForWindow escolhe o step de uma QueryRange (não-subquery) proporcional à janela, pra
+// manter o volume de pontos por série num teto baixo (~120-170) mesmo em janelas de 30d —
+// resolução de meia-hora/hora é mais que suficiente pra um humano julgar "o pico foi recente ou
+// antigo", que é o único propósito do timestamp aqui (não é uma série pra plotar num gráfico
+// detalhado). Reduzido de um teto de ~500-700 pontos/série pra ~120-170: essa QueryRange devolve
+// UMA série POR POD (ou por node) — num cluster com centenas/milhares de pods, o volume total
+// transferido (pontos × séries) é a causa mais provável de "top sempre zerado" relatada pelo
+// usuário (falha silenciosa: a query estoura algum limite do Prometheus — query.max-samples,
+// timeout, tamanho de resposta — e o código só loga um Warn e segue com mapa vazio). Por isso
+// esta query agora é só BEST-EFFORT pro timestamp — o VALOR do pico vem de uma query instant com
+// subquery (queryPodMetricPeakValue/queryInstanceMetricPeakValue), mesmo padrão já comprovado
+// confiável usado pelo P95 (um único ponto por série, nunca a série inteira).
+func rangeStepForWindow(windowDays int) time.Duration {
+	switch {
+	case windowDays <= 3:
+		return 30 * time.Minute
+	case windowDays <= 7:
+		return time.Hour
+	case windowDays <= 14:
+		return 2 * time.Hour
+	default:
+		return 6 * time.Hour
+	}
+}
+
+// peakOf varre os pontos de uma série (já ordenados por tempo pelo Prometheus) e retorna o de
+// maior valor + seu timestamp. len(values) > 0 é responsabilidade do chamador.
+func peakOf(values []model.SamplePair) promPeakSample {
+	best := values[0]
+	for _, v := range values[1:] {
+		if v.Value > best.Value {
+			best = v
+		}
+	}
+	return promPeakSample{Value: float64(best.Value), At: best.Timestamp.Time()}
 }
 
 // NewPrometheusEnricher cria um enricher conectado ao endpoint Prometheus dado.
@@ -75,41 +123,119 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 	log.Info().Int("window_days", w).Int("workloads", len(workloads)).
 		Msg("FinOps/Prom: iniciando enriquecimento batch")
 
-	// ── 1. Métricas de container (por pod, depois agrega ao workload) ──────────
-	cpuP95Map := e.queryContainerMetric(ctx,
-		fmt.Sprintf(`quantile_over_time(0.95, rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
-		"cpu_p95",
+	// ── 1./2. Métricas de container (por pod) + HPA (por namespace/hpa-name) ───────────────────
+	// As 12 queries abaixo são TOTALMENTE independentes entre si (nenhuma usa o resultado de
+	// outra) — disparadas em paralelo, não mais sequencialmente uma atrás da outra. Bug real
+	// corrigido/relatado: "demora horrores... coisas de minutos" tanto no relatório principal
+	// (GET /finops/report?with_prometheus=true, que chama esta mesma função) quanto no scan de
+	// Rightsizing — 12 round-trips sequenciais ao Prometheus, cada um levando alguns segundos,
+	// somavam bastante tempo de parede mesmo sem nenhuma query individualmente lenta ou travada.
+	// Prometheus lida bem com um punhado de queries concorrentes da mesma sessão (limite default
+	// --query.max-concurrency=20, bem acima das 12 daqui); nenhuma delas muta e.api nem qualquer
+	// outro campo do enricher, só HTTP GET/POST independentes — seguro chamar concorrentemente.
+	var (
+		cpuP95Map, cpuAvgMap, memP95Map, memAvgMap    map[string]float64
+		cpuMaxValueMap, memMaxValueMap                map[string]float64
+		cpuMaxRange, memMaxRange                      map[string]promPeakSample
+		hpaAvgMap, hpaMaxMap, hpaMinMap, hpaEventsMap map[string]float64
 	)
-	cpuAvgMap := e.queryContainerMetric(ctx,
-		fmt.Sprintf(`avg_over_time(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
-		"cpu_avg",
-	)
-	memP95Map := e.queryContainerMetric(ctx,
-		fmt.Sprintf(`quantile_over_time(0.95, container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
-		"mem_p95",
-	)
-	memAvgMap := e.queryContainerMetric(ctx,
-		fmt.Sprintf(`avg_over_time(container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
-		"mem_avg",
-	)
+	var wg sync.WaitGroup
+	run := func(fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn()
+		}()
+	}
 
-	// ── 2. Métricas HPA (por namespace/hpa-name) ──────────────────────────────
-	hpaAvgMap := e.queryHPAMetric(ctx,
-		fmt.Sprintf(`avg_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
-		"hpa_avg",
-	)
-	hpaMaxMap := e.queryHPAMetric(ctx,
-		fmt.Sprintf(`max_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
-		"hpa_max",
-	)
-	hpaMinMap := e.queryHPAMetric(ctx,
-		fmt.Sprintf(`min_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
-		"hpa_min",
-	)
-	hpaEventsMap := e.queryHPAMetric(ctx,
-		fmt.Sprintf(`changes(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
-		"hpa_changes",
-	)
+	run(func() {
+		cpuP95Map = e.queryContainerMetric(ctx,
+			fmt.Sprintf(`quantile_over_time(0.95, rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+			"cpu_p95",
+		)
+	})
+	run(func() {
+		cpuAvgMap = e.queryContainerMetric(ctx,
+			fmt.Sprintf(`avg_over_time(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+			"cpu_avg",
+		)
+	})
+	run(func() {
+		memP95Map = e.queryContainerMetric(ctx,
+			fmt.Sprintf(`quantile_over_time(0.95, container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+			"mem_p95",
+		)
+	})
+	run(func() {
+		memAvgMap = e.queryContainerMetric(ctx,
+			fmt.Sprintf(`avg_over_time(container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+			"mem_avg",
+		)
+	})
+	// Pico real de CPU/Mem — CPU só exibido como "top" na UI (nunca usado na recomendação de CPU
+	// Limit, que segue baseada na proporção limit/request, ver recommendedLimits); Mem também
+	// alimenta o Mem Limit recomendado (ver recommendedLimits). Duas queries por métrica,
+	// deliberadamente separadas (bug real corrigido — "top sempre zerado em todas as análises"):
+	//   1) *MaxValueMap: query INSTANT com subquery (mesmo padrão/custo do P95 acima — Prometheus
+	//      devolve UM único ponto por série, nunca a série inteira) — fonte PRIMÁRIA e confiável
+	//      do VALOR do pico.
+	//   2) *MaxRange: QueryRange de resolução completa (uma série POR POD, todos os pontos) — só
+	//      existe pra saber QUANDO o pico ocorreu (pedido explícito do usuário: um "top" sem
+	//      data/hora não diz se é recente ou de semanas atrás). Num cluster com muitos pods essa
+	//      query transfere ordens de magnitude mais dado que a #1 e é a candidata natural a
+	//      estourar algum limite do Prometheus (query.max-samples, timeout, tamanho de resposta)
+	//      — falhando SILENCIOSAMENTE (só um log.Warn) e zerando o "top" inteiro quando o valor
+	//      dependia só dela. Por isso o valor NUNCA depende dela ter sucesso — o timestamp é
+	//      best-effort, anexado só quando essa query de fato retorna algo pro pod/workload.
+	run(func() {
+		cpuMaxValueMap = e.queryPodMetricPeakValue(ctx,
+			fmt.Sprintf(`max_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
+			"cpu_max_value",
+		)
+	})
+	run(func() {
+		memMaxValueMap = e.queryPodMetricPeakValue(ctx,
+			fmt.Sprintf(`max_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
+			"mem_max_value",
+		)
+	})
+	run(func() {
+		cpuMaxRange = e.queryPodMetricRangeMax(ctx,
+			`sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])) * 1000`,
+			"cpu_max_range",
+		)
+	})
+	run(func() {
+		memMaxRange = e.queryPodMetricRangeMax(ctx,
+			`sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}) / 1048576`,
+			"mem_max_range",
+		)
+	})
+	run(func() {
+		hpaAvgMap = e.queryHPAMetric(ctx,
+			fmt.Sprintf(`avg_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
+			"hpa_avg",
+		)
+	})
+	run(func() {
+		hpaMaxMap = e.queryHPAMetric(ctx,
+			fmt.Sprintf(`max_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
+			"hpa_max",
+		)
+	})
+	run(func() {
+		hpaMinMap = e.queryHPAMetric(ctx,
+			fmt.Sprintf(`min_over_time(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
+			"hpa_min",
+		)
+	})
+	run(func() {
+		hpaEventsMap = e.queryHPAMetric(ctx,
+			fmt.Sprintf(`changes(kube_horizontalpodautoscaler_status_current_replicas[%dd])`, w),
+			"hpa_changes",
+		)
+	})
+	wg.Wait()
 
 	// ── 3. Agrega métricas de container: pod → workload ───────────────────────
 	// P95: max entre pods (pior caso do workload)
@@ -118,6 +244,14 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 	wlCPUAvg := e.aggregatePodToWorkload(cpuAvgMap, false)
 	wlMemP95 := e.aggregatePodToWorkload(memP95Map, true)
 	wlMemAvg := e.aggregatePodToWorkload(memAvgMap, false)
+	// Valor confiável do pico (reaproveita aggregatePodToWorkload, useMax=true — mesma redução
+	// "pior caso entre pods" já usada pro P95, só que sobre a query instant/barata acima).
+	wlCPUMaxValue := e.aggregatePodToWorkload(cpuMaxValueMap, true)
+	wlMemMaxValue := e.aggregatePodToWorkload(memMaxValueMap, true)
+	// Timestamp best-effort (pior caso entre pods, com o "quando" preservado) — ver comentário
+	// acima sobre por que essa query pode falhar silenciosamente em clusters grandes.
+	wlCPUMaxPeak := e.aggregatePodToWorkloadPeak(cpuMaxRange)
+	wlMemMaxPeak := e.aggregatePodToWorkloadPeak(memMaxRange)
 
 	// ── 4. Enriquecer cada workload ───────────────────────────────────────────
 	enriched := 0
@@ -129,6 +263,10 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 		cpuAvg := wlCPUAvg[key]
 		memP95 := wlMemP95[key]
 		memAvg := wlMemAvg[key]
+		cpuMaxValue, hasCPUMaxValue := wlCPUMaxValue[key]
+		memMaxValue, hasMemMaxValue := wlMemMaxValue[key]
+		cpuMaxPeak, hasCPUMaxAt := wlCPUMaxPeak[key]
+		memMaxPeak, hasMemMaxAt := wlMemMaxPeak[key]
 		hasUsage := cpuP95 > 0 || memP95 > 0
 
 		if hasUsage {
@@ -137,6 +275,32 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 			wl.MemP95Mi = round2(memP95)
 			wl.MemAvgMi = round2(memAvg)
 
+			// Valor do pico: sempre da query confiável (instant/subquery) quando disponível;
+			// só cai pro valor da QueryRange (mais pesada) se a query barata não tiver retornado
+			// nada pra este workload — nunca o contrário, pra não regredir pra um valor menos
+			// confiável quando o barato já funcionou. Timestamp: sempre best-effort, da
+			// QueryRange, anexado independente de qual das duas deu o valor.
+			switch {
+			case hasCPUMaxValue:
+				wl.CPUMaxMillis = round2(cpuMaxValue)
+			case hasCPUMaxAt:
+				wl.CPUMaxMillis = round2(cpuMaxPeak.Value)
+			}
+			if hasCPUMaxAt {
+				at := cpuMaxPeak.At
+				wl.CPUMaxAt = &at
+			}
+			switch {
+			case hasMemMaxValue:
+				wl.MemMaxMi = round2(memMaxValue)
+			case hasMemMaxAt:
+				wl.MemMaxMi = round2(memMaxPeak.Value)
+			}
+			if hasMemMaxAt {
+				at := memMaxPeak.At
+				wl.MemMaxAt = &at
+			}
+
 			// Recomendação com margem de segurança SRE de 20%
 			if cpuP95 > 0 {
 				wl.CPURecommendedMillis = round2(cpuP95 * SafetyMargin)
@@ -144,6 +308,11 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 			if memP95 > 0 {
 				wl.MemRecommendedMi = round2(memP95 * SafetyMargin)
 			}
+
+			wl.CPULimitRecommendedMillis, wl.MemLimitRecommendedMi = recommendedLimits(
+				wl.CPURecommendedMillis, wl.MemRecommendedMi, wl.MemP95Mi, wl.MemMaxMi,
+				wl.CPULimitMillis, wl.CPURequestMillis, wl.MemLimitMi,
+			)
 
 			// Desperdício = custo proporcional à fração de request além do recomendado
 			wl.WasteBRL = calculateWaste(wl)
@@ -231,6 +400,93 @@ func (e *PrometheusEnricher) queryContainerMetric(ctx context.Context, query, la
 	return m
 }
 
+// queryPodMetricPeakValue executa uma query INSTANT com subquery (mesmo padrão/custo de
+// quantile_over_time usado pro P95 em EnrichWorkloads — Prometheus reduz tudo server-side e
+// devolve um ÚNICO ponto por série, nunca a série inteira) pra obter o valor real do pico de
+// CPU/Mem por pod, já agregado via "sum by (namespace, pod)" dentro da própria query. Fonte
+// PRIMÁRIA e confiável do VALOR do pico — ver queryPodMetricRangeMax pro porquê de existir uma
+// query separada, bem mais pesada, só pro timestamp.
+func (e *PrometheusEnricher) queryPodMetricPeakValue(ctx context.Context, query, label string) map[string]float64 {
+	qctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	result, _, err := e.api.Query(qctx, query, time.Now())
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query de pico (valor) falhou")
+		return nil
+	}
+	vec, ok := result.(model.Vector)
+	if !ok {
+		return nil
+	}
+	m := make(map[string]float64, len(vec))
+	for _, sample := range vec {
+		ns := string(sample.Metric["namespace"])
+		pod := string(sample.Metric["pod"])
+		if ns == "" || pod == "" {
+			continue
+		}
+		m[ns+"/"+pod] = float64(sample.Value)
+	}
+	return m
+}
+
+// queryPodMetricRangeMax executa QueryRange com a métrica JÁ agregada por (namespace,pod) via
+// "sum by" na própria query — diferente de queryContainerMetric (que soma containers em Go após
+// uma agregação temporal já feita pelo Prometheus), aqui a soma de containers acontece em cada
+// ponto no tempo ANTES de achar o pico, o que é mais correto pra "top": o pico real do POD é o
+// maior valor da série já somada, não a soma dos picos independentes de cada container (que
+// podem nunca ter ocorrido no mesmo instante). Retorna valor + timestamp exato do pico.
+func (e *PrometheusEnricher) queryPodMetricRangeMax(ctx context.Context, query, label string) map[string]promPeakSample {
+	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	end := time.Now()
+	start := end.Add(-time.Duration(e.window) * 24 * time.Hour)
+	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(e.window)}
+
+	result, _, err := e.api.QueryRange(qctx, query, r)
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query range (com timestamp) falhou")
+		return nil
+	}
+	mat, ok := result.(model.Matrix)
+	if !ok {
+		return nil
+	}
+
+	m := make(map[string]promPeakSample)
+	for _, series := range mat {
+		ns := string(series.Metric["namespace"])
+		pod := string(series.Metric["pod"])
+		if ns == "" || pod == "" || len(series.Values) == 0 {
+			continue
+		}
+		m[ns+"/"+pod] = peakOf(series.Values)
+	}
+	return m
+}
+
+// aggregatePodToWorkloadPeak reduz picos por pod (com timestamp) pro pico do workload — mantém o
+// timestamp do PARTICULAR pod que teve o maior valor entre todos os pods do workload (pior caso,
+// mesmo critério de aggregatePodToWorkload com useMax=true, só que preservando o "quando").
+func (e *PrometheusEnricher) aggregatePodToWorkloadPeak(podPeaks map[string]promPeakSample) map[string]promPeakSample {
+	if len(podPeaks) == 0 || len(e.podToWorkload) == 0 {
+		return nil
+	}
+	result := make(map[string]promPeakSample)
+	for podKey, peak := range podPeaks {
+		wlKey, ok := e.podToWorkload[podKey]
+		if !ok {
+			continue
+		}
+		if existing, ok := result[wlKey]; !ok || peak.Value > existing.Value {
+			result[wlKey] = peak
+		}
+	}
+	return result
+}
+
 // queryHPAMetric executa uma query de HPA e retorna map["ns/hpa-name"] → valor.
 func (e *PrometheusEnricher) queryHPAMetric(ctx context.Context, query, label string) map[string]float64 {
 	qctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -255,6 +511,334 @@ func (e *PrometheusEnricher) queryHPAMetric(ctx context.Context, query, label st
 			continue
 		}
 		m[ns+"/"+hpa] = float64(sample.Value)
+	}
+	return m
+}
+
+// nodeMetricQuerySet agrupa as 4 variantes de query (valor/timestamp × nodename/instance) de UMA
+// métrica de node (CPU ou Mem) — ver nodeTopUsage/nodeMetricTopUsage.
+type nodeMetricQuerySet struct {
+	valueByNodename, rangeByNodename string
+	valueByInstance, rangeByInstance string
+}
+
+func nodeCPUTopQueries(windowDays int) nodeMetricQuerySet {
+	return nodeMetricQuerySet{
+		valueByNodename: fmt.Sprintf(`max_over_time((sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info))[%dd:5m]) * 1000`, windowDays),
+		rangeByNodename: `sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info) * 1000`,
+		valueByInstance: fmt.Sprintf(`max_over_time((sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])))[%dd:5m]) * 1000`, windowDays),
+		rangeByInstance: `sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) * 1000`,
+	}
+}
+
+func nodeMemTopQueries(windowDays int) nodeMetricQuerySet {
+	return nodeMetricQuerySet{
+		valueByNodename: fmt.Sprintf(`max_over_time((sum by (nodename) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info))[%dd:5m])`, windowDays),
+		rangeByNodename: `sum by (nodename) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info)`,
+		valueByInstance: fmt.Sprintf(`max_over_time((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)[%dd:5m])`, windowDays),
+		rangeByInstance: `node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes`,
+	}
+}
+
+// nodeTopUsage retorna, por node, o pico histórico (janela e.window) de CPU (millicores) e Mem
+// (MiB) — "top" de verdade, não uma média — E a data/hora em que esse pico ocorreu (promPeakSample.At).
+// Timestamp é crítico pra nodes efêmeros (spot/preemptible, recriados a cada eviction): sem ele
+// não dá pra saber se o "top" reflete agora ou um momento qualquer dos últimos N dias, nem
+// explicar por que um node muito jovem tem pouco (ou nenhum) histórico de pico. Valores brutos
+// (não %) — o chamador (ComputeNodeUsage, live_metrics.go) calcula o percentual usando a
+// capacidade real do node via API K8s. Best-effort: node ausente no resultado = sem dado, nunca
+// erro. Ver nodeMetricTopUsage pro detalhe da correlação (2 estratégias, com short-circuit).
+func (e *PrometheusEnricher) nodeTopUsage(ctx context.Context, nodeNames []string) (cpu, mem map[string]promPeakSample) {
+	if len(nodeNames) == 0 {
+		return make(map[string]promPeakSample), make(map[string]promPeakSample)
+	}
+	// CPU e Mem são cadeias de correlação totalmente independentes — rodadas em paralelo (mesmo
+	// racional de EnrichWorkloads) pra reduzir tempo de parede sem aumentar o número de queries
+	// (o short-circuit por métrica, ver nodeMetricTopUsage, continua intacto dentro de cada uma).
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		cpu = e.nodeMetricTopUsage(ctx, nodeNames, nodeCPUTopQueries(e.window), 1, "cpu")
+	}()
+	go func() {
+		defer wg.Done()
+		mem = e.nodeMetricTopUsage(ctx, nodeNames, nodeMemTopQueries(e.window), 1.0/1048576, "mem")
+	}()
+	wg.Wait()
+	return cpu, mem
+}
+
+// nodeMetricTopUsage roda a correlação Prometheus↔node K8s em 2 estratégias, SEM disparar as
+// duas incondicionalmente — bug real corrigido: a versão anterior sempre rodava as 4 queries
+// (valor+timestamp × nodename+instance) pra CADA métrica (8 no total, CPU+Mem), o que tornou o
+// scan de Rightsizing muito mais lento e, em clusters acessados via VPN/túnel, chegou a derrubar
+// a conexão — puro efeito colateral de multiplicar round-trips (e o join com node_uname_info é
+// mais caro pro Prometheus avaliar numa QueryRange do que uma simples agregação). Agora:
+//  1. (preferida) join com node_uname_info, correlacionando por "nodename" EXATO — coletor
+//     default do node-exporter (raramente desabilitado), cujo label "nodename" é o hostname do SO
+//     e coincide com Node.metadata.name na esmagadora maioria dos clusters (AKS/EKS/GKE inclusos,
+//     mesmo em nodes com nome tipo "aks-pool-xxx-vmssNNNNNN") — SEMPRE tentada primeiro (1 query
+//     de valor, barata).
+//  2. (fallback) substring no label "instance" contra o nome do node — SÓ disparada se a
+//     estratégia #1 não cobriu TODOS os nodes pedidos (node_uname_info ausente, ou correlação não
+//     bateu pra algum node específico).
+//
+// O timestamp (QueryRange, a query mais cara) só roda pra CADA estratégia que de fato achou pelo
+// menos 1 node via a query de valor correspondente — nunca "no escuro", nunca as duas ao mesmo
+// tempo por padrão. No caso comum (node_uname_info existe e correlaciona 100% dos nodes — cenário
+// já confirmado nesta sessão), isso cai pra 2 queries totais por métrica (1 valor + 1 timestamp),
+// igual ao custo de antes desta correlação por nodename ter sido introduzida.
+func (e *PrometheusEnricher) nodeMetricTopUsage(ctx context.Context, nodeNames []string, q nodeMetricQuerySet, scale float64, label string) map[string]promPeakSample {
+	valueByNodename := scaleFloatMap(
+		e.queryNodenameMetricPeakValue(ctx, q.valueByNodename, label+"_top_value_by_nodename"),
+		scale,
+	)
+
+	allCoveredByNodename := len(nodeNames) > 0
+	for _, name := range nodeNames {
+		if _, ok := valueByNodename[name]; !ok {
+			allCoveredByNodename = false
+			break
+		}
+	}
+
+	var valueByInstance map[string]float64
+	if !allCoveredByNodename {
+		valueByInstance = scaleFloatMap(
+			e.queryInstanceMetricPeakValue(ctx, q.valueByInstance, label+"_top_value"),
+			scale,
+		)
+	}
+
+	var rangeByNodename, rangeByInstance map[string]promPeakSample
+	if len(valueByNodename) > 0 {
+		rangeByNodename = scalePeakMap(
+			e.queryNodenameMetricRangeMax(ctx, q.rangeByNodename, label+"_top_range_by_nodename"),
+			scale,
+		)
+	}
+	if len(valueByInstance) > 0 {
+		rangeByInstance = scalePeakMap(
+			e.queryInstanceMetricRangeMax(ctx, q.rangeByInstance, label+"_top_range"),
+			scale,
+		)
+	}
+
+	return mergeNodeTopPeaks(nodeNames, valueByNodename, rangeByNodename, valueByInstance, rangeByInstance)
+}
+
+// scaleFloatMap/scalePeakMap aplicam um fator de conversão (ex: bytes→MiB) sem mutar o mapa de
+// entrada — usados só pra Mem (scale=1/1048576); CPU já sai em millicores direto da query
+// (multiplicação embutida no PromQL), scale=1 é passthrough sem alocação.
+func scaleFloatMap(m map[string]float64, scale float64) map[string]float64 {
+	if scale == 1 || m == nil {
+		return m
+	}
+	out := make(map[string]float64, len(m))
+	for k, v := range m {
+		out[k] = v * scale
+	}
+	return out
+}
+
+func scalePeakMap(m map[string]promPeakSample, scale float64) map[string]promPeakSample {
+	if scale == 1 || m == nil {
+		return m
+	}
+	out := make(map[string]promPeakSample, len(m))
+	for k, v := range m {
+		v.Value *= scale
+		out[k] = v
+	}
+	return out
+}
+
+// mergeInstancePeak combina o valor confiável (subquery instant) com o timestamp best-effort
+// (QueryRange) por node, correlacionando por substring no label "instance" (node-exporter)
+// contra o nome literal do node K8s — estratégia de FALLBACK (ver nodeTopUsage), usada quando o
+// join por "nodename" (mergeNodeTopPeaks) não encontrou nada pra esse node. O valor NUNCA
+// depende da query de timestamp ter tido sucesso; o timestamp é anexado só quando essa query de
+// fato retorna algo pra esse node.
+func mergeInstancePeak(nodeNames []string, valueByInstance map[string]float64, rangeByInstance map[string]promPeakSample) map[string]promPeakSample {
+	out := make(map[string]promPeakSample, len(nodeNames))
+	for _, name := range nodeNames {
+		var sample promPeakSample
+		var found bool
+		for instance, v := range valueByInstance {
+			if strings.Contains(instance, name) {
+				sample.Value = v
+				found = true
+				break
+			}
+		}
+		for instance, v := range rangeByInstance {
+			if strings.Contains(instance, name) {
+				if !found {
+					sample.Value = v.Value
+					found = true
+				}
+				sample.At = v.At
+				break
+			}
+		}
+		if found {
+			out[name] = sample
+		}
+	}
+	return out
+}
+
+// mergeNodeTopPeaks combina as 2 estratégias de correlação documentadas em nodeTopUsage: roda o
+// fallback (substring de "instance", via mergeInstancePeak) primeiro, preenchendo o que
+// conseguir; depois a estratégia preferida (join exato por "nodename") SOBRESCREVE cada node em
+// que encontrou dado — nunca o contrário, pra sempre priorizar a correlação mais confiável
+// quando ela está disponível.
+func mergeNodeTopPeaks(
+	nodeNames []string,
+	valueByNodename map[string]float64, rangeByNodename map[string]promPeakSample,
+	valueByInstance map[string]float64, rangeByInstance map[string]promPeakSample,
+) map[string]promPeakSample {
+	out := mergeInstancePeak(nodeNames, valueByInstance, rangeByInstance)
+	for _, name := range nodeNames {
+		v, hasValue := valueByNodename[name]
+		r, hasRange := rangeByNodename[name]
+		if !hasValue && !hasRange {
+			continue
+		}
+		sample := out[name] // zero-value se o fallback não tinha achado nada pra este node
+		switch {
+		case hasValue:
+			sample.Value = v
+		case hasRange:
+			sample.Value = r.Value
+		}
+		if hasRange {
+			sample.At = r.At
+		}
+		out[name] = sample
+	}
+	return out
+}
+
+// queryInstanceMetricPeakValue é o equivalente pra node de queryPodMetricPeakValue — query
+// INSTANT com subquery (um único ponto por série via node-exporter, nunca a série inteira),
+// fonte confiável do VALOR do pico por "instance". Ver queryInstanceMetricRangeMax pro porquê
+// de existir uma query bem mais pesada, separada, só pro timestamp.
+func (e *PrometheusEnricher) queryInstanceMetricPeakValue(ctx context.Context, query, label string) map[string]float64 {
+	qctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	result, _, err := e.api.Query(qctx, query, time.Now())
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query de pico de node (valor) falhou")
+		return nil
+	}
+	vec, ok := result.(model.Vector)
+	if !ok {
+		return nil
+	}
+	m := make(map[string]float64, len(vec))
+	for _, sample := range vec {
+		instance := string(sample.Metric["instance"])
+		if instance == "" {
+			continue
+		}
+		m[instance] = float64(sample.Value)
+	}
+	return m
+}
+
+// queryInstanceMetricRangeMax executa QueryRange (não subquery instant) agrupado pelo label
+// "instance" (node-exporter) e retorna, por instance, o pico (valor + timestamp exato) dentro da
+// janela e.window. Step escolhido por rangeStepForWindow — mesmo trade-off resolução/volume já
+// usado por queryContainerMetricRangeMax (o "quando" de um pico não precisa de resolução de
+// segundos, minutos já bastam pra um humano julgar recência).
+func (e *PrometheusEnricher) queryInstanceMetricRangeMax(ctx context.Context, query, label string) map[string]promPeakSample {
+	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	end := time.Now()
+	start := end.Add(-time.Duration(e.window) * 24 * time.Hour)
+	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(e.window)}
+
+	result, _, err := e.api.QueryRange(qctx, query, r)
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query range de node (com timestamp) falhou")
+		return nil
+	}
+	mat, ok := result.(model.Matrix)
+	if !ok {
+		return nil
+	}
+
+	m := make(map[string]promPeakSample)
+	for _, series := range mat {
+		instance := string(series.Metric["instance"])
+		if instance == "" || len(series.Values) == 0 {
+			continue
+		}
+		m[instance] = peakOf(series.Values)
+	}
+	return m
+}
+
+// queryNodenameMetricPeakValue é o equivalente de queryInstanceMetricPeakValue, mas keyed pelo
+// label "nodename" (via join com node_uname_info na própria query — ver nodeTopUsage) em vez de
+// "instance" — resultado já vem correlacionável por IGUALDADE EXATA contra o nome do node K8s,
+// sem precisar do fallback de substring que mergeInstancePeak usa.
+func (e *PrometheusEnricher) queryNodenameMetricPeakValue(ctx context.Context, query, label string) map[string]float64 {
+	qctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	result, _, err := e.api.Query(qctx, query, time.Now())
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query de pico de node por nodename (valor) falhou")
+		return nil
+	}
+	vec, ok := result.(model.Vector)
+	if !ok {
+		return nil
+	}
+	m := make(map[string]float64, len(vec))
+	for _, sample := range vec {
+		nodename := string(sample.Metric["nodename"])
+		if nodename == "" {
+			continue
+		}
+		m[nodename] = float64(sample.Value)
+	}
+	return m
+}
+
+// queryNodenameMetricRangeMax é o equivalente de queryInstanceMetricRangeMax, mas keyed por
+// "nodename" — ver queryNodenameMetricPeakValue e nodeTopUsage pro porquê dessa correlação ser
+// preferível à de "instance" (substring, mais frágil).
+func (e *PrometheusEnricher) queryNodenameMetricRangeMax(ctx context.Context, query, label string) map[string]promPeakSample {
+	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	end := time.Now()
+	start := end.Add(-time.Duration(e.window) * 24 * time.Hour)
+	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(e.window)}
+
+	result, _, err := e.api.QueryRange(qctx, query, r)
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query range de node por nodename (com timestamp) falhou")
+		return nil
+	}
+	mat, ok := result.(model.Matrix)
+	if !ok {
+		return nil
+	}
+
+	m := make(map[string]promPeakSample)
+	for _, series := range mat {
+		nodename := string(series.Metric["nodename"])
+		if nodename == "" || len(series.Values) == 0 {
+			continue
+		}
+		m[nodename] = peakOf(series.Values)
 	}
 	return m
 }

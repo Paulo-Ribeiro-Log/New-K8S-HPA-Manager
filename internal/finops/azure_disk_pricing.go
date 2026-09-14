@@ -68,20 +68,20 @@ var filesAndBlobFallbackPerGB = map[string]float64{
 
 // storageClassProvisioners mapeia provisioner → categoria ("disk", "files", "blob")
 var storageClassProvisioners = map[string]string{
-	"disk.csi.azure.com":        "disk",
-	"file.csi.azure.com":        "files",
-	"blob.csi.azure.com":        "blob",
-	"kubernetes.io/azure-disk":  "disk",
-	"kubernetes.io/azure-file":  "files",
+	"disk.csi.azure.com":       "disk",
+	"file.csi.azure.com":       "files",
+	"blob.csi.azure.com":       "blob",
+	"kubernetes.io/azure-disk": "disk",
+	"kubernetes.io/azure-file": "files",
 }
 
 // skuNameToAzureType mapeia o parâmetro skuName da StorageClass → tipo de disco Azure
 var skuNameToAzureType = map[string]string{
-	"premium_lrs":      "Premium SSD",
-	"premium_zrs":      "Premium SSD",
-	"standardssd_lrs":  "Standard SSD",
-	"standardssd_zrs":  "Standard SSD",
-	"standard_lrs":     "Standard HDD",
+	"premium_lrs":     "Premium SSD",
+	"premium_zrs":     "Premium SSD",
+	"standardssd_lrs": "Standard SSD",
+	"standardssd_zrs": "Standard SSD",
+	"standard_lrs":    "Standard HDD",
 }
 
 // storageClassNameHints é a tabela de fallback para mapear nome de SC → tipo Azure

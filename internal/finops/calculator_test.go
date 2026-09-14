@@ -57,7 +57,7 @@ func TestCalculatePoolCosts(t *testing.T) {
 
 	pools := []storage.NodePoolRegistryEntry{
 		{Cluster: "test", NodePool: "system", VMSize: "Standard_D4s_v3", NodeCount: 2, Mode: "System"},
-		{Cluster: "test", NodePool: "user",   VMSize: "Standard_D8s_v3", NodeCount: 3, Mode: "User"},
+		{Cluster: "test", NodePool: "user", VMSize: "Standard_D8s_v3", NodeCount: 3, Mode: "User"},
 	}
 
 	finOpsPools, cap, totalUSD, err := calc.calculatePoolCosts(pools, rate)
@@ -97,8 +97,8 @@ func TestAllocateCosts(t *testing.T) {
 
 	workloads := []rawWorkload{
 		{Namespace: "ns-a", Workload: "app-a", Pods: 3, CPURequestMillis: 3000, MemRequestMi: 3072, HPAMin: 2, HPAMax: 10, HPACurrent: 3},
-		{Namespace: "ns-a", Workload: "app-b", Pods: 1, CPURequestMillis: 500,  MemRequestMi: 512},
-		{Namespace: "ns-b", Workload: "app-c", Pods: 2, CPURequestMillis: 0,    MemRequestMi: 0},
+		{Namespace: "ns-a", Workload: "app-b", Pods: 1, CPURequestMillis: 500, MemRequestMi: 512},
+		{Namespace: "ns-b", Workload: "app-c", Pods: 2, CPURequestMillis: 0, MemRequestMi: 0},
 	}
 
 	result := allocateCosts(workloads, cap, clusterCostUSD, rate)
@@ -138,7 +138,7 @@ func TestAllocateCosts(t *testing.T) {
 func TestAggregateNamespaces(t *testing.T) {
 	workloads := []FinOpsWorkload{
 		{Namespace: "ns-a", Workload: "w1", CostShareUSD: 100, CostShareBRL: 520},
-		{Namespace: "ns-a", Workload: "w2", CostShareUSD: 50,  CostShareBRL: 260},
+		{Namespace: "ns-a", Workload: "w2", CostShareUSD: 50, CostShareBRL: 260},
 		{Namespace: "ns-b", Workload: "w3", CostShareUSD: 200, CostShareBRL: 1040},
 	}
 
@@ -156,5 +156,40 @@ func TestAggregateNamespaces(t *testing.T) {
 	}
 	if namespaces[1].MonthlyCostBRL != 780 {
 		t.Errorf("ns-a custo esperado 780 (520+260), got %.2f", namespaces[1].MonthlyCostBRL)
+	}
+}
+
+// TestBuildSummary_MetricsWorkloadsEnriched cobre o bug real relatado pelo usuário: um scan onde
+// TODOS os workloads/pools vieram com desperdício R$0, CPU/Mem 0%, "Com Oportunidade 0" — sinal
+// indistinguível, sem esse campo, de "cluster genuinamente sem desperdício algum" (quando na
+// real era falha silenciosa de coleta Prometheus/Dynatrace). Confirma que MetricsWorkloadsEnriched
+// conta corretamente os workloads com MetricsSource preenchido (por qualquer fonte).
+func TestBuildSummary_MetricsWorkloadsEnriched(t *testing.T) {
+	workloads := []FinOpsWorkload{
+		{Namespace: "ns-a", Workload: "w1", MetricsSource: "prometheus"},
+		{Namespace: "ns-a", Workload: "w2", MetricsSource: "dynatrace"},
+		{Namespace: "ns-b", Workload: "w3", MetricsSource: ""}, // sem enriquecimento
+	}
+
+	summary := buildSummary(workloads, nil, 0, 5.2)
+	if summary.MetricsWorkloadsEnriched != 2 {
+		t.Errorf("esperava MetricsWorkloadsEnriched=2, got %d", summary.MetricsWorkloadsEnriched)
+	}
+	if summary.WorkloadsAnalyzed != 3 {
+		t.Errorf("esperava WorkloadsAnalyzed=3, got %d", summary.WorkloadsAnalyzed)
+	}
+}
+
+// TestBuildSummary_MetricsWorkloadsEnriched_AllEmpty cobre o cenário exato do bug real — nenhum
+// workload recebeu enriquecimento (o sinal de falha silenciosa que BuildReport usa junto de
+// MetricsAttempted pra decidir se avisa o usuário).
+func TestBuildSummary_MetricsWorkloadsEnriched_AllEmpty(t *testing.T) {
+	workloads := []FinOpsWorkload{
+		{Namespace: "ns-a", Workload: "w1"},
+		{Namespace: "ns-a", Workload: "w2"},
+	}
+	summary := buildSummary(workloads, nil, 0, 5.2)
+	if summary.MetricsWorkloadsEnriched != 0 {
+		t.Errorf("esperava MetricsWorkloadsEnriched=0, got %d", summary.MetricsWorkloadsEnriched)
 	}
 }
