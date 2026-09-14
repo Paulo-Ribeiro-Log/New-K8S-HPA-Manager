@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -4157,6 +4157,38 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     staleTime: Infinity,   // cache permanece válido indefinidamente
     retry: false,
   });
+
+  // Restaura o último scan já feito (sem NUNCA disparar um re-scan) sempre que o cluster muda ou
+  // a aba monta — bug real corrigido, relatado pelo usuário: "sempre que chamamos a aba finops,
+  // ela vem vazia só com as seleções de cluster e os botões... ajuste para que venha com a
+  // exibição do último scan". Antes, `enabled: false` acima significava que NADA aparecia até um
+  // clique manual em "Analisar" — mesmo que o cluster já tivesse sido analisado minutos antes,
+  // bastava trocar de aba (desmontando este componente) ou recarregar a página pra perder tudo.
+  // GET /finops/report/last só lê um cache já persistido no backend (SQLite) — nunca consulta
+  // Dynatrace/Prometheus/K8s. Só busca se a queryKey ainda não tiver dado (evita sobrescrever um
+  // relatório recém-buscado ao vivo nesta mesma sessão, e evita rebuscar à toa).
+  useEffect(() => {
+    if (!cluster) return;
+    if (queryClient.getQueryData(["finops-report", cluster])) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/v1/finops/report/last?cluster=${encodeURIComponent(cluster)}`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+        });
+        if (!r.ok || cancelled) return;
+        const data = await r.json();
+        if (cancelled || data?.scanned === false) return;
+        queryClient.setQueryData(["finops-report", cluster], data);
+      } catch {
+        // best-effort e silencioso — sem cache, a tela simplesmente fica no estado vazio já
+        // existente ("Selecione um cluster e clique em Analisar"), nunca um erro visível.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cluster, queryClient]);
 
   // Depois que o relatório principal (já persistindo rightsizing como efeito colateral, acima)
   // termina, só invalida a query de leitura (["finops-rightsizing", cluster], mesma chave que

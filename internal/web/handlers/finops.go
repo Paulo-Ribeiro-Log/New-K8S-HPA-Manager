@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -25,6 +26,7 @@ type FinOpsHandler struct {
 	npRegistryStore  *storage.NodePoolRegistryStore
 	timelineStore    *storage.FinOpsTimelineStore    // pode ser nil se DB não disponível
 	rightsizingStore *storage.FinOpsRightsizingStore // pode ser nil se DB não disponível — ver finops_rightsizing.go
+	reportCacheStore *storage.FinOpsReportCacheStore // pode ser nil se DB não disponível — cache do último GET /finops/report por cluster, ver GetLastReport
 	pricer           *finops.AzurePricer             // AKS — também usado como fallback pra providers sem pricer próprio
 	gcpPricer        *finops.GCPPricer               // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
 	diskPricer       *finops.DiskPricer              // nil = análise de storage omitida (Azure only)
@@ -47,7 +49,7 @@ type dtTokenReader interface {
 
 // NewFinOpsHandler cria o handler com as dependências compartilhadas.
 // AzurePricer, GCPPricer e DiskPricer são inicializados uma única vez (cache SQLite interno).
-func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, rightsizingStore *storage.FinOpsRightsizingStore, aiHandler *AIDiagnosticsHandler, dtTokens dtTokenReader) *FinOpsHandler {
+func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, rightsizingStore *storage.FinOpsRightsizingStore, reportCacheStore *storage.FinOpsReportCacheStore, aiHandler *AIDiagnosticsHandler, dtTokens dtTokenReader) *FinOpsHandler {
 	pricer, err := finops.NewAzurePricer("")
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar AzurePricer, usando apenas fallback")
@@ -65,6 +67,7 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		npRegistryStore:  npRegistryStore,
 		timelineStore:    timelineStore,
 		rightsizingStore: rightsizingStore,
+		reportCacheStore: reportCacheStore,
 		pricer:           pricer,
 		gcpPricer:        gcpPricer,
 		diskPricer:       diskPricer,
@@ -264,6 +267,21 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		}
 	}
 
+	// Cacheia o relatório recém-gerado como "último scan" deste cluster — bug real corrigido,
+	// relatado pelo usuário: "sempre que chamamos a aba finops, ela vem vazia... ajuste para que
+	// venha com a exibição do último scan". Antes o relatório só existia no cache em memória do
+	// React Query (nada sobrevive a um reload de página ou a uma troca de aba que desmonte o
+	// componente e deixe o cache expirar) — GET /finops/report/last (ver GetLastReport) lê daqui
+	// pra restaurar a última tela vista sem exigir um novo clique em "Analisar". Best-effort:
+	// nunca falha a resposta principal do relatório se o cache não puder ser escrito.
+	if h.reportCacheStore != nil {
+		if reportJSON, merr := json.Marshal(report); merr != nil {
+			log.Warn().Err(merr).Str("cluster", cluster).Msg("FinOps: falha ao serializar relatório pro cache de último scan")
+		} else if serr := h.reportCacheStore.Save(cluster, reportJSON, report.GeneratedAt); serr != nil {
+			log.Warn().Err(serr).Str("cluster", cluster).Msg("FinOps: falha ao persistir cache de último scan (best-effort, não afeta o relatório em si)")
+		}
+	}
+
 	log.Info().
 		Str("cluster", cluster).
 		Int("workloads", report.Summary.WorkloadsAnalyzed).
@@ -274,6 +292,39 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		Msg("FinOps: relatório gerado")
 
 	c.JSON(http.StatusOK, report)
+}
+
+// GetLastReport godoc
+// GET /api/v1/finops/report/last?cluster=X
+//
+// Devolve o ÚLTIMO relatório com sucesso (GET /finops/report) já persistido em cache pra este
+// cluster — sem NUNCA consultar Dynatrace/Prometheus/K8s de novo, só lê o JSON já pronto do
+// SQLite. Existe pra que abrir/reabrir a aba FinOps mostre a última análise feita, em vez de vir
+// vazia até o usuário clicar "Analisar" manualmente de novo. scanned=false (200, nunca 404 —
+// mais simples de consumir no frontend) quando o cluster nunca foi analisado ainda.
+func (h *FinOpsHandler) GetLastReport(c *gin.Context) {
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
+		return
+	}
+	if h.reportCacheStore == nil {
+		c.JSON(http.StatusOK, gin.H{"scanned": false})
+		return
+	}
+
+	reportJSON, generatedAt, found, err := h.reportCacheStore.Get(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao ler cache do último relatório: " + err.Error()})
+		return
+	}
+	if !found {
+		c.JSON(http.StatusOK, gin.H{"scanned": false})
+		return
+	}
+
+	log.Debug().Str("cluster", cluster).Time("generated_at", generatedAt).Msg("FinOps: último relatório restaurado do cache (sem re-scan)")
+	c.Data(http.StatusOK, "application/json; charset=utf-8", reportJSON)
 }
 
 // GetPricing godoc

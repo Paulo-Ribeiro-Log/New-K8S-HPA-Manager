@@ -111,6 +111,9 @@ type Server struct {
 	// FinOps Rightsizing Store (análises persistidas de request/limit + tier de VM)
 	finopsRightsizingStore *storage.FinOpsRightsizingStore
 
+	// FinOps Report Cache Store (cache do último GET /finops/report por cluster)
+	finopsReportCacheStore *storage.FinOpsReportCacheStore
+
 	// SNAT History Store (histórico de snapshots SNAT para projeção de crescimento)
 	snatHistoryStore *storage.SNATHistoryStore
 
@@ -425,6 +428,17 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ FinOps Rightsizing Store inicializado (análises persistidas de rightsizing)")
 	}
 
+	// FinOps Report Cache Store (cache do último GET /finops/report por cluster — reabrir a aba
+	// FinOps mostra a última análise em vez de vir vazia)
+	var finopsReportCacheStore *storage.FinOpsReportCacheStore
+	finopsReportCacheDBPath := filepath.Join(baseDir, "finops-report-cache.db")
+	if store, err := storage.NewFinOpsReportCacheStore(finopsReportCacheDBPath); err != nil {
+		fmt.Printf("⚠️  FinOps Report Cache Store: falha ao criar store: %v\n", err)
+	} else {
+		finopsReportCacheStore = store
+		fmt.Println("✅ FinOps Report Cache Store inicializado (último relatório por cluster)")
+	}
+
 	// SNAT History Store (histórico de snapshots para projeção de crescimento)
 	var snatHistoryStore *storage.SNATHistoryStore
 	snatHistoryDBPath := filepath.Join(baseDir, "snat_history.db")
@@ -521,6 +535,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		npRegistryStore:           npRegistryStore,           // Usado pelo healthcheck orchestrator
 		finopsTimelineStore:       finopsTimelineStore,       // Snapshots históricos HPA para comparação
 		finopsRightsizingStore:    finopsRightsizingStore,    // Análises persistidas de rightsizing (request/limit + tier de VM)
+		finopsReportCacheStore:    finopsReportCacheStore,    // Cache do último GET /finops/report por cluster
 		snatHistoryStore:          snatHistoryStore,          // Histórico SNAT para projeção de crescimento
 		latencyTestHistoryStore:   latencyTestHistoryStore,   // Histórico de testes de latência (grafo Fase 6.4)
 		netDiscoveryRegistryStore: netDiscoveryRegistryStore, // Cache de cross-reference K8s da Descoberta de Rede (Fase 4)
@@ -820,8 +835,9 @@ func (s *Server) setupRoutes() {
 	}
 
 	// FinOps — análise de custo real de clusters AKS (Azure Pricing API + alocação por workload)
-	finOpsHandler := handlers.NewFinOpsHandler(s.kubeManager, s.npRegistryStore, s.finopsTimelineStore, s.finopsRightsizingStore, s.aiHandler, s.aiTokensStore)
+	finOpsHandler := handlers.NewFinOpsHandler(s.kubeManager, s.npRegistryStore, s.finopsTimelineStore, s.finopsRightsizingStore, s.finopsReportCacheStore, s.aiHandler, s.aiTokensStore)
 	api.GET("/finops/report", finOpsHandler.GetReport)
+	api.GET("/finops/report/last", finOpsHandler.GetLastReport)
 	api.GET("/finops/rightsizing", finOpsHandler.GetRightsizing)
 	api.POST("/finops/rightsizing/scan", finOpsHandler.ScanRightsizing) // mesmo padrão sem RBAC extra dos demais POST de FinOps (pricing/refresh, storage/refresh) — análise, não mutação de cluster
 	api.GET("/finops/pricing", finOpsHandler.GetPricing)
