@@ -713,6 +713,21 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
         </Card>
       </div>
 
+      {/* ── 1b. Recursos de Dados (RG separado, rg-<nome>-data-<env>) ──────────
+          Antes só vivia dentro da aba "Armazenamento" (7ª de 8) — pedido explícito do usuário
+          relatado 2x nesta sessão ("não existe nada relacionado a rg-<cluster>-data<env> sendo
+          exibido nas tabs"): o backend/endpoint sempre funcionou (confirmado ao vivo contra 4
+          clusters reais), o problema era só descoberta — enterrado numa sub-aba raramente
+          aberta. Duplicado aqui na Dashboard (1ª aba, sempre vista primeiro) só como resumo
+          compacto; a versão completa (lista expansível por recurso) continua em Armazenamento,
+          sem mudança. O próprio componente já é silencioso quando o cluster não tem RG de dados
+          (nota discreta, nunca alarme) — reaproveitado tal como está, sem duplicar lógica. */}
+      <Card>
+        <CardContent className="p-3">
+          <DataResourcesPanel cluster={cluster} />
+        </CardContent>
+      </Card>
+
       {/* ── 2. Window selector ──────────────────────────────────────────────── */}
       <div className="flex items-center gap-2">
         <span className="text-xs text-muted-foreground">Série temporal:</span>
