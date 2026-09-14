@@ -4135,7 +4135,13 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     queryFn: async ({ signal }) => {
       let url = `/api/v1/finops/report?cluster=${encodeURIComponent(cluster)}`;
       if (withPrometheus) {
-        url += `&with_prometheus=true&window_days=${windowDays}`;
+        // persist_rightsizing=true: o MESMO relatório que esta chamada já constrói (Dynatrace/
+        // Prometheus/K8s/storage) também alimenta a aba Rightsizing (ver RightsizingTab.tsx) — o
+        // backend persiste as tabelas de rightsizing como efeito colateral, sem nenhum re-scan.
+        // Bug real corrigido, relatado pelo usuário ("o que me leva a crer que está fazendo o
+        // mesmo scan 2 vezes" — cada "Analisar" chegou a levar ~2min + mais ~2min de rightsizing
+        // logo em seguida, porque a versão anterior disparava um 2º scan completo do zero).
+        url += `&with_prometheus=true&window_days=${windowDays}&persist_rightsizing=true`;
       }
       const r = await fetch(url, {
         signal,
@@ -4152,41 +4158,15 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     retry: false,
   });
 
-  // Dispara o scan de Rightsizing (request/limit + tier de VM, ver RightsizingTab.tsx) junto da
-  // análise principal do cluster — pedido explícito do usuário: antes só rodava sob clique manual
-  // em "Analisar agora" dentro da própria aba Rightsizing, exigindo visitar a aba pra ter dado
-  // algum. Roda DEPOIS do relatório principal terminar (nunca em paralelo) — os dois disparam
-  // várias queries pesadas ao Prometheus/Dynatrace, rodar junto dobraria a carga concorrente
-  // justamente no momento em que picos de uso (CPUMaxMillis/MemMaxMi) já se provaram sensíveis a
-  // isso. Usa queryClient.fetchQuery (não um fetch cru) na MESMA queryKey que RightsizingTab.tsx
-  // já observa (["finops-rightsizing", cluster]) — se o usuário estiver com essa aba aberta, o
-  // próprio hook dela reflete "carregando"/dado novo automaticamente, sem nenhuma prop nova ou
-  // estado compartilhado explícito. Best-effort: nunca bloqueia nem suja a análise principal —
-  // uma falha aqui (ex: node pools nunca escaneados) só avisa via toast discreto, e o botão
-  // "Reanalisar agora" dentro da aba Rightsizing continua funcionando pra tentar de novo na mão.
-  const triggerRightsizingScan = useCallback(async () => {
-    try {
-      await queryClient.fetchQuery({
-        queryKey: ["finops-rightsizing", cluster],
-        queryFn: async () => {
-          const url = `/api/v1/finops/rightsizing/scan?cluster=${encodeURIComponent(cluster)}&window_days=${windowDays}`;
-          const r = await fetch(url, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
-          });
-          if (!r.ok) {
-            const err = await r.json().catch(() => ({}));
-            throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
-          }
-          return r.json();
-        },
-      });
-    } catch (e) {
-      toast.warning("Rightsizing não pôde ser reanalisado automaticamente: " + (e as Error).message, {
-        description: "Abra a aba Rightsizing e use \"Reanalisar agora\" pra tentar de novo.",
-      });
-    }
-  }, [queryClient, cluster, windowDays]);
+  // Depois que o relatório principal (já persistindo rightsizing como efeito colateral, acima)
+  // termina, só invalida a query de leitura (["finops-rightsizing", cluster], mesma chave que
+  // RightsizingTab.tsx observa) — invalidateQueries refaz automaticamente o fetch se a aba
+  // Rightsizing estiver aberta no momento (React Query só refetcha queries ativas/montadas) e
+  // marca como stale pra quando o usuário for lá depois; como GET /rightsizing só lê do SQLite
+  // (rápido, sem Prometheus/Dynatrace), isso nunca reintroduz o custo do 2º scan completo.
+  const refreshRightsizingCache = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["finops-rightsizing", cluster] });
+  }, [queryClient, cluster]);
 
   const exportCSV = () => {
     if (!report) return;
@@ -4315,7 +4295,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                   setAiAnalysis(null);
                   const result = await refetch();
                   if (result.isSuccess) {
-                    void triggerRightsizingScan();
+                    refreshRightsizingCache();
                   }
                 }
               }}>

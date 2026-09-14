@@ -229,7 +229,8 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		storagePromURL = discovery.GetPrometheusURL(cluster)
 		storageRequiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
-	calc := finops.NewCalculator(h.pricerForCluster(cluster), h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
+	pricer := h.pricerForCluster(cluster)
+	calc := finops.NewCalculator(pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
 	// metrics-server é opcional/best-effort (ex: EKS sem metrics-server instalado) — nil aqui só
 	// significa que os campos "current" (live) do relatório ficam vazios, nunca bloqueia o resto.
 	metricsClient, metricsErr := h.kubeManager.GetMetricsClient(cluster)
@@ -242,6 +243,25 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()})
 		return
+	}
+
+	// Rightsizing reaproveitando o MESMO relatório — bug real corrigido, relatado pelo usuário:
+	// "o que me leva a crer que está fazendo o mesmo scan 2 vezes" (o "Analisar" principal do
+	// FinOps disparava GetReport completo e, em seguida, o frontend chamava POST /rightsizing/
+	// scan, que refazia TODO o pipeline Dynatrace/Prometheus/K8s/storage do zero — dobrando o
+	// tempo total, cada scan já levando ~2min sozinho). Best-effort e opt-in via
+	// persist_rightsizing=true (só o "Analisar" principal do FinOps manda isso — ver
+	// triggerRightsizingScan em FinOpsTab.tsx); nunca falha a resposta principal do relatório.
+	// Só roda sem filtro de namespace (persistir um relatório PARCIAL sobrescreveria a análise
+	// completa do cluster no store) e só quando há alguma fonte de uso real (mesma exigência já
+	// documentada em ScanRightsizing — "rightsizing exige uso real histórico").
+	if c.Query("persist_rightsizing") == "true" && h.rightsizingStore != nil && len(namespaces) == 0 && (dtEnricher != nil || enricher != nil) {
+		if _, _, _, perr := h.persistRightsizingFromReport(c.Request.Context(), cluster, report, windowDays, pricer); perr != nil {
+			log.Warn().Err(perr).Str("cluster", cluster).
+				Msg("FinOps: falha ao persistir rightsizing a partir do relatório principal (best-effort, não afeta o relatório em si)")
+		} else {
+			log.Info().Str("cluster", cluster).Msg("FinOps: rightsizing persistido a partir do relatório principal (sem re-scan)")
+		}
 	}
 
 	log.Info().

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -124,9 +125,11 @@ func (h *FinOpsHandler) GetRightsizing(c *gin.Context) {
 //
 // Roda o mesmo pipeline que GetReport já usa pra montar o FinOpsReport (Dynatrace/Prometheus
 // enrichers, agora populando CPULimitRecommendedMillis/MemLimitRecommendedMi e NodePool por
-// workload), agrega o uso real recomendado (não o request nominal) por node pool e chama
-// SuggestVMTier — persiste tudo e devolve o resultado fresco. É o único caminho "caro" desta
-// aba; GET /rightsizing nunca dispara isto sozinho.
+// workload) e delega a persistRightsizingFromReport a agregação por pool + SuggestVMTier +
+// persistência. É o caminho STANDALONE (usado pelo botão "Reanalisar agora" da aba Rightsizing,
+// quando não há nenhum relatório já construído na mesma requisição pra reaproveitar — ver
+// GetReport's persist_rightsizing=true pro caminho reaproveitado, que é o que o "Analisar"
+// principal do FinOps dispara).
 func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 	cluster := c.Query("cluster")
 	if cluster == "" {
@@ -196,7 +199,14 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 	}
 
 	pricer := h.pricerForCluster(cluster)
-	calc := finops.NewCalculator(pricer, nil, h.exchange)
+	// h.diskPricer (não mais nil) + WithPrometheusURL: standalone precisa computar storage/PVC
+	// igual ao relatório principal (GetReport) computa — antes ScanRightsizing passava nil pro
+	// diskPricer, deixando report.Storage/PVCs sempre vazios nesse caminho (achado ao investigar
+	// "isso [PVC] está sendo levado em conta nos custos apresentados?" — o total geral do FinOps
+	// (Dashboard/Relatório) sempre incluiu storage via GetReport; só o report INTERNO gerado por
+	// um scan standalone de Rightsizing não incluía. waste_brl/recomendações continuam só de
+	// compute — storage nunca fez parte de "rightsizing" de request/limit, propositalmente).
+	calc := finops.NewCalculator(pricer, h.diskPricer, h.exchange).WithPrometheusURL(promURL, requiresGCPAuth)
 	// metrics-server best-effort — nil aqui só significa que os campos "current" (live) e
 	// NodeUsage ficam sem dado ao vivo, nunca bloqueia o scan (mesmo padrão de GetReport).
 	metricsClient, metricsErr := h.kubeManager.GetMetricsClient(cluster)
@@ -210,6 +220,47 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 		return
 	}
 
+	workloadRecs, tierSuggestions, nodeUsageRecs, persistErr := h.persistRightsizingFromReport(c.Request.Context(), cluster, report, windowDays, pricer)
+	if persistErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao persistir análise: " + persistErr.Error()})
+		return
+	}
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("workloads", len(workloadRecs)).
+		Int("node_pools", len(tierSuggestions)).
+		Int("nodes", len(nodeUsageRecs)).
+		Bool("dynatrace", dtEnricher != nil).
+		Bool("prometheus", enricher != nil).
+		Msg("FinOps/Rightsizing: scan standalone concluído e persistido")
+
+	c.JSON(http.StatusOK, gin.H{
+		"cluster":         cluster,
+		"scanned":         true,
+		"last_scanned_at": time.Now(),
+		"workloads":       workloadRecs,
+		"node_pools":      nodePoolTierResponses(tierSuggestions),
+		"nodes":           nodeUsageRecs,
+	})
+}
+
+// persistRightsizingFromReport agrega o uso real recomendado por node pool, computa as sugestões
+// de tier de VM (SuggestVMTier) e persiste tudo no rightsizingStore — a partir de um
+// *finops.FinOpsReport JÁ CONSTRUÍDO (por ScanRightsizing, ou por GetReport quando o relatório
+// principal também pede ?persist_rightsizing=true). Extraída pra ser compartilhada pelos dois
+// call sites — bug real corrigido, relatado pelo usuário: "o que me leva a crer que está fazendo
+// o mesmo scan 2 vezes" (exatamente o que acontecia: clicar "Analisar" disparava GetReport
+// completo, e o auto-trigger do scan de Rightsizing em seguida refazia TODO o pipeline
+// Dynatrace/Prometheus/K8s/storage do zero, dobrando o tempo total). Esta função nunca
+// re-consulta Prometheus/Dynatrace — só faz o trabalho que é exclusivo do Rightsizing.
+func (h *FinOpsHandler) persistRightsizingFromReport(
+	ctx context.Context,
+	cluster string,
+	report *finops.FinOpsReport,
+	windowDays int,
+	pricer finops.CloudPricer,
+) (workloadRecs []storage.WorkloadRecommendation, tierSuggestions []storage.NodePoolTierSuggestion, nodeUsageRecs []storage.NodeUsage, err error) {
 	now := time.Now()
 
 	// ── Workloads: persiste o snapshot + agrega uso real recomendado por pool ──────────────────
@@ -219,7 +270,7 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 	}
 	poolAgg := make(map[string]*poolUsage)
 
-	workloadRecs := make([]storage.WorkloadRecommendation, 0, len(report.Workloads))
+	workloadRecs = make([]storage.WorkloadRecommendation, 0, len(report.Workloads))
 	for _, wl := range report.Workloads {
 		workloadRecs = append(workloadRecs, storage.WorkloadRecommendation{
 			Namespace:                 wl.Namespace,
@@ -271,9 +322,8 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 		}
 	}
 
-	if err := h.rightsizingStore.ReplaceWorkloadRecommendations(cluster, workloadRecs); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao persistir recomendações: " + err.Error()})
-		return
+	if err = h.rightsizingStore.ReplaceWorkloadRecommendations(cluster, workloadRecs); err != nil {
+		return nil, nil, nil, err
 	}
 
 	// ── Node Pools: tier de VM guiado pelo uso REAL agregado (não o request nominal) ───────────
@@ -286,7 +336,7 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 	// fica sem min/max/autoscaling pra esse pool, tudo o mais continua funcionando.
 	liveNodeGroups := make(map[string]models.NodePool)
 	if npProvider := h.kubeManager.GetNodeGroupProvider(cluster); npProvider != nil {
-		groups, npErr := npProvider.ListNodeGroups(c.Request.Context(), cluster)
+		groups, npErr := npProvider.ListNodeGroups(ctx, cluster)
 		if npErr != nil {
 			log.Warn().Err(npErr).Str("cluster", cluster).Msg("FinOps/Rightsizing: falha ao buscar min/max de node count ao vivo — cenário de resize de node count ficará incompleto")
 		} else {
@@ -296,7 +346,7 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 		}
 	}
 
-	tierSuggestions := make([]storage.NodePoolTierSuggestion, 0, len(report.NodePools))
+	tierSuggestions = make([]storage.NodePoolTierSuggestion, 0, len(report.NodePools))
 	coveredPools := make(map[string]bool, len(report.NodePools))
 	for _, pool := range report.NodePools {
 		if pool.Mode == "System" {
@@ -398,15 +448,14 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			Msg("FinOps/Rightsizing: pool presente ao vivo mas ausente do relatório (registry stale) — entrada sintética adicionada")
 	}
 
-	if err := h.rightsizingStore.ReplaceNodePoolTierSuggestions(cluster, tierSuggestions); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao persistir sugestões de tier: " + err.Error()})
-		return
+	if err = h.rightsizingStore.ReplaceNodePoolTierSuggestions(cluster, tierSuggestions); err != nil {
+		return nil, nil, nil, err
 	}
 
 	// ── Nodes: current (live, metrics-server) + top (pico histórico, Prometheus) por node único
 	// onde os workloads rodam — correlaciona "esta app roda no node X, que está em Y% agora
 	// (pico Z%)" na UI. Best-effort, já vem pronto de report.NodeUsage (calc.BuildReport).
-	nodeUsageRecs := make([]storage.NodeUsage, 0, len(report.NodeUsage))
+	nodeUsageRecs = make([]storage.NodeUsage, 0, len(report.NodeUsage))
 	for _, nu := range report.NodeUsage {
 		nodeUsageRecs = append(nodeUsageRecs, storage.NodeUsage{
 			NodeName:         nu.NodeName,
@@ -425,26 +474,9 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			GeneratedAt:      now,
 		})
 	}
-	if err := h.rightsizingStore.ReplaceNodeUsage(cluster, nodeUsageRecs); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao persistir uso de nodes: " + err.Error()})
-		return
+	if err = h.rightsizingStore.ReplaceNodeUsage(cluster, nodeUsageRecs); err != nil {
+		return nil, nil, nil, err
 	}
 
-	log.Info().
-		Str("cluster", cluster).
-		Int("workloads", len(workloadRecs)).
-		Int("node_pools", len(tierSuggestions)).
-		Int("nodes", len(nodeUsageRecs)).
-		Bool("dynatrace", dtEnricher != nil).
-		Bool("prometheus", enricher != nil).
-		Msg("FinOps/Rightsizing: scan concluído e persistido")
-
-	c.JSON(http.StatusOK, gin.H{
-		"cluster":         cluster,
-		"scanned":         true,
-		"last_scanned_at": now,
-		"workloads":       workloadRecs,
-		"node_pools":      nodePoolTierResponses(tierSuggestions),
-		"nodes":           nodeUsageRecs,
-	})
+	return workloadRecs, tierSuggestions, nodeUsageRecs, nil
 }
