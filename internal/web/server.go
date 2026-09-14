@@ -850,6 +850,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/timeline/compare-saved", finOpsHandler.CompareSnapshots)
 	api.GET("/finops/timeline/saved", finOpsHandler.GetSavedTimelines)
 	api.GET("/finops/vm-alternatives", finOpsHandler.GetVMAlternatives)
+	api.GET("/finops/data-resources", finOpsHandler.GetDataResources) // RG de dados (rg-<nome>-data-<env>) — SQL/Storage/Redis/Cosmos/ServiceBus fora do cluster K8s
 	api.POST("/finops/storage/refresh", finOpsHandler.RefreshDiskPricing)
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)

@@ -28,6 +28,7 @@ import {
   KubectlBlock, SummaryCard, VerdictBadge,
 } from "@/lib/finopsFormat";
 import { RightsizingTab } from "@/components/RightsizingTab";
+import { DataResourcesPanel } from "@/components/DataResourcesPanel";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -3475,7 +3476,7 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
 
 // ─── Aba: Armazenamento ───────────────────────────────────────────────────────
 
-function StorageTab({ pvcs: pvcsRaw, storage }: { pvcs: PVCCostItem[]; storage: StorageSummary }) {
+function StorageTab({ cluster, pvcs: pvcsRaw, storage }: { cluster: string; pvcs: PVCCostItem[]; storage: StorageSummary }) {
   const pvcs = pvcsRaw ?? [];
   const [filterNs, setFilterNs] = useState("all");
   const [filterType, setFilterType] = useState("all");
@@ -3530,7 +3531,11 @@ function StorageTab({ pvcs: pvcsRaw, storage }: { pvcs: PVCCostItem[]; storage: 
 
   return (
     <div className="space-y-4">
-      {/* ── 4 KPI Cards ──────────────────────────────────────────────────────── */}
+      {/* ── Recursos de Dados (RG separado, fora do cluster K8s — SQL/Storage/Redis/Cosmos) ── */}
+      <DataResourcesPanel cluster={cluster} />
+      <div className="border-t" />
+
+      {/* ── 4 KPI Cards (storage DENTRO do cluster — PVCs + disco OS) ──────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <Card>
           <CardContent className="p-3">
@@ -4141,7 +4146,18 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
 
   const queryClient = useQueryClient();
 
-  const { data: report, isLoading, error, refetch } = useQuery<FinOpsReport>({
+  // Bug real corrigido, relatado pelo usuário: "o botão analisar... não funciona, impedindo de
+  // executar novas análises no mesmo cluster" — `isLoading` do React Query v5 é
+  // `isPending && isFetching`, e `isPending` vira `false` pra sempre assim que a query tem
+  // sucesso UMA vez (não volta a `true` num refetch manual, mesmo com dado antigo em tela). O
+  // botão "Analisar"/spinner/gate do relatório usavam `isLoading` — então, depois do 1º scan
+  // bem-sucedido, clicar "Analisar" de novo chamava `refetch()` normalmente (o clique em si
+  // funcionava), mas a UI inteira continuava achando que nada estava acontecendo: sem spinner,
+  // sem troca pra "Cancelar", e o relatório VELHO continuava exibido por cima (gate era
+  // `report && !isLoading`, sempre true durante o refetch) — um scan de ~2min rodando de verdade
+  // no fundo, mas com zero sinal visual, indistinguível de "o botão não fez nada". `isFetching`
+  // (true em QUALQUER fetch, inicial ou refetch) substitui `isLoading` em todo lugar abaixo.
+  const { data: report, isFetching, error, refetch } = useQuery<FinOpsReport>({
     queryKey: ["finops-report", cluster],
     queryFn: async ({ signal }) => {
       let url = `/api/v1/finops/report?cluster=${encodeURIComponent(cluster)}`;
@@ -4330,9 +4346,9 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 </Command>
               </PopoverContent>
             </Popover>
-            <Button size="sm" variant={isLoading ? "destructive" : "outline"} className="h-8 gap-1"
+            <Button size="sm" variant={isFetching ? "destructive" : "outline"} className="h-8 gap-1"
               onClick={async () => {
-                if (isLoading) {
+                if (isFetching) {
                   queryClient.cancelQueries({ queryKey: ["finops-report", cluster] });
                 } else {
                   setAiAnalysis(null);
@@ -4342,10 +4358,10 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                   }
                 }
               }}>
-              {isLoading
+              {isFetching
                 ? <X className="h-3.5 w-3.5" />
                 : <RefreshCw className="h-3.5 w-3.5" />}
-              {isLoading ? "Cancelar" : "Analisar"}
+              {isFetching ? "Cancelar" : "Analisar"}
             </Button>
             {report && (
               <>
@@ -4392,7 +4408,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       </div>
 
       {/* Estados */}
-      {isLoading && (
+      {isFetching && (
         <div className="flex-1 flex items-center justify-center gap-3 text-muted-foreground">
           <Loader2 className="h-6 w-6 animate-spin" />
           <span>Coletando dados do cluster e preços Azure...</span>
@@ -4414,7 +4430,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       )}
 
       {/* Relatório */}
-      {report && !isLoading && (
+      {report && !isFetching && (
         <>
           {metricsCollectionLikelyFailed(report.summary) && (
             <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
@@ -4523,7 +4539,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               </TabsContent>
               {report.storage && (
                 <TabsContent value="storage" className="mt-0 h-full">
-                  <StorageTab pvcs={report.pvcs ?? []} storage={report.storage} />
+                  <StorageTab cluster={cluster} pvcs={report.pvcs ?? []} storage={report.storage} />
                 </TabsContent>
               )}
               <TabsContent value="opportunities" className="mt-0 h-full">
@@ -4540,7 +4556,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         </>
       )}
 
-      {!report && !isLoading && !error && (
+      {!report && !isFetching && !error && (
         <div className="flex-1 flex items-center justify-center flex-col gap-3 text-muted-foreground">
           <CircleDollarSign className="h-12 w-12 opacity-20" />
           <p>Selecione um cluster e clique em <strong>Analisar</strong></p>

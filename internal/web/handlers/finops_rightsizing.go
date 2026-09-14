@@ -22,10 +22,15 @@ import (
 // nodePoolTierResponse é o shape de resposta de um pool com alternativas já decodificadas (o
 // store guarda AlternativesJSON como string — nunca expõe isso cru pro frontend).
 type nodePoolTierResponse struct {
-	NodePool           string                 `json:"node_pool"`
-	CurrentSKU         string                 `json:"current_sku"`
-	CPUUtilPct         float64                `json:"cpu_util_pct"`
-	MemUtilPct         float64                `json:"mem_util_pct"`
+	NodePool   string  `json:"node_pool"`
+	CurrentSKU string  `json:"current_sku"`
+	CPUUtilPct float64 `json:"cpu_util_pct"`
+	MemUtilPct float64 `json:"mem_util_pct"`
+	// CPUP95Pct/MemP95Pct — percentil de uso REAL do pool (P95, sem a margem de segurança que
+	// CPUUtilPct/MemUtilPct já embutem) — ver comentário de poolUsage em
+	// persistRightsizingFromReport, e storage.NodePoolTierSuggestion.CPUP95Pct.
+	CPUP95Pct          float64                `json:"cpu_p95_pct,omitempty"`
+	MemP95Pct          float64                `json:"mem_p95_pct,omitempty"`
 	WorkloadCount      int                    `json:"workload_count"`
 	NodeCount          int                    `json:"node_count,omitempty"`
 	MinNodeCount       int                    `json:"min_node_count,omitempty"`
@@ -52,6 +57,8 @@ func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion) []nodePoolTierR
 			CurrentSKU:         r.CurrentSKU,
 			CPUUtilPct:         r.CPUUtilPct,
 			MemUtilPct:         r.MemUtilPct,
+			CPUP95Pct:          r.CPUP95Pct,
+			MemP95Pct:          r.MemP95Pct,
 			WorkloadCount:      r.WorkloadCount,
 			NodeCount:          r.NodeCount,
 			MinNodeCount:       r.MinNodeCount,
@@ -266,9 +273,18 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 	now := time.Now()
 
 	// ── Workloads: persiste o snapshot + agrega uso real recomendado por pool ──────────────────
+	// cpu/mem = Σ CPURecommendedMillis/MemRecommendedMi (P95-ou-avg × SafetyMargin=1.20) — já usado
+	// por SuggestVMTier pra decidir a troca de tier, JÁ com a margem de segurança embutida.
+	// cpuP95/memP95 = Σ do percentil PURO (P95Millis, ou avg quando a fonte não supre P95 — mesmo
+	// fallback já usado pelo enriquecimento DT, ver dynatrace_enricher.go), SEM margem nenhuma —
+	// pedido explícito do usuário: "preciso que o percentil de uso... seja evidenciado nas
+	// análises... pode nos dar uma visão mais adequada da possibilidade de troca de família de
+	// máquina" — antes só existia o número já misturado com a margem, sem visibilidade do
+	// percentil real por trás da decisão.
 	type poolUsage struct {
-		cpu, mem float64
-		n        int
+		cpu, mem       float64
+		cpuP95, memP95 float64
+		n              int
 	}
 	poolAgg := make(map[string]*poolUsage)
 
@@ -320,6 +336,19 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 			}
 			agg.cpu += wl.CPURecommendedMillis
 			agg.mem += wl.MemRecommendedMi
+			// Percentil puro — P95 quando a fonte supre (Prometheus sempre; Dynatrace, ainda não
+			// nesta família de métrica, ver finops_metrics.go), senão cai pro avg, igual ao mesmo
+			// fallback já aplicado em CPURecommendedMillis/MemRecommendedMi antes da margem.
+			cpuP95Basis := wl.CPUP95Millis
+			if cpuP95Basis == 0 {
+				cpuP95Basis = wl.CPUAvgMillis
+			}
+			memP95Basis := wl.MemP95Mi
+			if memP95Basis == 0 {
+				memP95Basis = wl.MemAvgMi
+			}
+			agg.cpuP95 += cpuP95Basis
+			agg.memP95 += memP95Basis
 			agg.n++
 		}
 	}
@@ -378,15 +407,17 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 		}
 
 		agg := poolAgg[pool.Name]
-		var cpuUtilPct, memUtilPct float64
+		var cpuUtilPct, memUtilPct, cpuP95Pct, memP95Pct float64
 		var workloadCount int
 		if agg != nil {
 			workloadCount = agg.n
 			if pool.VMCPUCores > 0 && currentNodeCount > 0 {
 				cpuUtilPct = agg.cpu / (float64(pool.VMCPUCores) * 1000 * float64(currentNodeCount)) * 100
+				cpuP95Pct = agg.cpuP95 / (float64(pool.VMCPUCores) * 1000 * float64(currentNodeCount)) * 100
 			}
 			if pool.VMMemoryGB > 0 && currentNodeCount > 0 {
 				memUtilPct = agg.mem / (float64(pool.VMMemoryGB) * 1024 * float64(currentNodeCount)) * 100
+				memP95Pct = agg.memP95 / (float64(pool.VMMemoryGB) * 1024 * float64(currentNodeCount)) * 100
 			}
 		}
 
@@ -398,6 +429,8 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 			CurrentSKU:         pool.VMSize,
 			CPUUtilPct:         rightsizingRound2(cpuUtilPct),
 			MemUtilPct:         rightsizingRound2(memUtilPct),
+			CPUP95Pct:          rightsizingRound2(cpuP95Pct),
+			MemP95Pct:          rightsizingRound2(memP95Pct),
 			WorkloadCount:      workloadCount,
 			NodeCount:          currentNodeCount,
 			MinNodeCount:       int(live.MinNodeCount),
@@ -423,15 +456,17 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 		}
 		cpuCores, memGB := pricer.GetVMSpecs(live.VMSize)
 		agg := poolAgg[name]
-		var cpuUtilPct, memUtilPct float64
+		var cpuUtilPct, memUtilPct, cpuP95Pct, memP95Pct float64
 		var workloadCount int
 		if agg != nil {
 			workloadCount = agg.n
 			if cpuCores > 0 {
 				cpuUtilPct = agg.cpu / (float64(cpuCores) * 1000 * float64(live.NodeCount)) * 100
+				cpuP95Pct = agg.cpuP95 / (float64(cpuCores) * 1000 * float64(live.NodeCount)) * 100
 			}
 			if memGB > 0 {
 				memUtilPct = agg.mem / (float64(memGB) * 1024 * float64(live.NodeCount)) * 100
+				memP95Pct = agg.memP95 / (float64(memGB) * 1024 * float64(live.NodeCount)) * 100
 			}
 		}
 
@@ -443,6 +478,8 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 			CurrentSKU:         live.VMSize,
 			CPUUtilPct:         rightsizingRound2(cpuUtilPct),
 			MemUtilPct:         rightsizingRound2(memUtilPct),
+			CPUP95Pct:          rightsizingRound2(cpuP95Pct),
+			MemP95Pct:          rightsizingRound2(memP95Pct),
 			WorkloadCount:      workloadCount,
 			NodeCount:          int(live.NodeCount),
 			MinNodeCount:       int(live.MinNodeCount),
