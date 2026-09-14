@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
@@ -86,6 +87,68 @@ func (s *StorageCalculator) WithPrometheus(prometheusURL string, requiresGCPAuth
 	s.prometheusAPI = v1.NewAPI(apiClient)
 }
 
+// pvcKnownCapacityGB replica a mesma checagem de capacidade (PV > PVC request, com o teto de
+// maxReasonableGB pra descartar placeholder de Blob/Files) já feita dentro de calculatePVCCost —
+// extraída pra ser reaproveitada pelo pré-cálculo em paralelo das queries de uso real (ver
+// Calculate/queryVolumeUsedBytes), decidindo QUAIS pvcs precisam da query sem duplicar a lógica
+// de capacidade em 2 lugares divergentes. Retorna 0 quando a capacidade é desconhecida/placeholder
+// (mesmo critério de calculatePVCCost — "item.CapacityGB == 0" é o sinal de fallback).
+func pvcKnownCapacityGB(pvc corev1.PersistentVolumeClaim, pvMap map[string]corev1.PersistentVolume) float64 {
+	const maxReasonableGB = 50 * 1024.0 // 50 TB
+	if pv, ok := pvMap[pvc.Spec.VolumeName]; ok {
+		if capQ, cok := pv.Spec.Capacity[corev1.ResourceStorage]; cok {
+			cap := float64(capQ.Value()) / (1024 * 1024 * 1024)
+			if cap <= maxReasonableGB {
+				return cap
+			}
+		}
+	}
+	if req, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+		cap := float64(req.Value()) / (1024 * 1024 * 1024)
+		if cap <= maxReasonableGB {
+			return cap
+		}
+	}
+	return 0
+}
+
+// prefetchVolumeUsage roda queryVolumeUsedBytes EM PARALELO só pros PVCs que vão precisar dela
+// (capacidade placeholder — ver pvcKnownCapacityGB) — nunca sequencial, nunca 1-por-PVC-de-cada-
+// vez. Sem Prometheus configurado (s.prometheusAPI nil) ou sem nenhum PVC nessa condição, retorna
+// mapa vazio sem tocar rede. Chave "namespace/nome", mesmo formato usado por calculatePVCCost.
+func (s *StorageCalculator) prefetchVolumeUsage(
+	ctx context.Context,
+	pvcs []corev1.PersistentVolumeClaim,
+	pvMap map[string]corev1.PersistentVolume,
+) map[string]float64 {
+	result := make(map[string]float64)
+	if s.prometheusAPI == nil {
+		return result
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, pvc := range pvcs {
+		if pvcKnownCapacityGB(pvc, pvMap) > 0 {
+			continue // capacidade real já conhecida via PV/PVC — não precisa de Prometheus
+		}
+		pvc := pvc
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			usedGB, ok := s.queryVolumeUsedBytes(ctx, pvc.Namespace, pvc.Name)
+			if !ok {
+				return
+			}
+			mu.Lock()
+			result[pvc.Namespace+"/"+pvc.Name] = usedGB
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return result
+}
+
 // queryVolumeUsedBytes consulta o uso real de um PVC via kubelet_volume_stats_used_bytes.
 // Retorna (usedGB, true) se disponível, (0, false) caso contrário.
 func (s *StorageCalculator) queryVolumeUsedBytes(ctx context.Context, namespace, pvcName string) (float64, bool) {
@@ -153,10 +216,19 @@ func (s *StorageCalculator) Calculate(
 		}
 	}
 
+	// 4b. Pré-busca, EM PARALELO, o uso real (Prometheus) só dos PVCs com capacidade placeholder
+	// (Blob/Files, > 50 TB) — bug real corrigido: calculatePVCCost fazia essa query DENTRO do
+	// loop sequencial abaixo, uma consulta HTTP por PVC, uma de cada vez. Num cluster com muitos
+	// PVCs desse tipo isso é a mesma classe de problema já corrigida nesta mesma investigação de
+	// lentidão pro Prometheus (workload/node) e Dynatrace — N round-trips em série, cada um
+	// pagando o RTT completo antes do próximo nem começar. Aqui N é o Nº de PVCs, não um valor
+	// fixo pequeno, então o potencial de atraso é ainda maior num cluster com muito volume.
+	usageMap := s.prefetchVolumeUsage(ctx, pvcList.Items, pvMap)
+
 	// 5. Calcular custo de cada PVC
 	items := make([]PVCCostItem, 0, len(pvcList.Items))
 	for _, pvc := range pvcList.Items {
-		item := s.calculatePVCCost(ctx, pvc, pvMap, scMap, pvcToWorkload, cluster, rate, region)
+		item := s.calculatePVCCost(pvc, pvMap, scMap, pvcToWorkload, cluster, rate, region, usageMap)
 		items = append(items, item)
 	}
 
@@ -203,7 +275,6 @@ func groupPVCsByWorkload(items []PVCCostItem) map[string][]PVCCostItem {
 // ── internals ─────────────────────────────────────────────────────────────────
 
 func (s *StorageCalculator) calculatePVCCost(
-	ctx context.Context,
 	pvc corev1.PersistentVolumeClaim,
 	pvMap map[string]corev1.PersistentVolume,
 	scMap map[string]scInfo,
@@ -211,6 +282,7 @@ func (s *StorageCalculator) calculatePVCCost(
 	cluster string,
 	rate float64,
 	region string,
+	usageMap map[string]float64,
 ) PVCCostItem {
 	item := PVCCostItem{
 		Namespace:     pvc.Namespace,
@@ -243,9 +315,11 @@ func (s *StorageCalculator) calculatePVCCost(
 			}
 		}
 	}
-	// Blob/Files com capacidade placeholder (> 50 TB) → usar uso real via kubelet_volume_stats_used_bytes
+	// Blob/Files com capacidade placeholder (> 50 TB) → usar uso real via
+	// kubelet_volume_stats_used_bytes, já pré-buscado EM PARALELO por prefetchVolumeUsage (nunca
+	// mais uma query HTTP individual aqui dentro do loop sequencial — ver Calculate).
 	if item.CapacityGB == 0 {
-		if usedGB, ok := s.queryVolumeUsedBytes(ctx, pvc.Namespace, pvc.Name); ok {
+		if usedGB, ok := usageMap[pvc.Namespace+"/"+pvc.Name]; ok {
 			item.CapacityGB = usedGB
 			item.PriceSource = "prometheus_usage"
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -25,8 +26,12 @@ type WorkloadMetrics struct {
 
 // GetAllWorkloadMetrics consulta CPU e memória de todos os workloads monitorados pelo DT
 // no período dado, retornando um mapa "namespace/workload" → WorkloadMetrics.
-// Usa splitBy para fazer apenas 4 queries (avg+P95 × cpu+mem) em vez de N queries por workload.
-// Retorna mapa vazio (não erro) quando DT não tem dados para o cluster.
+// Usa splitBy para fazer apenas 6 queries (avg+P95+max × cpu+mem) em vez de N queries por
+// workload — as 6 são disparadas em PARALELO (bug real corrigido: eram sequenciais, cada uma
+// pagando o RTT completo do DT — historicamente lento contra o metrics/query real desta empresa
+// — antes da próxima nem começar; mesma classe de problema já corrigida no lado Prometheus desta
+// mesma investigação de lentidão, ver internal/finops/prometheus_enricher.go — só que nunca
+// tinha sido olhada aqui). Retorna mapa vazio (não erro) quando DT não tem dados para o cluster.
 func (c *Client) GetAllWorkloadMetrics(ctx context.Context, windowDays int) (map[string]WorkloadMetrics, error) {
 	ctx, cancel := context.WithTimeout(ctx, dtQueryTimeout)
 	defer cancel()
@@ -34,34 +39,54 @@ func (c *Client) GetAllWorkloadMetrics(ctx context.Context, windowDays int) (map
 	from := fmt.Sprintf("now-%dd", windowDays)
 	result := make(map[string]WorkloadMetrics)
 
-	cpuAvg, err := c.queryWorkloadBatch(ctx, metricCPUMillicores, "avg", from)
-	if err != nil {
-		return nil, fmt.Errorf("DT finops cpu avg: %w", err)
+	var (
+		cpuAvg, cpuP95, memAvg, memP95, memMax, cpuMax map[string]float64
+		cpuAvgErr, cpuP95Err, memAvgErr, memP95Err     error
+	)
+	var wg sync.WaitGroup
+	run := func(fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn()
+		}()
 	}
-	cpuP95, err := c.queryWorkloadBatch(ctx, metricCPUMillicores, "percentile(95)", from)
-	if err != nil {
-		return nil, fmt.Errorf("DT finops cpu p95: %w", err)
-	}
-	memAvg, err := c.queryWorkloadBatch(ctx, metricMemBytes, "avg", from)
-	if err != nil {
-		return nil, fmt.Errorf("DT finops mem avg: %w", err)
-	}
-	memP95, err := c.queryWorkloadBatch(ctx, metricMemBytes, "percentile(95)", from)
-	if err != nil {
-		return nil, fmt.Errorf("DT finops mem p95: %w", err)
-	}
+	run(func() { cpuAvg, cpuAvgErr = c.queryWorkloadBatch(ctx, metricCPUMillicores, "avg", from) })
+	run(func() { cpuP95, cpuP95Err = c.queryWorkloadBatch(ctx, metricCPUMillicores, "percentile(95)", from) })
+	run(func() { memAvg, memAvgErr = c.queryWorkloadBatch(ctx, metricMemBytes, "avg", from) })
+	run(func() { memP95, memP95Err = c.queryWorkloadBatch(ctx, metricMemBytes, "percentile(95)", from) })
 	// Pico real de memória (mesmo papel do max_over_time do Prometheus) — usado só pra Mem Limit
 	// recomendado, nunca pro request. Best-effort: se a query falhar, memMax fica vazio e a
 	// recomendação de Mem Limit cai pra P95×margem sem o benefício extra do pico real (ver
 	// finops.recommendedLimits) — não derruba o enriquecimento inteiro por causa disso.
-	memMax, err := c.queryWorkloadBatch(ctx, metricMemBytes, "max", from)
-	if err != nil {
-		memMax = map[string]float64{}
-	}
+	run(func() {
+		var err error
+		memMax, err = c.queryWorkloadBatch(ctx, metricMemBytes, "max", from)
+		if err != nil {
+			memMax = map[string]float64{}
+		}
+	})
 	// Pico real de CPU (espelha memMax acima) — best-effort, mesma tolerância a falha.
-	cpuMax, err := c.queryWorkloadBatch(ctx, metricCPUMillicores, "max", from)
-	if err != nil {
-		cpuMax = map[string]float64{}
+	run(func() {
+		var err error
+		cpuMax, err = c.queryWorkloadBatch(ctx, metricCPUMillicores, "max", from)
+		if err != nil {
+			cpuMax = map[string]float64{}
+		}
+	})
+	wg.Wait()
+
+	if cpuAvgErr != nil {
+		return nil, fmt.Errorf("DT finops cpu avg: %w", cpuAvgErr)
+	}
+	if cpuP95Err != nil {
+		return nil, fmt.Errorf("DT finops cpu p95: %w", cpuP95Err)
+	}
+	if memAvgErr != nil {
+		return nil, fmt.Errorf("DT finops mem avg: %w", memAvgErr)
+	}
+	if memP95Err != nil {
+		return nil, fmt.Errorf("DT finops mem p95: %w", memP95Err)
 	}
 
 	// Merge nos mapas usando chave "namespace/workload"
