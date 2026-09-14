@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -113,20 +114,41 @@ func (c *Calculator) BuildReport(
 	enricher *PrometheusEnricher,
 	metricsClient metricsclientset.Interface,
 ) (*FinOpsReport, error) {
+	// Timing por fase — bug real relatado pelo usuário: "definitivamente depois dos ajuste...
+	// o que temos é um scan de 2 minutos... não parece haver nenhum paralelismo". As rodadas
+	// anteriores desta investigação já paralelizaram as queries do Prometheus, do Dynatrace e o
+	// pré-fetch de uso de PVC — mas sem NENHUMA telemetria real de qual fase é de fato a
+	// dominante, cada rodada foi um chute (ainda que fundamentado) sobre código nunca visto
+	// rodando ao vivo. Esses logs eliminam o chute: a próxima vez que "ainda está lento" for
+	// relatado, o log do servidor já mostra o tempo exato de cada fase, sem precisar de mais uma
+	// rodada de "acho que pode ser X".
+	overallStart := time.Now()
+	logTiming := func(step string, start time.Time, extra map[string]interface{}) {
+		ev := log.Info().Str("cluster", cluster).Str("step", step).Dur("elapsed", time.Since(start))
+		for k, v := range extra {
+			ev = ev.Interface(k, v)
+		}
+		ev.Msg("FinOps/timing")
+	}
+
 	rate, rateDate := c.exchange.Get()
 
 	// 1. Calcular custo e capacidade dos node pools
+	stepStart := time.Now()
 	finOpsPools, capacity, clusterCostUSD, err := c.calculatePoolCosts(pools, rate)
 	if err != nil {
 		return nil, err
 	}
+	logTiming("calculatePoolCosts", stepStart, map[string]interface{}{"pools": len(finOpsPools)})
 
 	// 2. Coletar workloads do cluster (pods + HPAs) + mapa pod→workload para o enricher +
 	// mapa node→pool (reaproveitado abaixo pra NodeUsage).
+	stepStart = time.Now()
 	rawWorkloads, podToWorkload, nodeToPool, err := collectWorkloads(ctx, client, namespaces)
 	if err != nil {
 		return nil, err
 	}
+	logTiming("collectWorkloads", stepStart, map[string]interface{}{"workloads": len(rawWorkloads)})
 
 	// 3. Alocar custo proporcional a cada workload
 	workloads := allocateCosts(rawWorkloads, capacity, clusterCostUSD, rate)
@@ -136,18 +158,22 @@ func (c *Calculator) BuildReport(
 	var dtEnriched map[string]bool
 
 	if dtEnricher != nil {
+		stepStart = time.Now()
 		dtEnriched = dtEnricher.EnrichWorkloads(ctx, workloads)
 		windowDays = dtEnricher.windowDays
+		logTiming("dtEnricher.EnrichWorkloads", stepStart, nil)
 	}
 
 	if enricher != nil {
 		enricher.SetPodMapping(podToWorkload)
+		stepStart = time.Now()
 		if len(dtEnriched) > 0 {
 			// Aplicar Prometheus apenas nos workloads sem dados DT
 			enricher.EnrichWorkloadsPartial(ctx, workloads, dtEnriched)
 		} else {
 			enricher.EnrichWorkloads(ctx, workloads)
 		}
+		logTiming("prometheusEnricher.EnrichWorkloads", stepStart, nil)
 		if windowDays == 0 {
 			windowDays = enricher.window
 		}
@@ -157,10 +183,14 @@ func (c *Calculator) BuildReport(
 	// nunca bloqueia o relatório se o metrics-server não estiver disponível (ver live_metrics.go).
 	var nodeUsage []NodeUsage
 	if metricsClient != nil {
+		stepStart = time.Now()
 		EnrichWorkloadsLiveMetrics(ctx, metricsClient, workloads, podToWorkload)
+		logTiming("EnrichWorkloadsLiveMetrics", stepStart, nil)
 	}
 	if uniqueNodes := uniqueNonEmptyNodeNames(workloads); len(uniqueNodes) > 0 {
+		stepStart = time.Now()
 		nodeUsage = ComputeNodeUsage(ctx, client, metricsClient, uniqueNodes, nodeToPool, enricher)
+		logTiming("ComputeNodeUsage", stepStart, map[string]interface{}{"nodes": len(uniqueNodes)})
 	}
 
 	// 5. Agregar por namespace
@@ -185,36 +215,60 @@ func (c *Calculator) BuildReport(
 			storageCalc.WithAWSPricer(awsPricer)
 		}
 
+		stepStart = time.Now()
 		pvcs, storageSummary, err = storageCalc.Calculate(ctx, client, cluster, rate)
 		if err != nil {
 			log.Warn().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao calcular storage (relatório retorna sem dados de storage)")
 		}
+		logTiming("storageCalc.Calculate", stepStart, map[string]interface{}{"pvcs": len(pvcs)})
 
-		// 7a. Custo de disco OS por node pool
+		// 7a. Custo de disco OS por node pool — bug real corrigido: pra AKS (o caminho padrão de
+		// osDiskCostForPool, ver comentário da função) isso é uma chamada K8s AO VIVO (Nodes List
+		// por pool, via OSDiskForNodePool) — rodava sequencial, UMA por pool, aqui dentro deste
+		// loop. Num cluster com muitos pools, isso sozinho já pagava N round-trips ao kube-
+		// apiserver em série, mesma classe de problema já corrigida (Prometheus, Dynatrace, PVC)
+		// nas rodadas anteriores desta mesma investigação, só que nunca olhada até agora. GKE/EKS
+		// não sofrem disso (osDiskCostForPool só consulta pricer em cache pra esses providers),
+		// mas paraleliza sempre — sem custo extra nesse caso, cada goroutine só lê de um cache.
+		stepStart = time.Now()
 		poolRegistryByName := make(map[string]storage.NodePoolRegistryEntry, len(pools))
 		for _, p := range pools {
 			poolRegistryByName[p.NodePool] = p
 		}
 
+		var wg sync.WaitGroup
+		for i := range finOpsPools {
+			i := i
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sku, tier, sizeGB, priceUSD, ok := c.osDiskCostForPool(ctx, client, cluster, finOpsPools[i].Name, poolRegistryByName[finOpsPools[i].Name], storageCalc)
+				if !ok {
+					log.Debug().Str("pool", finOpsPools[i].Name).Msg("FinOps: preço de OS disk não encontrado")
+					return
+				}
+				osDiskCostUSD := round2(priceUSD * float64(finOpsPools[i].NodeCount))
+				finOpsPools[i].OSDiskSKU = sku
+				finOpsPools[i].OSDiskTier = tier
+				finOpsPools[i].OSDiskGB = sizeGB
+				finOpsPools[i].OSDiskCostUSD = osDiskCostUSD
+				finOpsPools[i].OSDiskCostBRL = round2(osDiskCostUSD * rate)
+				finOpsPools[i].TotalCostUSD = round2(finOpsPools[i].MonthlyCostUSD + osDiskCostUSD)
+				finOpsPools[i].TotalCostBRL = round2(finOpsPools[i].MonthlyCostBRL + finOpsPools[i].OSDiskCostBRL)
+			}()
+		}
+		wg.Wait()
+
+		// Soma sequencial DEPOIS de todas as goroutines terminarem — nunca dentro delas (evita
+		// precisar de mutex pras variáveis compartilhadas abaixo, cada goroutine só escreve no
+		// seu próprio índice finOpsPools[i], nunca em totalOSDiskCostBRL/storageSummary).
 		var totalOSDiskCostBRL float64
 		for i := range finOpsPools {
-			sku, tier, sizeGB, priceUSD, ok := c.osDiskCostForPool(ctx, client, cluster, finOpsPools[i].Name, poolRegistryByName[finOpsPools[i].Name], storageCalc)
-			if !ok {
-				log.Debug().Str("pool", finOpsPools[i].Name).Msg("FinOps: preço de OS disk não encontrado")
-				continue
-			}
-			osDiskCostUSD := round2(priceUSD * float64(finOpsPools[i].NodeCount))
-			finOpsPools[i].OSDiskSKU = sku
-			finOpsPools[i].OSDiskTier = tier
-			finOpsPools[i].OSDiskGB = sizeGB
-			finOpsPools[i].OSDiskCostUSD = osDiskCostUSD
-			finOpsPools[i].OSDiskCostBRL = round2(osDiskCostUSD * rate)
-			finOpsPools[i].TotalCostUSD = round2(finOpsPools[i].MonthlyCostUSD + osDiskCostUSD)
-			finOpsPools[i].TotalCostBRL = round2(finOpsPools[i].MonthlyCostBRL + finOpsPools[i].OSDiskCostBRL)
 			totalOSDiskCostBRL = round2(totalOSDiskCostBRL + finOpsPools[i].OSDiskCostBRL)
-			storageSummary.OSDiskCostUSD = round2(storageSummary.OSDiskCostUSD + osDiskCostUSD)
+			storageSummary.OSDiskCostUSD = round2(storageSummary.OSDiskCostUSD + finOpsPools[i].OSDiskCostUSD)
 			storageSummary.OSDiskCostBRL = round2(storageSummary.OSDiskCostBRL + finOpsPools[i].OSDiskCostBRL)
 		}
+		logTiming("osDiskCostForPool (todos os pools, em paralelo)", stepStart, map[string]interface{}{"pools": len(finOpsPools)})
 
 		// 7b. Enriquecer workloads com custo de PVCs correlacionados
 		pvcByWorkload := groupPVCsByWorkload(pvcs)
@@ -237,6 +291,8 @@ func (c *Calculator) BuildReport(
 		summary.OrphanedStorageCostBRL = storageSummary.OrphanedCostBRL
 		summary.TotalWithStorageBRL = round2(summary.TotalMonthlyCostBRL + storageSummary.TotalMonthlyCostBRL + totalOSDiskCostBRL)
 	}
+
+	logTiming("BuildReport TOTAL", overallStart, map[string]interface{}{"workloads": len(workloads), "node_pools": len(finOpsPools)})
 
 	return &FinOpsReport{
 		Cluster:      cluster,

@@ -139,6 +139,7 @@ func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
 // cenários HPA e resumo de oportunidades de saving.
 // Com with_prometheus=true, enriquece workloads com P95 CPU/Mem real (mais lento).
 func (h *FinOpsHandler) GetReport(c *gin.Context) {
+	handlerStart := time.Now()
 	cluster := c.Query("cluster")
 	if cluster == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
@@ -289,6 +290,7 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		Float64("waste_brl", report.Summary.PotentialSavingsBRL).
 		Bool("dynatrace", dtEnricher != nil).
 		Bool("prometheus", enricher != nil).
+		Dur("elapsed_total_handler", time.Since(handlerStart)).
 		Msg("FinOps: relatório gerado")
 
 	c.JSON(http.StatusOK, report)

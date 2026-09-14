@@ -131,6 +131,7 @@ func (h *FinOpsHandler) GetRightsizing(c *gin.Context) {
 // GetReport's persist_rightsizing=true pro caminho reaproveitado, que é o que o "Analisar"
 // principal do FinOps dispara).
 func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
+	handlerStart := time.Now()
 	cluster := c.Query("cluster")
 	if cluster == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
@@ -233,6 +234,7 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 		Int("nodes", len(nodeUsageRecs)).
 		Bool("dynatrace", dtEnricher != nil).
 		Bool("prometheus", enricher != nil).
+		Dur("elapsed_total_handler", time.Since(handlerStart)).
 		Msg("FinOps/Rightsizing: scan standalone concluído e persistido")
 
 	c.JSON(http.StatusOK, gin.H{
@@ -336,7 +338,14 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 	// fica sem min/max/autoscaling pra esse pool, tudo o mais continua funcionando.
 	liveNodeGroups := make(map[string]models.NodePool)
 	if npProvider := h.kubeManager.GetNodeGroupProvider(cluster); npProvider != nil {
+		// Timing explícito — chamada CLI (az/gcloud/aws), já documentada como podendo levar até
+		// 60s sozinha; candidata real à lentidão relatada ("definitivamente... scan de 2
+		// minutos... não parece haver nenhum paralelismo"). Não dá pra paralelizar (é 1 chamada
+		// só, não um loop por pool), mas expor o tempo aqui tira a adivinhação de qual fase é a
+		// culpada da próxima vez que o scan estiver lento.
+		listStart := time.Now()
 		groups, npErr := npProvider.ListNodeGroups(ctx, cluster)
+		log.Info().Str("cluster", cluster).Str("step", "npProvider.ListNodeGroups").Dur("elapsed", time.Since(listStart)).Msg("FinOps/timing")
 		if npErr != nil {
 			log.Warn().Err(npErr).Str("cluster", cluster).Msg("FinOps/Rightsizing: falha ao buscar min/max de node count ao vivo — cenário de resize de node count ficará incompleto")
 		} else {
