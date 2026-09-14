@@ -156,7 +156,10 @@ function HistoryChart({
       pts: decimate(compareHistoryMap[offset]?.[node.node_name]?.points ?? []),
     }));
     return todayPts.map((p, idx) => {
-      const row: Record<string, number | string> = {
+      // Interseção (não só Record<string, number|string>) preserva o tipo específico de cada
+      // campo fixo — sem isso `fill` (sempre string, ver barFill) virava `number|string` só por
+      // compartilhar o objeto com os campos dinâmicos `pctD<offset>` (esses sim number|string).
+      const row: { time: string; pct: number; fill: string } & Record<string, number | string> = {
         time: new Date(p.ts * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         pct: parseFloat(p.usage_pct.toFixed(1)),
         fill: barFill(p.usage_pct),

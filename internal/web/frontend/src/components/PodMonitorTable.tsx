@@ -141,7 +141,6 @@ function TopNFilter({
         </div>
         <ToggleGroup
           type="single"
-          collapsible
           value={value !== null ? String(value) : ""}
           onValueChange={(v) => onChange(v ? Number(v) : null)}
           className="w-full gap-1.5"

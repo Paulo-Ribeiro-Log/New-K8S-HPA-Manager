@@ -54,11 +54,17 @@ export function useHPAAlerts(cluster: string, enabled = true) {
       return response.alerts || [];
     },
     enabled: enabled && !!cluster,
-    refetchInterval: (data, query) => {
-      // ✅ FIX: Guard contra query undefined na primeira renderização
+    // refetchInterval recebe só `query` no React Query v5 (era `(data, query)` no v4) — a
+    // assinatura antiga nunca batia em nenhum overload de `useQuery`, forçando o TS a inferir
+    // `.data` como `any[] | NoInfer<TQueryFnData>` em vez de `HPAAlert[] | undefined` — daí os
+    // erros de "Property 'filter'/'critical' does not exist" em cascata em todo consumidor
+    // (CriticalAlertsBanner, AlertsDialog, AlertsPage). Nunca quebrou em runtime (JS não
+    // valida assinatura), só escondia esse tipo de erro real do compilador.
+    refetchInterval: (query) => {
+      // Guard contra query undefined na primeira renderização
       if (!query) return 30000;
 
-      // ✅ FIX: Desabilitar refetch se query key não corresponde ao cluster atual
+      // Desabilitar refetch se query key não corresponde ao cluster atual
       const queryCluster = query.queryKey[1];
       if (queryCluster !== cluster) {
         console.log(`[useHPAAlerts] Disabling refetch for old cluster: ${queryCluster} (current: ${cluster})`);
@@ -125,7 +131,7 @@ export function useNodePoolAlerts(cluster: string, enabled = true) {
       return response.alerts || [];
     },
     enabled: enabled && !!cluster,
-    refetchInterval: (data, query) => {
+    refetchInterval: (query) => {
       // ✅ FIX: Guard contra query undefined na primeira renderização
       if (!query) return 30000;
 
@@ -152,7 +158,7 @@ export function useAlertSummary(cluster: string, enabled = true) {
       return response.summary || { critical: 0, warning: 0, info: 0, total: 0 };
     },
     enabled: enabled && !!cluster,
-    refetchInterval: (data, query) => {
+    refetchInterval: (query) => {
       // ✅ FIX: Guard contra query undefined na primeira renderização
       if (!query) return 30000;
 

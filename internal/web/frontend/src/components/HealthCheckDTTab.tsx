@@ -74,7 +74,10 @@ const VisualResolutionPath = ({ problem }: { problem: DynatraceHealth }) => {
               🎯 Root Cause
             </text>
             <foreignObject x={20} y={midY + 19} width={NW - 8} height={22}>
-              <div xmlns="http://www.w3.org/1999/xhtml"
+              {/* xmlns é atributo válido de SVG/XHTML pro conteúdo raiz de foreignObject, mas não
+                  faz parte do tipo de props HTML de <div> do React — spread evita o erro de tipo
+                  sem mudar o atributo que de fato vai pro DOM. */}
+              <div {...{ xmlns: "http://www.w3.org/1999/xhtml" }}
                 style={{ fontSize: 8, color: "#7f1d1d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {rootCause}
               </div>
@@ -119,7 +122,7 @@ const VisualResolutionPath = ({ problem }: { problem: DynatraceHealth }) => {
               <rect x={tgtX} y={wy} width={NW} height={NH} rx={6} fill={bg} stroke={col} strokeWidth={1} />
               <text x={tgtX + NW / 2} y={wy + 14} textAnchor="middle" fontSize={8} fill={col} fontWeight="600">{ns}</text>
               <foreignObject x={tgtX + 4} y={wy + 19} width={NW - 8} height={22}>
-                <div xmlns="http://www.w3.org/1999/xhtml"
+                <div {...{ xmlns: "http://www.w3.org/1999/xhtml" }}
                   style={{ fontSize: 8, color: col, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>
                   {name.length > 20 ? name.slice(0, 20) + "…" : name}
                 </div>

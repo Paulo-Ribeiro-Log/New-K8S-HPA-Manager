@@ -380,8 +380,8 @@ export const VPAMonitorTable = ({
               </span>
               <span className="flex items-center">
                 {item.hasRecommendation
-                  ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" title="Tem recomendação" />
-                  : <Circle className="w-3.5 h-3.5 text-muted-foreground/40" title="Sem recomendação" />
+                  ? <span title="Tem recomendação"><CheckCircle2 className="w-3.5 h-3.5 text-green-400" /></span>
+                  : <span title="Sem recomendação"><Circle className="w-3.5 h-3.5 text-muted-foreground/40" /></span>
                 }
               </span>
               <span className="flex items-center justify-center">

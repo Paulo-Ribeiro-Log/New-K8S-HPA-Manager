@@ -373,6 +373,22 @@ export const VPAsTab = ({
     </div>
   );
 
+  // Bug real corrigido: handleClearSelection era referenciada aqui (dentro de leftContent) mas só
+  // declarada ~100 linhas abaixo — como leftContent é um `const` avaliado imediatamente (JSX não é
+  // lazy), ler a função antes da sua declaração cai na temporal dead zone e derruba TODA a aba
+  // com "Cannot access 'handleClearSelection' before initialization" assim que um VPA é
+  // selecionado (selectedVPA vira truthy). Só usa setters de useState (sempre estáveis), então é
+  // seguro declarar mais cedo.
+  const handleClearSelection = () => {
+    setSelectedVPA(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setViewMode("editor");
+    setHistory([]);
+    setHistoryIndex(-1);
+  };
+
   const leftContent = (
     <div className="space-y-3">
       {selectedVPA && (
@@ -484,16 +500,6 @@ export const VPAsTab = ({
   );
 
   // ─── Right panel ─────────────────────────────────────────────────────────
-  const handleClearSelection = () => {
-    setSelectedVPA(null);
-    setManifest(null);
-    setEditorValue("");
-    setOriginalYaml("");
-    setViewMode("editor");
-    setHistory([]);
-    setHistoryIndex(-1);
-  };
-
   const rightTitlePrefix = selectedVPA ? (
     <button
       onClick={handleClearSelection}

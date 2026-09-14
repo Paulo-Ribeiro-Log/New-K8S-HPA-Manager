@@ -173,7 +173,7 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
   };
 
   // Helper: Get status badge variant
-  const getStatusVariant = (status: string): "destructive" | "default" | "secondary" => {
+  const getStatusVariant = (status: string): "destructive" | "default" | "secondary" | "outline" => {
     switch (status.toLowerCase()) {
       case "unhealthy":
         return "destructive";
@@ -385,9 +385,9 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
           </CardHeader>
           <CardContent>
             <ScrollArea className="h-96">
-              <ReactMarkdown className="prose prose-sm max-w-none">
-                {analysis.analysis}
-              </ReactMarkdown>
+              <div className="prose prose-sm max-w-none">
+                <ReactMarkdown>{analysis.analysis}</ReactMarkdown>
+              </div>
             </ScrollArea>
           </CardContent>
         </Card>
