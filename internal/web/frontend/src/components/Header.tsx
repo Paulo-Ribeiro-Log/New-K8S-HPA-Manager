@@ -90,6 +90,10 @@ export const Header = ({
   const { envFilter, setEnvFilter, journeyOptions, selectedJourneys, toggleJourney, filteredClusters } =
     useClusterEnvFilter(clusters, clusterJourneys);
   const selectedIsProd = isProdClusterName(selectedCluster);
+  // O foco deve ir sempre para a digitação de nomes ao abrir o combobox — o Radix Popover foca
+  // automaticamente o 1º elemento focável do conteúdo (onOpenAutoFocus padrão), que hoje é o
+  // botão "Todos" da ClusterFilterBar (renderizada antes do CommandInput), não o campo de busca.
+  const clusterSearchInputRef = useRef<HTMLInputElement>(null);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [updating, setUpdating] = useState(false);
   const [confirmUpdateOpen, setConfirmUpdateOpen] = useState(false);
@@ -246,12 +250,18 @@ export const Header = ({
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-[300px] xl:w-[400px] p-0">
+          <PopoverContent
+            className="w-[300px] xl:w-[400px] p-0"
+            onOpenAutoFocus={(e) => {
+              e.preventDefault();
+              clusterSearchInputRef.current?.focus();
+            }}
+          >
             {/* Filtro Todos/HLG/PRD — reduz a lista antes mesmo da busca por texto, pra um
                 analista sobrecarregado não escolher o ambiente errado por engano. */}
             <ClusterFilterBar envFilter={envFilter} onEnvFilterChange={setEnvFilter} />
             <Command>
-              <CommandInput placeholder="Buscar cluster..." />
+              <CommandInput ref={clusterSearchInputRef} placeholder="Buscar cluster..." />
               <CommandList>
                 <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
                 <CommandGroup>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Command,
   CommandEmpty,
@@ -54,6 +54,10 @@ export const ClusterSelectorForTab = ({
   const { envFilter, setEnvFilter, journeyOptions, selectedJourneys, toggleJourney, filteredClusters } =
     useClusterEnvFilter(clusters, clusterJourneys);
   const selectedIsProd = isProdClusterName(selectedCluster);
+  // Mesma correção de foco do combobox principal (Header.tsx): sem isso, o Radix Popover foca
+  // automaticamente o botão "Todos" da ClusterFilterBar (1º elemento focável), não o campo de
+  // busca — o foco ao abrir deve ser sempre a digitação de nomes.
+  const clusterSearchInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="px-6 py-3 bg-muted/30 border-b">
@@ -83,11 +87,17 @@ export const ClusterSelectorForTab = ({
                 <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-[280px] p-0">
+            <PopoverContent
+              className="w-[280px] p-0"
+              onOpenAutoFocus={(e) => {
+                e.preventDefault();
+                clusterSearchInputRef.current?.focus();
+              }}
+            >
               {/* Filtro Todos/HLG/PRD — mesmo padrão do combobox principal (Header.tsx). */}
               <ClusterFilterBar envFilter={envFilter} onEnvFilterChange={setEnvFilter} />
               <Command>
-                <CommandInput placeholder="Buscar cluster..." />
+                <CommandInput ref={clusterSearchInputRef} placeholder="Buscar cluster..." />
                 <CommandList>
                   <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
                   <CommandGroup>
