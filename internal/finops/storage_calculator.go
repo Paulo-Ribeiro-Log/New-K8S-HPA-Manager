@@ -486,7 +486,7 @@ func (s *StorageCalculator) correlateToWorkloads(
 	result := make(map[string]string)
 	for i := range podList.Items {
 		pod := &podList.Items[i]
-		workload := resolveWorkload(pod, rsOwner)
+		workload := ResolveWorkload(pod, rsOwner)
 		workloadRef := pod.Namespace + "/" + workload
 
 		for _, vol := range pod.Spec.Volumes {

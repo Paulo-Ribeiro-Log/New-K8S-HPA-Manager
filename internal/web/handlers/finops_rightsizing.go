@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/dynatrace"
@@ -165,7 +166,7 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			if dtClient, err := dynatrace.NewClient(dtURL, dtToken); err != nil {
 				log.Warn().Err(err).Msg("FinOps/Rightsizing: falha ao criar cliente DT, enriquecimento DT desativado")
 			} else {
-				dtEnricher = finops.NewDTEnricher(dtClient, windowDays)
+				dtEnricher = finops.NewDTEnricher(dtClient, windowDays, cluster)
 			}
 		}
 	}
@@ -525,4 +526,103 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 	}
 
 	return workloadRecs, tierSuggestions, nodeUsageRecs, nil
+}
+
+// GetWorkloadHistory godoc
+// GET /api/v1/finops/rightsizing/history?cluster=X&namespace=Y&workload=Z&days=30
+//
+// Busca o histórico de uso (CPU/Mem) via Prometheus SOB DEMANDA — só quando o usuário abre o
+// modal de detalhe de UM workload específico na aba Rightsizing (nunca no scan em lote, que já
+// foi alvo de 3 rodadas de correção de performance nesta mesma sessão). Resolve os pods ATUAIS
+// do workload via ResolveWorkload (mesma função usada pelo scan em lote, internal/finops/
+// calculator.go) — nunca casa por regex/prefixo de nome, que teria risco real de colisão entre
+// workloads cujo nome é prefixo de outro (ex: "api" vs "api-legacy").
+//
+// Sempre responde 200 com "available":false + "reason" em qualquer falha não-fatal (cluster
+// inacessível, sem pods, sem Prometheus) — nunca erro HTTP, mesmo padrão soft-fail já usado em
+// GetDataResources.
+func (h *FinOpsHandler) GetWorkloadHistory(c *gin.Context) {
+	cluster := c.Query("cluster")
+	namespace := c.Query("namespace")
+	workload := c.Query("workload")
+	if cluster == "" || namespace == "" || workload == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetros 'cluster', 'namespace' e 'workload' são obrigatórios"})
+		return
+	}
+
+	days, _ := strconv.Atoi(c.Query("days"))
+	if days <= 0 {
+		days = 30
+	}
+
+	ctx := c.Request.Context()
+
+	k8sClient, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"available": false, "reason": "Falha ao conectar ao cluster: " + err.Error()})
+		return
+	}
+
+	rsList, err := k8sClient.AppsV1().ReplicaSets(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"available": false, "reason": "Falha ao listar ReplicaSets: " + err.Error()})
+		return
+	}
+	rsOwner := make(map[string]string) // "ns/rs-name" → deployment name
+	for _, rs := range rsList.Items {
+		for _, ref := range rs.OwnerReferences {
+			if ref.Kind == "Deployment" {
+				rsOwner[rs.Namespace+"/"+rs.Name] = ref.Name
+			}
+		}
+	}
+
+	podList, err := k8sClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: "status.phase=Running",
+	})
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"available": false, "reason": "Falha ao listar pods: " + err.Error()})
+		return
+	}
+
+	var podNames []string
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if finops.ResolveWorkload(pod, rsOwner) == workload {
+			podNames = append(podNames, pod.Name)
+		}
+	}
+
+	if len(podNames) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"available": false,
+			"reason":    "Nenhum pod em execução encontrado para este workload — pode estar escalado a 0 réplicas ou ter sido removido desde o último scan.",
+		})
+		return
+	}
+
+	promURL := discovery.GetPrometheusURL(cluster)
+	if promURL == "" {
+		c.JSON(http.StatusOK, gin.H{"available": false, "reason": "Prometheus não configurado/descoberto para este cluster."})
+		return
+	}
+	requiresGCPAuth := discovery.RequiresGCPAuth(cluster)
+
+	enricher, err := finops.NewPrometheusEnricher(promURL, days, requiresGCPAuth)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"available": false, "reason": "Falha ao conectar ao Prometheus: " + err.Error()})
+		return
+	}
+
+	cpu, mem, err := enricher.WorkloadHistory(ctx, podNames, namespace, days)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"available": false, "reason": "Falha ao consultar histórico no Prometheus: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"available":  true,
+		"cpu_millis": cpu,
+		"mem_mi":     mem,
+	})
 }

@@ -60,7 +60,37 @@ type WorkloadMetrics struct {
 // permanente do metric neste tenant. Só avg/max: chamar `finops.recommendedLimits`/o cálculo de
 // CPURecommendedMillis com CPUAvgMillicores como base quando P95 não está disponível é
 // responsabilidade do chamador (dynatrace_enricher.go), não deste client.
-func (c *Client) GetAllWorkloadMetrics(ctx context.Context, windowDays int) (map[string]WorkloadMetrics, error) {
+//
+// Bug real CRÍTICO corrigido (achado ao vivo, relatado pelo usuário com números impossíveis —
+// "CPU: 626%, Mem: 519%" num node pool de 1 node): a query nunca teve NENHUMA dimensão de
+// cluster no splitBy — só "k8s.namespace.name"/"k8s.workload.name". Este tenant Dynatrace é
+// COMPARTILHADO entre TODA a frota de clusters da empresa (confirmado ao vivo: `GET /entities?
+// entitySelector=type(KUBERNETES_CLUSTER)` lista 17 clusters distintos monitorados, todos PRD —
+// nenhum HLG, inclusive o cluster que gerou o relato original não está nem entre eles). Qualquer
+// workload cujo namespace+nome se repete em MAIS de um cluster (o caso normal pra componentes de
+// infra genéricos/compartilhados: ingress-nginx-controller, istiod, cert-manager, velero, kyverno-
+// *, calico-apiserver, prometheus-prometheus-prometheus — confirmados ao vivo existindo
+// IDENTICAMENTE em 15-16 clusters diferentes) tinha sua métrica AGREGADA (`:avg`/`:max`) através
+// de TODOS os clusters que a compartilham — nunca isolada pro cluster sendo de fato analisado.
+// Exemplo real confirmado: "monitoring/prometheus-prometheus-prometheus" somado/agregado entre
+// 16 clusters reais (de ~0.8GB até 69GB de memória cada) virava um único número sem sentido
+// nenhum, atribuído como se fosse o uso de QUALQUER cluster que por acaso tivesse um workload com
+// esse nome — mesmo quando esse cluster específico (o do relato) nem tem OneAgent instalado.
+//
+// Corrigido adicionando `filter(and(eq("k8s.cluster.name","<cluster>")))` à query — validado ao
+// vivo: a MESMA sintaxe, filtrada pro cluster real "akspriv-viaunica-prd", devolveu exatamente o
+// valor isolado daquele cluster (confirmado batendo com o valor já visto na consulta sem filtro,
+// pra ESSE cluster específico); filtrada pro cluster do relato original (sem cobertura DT real)
+// devolveu corretamente ZERO séries — nunca mais emprestando dado de outro cluster qualquer.
+// cluster: nome "limpo" do cluster (sem sufixo "-admin", mesma convenção de
+// clusters-config.json/k8s.cluster.name no DT — ver bug real corrigido abaixo). Nunca vazio —
+// GetAllWorkloadMetrics rejeita explicitamente pra nunca cair de volta no comportamento antigo
+// por engano.
+func (c *Client) GetAllWorkloadMetrics(ctx context.Context, windowDays int, cluster string) (map[string]WorkloadMetrics, error) {
+	if cluster == "" {
+		return nil, fmt.Errorf("DT finops: cluster vazio — recusado pra nunca consultar sem escopo de cluster (ver bug real corrigido em GetAllWorkloadMetrics)")
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, dtQueryTimeout)
 	defer cancel()
 
@@ -79,14 +109,14 @@ func (c *Client) GetAllWorkloadMetrics(ctx context.Context, windowDays int) (map
 			fn()
 		}()
 	}
-	run(func() { cpuAvg, cpuAvgErr = c.queryWorkloadBatch(ctx, metricCPUMillicores, "avg", from) })
-	run(func() { memAvg, memAvgErr = c.queryWorkloadBatch(ctx, metricMemBytes, "avg", from) })
+	run(func() { cpuAvg, cpuAvgErr = c.queryWorkloadBatch(ctx, metricCPUMillicores, "avg", from, cluster) })
+	run(func() { memAvg, memAvgErr = c.queryWorkloadBatch(ctx, metricMemBytes, "avg", from, cluster) })
 	// Pico real de memória (mesmo papel do max_over_time do Prometheus) — usado pra Mem Limit
 	// recomendado (ver finops.recommendedLimits) E como substituto de P95 quando este não existe.
 	// Best-effort: se a query falhar, memMax fica vazio (não derruba o enriquecimento).
 	run(func() {
 		var err error
-		memMax, err = c.queryWorkloadBatch(ctx, metricMemBytes, "max", from)
+		memMax, err = c.queryWorkloadBatch(ctx, metricMemBytes, "max", from, cluster)
 		if err != nil {
 			memMax = map[string]float64{}
 		}
@@ -94,7 +124,7 @@ func (c *Client) GetAllWorkloadMetrics(ctx context.Context, windowDays int) (map
 	// Pico real de CPU (espelha memMax acima) — best-effort, mesma tolerância a falha.
 	run(func() {
 		var err error
-		cpuMax, err = c.queryWorkloadBatch(ctx, metricCPUMillicores, "max", from)
+		cpuMax, err = c.queryWorkloadBatch(ctx, metricCPUMillicores, "max", from, cluster)
 		if err != nil {
 			cpuMax = map[string]float64{}
 		}
@@ -128,20 +158,27 @@ func (c *Client) GetAllWorkloadMetrics(ctx context.Context, windowDays int) (map
 	return result, nil
 }
 
-// queryWorkloadBatch executa uma query com splitBy de namespace e workload.
+// queryWorkloadBatch executa uma query com splitBy de namespace e workload, filtrada a um único
+// cluster (ver bug real corrigido em GetAllWorkloadMetrics — sem esse filtro, a query soma/agrega
+// o mesmo namespace+workload através de TODOS os clusters que o tenant DT monitora).
 // aggregation: "avg", "max", etc. (percentile não é suportado por este metric, ver comentário
 // de metricCPUMillicores acima).
-// Retorna mapa "namespace/workload" → valor agregado no período.
-func (c *Client) queryWorkloadBatch(ctx context.Context, metric, aggregation, from string) (map[string]float64, error) {
+// Retorna mapa "namespace/workload" → valor agregado no período, já isolado a `cluster`.
+func (c *Client) queryWorkloadBatch(ctx context.Context, metric, aggregation, from, cluster string) (map[string]float64, error) {
 	// resolution=inf agrega todo o período em um único ponto por série — bug real corrigido:
 	// o ":last" no final (sobrando de quando isso tentava extrair "o último ponto" de uma série
 	// multi-ponto) é ILEGAL combinado com resolution=inf ("Illegal transform operator: Usage of
 	// last operator is only supported for resolutions other than `Inf`", confirmado ao vivo) —
 	// redundante mesmo: com resolution=inf já existe só 1 ponto por série, não há "último" a
 	// extrair.
+	//
+	// filter(and(eq("k8s.cluster.name","<cluster>"))) — sintaxe validada ao vivo contra o tenant
+	// real (GET /metrics/query com essa exata combinação de transformações, nessa exata ordem).
+	// `cluster` nunca contém aspas duplas (é sempre um nome de cluster AKS/EKS/GKE, alfanumérico
+	// + hífen), então não há necessidade de escape além da interpolação simples.
 	metricSelector := fmt.Sprintf(
-		`%s:%s:splitBy("k8s.namespace.name","k8s.workload.name")`,
-		metric, aggregation,
+		`%s:filter(and(eq("k8s.cluster.name","%s"))):%s:splitBy("k8s.namespace.name","k8s.workload.name")`,
+		metric, cluster, aggregation,
 	)
 
 	params := url.Values{

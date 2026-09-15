@@ -577,7 +577,7 @@ func collectWorkloads(
 			continue
 		}
 
-		workloadName := resolveWorkload(pod, rsOwner)
+		workloadName := ResolveWorkload(pod, rsOwner)
 		key := pod.Namespace + "/" + workloadName
 
 		// Mapa para o enricher: "ns/pod-name" → "ns/workload-name"
@@ -801,10 +801,12 @@ func buildSummary(workloads []FinOpsWorkload, namespaces []FinOpsNamespace, clus
 	return s
 }
 
-// resolveWorkload determina o nome do workload dono do pod.
+// ResolveWorkload determina o nome do workload dono do pod.
 // Pod → ReplicaSet → Deployment (via rsOwner map)
 // Pod → StatefulSet / DaemonSet / Job (direto do ownerRef)
-func resolveWorkload(pod *corev1.Pod, rsOwner map[string]string) string {
+// Exportada (era resolveWorkload) pra ser reaproveitada por internal/web/handlers
+// (GetWorkloadHistory, finops_rightsizing.go) sem duplicar a lógica de owner chain.
+func ResolveWorkload(pod *corev1.Pod, rsOwner map[string]string) string {
 	for _, ref := range pod.OwnerReferences {
 		switch ref.Kind {
 		case "ReplicaSet":

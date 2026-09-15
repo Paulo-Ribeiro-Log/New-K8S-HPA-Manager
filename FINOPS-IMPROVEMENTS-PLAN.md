@@ -1,7 +1,7 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
-**Status**: 🟡 em execução — Fase 0 concluída (commit `99271f0b`, branch
-`fix/finops-improvements-fase0`), Fases 1-5 pendentes.
+**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original, PR #431) e Fase 0 (PR #430)
+concluídas, ambas aguardando merge. Fases 1-5 pendentes.
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
@@ -45,6 +45,29 @@ aqui só pra registrar que foram checados e não são gap) não viraram itens de
 ---
 
 ## Checklist de execução
+
+### Fase -1 — CRÍTICO: métricas Dynatrace/Prometheus contaminadas (fora do escopo original, achado ao vivo) ✅
+
+**Concluída** (commit `8e214ac2`, PR #431, baseado em cima da Fase 0/#430). Não fazia parte da
+auditoria original — achado investigando um relato do usuário com números impossíveis num node
+pool real ("CPU: 626%, Mem: 519%"). Dois bugs INDEPENDENTES, ambos confirmados ao vivo contra a
+infra real da empresa:
+
+1. **Dynatrace**: as queries de métrica de workload nunca tinham `k8s.cluster.name` no `splitBy` —
+   o tenant DT desta empresa é compartilhado entre TODA a frota (17 clusters monitorados,
+   confirmado ao vivo via `/entities`), então qualquer workload com nome comum entre clusters
+   (ingress-controller, istiod, cert-manager, velero, prometheus, kyverno, calico) tinha sua
+   métrica agregada através de TODOS os clusters que compartilham esse nome — mesmo quando o
+   cluster analisado não tem nenhuma cobertura DT real. Corrigido com
+   `filter(and(eq("k8s.cluster.name","<cluster>")))`.
+2. **Prometheus**: as queries de P95/avg nunca tinham o wrapper `sum by (namespace, pod)` que as
+   queries de MAX já usavam — um container que reinicia (cgroup id novo a cada restart) faz
+   `quantile_over_time`/`avg_over_time` somar o valor de CADA reinicialização como se fosse uma
+   série independente. Um pod com 24 reinícios em 30d tinha o P95 inflado 24x (31,5GB em vez de
+   ~1,5GB, confirmado ao vivo). Corrigido replicando o wrapper já usado nas queries de MAX.
+
+Resultado combinado, validado ao vivo ponta a ponta: pool real foi de CPU 626%/Mem 519%
+(matematicamente impossível) pra CPU ~40%/Mem ~36% (plausível).
 
 ### Fase 0 — Correções de correção de dados (bugs reais, silenciosos, sem mudança de escopo) ✅
 

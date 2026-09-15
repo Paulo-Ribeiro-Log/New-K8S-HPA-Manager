@@ -10,6 +10,8 @@ import { Loader2, RefreshCw, X, Server, Search, Sparkles, Boxes, Gauge, Info, Al
 import ResourceGauge from "@/components/ResourceGauge";
 import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard } from "@/lib/finopsFormat";
 import { DollarSign, TrendingDown, Layers } from "lucide-react";
+import { ComposedChart, Line, XAxis, YAxis, ReferenceLine, ReferenceDot } from "recharts";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 
 // ─── Tipos (shape de GET/POST /api/v1/finops/rightsizing, ver
 //      internal/web/handlers/finops_rightsizing.go / internal/storage/finops_rightsizing_store.go) ──
@@ -132,6 +134,20 @@ interface RightsizingResponse {
   workloads?: WorkloadRecommendation[];
   node_pools?: NodePoolTierSuggestion[];
   nodes?: NodeUsageInfo[];
+}
+
+// Histórico de uso (CPU/Mem) sob demanda, ver GET /finops/rightsizing/history — buscado só quando
+// o modal de detalhe de um workload abre (nunca no scan em lote da lista inteira).
+interface WorkloadHistoryPoint {
+  timestamp: string;
+  value: number;
+}
+
+interface WorkloadHistoryResponse {
+  available: boolean;
+  reason?: string;
+  cpu_millis?: WorkloadHistoryPoint[];
+  mem_mi?: WorkloadHistoryPoint[];
 }
 
 const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("auth_token")}` });
@@ -352,12 +368,107 @@ function replicaScenarioText(w: WorkloadRecommendation): string {
   return `Min/max configurado: ${min}–${max} (atual: ${current}). Sem dado observado de réplicas no período (Prometheus indisponível ou sem histórico de HPA) pra confirmar se o range está adequado.`;
 }
 
+/** Gráfico de evolução histórica (CPU ou Mem) de um workload — substitui o ResourceGauge estático
+ *  no modal de detalhe (pedido explícito do usuário: "não seria melhor usar um gráfico para poder
+ *  ver a evolução das métricas e onde o ponto de pico existiu dentro dos dados históricos?").
+ *  Linhas de referência tracejadas marcam request/limit/recomendado (mesmo papel que os arcos do
+ *  gauge cumpriam antes); um ReferenceDot marca explicitamente o ponto de maior valor da série. */
+function WorkloadHistoryChart({
+  title, points, request, limit, recommended, color, formatValue, windowDays,
+}: {
+  title: string;
+  points: WorkloadHistoryPoint[] | undefined;
+  request?: number;
+  limit?: number;
+  recommended?: number;
+  color: string;
+  formatValue: (v: number) => string;
+  windowDays: number;
+}) {
+  const chartData = useMemo(() => {
+    if (!points?.length) return [];
+    return points.map((p) => ({
+      time: new Date(p.timestamp).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
+      value: p.value,
+    }));
+  }, [points]);
+
+  const peak = useMemo(() => {
+    if (!chartData.length) return null;
+    return chartData.reduce((max, p) => (p.value > max.value ? p : max), chartData[0]);
+  }, [chartData]);
+
+  if (!chartData.length) {
+    return (
+      <div className="space-y-1">
+        <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{title}</p>
+        <div className="h-[130px] flex items-center justify-center border rounded-md">
+          <p className="text-[11px] text-muted-foreground">Sem dados de uso no período.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const maxVal = Math.max(...chartData.map((p) => p.value), request ?? 0, limit ?? 0, recommended ?? 0, 1);
+  const xInterval = Math.max(0, Math.floor(chartData.length / 5) - 1);
+
+  return (
+    <div className="space-y-1">
+      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{title} — últimos {windowDays}d</p>
+      <ChartContainer config={{ value: { label: title, color } }} className="h-[130px] w-full">
+        <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -18, bottom: 0 }}>
+          <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} interval={xInterval} />
+          <YAxis
+            tick={{ fontSize: 9 }}
+            tickLine={false}
+            axisLine={false}
+            width={54}
+            domain={[0, maxVal * 1.15]}
+            tickFormatter={(v: number) => formatValue(v)}
+          />
+          <ChartTooltip
+            content={
+              <ChartTooltipContent
+                labelFormatter={(l) => l as string}
+                formatter={(value) => (
+                  <div className="flex flex-1 justify-between items-center leading-none gap-3">
+                    <span className="text-muted-foreground">{title}</span>
+                    <span className="font-mono font-medium tabular-nums text-foreground">{formatValue(Number(value))}</span>
+                  </div>
+                )}
+              />
+            }
+          />
+          {!!request && (
+            <ReferenceLine y={request} stroke="#94a3b8" strokeDasharray="4 3" strokeWidth={1}
+              label={{ value: "request", position: "insideTopLeft", fontSize: 9, fill: "#94a3b8" }} />
+          )}
+          {!!limit && (
+            <ReferenceLine y={limit} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1}
+              label={{ value: "limit", position: "insideTopLeft", fontSize: 9, fill: "#ef4444" }} />
+          )}
+          {!!recommended && (
+            <ReferenceLine y={recommended} stroke="#a855f7" strokeDasharray="4 3" strokeWidth={1}
+              label={{ value: "recomendado", position: "insideBottomLeft", fontSize: 9, fill: "#a855f7" }} />
+          )}
+          <Line type="monotone" dataKey="value" stroke={color} strokeWidth={1.75} dot={false} isAnimationActive={false} />
+          {peak && (
+            <ReferenceDot x={peak.time} y={peak.value} r={3.5} fill="#f59e0b" stroke="#fff" strokeWidth={1}
+              label={{ value: `pico ${formatValue(peak.value)}`, position: "top", fontSize: 9, fill: "#f59e0b" }} />
+          )}
+        </ComposedChart>
+      </ChartContainer>
+    </div>
+  );
+}
+
 /** Modal de detalhe combinado — aberto ao clicar no nome de uma aplicação dentro do card do
  *  Node Pool/Node Group (pedido explícito do usuário: informação completa de node+app+cenários
  *  de resize num só lugar, sem precisar caçar em vários cards). */
 function WorkloadNodeDetailModal({
-  workload, pool, poolNodes, onClose,
+  cluster, workload, pool, poolNodes, onClose,
 }: {
+  cluster: string;
   workload: WorkloadRecommendation;
   pool: NodePoolTierSuggestion | undefined;
   poolNodes: NodeUsageInfo[];
@@ -367,6 +478,22 @@ function WorkloadNodeDetailModal({
   const resizeCmd = buildResizeCommand(workload);
   const totalCPUCores = (pool?.vm_cpu_cores ?? 0) * (pool?.node_count ?? 0);
   const totalMemGB = (pool?.vm_memory_gb ?? 0) * (pool?.node_count ?? 0);
+
+  // Histórico on-demand — só busca quando este modal está de fato montado (fechar o modal
+  // desmonta o componente, cancelando a query via React Query; nunca roda no scan em lote).
+  const { data: historyResp, isLoading: historyLoading } = useQuery<WorkloadHistoryResponse>({
+    queryKey: ["finops-workload-history", cluster, workload.namespace, workload.workload, workload.window_days],
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/v1/finops/rightsizing/history?cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(workload.namespace)}&workload=${encodeURIComponent(workload.workload)}&days=${workload.window_days}`,
+        { headers: authHeaders() }
+      );
+      if (!r.ok) throw new Error("workload-history error");
+      return r.json();
+    },
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -515,24 +642,39 @@ function WorkloadNodeDetailModal({
               })()}
 
               <div className="grid grid-cols-2 gap-4 py-1">
-                <ResourceGauge
-                  title={(workload.cpu_current_millis ?? 0) > 0 ? "CPU (agora)" : "CPU (P95)"}
-                  current={(workload.cpu_current_millis ?? 0) > 0 ? workload.cpu_current_millis! : (workload.cpu_p95_millis ?? 0)}
-                  request={workload.cpu_request_millis}
-                  limit={workload.cpu_limit_millis ?? 0}
-                  recommended={workload.cpu_recommended_millis}
-                  unit="millicores"
-                  formatValue={fmtMillis}
-                />
-                <ResourceGauge
-                  title={(workload.mem_current_mi ?? 0) > 0 ? "Memória (agora)" : "Memória (P95)"}
-                  current={(workload.mem_current_mi ?? 0) > 0 ? workload.mem_current_mi! : (workload.mem_p95_mi ?? 0)}
-                  request={workload.mem_request_mi}
-                  limit={workload.mem_limit_mi ?? 0}
-                  recommended={workload.mem_recommended_mi}
-                  unit="Mi"
-                  formatValue={fmtMi}
-                />
+                {historyLoading ? (
+                  <>
+                    <div className="h-[150px] rounded-md bg-muted/40 animate-pulse" />
+                    <div className="h-[150px] rounded-md bg-muted/40 animate-pulse" />
+                  </>
+                ) : !historyResp?.available ? (
+                  <div className="col-span-2 text-[11px] text-muted-foreground border rounded-md p-3 text-center">
+                    {historyResp?.reason ?? "Histórico de uso indisponível para este workload."}
+                  </div>
+                ) : (
+                  <>
+                    <WorkloadHistoryChart
+                      title="CPU"
+                      points={historyResp.cpu_millis}
+                      request={workload.cpu_request_millis}
+                      limit={workload.cpu_limit_millis}
+                      recommended={workload.cpu_recommended_millis}
+                      color="#3b82f6"
+                      formatValue={fmtMillis}
+                      windowDays={workload.window_days}
+                    />
+                    <WorkloadHistoryChart
+                      title="Memória"
+                      points={historyResp.mem_mi}
+                      request={workload.mem_request_mi}
+                      limit={workload.mem_limit_mi}
+                      recommended={workload.mem_recommended_mi}
+                      color="#10b981"
+                      formatValue={fmtMi}
+                      windowDays={workload.window_days}
+                    />
+                  </>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4 text-[10px] text-muted-foreground">
@@ -1128,6 +1270,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
 
       {detailWorkload && (
         <WorkloadNodeDetailModal
+          cluster={cluster}
           workload={detailWorkload}
           pool={detailWorkload.node_pool ? poolsByName.get(detailWorkload.node_pool) : undefined}
           poolNodes={detailWorkload.node_pool ? (nodesByPool.get(detailWorkload.node_pool) ?? []) : []}

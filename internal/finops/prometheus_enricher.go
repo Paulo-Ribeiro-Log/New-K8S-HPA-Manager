@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -148,27 +149,44 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 		}()
 	}
 
+	// Bug real CRÍTICO corrigido (achado ao vivo, relatado pelo usuário com números impossíveis —
+	// "Mem: 519%" num pool de 1 node): estas 4 queries (P95/avg × CPU/Mem) nunca tinham o wrapper
+	// `sum by (namespace, pod) (...)` que as queries de MAX/pico (logo abaixo) já usam — sem ele,
+	// o seletor `container_cpu_usage_seconds_total{...}`/`container_memory_working_set_bytes{...}`
+	// casa com uma série POR CGROUP (label "id", que muda a CADA restart/recriação do container —
+	// cAdvisor/kubelet expõem um novo cgroup id por instância física do container). Um pod que
+	// reiniciou N vezes na janela (confirmado ao vivo: 24 reinícios em 30d pra um Prometheus
+	// interno real) faz `quantile_over_time`/`avg_over_time` calcular o valor INDEPENDENTEMENTE
+	// pra CADA uma das 24 séries (uma por cgroup id), e o pós-processamento em Go
+	// (queryContainerMetric, `m[ns+"/"+pod] += valor`) SOMA todas elas — 24× o valor real. Exemplo
+	// real confirmado: quantile_over_time sem o wrapper devolveu 24 valores distintos pro mesmo
+	// pod/container (725-1962 MiB cada), somando pra ~31,5GB; com `sum by (namespace, pod)`
+	// aplicado ANTES do quantile_over_time (mesmo padrão das queries de MAX, nunca tocadas por
+	// este bug), a MESMA query devolveu 1 única série coerente (~1,5GB) — validado ao vivo
+	// contra o Prometheus real. `sum by (namespace, pod)` colapsa tanto o churn de cgroup id
+	// QUANTO a soma legítima entre containers do mesmo pod (config-reloader + prometheus, nesse
+	// exemplo) num único passo — Go não precisa mais somar nada, só repassa o valor.
 	run(func() {
 		cpuP95Map = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`quantile_over_time(0.95, rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+			fmt.Sprintf(`quantile_over_time(0.95, (sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
 			"cpu_p95",
 		)
 	})
 	run(func() {
 		cpuAvgMap = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`avg_over_time(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+			fmt.Sprintf(`avg_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
 			"cpu_avg",
 		)
 	})
 	run(func() {
 		memP95Map = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`quantile_over_time(0.95, container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+			fmt.Sprintf(`quantile_over_time(0.95, (sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
 			"mem_p95",
 		)
 	})
 	run(func() {
 		memAvgMap = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`avg_over_time(container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+			fmt.Sprintf(`avg_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
 			"mem_avg",
 		)
 	})
@@ -448,7 +466,11 @@ func (e *PrometheusEnricher) queryContainerMetric(ctx context.Context, query, la
 		if ns == "" || pod == "" {
 			continue
 		}
-		// Soma containers do mesmo pod (label container distingue)
+		// A soma entre containers do mesmo pod (e entre séries de cgroup id diferentes, quando o
+		// container reinicia) já acontece dentro da própria query PromQL agora (`sum by
+		// (namespace, pod)`, ver EnrichWorkloads) — cada `query` chamada por este helper já
+		// devolve no máximo 1 amostra por pod. O `+=` (em vez de `=`) é só defesa em profundidade
+		// caso algum chamador futuro passe uma query sem esse wrapper.
 		m[ns+"/"+pod] += float64(sample.Value)
 	}
 	return m
@@ -519,6 +541,117 @@ func (e *PrometheusEnricher) queryPodMetricRangeMax(ctx context.Context, query, 
 		m[ns+"/"+pod] = peakOf(series.Values)
 	}
 	return m
+}
+
+// WorkloadHistoryPoint é um ponto (timestamp, valor) de uma série temporal de uso — usado pelo
+// gráfico de evolução histórica do modal de detalhe de workload na aba Rightsizing (pedido
+// explícito do usuário: "não seria melhor usar um gráfico para poder ver a evolução das métricas
+// e onde o ponto de pico existiu... on-demand no modal").
+type WorkloadHistoryPoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Value     float64   `json:"value"`
+}
+
+// WorkloadHistory busca a série temporal de uso de CPU (millicores) e Mem (MiB) de um workload
+// específico, pros últimos `windowDays` dias — diferente do resto deste arquivo (que só computa
+// agregados escalares — avg/P95/max — pra TODOS os workloads de uma vez, via splitBy), esta
+// função é chamada sob demanda, só quando o usuário abre o detalhe de UM workload no frontend
+// (nunca durante o scan em lote — buscar a série completa pra cada workload inflaria bastante o
+// tempo do scan, já alvo de 3 rodadas de correção de performance nesta mesma investigação).
+//
+// `podNames`: os pods ATUAIS do workload, resolvidos pelo chamador (handler) via K8s API + a
+// mesma função resolveWorkload (owner chain Pod→ReplicaSet/StatefulSet/DaemonSet/Job) já usada
+// no scan em lote — deliberadamente NUNCA por regex de nome (`pod=~"<workload>.*"`), que teria
+// risco real de colisão entre workloads cujo nome é prefixo de outro (ex: "api" casaria também
+// com pods de "api-legacy"). Retorna slices vazios (não erro) se `podNames` estiver vazio (nenhum
+// pod atual desse workload) ou se a query genuinamente não achar dado.
+//
+// `sum by (namespace, pod)` nas duas queries é OBRIGATÓRIO — é o mesmo wrapper recém-adicionado
+// nas queries de P95/avg agregadas (ver EnrichWorkloads acima) pra corrigir o bug real de
+// restart-churn (cada reinicialização do container ganha um novo cgroup "id", e sem esse wrapper
+// o seletor casaria com uma série POR REINICIALIZAÇÃO, inflando a série igual ao bug já corrigido
+// pro P95/avg). Quando há mais de um pod (réplica > 1), reduz por MÁXIMO entre pods em cada
+// timestamp — mesma convenção "pior caso entre pods" já usada por aggregatePodToWorkload
+// (useMax=true) pro cálculo de P95, mantendo o gráfico semanticamente consistente com o número
+// de P95 já exibido no resto do modal.
+func (e *PrometheusEnricher) WorkloadHistory(ctx context.Context, podNames []string, namespace string, windowDays int) (cpu, mem []WorkloadHistoryPoint, err error) {
+	if len(podNames) == 0 {
+		return nil, nil, nil
+	}
+	if windowDays <= 0 {
+		windowDays = e.window
+	}
+
+	podPattern := strings.Join(podNames, "|")
+	cpuQuery := fmt.Sprintf(
+		`sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{namespace=%q,pod=~"^(%s)$",container!="",container!="POD"}[5m])) * 1000`,
+		namespace, podPattern,
+	)
+	memQuery := fmt.Sprintf(
+		`sum by (namespace, pod) (container_memory_working_set_bytes{namespace=%q,pod=~"^(%s)$",container!="",container!="POD"}) / 1048576`,
+		namespace, podPattern,
+	)
+
+	var cpuErr, memErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		cpu, cpuErr = e.queryRangeSeries(ctx, cpuQuery, windowDays, "workload_history_cpu")
+	}()
+	go func() {
+		defer wg.Done()
+		mem, memErr = e.queryRangeSeries(ctx, memQuery, windowDays, "workload_history_mem")
+	}()
+	wg.Wait()
+
+	if cpuErr != nil {
+		return nil, nil, fmt.Errorf("histórico de CPU: %w", cpuErr)
+	}
+	if memErr != nil {
+		return nil, nil, fmt.Errorf("histórico de memória: %w", memErr)
+	}
+	return cpu, mem, nil
+}
+
+// queryRangeSeries executa uma QueryRange já agregada por (namespace,pod) e reduz múltiplas
+// séries (uma por pod, quando o workload tem mais de uma réplica) num único ponto por timestamp
+// via MÁXIMO — alinhamento por timestamp exato (não por índice), robusto a séries com número de
+// pontos diferente (ex: um pod criado no meio da janela tem menos pontos que um mais antigo).
+func (e *PrometheusEnricher) queryRangeSeries(ctx context.Context, query string, windowDays int, label string) ([]WorkloadHistoryPoint, error) {
+	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	end := time.Now()
+	start := end.Add(-time.Duration(windowDays) * 24 * time.Hour)
+	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(windowDays)}
+
+	result, _, err := e.api.QueryRange(qctx, query, r)
+	if err != nil {
+		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query de histórico de workload falhou")
+		return nil, err
+	}
+	mat, ok := result.(model.Matrix)
+	if !ok || len(mat) == 0 {
+		return nil, nil
+	}
+
+	byTimestamp := make(map[int64]float64)
+	for _, series := range mat {
+		for _, sample := range series.Values {
+			ts := sample.Timestamp.Unix()
+			if v := float64(sample.Value); v > byTimestamp[ts] {
+				byTimestamp[ts] = v
+			}
+		}
+	}
+
+	points := make([]WorkloadHistoryPoint, 0, len(byTimestamp))
+	for ts, v := range byTimestamp {
+		points = append(points, WorkloadHistoryPoint{Timestamp: time.Unix(ts, 0), Value: v})
+	}
+	sort.Slice(points, func(i, j int) bool { return points[i].Timestamp.Before(points[j].Timestamp) })
+	return points, nil
 }
 
 // aggregatePodToWorkloadPeak reduz picos por pod (com timestamp) pro pico do workload — mantém o
