@@ -193,3 +193,54 @@ func TestBuildSummary_MetricsWorkloadsEnriched_AllEmpty(t *testing.T) {
 		t.Errorf("esperava MetricsWorkloadsEnriched=0, got %d", summary.MetricsWorkloadsEnriched)
 	}
 }
+
+// TestReclassifyNoDataVerdicts cobre o bug real corrigido (FINOPS-IMPROVEMENTS-PLAN.md F0.2):
+// determineVerdict (baseado só em HPA, roda ANTES de qualquer enriquecimento) devolve "ok" tanto
+// pro workload genuinamente sem HPA quanto pro workload que nunca recebeu enriquecimento nenhum
+// — as duas situações ficavam indistinguíveis, badge verde "Eficiente" idêntico pros dois casos.
+func TestReclassifyNoDataVerdicts(t *testing.T) {
+	workloads := []FinOpsWorkload{
+		// Sem MetricsSource E verdict "ok" — o caso do bug: deve virar "sem_dados".
+		{Namespace: "ns-a", Workload: "sem-enriquecimento", Verdict: "ok", MetricsSource: ""},
+		// Enriquecido (Prometheus) com verdict "ok" real — verificado e saudável, não deve mudar.
+		{Namespace: "ns-a", Workload: "verificado-ok", Verdict: "ok", MetricsSource: "prometheus"},
+		// Sem MetricsSource mas verdict "no_request" — conclusão já válida só com dado de HPA/
+		// request, não depende de métrica de uso nenhuma; não deve virar "sem_dados".
+		{Namespace: "ns-b", Workload: "sem-request", Verdict: "no_request", MetricsSource: ""},
+		// Sem MetricsSource mas verdict "superprovisioned" — idem, conclusão via HPA, preservar.
+		{Namespace: "ns-b", Workload: "hpa-superprovisionado", Verdict: "superprovisioned", MetricsSource: ""},
+	}
+
+	reclassifyNoDataVerdicts(workloads)
+
+	if workloads[0].Verdict != "sem_dados" {
+		t.Errorf("workload sem MetricsSource e verdict 'ok' deveria virar 'sem_dados', ficou %q", workloads[0].Verdict)
+	}
+	if workloads[1].Verdict != "ok" {
+		t.Errorf("workload verificado via Prometheus deveria continuar 'ok', ficou %q", workloads[1].Verdict)
+	}
+	if workloads[2].Verdict != "no_request" {
+		t.Errorf("verdict 'no_request' (conclusão via HPA/request, não uso) não deveria ser tocado, ficou %q", workloads[2].Verdict)
+	}
+	if workloads[3].Verdict != "superprovisioned" {
+		t.Errorf("verdict 'superprovisioned' (conclusão via HPA) não deveria ser tocado, ficou %q", workloads[3].Verdict)
+	}
+}
+
+// TestBuildSummary_NoDataCount confirma que buildSummary conta corretamente o novo verdict
+// "sem_dados" num campo próprio (NoDataCount) — nunca misturado com SuperprovisionedCount/
+// OOMRiskCount (que representariam desperdício/risco CONFIRMADOS, não desconhecidos).
+func TestBuildSummary_NoDataCount(t *testing.T) {
+	workloads := []FinOpsWorkload{
+		{Namespace: "ns-a", Workload: "w1", Verdict: "sem_dados"},
+		{Namespace: "ns-a", Workload: "w2", Verdict: "sem_dados"},
+		{Namespace: "ns-a", Workload: "w3", Verdict: "ok", MetricsSource: "prometheus"},
+	}
+	summary := buildSummary(workloads, nil, 0, 5.2)
+	if summary.NoDataCount != 2 {
+		t.Errorf("esperava NoDataCount=2, got %d", summary.NoDataCount)
+	}
+	if summary.SuperprovisionedCount != 0 || summary.OOMRiskCount != 0 {
+		t.Errorf("sem_dados não deveria contar como desperdício/risco — got superprovisioned=%d oom_risk=%d", summary.SuperprovisionedCount, summary.OOMRiskCount)
+	}
+}

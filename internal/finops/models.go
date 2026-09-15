@@ -191,6 +191,10 @@ type FinOpsSummary struct {
 	NoRequestCount        int     `json:"no_request_count"`
 	HPARemovableCount     int     `json:"hpa_removable_count"`   // HPAs que nunca escalaram
 	FixedHighCostCount    int     `json:"fixed_high_cost_count"` // workloads caros sem HPA
+	// NoDataCount — verdict "sem_dados" (ver BuildReport): workloads que nunca receberam
+	// enriquecimento de uso real (MetricsSource==""), distintos de "ok" (verificado e saudável).
+	// Não contam como desperdício/risco nem como "eficiente" — são simplesmente desconhecidos.
+	NoDataCount int `json:"no_data_count"`
 	// Storage totals (preenchidos quando DiskPricer disponível)
 	StorageMonthlyCostBRL  float64 `json:"storage_monthly_cost_brl,omitempty"`
 	StorageMonthlyCostUSD  float64 `json:"storage_monthly_cost_usd,omitempty"`
