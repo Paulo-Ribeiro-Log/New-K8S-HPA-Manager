@@ -379,7 +379,7 @@ export function AIHistoryPanel({
                 </SelectContent>
               </Select>
 
-              <Select value={dateFilter} onValueChange={setDateFilter}>
+              <Select value={dateFilter} onValueChange={(v) => setDateFilter(v as "all" | "today" | "week" | "month")}>
                 <SelectTrigger>
                   <SelectValue placeholder="Período" />
                 </SelectTrigger>

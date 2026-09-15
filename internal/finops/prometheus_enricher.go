@@ -802,7 +802,18 @@ func (e *PrometheusEnricher) queryNodenameMetricPeakValue(ctx context.Context, q
 	}
 	m := make(map[string]float64, len(vec))
 	for _, sample := range vec {
-		nodename := string(sample.Metric["nodename"])
+		// Bug real corrigido: o hostname que a Azure grava no node_uname_info (via uname -n
+		// dentro da VM) preserva a caixa original da VMSS instance (ex: "...vmss0001CR"), mas o
+		// K8s SEMPRE normaliza o Node.metadata.name pra minúsculas (exigência de DNS-1123) — as
+		// duas nunca batiam por igualdade exata, então esta correlação (a "preferida", ver
+		// nodeTopUsage) nunca casava NENHUM node em clusters AKS reais, silenciosamente caindo
+		// sempre pro fallback de "instance" (substring), que por sua vez também falha quando o
+		// node-exporter expõe "instance" como IP:porta em vez de hostname (confirmado ao vivo
+		// contra um Prometheus real desta empresa) — resultado: "pico" de node sempre 0/ausente,
+		// mesmo com node_uname_info presente e correlacionável. Normalizado pra minúsculas aqui
+		// (nodeNames, vindo da API K8s, já é sempre minúsculo) em vez de tentar alterar a query
+		// PromQL (sem função nativa de lowercase no PromQL antes da v3).
+		nodename := strings.ToLower(string(sample.Metric["nodename"]))
 		if nodename == "" {
 			continue
 		}
@@ -834,7 +845,8 @@ func (e *PrometheusEnricher) queryNodenameMetricRangeMax(ctx context.Context, qu
 
 	m := make(map[string]promPeakSample)
 	for _, series := range mat {
-		nodename := string(series.Metric["nodename"])
+		// Mesma normalização de queryNodenameMetricPeakValue acima (mesmo bug, mesma correção).
+		nodename := strings.ToLower(string(series.Metric["nodename"]))
 		if nodename == "" || len(series.Values) == 0 {
 			continue
 		}
@@ -914,9 +926,20 @@ func verdictFromPrometheus(wl *FinOpsWorkload) string {
 		return "no_request"
 	}
 
-	// OOM/Throttling: P95 >= 95% do request em CPU ou Mem
-	cpuRisk := wl.CPUP95Millis > 0 && wl.CPURequestMillis > 0 && wl.CPUP95Millis >= 0.95*wl.CPURequestMillis
-	memRisk := wl.MemP95Mi > 0 && wl.MemRequestMi > 0 && wl.MemP95Mi >= 0.95*wl.MemRequestMi
+	// OOM/Throttling: P95 >= 95% do request em CPU ou Mem. Quando P95 não está disponível (ex:
+	// Dynatrace nesta família de métrica, que nunca supre percentile — ver finops_metrics.go),
+	// cai pro pico real (Max) como sinal — sem isso, todo workload enriquecido via DT teria
+	// "oom_risk" permanentemente inalcançável, mesmo genuinamente perto do limite.
+	cpuRiskBasis := wl.CPUP95Millis
+	if cpuRiskBasis == 0 {
+		cpuRiskBasis = wl.CPUMaxMillis
+	}
+	memRiskBasis := wl.MemP95Mi
+	if memRiskBasis == 0 {
+		memRiskBasis = wl.MemMaxMi
+	}
+	cpuRisk := cpuRiskBasis > 0 && wl.CPURequestMillis > 0 && cpuRiskBasis >= 0.95*wl.CPURequestMillis
+	memRisk := memRiskBasis > 0 && wl.MemRequestMi > 0 && memRiskBasis >= 0.95*wl.MemRequestMi
 	if cpuRisk || memRisk {
 		return "oom_risk"
 	}

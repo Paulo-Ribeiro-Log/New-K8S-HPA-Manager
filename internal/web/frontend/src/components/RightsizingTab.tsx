@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Loader2, RefreshCw, Server, Search, Sparkles, Boxes, Gauge, Info, AlertTriangle } from "lucide-react";
+import { Loader2, RefreshCw, X, Server, Search, Sparkles, Boxes, Gauge, Info, AlertTriangle } from "lucide-react";
 import ResourceGauge from "@/components/ResourceGauge";
 import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard } from "@/lib/finopsFormat";
 import { DollarSign, TrendingDown, Layers } from "lucide-react";
@@ -105,8 +105,13 @@ interface VMAlternative {
 interface NodePoolTierSuggestion {
   node_pool: string;
   current_sku: string;
+  // cpu_util_pct/mem_util_pct já inclui a margem de segurança (P95-ou-avg × 1.20) — é o número
+  // que decide a sugestão de tier, não o uso real puro. cpu_p95_pct/mem_p95_pct é o percentil
+  // REAL, sem margem — pedido explícito do usuário pra evidenciar o percentil por trás da decisão.
   cpu_util_pct: number;
   mem_util_pct: number;
+  cpu_p95_pct?: number;
+  mem_p95_pct?: number;
   workload_count: number;
   // Node count — atual (sempre presente) + min/max de autoscaling (best-effort, via cloud
   // provider ao vivo — 0/0 quando a chamada falhou no scan, ver ScanRightsizing).
@@ -756,8 +761,20 @@ function NodePoolTierCard({
             </p>
           </div>
           <div className="text-right text-[11px] text-muted-foreground">
-            <p>CPU: {pool.cpu_util_pct.toFixed(0)}%</p>
-            <p>Mem: {pool.mem_util_pct.toFixed(0)}%</p>
+            <p title="Usado para decidir a sugestão de tier abaixo — já inclui 20% de margem de segurança sobre o uso real">
+              CPU: {pool.cpu_util_pct.toFixed(0)}%
+            </p>
+            <p title="Usado para decidir a sugestão de tier abaixo — já inclui 20% de margem de segurança sobre o uso real">
+              Mem: {pool.mem_util_pct.toFixed(0)}%
+            </p>
+            {((pool.cpu_p95_pct ?? 0) > 0 || (pool.mem_p95_pct ?? 0) > 0) && (
+              <p
+                className="mt-1 pt-1 border-t text-[10px] text-foreground/80"
+                title="Percentil de uso real do pool (P95), sem nenhuma margem de segurança — mais fiel pra avaliar troca de família de máquina"
+              >
+                P95 real: {(pool.cpu_p95_pct ?? 0).toFixed(0)}% CPU / {(pool.mem_p95_pct ?? 0).toFixed(0)}% Mem
+              </p>
+            )}
           </div>
         </div>
 
@@ -815,6 +832,10 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   const queryClient = useQueryClient();
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  // Mesmo recurso já corrigido no botão "Analisar" da aba Dashboard (FinOpsTab.tsx): enquanto o
+  // scan de rightsizing está rodando (POST /rightsizing/scan, síncrono, pode levar ~2min), o
+  // botão vira "Cancelar" e aborta a requisição em andamento em vez de ficar só desabilitado.
+  const scanAbortRef = useRef<AbortController | null>(null);
   const [namespaceFilter, setNamespaceFilter] = useState<string>("all");
   const [verdictFilter, setVerdictFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -837,12 +858,15 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   });
 
   const runScan = async () => {
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
     setScanning(true);
     setScanError(null);
     try {
       const r = await fetch(`/api/v1/finops/rightsizing/scan?cluster=${encodeURIComponent(cluster)}`, {
         method: "POST",
         headers: authHeaders(),
+        signal: controller.signal,
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
@@ -851,10 +875,19 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
       const fresh: RightsizingResponse = await r.json();
       queryClient.setQueryData(["finops-rightsizing", cluster], fresh);
     } catch (e) {
-      setScanError(e instanceof Error ? e.message : "Falha ao analisar");
+      if (e instanceof DOMException && e.name === "AbortError") {
+        // cancelado pelo usuário — nenhum erro a mostrar
+      } else {
+        setScanError(e instanceof Error ? e.message : "Falha ao analisar");
+      }
     } finally {
+      scanAbortRef.current = null;
       setScanning(false);
     }
+  };
+
+  const cancelScan = () => {
+    scanAbortRef.current?.abort();
   };
 
   const workloads = useMemo(() => {
@@ -897,6 +930,34 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
 
   const totalWaste = workloads.reduce((sum, w) => sum + (w.waste_brl ?? 0), 0);
 
+  // P95 agregado do CLUSTER (não só por pool) — pedido explícito do usuário: "preciso que o
+  // percentil de uso dos clusters... seja evidenciado nas análises". Média ponderada por
+  // capacidade (vCPU/GB × node_count de cada pool), não uma média simples dos %— um pool de 2
+  // nodes rodando a 90% não deveria pesar igual a um pool de 20 nodes rodando a 40%. Calculado
+  // aqui no frontend (não persistido) porque é só uma agregação dos node_pools já recebidos —
+  // sem custo de mais uma consulta/coluna no backend pra um número derivado.
+  const clusterP95 = useMemo(() => {
+    const pools = data?.node_pools ?? [];
+    let cpuNum = 0, cpuDen = 0, memNum = 0, memDen = 0;
+    for (const p of pools) {
+      const cpuCap = (p.vm_cpu_cores ?? 0) * (p.node_count ?? 0);
+      const memCap = (p.vm_memory_gb ?? 0) * (p.node_count ?? 0);
+      if (cpuCap > 0 && (p.cpu_p95_pct ?? 0) > 0) {
+        cpuNum += (p.cpu_p95_pct ?? 0) * cpuCap;
+        cpuDen += cpuCap;
+      }
+      if (memCap > 0 && (p.mem_p95_pct ?? 0) > 0) {
+        memNum += (p.mem_p95_pct ?? 0) * memCap;
+        memDen += memCap;
+      }
+    }
+    return {
+      cpu: cpuDen > 0 ? cpuNum / cpuDen : 0,
+      mem: memDen > 0 ? memNum / memDen : 0,
+      hasData: cpuDen > 0 || memDen > 0,
+    };
+  }, [data?.node_pools]);
+
   // Rightsizing SEMPRE exige uso real (ScanRightsizing só roda se Dynatrace ou Prometheus foi
   // configurado — sem isso o scan já falha com 400 antes de chegar aqui, ver ScanRightsizing),
   // então nenhum workload com metrics_source é sempre um sinal de falha de coleta (VPN/rede/API
@@ -936,9 +997,11 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
               : "Nunca analisado"}
           </p>
         </div>
-        <Button size="sm" onClick={runScan} disabled={scanning}>
-          {scanning ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
-          {data?.scanned ? "Reanalisar agora" : "Analisar agora"}
+        <Button size="sm" variant={scanning ? "destructive" : "default"} onClick={scanning ? cancelScan : runScan}>
+          {scanning
+            ? <X className="h-4 w-4 mr-1.5" />
+            : <RefreshCw className="h-4 w-4 mr-1.5" />}
+          {scanning ? "Cancelar" : (data?.scanned ? "Reanalisar agora" : "Analisar agora")}
         </Button>
       </div>
 
@@ -977,7 +1040,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
       {data?.scanned && (
         <>
           {/* KPIs */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <SummaryCard icon={DollarSign} label="Desperdício Total" value={fmtBRL(totalWaste)} color="text-red-500" />
             <SummaryCard icon={TrendingDown} label="Workloads Analisados" value={String(workloads.length)} color="text-blue-500" />
             <SummaryCard icon={Layers} label="Node Pools" value={String(data.node_pools?.length ?? 0)} color="text-purple-500" />
@@ -987,6 +1050,15 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
               value={String(workloads.filter((w) => (w.waste_brl ?? 0) > 0).length)}
               color="text-amber-500"
             />
+            {clusterP95.hasData && (
+              <SummaryCard
+                icon={Gauge}
+                label="P95 Real do Cluster"
+                value={`${clusterP95.cpu.toFixed(0)}% CPU`}
+                sub={`${clusterP95.mem.toFixed(0)}% Mem — média ponderada por capacidade dos pools`}
+                color="text-teal-500"
+              />
+            )}
           </div>
 
           {/* Seção Node Pools — tier de VM */}

@@ -111,11 +111,23 @@ type NodeUsage struct {
 // storage não pode importar finops (finops já importa storage, ver calculator.go:BuildReport),
 // então quem monta/lê esse JSON é sempre o chamador (internal/web/handlers/finops_rightsizing.go).
 type NodePoolTierSuggestion struct {
-	Cluster       string  `json:"cluster"`
-	NodePool      string  `json:"node_pool"`
-	CurrentSKU    string  `json:"current_sku"`
-	CPUUtilPct    float64 `json:"cpu_util_pct"`
-	MemUtilPct    float64 `json:"mem_util_pct"`
+	Cluster    string `json:"cluster"`
+	NodePool   string `json:"node_pool"`
+	CurrentSKU string `json:"current_sku"`
+	// CPUUtilPct/MemUtilPct é a % usada pra DECIDIR a sugestão de tier (SuggestVMTier) — soma de
+	// CPURecommendedMillis/MemRecommendedMi (P95-ou-avg × SafetyMargin=1.20) sobre a capacidade
+	// do pool. JÁ inclui a margem de segurança, então é sempre maior que o uso real observado.
+	CPUUtilPct float64 `json:"cpu_util_pct"`
+	MemUtilPct float64 `json:"mem_util_pct"`
+	// CPUP95Pct/MemP95Pct é o percentil de uso REAL do pool, SEM a margem de segurança — soma de
+	// CPUP95Millis/MemP95Mi (ou avg quando a fonte não supre P95, ex: Dynatrace nesta família de
+	// métrica — ver internal/dynatrace/finops_metrics.go) sobre a capacidade do pool. Bug real
+	// corrigido, pedido explícito do usuário: "preciso que o percentil de uso... seja evidenciado
+	// nas análises... pode dar uma visão mais adequada da possibilidade de troca de família de
+	// máquina" — antes só existia o número já misturado com a margem (CPUUtilPct acima), sem
+	// nenhuma forma de ver o percentil puro por trás da decisão.
+	CPUP95Pct     float64 `json:"cpu_p95_pct,omitempty"`
+	MemP95Pct     float64 `json:"mem_p95_pct,omitempty"`
 	WorkloadCount int     `json:"workload_count"` // nº de workloads que embasaram o cálculo de util%
 
 	// ── Node count: atual (live) + min/max de autoscaling (live, via cloudprovider) ───────────
@@ -177,6 +189,8 @@ CREATE TABLE IF NOT EXISTS nodepool_tier_suggestions (
     current_sku       TEXT,
     cpu_util_pct      REAL NOT NULL DEFAULT 0,
     mem_util_pct      REAL NOT NULL DEFAULT 0,
+    cpu_p95_pct       REAL NOT NULL DEFAULT 0,
+    mem_p95_pct       REAL NOT NULL DEFAULT 0,
     workload_count    INTEGER NOT NULL DEFAULT 0,
     alternatives_json TEXT,
     generated_at      DATETIME NOT NULL,
@@ -232,6 +246,8 @@ var finopsRightsizingMigrations = []string{
 	`ALTER TABLE node_usage ADD COLUMN cpu_top_at DATETIME`,
 	`ALTER TABLE node_usage ADD COLUMN mem_top_at DATETIME`,
 	`ALTER TABLE node_usage ADD COLUMN node_created_at DATETIME`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN cpu_p95_pct REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN mem_p95_pct REAL NOT NULL DEFAULT 0`,
 }
 
 // NewFinOpsRightsizingStore abre (ou cria) o banco SQLite de análises de rightsizing.
@@ -400,10 +416,10 @@ func (s *FinOpsRightsizingStore) ReplaceNodePoolTierSuggestions(cluster string, 
 
 	stmt, err := tx.Prepare(`
 INSERT INTO nodepool_tier_suggestions (
-    cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, workload_count,
+    cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, cpu_p95_pct, mem_p95_pct, workload_count,
     node_count, min_node_count, max_node_count, autoscaling_enabled, vm_cpu_cores, vm_memory_gb,
     alternatives_json, generated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -411,7 +427,7 @@ INSERT INTO nodepool_tier_suggestions (
 
 	for _, sug := range suggestions {
 		if _, err := stmt.Exec(
-			cluster, sug.NodePool, sug.CurrentSKU, sug.CPUUtilPct, sug.MemUtilPct,
+			cluster, sug.NodePool, sug.CurrentSKU, sug.CPUUtilPct, sug.MemUtilPct, sug.CPUP95Pct, sug.MemP95Pct,
 			sug.WorkloadCount,
 			sug.NodeCount, sug.MinNodeCount, sug.MaxNodeCount, sug.AutoscalingEnabled, sug.VMCPUCores, sug.VMMemoryGB,
 			sug.AlternativesJSON, sug.GeneratedAt,
@@ -428,7 +444,7 @@ func (s *FinOpsRightsizingStore) GetNodePoolTierSuggestions(cluster string) ([]N
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-SELECT cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, workload_count,
+SELECT cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, cpu_p95_pct, mem_p95_pct, workload_count,
        node_count, min_node_count, max_node_count, autoscaling_enabled, vm_cpu_cores, vm_memory_gb,
        alternatives_json, generated_at
 FROM nodepool_tier_suggestions WHERE cluster = ? ORDER BY node_pool`, cluster)
@@ -442,7 +458,7 @@ FROM nodepool_tier_suggestions WHERE cluster = ? ORDER BY node_pool`, cluster)
 		var sug NodePoolTierSuggestion
 		var currentSKU, altJSON sql.NullString
 		if err := rows.Scan(
-			&sug.Cluster, &sug.NodePool, &currentSKU, &sug.CPUUtilPct, &sug.MemUtilPct,
+			&sug.Cluster, &sug.NodePool, &currentSKU, &sug.CPUUtilPct, &sug.MemUtilPct, &sug.CPUP95Pct, &sug.MemP95Pct,
 			&sug.WorkloadCount,
 			&sug.NodeCount, &sug.MinNodeCount, &sug.MaxNodeCount, &sug.AutoscalingEnabled, &sug.VMCPUCores, &sug.VMMemoryGB,
 			&altJSON, &sug.GeneratedAt,

@@ -3174,6 +3174,7 @@ class APIClient {
     has_gemini_refresh_token: boolean;
     has_openai: boolean;
     openai_model?: string;
+    openai_base_url?: string;
     has_claude: boolean;
     claude_model?: string;
     has_copilot: boolean;
@@ -3207,6 +3208,7 @@ class APIClient {
     gemini_service_account_json?: string;
     openai_api_key?: string;
     openai_model?: string;
+    openai_base_url?: string;
     claude_api_key?: string;
     claude_model?: string;
     copilot_api_key?: string;

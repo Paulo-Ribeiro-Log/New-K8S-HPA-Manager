@@ -97,7 +97,8 @@ export function useAwsSsoAuth() {
             // Fechar automaticamente após 2s
             setTimeout(() => setState(INITIAL), 2000);
           } else {
-            const detail = res.error_detail || "Login não concluído. Verifique se a VPN AWS está ativa e tente novamente.";
+            // Backend não devolve um motivo detalhado para success:false — só o booleano.
+            const detail = "Login não concluído. Verifique se a VPN AWS está ativa e tente novamente.";
             setState((s) => ({ ...s, polling: false, error: detail }));
           }
         }

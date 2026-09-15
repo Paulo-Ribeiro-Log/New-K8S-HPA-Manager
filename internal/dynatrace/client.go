@@ -102,7 +102,7 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, dest i
 		case 403:
 			return fmt.Errorf("Dynatrace: token sem permissão (403) — URL: %s — body: %s", apiURL, string(body))
 		case 404:
-			return fmt.Errorf("Dynatrace: endpoint não encontrado (404) — URL: %s", apiURL)
+			return fmt.Errorf("Dynatrace: endpoint não encontrado (404) — URL: %s — body: %s", apiURL, string(body))
 		default:
 			return fmt.Errorf("Dynatrace API error (status %d) — URL: %s — body: %s", resp.StatusCode, apiURL, string(body))
 		}

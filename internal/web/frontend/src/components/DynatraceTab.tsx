@@ -2913,7 +2913,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
             onClick={() => {
               setStatusFilter(s);
               setSelectedProblem(null);
-              setAnalysisResult("");
+              setQuickAnalysisResult("");
               // Limpar datas ao voltar para OPEN (datas só fazem sentido em CLOSED/ALL)
               if (s === "OPEN") { setDateFrom(""); setDateTo(""); }
               queryClient.invalidateQueries({ queryKey: ["dynatrace-problems", aiEmail, activeFilter, s, dateFrom, dateTo] });

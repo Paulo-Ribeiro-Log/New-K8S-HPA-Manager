@@ -145,11 +145,11 @@ export function AIAnalysisCard({ analysis, onClose }: AIAnalysisCardProps) {
         </div>
         <div className="flex items-center gap-4 text-xs text-muted-foreground mt-2">
           <span>📅 {formattedDate}</span>
-          {analysis.responseTime && (
-            <span>⚡ {analysis.responseTime.toFixed(2)}s</span>
+          {analysis.response_time && (
+            <span>⚡ {analysis.response_time.toFixed(2)}s</span>
           )}
-          {analysis.tokensUsed && (
-            <span>🎯 {analysis.tokensUsed} tokens</span>
+          {analysis.tokens_used && (
+            <span>🎯 {analysis.tokens_used} tokens</span>
           )}
           {analysis.model && (
             <span>🧠 {analysis.model}</span>
@@ -184,11 +184,11 @@ export function AIAnalysisCard({ analysis, onClose }: AIAnalysisCardProps) {
         )}
 
         {/* Metadata adicional */}
-        {analysis.userEmail && (
+        {analysis.user_email && (
           <>
             <Separator />
             <div className="text-xs text-muted-foreground">
-              Analisado por: {analysis.userEmail}
+              Analisado por: {analysis.user_email}
             </div>
           </>
         )}

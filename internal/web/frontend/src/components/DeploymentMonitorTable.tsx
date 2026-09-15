@@ -644,10 +644,12 @@ export const DeploymentMonitorTable = ({
               <span className="flex items-center gap-1">
                 {ready}/{desired}
                 {!!dep.unhealthyPodCount && (
-                  <AlertTriangle
-                    className="w-3 h-3 text-orange-500 dark:text-orange-400 flex-shrink-0"
-                    title={`${dep.unhealthyPodCount} pod(s) com problema: ${dep.podIssueReason ?? "status degradado"}`}
-                  />
+                  // Ícones lucide-react não aceitam `title` como prop tipada (LucideProps não
+                  // inclui, mesmo repassando pra o <svg> em runtime) — <span title> garante o
+                  // tooltip nativo sem depender de comportamento de atributo SVG não documentado.
+                  <span title={`${dep.unhealthyPodCount} pod(s) com problema: ${dep.podIssueReason ?? "status degradado"}`}>
+                    <AlertTriangle className="w-3 h-3 text-orange-500 dark:text-orange-400 flex-shrink-0" />
+                  </span>
                 )}
               </span>
               <span>{updated}</span>

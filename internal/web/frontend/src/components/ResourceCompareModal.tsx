@@ -107,7 +107,7 @@ async function fetchList(type: ResourceType, cluster: string, namespace: string)
     case "ingress":     return (await apiClient.getIngresses(cluster, namespace ? [namespace] : [], "", true)).map(i => i.name);
     case "namespace":   return (await apiClient.getNamespaces(cluster)).map(n => n.name);
     case "pod":         return (await apiClient.getPods(cluster, namespace ? [namespace] : [], "", true)).map(p => p.name);
-    case "gateway":     return (await apiClient.getGateways(cluster, namespace, "gateway", true)).map(g => g.name);
+    case "gateway":     return (await apiClient.getGateways(cluster, namespace, "gateway", true)).data.map(g => g.name);
     default: return [];
   }
 }

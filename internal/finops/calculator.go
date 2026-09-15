@@ -153,9 +153,33 @@ func (c *Calculator) BuildReport(
 	// 3. Alocar custo proporcional a cada workload
 	workloads := allocateCosts(rawWorkloads, capacity, clusterCostUSD, rate)
 
-	// 4. Enriquecer com métricas históricas: Dynatrace (primário) → Prometheus (fallback)
+	// 4. Enriquecer com métricas históricas: Dynatrace (primário) → Prometheus (fallback) — roda
+	// EM PARALELO com ComputeNodeUsage (uso por node, também via Prometheus) — bug real
+	// corrigido, relatado pelo usuário: "a ferramenta está 2x mais demorada do que era quando
+	// iniciamos esses ajustes". Achado via telemetria real do log do servidor (FinOps/timing):
+	// as duas etapas fazem chamadas INDEPENDENTES ao MESMO Prometheus, cada uma com seu próprio
+	// timeout de contexto (~60-75s) — quando o Prometheus do cluster está genuinamente fora do
+	// ar (confirmado ao vivo: "context deadline exceeded" nas duas, uma logo depois da outra),
+	// elas rodavam SEQUENCIALMENTE, somando os dois timeouts (~135s) em vez de pagar só o maior
+	// dos dois (~75s) — exatamente a duplicação de tempo relatada. `uniqueNodes`/`nodeToPool` já
+	// estão disponíveis desde collectWorkloads/allocateCosts (NodeName é preenchido lá, nunca
+	// pelos enrichers abaixo — ver uniqueNonEmptyNodeNames), então ComputeNodeUsage não depende
+	// de nada que o enriquecimento de workload produza — as duas são genuinamente independentes
+	// (ComputeNodeUsage nunca lê/escreve em `workloads`, só devolve um []NodeUsage novo).
 	windowDays := 0
 	var dtEnriched map[string]bool
+	var nodeUsage []NodeUsage
+
+	var nodeWg sync.WaitGroup
+	if uniqueNodes := uniqueNonEmptyNodeNames(workloads); len(uniqueNodes) > 0 {
+		nodeWg.Add(1)
+		go func() {
+			defer nodeWg.Done()
+			nodeStart := time.Now()
+			nodeUsage = ComputeNodeUsage(ctx, client, metricsClient, uniqueNodes, nodeToPool, enricher)
+			logTiming("ComputeNodeUsage", nodeStart, map[string]interface{}{"nodes": len(uniqueNodes)})
+		}()
+	}
 
 	if dtEnricher != nil {
 		stepStart = time.Now()
@@ -179,19 +203,15 @@ func (c *Calculator) BuildReport(
 		}
 	}
 
-	// 4b. Live (metrics-server): uso "current" de verdade por workload + por node — best-effort,
-	// nunca bloqueia o relatório se o metrics-server não estiver disponível (ver live_metrics.go).
-	var nodeUsage []NodeUsage
+	// 4b. Live (metrics-server): uso "current" de verdade por workload — best-effort, nunca
+	// bloqueia o relatório se o metrics-server não estiver disponível (ver live_metrics.go).
 	if metricsClient != nil {
 		stepStart = time.Now()
 		EnrichWorkloadsLiveMetrics(ctx, metricsClient, workloads, podToWorkload)
 		logTiming("EnrichWorkloadsLiveMetrics", stepStart, nil)
 	}
-	if uniqueNodes := uniqueNonEmptyNodeNames(workloads); len(uniqueNodes) > 0 {
-		stepStart = time.Now()
-		nodeUsage = ComputeNodeUsage(ctx, client, metricsClient, uniqueNodes, nodeToPool, enricher)
-		logTiming("ComputeNodeUsage", stepStart, map[string]interface{}{"nodes": len(uniqueNodes)})
-	}
+
+	nodeWg.Wait() // espera ComputeNodeUsage (goroutine acima) terminar antes de montar o relatório
 
 	// 5. Agregar por namespace
 	nsMap := aggregateNamespaces(workloads)

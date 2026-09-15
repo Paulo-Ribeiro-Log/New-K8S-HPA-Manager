@@ -12,14 +12,16 @@ import (
 
 // TestGetAllWorkloadMetrics_RunsInParallel cobre o mesmo bug real de performance já corrigido
 // para EnrichEntitiesWithK8s (ver enrich_concurrency_test.go), agora achado em
-// GetAllWorkloadMetrics: as 6 queries batch (avg+P95+max × cpu+mem) eram disparadas
+// GetAllWorkloadMetrics: as 4 queries batch (avg+max × cpu+mem — as de percentile(95) foram
+// removidas depois, ver comentário de metricCPUMillicores em finops_metrics.go: a família
+// builtin:kubernetes.workload.* nunca suporta agregação percentile neste tenant) eram disparadas
 // sequencialmente, cada uma pagando o RTT completo do endpoint metrics/query do DT (relatado
 // como parte do "scans ainda estão levando 2 minutos cada", junto do mesmo problema já corrigido
 // do lado Prometheus). Um servidor de teste que atrasa cada resposta e conta o pico de
 // requisições simultâneas confirma que, após a correção, várias queries acontecem ao mesmo
 // tempo.
 func TestGetAllWorkloadMetrics_RunsInParallel(t *testing.T) {
-	const numQueries = 6
+	const numQueries = 4
 	const perRequestDelay = 80 * time.Millisecond
 
 	var inFlight int32
@@ -58,13 +60,14 @@ func TestGetAllWorkloadMetrics_RunsInParallel(t *testing.T) {
 	if !ok {
 		t.Fatalf("esperava métricas de ns1/wl1, veio %+v", metrics)
 	}
-	if m.CPUAvgMillicores != 42 || m.CPUP95Millicores != 42 || m.CPUMaxMillicores != 42 ||
-		m.MemAvgBytes != 42 || m.MemP95Bytes != 42 || m.MemMaxBytes != 42 {
-		t.Fatalf("esperava todos os campos = 42 (mesma resposta fake pras 6 queries), veio %+v", m)
+	// CPUP95Millicores/MemP95Bytes nunca são consultados (percentile não suportado) — ficam 0.
+	if m.CPUAvgMillicores != 42 || m.CPUP95Millicores != 0 || m.CPUMaxMillicores != 42 ||
+		m.MemAvgBytes != 42 || m.MemP95Bytes != 0 || m.MemMaxBytes != 42 {
+		t.Fatalf("esperava avg/max = 42 e P95 = 0 (mesma resposta fake pras 4 queries reais), veio %+v", m)
 	}
 
-	if peakInFlight < 3 {
-		t.Errorf("esperava pelo menos 3 queries simultâneas ao DT, pico observado foi %d", peakInFlight)
+	if peakInFlight < 2 {
+		t.Errorf("esperava pelo menos 2 queries simultâneas ao DT, pico observado foi %d", peakInFlight)
 	}
 
 	// Sequencial custaria numQueries*perRequestDelay (480ms); paralelo deve ficar bem abaixo.

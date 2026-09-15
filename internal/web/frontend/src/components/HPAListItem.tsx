@@ -53,7 +53,9 @@ export const HPAListItem = ({
         </div>
         <div className="flex items-center gap-2">
           {isInStaging && (
-            <BookmarkCheck className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" title="No staging" />
+            <span title="No staging">
+              <BookmarkCheck className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+            </span>
           )}
           {isModified && (
             <Badge variant="secondary" className="bg-warning/20 text-warning border-warning/30 text-xs py-0">

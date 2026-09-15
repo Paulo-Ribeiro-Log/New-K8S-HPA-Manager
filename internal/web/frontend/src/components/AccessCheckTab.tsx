@@ -30,6 +30,13 @@ interface AccessCheckHistoryEntry {
   user_email?: string;
   cluster: string;
   status: string;
+  // `resource` (campo genérico de HistoryEntry — ver CreateHistoryEntry em
+  // internal/web/handlers/helpers.go) é reaproveitado pelo access_check especificamente pra
+  // guardar o NAMESPACE consultado, não um tipo de recurso RBAC — daí a coluna "Namespace" da
+  // tabela usar `entry.resource` direto, não `entry.after?.resource` (que é outra coisa: o
+  // recurso RBAC verificado, ex: "pods"). Campo ausente aqui era um bug real — a coluna
+  // "Namespace" da tabela de histórico sempre vinha vazia.
+  resource?: string;
   after?: { email_analisado?: string; verb?: string; resource?: string };
 }
 

@@ -101,12 +101,13 @@ const clientCleanupInterval = 15 * time.Minute
 // re-testa), sem exigir esperar o TTL inteiro — custo é só mais 1 dial TCP ocasional, barato.
 const reachabilityCacheTTL = 5 * time.Second
 
-// reachabilityProbeTimeout é o timeout de CADA tentativa do dial TCP usado pelo probe de
-// conectividade (ver TestClusterTCPConnection — até 2 tentativas). Aumentado de 3s pra 10s no
-// mesmo estudo acima: 3s era mais curto que o RTT ocasional de rede que kubectl/k9s (timeout
-// ~30s) toleram sem sequer notar — um probe tão mais rígido que a operação real que ele existe
-// pra "proteger" acaba sendo o próprio ponto de falha. 10s ainda garante falha rápida (bem menor
-// que os 30s do restConfig.Timeout) quando o cluster está genuinamente inacessível.
+// reachabilityProbeTimeout é o orçamento TOTAL (não por tentativa) de TestClusterTCPConnection —
+// ver comentário de TestClusterTCPConnection pro bug real corrigido de dobrar esse valor.
+// Aumentado de 3s pra 10s no mesmo estudo acima: 3s era mais curto que o RTT ocasional de rede
+// que kubectl/k9s (timeout ~30s) toleram sem sequer notar — um probe tão mais rígido que a
+// operação real que ele existe pra "proteger" acaba sendo o próprio ponto de falha. 10s ainda
+// garante falha rápida (bem menor que os 30s do restConfig.Timeout) quando o cluster está
+// genuinamente inacessível.
 const reachabilityProbeTimeout = 10 * time.Second
 
 // reachabilityProbeRetryDelay é a pausa entre as 2 tentativas do dial TCP em
@@ -672,9 +673,24 @@ func (k *KubeConfigManager) TestClusterConnection(ctx context.Context, clusterNa
 
 // TestClusterTCPConnection testa conectividade TCP pura com o API server do cluster.
 // Não requer autenticação — apenas verifica se o endpoint está acessível via rede/VPN.
+// `timeout` é o orçamento TOTAL da função (não por tentativa) — ver bug real corrigido abaixo.
 // Retorna true se a conexão TCP foi estabelecida dentro do timeout (até 2 tentativas — ver
 // reachabilityProbeRetryDelay: um pacote perdido isolado não deveria virar "cluster inacessível"
 // sozinho, mesmo achado do estudo de VPN documentado junto às constantes acima).
+//
+// Bug real corrigido, achado ao vivo durante uma instabilidade real de VPN relatada pelo usuário
+// ("estamos com a vpn instável"): a versão anterior fazia CADA uma das 2 tentativas com o
+// `timeout` INTEIRO, dobrando o pior caso pra até `2×timeout + reachabilityProbeRetryDelay` — 5
+// chamadas reais a `GET /vpn/status?cluster=...` (timeout=8s) alternaram entre responder em
+// ~3s e não responder NADA até o cliente HTTP desistir depois de 15s, confirmando que a 2ª
+// tentativa de fato roda até o fim do orçamento completo quando a 1ª falha. Pra
+// `checkReachability` (chamado em TODA operação K8s quando o cache de 5s expira, orçamento
+// default 10s) isso significa até ~20s só no PRÉ-CHECK, antes mesmo de tentar a operação real —
+// o oposto do propósito original desse probe ("falhar rápido", ver reachabilityProbeTimeout) e
+// justamente mais grave no cenário que mais importa: quando a VPN está de fato instável, não
+// caída por completo. Corrigido dividindo o MESMO orçamento total entre as 2 tentativas, nunca
+// multiplicando — cada chamador continua podendo confiar que a função retorna dentro do
+// `timeout` que ele pediu.
 func (k *KubeConfigManager) TestClusterTCPConnection(clusterName string, timeout time.Duration) bool {
 	serverURL := k.getServerURL(clusterName)
 	if serverURL == "" {
@@ -695,14 +711,33 @@ func (k *KubeConfigManager) TestClusterTCPConnection(clusterName string, timeout
 		return false
 	}
 
-	if dialOnce(host, timeout) {
+	perAttempt, splittable := splitProbeBudget(timeout)
+	if !splittable {
+		return dialOnce(host, timeout)
+	}
+	if dialOnce(host, perAttempt) {
 		return true
 	}
 	// 1ª tentativa falhou — pausa curta e tenta de novo antes de declarar inacessível. Cobre o
 	// caso comum de um pacote perdido isolado (não uma queda genuína de VPN/rede), que uma
 	// segunda tentativa resolve sozinha na prática.
 	time.Sleep(reachabilityProbeRetryDelay)
-	return dialOnce(host, timeout)
+	return dialOnce(host, perAttempt)
+}
+
+// splitProbeBudget divide o orçamento TOTAL de TestClusterTCPConnection entre suas até 2
+// tentativas, nunca multiplicando (ver comentário de TestClusterTCPConnection pro bug real que
+// isso corrige). Extraída como função pura (sem I/O de rede) pra ser testável sem depender de
+// timing real de socket. Quando `timeout` é pequeno demais pra caber 2 tentativas + o delay
+// entre elas sem deixar cada uma com um orçamento residual quase inútil, `splittable=false` —
+// o chamador faz 1 tentativa só, com o orçamento cheio (mesmo comportamento de antes da retry
+// existir, pra esse caso).
+func splitProbeBudget(timeout time.Duration) (perAttempt time.Duration, splittable bool) {
+	const minSplittableTimeout = 2*time.Second + reachabilityProbeRetryDelay
+	if timeout < minSplittableTimeout {
+		return timeout, false
+	}
+	return (timeout - reachabilityProbeRetryDelay) / 2, true
 }
 
 // dialOnce faz uma única tentativa de conexão TCP, extraída pra ser reaproveitada pelas 2

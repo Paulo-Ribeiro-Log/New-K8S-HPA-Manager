@@ -172,8 +172,8 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
             <p className="text-xs text-red-600 dark:text-red-400 font-mono bg-red-50 dark:bg-red-900/20 p-2 rounded border border-red-200 dark:border-red-800 mb-6">
               {error}
             </p>
-            <button 
-              onClick={fetchClusterInfo}
+            <button
+              onClick={() => fetchClusterInfo(false)}
               className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg text-sm font-medium hover:from-blue-600 hover:to-purple-700 transition-all duration-200 shadow-lg hover:shadow-xl"
             >
               <Activity className="w-4 h-4" />
