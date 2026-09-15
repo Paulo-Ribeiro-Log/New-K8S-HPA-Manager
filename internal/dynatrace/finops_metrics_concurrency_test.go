@@ -50,7 +50,7 @@ func TestGetAllWorkloadMetrics_RunsInParallel(t *testing.T) {
 	}
 
 	start := time.Now()
-	metrics, err := client.GetAllWorkloadMetrics(context.Background(), 30)
+	metrics, err := client.GetAllWorkloadMetrics(context.Background(), 30, "test-cluster")
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("GetAllWorkloadMetrics falhou: %v", err)

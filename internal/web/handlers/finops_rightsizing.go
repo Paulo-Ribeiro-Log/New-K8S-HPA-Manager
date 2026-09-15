@@ -165,7 +165,7 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 			if dtClient, err := dynatrace.NewClient(dtURL, dtToken); err != nil {
 				log.Warn().Err(err).Msg("FinOps/Rightsizing: falha ao criar cliente DT, enriquecimento DT desativado")
 			} else {
-				dtEnricher = finops.NewDTEnricher(dtClient, windowDays)
+				dtEnricher = finops.NewDTEnricher(dtClient, windowDays, cluster)
 			}
 		}
 	}
