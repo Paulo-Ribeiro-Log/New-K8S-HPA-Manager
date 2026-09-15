@@ -839,7 +839,8 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/report", finOpsHandler.GetReport)
 	api.GET("/finops/report/last", finOpsHandler.GetLastReport)
 	api.GET("/finops/rightsizing", finOpsHandler.GetRightsizing)
-	api.POST("/finops/rightsizing/scan", finOpsHandler.ScanRightsizing) // mesmo padrão sem RBAC extra dos demais POST de FinOps (pricing/refresh, storage/refresh) — análise, não mutação de cluster
+	api.POST("/finops/rightsizing/scan", finOpsHandler.ScanRightsizing)      // mesmo padrão sem RBAC extra dos demais POST de FinOps (pricing/refresh, storage/refresh) — análise, não mutação de cluster
+	api.GET("/finops/rightsizing/history", finOpsHandler.GetWorkloadHistory) // histórico on-demand (CPU/Mem) pro gráfico do modal de detalhe de workload — leitura, sem RBAC extra
 	api.GET("/finops/pricing", finOpsHandler.GetPricing)
 	api.POST("/finops/pricing/refresh", finOpsHandler.RefreshPricing)
 	api.GET("/finops/exchange-rate", finOpsHandler.GetExchangeRate)
