@@ -144,6 +144,16 @@ type NodePoolTierSuggestion struct {
 	VMCPUCores int `json:"vm_cpu_cores,omitempty"`
 	VMMemoryGB int `json:"vm_memory_gb,omitempty"`
 
+	// HasCriticalWorkload/CriticalWorkloadNames — F1.1 do plano de melhorias
+	// (FINOPS-IMPROVEMENTS-PLAN.md): PALPITE heurístico (substring por nome contra uma lista
+	// curada de componentes de infra conhecidos — ingress-controller, istio, velero,
+	// cert-manager, coredns, etc., ver finops.MatchCriticalInfraWorkloads), nunca uma verdade
+	// absoluta. Existe pra evitar o incidente real que motivou esta fase: o pool "ingress"
+	// (nginx-ingress-controller/velero/istio-ingressgateway) recebeu sugestão de downsize sem
+	// nenhum aviso de criticidade.
+	HasCriticalWorkload   bool   `json:"has_critical_workload,omitempty"`
+	CriticalWorkloadNames string `json:"critical_workload_names,omitempty"` // nomes separados por ", "
+
 	AlternativesJSON string    `json:"-"`
 	GeneratedAt      time.Time `json:"generated_at"`
 }
@@ -248,6 +258,8 @@ var finopsRightsizingMigrations = []string{
 	`ALTER TABLE node_usage ADD COLUMN node_created_at DATETIME`,
 	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN cpu_p95_pct REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN mem_p95_pct REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN has_critical_workload INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN critical_workload_names TEXT`,
 }
 
 // NewFinOpsRightsizingStore abre (ou cria) o banco SQLite de análises de rightsizing.
@@ -418,8 +430,9 @@ func (s *FinOpsRightsizingStore) ReplaceNodePoolTierSuggestions(cluster string, 
 INSERT INTO nodepool_tier_suggestions (
     cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, cpu_p95_pct, mem_p95_pct, workload_count,
     node_count, min_node_count, max_node_count, autoscaling_enabled, vm_cpu_cores, vm_memory_gb,
+    has_critical_workload, critical_workload_names,
     alternatives_json, generated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -430,6 +443,7 @@ INSERT INTO nodepool_tier_suggestions (
 			cluster, sug.NodePool, sug.CurrentSKU, sug.CPUUtilPct, sug.MemUtilPct, sug.CPUP95Pct, sug.MemP95Pct,
 			sug.WorkloadCount,
 			sug.NodeCount, sug.MinNodeCount, sug.MaxNodeCount, sug.AutoscalingEnabled, sug.VMCPUCores, sug.VMMemoryGB,
+			sug.HasCriticalWorkload, sug.CriticalWorkloadNames,
 			sug.AlternativesJSON, sug.GeneratedAt,
 		); err != nil {
 			return err
@@ -446,6 +460,7 @@ func (s *FinOpsRightsizingStore) GetNodePoolTierSuggestions(cluster string) ([]N
 	rows, err := s.db.Query(`
 SELECT cluster, node_pool, current_sku, cpu_util_pct, mem_util_pct, cpu_p95_pct, mem_p95_pct, workload_count,
        node_count, min_node_count, max_node_count, autoscaling_enabled, vm_cpu_cores, vm_memory_gb,
+       has_critical_workload, critical_workload_names,
        alternatives_json, generated_at
 FROM nodepool_tier_suggestions WHERE cluster = ? ORDER BY node_pool`, cluster)
 	if err != nil {
@@ -456,16 +471,18 @@ FROM nodepool_tier_suggestions WHERE cluster = ? ORDER BY node_pool`, cluster)
 	result := make([]NodePoolTierSuggestion, 0)
 	for rows.Next() {
 		var sug NodePoolTierSuggestion
-		var currentSKU, altJSON sql.NullString
+		var currentSKU, altJSON, criticalNames sql.NullString
 		if err := rows.Scan(
 			&sug.Cluster, &sug.NodePool, &currentSKU, &sug.CPUUtilPct, &sug.MemUtilPct, &sug.CPUP95Pct, &sug.MemP95Pct,
 			&sug.WorkloadCount,
 			&sug.NodeCount, &sug.MinNodeCount, &sug.MaxNodeCount, &sug.AutoscalingEnabled, &sug.VMCPUCores, &sug.VMMemoryGB,
+			&sug.HasCriticalWorkload, &criticalNames,
 			&altJSON, &sug.GeneratedAt,
 		); err != nil {
 			return nil, err
 		}
 		sug.CurrentSKU = currentSKU.String
+		sug.CriticalWorkloadNames = criticalNames.String
 		sug.AlternativesJSON = altJSON.String
 		result = append(result, sug)
 	}

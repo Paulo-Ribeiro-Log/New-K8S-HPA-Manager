@@ -308,6 +308,31 @@ func pickAzureBySize(letter string, targetVCPUs int) string {
 	return best.Size
 }
 
+// MarkInsufficientForLargestWorkload sinaliza (sem remover da lista) qualquer alternativa cuja
+// capacidade por node (CPU/Mem, convertida pra millis/Mi) fique abaixo do maior REQUEST
+// individual entre os workloads do pool + a mesma SafetyMargin já usada no resto do
+// Rightsizing — F1.2 do plano de melhorias: a decisão de SuggestVMTier é 100% sobre a
+// média/agregado do pool, nunca sobre o maior pod individual, então uma SKU menor sugerida
+// pode ter memória-por-vCPU insuficiente pro maior pod ali rodando, que simplesmente não
+// conseguiria ser agendado no node menor.
+//
+// maxCPUReqMillis/maxMemReqMi <= 0 (nenhum workload com request conhecido no pool) não marca
+// nada — sem dado, não há como afirmar insuficiência (mesmo princípio de nunca alarmar sem
+// evidência já usado em TrustedByPublicCA/ChainValidationResult). Nunca remove a alternativa —
+// a decisão final continua com um humano, mesma filosofia de MatchCriticalInfraWorkloads.
+func MarkInsufficientForLargestWorkload(alts []VMAlternative, maxCPUReqMillis, maxMemReqMi float64) {
+	for i := range alts {
+		capCPUMillis := float64(alts[i].CPUCores) * 1000
+		capMemMi := float64(alts[i].MemoryGB) * 1024
+		if maxCPUReqMillis > 0 && capCPUMillis < maxCPUReqMillis*SafetyMargin {
+			alts[i].InsufficientForLargestWorkload = true
+		}
+		if maxMemReqMi > 0 && capMemMi < maxMemReqMi*SafetyMargin {
+			alts[i].InsufficientForLargestWorkload = true
+		}
+	}
+}
+
 // nearestLadderSize retorna o maior valor da ladder que seja <= target (0 se nenhum servir).
 func nearestLadderSize(ladder []int, target int) int {
 	best := 0

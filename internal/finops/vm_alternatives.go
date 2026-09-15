@@ -14,6 +14,14 @@ type VMAlternative struct {
 	MonthlySavingsBRL float64 `json:"monthly_savings_brl"` // positivo = economia na frota
 	Reason            string  `json:"reason"`
 	Verdict           string  `json:"verdict"` // "recommended" | "consider" | "cheaper"
+	// InsufficientForLargestWorkload — F1.2 do plano de melhorias (FINOPS-IMPROVEMENTS-PLAN.md):
+	// true quando a capacidade desta SKU por node fica abaixo do maior request individual
+	// (CPU/Mem) entre os workloads do pool + margem de segurança — sinal de que o maior pod ali
+	// rodando pode não conseguir ser agendado nesta SKU menor. Preenchido pelo CHAMADOR via
+	// MarkInsufficientForLargestWorkload (vm_tiers.go), nunca por SuggestVMTier em si (que não
+	// conhece requests individuais, só o agregado do pool). Nunca remove a alternativa da
+	// lista — só sinaliza, a decisão final continua humana.
+	InsufficientForLargestWorkload bool `json:"insufficient_for_largest_workload,omitempty"`
 }
 
 // A lógica de sugestão em si (antes SuggestAlternatives, Azure-only) vive agora em
