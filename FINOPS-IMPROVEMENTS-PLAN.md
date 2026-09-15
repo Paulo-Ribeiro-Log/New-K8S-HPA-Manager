@@ -1,6 +1,7 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
-**Status**: 📋 planejado — checklist pronta para execução, nenhuma fase iniciada.
+**Status**: 🟡 em execução — Fase 0 concluída (commit `99271f0b`, branch
+`fix/finops-improvements-fase0`), Fases 1-5 pendentes.
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
@@ -45,9 +46,18 @@ aqui só pra registrar que foram checados e não são gap) não viraram itens de
 
 ## Checklist de execução
 
-### Fase 0 — Correções de correção de dados (bugs reais, silenciosos, sem mudança de escopo)
+### Fase 0 — Correções de correção de dados (bugs reais, silenciosos, sem mudança de escopo) ✅
 
-- [ ] **F0.1 — Enriquecimento Prometheus-only não cai pra avg quando P95 arredonda pra 0.**
+**Concluída** (commit `99271f0b`). Validado ao vivo contra um cluster real: 17 de 49 workloads
+(35%) que antes apareciam com o badge verde "Eficiente" (sem nenhum dado de uso por trás) agora
+corretamente mostram "Sem Dados de Uso" (F0.2). Achado extra no caminho de F0.1: `EnrichWorkloadsPartial`
+sobrescrevia dado do Dynatrace com dado do Prometheus sempre que ambos cobriam o mesmo workload —
+corrigido junto (fora do escopo original F0.1, mas no mesmo arquivo/função). F0.3 validado sem
+regressão contra um cluster AKS real (path default inalterado); não validado ao vivo contra um
+cluster EKS aliased (exigiria reproduzir esse cenário específico, não disponível nesta sessão) —
+corrigido por revisão de código + o padrão já comprovado (`pricerForCluster`) sendo replicado.
+
+- [x] **F0.1 — Enriquecimento Prometheus-only não cai pra avg quando P95 arredonda pra 0.**
   `internal/finops/prometheus_enricher.go:270` (`hasUsage := cpuP95 > 0 || memP95 > 0`) e `:304-309`
   só populam `CPURecommendedMillis`/`MemRecommendedMi` quando `cpuP95 > 0`/`memP95 > 0` — sem
   fallback pra `avg`, diferente de `internal/finops/dynatrace_enricher.go:76-84`, que já tem esse
@@ -58,7 +68,7 @@ aqui só pra registrar que foram checados e não são gap) não viraram itens de
   **Teste**: caso com `cpuP95=0, cpuAvg>0` deve popular `CPURecommendedMillis` a partir do avg,
   igual ao teste equivalente já existente pro enricher Dynatrace.
 
-- [ ] **F0.2 — Verdict default `"ok"` é indistinguível de "verificado eficiente".**
+- [x] **F0.2 — Verdict default `"ok"` é indistinguível de "verificado eficiente".**
   `internal/finops/calculator.go:840-856` (`determineVerdict`) retorna `"ok"` sempre que não há
   HPA ou `HPAMin==HPAMax`, ANTES de qualquer enriquecimento rodar — e os dois enrichers só
   sobrescrevem `wl.Verdict` dentro do próprio gate de "tem uso" (`prometheus_enricher.go:318`,
@@ -70,7 +80,7 @@ aqui só pra registrar que foram checados e não são gap) não viraram itens de
   (pra não contar como "eficiente" nas agregações do Dashboard/Relatório) quanto no frontend
   (badge cinza "sem dados de uso", não verde "OK").
 
-- [ ] **F0.3 — Pricing de disco OS do EKS quebra silenciosamente pra contexts aliased.**
+- [x] **F0.3 — Pricing de disco OS do EKS quebra silenciosamente pra contexts aliased.**
   `internal/finops/calculator.go:388-441` (`osDiskCostForPool`) despacha por
   `strings.HasPrefix(cluster, "arn:aws:eks:")`/`"gke_"` em vez de `config.DetectCloudProvider` (a
   fonte de verdade já usada em `pricerForCluster`/`calculatePVCCost`). Contexts EKS com alias (ex:
