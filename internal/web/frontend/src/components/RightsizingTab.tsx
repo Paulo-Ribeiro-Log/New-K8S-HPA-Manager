@@ -102,6 +102,11 @@ interface VMAlternative {
   monthly_savings_brl: number;
   reason: string;
   verdict: "recommended" | "consider" | "cheaper";
+  // F1.2 (FINOPS-IMPROVEMENTS-PLAN.md) — true quando a capacidade desta SKU por node fica
+  // abaixo do maior request individual (CPU/Mem) entre os workloads do pool + margem de
+  // segurança: o maior pod ali rodando pode não conseguir ser agendado nesta SKU menor. Nunca
+  // remove a alternativa, só sinaliza — a decisão final continua humana.
+  insufficient_for_largest_workload?: boolean;
 }
 
 interface NodePoolTierSuggestion {
@@ -123,6 +128,13 @@ interface NodePoolTierSuggestion {
   autoscaling_enabled?: boolean;
   vm_cpu_cores?: number;
   vm_memory_gb?: number;
+  // F1.1 (FINOPS-IMPROVEMENTS-PLAN.md) — PALPITE heurístico (substring por nome de workload
+  // contra uma lista curada de infra conhecida: ingress-controller, istio, velero, cert-manager,
+  // coredns, etc.), nunca uma verdade absoluta. Existe pra evitar o incidente real que motivou
+  // esta fase: sugestão de downsize sem nenhum aviso pro pool "ingress"
+  // (nginx-ingress-controller/velero/istio-ingressgateway).
+  has_critical_workload?: boolean;
+  critical_workload_names?: string; // nomes separados por ", "
   alternatives: VMAlternative[];
   generated_at: string;
 }
@@ -462,6 +474,38 @@ function WorkloadHistoryChart({
   );
 }
 
+/** F1.1 (FINOPS-IMPROVEMENTS-PLAN.md) — aviso de infra crítica no pool, compartilhado entre
+ *  NodePoolTierCard (card principal da lista) e WorkloadNodeDetailModal (modal de detalhe). Só
+ *  renderiza quando `has_critical_workload` vem true — silencioso no caso comum (a maioria dos
+ *  pools é app de negócio, não infra), mesmo princípio de "badge só no caso especial" já usado
+ *  no CompanyAppBadge de DeploymentsTab.tsx. Nunca esconde a sugestão de downsize abaixo — só
+ *  pede atenção extra antes de aplicá-la. */
+function CriticalWorkloadWarning({ pool }: { pool: NodePoolTierSuggestion }) {
+  if (!pool.has_critical_workload) return null;
+  return (
+    <div className="flex items-start gap-1.5 rounded-md border border-amber-400/50 bg-amber-50 dark:bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-300">
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+      <span>
+        Este pool roda componente(s) de infraestrutura
+        {pool.critical_workload_names ? <> (<span className="font-medium">{pool.critical_workload_names}</span>)</> : null}
+        {" "}— reveja com cuidado antes de aplicar qualquer sugestão de downsize abaixo (palpite por nome, não uma garantia).
+      </span>
+    </div>
+  );
+}
+
+/** F1.2 (FINOPS-IMPROVEMENTS-PLAN.md) — aviso por alternativa, quando ela pode não comportar o
+ *  maior pod individual do pool. Compartilhado entre os 2 pontos que renderizam
+ *  `alt`/VMAlternative. */
+function InsufficientCapacityWarning({ alt }: { alt: VMAlternative }) {
+  if (!alt.insufficient_for_largest_workload) return null;
+  return (
+    <p className="text-[10px] font-medium text-red-600 dark:text-red-400 flex items-center gap-1">
+      <AlertTriangle className="h-3 w-3 shrink-0" /> Capacidade pode não comportar o maior pod individual do pool — revisar antes de aplicar.
+    </p>
+  );
+}
+
 /** Modal de detalhe combinado — aberto ao clicar no nome de uma aplicação dentro do card do
  *  Node Pool/Node Group (pedido explícito do usuário: informação completa de node+app+cenários
  *  de resize num só lugar, sem precisar caçar em vários cards). */
@@ -518,6 +562,7 @@ function WorkloadNodeDetailModal({
               </Alert>
             ) : (
               <div className="border rounded-lg p-3 space-y-3 bg-muted/20">
+                <CriticalWorkloadWarning pool={pool} />
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
                   <div><span className="text-muted-foreground">Tier (SKU) atual:</span> <span className="font-mono font-medium">{pool.current_sku || "—"}</span></div>
                   <div><span className="text-muted-foreground">Autoscaling:</span> <span className="font-medium">{pool.autoscaling_enabled ? "Ligado" : "Desligado"}</span></div>
@@ -598,6 +643,7 @@ function WorkloadNodeDetailModal({
                             {alt.monthly_savings_brl > 10 && <p className="text-[11px] font-semibold text-green-600">-{fmtBRL(alt.monthly_savings_brl)}/mês na frota do pool</p>}
                             {alt.monthly_savings_brl < -10 && <p className="text-[11px] font-semibold text-orange-600">+{fmtBRL(Math.abs(alt.monthly_savings_brl))}/mês na frota do pool</p>}
                             <p className="text-[11px] italic text-muted-foreground">{alt.reason}</p>
+                            <InsufficientCapacityWarning alt={alt} />
                           </div>
                         );
                       })}
@@ -920,6 +966,8 @@ function NodePoolTierCard({
           </div>
         </div>
 
+        <CriticalWorkloadWarning pool={pool} />
+
         {relatedWorkloads.length > 0 && (
           <p className="text-[10px] text-muted-foreground">
             Baseado no uso real de {pool.workload_count} workload(s) — clique num nome pra ver o detalhe completo (node + app + cenários de resize):{" "}
@@ -960,6 +1008,7 @@ function NodePoolTierCard({
                     <p className="text-[11px] font-semibold text-orange-600">+{fmtBRL(Math.abs(alt.monthly_savings_brl))}/mês na frota do pool</p>
                   )}
                   <p className="text-[11px] italic text-muted-foreground">{alt.reason}</p>
+                  <InsufficientCapacityWarning alt={alt} />
                 </div>
               );
             })}
