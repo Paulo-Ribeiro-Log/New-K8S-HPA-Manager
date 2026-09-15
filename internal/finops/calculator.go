@@ -213,6 +213,10 @@ func (c *Calculator) BuildReport(
 
 	nodeWg.Wait() // espera ComputeNodeUsage (goroutine acima) terminar antes de montar o relatório
 
+	// 4c. Reclassifica "ok" genérico (sem enriquecimento nenhum) pra "sem_dados" — ver
+	// reclassifyNoDataVerdicts.
+	reclassifyNoDataVerdicts(workloads)
+
 	// 5. Agregar por namespace
 	nsMap := aggregateNamespaces(workloads)
 
@@ -277,7 +281,7 @@ func (c *Calculator) BuildReport(
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				sku, tier, sizeGB, priceUSD, ok := c.osDiskCostForPool(ctx, client, cluster, finOpsPools[i].Name, poolRegistryByName[finOpsPools[i].Name], storageCalc)
+				sku, tier, sizeGB, priceUSD, ok := c.osDiskCostForPool(ctx, client, finOpsPools[i].Name, poolRegistryByName[finOpsPools[i].Name], storageCalc)
 				if !ok {
 					log.Debug().Str("pool", finOpsPools[i].Name).Msg("FinOps: preço de OS disk não encontrado")
 					return
@@ -385,21 +389,29 @@ const (
 //   - EKS: preço linear USD/GB/mês (AWSPricer.GetDiskPricePerGBMonth), mas sempre com os defaults
 //     acima (defaultEKSDiskSizeGB/gp3) — diferente do GKE, o tamanho/tipo reais de EBS não são
 //     capturados nesta fase (não validado ao vivo contra conta AWS real, ver CLAUDE.md).
+// osDiskCostForPool despacha a precificação de disco OS por cloud provider. Bug real corrigido
+// (FINOPS-IMPROVEMENTS-PLAN.md F0.3): a versão anterior decidia o provider via
+// `strings.HasPrefix(cluster, "gke_"/"arn:aws:eks:")` — o resto do pacote (`pricerForCluster`,
+// que já escolheu `c.pricer` antes deste Calculator ser construído) usa
+// `config.DetectCloudProvider`, muito mais robusto (cobre contexts EKS "aliased", ex:
+// "cluster-apis-prd" em vez do ARN completo — classe de bug já documentada e corrigida noutros
+// lugares desta app). Um context EKS aliased nunca batia no prefixo `"arn:aws:eks:"` aqui e caía
+// no path DEFAULT (Azure): lia um label de node Azure-only e, na pior hipótese, chamava
+// `diskPricer.GetDiskPrice("Premium SSD", ...)` — um pricer de Managed Disk Azure — pra um node
+// pool AWS de verdade, sem nenhum aviso.
+//
+// Corrigido despachando pelo TIPO CONCRETO de `c.pricer` em vez de reanalisar o nome do cluster
+// — `c.pricer` já reflete a detecção correta (é sempre construído via `pricerForCluster`, que já
+// chama `config.DetectCloudProvider`, antes de qualquer `Calculator` existir), então checar o
+// tipo aqui nunca diverge da fonte de verdade usada pelo resto do relatório (compute, PVC).
 func (c *Calculator) osDiskCostForPool(
 	ctx context.Context,
 	client kubernetes.Interface,
-	cluster, poolName string,
+	poolName string,
 	registryEntry storage.NodePoolRegistryEntry,
 	storageCalc *StorageCalculator,
 ) (sku, tier string, sizeGB int, priceUSD float64, ok bool) {
-	if strings.HasPrefix(cluster, "gke_") {
-		gcpPricer, isGCP := c.pricer.(*GCPPricer)
-		if !isGCP {
-			// Não deveria acontecer (pricerForCluster já escolhe GCPPricer pra contexts gke_),
-			// mas não travar o relatório inteiro por causa do disco se acontecer.
-			return "", "", 0, 0, false
-		}
-
+	if gcpPricer, isGCP := c.pricer.(*GCPPricer); isGCP {
 		diskType := registryEntry.DiskType
 		if diskType == "" {
 			diskType = defaultGKEDiskType
@@ -416,12 +428,7 @@ func (c *Calculator) osDiskCostForPool(
 		return diskType, "", size, round2(pricePerGBMonth * float64(size)), true
 	}
 
-	if strings.HasPrefix(cluster, "arn:aws:eks:") {
-		awsPricer, isAWS := c.pricer.(*AWSPricer)
-		if !isAWS {
-			return "", "", 0, 0, false
-		}
-
+	if awsPricer, isAWS := c.pricer.(*AWSPricer); isAWS {
 		diskType := defaultEKSDiskType
 		size := defaultEKSDiskSizeGB
 
@@ -432,6 +439,7 @@ func (c *Calculator) osDiskCostForPool(
 		return diskType, "", size, round2(pricePerGBMonth * float64(size)), true
 	}
 
+	// Default: AKS (c.pricer é *AzurePricer nesse caso).
 	sizeGB, _ = storageCalc.OSDiskForNodePool(ctx, client, poolName)
 	tier = ResolveManagedDiskTier("Premium SSD", float64(sizeGB)) // AKS default: Premium SSD
 	priceUSD, _, err := c.diskPricer.GetDiskPrice("Premium SSD", tier, defaultPricingRegion)
@@ -779,6 +787,8 @@ func buildSummary(workloads []FinOpsWorkload, namespaces []FinOpsNamespace, clus
 			s.HPARemovableCount++
 		case "fixed_high_cost":
 			s.FixedHighCostCount++
+		case "sem_dados":
+			s.NoDataCount++
 		}
 		if wl.HPACostMinBRL < wl.HPACostCurrentBRL {
 			s.HPASavingsIfMinBRL = round2(s.HPASavingsIfMinBRL + (wl.HPACostCurrentBRL - wl.HPACostMinBRL))
@@ -854,6 +864,25 @@ func determineVerdict(wl rawWorkload) string {
 		}
 	}
 	return "ok"
+}
+
+// reclassifyNoDataVerdicts corrige um bug real: `determineVerdict` (baseado só em HPA, chamado
+// antes de qualquer enriquecimento) devolve "ok" tanto pro caso "sem HPA, nada a avaliar" quanto
+// — depois de nenhum enricher rodar pra este workload (Prometheus/DT indisponíveis, VPN instável
+// durante o scan, workload sem pods rodando na janela) — pro caso "nunca chegamos a checar uso
+// real". As duas situações ficavam indistinguíveis na API/UI: um workload sem NENHUM dado
+// parecia "verificado eficiente", com o mesmo badge verde de um workload genuinamente medido e
+// OK. `wl.MetricsSource == ""` é o sinal confiável de que nenhum enricher tocou este workload
+// (verdictFromPrometheus SEMPRE seta MetricsSource junto, nos dois enrichers — nunca roda sem
+// isso) — só reclassifica o "ok" genérico, nunca "no_request"/"superprovisioned" (conclusões já
+// válidas só com dado de HPA, sem depender de métrica de uso nenhuma). Chamada depois que
+// dtEnricher/enricher já rodaram (ver BuildReport), antes de agregar/montar o summary.
+func reclassifyNoDataVerdicts(workloads []FinOpsWorkload) {
+	for i := range workloads {
+		if workloads[i].MetricsSource == "" && workloads[i].Verdict == "ok" {
+			workloads[i].Verdict = "sem_dados"
+		}
+	}
 }
 
 // sumCPURequestsMillis soma os CPU requests de todos os containers de um pod em millicores

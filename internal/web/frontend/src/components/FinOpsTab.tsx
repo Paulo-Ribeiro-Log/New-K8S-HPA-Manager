@@ -78,7 +78,7 @@ interface FinOpsWorkload {
   hpa_cost_min_brl: number;
   hpa_cost_max_brl: number;
   hpa_cost_current_brl: number;
-  verdict: "superprovisioned" | "ok" | "oom_risk" | "no_request" | "hpa_removable" | "fixed_high_cost";
+  verdict: "superprovisioned" | "ok" | "oom_risk" | "no_request" | "hpa_removable" | "fixed_high_cost" | "sem_dados";
   // Prometheus — uso real CPU/Mem (últimos N dias)
   cpu_avg_millis?: number;
   cpu_p95_millis?: number;
@@ -114,6 +114,10 @@ interface FinOpsSummary {
   no_request_count: number;
   hpa_removable_count: number;
   fixed_high_cost_count: number;
+  // no_data_count — verdict "sem_dados": workloads que nunca receberam enriquecimento de uso
+  // real (Prometheus/DT indisponíveis pra ele especificamente), distintos de "ok" (verificado e
+  // saudável) — ver internal/finops/models.go.
+  no_data_count?: number;
   // Storage
   storage_monthly_cost_brl?: number;
   storage_monthly_cost_usd?: number;
@@ -1614,7 +1618,7 @@ function WorkloadsTab({ workloads, windowDays }: { workloads: FinOpsWorkload[]; 
       ? (sortAsc ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)
       : <ArrowUpDown className="h-3 w-3 opacity-30" />;
 
-  const filterButtons = ["all", "superprovisioned", "fixed_high_cost", "oom_risk", "hpa_removable", "ok", "no_request"];
+  const filterButtons = ["all", "superprovisioned", "fixed_high_cost", "oom_risk", "hpa_removable", "ok", "no_request", "sem_dados"];
 
   // Mini chart: custo por namespace (top 6)
   const nsCostMap = workloads.reduce<Record<string, number>>((acc, w) => {

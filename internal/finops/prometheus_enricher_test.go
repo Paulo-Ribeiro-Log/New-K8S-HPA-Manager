@@ -19,6 +19,14 @@ type fakePrometheusServer struct {
 	queryFail       bool // faz /api/v1/query (instant) retornar erro
 	queryRangeFail  bool // faz /api/v1/query_range (range) retornar erro
 	queryRangeEmpty bool // faz /api/v1/query_range retornar sucesso com result vazio
+	// emptyQuerySubstrings faz /api/v1/query retornar sucesso com result VAZIO (não erro) quando
+	// o parâmetro "query" contém qualquer uma destas substrings — usado pra simular UMA query
+	// PromQL específica (ex: só a de P95, "quantile_over_time") não achando nada, enquanto as
+	// demais queries instant (ex: avg, "avg_over_time") no mesmo enriquecimento continuam
+	// retornando dado normal. Sem isso, todo /api/v1/query desta fake sempre devolve a mesma
+	// série fixa, então não dá pra reproduzir "uma métrica falhou, a outra não" no nível de query
+	// individual (só no nível de endpoint inteiro, via queryFail).
+	emptyQuerySubstrings []string
 }
 
 func (f *fakePrometheusServer) handler(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +37,18 @@ func (f *fakePrometheusServer) handler(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"status":"error","error":"simulated failure"}`))
 			return
+		}
+		_ = r.ParseForm()
+		queryParam := r.Form.Get("query")
+		for _, sub := range f.emptyQuerySubstrings {
+			if strings.Contains(queryParam, sub) {
+				resp := map[string]interface{}{
+					"status": "success",
+					"data":   map[string]interface{}{"resultType": "vector", "result": []interface{}{}},
+				}
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
 		}
 		resp := map[string]interface{}{
 			"status": "success",
@@ -176,6 +196,95 @@ func TestEnrichWorkloads_PeakHasTimestampWhenBothQueriesSucceed(t *testing.T) {
 	}
 	if wl.CPUMaxAt == nil || wl.CPUMaxAt.Unix() != 1700003600 {
 		t.Fatalf("esperava CPUMaxAt=1700003600 (da QueryRange), veio %v", wl.CPUMaxAt)
+	}
+}
+
+// TestEnrichWorkloads_FallsBackToAvgWhenP95QueryReturnsNothing cobre o bug real corrigido: cada
+// campo (P95/avg de CPU/Mem) vem de uma query PromQL INDEPENDENTE — é plausível a query de P95
+// (quantile_over_time, mais cara) não retornar nada pra um workload enquanto a de avg (mais
+// barata) retorna normalmente. Antes desta correção, `hasUsage` só olhava P95 — um workload nesse
+// estado nunca era enriquecido (CPUAvgMillis/Verdict/CPURecommendedMillis todos ficavam vazios),
+// mesmo tendo uso real mensurável via avg. Mesmo padrão de fallback já usado no enricher
+// Dynatrace, replicado aqui pela primeira vez.
+func TestEnrichWorkloads_FallsBackToAvgWhenP95QueryReturnsNothing(t *testing.T) {
+	e := newFakeEnricher(t, &fakePrometheusServer{
+		emptyQuerySubstrings: []string{"quantile_over_time"}, // derruba só as 2 queries de P95 (cpu+mem)
+	})
+	e.SetPodMapping(map[string]string{"ns1/pod1": "ns1/wl1"})
+
+	workloads := []FinOpsWorkload{{Namespace: "ns1", Workload: "wl1", CPURequestMillis: 1000, MemRequestMi: 1000}}
+	e.EnrichWorkloads(t.Context(), workloads)
+
+	wl := workloads[0]
+	if wl.CPUP95Millis != 0 {
+		t.Fatalf("CPUP95Millis deveria continuar honestamente 0 (query não achou nada), veio %v — nunca deveria ser populado com avg disfarçado", wl.CPUP95Millis)
+	}
+	if wl.CPUAvgMillis != 777 {
+		t.Fatalf("esperava CPUAvgMillis=777 (query de avg funcionou normalmente), veio %v — workload não foi enriquecido", wl.CPUAvgMillis)
+	}
+	if wl.CPURecommendedMillis != round2(777*SafetyMargin) {
+		t.Fatalf("esperava CPURecommendedMillis calculado a partir do avg (fallback, já que P95=0), veio %v", wl.CPURecommendedMillis)
+	}
+	if wl.MemRecommendedMi != round2(777*SafetyMargin) {
+		t.Fatalf("esperava MemRecommendedMi calculado a partir do avg (fallback), veio %v", wl.MemRecommendedMi)
+	}
+	if wl.Verdict == "" {
+		t.Fatalf("esperava um Verdict calculado (workload tem uso real via avg) — ficou vazio, sinal de que hasUsage não considerou o avg")
+	}
+	if wl.MetricsSource != "prometheus" {
+		t.Fatalf("esperava MetricsSource=prometheus, veio %q", wl.MetricsSource)
+	}
+}
+
+// TestEnrichWorkloadsPartial_DoesNotOverwriteDynatraceEnrichedWorkloads cobre um bug real
+// corrigido no mesmo lote: EnrichWorkloadsPartial chamava EnrichWorkloads sobre o slice INTEIRO,
+// sem filtrar — como EnrichWorkloads sobrescreve incondicionalmente qualquer workload com dado
+// Prometheus disponível, isso sobrescrevia silenciosamente valores já preenchidos pelo Dynatrace
+// sempre que o MESMO workload também tinha métrica Prometheus disponível (violando a prioridade
+// documentada "DT primário, Prometheus só cobre o resto"). O pod deste workload é justamente o
+// único que a fakePrometheusServer tem dado pra devolver — se a correlação corresse mesmo assim,
+// o teste pegaria a sobrescrita.
+func TestEnrichWorkloadsPartial_DoesNotOverwriteDynatraceEnrichedWorkloads(t *testing.T) {
+	e := newFakeEnricher(t, &fakePrometheusServer{})
+	e.SetPodMapping(map[string]string{"ns1/pod1": "ns1/wl-dt"})
+
+	workloads := []FinOpsWorkload{
+		{
+			Namespace: "ns1", Workload: "wl-dt",
+			CPURequestMillis: 1000, MemRequestMi: 1000,
+			CPUAvgMillis: 999, CPUP95Millis: 999, Verdict: "ok", MetricsSource: "dynatrace",
+		},
+	}
+	dtEnriched := map[string]bool{"ns1/wl-dt": true}
+
+	e.EnrichWorkloadsPartial(t.Context(), workloads, dtEnriched)
+
+	wl := workloads[0]
+	if wl.MetricsSource != "dynatrace" {
+		t.Fatalf("MetricsSource deveria continuar 'dynatrace' (workload já coberto pelo DT), veio %q", wl.MetricsSource)
+	}
+	if wl.CPUAvgMillis != 999 {
+		t.Fatalf("CPUAvgMillis deveria continuar 999 (valor do DT) mesmo com dado Prometheus disponível pro mesmo pod, veio %v — sinal de que Prometheus sobrescreveu o DT", wl.CPUAvgMillis)
+	}
+}
+
+// TestEnrichWorkloadsPartial_EnrichesWorkloadsNotCoveredByDynatrace confirma o caminho feliz:
+// workloads FORA de dtEnriched continuam sendo enriquecidos normalmente via Prometheus.
+func TestEnrichWorkloadsPartial_EnrichesWorkloadsNotCoveredByDynatrace(t *testing.T) {
+	e := newFakeEnricher(t, &fakePrometheusServer{})
+	e.SetPodMapping(map[string]string{"ns1/pod1": "ns1/wl-prom-only"})
+
+	workloads := []FinOpsWorkload{
+		{Namespace: "ns1", Workload: "wl-prom-only", CPURequestMillis: 1000, MemRequestMi: 1000},
+	}
+	e.EnrichWorkloadsPartial(t.Context(), workloads, map[string]bool{})
+
+	wl := workloads[0]
+	if wl.MetricsSource != "prometheus" {
+		t.Fatalf("esperava MetricsSource=prometheus, veio %q", wl.MetricsSource)
+	}
+	if wl.CPUAvgMillis != 777 {
+		t.Fatalf("esperava CPUAvgMillis=777 (dado real da fake), veio %v", wl.CPUAvgMillis)
 	}
 }
 

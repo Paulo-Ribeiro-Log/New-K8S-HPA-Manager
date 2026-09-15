@@ -267,7 +267,16 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 		memMaxValue, hasMemMaxValue := wlMemMaxValue[key]
 		cpuMaxPeak, hasCPUMaxAt := wlCPUMaxPeak[key]
 		memMaxPeak, hasMemMaxAt := wlMemMaxPeak[key]
-		hasUsage := cpuP95 > 0 || memP95 > 0
+		// Bug real corrigido: o gate original só considerava cpuP95/memP95 — mas cada campo vem
+		// de uma query PromQL INDEPENDENTE (rodadas em paralelo acima), então é totalmente
+		// possível a query de avg retornar dado real pra um workload enquanto a de P95 (quantile
+		// mais caro de calcular) falha/não retorna nada pro mesmo período — `wlCPUP95[key]`/
+		// `wlMemP95[key]` num mapa sem essa chave silenciosamente vira 0, indistinguível de "uso
+		// genuinamente zero". Com o gate antigo, esse workload nunca era enriquecido (sem
+		// CPUAvgMillis/MemMaxMi/Verdict/recomendação nenhuma), mesmo tendo uso real mensurável —
+		// mesma classe de bug já corrigida pro enricher Dynatrace (ver comentário equivalente em
+		// dynatrace_enricher.go), nunca replicada aqui.
+		hasUsage := cpuP95 > 0 || memP95 > 0 || cpuAvg > 0 || memAvg > 0
 
 		if hasUsage {
 			wl.CPUP95Millis = round2(cpuP95)
@@ -301,12 +310,26 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 				wl.MemMaxAt = &at
 			}
 
-			// Recomendação com margem de segurança SRE de 20%
-			if cpuP95 > 0 {
-				wl.CPURecommendedMillis = round2(cpuP95 * SafetyMargin)
+			// Base do Request recomendado: P95 quando disponível; na ausência dele (query de P95
+			// não retornou nada pra este workload, ver comentário de `hasUsage` acima — nunca
+			// "uso genuinamente zero com avg positivo", combinação estatisticamente implausível
+			// pra métricas de utilização), cai pro avg — mesmo fallback já usado no enricher
+			// Dynatrace (ver dynatrace_enricher.go), replicado aqui pela primeira vez. Nunca
+			// inventa um valor intermediário — CPUP95Millis/MemP95Mi continuam honestamente 0
+			// quando a query de fato não achou nada, nunca populados com avg disfarçado.
+			cpuRecBasis := cpuP95
+			if cpuRecBasis == 0 {
+				cpuRecBasis = cpuAvg
 			}
-			if memP95 > 0 {
-				wl.MemRecommendedMi = round2(memP95 * SafetyMargin)
+			memRecBasis := memP95
+			if memRecBasis == 0 {
+				memRecBasis = memAvg
+			}
+			if cpuRecBasis > 0 {
+				wl.CPURecommendedMillis = round2(cpuRecBasis * SafetyMargin)
+			}
+			if memRecBasis > 0 {
+				wl.MemRecommendedMi = round2(memRecBasis * SafetyMargin)
 			}
 
 			wl.CPULimitRecommendedMillis, wl.MemLimitRecommendedMi = recommendedLimits(
@@ -319,6 +342,14 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 
 			// Verdict baseado em uso real
 			wl.Verdict = verdictFromPrometheus(wl)
+			// Bug real corrigido: este loop nunca setava MetricsSource, diferente do enricher
+			// Dynatrace (dynatrace_enricher.go:97) — um workload enriquecido via Prometheus
+			// ficava com MetricsSource="" pra sempre, sem o badge de origem (DT=azul/Prom=laranja,
+			// ver CLAUDE.md) aparecer na UI mesmo com dado real e confiável por trás. Setado aqui
+			// incondicionalmente (não só no caminho "Prometheus-único") porque EnrichWorkloadsPartial
+			// (abaixo) agora só passa pra cá os workloads que o DT genuinamente não cobriu —
+			// nunca sobrescreve um MetricsSource="dynatrace" já definido.
+			wl.MetricsSource = "prometheus"
 			enriched++
 		}
 
@@ -356,17 +387,40 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 		Msg("FinOps/Prom: enriquecimento concluído")
 }
 
-// EnrichWorkloadsPartial é igual a EnrichWorkloads mas pula workloads já enriquecidos
-// pelo Dynatrace (presentes em dtEnriched). Marca MetricsSource="prometheus" nos enriquecidos.
+// EnrichWorkloadsPartial é igual a EnrichWorkloads mas pula workloads já enriquecidos pelo
+// Dynatrace (presentes em dtEnriched) — DT é a fonte PRIMÁRIA, Prometheus só cobre o que sobrou.
+//
+// Bug real corrigido: a versão anterior chamava `EnrichWorkloads(ctx, workloads)` sobre o slice
+// INTEIRO, sem filtrar antes — como `EnrichWorkloads` sobrescreve incondicionalmente qualquer
+// workload com dado Prometheus disponível (nenhum guard de "já tem dado de outra fonte"), isso
+// sobrescrevia silenciosamente os valores já preenchidos pelo Dynatrace (CPUAvgMillis/
+// CPURecommendedMillis/Verdict/WasteBRL/etc.) por dados do Prometheus sempre que o MESMO
+// workload também tinha métrica Prometheus disponível — violando o próprio contrato documentado
+// desta função ("aplicar Prometheus apenas nos workloads sem dados DT") e a prioridade
+// DT-primário/Prometheus-fallback que o resto do FinOps assume. Só o campo `MetricsSource` era
+// corrigido depois, por cima — os NÚMEROS por trás já tinham sido trocados, sem nenhum log/sinal
+// disso acontecer.
+//
+// Corrigido enriquecendo só uma CÓPIA dos workloads não cobertos pelo DT, e escrevendo o
+// resultado de volta nos elementos originais — os workloads já DT-enriquecidos nunca são
+// tocados por este método. `MetricsSource="prometheus"` já sai correto de dentro de
+// `EnrichWorkloads` (ver comentário lá) — sem precisar de um 2º passe pra corrigir o label.
 func (e *PrometheusEnricher) EnrichWorkloadsPartial(ctx context.Context, workloads []FinOpsWorkload, dtEnriched map[string]bool) {
-	e.EnrichWorkloads(ctx, workloads)
-	// Ajustar source: workloads não marcados pelo DT que agora têm dados = prometheus
+	var idx []int
+	var subset []FinOpsWorkload
 	for i := range workloads {
-		wl := &workloads[i]
-		key := wl.Namespace + "/" + wl.Workload
-		if !dtEnriched[key] && wl.MetricsSource == "" && (wl.CPUP95Millis > 0 || wl.MemP95Mi > 0) {
-			wl.MetricsSource = "prometheus"
+		key := workloads[i].Namespace + "/" + workloads[i].Workload
+		if !dtEnriched[key] {
+			idx = append(idx, i)
+			subset = append(subset, workloads[i])
 		}
+	}
+	if len(subset) == 0 {
+		return
+	}
+	e.EnrichWorkloads(ctx, subset)
+	for j, i := range idx {
+		workloads[i] = subset[j]
 	}
 }
 

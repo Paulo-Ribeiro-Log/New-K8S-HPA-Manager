@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import {
-  DollarSign, TrendingDown, TrendingUp, AlertTriangle, CheckCircle2, Info, Copy, Check,
+  DollarSign, TrendingDown, TrendingUp, AlertTriangle, CheckCircle2, Info, Copy, Check, HelpCircle,
 } from "lucide-react";
 
 // Helpers/componentes compartilhados de FinOps — extraídos de FinOpsTab.tsx (que já passava de
@@ -29,6 +29,12 @@ export const verdictConfig: Record<string, { label: string; color: string; fill:
   no_request: { label: "Sem Request", fill: "#9ca3af", color: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400", icon: Info },
   hpa_removable: { label: "Remover HPA", fill: "#8b5cf6", color: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400", icon: Info },
   fixed_high_cost: { label: "Sem HPA", fill: "#f97316", color: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400", icon: TrendingUp },
+  // sem_dados — bug real corrigido (FINOPS-IMPROVEMENTS-PLAN.md F0.2): antes, um workload sem
+  // NENHUM dado de uso real (Prometheus/DT indisponíveis durante o scan) ficava com verdict "ok"
+  // — sem esta entrada, VerdictBadge cairia no fallback `verdictConfig.ok` (linha abaixo) e
+  // mostraria o mesmo badge verde "Eficiente" de um workload genuinamente verificado, mascarando
+  // a diferença de novo, agora só no frontend.
+  sem_dados: { label: "Sem Dados de Uso", fill: "#64748b", color: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400", icon: HelpCircle },
 };
 
 export const POOL_COLORS = ["#6366f1", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", "#ec4899"];
