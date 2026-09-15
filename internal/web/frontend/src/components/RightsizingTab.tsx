@@ -7,11 +7,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Loader2, RefreshCw, X, Server, Search, Sparkles, Boxes, Gauge, Info, AlertTriangle } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import ResourceGauge from "@/components/ResourceGauge";
 import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard } from "@/lib/finopsFormat";
 import { DollarSign, TrendingDown, Layers } from "lucide-react";
 import { ComposedChart, Line, XAxis, YAxis, ReferenceLine, ReferenceDot } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import { useRightsizingReport } from "@/hooks/useRightsizingReport";
 
 // ─── Tipos (shape de GET/POST /api/v1/finops/rightsizing, ver
 //      internal/web/handlers/finops_rightsizing.go / internal/storage/finops_rightsizing_store.go) ──
@@ -139,7 +141,7 @@ interface NodePoolTierSuggestion {
   generated_at: string;
 }
 
-interface RightsizingResponse {
+export interface RightsizingResponse {
   cluster: string;
   scanned: boolean;
   last_scanned_at?: string;
@@ -164,6 +166,44 @@ interface WorkloadHistoryResponse {
 
 const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("auth_token")}` });
 
+/** F2.1 (FINOPS-IMPROVEMENTS-PLAN.md) — Rightsizing era a única das 8 abas do FinOps sem badge
+ *  de contagem/urgência na TabsTrigger, sem nenhum sinal visual de que ali existe economia em
+ *  R$. Mostra a economia potencial (melhor alternativa por pool, somada — nunca soma TODAS as
+ *  até-3 alternativas de um mesmo pool, que dobraria/triplicaria a mesma oportunidade) quando
+ *  há alguma relevante (> R$10/mês, mesmo limiar de "vale a pena mostrar" já usado nos cards de
+ *  alternativa); cai pro número de workloads que precisam de atenção (`verdict != "ok"`) quando
+ *  não há economia de tier mas ainda há algo a rever. Silencioso (sem badge) só quando os dois
+ *  são zero — mesmo princípio de "badge só no caso relevante" já usado no CompanyAppBadge de
+ *  DeploymentsTab.tsx. */
+export function RightsizingTabBadge({ cluster }: { cluster: string }) {
+  const { data } = useRightsizingReport(cluster);
+  const { totalSavings, attentionCount } = useMemo(() => {
+    let savings = 0;
+    for (const pool of data?.node_pools ?? []) {
+      const best = Math.max(0, ...pool.alternatives.map((a) => a.monthly_savings_brl));
+      if (best > 10) savings += best;
+    }
+    const attention = (data?.workloads ?? []).filter((w) => w.verdict !== "ok").length;
+    return { totalSavings: savings, attentionCount: attention };
+  }, [data]);
+
+  if (totalSavings > 10) {
+    return (
+      <Badge className="ml-1 text-[10px] bg-green-600" title={`Economia potencial de tier de VM: ${fmtBRL(totalSavings)}/mês`}>
+        -{fmtBRL(totalSavings)}
+      </Badge>
+    );
+  }
+  if (attentionCount > 0) {
+    return (
+      <Badge variant="destructive" className="ml-1 text-[10px]" title={`${attentionCount} workload(s) precisam de atenção (verdict diferente de "ok")`}>
+        {attentionCount}
+      </Badge>
+    );
+  }
+  return null;
+}
+
 function workloadCardId(w: WorkloadRecommendation) {
   return `rightsizing-wl-${w.namespace}-${w.workload}`;
 }
@@ -177,6 +217,20 @@ function timeAgo(iso: string): string {
   if (hours < 24) return `${hours}h atrás`;
   const days = Math.round(hours / 24);
   return `${days}d atrás`;
+}
+
+/** F2.3 (FINOPS-IMPROVEMENTS-PLAN.md) — `last_scanned_at` era mostrado sempre em cinza neutro,
+ *  "45d atrás" com a mesma aparência de "5min atrás", sem nenhum sinal de que o dado pode estar
+ *  desatualizado (uso real muda — request/limit de workload, tier de VM sugerido — então uma
+ *  análise de semanas atrás pode já não refletir a realidade do cluster). Limiares escolhidos
+ *  pelo próprio plano: >7 dias → âmbar (aviso leve), >30 dias → vermelho (provavelmente
+ *  desatualizado). Nunca some o dado nem bloqueia nada — só chama atenção visual. */
+function scanAgeSeverity(iso?: string): "fresh" | "stale" | "very_stale" {
+  if (!iso) return "fresh";
+  const days = (Date.now() - new Date(iso).getTime()) / 86400000;
+  if (days > 30) return "very_stale";
+  if (days > 7) return "stale";
+  return "fresh";
 }
 
 /** Data/hora curta (DD/MM HH:MM, timezone do browser) de quando um "top"/pico foi observado —
@@ -1032,21 +1086,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   const [search, setSearch] = useState("");
   const [detailWorkload, setDetailWorkload] = useState<WorkloadRecommendation | null>(null);
 
-  const { data, isLoading, error } = useQuery<RightsizingResponse>({
-    queryKey: ["finops-rightsizing", cluster],
-    queryFn: async () => {
-      const r = await fetch(`/api/v1/finops/rightsizing?cluster=${encodeURIComponent(cluster)}`, {
-        headers: authHeaders(),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      return r.json();
-    },
-    enabled: !!cluster,
-    staleTime: 60 * 1000,
-  });
+  const { data, isLoading, error } = useRightsizingReport(cluster);
 
   const runScan = async () => {
     const controller = new AbortController();
@@ -1173,6 +1213,8 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
     );
   }
 
+  const ageSeverity = data?.last_scanned_at ? scanAgeSeverity(data.last_scanned_at) : "fresh";
+
   return (
     <div className="space-y-4">
       {/* Header: última análise + botão de reanalisar */}
@@ -1182,11 +1224,24 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
             <Sparkles className="h-4 w-4 text-purple-500" />
             Rightsizing — Request/Limit e Tier de VM
           </h3>
-          <p className="text-xs text-muted-foreground">
-            {data?.scanned && data.last_scanned_at
-              ? `Última análise: ${timeAgo(data.last_scanned_at)}`
-              : "Nunca analisado"}
-          </p>
+          {data?.scanned && data.last_scanned_at ? (
+            <p
+              className={`text-xs flex items-center gap-1 ${
+                ageSeverity === "very_stale"
+                  ? "text-red-600 dark:text-red-400 font-medium"
+                  : ageSeverity === "stale"
+                    ? "text-amber-600 dark:text-amber-400 font-medium"
+                    : "text-muted-foreground"
+              }`}
+            >
+              {ageSeverity !== "fresh" && <AlertTriangle className="h-3 w-3 shrink-0" />}
+              Última análise: {timeAgo(data.last_scanned_at)}
+              {ageSeverity === "stale" && " — considere reanalisar"}
+              {ageSeverity === "very_stale" && " — provavelmente desatualizado, reanalise"}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">Nunca analisado</p>
+          )}
         </div>
         <Button size="sm" variant={scanning ? "destructive" : "default"} onClick={scanning ? cancelScan : runScan}>
           {scanning

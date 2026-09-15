@@ -1,7 +1,8 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
-**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original), Fase 0 e Fase 1
-concluídas e mescladas na `main`. Fases 2-5 pendentes.
+**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original) e Fase 0 mescladas na
+`main`. Fase 1 concluída (PR #433, aguardando merge). Fase 2 concluída (PR seguinte). Fases 3-5
+pendentes.
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
@@ -173,9 +174,20 @@ desta app.
   da sugestão, sem esconder a sugestão em si (a economia ainda pode ser válida, só precisa de
   mais atenção humana).
 
-### Fase 2 — Discoverability / UX (mesma classe de problema já corrigida uma vez pro RG-data)
+### Fase 2 — Discoverability / UX (mesma classe de problema já corrigida uma vez pro RG-data) ✅
 
-- [ ] **F2.1 — Aba Rightsizing é a única das 8 sem badge de contagem/urgência.**
+**Concluída.** F2.1 validado com uma reprodução em Go da MESMA lógica do badge (soma da melhor
+alternativa por pool + contagem de `verdict != "ok"`) contra dados reais já persistidos de 3
+clusters — achado um caso real com economia relevante (`akspriv-ofertalogistica-hlg-admin`,
+R$8684/mês, badge verde) e dois casos caindo corretamente no fallback de contagem (sem
+alternativa persistida com economia > R$10). `useRightsizingReport` extraído pra
+`hooks/useRightsizingReport.ts` (convenção já usada no resto do projeto) — reaproveitado tanto
+pela aba Rightsizing quanto pelo badge novo, mesma queryKey, sem requisição duplicada quando os
+dois estão montados. `npx tsc --noEmit`/`eslint`/`vite build` limpos (mesmo baseline de erros
+pré-existentes em `FinOpsTab.tsx`, confirmado via `git stash`). **Não clicado na UI real** — VPN
+indisponível na sessão inteira desta fase, sem instância isolada possível.
+
+- [x] **F2.1 — Aba Rightsizing é a única das 8 sem badge de contagem/urgência.**
   `FinOpsTab.tsx:4500-4539` — Node Pools, Workloads, HPA, Armazenamento, Oportunidades e Relatório
   têm todas um `<Badge>` numérico (algumas em vermelho/laranja) no `TabsTrigger`; Rightsizing é só
   texto puro. Combinado com ser a última das 8 abas, não há nenhum sinal visual de que ali existe
@@ -183,7 +195,7 @@ desta app.
   de `monthly_savings_brl` das alternativas de tier + o número de workloads com `verdict !=
   "ok"` — mesmo padrão visual já usado nas outras 6 abas.
 
-- [ ] **F2.2 — `DataResourcesPanel.tsx` não distingue falha transiente de "não aplicável".**
+- [x] **F2.2 — `DataResourcesPanel.tsx` não distingue falha transiente de "não aplicável".**
   Linhas 75-87 — o `useQuery` desestrutura só `{ data, isLoading }`, nunca `error`/`isError`, com
   `retry: false`. Uma falha real de rede/Azure cai no MESMO branch (`!data?.available`, linha 107)
   que o caso legítimo "este cluster não tem RG de dados" — texto idêntico, sem botão de tentar de
@@ -191,7 +203,7 @@ desta app.
   ("falha ao consultar — tentar novamente", com botão que chama `refetch()`) em vez de cair no
   mesmo texto neutro de "não disponível".
 
-- [ ] **F2.3 — `last_scanned_at` sem escalonamento visual de idade.**
+- [x] **F2.3 — `last_scanned_at` sem escalonamento visual de idade.**
   `RightsizingTab.tsx:994-998` — mostrado sempre em cinza neutro, "45d atrás" com a mesma
   aparência de "5min atrás". **Ação**: escalar cor/ícone quando a idade passar de um limiar (ex:
   >7 dias → âmbar com aviso "considere reanalisar"; >30 dias → vermelho).

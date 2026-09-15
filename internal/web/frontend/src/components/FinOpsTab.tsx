@@ -27,7 +27,7 @@ import {
   fmtBRL, fmtUSD, fmtMillis, fmtMi, verdictConfig, POOL_COLORS,
   KubectlBlock, SummaryCard, VerdictBadge,
 } from "@/lib/finopsFormat";
-import { RightsizingTab } from "@/components/RightsizingTab";
+import { RightsizingTab, RightsizingTabBadge } from "@/components/RightsizingTab";
 import { DataResourcesPanel } from "@/components/DataResourcesPanel";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -4540,7 +4540,10 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                   </Badge>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="rightsizing">Rightsizing</TabsTrigger>
+              <TabsTrigger value="rightsizing">
+                Rightsizing
+                <RightsizingTabBadge cluster={cluster} />
+              </TabsTrigger>
             </TabsList>
 
             <div className="flex-1 overflow-auto mt-3">
