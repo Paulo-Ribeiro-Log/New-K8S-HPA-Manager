@@ -169,7 +169,7 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 			if err != nil {
 				log.Warn().Err(err).Msg("FinOps: falha ao criar cliente DT, enriquecimento DT desativado")
 			} else {
-				dtEnricher = finops.NewDTEnricher(dtClient, windowDays)
+				dtEnricher = finops.NewDTEnricher(dtClient, windowDays, cluster)
 				log.Info().Str("cluster", cluster).Msg("FinOps: DT enricher ativado como fonte primária")
 			}
 		}

@@ -23,15 +23,21 @@ func TestDTEnricher_EnrichWorkloads_FallsBackToAvgWhenNoP95(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		selector := r.URL.Query().Get("metricSelector")
 		w.Header().Set("Content-Type", "application/json")
+		// Confirma o bug real corrigido em finops_metrics.go: a query agora SEMPRE inclui
+		// filter(and(eq("k8s.cluster.name","..."))) — sem isso, o tenant DT (compartilhado entre
+		// toda a frota) agregaria o mesmo namespace/workload através de outros clusters.
+		if !strings.Contains(selector, `filter(and(eq("k8s.cluster.name","test-cluster")))`) {
+			t.Fatalf("selector deveria filtrar por k8s.cluster.name=\"test-cluster\", veio: %s", selector)
+		}
 		var value float64
 		switch {
-		case strings.Contains(selector, "cpu_usage:avg"):
+		case strings.Contains(selector, "cpu_usage") && strings.Contains(selector, ":avg:"):
 			value = 500 // 500 mCPU avg
-		case strings.Contains(selector, "cpu_usage:max"):
+		case strings.Contains(selector, "cpu_usage") && strings.Contains(selector, ":max:"):
 			value = 800
-		case strings.Contains(selector, "memory_working_set:avg"):
+		case strings.Contains(selector, "memory_working_set") && strings.Contains(selector, ":avg:"):
 			value = 200 * 1048576 // 200Mi
-		case strings.Contains(selector, "memory_working_set:max"):
+		case strings.Contains(selector, "memory_working_set") && strings.Contains(selector, ":max:"):
 			value = 300 * 1048576 // 300Mi
 		default:
 			t.Fatalf("selector inesperado nesta 1ª rodada (não deveria pedir percentile): %s", selector)
@@ -46,7 +52,7 @@ func TestDTEnricher_EnrichWorkloads_FallsBackToAvgWhenNoP95(t *testing.T) {
 		t.Fatalf("NewClient falhou: %v", err)
 	}
 
-	enricher := NewDTEnricher(client, 30)
+	enricher := NewDTEnricher(client, 30, "test-cluster")
 	workloads := []FinOpsWorkload{
 		{Namespace: "ns-a", Workload: "app-a", CPURequestMillis: 1000, MemRequestMi: 1024},
 	}

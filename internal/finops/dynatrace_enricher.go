@@ -2,6 +2,7 @@ package finops
 
 import (
 	"context"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 
@@ -13,14 +14,21 @@ import (
 type DTEnricher struct {
 	client     *dynatrace.Client
 	windowDays int
+	// cluster — nome "limpo" (sem "-admin"), usado pra escopar as queries DT a ESTE cluster —
+	// ver bug real corrigido em internal/dynatrace/finops_metrics.go: sem esse escopo, um tenant
+	// DT compartilhado entre toda a frota (o caso real desta empresa) agrega/soma a métrica de
+	// qualquer workload cujo namespace+nome se repete em outros clusters, silenciosamente.
+	cluster string
 }
 
 // NewDTEnricher cria um DTEnricher. windowDays define a janela histórica (padrão 30d).
-func NewDTEnricher(client *dynatrace.Client, windowDays int) *DTEnricher {
+// cluster: nome do cluster (com ou sem sufixo "-admin", normalizado aqui) — sempre obrigatório
+// pra escopar as queries DT a este cluster específico.
+func NewDTEnricher(client *dynatrace.Client, windowDays int, cluster string) *DTEnricher {
 	if windowDays <= 0 {
 		windowDays = 30
 	}
-	return &DTEnricher{client: client, windowDays: windowDays}
+	return &DTEnricher{client: client, windowDays: windowDays, cluster: strings.TrimSuffix(cluster, "-admin")}
 }
 
 // EnrichWorkloads consulta métricas de CPU e memória no DT em batch (4 queries para
@@ -30,7 +38,7 @@ func NewDTEnricher(client *dynatrace.Client, windowDays int) *DTEnricher {
 func (e *DTEnricher) EnrichWorkloads(ctx context.Context, workloads []FinOpsWorkload) map[string]bool {
 	enriched := make(map[string]bool)
 
-	metrics, err := e.client.GetAllWorkloadMetrics(ctx, e.windowDays)
+	metrics, err := e.client.GetAllWorkloadMetrics(ctx, e.windowDays, e.cluster)
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps/DT: falha ao buscar métricas — sem enriquecimento DT")
 		return enriched

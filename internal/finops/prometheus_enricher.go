@@ -148,27 +148,44 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 		}()
 	}
 
+	// Bug real CRÍTICO corrigido (achado ao vivo, relatado pelo usuário com números impossíveis —
+	// "Mem: 519%" num pool de 1 node): estas 4 queries (P95/avg × CPU/Mem) nunca tinham o wrapper
+	// `sum by (namespace, pod) (...)` que as queries de MAX/pico (logo abaixo) já usam — sem ele,
+	// o seletor `container_cpu_usage_seconds_total{...}`/`container_memory_working_set_bytes{...}`
+	// casa com uma série POR CGROUP (label "id", que muda a CADA restart/recriação do container —
+	// cAdvisor/kubelet expõem um novo cgroup id por instância física do container). Um pod que
+	// reiniciou N vezes na janela (confirmado ao vivo: 24 reinícios em 30d pra um Prometheus
+	// interno real) faz `quantile_over_time`/`avg_over_time` calcular o valor INDEPENDENTEMENTE
+	// pra CADA uma das 24 séries (uma por cgroup id), e o pós-processamento em Go
+	// (queryContainerMetric, `m[ns+"/"+pod] += valor`) SOMA todas elas — 24× o valor real. Exemplo
+	// real confirmado: quantile_over_time sem o wrapper devolveu 24 valores distintos pro mesmo
+	// pod/container (725-1962 MiB cada), somando pra ~31,5GB; com `sum by (namespace, pod)`
+	// aplicado ANTES do quantile_over_time (mesmo padrão das queries de MAX, nunca tocadas por
+	// este bug), a MESMA query devolveu 1 única série coerente (~1,5GB) — validado ao vivo
+	// contra o Prometheus real. `sum by (namespace, pod)` colapsa tanto o churn de cgroup id
+	// QUANTO a soma legítima entre containers do mesmo pod (config-reloader + prometheus, nesse
+	// exemplo) num único passo — Go não precisa mais somar nada, só repassa o valor.
 	run(func() {
 		cpuP95Map = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`quantile_over_time(0.95, rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+			fmt.Sprintf(`quantile_over_time(0.95, (sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
 			"cpu_p95",
 		)
 	})
 	run(func() {
 		cpuAvgMap = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`avg_over_time(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])[%dd:5m]) * 1000`, w),
+			fmt.Sprintf(`avg_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
 			"cpu_avg",
 		)
 	})
 	run(func() {
 		memP95Map = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`quantile_over_time(0.95, container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+			fmt.Sprintf(`quantile_over_time(0.95, (sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
 			"mem_p95",
 		)
 	})
 	run(func() {
 		memAvgMap = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`avg_over_time(container_memory_working_set_bytes{container!="",container!="POD"}[%dd]) / 1048576`, w),
+			fmt.Sprintf(`avg_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
 			"mem_avg",
 		)
 	})
@@ -448,7 +465,11 @@ func (e *PrometheusEnricher) queryContainerMetric(ctx context.Context, query, la
 		if ns == "" || pod == "" {
 			continue
 		}
-		// Soma containers do mesmo pod (label container distingue)
+		// A soma entre containers do mesmo pod (e entre séries de cgroup id diferentes, quando o
+		// container reinicia) já acontece dentro da própria query PromQL agora (`sum by
+		// (namespace, pod)`, ver EnrichWorkloads) — cada `query` chamada por este helper já
+		// devolve no máximo 1 amostra por pod. O `+=` (em vez de `=`) é só defesa em profundidade
+		// caso algum chamador futuro passe uma query sem esse wrapper.
 		m[ns+"/"+pod] += float64(sample.Value)
 	}
 	return m
