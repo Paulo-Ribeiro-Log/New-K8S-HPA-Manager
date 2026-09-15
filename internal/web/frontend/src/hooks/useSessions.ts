@@ -52,7 +52,7 @@ export function useSessionTemplates() {
           description: "Template para scale up de produção",
           pattern: "{action}_{env}_{date}_{time}",
           variables: ["{action}", "{env}", "{date}", "{time}"],
-          example: "upscale_prod_18-10-25_19:30"
+          example: "upscale_prod_18-10-25_19-30-00"
         },
         {
           name: "Downscale Padrão", 
@@ -73,7 +73,7 @@ export function useSessionTemplates() {
           description: "Nome totalmente customizável",
           pattern: "{action}_custom_{timestamp}",
           variables: ["{action}", "{timestamp}"],
-          example: "emergency_custom_18-10-25_19:30:15"
+          example: "emergency_custom_18-10-25_19-30-15"
         }
       ] as SessionTemplate[];
     },

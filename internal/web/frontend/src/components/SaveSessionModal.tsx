@@ -459,7 +459,7 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
               <Input
                 id="action"
                 value={customAction}
-                onChange={(e) => setCustomAction(e.target.value)}
+                onChange={(e) => setCustomAction(sanitizeSessionName(e.target.value))}
                 placeholder={saveMode === 'snapshot' ? "Ex: backup-pre-change, rollback-point" : "Ex: Emergency-scale, Stress-test"}
               />
             </div>
@@ -486,7 +486,11 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
               id="name"
               value={sessionName}
               onChange={(e) => {
-                setSessionName(e.target.value);
+                // Sanitiza em tempo real — o backend (validateSessionName, internal/session/
+                // manager.go) só aceita [a-zA-Z0-9_-]. Sem isso, qualquer nome digitado com
+                // espaço/acento (ex: "Ajuste de Réplicas") só falhava no clique de "Salvar",
+                // com um erro que não aponta qual caractere é o problema.
+                setSessionName(sanitizeSessionName(e.target.value));
                 setAllowCustomName(true);
               }}
               placeholder="Digite o nome da sessão..."
@@ -497,6 +501,10 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
                 💡 Nome gerado pelo template. Clique "Nome Customizado" para editar livremente.
               </p>
             )}
+            <p className="text-xs text-muted-foreground">
+              Apenas letras, números, <code>_</code> e <code>-</code> — espaços e acentos são
+              convertidos automaticamente.
+            </p>
           </div>
 
           {/* Descrição Opcional */}
@@ -549,6 +557,21 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
   );
 }
 
+// Sanitiza qualquer texto pro subconjunto de caracteres que o backend aceita no nome do arquivo
+// de sessão (validateSessionName, internal/session/manager.go: só [a-zA-Z0-9_-]). Usado tanto no
+// campo "Nome da Sessão" quanto em "Ação Customizada" (que é interpolada dentro do nome via
+// {action}) — sem isso, um nome digitado com espaço/acento (ex: "Ajuste de Réplicas") só falhava
+// no clique de "Salvar", com "session name can only contain letters, numbers, underscore and
+// dash", sem indicar qual caractere era o problema.
+function sanitizeSessionName(raw: string): string {
+  return raw
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // remove diacríticos (á→a, ç→c, ã→a, é→e, etc.)
+    .replace(/\s+/g, '-') // espaço(s) viram um único hífen
+    .replace(/[^a-zA-Z0-9_-]/g, '') // remove qualquer caractere fora do permitido pelo backend
+    .slice(0, 50); // mesmo limite de 50 chars do backend
+}
+
 // Função para gerar nome da sessão (compatível com TUI)
 function generateSessionName(
   template: SessionTemplate,
@@ -559,13 +582,17 @@ function generateSessionName(
   let name = template.pattern;
 
   // Substituir variáveis (MESMA lógica do TUI)
+  // IMPORTANTE: nunca usar ":" no timestamp/hora — o backend (validateSessionName,
+  // internal/session/manager.go) só aceita [a-zA-Z0-9_-] no nome do arquivo de sessão.
+  // Um nome gerado com ":" (ex: "14:23:45") sempre falhava ao salvar com
+  // "session name can only contain letters, numbers, underscore and dash".
   const now = new Date();
-  const timestamp = formatDate(now, 'dd-mm-yy_hh:mm:ss');
+  const timestamp = formatDate(now, 'dd-mm-yy_hh-mm-ss');
   const date = formatDate(now, 'dd-mm-yy');
-  const time = formatDate(now, 'hh:mm:ss');
+  const time = formatDate(now, 'hh-mm-ss');
   const user = 'web-user'; // Usuário web
 
-  name = name.replace('{action}', customAction || 'Web-session');
+  name = name.replace('{action}', sanitizeSessionName(customAction) || 'Web-session');
   name = name.replace('{timestamp}', timestamp);
   name = name.replace('{date}', date);
   name = name.replace('{time}', time);
@@ -574,7 +601,10 @@ function generateSessionName(
   name = name.replace('{cluster}', 'multi-cluster'); // Simplificação para web
   name = name.replace('{env}', 'web'); // Ambiente web
 
-  return name;
+  // Defesa em profundidade: mesmo com {action} já sanitizado acima, garante que o nome final
+  // nunca tenha nenhum caractere fora do que o backend aceita (ex: se um template futuro trouxer
+  // texto literal com espaço/acento).
+  return sanitizeSessionName(name);
 }
 
 function formatDate(date: Date, format: string): string {
@@ -585,11 +615,34 @@ function formatDate(date: Date, format: string): string {
   const minutes = date.getMinutes().toString().padStart(2, '0');
   const seconds = date.getSeconds().toString().padStart(2, '0');
 
-  return format
-    .replace('dd', day)
-    .replace('mm', month)
-    .replace('yy', year)
-    .replace('hh', hours)
-    .replace('mm', minutes)
-    .replace('ss', seconds);
+  // Bug real corrigido: a cadeia de .replace() sequencial (uma chamada por token) dependia da
+  // ORDEM das chamadas para desambiguar "mm" (mês, no padrão "dd-mm-yy") de "mm" (minuto, no
+  // padrão "hh-mm-ss") — funcionava só quando os dois blocos apareciam juntos no mesmo formato
+  // ("dd-mm-yy_hh-mm-ss": a 1ª ocorrência de "mm" era consumida como mês antes da 2ª chamada
+  // tentar substituir minuto). Chamado sozinho com só "hh-mm-ss" (usado pelo placeholder
+  // {time}), a única ocorrência de "mm" era sempre substituída pelo MÊS (não pelo minuto) —
+  // template "Upscale Padrão" ({action}_{env}_{date}_{time}) sempre gerava um nome de sessão com
+  // o valor errado no lugar do minuto. Corrigido com substituição num único passe, decidindo
+  // "mm" = mês só na 1ª ocorrência E só quando o formato também tem "dd" (convenção deste
+  // arquivo); qualquer outra ocorrência de "mm" é minuto.
+  const hasDatePart = format.includes('dd');
+  let monthTokensSeen = 0;
+
+  return format.replace(/dd|mm|yy|hh|ss/g, (token) => {
+    switch (token) {
+      case 'dd':
+        return day;
+      case 'yy':
+        return year;
+      case 'hh':
+        return hours;
+      case 'ss':
+        return seconds;
+      case 'mm':
+        monthTokensSeen += 1;
+        return hasDatePart && monthTokensSeen === 1 ? month : minutes;
+      default:
+        return token;
+    }
+  });
 }
