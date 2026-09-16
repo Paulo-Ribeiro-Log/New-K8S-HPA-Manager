@@ -1,6 +1,7 @@
 package finops
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -38,15 +39,24 @@ import (
 //     validado ao vivo contra um tenant real (diferente de VM/disco, que já são mecanismos
 //     usados em produção por este app) — se o filtro não encontrar preço, cai em "não estimado"
 //     honestamente, nunca um número inventado.
-//   - Storage Accounts: cobrado por GB armazenado + transações + banda — sem uma consulta a
-//     métricas de uso real (Azure Monitor, fora do escopo desta versão), qualquer "total mensal"
-//     seria inventado — NÃO estimado, só a listagem/SKU são mostrados.
+//   - Storage Accounts (F3.1 do FINOPS-IMPROVEMENTS-PLAN.md): estimativa best-effort a partir do
+//     volume REAL de uso (Azure Monitor, métrica UsedCapacity) × preço de Blob Storage por
+//     access tier — ver priceStorageAccount. Só cobre kind StorageV2/Storage/BlobStorage
+//     (validado ao vivo contra 2 Storage Accounts reais); FileStorage/BlockBlobStorage caem no
+//     fallback "não estimado". Nunca inclui transações/banda (não observáveis via essa métrica).
 //   - Azure SQL Database/Server: modelo DTU vs vCore vs Serverless varia demais por recurso pra
 //     confiar num único filtro de preço sem validação ao vivo contra um tenant real — NÃO
 //     estimado nesta versão.
-//   - Cosmos DB: cobrado por RU/s provisionado (ou serverless por request), não visível no nível
-//     da conta via `az resource list` (é por banco/container) — NÃO estimado nesta versão.
-func PriceDataResources(resources []AzureDataResource, vmPricer *AzurePricer, diskPricer *DiskPricer, rate float64) []AzureDataResource {
+//   - Cosmos DB (F3.2 do FINOPS-IMPROVEMENTS-PLAN.md, avaliado e NÃO implementado nesta versão):
+//     cobrado por RU/s provisionado (ou serverless por request), configurado por banco/container,
+//     não visível no nível da conta via `az resource list`. Diferente de Storage Account, essa
+//     fase NUNCA pôde ser validada ao vivo — o tenant usado nesta investigação não tem NENHUMA
+//     conta Cosmos DB provisionada (confirmado via `az resource list --query
+//     "[?type=='Microsoft.DocumentDB/databaseAccounts']"`, lista vazia) — implementar um caminho
+//     de preço (via `az cosmosdb sql database/container throughput show` + Retail Prices API RU/s)
+//     sem nenhum recurso real pra confirmar a sintaxe/unidades contrariaria a disciplina de
+//     validação ao vivo já seguida no resto deste arquivo. Mantido como "não estimado" honesto.
+func PriceDataResources(ctx context.Context, resources []AzureDataResource, vmPricer *AzurePricer, diskPricer *DiskPricer, subscription string, rate float64) []AzureDataResource {
 	out := make([]AzureDataResource, len(resources))
 	copy(out, resources)
 
@@ -67,7 +77,7 @@ func PriceDataResources(resources []AzureDataResource, vmPricer *AzurePricer, di
 		case strings.HasPrefix(t, "microsoft.dbforpostgresql/") || strings.HasPrefix(t, "microsoft.dbformysql/") || t == "microsoft.dbformariadb/servers":
 			priceFlexibleServer(r, region, rate)
 		case t == "microsoft.storage/storageaccounts":
-			r.PricingNote = "Cobrado por GB armazenado + transações + banda — requer volume real de uso (Azure Monitor), não estimado automaticamente nesta versão."
+			priceStorageAccount(ctx, r, subscription, rate)
 		case t == "microsoft.sql/servers/databases":
 			r.PricingNote = "Modelo de cobrança (DTU/vCore/Serverless) varia por database — não estimado automaticamente nesta versão."
 		case t == "microsoft.sql/servers":
@@ -218,6 +228,121 @@ func priceFlexibleServer(r *AzureDataResource, region string, rate float64) {
 	r.MonthlyCostBRL = round2(monthlyUSD * rate)
 	r.PriceSource = "api"
 	r.PricingNote = "Só compute (vCore/hora) — custo de storage provisionado não coberto nesta versão."
+}
+
+// priceStorageAccount (F3.1 do FINOPS-IMPROVEMENTS-PLAN.md) — estimativa best-effort a partir do
+// uso REAL de armazenamento (Azure Monitor, métrica UsedCapacity — soma Blob+File+Table+Queue da
+// conta inteira, confirmado ao vivo) × preço de "Data Stored" pra Blob Storage no access tier
+// configurado (Hot/Cool/Cold + redundância). Achado real, confirmado ao vivo: a Retail Prices API
+// tem preço TIERED por volume pra Data Stored (3 faixas: 0-50TB/50-500TB/500TB+, cada uma mais
+// barata que a anterior) — pickTieredPrice escolhe a faixa certa pro volume em uso.
+//
+// Nunca inclui transações/banda (não observáveis via essa métrica isolada) — sempre PriceSource
+// "estimated" (não "api", diferente de VM/disco/Redis/etc.) pra deixar claro que é uma
+// aproximação, não um preço fixo por SKU. Cobertura: só kind StorageV2/Storage/BlobStorage — as
+// convenções onde "Block Blob"/"Blob Storage" é o produto certo pra Data Stored (as 2 Storage
+// Accounts reais encontradas nesta investigação eram ambas StorageV2); FileStorage/
+// BlockBlobStorage (nunca confirmados ao vivo) caem no fallback "não estimado" honesto.
+func priceStorageAccount(ctx context.Context, r *AzureDataResource, subscription string, rate float64) {
+	const unavailableSuffix = " (transações/banda também não incluídas nesta versão)."
+
+	if r.ResourceID == "" {
+		r.PricingNote = "Cobrado por GB armazenado + transações + banda — requer volume real de uso (Azure Monitor), não estimado automaticamente nesta versão."
+		return
+	}
+
+	kind := strings.ToLower(r.Kind)
+	if kind != "storagev2" && kind != "storage" && kind != "blobstorage" {
+		r.PricingNote = fmt.Sprintf("Kind '%s' fora da cobertura de estimativa automática desta versão%s", r.Kind, unavailableSuffix)
+		return
+	}
+
+	resourceGroup := resourceGroupFromID(r.ResourceID)
+	accessTier, err := getStorageAccountAccessTier(ctx, resourceGroup, r.Name, subscription)
+	if err != nil || accessTier == "" {
+		note := "Não foi possível determinar o access tier (Hot/Cool/Cold)"
+		if err != nil {
+			note += ": " + err.Error()
+		}
+		r.PricingNote = note + unavailableSuffix
+		return
+	}
+
+	usedBytes, ok, err := getResourceMetricAverage(ctx, r.ResourceID, "UsedCapacity")
+	if err != nil || !ok {
+		note := "Não foi possível obter o volume real de uso via Azure Monitor"
+		if err != nil {
+			note += ": " + err.Error()
+		}
+		r.PricingNote = note + unavailableSuffix
+		return
+	}
+	usedGB := usedBytes / (1024 * 1024 * 1024)
+
+	redundancy := storageRedundancyFromSKU(r.SKUName)
+	if redundancy == "" {
+		redundancy = "LRS"
+	}
+	skuLabel := accessTier + " " + redundancy
+	region := normalizeRetailRegion(r.Location)
+
+	filter := fmt.Sprintf(
+		"serviceName eq 'Storage' and armRegionName eq '%s' and contains(productName, 'Block Blob') and skuName eq '%s' and contains(meterName, 'Data Stored')",
+		region, skuLabel,
+	)
+	items, err := fetchRetailPriceItems(filter)
+	if err != nil {
+		r.PricingNote = "Falha ao consultar a Retail Prices API" + unavailableSuffix + " (" + err.Error() + ")"
+		return
+	}
+
+	pricePerGB, priceOk := pickTieredPrice(items, usedGB)
+	if !priceOk {
+		r.PricingNote = fmt.Sprintf("Nenhum preço de Blob %s encontrado na região %s%s", skuLabel, region, unavailableSuffix)
+		return
+	}
+
+	monthlyUSD := round2(pricePerGB * usedGB)
+	r.MonthlyCostUSD = monthlyUSD
+	r.MonthlyCostBRL = round2(monthlyUSD * rate)
+	r.PriceSource = "estimated"
+	r.PricingNote = fmt.Sprintf(
+		"Estimativa aproximada: %.2f GB em uso (Azure Monitor, média das últimas 48h) × preço de Blob %s — NÃO inclui transações/banda; assume que o uso é majoritariamente Blob (contas GPv2 também podem ter File/Table/Queue com preço próprio, não discriminado nesta métrica).",
+		usedGB, skuLabel,
+	)
+}
+
+// storageRedundancyFromSKU extrai a redundância (LRS/GRS/ZRS/GZRS/RAGRS) do SKU cru da Storage
+// Account (ex: "Standard_LRS" → "LRS") — mesmo formato usado pelo sufixo do skuName da Retail
+// Prices API ("Hot LRS", "Cool GRS").
+func storageRedundancyFromSKU(sku string) string {
+	sku = strings.TrimPrefix(sku, "Standard_")
+	sku = strings.TrimPrefix(sku, "standard_")
+	sku = strings.TrimPrefix(sku, "Premium_")
+	sku = strings.TrimPrefix(sku, "premium_")
+	return strings.ToUpper(sku)
+}
+
+// pickTieredPrice escolhe, entre itens de preço "Data Stored" (Retail Prices API, cobrança tiered
+// por volume — ver priceStorageAccount), o preço por GB/mês da faixa correta pro volume em uso: a
+// maior tierMinimumUnits que ainda seja <= usedGB. Confirmado ao vivo contra a API real (3 faixas:
+// 0/51200/512000 GB, preços decrescentes). ok=false quando nenhum item de "1 GB/Month" bate.
+func pickTieredPrice(items []retailPriceItem, usedGB float64) (pricePerGB float64, ok bool) {
+	bestTier := -1.0
+	for _, it := range items {
+		if it.UnitOfMeasure != "1 GB/Month" || it.RetailPrice <= 0 {
+			continue
+		}
+		if it.TierMinimumUnits > usedGB {
+			continue
+		}
+		if it.TierMinimumUnits > bestTier {
+			bestTier = it.TierMinimumUnits
+			pricePerGB = it.RetailPrice
+			ok = true
+		}
+	}
+	return pricePerGB, ok
 }
 
 // normalizeRetailRegion converte o `location` do recurso (ex: "brazilsouth") pro armRegionName
@@ -392,6 +517,9 @@ type retailPriceItem struct {
 	UnitOfMeasure string  `json:"unitOfMeasure"`
 	ProductName   string  `json:"productName"`
 	MeterName     string  `json:"meterName"`
+	// TierMinimumUnits — só relevante pra preço TIERED por volume (ex: Storage "Data Stored",
+	// que tem 3 faixas de preço decrescente por GB armazenado) — ver pickTieredPrice.
+	TierMinimumUnits float64 `json:"tierMinimumUnits"`
 }
 
 type retailPriceResponse struct {

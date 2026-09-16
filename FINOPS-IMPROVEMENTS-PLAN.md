@@ -1,7 +1,9 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
-**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original), Fase 0 e Fase 1
-concluídas e mescladas na `main`. Fases 2-5 pendentes.
+**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original) e Fase 0 mescladas na
+`main`. Fase 1 concluída (PR #433, aguardando merge). Fase 2 concluída (PR #434, aguardando
+merge). Fase 3 concluída (F3.1 implementada; F3.2 avaliada e conscientemente não implementada por
+falta de recurso real pra validar — ver seção da fase). Fases 4-5 pendentes.
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
@@ -173,9 +175,20 @@ desta app.
   da sugestão, sem esconder a sugestão em si (a economia ainda pode ser válida, só precisa de
   mais atenção humana).
 
-### Fase 2 — Discoverability / UX (mesma classe de problema já corrigida uma vez pro RG-data)
+### Fase 2 — Discoverability / UX (mesma classe de problema já corrigida uma vez pro RG-data) ✅
 
-- [ ] **F2.1 — Aba Rightsizing é a única das 8 sem badge de contagem/urgência.**
+**Concluída.** F2.1 validado com uma reprodução em Go da MESMA lógica do badge (soma da melhor
+alternativa por pool + contagem de `verdict != "ok"`) contra dados reais já persistidos de 3
+clusters — achado um caso real com economia relevante (`akspriv-ofertalogistica-hlg-admin`,
+R$8684/mês, badge verde) e dois casos caindo corretamente no fallback de contagem (sem
+alternativa persistida com economia > R$10). `useRightsizingReport` extraído pra
+`hooks/useRightsizingReport.ts` (convenção já usada no resto do projeto) — reaproveitado tanto
+pela aba Rightsizing quanto pelo badge novo, mesma queryKey, sem requisição duplicada quando os
+dois estão montados. `npx tsc --noEmit`/`eslint`/`vite build` limpos (mesmo baseline de erros
+pré-existentes em `FinOpsTab.tsx`, confirmado via `git stash`). **Não clicado na UI real** — VPN
+indisponível na sessão inteira desta fase, sem instância isolada possível.
+
+- [x] **F2.1 — Aba Rightsizing é a única das 8 sem badge de contagem/urgência.**
   `FinOpsTab.tsx:4500-4539` — Node Pools, Workloads, HPA, Armazenamento, Oportunidades e Relatório
   têm todas um `<Badge>` numérico (algumas em vermelho/laranja) no `TabsTrigger`; Rightsizing é só
   texto puro. Combinado com ser a última das 8 abas, não há nenhum sinal visual de que ali existe
@@ -183,7 +196,7 @@ desta app.
   de `monthly_savings_brl` das alternativas de tier + o número de workloads com `verdict !=
   "ok"` — mesmo padrão visual já usado nas outras 6 abas.
 
-- [ ] **F2.2 — `DataResourcesPanel.tsx` não distingue falha transiente de "não aplicável".**
+- [x] **F2.2 — `DataResourcesPanel.tsx` não distingue falha transiente de "não aplicável".**
   Linhas 75-87 — o `useQuery` desestrutura só `{ data, isLoading }`, nunca `error`/`isError`, com
   `retry: false`. Uma falha real de rede/Azure cai no MESMO branch (`!data?.available`, linha 107)
   que o caso legítimo "este cluster não tem RG de dados" — texto idêntico, sem botão de tentar de
@@ -191,26 +204,64 @@ desta app.
   ("falha ao consultar — tentar novamente", com botão que chama `refetch()`) em vez de cair no
   mesmo texto neutro de "não disponível".
 
-- [ ] **F2.3 — `last_scanned_at` sem escalonamento visual de idade.**
+- [x] **F2.3 — `last_scanned_at` sem escalonamento visual de idade.**
   `RightsizingTab.tsx:994-998` — mostrado sempre em cinza neutro, "45d atrás" com a mesma
   aparência de "5min atrás". **Ação**: escalar cor/ícone quando a idade passar de um limiar (ex:
   >7 dias → âmbar com aviso "considere reanalisar"; >30 dias → vermelho).
 
-### Fase 3 — Completude de precificação (RG de dados)
+### Fase 3 — Completude de precificação (RG de dados) ✅ (parcial, ver F3.2)
 
-- [ ] **F3.1 — Storage Account nunca é precificado.**
-  `internal/finops/data_resources_pricing.go:70` — sempre `pricing_note` explicando que é
-  baseado em volume/uso, nunca um número. Pra times com arquitetura PaaS-heavy (ao contrário do
-  cluster "abastecimento", VM-heavy, único validado ao vivo até agora), o total do RG de dados
-  pode aparecer perto de zero enquanto o gasto real está justamente aqui. **Ação**: avaliar
-  estimativa via Azure Monitor Metrics API (capacidade usada real da conta, `UsedCapacity`) — ou,
-  na ausência disso, tornar o aviso de "sem estimativa" mais visível no total agregado (hoje só
-  aparece por item, dentro da lista expandida).
+**F3.1 concluída, validada ao vivo (parcialmente — ver nota de escopo abaixo). F3.2 avaliada e
+conscientemente NÃO implementada** — nenhuma conta Cosmos DB existe no tenant desta investigação
+pra validar contra dado real, e este projeto tem uma disciplina forte de nunca escrever um caminho
+de preço sem confirmar sintaxe/unidades ao vivo primeiro (ver o resto deste arquivo/CLAUDE.md).
 
-- [ ] **F3.2 — Cosmos DB nunca é precificado.**
-  `internal/finops/data_resources_pricing.go:76` — mesma lacuna, "RU/s não visível neste nível".
-  **Ação**: avaliar Azure Monitor Metrics API (`NormalizedRUConsumption`/RU provisionado) como
-  fonte, mesmo princípio de F3.1.
+- [x] **F3.1 — Storage Account nunca é precificado.**
+  `internal/finops/data_resources_pricing.go` — `priceStorageAccount` implementada: estimativa
+  best-effort a partir do volume REAL de uso (`az monitor metrics list`, métrica `UsedCapacity`,
+  média das últimas 48h) × preço de "Data Stored" pra Blob Storage no access tier + redundância
+  configurados (`az storage account show --query accessTier` — achado confirmado ao vivo desde a
+  investigação inicial: `az resource list` genérico NÃO expõe esse campo). Retail Prices API tem
+  preço TIERED por volume (3 faixas: 0-50TB/50-500TB/500TB+, cada uma mais barata) —
+  `pickTieredPrice` escolhe a faixa certa pro uso real. `PriceSource="estimated"` (distinto de
+  `"api"` usado por VM/disco/Redis/etc.) — frontend mostra "≈" antes do valor + tooltip explicando
+  a aproximação, nunca disfarça de preço fixo. **Nunca inclui transações/banda** (não observáveis
+  via essa métrica isolada) — sempre citado na nota.
+
+  **Escopo de cobertura, honesto**: só `kind` StorageV2/Storage/BlobStorage (onde "Block Blob" é o
+  produto certo pra "Data Stored") — as 2 Storage Accounts reais encontradas no tenant
+  (`stgcdchlg`/`stgtrackinghlg`) eram ambas StorageV2, então essa cobertura já resolve o caso real
+  confirmado; FileStorage/BlockBlobStorage (nunca confirmados ao vivo) caem no fallback "não
+  estimado" honesto, sem inventar.
+
+  **Validação ao vivo — o que foi confirmado e o que não**: `az storage account show`
+  (`accessTier="Hot"`), `az monitor metrics list --metric UsedCapacity` (2714161541 bytes reais) e
+  a Retail Prices API tiered (3 faixas reais, 0.0326/0.03146/0.03032 USD/GB/mês) foram TODOS
+  confirmados ao vivo, individualmente, contra a Storage Account real `stgcdchlg`
+  (`rg-cdc-data-hlg`) e a API pública — inclusive usados como fixtures reais nos testes unitários
+  novos (`TestPickTieredPrice_RealAzureTiers`, `TestStorageRedundancyFromSKU`,
+  `TestResourceGroupFromID`, `internal/finops/data_resources_pricing_test.go`). **O caminho Go
+  completo, ponta a ponta (a função `priceStorageAccount` chamando os 2 comandos `az` em
+  sequência), não pôde ser validado end-to-end**: o token AAD do `az` CLI expirou genuinamente no
+  meio da sessão (política de conditional access, limite de 4h) bem depois da validação individual
+  de cada peça, mas antes de rodar o teste de integração final — reautenticar exige um `az login`
+  interativo (browser), impossível neste ambiente sandboxed. Risco residual: só bugs de "encanamento"
+  Go puro (parse de JSON, nomes de campo) — a lógica de negócio (fórmula, seleção de faixa,
+  extração de redundância) já está coberta por teste unitário com os valores reais capturados.
+  `go build`/`go vet`/`gofmt`/`go test ./internal/finops/... ./internal/web/handlers/... -race`
+  limpos; `tsc --noEmit`/`eslint` sem erro novo no frontend.
+
+- [ ] **F3.2 — Cosmos DB nunca é precificado — avaliado, não implementado nesta rodada.**
+  `internal/finops/data_resources_pricing.go` — investigado durante esta sessão: **o tenant desta
+  investigação não tem NENHUMA conta Cosmos DB provisionada** (`az resource list --query
+  "[?type=='Microsoft.DocumentDB/databaseAccounts']"` → lista vazia, confirmado ao vivo). Cosmos DB
+  é cobrado por RU/s provisionado por banco/container (não por conta, ao contrário de Storage) —
+  implementar sem NENHUM recurso real pra confirmar a sintaxe do `az cosmosdb sql database/
+  container throughput show` (ou a métrica `NormalizedRUConsumption`) e as unidades de preço da
+  Retail Prices API pra RU/s contrariaria a disciplina de validação ao vivo seguida no resto deste
+  projeto (ver F3.1 acima e o restante do CLAUDE.md). Mantido como "não estimado" honesto — retomar
+  quando houver um Cosmos DB real disponível pra validar contra (outro tenant/cluster, ou se algum
+  dia esta empresa provisionar um).
 
 ### Fase 4 — Robustez operacional
 

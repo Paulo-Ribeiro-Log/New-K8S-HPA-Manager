@@ -67,7 +67,14 @@ type AzureDataResource struct {
 	MonthlyCostUSD float64 `json:"monthly_cost_usd,omitempty"`
 	MonthlyCostBRL float64 `json:"monthly_cost_brl,omitempty"`
 	PricingNote    string  `json:"pricing_note,omitempty"`
-	PriceSource    string  `json:"price_source,omitempty"` // "api" quando MonthlyCostUSD foi estimado
+	PriceSource    string  `json:"price_source,omitempty"` // "api" (preço fixo por SKU) ou "estimated" (aproximação a partir de uso real — ver F3.1)
+
+	// ResourceID — o Resource ID ARM completo, capturado só do `az resource list` genérico (nunca
+	// exposto na API — uso interno de pricing). F3.1 (FINOPS-IMPROVEMENTS-PLAN.md): precificar
+	// Storage Account exige consultar a métrica UsedCapacity (Azure Monitor) pra ESTE recurso
+	// específico, que precisa do ID completo (`az monitor metrics list --resource <id>`) — mais
+	// confiável que reconstruir o ID à mão a partir de subscription+rg+type+name.
+	ResourceID string `json:"-"`
 }
 
 // azCLIResource é o shape genérico devolvido por `az resource list` — cobre qualquer tipo de
@@ -76,6 +83,7 @@ type AzureDataResource struct {
 // list`/`az disk list` (ver listVirtualMachines/listManagedDisks abaixo), que devolvem esses
 // campos de forma direta e com contrato de saída estável.
 type azCLIResource struct {
+	Id       string `json:"id"`
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Kind     string `json:"kind"`
@@ -186,7 +194,7 @@ func listGenericResources(ctx context.Context, resourceGroup, subscription strin
 	args := []string{
 		"resource", "list",
 		"--resource-group", resourceGroup,
-		"--query", "[].{name:name,type:type,kind:kind,location:location,sku:sku}",
+		"--query", "[].{id:id,name:name,type:type,kind:kind,location:location,sku:sku}",
 		"-o", "json",
 	}
 	if subscription != "" {
@@ -252,6 +260,107 @@ func listManagedDisks(ctx context.Context, resourceGroup, subscription string) (
 	return out, nil
 }
 
+// resourceGroupFromID extrai o Resource Group de um Resource ID ARM completo
+// (".../resourceGroups/<rg>/providers/...") — usado pra reconstruir chamadas `az` que exigem
+// --resource-group separado do nome (ex: `az storage account show`), já que AzureDataResource só
+// guarda o ID completo (ResourceID), nunca o RG isolado.
+func resourceGroupFromID(resourceID string) string {
+	parts := strings.Split(resourceID, "/")
+	for i, p := range parts {
+		if strings.EqualFold(p, "resourceGroups") && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// storageAccountMetricsTimeout — mesma convenção de timeout de leitura documentada no CLAUDE.md
+// (Azure CLI — Timeout Obrigatório), só que menor que dataResourcesListTimeout: aqui é sempre UM
+// recurso/UMA métrica por chamada, não uma listagem paginada de um RG inteiro.
+const storageAccountMetricsTimeout = 20 * time.Second
+
+// getStorageAccountAccessTier busca o access tier (Hot/Cool/Cold/Premium) de uma Storage Account —
+// achado real (F3.1 do FINOPS-IMPROVEMENTS-PLAN.md), confirmado ao vivo: o `az resource list`
+// genérico usado por listGenericResources NÃO captura esse campo (só expõe sku.name/sku.tier, não
+// properties.accessTier) — precisa de uma chamada dedicada.
+func getStorageAccountAccessTier(ctx context.Context, resourceGroup, name, subscription string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, storageAccountMetricsTimeout)
+	defer cancel()
+	args := []string{
+		"storage", "account", "show",
+		"--name", name,
+		"--resource-group", resourceGroup,
+		"--query", "accessTier",
+		"-o", "tsv",
+	}
+	if subscription != "" {
+		args = append(args, "--subscription", subscription)
+	}
+	raw, err := exec.CommandContext(ctx, "az", args...).Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+// azMetricsListResponse é o shape reduzido de `az monitor metrics list` — só o necessário pra
+// extrair os pontos de dado de uma métrica (ex: UsedCapacity de Storage Account).
+type azMetricsListResponse struct {
+	Value []struct {
+		Timeseries []struct {
+			Data []struct {
+				Average *float64 `json:"average"`
+			} `json:"data"`
+		} `json:"timeseries"`
+	} `json:"value"`
+}
+
+// getResourceMetricAverage busca a média de uma métrica do Azure Monitor pra um recurso, numa
+// janela de 48h/intervalo de 1h — validado ao vivo contra uma Storage Account real (métrica
+// UsedCapacity, F3.1 do FINOPS-IMPROVEMENTS-PLAN.md). Usa a MÉDIA de todos os pontos não-nulos da
+// janela (não só o último ponto) — uso de armazenamento varia pouco hora a hora, mais estável e
+// menos sujeito a um ponto isolado ausente/zerado. ok=false quando a métrica não tem nenhum dado
+// no período (conta nova, sem uso ainda, ou recurso sem essa métrica) — nunca inventa um valor.
+func getResourceMetricAverage(ctx context.Context, resourceID, metricName string) (value float64, ok bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, storageAccountMetricsTimeout)
+	defer cancel()
+	now := time.Now().UTC()
+	start := now.Add(-48 * time.Hour)
+	args := []string{
+		"monitor", "metrics", "list",
+		"--resource", resourceID,
+		"--metric", metricName,
+		"--aggregation", "Average",
+		"--interval", "PT1H",
+		"--start-time", start.Format(time.RFC3339),
+		"--end-time", now.Format(time.RFC3339),
+		"-o", "json",
+	}
+	var resp azMetricsListResponse
+	if err := runAzJSON(ctx, args, &resp); err != nil {
+		return 0, false, err
+	}
+	var sum float64
+	var count int
+	for _, v := range resp.Value {
+		for _, ts := range v.Timeseries {
+			for _, d := range ts.Data {
+				if d.Average != nil {
+					sum += *d.Average
+					count++
+				}
+			}
+		}
+	}
+	if count == 0 {
+		return 0, false, nil
+	}
+	return sum / float64(count), true, nil
+}
+
 // filterToAllowlist converte a saída crua do `az resource list` genérico na lista de recursos de
 // dados relevantes — extraída pra ser testável sem precisar de `az` real.
 func filterToAllowlist(raw []azCLIResource) []AzureDataResource {
@@ -261,10 +370,11 @@ func filterToAllowlist(raw []azCLIResource) []AzureDataResource {
 			continue
 		}
 		res := AzureDataResource{
-			Name:     r.Name,
-			Type:     r.Type,
-			Kind:     r.Kind,
-			Location: r.Location,
+			Name:       r.Name,
+			Type:       r.Type,
+			Kind:       r.Kind,
+			Location:   r.Location,
+			ResourceID: r.Id,
 		}
 		if r.Sku != nil {
 			res.SKUName = r.Sku.Name
