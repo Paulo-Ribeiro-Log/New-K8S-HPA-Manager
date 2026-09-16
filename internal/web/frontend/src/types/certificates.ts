@@ -222,3 +222,48 @@ export interface PFXExtractInfo {
   original_filename?: string;
   comment?: string;
 }
+
+// MutatingWebhookEntry — uma entrada webhooks[] dentro de um MutatingWebhookConfiguration, com o
+// caBundle já parseado (subject/issuer/validade) pra exibição. camelCase, espelha
+// internal/certificates/mutating_webhook.go (MutatingWebhookEntry).
+export interface MutatingWebhookEntry {
+  name: string;
+  serviceName?: string;
+  serviceNamespace?: string;
+  url?: string;
+  caBundleEmpty: boolean;
+  caBundleSubject?: string;
+  caBundleIssuer?: string;
+  caBundleNotAfter?: string;
+  caBundleStatus?: 'valid' | 'expiring' | 'expired';
+  caBundleDays?: number;
+}
+
+// MutatingWebhookConfigSummary — um MutatingWebhookConfiguration inteiro (objeto cluster-scoped,
+// sem namespace).
+export interface MutatingWebhookConfigSummary {
+  name: string;
+  cluster: string;
+  webhooks: MutatingWebhookEntry[];
+}
+
+// UpdateMutatingWebhookCABundleRequest — webhookNames vazio/ausente atualiza TODAS as entradas do
+// config (caso comum: Delinea/Istio registram várias entradas com o mesmo caBundle).
+export interface UpdateMutatingWebhookCABundleRequest {
+  cluster: string;
+  configName: string;
+  webhookNames?: string[];
+  caBundlePEM: string;
+}
+
+// UpdateMutatingWebhookCABundleResult — inclui o estado ANTERIOR (before) de cada entrada afetada,
+// pra permitir reverter manualmente caso algo dê errado (não existe um RollbackStore dedicado pra
+// isso, ver comentário do tipo equivalente no backend).
+export interface UpdateMutatingWebhookCABundleResult {
+  updatedCount: number;
+  updatedNames: string[];
+  before: MutatingWebhookEntry[];
+  newSubject: string;
+  newIssuer: string;
+  newNotAfter?: string;
+}

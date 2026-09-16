@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo, ManualBackupInfo, PFXExtractInfo, BackendTLSCheckResult } from '../types/certificates';
+import type { ScanRequest, ScanResult, CertificateInfo, CopyRequest, UploadRequest, ChainValidationResult, RollbackBackupInfo, ManualBackupInfo, PFXExtractInfo, BackendTLSCheckResult, MutatingWebhookConfigSummary, UpdateMutatingWebhookCABundleRequest, UpdateMutatingWebhookCABundleResult } from '../types/certificates';
 
 const API_BASE = '/api/v1/certificates';
 
@@ -473,6 +473,44 @@ export function useCertificates() {
     return { data: data.data, markdown: data.markdown };
   }, []);
 
+  // listMutatingWebhooks — lista os MutatingWebhookConfiguration de um cluster (objeto
+  // cluster-scoped, sem namespace — cluster vai via query param).
+  const listMutatingWebhooks = useCallback(async (cluster: string): Promise<MutatingWebhookConfigSummary[]> => {
+    const response = await fetch(`${API_BASE}/webhooks?cluster=${encodeURIComponent(cluster)}`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return (data.data ?? []) as MutatingWebhookConfigSummary[];
+  }, []);
+
+  // updateMutatingWebhookCABundle — sobrescreve o caBundle de uma ou mais entradas webhooks[] de
+  // um MutatingWebhookConfiguration (ex: renovar a confiança do apiserver no webhook do Delinea
+  // DSV injector ou do Istio sidecar injector após rotacionar o certificado de serviço deles).
+  const updateMutatingWebhookCABundle = useCallback(async (req: UpdateMutatingWebhookCABundleRequest): Promise<UpdateMutatingWebhookCABundleResult> => {
+    const response = await fetch(`${API_BASE}/webhooks/update-cabundle`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+      body: JSON.stringify(req),
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
+    }
+
+    return data.data as UpdateMutatingWebhookCABundleResult;
+  }, []);
+
   return {
     scanResult,
     scanning,
@@ -503,5 +541,7 @@ export function useCertificates() {
     deletePFX,
     getReport,
     setScanResult,
+    listMutatingWebhooks,
+    updateMutatingWebhookCABundle,
   };
 }

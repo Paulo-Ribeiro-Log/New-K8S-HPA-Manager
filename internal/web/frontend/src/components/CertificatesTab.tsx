@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CertificateDetailModal } from "@/components/CertificateDetailModal";
 import { ExternalCertEndpointsPanel } from "@/components/ExternalCertEndpointsPanel";
+import { WebhookCABundlePanel } from "@/components/WebhookCABundlePanel";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { PFXExtractModal } from "@/components/PFXExtractModal";
 import { AWXCertForm } from "@/components/AWXCertForm";
@@ -107,8 +108,11 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
 
   // Sub-aba: "Certificados K8s" (conteúdo original desta tab, inalterado) vs "Endpoints
   // Externos" (monitor de TLS por handshake — endpoints fora de qualquer cluster K8s, ver
-  // EXTERNAL-CERT-MONITOR-PLAN.md).
-  const [certTab, setCertTab] = useState<"k8s" | "external">("k8s");
+  // EXTERNAL-CERT-MONITOR-PLAN.md) vs "Webhooks (CA Bundle)" (atualiza o clientConfig.caBundle
+  // de MutatingWebhookConfiguration — objeto cluster-scoped nativo do K8s, não um Secret — pra
+  // rotacionar a confiança do apiserver em webhooks de terceiro como Delinea DSV injector/Istio
+  // sidecar injector, ver WebhookCABundlePanel.tsx).
+  const [certTab, setCertTab] = useState<"k8s" | "external" | "webhooks">("k8s");
 
   // UI state
   const [searchQuery, setSearchQuery] = useState("");
@@ -1214,11 +1218,27 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
         >
           Endpoints Externos
         </button>
+        <button
+          onClick={() => setCertTab("webhooks")}
+          className={`px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            certTab === "webhooks"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Webhooks (CA Bundle)
+        </button>
       </div>
 
       {certTab === "external" && (
         <div className="flex-1 min-h-0">
           <ExternalCertEndpointsPanel />
+        </div>
+      )}
+
+      {certTab === "webhooks" && (
+        <div className="flex-1 min-h-0">
+          <WebhookCABundlePanel />
         </div>
       )}
 
