@@ -263,17 +263,37 @@ de preço sem confirmar sintaxe/unidades ao vivo primeiro (ver o resto deste arq
   quando houver um Cosmos DB real disponível pra validar contra (outro tenant/cluster, ou se algum
   dia esta empresa provisionar um).
 
-### Fase 4 — Robustez operacional
+### Fase 4 — Robustez operacional (F4.1 concluída, validada ao vivo; F4.2 pendente de decisão)
 
-- [ ] **F4.1 — Sem debounce/lock em scans caros e repetíveis.**
-  `POST /finops/rightsizing/scan` (`finops_rightsizing.go`) e `GET /finops/report?
-  with_prometheus=true` (`finops.go:141`) não têm nenhum `singleflight.Group` nem lock por
-  cluster — confirmado via grep (só existe `awsPricersMu`, que protege um cache não relacionado).
-  Cada chamada é 40-60s batendo Prometheus+Dynatrace+Azure Retail Prices+K8s API. Duas abas do
-  browser, dois usuários, ou um duplo-clique no meio do fluxo disparam scans concorrentes
-  redundantes pro MESMO cluster. **Ação**: `singleflight.Group` por cluster nos dois endpoints,
-  mesmo padrão já usado em `GetFreshEKSToken`/`GetFreshGKEToken` nesta app pra "operação cara e
-  provavelmente duplicada em voo".
+- [x] **F4.1 — Sem debounce/lock em scans caros e repetíveis.**
+  `GetReport` (`finops.go`) e `ScanRightsizing` (`finops_rightsizing.go`) foram divididos em
+  handler-fino (parseia query params, monta a chave de dedup) + `doGetReport`/
+  `doScanRightsizing` (o trabalho de verdade, agora rodando atrás de um
+  `singleflight.Group` por handler — `reportSF`/`rightsizingScanSF`, campos novos em
+  `FinOpsHandler`), mesmo padrão já usado em `GetFreshEKSToken`/`GetFreshGKEToken`
+  (`internal/config/kubeconfig.go`). Chave de dedup (`reportSFKey`/`rightsizingScanSFKey`, funções
+  puras testáveis) inclui TODO parâmetro que afeta o resultado/efeito colateral — cluster,
+  namespaces, window_days, with_prometheus, prometheus_url, persist_rightsizing pra GetReport;
+  cluster, window_days, prometheus_url pra ScanRightsizing — requisições com qualquer parâmetro
+  diferente nunca são dedupadas entre si. O trabalho compartilhado roda com `context.Background()`
+  (não o da requisição que disparou), mesmo trade-off já aceito por `getFreshEKSToken`: se essa
+  requisição específica cancelar, o trabalho continua pros outros chamadores esperando o mesmo
+  resultado.
+
+  **Validado ao vivo, ponta a ponta, contra um cluster de produção real**
+  (`akspriv-abastecimento-hlg-admin`, instância de teste isolada na porta 8091, nunca o processo
+  real do usuário na 8080): 6 requisições `GET /finops/report` concorrentes e idênticas
+  produziram exatamente **1** execução real (`"FinOps: relatório gerado"` no log, 1 ocorrência;
+  as 6 respostas HTTP byte-a-byte idênticas via `md5sum`, todas em ~18,4s — não 6×18s); 4
+  requisições `POST /finops/rightsizing/scan` concorrentes e idênticas produziram exatamente **1**
+  scan real (mesmo padrão de confirmação); 2 requisições `GET /finops/report` concorrentes com
+  `window_days` DIFERENTE (7 vs. 14) corretamente dispararam **2** execuções independentes — nunca
+  uma falsa deduplicação entre parâmetros distintos. Também coberto por 6 testes unitários
+  permanentes (`internal/web/handlers/finops_singleflight_test.go`) — 4 sobre as funções de chave
+  (mesmos parâmetros → mesma chave; qualquer parâmetro diferente → chave nunca colide) e 2 sobre o
+  mecanismo `singleflight.Group` em si (N chamadas concorrentes com a mesma chave → 1 execução;
+  chaves diferentes → execuções independentes), rodados 5x seguidas com `-race` sem flake.
+  `go build`/`go vet`/`gofmt`/`go test ./internal/web/handlers/... -race` limpos.
 
 - [ ] **F4.2 — Decisão de RBAC pendente pras rotas `/finops/*`.**
   `internal/web/server.go:839-854` — nenhuma das 14 rotas FinOps usa
