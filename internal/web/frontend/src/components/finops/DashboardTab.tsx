@@ -216,7 +216,18 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
             <p className="text-lg font-bold text-blue-600 leading-tight">{fmtBRL(summary.total_monthly_cost_brl)}</p>
             {(summary.total_with_storage_brl ?? 0) > 0 ? (
               <>
-                <p className="text-[10px] text-purple-500 font-medium">+{fmtBRL(summary.storage_monthly_cost_brl!)} storage</p>
+                {/* Bug real corrigido — crash "Cannot read properties of undefined (reading
+                    'toLocaleString')": total_with_storage_brl = compute + storage_monthly_cost_brl
+                    (PVC) + os_disk_cost_brl (disco OS dos nodes, quase sempre > 0). Um cluster sem
+                    NENHUM PVC (storage_monthly_cost_brl genuinamente 0 → omitido do JSON por
+                    `omitempty`) ainda tem total_with_storage_brl > 0 só pelo disco OS — a condição
+                    acima então entrava neste branch com storage_monthly_cost_brl undefined, e o
+                    `!` do TypeScript não protege nada em runtime. Corrigido guardando esta linha
+                    pelo PRÓPRIO campo, não pelo de total — some quando não há custo de PVC real,
+                    "Total" abaixo continua mostrando compute+disco OS normalmente. */}
+                {(summary.storage_monthly_cost_brl ?? 0) > 0 && (
+                  <p className="text-[10px] text-purple-500 font-medium">+{fmtBRL(summary.storage_monthly_cost_brl ?? 0)} storage</p>
+                )}
                 <p className="text-[10px] text-muted-foreground">Total: <strong>{fmtBRL(summary.total_with_storage_brl!)}</strong></p>
               </>
             ) : (
