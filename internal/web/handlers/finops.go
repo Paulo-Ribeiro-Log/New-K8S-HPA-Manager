@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/singleflight"
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/dynatrace"
@@ -40,6 +41,19 @@ type FinOpsHandler struct {
 	// não na construção do handler. Populado sob demanda em awsPricerForCluster.
 	awsPricers   map[string]*finops.AWSPricer
 	awsPricersMu sync.Mutex
+
+	// reportSF/rightsizingScanSF — F4.1 do FINOPS-IMPROVEMENTS-PLAN.md: GetReport e ScanRightsizing
+	// batem Prometheus+Dynatrace+Azure Retail Prices+K8s API numa chamada só (40-60s) sem nenhum
+	// lock — duas abas do browser, dois usuários, ou um duplo-clique disparavam scans concorrentes
+	// redundantes pro MESMO cluster. Mesmo padrão já usado nesta app pra "operação cara e
+	// provavelmente duplicada em voo" (GetFreshEKSToken/GetFreshGKEToken,
+	// internal/config/kubeconfig.go) — chaveados pelos MESMOS parâmetros que afetam o resultado
+	// (nunca dedupe requisições com params diferentes). Dois Groups separados (não um só
+	// compartilhado) porque são operações DIFERENTES — ScanRightsizing sempre tenta Prometheus e
+	// nunca aceita filtro de namespace, GetReport é opt-in e aceita namespaces — uma chave que
+	// colidisse entre os dois devolveria a resposta errada pro chamador errado.
+	reportSF          singleflight.Group
+	rightsizingScanSF singleflight.Group
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -132,14 +146,40 @@ func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
 	return p
 }
 
+// reportSFKey monta a chave de dedup do singleflight de GetReport — extraída pra ser testável sem
+// precisar de nenhuma dependência do handler (ver F4.1 do FINOPS-IMPROVEMENTS-PLAN.md). Precisa
+// incluir TODO parâmetro que afeta o resultado/efeito colateral da chamada — duas requisições que
+// diferem em qualquer um deles NUNCA podem cair na mesma chave, ou uma delas receberia a resposta
+// (ou deixaria de disparar o efeito colateral, ex: persist_rightsizing) da outra.
+func reportSFKey(cluster string, namespaces []string, windowDays int, withPrometheus bool, promURLParam string, persistRightsizing bool) string {
+	return fmt.Sprintf("%s|%s|%d|%v|%s|%v", cluster, strings.Join(namespaces, ","), windowDays, withPrometheus, promURLParam, persistRightsizing)
+}
+
+// finOpsReportResult empacota status HTTP + corpo — necessário pra passar o resultado de
+// doGetReport através de singleflight.Group.Do, que só devolve um único interface{} (ver F4.1
+// do FINOPS-IMPROVEMENTS-PLAN.md e o comentário de reportSF).
+type finOpsReportResult struct {
+	status int
+	body   interface{}
+}
+
 // GetReport godoc
 // GET /api/v1/finops/report?cluster=X[&namespaces=ns1,ns2][&with_prometheus=true&prometheus_url=http://...&window_days=7]
 //
 // Retorna o relatório FinOps completo: custo de node pools, alocação por workload,
 // cenários HPA e resumo de oportunidades de saving.
 // Com with_prometheus=true, enriquece workloads com P95 CPU/Mem real (mais lento).
+//
+// F4.1 (FINOPS-IMPROVEMENTS-PLAN.md) — o trabalho de verdade (doGetReport) roda atrás de um
+// singleflight.Group chaveado pelos parâmetros que afetam o resultado: duas requisições
+// CONCORRENTES e IDÊNTICAS (mesmo cluster/namespaces/window/prometheus/persist — o caso real de
+// duas abas do browser ou um duplo-clique) reaproveitam a MESMA chamada cara a Prometheus/
+// Dynatrace/Azure/K8s em vez de disparar duas; parâmetros diferentes nunca são deduplicados entre
+// si (chaves diferentes). O contexto usado pelo trabalho compartilhado é `context.Background()`,
+// não o da requisição que disparou — se essa requisição específica cancelar (cliente fechou a
+// aba), o trabalho continua pros outros que estejam esperando o mesmo resultado (mesmo trade-off
+// já aceito por getFreshEKSToken/GetFreshGKEToken nesta app).
 func (h *FinOpsHandler) GetReport(c *gin.Context) {
-	handlerStart := time.Now()
 	cluster := c.Query("cluster")
 	if cluster == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
@@ -161,6 +201,32 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		windowDays = 30
 	}
 
+	withPrometheus := c.Query("with_prometheus") == "true"
+	promURLParam := strings.TrimSpace(c.Query("prometheus_url"))
+	persistRightsizing := c.Query("persist_rightsizing") == "true"
+
+	key := reportSFKey(cluster, namespaces, windowDays, withPrometheus, promURLParam, persistRightsizing)
+	v, _, shared := h.reportSF.Do(key, func() (interface{}, error) {
+		status, body := h.doGetReport(context.Background(), cluster, namespaces, windowDays, withPrometheus, promURLParam, persistRightsizing)
+		return finOpsReportResult{status: status, body: body}, nil
+	})
+	result := v.(finOpsReportResult)
+	if shared {
+		log.Info().Str("cluster", cluster).Msg("FinOps: requisição concorrente reaproveitou um scan já em andamento (F4.1, singleflight)")
+	}
+	c.JSON(result.status, result.body)
+}
+
+// doGetReport é o trabalho de verdade de GetReport, extraído pra rodar atrás do singleflight —
+// ver comentário de GetReport/reportSF. Retorna (status HTTP, corpo) em vez de escrever direto no
+// gin.Context, porque múltiplas requisições concorrentes deduplicadas compartilham esta MESMA
+// chamada e cada uma precisa devolver a resposta pro seu próprio *gin.Context.
+func (h *FinOpsHandler) doGetReport(
+	ctx context.Context, cluster string, namespaces []string, windowDays int,
+	withPrometheus bool, promURLParam string, persistRightsizing bool,
+) (int, interface{}) {
+	handlerStart := time.Now()
+
 	// Dynatrace (primário) — criado automaticamente se token configurado
 	var dtEnricher *finops.DTEnricher
 	if h.dtTokenStore != nil {
@@ -177,8 +243,8 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 
 	// Prometheus (fallback) — URL auto-descoberta pelo cluster se não fornecida
 	var enricher *finops.PrometheusEnricher
-	if c.Query("with_prometheus") == "true" {
-		promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	if withPrometheus {
+		promURL := promURLParam
 		requiresGCPAuth := false
 		if promURL == "" {
 			promURL = discovery.GetPrometheusURL(cluster)
@@ -189,45 +255,40 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		enricher, err = finops.NewPrometheusEnricher(promURL, windowDays, requiresGCPAuth)
 		if err != nil {
 			log.Warn().Err(err).Str("prometheus_url", promURL).Msg("FinOps: falha ao criar enricher Prometheus")
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Falha ao conectar ao Prometheus: " + err.Error()})
-			return
+			return http.StatusBadRequest, gin.H{"error": "Falha ao conectar ao Prometheus: " + err.Error()}
 		}
 		log.Info().Str("prometheus_url", promURL).Int("window_days", windowDays).Msg("FinOps: enricher Prometheus criado")
 	}
 
 	if h.npRegistryStore == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
+		return http.StatusServiceUnavailable, gin.H{
 			"error": "NodePool Registry não está disponível. Execute um scan de node pools primeiro.",
-		})
-		return
+		}
 	}
 
 	// Buscar node pools do cluster no registry
 	pools, err := h.npRegistryStore.GetAll(cluster)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao buscar node pools")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar node pools: " + err.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"error": "Falha ao buscar node pools: " + err.Error()}
 	}
 	if len(pools) == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
+		return http.StatusNotFound, gin.H{
 			"error": "Nenhum node pool encontrado para o cluster '" + cluster + "'. Execute um scan de node pools primeiro.",
-		})
-		return
+		}
 	}
 
 	// Obter cliente K8s
 	k8sClient, err := h.kubeManager.GetClient(cluster)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao obter cliente K8s")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao conectar ao cluster: " + err.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"error": "Falha ao conectar ao cluster: " + err.Error()}
 	}
 
 	// Gerar relatório (com Prometheus e Storage opcionais)
 	// prometheusURL também é passado ao StorageCalculator para obter uso real de Blob/Files
 	// via kubelet_volume_stats_used_bytes (capacidade placeholder > 50 TB → fallback para uso real)
-	storagePromURL := strings.TrimSpace(c.Query("prometheus_url"))
+	storagePromURL := promURLParam
 	storageRequiresGCPAuth := false
 	if storagePromURL == "" {
 		storagePromURL = discovery.GetPrometheusURL(cluster)
@@ -242,11 +303,10 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		log.Debug().Err(metricsErr).Str("cluster", cluster).Msg("FinOps: metrics-server indisponível, uso 'current' ao vivo ficará vazio")
 		metricsClient = nil
 	}
-	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher, metricsClient)
+	report, err := calc.BuildReport(ctx, cluster, k8sClient, pools, namespaces, dtEnricher, enricher, metricsClient)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()}
 	}
 
 	// Rightsizing reaproveitando o MESMO relatório — bug real corrigido, relatado pelo usuário:
@@ -259,8 +319,8 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	// Só roda sem filtro de namespace (persistir um relatório PARCIAL sobrescreveria a análise
 	// completa do cluster no store) e só quando há alguma fonte de uso real (mesma exigência já
 	// documentada em ScanRightsizing — "rightsizing exige uso real histórico").
-	if c.Query("persist_rightsizing") == "true" && h.rightsizingStore != nil && len(namespaces) == 0 && (dtEnricher != nil || enricher != nil) {
-		if _, _, _, perr := h.persistRightsizingFromReport(c.Request.Context(), cluster, report, windowDays, pricer); perr != nil {
+	if persistRightsizing && h.rightsizingStore != nil && len(namespaces) == 0 && (dtEnricher != nil || enricher != nil) {
+		if _, _, _, perr := h.persistRightsizingFromReport(ctx, cluster, report, windowDays, pricer); perr != nil {
 			log.Warn().Err(perr).Str("cluster", cluster).
 				Msg("FinOps: falha ao persistir rightsizing a partir do relatório principal (best-effort, não afeta o relatório em si)")
 		} else {
@@ -293,7 +353,7 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		Dur("elapsed_total_handler", time.Since(handlerStart)).
 		Msg("FinOps: relatório gerado")
 
-	c.JSON(http.StatusOK, report)
+	return http.StatusOK, report
 }
 
 // GetLastReport godoc

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -143,8 +144,12 @@ func (h *FinOpsHandler) GetRightsizing(c *gin.Context) {
 // quando não há nenhum relatório já construído na mesma requisição pra reaproveitar — ver
 // GetReport's persist_rightsizing=true pro caminho reaproveitado, que é o que o "Analisar"
 // principal do FinOps dispara).
+//
+// F4.1 (FINOPS-IMPROVEMENTS-PLAN.md) — mesmo tratamento de singleflight já aplicado a GetReport:
+// o trabalho de verdade (doScanRightsizing) roda atrás de rightsizingScanSF, chaveado por
+// cluster+window_days+prometheus_url — duas chamadas concorrentes e idênticas (duplo-clique, duas
+// abas) reaproveitam o MESMO scan caro em vez de disparar dois.
 func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
-	handlerStart := time.Now()
 	cluster := c.Query("cluster")
 	if cluster == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
@@ -163,6 +168,30 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 	if windowDays <= 0 {
 		windowDays = 30
 	}
+	promURLParam := strings.TrimSpace(c.Query("prometheus_url"))
+
+	key := rightsizingScanSFKey(cluster, windowDays, promURLParam)
+	v, _, shared := h.rightsizingScanSF.Do(key, func() (interface{}, error) {
+		status, body := h.doScanRightsizing(context.Background(), cluster, windowDays, promURLParam)
+		return finOpsReportResult{status: status, body: body}, nil
+	})
+	result := v.(finOpsReportResult)
+	if shared {
+		log.Info().Str("cluster", cluster).Msg("FinOps/Rightsizing: requisição concorrente reaproveitou um scan já em andamento (F4.1, singleflight)")
+	}
+	c.JSON(result.status, result.body)
+}
+
+// rightsizingScanSFKey monta a chave de dedup do singleflight de ScanRightsizing — mesmo
+// princípio de reportSFKey (finops.go): precisa incluir TODO parâmetro que afeta o resultado.
+func rightsizingScanSFKey(cluster string, windowDays int, promURLParam string) string {
+	return fmt.Sprintf("%s|%d|%s", cluster, windowDays, promURLParam)
+}
+
+// doScanRightsizing é o trabalho de verdade de ScanRightsizing, extraído pra rodar atrás do
+// singleflight — ver comentário de ScanRightsizing/rightsizingScanSF.
+func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, windowDays int, promURLParam string) (int, interface{}) {
+	handlerStart := time.Now()
 
 	// Dynatrace (primário) — mesma construção de GetReport.
 	var dtEnricher *finops.DTEnricher
@@ -180,7 +209,7 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 	// with_prometheus=true): sem uso real não há rightsizing nenhum pra sugerir, então esta aba
 	// não faz sentido sem métricas. Auto-descobre a URL pelo cluster, mesmo padrão de GetReport.
 	// Falha ao criar o enricher não aborta o scan — segue só com DT, se houver.
-	promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	promURL := promURLParam
 	requiresGCPAuth := false
 	if promURL == "" {
 		promURL = discovery.GetPrometheusURL(cluster)
@@ -192,24 +221,20 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 		enricher = nil
 	}
 	if dtEnricher == nil && enricher == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Nenhuma fonte de métricas disponível (Dynatrace não configurado e Prometheus inacessível) — rightsizing exige uso real histórico."})
-		return
+		return http.StatusBadRequest, gin.H{"error": "Nenhuma fonte de métricas disponível (Dynatrace não configurado e Prometheus inacessível) — rightsizing exige uso real histórico."}
 	}
 
 	pools, err := h.npRegistryStore.GetAll(cluster)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar node pools: " + err.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"error": "Falha ao buscar node pools: " + err.Error()}
 	}
 	if len(pools) == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Nenhum node pool encontrado para o cluster '" + cluster + "'. Execute um scan de node pools primeiro."})
-		return
+		return http.StatusNotFound, gin.H{"error": "Nenhum node pool encontrado para o cluster '" + cluster + "'. Execute um scan de node pools primeiro."}
 	}
 
 	k8sClient, err := h.kubeManager.GetClient(cluster)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao conectar ao cluster: " + err.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"error": "Falha ao conectar ao cluster: " + err.Error()}
 	}
 
 	pricer := h.pricerForCluster(cluster)
@@ -228,16 +253,14 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 		log.Debug().Err(metricsErr).Str("cluster", cluster).Msg("FinOps/Rightsizing: metrics-server indisponível, uso 'current' ao vivo ficará vazio")
 		metricsClient = nil
 	}
-	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, nil, dtEnricher, enricher, metricsClient)
+	report, err := calc.BuildReport(ctx, cluster, k8sClient, pools, nil, dtEnricher, enricher, metricsClient)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao gerar análise: " + err.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"error": "Falha ao gerar análise: " + err.Error()}
 	}
 
-	workloadRecs, tierSuggestions, nodeUsageRecs, persistErr := h.persistRightsizingFromReport(c.Request.Context(), cluster, report, windowDays, pricer)
+	workloadRecs, tierSuggestions, nodeUsageRecs, persistErr := h.persistRightsizingFromReport(ctx, cluster, report, windowDays, pricer)
 	if persistErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao persistir análise: " + persistErr.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"error": "Falha ao persistir análise: " + persistErr.Error()}
 	}
 
 	log.Info().
@@ -250,14 +273,14 @@ func (h *FinOpsHandler) ScanRightsizing(c *gin.Context) {
 		Dur("elapsed_total_handler", time.Since(handlerStart)).
 		Msg("FinOps/Rightsizing: scan standalone concluído e persistido")
 
-	c.JSON(http.StatusOK, gin.H{
+	return http.StatusOK, gin.H{
 		"cluster":         cluster,
 		"scanned":         true,
 		"last_scanned_at": time.Now(),
 		"workloads":       workloadRecs,
 		"node_pools":      nodePoolTierResponses(tierSuggestions),
 		"nodes":           nodeUsageRecs,
-	})
+	}
 }
 
 // persistRightsizingFromReport agrega o uso real recomendado por node pool, computa as sugestões

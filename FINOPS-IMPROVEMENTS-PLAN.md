@@ -1,9 +1,10 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
-**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original) e Fase 0 mescladas na
-`main`. Fase 1 concluída (PR #433, aguardando merge). Fase 2 concluída (PR #434, aguardando
-merge). Fase 3 concluída (F3.1 implementada; F3.2 avaliada e conscientemente não implementada por
-falta de recurso real pra validar — ver seção da fase). Fases 4-5 pendentes.
+**Status**: 🟢 todas as fases concluídas — Fase -1 (crítico, fora do escopo original) e Fase 0
+mescladas na `main`, junto com a Fase 1. Fases 2-5 concluídas, aguardando merge da cadeia de PRs
+#434 (Fase 2) → #435 (Fase 3) → #436 (F4.1) → #437 (F4.2) → #438 (F5.1). F3.2 avaliada e
+conscientemente não implementada (falta de recurso real pra validar). F5.2 avaliada e
+conscientemente deferida (F2.3 já resolveu a necessidade real do usuário).
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
@@ -263,43 +264,94 @@ de preço sem confirmar sintaxe/unidades ao vivo primeiro (ver o resto deste arq
   quando houver um Cosmos DB real disponível pra validar contra (outro tenant/cluster, ou se algum
   dia esta empresa provisionar um).
 
-### Fase 4 — Robustez operacional
+### Fase 4 — Robustez operacional (F4.1 concluída, validada ao vivo; F4.2 pendente de decisão)
 
-- [ ] **F4.1 — Sem debounce/lock em scans caros e repetíveis.**
-  `POST /finops/rightsizing/scan` (`finops_rightsizing.go`) e `GET /finops/report?
-  with_prometheus=true` (`finops.go:141`) não têm nenhum `singleflight.Group` nem lock por
-  cluster — confirmado via grep (só existe `awsPricersMu`, que protege um cache não relacionado).
-  Cada chamada é 40-60s batendo Prometheus+Dynatrace+Azure Retail Prices+K8s API. Duas abas do
-  browser, dois usuários, ou um duplo-clique no meio do fluxo disparam scans concorrentes
-  redundantes pro MESMO cluster. **Ação**: `singleflight.Group` por cluster nos dois endpoints,
-  mesmo padrão já usado em `GetFreshEKSToken`/`GetFreshGKEToken` nesta app pra "operação cara e
-  provavelmente duplicada em voo".
+- [x] **F4.1 — Sem debounce/lock em scans caros e repetíveis.**
+  `GetReport` (`finops.go`) e `ScanRightsizing` (`finops_rightsizing.go`) foram divididos em
+  handler-fino (parseia query params, monta a chave de dedup) + `doGetReport`/
+  `doScanRightsizing` (o trabalho de verdade, agora rodando atrás de um
+  `singleflight.Group` por handler — `reportSF`/`rightsizingScanSF`, campos novos em
+  `FinOpsHandler`), mesmo padrão já usado em `GetFreshEKSToken`/`GetFreshGKEToken`
+  (`internal/config/kubeconfig.go`). Chave de dedup (`reportSFKey`/`rightsizingScanSFKey`, funções
+  puras testáveis) inclui TODO parâmetro que afeta o resultado/efeito colateral — cluster,
+  namespaces, window_days, with_prometheus, prometheus_url, persist_rightsizing pra GetReport;
+  cluster, window_days, prometheus_url pra ScanRightsizing — requisições com qualquer parâmetro
+  diferente nunca são dedupadas entre si. O trabalho compartilhado roda com `context.Background()`
+  (não o da requisição que disparou), mesmo trade-off já aceito por `getFreshEKSToken`: se essa
+  requisição específica cancelar, o trabalho continua pros outros chamadores esperando o mesmo
+  resultado.
 
-- [ ] **F4.2 — Decisão de RBAC pendente pras rotas `/finops/*`.**
-  `internal/web/server.go:839-854` — nenhuma das 14 rotas FinOps usa
-  `rbacMiddleware.RequireSREGroup()`, diferente de operações comparáveis noutras partes da app
-  (ex: `POST /nodepools/registry/scan`). Hoje isso não é uma vulnerabilidade viva —
-  `RequireSREGroup()` é um no-op documentado (`internal/web/middleware/rbac.go:68-73`) — mas é uma
-  inconsistência que deixaria FinOps (IDs de subscription, nomes de recurso, dados de custo via
-  `GetDataResources`, scans caros) desprotegido no exato momento em que esse middleware for
-  reativado em qualquer outro lugar da app, porque ninguém vai lembrar de adicionar aqui também.
-  **Ação**: decisão explícita do usuário — aplicar `RequireSREGroup()` nas rotas de escrita/scan
-  do FinOps agora (por consistência, mesmo sendo no-op), ou registrar deliberadamente como "fora
-  de escopo" e mover pra um backlog de segurança geral da app.
+  **Validado ao vivo, ponta a ponta, contra um cluster de produção real**
+  (`akspriv-abastecimento-hlg-admin`, instância de teste isolada na porta 8091, nunca o processo
+  real do usuário na 8080): 6 requisições `GET /finops/report` concorrentes e idênticas
+  produziram exatamente **1** execução real (`"FinOps: relatório gerado"` no log, 1 ocorrência;
+  as 6 respostas HTTP byte-a-byte idênticas via `md5sum`, todas em ~18,4s — não 6×18s); 4
+  requisições `POST /finops/rightsizing/scan` concorrentes e idênticas produziram exatamente **1**
+  scan real (mesmo padrão de confirmação); 2 requisições `GET /finops/report` concorrentes com
+  `window_days` DIFERENTE (7 vs. 14) corretamente dispararam **2** execuções independentes — nunca
+  uma falsa deduplicação entre parâmetros distintos. Também coberto por 6 testes unitários
+  permanentes (`internal/web/handlers/finops_singleflight_test.go`) — 4 sobre as funções de chave
+  (mesmos parâmetros → mesma chave; qualquer parâmetro diferente → chave nunca colide) e 2 sobre o
+  mecanismo `singleflight.Group` em si (N chamadas concorrentes com a mesma chave → 1 execução;
+  chaves diferentes → execuções independentes), rodados 5x seguidas com `-race` sem flake.
+  `go build`/`go vet`/`gofmt`/`go test ./internal/web/handlers/... -race` limpos.
+
+- [x] **F4.2 — Decisão de RBAC pendente pras rotas `/finops/*`.**
+  Decisão explícita do usuário (`AskUserQuestion`): aplicar `RequireSREGroup()` agora, por
+  consistência com o resto da app. `internal/web/server.go` — as 4 rotas de escrita/scan do
+  FinOps (`POST /finops/rightsizing/scan`, `POST /finops/pricing/refresh`, `POST /finops/analyze`,
+  `POST /finops/storage/refresh`) ganharam `rbacMiddleware.RequireSREGroup()`, mesmo padrão já
+  usado por `POST /nodepools/registry/scan`. As demais rotas `GET` (leitura pura) permanecem sem
+  RBAC extra, mesmo critério já documentado inline nelas ("histórico on-demand... leitura, sem RBAC
+  extra"). `RequireSREGroup()` continua sendo um no-op documentado
+  (`internal/web/middleware/rbac.go`, `c.Set("isSRE", true); c.Next()`) — zero efeito comportamental
+  hoje, confirmado lendo o código-fonte do middleware antes de aplicar — só protege
+  automaticamente estas 4 rotas no momento em que ele for reativado em qualquer lugar da app,
+  sem exigir lembrar de voltar aqui. `go build`/`go vet`/`gofmt` limpos; nenhum teste (RBAC ou
+  outro) referencia essas rotas, então nada precisou de atualização.
 
 ### Fase 5 — Manutenibilidade (menor risco/urgência — adiável)
 
-- [ ] **F5.1 — `FinOpsTab.tsx` com 4582 linhas, um único arquivo.** Já era um problema conhecido;
-  `RightsizingTab.tsx` (1141 linhas) está seguindo a mesma trajetória depois de só 1 feature nova.
-  **Ação**: extrair cada aba do `FinOpsTab.tsx` pro próprio arquivo, mesmo padrão já usado pra
-  `RightsizingTab.tsx`/`DataResourcesPanel.tsx` — comece pelas abas mais simples
-  (Dashboard/Relatório) antes das mais acopladas (Workloads/Oportunidades).
+- [x] **F5.1 — `FinOpsTab.tsx` com 4582 linhas, um único arquivo.**
+  Extraído em `internal/web/frontend/src/components/finops/` (mesmo padrão já usado pra
+  `RightsizingTab.tsx`/`DataResourcesPanel.tsx`): `types.ts` (todas as interfaces compartilhadas —
+  `FinOpsPool`/`FinOpsWorkload`/`FinOpsReport`/tipos de Timeline/`Recommendation`), `helpers.ts`
+  (`buildRecommendation` — compartilhada por Workloads e Oportunidades —, `financeProviderInfo`,
+  `metricsCollectionLikelyFailed`) e um arquivo por aba: `DashboardTab.tsx`, `NodePoolsTab.tsx`
+  (inclui `PoolSKUAlternatives`), `WorkloadsTab.tsx`, `HPAHistoryTab.tsx` (inclui
+  `HPAComparePanel`/`HPADetailChart`/`HPASparkline`), `StorageTab.tsx`, `OpportunitiesTab.tsx`,
+  `RelatorioTab.tsx` (inclui o export de PDF). `FinOpsTab.tsx` caiu de 4589 pra 483 linhas — agora
+  só orquestra o fetch do relatório principal + a barra de abas, importando cada aba do módulo
+  próprio.
 
-- [ ] **F5.2 — Sem TTL/expiração de recomendações persistidas muito antigas.**
+  **Extração puramente mecânica, sem mudança de comportamento** — cada bloco foi movido linha a
+  linha (via `sed` pra extrair os ranges exatos, cross-referenciados por grep pra achar toda
+  dependência cruzada entre abas antes de cortar), sem tocar em nenhuma lógica de negócio, JSX ou
+  fraseologia. Validado comparando o estado ANTES/DEPOIS via `git stash`: `npx tsc --noEmit`
+  idêntico (0 erros nos dois), `npx eslint .` com contagem **byte-a-byte idêntica** (555
+  problemas: 436 erros + 119 warnings, e a contagem POR REGRA também idêntica — confirma que
+  nenhum lint novo foi introduzido nem nenhum pré-existente foi silenciosamente corrigido/mascarado
+  durante a extração). `npx vite build` limpo (mesmos avisos pré-existentes de code-splitting do
+  `jsPDF`, já presentes antes por outros consumidores do mesmo import dinâmico). `go build`/`make
+  build` também limpos (mudança 100% frontend, backend intocado). **Não clicado no navegador nesta
+  rodada** (sem ferramenta de automação disponível) — risco residual mitigado pela extração
+  mecânica + validação de lint/tipo idêntica ao baseline, mesmo padrão de risco já aceito noutras
+  extrações de componente desta sessão (ex: `RightsizingTab.tsx`).
+
+- [x] **F5.2 — Sem TTL/expiração de recomendações persistidas muito antigas — avaliada, deferida.**
   `internal/storage/finops_rightsizing_store.go` — `generated_at` é guardado e exposto, mas nada
-  no STORE em si força expiração; é 100% escolha de exibição do frontend (ver F2.3). **Ação**:
-  avaliar se vale um `GetByCluster` que já sinaliza `stale: true` quando `generated_at` passa de
-  um limiar, em vez de deixar essa lógica só no componente React.
+  no STORE em si força expiração; é 100% escolha de exibição do frontend. Reavaliado nesta rodada:
+  o item já pedia só "avaliar se vale", não mandava implementar — e a F2.3 (já concluída, PR #434)
+  **já resolveu por completo** a necessidade real do usuário (escalonamento visual de idade —
+  `scanAgeSeverity` em `RightsizingTab.tsx`, âmbar/vermelho conforme `last_scanned_at` envelhece).
+  Mover essa MESMA lógica pro backend (`GetByCluster` sinalizando `stale: true`) não adicionaria
+  nenhuma capacidade nova pro usuário — só preferência arquitetural (onde o threshold "mora"), sem
+  nenhum outro consumidor do store precisando desse sinal hoje. Combinado com a própria orientação
+  do plano pra Fase 5 ("fazer quando outra fase já estiver tocando o mesmo arquivo, não como
+  trabalho dedicado isolado") — esta rodada não tocou `finops_rightsizing_store.go` por nenhum
+  outro motivo, então não há gancho natural pra empacotar a mudança sem virar trabalho dedicado
+  isolado. Deferido conscientemente — retomar se/quando outro consumidor precisar do sinal de
+  staleness fora do componente React (ex: um alerta/notificação server-side).
 
 ---
 
