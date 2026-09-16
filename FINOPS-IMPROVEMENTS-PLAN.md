@@ -312,11 +312,31 @@ de preço sem confirmar sintaxe/unidades ao vivo primeiro (ver o resto deste arq
 
 ### Fase 5 — Manutenibilidade (menor risco/urgência — adiável)
 
-- [ ] **F5.1 — `FinOpsTab.tsx` com 4582 linhas, um único arquivo.** Já era um problema conhecido;
-  `RightsizingTab.tsx` (1141 linhas) está seguindo a mesma trajetória depois de só 1 feature nova.
-  **Ação**: extrair cada aba do `FinOpsTab.tsx` pro próprio arquivo, mesmo padrão já usado pra
-  `RightsizingTab.tsx`/`DataResourcesPanel.tsx` — comece pelas abas mais simples
-  (Dashboard/Relatório) antes das mais acopladas (Workloads/Oportunidades).
+- [x] **F5.1 — `FinOpsTab.tsx` com 4582 linhas, um único arquivo.**
+  Extraído em `internal/web/frontend/src/components/finops/` (mesmo padrão já usado pra
+  `RightsizingTab.tsx`/`DataResourcesPanel.tsx`): `types.ts` (todas as interfaces compartilhadas —
+  `FinOpsPool`/`FinOpsWorkload`/`FinOpsReport`/tipos de Timeline/`Recommendation`), `helpers.ts`
+  (`buildRecommendation` — compartilhada por Workloads e Oportunidades —, `financeProviderInfo`,
+  `metricsCollectionLikelyFailed`) e um arquivo por aba: `DashboardTab.tsx`, `NodePoolsTab.tsx`
+  (inclui `PoolSKUAlternatives`), `WorkloadsTab.tsx`, `HPAHistoryTab.tsx` (inclui
+  `HPAComparePanel`/`HPADetailChart`/`HPASparkline`), `StorageTab.tsx`, `OpportunitiesTab.tsx`,
+  `RelatorioTab.tsx` (inclui o export de PDF). `FinOpsTab.tsx` caiu de 4589 pra 483 linhas — agora
+  só orquestra o fetch do relatório principal + a barra de abas, importando cada aba do módulo
+  próprio.
+
+  **Extração puramente mecânica, sem mudança de comportamento** — cada bloco foi movido linha a
+  linha (via `sed` pra extrair os ranges exatos, cross-referenciados por grep pra achar toda
+  dependência cruzada entre abas antes de cortar), sem tocar em nenhuma lógica de negócio, JSX ou
+  fraseologia. Validado comparando o estado ANTES/DEPOIS via `git stash`: `npx tsc --noEmit`
+  idêntico (0 erros nos dois), `npx eslint .` com contagem **byte-a-byte idêntica** (555
+  problemas: 436 erros + 119 warnings, e a contagem POR REGRA também idêntica — confirma que
+  nenhum lint novo foi introduzido nem nenhum pré-existente foi silenciosamente corrigido/mascarado
+  durante a extração). `npx vite build` limpo (mesmos avisos pré-existentes de code-splitting do
+  `jsPDF`, já presentes antes por outros consumidores do mesmo import dinâmico). `go build`/`make
+  build` também limpos (mudança 100% frontend, backend intocado). **Não clicado no navegador nesta
+  rodada** (sem ferramenta de automação disponível) — risco residual mitigado pela extração
+  mecânica + validação de lint/tipo idêntica ao baseline, mesmo padrão de risco já aceito noutras
+  extrações de componente desta sessão (ex: `RightsizingTab.tsx`).
 
 - [ ] **F5.2 — Sem TTL/expiração de recomendações persistidas muito antigas.**
   `internal/storage/finops_rightsizing_store.go` — `generated_at` é guardado e exposto, mas nada
