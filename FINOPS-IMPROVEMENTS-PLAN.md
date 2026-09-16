@@ -1,10 +1,16 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
-**Status**: 🟢 todas as fases concluídas — Fase -1 (crítico, fora do escopo original) e Fase 0
-mescladas na `main`, junto com a Fase 1. Fases 2-5 concluídas, aguardando merge da cadeia de PRs
-#434 (Fase 2) → #435 (Fase 3) → #436 (F4.1) → #437 (F4.2) → #438 (F5.1). F3.2 avaliada e
-conscientemente não implementada (falta de recurso real pra validar). F5.2 avaliada e
-conscientemente deferida (F2.3 já resolveu a necessidade real do usuário).
+**Status**: 🟢 todas as fases (-1 a 5) mescladas na `main` — histórico de PRs ficou emaranhado
+(a branch da PR #440, de um bug não relacionado de mutating webhook, estava desatualizada em
+relação à `main` e trouxe de volta o `FinOpsTab.tsx` monolítico ao ser mesclada; a PR #442, já
+corrigida a partir de um ponto anterior, restaurou a divisão por aba da Fase 5 no mesmo merge),
+mas o conteúdo de TODAS as fases (F0-F5, incl. F4.1/F4.2) está confirmado presente e funcional na
+`main` atual — validado lendo cada arquivo direto de `origin/main` (singleflight, RBAC, F3.1
+storage pricing, split de `FinOpsTab.tsx`, correção de contaminação cross-cluster da Fase -1) e
+`go build`/`go vet`/`tsc --noEmit` limpos. PRs remanescentes que tentavam re-mesclar branches
+antigas já incorporadas (#443, #444) foram fechadas sem merge; branches correspondentes apagadas.
+F3.2 avaliada e conscientemente não implementada (falta de recurso real pra validar). F5.2
+avaliada e conscientemente deferida (F2.3 já resolveu a necessidade real do usuário).
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
