@@ -1433,6 +1433,12 @@ func (s *Server) setupRoutes() {
 		// Write Operations (SRE-only)
 		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
 		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)
+		// MutatingWebhookConfiguration — atualizar o caBundle confiado pelo apiserver ao chamar
+		// webhooks de terceiro (ex: Delinea DSV injector, Istio sidecar injector) após rotacionar
+		// o certificado de serviço deles. Objeto cluster-scoped — cluster vai via query param, não
+		// segmento de path (evita colidir com /:cluster/:namespace/:name acima).
+		certGroup.GET("/webhooks", certificatesHandler.ListMutatingWebhooks) // leitura, sem RBAC
+		certGroup.POST("/webhooks/update-cabundle", rbacMiddleware.RequireSREGroup(), certificatesHandler.UpdateMutatingWebhookCABundle)
 	}
 
 	// Perfil SSO corporativo (email + matrícula + senha compartilhada entre serviços)
