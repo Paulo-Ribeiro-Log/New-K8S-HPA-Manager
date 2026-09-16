@@ -137,6 +137,10 @@ export function DataResourcesPanel({ cluster }: { cluster: string }) {
   }
 
   const hasUnpriced = sortedResources.some((r) => !r.monthly_cost_brl && r.pricing_note);
+  // F3.1 (FINOPS-IMPROVEMENTS-PLAN.md) — Storage Account é precificado via aproximação (uso real
+  // do Azure Monitor × preço por GB), distinta de VM/disco/Redis/etc. (preço fixo por SKU) — o "≈"
+  // já sinaliza isso item a item, esta legenda explica o símbolo uma única vez.
+  const hasEstimated = sortedResources.some((r) => r.price_source === "estimated");
 
   return (
     <div className="space-y-3">
@@ -182,7 +186,13 @@ export function DataResourcesPanel({ cluster }: { cluster: string }) {
                 </div>
                 <div className="text-right shrink-0">
                   {r.monthly_cost_brl ? (
-                    <p className="text-sm font-semibold text-cyan-600">{fmtBRL(r.monthly_cost_brl)}/mês</p>
+                    <p
+                      className="text-sm font-semibold text-cyan-600"
+                      title={r.price_source === "estimated" ? r.pricing_note : undefined}
+                    >
+                      {r.price_source === "estimated" ? "≈ " : ""}
+                      {fmtBRL(r.monthly_cost_brl)}/mês
+                    </p>
                   ) : (
                     <p className="text-[10px] text-muted-foreground max-w-[220px]" title={r.pricing_note}>
                       {r.pricing_note ?? "Sem estimativa"}
@@ -199,6 +209,12 @@ export function DataResourcesPanel({ cluster }: { cluster: string }) {
         <p className="text-[10px] text-muted-foreground">
           Preços via Azure Retail Prices API (tabela pública, sem desconto/reserved instance) — alguns tipos de recurso têm modelo de
           cobrança baseado em consumo/volume e não têm estimativa automática nesta versão (motivo explicado em cada item).
+        </p>
+      )}
+      {expanded && hasEstimated && (
+        <p className="text-[10px] text-muted-foreground">
+          "≈" = estimativa aproximada a partir do volume real de uso (Azure Monitor), não um preço fixo por SKU — passe o mouse pro
+          detalhe.
         </p>
       )}
     </div>

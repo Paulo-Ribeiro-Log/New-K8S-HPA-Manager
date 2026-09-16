@@ -60,7 +60,7 @@ func (h *FinOpsHandler) GetDataResources(c *gin.Context) {
 	}
 
 	rate, _ := h.exchange.Get()
-	priced := finops.PriceDataResources(resources, h.pricer, h.diskPricer, rate)
+	priced := finops.PriceDataResources(c.Request.Context(), resources, h.pricer, h.diskPricer, cfg.Subscription, rate)
 
 	var totalUSD, totalBRL float64
 	var pricedCount int
