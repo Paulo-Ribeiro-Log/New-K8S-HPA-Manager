@@ -231,11 +231,33 @@ func (c *Calculator) BuildReport(
 	// desperdício nenhum". summary.MetricsAttempted/MetricsWorkloadsEnriched (ver models.go) dão
 	// ao frontend o sinal pra distinguir os dois casos; este log torna o mesmo sinal visível
 	// direto no servidor, sem precisar abrir a UI pra perceber.
+	// summary.MetricsCollectionError — distingue "falha de coleta transitória" (query de fato
+	// falhou) de "cluster sem cobertura de monitoramento" (query teve sucesso, resultado vazio) —
+	// ver comentário do campo em models.go. Computado sempre (não só quando MetricsWorkloadsEnriched
+	// == 0) pra o frontend também poder mostrar a causa real quando ENRIQUECEU PARCIALMENTE mas
+	// alguma das fontes falhou de verdade (ex: Dynatrace timeout, Prometheus fallback funcionou).
+	var collectionErrParts []string
+	if dtEnricher != nil {
+		if dtErr := dtEnricher.CollectionError(); dtErr != nil {
+			collectionErrParts = append(collectionErrParts, "Dynatrace: "+dtErr.Error())
+		}
+	}
+	if enricher != nil {
+		for _, promErr := range enricher.CollectionErrors() {
+			collectionErrParts = append(collectionErrParts, "Prometheus/"+promErr)
+		}
+	}
+	if len(collectionErrParts) > 0 {
+		summary.MetricsCollectionError = strings.Join(collectionErrParts, "; ")
+	}
+
 	if summary.MetricsAttempted && summary.MetricsWorkloadsEnriched == 0 && len(workloads) > 0 {
 		log.Warn().Str("cluster", cluster).Int("workloads", len(workloads)).
 			Bool("dynatrace_configured", dtEnricher != nil).
 			Bool("prometheus_configured", enricher != nil).
-			Msg("FinOps: NENHUM workload recebeu dado real de uso (Dynatrace/Prometheus) nesta análise — provável falha de coleta (VPN/rede/API indisponível no momento do scan), não ausência genuína de desperdício. Verifique os logs 'FinOps/Prom'/'FinOps/DT' acima pra causa raiz.")
+			Bool("real_collection_error", summary.MetricsCollectionError != "").
+			Str("collection_error_detail", summary.MetricsCollectionError).
+			Msg("FinOps: NENHUM workload recebeu dado real de uso (Dynatrace/Prometheus) nesta análise — verifique 'real_collection_error' acima: true = falha transitória de coleta (VPN/rede/API), false = as consultas tiveram sucesso mas o cluster genuinamente não tem cobertura de monitoramento pra nenhum workload (não é algo que 'reanalisar' resolve sozinho).")
 	}
 
 	// 7. Storage: PVCs + disco OS por pool (não fatal — relatório retorna mesmo sem dados de storage)

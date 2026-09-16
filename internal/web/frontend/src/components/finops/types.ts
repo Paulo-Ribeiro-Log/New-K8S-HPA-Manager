@@ -99,6 +99,12 @@ export interface FinOpsSummary {
   // desperdício" de "falha silenciosa de coleta" (ver internal/finops/models.go).
   metrics_attempted?: boolean;
   metrics_workloads_enriched?: number;
+  // metrics_collection_error — SEMPRE presente (mesmo "") num relatório fresco; AUSENTE
+  // (undefined) só num relatório antigo já persistido/cacheado de antes deste campo existir.
+  // "" = consultas tiveram sucesso mas sem nenhum dado real (cluster sem cobertura de
+  // monitoramento); não-vazia = pelo menos uma consulta falhou de verdade (falha transitória).
+  // Ver comentário completo em internal/finops/models.go.
+  metrics_collection_error?: string;
 }
 
 export interface PVCCostItem {

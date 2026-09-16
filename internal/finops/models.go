@@ -216,6 +216,27 @@ type FinOpsSummary struct {
 	// deve gerar aviso nenhum.
 	MetricsAttempted         bool `json:"metrics_attempted"`
 	MetricsWorkloadsEnriched int  `json:"metrics_workloads_enriched"`
+
+	// MetricsCollectionError — bug real corrigido: quando MetricsAttempted && MetricsWorkloadsEnriched
+	// == 0, a UI sempre assumia "provável falha de coleta TRANSITÓRIA (VPN/rede/API indisponível
+	// no momento do scan)" — mas DTEnricher/PrometheusEnricher podiam retornar zero workloads
+	// enriquecidos por dois motivos bem diferentes, indistinguíveis até agora: (a) a consulta de
+	// fato falhou (timeout, conexão recusada, erro HTTP) — aí sim é transitório, "reanalisar em
+	// alguns minutos" pode resolver; ou (b) a consulta teve sucesso (HTTP 200) mas o cluster
+	// genuinamente não tem nenhuma métrica pra devolver (sem OneAgent Dynatrace instalado, sem
+	// Prometheus com essas métricas) — um problema ESTRUTURAL de cobertura, que "reanalisar" não
+	// resolve sozinho, precisa configurar DT/Prometheus pra este cluster. Preenchido (não-vazio)
+	// só no caso (a) — DTEnricher.CollectionError()/PrometheusEnricher.CollectionErrors()
+	// reportaram pelo menos um erro real; fica "" no caso (b) e quando MetricsWorkloadsEnriched >
+	// 0 (nenhum sinal de falha).
+	//
+	// Deliberadamente SEM omitempty — precisa sempre aparecer no JSON (mesmo como "") pra o
+	// frontend distinguir "consultei e não achei erro" (chave presente, vazia) de "relatório
+	// antigo, cacheado em SQLite (ver GetLastReport) de antes deste campo existir" (chave
+	// ausente) — com omitempty as duas situações ficariam indistinguíveis (`undefined` nos dois
+	// casos), e o frontend cairia sempre na mensagem genérica de antes mesmo pra relatórios
+	// frescos sem nenhum erro real.
+	MetricsCollectionError string `json:"metrics_collection_error"`
 }
 
 // ── Storage types ─────────────────────────────────────────────────────────────

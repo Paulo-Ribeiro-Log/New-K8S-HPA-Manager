@@ -19,6 +19,12 @@ type DTEnricher struct {
 	// DT compartilhado entre toda a frota (o caso real desta empresa) agrega/soma a métrica de
 	// qualquer workload cujo namespace+nome se repete em outros clusters, silenciosamente.
 	cluster string
+
+	// collectionErr — mesmo racional de PrometheusEnricher.workloadQueryErrs (ver comentário lá):
+	// distingue "GetAllWorkloadMetrics falhou de verdade" (timeout, 4xx/5xx, rede) de "consultou
+	// com sucesso e o cluster genuinamente não tem nenhuma métrica" (sem OneAgent/DT não
+	// configurado pra ele) — só o primeiro caso é "falha de coleta transitória, tente de novo".
+	collectionErr error
 }
 
 // NewDTEnricher cria um DTEnricher. windowDays define a janela histórica (padrão 30d).
@@ -41,6 +47,7 @@ func (e *DTEnricher) EnrichWorkloads(ctx context.Context, workloads []FinOpsWork
 	metrics, err := e.client.GetAllWorkloadMetrics(ctx, e.windowDays, e.cluster)
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps/DT: falha ao buscar métricas — sem enriquecimento DT")
+		e.collectionErr = err
 		return enriched
 	}
 	if len(metrics) == 0 {
@@ -111,4 +118,11 @@ func (e *DTEnricher) EnrichWorkloads(ctx context.Context, workloads []FinOpsWork
 	log.Info().Int("enriched", count).Int("window_days", e.windowDays).
 		Msg("FinOps/DT: enriquecimento concluído")
 	return enriched
+}
+
+// CollectionError devolve o erro real (se houve) da última chamada a EnrichWorkloads — nil
+// quando a consulta teve sucesso (mesmo com zero métricas retornadas). Ver comentário de
+// collectionErr.
+func (e *DTEnricher) CollectionError() error {
+	return e.collectionErr
 }

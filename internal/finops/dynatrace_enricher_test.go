@@ -81,3 +81,50 @@ func TestDTEnricher_EnrichWorkloads_FallsBackToAvgWhenNoP95(t *testing.T) {
 		t.Errorf("MetricsSource esperado 'dynatrace', veio %q", wl.MetricsSource)
 	}
 }
+
+// TestDTEnricher_CollectionError_DistinguishesRealFailureFromEmptyCoverage cobre o bug real
+// corrigido: o banner de aviso do FinOps ("Nenhum dos N workloads recebeu dado real de uso")
+// sempre assumia "provável falha de coleta transitória" mesmo quando as consultas tiveram
+// sucesso e o cluster genuinamente não tem cobertura DT — CollectionError() é a fonte de
+// verdade que agora distingue os dois casos (ver comentário de DTEnricher.collectionErr).
+func TestDTEnricher_CollectionError_DistinguishesRealFailureFromEmptyCoverage(t *testing.T) {
+	workloads := []FinOpsWorkload{{Namespace: "ns-a", Workload: "app-a"}}
+
+	t.Run("falha real (HTTP 500) fica registrada", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"boom"}`))
+		}))
+		defer srv.Close()
+
+		client, err := dynatrace.NewClient(srv.URL, "test-token")
+		if err != nil {
+			t.Fatalf("NewClient falhou: %v", err)
+		}
+		enricher := NewDTEnricher(client, 30, "test-cluster")
+		enricher.EnrichWorkloads(context.Background(), append([]FinOpsWorkload(nil), workloads...))
+
+		if enricher.CollectionError() == nil {
+			t.Fatal("esperava CollectionError() != nil após falha HTTP real, veio nil")
+		}
+	})
+
+	t.Run("sucesso com zero cobertura NÃO conta como falha", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"result":[{"data":[]}]}`))
+		}))
+		defer srv.Close()
+
+		client, err := dynatrace.NewClient(srv.URL, "test-token")
+		if err != nil {
+			t.Fatalf("NewClient falhou: %v", err)
+		}
+		enricher := NewDTEnricher(client, 30, "test-cluster")
+		enricher.EnrichWorkloads(context.Background(), append([]FinOpsWorkload(nil), workloads...))
+
+		if enricher.CollectionError() != nil {
+			t.Fatalf("esperava CollectionError() == nil (consulta teve sucesso, só sem dado), veio %v", enricher.CollectionError())
+		}
+	})
+}

@@ -25,6 +25,24 @@ type PrometheusEnricher struct {
 	api           v1.API
 	window        int               // janela de histórico em dias
 	podToWorkload map[string]string // "ns/pod" → "ns/workload" (preenchido pelo calculator)
+
+	// workloadQueryErrMu/workloadQueryErrs — bug real corrigido: quando NENHUM workload recebe
+	// dado real (nem DT, nem Prometheus), o banner "provável falha de coleta" na UI (ver
+	// finops/helpers.ts:metricsCollectionLikelyFailed) sempre atribuía isso a uma falha
+	// TRANSITÓRIA (VPN/rede/API indisponível "no momento do scan", sugerindo "reanalise em
+	// alguns minutos") — mas as 4 queries de container/HPA usadas em EnrichWorkloads
+	// (queryContainerMetric/queryPodMetricPeakValue/queryPodMetricRangeMax/queryHPAMetric) só
+	// logavam o erro real (timeout, conexão recusada, etc.) via log.Warn e devolviam mapa vazio —
+	// exatamente o MESMO resultado de uma query que teve SUCESSO (HTTP 200) mas genuinamente não
+	// achou nenhuma série pro cluster (cluster sem OneAgent/sem Prometheus com essas métricas —
+	// um problema ESTRUTURAL, não algo que "reanalisar em alguns minutos" resolve sozinho). Os
+	// dois casos eram indistinguíveis pro chamador, então a mensagem sempre assumia o cenário
+	// transitório, mesmo quando é o estrutural. Estes campos guardam os erros REAIS (se houve
+	// algum) das 4 queries acima, pra CollectionErrors() expor essa distinção pro calculator.go
+	// popular FinOpsSummary.MetricsCollectionError — presente e não-vazio só quando pelo menos
+	// uma query de fato falhou (não quando todas tiveram sucesso com resultado vazio).
+	workloadQueryErrMu sync.Mutex
+	workloadQueryErrs  []string
 }
 
 // promPeakSample é um valor de pico + o instante em que ocorreu — usado por qualquer "top"
@@ -111,6 +129,25 @@ func NewPrometheusEnricher(prometheusURL string, windowDays int, requiresGCPAuth
 // Deve ser chamado pelo calculator antes de EnrichWorkloads.
 func (e *PrometheusEnricher) SetPodMapping(m map[string]string) {
 	e.podToWorkload = m
+}
+
+// recordWorkloadQueryError registra o erro REAL (não "resultado vazio") de uma das 4 queries de
+// EnrichWorkloads — ver comentário de workloadQueryErrMu/workloadQueryErrs. Chamado
+// concorrentemente pelas goroutines de EnrichWorkloads, por isso protegido por mutex.
+func (e *PrometheusEnricher) recordWorkloadQueryError(label string, err error) {
+	e.workloadQueryErrMu.Lock()
+	defer e.workloadQueryErrMu.Unlock()
+	e.workloadQueryErrs = append(e.workloadQueryErrs, label+": "+err.Error())
+}
+
+// CollectionErrors devolve os erros reais (timeout, conexão recusada, etc.) acumulados durante
+// EnrichWorkloads — vazio quando todas as queries tiveram sucesso (mesmo que sem dado nenhum
+// pro cluster). Usado por calculator.go pra distinguir "falha de coleta transitória" de "cluster
+// sem cobertura de monitoramento" na FinOpsSummary — ver comentário de workloadQueryErrMu.
+func (e *PrometheusEnricher) CollectionErrors() []string {
+	e.workloadQueryErrMu.Lock()
+	defer e.workloadQueryErrMu.Unlock()
+	return append([]string(nil), e.workloadQueryErrs...)
 }
 
 // EnrichWorkloads executa 8 queries batch e enriquece todos os workloads com:
@@ -451,6 +488,7 @@ func (e *PrometheusEnricher) queryContainerMetric(ctx context.Context, query, la
 	result, _, err := e.api.Query(qctx, query, time.Now())
 	if err != nil {
 		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query falhou")
+		e.recordWorkloadQueryError(label, err)
 		return nil
 	}
 
@@ -489,6 +527,7 @@ func (e *PrometheusEnricher) queryPodMetricPeakValue(ctx context.Context, query,
 	result, _, err := e.api.Query(qctx, query, time.Now())
 	if err != nil {
 		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query de pico (valor) falhou")
+		e.recordWorkloadQueryError(label, err)
 		return nil
 	}
 	vec, ok := result.(model.Vector)
@@ -524,6 +563,7 @@ func (e *PrometheusEnricher) queryPodMetricRangeMax(ctx context.Context, query, 
 	result, _, err := e.api.QueryRange(qctx, query, r)
 	if err != nil {
 		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query range (com timestamp) falhou")
+		e.recordWorkloadQueryError(label, err)
 		return nil
 	}
 	mat, ok := result.(model.Matrix)
@@ -682,6 +722,7 @@ func (e *PrometheusEnricher) queryHPAMetric(ctx context.Context, query, label st
 	result, _, err := e.api.Query(qctx, query, time.Now())
 	if err != nil {
 		log.Warn().Err(err).Str("metric", label).Msg("FinOps/Prom: query HPA falhou")
+		e.recordWorkloadQueryError(label, err)
 		return nil
 	}
 

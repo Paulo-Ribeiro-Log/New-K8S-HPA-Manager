@@ -15,6 +15,20 @@ export function metricsCollectionLikelyFailed(summary: FinOpsSummary): boolean {
   return !!summary.metrics_attempted && (summary.metrics_workloads_enriched ?? 0) === 0 && summary.workloads_analyzed > 0;
 }
 
+/** Só chamar quando metricsCollectionLikelyFailed(summary) já é true — refina a causa provável:
+ *  "transient" = pelo menos uma consulta a Dynatrace/Prometheus falhou de verdade (timeout,
+ *  conexão recusada, erro HTTP) — "reanalisar em alguns minutos" pode de fato resolver.
+ *  "structural" = as consultas tiveram sucesso (HTTP 200) mas não acharam NENHUM dado real pra
+ *  nenhum workload — sinal de que este cluster genuinamente não tem cobertura de monitoramento
+ *  (sem OneAgent Dynatrace, sem Prometheus com as métricas certas) — reanalisar não resolve
+ *  sozinho, precisa configurar DT/Prometheus pra este cluster.
+ *  "unknown" = relatório antigo (cache SQLite de antes deste campo existir, ver GetLastReport/
+ *  GetRightsizing) sem essa informação disponível — mantém a mensagem genérica/conservadora. */
+export function metricsFailureReason(summary: FinOpsSummary): "transient" | "structural" | "unknown" {
+  if (summary.metrics_collection_error === undefined) return "unknown";
+  return summary.metrics_collection_error === "" ? "structural" : "transient";
+}
+
 /**
  * Rótulo do cloud provider + fonte de preço real usada pelo backend pra este cluster
  * (FinOpsHandler.pricerForCluster, internal/web/handlers/finops.go). Mesma detecção por prefixo

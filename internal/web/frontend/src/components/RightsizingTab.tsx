@@ -148,6 +148,12 @@ export interface RightsizingResponse {
   workloads?: WorkloadRecommendation[];
   node_pools?: NodePoolTierSuggestion[];
   nodes?: NodeUsageInfo[];
+  // metrics_collection_error — só presente na resposta de um scan FRESCO (POST .../scan), nunca
+  // na leitura persistida (GET .../rightsizing) — ver comentário completo em
+  // internal/finops/models.go (FinOpsSummary.MetricsCollectionError). "" = consultas tiveram
+  // sucesso mas sem nenhum dado real (cluster sem cobertura de monitoramento); não-vazia = pelo
+  // menos uma consulta falhou de verdade (falha transitória, "reanalisar" pode resolver).
+  metrics_collection_error?: string;
 }
 
 // Histórico de uso (CPU/Mem) sob demanda, ver GET /finops/rightsizing/history — buscado só quando
@@ -1197,6 +1203,16 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   // Mem 0%, "baseado no uso real de 0 workload(s)" e Desperdício Total R$0 ao mesmo tempo.
   const metricsFailureLikely = workloads.length > 0 && workloads.every((w) => !w.metrics_source);
 
+  // metricsFailureReason — bug real corrigido: distingue "pelo menos uma consulta a Dynatrace/
+  // Prometheus falhou de verdade nesta rodada" (metrics_collection_error não-vazio — falha
+  // transitória, "Reanalisar agora" pode resolver) de "as consultas tiveram sucesso mas o
+  // cluster genuinamente não tem nenhuma métrica pra devolver" (metrics_collection_error === "",
+  // problema estrutural de cobertura) — só presente na resposta de um scan FRESCO (ver
+  // RightsizingResponse.metrics_collection_error); undefined = leitura persistida (GET, sem essa
+  // informação disponível), mantém a mensagem genérica/conservadora de antes.
+  const metricsFailureReason: "transient" | "structural" | "unknown" =
+    data?.metrics_collection_error === undefined ? "unknown" : data.metrics_collection_error === "" ? "structural" : "transient";
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20 text-muted-foreground gap-2">
@@ -1262,9 +1278,26 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
           <AlertTriangle className="h-4 w-4 text-red-600" />
           <AlertDescription className="text-sm text-red-700 dark:text-red-400">
             <strong>Nenhum dos {workloads.length} workloads recebeu dado real de uso</strong> (Dynatrace/Prometheus) nesta análise —
-            os valores de CPU/Mem, desperdício e "Com Oportunidade" abaixo provavelmente não refletem a realidade, é mais provável
-            que seja uma falha de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente não ter
-            desperdício em lugar nenhum. Clique em "Reanalisar agora" em alguns minutos.
+            os valores de CPU/Mem, desperdício e "Com Oportunidade" abaixo provavelmente não refletem a realidade.{" "}
+            {metricsFailureReason === "structural" ? (
+              <>
+                As consultas a Dynatrace/Prometheus completaram <strong>sem erro</strong>, mas não retornaram nenhum dado real pra nenhum dos{" "}
+                {workloads.length} workloads — é mais provável que este cluster genuinamente não tenha cobertura de monitoramento (sem OneAgent
+                Dynatrace instalado / sem Prometheus com as métricas de container) do que uma falha transitória. "Reanalisar agora" não deve resolver
+                sozinho — verifique se Dynatrace/Prometheus estão de fato configurados e coletando dados para este cluster.
+              </>
+            ) : metricsFailureReason === "transient" ? (
+              <>
+                Pelo menos uma consulta a Dynatrace/Prometheus falhou de verdade durante este scan ({data?.metrics_collection_error}) — é mais
+                provável que seja uma falha transitória de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente não
+                ter desperdício em lugar nenhum. Clique em "Reanalisar agora" em alguns minutos.
+              </>
+            ) : (
+              <>
+                É mais provável que seja uma falha de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente não ter
+                desperdício em lugar nenhum. Clique em "Reanalisar agora" em alguns minutos.
+              </>
+            )}
           </AlertDescription>
         </Alert>
       )}
