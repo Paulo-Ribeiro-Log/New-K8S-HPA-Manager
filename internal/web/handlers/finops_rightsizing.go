@@ -280,6 +280,12 @@ func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, w
 		"workloads":       workloadRecs,
 		"node_pools":      nodePoolTierResponses(tierSuggestions),
 		"nodes":           nodeUsageRecs,
+		// metrics_collection_error — SEMPRE presente (mesmo "") na resposta de um scan FRESCO —
+		// nunca omitido, pra o frontend distinguir "consultei e não achei erro real" (chave
+		// presente e vazia — cluster sem cobertura de monitoramento) de "leitura persistida de
+		// GetRightsizing, sem essa informação disponível" (chave ausente) — ver comentário de
+		// FinOpsSummary.MetricsCollectionError (models.go).
+		"metrics_collection_error": report.Summary.MetricsCollectionError,
 	}
 }
 

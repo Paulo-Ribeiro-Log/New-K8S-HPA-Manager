@@ -1,6 +1,7 @@
 package finops
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -612,4 +613,45 @@ func TestEnrichWorkloads_RunsQueriesConcurrently(t *testing.T) {
 		t.Fatalf("EnrichWorkloads levou %v pra %d queries de %v cada — parece sequencial, não paralelo (esperava bem menos que %v)",
 			elapsed, expectedQueries, latencyPerQuery, sequentialWorstCase/2)
 	}
+}
+
+// TestPrometheusEnricher_CollectionErrors_DistinguishesRealFailureFromEmptyCoverage cobre o bug
+// real corrigido: o banner de aviso do FinOps sempre assumia "provável falha de coleta
+// transitória (VPN/rede/API indisponível no momento do scan)" mesmo quando as 12 queries do
+// EnrichWorkloads tiveram sucesso (HTTP 200) e só não acharam nenhuma série pro cluster —
+// CollectionErrors() é a fonte de verdade que agora distingue os dois casos (ver comentário de
+// PrometheusEnricher.workloadQueryErrs).
+func TestPrometheusEnricher_CollectionErrors_DistinguishesRealFailureFromEmptyCoverage(t *testing.T) {
+	workloads := func() []FinOpsWorkload {
+		return []FinOpsWorkload{{Namespace: "ns1", Workload: "wl1"}}
+	}
+
+	t.Run("falha real (HTTP 500 nas duas rotas) fica registrada", func(t *testing.T) {
+		e := newFakeEnricher(t, &fakePrometheusServer{queryFail: true, queryRangeFail: true})
+		e.SetPodMapping(map[string]string{"ns1/pod1": "ns1/wl1"})
+		e.EnrichWorkloads(context.Background(), workloads())
+
+		errs := e.CollectionErrors()
+		if len(errs) == 0 {
+			t.Fatal("esperava CollectionErrors() não-vazio após falha HTTP real em todas as queries, veio vazio")
+		}
+	})
+
+	t.Run("sucesso com zero cobertura NÃO conta como falha", func(t *testing.T) {
+		e := newFakeEnricher(t, &fakePrometheusServer{
+			queryRangeEmpty: true,
+			emptyQuerySubstrings: []string{
+				"container_cpu_usage_seconds_total",
+				"container_memory_working_set_bytes",
+				"kube_horizontalpodautoscaler_status_current_replicas",
+			},
+		})
+		e.SetPodMapping(map[string]string{"ns1/pod1": "ns1/wl1"})
+		e.EnrichWorkloads(context.Background(), workloads())
+
+		errs := e.CollectionErrors()
+		if len(errs) != 0 {
+			t.Fatalf("esperava CollectionErrors() vazio (todas as queries tiveram sucesso, só sem dado), veio %v", errs)
+		}
+	})
 }

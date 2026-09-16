@@ -23,7 +23,7 @@ import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
 import { RightsizingTab, RightsizingTabBadge } from "@/components/RightsizingTab";
 import type { FinOpsReport } from "./finops/types";
-import { financeProviderInfo, metricsCollectionLikelyFailed } from "./finops/helpers";
+import { financeProviderInfo, metricsCollectionLikelyFailed, metricsFailureReason } from "./finops/helpers";
 import { DashboardTab } from "./finops/DashboardTab";
 import { NodePoolsTab } from "./finops/NodePoolsTab";
 import { WorkloadsTab } from "./finops/WorkloadsTab";
@@ -345,17 +345,37 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       {/* Relatório */}
       {report && !isFetching && (
         <>
-          {metricsCollectionLikelyFailed(report.summary) && (
-            <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
-              <AlertTriangle className="h-4 w-4 text-red-600" />
-              <AlertDescription className="text-sm text-red-700 dark:text-red-400">
-                <strong>Nenhum dos {report.summary.workloads_analyzed} workloads recebeu dado real de uso</strong> (Dynatrace/Prometheus) nesta análise —
-                os valores de desperdício, CPU/Mem e "Com Oportunidade" abaixo (e na aba Rightsizing) provavelmente não refletem a realidade, é mais provável
-                que seja uma falha de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente não ter desperdício em lugar
-                nenhum. Reanalise em alguns minutos; se persistir, verifique a conectividade com Prometheus/Dynatrace.
-              </AlertDescription>
-            </Alert>
-          )}
+          {metricsCollectionLikelyFailed(report.summary) && (() => {
+            const reason = metricsFailureReason(report.summary);
+            return (
+              <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
+                <AlertTriangle className="h-4 w-4 text-red-600" />
+                <AlertDescription className="text-sm text-red-700 dark:text-red-400">
+                  <strong>Nenhum dos {report.summary.workloads_analyzed} workloads recebeu dado real de uso</strong> (Dynatrace/Prometheus) nesta análise —
+                  os valores de desperdício, CPU/Mem e "Com Oportunidade" abaixo (e na aba Rightsizing) provavelmente não refletem a realidade.{" "}
+                  {reason === "structural" ? (
+                    <>
+                      As consultas a Dynatrace/Prometheus completaram <strong>sem erro</strong>, mas não retornaram nenhum dado real pra nenhum dos{" "}
+                      {report.summary.workloads_analyzed} workloads — é mais provável que este cluster genuinamente não tenha cobertura de monitoramento
+                      (sem OneAgent Dynatrace instalado / sem Prometheus com as métricas de container) do que uma falha transitória. "Reanalisar" não deve
+                      resolver sozinho — verifique se Dynatrace/Prometheus estão de fato configurados e coletando dados para este cluster.
+                    </>
+                  ) : reason === "transient" ? (
+                    <>
+                      Pelo menos uma consulta a Dynatrace/Prometheus falhou de verdade durante este scan ({report.summary.metrics_collection_error}) —
+                      é mais provável que seja uma falha transitória de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente
+                      não ter desperdício em lugar nenhum. Reanalise em alguns minutos.
+                    </>
+                  ) : (
+                    <>
+                      É mais provável que seja uma falha de coleta (VPN/rede/API indisponível no momento do scan) do que o cluster genuinamente não ter
+                      desperdício em lugar nenhum. Reanalise em alguns minutos; se persistir, verifique a conectividade com Prometheus/Dynatrace.
+                    </>
+                  )}
+                </AlertDescription>
+              </Alert>
+            );
+          })()}
           <div className="flex items-center gap-2 text-xs text-muted-foreground -mb-1 flex-wrap">
             <Server className="h-3.5 w-3.5 shrink-0" />
             <span>
