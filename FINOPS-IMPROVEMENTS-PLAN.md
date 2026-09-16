@@ -1,10 +1,10 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
-**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original) e Fase 0 mescladas na
-`main`, junto com a Fase 1. Fase 2 concluída (PR #434, aguardando merge). Fase 3 concluída (F3.1
-implementada; F3.2 avaliada e conscientemente não implementada por falta de recurso real pra
-validar — ver seção da fase). Fase 4 concluída (F4.1 singleflight + F4.2 RBAC, PR seguinte). Fase
-5 pendente.
+**Status**: 🟢 todas as fases concluídas — Fase -1 (crítico, fora do escopo original) e Fase 0
+mescladas na `main`, junto com a Fase 1. Fases 2-5 concluídas, aguardando merge da cadeia de PRs
+#434 (Fase 2) → #435 (Fase 3) → #436 (F4.1) → #437 (F4.2) → #438 (F5.1). F3.2 avaliada e
+conscientemente não implementada (falta de recurso real pra validar). F5.2 avaliada e
+conscientemente deferida (F2.3 já resolveu a necessidade real do usuário).
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
@@ -338,11 +338,20 @@ de preço sem confirmar sintaxe/unidades ao vivo primeiro (ver o resto deste arq
   mecânica + validação de lint/tipo idêntica ao baseline, mesmo padrão de risco já aceito noutras
   extrações de componente desta sessão (ex: `RightsizingTab.tsx`).
 
-- [ ] **F5.2 — Sem TTL/expiração de recomendações persistidas muito antigas.**
+- [x] **F5.2 — Sem TTL/expiração de recomendações persistidas muito antigas — avaliada, deferida.**
   `internal/storage/finops_rightsizing_store.go` — `generated_at` é guardado e exposto, mas nada
-  no STORE em si força expiração; é 100% escolha de exibição do frontend (ver F2.3). **Ação**:
-  avaliar se vale um `GetByCluster` que já sinaliza `stale: true` quando `generated_at` passa de
-  um limiar, em vez de deixar essa lógica só no componente React.
+  no STORE em si força expiração; é 100% escolha de exibição do frontend. Reavaliado nesta rodada:
+  o item já pedia só "avaliar se vale", não mandava implementar — e a F2.3 (já concluída, PR #434)
+  **já resolveu por completo** a necessidade real do usuário (escalonamento visual de idade —
+  `scanAgeSeverity` em `RightsizingTab.tsx`, âmbar/vermelho conforme `last_scanned_at` envelhece).
+  Mover essa MESMA lógica pro backend (`GetByCluster` sinalizando `stale: true`) não adicionaria
+  nenhuma capacidade nova pro usuário — só preferência arquitetural (onde o threshold "mora"), sem
+  nenhum outro consumidor do store precisando desse sinal hoje. Combinado com a própria orientação
+  do plano pra Fase 5 ("fazer quando outra fase já estiver tocando o mesmo arquivo, não como
+  trabalho dedicado isolado") — esta rodada não tocou `finops_rightsizing_store.go` por nenhum
+  outro motivo, então não há gancho natural pra empacotar a mudança sem virar trabalho dedicado
+  isolado. Deferido conscientemente — retomar se/quando outro consumidor precisar do sinal de
+  staleness fora do componente React (ex: um alerta/notificação server-side).
 
 ---
 
