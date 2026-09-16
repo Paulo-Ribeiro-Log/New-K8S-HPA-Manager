@@ -30,17 +30,20 @@ type nodePoolTierResponse struct {
 	// CPUP95Pct/MemP95Pct — percentil de uso REAL do pool (P95, sem a margem de segurança que
 	// CPUUtilPct/MemUtilPct já embutem) — ver comentário de poolUsage em
 	// persistRightsizingFromReport, e storage.NodePoolTierSuggestion.CPUP95Pct.
-	CPUP95Pct          float64                `json:"cpu_p95_pct,omitempty"`
-	MemP95Pct          float64                `json:"mem_p95_pct,omitempty"`
-	WorkloadCount      int                    `json:"workload_count"`
-	NodeCount          int                    `json:"node_count,omitempty"`
-	MinNodeCount       int                    `json:"min_node_count,omitempty"`
-	MaxNodeCount       int                    `json:"max_node_count,omitempty"`
-	AutoscalingEnabled bool                   `json:"autoscaling_enabled,omitempty"`
-	VMCPUCores         int                    `json:"vm_cpu_cores,omitempty"`
-	VMMemoryGB         int                    `json:"vm_memory_gb,omitempty"`
-	Alternatives       []finops.VMAlternative `json:"alternatives"`
-	GeneratedAt        time.Time              `json:"generated_at"`
+	CPUP95Pct          float64 `json:"cpu_p95_pct,omitempty"`
+	MemP95Pct          float64 `json:"mem_p95_pct,omitempty"`
+	WorkloadCount      int     `json:"workload_count"`
+	NodeCount          int     `json:"node_count,omitempty"`
+	MinNodeCount       int     `json:"min_node_count,omitempty"`
+	MaxNodeCount       int     `json:"max_node_count,omitempty"`
+	AutoscalingEnabled bool    `json:"autoscaling_enabled,omitempty"`
+	VMCPUCores         int     `json:"vm_cpu_cores,omitempty"`
+	VMMemoryGB         int     `json:"vm_memory_gb,omitempty"`
+	// HasCriticalWorkload/CriticalWorkloadNames — F1.1, ver storage.NodePoolTierSuggestion.
+	HasCriticalWorkload   bool                   `json:"has_critical_workload,omitempty"`
+	CriticalWorkloadNames string                 `json:"critical_workload_names,omitempty"`
+	Alternatives          []finops.VMAlternative `json:"alternatives"`
+	GeneratedAt           time.Time              `json:"generated_at"`
 }
 
 func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion) []nodePoolTierResponse {
@@ -54,21 +57,23 @@ func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion) []nodePoolTierR
 			alts = []finops.VMAlternative{}
 		}
 		out = append(out, nodePoolTierResponse{
-			NodePool:           r.NodePool,
-			CurrentSKU:         r.CurrentSKU,
-			CPUUtilPct:         r.CPUUtilPct,
-			MemUtilPct:         r.MemUtilPct,
-			CPUP95Pct:          r.CPUP95Pct,
-			MemP95Pct:          r.MemP95Pct,
-			WorkloadCount:      r.WorkloadCount,
-			NodeCount:          r.NodeCount,
-			MinNodeCount:       r.MinNodeCount,
-			MaxNodeCount:       r.MaxNodeCount,
-			AutoscalingEnabled: r.AutoscalingEnabled,
-			VMCPUCores:         r.VMCPUCores,
-			VMMemoryGB:         r.VMMemoryGB,
-			Alternatives:       alts,
-			GeneratedAt:        r.GeneratedAt,
+			NodePool:              r.NodePool,
+			CurrentSKU:            r.CurrentSKU,
+			CPUUtilPct:            r.CPUUtilPct,
+			MemUtilPct:            r.MemUtilPct,
+			CPUP95Pct:             r.CPUP95Pct,
+			MemP95Pct:             r.MemP95Pct,
+			WorkloadCount:         r.WorkloadCount,
+			NodeCount:             r.NodeCount,
+			MinNodeCount:          r.MinNodeCount,
+			MaxNodeCount:          r.MaxNodeCount,
+			AutoscalingEnabled:    r.AutoscalingEnabled,
+			VMCPUCores:            r.VMCPUCores,
+			VMMemoryGB:            r.VMMemoryGB,
+			HasCriticalWorkload:   r.HasCriticalWorkload,
+			CriticalWorkloadNames: r.CriticalWorkloadNames,
+			Alternatives:          alts,
+			GeneratedAt:           r.GeneratedAt,
 		})
 	}
 	return out
@@ -289,6 +294,20 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 	}
 	poolAgg := make(map[string]*poolUsage)
 
+	// poolMeta — F1.1/F1.2 do plano de melhorias (FINOPS-IMPROVEMENTS-PLAN.md): nomes de TODOS
+	// os workloads do pool (pra checagem de infra crítica) + o MAIOR request individual de
+	// CPU/Mem (pra checagem de capacidade contra o maior pod). Deliberadamente NÃO gateado pelo
+	// mesmo "tem recomendação" de poolAgg acima — um workload de infra genuinamente idle (CPU/
+	// Mem recomendado = 0, ex: um DaemonSet sem uso real) ainda precisa contar pra F1.1/F1.2, e é
+	// exatamente esse tipo de pool ("sem uso real") que mais aciona a sugestão de downsize que
+	// motivou esta fase.
+	type poolMeta struct {
+		names           []string
+		maxCPUReqMillis float64
+		maxMemReqMi     float64
+	}
+	poolMetaAgg := make(map[string]*poolMeta)
+
 	workloadRecs = make([]storage.WorkloadRecommendation, 0, len(report.Workloads))
 	for _, wl := range report.Workloads {
 		workloadRecs = append(workloadRecs, storage.WorkloadRecommendation{
@@ -328,6 +347,21 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 			WindowDays:                windowDays,
 			GeneratedAt:               now,
 		})
+
+		if wl.NodePool != "" {
+			pm, ok := poolMetaAgg[wl.NodePool]
+			if !ok {
+				pm = &poolMeta{}
+				poolMetaAgg[wl.NodePool] = pm
+			}
+			pm.names = append(pm.names, wl.Workload)
+			if wl.CPURequestMillis > pm.maxCPUReqMillis {
+				pm.maxCPUReqMillis = wl.CPURequestMillis
+			}
+			if wl.MemRequestMi > pm.maxMemReqMi {
+				pm.maxMemReqMi = wl.MemRequestMi
+			}
+		}
 
 		if wl.NodePool != "" && (wl.CPURecommendedMillis > 0 || wl.MemRecommendedMi > 0) {
 			agg, ok := poolAgg[wl.NodePool]
@@ -423,24 +457,36 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 		}
 
 		alts := finops.SuggestVMTier(provider, pool.VMSize, cpuUtilPct, memUtilPct, pricer, rate, currentNodeCount)
+
+		// F1.1/F1.2 — ver comentário de poolMeta acima. hasCritical/criticalNames nunca bloqueiam
+		// a sugestão, só a marcam; MarkInsufficientForLargestWorkload marca cada alternativa in-place.
+		var hasCritical bool
+		var criticalNames []string
+		if pm := poolMetaAgg[pool.Name]; pm != nil {
+			criticalNames = finops.MatchCriticalInfraWorkloads(pm.names)
+			hasCritical = len(criticalNames) > 0
+			finops.MarkInsufficientForLargestWorkload(alts, pm.maxCPUReqMillis, pm.maxMemReqMi)
+		}
 		altJSON, _ := json.Marshal(alts)
 
 		tierSuggestions = append(tierSuggestions, storage.NodePoolTierSuggestion{
-			NodePool:           pool.Name,
-			CurrentSKU:         pool.VMSize,
-			CPUUtilPct:         rightsizingRound2(cpuUtilPct),
-			MemUtilPct:         rightsizingRound2(memUtilPct),
-			CPUP95Pct:          rightsizingRound2(cpuP95Pct),
-			MemP95Pct:          rightsizingRound2(memP95Pct),
-			WorkloadCount:      workloadCount,
-			NodeCount:          currentNodeCount,
-			MinNodeCount:       int(live.MinNodeCount),
-			MaxNodeCount:       int(live.MaxNodeCount),
-			AutoscalingEnabled: live.AutoscalingEnabled,
-			VMCPUCores:         pool.VMCPUCores,
-			VMMemoryGB:         pool.VMMemoryGB,
-			AlternativesJSON:   string(altJSON),
-			GeneratedAt:        now,
+			NodePool:              pool.Name,
+			CurrentSKU:            pool.VMSize,
+			CPUUtilPct:            rightsizingRound2(cpuUtilPct),
+			MemUtilPct:            rightsizingRound2(memUtilPct),
+			CPUP95Pct:             rightsizingRound2(cpuP95Pct),
+			MemP95Pct:             rightsizingRound2(memP95Pct),
+			WorkloadCount:         workloadCount,
+			NodeCount:             currentNodeCount,
+			MinNodeCount:          int(live.MinNodeCount),
+			MaxNodeCount:          int(live.MaxNodeCount),
+			AutoscalingEnabled:    live.AutoscalingEnabled,
+			VMCPUCores:            pool.VMCPUCores,
+			VMMemoryGB:            pool.VMMemoryGB,
+			HasCriticalWorkload:   hasCritical,
+			CriticalWorkloadNames: strings.Join(criticalNames, ", "),
+			AlternativesJSON:      string(altJSON),
+			GeneratedAt:           now,
 		})
 	}
 
@@ -472,24 +518,35 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 		}
 
 		alts := finops.SuggestVMTier(provider, live.VMSize, cpuUtilPct, memUtilPct, pricer, rate, int(live.NodeCount))
+
+		// F1.1/F1.2 — mesmo tratamento do loop principal acima.
+		var hasCritical bool
+		var criticalNames []string
+		if pm := poolMetaAgg[name]; pm != nil {
+			criticalNames = finops.MatchCriticalInfraWorkloads(pm.names)
+			hasCritical = len(criticalNames) > 0
+			finops.MarkInsufficientForLargestWorkload(alts, pm.maxCPUReqMillis, pm.maxMemReqMi)
+		}
 		altJSON, _ := json.Marshal(alts)
 
 		tierSuggestions = append(tierSuggestions, storage.NodePoolTierSuggestion{
-			NodePool:           name,
-			CurrentSKU:         live.VMSize,
-			CPUUtilPct:         rightsizingRound2(cpuUtilPct),
-			MemUtilPct:         rightsizingRound2(memUtilPct),
-			CPUP95Pct:          rightsizingRound2(cpuP95Pct),
-			MemP95Pct:          rightsizingRound2(memP95Pct),
-			WorkloadCount:      workloadCount,
-			NodeCount:          int(live.NodeCount),
-			MinNodeCount:       int(live.MinNodeCount),
-			MaxNodeCount:       int(live.MaxNodeCount),
-			AutoscalingEnabled: live.AutoscalingEnabled,
-			VMCPUCores:         cpuCores,
-			VMMemoryGB:         memGB,
-			AlternativesJSON:   string(altJSON),
-			GeneratedAt:        now,
+			NodePool:              name,
+			CurrentSKU:            live.VMSize,
+			CPUUtilPct:            rightsizingRound2(cpuUtilPct),
+			MemUtilPct:            rightsizingRound2(memUtilPct),
+			CPUP95Pct:             rightsizingRound2(cpuP95Pct),
+			MemP95Pct:             rightsizingRound2(memP95Pct),
+			WorkloadCount:         workloadCount,
+			NodeCount:             int(live.NodeCount),
+			MinNodeCount:          int(live.MinNodeCount),
+			MaxNodeCount:          int(live.MaxNodeCount),
+			AutoscalingEnabled:    live.AutoscalingEnabled,
+			VMCPUCores:            cpuCores,
+			VMMemoryGB:            memGB,
+			HasCriticalWorkload:   hasCritical,
+			CriticalWorkloadNames: strings.Join(criticalNames, ", "),
+			AlternativesJSON:      string(altJSON),
+			GeneratedAt:           now,
 		})
 		log.Info().Str("cluster", cluster).Str("node_pool", name).
 			Msg("FinOps/Rightsizing: pool presente ao vivo mas ausente do relatório (registry stale) — entrada sintética adicionada")

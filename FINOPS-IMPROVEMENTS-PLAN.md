@@ -1,7 +1,7 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
-**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original, PR #431) e Fase 0 (PR #430)
-concluídas, ambas aguardando merge. Fases 1-5 pendentes.
+**Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original), Fase 0 e Fase 1
+concluídas e mescladas na `main`. Fases 2-5 pendentes.
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
@@ -114,12 +114,33 @@ corrigido por revisão de código + o padrão já comprovado (`pricerForCluster`
   total. Worst case: número Azure atribuído a um pool AWS, sem aviso. **Ação**: trocar o
   dispatch de `osDiskCostForPool` pra usar `config.DetectCloudProvider`, igual ao resto do pacote.
 
-### Fase 1 — Segurança das recomendações (evitar sugestão perigosa em pool crítico)
+### Fase 1 — Segurança das recomendações (evitar sugestão perigosa em pool crítico) ✅
 
 Motivado diretamente pelo incidente relatado (pool "ingress" com nginx-ingress-controller/velero/
 istio-ingressgateway recebendo sugestão de downsize sem aviso).
 
-- [ ] **F1.1 — `SuggestVMTier` não tem nenhum sinal de criticidade do workload.**
+**Concluída.** Validado com dados REAIS já persistidos de 8 clusters de produção (nunca contra
+dado sintético) — VPN indisponível no momento desta implementação, então em vez de rodar um scan
+ao vivo, uma cópia local do `finops-rightsizing.db` real (nunca o arquivo original, cópia num
+diretório temporário) foi lida por uma ferramenta de debug (`cmd/_debugcriticalN`, removida
+depois). Achado real, direto: `akspriv-entregamais-prd-admin/ingress` tem EXATAMENTE a mesma
+combinação do incidente original (`nginx-ingress-controller`, `velero`, `istio-ingressgateway`) —
+confirmando que a heurística por nome (F1.1) captura de fato o caso que motivou esta fase. 31
+pools reais, em 8 clusters, bateram em pelo menos um padrão de infra conhecida — sem nenhum
+falso-positivo óbvio contra nome de app de negócio nos dados reais inspecionados. F1.2 validado
+com números reais do mesmo pool: `nginx-ingress-controller` em `.../ingress` pede genuinamente
+1920m de CPU — a checagem de capacidade (`MarkInsufficientForLargestWorkload`) usa esse valor real
+sem produzir números absurdos. Migração de schema (`has_critical_workload`/
+`critical_workload_names`) aplicada sem erro contra a cópia do banco real, e nenhuma linha
+pré-existente veio com `has_critical_workload=true` por engano (confirma o default correto da
+coluna nova). `go test ./internal/finops/... ./internal/storage/... ./internal/web/handlers/...
+-race`, `go build`/`go vet`/`gofmt`, `npx tsc --noEmit -p tsconfig.app.json`/`eslint`/`vite build`
+— todos limpos. **Não clicado na UI real** (sem VPN pra levantar uma instância isolada e sem
+ferramenta de automação de navegador nesta sessão) — o aviso visual (F1.3) foi revisado por
+leitura de código, seguindo o mesmo padrão visual (`AlertTriangle` âmbar) já usado noutras partes
+desta app.
+
+- [x] **F1.1 — `SuggestVMTier` não tem nenhum sinal de criticidade do workload.**
   `internal/finops/vm_tiers.go:170-256` — os 3 branches (AKS/GKE/EKS) recebem só
   `cpuUtilPct`/`memUtilPct` AGREGADOS do pool; `isOversized := hasUsage && cpuUtilPct < 30 &&
   memUtilPct < 30` (linha ~183) é exatamente a regra que disparou pro pool "ingress" (CPU 0%, Mem
@@ -132,7 +153,7 @@ istio-ingressgateway recebendo sugestão de downsize sem aviso).
   que marca `NodePoolTierSuggestion` com um novo campo `HasCriticalWorkload bool` (+ lista de quais
   bateram) quando qualquer workload do pool corresponder. Não bloquear a sugestão — só marcá-la.
 
-- [ ] **F1.2 — Nenhuma checagem de que a SKU sugerida comporta o maior pod individual do pool.**
+- [x] **F1.2 — Nenhuma checagem de que a SKU sugerida comporta o maior pod individual do pool.**
   Mesma função (`vm_tiers.go`) — a decisão é 100% sobre a MÉDIA/agregado do pool, nunca o pico de
   um único pod. Uma SKU menor sugerida pode ter memória-por-vCPU insuficiente pro maior pod
   individual rodando ali, que simplesmente não conseguiria ser agendado no node menor. **Ação**:
@@ -142,7 +163,7 @@ istio-ingressgateway recebendo sugestão de downsize sem aviso).
   como "requer revisão manual") qualquer alternativa cuja capacidade por node fique abaixo desse
   valor + margem.
 
-- [ ] **F1.3 — Frontend não exibe nenhum aviso de criticidade no card de sugestão.**
+- [x] **F1.3 — Frontend não exibe nenhum aviso de criticidade no card de sugestão.**
   `RightsizingTab.tsx` (`NodePoolTierCard`, linhas ~743-829, confirmado via leitura completa +
   grep por istio/velero/ingress/namespace — nenhuma checagem encontrada) renderiza a sugestão de
   downsize com a MESMA aparência visual pra qualquer pool, seja ele infra crítica ou app comum.
