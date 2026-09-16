@@ -1,9 +1,10 @@
 # Plano: Melhorias do FinOps (auditoria de gaps, falhas e riscos)
 
 **Status**: 🟡 em execução — Fase -1 (crítico, fora do escopo original) e Fase 0 mescladas na
-`main`. Fase 1 concluída (PR #433, aguardando merge). Fase 2 concluída (PR #434, aguardando
-merge). Fase 3 concluída (F3.1 implementada; F3.2 avaliada e conscientemente não implementada por
-falta de recurso real pra validar — ver seção da fase). Fases 4-5 pendentes.
+`main`, junto com a Fase 1. Fase 2 concluída (PR #434, aguardando merge). Fase 3 concluída (F3.1
+implementada; F3.2 avaliada e conscientemente não implementada por falta de recurso real pra
+validar — ver seção da fase). Fase 4 concluída (F4.1 singleflight + F4.2 RBAC, PR seguinte). Fase
+5 pendente.
 **Escopo**: o módulo FinOps inteiro — as 8 abas (Dashboard, Node Pools, Workloads, HPA Histórico,
 Armazenamento, Oportunidades, Relatório, Rightsizing), backend (`internal/finops/`,
 `internal/web/handlers/finops*.go`, `internal/storage/finops_rightsizing_store.go`) e frontend
@@ -295,17 +296,19 @@ de preço sem confirmar sintaxe/unidades ao vivo primeiro (ver o resto deste arq
   chaves diferentes → execuções independentes), rodados 5x seguidas com `-race` sem flake.
   `go build`/`go vet`/`gofmt`/`go test ./internal/web/handlers/... -race` limpos.
 
-- [ ] **F4.2 — Decisão de RBAC pendente pras rotas `/finops/*`.**
-  `internal/web/server.go:839-854` — nenhuma das 14 rotas FinOps usa
-  `rbacMiddleware.RequireSREGroup()`, diferente de operações comparáveis noutras partes da app
-  (ex: `POST /nodepools/registry/scan`). Hoje isso não é uma vulnerabilidade viva —
-  `RequireSREGroup()` é um no-op documentado (`internal/web/middleware/rbac.go:68-73`) — mas é uma
-  inconsistência que deixaria FinOps (IDs de subscription, nomes de recurso, dados de custo via
-  `GetDataResources`, scans caros) desprotegido no exato momento em que esse middleware for
-  reativado em qualquer outro lugar da app, porque ninguém vai lembrar de adicionar aqui também.
-  **Ação**: decisão explícita do usuário — aplicar `RequireSREGroup()` nas rotas de escrita/scan
-  do FinOps agora (por consistência, mesmo sendo no-op), ou registrar deliberadamente como "fora
-  de escopo" e mover pra um backlog de segurança geral da app.
+- [x] **F4.2 — Decisão de RBAC pendente pras rotas `/finops/*`.**
+  Decisão explícita do usuário (`AskUserQuestion`): aplicar `RequireSREGroup()` agora, por
+  consistência com o resto da app. `internal/web/server.go` — as 4 rotas de escrita/scan do
+  FinOps (`POST /finops/rightsizing/scan`, `POST /finops/pricing/refresh`, `POST /finops/analyze`,
+  `POST /finops/storage/refresh`) ganharam `rbacMiddleware.RequireSREGroup()`, mesmo padrão já
+  usado por `POST /nodepools/registry/scan`. As demais rotas `GET` (leitura pura) permanecem sem
+  RBAC extra, mesmo critério já documentado inline nelas ("histórico on-demand... leitura, sem RBAC
+  extra"). `RequireSREGroup()` continua sendo um no-op documentado
+  (`internal/web/middleware/rbac.go`, `c.Set("isSRE", true); c.Next()`) — zero efeito comportamental
+  hoje, confirmado lendo o código-fonte do middleware antes de aplicar — só protege
+  automaticamente estas 4 rotas no momento em que ele for reativado em qualquer lugar da app,
+  sem exigir lembrar de voltar aqui. `go build`/`go vet`/`gofmt` limpos; nenhum teste (RBAC ou
+  outro) referencia essas rotas, então nada precisou de atualização.
 
 ### Fase 5 — Manutenibilidade (menor risco/urgência — adiável)
 

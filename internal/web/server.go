@@ -839,12 +839,19 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/report", finOpsHandler.GetReport)
 	api.GET("/finops/report/last", finOpsHandler.GetLastReport)
 	api.GET("/finops/rightsizing", finOpsHandler.GetRightsizing)
-	api.POST("/finops/rightsizing/scan", finOpsHandler.ScanRightsizing)      // mesmo padrão sem RBAC extra dos demais POST de FinOps (pricing/refresh, storage/refresh) — análise, não mutação de cluster
+	// F4.2 (FINOPS-IMPROVEMENTS-PLAN.md) — decisão explícita do usuário: RequireSREGroup() nas 4
+	// rotas de escrita/scan do FinOps (mesmo padrão já usado por POST /nodepools/registry/scan),
+	// por consistência com o resto da app. RequireSREGroup() é hoje um no-op documentado
+	// (internal/web/middleware/rbac.go) — sem efeito prático imediato — mas protege
+	// automaticamente estas rotas (que expõem IDs de subscription, nomes de recurso e dados de
+	// custo, e disparam scans caros) no exato momento em que o middleware for reativado em
+	// qualquer lugar da app, sem exigir lembrar de voltar aqui.
+	api.POST("/finops/rightsizing/scan", rbacMiddleware.RequireSREGroup(), finOpsHandler.ScanRightsizing)
 	api.GET("/finops/rightsizing/history", finOpsHandler.GetWorkloadHistory) // histórico on-demand (CPU/Mem) pro gráfico do modal de detalhe de workload — leitura, sem RBAC extra
 	api.GET("/finops/pricing", finOpsHandler.GetPricing)
-	api.POST("/finops/pricing/refresh", finOpsHandler.RefreshPricing)
+	api.POST("/finops/pricing/refresh", rbacMiddleware.RequireSREGroup(), finOpsHandler.RefreshPricing)
 	api.GET("/finops/exchange-rate", finOpsHandler.GetExchangeRate)
-	api.POST("/finops/analyze", finOpsHandler.AnalyzeReport)
+	api.POST("/finops/analyze", rbacMiddleware.RequireSREGroup(), finOpsHandler.AnalyzeReport)
 	api.GET("/finops/timeline", finOpsHandler.GetTimeline)
 	api.GET("/finops/timeline/compare", finOpsHandler.GetTimelineCompare)
 	api.GET("/finops/timeline/compare-snapshot", finOpsHandler.CompareWithSnapshot)
@@ -852,7 +859,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/timeline/saved", finOpsHandler.GetSavedTimelines)
 	api.GET("/finops/vm-alternatives", finOpsHandler.GetVMAlternatives)
 	api.GET("/finops/data-resources", finOpsHandler.GetDataResources) // RG de dados (rg-<nome>-data-<env>) — SQL/Storage/Redis/Cosmos/ServiceBus fora do cluster K8s
-	api.POST("/finops/storage/refresh", finOpsHandler.RefreshDiskPricing)
+	api.POST("/finops/storage/refresh", rbacMiddleware.RequireSREGroup(), finOpsHandler.RefreshDiskPricing)
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
