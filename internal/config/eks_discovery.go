@@ -67,7 +67,7 @@ func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string), allowI
 		return nil, nil
 	}
 
-	profiles, err := listAWSProfiles(ctx)
+	profiles, err := ListAWSProfiles(ctx)
 	if err != nil {
 		return nil, []error{fmt.Errorf("erro ao listar profiles AWS: %w", err)}
 	}
@@ -234,10 +234,12 @@ func checkAWSCredentials(profile string) bool {
 	return err == nil
 }
 
-// listAWSProfiles lista todos os profiles configurados via aws configure list-profiles.
+// ListAWSProfiles lista todos os profiles configurados via aws configure list-profiles.
 // Filtra entradas que parecem ARNs (arn:aws:...) — geradas pelo aws eks update-kubeconfig
-// e inválidas como nome de profile.
-func listAWSProfiles(ctx context.Context) ([]string, error) {
+// e inválidas como nome de profile. Exportada para reuso pela aba VMs/EC2
+// (internal/web/handlers/vm.go), que precisa listar profiles AWS fora de qualquer contexto de
+// cluster EKS.
+func ListAWSProfiles(ctx context.Context) ([]string, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 

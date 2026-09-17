@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -71,29 +70,15 @@ func parseEKSClusterName(input string) (string, string) {
 	return input, arnRegion
 }
 
-// args base para todos os comandos AWS CLI
+// args base para todos os comandos AWS CLI — delega pra buildAWSArgs (awscli.go), compartilhada
+// com AWSEC2Provider. Mantido como método (não removido) pra não precisar tocar em nenhum dos
+// call sites existentes abaixo.
 func (p *AWSNodeGroupProvider) baseArgs(subcmd ...string) []string {
-	args := append([]string{}, subcmd...)
-	if p.region != "" {
-		args = append(args, "--region", p.region)
-	}
-	if p.profile != "" {
-		args = append(args, "--profile", p.profile)
-	}
-	args = append(args, "--output", "json")
-	return args
+	return buildAWSArgs(p.region, p.profile, subcmd...)
 }
 
 func (p *AWSNodeGroupProvider) run(ctx context.Context, args []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "aws", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("%w: %s", err, string(exitErr.Stderr))
-		}
-		return nil, err
-	}
-	return out, nil
+	return runAWSCLI(ctx, args)
 }
 
 // ValidateAuth retorna ErrNotSupported para EKS — autenticação é gerenciada

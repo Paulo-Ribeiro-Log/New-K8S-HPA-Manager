@@ -1448,6 +1448,20 @@ func (s *Server) setupRoutes() {
 		certGroup.POST("/webhooks/update-cabundle", rbacMiddleware.RequireSREGroup(), certificatesHandler.UpdateMutatingWebhookCABundle)
 	}
 
+	// VMs/EC2 — Fase 1 do plano (só listagem/power actions; terminal SSH/SSM vem nas fases
+	// seguintes). Hoje só AWS EC2 implementado (ver internal/cloudprovider/aws/ec2.go), mas a
+	// interface cloudprovider.VMProvider já é multi-cloud desde o início.
+	vmHandler := handlers.NewVMHandler(s.historyTracker)
+	vmGroup := api.Group("/vms")
+	{
+		vmGroup.GET("/aws/profiles", vmHandler.ListProfiles) // leitura, sem RBAC
+		vmGroup.GET("", vmHandler.ListInstances)             // leitura, sem RBAC
+		vmGroup.GET("/:instanceId", vmHandler.GetInstance)   // leitura, sem RBAC
+		vmGroup.POST("/:instanceId/start", rbacMiddleware.RequireSREGroup(), vmHandler.StartInstance)
+		vmGroup.POST("/:instanceId/stop", rbacMiddleware.RequireSREGroup(), vmHandler.StopInstance)
+		vmGroup.POST("/:instanceId/reboot", rbacMiddleware.RequireSREGroup(), vmHandler.RebootInstance)
+	}
+
 	// Perfil SSO corporativo (email + matrícula + senha compartilhada entre serviços)
 	ssoRoutes := api.Group("/sso")
 	{
