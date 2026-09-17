@@ -3016,3 +3016,38 @@ export interface AKVDiscoveredKey {
   value_decoded?: string;
   is_binary: boolean;
 }
+
+// ============================================================================
+// VMs/EC2 (aba VMs/EC2 — ver plano em /home/paulo/.claude/plans/scalable-greeting-kazoo.md)
+// camelCase (não snake_case) — espelha internal/models/vm.go, mesma convenção já usada pelos
+// tipos de Certificados TLS (types/certificates.ts), não a de NodePool/HPA.
+// ============================================================================
+
+export type VMPowerState =
+  | "running"
+  | "stopped"
+  | "pending"
+  | "stopping"
+  | "shutting-down"
+  | "terminated"
+  | "unknown";
+
+export type VMConnectionMode = "ssh" | "ssm";
+
+export interface VMInstance {
+  id: string;
+  name: string;
+  provider: string; // "aws" (só implementado por enquanto — "azure"/"gcp" no futuro)
+  region: string;
+  zone?: string;
+  publicIp?: string;
+  privateIp?: string;
+  state: VMPowerState;
+  os?: string; // "linux" | "windows"
+  instanceType?: string;
+  tags?: Record<string, string>;
+  launchTime?: string;
+  // supportedConnectionModes é uma HEURÍSTICA de exibição (badge informativo) — nunca usada pra
+  // esconder um botão de conexão ou pré-selecionar um modo. A escolha SSH vs SSM é sempre manual.
+  supportedConnectionModes?: VMConnectionMode[];
+}

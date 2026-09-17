@@ -129,6 +129,7 @@ import type {
   NexusValuesFileResponse,
   NexusFlatArtifact,
   RollbackFileEntry,
+  VMInstance,
 } from "./types";
 
 import type {
@@ -4533,6 +4534,50 @@ class APIClient {
 
   async deleteAwsSsoConfig(profile: string): Promise<{ profile: string; message: string }> {
     return this.request(`/aws/config/${encodeURIComponent(profile)}`, { method: "DELETE" });
+  }
+
+  // ─── VMs/EC2 ──────────────────────────────────────────────────────────────
+  // Passa por this.request() (não fetch cru) de propósito: erros de sessão AWS SSO expirada
+  // (classifyEC2Error no backend, ver internal/cloudprovider/aws/ec2.go) usam o mesmo texto já
+  // reconhecido pelo detector de "aws-sso-token-expired" dentro de request() — o diálogo de
+  // login SSO (useAwsSsoAuth, montado globalmente em Index.tsx) já reage sozinho, sem precisar
+  // de nenhuma integração extra no componente da aba.
+
+  async listVMAwsProfiles(): Promise<string[]> {
+    const response = await this.request<APIResponse<string[]>>("/vms/aws/profiles");
+    return response.data || [];
+  }
+
+  async listVMInstances(profile: string, region: string, opts?: { refresh?: boolean }): Promise<VMInstance[]> {
+    const params = new URLSearchParams({ profile, region });
+    if (opts?.refresh) params.set("refresh", "true");
+    const response = await this.request<APIResponse<VMInstance[]>>(`/vms?${params.toString()}`);
+    return response.data || [];
+  }
+
+  async getVMInstance(instanceId: string, profile: string, region: string): Promise<VMInstance> {
+    const params = new URLSearchParams({ profile, region });
+    const response = await this.request<APIResponse<VMInstance>>(`/vms/${encodeURIComponent(instanceId)}?${params.toString()}`);
+    return response.data;
+  }
+
+  private async vmPowerAction(instanceId: string, action: "start" | "stop" | "reboot", profile: string, region: string): Promise<void> {
+    await this.request(`/vms/${encodeURIComponent(instanceId)}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({ profile, region }),
+    });
+  }
+
+  async startVMInstance(instanceId: string, profile: string, region: string): Promise<void> {
+    return this.vmPowerAction(instanceId, "start", profile, region);
+  }
+
+  async stopVMInstance(instanceId: string, profile: string, region: string): Promise<void> {
+    return this.vmPowerAction(instanceId, "stop", profile, region);
+  }
+
+  async rebootVMInstance(instanceId: string, profile: string, region: string): Promise<void> {
+    return this.vmPowerAction(instanceId, "reboot", profile, region);
   }
 
   // ─── GCP Auth (gcloud auth login via subprocesso) ───────────────────────────
