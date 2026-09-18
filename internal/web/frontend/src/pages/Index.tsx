@@ -67,6 +67,7 @@ import LatencyTestTab from "@/components/LatencyTestTab";
 import KafkaTestTab from "@/components/KafkaTestTab";
 import DatabaseTestTab from "@/components/DatabaseTestTab";
 import NetDiscoveryTab from "@/components/NetDiscoveryTab";
+import VMsTab from "@/components/VMsTab";
 import AKVDiscoveryTab from "@/components/AKVDiscoveryTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
@@ -1349,6 +1350,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Net Discovery Tab">
             <NetDiscoveryTab />
+          </ErrorBoundary>
+        );
+
+      case "vms":
+        return (
+          <ErrorBoundary componentName="VMs Tab">
+            <VMsTab />
           </ErrorBoundary>
         );
 

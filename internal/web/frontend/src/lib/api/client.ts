@@ -129,6 +129,14 @@ import type {
   NexusValuesFileResponse,
   NexusFlatArtifact,
   RollbackFileEntry,
+  VMInstance,
+  SSHCredentialProfile,
+  SaveSSHCredentialProfileInput,
+  VMSSMStatus,
+  LocalSSHKeyEntry,
+  GenerateVMSSHKeyInput,
+  GenerateVMSSHKeyResult,
+  ImportLocalVMSSHKeyInput,
 } from "./types";
 
 import type {
@@ -4533,6 +4541,157 @@ class APIClient {
 
   async deleteAwsSsoConfig(profile: string): Promise<{ profile: string; message: string }> {
     return this.request(`/aws/config/${encodeURIComponent(profile)}`, { method: "DELETE" });
+  }
+
+  // ─── VMs/EC2 ──────────────────────────────────────────────────────────────
+  // Passa por this.request() (não fetch cru) de propósito: erros de sessão AWS SSO expirada
+  // (classifyEC2Error no backend, ver internal/cloudprovider/aws/ec2.go) usam o mesmo texto já
+  // reconhecido pelo detector de "aws-sso-token-expired" dentro de request() — o diálogo de
+  // login SSO (useAwsSsoAuth, montado globalmente em Index.tsx) já reage sozinho, sem precisar
+  // de nenhuma integração extra no componente da aba.
+
+  async listVMAwsProfiles(): Promise<string[]> {
+    const response = await this.request<APIResponse<string[]>>("/vms/aws/profiles");
+    return response.data || [];
+  }
+
+  async listVMInstances(profile: string, region: string, opts?: { refresh?: boolean }): Promise<VMInstance[]> {
+    const params = new URLSearchParams({ profile, region });
+    if (opts?.refresh) params.set("refresh", "true");
+    const response = await this.request<APIResponse<VMInstance[]>>(`/vms?${params.toString()}`);
+    return response.data || [];
+  }
+
+  async getVMInstance(instanceId: string, profile: string, region: string): Promise<VMInstance> {
+    const params = new URLSearchParams({ profile, region });
+    const response = await this.request<APIResponse<VMInstance>>(`/vms/${encodeURIComponent(instanceId)}?${params.toString()}`);
+    return response.data;
+  }
+
+  private async vmPowerAction(instanceId: string, action: "start" | "stop" | "reboot", profile: string, region: string): Promise<void> {
+    await this.request(`/vms/${encodeURIComponent(instanceId)}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({ profile, region }),
+    });
+  }
+
+  async startVMInstance(instanceId: string, profile: string, region: string): Promise<void> {
+    return this.vmPowerAction(instanceId, "start", profile, region);
+  }
+
+  async stopVMInstance(instanceId: string, profile: string, region: string): Promise<void> {
+    return this.vmPowerAction(instanceId, "stop", profile, region);
+  }
+
+  async rebootVMInstance(instanceId: string, profile: string, region: string): Promise<void> {
+    return this.vmPowerAction(instanceId, "reboot", profile, region);
+  }
+
+  // ─── VMs — Perfis de credencial SSH (Fase 3) ────────────────────────────────
+  // Escopados pelo user_email do próprio usuário (InjectUserEmail no backend) — nunca RBAC de
+  // grupo SRE, são credenciais pessoais do usuário logado.
+
+  async listVMCredentialProfiles(): Promise<SSHCredentialProfile[]> {
+    const response = await this.request<APIResponse<SSHCredentialProfile[]>>("/vms/credentials");
+    return response.data || [];
+  }
+
+  async createVMCredentialProfile(input: SaveSSHCredentialProfileInput): Promise<{ id: string }> {
+    const response = await this.request<APIResponse<{ id: string }>>("/vms/credentials", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return response.data;
+  }
+
+  async updateVMCredentialProfile(id: string, input: SaveSSHCredentialProfileInput): Promise<{ id: string }> {
+    const response = await this.request<APIResponse<{ id: string }>>(`/vms/credentials/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+    return response.data;
+  }
+
+  async deleteVMCredentialProfile(id: string): Promise<void> {
+    await this.request(`/vms/credentials/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  // generateVMSSHKeyPair/listLocalVMSSHKeys/importLocalVMSSHKey — 2 caminhos alternativos de
+  // criação de perfil além de colar uma chave/senha crua (createVMCredentialProfile acima): gerar
+  // um par novo (RSA/Ed25519) ou importar uma chave já existente de ~/.ssh do host do servidor.
+  async generateVMSSHKeyPair(input: GenerateVMSSHKeyInput): Promise<GenerateVMSSHKeyResult> {
+    const response = await this.request<APIResponse<GenerateVMSSHKeyResult>>("/vms/credentials/generate-key", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return response.data;
+  }
+
+  async listLocalVMSSHKeys(): Promise<LocalSSHKeyEntry[]> {
+    const response = await this.request<APIResponse<LocalSSHKeyEntry[]>>("/vms/credentials/local-ssh-keys");
+    return response.data || [];
+  }
+
+  async importLocalVMSSHKey(input: ImportLocalVMSSHKeyInput): Promise<{ id: string }> {
+    const response = await this.request<APIResponse<{ id: string }>>("/vms/credentials/import-local-key", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return response.data;
+  }
+
+  // getVMTerminalWsUrl — monta a URL do WebSocket do terminal SSH de VM (Fase 3). Token via query
+  // param (?token=), mesmo mecanismo de todo WS desta app (EventSource/WebSocket não mandam
+  // headers customizados) — ver WebSocketJWTAuthMiddleware.
+  getVMTerminalWsUrl(instanceId: string, host: string, port: number, credentialProfileId: string): string {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const token = localStorage.getItem("auth_token") || "";
+    const params = new URLSearchParams({
+      host,
+      port: String(port),
+      credentialProfileId,
+      token,
+    });
+    return `${protocol}//${window.location.host}/api/v1/vms/${encodeURIComponent(instanceId)}/terminal/ssh?${params.toString()}`;
+  }
+
+  // ─── VMs — SSM Session Manager (Fase 5) ─────────────────────────────────────
+
+  async getVMSSMStatus(): Promise<VMSSMStatus> {
+    const response = await this.request<APIResponse<VMSSMStatus>>("/vms/ssm/status");
+    return response.data;
+  }
+
+  // getVMSSMTerminalWsUrl — monta a URL do WebSocket do terminal SSM de VM. Diferente do SSH, não
+  // precisa de credencial nenhuma — a sessão é autorizada pelo profile/região AWS já usado pra
+  // listar a instância (IAM do SSM, não chave/senha própria da VM).
+  getVMSSMTerminalWsUrl(instanceId: string, profile: string, region: string): string {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const token = localStorage.getItem("auth_token") || "";
+    const params = new URLSearchParams({ profile, region, token });
+    return `${protocol}//${window.location.host}/api/v1/vms/${encodeURIComponent(instanceId)}/terminal/ssm?${params.toString()}`;
+  }
+
+  // startVMSSMTunnel/stopVMSSMTunnel — SFTP sobre SSM (pedido explícito do usuário: "como vou
+  // fazer sftp usando a conexão ssm?"). SSM não fala SFTP nativamente — abre um túnel de
+  // port-forwarding real (aws ssm start-session --document-name AWS-StartPortForwardingSession)
+  // encaminhando uma porta local pra porta remota (sshd) da instância; SSH/SFTP então falam
+  // através desse túnel com a credencial de sempre. Diferente do resto do SFTP desta app (sem
+  // estado), este túnel PRECISA ficar vivo entre operações — por isso start/stop explícitos, não
+  // implícito em cada chamada de list/download/etc.
+  async startVMSSMTunnel(instanceId: string, profile: string, region: string, remotePort?: number): Promise<{ sessionId: string }> {
+    const response = await this.request<APIResponse<{ sessionId: string }>>(
+      `/vms/${encodeURIComponent(instanceId)}/ssm-tunnel/start`,
+      { method: "POST", body: JSON.stringify({ profile, region, remotePort }) }
+    );
+    return response.data;
+  }
+
+  async stopVMSSMTunnel(instanceId: string, sessionId: string): Promise<void> {
+    await this.request(`/vms/${encodeURIComponent(instanceId)}/ssm-tunnel/stop`, {
+      method: "POST",
+      body: JSON.stringify({ sessionId }),
+    });
   }
 
   // ─── GCP Auth (gcloud auth login via subprocesso) ───────────────────────────

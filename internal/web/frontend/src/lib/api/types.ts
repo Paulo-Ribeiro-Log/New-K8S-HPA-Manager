@@ -3016,3 +3016,95 @@ export interface AKVDiscoveredKey {
   value_decoded?: string;
   is_binary: boolean;
 }
+
+// ============================================================================
+// VMs/EC2 (aba VMs/EC2 — ver plano em /home/paulo/.claude/plans/scalable-greeting-kazoo.md)
+// camelCase (não snake_case) — espelha internal/models/vm.go, mesma convenção já usada pelos
+// tipos de Certificados TLS (types/certificates.ts), não a de NodePool/HPA.
+// ============================================================================
+
+export type VMPowerState =
+  | "running"
+  | "stopped"
+  | "pending"
+  | "stopping"
+  | "shutting-down"
+  | "terminated"
+  | "unknown";
+
+export type VMConnectionMode = "ssh" | "ssm";
+
+export interface VMInstance {
+  id: string;
+  name: string;
+  provider: string; // "aws" (só implementado por enquanto — "azure"/"gcp" no futuro)
+  region: string;
+  zone?: string;
+  publicIp?: string;
+  privateIp?: string;
+  state: VMPowerState;
+  os?: string; // "linux" | "windows"
+  instanceType?: string;
+  tags?: Record<string, string>;
+  launchTime?: string;
+  // supportedConnectionModes é uma HEURÍSTICA de exibição (badge informativo) — nunca usada pra
+  // esconder um botão de conexão ou pré-selecionar um modo. A escolha SSH vs SSM é sempre manual.
+  supportedConnectionModes?: VMConnectionMode[];
+}
+
+// SSHCredentialProfile — metadados de um perfil de credencial SSH nomeado (nunca inclui os
+// segredos — ver internal/storage/vm_credentials_store.go:SSHCredentialProfile). O segredo real
+// só é lido no backend, ao abrir uma conexão de verdade (vm_terminal.go).
+export interface SSHCredentialProfile {
+  id: string;
+  name: string;
+  username: string;
+  authMethod: "key" | "password";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveSSHCredentialProfileInput {
+  name: string;
+  username: string;
+  authMethod: "key" | "password";
+  privateKeyPEM?: string;
+  passphrase?: string;
+  password?: string;
+}
+
+// VMSSMStatus — disponibilidade de aws CLI + session-manager-plugin no servidor (Fase 5). Só
+// alimenta um badge informativo — nunca esconde o botão "Conectar via SSM" (seleção de modo é
+// sempre manual, ver internal/web/handlers/vm_ssm_status.go).
+export interface VMSSMStatus {
+  awsCliFound: boolean;
+  pluginFound: boolean;
+  available: boolean;
+  message?: string;
+}
+
+// LocalSSHKeyEntry — arquivo candidato a chave privada em ~/.ssh do HOST do servidor (nunca inclui
+// conteúdo, só nome/caminho — ver internal/web/handlers/vm_credentials_keys.go).
+export interface LocalSSHKeyEntry {
+  name: string;
+  path: string;
+}
+
+export interface GenerateVMSSHKeyInput {
+  name: string;
+  username: string;
+  keyType: "rsa" | "ed25519";
+  bits?: number; // só relevante pra rsa
+}
+
+export interface GenerateVMSSHKeyResult {
+  id: string;
+  publicKey: string; // formato authorized_keys — única vez que aparece, nunca reexibida depois
+}
+
+export interface ImportLocalVMSSHKeyInput {
+  path: string;
+  name: string;
+  username: string;
+  passphrase?: string;
+}

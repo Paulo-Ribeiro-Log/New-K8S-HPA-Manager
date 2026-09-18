@@ -29,3 +29,28 @@ type NodeGroupProvider interface {
 	// ValidateAuth verifica se a autenticação com o cloud provider está ativa.
 	ValidateAuth(ctx context.Context) error
 }
+
+// VMProvider abstrai operações de VMs/instâncias standalone (fora de qualquer cluster K8s) por
+// cloud provider — ex: AWSEC2Provider. Deliberadamente SEM nenhum método de conexão (terminal/
+// SFTP): SSH é um transporte universal que serve qualquer cloud, enquanto SSM Session Manager é
+// exclusivo da AWS (o equivalente Azure é Bastion, o da GCP é IAP — sem superfície de interface
+// comum real). Forçar um método de conexão aqui obrigaria um futuro provider Azure/GCP a
+// implementar algo sem equivalente, ou stubar com ErrNotSupported pra sempre. Conectividade vive
+// em interfaces irmãs (ver internal/vmssh, internal/vmssm), compostas só na camada de handler.
+type VMProvider interface {
+	// ListInstances lista as instâncias visíveis para este provider, aplicando o filtro dado.
+	ListInstances(ctx context.Context, filter models.VMFilter) ([]models.VMInstance, error)
+
+	// GetInstance retorna os detalhes de uma única instância.
+	GetInstance(ctx context.Context, instanceID string) (models.VMInstance, error)
+
+	// StartInstance, StopInstance, RebootInstance disparam a transição de energia — não esperam
+	// a transição completar (o chamador refaz ListInstances/GetInstance depois de invalidar o
+	// cache pra observar o novo estado, mesmo padrão já usado por invalidateNodePoolCache).
+	StartInstance(ctx context.Context, instanceID string) error
+	StopInstance(ctx context.Context, instanceID string) error
+	RebootInstance(ctx context.Context, instanceID string) error
+
+	// ValidateAuth verifica se a autenticação com o cloud provider está ativa.
+	ValidateAuth(ctx context.Context) error
+}
