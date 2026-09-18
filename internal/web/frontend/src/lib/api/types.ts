@@ -3051,3 +3051,60 @@ export interface VMInstance {
   // esconder um botão de conexão ou pré-selecionar um modo. A escolha SSH vs SSM é sempre manual.
   supportedConnectionModes?: VMConnectionMode[];
 }
+
+// SSHCredentialProfile — metadados de um perfil de credencial SSH nomeado (nunca inclui os
+// segredos — ver internal/storage/vm_credentials_store.go:SSHCredentialProfile). O segredo real
+// só é lido no backend, ao abrir uma conexão de verdade (vm_terminal.go).
+export interface SSHCredentialProfile {
+  id: string;
+  name: string;
+  username: string;
+  authMethod: "key" | "password";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveSSHCredentialProfileInput {
+  name: string;
+  username: string;
+  authMethod: "key" | "password";
+  privateKeyPEM?: string;
+  passphrase?: string;
+  password?: string;
+}
+
+// VMSSMStatus — disponibilidade de aws CLI + session-manager-plugin no servidor (Fase 5). Só
+// alimenta um badge informativo — nunca esconde o botão "Conectar via SSM" (seleção de modo é
+// sempre manual, ver internal/web/handlers/vm_ssm_status.go).
+export interface VMSSMStatus {
+  awsCliFound: boolean;
+  pluginFound: boolean;
+  available: boolean;
+  message?: string;
+}
+
+// LocalSSHKeyEntry — arquivo candidato a chave privada em ~/.ssh do HOST do servidor (nunca inclui
+// conteúdo, só nome/caminho — ver internal/web/handlers/vm_credentials_keys.go).
+export interface LocalSSHKeyEntry {
+  name: string;
+  path: string;
+}
+
+export interface GenerateVMSSHKeyInput {
+  name: string;
+  username: string;
+  keyType: "rsa" | "ed25519";
+  bits?: number; // só relevante pra rsa
+}
+
+export interface GenerateVMSSHKeyResult {
+  id: string;
+  publicKey: string; // formato authorized_keys — única vez que aparece, nunca reexibida depois
+}
+
+export interface ImportLocalVMSSHKeyInput {
+  path: string;
+  name: string;
+  username: string;
+  passphrase?: string;
+}

@@ -62,6 +62,7 @@ type Server struct {
 	historyTracker     *history.HistoryTracker
 	incidentKBStore    *incidentkb.Store
 	portForwardHandler *handlers.PortForwardHandler
+	vmSSMTunnels       *handlers.VMSSMTunnelManager
 
 	// TODO: Remover após migração completa para V2
 	// monitoringEngine *engine.ScanEngine
@@ -679,6 +680,9 @@ func (s *Server) setupRoutes() {
 			fmt.Println("\n🛑 Shutdown solicitado via API...")
 			teams.CloseBrowser()
 			s.portForwardHandler.Manager().StopAll()
+			if s.vmSSMTunnels != nil {
+				s.vmSSMTunnels.StopAll()
+			}
 			fmt.Println("✅ Servidor encerrado")
 			os.Exit(0)
 		}()
@@ -1448,19 +1452,95 @@ func (s *Server) setupRoutes() {
 		certGroup.POST("/webhooks/update-cabundle", rbacMiddleware.RequireSREGroup(), certificatesHandler.UpdateMutatingWebhookCABundle)
 	}
 
-	// VMs/EC2 — Fase 1 do plano (só listagem/power actions; terminal SSH/SSM vem nas fases
-	// seguintes). Hoje só AWS EC2 implementado (ver internal/cloudprovider/aws/ec2.go), mas a
-	// interface cloudprovider.VMProvider já é multi-cloud desde o início.
+	// VMs/EC2 — Fase 1 do plano (listagem/power actions). Hoje só AWS EC2 implementado (ver
+	// internal/cloudprovider/aws/ec2.go), mas a interface cloudprovider.VMProvider já é
+	// multi-cloud desde o início.
 	vmHandler := handlers.NewVMHandler(s.historyTracker)
+	vmSSMStatusHandler := handlers.NewVMSSMStatusHandler()
 	vmGroup := api.Group("/vms")
 	{
-		vmGroup.GET("/aws/profiles", vmHandler.ListProfiles) // leitura, sem RBAC
-		vmGroup.GET("", vmHandler.ListInstances)             // leitura, sem RBAC
-		vmGroup.GET("/:instanceId", vmHandler.GetInstance)   // leitura, sem RBAC
+		vmGroup.GET("/aws/profiles", vmHandler.ListProfiles)       // leitura, sem RBAC
+		vmGroup.GET("/ssm/status", vmSSMStatusHandler.CheckStatus) // leitura, sem RBAC — só badge informativo (Fase 5)
+		vmGroup.GET("", vmHandler.ListInstances)                   // leitura, sem RBAC
+		vmGroup.GET("/:instanceId", vmHandler.GetInstance)         // leitura, sem RBAC
 		vmGroup.POST("/:instanceId/start", rbacMiddleware.RequireSREGroup(), vmHandler.StartInstance)
 		vmGroup.POST("/:instanceId/stop", rbacMiddleware.RequireSREGroup(), vmHandler.StopInstance)
 		vmGroup.POST("/:instanceId/reboot", rbacMiddleware.RequireSREGroup(), vmHandler.RebootInstance)
 	}
+
+	// VMs/EC2 — Fase 3: credenciais SSH + terminal. Store criptografado (AES-256-GCM, mesmo
+	// mecanismo de GitHubTokenStore) — melhor esforço, feature fica indisponível (503) se falhar
+	// ao inicializar, sem derrubar o resto do servidor.
+	fmt.Println("🔐 Inicializando VM Credentials Store...")
+	vmCredStore, err := storage.NewVMCredentialStore()
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao inicializar VM Credentials Store: %v\n", err)
+		fmt.Println("   Terminal SSH de VMs ficará indisponível")
+		vmCredStore = nil
+	} else {
+		fmt.Println("✅ VM Credentials Store inicializado (AES-256-GCM encryption)")
+	}
+
+	vmCredentialsHandler := handlers.NewVMCredentialsHandler(vmCredStore)
+	vmCredGroup := api.Group("/vms/credentials")
+	vmCredGroup.Use(rbacMiddleware.InjectUserEmail()) // escopo por usuário, não SRE-only — é o "meu" perfil
+	{
+		vmCredGroup.GET("", vmCredentialsHandler.ListProfiles)
+		vmCredGroup.POST("", vmCredentialsHandler.CreateProfile)
+		vmCredGroup.PUT("/:id", vmCredentialsHandler.UpdateProfile)
+		vmCredGroup.DELETE("/:id", vmCredentialsHandler.DeleteProfile)
+		// Criação alternativa de credencial (além de colar chave/senha crua acima): gerar um par
+		// novo (RSA/Ed25519) ou importar uma chave já existente de ~/.ssh do host do servidor.
+		vmCredGroup.POST("/generate-key", vmCredentialsHandler.GenerateKey)
+		vmCredGroup.GET("/local-ssh-keys", vmCredentialsHandler.ListLocalSSHKeys)
+		vmCredGroup.POST("/import-local-key", vmCredentialsHandler.ImportLocalKey)
+	}
+
+	// VMs/EC2 — Fase 4: SFTP. Reaproveita o mesmo VMCredentialStore (vmCredStore) e o mesmo
+	// known_hosts compartilhado com o terminal (internal/vmssh — host key confiada uma vez no
+	// terminal já vale pro SFTP); nenhuma sessão persiste entre requisições, cada chamada abre
+	// SSH+SFTP, faz uma operação, fecha. Grupo PRÓPRIO (não reaproveita vmGroup) só pra poder
+	// aplicar InjectUserEmail() — vmGroup não tem esse middleware (suas rotas nunca precisaram de
+	// user_email), mas openSFTPSession precisa dele pra escopar qual perfil de credencial o
+	// usuário pode ler; sem isso, GetCurrentUserInfo cairia no fallback de Azure CLI do SERVIDOR,
+	// resolvendo o email errado.
+	//
+	// SSM: SSM Session Manager não fala SFTP nativamente — a técnica real da AWS é um túnel de
+	// port-forwarding (`aws ssm start-session --document-name AWS-StartPortForwardingSession`)
+	// encaminhando uma porta local pra porta 22 (sshd) da instância através do canal criptografado
+	// do SSM; SSH/SFTP então falam normalmente ATRAVÉS desse túnel, com a mesma credencial de
+	// sempre. Único mecanismo desta app que introduz estado no fluxo de SFTP (o túnel precisa
+	// ficar vivo entre operações) — VMSSMTunnelManager (vm_ssm_tunnel.go), com reaper de
+	// ociosidade próprio.
+	s.vmSSMTunnels = handlers.NewVMSSMTunnelManager()
+	vmSFTPHandler := handlers.NewVMSFTPHandler(vmCredStore, s.historyTracker, s.vmSSMTunnels)
+	vmSFTPGroup := api.Group("/vms")
+	vmSFTPGroup.Use(rbacMiddleware.InjectUserEmail())
+	{
+		vmSFTPGroup.GET("/:instanceId/sftp/list", vmSFTPHandler.VMSFTPList)         // leitura, sem RBAC de grupo
+		vmSFTPGroup.GET("/:instanceId/sftp/download", vmSFTPHandler.VMSFTPDownload) // leitura, sem RBAC de grupo
+		vmSFTPGroup.POST("/:instanceId/sftp/upload", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPUpload)
+		vmSFTPGroup.POST("/:instanceId/sftp/mkdir", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPMkdir)
+		vmSFTPGroup.POST("/:instanceId/sftp/rename", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPRename)
+		vmSFTPGroup.DELETE("/:instanceId/sftp/remove", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPRemove)
+		// Túnel SSM — abre/fecha um subprocesso aws cli real, então atrás de RequireSREGroup()
+		// nos dois (mesmo nível de confiança já dado a StartInstance/StopInstance/RebootInstance).
+		vmSFTPGroup.POST("/:instanceId/ssm-tunnel/start", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.StartSSMTunnel)
+		vmSFTPGroup.POST("/:instanceId/ssm-tunnel/stop", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.StopSSMTunnel)
+	}
+
+	// WebSocket do terminal SSH de VM (fora do grupo api — WebSocket não envia header
+	// Authorization, mesmo motivo documentado pro wsShell/wsCodeEditor acima). RequireSREGroup()
+	// porque isso de fato conecta e executa comandos numa máquina real; InjectUserEmail() vem
+	// ANTES pra já povoar user_email no contexto (usado pra escopar qual perfil de credencial o
+	// usuário pode ler).
+	vmTerminalHandler := handlers.NewVMTerminalHandler(vmCredStore, s.historyTracker)
+	wsVM := s.router.Group("/api/v1/vms")
+	wsVM.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
+	wsVM.Use(rbacMiddleware.InjectUserEmail())
+	wsVM.Use(rbacMiddleware.RequireSREGroup())
+	wsVM.GET("/:instanceId/terminal/ssh", vmTerminalHandler.HandleSSHTerminal)
+	wsVM.GET("/:instanceId/terminal/ssm", vmTerminalHandler.HandleSSMTerminal) // Fase 5 — SSM Session Manager
 
 	// Perfil SSO corporativo (email + matrícula + senha compartilhada entre serviços)
 	ssoRoutes := api.Group("/sso")
@@ -2211,6 +2291,9 @@ func (s *Server) autoShutdown() {
 
 	teams.CloseBrowser()
 	s.portForwardHandler.Manager().StopAll()
+	if s.vmSSMTunnels != nil {
+		s.vmSSMTunnels.StopAll()
+	}
 	os.Exit(0)
 }
 
@@ -2281,6 +2364,13 @@ func (s *Server) Shutdown() error {
 	if s.portForwardHandler != nil {
 		s.portForwardHandler.Manager().StopAll()
 		fmt.Println("✓ Sessões de port-forward encerradas")
+	}
+
+	// 5. Encerrar todos os túneis SSM abertos (SFTP sobre SSM) — sem isso, subprocessos
+	// `aws ssm start-session` ficariam órfãos.
+	if s.vmSSMTunnels != nil {
+		s.vmSSMTunnels.StopAll()
+		fmt.Println("✓ Túneis SSM encerrados")
 	}
 
 	fmt.Println("\n✅ Shutdown concluído com sucesso!")

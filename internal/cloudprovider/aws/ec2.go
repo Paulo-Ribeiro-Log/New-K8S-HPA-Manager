@@ -27,7 +27,7 @@ func (p *AWSEC2Provider) baseArgs(subcmd ...string) []string {
 }
 
 func (p *AWSEC2Provider) run(ctx context.Context, args []string) ([]byte, error) {
-	return runAWSCLI(ctx, args)
+	return runAWSCLI(ctx, p.profile, args)
 }
 
 // --- structs para parse de `aws ec2 describe-instances` ---
@@ -68,9 +68,23 @@ type ssmDescribeInstanceInfoResponse struct {
 
 // instanceNameFromTags resolve o nome de exibição a partir da tag "Name" (convenção universal da
 // AWS Console) — sem essa tag, cai pro próprio InstanceId (nunca string vazia).
+//
+// Bug real corrigido — relatado pelo usuário: "não exibe o nome apenas o ID". Chave de tag na AWS
+// é case-sensitive (confirmado na API/CLI) — a checagem original exigia a chave EXATA "Name",
+// então uma instância tagueada como "name"/"NAME"/"Instance Name" (convenções alternativas reais,
+// comuns em contas geridas por Terraform/CloudFormation de times diferentes) sempre caía no
+// fallback pro InstanceId, mesmo tendo um nome de exibição de fato cadastrado. Corrigido com 2
+// passadas: 1ª exige a chave exata "Name" (prioridade — é a convenção oficial da AWS Console,
+// preferida quando ambas existem); 2ª, só se a 1ª não achou nada, aceita qualquer chave que bata
+// case-insensitively com "name" (cobre "name"/"NAME"/"Name " com espaço).
 func instanceNameFromTags(inst ec2Instance) string {
 	for _, t := range inst.Tags {
 		if t.Key == "Name" && t.Value != "" {
+			return t.Value
+		}
+	}
+	for _, t := range inst.Tags {
+		if strings.EqualFold(strings.TrimSpace(t.Key), "name") && t.Value != "" {
 			return t.Value
 		}
 	}

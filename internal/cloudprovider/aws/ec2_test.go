@@ -85,6 +85,46 @@ func TestParseDescribeInstances_CamposBasicos(t *testing.T) {
 	}
 }
 
+func TestInstanceNameFromTags_CaseInsensitiveFallback(t *testing.T) {
+	makeInst := func(tags ...struct{ Key, Value string }) ec2Instance {
+		inst := ec2Instance{InstanceId: "i-0000000000000000"}
+		for _, tg := range tags {
+			inst.Tags = append(inst.Tags, struct {
+				Key   string `json:"Key"`
+				Value string `json:"Value"`
+			}{Key: tg.Key, Value: tg.Value})
+		}
+		return inst
+	}
+	kv := func(k, v string) struct{ Key, Value string } { return struct{ Key, Value string }{k, v} }
+
+	// Chave lowercase "name" — não bate no match exato "Name", só no fallback case-insensitive.
+	instLower := makeInst(kv("name", "meu-servidor"))
+	if got := instanceNameFromTags(instLower); got != "meu-servidor" {
+		t.Errorf("fallback case-insensitive (name) = %q, esperado meu-servidor", got)
+	}
+
+	// Chave "NAME" (maiúsculas) + espaço em branco.
+	instUpper := makeInst(kv("NAME", "outro-servidor"))
+	if got := instanceNameFromTags(instUpper); got != "outro-servidor" {
+		t.Errorf("fallback case-insensitive (NAME) = %q, esperado outro-servidor", got)
+	}
+
+	// Exact match "Name" tem prioridade sobre um "name" lowercase concorrente (não deveria
+	// acontecer na prática — AWS não permite 2 tags com a mesma chave normalizada — mas o
+	// comportamento de prioridade é explícito e testável mesmo assim).
+	instBoth := makeInst(kv("Name", "prioridade-exata"), kv("name", "nao-deveria-vencer"))
+	if got := instanceNameFromTags(instBoth); got != "prioridade-exata" {
+		t.Errorf("prioridade exata = %q, esperado prioridade-exata", got)
+	}
+
+	// Nenhuma tag parecida com "name" — cai pro InstanceId, nunca string vazia.
+	instNone := makeInst(kv("Environment", "prd"))
+	if got := instanceNameFromTags(instNone); got != "i-0000000000000000" {
+		t.Errorf("sem tag de nome = %q, esperado o InstanceId", got)
+	}
+}
+
 func TestSSMOnlineParsing_SoContaOnline(t *testing.T) {
 	var resp ssmDescribeInstanceInfoResponse
 	if err := json.Unmarshal([]byte(ssmDescribeInstanceInfoFixture), &resp); err != nil {

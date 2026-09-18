@@ -78,7 +78,7 @@ func (p *AWSNodeGroupProvider) baseArgs(subcmd ...string) []string {
 }
 
 func (p *AWSNodeGroupProvider) run(ctx context.Context, args []string) ([]byte, error) {
-	return runAWSCLI(ctx, args)
+	return runAWSCLI(ctx, p.profile, args)
 }
 
 // ValidateAuth retorna ErrNotSupported para EKS — autenticação é gerenciada

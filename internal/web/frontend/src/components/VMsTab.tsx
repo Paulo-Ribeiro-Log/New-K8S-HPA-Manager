@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -21,12 +21,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, RefreshCcw, Play, Square, RotateCw, Server } from "lucide-react";
+import { Loader2, RefreshCcw, Play, Square, RotateCw, Server, Terminal as TerminalIcon, KeyRound, FolderOpen, Search } from "lucide-react";
 import { toast } from "sonner";
 import { ProtectedAction } from "@/components/rbac";
-import { useVMAwsProfiles, useVMInstances } from "@/hooks/useVMs";
+import { useVMAwsProfiles, useVMInstances, useVMSSMStatus } from "@/hooks/useVMs";
 import { apiClient } from "@/lib/api/client";
 import type { VMInstance, VMPowerState } from "@/lib/api/types";
+import VMCredentialsModal from "@/components/VMCredentialsModal";
+import VMConnectModal from "@/components/VMConnectModal";
+import { VMSFTPModal } from "@/components/VMSFTPModal";
 
 // Regiões usadas pra descoberta automática de EKS (internal/config/eks_discovery.go,
 // eksDefaultRegions) — reaproveitadas aqui como atalhos, já que são as regiões reais que esta
@@ -69,9 +72,23 @@ export default function VMsTab() {
   const [profile, setProfile] = useState("");
   const [region, setRegion] = useState("us-east-1");
   const { instances, loading, error, refetch } = useVMInstances(profile, region);
+  const { status: ssmStatus } = useVMSSMStatus();
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [pendingAction, setPendingAction] = useState<{ instance: VMInstance; action: PowerAction } | null>(null);
   const [actingOn, setActingOn] = useState<string | null>(null);
+  // connectTarget — pedido explícito do usuário: "escolho a vm, me conecto por ssm e a conexão
+  // acontece, mas sem exibir o terminal. é executado um 'sudo su -'. o gerenciador de arquivos é
+  // exibido para a escolha das pastas/sub-pastas e depois disso escolhido o terminal é exibido" —
+  // vale pros dois modos (SSH e SSM), tudo dentro de VMConnectModal.tsx (nunca via SFTP — SSM não
+  // fala SFTP nativamente e não deveria pedir credencial SSH nenhuma pra só abrir um terminal).
+  const [connectTarget, setConnectTarget] = useState<VMInstance | null>(null);
+  const [connectMode, setConnectMode] = useState<"ssh" | "ssm">("ssh");
+  // sftpTarget — ferramenta SEPARADA, só pra transferência de arquivo de verdade (upload/download/
+  // renomear/excluir via SFTP), que continua exigindo credencial SSH (com ou sem túnel SSM) — não
+  // é mais o caminho automático de "SSH"/"SSM", só o botão dedicado "Arquivos (SFTP)".
+  const [sftpTarget, setSftpTarget] = useState<VMInstance | null>(null);
+  const [credentialsModalOpen, setCredentialsModalOpen] = useState(false);
 
   const handleConfirm = async () => {
     if (!pendingAction) return;
@@ -93,6 +110,21 @@ export default function VMsTab() {
       setActingOn(null);
     }
   };
+
+  // Busca dinâmica client-side (pedido explícito do usuário) — a lista já vem inteira do backend
+  // por profile+região (useVMInstances), então filtrar aqui não custa nenhuma chamada extra.
+  // Cobre nome, ID e os dois IPs — nome sozinho não bastava pra achar uma instância quando ela
+  // não tem tag "Name" (nesse caso o campo "nome" já é o próprio ID, ver instanceNameFromTags em
+  // ec2.go), mas buscar pelo IP continua útil mesmo assim.
+  const filteredInstances = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return instances;
+    return instances.filter((inst) =>
+      [inst.name, inst.id, inst.privateIp, inst.publicIp, inst.instanceType]
+        .filter((v): v is string => !!v)
+        .some((v) => v.toLowerCase().includes(q))
+    );
+  }, [instances, searchQuery]);
 
   return (
     <div className="h-full flex flex-col min-h-0 p-4 gap-4">
@@ -130,7 +162,44 @@ export default function VMsTab() {
           {loading ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5 mr-1.5" />}
           Atualizar
         </Button>
+
+        {ssmStatus && !ssmStatus.available && (
+          <Badge
+            variant="secondary"
+            className="ml-auto bg-amber-500/20 text-amber-400 border-amber-500/30"
+            title={ssmStatus.message}
+          >
+            SSM indisponível neste servidor
+          </Badge>
+        )}
+
+        <Button variant="outline" size="sm" className={ssmStatus?.available === false ? "" : "ml-auto"} onClick={() => setCredentialsModalOpen(true)}>
+          <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+          Perfis de Credencial SSH
+        </Button>
       </div>
+
+      {instances.length > 0 && (
+        <div className="relative flex-shrink-0">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label="Limpar busca"
+            >
+              ×
+            </button>
+          )}
+          <Input
+            placeholder="Buscar por nome, ID ou IP..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-10 pr-8"
+          />
+        </div>
+      )}
 
       <ScrollArea className="flex-1 min-h-0 border rounded-md">
         {!profile && (
@@ -149,14 +218,25 @@ export default function VMsTab() {
           </div>
         )}
 
-        {instances.length > 0 && (
+        {instances.length > 0 && filteredInstances.length === 0 && (
+          <div className="text-sm text-muted-foreground p-6 text-center">
+            Nenhuma instância corresponde à busca "{searchQuery}".
+          </div>
+        )}
+
+        {filteredInstances.length > 0 && (
           <div className="divide-y">
-            {instances.map((inst) => (
+            {filteredInstances.map((inst) => (
               <div key={inst.id} className="flex items-center gap-3 p-3 flex-wrap">
                 <Server className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <div className="min-w-[180px]">
                   <div className="text-sm font-medium truncate" title={inst.name}>{inst.name}</div>
-                  <div className="text-xs text-muted-foreground font-mono">{inst.id}</div>
+                  {/* Sem duplicar quando a instância não tem tag "Name" (instanceNameFromTags,
+                      ec2.go, cai pro próprio InstanceId nesse caso) — mostrar a mesma string duas
+                      vezes já foi relatado como "parece que só tem o ID, sem nome nenhum". */}
+                  {inst.name !== inst.id && (
+                    <div className="text-xs text-muted-foreground font-mono">{inst.id}</div>
+                  )}
                 </div>
                 {powerStateBadge(inst.state)}
                 <span className="text-xs text-muted-foreground">{inst.instanceType}</span>
@@ -170,6 +250,47 @@ export default function VMsTab() {
                 </div>
 
                 <div className="ml-auto flex items-center gap-1">
+                  <ProtectedAction>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={inst.state !== "running"}
+                      onClick={() => {
+                        setConnectMode("ssh");
+                        setConnectTarget(inst);
+                      }}
+                      title={inst.state !== "running" ? "Instância precisa estar rodando" : "Conectar via SSH"}
+                    >
+                      <TerminalIcon className="h-3.5 w-3.5 mr-1.5" />
+                      SSH
+                    </Button>
+                  </ProtectedAction>
+                  <ProtectedAction>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={inst.state !== "running"}
+                      onClick={() => {
+                        setConnectMode("ssm");
+                        setConnectTarget(inst);
+                      }}
+                      title={inst.state !== "running" ? "Instância precisa estar rodando" : "Conectar via SSM Session Manager"}
+                    >
+                      <TerminalIcon className="h-3.5 w-3.5 mr-1.5" />
+                      SSM
+                    </Button>
+                  </ProtectedAction>
+                  <ProtectedAction>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={inst.state !== "running"}
+                      onClick={() => setSftpTarget(inst)}
+                      title={inst.state !== "running" ? "Instância precisa estar rodando" : "Arquivos (SFTP) — transferência de arquivo"}
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />
+                    </Button>
+                  </ProtectedAction>
                   <ProtectedAction>
                     <Button
                       variant="outline"
@@ -229,6 +350,29 @@ export default function VMsTab() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {connectTarget && (
+        <VMConnectModal
+          instance={connectTarget}
+          mode={connectMode}
+          profile={profile}
+          region={region}
+          open={connectTarget !== null}
+          onClose={() => setConnectTarget(null)}
+        />
+      )}
+
+      {sftpTarget && (
+        <VMSFTPModal
+          instance={sftpTarget}
+          open={sftpTarget !== null}
+          onOpenChange={(o) => !o && setSftpTarget(null)}
+          profile={profile}
+          region={region}
+        />
+      )}
+
+      <VMCredentialsModal open={credentialsModalOpen} onClose={() => setCredentialsModalOpen(false)} />
     </div>
   );
 }
