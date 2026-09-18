@@ -39,6 +39,12 @@ import type { NodePool } from "@/lib/api/types";
 import { toast } from "sonner";
 import { useStaging } from "@/contexts/StagingContext";
 import { guardVPNOperation } from "@/lib/vpnGuard";
+import { runWithConcurrencyLimit } from "@/lib/concurrency";
+
+// Máximo de node pools aplicados simultaneamente (multi-thread real) —
+// limitado para não disparar dezenas de subprocessos az/aws/gcloud de uma
+// vez só no servidor (operações de scale podem levar até 10min cada).
+const NODE_POOL_APPLY_CONCURRENCY = 5;
 
 interface NodePoolApplyModalProps {
   open: boolean;
@@ -245,9 +251,15 @@ export const NodePoolApplyModal = ({
 
     setIsApplying(true);
 
+    let sequentialSuccessCount = 0;
+    let sequentialErrorCount = 0;
+    let normalSuccessCount = 0;
+    let normalErrorCount = 0;
+
     try {
       if (hasSequentialPools && sequentialPools.length > 0) {
-        // Execução SEQUENCIAL via endpoint dedicado
+        // Execução SEQUENCIAL via endpoint dedicado — ordem importa aqui
+        // (cordon/drain entre pools), nunca deve ser paralelizada.
         for (const { key, current } of sequentialPools) {
           setNodePoolStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
           dispatchPoolEvent(current.name, "start");
@@ -266,6 +278,7 @@ export const NodePoolApplyModal = ({
             }));
             dispatchPoolEvent(np.current.name, "end", "success");
           }
+          sequentialSuccessCount = sequentialPools.length;
         } else {
           // Erro geral no endpoint
           for (const np of sequentialPools) {
@@ -275,18 +288,19 @@ export const NodePoolApplyModal = ({
             }));
             dispatchPoolEvent(np.current.name, "end", "error");
           }
+          sequentialErrorCount = sequentialPools.length;
         }
       }
 
-      // Executar node pools NORMAIS (sem ordem) em paralelo
-      for (const { key, current } of normalPools) {
+      // Executar node pools NORMAIS (sem ordem) de verdade em paralelo —
+      // multi-thread real via worker pool, limitado a NODE_POOL_APPLY_CONCURRENCY
+      // execuções simultâneas (antes era um for...of sequencial disfarçado).
+      await runWithConcurrencyLimit(normalPools, NODE_POOL_APPLY_CONCURRENCY, async ({ key, current }) => {
         const normalAbortController = new AbortController();
         abortControllersRef.current.set(`${key}-${current.name}`, normalAbortController);
         setNodePoolStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
         dispatchPoolEvent(current.name, "start");
 
-        let normalSuccess = false;
-        let normalError: string | undefined;
         try {
           await apiClient.updateNodePool(
             current.cluster_name,
@@ -302,34 +316,35 @@ export const NodePoolApplyModal = ({
             normalAbortController.signal
           );
 
-          normalSuccess = true;
+          abortControllersRef.current.delete(`${key}-${current.name}`);
           setNodePoolStates(prev => ({
             ...prev,
             [key]: { status: 'success', message: 'Aplicado com sucesso' }
           }));
+          normalSuccessCount++;
+          dispatchPoolEvent(current.name, "end", "success");
         } catch (error) {
+          abortControllersRef.current.delete(`${key}-${current.name}`);
           if (normalAbortController.signal.aborted) {
             setNodePoolStates(prev => ({ ...prev, [key]: { status: 'idle' } }));
             dispatchPoolEvent(current.name, "end");
-            abortControllersRef.current.delete(`${key}-${current.name}`);
-            continue;
+            return;
           }
-          normalError = error instanceof Error ? error.message : "Erro desconhecido";
+          const normalError = error instanceof Error ? error.message : "Erro desconhecido";
           setNodePoolStates(prev => ({
             ...prev,
             [key]: { status: 'error', message: normalError }
           }));
-        } finally {
-          abortControllersRef.current.delete(`${key}-${current.name}`);
-          dispatchPoolEvent(current.name, "end", normalSuccess ? "success" : "error", normalError);
+          normalErrorCount++;
+          dispatchPoolEvent(current.name, "end", "error", normalError);
         }
-      }
+      });
 
       setIsApplying(false);
       onApplied?.();
 
-      const successCount = Object.values(nodePoolStates).filter(s => s.status === 'success').length;
-      const errorCount = Object.values(nodePoolStates).filter(s => s.status === 'error').length;
+      const successCount = sequentialSuccessCount + normalSuccessCount;
+      const errorCount = sequentialErrorCount + normalErrorCount;
 
       if (errorCount === 0) {
         toast.success(`✅ ${successCount} node pool(s) aplicado(s) com sucesso`);
