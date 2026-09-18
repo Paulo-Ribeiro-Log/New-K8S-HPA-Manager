@@ -1336,21 +1336,26 @@ export function VMCertificatePanel() {
                 </>
               )}
 
-              {transferResult?.success && (
-                <>
-                  <Separator />
+              {/* 6. Reload — BUG REAL CORRIGIDO, relatado ao vivo pelo usuário ("o botão de
+                  executar o restart do serviço não está exibido"): esta seção inteira estava
+                  presa atrás de `transferResult?.success` — só aparecia DEPOIS de uma transferência
+                  bem-sucedida NESTA MESMA sessão do painel, mesmo restart de serviço sendo uma ação
+                  independente na prática (confirmar/testar o que já está instalado, sem
+                  necessariamente ter acabado de transferir nada novo agora). Passou a acompanhar só
+                  o `instance && (...)` de fora (mesmo nível de steps 2/3) — sempre visível assim que
+                  a instância está selecionada; o próprio botão já fica desabilitado (com o motivo
+                  no title) enquanto a conexão do passo 2 não estiver pronta. */}
+              <>
+                <Separator />
 
-                  {/* 6. Reload — reinício automático por serviço selecionado (pedido explícito do
-                      usuário), OU terminal manual como alternativa quando o serviço não está na
-                      lista/tem um fluxo de reload próprio (não um restart completo). A transferência
-                      em si nunca reinicia nada sozinha — esta seção é sempre uma ação separada e
-                      explícita. */}
-                  <div className="space-y-2">
+                <div className="space-y-2">
                     <Label className="text-xs font-semibold">6. Reiniciar serviço e confirmar</Label>
                     <p className="text-xs text-muted-foreground">
-                      Escolha o serviço que serve este certificado e clique em "Reiniciar serviço" — roda
-                      <code className="font-mono mx-1">systemctl restart</code> (ou <code className="font-mono">service ... restart</code>,
-                      pra init clássico) direto na VM, sem precisar abrir terminal nenhum.
+                      Ação independente das anteriores — funciona mesmo sem ter transferido um certificado novo nesta
+                      sessão (ex: só confirmar/testar o que já está instalado). Escolha o serviço e clique em
+                      "Reiniciar serviço" — roda <code className="font-mono mx-1">systemctl restart</code> (ou
+                      <code className="font-mono">service ... restart</code>, pra init clássico) direto na VM, sem
+                      precisar abrir terminal nenhum.
                     </p>
                     <div className="flex gap-2 flex-wrap items-end">
                       <div className="space-y-1 min-w-[220px]">
@@ -1393,6 +1398,7 @@ export function VMCertificatePanel() {
                         <Button
                           size="sm"
                           disabled={!certActionsReady || !effectiveServiceName || restarting}
+                          title={!certActionsReady ? "Preencha a conexão (passo 2) primeiro" : !effectiveServiceName ? "Escolha ou digite o nome do serviço" : undefined}
                           onClick={() => handleRestartService()}
                         >
                           {restarting ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5 mr-1.5" />}
@@ -1428,7 +1434,6 @@ export function VMCertificatePanel() {
                     </div>
                   </div>
                 </>
-              )}
             </>
           )}
         </div>

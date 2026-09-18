@@ -1527,6 +1527,16 @@ func (s *Server) setupRoutes() {
 		// nos dois (mesmo nível de confiança já dado a StartInstance/StopInstance/RebootInstance).
 		vmSFTPGroup.POST("/:instanceId/ssm-tunnel/start", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.StartSSMTunnel)
 		vmSFTPGroup.POST("/:instanceId/ssm-tunnel/stop", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.StopSSMTunnel)
+		// SSM sem SSH (vm_sftp_ssm.go) — generaliza pro navegador de arquivos GERAL o mesmo
+		// transporte já construído só pra certificados (certificates_vm.go) — pedido explícito do
+		// usuário: "na lista das VMs... a opção de SSM (sem sshd) não existe". Mesmo nível de RBAC
+		// dos equivalentes SFTP acima (leitura sem grupo, escrita atrás de RequireSREGroup()).
+		vmSFTPGroup.GET("/:instanceId/sftp/list-ssm", vmSFTPHandler.VMSFTPListSSM)
+		vmSFTPGroup.GET("/:instanceId/sftp/download-ssm", vmSFTPHandler.VMSFTPDownloadSSM)
+		vmSFTPGroup.POST("/:instanceId/sftp/upload-ssm", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPUploadSSM)
+		vmSFTPGroup.POST("/:instanceId/sftp/mkdir-ssm", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPMkdirSSM)
+		vmSFTPGroup.POST("/:instanceId/sftp/rename-ssm", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPRenameSSM)
+		vmSFTPGroup.DELETE("/:instanceId/sftp/remove-ssm", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPRemoveSSM)
 	}
 
 	// VMs/EC2 — Fase 6: sub-aba "Certificados em VM" (dentro de Certificados TLS). Reaproveita
