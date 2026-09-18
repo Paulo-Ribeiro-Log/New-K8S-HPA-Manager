@@ -106,40 +106,71 @@ func (s *vmSFTPSession) Close() {
 // ter canal de confirmação). Por isso vmssh.Dial recebe hostKeyIdentity SEPARADO do endereço de
 // discagem real — uma identidade estável por instância (não pelo túnel efêmero), garantindo que o
 // TOFU funcione de verdade entre sessões de túnel diferentes contra o mesmo sshd remoto.
+// SFTPSessionError é o erro estruturado devolvido por resolveSFTPSession — carrega status HTTP +
+// code + message (mesmo shape que openSFTPSession já escrevia direto em c.JSON) e, quando
+// aplicável, a fingerprint de uma host key desconhecida (SSH_HOSTKEY_UNKNOWN). Exportado pra
+// permitir que OUTROS handlers (ex: certificates_vm.go, Fase 6) que reaproveitam OpenFileSession
+// decidam como reportar o erro dentro da própria resposta que estão montando, sem depender de
+// c.JSON já ter sido chamado.
+type SFTPSessionError struct {
+	Status      int
+	Code        string
+	Message     string
+	Fingerprint string
+}
+
+func (e *SFTPSessionError) Error() string { return e.Message }
+
+func (e *SFTPSessionError) writeJSON(c *gin.Context) {
+	body := gin.H{"error": gin.H{"code": e.Code, "message": e.Message}}
+	if e.Fingerprint != "" {
+		body["error"].(gin.H)["fingerprint"] = e.Fingerprint
+	}
+	body["success"] = false
+	c.JSON(e.Status, body)
+}
+
 func (h *VMSFTPHandler) openSFTPSession(c *gin.Context) (*vmSFTPSession, bool) {
-	if h.credStore == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "CREDENTIAL_STORE_UNAVAILABLE", "message": "Store de credenciais SSH indisponível neste servidor"},
-		})
+	sess, sErr := h.resolveSFTPSession(c)
+	if sErr != nil {
+		sErr.writeJSON(c)
 		return nil, false
+	}
+	return sess, true
+}
+
+// resolveSFTPSession faz todo o trabalho de openSFTPSession (resolver host/túnel/credencial,
+// discar SSH, abrir SFTP em cima) mas SEM escrever nada em c — devolve um *SFTPSessionError
+// estruturado em vez disso, pra permitir reuso por chamadores que querem montar sua própria
+// resposta JSON (ver OpenFileSession). openSFTPSession continua sendo o caminho usado pelos
+// handlers deste arquivo (só um wrapper fino por cima desta função agora).
+func (h *VMSFTPHandler) resolveSFTPSession(c *gin.Context) (*vmSFTPSession, *SFTPSessionError) {
+	if h.credStore == nil {
+		return nil, &SFTPSessionError{
+			Status: http.StatusServiceUnavailable, Code: "CREDENTIAL_STORE_UNAVAILABLE",
+			Message: "Store de credenciais SSH indisponível neste servidor",
+		}
 	}
 
 	profileID := c.Query("credentialProfileId")
 	if profileID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "INVALID_REQUEST", "message": "credentialProfileId é obrigatório"},
-		})
-		return nil, false
+		return nil, &SFTPSessionError{
+			Status: http.StatusBadRequest, Code: "INVALID_REQUEST",
+			Message: "credentialProfileId é obrigatório",
+		}
 	}
 
 	var dialAddr, hostKeyIdentity, tunnelSessionID string
 	if tunnelSessionID = c.Query("tunnelSessionId"); tunnelSessionID != "" {
 		if h.ssmTunnels == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"success": false,
-				"error":   gin.H{"code": "SSM_TUNNEL_UNAVAILABLE", "message": "gerenciador de túnel SSM indisponível neste servidor"},
-			})
-			return nil, false
+			return nil, &SFTPSessionError{
+				Status: http.StatusServiceUnavailable, Code: "SSM_TUNNEL_UNAVAILABLE",
+				Message: "gerenciador de túnel SSM indisponível neste servidor",
+			}
 		}
 		resolvedAddr, err := h.ssmTunnels.ResolveLocalAddr(tunnelSessionID)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"error":   gin.H{"code": "SSM_TUNNEL_NOT_FOUND", "message": err.Error()},
-			})
-			return nil, false
+			return nil, &SFTPSessionError{Status: http.StatusBadRequest, Code: "SSM_TUNNEL_NOT_FOUND", Message: err.Error()}
 		}
 		dialAddr = resolvedAddr
 		// ":0" só pra manter o formato host:porta que net.SplitHostPort exige (usado internamente
@@ -155,11 +186,10 @@ func (h *VMSFTPHandler) openSFTPSession(c *gin.Context) (*vmSFTPSession, bool) {
 			}
 		}
 		if host == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"error":   gin.H{"code": "INVALID_REQUEST", "message": "host (ou tunnelSessionId) é obrigatório"},
-			})
-			return nil, false
+			return nil, &SFTPSessionError{
+				Status: http.StatusBadRequest, Code: "INVALID_REQUEST",
+				Message: "host (ou tunnelSessionId) é obrigatório",
+			}
 		}
 		dialAddr = fmt.Sprintf("%s:%d", host, port)
 		hostKeyIdentity = dialAddr
@@ -168,11 +198,7 @@ func (h *VMSFTPHandler) openSFTPSession(c *gin.Context) (*vmSFTPSession, bool) {
 	userInfo := GetUserInfoForHistory(c)
 	cred, err := h.credStore.GetDecrypted(userInfo.Email, profileID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "CREDENTIAL_NOT_FOUND", "message": err.Error()},
-		})
-		return nil, false
+		return nil, &SFTPSessionError{Status: http.StatusBadRequest, Code: "CREDENTIAL_NOT_FOUND", Message: err.Error()}
 	}
 
 	// Rota REST pura, sem canal interativo (diferente do terminal, que confirma via WebSocket em
@@ -198,15 +224,12 @@ func (h *VMSFTPHandler) openSFTPSession(c *gin.Context) (*vmSFTPSession, bool) {
 	}, confirmFunc)
 	if err != nil {
 		if fp, ok := extractUnknownHostKeyFingerprint(err); ok {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"error": gin.H{
-					"code":        "SSH_HOSTKEY_UNKNOWN",
-					"message":     fmt.Sprintf("host key desconhecida (fingerprint %s) — confirme e tente de novo", fp),
-					"fingerprint": fp,
-				},
-			})
-			return nil, false
+			return nil, &SFTPSessionError{
+				Status:      http.StatusBadRequest,
+				Code:        "SSH_HOSTKEY_UNKNOWN",
+				Message:     fmt.Sprintf("host key desconhecida (fingerprint %s) — confirme e tente de novo", fp),
+				Fingerprint: fp,
+			}
 		}
 		message := err.Error()
 		// No modo túnel SSM, um handshake que cai com EOF logo após conectar tem 2 causas
@@ -223,24 +246,69 @@ func (h *VMSFTPHandler) openSFTPSession(c *gin.Context) (*vmSFTPSession, bool) {
 					"ou, se ela não tiver SSH configurado, use apenas o terminal nativo via SSM (sem arquivos)."
 			}
 		}
-		c.JSON(http.StatusBadGateway, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "SSH_CONNECT_ERROR", "message": message},
-		})
-		return nil, false
+		return nil, &SFTPSessionError{Status: http.StatusBadGateway, Code: "SSH_CONNECT_ERROR", Message: message}
 	}
 
 	sftpClient, err := vmssh.OpenSFTP(sshClient)
 	if err != nil {
 		sshClient.Close()
-		c.JSON(http.StatusBadGateway, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "SFTP_SESSION_ERROR", "message": err.Error()},
-		})
-		return nil, false
+		return nil, &SFTPSessionError{Status: http.StatusBadGateway, Code: "SFTP_SESSION_ERROR", Message: err.Error()}
 	}
 
-	return &vmSFTPSession{sftp: sftpClient, ssh: sshClient}, true
+	return &vmSFTPSession{sftp: sftpClient, ssh: sshClient}, nil
+}
+
+// VMFileSession — sessão SFTP reaproveitável por outros handlers (ex: certificates_vm.go, Fase 6)
+// sem duplicar a resolução de host/túnel/credencial/host-key já feita em resolveSFTPSession. Só
+// expõe o necessário (ler/escrever um arquivo inteiro) — nunca o cliente *sftp.Client cru, pra não
+// vazar a API completa do pacote sftp pra fora deste arquivo.
+type VMFileSession struct {
+	sess *vmSFTPSession
+}
+
+// Close fecha SFTP e SSH juntos (mesmo princípio de vmSFTPSession.Close).
+func (s *VMFileSession) Close() { s.sess.Close() }
+
+// ReadFile lê o conteúdo inteiro de um arquivo remoto.
+func (s *VMFileSession) ReadFile(path string) ([]byte, error) {
+	f, err := s.sess.sftp.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// WriteFile grava data inteiro num arquivo remoto (cria ou sobrescreve — mesmo comportamento de
+// sftp.Create já usado por VMSFTPUpload).
+func (s *VMFileSession) WriteFile(path string, data []byte) (int64, error) {
+	f, err := s.sess.sftp.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	n, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil {
+		return int64(n), werr
+	}
+	if cerr != nil {
+		return int64(n), fmt.Errorf("falha ao enviar pro destino: %w", cerr)
+	}
+	return int64(n), nil
+}
+
+// OpenFileSession abre uma sessão SFTP a partir dos MESMOS parâmetros de query que
+// List/Download/Upload/Remove já usam (host/port/tunnelSessionId/credentialProfileId,
+// acceptHostKeyFingerprint) — usado por certificates_vm.go pra ler/gravar o par cert+chave direto
+// numa VM sem reimplementar a resolução de conexão. O erro, quando não-nil, já é um
+// *SFTPSessionError (sempre — nunca um erro genérico) pronto pra virar parte da resposta JSON que
+// o chamador está montando, incluindo o caso SSH_HOSTKEY_UNKNOWN com a fingerprint estruturada.
+func (h *VMSFTPHandler) OpenFileSession(c *gin.Context) (*VMFileSession, *SFTPSessionError) {
+	sess, sErr := h.resolveSFTPSession(c)
+	if sErr != nil {
+		return nil, sErr
+	}
+	return &VMFileSession{sess: sess}, nil
 }
 
 // sftpTargetLabel monta um rótulo legível pro audit log (logAction) — "host:porta" no modo SSH

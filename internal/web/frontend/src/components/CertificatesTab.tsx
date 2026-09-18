@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { CertificateDetailModal } from "@/components/CertificateDetailModal";
 import { ExternalCertEndpointsPanel } from "@/components/ExternalCertEndpointsPanel";
 import { WebhookCABundlePanel } from "@/components/WebhookCABundlePanel";
+import { VMCertificatePanel } from "@/components/VMCertificatePanel";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { PFXExtractModal } from "@/components/PFXExtractModal";
 import { AWXCertForm } from "@/components/AWXCertForm";
@@ -112,7 +113,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
   // de MutatingWebhookConfiguration — objeto cluster-scoped nativo do K8s, não um Secret — pra
   // rotacionar a confiança do apiserver em webhooks de terceiro como Delinea DSV injector/Istio
   // sidecar injector, ver WebhookCABundlePanel.tsx).
-  const [certTab, setCertTab] = useState<"k8s" | "external" | "webhooks">("k8s");
+  const [certTab, setCertTab] = useState<"k8s" | "external" | "webhooks" | "vm">("k8s");
 
   // UI state
   const [searchQuery, setSearchQuery] = useState("");
@@ -1228,6 +1229,16 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
         >
           Webhooks (CA Bundle)
         </button>
+        <button
+          onClick={() => setCertTab("vm")}
+          className={`px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            certTab === "vm"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Certificados em VM
+        </button>
       </div>
 
       {certTab === "external" && (
@@ -1239,6 +1250,12 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
       {certTab === "webhooks" && (
         <div className="flex-1 min-h-0">
           <WebhookCABundlePanel />
+        </div>
+      )}
+
+      {certTab === "vm" && (
+        <div className="flex-1 min-h-0">
+          <VMCertificatePanel />
         </div>
       )}
 

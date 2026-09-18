@@ -227,6 +227,13 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Edição manual do caminho — pedido explícito do usuário: o breadcrumb (clique-a-clique) não
+  // basta quando já se sabe o caminho exato de cor (ex: "/etc/nginx/"). Alterna entre breadcrumb
+  // (padrão) e um <Input> de texto livre; Enter navega, Escape/perder foco cancela sem navegar.
+  const [editingPath, setEditingPath] = useState(false);
+  const [pathInput, setPathInput] = useState("/");
+  const pathInputRef = useRef<HTMLInputElement>(null);
+
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -422,6 +429,27 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
   const handleEntryClick = (entry: SFTPFileEntry) => {
     if (entry.is_dir) navigateTo(entry.path);
   };
+
+  const startEditingPath = () => {
+    setPathInput(path);
+    setEditingPath(true);
+  };
+
+  const commitPathInput = () => {
+    const trimmed = pathInput.trim();
+    // Sempre absoluto — um caminho relativo não tem significado sem saber o cwd remoto (que este
+    // modal nunca rastreia), então normaliza adicionando "/" na frente em vez de navegar errado
+    // silenciosamente.
+    navigateTo(trimmed.startsWith("/") ? trimmed : `/${trimmed}`);
+    setEditingPath(false);
+  };
+
+  useEffect(() => {
+    if (editingPath) {
+      pathInputRef.current?.focus();
+      pathInputRef.current?.select();
+    }
+  }, [editingPath]);
 
   const handleUploadClick = () => fileInputRef.current?.click();
 
@@ -668,20 +696,40 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
           {phase === "browsing" && !hostKeyToConfirm && (
             <>
               <div className="flex-shrink-0 flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-1 text-xs flex-1 min-w-0 overflow-x-auto whitespace-nowrap">
-                  <button className="p-1 rounded hover:bg-accent flex-shrink-0" onClick={() => navigateTo("/")} title="Raiz">
-                    <Home className="h-3.5 w-3.5" />
-                  </button>
-                  {breadcrumbSegments.map((seg, i) => {
-                    const segPath = "/" + breadcrumbSegments.slice(0, i + 1).join("/");
-                    return (
-                      <span key={segPath} className="flex items-center gap-1 flex-shrink-0">
-                        <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                        <button className="hover:underline" onClick={() => navigateTo(segPath)}>{seg}</button>
-                      </span>
-                    );
-                  })}
-                </div>
+                {editingPath ? (
+                  <Input
+                    ref={pathInputRef}
+                    value={pathInput}
+                    onChange={(e) => setPathInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitPathInput();
+                      else if (e.key === "Escape") setEditingPath(false);
+                    }}
+                    onBlur={() => setEditingPath(false)}
+                    placeholder="/etc/nginx/"
+                    className="h-8 text-xs font-mono flex-1 min-w-0"
+                  />
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1 text-xs flex-1 min-w-0 overflow-x-auto whitespace-nowrap">
+                      <button className="p-1 rounded hover:bg-accent flex-shrink-0" onClick={() => navigateTo("/")} title="Raiz">
+                        <Home className="h-3.5 w-3.5" />
+                      </button>
+                      {breadcrumbSegments.map((seg, i) => {
+                        const segPath = "/" + breadcrumbSegments.slice(0, i + 1).join("/");
+                        return (
+                          <span key={segPath} className="flex items-center gap-1 flex-shrink-0">
+                            <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                            <button className="hover:underline" onClick={() => navigateTo(segPath)}>{seg}</button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={startEditingPath} title="Digitar o caminho diretamente">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                  </>
+                )}
 
                 <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={() => load(path)} title="Atualizar" disabled={loading}>
                   <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />

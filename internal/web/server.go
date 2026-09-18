@@ -1529,6 +1529,26 @@ func (s *Server) setupRoutes() {
 		vmSFTPGroup.POST("/:instanceId/ssm-tunnel/stop", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.StopSSMTunnel)
 	}
 
+	// VMs/EC2 — Fase 6: sub-aba "Certificados em VM" (dentro de Certificados TLS). Reaproveita
+	// vmSFTPHandler (Fase 4, via OpenFileSession) pra gravar o par cert+chave direto na VM — sem
+	// nenhum mecanismo de conexão/credencial novo. Validação (par local + checagem TLS ao vivo
+	// opcional) nunca faz escrita, só leitura; mesmo grupo/middleware de vmSFTPGroup acima
+	// (InjectUserEmail, necessário pra OpenFileSession escopar credencial por usuário).
+	vmCertificatesHandler := handlers.NewVMCertificatesHandler(vmSFTPHandler, s.historyTracker)
+	vmCertGroup := api.Group("/vms")
+	vmCertGroup.Use(rbacMiddleware.InjectUserEmail())
+	{
+		vmCertGroup.POST("/certificates/validate", vmCertificatesHandler.ValidateCertKeyPair)          // leitura/validação local, sem RBAC de grupo
+		vmCertGroup.GET("/:instanceId/certificates/read", vmCertificatesHandler.ReadRemoteCertificate) // leitura via SFTP, sem RBAC de grupo (mesmo nível de List/Download)
+		vmCertGroup.POST("/:instanceId/certificates/transfer", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.TransferCertificate)
+		// Modo alternativo sem SSH — instância gerida só via SSM, sem sshd (ver comentário de
+		// topo de certificates_vm.go). Read via SSM executa um comando remoto de verdade (não é
+		// uma leitura "passiva" como o SFTP), por isso atrás de RequireSREGroup() nos dois, mais
+		// conservador que o ReadRemoteCertificate via SFTP acima.
+		vmCertGroup.GET("/:instanceId/certificates/read-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.ReadRemoteCertificateViaSSM)
+		vmCertGroup.POST("/:instanceId/certificates/transfer-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.TransferCertificateViaSSM)
+	}
+
 	// WebSocket do terminal SSH de VM (fora do grupo api — WebSocket não envia header
 	// Authorization, mesmo motivo documentado pro wsShell/wsCodeEditor acima). RequireSREGroup()
 	// porque isso de fato conecta e executa comandos numa máquina real; InjectUserEmail() vem
