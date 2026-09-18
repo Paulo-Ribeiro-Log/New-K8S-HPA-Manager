@@ -1547,6 +1547,16 @@ func (s *Server) setupRoutes() {
 		// conservador que o ReadRemoteCertificate via SFTP acima.
 		vmCertGroup.GET("/:instanceId/certificates/read-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.ReadRemoteCertificateViaSSM)
 		vmCertGroup.POST("/:instanceId/certificates/transfer-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.TransferCertificateViaSSM)
+		// Navegação de diretório via SSM Run Command — mesmo nível de exposição de read-ssm acima
+		// (leitura via comando remoto, não passiva como SFTP, por isso RequireSREGroup()); destrava
+		// "Procurar na VM" também no modo sem SSH (antes sempre desabilitado nesse modo).
+		vmCertGroup.GET("/:instanceId/certificates/browse-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.ListDirectoryViaSSM)
+		// Restart de serviço (nginx/apache2/httpd/haproxy/etc.) — pedido explícito do usuário, pra
+		// não exigir abrir o terminal e digitar o comando manualmente (passo 6, que continua
+		// existindo como alternativa 100% manual). Mutação real num serviço rodando na VM, mesmo
+		// nível de confiança já dado a transfer/transfer-ssm acima.
+		vmCertGroup.POST("/:instanceId/certificates/restart-service", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.RestartService)
+		vmCertGroup.POST("/:instanceId/certificates/restart-service-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.RestartServiceViaSSM)
 	}
 
 	// WebSocket do terminal SSH de VM (fora do grupo api — WebSocket não envia header

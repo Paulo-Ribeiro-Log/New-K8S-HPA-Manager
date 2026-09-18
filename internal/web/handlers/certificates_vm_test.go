@@ -518,3 +518,52 @@ func TestTransferCertificateHandler_CamposObrigatoriosAusentesRejeitados(t *test
 		t.Fatalf("esperava error.code=INVALID_REQUEST, corpo: %+v", body)
 	}
 }
+
+// TestParseFindPrintfOutput_SaidaReal — fixture capturada ao vivo rodando
+// `find . -mindepth 1 -maxdepth 1 -printf '%y\t%s\t%f\n' | sort -k3` de verdade (GNU findutils,
+// WSL2/Linux) contra um diretório real com 1 subpasta + 2 arquivos, antes de escrever o parser —
+// mesma disciplina já usada no resto desta ferramenta (validar contra saída real, não inventada).
+func TestParseFindPrintfOutput_SaidaReal(t *testing.T) {
+	output := "d\t4096\tsub\nf\t6\ttls.crt\nf\t6\ttls.key\n"
+	entries := parseFindPrintfOutput(output, "/etc/nginx/ssl")
+
+	if len(entries) != 3 {
+		t.Fatalf("esperava 3 entradas, veio %d: %+v", len(entries), entries)
+	}
+	want := map[string]struct {
+		isDir bool
+		size  int64
+		path  string
+	}{
+		"sub":     {true, 4096, "/etc/nginx/ssl/sub"},
+		"tls.crt": {false, 6, "/etc/nginx/ssl/tls.crt"},
+		"tls.key": {false, 6, "/etc/nginx/ssl/tls.key"},
+	}
+	for _, e := range entries {
+		w, ok := want[e.Name]
+		if !ok {
+			t.Fatalf("entrada inesperada: %+v", e)
+		}
+		if e.IsDir != w.isDir || e.Size != w.size || e.Path != w.path {
+			t.Errorf("entrada %q = %+v, esperava is_dir=%v size=%d path=%q", e.Name, e, w.isDir, w.size, w.path)
+		}
+	}
+}
+
+func TestParseFindPrintfOutput_RaizNuncaDuplicaBarra(t *testing.T) {
+	entries := parseFindPrintfOutput("f\t123\ttls.crt\n", "/")
+	if len(entries) != 1 || entries[0].Path != "/tls.crt" {
+		t.Fatalf("esperava path=/tls.crt, veio %+v", entries)
+	}
+}
+
+func TestParseFindPrintfOutput_LinhasMalformadasIgnoradasSemDerrubarOParse(t *testing.T) {
+	// Linha vazia, linha sem os 3 campos esperados, e uma linha válida no meio — o parser nunca
+	// deveria abortar por completo só porque uma linha ruidosa apareceu (comando remoto genuíno
+	// pode emitir avisos em stderr/stdout dependendo do shell, mesmo com 2>/dev/null no comando).
+	output := "\nlixo-sem-tab\nf\t42\treal.txt\n"
+	entries := parseFindPrintfOutput(output, "/tmp")
+	if len(entries) != 1 || entries[0].Name != "real.txt" || entries[0].Size != 42 {
+		t.Fatalf("esperava só a entrada válida, veio %+v", entries)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -432,4 +434,297 @@ func (h *VMCertificatesHandler) ReadRemoteCertificateViaSSM(c *gin.Context) {
 		"certificate": info,
 		"raw_pem":     result.StandardOutputContent,
 	})
+}
+
+// ListDirectoryViaSSM — GET /api/v1/vms/:instanceId/certificates/browse-ssm?profile=&region=&path=
+// Equivalente sem-SSH de VMSFTPList — BUG REAL CORRIGIDO, relatado ao vivo pelo usuário: em
+// instâncias geridas só via SSM (sem sshd), "Procurar na VM" ficava SEMPRE desabilitado (sem SFTP
+// não há como navegar) — sem nenhuma pista clara na tela do motivo, dando a impressão de que a
+// ferramenta inteira "não conecta", mesmo quando o caminho/arquivo já existe de verdade (caso mais
+// comum: ATUALIZAR um certificado existente, não instalar um novo). Lista via `find` (GNU
+// findutils, presente em qualquer AMI real de EC2 — diferente de BusyBox, que é característica de
+// imagem de container, não de VM), formato delimitado por tab (`%y\t%s\t%f`) — sem a ambiguidade de
+// formato de data que `ls -la` teria (mesma lição já documentada nesta app pra parsing de listagem
+// via exec, ver internal/kubernetes: "Bug real corrigido... ls do BusyBox").
+func (h *VMCertificatesHandler) ListDirectoryViaSSM(c *gin.Context) {
+	instanceID := c.Param("instanceId")
+	profile := c.Query("profile")
+	region := c.Query("region")
+	dirPath := c.DefaultQuery("path", "/")
+	if dirPath == "" {
+		dirPath = "/"
+	}
+	if profile == "" || region == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": "profile e region são obrigatórios"},
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), ssmCommandTimeout)
+	defer cancel()
+
+	cmd := fmt.Sprintf(
+		"find %s -mindepth 1 -maxdepth 1 -printf '%%y\\t%%s\\t%%f\\n' 2>/dev/null | sort -k3",
+		awsprovider.ShellQuote(dirPath),
+	)
+	result, err := awsprovider.RunShellCommand(ctx, profile, region, instanceID, []string{cmd})
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "SSM_COMMAND_ERROR", "message": err.Error()},
+		})
+		return
+	}
+	if result.Status != "Success" {
+		msg := result.StandardErrorContent
+		if msg == "" {
+			msg = fmt.Sprintf("comando terminou com status %s", result.Status)
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "SSM_COMMAND_FAILED", "message": msg},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"path":    dirPath,
+		"entries": parseFindPrintfOutput(result.StandardOutputContent, dirPath),
+	})
+}
+
+// parseFindPrintfOutput parseia a saída de `find -printf '%y\t%s\t%f\n'` — tipo de entrada ('d'
+// diretório, 'f' arquivo, 'l' link, etc.), tamanho em bytes, nome do arquivo (sem o diretório-pai).
+// Linhas malformadas (menos de 3 campos — nunca deveria acontecer com este formato fixo, mas nunca
+// derruba o parse inteiro por causa de uma linha ruidosa) são só ignoradas.
+func parseFindPrintfOutput(output, dirPath string) []VMSFTPFileEntry {
+	entries := make([]VMSFTPFileEntry, 0)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		typ, sizeStr, name := parts[0], parts[1], parts[2]
+		size, _ := strconv.ParseInt(sizeStr, 10, 64)
+		entries = append(entries, VMSFTPFileEntry{
+			Name:  name,
+			Path:  path.Join(dirPath, name),
+			Size:  size,
+			IsDir: typ == "d",
+		})
+	}
+	return entries
+}
+
+// serviceRestartTimeout — teto do contexto pro comando de restart via SSH (RunCommand). Mais
+// generoso que uma operação de leitura comum — um `systemctl restart` pode legitimamente demorar
+// (parar conexões em andamento, recarregar config grande) sem que isso signifique travamento.
+const serviceRestartTimeout = 30 * time.Second
+
+// restartServiceCommand/serviceStatusCommand — pedido explícito do usuário: botão "Reiniciar
+// serviço" com seleção entre os gerenciadores mais comuns de mercado (nginx/apache2/httpd/haproxy/
+// etc., mais um campo livre pro nome exato) em vez de só abrir o terminal e digitar manualmente
+// (passo 6, que continua existindo como alternativa 100% manual). `sudo -n` (nunca `sudo` puro) —
+// se o usuário SSH não tiver NOPASSWD configurado pra esse comando, falha na hora com uma mensagem
+// clara em vez de FICAR PENDURADO esperando uma senha que nunca vai chegar (esta é uma sessão SSH
+// não-interativa, sem canal nenhum pra responder um prompt). Como root (já é o caso de toda
+// execução via SSM Run Command), `sudo -n` continua funcionando normalmente — nunca pede senha pra
+// quem já é root. awsprovider.ShellQuote (mesma função já usada pra escapar o par cert+chave no
+// modo SSM) garante que o nome do serviço nunca é interpolado cru numa linha de shell, mesmo que o
+// usuário digite algo com espaço/aspas/`;` no campo livre.
+func restartServiceCommand(serviceName, initSystem string) string {
+	quoted := awsprovider.ShellQuote(serviceName)
+	if initSystem == "sysv" {
+		return fmt.Sprintf("sudo -n service %s restart", quoted)
+	}
+	return fmt.Sprintf("sudo -n systemctl restart %s", quoted)
+}
+
+func serviceStatusCommand(serviceName, initSystem string) string {
+	quoted := awsprovider.ShellQuote(serviceName)
+	if initSystem == "sysv" {
+		return fmt.Sprintf("sudo -n service %s status", quoted)
+	}
+	return fmt.Sprintf("sudo -n systemctl is-active %s", quoted)
+}
+
+type vmServiceRestartRequest struct {
+	Host                string `json:"host"`
+	Port                int    `json:"port"`
+	TunnelSessionID     string `json:"tunnelSessionId"`
+	CredentialProfileID string `json:"credentialProfileId" binding:"required"`
+	ServiceName         string `json:"serviceName" binding:"required"`
+	// InitSystem — "systemd" (default, omitido) ou "sysv" (`service <nome> restart`, pra imagens
+	// mais antigas sem systemd — ainda em uso em parte real do mercado, daí o toggle em vez de
+	// assumir systemd incondicionalmente).
+	InitSystem string `json:"initSystem"`
+}
+
+// RestartService — POST /api/v1/vms/:instanceId/certificates/restart-service. Reaproveita a MESMA
+// sessão SSH já resolvida por OpenFileSession (host/porta/túnel/credencial/host-key) pra rodar o
+// comando de restart de verdade (RunCommand, vm_sftp.go) — nenhuma conexão nova. Depois de um
+// restart bem-sucedido, roda uma 2ª checagem (status do serviço) best-effort — nunca derruba a
+// resposta principal se essa checagem falhar, o restart em si já teve sucesso nesse ponto.
+func (h *VMCertificatesHandler) RestartService(c *gin.Context) {
+	var req vmServiceRestartRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": err.Error()},
+		})
+		return
+	}
+	serviceName := strings.TrimSpace(req.ServiceName)
+	if serviceName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": "serviceName é obrigatório"},
+		})
+		return
+	}
+
+	// resolveSFTPSession (via OpenFileSession) lê host/port/tunnelSessionId/credentialProfileId da
+	// QUERY, não do corpo — mesmo truque já usado por TransferCertificate pra reaproveitar sem
+	// duplicar a resolução de conexão.
+	c.Request.URL.RawQuery = buildSFTPTargetQuery(req.Host, req.Port, req.TunnelSessionID, req.CredentialProfileID)
+
+	sess, sErr := h.sftp.OpenFileSession(c)
+	if sErr != nil {
+		body := gin.H{"success": false, "error": gin.H{"code": sErr.Code, "message": sErr.Message}}
+		if sErr.Fingerprint != "" {
+			body["error"].(gin.H)["fingerprint"] = sErr.Fingerprint
+		}
+		c.JSON(sErr.Status, body)
+		return
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), serviceRestartTimeout)
+	defer cancel()
+
+	result, err := sess.RunCommand(ctx, restartServiceCommand(serviceName, req.InitSystem))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "SSH_COMMAND_ERROR", "message": err.Error()},
+		})
+		return
+	}
+	if result.ExitCode != 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success":   false,
+			"error":     gin.H{"code": "SERVICE_RESTART_FAILED", "message": restartFailureMessage(result)},
+			"exit_code": result.ExitCode,
+		})
+		return
+	}
+
+	status := ""
+	if statusResult, statusErr := sess.RunCommand(ctx, serviceStatusCommand(serviceName, req.InitSystem)); statusErr == nil && statusResult != nil {
+		status = strings.TrimSpace(statusResult.Stdout)
+	}
+
+	if h.historyTracker != nil {
+		entry := CreateHistoryEntry(c, "vm-service-restart", c.Param("instanceId"), sftpTargetLabel(c), "success", nil, map[string]interface{}{
+			"service_name": serviceName,
+		}, 0, "")
+		_ = h.historyTracker.Log(entry)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "status": status})
+}
+
+// restartFailureMessage prioriza stderr (onde `systemctl`/`service` normalmente escrevem o motivo
+// real da falha), cai pro stdout quando stderr vier vazio, e só usa um texto genérico com o código
+// de saída como último recurso.
+func restartFailureMessage(result *RemoteCommandResult) string {
+	if msg := strings.TrimSpace(result.Stderr); msg != "" {
+		return msg
+	}
+	if msg := strings.TrimSpace(result.Stdout); msg != "" {
+		return msg
+	}
+	return fmt.Sprintf("comando terminou com código %d", result.ExitCode)
+}
+
+type vmServiceRestartSSMRequest struct {
+	vmCertSSMTarget
+	ServiceName string `json:"serviceName" binding:"required"`
+	InitSystem  string `json:"initSystem"`
+}
+
+// RestartServiceViaSSM — POST /api/v1/vms/:instanceId/certificates/restart-service-ssm. Mesmo
+// comando de restart de RestartService, só a camada de transporte muda: SSM Run Command em vez de
+// SSH, sem nenhuma dependência de sshd (mesmo modelo de TransferCertificateViaSSM). Duas chamadas
+// SSM separadas (restart, depois status) — mais simples/robusto que tentar embutir os dois passos
+// num script só com `set -e` (que abortaria a checagem de status se o restart falhasse, escondendo
+// o que aconteceu de fato).
+func (h *VMCertificatesHandler) RestartServiceViaSSM(c *gin.Context) {
+	instanceID := c.Param("instanceId")
+	var req vmServiceRestartSSMRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": err.Error()},
+		})
+		return
+	}
+	serviceName := strings.TrimSpace(req.ServiceName)
+	if serviceName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": "serviceName é obrigatório"},
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), ssmCommandTimeout)
+	defer cancel()
+
+	restartResult, err := awsprovider.RunShellCommand(ctx, req.Profile, req.Region, instanceID, []string{
+		restartServiceCommand(serviceName, req.InitSystem),
+	})
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "SSM_COMMAND_ERROR", "message": err.Error()},
+		})
+		return
+	}
+	if restartResult.Status != "Success" {
+		msg := restartResult.StandardErrorContent
+		if msg == "" {
+			msg = fmt.Sprintf("comando terminou com status %s", restartResult.Status)
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "SERVICE_RESTART_FAILED", "message": msg},
+		})
+		return
+	}
+
+	status := ""
+	statusCtx, statusCancel := context.WithTimeout(c.Request.Context(), ssmCommandTimeout)
+	defer statusCancel()
+	if statusResult, statusErr := awsprovider.RunShellCommand(statusCtx, req.Profile, req.Region, instanceID, []string{
+		serviceStatusCommand(serviceName, req.InitSystem),
+	}); statusErr == nil && statusResult.Status == "Success" {
+		status = strings.TrimSpace(statusResult.StandardOutputContent)
+	}
+
+	if h.historyTracker != nil {
+		entry := CreateHistoryEntry(c, "vm-service-restart-ssm", instanceID, fmt.Sprintf("profile=%s region=%s", req.Profile, req.Region), "success", nil, map[string]interface{}{
+			"service_name": serviceName,
+		}, 0, "")
+		_ = h.historyTracker.Log(entry)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "status": status})
 }

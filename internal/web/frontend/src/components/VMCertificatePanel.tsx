@@ -57,10 +57,31 @@ import type {
   VMCertTransferSSMResult,
   VMCertReadResult,
   VMSFTPBrowseEntry,
+  VMServiceRestartResult,
 } from "@/lib/api/types";
 import type { CertificateInfo } from "@/types/certificates";
 
 const REGION_SHORTCUTS = ["us-east-1", "us-east-2", "us-west-2", "sa-east-1"];
+
+// COMMON_SERVICES — pedido explícito do usuário: seleção entre os gerenciadores de serviço mais
+// comuns de mercado, em vez de exigir digitar o nome de cor toda vez. Value = nome real da unit
+// systemd/init (o que de fato vai pro comando `systemctl restart <value>`/`service <value>
+// restart`), Label = nome popular de exibição quando diverge do value técnico.
+const COMMON_SERVICES: { value: string; label: string }[] = [
+  { value: "nginx", label: "nginx" },
+  { value: "apache2", label: "Apache (apache2 — Debian/Ubuntu)" },
+  { value: "httpd", label: "Apache (httpd — RHEL/Amazon Linux)" },
+  { value: "haproxy", label: "HAProxy" },
+  { value: "envoy", label: "Envoy" },
+  { value: "caddy", label: "Caddy" },
+  { value: "squid", label: "Squid" },
+  { value: "tomcat", label: "Tomcat" },
+  { value: "mysqld", label: "MySQL (mysqld)" },
+  { value: "mariadb", label: "MariaDB" },
+  { value: "postgresql", label: "PostgreSQL" },
+  { value: "docker", label: "Docker" },
+];
+const CUSTOM_SERVICE_VALUE = "__custom__";
 
 function authToken(): string {
   return localStorage.getItem("auth_token") ?? "";
@@ -237,6 +258,17 @@ function RemoteFileBrowserDialog({
   const [pathInput, setPathInput] = useState("/");
   const pathInputRef = useRef<HTMLInputElement>(null);
 
+  // confirmPathInput — BUG REAL CORRIGIDO, relatado ao vivo pelo usuário ("nada pode ser
+  // selecionado lá"): clicar numa linha só funciona pra escolher um arquivo que JÁ EXISTE na VM —
+  // certo pro passo 3 (ler o que já está instalado, que por definição precisa existir), mas o
+  // passo 5 (destino de um certificado NOVO) quase sempre aponta pra um caminho que ainda não
+  // existe (pasta vazia ou com outro nome de arquivo) — a listagem nunca tem nada clicável que
+  // corresponda ao destino desejado, travando a escolha por completo. Barra de rodapé sempre
+  // visível: mostra/edita o caminho completo (pasta atual + nome de arquivo digitado), com um
+  // botão "Usar este caminho" que devolve esse valor via onPick mesmo sem o arquivo existir —
+  // clicar numa linha da listagem continua funcionando igual (atalho pro caso comum de já existir).
+  const [confirmPathInput, setConfirmPathInput] = useState("/");
+
   // Confirmação de host key SSH desconhecida (TOFU) — BUG REAL CORRIGIDO, relatado ao vivo pelo
   // usuário ("o botão procurar na VM não funciona"): esta tela nunca tratava SSH_HOSTKEY_UNKNOWN
   // de verdade, só mostrava o texto cru do erro ("...confirme e tente de novo") sem nenhum jeito
@@ -315,6 +347,19 @@ function RemoteFileBrowserDialog({
     load(p || "/");
   };
   const breadcrumbSegments = path === "/" ? [] : path.split("/").filter(Boolean);
+
+  // Sincroniza a barra "Usar este caminho" com a pasta atual a cada navegação (clique no
+  // breadcrumb ou numa subpasta) — o usuário só precisa completar com o nome do arquivo.
+  useEffect(() => {
+    setConfirmPathInput(path);
+  }, [path]);
+
+  const handleConfirmPath = () => {
+    const trimmed = confirmPathInput.trim();
+    if (!trimmed) return;
+    onPick(trimmed.startsWith("/") ? trimmed : `/${trimmed}`);
+    onOpenChange(false);
+  };
 
   const startEditingPath = () => {
     setPathInput(path);
@@ -405,7 +450,13 @@ function RemoteFileBrowserDialog({
                   <Loader2 className="h-4 w-4 animate-spin" /> Carregando...
                 </div>
               ) : entries.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-sm text-muted-foreground">Pasta vazia.</div>
+                <div className="flex flex-col items-center justify-center h-full gap-1 text-center px-4">
+                  <p className="text-sm text-muted-foreground">Pasta vazia.</p>
+                  <p className="text-xs text-muted-foreground">
+                    Se o arquivo ainda não existe (destino de uma instalação nova), digite o caminho completo no campo
+                    abaixo e clique em "Usar este caminho".
+                  </p>
+                </div>
               ) : (
                 <ScrollArea className="h-full">
                   <div className="divide-y divide-border/50">
@@ -434,6 +485,19 @@ function RemoteFileBrowserDialog({
                   </div>
                 </ScrollArea>
               )}
+            </div>
+
+            <div className="flex items-center gap-2 flex-shrink-0 pt-1 border-t">
+              <Input
+                className="h-8 text-xs font-mono flex-1"
+                value={confirmPathInput}
+                onChange={(e) => setConfirmPathInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleConfirmPath(); }}
+                placeholder="/caminho/completo/do/arquivo"
+              />
+              <Button size="sm" disabled={!confirmPathInput.trim()} onClick={handleConfirmPath}>
+                Usar este caminho
+              </Button>
             </div>
           </>
         )}
@@ -504,6 +568,18 @@ export function VMCertificatePanel() {
 
   const [connectOpen, setConnectOpen] = useState(false);
 
+  // Restart de serviço (nginx/apache2/httpd/haproxy/etc.) — pedido explícito do usuário: um botão
+  // dedicado em vez de exigir abrir o terminal (que continua existindo como alternativa manual,
+  // mais abaixo). serviceSelectValue guarda o valor do <Select> (um dos COMMON_SERVICES OU
+  // CUSTOM_SERVICE_VALUE); serviceNameCustom só é usado/mostrado quando o valor selecionado é
+  // "Personalizado...".
+  const [serviceSelectValue, setServiceSelectValue] = useState(COMMON_SERVICES[0].value);
+  const [serviceNameCustom, setServiceNameCustom] = useState("");
+  const [initSystem, setInitSystem] = useState<"systemd" | "sysv">("systemd");
+  const [restarting, setRestarting] = useState(false);
+  const [restartResult, setRestartResult] = useState<VMServiceRestartResult | null>(null);
+  const effectiveServiceName = (serviceSelectValue === CUSTOM_SERVICE_VALUE ? serviceNameCustom : serviceSelectValue).trim();
+
   // "Certificado atual na VM" — leitura via SFTP de um arquivo JÁ instalado (ReadRemoteCertificate),
   // pra responder "como vejo o que já está lá" sem precisar já saber o caminho de cor. browseTarget
   // decide pra qual campo (readPath/remoteCertPath/remoteKeyPath) o caminho escolhido no navegador
@@ -512,6 +588,19 @@ export function VMCertificatePanel() {
   const [reading, setReading] = useState(false);
   const [readResult, setReadResult] = useState<VMCertReadResult | null>(null);
   const [browseTarget, setBrowseTarget] = useState<"readPath" | "remoteCertPath" | "remoteKeyPath" | null>(null);
+
+  // Confirmação de host key SSH desconhecida (TOFU), agora TAMBÉM nas ações "Ler certificado" e
+  // "Transferir" — BUG REAL CORRIGIDO, relatado ao vivo pelo usuário ("o envio de arquivos ainda
+  // não está funcionando, assim como os botões de procurar na vm"): só RemoteFileBrowserDialog
+  // tinha essa confirmação inline; handleReadCertificate/handleTransfer só mostravam um toast
+  // pedindo pra abrir o terminal SSH (aba VMs/EC2) e aceitar a fingerprint lá — tecnicamente
+  // funciona (mesmo vm_known_hosts, ver internal/vmssh/knownhosts.go), mas exige sair do painel
+  // sem nenhum contexto do que se estava tentando fazer, indistinguível de "não funciona" pra
+  // quem nunca leu o toast até o fim. Mesmo mecanismo agora aqui: aceitar grava no known_hosts
+  // (persistido no servidor) e relança a MESMA ação que falhou.
+  const [pendingHostKeyFingerprint, setPendingHostKeyFingerprint] = useState<string | null>(null);
+  const [pendingHostKeyAction, setPendingHostKeyAction] = useState<"read" | "transfer" | "restart" | null>(null);
+  const [acceptedHostKeyFingerprint, setAcceptedHostKeyFingerprint] = useState<string | null>(null);
 
   // Reset da conexão/validação ao trocar de instância — nunca reaproveita host/resultado de uma
   // instância diferente sem o usuário perceber. Encerra também um túnel SSM porventura aberto pra
@@ -545,10 +634,17 @@ export function VMCertificatePanel() {
   // Session Manager — mapeia pro mesmo "ssm" que o modo de túnel já usa pro terminal.
   const terminalMode: "ssh" | "ssm" = connectionMode === "ssh" ? "ssh" : "ssm";
 
-  const targetParams = () =>
-    connectionMode === "ssm"
-      ? { tunnelSessionId: tunnelSessionId ?? "" }
-      : { host: host.trim(), port: Number(port) || 22 };
+  // fingerprintOverride — mesmo motivo de RemoteFileBrowserDialog: setState é assíncrono, então o
+  // acceptedHostKeyFingerprint recém-aceito ainda não estaria visível na mesma chamada que o
+  // relança (handleTrustHostKeyMain) via closure de estado, sem passar explicitamente.
+  const targetParams = (fingerprintOverride?: string) => {
+    const base =
+      connectionMode === "ssm"
+        ? { tunnelSessionId: tunnelSessionId ?? "" }
+        : { host: host.trim(), port: Number(port) || 22 };
+    const fp = fingerprintOverride ?? acceptedHostKeyFingerprint;
+    return fp ? { ...base, acceptHostKeyFingerprint: fp } : base;
+  };
 
   const handleStartSSMTunnel = async () => {
     if (!awsProfile || !region || !instance) return;
@@ -580,6 +676,19 @@ export function VMCertificatePanel() {
     return `/api/v1/vms/${encodeURIComponent(instance.id)}/sftp/list?${params.toString()}`;
   };
 
+  // browseSSMUrl — BUG REAL CORRIGIDO, relatado ao vivo pelo usuário: no modo "SSM (sem SSH)", o
+  // botão "Procurar na VM" ficava SEMPRE desabilitado (não existe SFTP sem sshd) — sem nenhuma
+  // pista clara na tela, dava a impressão de que a ferramenta inteira "não conecta", mesmo o
+  // caminho já existindo de verdade (caso mais comum: ATUALIZAR um certificado, não instalar um
+  // novo). Endpoint novo (ListDirectoryViaSSM, certificates_vm.go) lista via `find` sobre SSM Run
+  // Command, mesmo shape de resposta do /sftp/list — RemoteFileBrowserDialog funciona sem nenhuma
+  // mudança interna, só aponta pra uma URL diferente.
+  const browseSSMUrl = () => {
+    if (!instance) return "";
+    const params = new URLSearchParams({ profile: awsProfile, region });
+    return `/api/v1/vms/${encodeURIComponent(instance.id)}/certificates/browse-ssm?${params.toString()}`;
+  };
+
   const handlePickedPath = (path: string) => {
     if (browseTarget === "remoteCertPath") setRemoteCertPath(path);
     else if (browseTarget === "remoteKeyPath") setRemoteKeyPath(path);
@@ -587,7 +696,7 @@ export function VMCertificatePanel() {
     setBrowseTarget(null);
   };
 
-  const handleReadCertificate = async () => {
+  const handleReadCertificate = async (fingerprintOverride?: string) => {
     if (!instance || !readPath.trim()) return;
     setReading(true);
     setReadResult(null);
@@ -597,10 +706,15 @@ export function VMCertificatePanel() {
         const params = new URLSearchParams({ profile: awsProfile, region, path: readPath.trim() });
         resp = await apiFetch(`/api/v1/vms/${encodeURIComponent(instance.id)}/certificates/read-ssm?${params.toString()}`);
       } else {
-        const params = new URLSearchParams({ ...targetParams(), credentialProfileId, path: readPath.trim() } as Record<string, string>);
+        const params = new URLSearchParams({ ...targetParams(fingerprintOverride), credentialProfileId, path: readPath.trim() } as Record<string, string>);
         resp = await apiFetch(`/api/v1/vms/${encodeURIComponent(instance.id)}/certificates/read?${params.toString()}`);
       }
       const result = await parseJSON<VMCertReadResult>(resp);
+      if (!result.success && result.error?.code === "SSH_HOSTKEY_UNKNOWN" && result.error.fingerprint) {
+        setPendingHostKeyFingerprint(result.error.fingerprint);
+        setPendingHostKeyAction("read");
+        return;
+      }
       setReadResult(result);
       if (!result.success) {
         toast.error("Não foi possível ler o certificado", { description: result.error?.message });
@@ -653,7 +767,7 @@ export function VMCertificatePanel() {
     }
   };
 
-  const handleTransfer = async () => {
+  const handleTransfer = async (fingerprintOverride?: string) => {
     if (!instance) return;
     if (isSSHBased && !credentialProfileId) {
       toast.error("Selecione um perfil de credencial SSH");
@@ -683,7 +797,7 @@ export function VMCertificatePanel() {
         resp = await apiFetch(`/api/v1/vms/${encodeURIComponent(instance.id)}/certificates/transfer`, {
           method: "POST",
           body: JSON.stringify({
-            ...targetParams(),
+            ...targetParams(fingerprintOverride),
             credentialProfileId,
             certPem: tlsCrt,
             keyPem: tlsKey,
@@ -693,14 +807,18 @@ export function VMCertificatePanel() {
         });
       }
       const result = await parseJSON<VMCertTransferResult | VMCertTransferSSMResult>(resp);
+      // "fingerprint" in result.error — SSH_HOSTKEY_UNKNOWN só existe no caminho SFTP
+      // (VMCertTransferResult); o caminho SSM (VMCertTransferSSMResult) nunca tem esse campo, já
+      // que não envolve SSH algum — narrowing explícito em vez de um cast, TS não infere sozinho.
+      if (!result.success && result.error?.code === "SSH_HOSTKEY_UNKNOWN" && "fingerprint" in result.error && result.error.fingerprint) {
+        setPendingHostKeyFingerprint(result.error.fingerprint);
+        setPendingHostKeyAction("transfer");
+        return;
+      }
       setTransferResult(result);
       if (result.success) {
         toast.success("Certificado transferido para a VM", {
           description: `${remoteCertPath.trim()} + ${remoteKeyPath.trim()}`,
-        });
-      } else if (result.error?.code === "SSH_HOSTKEY_UNKNOWN") {
-        toast.error("Host key SSH desconhecida", {
-          description: "Abra um terminal SSH pra esta instância primeiro (aba VMs/EC2) e aceite a fingerprint — a transferência de arquivo nunca pergunta, só reaproveita o known_hosts já gravado.",
         });
       } else {
         toast.error("Erro ao transferir", { description: result.error?.message });
@@ -710,6 +828,74 @@ export function VMCertificatePanel() {
     } finally {
       setTransferring(false);
     }
+  };
+
+  // handleRestartService — pedido explícito do usuário: botão dedicado pra reiniciar o serviço
+  // (nginx/apache2/httpd/haproxy/etc.) sem precisar abrir o terminal e digitar o comando na mão
+  // (que continua disponível logo abaixo, como alternativa 100% manual). Mesmos 3 transportes já
+  // usados por handleReadCertificate/handleTransfer — SSM Run Command no modo sem SSH, SSH/SFTP
+  // (RunCommand sobre a mesma sessão já resolvida) nos outros dois.
+  const handleRestartService = async (fingerprintOverride?: string) => {
+    if (!instance) return;
+    const svc = effectiveServiceName;
+    if (!svc) {
+      toast.error("Selecione ou digite o nome do serviço");
+      return;
+    }
+    if (isSSHBased && !credentialProfileId) {
+      toast.error("Selecione um perfil de credencial SSH");
+      return;
+    }
+    setRestarting(true);
+    setRestartResult(null);
+    try {
+      let resp: Response;
+      if (connectionMode === "ssm-command") {
+        resp = await apiFetch(`/api/v1/vms/${encodeURIComponent(instance.id)}/certificates/restart-service-ssm`, {
+          method: "POST",
+          body: JSON.stringify({ profile: awsProfile, region, serviceName: svc, initSystem }),
+        });
+      } else {
+        resp = await apiFetch(`/api/v1/vms/${encodeURIComponent(instance.id)}/certificates/restart-service`, {
+          method: "POST",
+          body: JSON.stringify({ ...targetParams(fingerprintOverride), credentialProfileId, serviceName: svc, initSystem }),
+        });
+      }
+      const result = await parseJSON<VMServiceRestartResult>(resp);
+      if (!result.success && result.error?.code === "SSH_HOSTKEY_UNKNOWN" && result.error.fingerprint) {
+        setPendingHostKeyFingerprint(result.error.fingerprint);
+        setPendingHostKeyAction("restart");
+        return;
+      }
+      setRestartResult(result);
+      if (result.success) {
+        toast.success(`Serviço "${svc}" reiniciado`, { description: result.status ? `status: ${result.status}` : undefined });
+      } else {
+        toast.error("Erro ao reiniciar serviço", { description: result.error?.message });
+      }
+    } catch (e) {
+      toast.error("Erro ao reiniciar serviço", { description: e instanceof Error ? e.message : "Erro desconhecido" });
+    } finally {
+      setRestarting(false);
+    }
+  };
+
+  const handleTrustHostKeyMain = () => {
+    if (!pendingHostKeyFingerprint || !pendingHostKeyAction) return;
+    const fingerprint = pendingHostKeyFingerprint;
+    const action = pendingHostKeyAction;
+    setAcceptedHostKeyFingerprint(fingerprint);
+    setPendingHostKeyFingerprint(null);
+    setPendingHostKeyAction(null);
+    if (action === "read") void handleReadCertificate(fingerprint);
+    else if (action === "transfer") void handleTransfer(fingerprint);
+    else void handleRestartService(fingerprint);
+  };
+
+  const handleRejectHostKeyMain = () => {
+    setPendingHostKeyFingerprint(null);
+    setPendingHostKeyAction(null);
+    toast.error("Host key rejeitada — a operação não pode continuar sem confiar nela.");
   };
 
   const canValidate = tlsCrt.trim() !== "" && tlsKey.trim() !== "" && !validating;
@@ -723,6 +909,41 @@ export function VMCertificatePanel() {
   const canTransfer =
     !!instance && tlsCrt.trim() !== "" && tlsKey.trim() !== "" && remoteCertPath.trim() !== "" && remoteKeyPath.trim() !== "" &&
     (connectionMode === "ssm-command" ? ssmCommandReady : !!credentialProfileId && (connectionMode === "ssh" ? host.trim() !== "" : !!tunnelSessionId));
+
+  // Carregar do PC do usuário — BUG REAL CORRIGIDO, relatado ao vivo pelo usuário: até aqui o
+  // único jeito de preencher o certificado NOVO era colar manualmente ou escolher de uma fonte já
+  // salva no SERVIDOR (CertificateSourcePickerModal — rollback/backup apartado/PFX extraído, nada
+  // disso é o arquivo do PC do usuário). "Procurar na VM" (RemoteFileBrowserDialog) também não
+  // serve pra isso — navega arquivos JÁ na VM, é o caminho contrário (usado pra "ler o que já está
+  // lá" ou escolher o CAMINHO de destino remoto, nunca a origem do conteúdo local). Lê o arquivo
+  // inteiramente no browser (FileReader, nunca sobe pro servidor antes de "Transferir" — mesma
+  // origem de dado que colar manualmente, só que sem exigir copiar/colar) e preenche a textarea
+  // correspondente, exatamente como se o usuário tivesse colado o texto.
+  const certFileInputRef = useRef<HTMLInputElement>(null);
+  const keyFileInputRef = useRef<HTMLInputElement>(null);
+
+  const readLocalFileInto = (file: File, setter: (v: string) => void) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      setter(String(reader.result ?? ""));
+      setValidateResult(null);
+      setTransferResult(null);
+    };
+    reader.onerror = () => toast.error("Erro ao ler o arquivo", { description: file.name });
+    reader.readAsText(file);
+  };
+
+  const handleLocalCertFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) readLocalFileInto(file, setTlsCrt);
+  };
+
+  const handleLocalKeyFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) readLocalFileInto(file, setTlsKey);
+  };
 
   return (
     <div className="h-full flex flex-col min-h-0">
@@ -830,7 +1051,7 @@ export function VMCertificatePanel() {
                   <p className="text-xs text-muted-foreground">
                     Sem SSH/sshd nenhum — os comandos rodam via AWS SSM Run Command, usando o profile "{awsProfile || "?"}"
                     e a região "{region}" já escolhidos no passo 1. Só precisa do agente SSM (o mesmo já exigido pelo
-                    terminal). Navegação visual de arquivos não está disponível neste modo — digite o caminho direto.
+                    terminal). "Procurar na VM" também funciona aqui — lista via um comando remoto (find), não SFTP.
                   </p>
                 )}
 
@@ -850,6 +1071,28 @@ export function VMCertificatePanel() {
                   </div>
                 )}
               </div>
+
+              {/* Confirmação de host key SSH desconhecida (TOFU) — dispara quando "Ler
+                  certificado" (passo 3), "Transferir" (passo 5) ou "Reiniciar serviço" (passo 6)
+                  batem em SSH_HOSTKEY_UNKNOWN numa instância nunca antes acessada por este app. Ver
+                  comentário no state pendingHostKeyFingerprint acima. */}
+              {pendingHostKeyFingerprint && (
+                <div className="space-y-3 border border-amber-500/40 rounded-md p-4 bg-amber-500/5">
+                  <div className="flex items-center gap-2 text-amber-500">
+                    <ShieldAlert className="h-4 w-4" />
+                    <span className="text-sm font-medium">Host key SSH desconhecida</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Esta é a primeira conexão com esta instância. Confirme a fingerprint com o administrador da VM
+                    antes de aceitar — aceitar uma fingerprint errada pode expor suas credenciais a um ataque MITM.
+                  </p>
+                  <code className="block px-2 py-1 rounded bg-muted text-xs font-mono break-all">{pendingHostKeyFingerprint}</code>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" size="sm" onClick={handleRejectHostKeyMain}>Rejeitar</Button>
+                    <Button size="sm" onClick={handleTrustHostKeyMain}>Confiar e continuar</Button>
+                  </div>
+                </div>
+              )}
 
               <Separator />
 
@@ -875,20 +1118,14 @@ export function VMCertificatePanel() {
                     size="sm"
                     variant="outline"
                     className="h-8 text-xs"
-                    disabled={!sftpConnectionReady}
-                    title={
-                      connectionMode === "ssm-command"
-                        ? "Navegação visual não disponível no modo SSM sem SSH — digite o caminho direto"
-                        : !sftpConnectionReady
-                        ? "Preencha a conexão (passo 2) primeiro"
-                        : "Navegar pelos arquivos da VM"
-                    }
+                    disabled={!certActionsReady}
+                    title={certActionsReady ? "Navegar pelos arquivos da VM" : "Preencha a conexão (passo 2) primeiro"}
                     onClick={() => setBrowseTarget("readPath")}
                   >
                     <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
                     Procurar na VM...
                   </Button>
-                  <Button size="sm" disabled={!certActionsReady || !readPath.trim() || reading} onClick={handleReadCertificate}>
+                  <Button size="sm" disabled={!certActionsReady || !readPath.trim() || reading} onClick={() => handleReadCertificate()}>
                     {reading ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <FileSearch className="h-3.5 w-3.5 mr-1.5" />}
                     Ler certificado
                   </Button>
@@ -922,11 +1159,17 @@ export function VMCertificatePanel() {
                 <div>
                   <div className="flex items-center justify-between">
                     <Label className="text-xs">Certificado (tls.crt — PEM)</Label>
-                    {tlsCrt.trim() && (
-                      <span className="text-[11px] text-muted-foreground">
-                        {countPemCertificates(tlsCrt)} certificado(s){countPemCertificates(tlsCrt) > 1 && " (chain incluída)"}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {tlsCrt.trim() && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {countPemCertificates(tlsCrt)} certificado(s){countPemCertificates(tlsCrt) > 1 && " (chain incluída)"}
+                        </span>
+                      )}
+                      <Button type="button" variant="ghost" size="sm" className="h-6 text-[11px] px-1.5" onClick={() => certFileInputRef.current?.click()}>
+                        <Upload className="h-3 w-3 mr-1" /> Carregar do PC
+                      </Button>
+                      <input ref={certFileInputRef} type="file" className="hidden" onChange={handleLocalCertFile} />
+                    </div>
                   </div>
                   <textarea
                     value={tlsCrt}
@@ -936,7 +1179,15 @@ export function VMCertificatePanel() {
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">Chave Privada (tls.key — PEM)</Label>
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs">Chave Privada (tls.key — PEM)</Label>
+                    <div className="flex items-center gap-2">
+                      <Button type="button" variant="ghost" size="sm" className="h-6 text-[11px] px-1.5" onClick={() => keyFileInputRef.current?.click()}>
+                        <Upload className="h-3 w-3 mr-1" /> Carregar do PC
+                      </Button>
+                      <input ref={keyFileInputRef} type="file" className="hidden" onChange={handleLocalKeyFile} />
+                    </div>
+                  </div>
                   <textarea
                     value={tlsKey}
                     onChange={(e) => setTlsKey(e.target.value)}
@@ -1046,8 +1297,8 @@ export function VMCertificatePanel() {
                         <Input className="h-8 text-xs font-mono" value={remoteCertPath} onChange={(e) => setRemoteCertPath(e.target.value)} placeholder="/etc/nginx/ssl/tls.crt" />
                       </div>
                       <Button
-                        size="sm" variant="outline" className="h-8 text-xs" disabled={!sftpConnectionReady}
-                        title={connectionMode === "ssm-command" ? "Navegação visual não disponível no modo SSM sem SSH" : "Navegar pelos arquivos da VM"}
+                        size="sm" variant="outline" className="h-8 text-xs" disabled={!certActionsReady}
+                        title={certActionsReady ? "Navegar pelos arquivos da VM" : "Preencha a conexão (passo 2) primeiro"}
                         onClick={() => setBrowseTarget("remoteCertPath")}
                       >
                         <FolderOpen className="h-3.5 w-3.5" />
@@ -1057,15 +1308,15 @@ export function VMCertificatePanel() {
                         <Input className="h-8 text-xs font-mono" value={remoteKeyPath} onChange={(e) => setRemoteKeyPath(e.target.value)} placeholder="/etc/nginx/ssl/tls.key" />
                       </div>
                       <Button
-                        size="sm" variant="outline" className="h-8 text-xs" disabled={!sftpConnectionReady}
-                        title={connectionMode === "ssm-command" ? "Navegação visual não disponível no modo SSM sem SSH" : "Navegar pelos arquivos da VM"}
+                        size="sm" variant="outline" className="h-8 text-xs" disabled={!certActionsReady}
+                        title={certActionsReady ? "Navegar pelos arquivos da VM" : "Preencha a conexão (passo 2) primeiro"}
                         onClick={() => setBrowseTarget("remoteKeyPath")}
                       >
                         <FolderOpen className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                     <ProtectedAction>
-                      <Button size="sm" disabled={!canTransfer || transferring} onClick={handleTransfer}>
+                      <Button size="sm" disabled={!canTransfer || transferring} onClick={() => handleTransfer()}>
                         {transferring ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Upload className="h-3.5 w-3.5 mr-1.5" />}
                         {connectionMode === "ssm-command" ? "Transferir via SSM" : "Transferir via SFTP"}
                       </Button>
@@ -1089,13 +1340,79 @@ export function VMCertificatePanel() {
                 <>
                   <Separator />
 
-                  {/* 6. Reload — sempre manual */}
+                  {/* 6. Reload — reinício automático por serviço selecionado (pedido explícito do
+                      usuário), OU terminal manual como alternativa quando o serviço não está na
+                      lista/tem um fluxo de reload próprio (não um restart completo). A transferência
+                      em si nunca reinicia nada sozinha — esta seção é sempre uma ação separada e
+                      explícita. */}
                   <div className="space-y-2">
-                    <Label className="text-xs font-semibold">6. Reload (manual) e confirmação</Label>
+                    <Label className="text-xs font-semibold">6. Reiniciar serviço e confirmar</Label>
                     <p className="text-xs text-muted-foreground">
-                      A transferência nunca reinicia nada sozinha. Abra o terminal e rode o comando de reload da sua
-                      aplicação (ex: <code className="font-mono">systemctl reload nginx</code>), depois clique em
-                      "Reconfirmar" abaixo pra verificar se o certificado servido já mudou.
+                      Escolha o serviço que serve este certificado e clique em "Reiniciar serviço" — roda
+                      <code className="font-mono mx-1">systemctl restart</code> (ou <code className="font-mono">service ... restart</code>,
+                      pra init clássico) direto na VM, sem precisar abrir terminal nenhum.
+                    </p>
+                    <div className="flex gap-2 flex-wrap items-end">
+                      <div className="space-y-1 min-w-[220px]">
+                        <Label className="text-xs text-muted-foreground">Serviço</Label>
+                        <Select value={serviceSelectValue} onValueChange={setServiceSelectValue}>
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {COMMON_SERVICES.map((s) => (
+                              <SelectItem key={s.value} value={s.value} className="text-xs">{s.label}</SelectItem>
+                            ))}
+                            <SelectItem value={CUSTOM_SERVICE_VALUE} className="text-xs">Personalizado (digitar)...</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {serviceSelectValue === CUSTOM_SERVICE_VALUE && (
+                        <div className="space-y-1 min-w-[180px]">
+                          <Label className="text-xs text-muted-foreground">Nome exato do serviço</Label>
+                          <Input
+                            className="h-8 text-xs font-mono"
+                            value={serviceNameCustom}
+                            onChange={(e) => setServiceNameCustom(e.target.value)}
+                            placeholder="ex: my-app.service"
+                          />
+                        </div>
+                      )}
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Gerenciador</Label>
+                        <div className="flex gap-1">
+                          <Button type="button" size="sm" variant={initSystem === "systemd" ? "default" : "outline"} className="h-8 text-xs" onClick={() => setInitSystem("systemd")}>
+                            systemd
+                          </Button>
+                          <Button type="button" size="sm" variant={initSystem === "sysv" ? "default" : "outline"} className="h-8 text-xs" onClick={() => setInitSystem("sysv")}>
+                            SysV/init
+                          </Button>
+                        </div>
+                      </div>
+                      <ProtectedAction>
+                        <Button
+                          size="sm"
+                          disabled={!certActionsReady || !effectiveServiceName || restarting}
+                          onClick={() => handleRestartService()}
+                        >
+                          {restarting ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5 mr-1.5" />}
+                          Reiniciar serviço
+                        </Button>
+                      </ProtectedAction>
+                    </div>
+
+                    {restartResult && (
+                      <div className={`text-xs flex items-center gap-2 ${restartResult.success ? "text-green-500" : "text-red-500"}`}>
+                        {restartResult.success ? <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0" /> : <XCircle className="h-3.5 w-3.5 flex-shrink-0" />}
+                        {restartResult.success
+                          ? `Reiniciado com sucesso${restartResult.status ? ` — status: ${restartResult.status}` : ""}`
+                          : restartResult.error?.message || "Falha ao reiniciar o serviço"}
+                      </div>
+                    )}
+
+                    <p className="text-xs text-muted-foreground pt-1">
+                      Alternativa 100% manual: abra o terminal e rode o comando você mesmo (útil quando o serviço não
+                      está na lista, ou quando o reload correto não é um restart completo).
                     </p>
                     <div className="flex gap-2">
                       <ProtectedAction>
@@ -1147,7 +1464,7 @@ export function VMCertificatePanel() {
         <RemoteFileBrowserDialog
           open={browseTarget !== null}
           onOpenChange={(open) => { if (!open) setBrowseTarget(null); }}
-          listUrl={sftpListUrl()}
+          listUrl={connectionMode === "ssm-command" ? browseSSMUrl() : sftpListUrl()}
           onPick={handlePickedPath}
         />
       )}

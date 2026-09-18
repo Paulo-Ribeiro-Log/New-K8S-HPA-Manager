@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -295,6 +297,55 @@ func (s *VMFileSession) WriteFile(path string, data []byte) (int64, error) {
 		return int64(n), fmt.Errorf("falha ao enviar pro destino: %w", cerr)
 	}
 	return int64(n), nil
+}
+
+// RemoteCommandResult — saída de RunCommand: stdout/stderr separados (não CombinedOutput, pra
+// diferenciar mensagem de erro real de log normal na hora de montar o texto de erro pro usuário) +
+// código de saída. ExitCode != 0 NÃO é um erro Go (err continua nil nesse caso) — o comando rodou
+// de verdade, só terminou mal; cabe ao chamador decidir a mensagem certa a partir do conteúdo.
+type RemoteCommandResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+// RunCommand executa um comando remoto de verdade (não é leitura/escrita de arquivo) sobre a MESMA
+// conexão SSH já resolvida por OpenFileSession (host/porta/túnel/credencial/host-key) — usado pelo
+// botão "Reiniciar serviço" (certificates_vm.go, passo 6) sem precisar discar de novo. Sessão SSH
+// nova por chamada (o protocolo SSH não reaproveita uma sessão pra rodar um 2º comando depois do
+// 1º terminar), mas a CONEXÃO TCP/SSH por baixo (s.sess.ssh) é a mesma.
+func (s *VMFileSession) RunCommand(ctx context.Context, command string) (*RemoteCommandResult, error) {
+	session, err := s.sess.ssh.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	done := make(chan error, 1)
+	go func() { done <- session.Run(command) }()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		return nil, ctx.Err()
+	case runErr := <-done:
+		result := &RemoteCommandResult{Stdout: stdout.String(), Stderr: stderr.String()}
+		if runErr == nil {
+			return result, nil
+		}
+		var exitErr *ssh.ExitError
+		if errors.As(runErr, &exitErr) {
+			result.ExitCode = exitErr.ExitStatus()
+			return result, nil
+		}
+		// Erro de transporte/sessão de verdade (conexão caiu no meio, etc.) — não um exit code,
+		// esse sim precisa propagar como erro Go.
+		return nil, runErr
+	}
 }
 
 // OpenFileSession abre uma sessão SFTP a partir dos MESMOS parâmetros de query que

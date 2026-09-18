@@ -44,7 +44,10 @@
       "Bash(./rebuild-web.sh -b)",
       "Bash(go test *)",
       "Bash(go vet *)",
-      "Bash(gofmt -l internal/cloudprovider/aws internal/web/handlers internal/web/server.go)"
+      "Bash(gofmt -l internal/cloudprovider/aws internal/web/handlers internal/web/server.go)",
+      "WebSearch",
+      "Bash(echo \"exit=$?\")",
+      "Bash(grep -n \"</ScrollArea>\\\\|</div>\\\\s*$\" internal/web/frontend/src/components/VMCertificatePanel.tsx)"
     ],
     "deny": [],
     "ask": []

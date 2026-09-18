@@ -3187,3 +3187,15 @@ export interface VMCertTransferSSMResult {
   success: boolean;
   error?: { code: string; message: string };
 }
+
+// VMServiceRestartResult — resultado de reiniciar um serviço (nginx/apache2/httpd/haproxy/etc.) na
+// VM — mesmo shape tanto via SSH/SFTP (RestartService) quanto via SSM Run Command
+// (RestartServiceViaSSM), por isso um único tipo cobre os dois. `status` é a saída best-effort de
+// `systemctl is-active`/`service <nome> status` rodada logo após um restart bem-sucedido — pode vir
+// vazia se essa 2ª checagem falhar, sem que isso signifique que o restart em si falhou.
+export interface VMServiceRestartResult {
+  success: boolean;
+  error?: { code: string; message: string; fingerprint?: string };
+  status?: string;
+  exit_code?: number;
+}
