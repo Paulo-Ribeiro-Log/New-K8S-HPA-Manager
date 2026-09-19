@@ -32,6 +32,7 @@ import { StorageTab } from "./finops/StorageTab";
 import { OpportunitiesTab } from "./finops/OpportunitiesTab";
 import { RelatorioTab } from "./finops/RelatorioTab";
 import { UnattachedDisksTab } from "./finops/UnattachedDisksTab";
+import { DataResourcesPanel } from "./DataResourcesPanel";
 
 export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => {
   const { clusters } = useClusters();
@@ -431,7 +432,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               Discos Desatachados já está disponível abaixo.
             </p>
           )}
-          <Tabs value={report ? subTab : "disks"} onValueChange={setSubTab} className="flex-1 flex flex-col min-h-0">
+          <Tabs value={report || subTab === "data" ? subTab : "disks"} onValueChange={setSubTab} className="flex-1 flex flex-col min-h-0">
             <TabsList className="w-fit">
               {report && (<>
               <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
@@ -478,6 +479,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <RightsizingTabBadge cluster={cluster} />
               </TabsTrigger>
               </>)}
+              <TabsTrigger value="data">Recursos de Dados</TabsTrigger>
               <TabsTrigger value="disks">Discos Desatachados</TabsTrigger>
             </TabsList>
 
@@ -510,6 +512,9 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <RightsizingTab cluster={cluster} />
               </TabsContent>
               </>)}
+              <TabsContent value="data" className="mt-0 h-full">
+                <DataResourcesPanel cluster={cluster} />
+              </TabsContent>
               <TabsContent value="disks" className="mt-0 h-full">
                 <UnattachedDisksTab cluster={cluster} />
               </TabsContent>

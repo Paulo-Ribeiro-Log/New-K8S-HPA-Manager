@@ -61,6 +61,18 @@ type FinOpsHandler struct {
 	unattachedDisksSF    singleflight.Group
 	unattachedDisksMu    sync.Mutex
 	unattachedDisksCache map[string]cachedUnattachedDisks
+
+	// Uso real (Azure Monitor) dos recursos do RG de dados — ~1 chamada por VM/servidor, então fica
+	// em cache de 30 min por cluster+janela (finops_data_resources.go).
+	dataUsageSF    singleflight.Group
+	dataUsageMu    sync.Mutex
+	dataUsageCache map[string]cachedDataUsage
+
+	// Resolução "em qual subscription está o RG de dados deste cluster" — a busca entre
+	// subscriptions faz dezenas de chamadas ao ARM, então o resultado (positivo ou negativo) é
+	// guardado por cluster (finops_data_resources.go).
+	dataRGMu    sync.Mutex
+	dataRGCache map[string]cachedDataRG
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -98,6 +110,8 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		awsPricers:       make(map[string]*finops.AWSPricer),
 
 		unattachedDisksCache: make(map[string]cachedUnattachedDisks),
+		dataUsageCache:       make(map[string]cachedDataUsage),
+		dataRGCache:          make(map[string]cachedDataRG),
 	}
 }
 

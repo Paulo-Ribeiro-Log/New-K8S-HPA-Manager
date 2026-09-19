@@ -9,9 +9,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"k8s-hpa-manager/internal/models"
 )
 
 // PriceDataResources tenta precificar cada recurso de dados. Achado real ao validar ao vivo
@@ -93,6 +96,12 @@ func PriceDataResources(ctx context.Context, resources []AzureDataResource, vmPr
 // precificar node pools do AKS — uma VM self-hosted de banco é precificada exatamente igual a um
 // node de cluster, é o mesmo SKU de VM Azure.
 func priceVirtualMachine(r *AzureDataResource, vmPricer *AzurePricer, rate float64) {
+	// VM desalocada não cobra compute (só os discos, precificados à parte). Antes ela era cobrada
+	// como se estivesse ligada, superestimando o RG.
+	if r.PowerState == "deallocated" {
+		r.PricingNote = "VM desalocada: sem custo de compute (os discos anexados continuam cobrando)."
+		return
+	}
 	if vmPricer == nil || r.SKUName == "" {
 		r.PricingNote = "vmSize não disponível — não foi possível estimar o custo."
 		return
@@ -113,12 +122,36 @@ func priceVirtualMachine(r *AzureDataResource, vmPricer *AzurePricer, rate float
 // ("Standard HDD"), ResolveManagedDiskTier resolve o tier de capacidade (ex: "S10") a partir do
 // tamanho real em GB (`az disk list` devolve isso direto, diferente de PVC via K8s StorageClass).
 func priceManagedDisk(r *AzureDataResource, diskPricer *DiskPricer, region string, rate float64) {
-	if diskPricer == nil || r.SKUName == "" || r.SizeGB <= 0 {
+	if r.SKUName == "" || r.SizeGB <= 0 {
 		r.PricingNote = "SKU ou tamanho do disco não disponível — não foi possível estimar o custo."
 		return
 	}
+
+	// Premium SSD v2 / Ultra: preço por capacidade + IOPS + throughput provisionados (tabela). Sem
+	// isso, "PremiumV2_LRS" cairia em Premium SSD por prefixo de nome e seria precificado errado.
+	probe := models.UnattachedDisk{Provider: "azure", DiskType: r.SKUName, SizeGB: r.SizeGB, ProvisionedIOPS: r.ProvisionedIOPS, ProvisionedMBps: r.ProvisionedMBps}
+	if row, ok := tablePriceFor(probe); ok {
+		usd := tableMonthlyCostUSD(probe, row)
+		r.MonthlyCostUSD = usd
+		r.MonthlyCostBRL = round2(usd * rate)
+		r.PriceSource = "table"
+		r.PricingNote = "Preço de tabela (brazilsouth, on-demand): capacidade + IOPS/throughput provisionados acima da cota gratuita."
+		return
+	}
+
+	if diskPricer == nil {
+		r.PricingNote = "Pricer de disco indisponível — não foi possível estimar o custo."
+		return
+	}
+	if !isKnownAzureSKU(r.SKUName) {
+		r.PricingNote = fmt.Sprintf("SKU de disco '%s' sem preço mapeado — não estimado.", r.SKUName)
+		return
+	}
 	azureType, _ := MapStorageClassToAzureType("", "", r.SKUName)
-	tier := ResolveManagedDiskTier(azureType, r.SizeGB)
+	tier := r.DiskTier
+	if tier == "" {
+		tier = ResolveManagedDiskTier(azureType, r.SizeGB)
+	}
 	monthlyUSD, _, err := diskPricer.GetDiskPrice(azureType, tier, region)
 	if err != nil {
 		r.PricingNote = fmt.Sprintf("Preço não encontrado pra disco %s %s — não estimado (%s).", azureType, tier, err.Error())
@@ -164,11 +197,6 @@ func parseFlexServerFamily(sku string) (family string, vcores int, ok bool) {
 // do jeito acima). Não inclui custo de storage/IOPS provisionado (mesma limitação já documentada
 // pra Storage Accounts — cobrado por GB, sem dado de volume aqui).
 func priceFlexibleServer(r *AzureDataResource, region string, rate float64) {
-	if r.SKUName == "" {
-		r.PricingNote = "SKU de compute não disponível — não foi possível estimar o custo (nota: o custo de storage provisionado também não é coberto nesta versão)."
-		return
-	}
-
 	serviceName := "Azure Database for PostgreSQL"
 	t := strings.ToLower(r.Type)
 	if strings.Contains(t, "mysql") {
@@ -177,39 +205,89 @@ func priceFlexibleServer(r *AzureDataResource, region string, rate float64) {
 		serviceName = "Azure Database for MariaDB"
 	}
 
-	rawSKU := strings.TrimPrefix(r.SKUName, "Standard_")
-	rawSKU = strings.TrimPrefix(rawSKU, "standard_")
+	// Compute e storage são consultados de forma INDEPENDENTE: falhar em achar o preço do compute
+	// (SKU incomum) não pode esconder o storage, que num servidor pequeno costuma ser a maior
+	// parte do custo.
+	computeUSD, computeErr := flexComputeMonthlyUSD(r, serviceName, region)
+
+	var storagePerGB float64
+	storageKnown := r.StorageGB <= 0
+	if r.StorageGB > 0 {
+		if p, ok := flexStoragePricePerGB(serviceName, region); ok {
+			storagePerGB, storageKnown = p, true
+		}
+	}
+	haOn := r.HAMode != "" && !strings.EqualFold(r.HAMode, "Disabled")
+	compute, storage, total := flexTotalCost(computeUSD, r.StorageGB, storagePerGB, haOn)
+
+	if total <= 0 {
+		r.PricingNote = computeErr
+		if r.StorageGB > 0 && !storageKnown {
+			r.PricingNote += fmt.Sprintf(" O preço do storage provisionado (%.0f GB) também não pôde ser consultado.", r.StorageGB)
+		}
+		return
+	}
+
+	r.ComputeCostUSD, r.ComputeCostBRL = compute, round2(compute*rate)
+	r.StorageCostUSD, r.StorageCostBRL = storage, round2(storage*rate)
+	r.MonthlyCostUSD = total
+	r.MonthlyCostBRL = round2(total * rate)
+	r.PriceSource = "api"
+	r.PricingNote = flexPricingNote(r.StorageGB, storageKnown, haOn, computeErr)
+}
+
+// flexComputeMonthlyUSD devolve o custo mensal (USD) do compute do servidor, ou (0, motivo) quando
+// o preço não foi encontrado.
+func flexComputeMonthlyUSD(r *AzureDataResource, serviceName, region string) (float64, string) {
+	if r.SKUName == "" {
+		return 0, "SKU de compute não disponível — o compute não foi estimado."
+	}
+	rawSKU := strings.TrimPrefix(strings.TrimPrefix(r.SKUName, "Standard_"), "standard_")
 	family, vcores, hasFamily := parseFlexServerFamily(rawSKU)
 
 	var filter string
-	if hasFamily {
+	switch {
+	case hasFamily:
 		filter = fmt.Sprintf(
 			"serviceName eq '%s' and armRegionName eq '%s' and priceType eq 'Consumption' and contains(productName, '%s')",
-			serviceName, region, family,
-		)
-	} else {
-		// M-series/Burstable: sem família parseável no formato esperado — busca só por
-		// serviceName+região e casa o skuName cru abaixo (catálogo menor por família não é
-		// filtrável aqui, mas o serviço inteiro ainda é uma lista administrável).
+			serviceName, region, family)
+	case strings.EqualFold(r.SKUTier, "Burstable") || strings.HasPrefix(strings.ToUpper(rawSKU), "B"):
+		// Burstable (B1ms, B2s...): a Retail API grava o skuName em caixa mista/alta ("B1MS") e o
+		// `contains(skuName, ...)` diferencia maiúsculas — por isso filtra pelo produto e casa o
+		// SKU em Go, sem diferenciar caixa.
+		filter = fmt.Sprintf(
+			"serviceName eq '%s' and armRegionName eq '%s' and priceType eq 'Consumption' and contains(productName, 'Burstable')",
+			serviceName, region)
+	default:
 		filter = fmt.Sprintf(
 			"serviceName eq '%s' and armRegionName eq '%s' and priceType eq 'Consumption' and contains(skuName, '%s')",
-			serviceName, region, rawSKU,
-		)
+			serviceName, region, rawSKU)
 	}
 
 	items, err := fetchRetailPriceItems(filter)
 	if err != nil {
-		r.PricingNote = fmt.Sprintf("Falha ao consultar a Retail Prices API — não estimado (%s). Custo de storage provisionado também não coberto nesta versão.", err.Error())
-		return
+		return 0, fmt.Sprintf("Falha ao consultar a Retail Prices API — o compute não foi estimado (%s).", err.Error())
 	}
+	hourly := pickFlexComputeHourly(items, hasFamily, vcores, rawSKU)
+	if hourly == 0 {
+		return 0, fmt.Sprintf("Nenhum preço de compute encontrado na Retail Prices API pra SKU '%s' na região %s — o compute não foi estimado.", r.SKUName, region)
+	}
+	return round2(hourly * hoursPerMonth), ""
+}
 
+// pickFlexComputeHourly escolhe o preço/hora do compute entre os itens da Retail API: pela
+// contagem de vCores (famílias General Purpose/Memory Optimized, cujo skuName é "N vCore") ou pelo
+// nome do SKU (Burstable). A comparação ignora caixa ("B1MS" == "B1ms").
+func pickFlexComputeHourly(items []retailPriceItem, hasFamily bool, vcores int, rawSKU string) float64 {
 	vcoreLabel := fmt.Sprintf("%d vCore", vcores)
 	var hourly float64
 	for _, it := range items {
 		if it.UnitOfMeasure != "1 Hour" {
 			continue
 		}
-		matches := (hasFamily && strings.EqualFold(it.SKUName, vcoreLabel)) || strings.EqualFold(it.SKUName, rawSKU)
+		matches := (hasFamily && strings.EqualFold(it.SKUName, vcoreLabel)) ||
+			strings.EqualFold(it.SKUName, rawSKU) ||
+			strings.EqualFold(it.SKUName, "Standard_"+rawSKU)
 		if !matches {
 			continue
 		}
@@ -217,17 +295,95 @@ func priceFlexibleServer(r *AzureDataResource, region string, rate float64) {
 			hourly = it.RetailPrice
 		}
 	}
+	return hourly
+}
 
-	if hourly == 0 {
-		r.PricingNote = fmt.Sprintf("Nenhum preço de compute encontrado na Retail Prices API pra SKU '%s' na região %s — não estimado. Custo de storage provisionado também não coberto nesta versão.", r.SKUName, region)
-		return
+// flexTotalCost compõe o custo mensal (USD) de um Flexible Server: compute + storage provisionado
+// (GB × preço/GB). Com alta disponibilidade (standby) compute e storage são cobrados em dobro.
+func flexTotalCost(computeUSD, storageGB, storagePerGB float64, ha bool) (compute, storage, total float64) {
+	compute = computeUSD
+	storage = round2(storageGB * storagePerGB)
+	if ha {
+		compute, storage = round2(compute*2), round2(storage*2)
 	}
+	return compute, storage, round2(compute + storage)
+}
 
-	monthlyUSD := round2(hourly * hoursPerMonth)
-	r.MonthlyCostUSD = monthlyUSD
-	r.MonthlyCostBRL = round2(monthlyUSD * rate)
-	r.PriceSource = "api"
-	r.PricingNote = "Só compute (vCore/hora) — custo de storage provisionado não coberto nesta versão."
+func flexPricingNote(storageGB float64, storageKnown, ha bool, computeErr string) string {
+	var parts []string
+	if computeErr == "" {
+		parts = append(parts, "Compute (vCore/hora)")
+	} else {
+		parts = append(parts, "SÓ storage — "+computeErr)
+	}
+	switch {
+	case storageGB > 0 && storageKnown:
+		parts = append(parts, fmt.Sprintf("storage provisionado (%.0f GB)", storageGB))
+	case storageGB > 0:
+		parts = append(parts, fmt.Sprintf("o preço do storage provisionado (%.0f GB) não pôde ser consultado, então o total está SUBESTIMADO", storageGB))
+	default:
+		parts = append(parts, "tamanho do storage não informado pelo ARM, então o storage não está no total")
+	}
+	note := strings.Join(parts, " + ")
+	if computeErr != "" {
+		note = parts[0] + " (" + parts[1] + ")"
+	}
+	if ha {
+		note += "; alta disponibilidade ativa (compute e storage em dobro)"
+	}
+	return note + ". Backup acima do incluído e IOPS extra não estão no total."
+}
+
+var (
+	flexStorageMu    sync.Mutex
+	flexStorageCache = map[string]flexStorageEntry{}
+)
+
+type flexStorageEntry struct {
+	perGB   float64
+	fetched time.Time
+}
+
+// flexStoragePricePerGB devolve o preço USD/GB/mês do storage de Flexible Server (PostgreSQL ou
+// MySQL) na região — medidor "Storage Data Stored", produto "...Flex(ible) Server Storage".
+// Cacheado em memória por 24h (mesmo preço pra todos os servidores da região).
+func flexStoragePricePerGB(serviceName, region string) (float64, bool) {
+	key := serviceName + "|" + region
+	flexStorageMu.Lock()
+	if e, ok := flexStorageCache[key]; ok && time.Since(e.fetched) < 24*time.Hour {
+		flexStorageMu.Unlock()
+		return e.perGB, e.perGB > 0
+	}
+	flexStorageMu.Unlock()
+
+	items, err := fetchRetailPriceItems(fmt.Sprintf(
+		"serviceName eq '%s' and armRegionName eq '%s' and priceType eq 'Consumption' and meterName eq 'Storage Data Stored'",
+		serviceName, region))
+	if err != nil {
+		return 0, false
+	}
+	price := pickFlexStoragePrice(items)
+	if price > 0 {
+		flexStorageMu.Lock()
+		flexStorageCache[key] = flexStorageEntry{perGB: price, fetched: time.Now()}
+		flexStorageMu.Unlock()
+	}
+	return price, price > 0
+}
+
+// pickFlexStoragePrice escolhe, entre os itens de "Storage Data Stored", o de Flexible Server em
+// GB/mês (exclui Single Server, Cosmos DB for PostgreSQL etc., que têm medidores parecidos).
+func pickFlexStoragePrice(items []retailPriceItem) float64 {
+	var best float64
+	for _, it := range items {
+		if !strings.EqualFold(it.UnitOfMeasure, "1 GB/Month") || !strings.Contains(strings.ToLower(it.ProductName), "flex") {
+			continue
+		}
+		if it.RetailPrice > 0 && (best == 0 || it.RetailPrice < best) {
+			best = it.RetailPrice
+		}
+	}
+	return best
 }
 
 // priceStorageAccount (F3.1 do FINOPS-IMPROVEMENTS-PLAN.md) — estimativa best-effort a partir do

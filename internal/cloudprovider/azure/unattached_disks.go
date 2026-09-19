@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -16,10 +13,7 @@ import (
 
 const (
 	unattachedDisksTimeout = 2 * time.Minute
-	armBaseURL             = "https://management.azure.com"
 	armDisksAPIVersion     = "2023-04-02"
-	// Teto de segurança contra loop de paginação (~página de 50–100 discos).
-	armMaxPages = 200
 )
 
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -55,82 +49,27 @@ type armDisk struct {
 // AAD via Graph). O estado "Reserved" (disco de VM desalocada) NÃO entra: é outro tipo de
 // desperdício.
 func ListUnattachedDisks(ctx context.Context, subscription string) ([]models.UnattachedDisk, error) {
-	subscription = strings.TrimSpace(subscription)
-	if subscription == "" {
+	if strings.TrimSpace(subscription) == "" {
 		return nil, fmt.Errorf("subscription do cluster não identificada — rode o autodiscover (clusters-config.json sem subscription)")
 	}
-
 	listCtx, cancel := context.WithTimeout(ctx, unattachedDisksTimeout)
 	defer cancel()
 
-	subID := subscription
-	if !uuidRe.MatchString(subID) {
-		resolved, err := azCLIOutput(listCtx, "account", "show", "--subscription", subscription, "--query", "id", "--output", "tsv")
-		if err != nil {
-			return nil, fmt.Errorf("resolver subscription %q: %w", subscription, err)
-		}
-		subID = resolved
-	}
-
-	token, err := azCLIOutput(listCtx, "account", "get-access-token",
-		"--subscription", subID, "--resource", armBaseURL+"/", "--query", "accessToken", "--output", "tsv")
+	c, err := NewARMClient(listCtx, subscription)
 	if err != nil {
-		return nil, fmt.Errorf("obter token do Azure (az login expirado?): %w", err)
+		return nil, err
 	}
-
-	next := fmt.Sprintf("%s/subscriptions/%s/providers/Microsoft.Compute/disks?api-version=%s", armBaseURL, subID, armDisksAPIVersion)
-	client := &http.Client{Timeout: 60 * time.Second}
+	first := fmt.Sprintf("%s/subscriptions/%s/providers/Microsoft.Compute/disks?api-version=%s", armBaseURL, c.SubscriptionID, armDisksAPIVersion)
 	all := make([]models.UnattachedDisk, 0)
-
-	for page := 0; next != "" && page < armMaxPages; page++ {
-		// nextLink vem da resposta da API — nunca mandar o token pra outro host.
-		if !strings.HasPrefix(next, armBaseURL+"/") {
-			return nil, fmt.Errorf("nextLink inesperado (fora de %s): %s", armBaseURL, next)
-		}
-		req, err := http.NewRequestWithContext(listCtx, http.MethodGet, next, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			if listCtx.Err() != nil {
-				return nil, fmt.Errorf("listagem de discos excedeu %s — subscription muito grande ou Azure indisponível", unattachedDisksTimeout)
-			}
-			return nil, err
-		}
-		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			return nil, readErr
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("ARM disks API retornou %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-		}
-
-		disks, nextLink, err := parseARMDisksPage(body)
-		if err != nil {
-			return nil, err
-		}
+	err = c.ListPages(listCtx, first, func(body []byte) (string, error) {
+		disks, next, perr := parseARMDisksPage(body)
 		all = append(all, disks...)
-		next = nextLink
-	}
-	if next != "" {
-		return nil, fmt.Errorf("listagem de discos passou de %d páginas — abortada", armMaxPages)
+		return next, perr
+	})
+	if err != nil {
+		return nil, err
 	}
 	return all, nil
-}
-
-func azCLIOutput(ctx context.Context, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "az", args...).Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 // parseARMDisksPage extrai os discos desatachados de UMA página da listagem e o nextLink.

@@ -12,7 +12,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { AlertTriangle, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
 import { fmtBRL, fmtUSD } from "@/lib/finopsFormat";
-import { DataResourcesPanel } from "@/components/DataResourcesPanel";
 import type { PVCCostItem, StorageSummary } from "./types";
 
 export function StorageTab({ cluster, pvcs: pvcsRaw, storage }: { cluster: string; pvcs: PVCCostItem[]; storage: StorageSummary }) {
@@ -70,10 +69,8 @@ export function StorageTab({ cluster, pvcs: pvcsRaw, storage }: { cluster: strin
 
   return (
     <div className="space-y-4">
-      {/* ── Recursos de Dados (RG separado, fora do cluster K8s — SQL/Storage/Redis/Cosmos) ── */}
-      <DataResourcesPanel cluster={cluster} />
-      <div className="border-t" />
-
+      {/* Recursos de Dados (RG separado, fora do cluster K8s) agora é a sub-aba própria "Recursos de
+          Dados" do FinOps — disponível sem precisar de "Analisar". */}
       {/* ── 4 KPI Cards (storage DENTRO do cluster — PVCs + disco OS) ──────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <Card>
