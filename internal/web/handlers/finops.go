@@ -54,6 +54,13 @@ type FinOpsHandler struct {
 	// colidisse entre os dois devolveria a resposta errada pro chamador errado.
 	reportSF          singleflight.Group
 	rightsizingScanSF singleflight.Group
+
+	// Descoberta de discos desatachados (finops_unattached_disks.go): a listagem no cloud custa
+	// alguns segundos (az/gcloud/aws) e é idêntica pra todo cluster do mesmo escopo
+	// (subscription/projeto/região+profile), então fica em cache curto + singleflight.
+	unattachedDisksSF    singleflight.Group
+	unattachedDisksMu    sync.Mutex
+	unattachedDisksCache map[string]cachedUnattachedDisks
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -89,6 +96,8 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		aiHandler:        aiHandler,
 		dtTokenStore:     dtTokens,
 		awsPricers:       make(map[string]*finops.AWSPricer),
+
+		unattachedDisksCache: make(map[string]cachedUnattachedDisks),
 	}
 }
 
@@ -114,13 +123,11 @@ func (h *FinOpsHandler) pricerForCluster(cluster string) finops.CloudPricer {
 	return h.pricer
 }
 
-// awsPricerForCluster resolve region/profile do cluster EKS (mesma ordem de prioridade de
-// fetchEKSCosts em nodepools_snat_costs.go: ARN > EKSClusterConfig > default us-east-1) e retorna
-// um *finops.AWSPricer cacheado por (region, profile) — não recria a conexão SQLite a cada
-// request. Retorna nil se a construção falhar (chamador cai no AzurePricer).
-func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
-	region := extractAWSRegionFromARN(cluster)
-	profile := ""
+// awsRegionProfileForCluster resolve região e profile AWS de um cluster EKS (ARN > config do
+// cluster > default us-east-1). Compartilhado por awsPricerForCluster e pela descoberta de discos
+// desatachados, que precisam varrer exatamente a mesma região/conta.
+func (h *FinOpsHandler) awsRegionProfileForCluster(cluster string) (region, profile string) {
+	region = extractAWSRegionFromARN(cluster)
 	if eksCfg := h.kubeManager.GetEKSClusterConfig(cluster); eksCfg != nil {
 		if region == "" {
 			region = eksCfg.AwsRegion
@@ -130,6 +137,15 @@ func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
 	if region == "" {
 		region = "us-east-1"
 	}
+	return region, profile
+}
+
+// awsPricerForCluster resolve region/profile do cluster EKS (mesma ordem de prioridade de
+// fetchEKSCosts em nodepools_snat_costs.go: ARN > EKSClusterConfig > default us-east-1) e retorna
+// um *finops.AWSPricer cacheado por (region, profile) — não recria a conexão SQLite a cada
+// request. Retorna nil se a construção falhar (chamador cai no AzurePricer).
+func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
+	region, profile := h.awsRegionProfileForCluster(cluster)
 
 	key := region + "|" + profile
 	h.awsPricersMu.Lock()

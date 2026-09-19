@@ -111,6 +111,9 @@ type GCPPricer struct {
 	refreshSF singleflight.Group
 }
 
+// Region devolve a região de preço deste pricer (o catálogo é cacheado por região).
+func (p *GCPPricer) Region() string { return p.region }
+
 // NewGCPPricer cria um novo pricer com cache SQLite (mesmo arquivo/banco do AzurePricer, tabela
 // própria — nomes de machine type GCE ("e2-standard-4") nunca colidem com SKUs Azure
 // ("Standard_D4s_v3"), mas mantemos tabelas separadas por clareza).

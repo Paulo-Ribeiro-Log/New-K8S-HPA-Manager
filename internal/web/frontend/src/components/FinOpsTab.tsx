@@ -31,6 +31,7 @@ import { HPAHistoryTab } from "./finops/HPAHistoryTab";
 import { StorageTab } from "./finops/StorageTab";
 import { OpportunitiesTab } from "./finops/OpportunitiesTab";
 import { RelatorioTab } from "./finops/RelatorioTab";
+import { UnattachedDisksTab } from "./finops/UnattachedDisksTab";
 
 export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => {
   const { clusters } = useClusters();
@@ -56,6 +57,10 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
 
   // Estado persistente da aba HPA Histórico (sobrevive a troca de tabs)
   const [hpaHistoryDays, setHpaHistoryDays] = useState(30);
+
+  // Sub-aba ativa. Controlada (não defaultValue) porque "Discos Desatachados" não depende do
+  // relatório principal — a barra de abas precisa existir mesmo sem "Analisar" ter rodado.
+  const [subTab, setSubTab] = useState("dashboard");
 
   const queryClient = useQueryClient();
 
@@ -413,8 +418,22 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
             </Card>
           )}
 
-          <Tabs defaultValue="dashboard" className="flex-1 flex flex-col min-h-0">
+        </>
+      )}
+
+      {/* Abas: as que dependem do relatório só aparecem com ele; "Discos Desatachados" consulta o
+          cloud direto e fica disponível assim que há um cluster selecionado. */}
+      {cluster && !isFetching && (
+        <>
+          {!report && !error && (
+            <p className="text-xs text-muted-foreground">
+              Clique em <strong>Analisar</strong> para liberar Dashboard, Node Pools, Workloads e as demais abas —
+              Discos Desatachados já está disponível abaixo.
+            </p>
+          )}
+          <Tabs value={report ? subTab : "disks"} onValueChange={setSubTab} className="flex-1 flex flex-col min-h-0">
             <TabsList className="w-fit">
+              {report && (<>
               <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
               <TabsTrigger value="nodepools">
                 Node Pools
@@ -458,9 +477,12 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 Rightsizing
                 <RightsizingTabBadge cluster={cluster} />
               </TabsTrigger>
+              </>)}
+              <TabsTrigger value="disks">Discos Desatachados</TabsTrigger>
             </TabsList>
 
             <div className="flex-1 overflow-auto mt-3">
+              {report && (<>
               <TabsContent value="dashboard" className="mt-0 h-full">
                 <DashboardTab cluster={cluster} report={report} />
               </TabsContent>
@@ -487,12 +509,16 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               <TabsContent value="rightsizing" className="mt-0 h-full">
                 <RightsizingTab cluster={cluster} />
               </TabsContent>
+              </>)}
+              <TabsContent value="disks" className="mt-0 h-full">
+                <UnattachedDisksTab cluster={cluster} />
+              </TabsContent>
             </div>
           </Tabs>
         </>
       )}
 
-      {!report && !isFetching && !error && (
+      {!report && !isFetching && !error && !cluster && (
         <div className="flex-1 flex items-center justify-center flex-col gap-3 text-muted-foreground">
           <CircleDollarSign className="h-12 w-12 opacity-20" />
           <p>Selecione um cluster e clique em <strong>Analisar</strong></p>

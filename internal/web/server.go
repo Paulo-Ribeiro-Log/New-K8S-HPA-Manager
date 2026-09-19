@@ -864,6 +864,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/vm-alternatives", finOpsHandler.GetVMAlternatives)
 	api.GET("/finops/data-resources", finOpsHandler.GetDataResources) // RG de dados (rg-<nome>-data-<env>) — SQL/Storage/Redis/Cosmos/ServiceBus fora do cluster K8s
 	api.POST("/finops/storage/refresh", rbacMiddleware.RequireSREGroup(), finOpsHandler.RefreshDiskPricing)
+	api.GET("/finops/unattached-disks", finOpsHandler.GetUnattachedDisks) // discos desatachados (Azure/GCP/AWS) — só leitura; a app nunca exclui, devolve o comando de exclusão pra copiar
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)

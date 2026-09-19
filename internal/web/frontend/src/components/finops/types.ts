@@ -229,3 +229,77 @@ export interface Recommendation {
   needsPrometheus: boolean; // verdadeiro quando saving = 0 só por falta de dados
   kubectlList: string[];   // lista de comandos kubectl aplicáveis (pode ter HPA + resources)
 }
+
+// ─── Discos desatachados (GET /api/v1/finops/unattached-disks) ─────────────────
+// Shape de finops.UnattachedDisksReport (internal/finops/unattached_disks.go) — só leitura: a app
+// nunca exclui disco, cada item traz o comando pra copiar.
+
+export type UnattachedDiskVerdict = "candidate" | "review" | "in_use_by_pv";
+export type UnattachedDiskOrigin = "cluster_pv" | "k8s_tags" | "external";
+
+export interface UnattachedDiskItem {
+  provider: "azure" | "gcp" | "aws";
+  id: string;
+  name: string;
+  resource_group?: string;
+  location?: string;
+  zone?: string;
+  size_gb: number;
+  disk_type: string;
+  disk_state?: string;
+  provisioned_iops?: number;  // só Azure Ultra/Premium SSD v2 e GCP Hyperdisk
+  provisioned_mbps?: number;
+  created_at?: string;
+  unattached_since?: string;
+  tags?: Record<string, string>;
+  k8s_pv_name?: string;
+  k8s_pvc_name?: string;
+  k8s_pvc_namespace?: string;
+  k8s_cluster_hint?: string;
+
+  monthly_cost_usd: number;
+  monthly_cost_brl: number;
+  price_source: "api" | "fallback" | "table" | "unsupported" | "unpriced";
+
+  age_days: number;
+  age_basis: "unattached" | "created" | "";
+  origin: UnattachedDiskOrigin;
+  verdict: UnattachedDiskVerdict;
+  reason: string;
+  cluster_match: boolean;
+
+  pv_name?: string;
+  pv_phase?: string;
+  pvc?: string;
+  reclaim_policy?: string;
+  storage_class?: string;
+  delete_command?: string;
+}
+
+export interface UnattachedDisksSummary {
+  total_count: number;
+  total_size_gb: number;
+  total_cost_usd: number;
+  total_cost_brl: number;
+  unpriced_count: number;
+  candidate_count: number;
+  candidate_cost_brl: number;
+  review_count: number;
+  review_cost_brl: number;
+  in_use_by_pv_count: number;
+  in_use_by_pv_cost_brl: number;
+}
+
+export interface UnattachedDisksReport {
+  cluster: string;
+  provider: "azure" | "gcp" | "aws";
+  scope: string;
+  disks: UnattachedDiskItem[];
+  summary: UnattachedDisksSummary;
+  exchange_rate: number;
+  exchange_date: string;
+  pv_cross_ref: boolean;
+  warnings: string[];
+  scanned_at: string;
+  from_cache: boolean;
+}
