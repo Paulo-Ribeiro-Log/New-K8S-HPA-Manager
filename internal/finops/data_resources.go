@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"k8s-hpa-manager/internal/cloudprovider/azure"
 )
 
 // dataResourcesListTimeout — mesma convenção já documentada no projeto pra chamadas de leitura
 // via Azure CLI (30s, ver CLAUDE.md "Azure CLI — Timeout Obrigatório").
-const dataResourcesListTimeout = 30 * time.Second
+const dataResourcesListTimeout = 60 * time.Second
 
 // DeriveDataResourceGroup deriva o nome do Resource Group de DADOS a partir do RG de APP,
 // seguindo a convenção confirmada com o usuário: "rg-<nome>-app-<env>" → "rg-<nome>-data-<env>"
@@ -69,6 +71,40 @@ type AzureDataResource struct {
 	PricingNote    string  `json:"pricing_note,omitempty"`
 	PriceSource    string  `json:"price_source,omitempty"` // "api" (preço fixo por SKU) ou "estimated" (aproximação a partir de uso real — ver F3.1)
 
+	// ── Inventário de disco/VM (ARM REST) ──────────────────────────────────────────────────
+	// DiskTier é o tier COBRADO do disco (P20/E10/S6): properties.tier quando o disco foi ajustado,
+	// senão o tier que cobre o tamanho. DiskState: Attached | Unattached | Reserved (Reserved =
+	// atachado a uma VM DESALOCADA — o disco segue cobrando). AttachedTo é a VM dona.
+	DiskTier        string  `json:"disk_tier,omitempty"`
+	DiskState       string  `json:"disk_state,omitempty"`
+	AttachedTo      string  `json:"attached_to,omitempty"`
+	ProvisionedIOPS float64 `json:"provisioned_iops,omitempty"`
+	ProvisionedMBps float64 `json:"provisioned_mbps,omitempty"`
+	UnattachedSince string  `json:"unattached_since,omitempty"`
+	// ── Flexible Server (PostgreSQL/MySQL): o que define o custo além do compute ───────────────
+	// StorageGB/StorageTier/HAMode vêm do ARM (o `resource list` genérico só entrega o SKU de
+	// compute). Num servidor Burstable pequeno o storage provisionado custa MAIS que o compute.
+	// HAMode != Disabled dobra compute e storage na cobrança. IOPS provisionado fica em
+	// ProvisionedIOPS. Compute*/Storage* decompõem MonthlyCost* pra tela mostrar de onde vem o valor.
+	StorageGB      float64 `json:"storage_gb,omitempty"`
+	StorageTier    string  `json:"storage_tier,omitempty"`
+	HAMode         string  `json:"ha_mode,omitempty"`
+	ComputeCostUSD float64 `json:"compute_cost_usd,omitempty"`
+	ComputeCostBRL float64 `json:"compute_cost_brl,omitempty"`
+	StorageCostUSD float64 `json:"storage_cost_usd,omitempty"`
+	StorageCostBRL float64 `json:"storage_cost_brl,omitempty"`
+
+	// PowerState só é preenchido pra VM quando dá pra afirmar: "deallocated" (deduzido de um disco
+	// dela em estado Reserved). VM ligada/parada-não-desalocada fica vazio — o ARM só entrega o
+	// power state via instanceView por VM, chamada que esta listagem evita.
+	PowerState string `json:"power_state,omitempty"`
+
+	// Utilization/Recommendations — uso real (Azure Monitor) e ofertas de resizing. Recommendations
+	// de inventário (disco desatachado, VM desalocada...) vêm sempre; as baseadas em métricas só
+	// quando a análise de uso é pedida (ver AnalyzeDataResourceUsage).
+	Utilization     *DataUtilization     `json:"utilization,omitempty"`
+	Recommendations []DataRecommendation `json:"recommendations,omitempty"`
+
 	// ResourceID — o Resource ID ARM completo, capturado só do `az resource list` genérico (nunca
 	// exposto na API — uso interno de pricing). F3.1 (FINOPS-IMPROVEMENTS-PLAN.md): precificar
 	// Storage Account exige consultar a métrica UsedCapacity (Azure Monitor) pra ESTE recurso
@@ -117,64 +153,139 @@ var dataResourceTypeAllowlist = map[string]bool{
 	"microsoft.eventhub/namespaces":             true,
 }
 
-// azCLIVM é o shape reduzido de `az vm list` (campos explicitamente selecionados via --query).
-type azCLIVM struct {
-	Name     string `json:"name"`
-	VMSize   string `json:"vmSize"`
-	Location string `json:"location"`
-}
-
-// azCLIDisk é o shape reduzido de `az disk list`.
-type azCLIDisk struct {
-	Name     string  `json:"name"`
-	SKU      string  `json:"sku"`
-	SizeGB   float64 `json:"sizeGB"`
-	Location string  `json:"location"`
-}
-
-// ListDataResourceGroup lista TODOS os recursos de dados de um Resource Group — 3 chamadas `az`
-// independentes disparadas em PARALELO (mesmo padrão de paralelização já estabelecido no resto
-// do FinOps nesta sessão): `az resource list` genérico (cobre a allowlist acima), `az vm list`
-// (VMs — precisa do subcomando dedicado pra ter vmSize, ausente do `resource list` genérico) e
-// `az disk list` (discos managed, mesma razão). As 3 são independentes entre si, sem motivo pra
-// rodar em série.
+// ListDataResourceGroup lista TODOS os recursos de dados de um Resource Group via ARM REST: os
+// recursos genéricos (allowlist), as VMs e os Managed Disks — 3 listagens independentes em
+// PARALELO com o mesmo token. Os discos vêm com estado/VM dona/tier/performance provisionada (o
+// `az disk list` enxuto perdia tudo isso), o que permite marcar VM desalocada e disco desatachado.
 func ListDataResourceGroup(ctx context.Context, resourceGroup, subscription string) ([]AzureDataResource, error) {
 	ctx, cancel := context.WithTimeout(ctx, dataResourcesListTimeout)
 	defer cancel()
 
+	c, err := azure.NewARMClient(ctx, subscription)
+	if err != nil {
+		return nil, err
+	}
+	return ListDataResourceGroupWith(ctx, c, resourceGroup)
+}
+
+// ListDataResourceGroupWith é ListDataResourceGroup com um ARMClient já autenticado (o handler
+// reaproveita o mesmo cliente pra métricas na análise de uso).
+func ListDataResourceGroupWith(ctx context.Context, c *azure.ARMClient, resourceGroup string) ([]AzureDataResource, error) {
 	var (
-		generic    []AzureDataResource
-		vms        []AzureDataResource
-		disks      []AzureDataResource
-		genericErr error
-		vmErr      error
-		diskErr    error
+		generic []azure.RGResource
+		vms     []azure.RGVM
+		disks   []azure.RGDisk
+		flex    []azure.RGFlexServer
+		errs    [4]error
 	)
 	var wg sync.WaitGroup
-	wg.Add(3)
-	go func() { defer wg.Done(); generic, genericErr = listGenericResources(ctx, resourceGroup, subscription) }()
-	go func() { defer wg.Done(); vms, vmErr = listVirtualMachines(ctx, resourceGroup, subscription) }()
-	go func() { defer wg.Done(); disks, diskErr = listManagedDisks(ctx, resourceGroup, subscription) }()
+	wg.Add(4)
+	go func() { defer wg.Done(); flex, errs[3] = c.ListRGFlexServers(ctx, resourceGroup) }()
+	go func() { defer wg.Done(); generic, errs[0] = c.ListRGResources(ctx, resourceGroup) }()
+	go func() { defer wg.Done(); vms, errs[1] = c.ListRGVMs(ctx, resourceGroup) }()
+	go func() { defer wg.Done(); disks, errs[2] = c.ListRGDisks(ctx, resourceGroup) }()
 	wg.Wait()
 
-	// A falha de QUALQUER uma das 3 chamadas já indica um problema real (RG inexistente, auth,
-	// permissão) — as 3 miram o MESMO Resource Group, então se uma falha as outras tendem a
-	// falhar pelo mesmo motivo; propaga o 1º erro encontrado (nunca mascara silenciosamente).
-	if genericErr != nil {
-		return nil, genericErr
-	}
-	if vmErr != nil {
-		return nil, vmErr
-	}
-	if diskErr != nil {
-		return nil, diskErr
+	// As 3 chamadas miram o MESMO Resource Group: se uma falha (RG inexistente, permissão) as outras
+	// tendem a falhar pelo mesmo motivo — propaga o 1º erro, nunca mascara.
+	for i, name := range []string{"resources", "virtualMachines", "disks", "flexibleServers"} {
+		if errs[i] != nil {
+			return nil, fmt.Errorf("ARM %s (rg=%s): %w", name, resourceGroup, errs[i])
+		}
 	}
 
-	resources := append(append(generic, vms...), disks...)
+	resources := buildDataResources(generic, vms, disks)
+	mergeFlexServers(resources, flex)
 	log.Info().Str("resource_group", resourceGroup).Int("relevant", len(resources)).
-		Int("generic", len(generic)).Int("vms", len(vms)).Int("disks", len(disks)).
-		Msg("FinOps/DataResources: RG de dados listado")
+		Int("vms", len(vms)).Int("disks", len(disks)).
+		Msg("FinOps/DataResources: RG de dados listado (ARM)")
 	return resources, nil
+}
+
+// buildDataResources monta a lista final (genéricos da allowlist + VMs + discos) e cruza VM↔disco:
+// disco Reserved ⇒ a VM dona está desalocada.
+func buildDataResources(generic []azure.RGResource, vms []azure.RGVM, disks []azure.RGDisk) []AzureDataResource {
+	raw := make([]azCLIResource, 0, len(generic))
+	for _, g := range generic {
+		r := azCLIResource{Id: g.ID, Name: g.Name, Type: g.Type, Kind: g.Kind, Location: g.Location}
+		if g.SKUName != "" || g.SKUTier != "" {
+			r.Sku = &struct {
+				Name string `json:"name"`
+				Tier string `json:"tier"`
+			}{Name: g.SKUName, Tier: g.SKUTier}
+		}
+		raw = append(raw, r)
+	}
+	out := filterToAllowlist(raw)
+
+	deallocated := map[string]bool{}
+	for _, d := range disks {
+		if strings.EqualFold(d.State, "Reserved") && d.AttachedVMName() != "" {
+			deallocated[strings.ToLower(d.AttachedVMName())] = true
+		}
+	}
+
+	for _, v := range vms {
+		res := AzureDataResource{
+			Name: v.Name, Type: "Microsoft.Compute/virtualMachines",
+			SKUName: v.VMSize, Location: v.Location, ResourceID: v.ID,
+		}
+		if deallocated[strings.ToLower(v.Name)] {
+			res.PowerState = "deallocated"
+		}
+		out = append(out, res)
+	}
+
+	for _, d := range disks {
+		out = append(out, AzureDataResource{
+			Name: d.Name, Type: "Microsoft.Compute/disks",
+			SKUName: d.SKU, SKUTier: d.SKUTier, SizeGB: d.SizeGB, Location: d.Location, ResourceID: d.ID,
+			DiskTier:        resolveDiskTier(d.SKU, d.SizeGB, d.PerformanceTier),
+			DiskState:       d.State,
+			AttachedTo:      d.AttachedVMName(),
+			ProvisionedIOPS: d.IOPS,
+			ProvisionedMBps: d.MBps,
+			UnattachedSince: d.LastOwnership,
+		})
+	}
+	return out
+}
+
+// mergeFlexServers copia storage/IOPS/HA dos Flexible Servers pra o recurso correspondente da
+// lista genérica (mesmo resource ID, sem diferenciar caixa — o ARM devolve o RG em caixas
+// diferentes conforme o endpoint).
+func mergeFlexServers(resources []AzureDataResource, flex []azure.RGFlexServer) {
+	byID := make(map[string]azure.RGFlexServer, len(flex))
+	for _, f := range flex {
+		byID[strings.ToLower(f.ID)] = f
+	}
+	for i := range resources {
+		f, ok := byID[strings.ToLower(resources[i].ResourceID)]
+		if !ok {
+			continue
+		}
+		resources[i].StorageGB = f.StorageGB
+		resources[i].StorageTier = f.StorageTier
+		resources[i].ProvisionedIOPS = f.IOPS
+		resources[i].HAMode = f.HAMode
+	}
+}
+
+// resolveDiskTier devolve o tier cobrado de um disco managed (P20/E10/S6): o tier explícito
+// (properties.tier — disco com performance ajustada) ou o que cobre o tamanho. Vazio pra SKU sem
+// tier de capacidade (Ultra, Premium SSD v2 — capacidade/IOPS/throughput são provisionados à parte).
+func resolveDiskTier(sku string, sizeGB float64, perfTier string) string {
+	if perfTier != "" {
+		return perfTier
+	}
+	if !isKnownAzureSKU(sku) || sizeGB <= 0 {
+		return ""
+	}
+	azType, _ := MapStorageClassToAzureType("", "", sku)
+	if _, managed := managedDiskTiers[azType]; !managed {
+		return ""
+	}
+	return ResolveManagedDiskTier(azType, sizeGB)
 }
 
 func runAzJSON(ctx context.Context, args []string, out interface{}) error {
@@ -188,76 +299,6 @@ func runAzJSON(ctx context.Context, args []string, out interface{}) error {
 		return err
 	}
 	return json.Unmarshal(raw, out)
-}
-
-func listGenericResources(ctx context.Context, resourceGroup, subscription string) ([]AzureDataResource, error) {
-	args := []string{
-		"resource", "list",
-		"--resource-group", resourceGroup,
-		"--query", "[].{id:id,name:name,type:type,kind:kind,location:location,sku:sku}",
-		"-o", "json",
-	}
-	if subscription != "" {
-		args = append(args, "--subscription", subscription)
-	}
-	var raw []azCLIResource
-	if err := runAzJSON(ctx, args, &raw); err != nil {
-		return nil, fmt.Errorf("az resource list (rg=%s): %w", resourceGroup, err)
-	}
-	return filterToAllowlist(raw), nil
-}
-
-func listVirtualMachines(ctx context.Context, resourceGroup, subscription string) ([]AzureDataResource, error) {
-	args := []string{
-		"vm", "list",
-		"--resource-group", resourceGroup,
-		"--query", "[].{name:name,vmSize:hardwareProfile.vmSize,location:location}",
-		"-o", "json",
-	}
-	if subscription != "" {
-		args = append(args, "--subscription", subscription)
-	}
-	var raw []azCLIVM
-	if err := runAzJSON(ctx, args, &raw); err != nil {
-		return nil, fmt.Errorf("az vm list (rg=%s): %w", resourceGroup, err)
-	}
-	out := make([]AzureDataResource, 0, len(raw))
-	for _, v := range raw {
-		out = append(out, AzureDataResource{
-			Name:     v.Name,
-			Type:     "Microsoft.Compute/virtualMachines",
-			SKUName:  v.VMSize,
-			Location: v.Location,
-		})
-	}
-	return out, nil
-}
-
-func listManagedDisks(ctx context.Context, resourceGroup, subscription string) ([]AzureDataResource, error) {
-	args := []string{
-		"disk", "list",
-		"--resource-group", resourceGroup,
-		"--query", "[].{name:name,sku:sku.name,sizeGB:diskSizeGB,location:location}",
-		"-o", "json",
-	}
-	if subscription != "" {
-		args = append(args, "--subscription", subscription)
-	}
-	var raw []azCLIDisk
-	if err := runAzJSON(ctx, args, &raw); err != nil {
-		return nil, fmt.Errorf("az disk list (rg=%s): %w", resourceGroup, err)
-	}
-	out := make([]AzureDataResource, 0, len(raw))
-	for _, d := range raw {
-		out = append(out, AzureDataResource{
-			Name:     d.Name,
-			Type:     "Microsoft.Compute/disks",
-			SKUName:  d.SKU,
-			SizeGB:   d.SizeGB,
-			Location: d.Location,
-		})
-	}
-	return out, nil
 }
 
 // resourceGroupFromID extrai o Resource Group de um Resource ID ARM completo

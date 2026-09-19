@@ -54,6 +54,25 @@ type FinOpsHandler struct {
 	// colidisse entre os dois devolveria a resposta errada pro chamador errado.
 	reportSF          singleflight.Group
 	rightsizingScanSF singleflight.Group
+
+	// Descoberta de discos desatachados (finops_unattached_disks.go): a listagem no cloud custa
+	// alguns segundos (az/gcloud/aws) e é idêntica pra todo cluster do mesmo escopo
+	// (subscription/projeto/região+profile), então fica em cache curto + singleflight.
+	unattachedDisksSF    singleflight.Group
+	unattachedDisksMu    sync.Mutex
+	unattachedDisksCache map[string]cachedUnattachedDisks
+
+	// Uso real (Azure Monitor) dos recursos do RG de dados — ~1 chamada por VM/servidor, então fica
+	// em cache de 30 min por cluster+janela (finops_data_resources.go).
+	dataUsageSF    singleflight.Group
+	dataUsageMu    sync.Mutex
+	dataUsageCache map[string]cachedDataUsage
+
+	// Resolução "em qual subscription está o RG de dados deste cluster" — a busca entre
+	// subscriptions faz dezenas de chamadas ao ARM, então o resultado (positivo ou negativo) é
+	// guardado por cluster (finops_data_resources.go).
+	dataRGMu    sync.Mutex
+	dataRGCache map[string]cachedDataRG
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -89,6 +108,10 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		aiHandler:        aiHandler,
 		dtTokenStore:     dtTokens,
 		awsPricers:       make(map[string]*finops.AWSPricer),
+
+		unattachedDisksCache: make(map[string]cachedUnattachedDisks),
+		dataUsageCache:       make(map[string]cachedDataUsage),
+		dataRGCache:          make(map[string]cachedDataRG),
 	}
 }
 
@@ -114,13 +137,11 @@ func (h *FinOpsHandler) pricerForCluster(cluster string) finops.CloudPricer {
 	return h.pricer
 }
 
-// awsPricerForCluster resolve region/profile do cluster EKS (mesma ordem de prioridade de
-// fetchEKSCosts em nodepools_snat_costs.go: ARN > EKSClusterConfig > default us-east-1) e retorna
-// um *finops.AWSPricer cacheado por (region, profile) — não recria a conexão SQLite a cada
-// request. Retorna nil se a construção falhar (chamador cai no AzurePricer).
-func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
-	region := extractAWSRegionFromARN(cluster)
-	profile := ""
+// awsRegionProfileForCluster resolve região e profile AWS de um cluster EKS (ARN > config do
+// cluster > default us-east-1). Compartilhado por awsPricerForCluster e pela descoberta de discos
+// desatachados, que precisam varrer exatamente a mesma região/conta.
+func (h *FinOpsHandler) awsRegionProfileForCluster(cluster string) (region, profile string) {
+	region = extractAWSRegionFromARN(cluster)
 	if eksCfg := h.kubeManager.GetEKSClusterConfig(cluster); eksCfg != nil {
 		if region == "" {
 			region = eksCfg.AwsRegion
@@ -130,6 +151,15 @@ func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
 	if region == "" {
 		region = "us-east-1"
 	}
+	return region, profile
+}
+
+// awsPricerForCluster resolve region/profile do cluster EKS (mesma ordem de prioridade de
+// fetchEKSCosts em nodepools_snat_costs.go: ARN > EKSClusterConfig > default us-east-1) e retorna
+// um *finops.AWSPricer cacheado por (region, profile) — não recria a conexão SQLite a cada
+// request. Retorna nil se a construção falhar (chamador cai no AzurePricer).
+func (h *FinOpsHandler) awsPricerForCluster(cluster string) *finops.AWSPricer {
+	region, profile := h.awsRegionProfileForCluster(cluster)
 
 	key := region + "|" + profile
 	h.awsPricersMu.Lock()

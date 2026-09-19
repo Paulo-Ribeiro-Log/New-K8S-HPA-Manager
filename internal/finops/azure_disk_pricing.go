@@ -128,8 +128,13 @@ func NewDiskPricer(region string) (*DiskPricer, error) {
 	db.SetMaxOpenConns(3)
 	db.SetMaxIdleConns(1)
 
+	// A tabela v1 (disk_pricing_cache) guardava preços ERRADOS de disco Standard SSD/Premium SSD:
+	// queryPricingAPI escolhia o menor preço da unidade "1/Month", que nesses produtos é a tarifa
+	// "Disk Mount" (US$ 1,82) e não o disco em si (P10: US$ 34,05). Trocar o nome da tabela
+	// invalida esse cache de uma vez em vez de esperar o TTL expirar.
+	_, _ = db.Exec(`DROP TABLE IF EXISTS disk_pricing_cache`)
 	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS disk_pricing_cache (
+		CREATE TABLE IF NOT EXISTS disk_pricing_cache_v2 (
 			disk_type  TEXT NOT NULL,
 			tier       TEXT NOT NULL,
 			region     TEXT NOT NULL,
@@ -260,7 +265,7 @@ func ResolveManagedDiskTier(azureType string, capacityGB float64) string {
 func (p *DiskPricer) InvalidateDiskCache() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	_, err := p.db.Exec(`DELETE FROM disk_pricing_cache WHERE region = ?`, p.region)
+	_, err := p.db.Exec(`DELETE FROM disk_pricing_cache_v2 WHERE region = ?`, p.region)
 	return err
 }
 
@@ -278,7 +283,7 @@ func (p *DiskPricer) getFromCache(diskType, tier, region string) (float64, error
 	var price float64
 	var fetchedAt time.Time
 	err := p.db.QueryRow(
-		`SELECT price_usd, fetched_at FROM disk_pricing_cache WHERE disk_type = ? AND tier = ? AND region = ?`,
+		`SELECT price_usd, fetched_at FROM disk_pricing_cache_v2 WHERE disk_type = ? AND tier = ? AND region = ?`,
 		diskType, tier, region,
 	).Scan(&price, &fetchedAt)
 	if err != nil {
@@ -294,7 +299,7 @@ func (p *DiskPricer) saveToCache(diskType, tier, region string, price float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	_, err := p.db.Exec(
-		`INSERT INTO disk_pricing_cache (disk_type, tier, region, price_usd, fetched_at)
+		`INSERT INTO disk_pricing_cache_v2 (disk_type, tier, region, price_usd, fetched_at)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(disk_type, tier, region) DO UPDATE SET price_usd = excluded.price_usd, fetched_at = excluded.fetched_at`,
 		diskType, tier, region, price, time.Now(),
@@ -316,7 +321,9 @@ func (p *DiskPricer) fetchDiskFromAPI(diskType, tier, region string) (float64, e
 		"serviceName eq 'Storage' and armRegionName eq '%s' and productName eq '%s' and skuName eq '%s LRS'",
 		region, productName, tier,
 	)
-	return p.queryPricingAPI(filter, "1/Month")
+	// Medidor exato do disco: "<tier> LRS Disk". O mesmo skuName tem outros medidores na mesma
+	// unidade (ex: "P10 LRS Disk Mount") que NÃO são o preço do disco.
+	return p.queryPricingAPIMeter(filter, "1/Month", tier+" LRS Disk")
 }
 
 // fetchFilesFromAPI consulta a Azure Pricing API para Azure Files e Blob.
@@ -346,6 +353,12 @@ func (p *DiskPricer) fetchFilesFromAPI(filesType, region string) (float64, error
 
 // queryPricingAPI executa uma query na Azure Retail Prices API e retorna o menor preço encontrado
 func (p *DiskPricer) queryPricingAPI(filter, unitOfMeasure string) (float64, error) {
+	return p.queryPricingAPIMeter(filter, unitOfMeasure, "")
+}
+
+// queryPricingAPIMeter é queryPricingAPI restrita a um medidor (meterName, comparação exata sem
+// diferenciar caixa) quando informado.
+func (p *DiskPricer) queryPricingAPIMeter(filter, unitOfMeasure, meterName string) (float64, error) {
 	reqURL := azurePricingAPIURL + "?api-version=2023-01-01-preview&$filter=" + url.QueryEscape(filter)
 
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -364,20 +377,31 @@ func (p *DiskPricer) queryPricingAPI(filter, unitOfMeasure string) (float64, err
 		return 0, fmt.Errorf("decodificar resposta: %w", err)
 	}
 
-	var bestPrice float64
-	for _, item := range result.Items {
-		if !strings.EqualFold(item.UnitOfMeasure, unitOfMeasure) {
-			continue
-		}
-		if item.RetailPrice > 0 && (bestPrice == 0 || item.RetailPrice < bestPrice) {
-			bestPrice = item.RetailPrice
-		}
-	}
-
+	bestPrice := pickRetailPrice(result.Items, unitOfMeasure, meterName)
 	if bestPrice == 0 {
 		return 0, fmt.Errorf("nenhum preço encontrado (filter=%s)", filter)
 	}
 	return bestPrice, nil
+}
+
+// pickRetailPrice escolhe o preço de uma lista de itens da Retail Prices API: o menor preço > 0 da
+// unidade pedida, restrito ao medidor meterName quando informado. Sem restringir o medidor, o
+// "menor preço" pega tarifas acessórias na mesma unidade (ex: "P10 LRS Disk Mount" = 1,82 em vez
+// de "P10 LRS Disk" = 34,05) e subestima o disco em ~10-20x.
+func pickRetailPrice(items []azurePriceItem, unitOfMeasure, meterName string) float64 {
+	var best float64
+	for _, item := range items {
+		if !strings.EqualFold(item.UnitOfMeasure, unitOfMeasure) {
+			continue
+		}
+		if meterName != "" && !strings.EqualFold(item.MeterName, meterName) {
+			continue
+		}
+		if item.RetailPrice > 0 && (best == 0 || item.RetailPrice < best) {
+			best = item.RetailPrice
+		}
+	}
+	return best
 }
 
 // diskTypeToProductName mapeia tipo interno → nome do produto na Azure Pricing API
