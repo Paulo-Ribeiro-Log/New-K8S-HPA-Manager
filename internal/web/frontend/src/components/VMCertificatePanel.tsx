@@ -21,6 +21,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Loader2,
   RefreshCcw,
   ShieldCheck,
@@ -580,6 +590,16 @@ export function VMCertificatePanel() {
   const [restartResult, setRestartResult] = useState<VMServiceRestartResult | null>(null);
   const effectiveServiceName = (serviceSelectValue === CUSTOM_SERVICE_VALUE ? serviceNameCustom : serviceSelectValue).trim();
 
+  // confirmRestartOpen — pedido explícito do usuário: "implemente a verificação e aprovação do uso
+  // do botão de reinício do serviço". Reiniciar um serviço real pode derrubar tráfego em produção
+  // por alguns segundos — clicar em "Reiniciar serviço" não dispara mais o restart direto, só abre
+  // um AlertDialog mostrando exatamente o que vai rodar (instância + serviço + comando exato) pra
+  // o usuário confirmar antes. Mesmo padrão já usado pras ações de energia da instância em
+  // VMsTab.tsx (pendingAction/AlertDialog). Um `false` reaproveitado — não é um "retry" de host key
+  // desconhecida (handleTrustHostKeyMain chama handleRestartService direto, sem reabrir este
+  // diálogo — é a MESMA ação já aprovada uma vez, só reenviada depois de confiar na fingerprint).
+  const [confirmRestartOpen, setConfirmRestartOpen] = useState(false);
+
   // "Certificado atual na VM" — leitura via SFTP de um arquivo JÁ instalado (ReadRemoteCertificate),
   // pra responder "como vejo o que já está lá" sem precisar já saber o caminho de cor. browseTarget
   // decide pra qual campo (readPath/remoteCertPath/remoteKeyPath) o caminho escolhido no navegador
@@ -878,6 +898,20 @@ export function VMCertificatePanel() {
     } finally {
       setRestarting(false);
     }
+  };
+
+  // restartPreviewCommand — só pra EXIBIÇÃO no AlertDialog de confirmação (nunca enviado ao
+  // backend, que sempre monta e escapa o comando de verdade server-side via ShellQuote,
+  // restartServiceCommand em certificates_vm.go) — deixa claro pro usuário exatamente o que vai
+  // rodar antes de aprovar.
+  const restartPreviewCommand = () => {
+    const svc = effectiveServiceName || "<serviço>";
+    return initSystem === "sysv" ? `sudo -n service '${svc}' restart` : `sudo -n systemctl restart '${svc}'`;
+  };
+
+  const handleConfirmRestart = () => {
+    setConfirmRestartOpen(false);
+    void handleRestartService();
   };
 
   const handleTrustHostKeyMain = () => {
@@ -1399,7 +1433,7 @@ export function VMCertificatePanel() {
                           size="sm"
                           disabled={!certActionsReady || !effectiveServiceName || restarting}
                           title={!certActionsReady ? "Preencha a conexão (passo 2) primeiro" : !effectiveServiceName ? "Escolha ou digite o nome do serviço" : undefined}
-                          onClick={() => handleRestartService()}
+                          onClick={() => setConfirmRestartOpen(true)}
                         >
                           {restarting ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5 mr-1.5" />}
                           Reiniciar serviço
@@ -1473,6 +1507,30 @@ export function VMCertificatePanel() {
           onPick={handlePickedPath}
         />
       )}
+
+      <AlertDialog open={confirmRestartOpen} onOpenChange={setConfirmRestartOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar reinício do serviço?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Isso vai reiniciar o serviço <strong className="text-foreground">{effectiveServiceName}</strong> na
+                  instância <strong className="text-foreground">{instance?.name}</strong> ({instance?.id}) — pode causar
+                  interrupção breve no tráfego servido por ele.
+                </p>
+                <code className="block px-2 py-1 rounded bg-muted text-xs font-mono break-all text-foreground">
+                  {restartPreviewCommand()}
+                </code>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmRestart}>Confirmar e reiniciar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
