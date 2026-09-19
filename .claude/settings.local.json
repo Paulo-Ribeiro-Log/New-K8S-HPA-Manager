@@ -34,7 +34,20 @@
       "Bash(find:*)",
       "Bash(sqlite3:*)",
       "Bash(ls internal/web/handlers/db_test_tool*test*)",
-      "Bash(ls internal/web/handlers/kafka_test_tool*test*)"
+      "Bash(ls internal/web/handlers/kafka_test_tool*test*)",
+      "Bash(tee /tmp/tsc_v2.txt)",
+      "Read(//tmp/**)",
+      "Bash(cd *)",
+      "Bash(gofmt -d internal/web/server.go)",
+      "Bash(gofmt -w internal/web/server.go)",
+      "Bash(gofmt -l internal/web/server.go)",
+      "Bash(./rebuild-web.sh -b)",
+      "Bash(go test *)",
+      "Bash(go vet *)",
+      "Bash(gofmt -l internal/cloudprovider/aws internal/web/handlers internal/web/server.go)",
+      "WebSearch",
+      "Bash(echo \"exit=$?\")",
+      "Bash(grep -n \"</ScrollArea>\\\\|</div>\\\\s*$\" internal/web/frontend/src/components/VMCertificatePanel.tsx)"
     ],
     "deny": [],
     "ask": []

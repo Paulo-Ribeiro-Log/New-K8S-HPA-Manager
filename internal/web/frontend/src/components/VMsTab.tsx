@@ -21,7 +21,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, RefreshCcw, Play, Square, RotateCw, Server, Terminal as TerminalIcon, KeyRound, FolderOpen, Search } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Loader2, RefreshCcw, Play, Square, RotateCw, Server, Terminal as TerminalIcon, KeyRound, FolderOpen, Search, MoreVertical } from "lucide-react";
 import { toast } from "sonner";
 import { ProtectedAction } from "@/components/rbac";
 import { useVMAwsProfiles, useVMInstances, useVMSSMStatus } from "@/hooks/useVMs";
@@ -291,38 +297,40 @@ export default function VMsTab() {
                       <FolderOpen className="h-3.5 w-3.5" />
                     </Button>
                   </ProtectedAction>
+                  {/* Start/Stop/Reboot atrás de um menu de 3 pontos (pedido explícito do
+                      usuário) — antes eram 3 botões sempre visíveis lado a lado numa lista
+                      densa, fáceis de clicar sem querer numa instância errada. A confirmação em
+                      AlertDialog abaixo (já existente, inalterada) continua acontecendo depois de
+                      escolher a ação no menu — duas camadas de proteção, não uma no lugar da
+                      outra. */}
                   <ProtectedAction>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={inst.state === "running" || actingOn === inst.id}
-                      onClick={() => setPendingAction({ instance: inst, action: "start" })}
-                      title="Iniciar"
-                    >
-                      {actingOn === inst.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                    </Button>
-                  </ProtectedAction>
-                  <ProtectedAction>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={inst.state !== "running" || actingOn === inst.id}
-                      onClick={() => setPendingAction({ instance: inst, action: "stop" })}
-                      title="Parar"
-                    >
-                      <Square className="h-3.5 w-3.5" />
-                    </Button>
-                  </ProtectedAction>
-                  <ProtectedAction>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={inst.state !== "running" || actingOn === inst.id}
-                      onClick={() => setPendingAction({ instance: inst, action: "reboot" })}
-                      title="Reiniciar"
-                    >
-                      <RotateCw className="h-3.5 w-3.5" />
-                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={actingOn === inst.id} title="Ações de energia">
+                          {actingOn === inst.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MoreVertical className="h-3.5 w-3.5" />}
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          disabled={inst.state === "running"}
+                          onClick={() => setPendingAction({ instance: inst, action: "start" })}
+                        >
+                          <Play className="h-3.5 w-3.5 mr-2" /> Iniciar
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={inst.state !== "running"}
+                          onClick={() => setPendingAction({ instance: inst, action: "stop" })}
+                        >
+                          <Square className="h-3.5 w-3.5 mr-2" /> Parar
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={inst.state !== "running"}
+                          onClick={() => setPendingAction({ instance: inst, action: "reboot" })}
+                        >
+                          <RotateCw className="h-3.5 w-3.5 mr-2" /> Reiniciar
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </ProtectedAction>
                 </div>
               </div>

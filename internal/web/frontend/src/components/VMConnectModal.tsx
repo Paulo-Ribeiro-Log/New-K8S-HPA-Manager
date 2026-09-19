@@ -25,6 +25,7 @@ import {
   Home,
   ChevronRight,
   RefreshCw,
+  Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Terminal } from "xterm";
@@ -195,6 +196,15 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
   const [browsingLoading, setBrowsingLoading] = useState(false);
   const [browsingError, setBrowsingError] = useState<string | null>(null);
 
+  // Edição manual do caminho — mesmo padrão já usado em VMSFTPModal.tsx/VMCertificatePanel.tsx
+  // (pedido explícito do usuário). Aqui `navigateTo` já roda um `cd` de verdade no shell remoto,
+  // então aceita qualquer coisa que um `cd` aceitaria (absoluto, relativo, "~", ".."), sem
+  // nenhuma normalização própria — diferente dos outros dois navegadores (baseados em listagem
+  // SFTP simples, sem noção de cwd/caminho relativo).
+  const [editingCwd, setEditingCwd] = useState(false);
+  const [cwdInput, setCwdInput] = useState("");
+  const cwdInputRef = useRef<HTMLInputElement>(null);
+
   const phaseRef = useRef<Phase>(phase);
   useEffect(() => {
     phaseRef.current = phase;
@@ -204,6 +214,13 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const startedTerminalRef = useRef(false);
+  // terminalOpened (state, não ref) — controla se o container do terminal continua MONTADO
+  // (só escondido via CSS) depois de aberto pela 1a vez, pra permitir "Voltar ao gerenciador de
+  // arquivos" sem perder a sessão xterm (scrollback, cursor, etc.). Sem isso, alternar phase pra
+  // "browsing" desmontaria o <div> e, ao voltar pra "connected", um container NOVO seria criado —
+  // mas startedTerminalRef já estaria true, então openTerminal nunca rodaria de novo pro novo nó,
+  // deixando o xterm "pendurado" sem nenhum DOM visível.
+  const [terminalOpened, setTerminalOpened] = useState(false);
   const removeResizeListenerRef = useRef<(() => void) | null>(null);
   const decoderRef = useRef<TextDecoder | null>(null);
   const rawBufferRef = useRef("");
@@ -253,14 +270,21 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
     };
   }, []);
 
+  // Também reage a `phase`: voltar de "browsing" pra "connected" (handleBackToFiles→"Abrir
+  // Terminal" de novo) reexibe o container via CSS (nunca desmonta — ver terminalOpened), e um
+  // container que esteve com `display:none` pode medir 0×0 até um fit() explícito rodar de novo;
+  // sem isso, o terminal voltaria com o tamanho/cols errado até o próximo resize manual da janela.
   useEffect(() => {
-    if (!fitAddonRef.current || !xtermRef.current) return;
-    fitAddonRef.current.fit();
-    const t = xtermRef.current;
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows }));
-    }
-  }, [modalSize.width, modalSize.height]);
+    if (!fitAddonRef.current || !xtermRef.current || phase !== "connected") return;
+    requestAnimationFrame(() => {
+      if (!fitAddonRef.current || !xtermRef.current) return;
+      fitAddonRef.current.fit();
+      const t = xtermRef.current;
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows }));
+      }
+    });
+  }, [modalSize.width, modalSize.height, phase]);
 
   const send = (msg: TerminalMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(msg));
@@ -476,7 +500,18 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
     setEntries([]);
     setBrowsingLoading(false);
     setBrowsingError(null);
+    setEditingCwd(false);
     startedTerminalRef.current = false;
+    setTerminalOpened(false);
+    // Descarta qualquer terminal de uma sessão anterior — nunca reaproveita xterm entre
+    // instâncias/reconexões diferentes (mesmo princípio de "nunca reaproveita WS/estado" já
+    // documentado acima; sem isso, com o container agora persistente — ver terminalOpened — um
+    // xterm órfão ficaria retido em memória, listeners inclusos).
+    removeResizeListenerRef.current?.();
+    removeResizeListenerRef.current = null;
+    xtermRef.current?.dispose();
+    xtermRef.current = null;
+    fitAddonRef.current = null;
     elevationSentRef.current = false;
     rawBufferRef.current = "";
     consumedUpToRef.current = 0;
@@ -544,6 +579,24 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
 
   const breadcrumbSegments = cwd === "/" || !cwd ? [] : cwd.split("/").filter(Boolean);
 
+  const startEditingCwd = () => {
+    setCwdInput(cwd);
+    setEditingCwd(true);
+  };
+
+  const commitCwdInput = () => {
+    const trimmed = cwdInput.trim();
+    if (trimmed) navigateTo(trimmed);
+    setEditingCwd(false);
+  };
+
+  useEffect(() => {
+    if (editingCwd) {
+      cwdInputRef.current?.focus();
+      cwdInputRef.current?.select();
+    }
+  }, [editingCwd]);
+
   // Revela o terminal de verdade — cria o xterm SÓ agora (nunca antes), escreve primeiro qualquer
   // texto já pendente no buffer bruto (tipicamente o prompt atual, ex: "root@ip-10-x-x-x:/etc#")
   // pra não abrir uma tela em branco sem contexto, e a partir daqui todo "output" novo passa a ser
@@ -594,11 +647,33 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
     if (el && phase === "connected" && !startedTerminalRef.current) {
       startedTerminalRef.current = true;
       openTerminal(el);
+      setTerminalOpened(true);
     }
   };
 
   const handleDisconnect = () => {
     wsRef.current?.close();
+  };
+
+  // handleBackToFiles — pedido explícito do usuário: volta do terminal pro gerenciador de
+  // arquivos SEM fechar a conexão. Reaproveita a MESMA sessão de shell (nunca abre um WS novo) —
+  // roda a listagem de novo (sem `cd`, equivalente a refreshCurrent) pra refletir onde quer que o
+  // shell esteja agora, já que o usuário pode ter navegado livremente enquanto usava o terminal.
+  // Risco aceito e sinalizado no tooltip do botão: se o shell estiver no meio de um programa
+  // interativo (vim, top, um REPL...) em vez de um prompt ocioso, o script de listagem vira input
+  // literal PRO PROGRAMA, não comandos de shell — mesma limitação estrutural já existente no
+  // mecanismo de navegação (não há como distinguir "prompt ocioso" de "programa rodando" só pela
+  // saída do terminal).
+  const handleBackToFiles = () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      toast.error("Conexão fechada — não é possível voltar ao gerenciador de arquivos.");
+      return;
+    }
+    rawBufferRef.current = "";
+    consumedUpToRef.current = 0;
+    pendingNavFromRef.current = null;
+    setPhase("browsing");
+    runListingScript(buildListingScript(), { checkUid: false });
   };
 
   const title = mode === "ssh" ? "Conectar via SSH" : "Conectar via SSM";
@@ -615,11 +690,24 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
               <span className="flex items-center gap-2">
                 <TerminalIcon className="h-4 w-4" /> {title} — {instance.name}
               </span>
-              {(phase === "elevating" || phase === "browsing" || phase === "connected") && (
-                <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={handleDisconnect}>
-                  <PlugZap className="h-3.5 w-3.5" /> Desconectar
-                </Button>
-              )}
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {phase === "connected" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs gap-1"
+                    onClick={handleBackToFiles}
+                    title="Volta ao gerenciador de arquivos sem fechar a conexão. Se o shell estiver rodando um programa interativo (vim, top, etc.) em vez de um prompt ocioso, isso manda o comando de listagem como input literal pra ele — use só com um prompt ocioso."
+                  >
+                    <Folder className="h-3.5 w-3.5" /> Gerenciador de Arquivos
+                  </Button>
+                )}
+                {(phase === "elevating" || phase === "browsing" || phase === "connected") && (
+                  <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={handleDisconnect}>
+                    <PlugZap className="h-3.5 w-3.5" /> Desconectar
+                  </Button>
+                )}
+              </div>
             </DialogTitle>
             {phase === "form" && (
               <DialogDescription>
@@ -730,25 +818,45 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
               {phase === "browsing" && (
                 <>
                   <div className="flex-shrink-0 flex items-center gap-2 flex-wrap pb-1">
-                    <div className="flex items-center gap-1 text-xs flex-1 min-w-0 overflow-x-auto whitespace-nowrap">
-                      <button className="p-1 rounded hover:bg-accent flex-shrink-0" onClick={() => navigateTo("/")} title="Raiz">
-                        <Home className="h-3.5 w-3.5" />
-                      </button>
-                      {breadcrumbSegments.map((seg, i) => {
-                        const segPath = "/" + breadcrumbSegments.slice(0, i + 1).join("/");
-                        return (
-                          <span key={segPath} className="flex items-center gap-1 flex-shrink-0">
-                            <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                            <button className="hover:underline" onClick={() => navigateTo(segPath)}>
-                              {seg}
-                            </button>
-                          </span>
-                        );
-                      })}
-                      {browsingLoading && (
-                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground flex-shrink-0 ml-1" />
-                      )}
-                    </div>
+                    {editingCwd ? (
+                      <Input
+                        ref={cwdInputRef}
+                        value={cwdInput}
+                        onChange={(e) => setCwdInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitCwdInput();
+                          else if (e.key === "Escape") setEditingCwd(false);
+                        }}
+                        onBlur={() => setEditingCwd(false)}
+                        placeholder="/etc/nginx/"
+                        className="h-8 text-xs font-mono flex-1 min-w-0"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1 text-xs flex-1 min-w-0 overflow-x-auto whitespace-nowrap">
+                        <button className="p-1 rounded hover:bg-accent flex-shrink-0" onClick={() => navigateTo("/")} title="Raiz">
+                          <Home className="h-3.5 w-3.5" />
+                        </button>
+                        {breadcrumbSegments.map((seg, i) => {
+                          const segPath = "/" + breadcrumbSegments.slice(0, i + 1).join("/");
+                          return (
+                            <span key={segPath} className="flex items-center gap-1 flex-shrink-0">
+                              <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                              <button className="hover:underline" onClick={() => navigateTo(segPath)}>
+                                {seg}
+                              </button>
+                            </span>
+                          );
+                        })}
+                        {browsingLoading && (
+                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground flex-shrink-0 ml-1" />
+                        )}
+                      </div>
+                    )}
+                    {!editingCwd && (
+                      <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={startEditingCwd} title="Digitar o caminho diretamente" disabled={browsingLoading}>
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                     <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={refreshCurrent} title="Atualizar" disabled={browsingLoading}>
                       <RefreshCw className={`h-3.5 w-3.5 ${browsingLoading ? "animate-spin" : ""}`} />
                     </Button>
@@ -817,7 +925,12 @@ export default function VMConnectModal({ instance, mode, profile, region, open, 
                 </>
               )}
 
-              {phase === "connected" && <div ref={containerRefCallback} className="w-full flex-1 min-h-0" />}
+              {/* Fica montado (só escondido via classe) uma vez aberto — troca de phase pra
+                  "browsing" via handleBackToFiles NUNCA desmonta o container, senão o xterm
+                  ficaria sem nenhum DOM pra reanexar ao voltar (ver comentário de terminalOpened). */}
+              {(phase === "connected" || terminalOpened) && (
+                <div ref={containerRefCallback} className={cn("w-full flex-1 min-h-0", phase !== "connected" && "hidden")} />
+              )}
               {phase === "closed" && (
                 <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
                   Conexão encerrada.

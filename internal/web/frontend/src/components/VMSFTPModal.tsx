@@ -131,8 +131,11 @@ interface VMSFTPModalProps {
   // livre pra trocar); "Arquivos (SFTP)" na aba VMs/EC2 é hoje o único ponto de entrada deste
   // modal, deliberadamente separado do fluxo "SSH"/"SSM" (ver VMConnectModal.tsx) — esta tela
   // continua existindo só pra transferência de arquivo de verdade (upload/download/renomear/
-  // excluir), com a mesma exigência de credencial SSH de sempre.
-  initialConnectionMode?: "ssh" | "ssm";
+  // excluir). "ssm-command" (pedido explícito do usuário: "na lista das VMs... a opção de SSM
+  // (sem sshd) não existe") — via SSM Run Command (vm_sftp_ssm.go), pra instâncias sem sshd
+  // algum: sem exigir credencial SSH nenhuma, mas com teto de 40KB por arquivo (documento SSM
+  // SendCommand tem limite real de 64KB) — arquivos maiores exigem SSH direto ou SSM (túnel).
+  initialConnectionMode?: "ssh" | "ssm" | "ssm-command";
 }
 
 function authToken(): string {
@@ -173,6 +176,23 @@ async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> 
   return resp;
 }
 
+// throwIfFailed — BUG REAL, corrigido antes de ir pro ar: os handlers *-ssm (vm_sftp_ssm.go)
+// seguem a MESMA convenção já usada em certificates_vm.go pra falha "lógica" (comando SSM rodou,
+// mas o resultado é um erro — ex: caminho inexistente na VM) — HTTP 200 com `success:false` no
+// corpo, reservando status != 2xx só pra falha de TRANSPORTE (SSM_COMMAND_ERROR). Os handlers SFTP
+// (SSH) equivalentes, ao contrário, sempre usam status != 2xx pros dois casos — por isso apiFetch()
+// acima nunca lança nada quando resp.ok é true, mesmo se o corpo disser success:false. Sem essa
+// checagem extra, qualquer falha lógica no modo "SSM sem SSH" (ex: "Pasta vazia" mostrado por
+// engano quando na real o comando falhou) passaria batido como sucesso silencioso.
+function throwIfFailed(data: { success?: boolean; error?: { code?: string; message?: string; fingerprint?: string } }): void {
+  if (data && data.success === false) {
+    const err = new ApiFetchError(data.error?.message || "Operação falhou");
+    err.code = data.error?.code;
+    err.fingerprint = data.error?.fingerprint;
+    throw err;
+  }
+}
+
 function formatModTime(iso: string): string {
   try {
     return new Date(iso).toLocaleString("pt-BR");
@@ -200,7 +220,7 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
   const [credentialsModalOpen, setCredentialsModalOpen] = useState(false);
 
   const [phase, setPhase] = useState<"form" | "browsing">("form");
-  const [connectionMode, setConnectionMode] = useState<"ssh" | "ssm">("ssh");
+  const [connectionMode, setConnectionMode] = useState<"ssh" | "ssm" | "ssm-command">("ssh");
   const [host, setHost] = useState(instance.publicIp || instance.privateIp || "");
   const [port, setPort] = useState("22");
   const [profileId, setProfileId] = useState("");
@@ -226,6 +246,13 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
   const [entries, setEntries] = useState<SFTPFileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Edição manual do caminho — pedido explícito do usuário: o breadcrumb (clique-a-clique) não
+  // basta quando já se sabe o caminho exato de cor (ex: "/etc/nginx/"). Alterna entre breadcrumb
+  // (padrão) e um <Input> de texto livre; Enter navega, Escape/perder foco cancela sem navegar.
+  const [editingPath, setEditingPath] = useState(false);
+  const [pathInput, setPathInput] = useState("/");
+  const pathInputRef = useRef<HTMLInputElement>(null);
 
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -315,16 +342,27 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
   }, []);
 
   const basePath = `/api/v1/vms/${encodeURIComponent(instance.id)}/sftp`;
-  const targetParams = () => ({
-    ...(connectionMode === "ssm"
-      ? { tunnelSessionId: tunnelSessionId ?? "" }
-      : { host: host.trim(), port }),
-    credentialProfileId: profileId,
-    // Só vai na query quando já existe uma fingerprint aceita nesta sessão do modal — em toda
-    // outra chamada fica de fora (URLSearchParams descarta chave com valor vazio do jeito que é
-    // consumida abaixo, então "" aqui equivale a "ausente").
-    ...(acceptedHostKeyFingerprint ? { acceptHostKeyFingerprint: acceptedHostKeyFingerprint } : {}),
-  });
+  // opPath — cada operação tem um par de rotas gêmeas (list/list-ssm, download/download-ssm etc.,
+  // ver vm_sftp_ssm.go) — só o sufixo muda conforme o transporte, sem duplicar toda a lógica de
+  // upload/download/mkdir/rename/remove entre os dois modos.
+  const opPath = (op: "list" | "download" | "upload" | "mkdir" | "rename" | "remove") =>
+    `${basePath}/${op}${connectionMode === "ssm-command" ? "-ssm" : ""}`;
+
+  const targetParams = () => {
+    // Modo SSM sem SSH — nunca precisa de credencial SSH/host key nenhuma, só profile+região
+    // (mesmos já usados pra listar a instância, ver vm_sftp_ssm.go: profile/region na query).
+    if (connectionMode === "ssm-command") {
+      return { profile: profile ?? "", region: region ?? "" };
+    }
+    return {
+      ...(connectionMode === "ssm" ? { tunnelSessionId: tunnelSessionId ?? "" } : { host: host.trim(), port }),
+      credentialProfileId: profileId,
+      // Só vai na query quando já existe uma fingerprint aceita nesta sessão do modal — em toda
+      // outra chamada fica de fora (URLSearchParams descarta chave com valor vazio do jeito que é
+      // consumida abaixo, então "" aqui equivale a "ausente").
+      ...(acceptedHostKeyFingerprint ? { acceptHostKeyFingerprint: acceptedHostKeyFingerprint } : {}),
+    };
+  };
 
   const load = useCallback(
     async (targetPath: string) => {
@@ -332,8 +370,9 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
       setError(null);
       try {
         const params = new URLSearchParams({ ...targetParams(), path: targetPath });
-        const resp = await apiFetch(`${basePath}/list?${params.toString()}`);
+        const resp = await apiFetch(`${opPath("list")}?${params.toString()}`);
         const data = await resp.json();
+        throwIfFailed(data);
         const sorted: SFTPFileEntry[] = (data.entries ?? []).sort((a: SFTPFileEntry, b: SFTPFileEntry) => {
           if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
           return a.name.localeCompare(b.name);
@@ -351,7 +390,7 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [basePath, connectionMode, host, port, profileId, tunnelSessionId, acceptedHostKeyFingerprint]
+    [basePath, connectionMode, host, port, profileId, tunnelSessionId, acceptedHostKeyFingerprint, profile, region]
   );
 
   const handleTrustHostKey = () => {
@@ -406,8 +445,21 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
     }
   };
 
+  // handleConnectSSMCommand — sem sshd algum, sem túnel, sem credencial SSH: cada operação já
+  // resolve profile/região por conta própria (targetParams()), então "conectar" aqui é só a
+  // transição de fase — nenhum estado de conexão persistente pra abrir/fechar (diferente do túnel
+  // SSM, que precisa ficar vivo enquanto o modal está aberto).
+  const handleConnectSSMCommand = () => {
+    if (!profile || !region) {
+      toast.error("Profile e região AWS não disponíveis — volte pra lista de instâncias e tente de novo");
+      return;
+    }
+    setPhase("browsing");
+  };
+
   const handleConnect = () => {
     if (connectionMode === "ssm") handleConnectSSM();
+    else if (connectionMode === "ssm-command") handleConnectSSMCommand();
     else handleConnectSSH();
   };
 
@@ -423,6 +475,27 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
     if (entry.is_dir) navigateTo(entry.path);
   };
 
+  const startEditingPath = () => {
+    setPathInput(path);
+    setEditingPath(true);
+  };
+
+  const commitPathInput = () => {
+    const trimmed = pathInput.trim();
+    // Sempre absoluto — um caminho relativo não tem significado sem saber o cwd remoto (que este
+    // modal nunca rastreia), então normaliza adicionando "/" na frente em vez de navegar errado
+    // silenciosamente.
+    navigateTo(trimmed.startsWith("/") ? trimmed : `/${trimmed}`);
+    setEditingPath(false);
+  };
+
+  useEffect(() => {
+    if (editingPath) {
+      pathInputRef.current?.focus();
+      pathInputRef.current?.select();
+    }
+  }, [editingPath]);
+
   const handleUploadClick = () => fileInputRef.current?.click();
 
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -436,7 +509,8 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
       const params = new URLSearchParams({ ...targetParams(), path: remotePath });
       const form = new FormData();
       form.append("file", file);
-      await apiFetch(`${basePath}/upload?${params.toString()}`, { method: "POST", body: form });
+      const resp = await apiFetch(`${opPath("upload")}?${params.toString()}`, { method: "POST", body: form });
+      throwIfFailed(await resp.json());
       toast.success(`Enviado: ${file.name}`);
       load(path);
     } catch (e) {
@@ -449,7 +523,15 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
   const handleDownload = async (entry: SFTPFileEntry) => {
     try {
       const params = new URLSearchParams({ ...targetParams(), path: entry.path });
-      const resp = await apiFetch(`${basePath}/download?${params.toString()}`);
+      const resp = await apiFetch(`${opPath("download")}?${params.toString()}`);
+      // download-ssm (vm_sftp_ssm.go) responde 200 tanto no sucesso (bytes crus,
+      // application/octet-stream) quanto numa falha "lógica" (JSON, ex: FILE_TOO_LARGE/arquivo não
+      // encontrado) — resp.ok sozinho não distingue os dois casos, só o Content-Type. Sem essa
+      // checagem, uma falha viraria um "download" corrompido com o texto do erro em JSON no lugar
+      // do conteúdo real do arquivo.
+      if ((resp.headers.get("content-type") || "").includes("application/json")) {
+        throwIfFailed(await resp.json());
+      }
       const blob = await resp.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -469,11 +551,12 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
     setCreatingFolder(true);
     try {
       const folderPath = path === "/" ? `/${newFolderName.trim()}` : `${path}/${newFolderName.trim()}`;
-      await apiFetch(`${basePath}/mkdir`, {
+      const resp = await apiFetch(`${opPath("mkdir")}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...targetParams(), port: Number(port), path: folderPath }),
       });
+      throwIfFailed(await resp.json());
       toast.success(`Pasta criada: ${newFolderName.trim()}`);
       setNewFolderOpen(false);
       setNewFolderName("");
@@ -499,11 +582,12 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
     try {
       const dir = path === "/" ? "" : path;
       const newPath = `${dir}/${renameValue.trim()}`;
-      await apiFetch(`${basePath}/rename`, {
+      const resp = await apiFetch(`${opPath("rename")}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...targetParams(), port: Number(port), old_path: renaming.path, new_path: newPath }),
       });
+      throwIfFailed(await resp.json());
       toast.success(`Renomeado para: ${renameValue.trim()}`);
       setRenaming(null);
       load(path);
@@ -519,7 +603,8 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
     setConfirmingDelete(true);
     try {
       const params = new URLSearchParams({ ...targetParams(), path: deleting.path, is_dir: String(deleting.is_dir) });
-      await apiFetch(`${basePath}/remove?${params.toString()}`, { method: "DELETE" });
+      const resp = await apiFetch(`${opPath("remove")}?${params.toString()}`, { method: "DELETE" });
+      throwIfFailed(await resp.json());
       toast.success(`Removido: ${deleting.name}`);
       setDeleting(null);
       load(path);
@@ -581,6 +666,17 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
                   >
                     SSM (túnel)
                   </Button>
+                  <Button
+                    type="button"
+                    variant={connectionMode === "ssm-command" ? "default" : "outline"}
+                    size="sm"
+                    className="text-xs"
+                    onClick={() => setConnectionMode("ssm-command")}
+                    disabled={!profile || !region}
+                    title={!profile || !region ? "Profile/região AWS não disponíveis" : "Sem sshd — via SSM Run Command"}
+                  >
+                    SSM (sem SSH)
+                  </Button>
                 </div>
                 {connectionMode === "ssm" && (
                   <p className="text-xs text-muted-foreground">
@@ -588,9 +684,17 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
                     através dele — a instância só precisa ter o sshd rodando, mesmo sem rede/VPN direta.
                   </p>
                 )}
+                {connectionMode === "ssm-command" && (
+                  <p className="text-xs text-muted-foreground">
+                    Sem SSH/sshd nenhum — os comandos rodam via AWS SSM Run Command (profile "{profile}", região
+                    "{region}"), o mesmo agente já exigido pelo terminal. Sem credencial SSH nenhuma, mas com um teto
+                    de 40KB por arquivo (documento SSM tem limite real de 64KB) — arquivos maiores exigem SSH direto
+                    ou SSM (túnel).
+                  </p>
+                )}
               </div>
 
-              {connectionMode === "ssh" ? (
+              {connectionMode === "ssh" && (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label className="text-xs">Host</Label>
@@ -601,39 +705,45 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
                     <Input value={port} onChange={(e) => setPort(e.target.value)} placeholder="22" />
                   </div>
                 </div>
-              ) : (
+              )}
+              {connectionMode === "ssm" && (
                 <div className="space-y-1.5 max-w-[160px]">
                   <Label className="text-xs">Porta remota (sshd)</Label>
                   <Input value={remotePort} onChange={(e) => setRemotePort(e.target.value)} placeholder="22" />
                 </div>
               )}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs">Perfil de credencial SSH</Label>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs gap-1 px-1.5"
-                    onClick={() => setCredentialsModalOpen(true)}
-                  >
-                    <Plus className="h-3 w-3" /> Novo perfil
-                  </Button>
-                </div>
-                <ProfileSelect value={profileId} onChange={setProfileId} profiles={profiles} disabled={loadingProfiles} />
-                {!loadingProfiles && profiles.length === 0 && (
+              {connectionMode !== "ssm-command" && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs">Perfil de credencial SSH</Label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs gap-1 px-1.5"
+                      onClick={() => setCredentialsModalOpen(true)}
+                    >
+                      <Plus className="h-3 w-3" /> Novo perfil
+                    </Button>
+                  </div>
+                  <ProfileSelect value={profileId} onChange={setProfileId} profiles={profiles} disabled={loadingProfiles} />
+                  {!loadingProfiles && profiles.length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Nenhum perfil de credencial cadastrado — clique em "Novo perfil" acima (gerar par novo, importar
+                      de ~/.ssh ou colar uma chave existente) antes de conectar.
+                    </p>
+                  )}
                   <p className="text-xs text-muted-foreground">
-                    Nenhum perfil de credencial cadastrado — clique em "Novo perfil" acima (gerar par novo, importar
-                    de ~/.ssh ou colar uma chave existente) antes de conectar.
+                    Se a host key desta instância ainda não foi confiada, abra um terminal SSH pra ela primeiro (aba
+                    VMs/EC2) e aceite a fingerprint — SFTP nunca pergunta, só reaproveita o known_hosts já gravado.
                   </p>
-                )}
-                <p className="text-xs text-muted-foreground">
-                  Se a host key desta instância ainda não foi confiada, abra um terminal SSH pra ela primeiro (aba
-                  VMs/EC2) e aceite a fingerprint — SFTP nunca pergunta, só reaproveita o known_hosts já gravado.
-                </p>
-              </div>
+                </div>
+              )}
               <div className="flex justify-end">
-                <Button onClick={handleConnect} disabled={profiles.length === 0}>
+                <Button
+                  onClick={handleConnect}
+                  disabled={connectionMode === "ssm-command" ? !profile || !region : profiles.length === 0}
+                >
                   Conectar
                 </Button>
               </div>
@@ -668,20 +778,40 @@ export function VMSFTPModal({ instance, open, onOpenChange, profile, region, ini
           {phase === "browsing" && !hostKeyToConfirm && (
             <>
               <div className="flex-shrink-0 flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-1 text-xs flex-1 min-w-0 overflow-x-auto whitespace-nowrap">
-                  <button className="p-1 rounded hover:bg-accent flex-shrink-0" onClick={() => navigateTo("/")} title="Raiz">
-                    <Home className="h-3.5 w-3.5" />
-                  </button>
-                  {breadcrumbSegments.map((seg, i) => {
-                    const segPath = "/" + breadcrumbSegments.slice(0, i + 1).join("/");
-                    return (
-                      <span key={segPath} className="flex items-center gap-1 flex-shrink-0">
-                        <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                        <button className="hover:underline" onClick={() => navigateTo(segPath)}>{seg}</button>
-                      </span>
-                    );
-                  })}
-                </div>
+                {editingPath ? (
+                  <Input
+                    ref={pathInputRef}
+                    value={pathInput}
+                    onChange={(e) => setPathInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitPathInput();
+                      else if (e.key === "Escape") setEditingPath(false);
+                    }}
+                    onBlur={() => setEditingPath(false)}
+                    placeholder="/etc/nginx/"
+                    className="h-8 text-xs font-mono flex-1 min-w-0"
+                  />
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1 text-xs flex-1 min-w-0 overflow-x-auto whitespace-nowrap">
+                      <button className="p-1 rounded hover:bg-accent flex-shrink-0" onClick={() => navigateTo("/")} title="Raiz">
+                        <Home className="h-3.5 w-3.5" />
+                      </button>
+                      {breadcrumbSegments.map((seg, i) => {
+                        const segPath = "/" + breadcrumbSegments.slice(0, i + 1).join("/");
+                        return (
+                          <span key={segPath} className="flex items-center gap-1 flex-shrink-0">
+                            <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                            <button className="hover:underline" onClick={() => navigateTo(segPath)}>{seg}</button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={startEditingPath} title="Digitar o caminho diretamente">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                  </>
+                )}
 
                 <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={() => load(path)} title="Atualizar" disabled={loading}>
                   <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />

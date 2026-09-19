@@ -1527,6 +1527,46 @@ func (s *Server) setupRoutes() {
 		// nos dois (mesmo nível de confiança já dado a StartInstance/StopInstance/RebootInstance).
 		vmSFTPGroup.POST("/:instanceId/ssm-tunnel/start", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.StartSSMTunnel)
 		vmSFTPGroup.POST("/:instanceId/ssm-tunnel/stop", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.StopSSMTunnel)
+		// SSM sem SSH (vm_sftp_ssm.go) — generaliza pro navegador de arquivos GERAL o mesmo
+		// transporte já construído só pra certificados (certificates_vm.go) — pedido explícito do
+		// usuário: "na lista das VMs... a opção de SSM (sem sshd) não existe". Mesmo nível de RBAC
+		// dos equivalentes SFTP acima (leitura sem grupo, escrita atrás de RequireSREGroup()).
+		vmSFTPGroup.GET("/:instanceId/sftp/list-ssm", vmSFTPHandler.VMSFTPListSSM)
+		vmSFTPGroup.GET("/:instanceId/sftp/download-ssm", vmSFTPHandler.VMSFTPDownloadSSM)
+		vmSFTPGroup.POST("/:instanceId/sftp/upload-ssm", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPUploadSSM)
+		vmSFTPGroup.POST("/:instanceId/sftp/mkdir-ssm", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPMkdirSSM)
+		vmSFTPGroup.POST("/:instanceId/sftp/rename-ssm", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPRenameSSM)
+		vmSFTPGroup.DELETE("/:instanceId/sftp/remove-ssm", rbacMiddleware.RequireSREGroup(), vmSFTPHandler.VMSFTPRemoveSSM)
+	}
+
+	// VMs/EC2 — Fase 6: sub-aba "Certificados em VM" (dentro de Certificados TLS). Reaproveita
+	// vmSFTPHandler (Fase 4, via OpenFileSession) pra gravar o par cert+chave direto na VM — sem
+	// nenhum mecanismo de conexão/credencial novo. Validação (par local + checagem TLS ao vivo
+	// opcional) nunca faz escrita, só leitura; mesmo grupo/middleware de vmSFTPGroup acima
+	// (InjectUserEmail, necessário pra OpenFileSession escopar credencial por usuário).
+	vmCertificatesHandler := handlers.NewVMCertificatesHandler(vmSFTPHandler, s.historyTracker)
+	vmCertGroup := api.Group("/vms")
+	vmCertGroup.Use(rbacMiddleware.InjectUserEmail())
+	{
+		vmCertGroup.POST("/certificates/validate", vmCertificatesHandler.ValidateCertKeyPair)          // leitura/validação local, sem RBAC de grupo
+		vmCertGroup.GET("/:instanceId/certificates/read", vmCertificatesHandler.ReadRemoteCertificate) // leitura via SFTP, sem RBAC de grupo (mesmo nível de List/Download)
+		vmCertGroup.POST("/:instanceId/certificates/transfer", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.TransferCertificate)
+		// Modo alternativo sem SSH — instância gerida só via SSM, sem sshd (ver comentário de
+		// topo de certificates_vm.go). Read via SSM executa um comando remoto de verdade (não é
+		// uma leitura "passiva" como o SFTP), por isso atrás de RequireSREGroup() nos dois, mais
+		// conservador que o ReadRemoteCertificate via SFTP acima.
+		vmCertGroup.GET("/:instanceId/certificates/read-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.ReadRemoteCertificateViaSSM)
+		vmCertGroup.POST("/:instanceId/certificates/transfer-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.TransferCertificateViaSSM)
+		// Navegação de diretório via SSM Run Command — mesmo nível de exposição de read-ssm acima
+		// (leitura via comando remoto, não passiva como SFTP, por isso RequireSREGroup()); destrava
+		// "Procurar na VM" também no modo sem SSH (antes sempre desabilitado nesse modo).
+		vmCertGroup.GET("/:instanceId/certificates/browse-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.ListDirectoryViaSSM)
+		// Restart de serviço (nginx/apache2/httpd/haproxy/etc.) — pedido explícito do usuário, pra
+		// não exigir abrir o terminal e digitar o comando manualmente (passo 6, que continua
+		// existindo como alternativa 100% manual). Mutação real num serviço rodando na VM, mesmo
+		// nível de confiança já dado a transfer/transfer-ssm acima.
+		vmCertGroup.POST("/:instanceId/certificates/restart-service", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.RestartService)
+		vmCertGroup.POST("/:instanceId/certificates/restart-service-ssm", rbacMiddleware.RequireSREGroup(), vmCertificatesHandler.RestartServiceViaSSM)
 	}
 
 	// WebSocket do terminal SSH de VM (fora do grupo api — WebSocket não envia header

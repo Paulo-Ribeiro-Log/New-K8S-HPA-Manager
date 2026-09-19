@@ -3108,3 +3108,94 @@ export interface ImportLocalVMSSHKeyInput {
   username: string;
   passphrase?: string;
 }
+
+// VMCertLiveCheck — projeção snake_case do resultado de um dial TLS real ao vivo (ver
+// internal/web/handlers/certificates_vm.go:vmCertLiveCheck), mesma convenção já usada pelo
+// Monitor de Certificados Externos (storage.CertEndpointCheck).
+export interface VMCertLiveCheck {
+  success: boolean;
+  error_message?: string;
+  subject?: string;
+  issuer?: string;
+  serial_number?: string;
+  status?: string;
+  // matchesTarget é true quando o certificado servido AGORA tem o mesmo número de série do
+  // certificado validado nesta chamada — sinal direto de "o reload já surtiu efeito".
+  matches_target: boolean;
+}
+
+export interface VMCertValidateInput {
+  certPem: string;
+  keyPem: string;
+  checkHost?: string;
+  checkPort?: number;
+  checkSni?: string;
+}
+
+// VMCertValidateResult — usa CertificateInfo (types/certificates.ts) pro campo `certificate`;
+// secretName/namespace/cluster vêm vazios nesse contexto (não há Secret K8s nenhum envolvido).
+export interface VMCertValidateResult {
+  success: boolean;
+  error?: { code: string; message: string };
+  certificate?: import("@/types/certificates").CertificateInfo;
+  live_check?: VMCertLiveCheck;
+}
+
+export interface VMCertTransferInput {
+  host?: string;
+  port?: number;
+  tunnelSessionId?: string;
+  credentialProfileId: string;
+  certPem: string;
+  keyPem: string;
+  remoteCertPath: string;
+  remoteKeyPath: string;
+}
+
+export interface VMCertTransferResult {
+  success: boolean;
+  error?: { code: string; message: string; fingerprint?: string };
+  cert_bytes_written?: number;
+  key_bytes_written?: number;
+}
+
+// VMCertReadResult — resultado de ler e parsear um certificado JÁ instalado na VM (ver
+// internal/web/handlers/certificates_vm.go:ReadRemoteCertificate). raw_pem permite reaproveitar o
+// conteúdo lido como ponto de partida pra uma renovação (ex: comparar visualmente com o novo).
+export interface VMCertReadResult {
+  success: boolean;
+  error?: { code: string; message: string; fingerprint?: string };
+  certificate?: import("@/types/certificates").CertificateInfo;
+  raw_pem?: string;
+}
+
+// VMSFTPBrowseEntry — mesmo shape de VMSFTPFileEntry (internal/web/handlers/vm_sftp.go), usado
+// pelo mini-navegador embutido de escolha de arquivo (VMCertificatePanel.tsx).
+export interface VMSFTPBrowseEntry {
+  name: string;
+  path: string;
+  size: number;
+  is_dir: boolean;
+  mod_time: string;
+  mode: string;
+}
+
+// VMCertTransferSSMResult — resultado de transferir um certificado via SSM Run Command (sem
+// SSH/sshd algum — ver internal/web/handlers/certificates_vm.go:TransferCertificateViaSSM),
+// pro caso de instância gerida só via SSM.
+export interface VMCertTransferSSMResult {
+  success: boolean;
+  error?: { code: string; message: string };
+}
+
+// VMServiceRestartResult — resultado de reiniciar um serviço (nginx/apache2/httpd/haproxy/etc.) na
+// VM — mesmo shape tanto via SSH/SFTP (RestartService) quanto via SSM Run Command
+// (RestartServiceViaSSM), por isso um único tipo cobre os dois. `status` é a saída best-effort de
+// `systemctl is-active`/`service <nome> status` rodada logo após um restart bem-sucedido — pode vir
+// vazia se essa 2ª checagem falhar, sem que isso signifique que o restart em si falhou.
+export interface VMServiceRestartResult {
+  success: boolean;
+  error?: { code: string; message: string; fingerprint?: string };
+  status?: string;
+  exit_code?: number;
+}
