@@ -249,6 +249,9 @@ func (c *Calculator) BuildReport(
 	}
 	if len(collectionErrParts) > 0 {
 		summary.MetricsCollectionError = strings.Join(collectionErrParts, "; ")
+		// Só Prometheus, só timeout de query pesada: nenhuma falha do Dynatrace no meio.
+		summary.MetricsCollectionTimeout = enricher != nil && enricher.HeavyQueryTimeoutsOnly() &&
+			!strings.Contains(summary.MetricsCollectionError, "Dynatrace:")
 	}
 
 	if summary.MetricsAttempted && summary.MetricsWorkloadsEnriched == 0 && len(workloads) > 0 {

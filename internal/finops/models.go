@@ -237,6 +237,13 @@ type FinOpsSummary struct {
 	// casos), e o frontend cairia sempre na mensagem genérica de antes mesmo pra relatórios
 	// frescos sem nenhum erro real.
 	MetricsCollectionError string `json:"metrics_collection_error"`
+
+	// MetricsCollectionTimeout — true quando a ÚNICA causa das falhas de coleta foram timeouts das
+	// queries PESADAS de container do Prometheus (as leves de HPA responderam): o Prometheus está no
+	// ar, o custo da consulta pra esta janela é que estoura o tempo. Diferente de rede/VPN fora —
+	// a orientação certa é reanalisar com uma janela menor, não "esperar alguns minutos". Ver
+	// PrometheusEnricher.HeavyQueryTimeoutsOnly.
+	MetricsCollectionTimeout bool `json:"metrics_collection_timeout,omitempty"`
 }
 
 // ── Storage types ─────────────────────────────────────────────────────────────

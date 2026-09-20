@@ -285,7 +285,8 @@ func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, w
 		// presente e vazia — cluster sem cobertura de monitoramento) de "leitura persistida de
 		// GetRightsizing, sem essa informação disponível" (chave ausente) — ver comentário de
 		// FinOpsSummary.MetricsCollectionError (models.go).
-		"metrics_collection_error": report.Summary.MetricsCollectionError,
+		"metrics_collection_error":   report.Summary.MetricsCollectionError,
+		"metrics_collection_timeout": report.Summary.MetricsCollectionTimeout,
 	}
 }
 

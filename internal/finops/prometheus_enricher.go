@@ -43,6 +43,10 @@ type PrometheusEnricher struct {
 	// uma query de fato falhou (não quando todas tiveram sucesso com resultado vazio).
 	workloadQueryErrMu sync.Mutex
 	workloadQueryErrs  []string
+
+	// heavySem limita quantas queries PESADAS (subqueries de janela longa) rodam ao mesmo tempo
+	// contra o Prometheus — ver shardedRun. nil = sem limite (enricher montado sem construtor).
+	heavySem chan struct{}
 }
 
 // promPeakSample é um valor de pico + o instante em que ocorreu — usado por qualquer "top"
@@ -120,8 +124,9 @@ func NewPrometheusEnricher(prometheusURL string, windowDays int, requiresGCPAuth
 		return nil, fmt.Errorf("falha ao criar cliente Prometheus: %w", err)
 	}
 	return &PrometheusEnricher{
-		api:    v1.NewAPI(apiClient),
-		window: windowDays,
+		api:      v1.NewAPI(apiClient),
+		window:   windowDays,
+		heavySem: make(chan struct{}, promHeavyConcurrency),
 	}, nil
 }
 
@@ -150,6 +155,28 @@ func (e *PrometheusEnricher) CollectionErrors() []string {
 	return append([]string(nil), e.workloadQueryErrs...)
 }
 
+// HeavyQueryTimeoutsOnly diz se TODAS as falhas de coleta foram timeout ("context deadline
+// exceeded") e nenhuma delas de uma query leve de HPA (hpa_*).
+//
+// Por que importa: as queries de container (P95/avg/pico) são subqueries pesadas — `[30d:5m]` sobre
+// TODOS os pods do cluster —, enquanto as de HPA são leves. Se as leves responderam e só as pesadas
+// estouraram o tempo, o Prometheus está no ar e alcançável: NÃO é VPN/rede fora, é o custo da
+// consulta pra esta janela neste cluster (típico de cluster grande) — e "reanalisar em alguns
+// minutos" com a mesma janela tende a falhar de novo. Se até as leves falharam, aí sim o problema é
+// de rede/Prometheus indisponível. Vazio (nenhum erro) devolve false.
+func (e *PrometheusEnricher) HeavyQueryTimeoutsOnly() bool {
+	errs := e.CollectionErrors()
+	if len(errs) == 0 {
+		return false
+	}
+	for _, msg := range errs {
+		if !strings.Contains(msg, "context deadline exceeded") || strings.HasPrefix(msg, "hpa_") {
+			return false
+		}
+	}
+	return true
+}
+
 // EnrichWorkloads executa 8 queries batch e enriquece todos os workloads com:
 //   - CPU/Mem P95 e avg dos últimos N dias
 //   - Requests recomendados (P95 × 1.20)
@@ -158,7 +185,12 @@ func (e *PrometheusEnricher) CollectionErrors() []string {
 func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []FinOpsWorkload) {
 	w := e.window
 
-	log.Info().Int("window_days", w).Int("workloads", len(workloads)).
+	// Queries pesadas restritas aos namespaces analisados e repartidas em fatias paralelas — ver
+	// prometheus_shards.go.
+	shards := planNamespaceShards(workloads, promMaxShards)
+
+	log.Info().Int("window_days", w).Int("workloads", len(workloads)).Int("shards", len(shards)).
+		Dur("heavy_timeout", promHeavyQueryTimeout()).
 		Msg("FinOps/Prom: iniciando enriquecimento batch")
 
 	// ── 1./2. Métricas de container (por pod) + HPA (por namespace/hpa-name) ───────────────────
@@ -204,28 +236,36 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 	// QUANTO a soma legítima entre containers do mesmo pod (config-reloader + prometheus, nesse
 	// exemplo) num único passo — Go não precisa mais somar nada, só repassa o valor.
 	run(func() {
-		cpuP95Map = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`quantile_over_time(0.95, (sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
-			"cpu_p95",
-		)
+		cpuP95Map = shardedRun(e, shards, "cpu_p95", func(m, label string) map[string]float64 {
+			return e.queryContainerMetric(ctx,
+				fmt.Sprintf(`quantile_over_time(0.95, (sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"%s}[5m])))[%dd:5m]) * 1000`, m, w),
+				label,
+			)
+		})
 	})
 	run(func() {
-		cpuAvgMap = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`avg_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
-			"cpu_avg",
-		)
+		cpuAvgMap = shardedRun(e, shards, "cpu_avg", func(m, label string) map[string]float64 {
+			return e.queryContainerMetric(ctx,
+				fmt.Sprintf(`avg_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"%s}[5m])))[%dd:5m]) * 1000`, m, w),
+				label,
+			)
+		})
 	})
 	run(func() {
-		memP95Map = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`quantile_over_time(0.95, (sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
-			"mem_p95",
-		)
+		memP95Map = shardedRun(e, shards, "mem_p95", func(m, label string) map[string]float64 {
+			return e.queryContainerMetric(ctx,
+				fmt.Sprintf(`quantile_over_time(0.95, (sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"%s}))[%dd:5m]) / 1048576`, m, w),
+				label,
+			)
+		})
 	})
 	run(func() {
-		memAvgMap = e.queryContainerMetric(ctx,
-			fmt.Sprintf(`avg_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
-			"mem_avg",
-		)
+		memAvgMap = shardedRun(e, shards, "mem_avg", func(m, label string) map[string]float64 {
+			return e.queryContainerMetric(ctx,
+				fmt.Sprintf(`avg_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"%s}))[%dd:5m]) / 1048576`, m, w),
+				label,
+			)
+		})
 	})
 	// Pico real de CPU/Mem — CPU só exibido como "top" na UI (nunca usado na recomendação de CPU
 	// Limit, que segue baseada na proporção limit/request, ver recommendedLimits); Mem também
@@ -243,28 +283,36 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 	//      dependia só dela. Por isso o valor NUNCA depende dela ter sucesso — o timestamp é
 	//      best-effort, anexado só quando essa query de fato retorna algo pro pod/workload.
 	run(func() {
-		cpuMaxValueMap = e.queryPodMetricPeakValue(ctx,
-			fmt.Sprintf(`max_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])))[%dd:5m]) * 1000`, w),
-			"cpu_max_value",
-		)
+		cpuMaxValueMap = shardedRun(e, shards, "cpu_max_value", func(m, label string) map[string]float64 {
+			return e.queryPodMetricPeakValue(ctx,
+				fmt.Sprintf(`max_over_time((sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"%s}[5m])))[%dd:5m]) * 1000`, m, w),
+				label,
+			)
+		})
 	})
 	run(func() {
-		memMaxValueMap = e.queryPodMetricPeakValue(ctx,
-			fmt.Sprintf(`max_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}))[%dd:5m]) / 1048576`, w),
-			"mem_max_value",
-		)
+		memMaxValueMap = shardedRun(e, shards, "mem_max_value", func(m, label string) map[string]float64 {
+			return e.queryPodMetricPeakValue(ctx,
+				fmt.Sprintf(`max_over_time((sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"%s}))[%dd:5m]) / 1048576`, m, w),
+				label,
+			)
+		})
 	})
 	run(func() {
-		cpuMaxRange = e.queryPodMetricRangeMax(ctx,
-			`sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])) * 1000`,
-			"cpu_max_range",
-		)
+		cpuMaxRange = shardedRun(e, shards, "cpu_max_range", func(m, label string) map[string]promPeakSample {
+			return e.queryPodMetricRangeMax(ctx,
+				fmt.Sprintf(`sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"%s}[5m])) * 1000`, m),
+				label,
+			)
+		})
 	})
 	run(func() {
-		memMaxRange = e.queryPodMetricRangeMax(ctx,
-			`sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"}) / 1048576`,
-			"mem_max_range",
-		)
+		memMaxRange = shardedRun(e, shards, "mem_max_range", func(m, label string) map[string]promPeakSample {
+			return e.queryPodMetricRangeMax(ctx,
+				fmt.Sprintf(`sum by (namespace, pod) (container_memory_working_set_bytes{container!="",container!="POD"%s}) / 1048576`, m),
+				label,
+			)
+		})
 	})
 	run(func() {
 		hpaAvgMap = e.queryHPAMetric(ctx,
@@ -482,7 +530,7 @@ func (e *PrometheusEnricher) EnrichWorkloadsPartial(ctx context.Context, workloa
 // queryContainerMetric executa uma query que retorna métricas por container
 // e agrega por pod (soma containers do mesmo pod). Retorna map["ns/pod"] → valor.
 func (e *PrometheusEnricher) queryContainerMetric(ctx context.Context, query, label string) map[string]float64 {
-	qctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, promHeavyQueryTimeout())
 	defer cancel()
 
 	result, _, err := e.api.Query(qctx, query, time.Now())
@@ -521,7 +569,7 @@ func (e *PrometheusEnricher) queryContainerMetric(ctx context.Context, query, la
 // PRIMÁRIA e confiável do VALOR do pico — ver queryPodMetricRangeMax pro porquê de existir uma
 // query separada, bem mais pesada, só pro timestamp.
 func (e *PrometheusEnricher) queryPodMetricPeakValue(ctx context.Context, query, label string) map[string]float64 {
-	qctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, promHeavyQueryTimeout())
 	defer cancel()
 
 	result, _, err := e.api.Query(qctx, query, time.Now())
@@ -553,7 +601,7 @@ func (e *PrometheusEnricher) queryPodMetricPeakValue(ctx context.Context, query,
 // maior valor da série já somada, não a soma dos picos independentes de cada container (que
 // podem nunca ter ocorrido no mesmo instante). Retorna valor + timestamp exato do pico.
 func (e *PrometheusEnricher) queryPodMetricRangeMax(ctx context.Context, query, label string) map[string]promPeakSample {
-	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, promHeavyQueryTimeout())
 	defer cancel()
 
 	end := time.Now()
@@ -659,7 +707,7 @@ func (e *PrometheusEnricher) WorkloadHistory(ctx context.Context, podNames []str
 // via MÁXIMO — alinhamento por timestamp exato (não por índice), robusto a séries com número de
 // pontos diferente (ex: um pod criado no meio da janela tem menos pontos que um mais antigo).
 func (e *PrometheusEnricher) queryRangeSeries(ctx context.Context, query string, windowDays int, label string) ([]WorkloadHistoryPoint, error) {
-	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, promHeavyQueryTimeout())
 	defer cancel()
 
 	end := time.Now()
@@ -954,7 +1002,7 @@ func mergeNodeTopPeaks(
 // fonte confiável do VALOR do pico por "instance". Ver queryInstanceMetricRangeMax pro porquê
 // de existir uma query bem mais pesada, separada, só pro timestamp.
 func (e *PrometheusEnricher) queryInstanceMetricPeakValue(ctx context.Context, query, label string) map[string]float64 {
-	qctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, promHeavyQueryTimeout())
 	defer cancel()
 
 	result, _, err := e.api.Query(qctx, query, time.Now())
@@ -983,7 +1031,7 @@ func (e *PrometheusEnricher) queryInstanceMetricPeakValue(ctx context.Context, q
 // usado por queryContainerMetricRangeMax (o "quando" de um pico não precisa de resolução de
 // segundos, minutos já bastam pra um humano julgar recência).
 func (e *PrometheusEnricher) queryInstanceMetricRangeMax(ctx context.Context, query, label string) map[string]promPeakSample {
-	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, promHeavyQueryTimeout())
 	defer cancel()
 
 	end := time.Now()
@@ -1016,7 +1064,7 @@ func (e *PrometheusEnricher) queryInstanceMetricRangeMax(ctx context.Context, qu
 // "instance" — resultado já vem correlacionável por IGUALDADE EXATA contra o nome do node K8s,
 // sem precisar do fallback de substring que mergeInstancePeak usa.
 func (e *PrometheusEnricher) queryNodenameMetricPeakValue(ctx context.Context, query, label string) map[string]float64 {
-	qctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, promHeavyQueryTimeout())
 	defer cancel()
 
 	result, _, err := e.api.Query(qctx, query, time.Now())
@@ -1054,7 +1102,7 @@ func (e *PrometheusEnricher) queryNodenameMetricPeakValue(ctx context.Context, q
 // "nodename" — ver queryNodenameMetricPeakValue e nodeTopUsage pro porquê dessa correlação ser
 // preferível à de "instance" (substring, mais frágil).
 func (e *PrometheusEnricher) queryNodenameMetricRangeMax(ctx context.Context, query, label string) map[string]promPeakSample {
-	qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, promHeavyQueryTimeout())
 	defer cancel()
 
 	end := time.Now()
