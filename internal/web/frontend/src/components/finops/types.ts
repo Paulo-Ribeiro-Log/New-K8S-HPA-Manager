@@ -105,6 +105,9 @@ export interface FinOpsSummary {
   // monitoramento); não-vazia = pelo menos uma consulta falhou de verdade (falha transitória).
   // Ver comentário completo em internal/finops/models.go.
   metrics_collection_error?: string;
+  // true quando a ÚNICA causa foram timeouts das queries pesadas de container do Prometheus (as
+  // leves de HPA responderam) — o Prometheus está no ar; a orientação é uma janela menor.
+  metrics_collection_timeout?: boolean;
 }
 
 export interface PVCCostItem {

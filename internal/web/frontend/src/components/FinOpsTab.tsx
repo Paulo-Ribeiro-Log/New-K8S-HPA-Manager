@@ -51,6 +51,10 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
   const [clusterOpen, setClusterOpen] = useState(false);
   const [withPrometheus, setWithPrometheus] = useState(true);
   const [windowDays, setWindowDays] = useState(30);
+  // O queryFn lê a janela por ref: "Reanalisar com 7 dias" (banner de timeout) precisa disparar o
+  // refetch NA MESMA chamada em que muda a janela — via state ela só valeria no próximo render.
+  const windowDaysRef = useRef(windowDays);
+  windowDaysRef.current = windowDays;
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiExpanded, setAiExpanded] = useState(true);
@@ -87,7 +91,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         // Bug real corrigido, relatado pelo usuário ("o que me leva a crer que está fazendo o
         // mesmo scan 2 vezes" — cada "Analisar" chegou a levar ~2min + mais ~2min de rightsizing
         // logo em seguida, porque a versão anterior disparava um 2º scan completo do zero).
-        url += `&with_prometheus=true&window_days=${windowDays}&persist_rightsizing=true`;
+        url += `&with_prometheus=true&window_days=${windowDaysRef.current}&persist_rightsizing=true`;
       }
       const r = await fetch(url, {
         signal,
@@ -175,6 +179,17 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     a.click();
     URL.revokeObjectURL(url);
     toast.success("CSV exportado com sucesso");
+  };
+
+  // Reanálise com outra janela (usada pelo banner de timeout do Prometheus).
+  const reanalyzeWithWindow = async (days: number) => {
+    windowDaysRef.current = days;
+    setWindowDays(days);
+    setAiAnalysis(null);
+    const result = await refetch();
+    if (result.isSuccess) {
+      refreshRightsizingCache();
+    }
   };
 
   const analyzeWithAI = async () => {
@@ -359,7 +374,21 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <AlertDescription className="text-sm text-red-700 dark:text-red-400">
                   <strong>Nenhum dos {report.summary.workloads_analyzed} workloads recebeu dado real de uso</strong> (Dynatrace/Prometheus) nesta análise —
                   os valores de desperdício, CPU/Mem e "Com Oportunidade" abaixo (e na aba Rightsizing) provavelmente não refletem a realidade.{" "}
-                  {reason === "structural" ? (
+                  {reason === "timeout" ? (
+                    <>
+                      As consultas <strong>pesadas</strong> de CPU/memória ao Prometheus (janela de {report.window_days || windowDays} dias sobre todos os pods
+                      do cluster) <strong>estouraram o tempo limite</strong>, mas as consultas leves de HPA responderam — ou seja, o Prometheus está no ar e a
+                      rede/VPN <strong>não</strong> é o problema. Reanalisar na mesma janela tende a falhar de novo: use uma janela menor.
+                      <span className="block mt-2">
+                        {[7, 14].filter(d => d < (report.window_days || windowDays)).map(d => (
+                          <Button key={d} size="sm" variant="outline" className="h-7 mr-2 gap-1 border-red-300 text-red-700 hover:bg-red-100"
+                            onClick={() => void reanalyzeWithWindow(d)}>
+                            <RefreshCw className="h-3 w-3" /> Reanalisar com {d} dias
+                          </Button>
+                        ))}
+                      </span>
+                    </>
+                  ) : reason === "structural" ? (
                     <>
                       As consultas a Dynatrace/Prometheus completaram <strong>sem erro</strong>, mas não retornaram nenhum dado real pra nenhum dos{" "}
                       {report.summary.workloads_analyzed} workloads — é mais provável que este cluster genuinamente não tenha cobertura de monitoramento

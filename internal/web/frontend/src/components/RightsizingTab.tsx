@@ -154,6 +154,7 @@ export interface RightsizingResponse {
   // sucesso mas sem nenhum dado real (cluster sem cobertura de monitoramento); não-vazia = pelo
   // menos uma consulta falhou de verdade (falha transitória, "reanalisar" pode resolver).
   metrics_collection_error?: string;
+  metrics_collection_timeout?: boolean;
 }
 
 // Histórico de uso (CPU/Mem) sob demanda, ver GET /finops/rightsizing/history — buscado só quando
@@ -1210,8 +1211,10 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   // problema estrutural de cobertura) — só presente na resposta de um scan FRESCO (ver
   // RightsizingResponse.metrics_collection_error); undefined = leitura persistida (GET, sem essa
   // informação disponível), mantém a mensagem genérica/conservadora de antes.
-  const metricsFailureReason: "transient" | "structural" | "unknown" =
-    data?.metrics_collection_error === undefined ? "unknown" : data.metrics_collection_error === "" ? "structural" : "transient";
+  const metricsFailureReason: "timeout" | "transient" | "structural" | "unknown" =
+    data?.metrics_collection_error === undefined ? "unknown"
+      : data.metrics_collection_timeout ? "timeout"
+      : data.metrics_collection_error === "" ? "structural" : "transient";
 
   if (isLoading) {
     return (
@@ -1279,7 +1282,13 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
           <AlertDescription className="text-sm text-red-700 dark:text-red-400">
             <strong>Nenhum dos {workloads.length} workloads recebeu dado real de uso</strong> (Dynatrace/Prometheus) nesta análise —
             os valores de CPU/Mem, desperdício e "Com Oportunidade" abaixo provavelmente não refletem a realidade.{" "}
-            {metricsFailureReason === "structural" ? (
+            {metricsFailureReason === "timeout" ? (
+              <>
+                As consultas <strong>pesadas</strong> de CPU/memória ao Prometheus estouraram o tempo limite, mas as consultas leves de HPA responderam —
+                o Prometheus está no ar e a rede/VPN <strong>não</strong> é o problema. Reanalisar com a mesma janela tende a falhar de novo: refaça a análise
+                na aba FinOps com uma janela menor (7 ou 14 dias).
+              </>
+            ) : metricsFailureReason === "structural" ? (
               <>
                 As consultas a Dynatrace/Prometheus completaram <strong>sem erro</strong>, mas não retornaram nenhum dado real pra nenhum dos{" "}
                 {workloads.length} workloads — é mais provável que este cluster genuinamente não tenha cobertura de monitoramento (sem OneAgent

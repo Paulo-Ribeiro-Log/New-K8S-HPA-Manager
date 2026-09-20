@@ -3,6 +3,24 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### FinOps — consultas pesadas ao Prometheus: mais tempo + fatias paralelas por namespace (Setembro 2026) ✅
+
+Decisão (usuário): a consulta É pesada, então o caminho certo é dar mais tempo e/ou paralelizar — não só avisar. Feito os dois (`internal/finops/prometheus_shards.go`):
+
+- **Tempo:** as 8 funções de query pesada (P95/média/pico de container, pico de node, range) passaram de 60/90 s fixos para `promHeavyQueryTimeout()` — padrão **3 min**, um pouco acima do `--query.timeout` padrão do Prometheus (2 min), de modo que quando o servidor desiste é ELE quem responde com o erro real ("query timed out in expression evaluation") em vez de a app cancelar antes com um genérico `context deadline exceeded`. Ajustável sem recompilar: `K8S_HPA_PROM_HEAVY_TIMEOUT` (ex: `5m`; aceita 30 s a 30 min) — necessário se o Prometheus roda com `--query.timeout` maior. As queries leves de HPA seguem em 30 s. (O `Timeout: 60s` do `http.Client` no construtor nunca valeu: só o `Transport` é repassado ao cliente Prometheus.)
+- **Paralelismo por fatias:** antes era UMA subquery `[30d:5m]` sobre TODOS os pods do cluster (inclusive kube-system/monitoring, que nunca são usados). Agora cada uma das 8 queries pesadas é restrita (`namespace=~"a|b|c"`) aos namespaces dos workloads analisados e repartida em até 4 fatias equilibradas por nº de workloads, rodando em paralelo com teto de 8 queries pesadas simultâneas (igual ao paralelismo que já existia). A query agrupa por `(namespace, pod)` e o filtro é por namespace, então as fatias não se sobrepõem: juntar é uma união exata. Cluster com menos de 4 namespaces não é repartido (só restrito).
+- **Degradação parcial:** uma fatia que falha não derruba as outras — os workloads das fatias que deram certo mantêm dado real, e o erro da fatia aparece rotulado (`cpu_p95[2/4]`). Antes era tudo-ou-nada por métrica.
+- **Custo:** até 4× mais requisições (8×4 pesadas + 4 leves), cada uma menor; não aumenta a concorrência contra o Prometheus. Consultas pra namespaces sem workload analisado deixam de ser feitas (eram descartadas).
+- **Não validado contra o Prometheus real** (sem VPN aqui): a lógica foi validada por teste ponta a ponta com um Prometheus falso que respeita o filtro de namespace (8 tipos de query, cobertura exata sem lacuna/sobreposição, todos os workloads enriquecidos, limite de concorrência, falha parcial). Se mesmo com fatias e 3 min estourar, os botões "Reanalisar com 7/14 dias" do aviso continuam valendo.
+
+### FinOps — aviso de "sem dado de uso" distingue timeout de query pesada de rede fora (Setembro 2026) ✅
+
+Caso real (`akspriv-oferta-prd`, janela de 30d): o aviso "Nenhum dos 72 workloads recebeu dado real de uso" listava 8 erros `context deadline exceeded` e orientava "VPN/rede fora — reanalise em alguns minutos". Só que os erros eram EXATAMENTE as 8 queries pesadas de container (`cpu_p95`, `cpu_avg`, `mem_p95`, `mem_avg`, `*_max_value`, `*_max_range`: subqueries `[30d:5m]` sobre todos os pods) e nenhuma das 4 queries leves de HPA (`hpa_*`, que também registram erro) — logo o Prometheus estava no ar e respondendo; o custo da consulta pra essa janela neste cluster grande é que estoura o tempo (60/90 s). Reanalisar com a mesma janela tende a falhar de novo.
+
+- `PrometheusEnricher.HeavyQueryTimeoutsOnly()` → `FinOpsSummary.MetricsCollectionTimeout` (`metrics_collection_timeout`, também na resposta do scan de Rightsizing): true só quando TODA falha é timeout e nenhuma é de HPA (nem do Dynatrace). Se até a query leve de HPA falhou, continua valendo a mensagem de rede.
+- Frontend: nova mensagem "consultas pesadas estouraram o tempo — o Prometheus está no ar, não é VPN" com botões **Reanalisar com 7 / 14 dias** (o `queryFn` passou a ler a janela por ref pra o refetch usar a janela nova na mesma chamada). Relatórios em cache de antes do campo existir seguem com a mensagem antiga.
+- **Não validado:** o Prometheus do oferta-prd não é alcançável do ambiente de desenvolvimento (sem VPN), então NÃO foi confirmado que 7d/14d completam nesse cluster — a mensagem/botão foram validados simulando o relatório no navegador. Possível evolução, não feita: fallback automático de janela quando a query estoura.
+
 ### FinOps — Recursos de Dados (RG `rg-<nome>-data-<env>`): coleta via ARM, preço corrigido e ofertas de resizing (Setembro 2026, branch `feat/finops-discos-desatachados`) ✅
 
 Investigação: o endpoint já devolvia dados reais em 23 dos 27 clusters AKS (os 3 restantes não têm RG de dados — `ResourceGroupNotFound`, comportamento correto). O "nada exibido" vinha da apresentação e da própria coleta: o painel ficava dentro da aba "Armazenamento" (que só existe depois de "Analisar"), vinha **recolhido** por padrão, não mostrava tier nem estado de disco/VM e não havia nenhuma análise de resizing. Achados de correção no caminho:

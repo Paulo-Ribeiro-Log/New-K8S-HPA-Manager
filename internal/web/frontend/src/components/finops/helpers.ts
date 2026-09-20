@@ -24,8 +24,11 @@ export function metricsCollectionLikelyFailed(summary: FinOpsSummary): boolean {
  *  sozinho, precisa configurar DT/Prometheus pra este cluster.
  *  "unknown" = relatório antigo (cache SQLite de antes deste campo existir, ver GetLastReport/
  *  GetRightsizing) sem essa informação disponível — mantém a mensagem genérica/conservadora. */
-export function metricsFailureReason(summary: FinOpsSummary): "transient" | "structural" | "unknown" {
+export function metricsFailureReason(summary: FinOpsSummary): "timeout" | "transient" | "structural" | "unknown" {
   if (summary.metrics_collection_error === undefined) return "unknown";
+  // "timeout": só as queries PESADAS de container estouraram o tempo (as de HPA responderam) —
+  // o Prometheus está no ar, então "esperar alguns minutos" não resolve: precisa de janela menor.
+  if (summary.metrics_collection_timeout) return "timeout";
   return summary.metrics_collection_error === "" ? "structural" : "transient";
 }
 
