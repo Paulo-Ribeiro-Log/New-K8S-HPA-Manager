@@ -166,7 +166,7 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
   const windowDays = report.window_days || 30;
   const opportunities = workloads
     .map(w => {
-      const rec = buildRecommendation(w, windowDays);
+      const rec = buildRecommendation(w, windowDays, report.window_days > 0);
       // Prioridade: waste_brl (Prometheus) > estimativa HPA > fallback
       const saving = rec.savingBRL > 0
         ? rec.savingBRL
@@ -330,7 +330,7 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
         {tl && !tlLoading && (
           <span className="text-[10px] text-muted-foreground ml-1">
             {tl.start_date} → {tl.end_date} · {tl.hpas.length} HPAs · {tl.nodes.length} dias
-            {!hasEfficiency && <span className="text-yellow-600 ml-2">⚠ Ative Prometheus para eficiência real</span>}
+            {!hasEfficiency && <span className="text-yellow-600 ml-2">⚠ Sem eficiência real nesta série — rode Analisar com "Análise histórica" marcada</span>}
           </span>
         )}
       </div>
