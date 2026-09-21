@@ -284,6 +284,14 @@ func NewFinOpsRightsizingStore(dbPath string) (*FinOpsRightsizingStore, error) {
 			return nil, fmt.Errorf("migrar schema finops-rightsizing: %w", err)
 		}
 	}
+	// Medições de desempenho de CPU: dado real medido, fora da limpeza de semântica abaixo (que só
+	// descarta análises derivadas regeneráveis).
+	if _, err := db.Exec(finopsPerfBenchmarksSchema); err != nil {
+		return nil, fmt.Errorf("criar schema node_perf_benchmarks: %w", err)
+	}
+	if _, err := db.Exec(finopsPerfBenchmarksMigration); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return nil, fmt.Errorf("migrar node_perf_benchmarks: %w", err)
+	}
 	if err := purgeFinOpsDataIfStale(db, "workload_recommendations", "nodepool_tier_suggestions", "node_usage"); err != nil {
 		return nil, fmt.Errorf("migrar semântica finops-rightsizing: %w", err)
 	}

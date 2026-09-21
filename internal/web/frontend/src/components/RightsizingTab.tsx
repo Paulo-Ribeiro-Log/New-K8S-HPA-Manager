@@ -14,6 +14,7 @@ import { DollarSign, TrendingDown, Layers } from "lucide-react";
 import { ComposedChart, Line, XAxis, YAxis, ReferenceLine, ReferenceDot } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { useRightsizingReport } from "@/hooks/useRightsizingReport";
+import { PerfBadge, CurrentPerfLine, PerfBenchmarkButton, type PerfComparison, type PerfInfo } from "@/components/finops/PerfBenchmark";
 
 // ─── Tipos (shape de GET/POST /api/v1/finops/rightsizing, ver
 //      internal/web/handlers/finops_rightsizing.go / internal/storage/finops_rightsizing_store.go) ──
@@ -109,6 +110,9 @@ interface VMAlternative {
   // segurança: o maior pod ali rodando pode não conseguir ser agendado nesta SKU menor. Nunca
   // remove a alternativa, só sinaliza — a decisão final continua humana.
   insufficient_for_largest_workload?: boolean;
+  // Comparativo de desempenho de CPU medido (SKU atual × esta alternativa) — informativo, montado na
+  // leitura a partir das medições; ausente/"unknown" quando o SKU nunca foi medido.
+  perf?: PerfComparison;
 }
 
 interface NodePoolTierSuggestion {
@@ -137,6 +141,7 @@ interface NodePoolTierSuggestion {
   // (nginx-ingress-controller/velero/istio-ingressgateway).
   has_critical_workload?: boolean;
   critical_workload_names?: string; // nomes separados por ", "
+  current_perf?: PerfInfo; // desempenho de CPU medido do SKU atual do pool
   alternatives: VMAlternative[];
   generated_at: string;
 }
@@ -704,6 +709,7 @@ function WorkloadNodeDetailModal({
                             {alt.monthly_savings_brl > 10 && <p className="text-[11px] font-semibold text-green-600">-{fmtBRL(alt.monthly_savings_brl)}/mês na frota do pool</p>}
                             {alt.monthly_savings_brl < -10 && <p className="text-[11px] font-semibold text-orange-600">+{fmtBRL(Math.abs(alt.monthly_savings_brl))}/mês na frota do pool</p>}
                             <p className="text-[11px] italic text-muted-foreground">{alt.reason}</p>
+                            <PerfBadge perf={alt.perf} />
                             <InsufficientCapacityWarning alt={alt} />
                           </div>
                         );
@@ -1008,6 +1014,7 @@ function NodePoolTierCard({
               {pool.node_count ?? "?"} node(s)
               {hasNodeRange && <> · min {pool.min_node_count} / máx {pool.max_node_count}{pool.autoscaling_enabled ? " (autoscaling)" : " (fixo)"}</>}
             </p>
+            <CurrentPerfLine perf={pool.current_perf} />
           </div>
           <div className="text-right text-[11px] text-muted-foreground">
             <p title="Usado para decidir a sugestão de tier abaixo — já inclui 20% de margem de segurança sobre o uso real">
@@ -1069,6 +1076,7 @@ function NodePoolTierCard({
                     <p className="text-[11px] font-semibold text-orange-600">+{fmtBRL(Math.abs(alt.monthly_savings_brl))}/mês na frota do pool</p>
                   )}
                   <p className="text-[11px] italic text-muted-foreground">{alt.reason}</p>
+                  <PerfBadge perf={alt.perf} />
                   <InsufficientCapacityWarning alt={alt} />
                 </div>
               );
@@ -1262,12 +1270,18 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
             <p className="text-xs text-muted-foreground">Nunca analisado</p>
           )}
         </div>
-        <Button size="sm" variant={scanning ? "destructive" : "default"} onClick={scanning ? cancelScan : runScan}>
-          {scanning
-            ? <X className="h-4 w-4 mr-1.5" />
-            : <RefreshCw className="h-4 w-4 mr-1.5" />}
-          {scanning ? "Cancelar" : (data?.scanned ? "Reanalisar agora" : "Analisar agora")}
-        </Button>
+        <div className="flex items-center gap-2">
+          <PerfBenchmarkButton
+            cluster={cluster}
+            pools={(data?.node_pools ?? []).map((p) => ({ name: p.node_pool, sku: p.current_sku }))}
+          />
+          <Button size="sm" variant={scanning ? "destructive" : "default"} onClick={scanning ? cancelScan : runScan}>
+            {scanning
+              ? <X className="h-4 w-4 mr-1.5" />
+              : <RefreshCw className="h-4 w-4 mr-1.5" />}
+            {scanning ? "Cancelar" : (data?.scanned ? "Reanalisar agora" : "Analisar agora")}
+          </Button>
+        </div>
       </div>
 
       {scanError && (

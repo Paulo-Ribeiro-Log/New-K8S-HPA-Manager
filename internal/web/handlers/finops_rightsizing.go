@@ -44,10 +44,13 @@ type nodePoolTierResponse struct {
 	HasCriticalWorkload   bool                   `json:"has_critical_workload,omitempty"`
 	CriticalWorkloadNames string                 `json:"critical_workload_names,omitempty"`
 	Alternatives          []finops.VMAlternative `json:"alternatives"`
-	GeneratedAt           time.Time              `json:"generated_at"`
+	// CurrentPerf: desempenho de CPU medido do SKU atual do pool (nil = nunca medido). Preenchido na
+	// LEITURA (não persistido na análise): uma medição feita depois do scan aparece sem reanalisar.
+	CurrentPerf *finops.PerfInfo `json:"current_perf,omitempty"`
+	GeneratedAt time.Time        `json:"generated_at"`
 }
 
-func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion) []nodePoolTierResponse {
+func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion, perf finops.PerfSet) []nodePoolTierResponse {
 	out := make([]nodePoolTierResponse, 0, len(raw))
 	for _, r := range raw {
 		var alts []finops.VMAlternative
@@ -56,6 +59,16 @@ func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion) []nodePoolTierR
 		}
 		if alts == nil {
 			alts = []finops.VMAlternative{}
+		}
+		// O SKU atual usa a medição dos nodes DESTE pool quando existir (Scope "pool"); senão a da
+		// frota (Scope "fleet"), sinalizado como tal — o SKU não fixa o processador.
+		poolPerf := perf.ForPool(r.Cluster, r.NodePool)
+		var currentPerf *finops.PerfInfo
+		if p, ok := finops.LookupPerf(r.CurrentSKU, poolPerf); ok {
+			currentPerf = &p
+		}
+		for i := range alts {
+			alts[i].Perf = finops.ComparePerf(r.CurrentSKU, alts[i].VMSize, poolPerf)
 		}
 		out = append(out, nodePoolTierResponse{
 			NodePool:              r.NodePool,
@@ -74,6 +87,7 @@ func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion) []nodePoolTierR
 			HasCriticalWorkload:   r.HasCriticalWorkload,
 			CriticalWorkloadNames: r.CriticalWorkloadNames,
 			Alternatives:          alts,
+			CurrentPerf:           currentPerf,
 			GeneratedAt:           r.GeneratedAt,
 		})
 	}
@@ -129,7 +143,7 @@ func (h *FinOpsHandler) GetRightsizing(c *gin.Context) {
 		"scanned":         true,
 		"last_scanned_at": lastScanned,
 		"workloads":       workloads,
-		"node_pools":      nodePoolTierResponses(pools),
+		"node_pools":      nodePoolTierResponses(pools, h.perfSet()),
 		"nodes":           nodeUsage,
 	})
 }
@@ -278,7 +292,7 @@ func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, w
 		"scanned":         true,
 		"last_scanned_at": time.Now(),
 		"workloads":       workloadRecs,
-		"node_pools":      nodePoolTierResponses(tierSuggestions),
+		"node_pools":      nodePoolTierResponses(tierSuggestions, h.perfSet()),
 		"nodes":           nodeUsageRecs,
 		// metrics_collection_error — SEMPRE presente (mesmo "") na resposta de um scan FRESCO —
 		// nunca omitido, pra o frontend distinguir "consultei e não achei erro real" (chave

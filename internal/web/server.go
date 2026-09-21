@@ -851,6 +851,10 @@ func (s *Server) setupRoutes() {
 	// custo, e disparam scans caros) no exato momento em que o middleware for reativado em
 	// qualquer lugar da app, sem exigir lembrar de voltar aqui.
 	api.POST("/finops/rightsizing/scan", rbacMiddleware.RequireSREGroup(), finOpsHandler.ScanRightsizing)
+	// Medição de desempenho de CPU por node pool (pods efêmeros de ~15 s) — leitura sem RBAC extra,
+	// execução atrás de RequireSREGroup() (cria pods no cluster).
+	api.GET("/finops/perf-benchmark", finOpsHandler.GetPerfBenchmarks)
+	api.POST("/finops/perf-benchmark", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), finOpsHandler.RunPerfBenchmark)
 	api.GET("/finops/rightsizing/history", finOpsHandler.GetWorkloadHistory) // histórico on-demand (CPU/Mem) pro gráfico do modal de detalhe de workload — leitura, sem RBAC extra
 	api.GET("/finops/pricing", finOpsHandler.GetPricing)
 	api.POST("/finops/pricing/refresh", rbacMiddleware.RequireSREGroup(), finOpsHandler.RefreshPricing)

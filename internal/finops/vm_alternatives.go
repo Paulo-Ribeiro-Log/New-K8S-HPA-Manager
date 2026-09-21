@@ -22,6 +22,11 @@ type VMAlternative struct {
 	// conhece requests individuais, só o agregado do pool). Nunca remove a alternativa da
 	// lista — só sinaliza, a decisão final continua humana.
 	InsufficientForLargestWorkload bool `json:"insufficient_for_largest_workload,omitempty"`
+	// Perf compara o desempenho de CPU por thread medido desta alternativa com o SKU atual do pool
+	// (ver vm_perf.go). Preenchido só na LEITURA (handler de rightsizing), nunca persistido com a
+	// análise — depende de medições que podem ser feitas depois do scan. Informativo: não altera o
+	// Verdict nem o Reason.
+	Perf *PerfComparison `json:"perf,omitempty"`
 }
 
 // A lógica de sugestão em si (antes SuggestAlternatives, Azure-only) vive agora em
