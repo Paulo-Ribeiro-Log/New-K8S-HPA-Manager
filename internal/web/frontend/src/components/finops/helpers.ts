@@ -51,7 +51,11 @@ export function financeProviderInfo(clusterName: string): { label: string; sourc
 
 // ─── Recomendações concretas ──────────────────────────────────────────────────
 
-export function buildRecommendation(w: FinOpsWorkload, windowDays: number): Recommendation {
+// historicalRan: a "Análise histórica" (checkbox no topo da aba FinOps) rodou neste relatório
+// (report.window_days > 0). Muda o motivo mostrado quando falta histórico de réplicas do HPA: com a
+// análise desligada o usuário precisa marcá-la; com ela ligada o dado simplesmente não veio
+// (Dynatrace/Prometheus sem retorno pra este HPA) e mandar "ativar" algo já ativo não ajuda.
+export function buildRecommendation(w: FinOpsWorkload, windowDays: number, historicalRan = true): Recommendation {
   const lines: { text: string; highlight?: boolean }[] = [];
   const podCostBRL = w.pods > 0 ? w.cost_share_brl / w.pods : 0;
   let safeMin: number | undefined;
@@ -96,8 +100,11 @@ export function buildRecommendation(w: FinOpsWorkload, windowDays: number): Reco
       }
     }
 
-  // ── Caso 2: sem Prometheus, workload JÁ está no mínimo (atual == min) ────
-  } else if (w.hpa_max > 0 && w.hpa_min > 0 && w.hpa_current <= w.hpa_min) {
+  // ── Caso 2: sem histórico de HPA, workload JÁ está no mínimo (atual == min) ─
+  // Só faz sentido com FAIXA de autoscaling (max > min). O backend preenche min/atual/max com o nº de
+  // pods quando o workload não tem HPA (ou o HPA é fixo), então min == max não é "rodando no mínimo":
+  // não há o que ajustar, e o aviso de histórico faltando seria falso (o histórico nem existe).
+  } else if (w.hpa_max > w.hpa_min && w.hpa_min > 0 && w.hpa_current <= w.hpa_min) {
     needsPrometheus = true;
     const ratio = Math.round((w.hpa_current / w.hpa_max) * 100);
     lines.push({ text: `Rodando no mínimo configurado (${w.hpa_min} de ${w.hpa_max} max = ${ratio}% do teto)`, highlight: true });
@@ -107,7 +114,11 @@ export function buildRecommendation(w: FinOpsWorkload, windowDays: number): Reco
       safeMax = heuristicMax;
       lines.push({ text: `Reduzir max de ${w.hpa_max} → ${heuristicMax} (3× o uso atual) para limitar exposição` });
     }
-    lines.push({ text: `Ative "Usar Prometheus" para ver histórico real e recomendar min seguro` });
+    lines.push({
+      text: historicalRan
+        ? `Sem histórico de réplicas do HPA deste workload em ${windowDays}d (Dynatrace/Prometheus não retornou dado) — não dá para recomendar um min seguro`
+        : `Marque "Análise histórica" no topo desta aba e clique em Analisar para ver o histórico real e recomendar um min seguro`,
+    });
 
   // ── Caso 3: sem Prometheus, workload ACIMA do mínimo ─────────────────────
   } else if (w.hpa_max > 0 && w.hpa_current > w.hpa_min) {
@@ -120,7 +131,11 @@ export function buildRecommendation(w: FinOpsWorkload, windowDays: number): Reco
     } else {
       const ratio = Math.round((w.hpa_current / w.hpa_max) * 100);
       lines.push({ text: `Rodando em ${ratio}% do max configurado (${w.hpa_current}/${w.hpa_max})`, highlight: true });
-      lines.push({ text: `Ative "Usar Prometheus" para recomendar novo min baseado em histórico` });
+      lines.push({
+        text: historicalRan
+          ? `Sem histórico de réplicas do HPA em ${windowDays}d — não dá para recomendar um novo min`
+          : `Marque "Análise histórica" no topo desta aba e clique em Analisar para recomendar um novo min baseado em histórico`,
+      });
     }
   }
 

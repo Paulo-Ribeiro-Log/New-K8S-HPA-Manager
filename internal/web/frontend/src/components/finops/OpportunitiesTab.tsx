@@ -38,10 +38,13 @@ function deriveActionType(w: FinOpsWorkload, rec: Recommendation): string {
   return "other";
 }
 
-export function OpportunitiesTab({ workloads, windowDays }: {
+export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }: {
   workloads: FinOpsWorkload[];
   summary?: FinOpsSummary;
   windowDays: number;
+  // A "Análise histórica" rodou neste relatório (report.window_days > 0) — muda o motivo mostrado
+  // quando falta histórico de HPA (ver buildRecommendation).
+  historicalRan?: boolean;
 }) {
   const hasPrometheus = workloads.some(w => (w.waste_brl ?? 0) > 0 || (w.hpa_avg_replicas ?? 0) > 0);
 
@@ -63,7 +66,7 @@ export function OpportunitiesTab({ workloads, windowDays }: {
                  w.verdict === "no_request" || w.verdict === "oom_risk" ||
                  w.verdict === "fixed_high_cost" || (w.waste_brl ?? 0) > 0)
     .map(w => {
-      const rec = buildRecommendation(w, windowDays);
+      const rec = buildRecommendation(w, windowDays, historicalRan);
       const saving = rec.savingBRL > 0
         ? rec.savingBRL
         : Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl);
@@ -233,7 +236,11 @@ export function OpportunitiesTab({ workloads, windowDays }: {
         <AlertDescription className="text-sm space-y-1">
           <span>
             <strong>{allOpportunities.length} oportunidades</strong> identificadas
-            {needsPrometheusCount > 0 && <span className="text-muted-foreground text-[11px]"> ({needsPrometheusCount} precisam de Prometheus para quantificar)</span>}
+            {needsPrometheusCount > 0 && (
+              <span className="text-muted-foreground text-[11px]">
+                {" "}({needsPrometheusCount} {historicalRan ? "sem histórico de réplicas do HPA para quantificar" : 'precisam da "Análise histórica" para quantificar'})
+              </span>
+            )}
             {"."}
           </span>
           {totalWaste > 0 && <span className="block">Desperdício real (P95): <strong className="text-red-600">{fmtBRL(totalWaste)}/mês = {fmtBRL(totalWaste * 12)}/ano</strong></span>}
@@ -404,7 +411,7 @@ export function OpportunitiesTab({ workloads, windowDays }: {
                 <span className="text-xs text-muted-foreground">· -{fmtBRL(selectedSaving * 12)}/ano</span>
               </>
             ) : (
-              <span className="text-xs text-muted-foreground">Ative Prometheus para quantificar</span>
+              <span className="text-xs text-muted-foreground">{historicalRan ? "Sem histórico de HPA para quantificar" : 'Marque "Análise histórica" para quantificar'}</span>
             )}
           </div>
         </div>

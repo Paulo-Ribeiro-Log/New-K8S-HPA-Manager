@@ -421,7 +421,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
             {!withPrometheus && report.window_days === 0 && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border border-amber-300 dark:border-amber-700">
                 <AlertTriangle className="h-3 w-3" />
-                Sem Prometheus — saving estimado por HPA config apenas
+                Sem análise histórica — saving estimado só pela config do HPA
               </span>
             )}
           </div>
@@ -532,7 +532,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 </TabsContent>
               )}
               <TabsContent value="opportunities" className="mt-0 h-full">
-                <OpportunitiesTab workloads={report.workloads ?? []} summary={report.summary} windowDays={report.window_days || windowDays} />
+                <OpportunitiesTab workloads={report.workloads ?? []} summary={report.summary} windowDays={report.window_days || windowDays} historicalRan={report.window_days > 0} />
               </TabsContent>
               <TabsContent value="report" className="mt-0 h-full">
                 <RelatorioTab report={report} windowDays={report.window_days || windowDays} cluster={cluster} />

@@ -3,6 +3,16 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### FinOps — aviso "Ative 'Usar Prometheus'" mandava ativar um controle que não existe (Setembro 2026) ✅
+
+Relato (usuário): `Ative "Usar Prometheus" para ver histórico real e recomendar min seguro` aparece nas recomendações, mas não há onde ativar.
+
+- **Causa 1 — controle com outro nome:** o checkbox do topo do FinOps chama-se **"Análise histórica"** (vem marcado por padrão; `report.window_days === 0` indica que rodou desligado). "Usar Prometheus" não existe mais na tela. O mesmo texto errado estava em 6 lugares: `buildRecommendation` (2 linhas), contador e rodapé de `OpportunitiesTab`, aviso de eficiência do `DashboardTab` e o selo de `FinOpsTab`.
+- **Causa 2 — motivo errado na maioria dos casos:** com a análise ligada (o padrão), mandar "ativar" algo já ativo não ajuda; o real é "o histórico de réplicas do HPA não veio". `buildRecommendation(w, windowDays, historicalRan)` ganhou o 3º parâmetro (padrão `true`; `OpportunitiesTab` recebe `historicalRan={report.window_days > 0}`): análise desligada → pede para marcar "Análise histórica" e clicar em Analisar; ligada → "Sem histórico de réplicas do HPA deste workload em Nd (Dynatrace/Prometheus não retornou dado)".
+- **Causa 3 — o aviso aparecia para workloads sem HPA:** o backend preenche `hpa_min/atual/max` com o nº de pods quando não há HPA (ou o HPA é fixo), então `min == max` era lido como "rodando no mínimo" (ex: `fluentd` "84 de 84 max = 100% do teto"). O ramo agora exige faixa real (`hpa_max > hpa_min`). Nenhum valor calculado muda: com `min == max` esse ramo nunca definia `safeMin`/`safeMax`.
+- **Efeito nos dados reais (oferta-prd, 30 dias):** o contador "sem histórico" caiu de **36 para 9** — 27 eram workloads sem faixa de autoscaling; os 9 restantes são HPAs reais sem histórico (`vv-cep-api`, `admin-frete-app-*`, `admin-root-config`, `kiali`) e a causa de o Prometheus não ter devolvido as réplicas deles não foi investigada.
+- Só texto + um parâmetro; `tsc` sem erros nos arquivos tocados e os 2 erros de lint em `OpportunitiesTab` são pré-existentes (baseline idêntico). Verificado no navegador (instância isolada): nenhum texto antigo restou, sem erros de JS.
+
 ### FinOps — desempenho de CPU medido por SKU (F4s_v2 × D4s_v4) nas sugestões de Rightsizing (Setembro 2026) ✅
 
 Pergunta (usuário): "F4s_v2 é mais rápida que D4s_v4? isso muda o response time das APIs? investigue e crie um modo de medir e informar nas sugestões". A sugestão de tier troca F4s_v2 por D4s_v5/D4s_v4 (mais RAM por vCPU) sem nenhuma informação de desempenho.
