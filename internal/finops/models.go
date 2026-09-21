@@ -65,7 +65,7 @@ type FinOpsWorkload struct {
 	Namespace        string  `json:"namespace"`
 	Workload         string  `json:"workload"`
 	Pods             int     `json:"pods"`
-	CPURequestMillis float64 `json:"cpu_request_millis"` // request configurado (por pod)
+	CPURequestMillis float64 `json:"cpu_request_millis"` // request configurado POR POD (média entre os pods; total = × Pods)
 	MemRequestMi     float64 `json:"mem_request_mi"`
 	CPULimitMillis   float64 `json:"cpu_limit_millis,omitempty"`
 	MemLimitMi       float64 `json:"mem_limit_mi,omitempty"`

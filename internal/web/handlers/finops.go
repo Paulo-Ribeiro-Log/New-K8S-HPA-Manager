@@ -941,9 +941,9 @@ func buildFinOpsPrompt(r finops.FinOpsReport) string {
 		if w.HPAMax > 0 {
 			hpaInfo = fmt.Sprintf("HPA %d/%d/%d", w.HPAMin, w.HPACurrent, w.HPAMax)
 		}
-		sb.WriteString(fmt.Sprintf("- %s/%s: R$ %.2f/mês | CPU %dm | Mem %.0fMi | %s | %s\n",
+		sb.WriteString(fmt.Sprintf("- %s/%s: R$ %.2f/mês | request por pod: CPU %dm, Mem %.0fMi (x%d pods) | %s | %s\n",
 			w.Namespace, w.Workload, w.CostShareBRL,
-			int(w.CPURequestMillis), w.MemRequestMi,
+			int(w.CPURequestMillis), w.MemRequestMi, w.Pods,
 			hpaInfo, w.Verdict))
 	}
 

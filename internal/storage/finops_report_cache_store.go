@@ -53,6 +53,9 @@ func NewFinOpsReportCacheStore(dbPath string) (*FinOpsReportCacheStore, error) {
 	if _, err := db.Exec(finOpsReportCacheSchema); err != nil {
 		return nil, fmt.Errorf("criar schema finops-report-cache: %w", err)
 	}
+	if err := purgeFinOpsDataIfStale(db, "finops_report_cache"); err != nil {
+		return nil, fmt.Errorf("migrar semântica finops-report-cache: %w", err)
+	}
 	return &FinOpsReportCacheStore{db: db}, nil
 }
 

@@ -284,6 +284,9 @@ func NewFinOpsRightsizingStore(dbPath string) (*FinOpsRightsizingStore, error) {
 			return nil, fmt.Errorf("migrar schema finops-rightsizing: %w", err)
 		}
 	}
+	if err := purgeFinOpsDataIfStale(db, "workload_recommendations", "nodepool_tier_suggestions", "node_usage"); err != nil {
+		return nil, fmt.Errorf("migrar semântica finops-rightsizing: %w", err)
+	}
 	return &FinOpsRightsizingStore{db: db}, nil
 }
 

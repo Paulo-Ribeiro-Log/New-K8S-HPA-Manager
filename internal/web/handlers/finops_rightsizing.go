@@ -399,8 +399,16 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 				agg = &poolUsage{}
 				poolAgg[wl.NodePool] = agg
 			}
-			agg.cpu += wl.CPURecommendedMillis
-			agg.mem += wl.MemRecommendedMi
+			// Recomendado/P95/avg são POR POD; o pool hospeda todas as réplicas, então a demanda
+			// dele é o valor por pod × nº de pods. Sem o multiplicador a utilização do pool saía
+			// ~N× menor (calculofrete: "cpu 0,8% / mem 3,9%" com os nodes reais a 64% de memória),
+			// o que empurrava sugestões de downsize de VM sem lastro.
+			replicas := float64(wl.Pods)
+			if replicas < 1 {
+				replicas = 1
+			}
+			agg.cpu += wl.CPURecommendedMillis * replicas
+			agg.mem += wl.MemRecommendedMi * replicas
 			// Percentil puro — P95 quando a fonte supre (Prometheus sempre; Dynatrace, ainda não
 			// nesta família de métrica, ver finops_metrics.go), senão cai pro avg, igual ao mesmo
 			// fallback já aplicado em CPURecommendedMillis/MemRecommendedMi antes da margem.
@@ -412,8 +420,8 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 			if memP95Basis == 0 {
 				memP95Basis = wl.MemAvgMi
 			}
-			agg.cpuP95 += cpuP95Basis
-			agg.memP95 += memP95Basis
+			agg.cpuP95 += cpuP95Basis * replicas
+			agg.memP95 += memP95Basis * replicas
 			agg.n++
 		}
 	}

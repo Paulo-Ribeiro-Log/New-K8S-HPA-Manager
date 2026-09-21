@@ -690,14 +690,19 @@ func allocateCosts(
 			hpaMax = wl.Pods
 		}
 
+		// Request/limit do FinOpsWorkload são POR POD (contrato do modelo e do frontend, que
+		// multiplica por `pods` quando precisa do total). rawWorkload acumula a SOMA de todos os
+		// pods — necessária só pra fração de custo acima — então divide aqui. Sem isso, o request
+		// (total) era comparado com o uso/recomendado (P95 de UM pod): workload com 70 pods
+		// aparecia com ~99% de desperdício (frete-hub: R$ 10.846 de custo, "R$ 10.758 de economia").
 		fw := FinOpsWorkload{
 			Namespace:         wl.Namespace,
 			Workload:          wl.Workload,
 			Pods:              wl.Pods,
-			CPURequestMillis:  round2(wl.CPURequestMillis),
-			MemRequestMi:      round2(wl.MemRequestMi),
-			CPULimitMillis:    round2(wl.CPULimitMillis),
-			MemLimitMi:        round2(wl.MemLimitMi),
+			CPURequestMillis:  round2(wl.CPURequestMillis / podCount),
+			MemRequestMi:      round2(wl.MemRequestMi / podCount),
+			CPULimitMillis:    round2(wl.CPULimitMillis / podCount),
+			MemLimitMi:        round2(wl.MemLimitMi / podCount),
 			NodePool:          dominantPool(wl.PoolPodCounts),
 			NodeName:          dominantPool(wl.NodePodCounts),
 			CostShareUSD:      round2(costShareUSD),
