@@ -15,6 +15,7 @@ import { ComposedChart, Line, XAxis, YAxis, ReferenceLine, ReferenceDot } from "
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { useRightsizingReport } from "@/hooks/useRightsizingReport";
 import { PerfBadge, CurrentPerfLine, PerfBenchmarkButton, type PerfComparison, type PerfInfo } from "@/components/finops/PerfBenchmark";
+import { CoverageLine, CoverageWarningBox, CoverageRefreshButton, ReservedHintChip, type PoolCoverage, type CoverageWarning, type ReservedHint } from "@/components/finops/PricingCoverage";
 
 // ─── Tipos (shape de GET/POST /api/v1/finops/rightsizing, ver
 //      internal/web/handlers/finops_rightsizing.go / internal/storage/finops_rightsizing_store.go) ──
@@ -113,6 +114,10 @@ interface VMAlternative {
   // Comparativo de desempenho de CPU medido (SKU atual × esta alternativa) — informativo, montado na
   // leitura a partir das medições; ausente/"unknown" quando o SKU nunca foi medido.
   perf?: PerfComparison;
+  // Aviso de que o pool está sob reserva/Savings Plan e a economia (preço de tabela) pode não se realizar.
+  coverage_warning?: CoverageWarning;
+  // O SKU (ou a série) já roda sob reserva/Savings Plan em algum lugar da frota (uso observado).
+  reserved_hint?: ReservedHint;
 }
 
 interface NodePoolTierSuggestion {
@@ -142,6 +147,7 @@ interface NodePoolTierSuggestion {
   has_critical_workload?: boolean;
   critical_workload_names?: string; // nomes separados por ", "
   current_perf?: PerfInfo; // desempenho de CPU medido do SKU atual do pool
+  coverage?: PoolCoverage; // quanto do custo efetivo vem de reserva/Savings Plan/sob demanda/spot (ausente = não consultado)
   alternatives: VMAlternative[];
   generated_at: string;
 }
@@ -700,7 +706,10 @@ function WorkloadNodeDetailModal({
                         return (
                           <div key={alt.vm_size} className="border rounded-lg p-2 space-y-1 bg-background">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-xs font-mono font-semibold">{alt.vm_size}</span>
+                              <span className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-xs font-mono font-semibold">{alt.vm_size}</span>
+                                <ReservedHintChip hint={alt.reserved_hint} />
+                              </span>
                               <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${cfg.cls}`}>{cfg.label}</span>
                             </div>
                             <p className="text-[11px] text-muted-foreground">
@@ -710,6 +719,7 @@ function WorkloadNodeDetailModal({
                             {alt.monthly_savings_brl < -10 && <p className="text-[11px] font-semibold text-orange-600">+{fmtBRL(Math.abs(alt.monthly_savings_brl))}/mês na frota do pool</p>}
                             <p className="text-[11px] italic text-muted-foreground">{alt.reason}</p>
                             <PerfBadge perf={alt.perf} />
+                            <CoverageWarningBox warning={alt.coverage_warning} />
                             <InsufficientCapacityWarning alt={alt} />
                           </div>
                         );
@@ -1015,6 +1025,7 @@ function NodePoolTierCard({
               {hasNodeRange && <> · min {pool.min_node_count} / máx {pool.max_node_count}{pool.autoscaling_enabled ? " (autoscaling)" : " (fixo)"}</>}
             </p>
             <CurrentPerfLine perf={pool.current_perf} />
+            <CoverageLine coverage={pool.coverage} />
           </div>
           <div className="text-right text-[11px] text-muted-foreground">
             <p title="Usado para decidir a sugestão de tier abaixo — já inclui 20% de margem de segurança sobre o uso real">
@@ -1063,7 +1074,10 @@ function NodePoolTierCard({
               return (
                 <div key={alt.vm_size} className="border rounded-lg p-2.5 space-y-1 bg-muted/20">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-mono font-semibold">{alt.vm_size}</span>
+                    <span className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-mono font-semibold">{alt.vm_size}</span>
+                      <ReservedHintChip hint={alt.reserved_hint} />
+                    </span>
                     <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${cfg.cls}`}>{cfg.label}</span>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
@@ -1077,6 +1091,7 @@ function NodePoolTierCard({
                   )}
                   <p className="text-[11px] italic text-muted-foreground">{alt.reason}</p>
                   <PerfBadge perf={alt.perf} />
+                  <CoverageWarningBox warning={alt.coverage_warning} />
                   <InsufficientCapacityWarning alt={alt} />
                 </div>
               );
@@ -1271,6 +1286,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <CoverageRefreshButton cluster={cluster} />
           <PerfBenchmarkButton
             cluster={cluster}
             pools={(data?.node_pools ?? []).map((p) => ({ name: p.node_pool, sku: p.current_sku }))}

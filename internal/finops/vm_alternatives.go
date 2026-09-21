@@ -27,6 +27,12 @@ type VMAlternative struct {
 	// análise — depende de medições que podem ser feitas depois do scan. Informativo: não altera o
 	// Verdict nem o Reason.
 	Perf *PerfComparison `json:"perf,omitempty"`
+	// CoverageWarning: aviso de que o pool está sob reserva/Savings Plan e a economia (preço de
+	// tabela) pode não se realizar. Também só na leitura (ver coverage.go); informativo.
+	CoverageWarning *CoverageWarning `json:"coverage_warning,omitempty"`
+	// ReservedHint: este SKU (ou a série dele) já roda sob reserva/Savings Plan na frota. Só na
+	// leitura, a partir do índice de SKUs cobertos (ver sku_coverage.go).
+	ReservedHint *SKUCoverageHint `json:"reserved_hint,omitempty"`
 }
 
 // A lógica de sugestão em si (antes SuggestAlternatives, Azure-only) vive agora em

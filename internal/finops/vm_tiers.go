@@ -261,32 +261,41 @@ func SuggestVMTier(provider, currentSKU string, cpuUtilPct, memUtilPct float64, 
 		}
 		seen[key] = true
 
-		cpu, mem := pricer.GetVMSpecs(c.sku)
-		if cpu == 0 {
+		alt, ok := buildVMAlternative(pricer, c.sku, c.verdict, currentCPU, currentMem, currentPrice, cpuUtilPct, memUtilPct, exchangeRate, nodeCount)
+		if !ok {
 			continue
 		}
-		price, src, err := pricer.GetPrice(c.sku)
-		if err != nil || price <= 0 {
-			continue
-		}
-
-		costDeltaPct := (price - currentPrice) / currentPrice * 100
-		monthlySavings := (currentPrice - price) * HoursPerMonth * float64(nodeCount) * exchangeRate
-
-		result = append(result, VMAlternative{
-			VMSize:            c.sku,
-			CPUCores:          cpu,
-			MemoryGB:          mem,
-			MemPerCPUGB:       math.Round(float64(mem)/float64(cpu)*10) / 10,
-			PriceUSDHour:      price,
-			PriceSource:       src,
-			CostDeltaPct:      math.Round(costDeltaPct*10) / 10,
-			MonthlySavingsBRL: math.Round(monthlySavings*100) / 100,
-			Reason:            buildAltReason(currentCPU, currentMem, cpu, mem, int(cpuUtilPct), int(memUtilPct)),
-			Verdict:           c.verdict,
-		})
+		result = append(result, alt)
 	}
 	return result
+}
+
+// buildVMAlternative monta uma alternativa (specs, preço de tabela, variação e economia) para o SKU
+// candidato, ou !ok quando o pricer não conhece o SKU ou não tem preço. Compartilhada entre
+// SuggestVMTier e a inclusão de gêmeos de geração anterior com cobertura (sku_coverage.go).
+func buildVMAlternative(pricer CloudPricer, sku, verdict string, currentCPU, currentMem int, currentPrice, cpuUtilPct, memUtilPct, exchangeRate float64, nodeCount int) (VMAlternative, bool) {
+	cpu, mem := pricer.GetVMSpecs(sku)
+	if cpu == 0 {
+		return VMAlternative{}, false
+	}
+	price, src, err := pricer.GetPrice(sku)
+	if err != nil || price <= 0 {
+		return VMAlternative{}, false
+	}
+	costDeltaPct := (price - currentPrice) / currentPrice * 100
+	monthlySavings := (currentPrice - price) * HoursPerMonth * float64(nodeCount) * exchangeRate
+	return VMAlternative{
+		VMSize:            sku,
+		CPUCores:          cpu,
+		MemoryGB:          mem,
+		MemPerCPUGB:       math.Round(float64(mem)/float64(cpu)*10) / 10,
+		PriceUSDHour:      price,
+		PriceSource:       src,
+		CostDeltaPct:      math.Round(costDeltaPct*10) / 10,
+		MonthlySavingsBRL: math.Round(monthlySavings*100) / 100,
+		Reason:            buildAltReason(currentCPU, currentMem, cpu, mem, int(cpuUtilPct), int(memUtilPct)),
+		Verdict:           verdict,
+	}, true
 }
 
 // pickAzureBySize acha, dentro de uma letra de família, o spec com vCPUs mais próximo do alvo

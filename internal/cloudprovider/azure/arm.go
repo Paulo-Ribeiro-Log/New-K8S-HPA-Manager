@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -83,6 +85,63 @@ func (c *ARMClient) Get(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, &ARMError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
 	return body, nil
+}
+
+const (
+	armPostMaxAttempts = 3
+	armPostMaxWait     = 30 * time.Second
+)
+
+// PostJSON faz um POST com corpo JSON numa URL absoluta do ARM (mesma trava de host do Get). Repete em
+// 429/503 respeitando o Retry-After (limitado a armPostMaxWait): a API de Cost Management limita
+// chamadas com frequência e a resposta "Too many requests. Please retry." é transitória.
+func (c *ARMClient) PostJSON(ctx context.Context, rawURL string, payload any) ([]byte, error) {
+	if !strings.HasPrefix(rawURL, armBaseURL+"/") {
+		return nil, fmt.Errorf("URL inesperada (fora de %s): %s", armBaseURL, rawURL)
+	}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	var lastErr error
+	for attempt := 1; attempt <= armPostMaxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(buf))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, rerr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if rerr != nil {
+			return nil, rerr
+		}
+		if resp.StatusCode == http.StatusOK {
+			return body, nil
+		}
+		lastErr = &ARMError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
+		if !retryable || attempt == armPostMaxAttempts {
+			break
+		}
+		wait := time.Duration(attempt) * 5 * time.Second
+		if secs, perr := strconv.Atoi(resp.Header.Get("Retry-After")); perr == nil && secs > 0 {
+			wait = time.Duration(secs) * time.Second
+		}
+		if wait > armPostMaxWait {
+			wait = armPostMaxWait
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return nil, lastErr
 }
 
 // ARMError é uma resposta HTTP não-200 do ARM — tipado pra o chamador distinguir 404 (não existe)
