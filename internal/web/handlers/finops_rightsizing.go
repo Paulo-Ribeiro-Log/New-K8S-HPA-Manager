@@ -47,10 +47,36 @@ type nodePoolTierResponse struct {
 	// CurrentPerf: desempenho de CPU medido do SKU atual do pool (nil = nunca medido). Preenchido na
 	// LEITURA (não persistido na análise): uma medição feita depois do scan aparece sem reanalisar.
 	CurrentPerf *finops.PerfInfo `json:"current_perf,omitempty"`
-	GeneratedAt time.Time        `json:"generated_at"`
+	// Coverage: quanto do custo efetivo do pool vem de reserva/Savings Plan/sob demanda/spot (nil =
+	// nunca consultado — POST /finops/pricing-coverage/refresh). Também montado na leitura.
+	Coverage    *finops.PoolCoverage `json:"coverage,omitempty"`
+	GeneratedAt time.Time            `json:"generated_at"`
 }
 
-func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion, perf finops.PerfSet) []nodePoolTierResponse {
+// exchangeRateFn devolve o câmbio USD→BRL do FinOps (0 se indisponível). Passado como função — e não
+// como valor — porque só é consultado quando há um pool com reserva (a consulta pode tentar a rede).
+func (h *FinOpsHandler) exchangeRateFn() func() float64 {
+	return func() float64 {
+		if h.exchange == nil {
+			return 0
+		}
+		r, _ := h.exchange.Get()
+		return r
+	}
+}
+
+func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion, perf finops.PerfSet, coverage map[string]*finops.PoolCoverage, exchangeRate func() float64, skuIndex finops.SKUCoverageIndex) []nodePoolTierResponse {
+	var rate float64
+	rateLoaded := false
+	getRate := func() float64 {
+		if !rateLoaded {
+			rateLoaded = true
+			if exchangeRate != nil {
+				rate = exchangeRate()
+			}
+		}
+		return rate
+	}
 	out := make([]nodePoolTierResponse, 0, len(raw))
 	for _, r := range raw {
 		var alts []finops.VMAlternative
@@ -67,8 +93,24 @@ func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion, perf finops.Per
 		if p, ok := finops.LookupPerf(r.CurrentSKU, poolPerf); ok {
 			currentPerf = &p
 		}
+		// Cobertura de reserva/Savings Plan do pool (nil = nunca consultada): a economia das alternativas
+		// usa preço de tabela, que não se realiza integralmente num pool coberto por reserva.
+		poolCov := coverage[strings.ToLower(r.NodePool)]
 		for i := range alts {
 			alts[i].Perf = finops.ComparePerf(r.CurrentSKU, alts[i].VMSize, poolPerf)
+			alts[i].ReservedHint = skuIndex.Hint(alts[i].VMSize)
+			alts[i].CoverageWarning = finops.AssessCoverageWarning(r.CurrentSKU, alts[i].VMSize, poolCov)
+			// Pool com reserva: o intervalo real do efeito da troca (melhor/pior caso) — a economia de
+			// tabela é só o melhor caso. O câmbio só é buscado aqui (lazy).
+			if w := alts[i].CoverageWarning; w != nil && w.Level == finops.CoverageLevelReservation {
+				w.Scenarios = finops.AssessSwapScenarios(r.CurrentSKU, alts[i].VMSize, poolCov, finops.SwapInputs{
+					NodeCount:       r.NodeCount,
+					AltPriceUSDHour: alts[i].PriceUSDHour,
+					ExchangeRate:    getRate(),
+					TableSavingsBRL: alts[i].MonthlySavingsBRL,
+					CostDeltaPct:    alts[i].CostDeltaPct,
+				})
+			}
 		}
 		out = append(out, nodePoolTierResponse{
 			NodePool:              r.NodePool,
@@ -88,6 +130,7 @@ func nodePoolTierResponses(raw []storage.NodePoolTierSuggestion, perf finops.Per
 			CriticalWorkloadNames: r.CriticalWorkloadNames,
 			Alternatives:          alts,
 			CurrentPerf:           currentPerf,
+			Coverage:              poolCov,
 			GeneratedAt:           r.GeneratedAt,
 		})
 	}
@@ -143,7 +186,7 @@ func (h *FinOpsHandler) GetRightsizing(c *gin.Context) {
 		"scanned":         true,
 		"last_scanned_at": lastScanned,
 		"workloads":       workloads,
-		"node_pools":      nodePoolTierResponses(pools, h.perfSet()),
+		"node_pools":      nodePoolTierResponses(pools, h.perfSet(), h.poolCoverage(cluster), h.exchangeRateFn(), h.skuCoverageIndex()),
 		"nodes":           nodeUsage,
 	})
 }
@@ -292,7 +335,7 @@ func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, w
 		"scanned":         true,
 		"last_scanned_at": time.Now(),
 		"workloads":       workloadRecs,
-		"node_pools":      nodePoolTierResponses(tierSuggestions, h.perfSet()),
+		"node_pools":      nodePoolTierResponses(tierSuggestions, h.perfSet(), h.poolCoverage(cluster), h.exchangeRateFn(), h.skuCoverageIndex()),
 		"nodes":           nodeUsageRecs,
 		// metrics_collection_error — SEMPRE presente (mesmo "") na resposta de um scan FRESCO —
 		// nunca omitido, pra o frontend distinguir "consultei e não achei erro real" (chave
@@ -321,6 +364,11 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 	pricer finops.CloudPricer,
 ) (workloadRecs []storage.WorkloadRecommendation, tierSuggestions []storage.NodePoolTierSuggestion, nodeUsageRecs []storage.NodeUsage, err error) {
 	now := time.Now()
+
+	// Atualiza (best-effort, com TTL) a cobertura de reserva/Savings Plan do cluster e o índice de SKUs
+	// cobertos da subscription ANTES de sugerir tiers: o índice decide quais alternativas são oferecidas.
+	h.autoRefreshCoverage(ctx, cluster)
+	skuIndex := h.skuCoverageIndex()
 
 	// ── Workloads: persiste o snapshot + agrega uso real recomendado por pool ──────────────────
 	// cpu/mem = Σ CPURecommendedMillis/MemRecommendedMi (P95-ou-avg × SafetyMargin=1.20) — já usado
@@ -509,6 +557,8 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 		}
 
 		alts := finops.SuggestVMTier(provider, pool.VMSize, cpuUtilPct, memUtilPct, pricer, rate, currentNodeCount)
+		// Oferece também o gêmeo de geração anterior que já roda sob reserva/Savings Plan na frota.
+		alts = finops.AugmentWithCoveredTwins(provider, pool.VMSize, alts, cpuUtilPct, memUtilPct, pricer, rate, currentNodeCount, skuIndex)
 
 		// F1.1/F1.2 — ver comentário de poolMeta acima. hasCritical/criticalNames nunca bloqueiam
 		// a sugestão, só a marcam; MarkInsufficientForLargestWorkload marca cada alternativa in-place.
@@ -570,6 +620,7 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 		}
 
 		alts := finops.SuggestVMTier(provider, live.VMSize, cpuUtilPct, memUtilPct, pricer, rate, int(live.NodeCount))
+		alts = finops.AugmentWithCoveredTwins(provider, live.VMSize, alts, cpuUtilPct, memUtilPct, pricer, rate, int(live.NodeCount), skuIndex)
 
 		// F1.1/F1.2 — mesmo tratamento do loop principal acima.
 		var hasCritical bool

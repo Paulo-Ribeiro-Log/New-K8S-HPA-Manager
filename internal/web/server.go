@@ -853,6 +853,9 @@ func (s *Server) setupRoutes() {
 	api.POST("/finops/rightsizing/scan", rbacMiddleware.RequireSREGroup(), finOpsHandler.ScanRightsizing)
 	// Medição de desempenho de CPU por node pool (pods efêmeros de ~15 s) — leitura sem RBAC extra,
 	// execução atrás de RequireSREGroup() (cria pods no cluster).
+	// Cobertura de reserva/Savings Plan por node pool (Cost Management, só leitura na Azure; grava só
+	// no banco local) — atrás de RequireSREGroup() por expor dados de custo da subscription.
+	api.POST("/finops/pricing-coverage/refresh", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), finOpsHandler.RefreshPricingCoverage)
 	api.GET("/finops/perf-benchmark", finOpsHandler.GetPerfBenchmarks)
 	api.POST("/finops/perf-benchmark", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), finOpsHandler.RunPerfBenchmark)
 	api.GET("/finops/rightsizing/history", finOpsHandler.GetWorkloadHistory) // histórico on-demand (CPU/Mem) pro gráfico do modal de detalhe de workload — leitura, sem RBAC extra

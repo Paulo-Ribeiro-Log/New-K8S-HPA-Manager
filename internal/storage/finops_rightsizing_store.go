@@ -289,6 +289,12 @@ func NewFinOpsRightsizingStore(dbPath string) (*FinOpsRightsizingStore, error) {
 	if _, err := db.Exec(finopsPerfBenchmarksSchema); err != nil {
 		return nil, fmt.Errorf("criar schema node_perf_benchmarks: %w", err)
 	}
+	if _, err := db.Exec(finopsPricingCoverageSchema); err != nil {
+		return nil, fmt.Errorf("criar schema pool_pricing_coverage: %w", err)
+	}
+	if _, err := db.Exec(finopsSKUCoverageSchema); err != nil {
+		return nil, fmt.Errorf("criar schema sku_pricing_coverage: %w", err)
+	}
 	if _, err := db.Exec(finopsPerfBenchmarksMigration); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return nil, fmt.Errorf("migrar node_perf_benchmarks: %w", err)
 	}
