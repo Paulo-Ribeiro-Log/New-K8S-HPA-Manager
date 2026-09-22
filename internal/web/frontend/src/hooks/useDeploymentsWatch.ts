@@ -117,8 +117,16 @@ export function useDeploymentsWatch(cluster: string, namespace: string, active: 
       };
 
       // Watch é contínuo por natureza — qualquer onerror é tratado como falha real.
+      //
+      // BUG REAL corrigido — mesma causa de "múltiplas conexões da aplicação rodando
+      // simultaneamente consumindo recursos" reportado pelo usuário, ver comentário equivalente em
+      // usePodsWatch.ts: sem chamar closeStream() aqui, o EventSource reconectava sozinho pra
+      // sempre (comportamento padrão do browser após onerror) E o Informer da sessão no backend
+      // nunca era cancelado (Cancel() só roda via closeStream(), nunca chamado no caminho de
+      // erro) — ficava com uma conexão real e permanente aberta contra a API do Kubernetes por
+      // sessão de watch que já deu erro alguma vez.
       es.onerror = () => {
-        setConnected(false);
+        closeStream();
         setWatchFailed(true);
       };
     } catch {
