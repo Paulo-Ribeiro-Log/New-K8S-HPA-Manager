@@ -57,6 +57,13 @@ interface PodsPanelProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  // isActive — a aba Pods fica sempre montada (display:none) depois da 1ª visita, ver
+  // hasBeenMounted em pages/Index.tsx. Sem isso, o watch SSE (usePodsWatch) e o poll de 5s do
+  // PodMonitorTable continuavam rodando pra sempre em segundo plano mesmo com a aba invisível —
+  // causa real de lentidão progressiva reportada pelo usuário (mais abas visitadas numa sessão =
+  // mais pollers/watches acumulados rodando ao mesmo tempo). Default true pra não quebrar nenhum
+  // outro lugar que renderize PodsPanel sem passar esse prop.
+  isActive?: boolean;
 }
 
 export const PodsPanel = ({
@@ -66,6 +73,7 @@ export const PodsPanel = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  isActive = true,
 }: PodsPanelProps) => {
   const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
@@ -589,7 +597,7 @@ export const PodsPanel = ({
   // continua 100% dirigido pelo polling já existente, sem nenhuma mudança de comportamento.
   // Fallback automático e silencioso: watchFailed nunca vira um erro visível pro usuário.
   const watchNamespace = selectedNamespace && selectedNamespace !== "__all__" ? selectedNamespace : "";
-  const { pods: watchedPods, connected: watchConnected } = usePodsWatch(cluster, watchNamespace, showSystemNamespaces, !!cluster);
+  const { pods: watchedPods, connected: watchConnected } = usePodsWatch(cluster, watchNamespace, showSystemNamespaces, !!cluster && isActive);
 
   // Ref (não o valor fechado do render) — mesmo padrão de currentClusterRef acima, necessário
   // porque o setInterval de 30s e o onRequestRefresh do PodMonitorTable (abaixo) precisam
@@ -1396,6 +1404,7 @@ export const PodsPanel = ({
             onRequestRefresh={() => { if (!watchConnectedRef.current) fetchPods(true); }}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
+            isActive={isActive}
           />
         </div>
       );

@@ -61,6 +61,11 @@ interface SecretsTabProps {
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
   onOpenCompare?: (initial: { type: "secret"; namespace: string; name: string }) => void;
+  // isActive — a aba Secrets fica sempre montada (display:none) depois da 1ª visita, ver
+  // hasBeenMounted em pages/Index.tsx. Sem isso, o poll de 10s do SecretMonitorTable continuava
+  // rodando pra sempre em segundo plano mesmo com a aba invisível. Default true pra não quebrar
+  // outro lugar que renderize sem esse prop.
+  isActive?: boolean;
 }
 
 export const SecretsTab = ({
@@ -71,6 +76,7 @@ export const SecretsTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
   onOpenCompare,
+  isActive = true,
 }: SecretsTabProps) => {
 
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
@@ -1174,6 +1180,7 @@ export const SecretsTab = ({
           onRequestRefresh={silentRefetch}
           searchQuery={searchQuery}
           onSearchQueryChange={setSearchQuery}
+          isActive={isActive}
         />
       );
     }

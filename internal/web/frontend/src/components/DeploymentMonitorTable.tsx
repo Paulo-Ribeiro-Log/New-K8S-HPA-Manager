@@ -65,6 +65,10 @@ interface DeploymentMonitorTableProps {
   // searchQuery de deployment/daemonset do painel esquerdo).
   searchQuery?: string;
   onSearchQueryChange?: (query: string) => void;
+  // isActive — quando a aba invisível (display:none, hasBeenMounted em pages/Index.tsx) continua
+  // montada, o poll de REFRESH_INTERVAL_MS abaixo pausa em vez de buscar dados em segundo plano
+  // pra sempre. Default true pra não quebrar quem não passa esse prop.
+  isActive?: boolean;
 }
 
 function ColumnFilter({
@@ -182,12 +186,15 @@ export const DeploymentMonitorTable = ({
   backLabel,
   searchQuery: controlledSearchQuery,
   onSearchQueryChange,
+  isActive = true,
 }: DeploymentMonitorTableProps) => {
   const { resize, gridTemplate } = useResizableColumns(INITIAL_WIDTHS);
 
   const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
   const searchQuery = controlledSearchQuery ?? uncontrolledSearchQuery;
   const setSearchQuery = onSearchQueryChange ?? setUncontrolledSearchQuery;
+  const isActiveRef = useRef(isActive);
+  useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
   const [sortKey, setSortKey] = useState<DepSortKey | null>(null);
@@ -235,6 +242,10 @@ export const DeploymentMonitorTable = ({
 
   useEffect(() => {
     const id = setInterval(() => {
+      // BUG REAL corrigido — esta tabela pode ficar montada (display:none) pro resto da sessão
+      // depois de a aba ser visitada uma vez; sem esta checagem, o poll continuava buscando dados
+      // a cada REFRESH_INTERVAL_MS em segundo plano pra sempre, mesmo invisível.
+      if (!isActiveRef.current) return;
       setRefreshing(true);
       refreshRef.current();
       setTimeout(() => setRefreshing(false), 600);

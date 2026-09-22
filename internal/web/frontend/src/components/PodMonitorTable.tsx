@@ -52,6 +52,11 @@ interface PodMonitorTableProps {
   // daquelas abas (só o uso em PodsPanel.tsx passa esses props).
   searchQuery?: string;
   onSearchQueryChange?: (query: string) => void;
+  // isActive — quando a aba que renderiza esta tabela está invisível (display:none, ver
+  // hasBeenMounted em pages/Index.tsx) mas continua montada, o poll de REFRESH_INTERVAL_MS abaixo
+  // pausa em vez de continuar buscando dados em segundo plano pra sempre. Default true (sempre
+  // ativo) pra não quebrar quem não passa esse prop.
+  isActive?: boolean;
 }
 
 function ColumnFilter({
@@ -286,10 +291,13 @@ export const PodMonitorTable = ({
   backLabel,
   searchQuery: controlledSearchQuery,
   onSearchQueryChange,
+  isActive = true,
 }: PodMonitorTableProps) => {
   const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
   const searchQuery = controlledSearchQuery ?? uncontrolledSearchQuery;
   const setSearchQuery = onSearchQueryChange ?? setUncontrolledSearchQuery;
+  const isActiveRef = useRef(isActive);
+  useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [nodeFilter, setNodeFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
@@ -354,6 +362,11 @@ export const PodMonitorTable = ({
 
   useEffect(() => {
     const id = setInterval(async () => {
+      // BUG REAL corrigido — esta tabela pode ficar montada (display:none) pro resto da sessão
+      // depois de a aba ser visitada uma vez (hasBeenMounted em pages/Index.tsx); sem esta
+      // checagem, o poll continuava buscando pods a cada REFRESH_INTERVAL_MS em segundo plano
+      // pra sempre, mesmo invisível — causa real de lentidão progressiva reportada pelo usuário.
+      if (!isActiveRef.current) return;
       setRefreshing(true);
       refreshRef.current();
       setTimeout(() => setRefreshing(false), 600);
