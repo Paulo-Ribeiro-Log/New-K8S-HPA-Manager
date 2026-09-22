@@ -1689,6 +1689,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 onNamespaceChange={setPodsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                isActive={activeTab === "pods"}
               />
             </ErrorBoundary>
           )}
@@ -1705,6 +1706,7 @@ const Index = ({ onLogout }: IndexProps) => {
               showSystemNamespaces={showSystemNamespaces}
               onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
               onOpenCompare={handleOpenCompare}
+              isActive={activeTab === "configmaps"}
             />
           )}
         </div>
@@ -1721,6 +1723,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
                 onOpenCompare={handleOpenCompare}
+                isActive={activeTab === "deployments"}
               />
             </ErrorBoundary>
           )}
@@ -1738,6 +1741,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
                 onOpenCompare={handleOpenCompare}
+                isActive={activeTab === "secrets"}
               />
             </ErrorBoundary>
           )}
@@ -1754,6 +1758,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 onNamespaceChange={setContainersNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                isActive={activeTab === "containers"}
               />
             </ErrorBoundary>
           )}
@@ -1771,6 +1776,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
                 onOpenCompare={handleOpenCompare}
+                isActive={activeTab === "ingresses"}
               />
             </ErrorBoundary>
           )}

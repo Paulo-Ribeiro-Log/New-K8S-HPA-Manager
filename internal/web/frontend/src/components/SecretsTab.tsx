@@ -61,6 +61,11 @@ interface SecretsTabProps {
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
   onOpenCompare?: (initial: { type: "secret"; namespace: string; name: string }) => void;
+  // isActive — a aba Secrets fica sempre montada (display:none) depois da 1ª visita, ver
+  // hasBeenMounted em pages/Index.tsx. Sem isso, o poll de 10s do SecretMonitorTable continuava
+  // rodando pra sempre em segundo plano mesmo com a aba invisível. Default true pra não quebrar
+  // outro lugar que renderize sem esse prop.
+  isActive?: boolean;
 }
 
 export const SecretsTab = ({
@@ -71,6 +76,7 @@ export const SecretsTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
   onOpenCompare,
+  isActive = true,
 }: SecretsTabProps) => {
 
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
@@ -92,6 +98,14 @@ export const SecretsTab = ({
   // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<SecretManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
+  // Cancela o poll de releitura pós-Resync AKV em andamento se o componente desmontar no meio do
+  // caminho (mesmo padrão de resyncPollCancelledRef em DependenciesTab.tsx).
+  const resyncPollCancelledRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      resyncPollCancelledRef.current = true;
+    };
+  }, []);
   // Sinal de "documento novo carregado" pro auto-check de espaços em branco do MonacoYamlEditor —
   // só muda quando `manifest` é populado (mesmo render que `editorValue`), nunca a cada tecla
   // digitada. `manifest` é nulled no início de handleSelectSecret, então esse key também passa por
@@ -418,6 +432,52 @@ export const SecretsTab = ({
     } finally {
       setManifestLoading(false);
     }
+  };
+
+  // Poll limitado após um Resync AKV bem-sucedido — o resync em si é assíncrono (o external-secrets
+  // ainda precisa buscar do AKV e atualizar o Secret no cluster), então uma releitura imediata única
+  // frequentemente ainda pegaria o YAML antigo. Mesmo padrão de pollResourceRefreshAfterResync em
+  // DependenciesTab.tsx, adaptado pro YAML completo do editor em vez de um índice de busca: tenta
+  // algumas vezes com intervalo, parando assim que o YAML realmente mudar (ou no limite de
+  // tentativas), e só então sobrescreve editor/histórico — evita descartar silenciosamente uma
+  // edição em andamento a cada tentativa que ainda não trouxe o valor novo.
+  const pollManifestRefreshAfterResync = async (cluster: string, namespace: string, secretName: string) => {
+    const before = originalYaml;
+    const maxAttempts = 8;
+    const intervalMs = 4000;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      if (resyncPollCancelledRef.current) return;
+      // Usuário trocou de secret selecionado enquanto o poll rodava — não faz sentido continuar
+      // sobrescrevendo o editor de um recurso diferente do que disparou o resync.
+      if (!selectedSecret || selectedSecret.cluster !== cluster || selectedSecret.namespace !== namespace || selectedSecret.name !== secretName) {
+        return;
+      }
+
+      try {
+        const detail = await apiClient.getSecret(cluster, namespace, secretName);
+        const freshYaml = detail.yaml || "";
+        if (freshYaml !== before) {
+          setManifest(detail);
+          setOriginalYaml(freshYaml);
+          setEditorValue(freshYaml);
+          setHistory([freshYaml]);
+          setHistoryIndex(0);
+          setIsDecoded(false);
+          toast.success("YAML recarregado após o Resync AKV", {
+            description: `${namespace}/${secretName}`,
+          });
+          return;
+        }
+      } catch {
+        // Tentativa isolada falhou (cluster instável, etc.) — segue pra próxima tentativa.
+      }
+    }
+
+    toast.warning("Resync disparado, mas o valor ainda não mudou", {
+      description: `${namespace}/${secretName} — o external-secrets pode levar mais tempo pra sincronizar. Use "Recarregar YAML" manualmente em instantes.`,
+    });
   };
 
   const handleToggleView = (mode: "editor" | "diff") => {
@@ -1118,6 +1178,9 @@ export const SecretsTab = ({
           headerLabel={`${(secrets ?? []).length} Secret(s)`}
           onOpenEditor={handleSelectSecret}
           onRequestRefresh={silentRefetch}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+          isActive={isActive}
         />
       );
     }
@@ -1896,6 +1959,9 @@ export const SecretsTab = ({
           cluster={selectedSecret.cluster}
           namespace={selectedSecret.namespace}
           secretName={selectedSecret.name}
+          onResyncSuccess={() =>
+            pollManifestRefreshAfterResync(selectedSecret.cluster, selectedSecret.namespace, selectedSecret.name)
+          }
         />
       )}
 

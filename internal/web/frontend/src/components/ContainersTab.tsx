@@ -35,6 +35,11 @@ interface ContainersTabProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  // isActive — a aba Containers fica sempre montada (display:none) depois da 1ª visita, ver
+  // hasBeenMounted em pages/Index.tsx. Sem isso, o poll de 5s do ContainerMonitorTable continuava
+  // rodando pra sempre em segundo plano mesmo com a aba invisível. Default true pra não quebrar
+  // outro lugar que renderize sem esse prop.
+  isActive?: boolean;
 }
 
 export const ContainersTab = ({
@@ -44,6 +49,7 @@ export const ContainersTab = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  isActive = true,
 }: ContainersTabProps) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPod, setSelectedPod] = useState<PodSummary | null>(null);
@@ -753,6 +759,9 @@ export const ContainersTab = ({
       headerLabel={selectedNamespace ? `${selectedNamespace} — containers (${filteredPods.reduce((n, p) => n + p.containers.length, 0)})` : `containers (${filteredPods.reduce((n, p) => n + p.containers.length, 0)})`}
       onOpenDetail={handleContainerRowClick}
       onRequestRefresh={silentRefetch}
+      searchQuery={searchQuery}
+      onSearchQueryChange={setSearchQuery}
+      isActive={isActive}
     />
   );
 

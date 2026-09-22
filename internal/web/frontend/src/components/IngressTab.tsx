@@ -46,6 +46,11 @@ interface IngressTabProps {
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
   onOpenCompare?: (initial: { type: "ingress"; namespace: string; name: string }) => void;
+  // isActive — a aba Ingress fica sempre montada (display:none) depois da 1ª visita, ver
+  // hasBeenMounted em pages/Index.tsx. Sem isso, o poll de 10s do IngressMonitorTable continuava
+  // rodando pra sempre em segundo plano mesmo com a aba invisível. Default true pra não quebrar
+  // outro lugar que renderize sem esse prop.
+  isActive?: boolean;
 }
 
 export const IngressTab = ({
@@ -56,6 +61,7 @@ export const IngressTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
   onOpenCompare,
+  isActive = true,
 }: IngressTabProps) => {
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
   const canWriteIngress = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteIngress : undefined;
@@ -751,6 +757,9 @@ spec:
           headerLabel={`${(ingresses ?? []).length} Ingress(es)`}
           onOpenEditor={handleSelectIngress}
           onRequestRefresh={silentRefetch}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+          isActive={isActive}
         />
       );
     }

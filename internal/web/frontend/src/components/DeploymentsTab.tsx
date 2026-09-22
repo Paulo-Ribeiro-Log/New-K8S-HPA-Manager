@@ -245,6 +245,12 @@ interface DeploymentsTabProps {
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
   onOpenCompare?: (initial: { type: "deployment"; namespace: string; name: string }) => void;
+  // isActive — a aba Deployments fica sempre montada (display:none) depois da 1ª visita, ver
+  // hasBeenMounted em pages/Index.tsx. Sem isso, o watch SSE (useDeploymentsWatch) e o poll de 10s
+  // do DeploymentMonitorTable (+ o do PodMonitorTable de drill-down) continuavam rodando pra
+  // sempre em segundo plano mesmo com a aba invisível — causa real de lentidão progressiva
+  // reportada pelo usuário. Default true pra não quebrar outro lugar que renderize sem esse prop.
+  isActive?: boolean;
 }
 
 export const DeploymentsTab = ({
@@ -255,6 +261,7 @@ export const DeploymentsTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
   onOpenCompare,
+  isActive = true,
 }: DeploymentsTabProps) => {
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('deployments', 'searchQuery', "");
@@ -610,7 +617,7 @@ export const DeploymentsTab = ({
   // (useAPI.ts), não dá pra gatear o poll de 60s dele por fora sem tocar o hook em si (fora do
   // escopo desta fase). Ganho aqui é de LATÊNCIA (campos quentes chegam na hora), não de redução
   // de chamadas ao cluster — mesmo trade-off aceito em HPATab.tsx.
-  const { items: deploymentWatchItems } = useDeploymentsWatch(cluster, selectedNamespace || "", !!cluster);
+  const { items: deploymentWatchItems } = useDeploymentsWatch(cluster, selectedNamespace || "", !!cluster && isActive);
 
   useEffect(() => {
     if (deploymentWatchItems.length === 0) return;
@@ -3117,6 +3124,7 @@ export const DeploymentsTab = ({
                 onRequestRefresh={() => { if (!monitorWatchConnectedRef.current) refreshMonitorPods(); }}
                 onBack={backToDeployments}
                 backLabel="Deployments"
+                isActive={isActive}
               />
             )}
           </div>
@@ -3128,6 +3136,9 @@ export const DeploymentsTab = ({
               onSelectDeployment={handleMonitorDeployment}
               onOpenEditor={(dep) => setSelectedDeployment(dep)}
               onRequestRefresh={silentRefetch}
+              searchQuery={searchQuery}
+              onSearchQueryChange={setSearchQuery}
+              isActive={isActive}
             />
           </div>
         </>

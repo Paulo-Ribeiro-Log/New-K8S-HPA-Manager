@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, XSquare, Network, FileArchive } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, XSquare, Network, FileCode } from "lucide-react";
 import { PortForwardModal } from "@/components/PortForwardModal";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
@@ -31,7 +31,7 @@ import { useDynatracePodStatus } from "@/hooks/useAPI";
 import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
 import { PodTerminal } from "@/components/PodTerminal";
 import { PodSFTPModal } from "@/components/PodSFTPModal";
-import { PodArchiveExtractModal } from "@/components/PodArchiveExtractModal";
+import { PodConfigFinderModal } from "@/components/PodConfigFinderModal";
 import ResourceGauge from "@/components/ResourceGauge";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -57,6 +57,13 @@ interface PodsPanelProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  // isActive — a aba Pods fica sempre montada (display:none) depois da 1ª visita, ver
+  // hasBeenMounted em pages/Index.tsx. Sem isso, o watch SSE (usePodsWatch) e o poll de 5s do
+  // PodMonitorTable continuavam rodando pra sempre em segundo plano mesmo com a aba invisível —
+  // causa real de lentidão progressiva reportada pelo usuário (mais abas visitadas numa sessão =
+  // mais pollers/watches acumulados rodando ao mesmo tempo). Default true pra não quebrar nenhum
+  // outro lugar que renderize PodsPanel sem passar esse prop.
+  isActive?: boolean;
 }
 
 export const PodsPanel = ({
@@ -66,6 +73,7 @@ export const PodsPanel = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  isActive = true,
 }: PodsPanelProps) => {
   const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
@@ -141,7 +149,7 @@ export const PodsPanel = ({
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   const [showFileTransferModal, setShowFileTransferModal] = useState(false);
-  const [showArchiveExtractModal, setShowArchiveExtractModal] = useState(false);
+  const [showConfigFinderModal, setShowConfigFinderModal] = useState(false);
   const [showPortForward, setShowPortForward] = useState(false);
 
   // Estados para edição de YAML
@@ -589,7 +597,7 @@ export const PodsPanel = ({
   // continua 100% dirigido pelo polling já existente, sem nenhuma mudança de comportamento.
   // Fallback automático e silencioso: watchFailed nunca vira um erro visível pro usuário.
   const watchNamespace = selectedNamespace && selectedNamespace !== "__all__" ? selectedNamespace : "";
-  const { pods: watchedPods, connected: watchConnected } = usePodsWatch(cluster, watchNamespace, showSystemNamespaces, !!cluster);
+  const { pods: watchedPods, connected: watchConnected } = usePodsWatch(cluster, watchNamespace, showSystemNamespaces, !!cluster && isActive);
 
   // Ref (não o valor fechado do render) — mesmo padrão de currentClusterRef acima, necessário
   // porque o setInterval de 30s e o onRequestRefresh do PodMonitorTable (abaixo) precisam
@@ -1132,10 +1140,10 @@ export const PodsPanel = ({
           Arquivos (SFTP)
         </DropdownMenuItem>
         <DropdownMenuItem
-          onClick={() => setShowArchiveExtractModal(true)}
+          onClick={() => setShowConfigFinderModal(true)}
         >
-          <FileArchive className="w-4 h-4 mr-2" />
-          Extrair de .jar/.war/.zip
+          <FileCode className="w-4 h-4 mr-2" />
+          Buscar Config (.NET/Java/...)
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <ProtectedAction showWarning={false} allowed={canWritePods}>
@@ -1394,6 +1402,9 @@ export const PodsPanel = ({
               { label: `Pods (${filteredPods.length})` },
             ]}
             onRequestRefresh={() => { if (!watchConnectedRef.current) fetchPods(true); }}
+            searchQuery={searchQuery}
+            onSearchQueryChange={setSearchQuery}
+            isActive={isActive}
           />
         </div>
       );
@@ -2590,12 +2601,13 @@ export const PodsPanel = ({
         />
       )}
 
-      {/* Extrator de .jar/.war/.zip — ver pod_archive_extract.go. Reaproveita o mesmo padrão de
-          props (cluster/namespace/podName/containers) do PodSFTPModal acima. */}
+      {/* Buscador de config (arquivo solto .NET ou empacotado .jar/.war/.zip Java/Spring) — ver
+          pod_config_finder.go. Reaproveita o mesmo padrão de props (cluster/namespace/podName/
+          containers) do PodSFTPModal acima. */}
       {selectedPod && (
-        <PodArchiveExtractModal
-          open={showArchiveExtractModal}
-          onOpenChange={setShowArchiveExtractModal}
+        <PodConfigFinderModal
+          open={showConfigFinderModal}
+          onOpenChange={setShowConfigFinderModal}
           cluster={cluster}
           namespace={selectedPod.namespace}
           podName={selectedPod.name}

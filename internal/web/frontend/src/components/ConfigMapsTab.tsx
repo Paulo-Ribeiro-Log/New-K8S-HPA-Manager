@@ -55,6 +55,11 @@ interface ConfigMapsTabProps {
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
   onOpenCompare?: (initial: { type: "configmap"; namespace: string; name: string }) => void;
+  // isActive — a aba ConfigMaps fica sempre montada (display:none) depois da 1ª visita, ver
+  // hasBeenMounted em pages/Index.tsx. Sem isso, o poll de 10s do ConfigMapMonitorTable continuava
+  // rodando pra sempre em segundo plano mesmo com a aba invisível. Default true pra não quebrar
+  // outro lugar que renderize sem esse prop.
+  isActive?: boolean;
 }
 
 export const ConfigMapsTab = ({
@@ -65,6 +70,7 @@ export const ConfigMapsTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
   onOpenCompare,
+  isActive = true,
 }: ConfigMapsTabProps) => {
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
   const canWriteConfigMaps = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteConfigMaps : undefined;
@@ -772,6 +778,9 @@ data:
           onOpenEditor={handleSelectConfigMap}
           onRequestRefresh={silentRefetch}
           usageByKey={usageByKey}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+          isActive={isActive}
         />
       );
     }

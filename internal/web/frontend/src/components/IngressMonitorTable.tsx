@@ -51,6 +51,15 @@ interface IngressMonitorTableProps {
   headerLabel: string;
   onOpenEditor: (item: IngressSummary) => void;
   onRequestRefresh: () => void;
+  // searchQuery/onSearchQueryChange — controlados pelo painel esquerdo (Tab) quando informados,
+  // pra manter a busca sincronizada entre os dois painéis. Opcionais: sem eles, cai no estado
+  // interno de sempre.
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
+  // isActive — quando a aba invisível (display:none, hasBeenMounted em pages/Index.tsx) continua
+  // montada, o poll de REFRESH_INTERVAL_MS abaixo pausa em vez de buscar dados em segundo plano
+  // pra sempre. Default true pra não quebrar quem não passa esse prop.
+  isActive?: boolean;
 }
 
 export const IngressMonitorTable = ({
@@ -59,8 +68,15 @@ export const IngressMonitorTable = ({
   headerLabel,
   onOpenEditor,
   onRequestRefresh,
+  searchQuery: controlledSearchQuery,
+  onSearchQueryChange,
+  isActive = true,
 }: IngressMonitorTableProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
+  const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
+  const searchQuery = controlledSearchQuery ?? uncontrolledSearchQuery;
+  const setSearchQuery = onSearchQueryChange ?? setUncontrolledSearchQuery;
+  const isActiveRef = useRef(isActive);
+  useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -92,6 +108,10 @@ export const IngressMonitorTable = ({
 
   useEffect(() => {
     const id = setInterval(() => {
+      // BUG REAL corrigido — esta tabela pode ficar montada (display:none) pro resto da sessão
+      // depois de a aba ser visitada uma vez; sem esta checagem, o poll continuava buscando dados
+      // a cada REFRESH_INTERVAL_MS em segundo plano pra sempre, mesmo invisível.
+      if (!isActiveRef.current) return;
       setRefreshing(true);
       refreshRef.current();
       setTimeout(() => setRefreshing(false), 600);

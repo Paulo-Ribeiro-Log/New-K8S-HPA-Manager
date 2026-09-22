@@ -822,6 +822,8 @@ export const StatefulSetsTab = ({
             headerLabel={selectedNamespace ? `${selectedNamespace} — statefulsets (${filteredStatefulSets.length})` : `statefulsets (${filteredStatefulSets.length})`}
             onOpenEditor={(sts) => handleSelectStatefulSet(sts)}
             onRequestRefresh={silentRefetch}
+            searchQuery={searchQuery}
+            onSearchQueryChange={setSearchQuery}
           />
         </div>
       );

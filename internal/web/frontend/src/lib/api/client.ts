@@ -5281,12 +5281,19 @@ class APIClient {
     await this.request(`/portforward/stop/${encodeURIComponent(id)}`, { method: "POST" });
   }
 
-  // ─── Extrator de Arquivos de .jar/.war/.zip (Pods) ───────────────────
+  // ─── Buscador de Config (Pods) — arquivo solto (.NET) + pacote .jar/.war/.zip/.nupkg (Spring) ───
 
-  async getPodArchives(cluster: string, namespace: string, pod: string, container: string): Promise<{ archives: PodArchiveCandidate[] }> {
+  async getPodConfigCandidates(cluster: string, namespace: string, pod: string, container: string): Promise<{ candidates: PodArchiveCandidate[] }> {
     const params = new URLSearchParams({ container });
     return this.request(
-      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/archives?${params.toString()}`
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/config-candidates?${params.toString()}`
+    );
+  }
+
+  async getPodConfigFileContent(cluster: string, namespace: string, pod: string, container: string, path: string): Promise<{ content: string }> {
+    const params = new URLSearchParams({ container, path });
+    return this.request(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/config-file-content?${params.toString()}`
     );
   }
 

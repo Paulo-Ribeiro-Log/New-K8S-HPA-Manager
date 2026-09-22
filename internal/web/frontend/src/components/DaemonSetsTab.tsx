@@ -849,6 +849,8 @@ export const DaemonSetsTab = ({
               onSelectDaemonSet={handleMonitorDaemonSet}
               onOpenEditor={(ds) => handleSelectDaemonSet(ds)}
               onRequestRefresh={silentRefetch}
+              searchQuery={searchQuery}
+              onSearchQueryChange={setSearchQuery}
             />
           </div>
         </>
