@@ -135,6 +135,15 @@ export const DeploymentScanModal = ({ open, onOpenChange }: DeploymentScanModalP
       // Invalidar cache após scan
       queryClient.invalidateQueries({ queryKey: ['github-deployments-registry'] });
       queryClient.invalidateQueries({ queryKey: ['github-deployments-search'] });
+      // BUG REAL corrigido: este modal nunca desmonta (GitHubReleasesTab.tsx só alterna a prop
+      // `open`, o componente continua vivo) — sem isso, scanProgress ficava populado depois do
+      // 1º scan, e a tela de seleção de clusters só aparece quando scanProgress.length === 0
+      // (condição logo abaixo). Reabrir o modal caía direto na tela de progresso do scan
+      // ANTERIOR, já concluída, sem nenhum jeito de selecionar clusters de novo — impedia
+      // continuar escaneando depois da 1ª vez. Resetar aqui garante que reabrir sempre volta pra
+      // tela de seleção.
+      setScanProgress([]);
+      setSelectedClusters([]);
     }
   };
 
