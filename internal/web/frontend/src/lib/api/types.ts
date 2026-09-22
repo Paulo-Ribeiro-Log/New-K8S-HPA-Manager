@@ -2839,11 +2839,13 @@ export interface StartPortForwardRequest {
   label?: string;
 }
 
-// ─── Extrator de Arquivos de .jar/.war/.zip (Pods) — ver internal/web/handlers/pod_archive_extract.go
+// ─── Buscador de Config (Pods) — ver internal/web/handlers/pod_config_finder.go
 
 export interface PodArchiveCandidate {
   path: string;
   size_bytes: number; // -1 quando desconhecido (fallback BusyBox `find` sem -printf)
+  kind: "file" | "archive"; // "file" = config solto (.NET appsettings.json etc, lê direto);
+  // "archive" = pacote .jar/.war/.zip/.nupkg (precisa listar entradas antes de extrair)
 }
 
 export interface PodArchiveEntry {

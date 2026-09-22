@@ -2,6 +2,12 @@ package handlers
 
 import "testing"
 
+// pod_config_finder_test.go — testes do parsing/priorização usados tanto pela busca de arquivos
+// de config soltos (Kind="file", .NET) quanto de pacotes (Kind="archive", Spring Boot) em
+// pod_config_finder.go. As fixtures abaixo continuam vindo de captura real contra pod Spring Boot
+// (Kind é atribuído pelos handlers ListConfigCandidates/ListArchiveEntries, não pelas funções de
+// parsing puro testadas aqui).
+
 // Fixture capturada ao vivo (`find / -xdev -maxdepth 6 ... -printf '%s\t%p\n'`) contra um pod
 // Spring Boot real (imagem com Maven instalado) — confirmou que a busca sem filtro traz ~50 jars
 // de dependência do Maven junto do único jar realmente relevante (/app/*.jar), motivando

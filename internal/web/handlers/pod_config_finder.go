@@ -16,15 +16,19 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// pod_archive_extract.go — extrator genérico de arquivos empacotados dentro de um .jar/.war/.zip
-// num container de pod (não expõe porta nenhuma, mesmo princípio do SFTP embutido: cada chamada
-// abre um `kubectl exec` via SPDY, roda UM comando, fecha). Motivado por um caso real: aplicações
-// Spring Boot desta empresa (chart `convair-helm`) frequentemente NÃO expõem o `application.yml`
-// via ConfigMap — o arquivo vem compilado dentro do próprio jar (`BOOT-INF/classes/application.yaml`),
-// e a única forma de ver o conteúdo real era abrir um Terminal manual e rodar `jar`/`unzip` à mão.
-// Deliberadamente genérico (não hardcoded pra "application.yml") — funciona pra qualquer entrada de
-// texto dentro de qualquer .jar/.war/.zip achado no pod, reaproveitável pra outros tipos de app
-// empacotada (não só Spring Boot).
+// pod_config_finder.go — buscador de arquivos de configuração num container de pod (não expõe
+// porta nenhuma, mesmo princípio do SFTP embutido: cada chamada abre um `kubectl exec` via SPDY,
+// roda UM comando, fecha). Motivado por dois casos reais, cada stack com sua própria convenção:
+//   - Spring Boot (chart `convair-helm` desta empresa): o `application.yml` frequentemente NÃO é
+//     exposto via ConfigMap — vem compilado dentro do próprio jar (`BOOT-INF/classes/application.yaml`),
+//     só visível abrindo o pacote (`.jar/.war/.zip`) — Kind="archive" abaixo.
+//   - .NET: o `appsettings.json`/`web.config` tipicamente NÃO vem empacotado — é um arquivo solto
+//     copiado direto na imagem (`Dockerfile COPY`), sem passo de extração nenhum — Kind="file"
+//     abaixo. NuGet (`.nupkg`) é zip de verdade e também é reconhecido como Kind="archive" pro caso
+//     raro de deploy via pacote.
+// ListConfigCandidates busca os dois tipos numa passada só; o front-end decide o fluxo (extrair
+// entrada vs ler direto) pelo campo Kind. Deliberadamente genérico por nome de arquivo/extensão —
+// não hardcoded pra um único framework — reaproveitável pra outras stacks empacotadas ou não.
 //
 // Reaproveita execCmdInPod (nodepools_conntrack.go, já usado por Conntrack/DB Test/Kafka Test) —
 // nenhum mecanismo de exec novo. Todas as rotas são só LEITURA (nunca escreve nada persistente no
@@ -49,10 +53,14 @@ const (
 	archiveExtractMaxCandidates = 200
 )
 
-// ArchiveCandidate é um .jar/.war/.zip encontrado no container.
+// ArchiveCandidate é um candidato encontrado no container: um arquivo de config SOLTO (Kind
+// "file" — lido direto via GetConfigFileContent, sem passo de extração) ou um pacote .jar/.war/
+// .zip/.nupkg (Kind "archive" — precisa listar entradas via ListArchiveEntries antes de extrair
+// uma via GetArchiveEntryContent).
 type ArchiveCandidate struct {
 	Path      string `json:"path"`
 	SizeBytes int64  `json:"size_bytes"`
+	Kind      string `json:"kind"`
 }
 
 // ArchiveEntry é uma entrada de arquivo dentro do .jar/.war/.zip. SizeBytes é -1 quando a
@@ -100,21 +108,122 @@ const archiveDetectToolScript = `if command -v unzip >/dev/null 2>&1; then echo 
 	`elif command -v python3 >/dev/null 2>&1; then echo python3; ` +
 	`else echo none; fi`
 
-// archiveFindCandidatesScript localiza .jar/.war/.zip no container. -xdev evita cruzar pontos de
-// montagem (mantém o find fora de /proc, /sys e volumes montados na prática); -prune nesses 3
-// caminhos é defesa em profundidade caso não sejam mount points próprios nesta imagem específica.
+// archiveFindCandidatesScript localiza .jar/.war/.zip/.nupkg no container (.nupkg é o formato de
+// pacote NuGet — zip de verdade, mesmo caso raro de deploy .NET via pacote em vez de arquivo
+// solto). -xdev evita cruzar pontos de montagem (mantém o find fora de /proc, /sys e volumes
+// montados na prática); -prune nesses 3 caminhos é defesa em profundidade caso não sejam mount
+// points próprios nesta imagem específica.
 const archiveFindCandidatesScript = `find / -xdev -maxdepth 6 ` +
 	`\( -path /proc -o -path /sys -o -path /dev \) -prune -o ` +
-	`-type f \( -iname '*.jar' -o -iname '*.war' -o -iname '*.zip' \) -printf '%s\t%p\n' 2>/dev/null`
+	`-type f \( -iname '*.jar' -o -iname '*.war' -o -iname '*.zip' -o -iname '*.nupkg' \) -printf '%s\t%p\n' 2>/dev/null`
 
 // archiveFindCandidatesScriptNoPrintf é o fallback pra `find` do BusyBox, que não tem `-printf`
 // (só o GNU find tem) — sem tamanho, só o caminho.
 const archiveFindCandidatesScriptNoPrintf = `find / -xdev -maxdepth 6 ` +
 	`\( -path /proc -o -path /sys -o -path /dev \) -prune -o ` +
-	`-type f \( -iname '*.jar' -o -iname '*.war' -o -iname '*.zip' \) -print 2>/dev/null`
+	`-type f \( -iname '*.jar' -o -iname '*.war' -o -iname '*.zip' -o -iname '*.nupkg' \) -print 2>/dev/null`
 
-// ListArchives — GET /api/v1/pods/:cluster/:namespace/:name/archives?container=
-func (h *PodHandler) ListArchives(c *gin.Context) {
+// configFileFindScript localiza arquivos de configuração SOLTOS reconhecidos por convenção de
+// nome — cobre .NET (appsettings*.json/.yml/.yaml, web.config — normalmente copiados soltos na
+// imagem via Dockerfile COPY, nunca empacotados) e Spring Boot fora do jar (application.yml/
+// .properties, bootstrap.yml, quando não vêm compilados no jar). Lista fechada de nomes/
+// convenções reais — não usa um wildcard genérico tipo "*.json"/"*.yml" pra não trazer ruído
+// (qualquer outro json/yaml do container que não seja config de aplicação).
+const configFileFindScript = `find / -xdev -maxdepth 6 ` +
+	`\( -path /proc -o -path /sys -o -path /dev \) -prune -o ` +
+	`-type f \( -iname 'appsettings*.json' -o -iname 'appsettings*.yml' -o -iname 'appsettings*.yaml' ` +
+	`-o -iname 'web.config' -o -iname 'application.yml' -o -iname 'application.yaml' ` +
+	`-o -iname 'application*.properties' -o -iname 'bootstrap.yml' -o -iname 'bootstrap.yaml' \) ` +
+	`-printf '%s\t%p\n' 2>/dev/null`
+
+// configFileFindScriptNoPrintf é o fallback BusyBox de configFileFindScript (sem tamanho).
+const configFileFindScriptNoPrintf = `find / -xdev -maxdepth 6 ` +
+	`\( -path /proc -o -path /sys -o -path /dev \) -prune -o ` +
+	`-type f \( -iname 'appsettings*.json' -o -iname 'appsettings*.yml' -o -iname 'appsettings*.yaml' ` +
+	`-o -iname 'web.config' -o -iname 'application.yml' -o -iname 'application.yaml' ` +
+	`-o -iname 'application*.properties' -o -iname 'bootstrap.yml' -o -iname 'bootstrap.yaml' \) ` +
+	`-print 2>/dev/null`
+
+// findCandidatesWithFallback roda o script GNU (`withPrintf`, com tamanho via -printf); se falhar
+// ou não achar nada, tenta o fallback BusyBox (`noPrintf`, sem -printf) antes de desistir — mesmo
+// padrão de retry que ListConfigCandidates aplica nas duas buscas (arquivo solto e pacote).
+//
+// BUG REAL corrigido — reproduzido ao vivo: `find / ...` varrendo a raiz inteira do container
+// esbarra com frequência em "Permission denied" de algum subdiretório ilegível (comum: container
+// rodando como non-root) — isso faz o `find` sair com status 1 mesmo tendo impresso candidatos
+// válidos em stdout ANTES de bater no diretório proibido (`2>/dev/null` só suprime a MENSAGEM de
+// erro, não muda o exit code). A versão antiga só aceitava o resultado com `err == nil`, então
+// descartava candidatos de verdade e caía no retry, que batia na mesma parede de permissão e
+// devolvia erro cru ("stream: command terminated with exit code 1") pro usuário em vez da lista
+// que o find já tinha achado. Corrigido: candidatos não-vazios em stdout sempre valem, com erro
+// (`err`/`err2`) só decidindo o resultado quando as DUAS tentativas vierem realmente vazias.
+func findCandidatesWithFallback(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, container, withPrintf, noPrintf string) ([]ArchiveCandidate, error) {
+	out, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container, []string{"sh", "-c", withPrintf})
+	candidates := parseArchiveCandidatesWithSize(out)
+	if len(candidates) > 0 {
+		return candidates, nil
+	}
+	out2, err2 := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container, []string{"sh", "-c", noPrintf})
+	candidates2 := parseArchiveCandidatesNoSize(out2)
+	if len(candidates2) > 0 {
+		return candidates2, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err2 != nil {
+		return nil, err2
+	}
+	return nil, nil // as duas tentativas rodaram limpo, só não acharam nada — não é erro.
+}
+
+// ListConfigCandidates — GET /api/v1/pods/:cluster/:namespace/:name/config-candidates?container=
+// Busca unificada: arquivos de config soltos (Kind="file") + pacotes .jar/.war/.zip/.nupkg
+// (Kind="archive"). Um erro de exec só derruba a resposta se as DUAS buscas falharem — uma
+// stack .NET tipicamente não tem nenhum pacote no container, o que não é erro, só resultado vazio
+// daquele lado.
+func (h *PodHandler) ListConfigCandidates(c *gin.Context) {
+	namespace, podName, container, clientset, restConfig, ctx, cancel, ok := h.resolvePodExecTarget(c)
+	if !ok {
+		return
+	}
+	defer cancel()
+
+	fileCandidates, fileErr := findCandidatesWithFallback(ctx, clientset, restConfig, namespace, podName, container,
+		configFileFindScript, configFileFindScriptNoPrintf)
+	for i := range fileCandidates {
+		fileCandidates[i].Kind = "file"
+	}
+
+	archiveCandidates, archiveErr := findCandidatesWithFallback(ctx, clientset, restConfig, namespace, podName, container,
+		archiveFindCandidatesScript, archiveFindCandidatesScriptNoPrintf)
+	for i := range archiveCandidates {
+		archiveCandidates[i].Kind = "archive"
+	}
+
+	if fileErr != nil && archiveErr != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("CONFIG_FIND_ERROR", fileErr.Error()))
+		return
+	}
+
+	candidates := append(fileCandidates, archiveCandidates...)
+	sortArchiveCandidates(candidates)
+	if len(candidates) > archiveExtractMaxCandidates {
+		candidates = candidates[:archiveExtractMaxCandidates]
+	}
+	c.JSON(http.StatusOK, gin.H{"candidates": candidates})
+}
+
+// GetConfigFileContent — GET /api/v1/pods/:cluster/:namespace/:name/config-file-content?container=&path=
+// Lê um arquivo de config SOLTO (candidato Kind="file" de ListConfigCandidates) direto via `cat`
+// — sem passo de extração, já que não está empacotado. Mesmas checagens de tamanho/UTF-8 de
+// GetArchiveEntryContent, pro mesmo motivo (trava o Monaco Editor do front-end).
+func (h *PodHandler) GetConfigFileContent(c *gin.Context) {
+	path := c.Query("path")
+	if path == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PATH", "parâmetro \"path\" é obrigatório"))
+		return
+	}
 	namespace, podName, container, clientset, restConfig, ctx, cancel, ok := h.resolvePodExecTarget(c)
 	if !ok {
 		return
@@ -122,24 +231,22 @@ func (h *PodHandler) ListArchives(c *gin.Context) {
 	defer cancel()
 
 	out, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container,
-		[]string{"sh", "-c", archiveFindCandidatesScript})
-	candidates := parseArchiveCandidatesWithSize(out)
-	if err != nil || len(candidates) == 0 {
-		// GNU -printf pode não existir (BusyBox find) — refaz sem tamanho antes de desistir.
-		out2, err2 := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container,
-			[]string{"sh", "-c", archiveFindCandidatesScriptNoPrintf})
-		if err2 == nil {
-			candidates = parseArchiveCandidatesNoSize(out2)
-		} else if err != nil {
-			c.JSON(http.StatusBadGateway, errorResponse("ARCHIVE_FIND_ERROR", err.Error()))
-			return
-		}
+		[]string{"sh", "-c", "cat " + quoteShellArg(path)})
+	if err != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("CONFIG_FILE_READ_ERROR", err.Error()+": "+out))
+		return
 	}
-	sortArchiveCandidates(candidates)
-	if len(candidates) > archiveExtractMaxCandidates {
-		candidates = candidates[:archiveExtractMaxCandidates]
+	if len(out) > archiveExtractMaxContentBytes {
+		c.JSON(http.StatusUnprocessableEntity, errorResponse("CONFIG_FILE_TOO_LARGE",
+			fmt.Sprintf("arquivo tem %d bytes, maior que o limite de exibição (%d bytes)", len(out), archiveExtractMaxContentBytes)))
+		return
 	}
-	c.JSON(http.StatusOK, gin.H{"archives": candidates})
+	if !utf8.ValidString(out) {
+		c.JSON(http.StatusUnprocessableEntity, errorResponse("CONFIG_FILE_BINARY",
+			"este arquivo não parece ser texto (binário/encoding não reconhecido) — não é possível exibir o conteúdo"))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"content": out})
 }
 
 // archiveSystemPathPrefixes — diretórios tipicamente cheios de jars de RUNTIME/FERRAMENTA (JDK,

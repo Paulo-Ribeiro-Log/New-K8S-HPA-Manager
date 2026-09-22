@@ -1058,11 +1058,15 @@ func (s *Server) setupRoutes() {
 		pods.POST("/:cluster/:namespace/:name/sftp/rename", rbacMiddleware.RequireSREGroup(), podHandler.SFTPRename)
 		pods.DELETE("/:cluster/:namespace/:name/sftp/remove", rbacMiddleware.RequireSREGroup(), podHandler.SFTPRemove)
 
-		// Extrator de .jar/.war/.zip (pod_archive_extract.go) — genérico, motivado por apps Spring
-		// Boot (chart convair-helm) que empacotam o application.yml dentro do jar em vez de expor
-		// via ConfigMap. Só leitura (exec via kubectl exec, extração num tmpdir sempre apagado
-		// dentro do próprio container) — sem RequireSREGroup, mesmo padrão de leitura do SFTP acima.
-		pods.GET("/:cluster/:namespace/:name/archives", podHandler.ListArchives)
+		// Buscador de config (pod_config_finder.go) — genérico, motivado por dois casos reais: apps
+		// Spring Boot (chart convair-helm) que empacotam o application.yml dentro do jar em vez de
+		// expor via ConfigMap (Kind="archive", precisa listar entradas antes de extrair), e apps
+		// .NET cujo appsettings.json/web.config normalmente é arquivo SOLTO na imagem, sem
+		// empacotamento nenhum (Kind="file", lido direto). Só leitura (exec via kubectl exec,
+		// extração num tmpdir sempre apagado dentro do próprio container) — sem RequireSREGroup,
+		// mesmo padrão de leitura do SFTP acima.
+		pods.GET("/:cluster/:namespace/:name/config-candidates", podHandler.ListConfigCandidates)
+		pods.GET("/:cluster/:namespace/:name/config-file-content", podHandler.GetConfigFileContent)
 		pods.GET("/:cluster/:namespace/:name/archive-entries", podHandler.ListArchiveEntries)
 		pods.GET("/:cluster/:namespace/:name/archive-content", podHandler.GetArchiveEntryContent)
 

@@ -16,20 +16,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Copy, Download, Loader2, FileArchive, RefreshCw } from "lucide-react";
+import { Copy, Download, Loader2, FileCode, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import type { PodArchiveCandidate, PodArchiveEntry } from "@/lib/api/types";
 import { formatBytes } from "@/lib/monitorUtils";
 
-// PodArchiveExtractModal — extrator genérico de arquivos empacotados dentro de um .jar/.war/.zip
-// num container de pod. Motivado por um caso real: aplicações Spring Boot desta empresa (chart
-// convair-helm) frequentemente não expõem o application.yml via ConfigMap — o arquivo vem
-// compilado dentro do próprio jar (BOOT-INF/classes/application.yaml). Deliberadamente genérico
-// (não hardcoded pra "application.yml") — qualquer entrada de texto de qualquer .jar/.war/.zip
-// encontrado no pod pode ser visualizada aqui. Ver internal/web/handlers/pod_archive_extract.go.
+// PodConfigFinderModal — buscador de arquivos de configuração num container de pod. Cobre dois
+// casos reais, cada um com Kind diferente (ver PodArchiveCandidate.kind):
+//   - Kind="archive": apps Spring Boot desta empresa (chart convair-helm) que não expõem o
+//     application.yml via ConfigMap — o arquivo vem compilado dentro do próprio jar
+//     (BOOT-INF/classes/application.yaml). Precisa listar entradas antes de extrair uma.
+//   - Kind="file": apps .NET, cujo appsettings.json/web.config normalmente é arquivo SOLTO
+//     (Dockerfile COPY), nunca empacotado — lido direto, sem passo de listar entradas.
+// Deliberadamente genérico por nome/extensão (não hardcoded pra um framework só). Ver
+// internal/web/handlers/pod_config_finder.go.
 
-interface PodArchiveExtractModalProps {
+interface PodConfigFinderModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   cluster: string;
@@ -99,19 +102,23 @@ function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
   );
 }
 
-export function PodArchiveExtractModal({
+export function PodConfigFinderModal({
   open,
   onOpenChange,
   cluster,
   namespace,
   podName,
   containers,
-}: PodArchiveExtractModalProps) {
+}: PodConfigFinderModalProps) {
   const [container, setContainer] = useState(containers[0] ?? "");
-  const [archives, setArchives] = useState<PodArchiveCandidate[]>([]);
+  const [candidates, setCandidates] = useState<PodArchiveCandidate[]>([]);
   const [archivesLoading, setArchivesLoading] = useState(false);
   const [archivesError, setArchivesError] = useState<string | null>(null);
   const [selectedArchive, setSelectedArchive] = useState<string>("");
+  const selectedCandidate = useMemo(
+    () => candidates.find((cand) => cand.path === selectedArchive),
+    [candidates, selectedArchive]
+  );
 
   const [entries, setEntries] = useState<PodArchiveEntry[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
@@ -160,7 +167,7 @@ export function PodArchiveExtractModal({
   useEffect(() => {
     if (!open) return;
     setContainer(containers[0] ?? "");
-    setArchives([]);
+    setCandidates([]);
     setSelectedArchive("");
     setEntries([]);
     setSelectedEntry("");
@@ -181,10 +188,10 @@ export function PodArchiveExtractModal({
     setSelectedEntry("");
     setContent("");
     try {
-      const res = await apiClient.getPodArchives(cluster, namespace, podName, targetContainer);
-      setArchives(res.archives || []);
-      if ((res.archives || []).length > 0) {
-        setSelectedArchive(res.archives[0].path);
+      const res = await apiClient.getPodConfigCandidates(cluster, namespace, podName, targetContainer);
+      setCandidates(res.candidates || []);
+      if ((res.candidates || []).length > 0) {
+        setSelectedArchive(res.candidates[0].path);
       }
     } catch (e) {
       setArchivesError(e instanceof Error ? e.message : String(e));
@@ -200,9 +207,20 @@ export function PodArchiveExtractModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, container]);
 
+  // Kind="file" (.NET appsettings.json etc): não existe "listar entradas" de verdade — trata o
+  // próprio arquivo como entrada única e já carrega o conteúdo direto (getPodConfigFileContent).
+  // Kind="archive" (Spring Boot etc): fluxo original — lista entradas do pacote, usuário escolhe.
   useEffect(() => {
-    if (!selectedArchive || !container) {
+    if (!selectedArchive || !container || !selectedCandidate) {
       setEntries([]);
+      return;
+    }
+    if (selectedCandidate.kind === "file") {
+      const name = entryDisplayName(selectedCandidate.path);
+      setEntriesError(null);
+      setEntriesLoading(false);
+      setEntries([{ name, size_bytes: selectedCandidate.size_bytes }]);
+      handleSelectEntry(name);
       return;
     }
     let cancelled = false;
@@ -227,7 +245,7 @@ export function PodArchiveExtractModal({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedArchive]);
+  }, [selectedArchive, selectedCandidate]);
 
   // BUG REAL corrigido — relatado ao vivo: colar um nome exato copiado de outro lugar (ex:
   // "BOOT-INF/classes/application.yaml" copiado da própria lista) não retornava resultado nenhum.
@@ -248,7 +266,9 @@ export function PodArchiveExtractModal({
     setContentError(null);
     setContent("");
     try {
-      const res = await apiClient.getPodArchiveContent(cluster, namespace, podName, container, selectedArchive, entryName);
+      const res = selectedCandidate?.kind === "file"
+        ? await apiClient.getPodConfigFileContent(cluster, namespace, podName, container, selectedCandidate.path)
+        : await apiClient.getPodArchiveContent(cluster, namespace, podName, container, selectedArchive, entryName);
       setContent(res.content);
     } catch (e) {
       setContentError(e instanceof Error ? e.message : String(e));
@@ -284,12 +304,13 @@ export function PodArchiveExtractModal({
       >
         <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
-            <FileArchive className="w-5 h-5" />
-            Extrair de .jar/.war/.zip
+            <FileCode className="w-5 h-5" />
+            Buscar arquivo de configuração
           </DialogTitle>
           <DialogDescription>
-            Visualiza qualquer arquivo de texto empacotado dentro de um .jar/.war/.zip do container — útil pra
-            aplicações (ex: Spring Boot) cujo <code>application.yml</code> vem compilado no jar, sem ConfigMap.
+            Localiza e mostra arquivos de config do container, soltos ou empacotados — útil pra apps .NET cujo{" "}
+            <code>appsettings.json</code>/<code>web.config</code> é arquivo solto na imagem, ou apps Java/Spring cujo{" "}
+            <code>application.yml</code> vem compilado dentro do próprio <code>.jar/.war/.zip</code>, sem ConfigMap.
           </DialogDescription>
         </DialogHeader>
 
@@ -312,16 +333,16 @@ export function PodArchiveExtractModal({
 
           <div className="flex-1 min-w-0">
             <label className="text-xs text-muted-foreground block mb-1">
-              Arquivo (.jar/.war/.zip) — {archivesLoading ? "buscando..." : `${archives.length} encontrado(s)`}
+              Arquivo de config — {archivesLoading ? "buscando..." : `${candidates.length} encontrado(s)`}
             </label>
-            <Select value={selectedArchive} onValueChange={setSelectedArchive} disabled={archivesLoading || archives.length === 0}>
+            <Select value={selectedArchive} onValueChange={setSelectedArchive} disabled={archivesLoading || candidates.length === 0}>
               <SelectTrigger>
                 <SelectValue placeholder={archivesLoading ? "Buscando arquivos no container..." : "Nenhum arquivo encontrado"} />
               </SelectTrigger>
               <SelectContent>
-                {archives.map((a) => (
-                  <SelectItem key={a.path} value={a.path}>
-                    {a.path} {a.size_bytes >= 0 ? `(${formatBytes(a.size_bytes)})` : ""}
+                {candidates.map((cand) => (
+                  <SelectItem key={cand.path} value={cand.path}>
+                    [{cand.kind === "file" ? "solto" : "pacote"}] {cand.path} {cand.size_bytes >= 0 ? `(${formatBytes(cand.size_bytes)})` : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -396,7 +417,7 @@ export function PodArchiveExtractModal({
             <div className="flex-1 min-h-0">
               {contentLoading && (
                 <div className="h-full flex items-center justify-center text-muted-foreground text-sm gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Extraindo...
+                  <Loader2 className="w-4 h-4 animate-spin" /> Carregando...
                 </div>
               )}
               {contentError && !contentLoading && (
