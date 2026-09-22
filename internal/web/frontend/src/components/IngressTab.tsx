@@ -751,6 +751,8 @@ spec:
           headerLabel={`${(ingresses ?? []).length} Ingress(es)`}
           onOpenEditor={handleSelectIngress}
           onRequestRefresh={silentRefetch}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
         />
       );
     }

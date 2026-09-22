@@ -45,6 +45,13 @@ interface PodMonitorTableProps {
   onRequestRefresh: () => void;
   onBack?: () => void;
   backLabel?: string;
+  // searchQuery/onSearchQueryChange — controlados pelo painel esquerdo (Tab) quando informados,
+  // pra manter a busca sincronizada entre os dois painéis. Opcionais: sem eles, cai no estado
+  // interno de sempre — importante pro drill-down de pods dentro de Deployments/DaemonSets, que
+  // busca um tipo de recurso diferente e não deve sincronizar com o searchQuery do painel esquerdo
+  // daquelas abas (só o uso em PodsPanel.tsx passa esses props).
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
 }
 
 function ColumnFilter({
@@ -277,8 +284,12 @@ export const PodMonitorTable = ({
   onRequestRefresh,
   onBack,
   backLabel,
+  searchQuery: controlledSearchQuery,
+  onSearchQueryChange,
 }: PodMonitorTableProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
+  const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
+  const searchQuery = controlledSearchQuery ?? uncontrolledSearchQuery;
+  const setSearchQuery = onSearchQueryChange ?? setUncontrolledSearchQuery;
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [nodeFilter, setNodeFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());

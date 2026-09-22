@@ -1118,6 +1118,8 @@ export const SecretsTab = ({
           headerLabel={`${(secrets ?? []).length} Secret(s)`}
           onOpenEditor={handleSelectSecret}
           onRequestRefresh={silentRefetch}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
         />
       );
     }

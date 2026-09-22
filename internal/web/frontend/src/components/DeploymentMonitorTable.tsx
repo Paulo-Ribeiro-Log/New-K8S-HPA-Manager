@@ -58,6 +58,13 @@ interface DeploymentMonitorTableProps {
   onRequestRefresh: () => void;
   onBack?: () => void;
   backLabel?: string;
+  // searchQuery/onSearchQueryChange — controlados pelo painel esquerdo (Tab) quando informados,
+  // pra manter a busca sincronizada entre os dois painéis (pedido do usuário). Opcionais: quando
+  // ausentes, cai no estado interno de sempre (uso não sincronizado, ex: drill-down de pods dentro
+  // de Deployments/DaemonSets, que busca outro tipo de recurso e não deve sincronizar com o
+  // searchQuery de deployment/daemonset do painel esquerdo).
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
 }
 
 function ColumnFilter({
@@ -173,10 +180,14 @@ export const DeploymentMonitorTable = ({
   onRequestRefresh,
   onBack,
   backLabel,
+  searchQuery: controlledSearchQuery,
+  onSearchQueryChange,
 }: DeploymentMonitorTableProps) => {
   const { resize, gridTemplate } = useResizableColumns(INITIAL_WIDTHS);
 
-  const [searchQuery, setSearchQuery] = useState("");
+  const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
+  const searchQuery = controlledSearchQuery ?? uncontrolledSearchQuery;
+  const setSearchQuery = onSearchQueryChange ?? setUncontrolledSearchQuery;
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
   const [sortKey, setSortKey] = useState<DepSortKey | null>(null);

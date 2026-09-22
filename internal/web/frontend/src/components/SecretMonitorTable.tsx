@@ -106,6 +106,11 @@ interface SecretMonitorTableProps {
   headerLabel: string;
   onOpenEditor: (item: SecretSummary) => void;
   onRequestRefresh: () => void;
+  // searchQuery/onSearchQueryChange — controlados pelo painel esquerdo (Tab) quando informados,
+  // pra manter a busca sincronizada entre os dois painéis. Opcionais: sem eles, cai no estado
+  // interno de sempre.
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
 }
 
 export const SecretMonitorTable = ({
@@ -114,8 +119,12 @@ export const SecretMonitorTable = ({
   headerLabel,
   onOpenEditor,
   onRequestRefresh,
+  searchQuery: controlledSearchQuery,
+  onSearchQueryChange,
 }: SecretMonitorTableProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
+  const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
+  const searchQuery = controlledSearchQuery ?? uncontrolledSearchQuery;
+  const setSearchQuery = onSearchQueryChange ?? setUncontrolledSearchQuery;
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());

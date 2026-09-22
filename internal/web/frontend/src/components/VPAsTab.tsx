@@ -551,6 +551,8 @@ export const VPAsTab = ({
           headerLabel={`${(vpas ?? []).length} VPA(s)`}
           onOpenEditor={handleSelectVPA}
           onRequestRefresh={silentRefetch}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
         />
       );
     }

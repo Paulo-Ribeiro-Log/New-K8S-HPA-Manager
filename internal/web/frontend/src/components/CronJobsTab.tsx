@@ -812,6 +812,8 @@ spec:
           headerLabel={`${filteredCronJobs.length} cronjob(s)`}
           onOpenEditor={handleSelectCronJob}
           onRequestRefresh={silentFetchCronJobs}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
         />
       );
     }

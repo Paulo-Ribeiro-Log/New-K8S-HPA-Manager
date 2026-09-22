@@ -3128,6 +3128,8 @@ export const DeploymentsTab = ({
               onSelectDeployment={handleMonitorDeployment}
               onOpenEditor={(dep) => setSelectedDeployment(dep)}
               onRequestRefresh={silentRefetch}
+              searchQuery={searchQuery}
+              onSearchQueryChange={setSearchQuery}
             />
           </div>
         </>

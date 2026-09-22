@@ -23,6 +23,11 @@ interface ContainerMonitorTableProps {
   headerLabel: string;
   onOpenDetail: (pod: PodSummary, containerName: string) => void;
   onRequestRefresh: () => void;
+  // searchQuery/onSearchQueryChange — controlados pelo painel esquerdo (Tab) quando informados,
+  // pra manter a busca sincronizada entre os dois painéis. Opcionais: sem eles, cai no estado
+  // interno de sempre.
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
 }
 
 function ColumnFilter({
@@ -193,8 +198,12 @@ export const ContainerMonitorTable = ({
   headerLabel,
   onOpenDetail,
   onRequestRefresh,
+  searchQuery: controlledSearchQuery,
+  onSearchQueryChange,
 }: ContainerMonitorTableProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
+  const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
+  const searchQuery = controlledSearchQuery ?? uncontrolledSearchQuery;
+  const setSearchQuery = onSearchQueryChange ?? setUncontrolledSearchQuery;
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const [stateFilter, setStateFilter] = useState<Set<string>>(new Set());
   const [nodeFilter, setNodeFilter] = useState<Set<string>>(new Set());

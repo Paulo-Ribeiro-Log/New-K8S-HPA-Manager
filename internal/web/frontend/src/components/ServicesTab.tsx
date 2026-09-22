@@ -602,6 +602,8 @@ export const ServicesTab = ({
           headerLabel={`${(services ?? []).length} service(s)`}
           onOpenEditor={handleSelectService}
           onRequestRefresh={silentRefetch}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
         />
       );
     }

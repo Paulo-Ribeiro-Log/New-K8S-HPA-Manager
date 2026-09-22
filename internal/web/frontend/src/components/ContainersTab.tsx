@@ -753,6 +753,8 @@ export const ContainersTab = ({
       headerLabel={selectedNamespace ? `${selectedNamespace} — containers (${filteredPods.reduce((n, p) => n + p.containers.length, 0)})` : `containers (${filteredPods.reduce((n, p) => n + p.containers.length, 0)})`}
       onOpenDetail={handleContainerRowClick}
       onRequestRefresh={silentRefetch}
+      searchQuery={searchQuery}
+      onSearchQueryChange={setSearchQuery}
     />
   );
 

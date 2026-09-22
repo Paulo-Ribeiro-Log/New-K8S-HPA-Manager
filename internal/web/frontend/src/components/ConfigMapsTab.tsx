@@ -772,6 +772,8 @@ data:
           onOpenEditor={handleSelectConfigMap}
           onRequestRefresh={silentRefetch}
           usageByKey={usageByKey}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
         />
       );
     }
