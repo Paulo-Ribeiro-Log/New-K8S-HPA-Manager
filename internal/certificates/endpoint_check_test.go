@@ -92,8 +92,8 @@ func TestCheckEndpointTLS_ConexaoRecusada(t *testing.T) {
 	if result.Success {
 		t.Fatal("esperava Success=false para porta fechada")
 	}
-	if result.ErrorMessage == "" {
-		t.Error("esperava ErrorMessage preenchida")
+	if !strings.Contains(result.ErrorMessage, "host está alcançável") {
+		t.Errorf("esperava a explicação de porta fechada (host alcançável), got %q", result.ErrorMessage)
 	}
 }
 
@@ -203,8 +203,13 @@ func TestClassifyTLSDialError(t *testing.T) {
 	}{
 		{"certificate required vira afirmação definitiva", "remote error: tls: certificate required", "exige certificado de cliente"},
 		{"bad certificate vira aviso qualificado", "remote error: tls: bad certificate", "Possível exigência"},
-		{"connection refused não é alterado", "dial tcp 127.0.0.1:443: connect: connection refused", "dial tcp 127.0.0.1:443: connect: connection refused"},
-		{"timeout não é alterado", "dial tcp 10.0.0.1:443: i/o timeout", "dial tcp 10.0.0.1:443: i/o timeout"},
+		{"connection refused explica host alcançável x porta fechada", "dial tcp 127.0.0.1:443: connect: connection refused", "host está alcançável"},
+		{"timeout explica firewall/Security Group, não é bug", "dial tcp 10.0.0.1:443: i/o timeout", "firewall/Security Group"},
+		// Mensagem real capturada do incidente (endpoint AWS EC2 "mesmo dentro da VPN não valida")
+		// — o dial falhava com exatamente este texto, tanto do processo real do servidor quanto de
+		// um shell separado em 6 tentativas seguidas; só conectava via SSM de dentro da própria
+		// instância, o que não prova alcançável de fora.
+		{"caso real: EC2 atrás de Security Group", "dial tcp 44.198.27.122:443: i/o timeout", "não vai validar por aqui mesmo com a VPN ativa"},
 		{"handshake failure genérico não é alterado (ambíguo demais)", "remote error: tls: handshake failure", "remote error: tls: handshake failure"},
 	}
 

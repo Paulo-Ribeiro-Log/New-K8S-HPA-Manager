@@ -3,6 +3,16 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Monitor de Certificados Externos — mensagem de timeout sem explicação, relatado como "mesmo dentro da VPN não valida" (Setembro 2026) ✅
+
+Relato: o endpoint `ec2-44-198-27-122.compute-1.amazonaws.com` (aba Certificados TLS → Endpoints Externos) sempre falhava com `dial tcp 44.198.27.122:443: i/o timeout`, mesmo com a VPN ativa. Investigado com o servidor real do usuário (não bug de checagem — outro endpoint cadastrado validou normalmente na mesma bateria de testes) e um shell separado (6 tentativas seguidas, ~30s, zero sucesso — descarta flutuação momentânea de rede).
+
+**Achado real, corrigido um diagnóstico errado no meio do caminho**: o usuário reportou que um `openssl s_client` manual conectava, contradizendo os testes — mas rodando de dentro de um terminal **SSM conectado na própria instância EC2**, contra o próprio nome público dela. Isso não prova alcançável de fora (a AWS costuma permitir uma instância falar com seu próprio IP público mesmo com o Security Group bloqueando tudo externo) — foi só depois de perguntar onde o comando rodou que essa causa apareceu.
+
+**Causa real**: `i/o timeout` no dial (SYN sem resposta nenhuma) é a assinatura de um Security Group/firewall descartando o pacote em silêncio — nada a ver com o certificado nem com a checagem em si (`CheckEndpointTLS`, `internal/certificates/endpoint_check.go`), que já funciona corretamente para outros endpoints. Não é um bug corrigível em código — é o Security Group da instância não liberando a rede de onde esta aplicação roda.
+
+**Corrigido, dentro do que é possível em código**: `classifyTLSDialError` ganhou dois casos novos (mesmo padrão de fraseologia neutra já usado para "certificate required"/"bad certificate" — nunca afirma o que não pode saber): `i/o timeout` vira explicação de que é sinal típico de Security Group/firewall, não de bug, com a orientação prática (abrir o SG para a rede de onde a aplicação roda); `connection refused` vira explicação distinta (host alcançável, porta fechada — diferente semanticamente de um timeout). Antes os dois casos eram devolvidos crus (`dial tcp ...: i/o timeout`), sem nenhuma pista do que aquilo significa. Validado com a mensagem real deste incidente (`dial tcp 44.198.27.122:443: i/o timeout`) como caso de teste permanente, e visualmente no navegador (lista + modal de detalhe, instância isolada) — mesma imagem exata que o usuário via, agora com a explicação completa e legível, sem cortar. Testes existentes que checavam "não é alterado" para esses dois casos foram atualizados para o novo comportamento; suíte completa (`go test ./internal/... -race`) permanece verde (uma falha em `internal/monitoring/storage` é pré-existente e não relacionada — flaky, confirmada 3/3 em isolamento).
+
 ### FinOps — índice de SKUs cobertos por reserva/Savings Plan usado nas trocas de SKU (Setembro 2026) ✅
 
 Ideia (usuário): no scan, identificar as máquinas com reserva e Savings Plan e usar isso como oferta na troca de SKU/tier — ex: `f4s_v2 → f2s_v2 (reserva)` ou `d2s_v4 (reserva)` em vez de `d2s_v5`, que não tem reserva. Escopo escolhido: índice por **uso observado** (sem permissão nova).

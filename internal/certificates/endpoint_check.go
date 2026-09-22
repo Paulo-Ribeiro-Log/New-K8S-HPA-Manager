@@ -167,9 +167,21 @@ func isTrustedByPublicCA(certs []*x509.Certificate, serverName string) bool {
 // código-fonte do Go que o servidor emite esse alerta especificamente quando ClientAuth exige
 // certificado e nenhum foi enviado — crypto/tls/handshake_server.go, requiresClientCert). "bad
 // certificate" é um sinal mais fraco (histórico do TLS 1.2, também usado por outros motivos) —
-// vira aviso qualificado, não afirmação. Qualquer outro erro (timeout, connection refused,
-// handshake failure genérico por incompatibilidade de versão/cifra, etc.) não é alterado — evita
-// diagnosticar errado.
+// vira aviso qualificado, não afirmação. "i/o timeout" e "connection refused" também ganham
+// explicação (ver abaixo) — qualquer outro erro (handshake failure genérico por incompatibilidade
+// de versão/cifra, etc.) não é alterado, evita diagnosticar errado.
+//
+// Achado real corrigido — endpoint AWS EC2 relatado como "mesmo dentro da VPN não valida": o dial
+// falhava com "i/o timeout" a partir do processo do servidor (mesma rede/VPN do usuário) — e
+// também a partir de 6 tentativas seguidas num shell separado, sem nenhum sucesso, descartando
+// flutuação momentânea. O usuário só conseguia conectar via `openssl s_client` rodando DE DENTRO
+// da própria instância EC2 (terminal SSM) contra o próprio nome público dela — isso não prova
+// alcançável de fora (AWS costuma permitir uma instância falar com seu próprio IP público mesmo
+// com o Security Group bloqueando tudo externo). "i/o timeout" no dial (SYN sem resposta nenhuma)
+// é a assinatura de um Security Group/firewall descartando o pacote em silêncio — diferente de
+// "connection refused" (host alcançável, porta genuinamente fechada/sem nada escutando, ou um
+// firewall no próprio host rejeitando ativamente, o que gera RST). Nenhuma das duas causas é bug
+// desta checagem nem do certificado — por isso a mensagem nunca afirma isso, só explica o sinal.
 // isTimeoutErr identifica um erro de timeout de rede (net.Error com Timeout()==true) — usado
 // pra distinguir "não recebemos nada, como esperado" de "o servidor nos rejeitou".
 func isTimeoutErr(err error) bool {
@@ -185,6 +197,10 @@ func classifyTLSDialError(err error) string {
 		return "Este servidor exige certificado de cliente (mTLS) para conectar — handshake recusado por não enviarmos nenhum certificado de cliente. Erro original: " + msg
 	case strings.Contains(lower, "bad certificate"):
 		return "Possível exigência de certificado de cliente (mTLS) — handshake falhou logo após não enviarmos nenhum certificado de cliente, mas esse erro também pode ter outras causas. Erro original: " + msg
+	case strings.Contains(lower, "i/o timeout"):
+		return "Sem resposta do host (timeout de conexão) — sinal típico de firewall/Security Group descartando o pacote em silêncio, não indício de problema no certificado nem nesta checagem. Esta checagem conecta a partir da rede/VPN onde o servidor desta aplicação está; se o destino só aceita conexões de dentro da própria rede (ex: só alcançável de dentro da própria instância/VPC, via SSM ou bastion), ele não vai validar por aqui mesmo com a VPN ativa — abrir o Security Group para a rede de onde esta aplicação roda é o que resolveria. Erro original: " + msg
+	case strings.Contains(lower, "connection refused"):
+		return "Conexão recusada — diferente de um timeout: o host respondeu, só que nada está escutando nesta porta (ou um firewall no próprio host rejeitou ativamente, gerando RST). O host está alcançável; a porta/serviço é que não está disponível. Erro original: " + msg
 	default:
 		return msg
 	}
