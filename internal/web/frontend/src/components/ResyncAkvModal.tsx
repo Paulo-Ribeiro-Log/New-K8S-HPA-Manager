@@ -14,8 +14,9 @@ interface ResyncAkvModalProps {
   // Opcional — chamado quando o `kubectl annotate` do resync retorna com sucesso. O resync em si
   // é assíncrono (o external-secrets ainda precisa buscar do AKV e atualizar o Secret no cluster),
   // então isso não significa "valor já atualizado", só "comando disparado com sucesso" — quem usa
-  // esse callback decide o que fazer depois (ex: poll de releitura, ver DependenciesTab.tsx).
-  // SecretsTab.tsx não passa esse prop — comportamento dela fica inalterado.
+  // esse callback decide o que fazer depois: poll de releitura, ver
+  // pollResourceRefreshAfterResync em DependenciesTab.tsx (índice de busca) e
+  // pollManifestRefreshAfterResync em SecretsTab.tsx (YAML do editor).
   onResyncSuccess?: () => void;
 }
 
