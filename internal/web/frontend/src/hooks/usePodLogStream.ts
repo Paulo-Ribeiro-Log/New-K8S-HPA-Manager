@@ -118,7 +118,17 @@ export function usePodLogStream(target: PodLogStreamTarget | null, tailLines: nu
         }
       };
 
-      es.onerror = () => setConnecting(false);
+      // BUG REAL corrigido — mesma causa de "múltiplas conexões da aplicação rodando
+      // simultaneamente consumindo recursos" reportado pelo usuário, ver comentário equivalente em
+      // usePodsWatch.ts: sem chamar closeStream() aqui, o EventSource reconectava sozinho pra
+      // sempre (comportamento padrão do browser após onerror) E a goroutine de streaming
+      // (Follow=true) no backend nunca era cancelada (cancelPodLogsStreamAll só roda via
+      // closeStream(), nunca chamado no caminho de erro) — ficava lendo logs do pod pro resto da
+      // vida do processo.
+      es.onerror = () => {
+        closeStream();
+        setConnecting(false);
+      };
     } catch {
       setConnecting(false);
     }

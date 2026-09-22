@@ -109,8 +109,20 @@ export function usePodsWatch(cluster: string, namespace: string, showSystem: boo
 
       // Watch é contínuo por natureza — nunca deveria fechar sozinho. Qualquer onerror aqui é
       // tratado como falha real (não um fechamento normal), disparando o fallback pro polling.
+      //
+      // BUG REAL corrigido — "múltiplas conexões da aplicação rodando simultaneamente consumindo
+      // recursos" reportado pelo usuário. Antes, este handler só setava watchFailed/connected, sem
+      // chamar closeStream(): (1) o EventSource nativo do browser RECONECTA SOZINHO depois de um
+      // onerror (é o comportamento padrão da spec, a menos que .close() seja chamado) — como
+      // esRef.current nunca era fechado aqui, ele ficava tentando reconectar pra sempre em segundo
+      // plano, mesmo com PodsPanel.tsx já tendo caído pro fallback de polling; (2) cada reconexão
+      // batia na MESMA session_id, mas o Cancel() do backend (watch_common.go) só é disparado por
+      // closeStream() — nunca chamado aqui — então o Informer da sessão antiga nunca era cancelado
+      // e ficava rodando pro resto da vida do processo, com uma conexão real e permanente aberta
+      // contra a API do Kubernetes. closeStream() aqui resolve as duas pontas de uma vez: fecha o
+      // EventSource (para o auto-retry) e cancela a sessão no backend (libera o Informer).
       es.onerror = () => {
-        setConnected(false);
+        closeStream();
         setWatchFailed(true);
       };
     } catch {
