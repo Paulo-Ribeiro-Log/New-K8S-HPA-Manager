@@ -94,11 +94,97 @@ function SimpleSearchableSelect({
   );
 }
 
+// MatchPatternCombobox — combobox de "Critério de busca (padrão de nome)": sugere "*" (Tudo — vira
+// o regexp ".*", sem restrição) e os regexps de `find.name.regexp` já usados por ExternalSecrets
+// existentes neste namespace (o mesmo texto que já aparecia como "critério:" nos cards acima), mas
+// sempre aceita digitar um regexp arbitrário — a "*" existe porque a secret desejada nem sempre foi
+// criada no namespace/local esperado, então o critério ideal pode não estar entre as sugestões.
+function MatchPatternCombobox({
+  value,
+  onChange,
+  suggestions,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  suggestions: string[];
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+
+  // "*" é só um atalho de exibição pro regexp "sem restrição" — a comparação/armazenamento reais
+  // sempre usam ".*" (mesmo valor que isUnscopedPattern já reconhece).
+  const toRegexp = (opt: string) => (opt === "*" ? ".*" : opt);
+  const toDisplay = (val: string) => (val.trim() === ".*" ? "*" : val);
+
+  const filteredSuggestions = suggestions.filter(
+    (s) => !search.trim() || s.toLowerCase().includes(search.trim().toLowerCase())
+  );
+  const hasExactMatch = suggestions.some((s) => toRegexp(s) === search.trim());
+
+  return (
+    <Popover open={open} onOpenChange={(o) => { setOpen(o); if (o) setSearch(""); }}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className="w-full justify-between font-normal font-mono h-9 text-xs"
+        >
+          <span className="truncate">{value ? toDisplay(value) : "Selecione ou digite um regexp..."}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+        <Command shouldFilter={false}>
+          <CommandInput placeholder="Buscar sugestão ou digitar um regexp..." value={search} onValueChange={setSearch} />
+          <CommandList>
+            <CommandGroup>
+              {filteredSuggestions.map((opt) => (
+                <CommandItem
+                  key={opt}
+                  value={opt}
+                  onSelect={() => {
+                    onChange(toRegexp(opt));
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4", toRegexp(opt) === value ? "opacity-100" : "opacity-0")} />
+                  <span className="font-mono">{opt}</span>
+                </CommandItem>
+              ))}
+              {search.trim() && !hasExactMatch && (
+                <CommandItem
+                  value={`__custom__${search}`}
+                  onSelect={() => {
+                    onChange(search.trim());
+                    setOpen(false);
+                  }}
+                >
+                  <Check className="mr-2 h-4 w-4 opacity-0" />
+                  Usar <span className="font-mono ml-1">"{search.trim()}"</span>
+                </CommandItem>
+              )}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 interface ActiveSession {
   cluster: string;
   namespace: string;
   name: string;
   targetName: string;
+  // defaultTargetSecretName — nome do Secret REAL sugerido pro "Salvar como Secret" do modal
+  // (AKVDiscoveryModal.tsx), capturado no momento em que a consulta é iniciada — vem da referência
+  // de ExternalSecret já existente escolhida pelo usuário, se houver (não o targetName acima, que
+  // é sempre o Secret temporário desta consulta).
+  defaultTargetSecretName?: string;
 }
 
 /**
@@ -149,6 +235,18 @@ export default function AKVDiscoveryTab() {
     [existingSecrets, selectedRef]
   );
 
+  // Sugestões do combobox de critério de busca: "*" (Tudo) sempre primeiro, seguido dos regexps
+  // distintos já usados por ExternalSecrets existentes neste namespace (deduplicados, sem contar
+  // ".*"/vazio, já cobertos pela opção "*").
+  const matchPatternSuggestions = useMemo(() => {
+    const distinct = new Set<string>();
+    for (const s of existingSecrets) {
+      const pattern = s.find_regexp?.trim();
+      if (pattern && pattern !== ".*") distinct.add(pattern);
+    }
+    return ["*", ...Array.from(distinct).sort()];
+  }, [existingSecrets]);
+
   const applyReference = (summary: AKVExternalSecretSummary) => {
     setSelectedRef(summary.name);
     setSecretStoreKind(summary.secret_store_kind || "ClusterSecretStore");
@@ -173,7 +271,13 @@ export default function AKVDiscoveryTab() {
         reason: reason.trim(),
       });
       toast.success(`Consulta criada: ${res.name}`);
-      setActiveSession({ cluster, namespace, name: res.name, targetName: res.target_name });
+      setActiveSession({
+        cluster,
+        namespace,
+        name: res.name,
+        targetName: res.target_name,
+        defaultTargetSecretName: selectedRefSummary?.target_name,
+      });
     } catch (e) {
       toast.error("Falha ao iniciar a consulta", {
         description: e instanceof Error ? e.message : "Erro desconhecido",
@@ -322,12 +426,20 @@ export default function AKVDiscoveryTab() {
         </div>
         <div>
           <Label className="text-xs">Critério de busca (padrão de nome)</Label>
-          <Input
-            className="mt-1 h-9 text-xs font-mono"
-            placeholder="ex: (?i).*meuapp.*"
-            value={matchPattern}
-            onChange={(e) => setMatchPattern(e.target.value)}
-          />
+          <div className="mt-1">
+            <MatchPatternCombobox
+              value={matchPattern}
+              onChange={setMatchPattern}
+              suggestions={matchPatternSuggestions}
+              disabled={!cluster || !namespace || !secretStoreName.trim()}
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            <span className="font-mono">*</span> busca tudo na origem (regexp <span className="font-mono">.*</span>)
+            — útil quando a secret não foi criada no namespace/local esperado. As demais sugestões
+            vêm dos critérios já usados por ExternalSecrets existentes neste namespace; digite um
+            regexp próprio quando nenhuma sugestão servir.
+          </p>
         </div>
         <div>
           <Label className="text-xs">Motivo (registrado para auditoria)</Label>
@@ -371,6 +483,7 @@ export default function AKVDiscoveryTab() {
           namespace={activeSession.namespace}
           name={activeSession.name}
           targetName={activeSession.targetName}
+          defaultTargetSecretName={activeSession.defaultTargetSecretName}
           onClose={() => setActiveSession(null)}
         />
       )}
