@@ -115,6 +115,10 @@ type externalSecretRaw struct {
 		} `json:"secretStoreRef"`
 		Target struct {
 			Name string `json:"name"`
+			// DeletionPolicy — só lido por secret_sync_pause.go (não por este arquivo): precisa
+			// ser "Retain" pra "Pausar sync" poder apagar o ExternalSecret com segurança sem
+			// apagar o Secret junto (ver comentário de PauseSync).
+			DeletionPolicy string `json:"deletionPolicy"`
 		} `json:"target"`
 		DataFrom []struct {
 			Find struct {

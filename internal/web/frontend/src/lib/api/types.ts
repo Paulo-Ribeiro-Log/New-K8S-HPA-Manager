@@ -177,6 +177,19 @@ export interface AkvResyncResult {
   timestamp?: number;
 }
 
+// SecretSyncStatus — ver internal/web/handlers/secret_sync_pause.go. "Pausar/Retomar sync" só se
+// aplica quando owned=true e deletionPolicyRetain=true (apagar o ExternalSecret sem essa garantia
+// apagaria o Secret junto — não é seguro).
+export interface SecretSyncStatus {
+  owned: boolean;
+  externalSecretName?: string;
+  deletionPolicyRetain?: boolean;
+  paused: boolean;
+  pausedBy?: string;
+  pausedAt?: string;
+  reason?: string;
+}
+
 // Deployment Types
 export interface DeploymentSummary {
   cluster: string;

@@ -34,6 +34,7 @@ import type {
   SecretValidateResult,
   SecretApplyResult,
   AkvResyncResult,
+  SecretSyncStatus,
   IngressSummary,
   IngressManifest,
   IngressDiffResult,
@@ -930,6 +931,44 @@ class APIClient {
       { method: "POST", body: JSON.stringify({ secret_name: secretName ?? "" }) }
     );
     return response;
+  }
+
+  // Pausar/Retomar sync — ver internal/web/handlers/secret_sync_pause.go.
+  async getSecretSyncStatus(cluster: string, namespace: string, name: string): Promise<SecretSyncStatus> {
+    const response = await this.request<APIResponse<SecretSyncStatus>>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/sync-status`
+    );
+    if (!response.data) {
+      throw new Error("Resposta sem dados");
+    }
+    return response.data;
+  }
+
+  async pauseSecretSync(
+    cluster: string,
+    namespace: string,
+    name: string,
+    reason?: string
+  ): Promise<{ externalSecretName: string; pausedBy: string }> {
+    const response = await this.request<APIResponse<{ externalSecretName: string; pausedBy: string }>>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/pause-sync`,
+      { method: "POST", body: JSON.stringify({ reason: reason ?? "" }) }
+    );
+    if (!response.data) {
+      throw new Error("Resposta sem dados");
+    }
+    return response.data;
+  }
+
+  async resumeSecretSync(cluster: string, namespace: string, name: string): Promise<{ externalSecretName: string }> {
+    const response = await this.request<APIResponse<{ externalSecretName: string }>>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/resume-sync`,
+      { method: "POST" }
+    );
+    if (!response.data) {
+      throw new Error("Resposta sem dados");
+    }
+    return response.data;
   }
 
   async createSecret(

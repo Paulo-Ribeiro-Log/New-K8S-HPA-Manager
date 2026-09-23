@@ -21,19 +21,25 @@ import (
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
+	"k8s-hpa-manager/internal/storage"
 )
 
 // SecretHandler gerencia as rotas de Secrets (placeholder KISS)
 type SecretHandler struct {
 	kubeManager    *config.KubeConfigManager
 	historyTracker *history.HistoryTracker
+	// syncPauseStore — "Pausar/Retomar sync" (secret_sync_pause.go). nil é seguro: GetSyncStatus
+	// devolve owned=false/paused=false, Pause/ResumeSync devolvem 503 — mesmo padrão de degradação
+	// graciosa de outras stores opcionais desta app (ex: netDiscoveryRegistryStore).
+	syncPauseStore *storage.SecretSyncPauseStore
 }
 
 // NewSecretHandler cria um handler com dependências já existentes
-func NewSecretHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *SecretHandler {
+func NewSecretHandler(km *config.KubeConfigManager, ht *history.HistoryTracker, syncPauseStore *storage.SecretSyncPauseStore) *SecretHandler {
 	return &SecretHandler{
 		kubeManager:    km,
 		historyTracker: ht,
+		syncPauseStore: syncPauseStore,
 	}
 }
 
