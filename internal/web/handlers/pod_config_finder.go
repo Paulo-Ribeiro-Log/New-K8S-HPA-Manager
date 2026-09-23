@@ -144,6 +144,30 @@ const configFileFindScriptNoPrintf = `find / -xdev -maxdepth 6 ` +
 	`-o -iname 'application*.properties' -o -iname 'bootstrap.yml' -o -iname 'bootstrap.yaml' \) ` +
 	`-print 2>/dev/null`
 
+// isNoShellExecError detecta o exec que falhou porque a imagem não tem `sh` (distroless, .NET
+// chiseled, etc.) — achado real: o runtime devolve `exec: "sh": executable file not found in
+// $PATH`. Nesse caso nenhum dos comandos desta ferramenta roda (find/cat/unzip dependem de sh),
+// então não adianta tentar os fallbacks: responde direto com NO_SHELL e uma mensagem legível.
+func isNoShellExecError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "executable file not found") && strings.Contains(msg, `"sh"`)
+}
+
+// respondNoShell escreve a resposta NO_SHELL. Devolve false se err não for desse tipo.
+func respondNoShell(c *gin.Context, container string, err error) bool {
+	if !isNoShellExecError(err) {
+		return false
+	}
+	c.JSON(http.StatusUnprocessableEntity, errorResponse("NO_SHELL", fmt.Sprintf(
+		"o container %q não tem shell (sh) — imagem mínima/distroless. Esta ferramenta depende de "+
+			"sh/find/cat dentro do container e não consegue buscar arquivos nele. Tente outro "+
+			"container do pod ou consulte a imagem/ConfigMap de origem.", container)))
+	return true
+}
+
 // findCandidatesWithFallback roda o script GNU (`withPrintf`, com tamanho via -printf); se falhar
 // ou não achar nada, tenta o fallback BusyBox (`noPrintf`, sem -printf) antes de desistir — mesmo
 // padrão de retry que ListConfigCandidates aplica nas duas buscas (arquivo solto e pacote).
@@ -162,6 +186,9 @@ func findCandidatesWithFallback(ctx context.Context, clientset kubernetes.Interf
 	candidates := parseArchiveCandidatesWithSize(out)
 	if len(candidates) > 0 {
 		return candidates, nil
+	}
+	if isNoShellExecError(err) {
+		return nil, err // sem sh o fallback falharia igual
 	}
 	out2, err2 := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container, []string{"sh", "-c", noPrintf})
 	candidates2 := parseArchiveCandidatesNoSize(out2)
@@ -191,6 +218,9 @@ func (h *PodHandler) ListConfigCandidates(c *gin.Context) {
 
 	fileCandidates, fileErr := findCandidatesWithFallback(ctx, clientset, restConfig, namespace, podName, container,
 		configFileFindScript, configFileFindScriptNoPrintf)
+	if respondNoShell(c, container, fileErr) {
+		return
+	}
 	for i := range fileCandidates {
 		fileCandidates[i].Kind = "file"
 	}
@@ -232,6 +262,9 @@ func (h *PodHandler) GetConfigFileContent(c *gin.Context) {
 
 	out, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container,
 		[]string{"sh", "-c", "cat " + quoteShellArg(path)})
+	if respondNoShell(c, container, err) {
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusBadGateway, errorResponse("CONFIG_FILE_READ_ERROR", err.Error()+": "+out))
 		return
@@ -340,6 +373,9 @@ func (h *PodHandler) ListArchiveEntries(c *gin.Context) {
 	defer cancel()
 
 	tool, err := detectArchiveTool(ctx, clientset, restConfig, namespace, podName, container)
+	if respondNoShell(c, container, err) {
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusBadGateway, errorResponse("ARCHIVE_TOOL_DETECT_ERROR", err.Error()))
 		return
@@ -459,6 +495,9 @@ func (h *PodHandler) GetArchiveEntryContent(c *gin.Context) {
 	defer cancel()
 
 	tool, err := detectArchiveTool(ctx, clientset, restConfig, namespace, podName, container)
+	if respondNoShell(c, container, err) {
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusBadGateway, errorResponse("ARCHIVE_TOOL_DETECT_ERROR", err.Error()))
 		return

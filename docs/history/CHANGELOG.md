@@ -3,6 +3,12 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Pods — "Buscar arquivo de configuração" em container sem shell (Setembro 2026) ✅
+
+Relato: a ferramenta falhava com o erro cru do runtime (`OCI runtime exec failed: ... exec: "sh": executable file not found in $PATH`). Causa: imagem mínima (distroless/.NET chiseled) sem `sh`, e a ferramenta roda `find`/`cat`/`unzip`/`jar` via `sh -c`. Não há como buscar nesse container sem alterar o pod (Ephemeral Container), o que a ferramenta evita por ser só leitura.
+
+Corrigido em `pod_config_finder.go`: `isNoShellExecError` reconhece o erro, a busca para na primeira tentativa (antes eram 4 execs falhando igual) e todas as rotas (candidatos, leitura de arquivo, listar/extrair pacote) devolvem `NO_SHELL` (422) com mensagem legível. Teste com a mensagem real em `pod_config_finder_test.go`.
+
 ### Monitor de Certificados Externos — mensagem de timeout sem explicação, relatado como "mesmo dentro da VPN não valida" (Setembro 2026) ✅
 
 Relato: o endpoint `ec2-44-198-27-122.compute-1.amazonaws.com` (aba Certificados TLS → Endpoints Externos) sempre falhava com `dial tcp 44.198.27.122:443: i/o timeout`, mesmo com a VPN ativa. Investigado com o servidor real do usuário (não bug de checagem — outro endpoint cadastrado validou normalmente na mesma bateria de testes) e um shell separado (6 tentativas seguidas, ~30s, zero sucesso — descarta flutuação momentânea de rede).

@@ -1,6 +1,9 @@
 package handlers
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // pod_config_finder_test.go — testes do parsing/priorização usados tanto pela busca de arquivos
 // de config soltos (Kind="file", .NET) quanto de pacotes (Kind="archive", Spring Boot) em
@@ -132,5 +135,19 @@ func TestParsePythonListOutput(t *testing.T) {
 	}
 	if got[1].Name != "BOOT-INF/classes/application.yaml" || got[1].SizeBytes != 45678 {
 		t.Errorf("got[1] = %+v", got[1])
+	}
+}
+
+// Fixture: mensagem real devolvida por execCmdInPod contra um container distroless (sem sh).
+func TestIsNoShellExecError(t *testing.T) {
+	realErr := errors.New(`stream: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "6095f63e": OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH: unknown (stderr: )`)
+	if !isNoShellExecError(realErr) {
+		t.Errorf("esperava detectar container sem sh")
+	}
+	if isNoShellExecError(errors.New("stream: command terminated with exit code 1 (stderr: )")) {
+		t.Errorf("exit code 1 do find não é falta de shell")
+	}
+	if isNoShellExecError(nil) {
+		t.Errorf("nil não é erro")
 	}
 }
