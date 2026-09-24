@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, CheckCircle2, TriangleAlert, AlertOctagon, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw, FileWarning, Building2 } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, CheckCircle2, TriangleAlert, AlertOctagon, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal, AlertCircle, Copy, Rocket, RotateCcw, FileWarning, Building2, ArrowLeft } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -251,6 +251,14 @@ interface DeploymentsTabProps {
   // sempre em segundo plano mesmo com a aba invisível — causa real de lentidão progressiva
   // reportada pelo usuário. Default true pra não quebrar outro lugar que renderize sem esse prop.
   isActive?: boolean;
+  // stateScope — chave do estado persistido por aba (usePersistedTabState). Uma instância embutida
+  // em outra aba (ex: Namespaces → Workloads) precisa de escopo próprio, senão compartilharia
+  // deployment selecionado/busca/filtros com a aba Deployments de verdade.
+  stateScope?: string;
+  // embedded — renderiza só o conteúdo do painel direito (tabela de deployments → pods → logs,
+  // editor do deployment e todos os modais), sem a lista lateral nem o SplitView. Usado pela aba
+  // Namespaces (modo "Workloads"). onBack volta para a tela de origem (lista de namespaces).
+  embedded?: { onBack: () => void; backLabel: string };
 }
 
 export const DeploymentsTab = ({
@@ -262,17 +270,19 @@ export const DeploymentsTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
   isActive = true,
+  stateScope = 'deployments',
+  embedded,
 }: DeploymentsTabProps) => {
   // Estados com persistência entre trocas de aba
-  const [searchQuery, setSearchQuery] = usePersistedTabState<string>('deployments', 'searchQuery', "");
+  const [searchQuery, setSearchQuery] = usePersistedTabState<string>(stateScope, 'searchQuery', "");
   // Filtro Todos/APPs/Sistema — pedido explícito do usuário, mesma ideia do badge isCompanyApp
   // (ver CompanyAppBadge), mas como filtro de verdade na lista: "APPs" mostra só aplicações da
   // empresa (isCompanyApp), "Sistema" mostra só o resto (ferramentas/infra), sem misturar.
-  const [appFilter, setAppFilter] = usePersistedTabState<"all" | "company" | "system">('deployments', 'appFilter', "all");
-  const [selectedDeployment, setSelectedDeployment] = usePersistedTabState<DeploymentSummary | null>('deployments', 'selectedDeployment', null);
-  const [showLabels, setShowLabels] = usePersistedTabState<boolean>('deployments', 'showLabels', false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('deployments', 'isSidebarCollapsed', false);
-  const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('deployments', 'viewMode', "editor");
+  const [appFilter, setAppFilter] = usePersistedTabState<"all" | "company" | "system">(stateScope, 'appFilter', "all");
+  const [selectedDeployment, setSelectedDeployment] = usePersistedTabState<DeploymentSummary | null>(stateScope, 'selectedDeployment', null);
+  const [showLabels, setShowLabels] = usePersistedTabState<boolean>(stateScope, 'showLabels', false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>(stateScope, 'isSidebarCollapsed', false);
+  const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">(stateScope, 'viewMode', "editor");
 
   // Permissões K8s reais — usa namespace do deployment selecionado ou o namespace filtrado
   const activeNamespace = selectedDeployment?.namespace || selectedNamespace;
@@ -3840,8 +3850,36 @@ export const DeploymentsTab = ({
 
   return (
     <>
-      {/* Layout: painel único (colapsado) ou split view */}
-      {isSidebarCollapsed ? (
+      {/* Layout: embutido (só painel direito), painel único (colapsado) ou split view */}
+      {embedded ? (
+        <div className="flex flex-col h-full min-h-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2 pb-2 border-b border-border/50 flex-shrink-0">
+            <div className="flex items-center gap-2 min-w-0 text-sm">
+              <Button variant="outline" size="sm" onClick={embedded.onBack}>
+                <ArrowLeft className="w-4 h-4 mr-1" />
+                {embedded.backLabel}
+              </Button>
+              <span className="font-semibold truncate">{selectedNamespace}</span>
+              <Button variant="outline" size="sm" onClick={refreshDeployments} disabled={!cluster || loading} title="Atualizar deployments">
+                <RefreshCcw className="w-4 h-4" />
+              </Button>
+              {selectedDeployment && (
+                <button
+                  onClick={() => { setSelectedDeployment(null); setRightView({ kind: "deployment-table" }); }}
+                  className="flex items-center justify-center w-7 h-7 rounded-full bg-primary text-primary-foreground shadow-sm hover:bg-primary/85 active:bg-primary/70 transition-colors flex-shrink-0"
+                  title="Desmarcar deployment selecionado"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            {rightTitleAction}
+          </div>
+          <div className="flex-1 overflow-auto min-h-0">
+            {renderManifestPanel()}
+          </div>
+        </div>
+      ) : isSidebarCollapsed ? (
         <div className="p-4 h-full">
           <div className="grid grid-cols-1 h-full">
             <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
