@@ -91,3 +91,49 @@ func TestGetTokens_NoRow_ReturnsNilWithoutError(t *testing.T) {
 		t.Errorf("esperava tokens nil, got: %+v", tokens)
 	}
 }
+
+// Tenant Dynatrace por ambiente: a frota HLG reporta para um tenant separado do PRD (caso real:
+// akspriv-abastecimento-hlg → kgq78385, akspriv-abastecimento-prd → nyr48864).
+func TestDynatraceTenantPorCluster(t *testing.T) {
+	store := newTestUserTokensStore(t)
+	email := "sre@example.com"
+	const prdURL, hlgURL = "https://prd.live.dynatrace.com", "https://hlg.live.dynatrace.com"
+
+	// Só PRD configurado → todo cluster (inclusive HLG) usa PRD, como antes.
+	if err := store.SaveTokens(email, &UserTokens{DynatraceURL: prdURL, DynatraceToken: "tok-prd"}); err != nil {
+		t.Fatal(err)
+	}
+	tokens, _ := store.GetTokens(email)
+	if u, _ := tokens.DynatraceCredsForCluster("akspriv-abastecimento-hlg-admin"); u != prdURL {
+		t.Fatalf("sem HLG configurado deveria cair no PRD, veio %q", u)
+	}
+	if u, _, _ := store.GetDynatraceConfig("akspriv-abastecimento-hlg-admin"); u != prdURL {
+		t.Fatalf("GetDynatraceConfig sem HLG deveria cair no PRD, veio %q", u)
+	}
+
+	tokens.DynatraceHLGURL, tokens.DynatraceHLGToken = hlgURL, "tok-hlg"
+	if err := store.SaveTokens(email, tokens); err != nil {
+		t.Fatal(err)
+	}
+	tokens, _ = store.GetTokens(email)
+	if tokens.DynatraceHLGURL != hlgURL || tokens.DynatraceHLGToken != "tok-hlg" {
+		t.Fatalf("campos HLG não persistiram: %+v", tokens)
+	}
+
+	cases := map[string]string{
+		"akspriv-abastecimento-hlg-admin":                      hlgURL,
+		"asaplog-preprod-admin":                                hlgURL,
+		"akspriv-abastecimento-prd-admin":                      prdURL,
+		"arn:aws:eks:us-east-1:123:cluster/asaplog-production": prdURL,
+		"akspriv-sem-marcador":                                 prdURL,
+		"":                                                     prdURL,
+	}
+	for cluster, want := range cases {
+		if u, _ := tokens.DynatraceCredsForCluster(cluster); u != want {
+			t.Errorf("DynatraceCredsForCluster(%q) = %q, want %q", cluster, u, want)
+		}
+		if u, _, _ := store.GetDynatraceConfig(cluster); u != want {
+			t.Errorf("GetDynatraceConfig(%q) = %q, want %q", cluster, u, want)
+		}
+	}
+}

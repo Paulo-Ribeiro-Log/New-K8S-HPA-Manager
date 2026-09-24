@@ -90,7 +90,7 @@ func loadDynatraceCredsForTest(t *testing.T) (string, string) {
 	defer sqliteClient.Close()
 
 	store := storage.NewUserTokensStore(sqliteClient)
-	dtURL, dtToken, ok := store.GetDynatraceConfig()
+	dtURL, dtToken, ok := store.GetDynatraceConfig("")
 	if !ok {
 		return "", ""
 	}

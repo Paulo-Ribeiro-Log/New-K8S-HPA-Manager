@@ -253,7 +253,7 @@ func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, w
 	// Dynatrace (primário) — mesma construção de GetReport.
 	var dtEnricher *finops.DTEnricher
 	if h.dtTokenStore != nil {
-		if dtURL, dtToken, ok := h.dtTokenStore.GetDynatraceConfig(); ok {
+		if dtURL, dtToken, ok := h.dtTokenStore.GetDynatraceConfig(cluster); ok {
 			if dtClient, err := dynatrace.NewClient(dtURL, dtToken); err != nil {
 				log.Warn().Err(err).Msg("FinOps/Rightsizing: falha ao criar cliente DT, enriquecimento DT desativado")
 			} else {

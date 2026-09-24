@@ -89,6 +89,8 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 				req.DynatraceURL = tokens.DynatraceURL
 				req.DynatraceToken = tokens.DynatraceToken
 				req.DynatraceTagFilter = tokens.DynatraceTagFilter
+				req.DynatraceHLGURL = tokens.DynatraceHLGURL
+				req.DynatraceHLGToken = tokens.DynatraceHLGToken
 			}
 		}
 	}

@@ -296,6 +296,10 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 	}
 	// Tag filter: sempre salva o valor enviado (campo não sensível, pode ser limpo)
 	tokens.DynatraceTagFilter = req.DynatraceTagFilter
+	// Tenant HLG só é editado pelo Perfil (DynatraceHandler.SaveConfig) — preservar aqui, senão
+	// salvar as chaves de IA apagaria a config de homologação (SaveTokens regrava a linha toda).
+	tokens.DynatraceHLGURL = existingTokens.DynatraceHLGURL
+	tokens.DynatraceHLGToken = existingTokens.DynatraceHLGToken
 
 	if err := h.tokensStore.SaveTokens(userEmailStr, tokens); err != nil {
 		log.Error().

@@ -248,6 +248,11 @@ func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string,
 
 // executeClusterCheck executa health check em um único cluster
 func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, cluster string, req HealthCheckRequest) (*HealthCheckResult, error) {
+	// req é cópia por cluster: em cluster não-produtivo usa o tenant Dynatrace de HLG, se houver.
+	if req.DynatraceHLGURL != "" && req.DynatraceHLGToken != "" && storage.IsNonProdClusterName(cluster) {
+		req.DynatraceURL, req.DynatraceToken = req.DynatraceHLGURL, req.DynatraceHLGToken
+	}
+
 	// Resetar circuit breaker de métricas para nova sessão/cluster
 	o.deploymentChecker.ResetMetricsCircuitBreaker()
 

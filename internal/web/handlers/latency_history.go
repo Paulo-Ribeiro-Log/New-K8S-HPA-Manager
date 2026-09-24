@@ -37,7 +37,7 @@ func (h *LatencyTestHandler) fetchHistoricalLatencyContext(ctx context.Context, 
 
 	var dtURL, dtToken string
 	if h.dtTokenStore != nil {
-		dtURL, dtToken, _ = h.dtTokenStore.GetDynatraceConfig()
+		dtURL, dtToken, _ = h.dtTokenStore.GetDynatraceConfig(cluster)
 	}
 
 	result := latencylookup.Fetch(ctx, dtURL, dtToken, cluster, namespace, serviceName)
