@@ -2,12 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, RefreshCw, Copy, Trash2, ScanEye, Binary, AlertTriangle } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Loader2, RefreshCw, Copy, Trash2, ScanEye, Binary, AlertTriangle, Save } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 import { apiClient } from "@/lib/api/client";
@@ -21,6 +25,12 @@ interface AKVDiscoveryModalProps {
   name: string;
   targetName: string;
   onClose: () => void;
+  // defaultTargetSecretName — nome do Secret REAL sugerido pra "Salvar como Secret" (ver abaixo),
+  // normalmente o target_name da referência de ExternalSecret já existente no namespace
+  // (AKVDiscoveryTab.tsx → selectedRefSummary.target_name). Nunca é o `targetName` do parâmetro
+  // acima (esse é sempre o Secret TEMPORÁRIO desta consulta, apagado ao fechar) — editável, então
+  // fica em branco quando não há referência conhecida.
+  defaultTargetSecretName?: string;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -36,9 +46,22 @@ const POLL_MAX_ATTEMPTS = 30; // ~60s de tentativa automática antes de exigir c
  * Ciclo de vida do ExternalSecret de descoberta é responsabilidade deste modal: apaga
  * automaticamente ao fechar (best-effort — o reaper do backend é a rede de segurança real se essa
  * chamada falhar) e também via botão explícito "Encerrar e Remover".
+ *
+ * "Salvar como Secret" (edição manual): motivado por um caso real — às vezes o AKV não reflete o
+ * segredo (falha na construção da própria secret na origem, ou algum impedimento técnico impede o
+ * sync), mas pra testar a aplicação em HLG o usuário precisa do Secret existindo mesmo assim, com
+ * valores digitados manualmente. Reaproveita EXATAMENTE o mesmo endpoint (`apiClient.applySecret`,
+ * server-side apply com --force-conflicts, ver internal/kubernetes/client.go) já usado pela aba
+ * Secrets — cria o Secret se ele não existir, ou sobrescreve se existir (mesmo quando gerenciado
+ * por um external-secrets real: --force-conflicts toma ownership dos campos editados). Nunca
+ * escreve no Azure Key Vault (fonte real) — só no Secret K8s, e fica explícito na UI que isso é
+ * perdido no próximo sync bem-sucedido do external-secrets.
  */
-export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClose }: AKVDiscoveryModalProps) {
-  const [modalSize, setModalSize] = useState({ width: 900, height: 620 });
+export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClose, defaultTargetSecretName }: AKVDiscoveryModalProps) {
+  // height=820 garante espaço pro editor mostrar 30 linhas por padrão em vez das ~15 anteriores
+  // (MonacoYamlEditor usa lineHeight=20px → 30 linhas = 600px, ver minHeight no container do
+  // editor abaixo; o resto é chrome do modal — header/toolbar/status).
+  const [modalSize, setModalSize] = useState({ width: 900, height: 820 });
   const resizing = useRef(false);
   const resizeDir = useRef<"se" | "e" | "s">("se");
   const lastResizePos = useRef({ x: 0, y: 0 });
@@ -59,6 +82,12 @@ export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClos
   const [stopping, setStopping] = useState(false);
   const stoppedRef = useRef(false);
 
+  // Edição manual + "Salvar como Secret" — ver comentário do componente acima.
+  const [editorValue, setEditorValue] = useState("");
+  const [targetSecretName, setTargetSecretName] = useState(defaultTargetSecretName ?? "");
+  const [saveConfirmOpen, setSaveConfirmOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!resizing.current) return;
@@ -67,7 +96,9 @@ export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClos
       lastResizePos.current = { x: e.clientX, y: e.clientY };
       setModalSize((prev) => ({
         width: resizeDir.current !== "s" ? Math.max(560, prev.width + dx) : prev.width,
-        height: resizeDir.current !== "e" ? Math.max(420, prev.height + dy) : prev.height,
+        // 700 — piso que ainda comporta as 30 linhas mínimas garantidas do editor (ver minHeight
+        // no container dele) sem cortar o chrome do modal (header/toolbar/status).
+        height: resizeDir.current !== "e" ? Math.max(700, prev.height + dy) : prev.height,
       }));
     };
     const onUp = () => {
@@ -158,14 +189,19 @@ export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClos
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const yamlContent = (() => {
-    if (!keys) return "# Aguardando sincronização...\n";
+  // baselineYaml — reconstruído sempre que a sincronização traz dado novo ou o modo de exibição
+  // muda; keys===null (sync ainda não trouxe nada, ou falhou) vira um esqueleto de Secret VÁLIDO E
+  // EDITÁVEL (data: {}) em vez de um comentário — pra permitir digitar chaves manualmente mesmo
+  // quando o AKV nunca sincronizou nada de verdade (o motivo desta feature existir).
+  const baselineYaml = (() => {
     const data: Record<string, string> = {};
-    for (const k of keys) {
-      if (k.is_binary) {
-        data[k.key] = showDecoded ? `<binário — ${k.value_base64.length} chars em base64, veja abaixo>` : k.value_base64;
-      } else {
-        data[k.key] = showDecoded ? (k.value_decoded ?? "") : k.value_base64;
+    if (keys) {
+      for (const k of keys) {
+        if (k.is_binary) {
+          data[k.key] = showDecoded ? `<binário — ${k.value_base64.length} chars em base64, veja abaixo>` : k.value_base64;
+        } else {
+          data[k.key] = showDecoded ? (k.value_decoded ?? "") : k.value_base64;
+        }
       }
     }
     const doc = {
@@ -177,8 +213,71 @@ export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClos
     return yaml.dump(doc, { lineWidth: -1 });
   })();
 
+  // Ressincroniza o buffer editável com o baseline sempre que ele muda de verdade (nova resposta
+  // do Vault, ou toggle Base64/Decodificado) — edições em andamento só sobrevivem enquanto keys e
+  // showDecoded não mudarem, o que é esperado aqui (ver comentário do componente: esta feature é
+  // uma sobreposição manual explícita, não precisa persistir através de re-sincronizações).
+  useEffect(() => {
+    setEditorValue(baselineYaml);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baselineYaml]);
+
   const handleCopyAll = () => {
-    navigator.clipboard.writeText(yamlContent).then(() => toast.success("Copiado para a área de transferência"));
+    navigator.clipboard.writeText(editorValue).then(() => toast.success("Copiado para a área de transferência"));
+  };
+
+  // "Salvar como Secret": server-side apply direto no cluster (cria se não existir, sobrescreve se
+  // existir) — nunca toca o Azure Key Vault. metadata.name/namespace do YAML editado são sempre
+  // forçados pro nome de destino escolhido (targetSecretName) e pro namespace desta sessão, mesmo
+  // que o usuário tenha editado esses campos no texto — evita o "secret name mismatch" que o
+  // backend rejeitaria se o YAML e o parâmetro de URL divergissem (ver prepareSecretApplyPayload
+  // em internal/kubernetes/client.go).
+  const handleSaveClick = () => {
+    if (showDecoded) {
+      toast.error("Não é possível salvar com valores decodificados", {
+        description: "Clique em \"Ver em Base64 (tudo)\" antes de salvar.",
+      });
+      return;
+    }
+    if (!targetSecretName.trim()) {
+      toast.error("Informe o nome do Secret de destino");
+      return;
+    }
+    setSaveConfirmOpen(true);
+  };
+
+  const confirmSave = async () => {
+    const finalName = targetSecretName.trim();
+    setSaving(true);
+    try {
+      const parsed = yaml.load(editorValue);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("YAML inválido — esperado um objeto Secret (apiVersion/kind/metadata/data)");
+      }
+      const doc = parsed as Record<string, unknown>;
+      const metadata = (doc.metadata as Record<string, unknown>) ?? {};
+      metadata.name = finalName;
+      metadata.namespace = namespace;
+      doc.metadata = metadata;
+      const finalYaml = yaml.dump(doc, { lineWidth: -1 });
+
+      await apiClient.applySecret(cluster, namespace, finalName, {
+        yaml: finalYaml,
+        fieldManager: "akv-discovery-manual-override",
+        dryRun: false,
+        force: true,
+      });
+      toast.success("Secret salvo", {
+        description: `${namespace}/${finalName} — será sobrescrito no próximo sync bem-sucedido do external-secrets, se houver`,
+      });
+      setSaveConfirmOpen(false);
+    } catch (e) {
+      toast.error("Falha ao salvar o Secret", {
+        description: e instanceof Error ? e.message : "Erro desconhecido",
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -238,6 +337,36 @@ export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClos
           </ProtectedAction>
         </div>
 
+        {/* "Salvar como Secret" — edição manual pra testes em HLG quando o AKV não sincroniza
+            (falha na origem ou impedimento técnico). Nunca escreve no Vault, só no Secret K8s. */}
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-border flex-shrink-0 flex-wrap">
+          <Label htmlFor="akv-target-secret-name" className="text-xs text-muted-foreground flex-shrink-0">
+            Salvar como Secret:
+          </Label>
+          <Input
+            id="akv-target-secret-name"
+            className="h-7 text-xs font-mono max-w-xs"
+            placeholder="nome do Secret de destino"
+            value={targetSecretName}
+            onChange={(e) => setTargetSecretName(e.target.value)}
+          />
+          <ProtectedAction>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs border-amber-500/40 text-amber-500 hover:bg-amber-500/10 hover:text-amber-400"
+              disabled={showDecoded || !targetSecretName.trim()}
+              onClick={handleSaveClick}
+              title={showDecoded ? "Volte pra Base64 antes de salvar" : "Cria ou sobrescreve o Secret no cluster (não escreve no Vault)"}
+            >
+              <Save className="h-3 w-3 mr-1" /> Salvar
+            </Button>
+          </ProtectedAction>
+          <span className="text-[11px] text-muted-foreground">
+            Sobrescreve o Secret real — perdido no próximo sync bem-sucedido do external-secrets.
+          </span>
+        </div>
+
         {statusMessage && (
           <div className="px-4 py-2 border-b border-border flex-shrink-0 text-xs flex items-start gap-1.5 text-muted-foreground">
             {!ready && <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5 text-amber-500" />}
@@ -248,13 +377,23 @@ export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClos
           </div>
         )}
 
-        <div className="flex-1 min-h-0">
+        {/* minHeight: 30 linhas * lineHeight 20px (MonacoYamlEditor) — garante o mínimo pedido
+            mesmo se o modal for redimensionado menor que o ideal pro chrome ao redor. */}
+        <div className="flex-1 min-h-0" style={{ minHeight: 600 }}>
           {loadingData && !keys ? (
             <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Carregando dados sincronizados...
             </div>
           ) : (
-            <MonacoYamlEditor value={yamlContent} mode="editor" height="100%" readOnly={false} />
+            <MonacoYamlEditor
+              value={editorValue}
+              onChange={(v) => setEditorValue(v)}
+              mode="editor"
+              height="100%"
+              readOnly={false}
+              autoCheckSecretWhitespace={!showDecoded}
+              documentKey={`${cluster}/${namespace}/${name}`}
+            />
           )}
         </div>
 
@@ -298,6 +437,36 @@ export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClos
           </svg>
         </div>
       </DialogContent>
+
+      <Dialog open={saveConfirmOpen} onOpenChange={(o) => { if (!saving) setSaveConfirmOpen(o); }}>
+        <DialogContent className="max-w-lg bg-background border-border">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="h-4 w-4 text-amber-500" /> Confirmar salvamento manual
+            </DialogTitle>
+            <DialogDescription>
+              Isso cria ou sobrescreve o Secret abaixo diretamente no cluster, agora — não é uma
+              simulação. Se o Secret já for gerenciado por um external-secrets de verdade, esta
+              operação toma ownership dos campos editados; o próximo sync bem-sucedido do AKV
+              sobrescreve os valores manuais de novo.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs space-y-1">
+            <p><span className="text-muted-foreground">Cluster:</span> {cluster}</p>
+            <p><span className="text-muted-foreground">Namespace:</span> {namespace}</p>
+            <p><span className="text-muted-foreground">Secret:</span> {targetSecretName.trim()}</p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" disabled={saving} onClick={() => setSaveConfirmOpen(false)}>
+              Cancelar
+            </Button>
+            <Button size="sm" disabled={saving} onClick={confirmSave}>
+              {saving ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
+              Confirmar e salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }

@@ -1394,12 +1394,28 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Secrets
-	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
+	// Secret Sync Pause Store (Pausar/Retomar sync de Secret gerenciado por ExternalSecret) — nil
+	// é seguro (ver comentário de SecretHandler.syncPauseStore em secrets.go).
+	var secretSyncPauseStore *storage.SecretSyncPauseStore
+	secretSyncPauseDBPath := filepath.Join(baseDir, "secret-sync-pauses.db")
+	if store, err := storage.NewSecretSyncPauseStore(secretSyncPauseDBPath); err != nil {
+		fmt.Printf("⚠️  Secret Sync Pause Store: falha ao criar store: %v\n", err)
+	} else {
+		secretSyncPauseStore = store
+		fmt.Println("✅ Secret Sync Pause Store inicializado (pausar/retomar sync de ExternalSecret)")
+	}
+	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker, secretSyncPauseStore)
 	secrets := api.Group("/secrets")
 	{
 		secrets.GET("", secretHandler.List)
 		secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
 		secrets.GET("/:cluster/:namespace/:name/describe", secretHandler.Describe)
+		// Pausar/Retomar sync — leitura (status) sem RBAC extra; escrita (pause/resume) atrás de
+		// RequireSREGroup + InjectUserEmail (auditoria via HistoryTracker precisa do e-mail real,
+		// não populado por RequireSREGroup sozinho — ver InjectUserEmail em rbac.go).
+		secrets.GET("/:cluster/:namespace/:name/sync-status", secretHandler.GetSyncStatus)
+		secrets.POST("/:cluster/:namespace/:name/pause-sync", rbacMiddleware.InjectUserEmail(), rbacMiddleware.RequireSREGroup(), secretHandler.PauseSync)
+		secrets.POST("/:cluster/:namespace/:name/resume-sync", rbacMiddleware.InjectUserEmail(), rbacMiddleware.RequireSREGroup(), secretHandler.ResumeSync)
 		secrets.POST("/diff", secretHandler.Diff)
 		secrets.POST("/validate", secretHandler.Validate)
 

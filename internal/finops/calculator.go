@@ -535,12 +535,12 @@ func collectWorkloads(
 	namespaces []string,
 ) ([]rawWorkload, map[string]string, map[string]string, error) {
 	// 1. Listar todos os ReplicaSets para resolver RS → Deployment
-	rsList, err := client.AppsV1().ReplicaSets("").List(ctx, metav1.ListOptions{})
+	rsItems, err := listAllReplicaSets(ctx, client)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	rsOwner := make(map[string]string) // "ns/rs-name" → deployment name
-	for _, rs := range rsList.Items {
+	for _, rs := range rsItems {
 		for _, ref := range rs.OwnerReferences {
 			if ref.Kind == "Deployment" {
 				rsOwner[rs.Namespace+"/"+rs.Name] = ref.Name
@@ -570,7 +570,7 @@ func collectWorkloads(
 
 	// 3. Listar pods Running
 	nsFilter := buildNamespaceFilter(namespaces)
-	podList, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+	podItems, err := listAllPods(ctx, client, metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
 	})
 	if err != nil {
@@ -594,10 +594,10 @@ func collectWorkloads(
 
 	// 4. Agregar por workload + construir mapa pod→workload para o enricher Prometheus
 	workloadMap := make(map[string]*rawWorkload)
-	podToWorkload := make(map[string]string, len(podList.Items))
+	podToWorkload := make(map[string]string, len(podItems))
 
-	for i := range podList.Items {
-		pod := &podList.Items[i]
+	for i := range podItems {
+		pod := &podItems[i]
 		if !shouldIncludeNamespace(pod.Namespace, nsFilter) {
 			continue
 		}

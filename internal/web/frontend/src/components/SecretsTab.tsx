@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -9,11 +10,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy, Shield, KeyRound } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy, Shield, KeyRound, PauseCircle, PlayCircle } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
@@ -23,6 +25,7 @@ import type {
   Namespace,
   SecretSummary,
   SecretManifest,
+  SecretSyncStatus,
 } from "@/lib/api/types";
 import { useSecrets } from "@/hooks/useAPI";
 import { SecretMonitorTable } from "@/components/SecretMonitorTable";
@@ -130,6 +133,80 @@ export const SecretsTab = ({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [resyncAkvModalOpen, setResyncAkvModalOpen] = useState(false);
+
+  // Pausar/Retomar sync (secret_sync_pause.go) — buscado a cada troca de selectedSecret, mesmo
+  // padrão do tlsCertInfo abaixo. null enquanto carrega ou quando o Secret não é gerenciado por
+  // nenhum ExternalSecret (owned:false) — o menu trata os dois casos como "opção indisponível".
+  const [syncStatus, setSyncStatus] = useState<SecretSyncStatus | null>(null);
+  const [syncStatusLoading, setSyncStatusLoading] = useState(false);
+  const [pauseSyncConfirmOpen, setPauseSyncConfirmOpen] = useState(false);
+  const [pauseSyncReason, setPauseSyncReason] = useState("");
+  const [pausingSync, setPausingSync] = useState(false);
+  const [resumingSync, setResumingSync] = useState(false);
+
+  const refreshSyncStatus = useCallback(async () => {
+    if (!selectedSecret) {
+      setSyncStatus(null);
+      return;
+    }
+    setSyncStatusLoading(true);
+    try {
+      const status = await apiClient.getSecretSyncStatus(selectedSecret.cluster, selectedSecret.namespace, selectedSecret.name);
+      setSyncStatus(status);
+    } catch {
+      setSyncStatus(null);
+    } finally {
+      setSyncStatusLoading(false);
+    }
+  }, [selectedSecret]);
+
+  useEffect(() => {
+    refreshSyncStatus();
+  }, [refreshSyncStatus]);
+
+  // "Pausar sync" — apaga o ExternalSecret (só quando deletionPolicyRetain, checado no backend) pra
+  // liberar edição manual sem o operador reconciliar (reverter) em segundos. Ver
+  // internal/web/handlers/secret_sync_pause.go pro porquê disso ser necessário.
+  const confirmPauseSync = async () => {
+    if (!selectedSecret) return;
+    setPausingSync(true);
+    try {
+      await apiClient.pauseSecretSync(selectedSecret.cluster, selectedSecret.namespace, selectedSecret.name, pauseSyncReason.trim() || undefined);
+      toast.success("Sincronização pausada", {
+        description: `${selectedSecret.namespace}/${selectedSecret.name} — o Secret continua com todos os valores atuais, agora editável sem o external-secrets reverter`,
+      });
+      setPauseSyncConfirmOpen(false);
+      setPauseSyncReason("");
+      await refreshSyncStatus();
+    } catch (err) {
+      toast.error("Falha ao pausar sincronização", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setPausingSync(false);
+    }
+  };
+
+  // "Retomar sync" — recria o ExternalSecret exatamente como estava antes de pausar; sem
+  // confirmação extra (recriar não é destrutivo — o pior caso é o operador voltar a sincronizar
+  // mais cedo do que o usuário queria, facilmente reversível pausando de novo).
+  const handleResumeSync = async () => {
+    if (!selectedSecret) return;
+    setResumingSync(true);
+    try {
+      await apiClient.resumeSecretSync(selectedSecret.cluster, selectedSecret.namespace, selectedSecret.name);
+      toast.success("Sincronização retomada", {
+        description: `${selectedSecret.namespace}/${selectedSecret.name} — o external-secrets volta a vigiar e vai restaurar os valores reais do Vault`,
+      });
+      await refreshSyncStatus();
+    } catch (err) {
+      toast.error("Falha ao retomar sincronização", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setResumingSync(false);
+    }
+  };
 
   // Visualização do certificado TLS (quando type === "kubernetes.io/tls")
   const [tlsCertModalOpen, setTlsCertModalOpen] = useState(false);
@@ -915,6 +992,14 @@ export const SecretsTab = ({
 
   const rightTitleAction = (
     <div className="flex items-center gap-2">
+      {syncStatus?.paused && (
+        <span
+          className="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-amber-500 font-medium"
+          title={`Sincronização pausada${syncStatus.pausedBy ? ` por ${syncStatus.pausedBy}` : ""}${syncStatus.reason ? ` — ${syncStatus.reason}` : ""}`}
+        >
+          <PauseCircle className="w-3 h-3" /> Sync pausado
+        </span>
+      )}
       {selectedSecret && onOpenCompare && (
         <Button
           variant="ghost"
@@ -981,6 +1066,34 @@ export const SecretsTab = ({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {syncStatus?.paused ? (
+                <DropdownMenuItem
+                  onClick={handleResumeSync}
+                  disabled={resumingSync}
+                  title="Recria o ExternalSecret exatamente como estava — o external-secrets volta a vigiar e sincronizar"
+                >
+                  <PlayCircle className="w-4 h-4 mr-2" />
+                  Retomar sincronização
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem
+                  onClick={() => setPauseSyncConfirmOpen(true)}
+                  disabled={syncStatusLoading || !syncStatus?.owned || !syncStatus?.deletionPolicyRetain}
+                  title={
+                    syncStatusLoading
+                      ? "Verificando..."
+                      : !syncStatus?.owned
+                      ? "Este Secret não é gerenciado por nenhum ExternalSecret"
+                      : !syncStatus?.deletionPolicyRetain
+                      ? "O ExternalSecret não tem deletionPolicy=Retain — pausar apagaria o Secret junto, não é seguro"
+                      : "Apaga o ExternalSecret (o Secret continua intacto) pra editar manualmente sem o external-secrets reverter em segundos — útil pra testar em HLG"
+                  }
+                >
+                  <PauseCircle className="w-4 h-4 mr-2" />
+                  Pausar sincronização
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => setDeleteConfirmOpen(true)}
                 disabled={isDeleting}
@@ -1994,6 +2107,45 @@ export const SecretsTab = ({
           }}
         />
       )}
+
+      {/* Modal Pausar Sincronização — apaga o ExternalSecret (Secret intacto, ver
+          secret_sync_pause.go) pra liberar edição manual sem reconciliação automática. */}
+      <Dialog open={pauseSyncConfirmOpen} onOpenChange={(o) => { if (!pausingSync) setPauseSyncConfirmOpen(o); }}>
+        <DialogContent className="max-w-lg bg-background border-border">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <PauseCircle className="w-4 h-4 text-amber-500" /> Pausar sincronização
+            </DialogTitle>
+            <DialogDescription>
+              Isso apaga o ExternalSecret <span className="font-mono">{syncStatus?.externalSecretName}</span> —
+              o Secret continua existindo com todos os valores atuais, agora editável livremente. O
+              external-secrets para de vigiar até você clicar em "Retomar sincronização" (recria o
+              ExternalSecret exatamente como estava).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="pause-sync-reason" className="text-xs text-muted-foreground">
+              Motivo (opcional, registrado para auditoria)
+            </Label>
+            <Input
+              id="pause-sync-reason"
+              className="h-9 text-xs"
+              placeholder="ex: testar aplicação em HLG com credencial nova"
+              value={pauseSyncReason}
+              onChange={(e) => setPauseSyncReason(e.target.value)}
+            />
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" disabled={pausingSync} onClick={() => setPauseSyncConfirmOpen(false)}>
+              Cancelar
+            </Button>
+            <Button size="sm" disabled={pausingSync} onClick={confirmPauseSync}>
+              {pausingSync ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <PauseCircle className="w-3.5 h-3.5 mr-1.5" />}
+              Confirmar e pausar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Modal Delete Confirm */}
       <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
