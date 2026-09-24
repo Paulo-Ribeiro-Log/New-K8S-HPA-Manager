@@ -4411,6 +4411,8 @@ class APIClient {
     has_token: boolean;
     enabled: boolean;
     tag_filter: string;
+    hlg_base_url?: string;
+    hlg_has_token?: boolean;
   }> {
     return this.request(`/dynatrace/config`);
   }
@@ -4419,11 +4421,16 @@ class APIClient {
     dynatrace_url?: string;
     dynatrace_token?: string;
     dynatrace_tag_filter?: string;
+    // Tenant de homologação (clusters -hlg/-dev/-stg/...). URL vazia remove o tenant HLG.
+    dynatrace_hlg_url?: string;
+    dynatrace_hlg_token?: string;
   }): Promise<{
     base_url: string;
     has_token: boolean;
     enabled: boolean;
     tag_filter: string;
+    hlg_base_url?: string;
+    hlg_has_token?: boolean;
   }> {
     return this.request(`/dynatrace/config`, {
       method: "POST",
@@ -4431,7 +4438,7 @@ class APIClient {
     });
   }
 
-  async testDynatraceConnection(): Promise<{
+  async testDynatraceConnection(env: "prd" | "hlg" = "prd"): Promise<{
     success: boolean;
     latency_ms?: number;
     base_url?: string;
@@ -4439,7 +4446,7 @@ class APIClient {
   }> {
     return this.request("/dynatrace/test", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(env === "hlg" ? { env } : {}),
     });
   }
 

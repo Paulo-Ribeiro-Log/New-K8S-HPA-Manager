@@ -146,21 +146,6 @@ func (h *DeploymentHandler) getPromClient(cluster string) (*promclient.Prometheu
 	return c, nil
 }
 
-// dynatraceClientForBehavior resolve um cliente Dynatrace pro fallback de série temporal — mesma
-// resolução de credenciais de DynatraceHandler.clientForUser/PodHandler.dynatraceClientForPods
-// (tokens salvos do usuário, fallback env vars DT_API_URL/DT_API_TOKEN).
-func (h *DeploymentHandler) dynatraceClientForBehavior(aiEmail string) (*dtclient.Client, error) {
-	var dtURL, dtToken string
-	if aiEmail != "" && h.tokensStore != nil {
-		tokens, err := h.tokensStore.GetTokens(aiEmail)
-		if err == nil && tokens != nil {
-			dtURL = tokens.DynatraceURL
-			dtToken = tokens.DynatraceToken
-		}
-	}
-	return dtclient.NewClient(dtURL, dtToken)
-}
-
 // GetDeploymentBehavior monta o gráfico de comportamento de um Deployment (réplicas, CPU/memória
 // %, restarts) numa janela de horas — Prometheus como fonte primária, Dynatrace como fallback real
 // de série temporal (não só anotação) quando o cluster não tem Prometheus instalado. Nenhuma das
@@ -270,7 +255,7 @@ func (h *DeploymentHandler) GetDeploymentBehavior(c *gin.Context) {
 	var dtc *dtclient.Client
 	var dtEntityID string
 	var dtEntityFound bool
-	if c, derr := h.dynatraceClientForBehavior(dtEmail); derr == nil {
+	if c, derr := dynatraceClientForCluster(h.tokensStore, dtEmail, cluster); derr == nil {
 		dtc = c
 		// UI usa .apps.dynatrace.com (interface web), a API usa .live.dynatrace.com — mesma
 		// transformação já usada em internal/web/handlers/dynatrace.go pro botão "Abrir no

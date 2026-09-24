@@ -132,6 +132,10 @@ type HealthCheckRequest struct {
 	DynatraceURL       string `json:"-"` // não exposto no JSON de request (preenchido internamente)
 	DynatraceToken     string `json:"-"` // não exposto no JSON de request (preenchido internamente)
 	DynatraceTagFilter string `json:"-"` // tag para filtrar problems (ex: "SRE-LOGISTICA")
+	// Tenant de homologação — executeClusterCheck troca DynatraceURL/Token por estes em cluster
+	// não-produtivo (ver storage.UserTokens.DynatraceCredsForCluster).
+	DynatraceHLGURL   string `json:"-"`
+	DynatraceHLGToken string `json:"-"`
 
 	// Timeout geral (segundos) - usado como fallback se timeouts específicos não forem definidos
 	Timeout int `json:"timeout"` // Padrão: 30s

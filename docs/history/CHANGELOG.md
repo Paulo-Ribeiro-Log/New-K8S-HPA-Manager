@@ -3,6 +3,13 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Dynatrace — tenant de homologação separado no Perfil (Setembro 2026) ✅
+
+Relato: indicador DT da aba Pods mostrava "não monitorado" em `akspriv-abastecimento-hlg` (ex: `adanalytics-hlg/comercial-sortimento-operacao`), com Dynatrace instalado. Investigado ao vivo: a instrumentação no cluster funciona (DynaKube `classicFullStack`, `liboneagentproc.so` + `liboneagentpython.so` carregados nos workers gunicorn). Causa: o DynaKube HLG aponta para o tenant **kgq78385** (homologação), o PRD para **nyr48864** — e o app só aceitava um tenant por usuário (o de PRD), então nunca achava as entidades de clusters HLG.
+
+Corrigido: `user_ai_tokens` ganhou `dynatrace_hlg_url`/`dynatrace_hlg_token` (Perfil → Dynatrace, seção "Homologação", com teste de conexão próprio via `POST /dynatrace/test {"env":"hlg"}`). `UserTokens.DynatraceCredsForCluster` escolhe o tenant pelo nome do cluster (token não-produtivo de `nonProdClusterTokens` → HLG, se configurado; senão PRD — comportamento antigo). Aplicado em: status DT da aba Pods, gráfico de Comportamento, pendentes de NodePool, Health Check (troca por cluster em `executeClusterCheck`), FinOps/Rightsizing e histórico de latência (`GetDynatraceConfig(cluster)`). A aba Dynatrace (Problems) é global e continua no tenant PRD. Validado pelo usuário ao vivo (pod HLG passou a aparecer monitorado).
+
+
 ### FinOps — "Falha ao gerar relatório FinOps: unexpected error when reading response body ... context deadline exceeded" (Setembro 2026) ✅
 
 Causa: `collectWorkloads` (`calculator.go`) e `correlateToWorkloads` (`storage_calculator.go`) listavam **todos** os Pods e ReplicaSets do cluster numa única requisição. `restConfig.Timeout` (30s) cobre a requisição inteira, inclusive a leitura do corpo; em cluster grande via VPN a resposta (RS carrega o pod template completo × `revisionHistoryLimit`) passa de dezenas de MB e o timeout estoura no meio da leitura — é essa a mensagem do client-go.

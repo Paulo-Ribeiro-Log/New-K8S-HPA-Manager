@@ -55,19 +55,23 @@ func (h *DynatraceHandler) SetInvestigateStores(orchestrator *healthcheck.Orches
 	h.depRegistry = depRegistry
 }
 
-// clientForUser cria um cliente Dynatrace para o usuário.
+// clientForUser cria um cliente Dynatrace para o usuário, no tenant que monitora o cluster
+// (HLG ou PRD, ver storage.UserTokens.DynatraceCredsForCluster; cluster "" → PRD).
 // Usa tokens salvos; fallback para env vars DT_API_URL e DT_API_TOKEN (service account futuro).
-func (h *DynatraceHandler) clientForUser(aiEmail string) (*dtclient.Client, error) {
-	var dtURL, dtToken string
+func (h *DynatraceHandler) clientForUser(aiEmail, cluster string) (*dtclient.Client, error) {
+	return dynatraceClientForCluster(h.tokensStore, aiEmail, cluster)
+}
 
-	if aiEmail != "" && h.tokensStore != nil {
-		tokens, err := h.tokensStore.GetTokens(aiEmail)
-		if err == nil && tokens != nil {
-			dtURL = tokens.DynatraceURL
-			dtToken = tokens.DynatraceToken
+// dynatraceClientForCluster é a resolução de credenciais Dynatrace compartilhada pelos handlers
+// (Dynatrace, Pods, Deployments, NodePools): tokens salvos do usuário no tenant do cluster, com
+// fallback para env vars DT_API_URL/DT_API_TOKEN dentro de dtclient.NewClient.
+func dynatraceClientForCluster(store *storage.UserTokensStore, userEmail, cluster string) (*dtclient.Client, error) {
+	var dtURL, dtToken string
+	if userEmail != "" && store != nil {
+		if tokens, err := store.GetTokens(userEmail); err == nil && tokens != nil {
+			dtURL, dtToken = tokens.DynatraceCredsForCluster(cluster)
 		}
 	}
-
 	return dtclient.NewClient(dtURL, dtToken)
 }
 
@@ -82,24 +86,26 @@ func (h *DynatraceHandler) clientForUser(aiEmail string) (*dtclient.Client, erro
 func (h *DynatraceHandler) GetConfig(c *gin.Context) {
 	userEmail := c.GetString("user_email")
 
-	var dtURL, tagFilter string
-	hasToken := false
-
+	tokens := &storage.UserTokens{}
 	if userEmail != "" && h.tokensStore != nil {
-		tokens, err := h.tokensStore.GetTokens(userEmail)
-		if err == nil && tokens != nil {
-			dtURL = tokens.DynatraceURL
-			hasToken = tokens.DynatraceToken != ""
-			tagFilter = tokens.DynatraceTagFilter
+		if t, err := h.tokensStore.GetTokens(userEmail); err == nil && t != nil {
+			tokens = t
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"base_url":   dtURL,
-		"has_token":  hasToken,
-		"enabled":    dtURL != "" && hasToken,
-		"tag_filter": tagFilter,
-	})
+	c.JSON(http.StatusOK, dynatraceConfigResponse(tokens))
+}
+
+// dynatraceConfigResponse é o corpo de GET/POST /dynatrace/config — nunca expõe os tokens.
+func dynatraceConfigResponse(t *storage.UserTokens) gin.H {
+	return gin.H{
+		"base_url":      t.DynatraceURL,
+		"has_token":     t.DynatraceToken != "",
+		"enabled":       t.DynatraceURL != "" && t.DynatraceToken != "",
+		"tag_filter":    t.DynatraceTagFilter,
+		"hlg_base_url":  t.DynatraceHLGURL,
+		"hlg_has_token": t.DynatraceHLGToken != "",
+	}
 }
 
 // ─── POST /api/v1/dynatrace/config ────────────────────────────────────────────
@@ -120,6 +126,8 @@ func (h *DynatraceHandler) SaveConfig(c *gin.Context) {
 		DynatraceURL       string `json:"dynatrace_url"`
 		DynatraceToken     string `json:"dynatrace_token"`
 		DynatraceTagFilter string `json:"dynatrace_tag_filter"`
+		DynatraceHLGURL    string `json:"dynatrace_hlg_url"`
+		DynatraceHLGToken  string `json:"dynatrace_hlg_token"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -151,6 +159,14 @@ func (h *DynatraceHandler) SaveConfig(c *gin.Context) {
 		existingTokens.DynatraceToken = req.DynatraceToken
 	}
 	existingTokens.DynatraceTagFilter = req.DynatraceTagFilter
+	// Tenant HLG é opcional: a URL sempre sobrescreve (vazia = remover o tenant HLG, junto com o
+	// token); o token, como o de PRD, só sobrescreve se vier preenchido.
+	existingTokens.DynatraceHLGURL = req.DynatraceHLGURL
+	if req.DynatraceHLGURL == "" {
+		existingTokens.DynatraceHLGToken = ""
+	} else if req.DynatraceHLGToken != "" {
+		existingTokens.DynatraceHLGToken = req.DynatraceHLGToken
+	}
 
 	if existingTokens.PreferredProvider == "" {
 		existingTokens.PreferredProvider = "ollama"
@@ -161,22 +177,39 @@ func (h *DynatraceHandler) SaveConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"base_url":   existingTokens.DynatraceURL,
-		"has_token":  existingTokens.DynatraceToken != "",
-		"enabled":    existingTokens.DynatraceURL != "" && existingTokens.DynatraceToken != "",
-		"tag_filter": existingTokens.DynatraceTagFilter,
-	})
+	c.JSON(http.StatusOK, dynatraceConfigResponse(existingTokens))
 }
 
 // ─── POST /api/v1/dynatrace/test ──────────────────────────────────────────────
 
 // TestConnection testa conectividade com a API Dynatrace do usuário logado (mesma identidade de
-// GetConfig/SaveConfig — via InjectUserEmail()).
+// GetConfig/SaveConfig — via InjectUserEmail()). Body opcional {"env":"hlg"} testa o tenant de
+// homologação em vez do de produção.
 func (h *DynatraceHandler) TestConnection(c *gin.Context) {
 	userEmail := c.GetString("user_email")
 
-	client, err := h.clientForUser(userEmail)
+	var req struct {
+		Env string `json:"env"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	var client *dtclient.Client
+	var err error
+	if req.Env == "hlg" {
+		// Sem o fallback pra PRD de DynatraceCredsForCluster — testar o HLG sem ele configurado
+		// daria "conectado" contra o tenant errado.
+		var tokens *storage.UserTokens
+		if h.tokensStore != nil && userEmail != "" {
+			tokens, _ = h.tokensStore.GetTokens(userEmail)
+		}
+		if tokens == nil || tokens.DynatraceHLGURL == "" || tokens.DynatraceHLGToken == "" {
+			c.JSON(http.StatusOK, gin.H{"success": false, "error": "tenant de homologação não configurado (URL e token)"})
+			return
+		}
+		client, err = dtclient.NewClient(tokens.DynatraceHLGURL, tokens.DynatraceHLGToken)
+	} else {
+		client, err = h.clientForUser(userEmail, "")
+	}
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "error": err.Error()})
 		return
@@ -204,7 +237,7 @@ func (h *DynatraceHandler) TestConnection(c *gin.Context) {
 func (h *DynatraceHandler) GetManagementZones(c *gin.Context) {
 	aiEmail := c.Query("ai_email")
 
-	client, err := h.clientForUser(aiEmail)
+	client, err := h.clientForUser(aiEmail, "")
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"zones": []interface{}{}})
 		return
@@ -230,7 +263,7 @@ func (h *DynatraceHandler) GetManagementZones(c *gin.Context) {
 func (h *DynatraceHandler) ListProblems(c *gin.Context) {
 	aiEmail := c.Query("ai_email")
 
-	client, err := h.clientForUser(aiEmail)
+	client, err := h.clientForUser(aiEmail, "")
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"problems":          []interface{}{},
@@ -351,7 +384,7 @@ func (h *DynatraceHandler) GetProblem(c *gin.Context) {
 	problemID := c.Param("problemId")
 	aiEmail := c.Query("ai_email")
 
-	client, err := h.clientForUser(aiEmail)
+	client, err := h.clientForUser(aiEmail, "")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -392,7 +425,7 @@ func (h *DynatraceHandler) AnalyzeProblem(c *gin.Context) {
 	// segue resolvendo só o provider de IA (req.AIEmail, usado abaixo em GetProviderForUser). As
 	// duas identidades podem ser pessoas/contas diferentes — não é bug, é o token Dynatrace sendo
 	// gerado sob uma conta diferente do e-mail corporativo primário usado no login deste app.
-	dtClient, err := h.clientForUser(c.GetString("user_email"))
+	dtClient, err := h.clientForUser(c.GetString("user_email"), "")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -511,7 +544,7 @@ func (h *DynatraceHandler) GetProblemMetrics(c *gin.Context) {
 	problemID := c.Param("problemId")
 	aiEmail := c.Query("ai_email")
 
-	client, err := h.clientForUser(aiEmail)
+	client, err := h.clientForUser(aiEmail, "")
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"error": err.Error(), "not_configured": true})
 		return
@@ -553,7 +586,7 @@ func (h *DynatraceHandler) GetProblemContext(c *gin.Context) {
 	problemID := c.Param("problemId")
 	aiEmail := c.Query("ai_email")
 
-	client, err := h.clientForUser(aiEmail)
+	client, err := h.clientForUser(aiEmail, "")
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"error": err.Error(), "not_configured": true})
 		return
@@ -672,7 +705,7 @@ func (h *DynatraceHandler) InvestigateProblem(c *gin.Context) {
 	}
 
 	// Identidade Dynatrace via InjectUserEmail() (JWT/RBAC) — ver nota equivalente em AnalyzeProblem.
-	dtClient, err := h.clientForUser(c.GetString("user_email"))
+	dtClient, err := h.clientForUser(c.GetString("user_email"), "")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

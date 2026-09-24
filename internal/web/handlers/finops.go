@@ -77,7 +77,7 @@ type FinOpsHandler struct {
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
 type dtTokenReader interface {
-	GetDynatraceConfig() (url string, token string, ok bool)
+	GetDynatraceConfig(cluster string) (url string, token string, ok bool)
 }
 
 // NewFinOpsHandler cria o handler com as dependências compartilhadas.
@@ -260,7 +260,7 @@ func (h *FinOpsHandler) doGetReport(
 	// Dynatrace (primário) — criado automaticamente se token configurado
 	var dtEnricher *finops.DTEnricher
 	if h.dtTokenStore != nil {
-		if dtURL, dtToken, ok := h.dtTokenStore.GetDynatraceConfig(); ok {
+		if dtURL, dtToken, ok := h.dtTokenStore.GetDynatraceConfig(cluster); ok {
 			dtClient, err := dynatrace.NewClient(dtURL, dtToken)
 			if err != nil {
 				log.Warn().Err(err).Msg("FinOps: falha ao criar cliente DT, enriquecimento DT desativado")

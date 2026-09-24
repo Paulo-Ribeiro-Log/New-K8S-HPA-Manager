@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -19,31 +20,36 @@ func NewUserTokensStore(client *SQLiteClient) *UserTokensStore {
 
 // UserTokens representa tokens de um usuário
 type UserTokens struct {
-	UserEmail                string            `json:"user_email"`
-	GeminiAPIKey             string            `json:"gemini_api_key,omitempty"`
-	GeminiModel              string            `json:"gemini_model,omitempty"`
-	GeminiAuthMode           string            `json:"gemini_auth_mode,omitempty"`            // "apikey" ou "vertex"
-	GeminiVertexProject      string            `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
-	GeminiVertexLocation     string            `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
-	GeminiServiceAccountJSON string            `json:"gemini_service_account_json,omitempty"` // JSON do service account (sem gcloud)
-	GeminiRefreshToken       string            `json:"gemini_refresh_token,omitempty"`        // OAuth refresh token (Device Auth flow)
-	GeminiWifLoginURL        string            `json:"gemini_wif_login_url,omitempty"`        // URL de login SSO corporativo (WIF)
-	OpenAIAPIKey             string            `json:"openai_api_key,omitempty"`
-	OpenAIModel              string            `json:"openai_model,omitempty"`
-	OpenAIBaseURL            string            `json:"openai_base_url,omitempty"` // endpoint compatível (ex: GitHub Models)
-	ClaudeAPIKey             string            `json:"claude_api_key,omitempty"`
-	ClaudeModel              string            `json:"claude_model,omitempty"`
-	CopilotAPIKey            string            `json:"copilot_api_key,omitempty"`
-	CopilotEndpoint          string            `json:"copilot_endpoint,omitempty"`
-	CopilotDeployment        string            `json:"copilot_deployment,omitempty"`
-	OllamaModel              string            `json:"ollama_model,omitempty"`
-	PreferredProvider        string            `json:"preferred_provider"`
-	DynatraceURL             string            `json:"dynatrace_url,omitempty"`
-	DynatraceToken           string            `json:"dynatrace_token,omitempty"`
-	DynatraceTagFilter       string            `json:"dynatrace_tag_filter,omitempty"` // filtro de tag: mostrar apenas problems com essa tag
-	Metadata                 map[string]string `json:"metadata,omitempty"`
-	UpdatedAt                time.Time         `json:"updated_at"`
-	CreatedAt                time.Time         `json:"created_at"`
+	UserEmail                string `json:"user_email"`
+	GeminiAPIKey             string `json:"gemini_api_key,omitempty"`
+	GeminiModel              string `json:"gemini_model,omitempty"`
+	GeminiAuthMode           string `json:"gemini_auth_mode,omitempty"`            // "apikey" ou "vertex"
+	GeminiVertexProject      string `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
+	GeminiVertexLocation     string `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
+	GeminiServiceAccountJSON string `json:"gemini_service_account_json,omitempty"` // JSON do service account (sem gcloud)
+	GeminiRefreshToken       string `json:"gemini_refresh_token,omitempty"`        // OAuth refresh token (Device Auth flow)
+	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`        // URL de login SSO corporativo (WIF)
+	OpenAIAPIKey             string `json:"openai_api_key,omitempty"`
+	OpenAIModel              string `json:"openai_model,omitempty"`
+	OpenAIBaseURL            string `json:"openai_base_url,omitempty"` // endpoint compatível (ex: GitHub Models)
+	ClaudeAPIKey             string `json:"claude_api_key,omitempty"`
+	ClaudeModel              string `json:"claude_model,omitempty"`
+	CopilotAPIKey            string `json:"copilot_api_key,omitempty"`
+	CopilotEndpoint          string `json:"copilot_endpoint,omitempty"`
+	CopilotDeployment        string `json:"copilot_deployment,omitempty"`
+	OllamaModel              string `json:"ollama_model,omitempty"`
+	PreferredProvider        string `json:"preferred_provider"`
+	DynatraceURL             string `json:"dynatrace_url,omitempty"`
+	DynatraceToken           string `json:"dynatrace_token,omitempty"`
+	DynatraceTagFilter       string `json:"dynatrace_tag_filter,omitempty"` // filtro de tag: mostrar apenas problems com essa tag
+	// Tenant Dynatrace de homologação — a frota não-produtiva reporta para um tenant separado
+	// (ex: akspriv-abastecimento-hlg → kgq78385, enquanto o PRD → nyr48864). DynatraceURL/Token
+	// acima continuam sendo o tenant de produção. Ver DynatraceCredsForCluster.
+	DynatraceHLGURL   string            `json:"dynatrace_hlg_url,omitempty"`
+	DynatraceHLGToken string            `json:"dynatrace_hlg_token,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+	CreatedAt         time.Time         `json:"created_at"`
 }
 
 // CreateTable cria tabela de tokens de usuários
@@ -96,6 +102,8 @@ func (s *UserTokensStore) CreateTable() error {
 		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_tag_filter TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_wif_login_url TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN openai_base_url TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_hlg_url TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_hlg_token TEXT`,
 	}
 
 	for _, migration := range migrations {
@@ -130,8 +138,9 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
 		gemini_service_account_json, gemini_refresh_token, gemini_wif_login_url, openai_api_key, openai_model, openai_base_url,
 		claude_api_key, claude_model, copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model,
-		preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter, metadata, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter, dynatrace_hlg_url, dynatrace_hlg_token,
+		metadata, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(user_email) DO UPDATE SET
 		gemini_api_key = excluded.gemini_api_key,
 		gemini_model = excluded.gemini_model,
@@ -154,6 +163,8 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		dynatrace_url = excluded.dynatrace_url,
 		dynatrace_token = excluded.dynatrace_token,
 		dynatrace_tag_filter = excluded.dynatrace_tag_filter,
+		dynatrace_hlg_url = excluded.dynatrace_hlg_url,
+		dynatrace_hlg_token = excluded.dynatrace_hlg_token,
 		metadata = excluded.metadata,
 		updated_at = excluded.updated_at
 	`
@@ -181,6 +192,8 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		tokens.DynatraceURL,
 		tokens.DynatraceToken,
 		tokens.DynatraceTagFilter,
+		tokens.DynatraceHLGURL,
+		tokens.DynatraceHLGToken,
 		metadataJSON,
 		tokens.UpdatedAt,
 	)
@@ -202,7 +215,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	SELECT user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
 	       gemini_service_account_json, gemini_refresh_token, gemini_wif_login_url, openai_api_key, openai_model, openai_base_url,
 	       claude_api_key, claude_model, copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model,
-	       preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter, metadata, updated_at, created_at
+	       preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter, dynatrace_hlg_url, dynatrace_hlg_token,
+	       metadata, updated_at, created_at
 	FROM user_ai_tokens
 	WHERE user_email = ?
 	`
@@ -218,6 +232,7 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	var copilotAPIKey, copilotEndpoint, copilotDeployment sql.NullString
 	var ollamaModel, preferredProvider sql.NullString
 	var dynatraceURL, dynatraceToken, dynatraceTagFilter sql.NullString
+	var dynatraceHLGURL, dynatraceHLGToken sql.NullString
 
 	// Bug real corrigido: linhas criadas por caminhos de INSERT parciais (SaveGitHubEditorProfiles,
 	// SaveCloudAccountHints — só preenchem user_email + a própria coluna + preferred_provider)
@@ -249,6 +264,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 		&dynatraceURL,
 		&dynatraceToken,
 		&dynatraceTagFilter,
+		&dynatraceHLGURL,
+		&dynatraceHLGToken,
 		&metadataJSON,
 		&tokens.UpdatedAt,
 		&tokens.CreatedAt,
@@ -274,6 +291,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	tokens.DynatraceURL = dynatraceURL.String
 	tokens.DynatraceToken = dynatraceToken.String
 	tokens.DynatraceTagFilter = dynatraceTagFilter.String
+	tokens.DynatraceHLGURL = dynatraceHLGURL.String
+	tokens.DynatraceHLGToken = dynatraceHLGToken.String
 
 	if err == sql.ErrNoRows {
 		return nil, nil // Usuário não tem tokens configurados
@@ -294,12 +313,37 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	return &tokens, nil
 }
 
-// GetDynatraceConfig retorna URL e token Dynatrace do primeiro usuário que os tenha configurados.
+// DynatraceCredsForCluster devolve URL e token do tenant Dynatrace que monitora o cluster:
+// o de homologação (DynatraceHLGURL/Token) quando o nome do cluster indica ambiente não-produtivo
+// E esse tenant está configurado; senão o de produção (DynatraceURL/Token) — mesmo comportamento
+// de antes pra quem só configurou um tenant. cluster == "" → produção.
+func (t *UserTokens) DynatraceCredsForCluster(cluster string) (url, token string) {
+	if t == nil {
+		return "", ""
+	}
+	if t.DynatraceHLGURL != "" && t.DynatraceHLGToken != "" && IsNonProdClusterName(cluster) {
+		return t.DynatraceHLGURL, t.DynatraceHLGToken
+	}
+	return t.DynatraceURL, t.DynatraceToken
+}
+
+// GetDynatraceConfig retorna URL e token Dynatrace (do tenant adequado ao cluster, ver
+// DynatraceCredsForCluster) do usuário mais recente que tenha esse tenant configurado.
 // Satisfaz a interface dtTokenReader usada pelo FinOpsHandler.
-func (s *UserTokensStore) GetDynatraceConfig() (url string, token string, ok bool) {
+func (s *UserTokensStore) GetDynatraceConfig(cluster string) (url string, token string, ok bool) {
 	query := `SELECT dynatrace_url, dynatrace_token FROM user_ai_tokens
 	           WHERE dynatrace_url != '' AND dynatrace_token != ''
 	           ORDER BY updated_at DESC LIMIT 1`
+	if IsNonProdClusterName(cluster) {
+		// Prioriza quem tem o tenant HLG; sem ninguém com HLG, cai no PRD (comportamento antigo).
+		row := s.client.db.QueryRow(`SELECT dynatrace_hlg_url, dynatrace_hlg_token FROM user_ai_tokens
+		           WHERE dynatrace_hlg_url != '' AND dynatrace_hlg_token != ''
+		           ORDER BY updated_at DESC LIMIT 1`)
+		var u, t string
+		if err := row.Scan(&u, &t); err == nil {
+			return u, t, true
+		}
+	}
 	row := s.client.db.QueryRow(query)
 	var u, t string
 	if err := row.Scan(&u, &t); err != nil {
@@ -442,4 +486,20 @@ func (s *UserTokensStore) ensureCloudAccountHintsColumn() error {
 		`ALTER TABLE user_ai_tokens ADD COLUMN cloud_account_hints TEXT`)
 	// "duplicate column name" é esperado se coluna já existe — ignorar
 	return err
+}
+
+// IsNonProdClusterName reporta se o nome do cluster/context tem algum token de ambiente
+// não-produtivo (nonProdClusterTokens, por TOKEN e não substring — "asaplog-preprod-admin" é
+// não-produtivo, "akspriv-abastecimento-prd-admin" não). Nome sem marcador nenhum → produção.
+func IsNonProdClusterName(cluster string) bool {
+	for _, tok := range strings.FieldsFunc(strings.ToLower(cluster), func(r rune) bool {
+		return r == '-' || r == '_' || r == '/' || r == '.' || r == ':'
+	}) {
+		for _, marker := range nonProdClusterTokens {
+			if tok == marker {
+				return true
+			}
+		}
+	}
+	return false
 }

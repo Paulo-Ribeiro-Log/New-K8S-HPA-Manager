@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	dtclient "k8s-hpa-manager/internal/dynatrace"
-
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -63,16 +61,7 @@ func (h *NodePoolHandler) GetPendingWorkloads(c *gin.Context) {
 
 // queryDTPending consulta workloads com pods não prontos via Dynatrace.
 func (h *NodePoolHandler) queryDTPending(ctx context.Context, cluster, aiEmail string) ([]PendingWorkload, error) {
-	var dtURL, dtToken string
-	if aiEmail != "" && h.tokensStore != nil {
-		tokens, err := h.tokensStore.GetTokens(aiEmail)
-		if err == nil && tokens != nil {
-			dtURL = tokens.DynatraceURL
-			dtToken = tokens.DynatraceToken
-		}
-	}
-
-	dt, err := dtclient.NewClient(dtURL, dtToken)
+	dt, err := dynatraceClientForCluster(h.tokensStore, aiEmail, cluster)
 	if err != nil {
 		return nil, err
 	}

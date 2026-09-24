@@ -10,23 +10,6 @@ import (
 	dtclient "k8s-hpa-manager/internal/dynatrace"
 )
 
-// dynatraceClientForPods resolve um cliente Dynatrace para checagem de status de monitoramento.
-// Mesma resolução de credenciais de DynatraceHandler.clientForUser: tokens salvos do usuário
-// (se aiEmail fornecido) com fallback para env vars DT_API_URL/DT_API_TOKEN (service account).
-func (h *PodHandler) dynatraceClientForPods(aiEmail string) (*dtclient.Client, error) {
-	var dtURL, dtToken string
-
-	if aiEmail != "" && h.tokensStore != nil {
-		tokens, err := h.tokensStore.GetTokens(aiEmail)
-		if err == nil && tokens != nil {
-			dtURL = tokens.DynatraceURL
-			dtToken = tokens.DynatraceToken
-		}
-	}
-
-	return dtclient.NewClient(dtURL, dtToken)
-}
-
 // GetDynatraceStatus retorna quais pods de um cluster têm entidade Dynatrace correspondente
 // (monitorados via OneAgent ou via OpenTelemetry/Cloud Native Full Stack), para o indicador
 // visual na aba Pods (painéis esquerdo e direito).
@@ -58,7 +41,7 @@ func (h *PodHandler) GetDynatraceStatus(c *gin.Context) {
 		"monitored":         []string{},
 	}
 
-	dtc, err := h.dynatraceClientForPods(aiEmail)
+	dtc, err := dynatraceClientForCluster(h.tokensStore, aiEmail, cluster)
 	if err != nil {
 		// Dynatrace não configurado (nem tokens do usuário, nem env vars) — estado "não aplicável",
 		// não um erro.
