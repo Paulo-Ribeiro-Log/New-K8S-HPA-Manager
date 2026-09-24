@@ -1771,6 +1771,7 @@ export interface ConntrackNodeStats {
   count: number;
   max: number;
   buckets: number;
+  max_map_count?: number; // sysctl vm.max_map_count (-1/ausente = não lido)
   usage_pct: number;
   status: 'ok' | 'warning' | 'critical' | 'error';
   probe_method: string;

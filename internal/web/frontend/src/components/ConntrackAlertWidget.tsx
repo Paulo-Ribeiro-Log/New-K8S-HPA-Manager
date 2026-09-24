@@ -39,6 +39,9 @@ export function ConntrackAlertWidget({ cluster }: Props) {
   });
 
   const validNodes: ConntrackNodeStats[] = (data?.nodes ?? []).filter((n) => !n.error && n.max > 0);
+  // Nós cuja leitura falhou (ex: nenhum pod hostNetwork com shell, exec negado) — antes eram
+  // descartados em silêncio e o widget só dizia "sem dados válidos", sem motivo nenhum.
+  const failedNodes: ConntrackNodeStats[] = (data?.nodes ?? []).filter((n) => !!n.error || n.max <= 0);
   const highest = validNodes.reduce<ConntrackNodeStats | null>(
     (max, n) => (!max || n.usage_pct > max.usage_pct ? n : max),
     null
@@ -68,7 +71,7 @@ export function ConntrackAlertWidget({ cluster }: Props) {
         {isLoading || isFetching ? (
           <RefreshCw className="w-3 h-3 animate-spin text-muted-foreground flex-shrink-0" />
         ) : error ? (
-          <span className="text-red-400">Erro ao carregar</span>
+          <span className="text-red-400" title={error instanceof Error ? error.message : undefined}>Erro ao carregar</span>
         ) : data ? (
           <>
             <StatusIcon className={`w-3.5 h-3.5 ${colors.text} flex-shrink-0`} />
@@ -80,6 +83,8 @@ export function ConntrackAlertWidget({ cluster }: Props) {
                   {" · "}
                   <span className={colors.text}>{highestPct.toFixed(1)}%</span>
                 </>
+              ) : failedNodes.length > 0 ? (
+                `falha em ${failedNodes.length} nó(s)`
               ) : (
                 "sem dados válidos"
               )}
@@ -96,7 +101,12 @@ export function ConntrackAlertWidget({ cluster }: Props) {
             <DialogTitle>Conntrack — todos os nós do cluster</DialogTitle>
           </DialogHeader>
           <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
-            {validNodes.length === 0 && (
+            {error && (
+              <p className="text-xs text-red-400 font-mono break-words py-2">
+                {error instanceof Error ? error.message : "Erro ao carregar"}
+              </p>
+            )}
+            {!error && validNodes.length === 0 && failedNodes.length === 0 && (
               <p className="text-sm text-muted-foreground py-4 text-center">Nenhum dado disponível.</p>
             )}
             {[...validNodes]
@@ -116,6 +126,15 @@ export function ConntrackAlertWidget({ cluster }: Props) {
                   </div>
                 );
               })}
+            {failedNodes.map((n) => (
+              <div
+                key={`err-${n.node_name}`}
+                className="px-3 py-2 rounded border border-red-500/30 bg-red-500/5 text-xs space-y-0.5"
+              >
+                <span className="font-mono">{n.node_name}</span>
+                <p className="text-red-400 break-words">{n.error || "limite de conntrack não informado pelo nó"}</p>
+              </div>
+            ))}
           </div>
         </DialogContent>
       </Dialog>

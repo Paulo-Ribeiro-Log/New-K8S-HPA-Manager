@@ -3,6 +3,15 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Node Pools — reload de SNAT/Conntrack, erros legíveis e colunas de sysctl (Setembro 2026)
+
+Relato: widgets de SNAT/Conntrack "falhando" e sem atualizar com os botões de reload. Causa do "não atualiza": os widgets usam React Query com `staleTime` de 2min e o reload do painel só remontava o `NodePoolEditor` + `refetchNodePools` — nenhuma query `snat-*`/`conntrack-alert-cluster` era invalidada. Corrigido com botão próprio ao lado dos widgets (`refreshSnatConntrack` em `Index.tsx`, invalida por predicate do cluster atual); o reload do node pool saiu do cabeçalho (ficava idêntico) para a linha de Análise Preditiva/Histórico no `NodePoolEditor` (props `onRefresh`/`refreshing`/`refreshLabel`) e também atualiza os widgets.
+
+Falha: não reproduzida em `akspriv-abastecimento-hlg` (exec de conntrack e `az aks show` ok). Tornada diagnosticável: `snatCLIError` (`nodepools_snat.go`) anexa o stderr de `az`/`aws`/`gcloud` (antes só "exit status 1") ou "tempo esgotado"; SNATPortWidget mostra a mensagem no modal/tooltip; ConntrackAlertWidget lista nós com falha e o erro de cada um (antes descartados, só "sem dados válidos"). Causa raiz pendente de um cluster que reproduza.
+
+Aba Conntrack: colunas `nf_conntrack_max` e `vm.max_map_count` — este último lido no mesmo exec (`/proc/sys/vm/max_map_count`, campo `max_map_count`).
+
+
 ### Namespaces — painel direito mostra "Workloads" (namespaces → deployments → pods) sem seleção (Setembro 2026) ✅
 
 Pedido: no painel direito da aba Namespaces, listar os namespaces e navegar até deployments e pods com todos os recursos das abas Deployments/Pods, sem alterar a lista da esquerda. Comportamento final: com namespace selecionado à esquerda, o painel direito continua mostrando o YAML/detalhes e suas ferramentas (original); sem seleção (ou após o "X" de desmarcar), mostra "Workloads". Ao clicar num namespace em Workloads, renderiza a própria `DeploymentsTab` em modo embutido (props novas `embedded` e `stateScope`): mesma tabela de deployments, drill-down de pods com logs/métricas/coluna DT, editor do deployment e todos os modais — sem duplicar código. `stateScope="namespaces-workloads"` isola o estado persistido da aba Deployments de verdade. A visão geral do cluster (gráficos CPU/memória/pods por namespace), que ocupava o painel sem seleção, foi para o modal "Visão geral do cluster" no cabeçalho. Fica de fora só o que vive na lista lateral da aba Deployments (seletor de namespace, filtro empresa/sistema).

@@ -355,7 +355,7 @@ func fetchEKSCosts(ctx context.Context, clusterCtx, profile, regionHint string) 
 
 	out, err := exec.CommandContext(ctx, "aws", args...).Output()
 	if err != nil {
-		return eksFallbackCosts(fmt.Sprintf("aws pricing get-products: %v", err))
+		return eksFallbackCosts(fmt.Sprintf("aws pricing get-products: %v", snatCLIError(ctx, err)))
 	}
 
 	var priceResp struct {
