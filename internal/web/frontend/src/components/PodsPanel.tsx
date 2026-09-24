@@ -27,7 +27,7 @@ import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { useUserPermissions } from "@/hooks/useUserPermissions";
-import { useDynatracePodStatus } from "@/hooks/useAPI";
+import { useDynatracePodStatus, useDynatracePodCoverage } from "@/hooks/useAPI";
 import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
 import { PodTerminal } from "@/components/PodTerminal";
 import { PodSFTPModal } from "@/components/PodSFTPModal";
@@ -49,6 +49,14 @@ import { PodMonitorTable } from "@/components/PodMonitorTable";
 import { usePodsWatch } from "@/hooks/usePodsWatch";
 import { PodLogsPanel } from "@/components/PodLogsPanel";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
+
+// Badges de deep monitoring no painel de detalhes do pod (status vindo de /dynatrace/coverage/pods).
+const DT_COVERAGE_LABEL: Record<string, string> = { Ativo: "Deep monitoring ativo", "Nao resolvido": "Não resolvido", "Sem servico": "Sem serviço" };
+const DT_COVERAGE_BADGE: Record<string, string> = {
+  Ativo: "bg-green-500/10 text-green-700 dark:text-green-400",
+  "Nao resolvido": "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  "Sem servico": "text-muted-foreground",
+};
 
 interface PodsPanelProps {
   cluster: string;
@@ -84,6 +92,7 @@ export const PodsPanel = ({
   const { data: userPermsForDT } = useUserPermissions();
   const aiEmailForDT = userPermsForDT?.email || "";
   const { clusterSupported: dtClusterSupported, monitoredKeys: dtMonitoredKeys, hasLoaded: dtHasLoaded, checkError: dtCheckError, refetch: refetchDtStatus } = useDynatracePodStatus(cluster, aiEmailForDT);
+  const dtCoverage = useDynatracePodCoverage(cluster, dtClusterSupported);
   const canWritePods = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWritePods : undefined;
 
   // ✅ Estados com persistência entre trocas de aba
@@ -1087,6 +1096,14 @@ export const PodsPanel = ({
 
   const rightTitleAction = selectedPod && (
     <div className="flex items-center gap-2">
+      {dtHasLoaded && (
+        <DynatraceStatusIcon
+          status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys, getPodKey(selectedPod))}
+          errorDetail={dtCheckError}
+          coverage={dtCoverage[getPodKey(selectedPod)]}
+          className="w-4 h-4"
+        />
+      )}
       <Button
         variant="outline"
         size="sm"
@@ -1325,6 +1342,7 @@ export const PodsPanel = ({
                     <DynatraceStatusIcon
                       status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys, getPodKey(pod))}
                       errorDetail={dtCheckError}
+                      coverage={dtCoverage[getPodKey(pod)]}
                     />
                   ) : (
                     // Enquanto a 1ª consulta ao Dynatrace não resolve (pode levar vários segundos
@@ -1526,6 +1544,26 @@ export const PodsPanel = ({
               </Badge>
             ))}
           </div>
+
+          {/* Dynatrace — deep monitoring (useDynatracePodCoverage): versão do OneAgent + processos */}
+          {dtCoverage[getPodKey(selectedPod)] && (
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span className="text-muted-foreground">Dynatrace:</span>
+              <span className="text-muted-foreground">
+                OneAgent <span className="font-mono text-foreground">{dtCoverage[getPodKey(selectedPod)].oneagent_version || "—"}</span>
+              </span>
+              {dtCoverage[getPodKey(selectedPod)].processes.map((p) => (
+                <Badge
+                  key={`${p.process_name}|${p.technology}`}
+                  variant="outline"
+                  className={`text-xs ${DT_COVERAGE_BADGE[p.deep_monitoring_status] ?? ""}`}
+                  title={p.process_name}
+                >
+                  {p.technology || "—"} · {DT_COVERAGE_LABEL[p.deep_monitoring_status] ?? p.deep_monitoring_status}
+                </Badge>
+              ))}
+            </div>
+          )}
 
           {/* Labels - Colapsável */}
           {selectedPod.labels && Object.keys(selectedPod.labels).length > 0 && (

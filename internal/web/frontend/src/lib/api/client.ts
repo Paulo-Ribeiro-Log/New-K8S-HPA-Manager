@@ -24,6 +24,7 @@ import type {
   ConfigMapSummary,
   ConfigMapUsage,
   DynatracePodStatusResponse,
+  DynatracePodCoverageResponse,
   ConfigMapManifest,
   ConfigMapDiffResult,
   ConfigMapValidateResult,
@@ -2129,6 +2130,10 @@ class APIClient {
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
     );
     return response;
+  }
+
+  async getDynatracePodCoverage(cluster: string): Promise<DynatracePodCoverageResponse> {
+    return this.request(`/dynatrace/coverage/pods?cluster=${encodeURIComponent(cluster)}`);
   }
 
   async getPodsDynatraceStatus(cluster: string, aiEmail?: string): Promise<DynatracePodStatusResponse> {
@@ -4448,6 +4453,30 @@ class APIClient {
       method: "POST",
       body: JSON.stringify(env === "hlg" ? { env } : {}),
     });
+  }
+
+  // Cobertura de Deep Monitoring (processos por namespace × tecnologia × versão do OneAgent).
+  // refresh=true ignora o cache de 5 min do backend.
+  async getDynatraceCoverage(cluster: string, refresh = false): Promise<{
+    cluster?: string;
+    host_group_found?: boolean;
+    rows?: Array<{
+      namespace: string;
+      service_name: string;
+      technology: string;
+      oneagent_version: string;
+      deep_monitoring_status: string;
+      host_count: number;
+      pod_count: number;
+    }>;
+    processes_without_service?: number;
+    generated_at?: string;
+    dt_not_configured?: boolean;
+    message?: string;
+  }> {
+    const params = new URLSearchParams({ cluster });
+    if (refresh) params.set("refresh", "1");
+    return this.request(`/dynatrace/coverage?${params.toString()}`);
   }
 
   async getDynatraceManagementZones(aiEmail: string): Promise<{

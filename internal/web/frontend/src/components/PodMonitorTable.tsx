@@ -13,6 +13,7 @@ import { ProtectedAction } from "@/components/rbac/ProtectedAction";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
+import { useDynatracePodCoverage } from "@/hooks/useAPI";
 import { DynatraceStatusIcon, resolveDynatraceStatus, DT_STATUS_LABEL, DT_STATUS_PRIORITY } from "@/components/DynatraceStatusIcon";
 import { AllPodsLogsModal } from "@/components/AllPodsLogsModal";
 
@@ -293,6 +294,7 @@ export const PodMonitorTable = ({
   onSearchQueryChange,
   isActive = true,
 }: PodMonitorTableProps) => {
+  const dtCoverage = useDynatracePodCoverage(cluster, dtClusterSupported);
   const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
   const searchQuery = controlledSearchQuery ?? uncontrolledSearchQuery;
   const setSearchQuery = onSearchQueryChange ?? setUncontrolledSearchQuery;
@@ -913,6 +915,7 @@ export const PodMonitorTable = ({
                   <DynatraceStatusIcon
                     status={resolveDynatraceStatus(dtClusterSupported, dtMonitoredKeys ?? EMPTY_DT_SET, `${pod.namespace}/${pod.name}`)}
                     errorDetail={dtCheckError}
+                    coverage={dtCoverage[`${pod.namespace}/${pod.name}`]}
                   />
                 ) : (
                   <Loader2 className="w-3 h-3 animate-spin text-muted-foreground/50" />

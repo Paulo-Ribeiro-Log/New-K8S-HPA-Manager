@@ -3,6 +3,17 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Dynatrace — aba "Cobertura Dynatrace" (deep monitoring por namespace) (Setembro 2026) ⏳ validação no tenant pendente
+
+Pedido: reproduzir no app a DQL do dashboard de cobertura (`smartscapeNodes "PROCESS"` → join SERVICE `runs_on` → join ONEAGENT; colunas Namespace / Service Name / Technology / OneAgent Version / Deep Monitoring Status / Host Count / Pod Count). A DQL exige Grail + platform token (`dt0s16`); o perfil só tem API token clássico (`dt0c01`), então foi traduzida para a API v2 (`dynatrace/coverage.go`): PROCESS_GROUP_INSTANCE do host group do cluster (mesmo seletor de `ListProcessGroupInstancesByHostGroup`) com relações `isProcessOf` (HOST), `isInstanceOf` (PROCESS_GROUP → `detectedName`) e `runsOnProcessGroupInstance` (SERVICE → `agentTechnologyType`); hosts/process groups/serviços buscados por `entityId(...)` em lotes de 100. Mantida a semântica de inner join da DQL (processo sem serviço fica fora; contado em `processes_without_service`). Rota `GET /api/v1/dynatrace/coverage?cluster=&refresh=1` (cache 5 min), aba em Ferramentas.
+
+Tooltip do ícone DT: a mesma coleta (e o mesmo cache) gera o detalhe por pod (`namespace/pod` via `KUBERNETES_FULL_POD_NAME` → versão do OneAgent + processos com tecnologia/status, incluindo "sem serviço" e namespaces de sistema), servido em `GET /api/v1/dynatrace/coverage/pods` — separado de `/pods/:cluster/dynatrace-status` para não atrasar o ícone. `useDynatracePodCoverage` (queryKey compartilhada entre `PodsPanel` e `PodMonitorTable`) alimenta o tooltip nas listagens de Pods/Deployments/DaemonSets; o cabeçalho do painel de detalhes/YAML do pod ganhou o ícone. Só clusters OneAgent clássico (host group); Cloud Native Full Stack fica com o tooltip antigo.
+
+Junto: `EntityStub` passou a aceitar o formato plano `{"id","type"}` das relações da Entities API (antes `EntityID` ficava vazio nelas); paginação de `listEntitiesBySelector` extraída para `listRawEntities`.
+
+A validar contra o tenant: nome da property de versão do OneAgent no HOST (`hostAgentVersion` tenta `agentVersion`/`installerVersion`/`oneAgentVersion`) e presença de `agentTechnologyType` nos serviços — se faltar, as linhas aparecem como "Nao resolvido".
+
+
 ### Node Pools — reload de SNAT/Conntrack, erros legíveis e colunas de sysctl (Setembro 2026)
 
 Relato: widgets de SNAT/Conntrack "falhando" e sem atualizar com os botões de reload. Causa do "não atualiza": os widgets usam React Query com `staleTime` de 2min e o reload do painel só remontava o `NodePoolEditor` + `refetchNodePools` — nenhuma query `snat-*`/`conntrack-alert-cluster` era invalidada. Corrigido com botão próprio ao lado dos widgets (`refreshSnatConntrack` em `Index.tsx`, invalida por predicate do cluster atual); o reload do node pool saiu do cabeçalho (ficava idêntico) para a linha de Análise Preditiva/Histórico no `NodePoolEditor` (props `onRefresh`/`refreshing`/`refreshLabel`) e também atualiza os widgets.

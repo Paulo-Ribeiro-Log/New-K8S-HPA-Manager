@@ -1,4 +1,7 @@
 import { CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { DynatracePodCoverage } from "@/lib/api/types";
 
 export type DynatraceMonitoringStatus = "monitored" | "warning" | "unsupported";
 
@@ -9,6 +12,39 @@ interface DynatraceStatusIconProps {
   // o tooltip genérico de "warning" com o motivo real, em vez da mensagem enganosa de "pod não
   // aparece monitorado" (que sugere problema de instrumentação, não de autenticação).
   errorDetail?: string;
+  // Detalhe de deep monitoring do pod (useDynatracePodCoverage) — acrescentado ao tooltip quando
+  // disponível (só clusters com OneAgent clássico; ausente → tooltip de sempre).
+  coverage?: DynatracePodCoverage;
+}
+
+const COVERAGE_STATUS: Record<string, { label: string; className: string }> = {
+  Ativo: { label: "Ativo", className: "text-green-600 dark:text-green-400" },
+  "Nao resolvido": { label: "Não resolvido", className: "text-amber-600 dark:text-amber-400" },
+  "Sem servico": { label: "Sem serviço", className: "text-muted-foreground" },
+};
+
+function CoverageDetail({ coverage }: { coverage: DynatracePodCoverage }) {
+  return (
+    <div className="mt-2 pt-2 border-t space-y-1.5">
+      <div className="text-muted-foreground">
+        OneAgent <span className="font-mono text-foreground">{coverage.oneagent_version || "—"}</span>
+      </div>
+      <table className="w-full">
+        <tbody>
+          {coverage.processes.map((p, i) => {
+            const st = COVERAGE_STATUS[p.deep_monitoring_status];
+            return (
+              <tr key={i} className="align-top">
+                <td className="pr-3 py-0.5 break-all">{p.process_name}</td>
+                <td className="pr-3 py-0.5 font-mono whitespace-nowrap">{p.technology || "—"}</td>
+                <td className={`py-0.5 whitespace-nowrap ${st?.className ?? ""}`}>{st?.label ?? p.deep_monitoring_status}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 // Ícones estilo "selo de círculo" (check verde / X vermelho / exclamação âmbar). Mapeamento de
@@ -53,17 +89,26 @@ export const DT_STATUS_PRIORITY: Record<DynatraceMonitoringStatus, number> = {
 };
 
 /** Ícone compacto de status de monitoramento Dynatrace, usado nos painéis esquerdo e direito da aba Pods. */
-export function DynatraceStatusIcon({ status, className, errorDetail }: DynatraceStatusIconProps) {
+export function DynatraceStatusIcon({ status, className, errorDetail, coverage }: DynatraceStatusIconProps) {
   const Icon = ICON_BY_STATUS[status];
   const title = errorDetail ? `Falha ao checar monitoramento — ${errorDetail}` : TITLE_BY_STATUS[status];
-  // O tooltip precisa estar num <span> HTML, não na prop `title` do ícone lucide (que vira um
-  // atributo `title` no <svg> raiz) — navegadores só mostram tooltip de SVG a partir de um
-  // elemento <title> FILHO dentro do svg, não de um atributo `title` no próprio svg. Bug real
-  // confirmado: o tooltip nunca aparecia em nenhum dos 3 estados (verde/vermelho/âmbar).
+  // Tooltip Radix (não o atributo `title` nativo, que não garante quebra de linha e ficava tudo
+  // numa linha só com o detalhe de deep monitoring). Portal: as células das tabelas de pods têm
+  // overflow-hidden e cortariam o conteúdo.
   return (
-    <span title={title} className="inline-flex items-center">
-      <Icon className={`w-3.5 h-3.5 shrink-0 ${COLOR_BY_STATUS[status]} ${className ?? ""}`} />
-    </span>
+    <Tooltip delayDuration={200}>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-center">
+          <Icon className={`w-3.5 h-3.5 shrink-0 ${COLOR_BY_STATUS[status]} ${className ?? ""}`} />
+        </span>
+      </TooltipTrigger>
+      <TooltipPrimitive.Portal>
+        <TooltipContent className="max-w-md text-xs">
+          <div>{title}</div>
+          {!errorDetail && coverage && coverage.processes.length > 0 && <CoverageDetail coverage={coverage} />}
+        </TooltipContent>
+      </TooltipPrimitive.Portal>
+    </Tooltip>
   );
 }
 

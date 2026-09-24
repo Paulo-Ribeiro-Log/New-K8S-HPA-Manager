@@ -625,6 +625,72 @@ func (h *DynatraceHandler) GetProblemContext(c *gin.Context) {
 	c.JSON(http.StatusOK, pctx)
 }
 
+// ─── GET /api/v1/dynatrace/coverage ───────────────────────────────────────────
+
+// GetCoverage devolve a Cobertura de Deep Monitoring do cluster (processos por namespace ×
+// tecnologia × versão do OneAgent) — tradução para a API clássica da DQL do dashboard de
+// cobertura, ver dynatrace.GetDeepMonitoringCoverage. Identidade via InjectUserEmail(); o tenant
+// (PRD/HLG) é escolhido pelo nome do cluster. refresh=1 ignora o cache de 5 min.
+func (h *DynatraceHandler) GetCoverage(c *gin.Context) {
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro cluster é obrigatório"})
+		return
+	}
+
+	client, err := h.clientForUser(c.GetString("user_email"), cluster)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"dt_not_configured": true, "message": err.Error()})
+		return
+	}
+
+	// Cluster grande (~4.500 PGIs) pagina 10 páginas + lotes de hosts/process groups/serviços.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 120*time.Second)
+	defer cancel()
+
+	report, err := client.GetDeepMonitoringCoverage(ctx, dtclient.NormalizeClusterName(cluster), c.Query("refresh") == "1")
+	if err != nil {
+		log.Error().Err(err).Str("cluster", cluster).Msg("Dynatrace: falha ao montar cobertura de deep monitoring")
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, report)
+}
+
+// ─── GET /api/v1/dynatrace/coverage/pods ──────────────────────────────────────
+
+// GetPodCoverage devolve o detalhe de deep monitoring por pod ("namespace/pod" → processos,
+// tecnologia, versão do OneAgent) para o tooltip do ícone DT das listagens de pods. Mesma coleta
+// e mesmo cache da Cobertura; separado de /pods/:cluster/dynatrace-status para não atrasar o
+// ícone (a coleta extra de hosts/process groups/serviços é mais lenta).
+func (h *DynatraceHandler) GetPodCoverage(c *gin.Context) {
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro cluster é obrigatório"})
+		return
+	}
+
+	client, err := h.clientForUser(c.GetString("user_email"), cluster)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"dt_not_configured": true, "pods": gin.H{}})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 120*time.Second)
+	defer cancel()
+
+	pods, found, err := client.GetPodCoverage(ctx, dtclient.NormalizeClusterName(cluster))
+	if err != nil {
+		log.Error().Err(err).Str("cluster", cluster).Msg("Dynatrace: falha ao montar cobertura por pod")
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	if pods == nil {
+		pods = map[string]*dtclient.PodCoverage{}
+	}
+	c.JSON(http.StatusOK, gin.H{"host_group_found": found, "pods": pods})
+}
+
 // ─── GET /api/v1/dynatrace/history ────────────────────────────────────────────
 
 // GetHistory retorna histórico de análises Dynatrace do usuário

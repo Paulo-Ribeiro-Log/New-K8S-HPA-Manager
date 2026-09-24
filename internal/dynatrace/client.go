@@ -684,7 +684,31 @@ const listEntitiesBySelectorMaxPages = 50
 // PROCESS_GROUP_INSTANCE correspondente inexistente em QUALQUER página, não só ausente da
 // primeira). Grava no cache entityCache a cada página.
 func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector string) ([]EntityStub, error) {
-	var stubs []EntityStub
+	entities, err := c.listRawEntities(ctx, entitySelector, "+tags,+properties")
+	if err != nil {
+		return nil, err
+	}
+	stubs := make([]EntityStub, 0, len(entities))
+	for i := range entities {
+		e := &entities[i]
+		stub := EntityStub{
+			EntityID:    EntityID{ID: e.EntityID, Type: e.Type},
+			DisplayName: e.DisplayName,
+		}
+		enriched := enrichFromEntity(stub, e)
+		entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
+		stubs = append(stubs, enriched)
+	}
+	return stubs, nil
+}
+
+// listRawEntities é a paginação de GET /entities compartilhada por listEntitiesBySelector e pela
+// Cobertura de Deep Monitoring (coverage.go), que precisa das Entity completas (properties +
+// relações), não só dos stubs. Segue nextPageKey até listEntitiesBySelectorMaxPages páginas; falha
+// na primeira página é erro, falha numa intermediária devolve o que já foi coletado (degradação
+// graciosa, mesmo princípio de outras checagens best-effort do app).
+func (c *Client) listRawEntities(ctx context.Context, entitySelector, fields string) ([]Entity, error) {
+	var all []Entity
 	nextPageKey := ""
 
 	for page := 0; page < listEntitiesBySelectorMaxPages; page++ {
@@ -692,7 +716,7 @@ func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector stri
 		if nextPageKey == "" {
 			params = url.Values{
 				"entitySelector": {entitySelector},
-				"fields":         {"+tags,+properties"},
+				"fields":         {fields},
 				"pageSize":       {"500"},
 			}
 		} else {
@@ -709,21 +733,9 @@ func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector stri
 			if page == 0 {
 				return nil, err
 			}
-			// Falha numa página intermediária — retorna o que já foi coletado em vez de
-			// descartar tudo (degradação graciosa, mesmo princípio de outras checagens
-			// best-effort do app).
 			break
 		}
-
-		for _, e := range resp.Entities {
-			stub := EntityStub{
-				EntityID:    EntityID{ID: e.EntityID, Type: e.Type},
-				DisplayName: e.DisplayName,
-			}
-			enriched := enrichFromEntity(stub, &e)
-			entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
-			stubs = append(stubs, enriched)
-		}
+		all = append(all, resp.Entities...)
 
 		nextPageKey = resp.NextPageKey
 		if nextPageKey == "" {
@@ -731,7 +743,7 @@ func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector stri
 		}
 	}
 
-	return stubs, nil
+	return all, nil
 }
 
 // clusterEntityCache guarda o entityId da entidade KUBERNETES_CLUSTER resolvida por nome —

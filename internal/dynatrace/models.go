@@ -1,6 +1,7 @@
 package dynatrace
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -46,6 +47,26 @@ type EntityStub struct {
 	// CalledBy: entidades que chamam esta entidade (upstream)
 	CallsTo  []EntityID `json:"callsTo,omitempty"`
 	CalledBy []EntityID `json:"calledBy,omitempty"`
+}
+
+// UnmarshalJSON aceita os dois formatos de referência a entidade da API v2: o da Problems API
+// ({"entityId":{"id","type"},"name"}) e o de fromRelationships/toRelationships da Entities API,
+// que é plano ({"id","type"}) — sem isso, EntityID ficava vazio nas relações.
+func (e *EntityStub) UnmarshalJSON(b []byte) error {
+	type alias EntityStub
+	var raw struct {
+		alias
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*e = EntityStub(raw.alias)
+	if e.EntityID.ID == "" && raw.ID != "" {
+		e.EntityID = EntityID{ID: raw.ID, Type: raw.Type}
+	}
+	return nil
 }
 
 // BestName retorna o melhor nome disponível para a entidade, na ordem de preferência.

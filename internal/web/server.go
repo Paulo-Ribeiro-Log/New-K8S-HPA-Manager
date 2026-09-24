@@ -1316,6 +1316,8 @@ func (s *Server) setupRoutes() {
 		dt.GET("/problems/:problemId/metrics", dtHandler.GetProblemMetrics)
 		dt.GET("/problems/:problemId/context", dtHandler.GetProblemContext)
 		dt.GET("/history", dtHandler.GetHistory)
+		dt.GET("/coverage", rbacMiddleware.InjectUserEmail(), dtHandler.GetCoverage)
+		dt.GET("/coverage/pods", rbacMiddleware.InjectUserEmail(), dtHandler.GetPodCoverage)
 	}
 
 	// Helm
