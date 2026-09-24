@@ -23,10 +23,13 @@ import (
 
 // ConntrackNodeStats estatísticas de conntrack de um nó
 type ConntrackNodeStats struct {
-	NodeName    string  `json:"node_name"`
-	Count       int64   `json:"count"`
-	Max         int64   `json:"max"`
-	Buckets     int64   `json:"buckets"`
+	NodeName string `json:"node_name"`
+	Count    int64  `json:"count"`
+	Max      int64  `json:"max"`
+	Buckets  int64  `json:"buckets"`
+	// MaxMapCount é o sysctl vm.max_map_count do nó (não é de conntrack, mas é lido no mesmo
+	// exec — /proc/sys/vm é global do host, visível de qualquer container). -1 = não lido.
+	MaxMapCount int64   `json:"max_map_count"`
 	UsagePct    float64 `json:"usage_pct"`
 	Status      string  `json:"status"` // ok / warning / critical / error
 	ProbeMethod string  `json:"probe_method"`
@@ -188,13 +191,14 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 		return stats
 	}
 
-	// Ler os três arquivos em um único exec
+	// Ler os quatro sysctls em um único exec
 	cmd := []string{
 		"sh", "-c",
-		"printf '%s\\n%s\\n%s\\n' " +
+		"printf '%s\\n%s\\n%s\\n%s\\n' " +
 			"$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo -1) " +
 			"$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo -1) " +
-			"$(cat /proc/sys/net/netfilter/nf_conntrack_buckets 2>/dev/null || echo -1)",
+			"$(cat /proc/sys/net/netfilter/nf_conntrack_buckets 2>/dev/null || echo -1) " +
+			"$(cat /proc/sys/vm/max_map_count 2>/dev/null || echo -1)",
 	}
 
 	var lastErr error
@@ -218,6 +222,10 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 		stats.Max = parseInt64(lines[1])
 		if len(lines) >= 3 {
 			stats.Buckets = parseInt64(lines[2])
+		}
+		stats.MaxMapCount = -1
+		if len(lines) >= 4 {
+			stats.MaxMapCount = parseInt64(lines[3])
 		}
 		if stats.Max > 0 {
 			stats.UsagePct = float64(stats.Count) / float64(stats.Max) * 100

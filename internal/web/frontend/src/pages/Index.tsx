@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useQueryClient, useIsFetching, type Query } from "@tanstack/react-query";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
@@ -145,6 +146,21 @@ const Index = ({ onLogout }: IndexProps) => {
   const [selectedHPA, setSelectedHPA] = useState<HPA | null>(null);
   const [selectedNodePool, setSelectedNodePool] = useState<NodePool | null>(null);
   const [nodePoolEditorKey, setNodePoolEditorKey] = useState(0);
+  // Widgets SNAT/Conntrack (aba Node Pools) usam React Query com staleTime de 2min — o reload do
+  // editor de node pool não os tocava, então os números ficavam velhos. Invalida todas as queries
+  // desses widgets do cluster atual (as de modal fechado ficam stale e recarregam ao abrir).
+  const queryClient = useQueryClient();
+  const isSnatConntrackQuery = useCallback(
+    (q: Query) =>
+      ["snat-profile", "snat-projection", "snat-nodes", "snat-node-history", "snat-costs", "conntrack-alert-cluster"]
+        .includes(q.queryKey[0] as string) && q.queryKey[1] === selectedCluster,
+    [selectedCluster]
+  );
+  const snatConntrackFetching = useIsFetching({ predicate: isSnatConntrackQuery });
+  const refreshSnatConntrack = useCallback(
+    () => { queryClient.invalidateQueries({ predicate: isSnatConntrackQuery }); },
+    [queryClient, isSnatConntrackQuery]
+  );
   const [vpnDialogState, setVpnDialogState] = useState<{ open: boolean; cloud: string; cluster: string }>({
     open: false,
     cloud: "",
@@ -1185,18 +1201,16 @@ const Index = ({ onLogout }: IndexProps) => {
                     <div className="flex items-center gap-2">
                       <SNATPortWidget cluster={selectedCluster} />
                       <ConntrackAlertWidget cluster={selectedCluster} />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={refreshSnatConntrack}
+                        disabled={snatConntrackFetching > 0}
+                        title="Atualizar SNAT e Conntrack"
+                      >
+                        <RefreshCcw className={`w-4 h-4 ${snatConntrackFetching > 0 ? "animate-spin" : ""}`} />
+                      </Button>
                     </div>
-                  )}
-                  {selectedNodePool && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => { setNodePoolEditorKey((k) => k + 1); refetchNodePools(); }}
-                      disabled={nodePoolsLoading}
-                      title={`Atualizar dados do ${nodeResourceSingular}`}
-                    >
-                      <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? "animate-spin" : ""}`} />
-                    </Button>
                   )}
                 </div>
               ),
@@ -1205,6 +1219,9 @@ const Index = ({ onLogout }: IndexProps) => {
                 nodePool={selectedNodePool ? (nodePools.find(np => np.name === selectedNodePool.name && np.cluster_name === selectedNodePool.cluster_name) ?? selectedNodePool) : selectedNodePool}
                 onApply={handleNodePoolApplyNow}
                 onApplied={refetchNodePools}
+                onRefresh={() => { setNodePoolEditorKey((k) => k + 1); refetchNodePools(); refreshSnatConntrack(); }}
+                refreshing={nodePoolsLoading}
+                refreshLabel={nodeResourceSingular}
               />,
             }}
           />

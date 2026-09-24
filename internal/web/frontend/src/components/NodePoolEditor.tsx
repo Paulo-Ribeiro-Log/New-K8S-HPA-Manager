@@ -153,9 +153,14 @@ interface NodePoolEditorProps {
   nodePool: NodePool | null;
   onApply?: (nodePool: NodePool, original: NodePool) => void;
   onApplied?: () => void;
+  // Recarregar o node pool (remonta o editor + refaz a listagem) — botão na linha de Análise
+  // Preditiva, fora do cabeçalho do painel, onde ficava idêntico ao reload de SNAT/Conntrack.
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  refreshLabel?: string;
 }
 
-export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorProps) => {
+export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refreshing, refreshLabel = "Node Pool" }: NodePoolEditorProps) => {
   const staging = useStaging();
 
   // O backend resolve automaticamente o contexto kubeconfig correto (com ou sem -admin)
@@ -828,6 +833,12 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           <History className="w-4 h-4 mr-2" />
           Histórico de Análises
         </Button>
+        {onRefresh && (
+          <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
+            <RefreshCcw className={`w-4 h-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+            Atualizar {refreshLabel}
+          </Button>
+        )}
       </div>
 
       <Separator />

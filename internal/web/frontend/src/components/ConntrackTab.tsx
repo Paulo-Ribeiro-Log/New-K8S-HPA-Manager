@@ -317,6 +317,8 @@ function NodeCard({
               <div className="flex gap-4">
                 <span>via {node.probe_method}</span>
                 {node.buckets > 0 && <span>buckets: {fmt(node.buckets)}</span>}
+                {node.max > 0 && <span>nf_conntrack_max: {fmt(node.max)}</span>}
+                {node.max_map_count && node.max_map_count > 0 ? <span>vm.max_map_count: {fmt(node.max_map_count)}</span> : null}
               </div>
               <Button variant="ghost" size="sm" className="h-6 text-[10px] px-2 gap-1 text-muted-foreground hover:text-foreground"
                 onClick={() => setExpanded((v) => !v)}>
@@ -391,7 +393,7 @@ function SummaryStrip({
 
 // ─── ConntrackTableRow (grid-based, expansível) ───────────────────────────────
 
-const COL_WIDTHS = [220, 140, 160, 80, 80, 100, 140];
+const COL_WIDTHS = [220, 140, 160, 80, 80, 130, 130, 100, 140];
 
 function ConntrackTableRow({
   node, history, histLoading, histStats, trend, capacityRec, gridTemplate, compareOffsets, compareHistoryMap,
@@ -435,6 +437,12 @@ function ConntrackTableRow({
         </div>
         <div className="py-2 px-3 flex items-center justify-center text-xs tabular-nums text-muted-foreground">
           {node.buckets > 0 ? fmt(node.buckets) : '—'}
+        </div>
+        <div className="py-2 px-3 flex items-center justify-center text-xs tabular-nums text-muted-foreground">
+          {node.max > 0 ? fmt(node.max) : '—'}
+        </div>
+        <div className="py-2 px-3 flex items-center justify-center text-xs tabular-nums text-muted-foreground">
+          {node.max_map_count && node.max_map_count > 0 ? fmt(node.max_map_count) : '—'}
         </div>
         <div className="py-2 px-3 flex items-center">
           <StatusBadge status={node.status} />
@@ -733,10 +741,12 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
                     { label: 'Uso atual', idx: 2 },
                     { label: 'P95 24h', idx: 3, center: true },
                     { label: 'Buckets', idx: 4, center: true },
-                    { label: 'Status', idx: 5 },
-                    { label: 'Recomendação', idx: 6 },
-                  ].map(({ label, idx, center }) => (
-                    <span key={label} className={`relative overflow-hidden pr-4 flex items-center px-3 py-2 ${center ? 'justify-center' : ''}`}>
+                    { label: 'nf_conntrack_max', idx: 5, center: true, title: 'sysctl net.netfilter.nf_conntrack_max' },
+                    { label: 'vm.max_map_count', idx: 6, center: true, title: 'sysctl vm.max_map_count' },
+                    { label: 'Status', idx: 7 },
+                    { label: 'Recomendação', idx: 8 },
+                  ].map(({ label, idx, center, title }: { label: string; idx: number; center?: boolean; title?: string }) => (
+                    <span key={label} title={title} className={`relative overflow-hidden pr-4 flex items-center px-3 py-2 ${center ? 'justify-center' : ''}`}>
                       {label}
                       <ResizeHandle onResize={(d) => resize(idx, d)} />
                     </span>

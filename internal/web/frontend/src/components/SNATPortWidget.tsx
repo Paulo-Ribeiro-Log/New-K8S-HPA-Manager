@@ -386,7 +386,7 @@ export function SNATPortWidget({ cluster }: Props) {
             </span>
           </>
         ) : error ? (
-          <span className="text-red-400">Erro ao carregar</span>
+          <span className="text-red-400" title={error instanceof Error ? error.message : undefined}>Erro ao carregar</span>
         ) : null}
 
         <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/50 flex-shrink-0" />
@@ -1207,8 +1207,11 @@ export function SNATPortWidget({ cluster }: Props) {
           )}
 
           {!data && !isLoading && error && (
-            <div className="px-5 py-8 text-center text-red-400 text-sm">
-              Erro ao carregar dados SNAT para este cluster.
+            <div className="px-5 py-8 text-center text-red-400 text-sm space-y-2">
+              <p>Erro ao carregar dados SNAT para este cluster.</p>
+              {error instanceof Error && (
+                <p className="text-xs text-muted-foreground font-mono break-words">{error.message}</p>
+              )}
             </div>
           )}
 

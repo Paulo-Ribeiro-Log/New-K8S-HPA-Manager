@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -100,6 +101,32 @@ type lbProfileResponse struct {
 	} `json:"agentPoolProfiles"`
 }
 
+// snatCLIError torna legível a falha de um CLI cloud (az/aws/gcloud) rodado com .Output():
+// sem isso o erro era só "exit status 1" — o motivo real (login expirado, sem permissão na
+// subscription/conta, cluster inexistente) ia pro stderr e era descartado.
+func snatCLIError(ctx context.Context, err error) error {
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("tempo esgotado aguardando o CLI (%w)", err)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		var lines []string
+		for _, l := range strings.Split(string(exitErr.Stderr), "\n") {
+			// "WARNING: ... aks-preview" e afins não explicam a falha — só poluem a mensagem.
+			if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "WARNING:") {
+				lines = append(lines, l)
+			}
+		}
+		if msg := strings.Join(lines, " "); msg != "" {
+			if len(msg) > 400 {
+				msg = msg[:400] + "…"
+			}
+			return fmt.Errorf("%s (%w)", msg, err)
+		}
+	}
+	return err
+}
+
 func (h *NodePoolHandler) buildSNATProfileAKS(ctx context.Context, clusterCtx string, totalNodes int, pools []SNATNodePoolInfo) (SNATProfile, error) {
 	cfg, err := findClusterInConfig(clusterCtx)
 	if err != nil {
@@ -116,7 +143,7 @@ func (h *NodePoolHandler) buildSNATProfileAKS(ctx context.Context, clusterCtx st
 	}
 	out, err := exec.CommandContext(ctx, "az", args...).Output()
 	if err != nil {
-		return SNATProfile{}, fmt.Errorf("az aks show falhou: %w", err)
+		return SNATProfile{}, fmt.Errorf("az aks show falhou: %w", snatCLIError(ctx, err))
 	}
 
 	var azResp lbProfileResponse
@@ -233,7 +260,7 @@ func listGKERoutersViaCLI(ctx context.Context, project, region string) ([]gkeRou
 	}
 	out, err := exec.CommandContext(ctx, "gcloud", listArgs...).Output()
 	if err != nil {
-		return nil, fmt.Errorf("gcloud compute routers list falhou: %w", err)
+		return nil, fmt.Errorf("gcloud compute routers list falhou: %w", snatCLIError(ctx, err))
 	}
 
 	var routers []gkeRouter
@@ -355,7 +382,7 @@ func (h *NodePoolHandler) buildSNATProfileEKS(ctx context.Context, clusterCtx st
 		}
 		out, err := exec.CommandContext(ctx, "aws", vpcArgs...).Output()
 		if err != nil {
-			return SNATProfile{}, fmt.Errorf("aws eks describe-cluster falhou: %w", err)
+			return SNATProfile{}, fmt.Errorf("aws eks describe-cluster falhou: %w", snatCLIError(ctx, err))
 		}
 		vpcID = strings.TrimSpace(string(out))
 	}
@@ -372,7 +399,7 @@ func (h *NodePoolHandler) buildSNATProfileEKS(ctx context.Context, clusterCtx st
 	}
 	out, err := exec.CommandContext(ctx, "aws", natArgs...).Output()
 	if err != nil {
-		return SNATProfile{}, fmt.Errorf("aws ec2 describe-nat-gateways falhou: %w", err)
+		return SNATProfile{}, fmt.Errorf("aws ec2 describe-nat-gateways falhou: %w", snatCLIError(ctx, err))
 	}
 
 	var natResp natGatewayResponse
