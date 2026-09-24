@@ -463,12 +463,12 @@ func (s *StorageCalculator) correlateToWorkloads(
 	client kubernetes.Interface,
 ) (map[string]string, error) {
 	// Resolver RS → Deployment (mesmo padrão do calculator principal)
-	rsList, err := client.AppsV1().ReplicaSets("").List(ctx, metav1.ListOptions{})
+	rsItems, err := listAllReplicaSets(ctx, client)
 	if err != nil {
 		return nil, err
 	}
 	rsOwner := make(map[string]string)
-	for _, rs := range rsList.Items {
+	for _, rs := range rsItems {
 		for _, ref := range rs.OwnerReferences {
 			if ref.Kind == "Deployment" {
 				rsOwner[rs.Namespace+"/"+rs.Name] = ref.Name
@@ -476,7 +476,7 @@ func (s *StorageCalculator) correlateToWorkloads(
 		}
 	}
 
-	podList, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+	podItems, err := listAllPods(ctx, client, metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
 	})
 	if err != nil {
@@ -484,8 +484,8 @@ func (s *StorageCalculator) correlateToWorkloads(
 	}
 
 	result := make(map[string]string)
-	for i := range podList.Items {
-		pod := &podList.Items[i]
+	for i := range podItems {
+		pod := &podItems[i]
 		workload := ResolveWorkload(pod, rsOwner)
 		workloadRef := pod.Namespace + "/" + workload
 

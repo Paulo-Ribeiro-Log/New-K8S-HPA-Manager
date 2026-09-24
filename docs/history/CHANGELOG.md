@@ -3,6 +3,13 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### FinOps — "Falha ao gerar relatório FinOps: unexpected error when reading response body ... context deadline exceeded" (Setembro 2026) ✅
+
+Causa: `collectWorkloads` (`calculator.go`) e `correlateToWorkloads` (`storage_calculator.go`) listavam **todos** os Pods e ReplicaSets do cluster numa única requisição. `restConfig.Timeout` (30s) cobre a requisição inteira, inclusive a leitura do corpo; em cluster grande via VPN a resposta (RS carrega o pod template completo × `revisionHistoryLimit`) passa de dezenas de MB e o timeout estoura no meio da leitura — é essa a mensagem do client-go.
+
+Corrigido em `internal/finops/list_paged.go`: `listAllPods`/`listAllReplicaSets` paginam com `Limit: 500`/`Continue` (cada página tem seu próprio orçamento de 30s) e recomeçam uma vez se o continue token expirar (410). Testes em `list_paged_test.go`. Validado pelo usuário no cluster real que falhava.
+
+
 ### Pods — "Buscar arquivo de configuração" em container sem shell (Setembro 2026) ✅
 
 Relato: a ferramenta falhava com o erro cru do runtime (`OCI runtime exec failed: ... exec: "sh": executable file not found in $PATH`). Causa: imagem mínima (distroless/.NET chiseled) sem `sh`, e a ferramenta roda `find`/`cat`/`unzip`/`jar` via `sh -c`. Não há como buscar nesse container sem alterar o pod (Ephemeral Container), o que a ferramenta evita por ser só leitura.
