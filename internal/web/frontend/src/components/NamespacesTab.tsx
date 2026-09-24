@@ -48,6 +48,8 @@ import "diff2html/bundles/css/diff2html.min.css";
 import * as yaml from "js-yaml";
 import { ProtectedAction } from "@/components/rbac";
 import { AWXCertModal } from "@/components/AWXCertModal";
+import { DeploymentsTab } from "@/components/DeploymentsTab";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 interface NamespacesTabProps {
   cluster: string;
@@ -71,6 +73,14 @@ export const NamespacesTab = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState<Namespace | null>(null);
+  // Painel direito: com namespace selecionado na lista da esquerda → YAML/detalhes (original);
+  // sem seleção → "Workloads" (namespaces → deployments → pods, reaproveitando a DeploymentsTab
+  // embutida). A visão geral do cluster (gráficos) fica num modal aberto pelo cabeçalho.
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const [workloadsNamespace, setWorkloadsNamespace] = useState("");
+  const [workloadsSearch, setWorkloadsSearch] = useState("");
+  // DeploymentsTab chama onNamespaceChange("") se o namespace sumir da lista — volta pra lista.
+  const handleWorkloadsNamespaceChange = useCallback((ns: string) => setWorkloadsNamespace(ns), []);
   const leftListRef = useRef<HTMLDivElement>(null);
   useRevealOnKeyChange(
     leftListRef,
@@ -726,6 +736,93 @@ export const NamespacesTab = ({
     }
   }, [selectedNamespace, cluster]);
 
+  useEffect(() => {
+    setWorkloadsNamespace("");
+  }, [cluster]);
+
+  const workloadsNamespaces = useMemo(() => {
+    if (!workloadsSearch) return filteredNamespaces;
+    const query = workloadsSearch.toLowerCase();
+    return filteredNamespaces.filter((ns) => ns.name.toLowerCase().includes(query));
+  }, [filteredNamespaces, workloadsSearch]);
+
+  const renderWorkloadsPanel = () => {
+    if (!cluster) {
+      return (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          Selecione um cluster para listar Namespaces
+        </div>
+      );
+    }
+
+    if (workloadsNamespace) {
+      return (
+        <ErrorBoundary componentName="Namespaces › Deployments">
+          <DeploymentsTab
+            cluster={cluster}
+            namespaces={namespaces}
+            selectedNamespace={workloadsNamespace}
+            onNamespaceChange={handleWorkloadsNamespaceChange}
+            showSystemNamespaces={showSystemNamespaces}
+            onToggleSystemNamespaces={onToggleSystemNamespaces}
+            stateScope="namespaces-workloads"
+            embedded={{ onBack: () => setWorkloadsNamespace(""), backLabel: "Namespaces" }}
+          />
+        </ErrorBoundary>
+      );
+    }
+
+    return (
+      <div className="flex flex-col h-full min-h-0 gap-2">
+        <div className="relative flex-shrink-0">
+          <Search className="absolute left-2 top-2.5 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Filtrar namespaces..."
+            value={workloadsSearch}
+            onChange={(e) => setWorkloadsSearch(e.target.value)}
+            className="pl-8"
+          />
+        </div>
+        <p className="text-xs text-muted-foreground flex-shrink-0">
+          {workloadsNamespaces.length} namespace(s) — clique para ver os deployments
+        </p>
+        <div className="flex-1 overflow-auto min-h-0 border border-border/50 rounded-md divide-y divide-border/50">
+          {workloadsNamespaces.length === 0 ? (
+            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+              Nenhum Namespace corresponde à busca
+            </div>
+          ) : (
+            workloadsNamespaces.map((ns) => (
+              <button
+                key={`${ns.cluster}-${ns.name}`}
+                onClick={() => setWorkloadsNamespace(ns.name)}
+                className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-primary/10 transition-colors"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <Package className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                  <span className="font-medium truncate">{ns.name}</span>
+                  {ns.isSystem && (
+                    <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-300 rounded text-[10px] flex-shrink-0">
+                      Sistema
+                    </span>
+                  )}
+                </span>
+                <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const overviewButton = (
+    <Button variant="outline" size="sm" onClick={() => setOverviewOpen(true)} disabled={!cluster}>
+      <BarChart3 className="w-4 h-4 mr-1" />
+      Visão geral do cluster
+    </Button>
+  );
+
   const searchedNamespaces = useMemo(() => {
     if (!searchQuery) return filteredNamespaces;
     const query = searchQuery.toLowerCase();
@@ -770,7 +867,7 @@ export const NamespacesTab = ({
             onNamespaceChange("");
           }}
           className="flex items-center justify-center w-7 h-7 rounded-full bg-primary text-primary-foreground shadow-sm hover:bg-primary/85 active:bg-primary/70 transition-colors flex-shrink-0"
-          title="Desmarcar namespace e ver overview"
+          title="Desmarcar namespace e voltar para Workloads"
         >
           <X className="w-4 h-4" />
         </button>
@@ -2371,12 +2468,12 @@ export const NamespacesTab = ({
               <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
                 <div className="flex items-center gap-3 flex-wrap">
                   {collapseButton}
-                  <p className="text-base font-semibold text-primary">Visualização</p>
+                  <p className="text-base font-semibold text-primary">{selectedNamespace ? "Visualização" : "Workloads"}</p>
                 </div>
-                {rightTitleAction}
+                {selectedNamespace ? rightTitleAction : overviewButton}
               </div>
               <div className="flex-1 overflow-auto min-h-0">
-                {renderMetricsPanel()}
+                {selectedNamespace ? renderMetricsPanel() : renderWorkloadsPanel()}
               </div>
             </div>
           </div>
@@ -2389,15 +2486,38 @@ export const NamespacesTab = ({
             content: leftContent,
           }}
           rightPanel={{
-            title: "Visualização",
-            titleAction: rightTitleAction,
-            content: renderMetricsPanel(),
+            title: selectedNamespace ? "Visualização" : "Workloads",
+            titleAction: selectedNamespace ? rightTitleAction : overviewButton,
+            content: selectedNamespace ? renderMetricsPanel() : renderWorkloadsPanel(),
           }}
         />
       )}
 
       {renderDiffDialog()}
       {renderApplyConfirmDialog()}
+
+      {/* Visão geral do cluster — antes era o conteúdo do painel direito sem namespace selecionado */}
+      <Dialog open={overviewOpen} onOpenChange={setOverviewOpen}>
+        <DialogContent className="max-w-6xl max-h-[90vh] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              <BarChart3 className="w-5 h-5" />
+              Visão geral do cluster
+            </DialogTitle>
+            <DialogDescription className="flex items-center justify-between gap-2">
+              <span>{cluster}</span>
+              <Button variant="outline" size="sm" onClick={loadOverviewMetrics} disabled={!cluster || metricsLoading}>
+                {metricsLoading ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCcw className="w-4 h-4 mr-1" />}
+                Atualizar
+              </Button>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto min-h-0">
+            {/* Botão só aparece sem namespace selecionado, então renderMetricsPanel cai no overview */}
+            {renderMetricsPanel()}
+          </div>
+        </DialogContent>
+      </Dialog>
       {renderGlobalModals()}
       {renderObservabilityModals()}
 

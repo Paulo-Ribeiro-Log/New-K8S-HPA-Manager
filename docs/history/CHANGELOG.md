@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Namespaces — painel direito mostra "Workloads" (namespaces → deployments → pods) sem seleção (Setembro 2026) ✅
+
+Pedido: no painel direito da aba Namespaces, listar os namespaces e navegar até deployments e pods com todos os recursos das abas Deployments/Pods, sem alterar a lista da esquerda. Comportamento final: com namespace selecionado à esquerda, o painel direito continua mostrando o YAML/detalhes e suas ferramentas (original); sem seleção (ou após o "X" de desmarcar), mostra "Workloads". Ao clicar num namespace em Workloads, renderiza a própria `DeploymentsTab` em modo embutido (props novas `embedded` e `stateScope`): mesma tabela de deployments, drill-down de pods com logs/métricas/coluna DT, editor do deployment e todos os modais — sem duplicar código. `stateScope="namespaces-workloads"` isola o estado persistido da aba Deployments de verdade. A visão geral do cluster (gráficos CPU/memória/pods por namespace), que ocupava o painel sem seleção, foi para o modal "Visão geral do cluster" no cabeçalho. Fica de fora só o que vive na lista lateral da aba Deployments (seletor de namespace, filtro empresa/sistema).
+
 ### Dynatrace — tenant de homologação separado no Perfil (Setembro 2026) ✅
 
 Relato: indicador DT da aba Pods mostrava "não monitorado" em `akspriv-abastecimento-hlg` (ex: `adanalytics-hlg/comercial-sortimento-operacao`), com Dynatrace instalado. Investigado ao vivo: a instrumentação no cluster funciona (DynaKube `classicFullStack`, `liboneagentproc.so` + `liboneagentpython.so` carregados nos workers gunicorn). Causa: o DynaKube HLG aponta para o tenant **kgq78385** (homologação), o PRD para **nyr48864** — e o app só aceitava um tenant por usuário (o de PRD), então nunca achava as entidades de clusters HLG.
