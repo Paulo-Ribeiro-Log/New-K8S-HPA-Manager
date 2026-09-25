@@ -82,6 +82,19 @@ export interface DynatracePodStatusResponse {
   check_error?: string; // presente quando a checagem em si falhou (auth/rede) — distingue de "nenhum pod monitorado"
 }
 
+// Detalhe de deep monitoring por pod (GET /dynatrace/coverage/pods) — tooltip do ícone DT.
+// deep_monitoring_status: "Ativo" | "Nao resolvido" | "Sem servico".
+export interface DynatracePodCoverage {
+  oneagent_version: string;
+  processes: Array<{ process_name: string; technology: string; deep_monitoring_status: string }>;
+}
+
+export interface DynatracePodCoverageResponse {
+  host_group_found?: boolean;
+  dt_not_configured?: boolean;
+  pods: Record<string, DynatracePodCoverage>; // chave "namespace/nome", igual getPodKey()
+}
+
 export interface ConfigMapMetadata {
   uid?: string;
   resourceVersion?: string;

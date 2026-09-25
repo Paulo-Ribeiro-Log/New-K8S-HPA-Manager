@@ -26,7 +26,7 @@ make web-dev                            # Vite HMR (5173) — rode o backend em 
 
 go test -v ./internal/... -race                       # tudo, com race detector
 go test -run TestNome -v ./internal/web/handlers/...  # teste único
-SKIP_AZURE_TESTS=1 go test ./...                      # sem az CLI autenticado (usado na CI)
+SKIP_AZURE_TESTS=1 make test                          # sem az CLI autenticado (é o que a CI roda em ci.yml)
 ./testes/test-rbac.sh                                 # suíte RBAC
 
 cd internal/web/frontend
@@ -39,9 +39,9 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 **Armadilhas de build/tooling**
 - O arquivo é `makefile` (minúsculo).
 - `vite build` **não** type-checka. `npx tsc --noEmit -p .` também não (tsconfig raiz é "solution", retorna sucesso sempre) — use `-p tsconfig.app.json`. O repo tem dezenas de erros de tipo/lint pré-existentes (`Index.tsx`, `client.ts`, …); compare com o baseline via `git stash` em vez de tentar zerar.
-- `vendor/github.com/go-rod/rod/lib/cdp/client.go` tem **patch manual** (`consumeMessages` loga+`continue` em vez de `panic` em frame CDP malformado; comentário `PATCH MANUAL`). `go mod vendor` apaga o patch em silêncio — reaplique.
+- `vendor/github.com/go-rod/rod/lib/cdp/client.go` tem **patch manual** (`consumeMessages` loga+`continue` em vez de `panic` em frame CDP malformado; comentário `PATCH MANUAL`). `go mod vendor` apaga o patch em silêncio — reaplique (o comentário no código cita uma seção "Notas de Build" que virou esta lista).
 - `go.mod` tem `godebug tlsmlkem=0` (o key share pós-quântico do Go 1.24+ trava handshake TLS em VPN/EKS privado). Não remover.
-- `make release`/`build-all` num host Linux geram binários **darwin com SQLite quebrado** (cgo desligado → stub do `go-sqlite3` compila mas falha em runtime). Release de verdade = workflow `release.yml` (runners macOS nativos). `make release-single` é o alvo usado pela CI.
+- `make release`/`build-all` num host Linux geram binários **darwin com SQLite quebrado** (cgo desligado → stub do `go-sqlite3` compila mas falha em runtime). Release de verdade = workflow `release.yml` (runners macOS nativos, alvo `make release-single` com `GOOS`/`GOARCH` no ambiente). O `make release` em `ci.yml` é só smoke-test de compilação.
 - Não existe test runner de frontend. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
 
 ## Arquitetura (visão geral)
@@ -73,7 +73,7 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - Rollback de Deployment: 6 modos (K8s nativo, Helm, Nexus, Imagem, Spinnaker, Arquivos), todos com bypass automático da label Kyverno `devops.k8s.io/kyverno-bypass` (ref-counted por namespace, removida no fim).
 - Sessão Teams/ServiceNow usam perfis de browser **separados** (`teams-session/` vs `rod-session/`); nunca misture.
 
-**Aba VMs / EC2** (branch `feat/vms-ec2-tab`, ainda **não** mesclada na `main`; ver `git log --grep 'feat(vms'`)
+**Aba VMs / EC2** (já mesclada em `origin/main`; histórico em `git log --grep 'feat(vms'`)
 - `cloudprovider.VMProvider` + `cloudprovider/aws/ec2.go` (inventário e start/stop/reboot). Rotas `/api/v1/vms/*` em `server.go`: leitura sem RBAC de grupo, escrita/terminal/túnel atrás de `RequireSREGroup()`.
 - Dois transportes para acessar a VM: **SSH direto** (`internal/vmssh`: client `golang.org/x/crypto/ssh`, `known_hosts` compartilhado com confirmação TOFU, terminal WebSocket, SFTP) e **SSM** (Session Manager: terminal, túnel `aws ssm start-session` para SFTP, e modo "SSM sem SSH" via `cloudprovider/aws/ssm_command.go` + `vm_sftp_ssm.go`).
 - Credenciais SSH por usuário em `storage.VMCredentialStore` (perfis, gerar/importar chave local). Certificados em VM (`certificates_vm.go`, `certificates/vm_cert_pair.go`): ler/validar par cert+key, transferir, reiniciar serviço.

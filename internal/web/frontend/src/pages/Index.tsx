@@ -72,6 +72,7 @@ import VMsTab from "@/components/VMsTab";
 import AKVDiscoveryTab from "@/components/AKVDiscoveryTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
+import { DynatraceCoverageTab } from "@/components/DynatraceCoverageTab";
 import { FinOpsTab } from "@/components/FinOpsTab";
 import { TeamsBroadcastTab } from "@/components/TeamsBroadcastTab";
 import { CodeEditorTab } from "@/components/CodeEditorTab";
@@ -1453,6 +1454,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Dynatrace Tab">
             <DynatraceTab selectedCluster={selectedCluster} />
+          </ErrorBoundary>
+        );
+
+      case "dynatrace-coverage":
+        return (
+          <ErrorBoundary componentName="Dynatrace Coverage Tab">
+            <DynatraceCoverageTab selectedCluster={selectedCluster} />
           </ErrorBoundary>
         );
 

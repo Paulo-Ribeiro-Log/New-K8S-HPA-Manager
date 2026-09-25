@@ -20,6 +20,7 @@ import type {
   VPASummary,
   APIResourceInfo,
   GenericResourceSummary,
+  DynatracePodCoverage,
 } from "@/lib/api/types";
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -410,6 +411,23 @@ export function useConfigMapUsage(cluster?: string, namespace?: string) {
  * não configurado" — nesses casos monitoredKeys fica sempre vazio. Poll bem mais espaçado que o
  * resto da tela de pods (refresh de 30s) — status de monitoramento muda devagar.
  */
+const EMPTY_DT_COVERAGE: Record<string, DynatracePodCoverage> = {};
+
+// Detalhe de deep monitoring por pod (processos/tecnologia/versão do OneAgent) para o tooltip do
+// ícone DT. Separado de useDynatracePodStatus: a coleta é mais lenta e não deve atrasar o ícone.
+// queryKey compartilhada — PodsPanel e PodMonitorTable disparam uma requisição só.
+export function useDynatracePodCoverage(cluster?: string, enabled = true) {
+  const { data } = useQuery({
+    queryKey: ["dt-pod-coverage", cluster],
+    queryFn: () => apiClient.getDynatracePodCoverage(cluster!),
+    enabled: !!cluster && enabled,
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+    retry: false,
+  });
+  return data?.pods ?? EMPTY_DT_COVERAGE;
+}
+
 export function useDynatracePodStatus(cluster?: string, aiEmail?: string) {
   const [clusterSupported, setClusterSupported] = useState(false);
   const [monitoredKeys, setMonitoredKeys] = useState<Set<string>>(new Set());
