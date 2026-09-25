@@ -3,6 +3,13 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — "Abrir pasta" (editar pastas da máquina sem clonar) (Setembro 2026)
+
+Pedido: escolher uma pasta do PC (ex: `scripts/teste.sh`) e editar direto no Code Editor, como o "Open Folder" do VS Code, sem clonar. A pasta vira um link simbólico `~/.k8s-hpa-manager/repos/local-<nome>` → pasta real (`code_editor_local.go`); como todo o editor resolve o diretório por `reposBase/<id>`, árvore, arquivos, busca, Git (se a pasta for repo), LSP, terminal e K8s funcionam sem mudança. `GET /code-editor/browse` (navegador de pastas do servidor, atalhos Home e discos `/mnt/<x>` do WSL) e `POST /code-editor/open-folder` (idempotente; recusa `/`, raiz de disco e pastas dentro de `repos/`), ambos atrás de `RequireSREGroup()`. O caminho aceita `~/…`, `C:\…` e `\\wsl$\<distro>\…` (convertidos para o caminho do WSL).
+
+`DeleteRepo` num item local remove só o link (checagem via `Lstat`), nunca os arquivos; passou a rejeitar id com `/`, `\` ou `..`. `ListRepos` inclui os links (`is_local`, `is_git`; sem `size` — `du` numa pasta arbitrária é lento); pastas locais não contam no limite de 10 clones. `buildTree` ganhou teto de 20.000 nós e pula subpastas ilegíveis (antes um "permission denied" em qualquer subpasta, comum em `/mnt/c`, derrubava a árvore inteira). Terminal abre no caminho real (`EvalSymlinks`). Frontend: botão "Abrir pasta" (`CodeEditorOpenFolderDialog`), ícone de pasta + caminho na lista, "Fechar" em vez de lixeira, e painéis/ações de Git escondidos em pasta sem Git.
+
+
 ### Dynatrace — aba "Cobertura Dynatrace" (deep monitoring por namespace) (Setembro 2026) ⏳ validação no tenant pendente
 
 Pedido: reproduzir no app a DQL do dashboard de cobertura (`smartscapeNodes "PROCESS"` → join SERVICE `runs_on` → join ONEAGENT; colunas Namespace / Service Name / Technology / OneAgent Version / Deep Monitoring Status / Host Count / Pod Count). A DQL exige Grail + platform token (`dt0s16`); o perfil só tem API token clássico (`dt0c01`), então foi traduzida para a API v2 (`dynatrace/coverage.go`): PROCESS_GROUP_INSTANCE do host group do cluster (mesmo seletor de `ListProcessGroupInstancesByHostGroup`) com relações `isProcessOf` (HOST), `isInstanceOf` (PROCESS_GROUP → `detectedName`) e `runsOnProcessGroupInstance` (SERVICE → `agentTechnologyType`); hosts/process groups/serviços buscados por `entityId(...)` em lotes de 100. Mantida a semântica de inner join da DQL (processo sem serviço fica fora; contado em `processes_without_service`). Rota `GET /api/v1/dynatrace/coverage?cluster=&refresh=1` (cache 5 min), aba em Ferramentas.
