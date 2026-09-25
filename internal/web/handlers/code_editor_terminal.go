@@ -70,6 +70,10 @@ func (h *CodeEditorHandler) HandleTerminal(c *gin.Context) {
 
 	cmd := exec.Command(shell)
 	cmd.Dir = dir
+	// Pasta local ("Abrir pasta") é um link — o shell abre no caminho real (pwd legível).
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		cmd.Dir = real
+	}
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",

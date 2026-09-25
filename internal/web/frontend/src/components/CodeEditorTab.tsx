@@ -74,6 +74,7 @@ import {
   Braces,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CodeEditorOpenFolderDialog } from "@/components/CodeEditorOpenFolderDialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -105,6 +106,16 @@ import {
 } from "@/lib/api/client";
 
 const API_BASE = "/api/v1";
+
+// Rótulo do item na lista/seletor: owner/repo para clonados, nome da pasta para locais.
+function repoLabel(r: CodeEditorRepo): string {
+  return r.is_local ? repoRootName(r) : `${r.owner}/${r.repo}`;
+}
+
+// Nome da pasta raiz do item — prefixo dos caminhos exibidos na árvore e no breadcrumb.
+function repoRootName(r: CodeEditorRepo): string {
+  return r.local_path.split("/").filter(Boolean).pop() || r.repo || r.id;
+}
 
 // ─── Markdown components ──────────────────────────────────────────────────────
 
@@ -2132,6 +2143,9 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
 
 export function CodeEditorTab() {
   const [repos, setRepos] = useState<CodeEditorRepo[]>([]);
+  // IDs de pastas locais sem Git ("Abrir pasta") — loadStatus/Branches/Log/Tags não consultam o Git
+  // nelas. Ref (não estado): selectRepo roda logo após setRepos, antes do re-render.
+  const nonGitIdsRef = useRef<Set<string>>(new Set());
   const [selectedRepo, setSelectedRepo] = useState<CodeEditorRepo | null>(null);
   const [tree, setTree] = useState<CodeEditorFileNode[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
@@ -2175,6 +2189,7 @@ export function CodeEditorTab() {
 
   // Dialogs
   const [showClone, setShowClone] = useState(false);
+  const [showOpenFolder, setShowOpenFolder] = useState(false);
   const [showGitHubToken, setShowGitHubToken] = useState(false);
   // Retorna o ID (não o token) da conta GitHub ativa — o token real nunca precisa trafegar
   // pelo browser, o backend resolve o profile_id para o PAT armazenado (resolveProfileToken).
@@ -2461,6 +2476,7 @@ export function CodeEditorTab() {
     try {
       const fresh = await apiClient.codeEditorListRepos();
       setRepos(fresh);
+      syncNonGitIds(fresh);
       // Restaurar último repo usado
       const lastId = localStorage.getItem("ce_last_repo");
       if (lastId) {
@@ -2470,8 +2486,18 @@ export function CodeEditorTab() {
     } catch (_) {}
   }
 
+  function syncNonGitIds(list: CodeEditorRepo[]) {
+    nonGitIdsRef.current = new Set(list.filter(r => r.is_git === false).map(r => r.id));
+  }
+
   async function selectRepo(repo: CodeEditorRepo) {
+    if (repo.is_git === false) {
+      nonGitIdsRef.current.add(repo.id);
+      setStatus(null); setBranches(null); setLog([]); setTags([]);
+      setSidePanel(p => (["source-control", "branches", "git", "log"].includes(p) ? "files" : p));
+    }
     setSelectedRepo(repo);
+    setFocusedDirPath("");
     setOpenTabs([]);
     setActiveTabIdx(0);
     setSearchQuery("");
@@ -2492,14 +2518,17 @@ export function CodeEditorTab() {
   }
 
   async function loadStatus(id: string) {
+    if (nonGitIdsRef.current.has(id)) return;
     try { setStatus(await apiClient.codeEditorGetStatus(id)); } catch (_) {}
   }
 
   async function loadBranches(id: string) {
+    if (nonGitIdsRef.current.has(id)) return;
     try { setBranches(await apiClient.codeEditorGetBranches(id)); } catch (_) {}
   }
 
   async function loadLog(id: string) {
+    if (nonGitIdsRef.current.has(id)) return;
     try { setLog(await apiClient.codeEditorGetLog(id)); } catch (_) {}
   }
 
@@ -2971,7 +3000,12 @@ export function CodeEditorTab() {
   }
 
   async function deleteRepo(id: string) {
-    if (!await showConfirm(`Remover repositório "${id}" localmente?`)) return;
+    const target = repos.find(r => r.id === id);
+    const isLocal = !!target?.is_local;
+    const msg = isLocal
+      ? `Fechar a pasta "${target?.local_path}" no editor? Os arquivos NÃO serão apagados.`
+      : `Remover repositório "${id}" localmente?`;
+    if (!await showConfirm(msg)) return;
     try {
       await apiClient.codeEditorDeleteRepo(id);
       if (selectedRepo?.id === id) {
@@ -2980,7 +3014,7 @@ export function CodeEditorTab() {
         localStorage.removeItem("ce_last_repo");
       }
       await loadRepos();
-      addToast("success", `Repositório ${id} removido`);
+      addToast("success", isLocal ? `Pasta ${target?.local_path} fechada` : `Repositório ${id} removido`);
     } catch (e: any) { addToast("error", e.message); }
   }
 
@@ -2998,6 +3032,7 @@ export function CodeEditorTab() {
   }
 
   async function loadTags(id: string) {
+    if (nonGitIdsRef.current.has(id)) return;
     try {
       const r = await apiClient.codeEditorListTags(id);
       setTags(r.tags ?? []);
@@ -3643,7 +3678,7 @@ export function CodeEditorTab() {
     { id: "log" as const,            label: "Log",                                                                              icon: History,     badge: 0 },
     { id: "replace" as const,        label: "Replace",                                                                          icon: Replace,     badge: 0 },
     { id: "k8s" as const,            label: "K8s",                                                                              icon: Layers,      badge: 0 },
-  ];
+  ].filter(p => selectedRepo?.is_git !== false || !["source-control", "branches", "git", "log"].includes(p.id));
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-background">
@@ -3654,12 +3689,23 @@ export function CodeEditorTab() {
 
         {repos.length > 0 && (
           <select
-            className="ml-2 text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground max-w-48"
+            className="ml-2 text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground max-w-80 truncate"
             value={selectedRepo?.id ?? ""}
+            title={selectedRepo ? (selectedRepo.is_local ? selectedRepo.local_path : repoLabel(selectedRepo)) : undefined}
             onChange={e => { const r = repos.find(x => x.id === e.target.value); if (r) selectRepo(r); }}
           >
-            <option value="">Selecionar repositório...</option>
-            {repos.map(r => <option key={r.id} value={r.id}>{r.owner}/{r.repo}</option>)}
+            <option value="">Selecionar repositório ou pasta...</option>
+            {repos.some(r => !r.is_local) && (
+              <optgroup label="Repositórios clonados">
+                {repos.filter(r => !r.is_local).map(r => <option key={r.id} value={r.id}>{repoLabel(r)}</option>)}
+              </optgroup>
+            )}
+            {/* Pastas locais: caminho completo — só o nome da pasta ("outra-pasta") perde a referência */}
+            {repos.some(r => r.is_local) && (
+              <optgroup label="Pastas locais">
+                {repos.filter(r => r.is_local).map(r => <option key={r.id} value={r.id}>{r.local_path}</option>)}
+              </optgroup>
+            )}
           </select>
         )}
 
@@ -3677,7 +3723,7 @@ export function CodeEditorTab() {
         <div className="flex-1" />
 
         {/* Ações Git */}
-        {selectedRepo && (
+        {selectedRepo && selectedRepo.is_git !== false && (
           <>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
               title="Sincronizar: Pull e, se der certo, Push em seguida"
@@ -3736,6 +3782,10 @@ export function CodeEditorTab() {
             <Terminal className="w-3 h-3" />Terminal
           </Button>
         )}
+        <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={() => setShowOpenFolder(true)}
+          title="Editar uma pasta desta máquina, sem clonar">
+          <FolderOpen className="w-3 h-3" />Abrir pasta
+        </Button>
         <Button size="sm" className="h-6 text-xs gap-1" onClick={() => setShowClone(true)}>
           <GitPullRequest className="w-3 h-3" />Clonar
         </Button>
@@ -3833,18 +3883,24 @@ export function CodeEditorTab() {
                   {!selectedRepo && (
                     <div className="p-2 space-y-1">
                       {repos.length === 0 ? (
-                        <p className="text-xs text-muted-foreground text-center py-4">Nenhum repo clonado.<br />Clique em "Clonar".</p>
+                        <p className="text-xs text-muted-foreground text-center py-4">Nenhum repo clonado.<br />Clique em "Clonar" ou "Abrir pasta".</p>
                       ) : repos.map(r => (
                         <div key={r.id} className="group flex items-center gap-1 rounded hover:bg-muted/50 px-1 py-1">
-                          <button className="flex-1 text-left text-xs truncate min-w-0" onClick={() => selectRepo(r)}>
-                            <span className="font-medium">{r.owner}/{r.repo}</span>
+                          <button className="flex-1 text-left text-xs truncate min-w-0" onClick={() => selectRepo(r)}
+                            title={r.is_local ? r.local_path : undefined}>
+                            <span className="font-medium flex items-center gap-1">
+                              {r.is_local && <FolderOpen className="w-3 h-3 text-blue-400 flex-shrink-0" />}
+                              <span className="truncate">{repoLabel(r)}</span>
+                            </span>
                             <div className="flex items-center gap-1.5 mt-0.5">
+                              {r.is_local && <span className="text-muted-foreground/70 text-[10px] font-mono truncate">{r.local_path}</span>}
                               <span className="text-muted-foreground text-[10px]">{r.current_branch}</span>
                               {r.size && <span className="text-[10px] text-muted-foreground/60 font-mono">{r.size}</span>}
                             </div>
                           </button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100" onClick={() => deleteRepo(r.id)}>
-                            <Trash2 className="w-3 h-3 text-red-400" />
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100" onClick={() => deleteRepo(r.id)}
+                            title={r.is_local ? "Fechar pasta (não apaga os arquivos)" : "Remover repositório clonado"}>
+                            {r.is_local ? <X className="w-3 h-3 text-muted-foreground" /> : <Trash2 className="w-3 h-3 text-red-400" />}
                           </Button>
                         </div>
                       ))}
@@ -3939,6 +3995,34 @@ export function CodeEditorTab() {
                             <button onClick={() => setClipboard(null)} className="text-[10px] text-muted-foreground hover:text-foreground">✕</button>
                           </div>
                         )}
+                        {/* Caminho da pasta em foco, a partir da raiz (ex: scripts / outra-pasta) — sem ele a
+                            árvore só mostra o nome de cada pasta e perde-se a referência de onde se está.
+                            Segmentos clicáveis: focam a pasta (destino de "novo arquivo"/colar) e a revelam. */}
+                        <div
+                          className="sticky top-0 z-10 flex items-center gap-1 px-2 py-1 mb-1 rounded bg-muted/60 backdrop-blur text-[11px] font-mono min-w-0"
+                          title={[selectedRepo.local_path, focusedDirPath].filter(Boolean).join("/")}
+                        >
+                          <FolderOpen className="w-3 h-3 text-blue-400 flex-shrink-0" />
+                          <div className="flex items-center min-w-0 overflow-hidden">
+                            <button
+                              className={`flex-shrink-0 hover:underline underline-offset-2 ${focusedDirPath ? "text-muted-foreground" : "text-foreground font-semibold"}`}
+                              onClick={() => setFocusedDirPath("")}
+                            >{repoRootName(selectedRepo)}</button>
+                            {focusedDirPath && focusedDirPath.split("/").map((seg, i, arr) => {
+                              const segPath = arr.slice(0, i + 1).join("/");
+                              const isLast = i === arr.length - 1;
+                              return (
+                                <span key={segPath} className="flex items-center min-w-0">
+                                  <span className="opacity-40 mx-0.5 select-none">/</span>
+                                  <button
+                                    className={`truncate hover:underline underline-offset-2 ${isLast ? "text-foreground font-semibold" : "text-muted-foreground"}`}
+                                    onClick={() => { setFocusedDirPath(segPath); setRevealPath(segPath + "/"); }}
+                                  >{seg}</button>
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
                         {tree.map(node => (
                           <FileTreeNode key={node.path} node={node} selectedPath={activeTab?.node.path ?? ""}
                             onSelect={openFile} modifiedPaths={modifiedPaths} gitFileStatus={gitFileStatusMap}
@@ -4505,7 +4589,14 @@ export function CodeEditorTab() {
               {/* Barra do arquivo ativo */}
               <div className="flex items-center gap-2 px-3 py-1 border-b border-border/50 flex-shrink-0 bg-card/20">
                 {/* Breadcrumb */}
-                <div className="flex items-center flex-1 min-w-0 overflow-hidden text-xs font-mono text-muted-foreground">
+                <div className="flex items-center flex-1 min-w-0 overflow-hidden text-xs font-mono text-muted-foreground"
+                  title={selectedRepo ? `${selectedRepo.local_path}/${activeTab.node.path}` : activeTab.node.path}>
+                  {selectedRepo && (
+                    <button
+                      className="hover:text-foreground hover:underline underline-offset-2 flex-shrink-0 truncate max-w-[160px]"
+                      onClick={() => { setSidePanel("files"); setFocusedDirPath(""); }}
+                    >{repoRootName(selectedRepo)}<span className="opacity-30 mx-0.5 select-none">/</span></button>
+                  )}
                   {activeTab.node.path.split("/").map((seg, i, arr) => {
                     const isLast = i === arr.length - 1;
                     return (
@@ -4720,9 +4811,14 @@ export function CodeEditorTab() {
                 ) : (
                   <>
                     <p className="text-sm">Nenhum repositório selecionado</p>
-                    <Button size="sm" onClick={() => setShowClone(true)}>
-                      <GitPullRequest className="w-3.5 h-3.5 mr-1.5" />Clonar repositório
-                    </Button>
+                    <div className="flex items-center justify-center gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setShowOpenFolder(true)}>
+                        <FolderOpen className="w-3.5 h-3.5 mr-1.5" />Abrir pasta
+                      </Button>
+                      <Button size="sm" onClick={() => setShowClone(true)}>
+                        <GitPullRequest className="w-3.5 h-3.5 mr-1.5" />Clonar repositório
+                      </Button>
+                    </div>
                   </>
                 )}
               </div>
@@ -4983,6 +5079,17 @@ export function CodeEditorTab() {
 
       {/* ── Dialogs ── */}
       <GitHubTokenDialog open={showGitHubToken} onClose={() => setShowGitHubToken(false)} />
+
+      <CodeEditorOpenFolderDialog
+        open={showOpenFolder}
+        onClose={() => setShowOpenFolder(false)}
+        onOpened={async (repo) => {
+          const fresh = await apiClient.codeEditorListRepos();
+          setRepos(fresh);
+          syncNonGitIds(fresh);
+          selectRepo(fresh.find(x => x.id === repo.id) ?? repo);
+        }}
+      />
 
       <CloneDialog
         open={showClone}

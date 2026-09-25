@@ -4999,6 +4999,17 @@ class APIClient {
     return this.request("/code-editor/repos");
   }
 
+  // "Abrir pasta": navega pelas pastas da máquina do servidor e registra uma como item do editor.
+  async codeEditorBrowse(path: string, hidden = false): Promise<CodeEditorBrowseResult> {
+    const params = new URLSearchParams({ path });
+    if (hidden) params.set("hidden", "1");
+    return this.request(`/code-editor/browse?${params.toString()}`);
+  }
+
+  async codeEditorOpenFolder(path: string): Promise<CodeEditorRepo> {
+    return this.request("/code-editor/open-folder", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
   async codeEditorDeleteRepo(id: string): Promise<void> {
     return this.request(`/code-editor/repos/${id}`, { method: "DELETE" });
   }
@@ -5404,6 +5415,16 @@ export interface CodeEditorRepo {
   remote_url: string;
   cloned_at: string;
   size?: string; // ex: "42M"
+  is_local?: boolean; // pasta local aberta via "Abrir pasta" (não clonada) — fechar remove só o vínculo
+  is_git?: boolean;
+}
+
+export interface CodeEditorBrowseResult {
+  path: string;
+  parent: string;
+  is_git: boolean;
+  dirs: Array<{ name: string; path: string; is_git: boolean }>;
+  shortcuts: Array<{ label: string; path: string }>;
 }
 
 export interface CodeEditorFileNode {

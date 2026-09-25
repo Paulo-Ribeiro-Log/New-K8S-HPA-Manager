@@ -87,6 +87,8 @@ type RepoInfo struct {
 	RemoteURL     string    `json:"remote_url"`
 	ClonedAt      time.Time `json:"cloned_at"`
 	Size          string    `json:"size,omitempty"` // ex: "42M"
+	IsLocal       bool      `json:"is_local"`       // pasta local aberta via "Abrir pasta" (code_editor_local.go)
+	IsGit         bool      `json:"is_git"`
 }
 
 // FileNode representa nó na árvore de arquivos.
@@ -270,6 +272,10 @@ func (h *CodeEditorHandler) ListRepos(c *gin.Context) {
 
 	repos := make([]RepoInfo, 0, len(entries))
 	for _, e := range entries {
+		if e.Type()&os.ModeSymlink != 0 {
+			repos = append(repos, h.localRepoInfo(e.Name()))
+			continue
+		}
 		if !e.IsDir() {
 			continue
 		}
@@ -299,6 +305,7 @@ func (h *CodeEditorHandler) ListRepos(c *gin.Context) {
 			RemoteURL:     remoteURL(dir),
 			ClonedAt:      info.ModTime(),
 			Size:          repoSize(dir),
+			IsGit:         true,
 		})
 	}
 	c.JSON(http.StatusOK, repos)
@@ -341,7 +348,7 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	}
 
 	// Limite de repositórios simultâneos
-	if entries, _ := os.ReadDir(h.reposBase); len(entries) >= h.maxReposPerUser {
+	if countClonedRepos(h.reposBase) >= h.maxReposPerUser {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("limite de %d repositórios atingido — remova um antes de clonar", h.maxReposPerUser)})
 		return
 	}
@@ -412,7 +419,20 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 // DeleteRepo — DELETE /api/v1/code-editor/repos/:id
 func (h *CodeEditorHandler) DeleteRepo(c *gin.Context) {
 	id := c.Param("id")
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id inválido"})
+		return
+	}
 	dir := h.repoDir(id)
+	// Pasta local ("Abrir pasta"): remove SÓ o link — nunca os arquivos do usuário.
+	if h.isLocalFolder(id) {
+		if err := os.Remove(dir); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"removed": id, "closed": true})
+		return
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -426,7 +446,8 @@ func (h *CodeEditorHandler) GetFileTree(c *gin.Context) {
 	dir := h.repoDir(id)
 
 	root := &FileNode{Name: id, Path: "", Type: "dir"}
-	err := buildTree(dir, dir, root, 0, 6)
+	budget := maxTreeNodes
+	err := buildTree(dir, dir, root, 0, 6, &budget)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -441,8 +462,27 @@ var ignoredDirs = map[string]bool{
 	"dist": true, "build": true, ".next": true, "target": true,
 }
 
-func buildTree(base, current string, node *FileNode, depth, maxDepth int) error {
-	if depth >= maxDepth {
+// maxTreeNodes limita a árvore — pastas locais arbitrárias ("Abrir pasta", ex: /mnt/c/Users/x)
+// podem ter centenas de milhares de arquivos; a árvore é recarregada a cada 5s pelo frontend.
+const maxTreeNodes = 20000
+
+// countClonedRepos conta só os repositórios clonados (pastas locais abertas são links e não
+// entram no limite de maxReposPerUser).
+func countClonedRepos(base string) int {
+	entries, _ := os.ReadDir(base)
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			n++
+		}
+	}
+	return n
+}
+
+// buildTree monta a árvore até maxDepth níveis e no máximo *budget nós. Subpastas ilegíveis
+// (permissão negada, comum em /mnt/c) são puladas; só erro na raiz é falha.
+func buildTree(base, current string, node *FileNode, depth, maxDepth int, budget *int) error {
+	if depth >= maxDepth || *budget <= 0 {
 		return nil
 	}
 	entries, err := os.ReadDir(current)
@@ -465,13 +505,15 @@ func buildTree(base, current string, node *FileNode, depth, maxDepth int) error 
 		if e.IsDir() && ignoredDirs[name] {
 			continue
 		}
+		if *budget <= 0 {
+			break
+		}
+		*budget--
 		rel, _ := filepath.Rel(base, filepath.Join(current, name))
 		child := &FileNode{Name: name, Path: rel}
 		if e.IsDir() {
 			child.Type = "dir"
-			if err2 := buildTree(base, filepath.Join(current, name), child, depth+1, maxDepth); err2 != nil {
-				return err2
-			}
+			_ = buildTree(base, filepath.Join(current, name), child, depth+1, maxDepth, budget)
 		} else {
 			child.Type = "file"
 		}
