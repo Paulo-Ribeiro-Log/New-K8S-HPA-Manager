@@ -3689,12 +3689,23 @@ export function CodeEditorTab() {
 
         {repos.length > 0 && (
           <select
-            className="ml-2 text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground max-w-48"
+            className="ml-2 text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground max-w-80 truncate"
             value={selectedRepo?.id ?? ""}
+            title={selectedRepo ? (selectedRepo.is_local ? selectedRepo.local_path : repoLabel(selectedRepo)) : undefined}
             onChange={e => { const r = repos.find(x => x.id === e.target.value); if (r) selectRepo(r); }}
           >
-            <option value="">Selecionar repositório...</option>
-            {repos.map(r => <option key={r.id} value={r.id}>{repoLabel(r)}</option>)}
+            <option value="">Selecionar repositório ou pasta...</option>
+            {repos.some(r => !r.is_local) && (
+              <optgroup label="Repositórios clonados">
+                {repos.filter(r => !r.is_local).map(r => <option key={r.id} value={r.id}>{repoLabel(r)}</option>)}
+              </optgroup>
+            )}
+            {/* Pastas locais: caminho completo — só o nome da pasta ("outra-pasta") perde a referência */}
+            {repos.some(r => r.is_local) && (
+              <optgroup label="Pastas locais">
+                {repos.filter(r => r.is_local).map(r => <option key={r.id} value={r.id}>{r.local_path}</option>)}
+              </optgroup>
+            )}
           </select>
         )}
 
