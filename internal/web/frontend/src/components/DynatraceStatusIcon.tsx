@@ -1,4 +1,4 @@
-import { CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { CheckCircle2, XCircle, AlertCircle, Cpu } from "lucide-react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { DynatracePodCoverage } from "@/lib/api/types";
@@ -17,33 +17,56 @@ interface DynatraceStatusIconProps {
   coverage?: DynatracePodCoverage;
 }
 
-const COVERAGE_STATUS: Record<string, { label: string; className: string }> = {
-  Ativo: { label: "Ativo", className: "text-green-600 dark:text-green-400" },
-  "Nao resolvido": { label: "Não resolvido", className: "text-amber-600 dark:text-amber-400" },
-  "Sem servico": { label: "Sem serviço", className: "text-muted-foreground" },
+const COVERAGE_STATUS: Record<string, { label: string; dot: string; text: string }> = {
+  Ativo: { label: "Ativo", dot: "bg-green-500", text: "text-green-600 dark:text-green-400" },
+  "Nao resolvido": { label: "Não resolvido", dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" },
+  "Sem servico": { label: "Sem serviço", dot: "bg-muted-foreground/40", text: "text-muted-foreground" },
 };
+
+// agentTechnologyType vem em maiúsculas com underscore (JAVA, DOTNET, NODE_JS...).
+const TECHNOLOGY_LABEL: Record<string, string> = {
+  JAVA: "Java", DOTNET: ".NET", NODE_JS: "Node.js", PYTHON: "Python", GO: "Go", PHP: "PHP",
+  RUBY: "Ruby", NGINX: "NGINX", APACHE_HTTP_SERVER: "Apache", IIS: "IIS", ENVOY: "Envoy",
+};
+
+function technologyLabel(tech: string): string {
+  if (!tech) return "";
+  return TECHNOLOGY_LABEL[tech] ?? tech.toLowerCase().split("_").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
 
 function CoverageDetail({ coverage }: { coverage: DynatracePodCoverage }) {
   return (
-    <div className="mt-2 pt-2 border-t space-y-1.5">
-      <div className="text-muted-foreground">
-        OneAgent <span className="font-mono text-foreground">{coverage.oneagent_version || "—"}</span>
+    <>
+      <div className="flex items-center gap-1.5 px-3 py-2 border-t bg-muted/30 text-[11px] text-muted-foreground">
+        <Cpu className="w-3 h-3" />
+        OneAgent
+        <span className="ml-auto rounded bg-background/80 border px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+          {coverage.oneagent_version || "—"}
+        </span>
       </div>
-      <table className="w-full">
-        <tbody>
+      <div className="px-3 pt-2 pb-2.5 border-t">
+        <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Processos · {coverage.processes.length}
+        </div>
+        <ul className="space-y-1.5">
           {coverage.processes.map((p, i) => {
             const st = COVERAGE_STATUS[p.deep_monitoring_status];
             return (
-              <tr key={i} className="align-top">
-                <td className="pr-3 py-0.5 break-all">{p.process_name}</td>
-                <td className="pr-3 py-0.5 font-mono whitespace-nowrap">{p.technology || "—"}</td>
-                <td className={`py-0.5 whitespace-nowrap ${st?.className ?? ""}`}>{st?.label ?? p.deep_monitoring_status}</td>
-              </tr>
+              <li key={i} className="flex items-start gap-2">
+                <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${st?.dot ?? "bg-muted-foreground/40"}`} />
+                <span className="min-w-0 flex-1 text-[11px] leading-snug break-words line-clamp-2">{p.process_name}</span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  {p.technology && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">{technologyLabel(p.technology)}</span>
+                  )}
+                  <span className={`text-[10px] ${st?.text ?? "text-muted-foreground"}`}>{st?.label ?? p.deep_monitoring_status}</span>
+                </span>
+              </li>
             );
           })}
-        </tbody>
-      </table>
-    </div>
+        </ul>
+      </div>
+    </>
   );
 }
 
@@ -65,10 +88,27 @@ const COLOR_BY_STATUS: Record<DynatraceMonitoringStatus, string> = {
   unsupported: "text-red-500 dark:text-red-400",
 };
 
-const TITLE_BY_STATUS: Record<DynatraceMonitoringStatus, string> = {
-  monitored: "Monitorado pelo Dynatrace",
-  warning: "Dynatrace configurado para este cluster, mas este pod não aparece monitorado no momento — pode ser um problema pontual (ex: precisa de restart pro OneAgent injetar, ou dado ainda não ingerido)",
-  unsupported: "Dynatrace não configurado ou não aplicável para este cluster",
+// Título curto + descrição opcional do cabeçalho do tooltip.
+const HEADLINE_BY_STATUS: Record<DynatraceMonitoringStatus, { title: string; description?: string }> = {
+  monitored: { title: "Monitorado pelo Dynatrace" },
+  warning: {
+    title: "Pod não aparece monitorado",
+    description: "O cluster tem Dynatrace, mas este pod não foi encontrado — pode precisar de restart para o OneAgent injetar, ou o dado ainda não foi ingerido.",
+  },
+  unsupported: { title: "Dynatrace indisponível", description: "Dynatrace não configurado ou não aplicável para este cluster." },
+};
+
+// Faixa superior do tooltip na cor do status — destaca o card do fundo da tela.
+const ACCENT_BY_STATUS: Record<DynatraceMonitoringStatus, string> = {
+  monitored: "border-t-green-500",
+  warning: "border-t-amber-500",
+  unsupported: "border-t-red-500",
+};
+
+const BADGE_BG_BY_STATUS: Record<DynatraceMonitoringStatus, string> = {
+  monitored: "bg-green-500/15",
+  warning: "bg-amber-500/15",
+  unsupported: "bg-red-500/15",
 };
 
 // Rótulo em pt-BR usado no filtro/ordenação da coluna DT (PodMonitorTable.tsx) — os valores do
@@ -91,10 +131,12 @@ export const DT_STATUS_PRIORITY: Record<DynatraceMonitoringStatus, number> = {
 /** Ícone compacto de status de monitoramento Dynatrace, usado nos painéis esquerdo e direito da aba Pods. */
 export function DynatraceStatusIcon({ status, className, errorDetail, coverage }: DynatraceStatusIconProps) {
   const Icon = ICON_BY_STATUS[status];
-  const title = errorDetail ? `Falha ao checar monitoramento — ${errorDetail}` : TITLE_BY_STATUS[status];
-  // Tooltip Radix (não o atributo `title` nativo, que não garante quebra de linha e ficava tudo
-  // numa linha só com o detalhe de deep monitoring). Portal: as células das tabelas de pods têm
-  // overflow-hidden e cortariam o conteúdo.
+  const headline = errorDetail
+    ? { title: "Falha ao checar monitoramento", description: errorDetail }
+    : HEADLINE_BY_STATUS[status];
+  const showCoverage = !errorDetail && coverage && coverage.processes.length > 0;
+  // Tooltip Radix (não o atributo `title` nativo, que não garante quebra de linha). Portal: as
+  // células das tabelas de pods têm overflow-hidden e cortariam o conteúdo.
   return (
     <Tooltip delayDuration={200}>
       <TooltipTrigger asChild>
@@ -103,9 +145,23 @@ export function DynatraceStatusIcon({ status, className, errorDetail, coverage }
         </span>
       </TooltipTrigger>
       <TooltipPrimitive.Portal>
-        <TooltipContent className="max-w-md text-xs">
-          <div>{title}</div>
-          {!errorDetail && coverage && coverage.processes.length > 0 && <CoverageDetail coverage={coverage} />}
+        <TooltipContent
+          className={`w-80 p-0 text-xs overflow-hidden border-foreground/20 border-t-2 shadow-2xl ring-1 ring-black/10 dark:ring-white/15 ${errorDetail ? "border-t-red-500" : ACCENT_BY_STATUS[status]}`}
+        >
+          <div className="flex items-start gap-2.5 px-3 py-2.5">
+            <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${BADGE_BG_BY_STATUS[status]}`}>
+              <Icon className={`w-3.5 h-3.5 ${COLOR_BY_STATUS[status]}`} />
+            </span>
+            <div className="min-w-0">
+              <div className="font-semibold leading-tight">{headline.title}</div>
+              {headline.description && (
+                <p className={`mt-1 text-[11px] leading-snug text-muted-foreground break-words ${errorDetail ? "font-mono line-clamp-4" : ""}`}>
+                  {headline.description}
+                </p>
+              )}
+            </div>
+          </div>
+          {showCoverage && <CoverageDetail coverage={coverage} />}
         </TooltipContent>
       </TooltipPrimitive.Portal>
     </Tooltip>
