@@ -310,6 +310,9 @@ const (
 	ActionSnapshotCluster    = "snapshot_cluster"
 	ActionCordonNode         = "cordon_node"         // Node marcado como unschedulable
 	ActionDrainNode          = "drain_node"          // Pods evacuados do node
+	ActionUncordonNode       = "uncordon_node"       // Node voltou a aceitar pods (aba Nodes)
+	ActionApplyNode          = "apply_node"          // YAML do node aplicado (aba Nodes)
+	ActionDeleteNode         = "delete_node"         // Objeto Node removido da API (aba Nodes)
 	ActionNodePoolSequence   = "nodepool_sequence"   // Sequência completa PRE-DRAIN → CORDON → DRAIN → POST-DRAIN
 	ActionRolloutDeployment  = "rollout_deployment"  // Rollout de Deployment executado
 	ActionRolloutDaemonSet   = "rollout_daemonset"   // Rollout de DaemonSet executado
