@@ -259,6 +259,9 @@ interface DeploymentsTabProps {
   // editor do deployment e todos os modais), sem a lista lateral nem o SplitView. Usado pela aba
   // Namespaces (modo "Workloads"). onBack volta para a tela de origem (lista de namespaces).
   embedded?: { onBack: () => void; backLabel: string };
+  // nodeFilter — só os deployments com pods no node e, no drill-down, só os pods desse node.
+  // Usado pela navegação node → namespaces → deployments → pods da aba Nodes.
+  nodeFilter?: { node: string; deployments: string[] };
 }
 
 export const DeploymentsTab = ({
@@ -272,6 +275,7 @@ export const DeploymentsTab = ({
   isActive = true,
   stateScope = 'deployments',
   embedded,
+  nodeFilter,
 }: DeploymentsTabProps) => {
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>(stateScope, 'searchQuery', "");
@@ -825,6 +829,10 @@ export const DeploymentsTab = ({
 
   const filteredDeployments = useMemo(() => {
     let result = displayDeployments;
+    if (nodeFilter) {
+      const onNode = new Set(nodeFilter.deployments);
+      result = result.filter((dep) => onNode.has(dep.name));
+    }
     if (appFilter === "company") {
       result = result.filter((dep) => dep.isCompanyApp);
     } else if (appFilter === "system") {
@@ -841,7 +849,7 @@ export const DeploymentsTab = ({
         )
       );
     });
-  }, [displayDeployments, searchQuery, appFilter]);
+  }, [displayDeployments, searchQuery, appFilter, nodeFilter]);
 
   const handleSelectDeployment = async (summary: DeploymentSummary) => {
     // Salvar histórico atual no cache antes de trocar
@@ -3109,13 +3117,14 @@ export const DeploymentsTab = ({
       // deployments preserve busca/filtros/ordenação ao voltar da lista de pods — trocar
       // via renderização condicional destruiria esse estado interno a cada ida e volta.
       const backToDeployments = () => setRightView({ kind: "deployment-table" });
+      const shownPods = nodeFilter ? monitorPods.filter((p) => p.nodeName === nodeFilter.node) : monitorPods;
       return (
         <>
           <div className="flex flex-col h-full p-2" style={{ display: rightView.kind === "pod-table" ? "flex" : "none" }}>
             {rightView.kind === "pod-table" && (
               <PodMonitorTable
                 cluster={cluster}
-                pods={monitorPods}
+                pods={shownPods}
                 loading={monitorPodsLoading}
                 metrics={batchMetrics}
                 metricsLoading={false}
@@ -3124,12 +3133,13 @@ export const DeploymentsTab = ({
                 dtHasLoaded={dtHasLoaded}
                 dtCheckError={dtCheckError}
                 onOpenDetail={(pod) => setQuickViewPod(pod)}
-                headerLabel={`${rightView.deployment.name} — pods (${monitorPods.length})`}
+                headerLabel={`${rightView.deployment.name} — pods (${shownPods.length})${nodeFilter ? ` no node ${nodeFilter.node}` : ""}`}
                 breadcrumb={[
                   { label: cluster },
+                  ...(nodeFilter ? [{ label: nodeFilter.node }] : []),
                   { label: rightView.deployment.namespace },
                   { label: rightView.deployment.name, onClick: backToDeployments },
-                  { label: `Pods (${monitorPods.length})` },
+                  { label: `Pods (${shownPods.length})` },
                 ]}
                 onRequestRefresh={() => { if (!monitorWatchConnectedRef.current) refreshMonitorPods(); }}
                 onBack={backToDeployments}
@@ -3142,7 +3152,7 @@ export const DeploymentsTab = ({
             <DeploymentMonitorTable
               deployments={filteredDeployments}
               loading={loading}
-              headerLabel={selectedNamespace ? `${selectedNamespace} — deployments (${filteredDeployments.length})` : `deployments (${filteredDeployments.length})`}
+              headerLabel={`${selectedNamespace ? `${selectedNamespace} — ` : ""}deployments (${filteredDeployments.length})${nodeFilter ? ` com pods no node ${nodeFilter.node}` : ""}`}
               onSelectDeployment={handleMonitorDeployment}
               onOpenEditor={(dep) => setSelectedDeployment(dep)}
               onRequestRefresh={silentRefetch}

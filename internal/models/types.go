@@ -96,6 +96,49 @@ type NamespaceManifest struct {
 	Metadata NamespaceMetadata `json:"metadata"`
 }
 
+// ClusterNodeSummary é um node na listagem da aba Nodes (todos os nodes do cluster).
+type ClusterNodeSummary struct {
+	Name             string    `json:"name"`
+	Status           string    `json:"status"` // Ready | NotReady | Unknown
+	Unschedulable    bool      `json:"unschedulable"`
+	Roles            []string  `json:"roles"`
+	NodePool         string    `json:"nodePool,omitempty"`
+	Zone             string    `json:"zone,omitempty"`
+	InstanceType     string    `json:"instanceType,omitempty"`
+	KubeletVersion   string    `json:"kubeletVersion"`
+	OSImage          string    `json:"osImage,omitempty"`
+	ContainerRuntime string    `json:"containerRuntime,omitempty"`
+	InternalIP       string    `json:"internalIP,omitempty"`
+	Taints           []string  `json:"taints"`    // "key=value:Effect"
+	Pressures        []string  `json:"pressures"` // condições de pressão ativas (MemoryPressure, DiskPressure...)
+	CreatedAt        time.Time `json:"createdAt"`
+	Age              string    `json:"age"`
+	CPUAllocatable   int64     `json:"cpuAllocatableMillis"`
+	MemAllocatable   int64     `json:"memAllocatableBytes"`
+	CPUUsage         int64     `json:"cpuUsageMillis"` // -1 = sem Metrics Server
+	MemUsage         int64     `json:"memUsageBytes"`  // -1 = sem Metrics Server
+	PodsCount        int       `json:"podsCount"`      // pods não finalizados
+	PodsCapacity     int64     `json:"podsCapacity"`
+}
+
+// NodeNamespaceWorkloads é um namespace com pods num node (navegação node → namespaces →
+// deployments da aba Nodes).
+type NodeNamespaceWorkloads struct {
+	Namespace   string   `json:"namespace"`
+	Pods        int      `json:"pods"`
+	Deployments []string `json:"deployments"` // deployments com ao menos um pod no node
+	OtherPods   int      `json:"otherPods"`   // pods de DaemonSet/StatefulSet/Job/sem dono
+}
+
+// NodeManifest é o YAML editável de um node (sem status e campos do servidor).
+type NodeManifest struct {
+	Cluster string `json:"cluster"`
+	Name    string `json:"name"`
+	YAML    string `json:"yaml"`
+	Status  string `json:"status"`
+	Age     string `json:"age"`
+}
+
 // IngressSummary descreve informações resumidas de um Ingress
 type IngressSummary struct {
 	Cluster         string            `json:"cluster"`

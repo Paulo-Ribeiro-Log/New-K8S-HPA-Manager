@@ -17,6 +17,7 @@ import {
   Network,
   Calendar,
   Server,
+  Cpu,
   Database,
   TrendingUp,
   Globe,
@@ -49,6 +50,7 @@ const workloadTabs: WorkloadTab[] = [
   { id: "events", label: "Events", icon: Calendar },
   { id: "cronjobs", label: "CronJobs", icon: Clock },
   { id: "namespaces", label: "Namespaces", icon: Database },
+  { id: "nodes", label: "Nodes", icon: Cpu },
   { id: "helm", label: "Helm", icon: PackageOpen },
   { id: "prometheus", label: "Prometheus", icon: Activity },
 ];

@@ -3228,3 +3228,70 @@ export interface VMServiceRestartResult {
   status?: string;
   exit_code?: number;
 }
+
+// ─── Aba Nodes (GET /cluster-nodes/:cluster) ────────────────────────────────
+export interface ClusterNodeSummary {
+  name: string;
+  status: "Ready" | "NotReady" | "Unknown";
+  unschedulable: boolean;
+  roles: string[];
+  nodePool?: string;
+  zone?: string;
+  instanceType?: string;
+  kubeletVersion: string;
+  osImage?: string;
+  containerRuntime?: string;
+  internalIP?: string;
+  taints: string[]; // "key=value:Effect"
+  pressures: string[]; // MemoryPressure, DiskPressure...
+  createdAt: string;
+  age: string;
+  cpuAllocatableMillis: number;
+  memAllocatableBytes: number;
+  cpuUsageMillis: number; // -1 = sem Metrics Server
+  memUsageBytes: number; // -1 = sem Metrics Server
+  podsCount: number;
+  podsCapacity: number;
+}
+
+export interface NodeManifest {
+  cluster: string;
+  name: string;
+  yaml: string;
+  status: string;
+  age: string;
+}
+
+export interface ClusterNodePermissions {
+  canPatch: boolean;
+  canDelete: boolean;
+  canEvict: boolean;
+}
+
+// Opções do drain (models.DrainOptions no backend).
+export interface NodeDrainOptions {
+  ignore_daemonsets: boolean;
+  delete_emptydir_data: boolean;
+  force: boolean;
+  grace_period: number;
+  timeout: string;
+  disable_eviction: boolean;
+}
+
+// Passo do drain recebido por streaming (kubernetes.DrainEvent + cordon/error do handler).
+export interface NodeDrainEvent {
+  type: "cordon" | "start" | "evicting" | "blocked" | "evicted" | "done" | "error";
+  namespace?: string;
+  pod?: string;
+  message?: string;
+  evicted: number;
+  total: number;
+}
+
+// Namespace com pods num node (GET /cluster-nodes/:cluster/:name/workloads).
+export interface NodeNamespaceWorkloads {
+  namespace: string;
+  pods: number;
+  deployments: string[];
+  otherPods: number; // DaemonSet/StatefulSet/Job/sem dono
+}

@@ -72,6 +72,7 @@ import VMsTab from "@/components/VMsTab";
 import AKVDiscoveryTab from "@/components/AKVDiscoveryTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
+import { NodesTab } from "@/components/NodesTab";
 import { DynatraceCoverageTab } from "@/components/DynatraceCoverageTab";
 import { FinOpsTab } from "@/components/FinOpsTab";
 import { TeamsBroadcastTab } from "@/components/TeamsBroadcastTab";
@@ -1046,6 +1047,18 @@ const Index = ({ onLogout }: IndexProps) => {
               onNamespaceChange={setSelectedNamespace}
               onRefresh={refetchNamespaces}
               onOpenCompare={handleOpenCompare}
+            />
+          </ErrorBoundary>
+        );
+
+      case "nodes":
+        return (
+          <ErrorBoundary componentName="Nodes Tab">
+            <NodesTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
             />
           </ErrorBoundary>
         );

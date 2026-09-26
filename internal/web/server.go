@@ -793,6 +793,23 @@ func (s *Server) setupRoutes() {
 	api.PUT("/namespaces/:cluster/:name", rbacMiddleware.RequireSREGroup(), namespaceHandler.Apply)
 	api.DELETE("/namespaces/:cluster/:name", rbacMiddleware.RequireSREGroup(), namespaceHandler.Delete)
 
+	// Aba Nodes (Workloads): todos os nodes do cluster — /nodes/:cluster/:nodepool é das telas de Node Pools
+	clusterNodeHandler := handlers.NewClusterNodeHandler(s.kubeManager, s.historyTracker)
+	clusterNodes := api.Group("/cluster-nodes")
+	{
+		clusterNodes.GET("/:cluster", clusterNodeHandler.List)
+		clusterNodes.GET("/:cluster/permissions", clusterNodeHandler.Permissions)
+		clusterNodes.POST("/:cluster/schedulable", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.SetSchedulableBatch) // cordon/uncordon em lote
+		clusterNodes.GET("/:cluster/:name", clusterNodeHandler.Get)
+		clusterNodes.GET("/:cluster/:name/describe", clusterNodeHandler.Describe)
+		clusterNodes.GET("/:cluster/:name/workloads", clusterNodeHandler.Workloads)
+		clusterNodes.PUT("/:cluster/:name", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.Apply)
+		clusterNodes.DELETE("/:cluster/:name", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.Delete)
+		clusterNodes.POST("/:cluster/:name/cordon", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.Cordon)
+		clusterNodes.POST("/:cluster/:name/uncordon", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.Uncordon)
+		clusterNodes.POST("/:cluster/:name/drain", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.Drain)
+	}
+
 	// HPAs
 	hpaHandler := handlers.NewHPAHandler(s.kubeManager, s.historyTracker)
 	api.GET("/hpas", hpaHandler.List)
