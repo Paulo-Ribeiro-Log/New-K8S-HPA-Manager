@@ -59,6 +59,28 @@ const fmtCores = (m: number) => (m / 1000).toFixed(m >= 10000 ? 0 : 1);
 const fmtGiB = (b: number) => (b / 1024 ** 3).toFixed(1);
 const pct = (used: number, total: number) => (used >= 0 && total > 0 ? Math.round((used / total) * 100) : null);
 
+// Pools que ficariam sem nenhum node Ready aceitando pods se `targets` entrarem em cordon (cordon
+// direto, em lote ou o cordon que o drain faz). Usado nos avisos das confirmações.
+function poolsLeftWithoutReadyNodes(targets: ClusterNodeSummary[], allNodes: ClusterNodeSummary[]): string[] {
+  const names = new Set(targets.map(n => n.name));
+  return [...new Set(targets.map(n => n.nodePool ?? ""))].filter(pool =>
+    !allNodes.some(n => (n.nodePool ?? "") === pool && n.status === "Ready" && !n.unschedulable && !names.has(n.name)),
+  );
+}
+
+function PoolsLeftEmptyWarning({ pools, className = "" }: { pools: string[]; className?: string }) {
+  if (pools.length === 0) return null;
+  return (
+    <p className={`text-xs text-amber-600 dark:text-amber-400 flex items-start gap-1.5 ${className}`}>
+      <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+      <span>
+        {pools.map(p => p || "(sem pool)").join(", ")} ficará(ão) sem nenhum node Ready aceitando pods — novos pods desses pools
+        ficarão Pending até um uncordon ou novos nodes.
+      </span>
+    </p>
+  );
+}
+
 function UsageBar({ label, value, detail }: { label: string; value: number | null; detail?: string }) {
   const color = value === null ? "bg-muted" : value >= 90 ? "bg-red-500" : value >= 75 ? "bg-amber-500" : "bg-primary";
   return (
@@ -119,6 +141,7 @@ export const NodesTab = ({ cluster, namespaces, showSystemNamespaces, onToggleSy
   const [busyNode, setBusyNode] = useState<string | null>(null);
   const [describe, setDescribe] = useState<{ node: string; content: string; loading: boolean } | null>(null);
   const [drainNodes, setDrainNodes] = useState<string[] | null>(null);
+  const [confirmSchedulable, setConfirmSchedulable] = useState<{ node: ClusterNodeSummary; schedulable: boolean } | null>(null);
   const [deleteNode, setDeleteNode] = useState<string | null>(null);
   const [overviewOpen, setOverviewOpen] = useState(false);
   // Seleção múltipla para cordon/uncordon em lote (independente do node aberto à direita).
@@ -206,13 +229,13 @@ export const NodesTab = ({ cluster, namespaces, showSystemNamespaces, onToggleSy
       <DropdownMenuContent align="end" onClick={e => e.stopPropagation()}>
         <ProtectedAction showWarning={false}>
           {node.unschedulable ? (
-            <DropdownMenuItem disabled={!perms.canPatch} onClick={() => setSchedulable(node.name, true)}>
+            <DropdownMenuItem disabled={!perms.canPatch} onClick={() => setConfirmSchedulable({ node, schedulable: true })}>
               <PlayCircle className="w-4 h-4 mr-2" />
               Uncordon
               {!perms.canPatch && <span className="ml-2 text-[10px] text-muted-foreground">(sem permissão)</span>}
             </DropdownMenuItem>
           ) : (
-            <DropdownMenuItem disabled={!perms.canPatch} onClick={() => setSchedulable(node.name, false)}>
+            <DropdownMenuItem disabled={!perms.canPatch} onClick={() => setConfirmSchedulable({ node, schedulable: false })}>
               <Ban className="w-4 h-4 mr-2" />
               Cordon
               {!perms.canPatch && <span className="ml-2 text-[10px] text-muted-foreground">(sem permissão)</span>}
@@ -662,10 +685,45 @@ export const NodesTab = ({ cluster, namespaces, showSystemNamespaces, onToggleSy
         </DialogContent>
       </Dialog>
 
+      {/* Confirmação do cordon/uncordon individual */}
+      <Dialog open={!!confirmSchedulable} onOpenChange={open => !open && setConfirmSchedulable(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {confirmSchedulable?.schedulable ? <PlayCircle className="w-5 h-5 text-green-500" /> : <Ban className="w-5 h-5 text-amber-500" />}
+              {confirmSchedulable?.schedulable ? "Uncordon" : "Cordon"} do node
+            </DialogTitle>
+            <DialogDescription className="font-mono break-all">{confirmSchedulable?.node.name} • {cluster}</DialogDescription>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {confirmSchedulable?.schedulable
+              ? "O node volta a receber novos pods. Confirme se ele não foi isolado de propósito (investigação, manutenção)."
+              : "O node deixa de receber novos pods; os pods que já estão nele continuam rodando."}
+          </p>
+          {confirmSchedulable && !confirmSchedulable.schedulable && (
+            <PoolsLeftEmptyWarning pools={poolsLeftWithoutReadyNodes([confirmSchedulable.node], nodes)} />
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmSchedulable(null)}>Cancelar</Button>
+            <Button
+              className={`text-white ${confirmSchedulable?.schedulable ? "bg-green-600 hover:bg-green-700" : "bg-amber-600 hover:bg-amber-700"}`}
+              onClick={() => {
+                if (!confirmSchedulable) return;
+                setSchedulable(confirmSchedulable.node.name, confirmSchedulable.schedulable);
+                setConfirmSchedulable(null);
+              }}
+            >
+              {confirmSchedulable?.schedulable ? "Confirmar uncordon" : "Confirmar cordon"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {drainNodes && (
         <DrainDialog
           cluster={cluster}
           nodes={drainNodes}
+          allNodes={nodes}
           onClose={() => setDrainNodes(null)}
           onFinished={() => { refresh(); setYamlReloadToken(t => t + 1); }}
         />
@@ -892,13 +950,7 @@ function NodeBulkBar({
   const skipped = selected.length - targets.length;
 
   // Pools que ficariam sem nenhum node Ready aceitando pods depois do cordon.
-  const poolsLeftEmpty = useMemo(() => {
-    if (action !== "cordon") return [];
-    const names = new Set(toCordon.map(n => n.name));
-    return [...new Set(toCordon.map(n => n.nodePool ?? ""))].filter(pool =>
-      !allNodes.some(n => (n.nodePool ?? "") === pool && n.status === "Ready" && !n.unschedulable && !names.has(n.name)),
-    );
-  }, [action, toCordon, allNodes]);
+  const poolsLeftEmpty = action === "cordon" ? poolsLeftWithoutReadyNodes(toCordon, allNodes) : [];
 
   const confirm = async () => {
     if (!action || targets.length === 0) return;
@@ -1003,14 +1055,26 @@ const DEFAULT_DRAIN_OPTIONS: NodeDrainOptions = {
   disable_eviction: false,
 };
 
-type DrainPhase = "config" | "running" | "done" | "error" | "cancelled";
+type DrainPhase = "config" | "confirm" | "running" | "done" | "error" | "cancelled";
 
 // Linha do log do drain: o evento e o node a que pertence (drain em lote).
 type DrainLogEntry = NodeDrainEvent & { node: string };
 
 // Drain de um ou mais nodes, um de cada vez (como `kubectl drain n1 n2 ...`), parando no primeiro
 // que falhar — os seguintes não são tocados.
-function DrainDialog({ cluster, nodes, onClose, onFinished }: { cluster: string; nodes: string[]; onClose: () => void; onFinished: () => void }) {
+function DrainDialog({
+  cluster,
+  nodes,
+  allNodes,
+  onClose,
+  onFinished,
+}: {
+  cluster: string;
+  nodes: string[];
+  allNodes: ClusterNodeSummary[];
+  onClose: () => void;
+  onFinished: () => void;
+}) {
   const [opts, setOpts] = useState<NodeDrainOptions>(DEFAULT_DRAIN_OPTIONS);
   const [phase, setPhase] = useState<DrainPhase>("config");
   const [events, setEvents] = useState<DrainLogEntry[]>([]);
@@ -1073,6 +1137,17 @@ function DrainDialog({ cluster, nodes, onClose, onFinished }: { cluster: string;
 
   const running = phase === "running";
   const percent = progress.total > 0 ? Math.round((progress.evicted / progress.total) * 100) : phase === "done" ? 100 : 0;
+
+  // Resumo da confirmação: pods afetados (contagem atual da listagem, inclui DaemonSets) e riscos.
+  const targetInfos = allNodes.filter(n => nodes.includes(n.name));
+  const podsOnTargets = targetInfos.reduce((acc, n) => acc + n.podsCount, 0);
+  const poolsLeftEmpty = poolsLeftWithoutReadyNodes(targetInfos.filter(n => !n.unschedulable), allNodes);
+  const risks = [
+    opts.force && "Force: pods sem controller serão removidos e NÃO serão recriados.",
+    opts.disable_eviction && "PodDisruptionBudgets ignorados: réplicas podem cair todas de uma vez.",
+    !opts.ignore_daemonsets && "DaemonSets não ignorados: o drain será recusado se houver pods de DaemonSet.",
+    opts.grace_period === 0 && "Grace period 0: os containers são encerrados sem tempo de desligamento.",
+  ].filter(Boolean) as string[];
 
   const optionRow = (key: keyof NodeDrainOptions, label: string, hint: string, danger = false) => (
     <div className="flex items-start justify-between gap-3 py-1.5">
@@ -1155,6 +1230,38 @@ function DrainDialog({ cluster, nodes, onClose, onFinished }: { cluster: string;
               </div>
             </div>
           </div>
+        ) : phase === "confirm" ? (
+          <div className="space-y-3 text-sm">
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 space-y-1">
+              <p className="font-semibold text-destructive">
+                {multi ? `Drenar ${nodes.length} nodes, um de cada vez?` : `Drenar o node ${nodes[0]}?`}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {multi ? "Cada node" : "O node"} entra em cordon e os pods são removidos — cerca de{" "}
+                <span className="font-semibold text-foreground">{podsOnTargets}</span> pod(s) hoje
+                {!opts.ignore_daemonsets ? "" : " (inclui pods de DaemonSet, que ficam no node)"}. Os pods com controller são recriados em
+                outros nodes.
+              </p>
+              <p className="text-xs text-muted-foreground font-mono">
+                grace {opts.grace_period}s · timeout {opts.timeout}
+                {opts.ignore_daemonsets && " · ignora DaemonSets"}
+                {opts.delete_emptydir_data && " · apaga emptyDir"}
+                {opts.force && " · force"}
+                {opts.disable_eviction && " · ignora PDB"}
+              </p>
+            </div>
+            {risks.length > 0 && (
+              <ul className="space-y-1">
+                {risks.map(r => (
+                  <li key={r} className="text-xs text-red-600 dark:text-red-400 flex items-start gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                    {r}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <PoolsLeftEmptyWarning pools={poolsLeftEmpty} />
+          </div>
         ) : (
           <div className="space-y-3">
             <div className="space-y-1.5">
@@ -1187,9 +1294,18 @@ function DrainDialog({ cluster, nodes, onClose, onFinished }: { cluster: string;
           {phase === "config" && (
             <>
               <Button variant="outline" onClick={onClose}>Cancelar</Button>
+              <Button variant="destructive" onClick={() => setPhase("confirm")}>
+                <ServerCog className="w-4 h-4 mr-2" />
+                {multi ? `Continuar (${nodes.length})` : "Continuar"}
+              </Button>
+            </>
+          )}
+          {phase === "confirm" && (
+            <>
+              <Button variant="outline" onClick={() => setPhase("config")}>Voltar</Button>
               <Button variant="destructive" onClick={start}>
                 <ServerCog className="w-4 h-4 mr-2" />
-                {multi ? `Iniciar drain (${nodes.length})` : "Iniciar drain"}
+                {multi ? `Confirmar drain de ${nodes.length} nodes` : "Confirmar drain"}
               </Button>
             </>
           )}
@@ -1199,7 +1315,7 @@ function DrainDialog({ cluster, nodes, onClose, onFinished }: { cluster: string;
               Cancelar drain
             </Button>
           )}
-          {!running && phase !== "config" && <Button onClick={onClose}>Fechar</Button>}
+          {!running && phase !== "config" && phase !== "confirm" && <Button onClick={onClose}>Fechar</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>
