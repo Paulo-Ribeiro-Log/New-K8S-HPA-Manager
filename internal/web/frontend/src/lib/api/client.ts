@@ -605,6 +605,18 @@ class APIClient {
     await this.request(this.clusterNodePath(cluster, name, schedulable ? "/uncordon" : "/cordon"), { method: "POST" });
   }
 
+  /** Cordon (schedulable=false) ou uncordon em lote. Falha num node não interrompe os demais. */
+  async setClusterNodesSchedulableBatch(
+    cluster: string,
+    nodes: string[],
+    schedulable: boolean,
+  ): Promise<{ success: boolean; failed: number; results: Array<{ node: string; ok: boolean; error?: string }> }> {
+    return this.request(this.clusterNodePath(cluster, undefined, "/schedulable"), {
+      method: "POST",
+      body: JSON.stringify({ nodes, schedulable }),
+    });
+  }
+
   /** Drain com progresso: o backend responde em SSE sobre o próprio POST (fetch + leitura do
    * stream, já que EventSource não faz POST). Abortar o signal fecha a conexão e cancela o drain.
    * Resolve com o último evento ("done" ou "error"). */

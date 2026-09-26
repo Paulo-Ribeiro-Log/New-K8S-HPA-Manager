@@ -799,6 +799,7 @@ func (s *Server) setupRoutes() {
 	{
 		clusterNodes.GET("/:cluster", clusterNodeHandler.List)
 		clusterNodes.GET("/:cluster/permissions", clusterNodeHandler.Permissions)
+		clusterNodes.POST("/:cluster/schedulable", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.SetSchedulableBatch) // cordon/uncordon em lote
 		clusterNodes.GET("/:cluster/:name", clusterNodeHandler.Get)
 		clusterNodes.GET("/:cluster/:name/describe", clusterNodeHandler.Describe)
 		clusterNodes.GET("/:cluster/:name/workloads", clusterNodeHandler.Workloads)

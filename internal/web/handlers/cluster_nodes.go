@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -42,10 +43,15 @@ func (h *ClusterNodeHandler) client(c *gin.Context) (*kubeclient.Client, bool) {
 }
 
 func (h *ClusterNodeHandler) record(c *gin.Context, action, status string, before, after map[string]interface{}, start time.Time, errMsg string) {
+	h.recordNode(c, c.Param("name"), action, status, before, after, start, errMsg)
+}
+
+// recordNode registra no histórico uma ação sobre um node específico (o lote não tem :name na rota).
+func (h *ClusterNodeHandler) recordNode(c *gin.Context, node, action, status string, before, after map[string]interface{}, start time.Time, errMsg string) {
 	if h.historyTracker == nil {
 		return
 	}
-	entry := CreateHistoryEntry(c, action, "node/"+c.Param("name"), c.Param("cluster"), status, before, after, time.Since(start).Milliseconds(), errMsg)
+	entry := CreateHistoryEntry(c, action, "node/"+node, c.Param("cluster"), status, before, after, time.Since(start).Milliseconds(), errMsg)
 	if err := h.historyTracker.Log(entry); err != nil {
 		log.Warn().Err(err).Str("action", action).Msg("falha ao registrar histórico")
 	}
@@ -238,6 +244,77 @@ func (h *ClusterNodeHandler) setSchedulable(c *gin.Context, schedulable bool) {
 	}
 	h.record(c, action, "success", before, after, start, "")
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// maxBatchNodes limita o cordon/uncordon em lote; batchConcurrency, quantos nodes em paralelo.
+const (
+	maxBatchNodes    = 500
+	batchConcurrency = 5
+)
+
+// SetSchedulableBatch — POST /api/v1/cluster-nodes/:cluster/schedulable
+// Body: { "nodes": ["n1","n2"], "schedulable": false }  (false = cordon, true = uncordon)
+// Cordon/uncordon em lote (equivalente ao kubectl cordon/uncordon com --selector). Falha num node
+// não interrompe os demais; a resposta traz o resultado de cada um, e cada um vai para o histórico.
+func (h *ClusterNodeHandler) SetSchedulableBatch(c *gin.Context) {
+	var req struct {
+		Nodes       []string `json:"nodes"`
+		Schedulable bool     `json:"schedulable"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Nodes) == 0 {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", "informe ao menos um node em \"nodes\""))
+		return
+	}
+	if len(req.Nodes) > maxBatchNodes {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", fmt.Sprintf("no máximo %d nodes por lote", maxBatchNodes)))
+		return
+	}
+	k, ok := h.client(c)
+	if !ok {
+		return
+	}
+
+	action, op := history.ActionCordonNode, k.CordonNode
+	if req.Schedulable {
+		action, op = history.ActionUncordonNode, k.UncordonNode
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	defer cancel()
+
+	type result struct {
+		Node  string `json:"node"`
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	results := make([]result, len(req.Nodes))
+	sem := make(chan struct{}, batchConcurrency)
+	var wg sync.WaitGroup
+	for i, node := range req.Nodes {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			start := time.Now()
+			before := map[string]interface{}{"unschedulable": req.Schedulable, "batch": true}
+			if err := op(ctx, node); err != nil {
+				results[i] = result{Node: node, Error: err.Error()}
+				h.recordNode(c, node, action, "failed", before, nil, start, err.Error())
+				return
+			}
+			results[i] = result{Node: node, OK: true}
+			h.recordNode(c, node, action, "success", before, map[string]interface{}{"unschedulable": !req.Schedulable}, start, "")
+		}()
+	}
+	wg.Wait()
+
+	failed := 0
+	for _, r := range results {
+		if !r.OK {
+			failed++
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": failed == 0, "results": results, "failed": failed})
 }
 
 // Drain — POST /api/v1/cluster-nodes/:cluster/:name/drain  Body: models.DrainOptions
