@@ -25,6 +25,12 @@ import type {
   ConfigMapUsage,
   DynatracePodStatusResponse,
   DynatracePodCoverageResponse,
+  ClusterNodeSummary,
+  NodeManifest,
+  ClusterNodePermissions,
+  NodeDrainOptions,
+  NodeDrainEvent,
+  NodeNamespaceWorkloads,
   ConfigMapManifest,
   ConfigMapDiffResult,
   ConfigMapValidateResult,
@@ -555,6 +561,110 @@ class APIClient {
       throw new Error("Namespace not found");
     }
     return response.data;
+  }
+
+  // ─── Aba Nodes (/cluster-nodes) ─────────────────────────────────────────────
+
+  private clusterNodePath(cluster: string, name?: string, suffix = ""): string {
+    return `/cluster-nodes/${encodeURIComponent(cluster)}${name ? `/${encodeURIComponent(name)}` : ""}${suffix}`;
+  }
+
+  async getClusterNodes(cluster: string): Promise<ClusterNodeSummary[]> {
+    const response = await this.request<APIResponse<ClusterNodeSummary[]>>(this.clusterNodePath(cluster));
+    return response.data ?? [];
+  }
+
+  async getClusterNodePermissions(cluster: string): Promise<ClusterNodePermissions> {
+    return this.request<ClusterNodePermissions>(this.clusterNodePath(cluster, undefined, "/permissions"));
+  }
+
+  async getClusterNode(cluster: string, name: string): Promise<NodeManifest> {
+    const response = await this.request<APIResponse<NodeManifest>>(this.clusterNodePath(cluster, name));
+    if (!response.data) throw new Error("Node não encontrado");
+    return response.data;
+  }
+
+  async getClusterNodeWorkloads(cluster: string, name: string): Promise<NodeNamespaceWorkloads[]> {
+    const response = await this.request<APIResponse<NodeNamespaceWorkloads[]>>(this.clusterNodePath(cluster, name, "/workloads"));
+    return response.data ?? [];
+  }
+
+  async describeClusterNode(cluster: string, name: string): Promise<{ describe: string }> {
+    return this.request<{ describe: string }>(this.clusterNodePath(cluster, name, "/describe"));
+  }
+
+  async applyClusterNode(cluster: string, name: string, payload: { yaml: string; dryRun: boolean; force?: boolean }): Promise<void> {
+    await this.request(this.clusterNodePath(cluster, name), { method: "PUT", body: JSON.stringify(payload) });
+  }
+
+  async deleteClusterNode(cluster: string, name: string): Promise<void> {
+    await this.request(this.clusterNodePath(cluster, name), { method: "DELETE" });
+  }
+
+  async setClusterNodeSchedulable(cluster: string, name: string, schedulable: boolean): Promise<void> {
+    await this.request(this.clusterNodePath(cluster, name, schedulable ? "/uncordon" : "/cordon"), { method: "POST" });
+  }
+
+  /** Cordon (schedulable=false) ou uncordon em lote. Falha num node não interrompe os demais. */
+  async setClusterNodesSchedulableBatch(
+    cluster: string,
+    nodes: string[],
+    schedulable: boolean,
+  ): Promise<{ success: boolean; failed: number; results: Array<{ node: string; ok: boolean; error?: string }> }> {
+    return this.request(this.clusterNodePath(cluster, undefined, "/schedulable"), {
+      method: "POST",
+      body: JSON.stringify({ nodes, schedulable }),
+    });
+  }
+
+  /** Drain com progresso: o backend responde em SSE sobre o próprio POST (fetch + leitura do
+   * stream, já que EventSource não faz POST). Abortar o signal fecha a conexão e cancela o drain.
+   * Resolve com o último evento ("done" ou "error"). */
+  async drainClusterNode(
+    cluster: string,
+    name: string,
+    options: NodeDrainOptions,
+    onEvent: (e: NodeDrainEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<NodeDrainEvent | null> {
+    if (this.isTokenExpired() || this.isTokenNearExpiry()) await this.tryRefreshToken();
+    const res = await fetch(`${API_BASE_URL}${this.clusterNodePath(cluster, name, "/drain")}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      },
+      body: JSON.stringify(options),
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || err?.error || `HTTP ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let last: NodeDrainEvent | null = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) >= 0) {
+        const chunk = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const line = chunk.split("\n").find(l => l.startsWith("data: "));
+        if (!line) continue;
+        try {
+          last = JSON.parse(line.slice(6)) as NodeDrainEvent;
+          onEvent(last);
+        } catch {
+          /* linha malformada: ignora */
+        }
+      }
+    }
+    return last;
   }
 
   async describeNamespace(cluster: string, name: string): Promise<{ describe: string }> {

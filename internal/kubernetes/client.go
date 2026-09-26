@@ -3715,73 +3715,198 @@ func (c *Client) UncordonNode(ctx context.Context, nodeName string) error {
 	return nil
 }
 
-// DrainNode remove todos os pods de um node (kubectl drain)
+// DrainEvent é um passo do drain reportado a quem chamou DrainNodeWithProgress (streaming de
+// progresso na aba Nodes).
+type DrainEvent struct {
+	Type      string `json:"type"` // start | evicting | blocked | evicted | done
+	Namespace string `json:"namespace,omitempty"`
+	Pod       string `json:"pod,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Evicted   int    `json:"evicted"`
+	Total     int    `json:"total"`
+}
+
+// DrainNode remove todos os pods de um node (kubectl drain), sem reportar progresso.
 func (c *Client) DrainNode(ctx context.Context, nodeName string, opts *models.DrainOptions) error {
-	if opts == nil {
-		opts = models.DefaultDrainOptions()
-	}
+	return c.DrainNodeWithProgress(ctx, nodeName, opts, nil)
+}
 
-	// Validar opções antes de executar
-	if err := ValidateDrainOptions(opts); err != nil {
-		return fmt.Errorf("invalid drain options: %w", err)
+// drainCandidates separa os pods do node entre os que o drain remove e, pela semântica estrita do
+// kubectl drain, os motivos que o impediriam (usados só por CheckDrainable):
+//   - mirror/static pods: nunca removidos (o kubelet os recria a partir do manifesto local);
+//   - pods já finalizados (Succeeded/Failed): removidos sem exigências;
+//   - pods de DaemonSet: ignorados com IgnoreDaemonsets; sem a opção, removidos (e bloqueiam no modo estrito);
+//   - pods sem controller: bloqueiam no modo estrito sem Force (removê-los perde o pod de vez);
+//   - pods com emptyDir: bloqueiam no modo estrito sem DeleteEmptyDirData (os dados se perdem).
+func drainCandidates(pods []corev1.Pod, opts *models.DrainOptions) (toEvict []corev1.Pod, problems []string) {
+	var daemonSetPods, unmanagedPods, emptyDirPods []string
+	for _, pod := range pods {
+		if isMirrorPod(pod) {
+			continue
+		}
+		key := pod.Namespace + "/" + pod.Name
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			toEvict = append(toEvict, pod)
+			continue
+		}
+		if isDaemonSetPod(pod) {
+			if opts.IgnoreDaemonsets {
+				continue
+			}
+			daemonSetPods = append(daemonSetPods, key)
+		} else if !hasController(&pod) && !opts.Force {
+			unmanagedPods = append(unmanagedPods, key)
+		}
+		if hasEmptyDirVolume(pod) && !opts.DeleteEmptyDirData {
+			emptyDirPods = append(emptyDirPods, key)
+		}
+		toEvict = append(toEvict, pod)
 	}
+	if len(daemonSetPods) > 0 {
+		problems = append(problems, "pods de DaemonSet (habilite \"ignorar DaemonSets\"): "+summarizePodList(daemonSetPods))
+	}
+	if len(unmanagedPods) > 0 {
+		problems = append(problems, "pods sem controller, que seriam perdidos (habilite \"force\"): "+summarizePodList(unmanagedPods))
+	}
+	if len(emptyDirPods) > 0 {
+		problems = append(problems, "pods com volume emptyDir, cujos dados seriam perdidos (habilite \"apagar dados emptyDir\"): "+summarizePodList(emptyDirPods))
+	}
+	return toEvict, problems
+}
 
-	// Listar todos os pods no node
+// CheckDrainable aplica a checagem estrita do kubectl drain (DaemonSet sem ignorar, pods sem
+// controller sem force, emptyDir sem permissão de apagar) e devolve erro listando os pods que
+// impedem o drain — sem remover nada. Usado pela aba Nodes antes do cordon; o sequenciamento de
+// node pools não chama (mantém o comportamento que já tinha).
+func (c *Client) CheckDrainable(ctx context.Context, nodeName string, opts *models.DrainOptions) error {
 	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
 	}
+	if _, problems := drainCandidates(pods.Items, opts); len(problems) > 0 {
+		return fmt.Errorf("drain do node %s recusado — %s", nodeName, strings.Join(problems, "; "))
+	}
+	return nil
+}
 
-	// Filtrar pods por selector (se fornecido)
-	podsToEvict := []corev1.Pod{}
-	for _, pod := range pods.Items {
-		// Pular DaemonSets se ignoreDaemonsets=true
-		if opts.IgnoreDaemonsets && isDaemonSetPod(pod) {
-			continue
+// DrainNodeWithProgress remove os pods do node (ver drainCandidates). Eviction bloqueada por
+// PodDisruptionBudget (429) é tentada de novo a cada 5s até o Timeout, em vez de abortar no
+// primeiro pod bloqueado. progress (opcional) recebe cada passo.
+func (c *Client) DrainNodeWithProgress(ctx context.Context, nodeName string, opts *models.DrainOptions, progress func(DrainEvent)) error {
+	if opts == nil {
+		opts = models.DefaultDrainOptions()
+	}
+	if err := ValidateDrainOptions(opts); err != nil {
+		return fmt.Errorf("invalid drain options: %w", err)
+	}
+	emit := func(e DrainEvent) {
+		if progress != nil {
+			progress(e)
 		}
-
-		// Filtrar por pod selector (se fornecido)
-		if opts.PodSelector != "" {
-			// TODO: Implementar label selector matching
-			// Por enquanto, incluir todos os pods
-		}
-
-		podsToEvict = append(podsToEvict, pod)
 	}
 
-	// Dry-run: apenas listar pods que seriam evicted
+	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+	podsToEvict, _ := drainCandidates(pods.Items, opts)
+
+	total := len(podsToEvict)
+	emit(DrainEvent{Type: "start", Total: total, Message: fmt.Sprintf("%d pod(s) a remover", total)})
+
 	if opts.DryRun {
-		return nil // Não executar, apenas validar
+		emit(DrainEvent{Type: "done", Total: total, Message: "dry-run: nenhum pod removido"})
+		return nil
 	}
 
-	// Evict pods em chunks
 	chunkSize := opts.ChunkSize
 	if chunkSize < 1 {
 		chunkSize = 1
 	}
 
+	evicted := 0
 	for i := 0; i < len(podsToEvict); i += chunkSize {
-		end := i + chunkSize
-		if end > len(podsToEvict) {
-			end = len(podsToEvict)
-		}
+		end := min(i+chunkSize, len(podsToEvict))
+		chunk := podsToEvict[i:end]
 
-		// Evict chunk de pods
-		for _, pod := range podsToEvict[i:end] {
-			if err := c.evictPod(ctx, &pod, opts); err != nil {
+		for j := range chunk {
+			pod := &chunk[j]
+			emit(DrainEvent{Type: "evicting", Namespace: pod.Namespace, Pod: pod.Name, Evicted: evicted, Total: total})
+			if err := c.evictPodWithRetry(ctx, pod, opts, evicted, total, emit); err != nil {
 				return fmt.Errorf("failed to evict pod %s/%s: %w", pod.Namespace, pod.Name, err)
 			}
 		}
 
-		// Aguardar pods serem deletados (com timeout)
-		if err := c.waitForPodsDeleted(ctx, podsToEvict[i:end], opts); err != nil {
+		if err := c.waitForPodsDeleted(ctx, chunk, opts); err != nil {
 			return err
+		}
+		for _, pod := range chunk {
+			evicted++
+			emit(DrainEvent{Type: "evicted", Namespace: pod.Namespace, Pod: pod.Name, Evicted: evicted, Total: total})
 		}
 	}
 
+	emit(DrainEvent{Type: "done", Evicted: evicted, Total: total, Message: "drain concluído"})
 	return nil
+}
+
+// evictPodWithRetry chama evictPod e, enquanto um PodDisruptionBudget bloquear (429), tenta de
+// novo a cada 5s até opts.Timeout — mesmo comportamento do kubectl drain. Pod que já sumiu
+// (404) conta como removido.
+func (c *Client) evictPodWithRetry(ctx context.Context, pod *corev1.Pod, opts *models.DrainOptions, evicted, total int, emit func(DrainEvent)) error {
+	timeout, err := parseDuration(opts.Timeout)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		err := c.evictPod(ctx, pod, opts)
+		if err == nil || apierrors.IsNotFound(err) {
+			return nil
+		}
+		if !apierrors.IsTooManyRequests(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("PodDisruptionBudget impediu a remoção até o timeout (%s): %w", opts.Timeout, err)
+		}
+		emit(DrainEvent{Type: "blocked", Namespace: pod.Namespace, Pod: pod.Name, Evicted: evicted, Total: total,
+			Message: "bloqueado por PodDisruptionBudget — nova tentativa em 5s"})
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(drainRetryInterval):
+		}
+	}
+}
+
+// drainRetryInterval é o intervalo entre tentativas de eviction bloqueadas por PDB (var para testes).
+var drainRetryInterval = 5 * time.Second
+
+func isMirrorPod(pod corev1.Pod) bool {
+	_, ok := pod.Annotations[corev1.MirrorPodAnnotationKey]
+	return ok
+}
+
+func hasEmptyDirVolume(pod corev1.Pod) bool {
+	for _, v := range pod.Spec.Volumes {
+		if v.EmptyDir != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// summarizePodList lista até 5 pods e resume o resto ("+N").
+func summarizePodList(pods []string) string {
+	if len(pods) <= 5 {
+		return strings.Join(pods, ", ")
+	}
+	return fmt.Sprintf("%s e mais %d", strings.Join(pods[:5], ", "), len(pods)-5)
 }
 
 // evictPod evict um único pod
@@ -3841,7 +3966,8 @@ func (c *Client) CountPodsOnNode(ctx context.Context, nodeName string) (int, err
 	return count, nil
 }
 
-// waitForPodsDeleted aguarda pods serem deletados
+// waitForPodsDeleted aguarda pods serem deletados. Um pod com o mesmo nome e UID diferente
+// (StatefulSet recriando o pod) conta como deletado — o original já saiu.
 func (c *Client) waitForPodsDeleted(ctx context.Context, pods []corev1.Pod, opts *models.DrainOptions) error {
 	timeout, err := parseDuration(opts.Timeout)
 	if err != nil {
@@ -3852,25 +3978,29 @@ func (c *Client) waitForPodsDeleted(ctx context.Context, pods []corev1.Pod, opts
 
 	for _, pod := range pods {
 		for {
-			// Verificar se ainda existe
-			_, err := c.clientset.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
-			if err != nil {
-				// Pod não existe mais (deletado)
+			current, err := c.clientset.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) || (err == nil && current.UID != pod.UID) {
 				break
 			}
+			// Outro erro (rede/API): continua checando até o timeout em vez de assumir removido.
 
-			// Verificar timeout
 			if time.Now().After(deadline) {
 				return fmt.Errorf("timeout waiting for pod %s/%s to be deleted", pod.Namespace, pod.Name)
 			}
 
-			// Aguardar antes de verificar novamente
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(drainPollInterval):
+			}
 		}
 	}
 
 	return nil
 }
+
+// drainPollInterval é o intervalo de checagem de pods removidos (var para testes).
+var drainPollInterval = 2 * time.Second
 
 // IsNodeDrained verifica se um node está completamente drained (sem pods)
 func (c *Client) IsNodeDrained(ctx context.Context, nodeName string) (bool, error) {
