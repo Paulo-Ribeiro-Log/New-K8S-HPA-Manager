@@ -10,6 +10,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, HardDrive, Info, Loader2, Ref
 import { fmtBRL, fmtUSD, KubectlBlock } from "@/lib/finopsFormat";
 import { useOrphanResources, useUnattachedDisks } from "@/hooks/useUnattachedDisks";
 import { OrphanResourcesPanel, ScopedResourceGroupsPanel } from "./OrphanResourcesPanel";
+import { JOURNEY_SOURCE_LABEL } from "./journeySource";
 import type { UnattachedDiskItem, UnattachedDiskVerdict } from "./types";
 
 // Discos (Azure Managed Disk / GCP Persistent Disk / AWS EBS) que existem na conta do cloud mas não
@@ -357,7 +358,7 @@ export function UnattachedDisksTab({ cluster, journeys, azureScope = false }: { 
                                 {d.storage_class && <span>StorageClass: <strong className="text-foreground">{d.storage_class}</strong></span>}
                                 {d.k8s_cluster_hint && <span>Pista de cluster: <strong className="text-foreground break-all">{d.k8s_cluster_hint}</strong></span>}
                                 {d.cluster && <span>Veredito calculado contra: <strong className="text-foreground">{d.cluster}</strong></span>}
-                                {d.journey && <span>Jornada: <strong className="text-foreground">{d.journey}</strong></span>}
+                                {d.journey && <span>Jornada: <strong className="text-foreground">{d.journey}</strong>{d.journey_source ? ` (${JOURNEY_SOURCE_LABEL[d.journey_source]})` : ""}</span>}
                                 {d.subscription_id && <span>Subscription: <strong className="text-foreground font-mono">{d.subscription_id}</strong></span>}
                                 {d.created_at && <span>Criado em: {new Date(d.created_at).toLocaleString("pt-BR")}</span>}
                                 {d.unattached_since && <span>Desatachado desde: {new Date(d.unattached_since).toLocaleString("pt-BR")}</span>}

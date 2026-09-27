@@ -59,3 +59,12 @@ func TestFilterScopeByEnvironment(t *testing.T) {
 		t.Error("ambiente desconhecido não deveria filtrar")
 	}
 }
+
+func TestEnvironmentRegex(t *testing.T) {
+	if got := EnvironmentRegex("hlg"); got != `(?i)(^|[-_./: ])(hlg|hml|homolog|homologacao)($|[-_./: ])` {
+		t.Errorf("EnvironmentRegex(hlg) = %s", got)
+	}
+	if EnvironmentRegex("") != "" {
+		t.Error("ambiente vazio deveria gerar regex vazio")
+	}
+}

@@ -43,45 +43,39 @@ func TestKQLList(t *testing.T) {
 
 func TestResolveJourneyResourceGroups(t *testing.T) {
 	f := &argFake{rows: []map[string]any{
-		{"subscriptionId": "s1", "resourceGroup": "rg-logistica-shared", "journey": "logistica", "clusterName": "", "source": "rg"},
-		{"subscriptionId": "s1", "resourceGroup": "rg-entregas-app-prd", "journey": "", "clusterName": "", "source": "rg"},
-		{"subscriptionId": "s2", "resourceGroup": "rg-entregas-data-prd", "journey": "", "clusterName": "", "source": "rg"},
-		{"subscriptionId": "s1", "resourceGroup": "MC_rg-entregas-app-prd_aks-entregas-prd_brazilsouth", "journey": "", "clusterName": "aks-entregas-prd", "source": "node"},
-		// Mesmo RG de app voltando pela tag: não duplica e mantém a origem "cluster".
-		{"subscriptionId": "s1", "resourceGroup": "rg-entregas-app-prd", "journey": "logistica", "clusterName": "", "source": "rg"},
+		{"subscriptionId": "s1", "resourceGroup": "rg-logistica-shared-hlg", "journey": "Logistica", "envTag": "", "clusterName": "", "source": "rg"},
+		{"subscriptionId": "s1", "resourceGroup": "MC_rg-entregas-app-hlg_aks-entregas-hlg_brazilsouth", "journey": "", "clusterName": "aks-entregas-hlg", "source": "node"},
+		// Node RG que também tem a tag: não duplica, fica como node.
+		{"subscriptionId": "s1", "resourceGroup": "MC_rg-entregas-app-hlg_aks-entregas-hlg_brazilsouth", "journey": "logistica", "clusterName": "", "source": "rg"},
 	}}
-	clusters := []JourneyCluster{{
-		Name: "aks-entregas-prd", Journey: "logistica", AppResourceGroup: "rg-entregas-app-prd",
-		DataRGCandidates: []string{"rg-entregas-data-prd"},
-	}}
-	rgs, err := ResolveJourneyResourceGroups(context.Background(), fakeARM(f), []string{"s1", "s2"}, []string{"Logistica"}, clusters)
+	clusters := []JourneyCluster{{Name: "aks-entregas-hlg", Journey: "logistica"}}
+	rgs, err := ResolveJourneyResourceGroups(context.Background(), fakeARM(f), []string{"s1"}, []string{"Logistica"}, clusters)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rgs) != 4 {
-		t.Fatalf("esperava 4 RGs (sem duplicata), got %+v", rgs)
+	if len(rgs) != 2 {
+		t.Fatalf("esperava 2 RGs, got %+v", rgs)
 	}
-	src := map[string]string{}
 	for _, rg := range rgs {
-		src[rg.ResourceGroup] = rg.Source
-		if rg.Journey != "logistica" {
-			t.Errorf("%s: jornada %q, esperava logistica", rg.ResourceGroup, rg.Journey)
-		}
-	}
-	want := map[string]string{
-		"rg-logistica-shared": "tag", "rg-entregas-app-prd": "cluster", "rg-entregas-data-prd": "data",
-		"MC_rg-entregas-app-prd_aks-entregas-prd_brazilsouth": "node",
-	}
-	for rg, s := range want {
-		if src[rg] != s {
-			t.Errorf("%s: origem %q, esperava %q", rg, src[rg], s)
+		switch rg.ResourceGroup {
+		case "rg-logistica-shared-hlg":
+			if rg.Source != "tag" || rg.JourneyTag != "Logistica" {
+				t.Errorf("RG tagueado: %+v", rg)
+			}
+		default:
+			if rg.Source != "node" || rg.Cluster != "aks-entregas-hlg" || rg.Journey != "logistica" || rg.JourneyTag != "logistica" {
+				t.Errorf("node RG: %+v", rg)
+			}
 		}
 	}
 	q := f.queries[0]
-	for _, part := range []string{"tolower(journey) in ('logistica')", "'rg-entregas-data-prd'", "'aks-entregas-prd'", "nodeResourceGroup"} {
+	for _, part := range []string{"tolower(journey) in ('logistica')", "'aks-entregas-hlg'", "nodeResourceGroup"} {
 		if !strings.Contains(q, part) {
 			t.Errorf("query não contém %q:\n%s", part, q)
 		}
+	}
+	if _, err := ResolveJourneyResourceGroups(context.Background(), fakeARM(f), []string{"s1"}, nil, clusters); err == nil {
+		t.Error("sem jornada deveria falhar (a busca começa pela tag)")
 	}
 }
 
@@ -104,9 +98,9 @@ func TestListOrphanResources(t *testing.T) {
 	}}
 	rgs := []models.ScopedResourceGroup{
 		{SubscriptionID: "s1", ResourceGroup: mc, Journey: "logistica", Source: "node"},
-		{SubscriptionID: "s1", ResourceGroup: "rg-logistica-shared", Journey: "logistica", Source: "tag"},
+		{SubscriptionID: "s1", ResourceGroup: "rg-logistica-shared", Journey: "logistica", JourneyTag: "logistica", Source: "tag"},
 	}
-	disks, others, err := ListOrphanResources(context.Background(), fakeARM(f), []string{"s1"}, rgs)
+	disks, others, err := ListOrphanResources(context.Background(), fakeARM(f), []string{"s1"}, rgs, []string{"logistica"}, "(?i)(^|[-_])(hlg)($|[-_])")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +111,10 @@ func TestListOrphanResources(t *testing.T) {
 	if len(others) != 1 || others[0].Reason != "IP público sem associação" || others[0].SKU != "Standard Regional" || others[0].Journey != "logistica" {
 		t.Errorf("órfão convertido errado: %+v", others)
 	}
-	if !strings.Contains(f.queries[0], strings.ToLower("s1/"+mc)) {
-		t.Errorf("query sem a chave do RG:\n%s", f.queries[0])
+	for _, part := range []string{strings.ToLower("s1/" + mc), "rj in ('logistica')", "matches regex @'(?i)(^|[-_])(hlg)($|[-_])'"} {
+		if !strings.Contains(f.queries[0], part) {
+			t.Errorf("query não contém %q:\n%s", part, f.queries[0])
+		}
 	}
 }
 
@@ -130,5 +126,26 @@ func TestLastChanges(t *testing.T) {
 	}
 	if ts, ok := got["/subscriptions/s1/x"]; !ok || ts.Day() != 20 {
 		t.Errorf("LastChanges = %+v", got)
+	}
+}
+
+func TestEffectiveJourney(t *testing.T) {
+	node := models.ScopedResourceGroup{Source: "node", Journey: "logistica"}
+	app := models.ScopedResourceGroup{Source: "cluster", Journey: "logistica"} // RG de app sem tag: pode ser compartilhado
+	tagged := models.ScopedResourceGroup{Source: "tag", Journey: "backoffice", JourneyTag: "backoffice"}
+	cases := []struct {
+		tags                    map[string]string
+		rg                      models.ScopedResourceGroup
+		wantJourney, wantSource string
+	}{
+		{map[string]string{"Jornada": "vendas"}, tagged, "vendas", "resource_tag"}, // tag do recurso vence a do RG
+		{nil, tagged, "backoffice", "rg_tag"},
+		{nil, node, "logistica", "node_rg"},
+		{nil, app, "", "none"},
+	}
+	for i, c := range cases {
+		if j, src := effectiveJourney(c.tags, c.rg); j != c.wantJourney || src != c.wantSource {
+			t.Errorf("caso %d: (%q, %q), want (%q, %q)", i, j, src, c.wantJourney, c.wantSource)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import { fmtBRL, fmtUSD, KubectlBlock } from "@/lib/finopsFormat";
 import type { OrphanResource, OrphanSummary, ScopedResourceGroup } from "./types";
+import { JOURNEY_SOURCE_LABEL } from "./journeySource";
 
 // Recursos Azure sem uso (fora discos) nos RGs das jornadas: NIC sem VM, IP público sem
 // associação, Private Endpoint desconectado, VM desalocada/parada, NSG/LB/NAT/route table sem
@@ -157,7 +158,11 @@ export function OrphanResourcesPanel({
                           </TableCell>
                           <TableCell className="max-w-[220px]">
                             <div className="truncate" title={o.resource_group}>{o.resource_group}</div>
-                            {o.journey && <div className="text-[10px] text-muted-foreground">{o.journey}</div>}
+                            {o.journey && (
+                              <div className="text-[10px] text-muted-foreground" title={o.journey_source ? `Jornada pela ${JOURNEY_SOURCE_LABEL[o.journey_source]}` : undefined}>
+                                {o.journey}
+                              </div>
+                            )}
                           </TableCell>
                           <TableCell className="text-right whitespace-nowrap" title={ageTitle(o)}>
                             {ageLabel(o)}
@@ -175,6 +180,7 @@ export function OrphanResourcesPanel({
                                 <span>Tipo ARM: <strong className="text-foreground">{o.type}</strong></span>
                                 {o.location && <span>Região: <strong className="text-foreground">{o.location}</strong></span>}
                                 <span>Subscription: <strong className="text-foreground font-mono">{o.subscription_id}</strong></span>
+                                {o.journey && <span>Jornada: <strong className="text-foreground">{o.journey}</strong>{o.journey_source ? ` (${JOURNEY_SOURCE_LABEL[o.journey_source]})` : ""}</span>}
                                 <span>{ageTitle(o)}</span>
                                 {o.price_note && <span>Custo: {o.monthly_cost_usd > 0 ? `${fmtUSD(o.monthly_cost_usd)}/mês — ` : ""}{o.price_note}</span>}
                                 <span className="break-all">ID: {o.id}</span>
@@ -242,6 +248,7 @@ function ResourceGroupsTable({ rgs, showReason = false }: { rgs: ScopedResourceG
             <TableRow>
               <TableHead>Resource group</TableHead>
               <TableHead>Jornada</TableHead>
+              <TableHead>Tag jornada do RG</TableHead>
               <TableHead>Origem</TableHead>
               <TableHead>Ambiente</TableHead>
               <TableHead>Cluster</TableHead>
@@ -253,6 +260,7 @@ function ResourceGroupsTable({ rgs, showReason = false }: { rgs: ScopedResourceG
               <TableRow key={`${rg.subscription_id}/${rg.resource_group}`} className="text-xs">
                 <TableCell className="font-mono">{rg.resource_group}</TableCell>
                 <TableCell>{rg.journey || "—"}</TableCell>
+                <TableCell className="text-muted-foreground">{rg.journey_tag || "—"}</TableCell>
                 <TableCell><Badge variant="secondary" className="text-[10px]">{SOURCE_LABEL[rg.source]}</Badge></TableCell>
                 <TableCell title={rg.excluded_reason}>
                   {rg.environment || "—"}

@@ -1,6 +1,7 @@
 package finops
 
 import (
+	"sort"
 	"strings"
 
 	"k8s-hpa-manager/internal/models"
@@ -57,4 +58,20 @@ func FilterScopeByEnvironment(rgs []models.ScopedResourceGroup, env string) (kep
 		}
 	}
 	return kept, excluded
+}
+
+// EnvironmentRegex devolve um regex (RE2, sem diferenciar caixa) que casa qualquer marcador do
+// ambiente env como token de um nome/tag — para filtrar no Resource Graph. "" quando env é vazio.
+func EnvironmentRegex(env string) string {
+	if env == "" {
+		return ""
+	}
+	var aliases []string
+	for alias, e := range envAliases {
+		if e == env {
+			aliases = append(aliases, alias)
+		}
+	}
+	sort.Strings(aliases)
+	return `(?i)(^|[-_./: ])(` + strings.Join(aliases, "|") + `)($|[-_./: ])`
 }

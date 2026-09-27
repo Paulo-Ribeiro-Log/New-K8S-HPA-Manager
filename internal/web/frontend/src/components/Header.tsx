@@ -92,15 +92,16 @@ export const Header = ({
   // duplicada aqui e em ClusterSelectorForTab.tsx.
   const { envFilter, setEnvFilter, journeyOptions, selectedJourneys, toggleJourney, filteredClusters } =
     useClusterEnvFilter(clusters, clusterJourneys);
-  // Publica a seleção de jornadas para o resto da página (FinOps → Recursos órfãos). Nenhuma ou
-  // todas marcadas = [] (todas), mesma regra do filtro de clusters. Só publica quando o valor muda:
+  // Publica as jornadas em vigor para o resto da página (FinOps → Recursos órfãos). "Todas as
+  // jornadas" (nenhuma ou todas marcadas) = a lista explícita das jornadas do seletor — nunca
+  // "qualquer jornada": só as listadas aqui valem. Só publica quando o valor muda:
   // journeyOptions é recalculado a cada render do Index (clusters é um array novo), e publicar
   // sempre re-renderizaria o Index em laço.
   const publishedJourneysRef = useRef<string | null>(null);
   useEffect(() => {
     if (!onJourneysChange) return;
     const all = selectedJourneys.size === 0 || selectedJourneys.size >= journeyOptions.length;
-    const journeys = all ? [] : Array.from(selectedJourneys).sort();
+    const journeys = all ? [...journeyOptions] : Array.from(selectedJourneys).sort();
     const key = journeys.join(",");
     if (publishedJourneysRef.current === key) return;
     publishedJourneysRef.current = key;

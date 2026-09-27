@@ -15,6 +15,7 @@ type UnattachedDisk struct {
 	// Azure no escopo por jornada (FinOps → Recursos órfãos): subscription e jornada do RG.
 	SubscriptionID string `json:"subscription_id,omitempty"`
 	Journey        string `json:"journey,omitempty"`
+	JourneySource  string `json:"journey_source,omitempty"` // ver OrphanResource.JourneySource
 	Location       string `json:"location,omitempty"`
 	Zone           string `json:"zone,omitempty"`
 

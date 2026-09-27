@@ -37,6 +37,7 @@ type cachedOrphanScan struct {
 	excluded  []models.ScopedResourceGroup // RGs da jornada de outro ambiente ou sem ambiente identificável
 	disks     []models.UnattachedDisk
 	others    []models.OrphanResource // já com idade (AnnotateOrphanAges)
+	ignored   finops.IgnoredByJourney
 	warnings  []string
 	scannedAt time.Time
 }
@@ -57,7 +58,7 @@ func parseJourneys(raw string) []string {
 }
 
 // journeyClusters são os clusters AKS (clusters-config.json) das jornadas e do ambiente env
-// (journeys vazio = todas; env vazio = qualquer ambiente).
+// (env vazio = qualquer ambiente) — de cada um só interessa o node RG.
 func (h *FinOpsHandler) journeyClusters(journeys []string, env string) []azure.JourneyCluster {
 	want := map[string]bool{}
 	for _, j := range journeys {
@@ -66,18 +67,13 @@ func (h *FinOpsHandler) journeyClusters(journeys []string, env string) []azure.J
 	var out []azure.JourneyCluster
 	for _, cfg := range h.kubeManager.GetAllClusterConfigs() {
 		journey := cfg.Journey()
-		if len(want) > 0 && !want[strings.ToLower(journey)] {
+		if !want[strings.ToLower(journey)] {
 			continue
 		}
 		if env != "" && finops.EnvironmentOf(cfg.Name) != env {
 			continue
 		}
-		out = append(out, azure.JourneyCluster{
-			Name:             cfg.Name,
-			Journey:          journey,
-			AppResourceGroup: cfg.ResourceGroup,
-			DataRGCandidates: finops.DataRGCandidates(cfg.Name, cfg.ResourceGroup),
-		})
+		out = append(out, azure.JourneyCluster{Name: cfg.Name, Journey: journey})
 	}
 	return out
 }
@@ -117,9 +113,13 @@ func (h *FinOpsHandler) scanOrphans(journeys []string, env string, forceRefresh 
 		}
 		// HLG e PRD da mesma jornada compartilham a tag: só fica o ambiente do cluster analisado.
 		scan.rgs, scan.excluded = finops.FilterScopeByEnvironment(rgs, env)
-		if scan.disks, scan.others, err = azure.ListOrphanResources(ctx, arm, subIDs, scan.rgs); err != nil {
+		disks, others, err := azure.ListOrphanResources(ctx, arm, subIDs, scan.rgs, journeys, finops.EnvironmentRegex(env))
+		if err != nil {
 			return nil, fmt.Errorf("listar recursos órfãos: %w", err)
 		}
+		// Jornada por recurso (tag do recurso → tag do RG → node RG): um RG compartilhado entre
+		// jornadas não arrasta os recursos das outras.
+		scan.disks, scan.others, scan.ignored = finops.FilterByJourney(disks, others, journeys)
 
 		ids := make([]string, 0, len(scan.others))
 		for _, o := range scan.others {
@@ -211,6 +211,19 @@ func (h *FinOpsHandler) GetOrphanResources(c *gin.Context) {
 	journeys := parseJourneys(c.Query("journeys"))
 	cluster := c.Query("cluster")
 	env := finops.EnvironmentOf(cluster)
+	// O frontend manda sempre a lista do seletor do cabeçalho ("Todas as jornadas" = todas as
+	// listadas nele). Lista vazia só quando o seletor não tem jornada nenhuma: aí vale a do cluster
+	// analisado, se ele tiver a tag.
+	journeyFromCluster := false
+	if len(journeys) == 0 && cluster != "" {
+		if cfg := h.kubeManager.GetClusterConfig(cluster); cfg != nil && cfg.Journey() != "" {
+			journeys, journeyFromCluster = parseJourneys(cfg.Journey()), true
+		}
+	}
+	if len(journeys) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Nenhuma jornada para analisar: o seletor de jornadas do cabeçalho está vazio e o cluster %q não tem a tag \"jornada\" (rode o autodiscover para carregar as tags).", cluster)})
+		return
+	}
 	scan, fromCache, err := h.scanOrphans(journeys, env, c.Query("refresh") == "true")
 	if err != nil {
 		log.Error().Err(err).Strs("journeys", journeys).Msg("FinOps: falha na varredura de recursos órfãos")
@@ -225,9 +238,9 @@ func (h *FinOpsHandler) GetOrphanResources(c *gin.Context) {
 	if h.diskPricer != nil {
 		prices.Azure = h.diskPricer.GetDiskPrice
 	}
-	scope := "Todas as jornadas"
-	if len(journeys) > 0 {
-		scope = "Jornada(s): " + strings.Join(journeys, ", ")
+	scope := "Jornada(s): " + strings.Join(journeys, ", ")
+	if journeyFromCluster {
+		scope = "Jornada: " + journeys[0] + " (do cluster analisado — o seletor do cabeçalho não tem jornadas)"
 	}
 	if env != "" {
 		scope += " · ambiente " + env
@@ -243,6 +256,10 @@ func (h *FinOpsHandler) GetOrphanResources(c *gin.Context) {
 	finops.PriceOrphanResources(others, rate, azure.OrphanDeleteCommand)
 
 	warnings := append(append([]string{}, scan.warnings...), pvWarnings...)
+	if n := scan.ignored.OtherJourney + scan.ignored.NoJourney; n > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d recurso(s) órfão(s) ficaram de fora: %d de outra jornada e %d sem jornada identificável.",
+			n, scan.ignored.OtherJourney, scan.ignored.NoJourney))
+	}
 	if env == "" {
 		warnings = append(warnings, fmt.Sprintf("Não foi possível identificar o ambiente (prd/hlg/...) pelo nome do cluster %q — o escopo inclui todos os ambientes da jornada.", cluster))
 	}
@@ -256,6 +273,7 @@ func (h *FinOpsHandler) GetOrphanResources(c *gin.Context) {
 		"resource_groups":          scan.rgs,
 		"excluded_resource_groups": scan.excluded,
 		"environment":              env,
+		"ignored":                  scan.ignored,
 		"clusters":                 len(scan.clusters),
 		"disks":                    disks,
 		"orphans":                  others,

@@ -247,6 +247,7 @@ export interface UnattachedDiskItem {
   resource_group?: string;
   subscription_id?: string; // Azure, escopo por jornada
   journey?: string;         // Azure, escopo por jornada
+  journey_source?: JourneySource;
   cluster?: string;         // cluster contra o qual o veredito foi calculado (escopo por jornada)
   location?: string;
   zone?: string;
@@ -311,10 +312,14 @@ export interface UnattachedDisksReport {
 }
 
 // ─── Recursos órfãos por jornada (GET /finops/orphan-resources, só Azure) ────
+// De onde veio a jornada de um recurso: tag do recurso, tag do RG ou node RG (MC_*) do cluster.
+export type JourneySource = "resource_tag" | "rg_tag" | "node_rg" | "none";
+
 export interface ScopedResourceGroup {
   subscription_id: string;
   resource_group: string;
   journey?: string;
+  journey_tag?: string; // valor da tag "jornada" do próprio RG
   source: "tag" | "cluster" | "node" | "data";
   cluster?: string;
   environment?: string;     // prd/hlg/... (tag de ambiente ou nome do RG)
@@ -331,6 +336,7 @@ export interface OrphanResource {
   resource_group: string;
   subscription_id: string;
   journey?: string;
+  journey_source?: JourneySource;
   reason: string;
   sku?: string;
   tags?: Record<string, string>;
@@ -359,6 +365,7 @@ export interface OrphanResourcesResponse {
   resource_groups: ScopedResourceGroup[];
   excluded_resource_groups: ScopedResourceGroup[] | null; // da jornada, mas de outro ambiente / sem ambiente
   environment: string; // ambiente do cluster analisado ("" = não identificado)
+  ignored: { other_journey: number; no_journey: number }; // órfãos deixados de fora pela jornada
   clusters: number;
   disks: UnattachedDisksReport;
   orphans: OrphanResource[];
