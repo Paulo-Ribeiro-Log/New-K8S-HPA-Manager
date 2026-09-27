@@ -439,6 +439,8 @@ const Index = ({ onLogout }: IndexProps) => {
     [clusters]
   );
 
+  // Jornadas selecionadas no seletor do cabeçalho ([] = todas) — FinOps → Recursos órfãos.
+  const [headerJourneys, setHeaderJourneys] = useState<string[]>([]);
   // Mapa context → valor da tag Azure "jornada" (filtro dinâmico no seletor de cluster)
   const clusterJourneys = useMemo(
     () => Object.fromEntries(clusters.map((c) => [c.context, c.journey ?? ""])),
@@ -1480,7 +1482,7 @@ const Index = ({ onLogout }: IndexProps) => {
       case "finops":
         return (
           <ErrorBoundary componentName="FinOps Tab">
-            <FinOpsTab selectedCluster={selectedCluster} />
+            <FinOpsTab selectedCluster={selectedCluster} journeys={headerJourneys} />
           </ErrorBoundary>
         );
 
@@ -1560,6 +1562,7 @@ const Index = ({ onLogout }: IndexProps) => {
         clusterProviders={clusterProviders}
         clusterDisplayNames={clusterDisplayNames}
         clusterJourneys={clusterJourneys}
+        onJourneysChange={setHeaderJourneys}
         modifiedCount={staging.getChangesCount().total}
         onApplyAll={() => {
           const changesCount = staging.getChangesCount();

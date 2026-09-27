@@ -51,6 +51,8 @@ interface HeaderProps {
   clusterDisplayNames?: Record<string, string>;
   /** Mapa de context → valor da tag Azure "jornada" (ex: "logistica", "backoffice") */
   clusterJourneys?: Record<string, string>;
+  /** Jornadas efetivamente filtradas no seletor ([] = todas) — usado pelo FinOps (Recursos órfãos). */
+  onJourneysChange?: (journeys: string[]) => void;
   modifiedCount: number;
   onApplyAll: () => void;
   onApplySequential?: () => void;
@@ -68,6 +70,7 @@ export const Header = ({
   clusterProviders,
   clusterDisplayNames,
   clusterJourneys,
+  onJourneysChange,
   modifiedCount,
   onApplyAll,
   onApplySequential,
@@ -89,6 +92,20 @@ export const Header = ({
   // duplicada aqui e em ClusterSelectorForTab.tsx.
   const { envFilter, setEnvFilter, journeyOptions, selectedJourneys, toggleJourney, filteredClusters } =
     useClusterEnvFilter(clusters, clusterJourneys);
+  // Publica a seleção de jornadas para o resto da página (FinOps → Recursos órfãos). Nenhuma ou
+  // todas marcadas = [] (todas), mesma regra do filtro de clusters. Só publica quando o valor muda:
+  // journeyOptions é recalculado a cada render do Index (clusters é um array novo), e publicar
+  // sempre re-renderizaria o Index em laço.
+  const publishedJourneysRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onJourneysChange) return;
+    const all = selectedJourneys.size === 0 || selectedJourneys.size >= journeyOptions.length;
+    const journeys = all ? [] : Array.from(selectedJourneys).sort();
+    const key = journeys.join(",");
+    if (publishedJourneysRef.current === key) return;
+    publishedJourneysRef.current = key;
+    onJourneysChange(journeys);
+  }, [selectedJourneys, journeyOptions, onJourneysChange]);
   const selectedIsProd = isProdClusterName(selectedCluster);
   // O foco deve ir sempre para a digitação de nomes ao abrir o combobox — o Radix Popover foca
   // automaticamente o 1º elemento focável do conteúdo (onOpenAutoFocus padrão), que hoje é o

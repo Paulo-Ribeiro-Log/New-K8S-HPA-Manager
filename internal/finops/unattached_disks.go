@@ -53,6 +53,10 @@ type PVDiskRef struct {
 type UnattachedDiskItem struct {
 	models.UnattachedDisk
 
+	// Cluster contra o qual o veredito foi calculado (escopo multi-cluster da jornada; vazio no
+	// relatório de um cluster só ou quando o disco não pertence a nenhum cluster do escopo).
+	Cluster string `json:"cluster,omitempty"`
+
 	MonthlyCostUSD float64 `json:"monthly_cost_usd"`
 	MonthlyCostBRL float64 `json:"monthly_cost_brl"`
 	PriceSource    string  `json:"price_source"` // "api" | "fallback" | "table" | "unsupported" | "unpriced"
@@ -474,29 +478,95 @@ func BuildUnattachedDisksReport(in UnattachedDisksInput) UnattachedDisksReport {
 	}
 
 	for _, d := range in.Disks {
-		item := UnattachedDiskItem{UnattachedDisk: d}
-		usd, src := priceUnattachedDisk(d, in.Prices)
-		item.MonthlyCostUSD = usd
-		item.MonthlyCostBRL = round2(usd * rate)
-		item.PriceSource = src
-		item.AgeDays, item.AgeBasis = diskAge(d, now)
-		classifyUnattachedDisk(&item, in)
-		if item.Verdict != DiskVerdictInUseByPV {
-			item.DeleteCommand = deleteCommand(d, in)
-		}
-		report.Disks = append(report.Disks, item)
+		report.Disks = append(report.Disks, buildUnattachedDiskItem(d, in, now, rate))
 	}
+	sortUnattachedDiskItems(report.Disks)
+	report.Summary = summarizeUnattachedDisks(report.Disks)
+	return report
+}
 
-	sort.SliceStable(report.Disks, func(i, j int) bool {
-		a, b := report.Disks[i], report.Disks[j]
+func buildUnattachedDiskItem(d models.UnattachedDisk, in UnattachedDisksInput, now time.Time, rate float64) UnattachedDiskItem {
+	item := UnattachedDiskItem{UnattachedDisk: d}
+	usd, src := priceUnattachedDisk(d, in.Prices)
+	item.MonthlyCostUSD = usd
+	item.MonthlyCostBRL = round2(usd * rate)
+	item.PriceSource = src
+	item.AgeDays, item.AgeBasis = diskAge(d, now)
+	classifyUnattachedDisk(&item, in)
+	if item.Verdict != DiskVerdictInUseByPV {
+		item.DeleteCommand = deleteCommand(d, in)
+	}
+	return item
+}
+
+func sortUnattachedDiskItems(items []UnattachedDiskItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
 		if a.MonthlyCostBRL != b.MonthlyCostBRL {
 			return a.MonthlyCostBRL > b.MonthlyCostBRL
 		}
 		return a.SizeGB > b.SizeGB
 	})
+}
 
+// ClusterPVIndex é o índice de PVs de um cluster do escopo (BuildUnattachedDisksReportForClusters).
+// OK=false: não deu para listar os PVs do cluster (discos dele ficam em "revisar").
+type ClusterPVIndex struct {
+	Cluster string
+	Index   map[string]PVDiskRef
+	OK      bool
+}
+
+// BuildUnattachedDisksReportForClusters é o BuildUnattachedDisksReport para um escopo com vários
+// clusters (ex: todos os RGs de uma jornada): cada disco é classificado contra o cluster a que
+// pertence — o que tem um PV apontando para ele ou, senão, o da pista de cluster (MC_<rg>_<cluster>_<região>).
+// Disco sem cluster conhecido no escopo é classificado sem cruzamento de PVs (fica em "revisar").
+// base.Cluster/PVIndex/PVIndexOK são ignorados.
+func BuildUnattachedDisksReportForClusters(base UnattachedDisksInput, clusters []ClusterPVIndex) UnattachedDisksReport {
+	disks := base.Disks
+	base.Disks, base.Cluster, base.PVIndex, base.PVIndexOK = nil, "", nil, false
+	report := BuildUnattachedDisksReport(base)
+
+	allOK := len(clusters) > 0
+	for _, c := range clusters {
+		allOK = allOK && c.OK
+	}
+	report.PVCrossRef = allOK
+
+	for _, d := range disks {
+		in := base
+		if c := ownerCluster(d, clusters); c != nil {
+			in.Cluster, in.PVIndex, in.PVIndexOK = c.Cluster, c.Index, c.OK
+		}
+		item := buildUnattachedDiskItem(d, in, report.ScannedAt, report.ExchangeRate)
+		item.Cluster = in.Cluster
+		report.Disks = append(report.Disks, item)
+	}
+	sortUnattachedDiskItems(report.Disks)
 	report.Summary = summarizeUnattachedDisks(report.Disks)
 	return report
+}
+
+// ownerCluster acha o cluster do escopo dono do disco: primeiro um PV que o referencia (prova),
+// depois a pista de cluster gravada pelo driver de storage.
+func ownerCluster(d models.UnattachedDisk, clusters []ClusterPVIndex) *ClusterPVIndex {
+	keys := diskKeysFor(d)
+	for i := range clusters {
+		if !clusters[i].OK {
+			continue
+		}
+		for _, k := range keys {
+			if _, ok := clusters[i].Index[k]; ok {
+				return &clusters[i]
+			}
+		}
+	}
+	for i := range clusters {
+		if clusterHintMatches(d.K8sClusterHint, clusters[i].Cluster) {
+			return &clusters[i]
+		}
+	}
+	return nil
 }
 
 func summarizeUnattachedDisks(items []UnattachedDiskItem) UnattachedDisksSummary {

@@ -34,7 +34,7 @@ import { RelatorioTab } from "./finops/RelatorioTab";
 import { UnattachedDisksTab } from "./finops/UnattachedDisksTab";
 import { DataResourcesPanel } from "./DataResourcesPanel";
 
-export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => {
+export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?: string; journeys?: string[] }) => {
   const { clusters } = useClusters();
 
   // Usar o contexto real do kubeconfig (campo `context`) — cada máquina tem seu próprio
@@ -63,7 +63,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
   // Estado persistente da aba HPA Histórico (sobrevive a troca de tabs)
   const [hpaHistoryDays, setHpaHistoryDays] = useState(30);
 
-  // Sub-aba ativa. Controlada (não defaultValue) porque "Discos Desatachados" não depende do
+  // Sub-aba ativa. Controlada (não defaultValue) porque "Recursos Órfãos" não depende do
   // relatório principal — a barra de abas precisa existir mesmo sem "Analisar" ter rodado.
   const [subTab, setSubTab] = useState("dashboard");
 
@@ -451,14 +451,14 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         </>
       )}
 
-      {/* Abas: as que dependem do relatório só aparecem com ele; "Discos Desatachados" consulta o
+      {/* Abas: as que dependem do relatório só aparecem com ele; "Recursos Órfãos" consulta o
           cloud direto e fica disponível assim que há um cluster selecionado. */}
       {cluster && !isFetching && (
         <>
           {!report && !error && (
             <p className="text-xs text-muted-foreground">
               Clique em <strong>Analisar</strong> para liberar Dashboard, Node Pools, Workloads e as demais abas —
-              Discos Desatachados já está disponível abaixo.
+              Recursos Órfãos já está disponível abaixo.
             </p>
           )}
           <Tabs value={report || subTab === "data" ? subTab : "disks"} onValueChange={setSubTab} className="flex-1 flex flex-col min-h-0">
@@ -509,7 +509,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               </TabsTrigger>
               </>)}
               <TabsTrigger value="data">Recursos de Dados</TabsTrigger>
-              <TabsTrigger value="disks">Discos Desatachados</TabsTrigger>
+              <TabsTrigger value="disks">Recursos Órfãos</TabsTrigger>
             </TabsList>
 
             <div className="flex-1 overflow-auto mt-3">
@@ -545,7 +545,11 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <DataResourcesPanel cluster={cluster} />
               </TabsContent>
               <TabsContent value="disks" className="mt-0 h-full">
-                <UnattachedDisksTab cluster={cluster} />
+                <UnattachedDisksTab
+                  cluster={cluster}
+                  journeys={journeys}
+                  azureScope={(clusters ?? []).find(c => c.context === cluster)?.cloud_provider === "aks"}
+                />
               </TabsContent>
             </div>
           </Tabs>

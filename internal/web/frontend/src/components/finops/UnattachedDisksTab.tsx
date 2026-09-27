@@ -8,12 +8,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AlertTriangle, ChevronDown, ChevronRight, HardDrive, Info, Loader2, RefreshCw, Search } from "lucide-react";
 import { fmtBRL, fmtUSD, KubectlBlock } from "@/lib/finopsFormat";
-import { useUnattachedDisks } from "@/hooks/useUnattachedDisks";
+import { useOrphanResources, useUnattachedDisks } from "@/hooks/useUnattachedDisks";
+import { OrphanResourcesPanel, ScopedResourceGroupsPanel } from "./OrphanResourcesPanel";
 import type { UnattachedDiskItem, UnattachedDiskVerdict } from "./types";
 
 // Discos (Azure Managed Disk / GCP Persistent Disk / AWS EBS) que existem na conta do cloud mas não
 // estão atachados a nenhuma VM. Só leitura — a app nunca exclui nada; cada disco traz o comando de
 // exclusão pra copiar. O veredito vem do backend (cruza com os PVs do cluster selecionado).
+//
+// Cluster AKS (azureScope): em vez da subscription inteira, o escopo são os resource groups das
+// jornadas selecionadas no cabeçalho (RGs com a tag "jornada", RG de app/node RG/RG de dados dos
+// clusters da jornada), e além dos discos entram os demais recursos órfãos (NIC, IP público,
+// Private Endpoint desconectado, VM desalocada...) — GET /finops/orphan-resources.
 
 const VERDICT_META: Record<UnattachedDiskVerdict, { label: string; badge: string; help: string }> = {
   candidate: {
@@ -66,8 +72,13 @@ const priceNote = (d: UnattachedDiskItem) => {
   }
 };
 
-export function UnattachedDisksTab({ cluster }: { cluster: string }) {
-  const { data: report, isFetching, error, refresh } = useUnattachedDisks(cluster);
+export function UnattachedDisksTab({ cluster, journeys, azureScope = false }: { cluster: string; journeys?: string[]; azureScope?: boolean }) {
+  const diskQuery = useUnattachedDisks(cluster, !azureScope);
+  const orphanQuery = useOrphanResources(cluster, journeys ?? [], azureScope);
+  const orphans = azureScope ? orphanQuery.data : undefined;
+  const { isFetching, error, refresh } = azureScope ? orphanQuery : diskQuery;
+  const report = azureScope ? orphans?.disks : diskQuery.data;
+  const [view, setView] = useState<"disks" | "others" | "rgs">("disks");
 
   const [verdict, setVerdict] = useState<VerdictFilter>("all");
   const [scope, setScope] = useState<ScopeFilter>("all");
@@ -105,7 +116,11 @@ export function UnattachedDisksTab({ cluster }: { cluster: string }) {
     return (
       <div className="flex items-center justify-center gap-3 py-16 text-muted-foreground">
         <Loader2 className="h-5 w-5 animate-spin" />
-        <span>Consultando discos desatachados no cloud e cruzando com os PVs do cluster...</span>
+        <span>
+          {azureScope
+            ? "Consultando os resource groups da jornada no Azure Resource Graph e cruzando os discos com os PVs dos clusters..."
+            : "Consultando discos desatachados no cloud e cruzando com os PVs do cluster..."}
+        </span>
       </div>
     );
   }
@@ -126,6 +141,7 @@ export function UnattachedDisksTab({ cluster }: { cluster: string }) {
 
   if (!report) return null;
   const s = report.summary;
+  const warnings = [...(orphans?.warnings ?? []), ...report.warnings];
 
   return (
     <div className="space-y-4">
@@ -134,6 +150,7 @@ export function UnattachedDisksTab({ cluster }: { cluster: string }) {
         <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
           <HardDrive className="h-3.5 w-3.5 shrink-0" />
           <span>{report.scope}</span>
+          {orphans && <span>· {orphans.resource_groups.length} resource group(s) · {orphans.clusters} cluster(s)</span>}
           <span>· varrido às {new Date(report.scanned_at).toLocaleTimeString("pt-BR")}{report.from_cache ? " (cache de até 5 min)" : ""}</span>
           <span>· câmbio R$ {report.exchange_rate.toFixed(4)}</span>
         </div>
@@ -150,11 +167,39 @@ export function UnattachedDisksTab({ cluster }: { cluster: string }) {
         </Alert>
       )}
 
+      {orphans && (
+        <div className="flex items-center gap-1 border-b">
+          {([
+            ["disks", `Discos (${s.total_count})`],
+            ["others", `Outros recursos (${orphans.orphan_summary.total_count})`],
+            ["rgs", `Resource groups (${orphans.resource_groups.length})`],
+          ] as const).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              className={`px-3 py-1.5 text-xs border-b-2 -mb-px transition-colors ${view === v ? "border-primary text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {orphans && view === "others" ? (
+        <OrphanResourcesPanel orphans={orphans.orphans} summary={orphans.orphan_summary} minAgeDays={orphans.min_age_days} />
+      ) : orphans && view === "rgs" ? (
+        <ScopedResourceGroupsPanel rgs={orphans.resource_groups} excluded={orphans.excluded_resource_groups ?? []} />
+      ) : (
+      <>
+
       {!report.pv_cross_ref && (
         <Alert className="border-amber-300 bg-amber-50 dark:bg-amber-950/20">
           <AlertTriangle className="h-4 w-4 text-amber-600" />
           <AlertDescription className="text-sm text-amber-800 dark:text-amber-300">
-            Não foi possível cruzar com os PVs deste cluster — nenhum disco é marcado como candidato a exclusão nesta varredura.
+            {azureScope
+              ? "Não foi possível cruzar com os PVs de todos os clusters da jornada — os discos desses clusters ficam em \"revisar\" (detalhes nas notas abaixo)."
+              : "Não foi possível cruzar com os PVs deste cluster — nenhum disco é marcado como candidato a exclusão nesta varredura."}
           </AlertDescription>
         </Alert>
       )}
@@ -200,9 +245,9 @@ export function UnattachedDisksTab({ cluster }: { cluster: string }) {
       </div>
 
       {/* Notas/limitações da estimativa */}
-      {report.warnings.length > 0 && (
+      {warnings.length > 0 && (
         <div className="space-y-1">
-          {report.warnings.map((w, i) => (
+          {warnings.map((w, i) => (
             <p key={i} className="text-[11px] text-muted-foreground flex items-start gap-1.5">
               <Info className="h-3 w-3 mt-0.5 shrink-0" />{w}
             </p>
@@ -234,8 +279,8 @@ export function UnattachedDisksTab({ cluster }: { cluster: string }) {
             <Select value={scope} onValueChange={v => setScope(v as ScopeFilter)}>
               <SelectTrigger className="h-8 w-52 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Toda a conta ({s.total_count})</SelectItem>
-                <SelectItem value="this">Deste cluster ({scopeCounts.this})</SelectItem>
+                <SelectItem value="all">{azureScope ? "Todo o escopo" : "Toda a conta"} ({s.total_count})</SelectItem>
+                <SelectItem value="this">{azureScope ? "De clusters da jornada" : "Deste cluster"} ({scopeCounts.this})</SelectItem>
                 <SelectItem value="other">De outros clusters ({scopeCounts.other})</SelectItem>
                 <SelectItem value="external">Sem vínculo com K8s ({scopeCounts.external})</SelectItem>
               </SelectContent>
@@ -311,6 +356,9 @@ export function UnattachedDisksTab({ cluster }: { cluster: string }) {
                                 {d.pv_name && <span>PV: <strong className="text-foreground">{d.pv_name}</strong> ({d.pv_phase}{d.reclaim_policy ? `, reclaim ${d.reclaim_policy}` : ""})</span>}
                                 {d.storage_class && <span>StorageClass: <strong className="text-foreground">{d.storage_class}</strong></span>}
                                 {d.k8s_cluster_hint && <span>Pista de cluster: <strong className="text-foreground break-all">{d.k8s_cluster_hint}</strong></span>}
+                                {d.cluster && <span>Veredito calculado contra: <strong className="text-foreground">{d.cluster}</strong></span>}
+                                {d.journey && <span>Jornada: <strong className="text-foreground">{d.journey}</strong></span>}
+                                {d.subscription_id && <span>Subscription: <strong className="text-foreground font-mono">{d.subscription_id}</strong></span>}
                                 {d.created_at && <span>Criado em: {new Date(d.created_at).toLocaleString("pt-BR")}</span>}
                                 {d.unattached_since && <span>Desatachado desde: {new Date(d.unattached_since).toLocaleString("pt-BR")}</span>}
                                 <span>Custo: {fmtUSD(d.monthly_cost_usd)}/mês{d.price_source === "fallback" ? " (referência)" : d.price_source === "table" ? " (preço de tabela)" : ""}</span>
@@ -340,6 +388,8 @@ export function UnattachedDisksTab({ cluster }: { cluster: string }) {
             </CardContent>
           </Card>
         </>
+      )}
+      </>
       )}
     </div>
   );
