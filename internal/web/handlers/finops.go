@@ -62,6 +62,12 @@ type FinOpsHandler struct {
 	unattachedDisksMu    sync.Mutex
 	unattachedDisksCache map[string]cachedUnattachedDisks
 
+	// Recursos órfãos por jornada (finops_orphan_resources.go): varredura no Resource Graph em
+	// cache curto + singleflight, por conjunto de jornadas.
+	orphanSF    singleflight.Group
+	orphanMu    sync.Mutex
+	orphanCache map[string]cachedOrphanScan
+
 	// Uso real (Azure Monitor) dos recursos do RG de dados — ~1 chamada por VM/servidor, então fica
 	// em cache de 30 min por cluster+janela (finops_data_resources.go).
 	dataUsageSF    singleflight.Group
@@ -110,6 +116,7 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		awsPricers:       make(map[string]*finops.AWSPricer),
 
 		unattachedDisksCache: make(map[string]cachedUnattachedDisks),
+		orphanCache:          make(map[string]cachedOrphanScan),
 		dataUsageCache:       make(map[string]cachedDataUsage),
 		dataRGCache:          make(map[string]cachedDataRG),
 	}

@@ -245,6 +245,9 @@ export interface UnattachedDiskItem {
   id: string;
   name: string;
   resource_group?: string;
+  subscription_id?: string; // Azure, escopo por jornada
+  journey?: string;         // Azure, escopo por jornada
+  cluster?: string;         // cluster contra o qual o veredito foi calculado (escopo por jornada)
   location?: string;
   zone?: string;
   size_gb: number;
@@ -305,4 +308,64 @@ export interface UnattachedDisksReport {
   warnings: string[];
   scanned_at: string;
   from_cache: boolean;
+}
+
+// ─── Recursos órfãos por jornada (GET /finops/orphan-resources, só Azure) ────
+export interface ScopedResourceGroup {
+  subscription_id: string;
+  resource_group: string;
+  journey?: string;
+  source: "tag" | "cluster" | "node" | "data";
+  cluster?: string;
+  environment?: string;     // prd/hlg/... (tag de ambiente ou nome do RG)
+  env_tag?: string;
+  excluded_reason?: string; // só nos RGs ignorados
+}
+
+export interface OrphanResource {
+  id: string;
+  name: string;
+  type: string; // tipo ARM em minúsculas
+  kind?: string;
+  location?: string;
+  resource_group: string;
+  subscription_id: string;
+  journey?: string;
+  reason: string;
+  sku?: string;
+  tags?: Record<string, string>;
+  last_change?: string;
+  since_basis: "last_change" | "no_change_14d" | "unknown";
+  age_days: number; // -1 = desconhecida
+  recent: boolean;  // alterado há menos de min_age_days
+  monthly_cost_usd: number;
+  monthly_cost_brl: number;
+  price_note?: string;
+  delete_command?: string;
+}
+
+export interface OrphanSummary {
+  total_count: number;
+  aged_count: number;
+  recent_count: number;
+  total_cost_brl: number;
+  aged_cost_brl: number;
+  by_type: Record<string, number>;
+}
+
+export interface OrphanResourcesResponse {
+  journeys: string[];
+  scope: string;
+  resource_groups: ScopedResourceGroup[];
+  excluded_resource_groups: ScopedResourceGroup[] | null; // da jornada, mas de outro ambiente / sem ambiente
+  environment: string; // ambiente do cluster analisado ("" = não identificado)
+  clusters: number;
+  disks: UnattachedDisksReport;
+  orphans: OrphanResource[];
+  orphan_summary: OrphanSummary;
+  min_age_days: number;
+  exchange_rate: number;
+  scanned_at: string;
+  from_cache: boolean;
+  warnings: string[];
 }

@@ -12,8 +12,11 @@ type UnattachedDisk struct {
 	// Localização — Azure: ResourceGroup + Location (região) · GCP: Zone (ou região, disco
 	// regional) · AWS: AvailabilityZone (Zone) + Location (região).
 	ResourceGroup string `json:"resource_group,omitempty"`
-	Location      string `json:"location,omitempty"`
-	Zone          string `json:"zone,omitempty"`
+	// Azure no escopo por jornada (FinOps → Recursos órfãos): subscription e jornada do RG.
+	SubscriptionID string `json:"subscription_id,omitempty"`
+	Journey        string `json:"journey,omitempty"`
+	Location       string `json:"location,omitempty"`
+	Zone           string `json:"zone,omitempty"`
 
 	SizeGB    float64 `json:"size_gb"`
 	DiskType  string  `json:"disk_type"`            // valor cru do cloud: "Premium_LRS" | "pd-ssd" | "gp3" ...
