@@ -66,3 +66,20 @@ func TestBuildUnattachedDisksReportForClusters(t *testing.T) {
 		t.Errorf("report = cross=%v total=%d", r.PVCrossRef, r.Summary.TotalCount)
 	}
 }
+
+func TestFilterByJourney(t *testing.T) {
+	disks := []models.UnattachedDisk{{ID: "d1", Journey: "Logistica"}, {ID: "d2", Journey: "backoffice"}, {ID: "d3"}}
+	others := []models.OrphanResource{{ID: "o1", Journey: "logistica"}, {ID: "o2", Journey: "vendas"}}
+	d, o, ign := FilterByJourney(disks, others, []string{"logistica"})
+	if len(d) != 1 || d[0].ID != "d1" || len(o) != 1 || o[0].ID != "o1" {
+		t.Errorf("kept disks=%+v others=%+v", d, o)
+	}
+	if ign.OtherJourney != 2 || ign.NoJourney != 1 {
+		t.Errorf("ignored = %+v", ign)
+	}
+	// Sem jornada selecionada: qualquer jornada fica, recurso sem jornada continua fora.
+	d, o, ign = FilterByJourney(disks, others, nil)
+	if len(d) != 2 || len(o) != 2 || ign.NoJourney != 1 || ign.OtherJourney != 0 {
+		t.Errorf("sem filtro: disks=%d others=%d ignored=%+v", len(d), len(o), ign)
+	}
+}

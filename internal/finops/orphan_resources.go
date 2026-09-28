@@ -123,3 +123,44 @@ func SummarizeOrphans(items []models.OrphanResource) OrphanSummary {
 	}
 	return s
 }
+
+// IgnoredByJourney conta os recursos (discos + demais) deixados de fora pelo filtro de jornada.
+type IgnoredByJourney struct {
+	OtherJourney int `json:"other_journey"` // jornada (tag) diferente da selecionada
+	NoJourney    int `json:"no_journey"`    // sem tag no recurso nem no RG e fora de node RG
+}
+
+// FilterByJourney mantém só os recursos cuja jornada efetiva (tag do recurso → tag do RG → node RG
+// do cluster; ver azure.effectiveJourney) está em journeys (comparação sem diferenciar caixa).
+// journeys vazio = qualquer jornada, mas recurso sem jornada continua de fora.
+func FilterByJourney(disks []models.UnattachedDisk, others []models.OrphanResource, journeys []string) ([]models.UnattachedDisk, []models.OrphanResource, IgnoredByJourney) {
+	want := map[string]bool{}
+	for _, j := range journeys {
+		want[strings.ToLower(strings.TrimSpace(j))] = true
+	}
+	var ignored IgnoredByJourney
+	keep := func(journey string) bool {
+		switch {
+		case strings.TrimSpace(journey) == "":
+			ignored.NoJourney++
+			return false
+		case len(want) > 0 && !want[strings.ToLower(strings.TrimSpace(journey))]:
+			ignored.OtherJourney++
+			return false
+		}
+		return true
+	}
+	var keptDisks []models.UnattachedDisk
+	for _, d := range disks {
+		if keep(d.Journey) {
+			keptDisks = append(keptDisks, d)
+		}
+	}
+	var keptOthers []models.OrphanResource
+	for _, o := range others {
+		if keep(o.Journey) {
+			keptOthers = append(keptOthers, o)
+		}
+	}
+	return keptDisks, keptOthers, ignored
+}
