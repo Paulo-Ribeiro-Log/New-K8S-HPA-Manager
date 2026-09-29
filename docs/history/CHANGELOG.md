@@ -3,6 +3,15 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tools — nova ferramenta "Cliente HTTP" (estilo Postman) (Setembro 2026) ⏳ validação em cluster real pendente
+
+Pedido: testar APIs como no Postman, a partir de um cURL colado (ex.: POST JSON no `frete-hub`). Ferramenta independente no menu Tools (`HttpClientTab`, rotas `/api/v1/http-client/*`, handlers `http_client_*.go`), sem coleções, ambientes nem scripts.
+
+- **Colar cURL** (`POST /http-client/parse-curl`, `ParseCurl`): parser de linha de comando estilo shell (aspas simples e duplas, `$'...'` do "Copy as cURL (bash)" do Chrome, `\` + quebra de linha) e flags `-X/--request`, `-H/--header`, `-d/--data*/--data-urlencode/--json`, `-L`, `-k`, `-u` (vira `Authorization: Basic`), `-G`, `-I`, `-A/-b/-e`, `-m`, flags curtas agrupadas (`-sSL`, `-XPOST`). Flags não suportadas (`-F`, certificados, proxy, corpo de arquivo `@`) viram avisos. O método segue a regra do curl: `-X`, senão HEAD com `-I`, senão POST com corpo, senão GET.
+- **Envio** (`POST /http-client/send`, atrás de `RequireSREGroup()`): modo **servidor** (`net/http`; seguir redirects e ignorar TLS opcionais; timeout até 120s) ou modo **pod** (`curl` num Ephemeral Container `curlimages/curl:8.10.1`, anexado a um pod do Deployment escolhido; acessa `*.svc.cluster.local` e respeita NetworkPolicy/Istio). No modo pod, headers/métricas/stderr/corpo saem em arquivos temporários impressos com marcadores; o corpo vai por último e é cortado com `head -c`. Sem `Content-Type` explícito, o `curl` recebe `-H 'Content-Type:'` para não inventar `x-www-form-urlencoded` (igual ao modo servidor). Resposta limitada a 5 MB na tela, com detecção de binário. Falta de resposta (DNS, conexão, timeout) vem em `error`; 4xx/5xx não é erro.
+- **Histórico:** registra método, `esquema://host/caminho` (sem query string), modo e status. Headers e corpo nunca são registrados (podem ter tokens).
+- **Testes:** o exemplo real e variações do parser; modo servidor contra `httptest`; e o script do modo pod rodando na imagem real do curl (Docker, rede do host) contra o mesmo servidor de teste (POST com JSON, redirects com e sem `-L`, DNS inexistente). Pulado sem a imagem local.
+
 ### Code Editor — Pull/Sync falhavam em branch não publicada e em branch divergente (Setembro 2026)
 
 **Sintoma:** Pull e Sync não atualizavam a branch. O handler `Pull` sempre executava `git pull origin <branch-atual>`, sem estratégia de reconciliação, e isso falhava em dois casos (reproduzidos com git 2.34):
@@ -16,7 +25,6 @@
 - **`SseDialog`:** passou a checar `res.ok`. Erro HTTP (401/500) chegava como JSON e o modal terminava vazio.
 
 **Testes:** `code_editor_sync_test.go` roda os handlers reais contra um remoto bare local: branch não publicada → Pull ok → Push publica e acerta o upstream; divergência com arquivo não commitado → rebase preserva o commit local e a modificação. Os dois falham no código antigo com as mensagens acima.
-
 
 ### Pods — Busca Config: "exit code 127" e "nenhuma ferramenta de extração" (Setembro 2026) ✅ validado em pods reais
 
