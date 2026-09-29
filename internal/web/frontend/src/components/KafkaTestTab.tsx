@@ -47,6 +47,7 @@ import {
   Search,
   Table2,
   Copy,
+  Columns2,
 } from "lucide-react";
 import {
   Dialog,
@@ -55,6 +56,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import KafkaMessagesModal, { Highlight } from "@/components/KafkaMessagesModal";
+import { snippetAround } from "@/lib/kafkaHighlight";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatBytes } from "@/lib/monitorUtils";
 import { cn } from "@/lib/utils";
@@ -64,7 +67,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import { DOCKER_FIX_BY_REASON } from "@/lib/dockerFixSnippets";
-import type { KafkaTestResult, KafkaTestSSEEvent, KafkaStageStatus, KafkaMessage, TopicsOverviewResponse, DBExecutionMode } from "@/lib/api/types";
+import type { KafkaTestResult, KafkaTestSSEEvent, KafkaStageStatus, TopicsOverviewResponse, DBExecutionMode } from "@/lib/api/types";
 
 // Combobox com busca embutida no mesmo popover — mesmo padrão de ClusterSelectorForTab.tsx
 // (evita o bug do <Select> do Radix fechar o dropdown ao focar um campo de busca externo).
@@ -232,7 +235,11 @@ export default function KafkaTestTab() {
   const [result, setResult] = useState<KafkaTestResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [rawOutputOpen, setRawOutputOpen] = useState(false);
-  const [selectedMessage, setSelectedMessage] = useState<KafkaMessage | null>(null);
+  // Modal de mensagens em dois painéis (lista + detalhe). appliedViewFilter guarda a busca usada no
+  // scan que gerou o resultado atual — é ela que é destacada, não o que estiver no campo agora.
+  const [messagesModalOpen, setMessagesModalOpen] = useState(false);
+  const [messagesModalIndex, setMessagesModalIndex] = useState(0);
+  const [appliedViewFilter, setAppliedViewFilter] = useState("");
   const esRef = useRef<EventSource | null>(null);
 
   // Busca de tópicos (popover de seleção) — lista sob demanda via kcat -L, não em toda digitação:
@@ -329,6 +336,7 @@ export default function KafkaTestTab() {
     setProgress(0);
     setPhaseMessage("Iniciando teste de Kafka...");
     setIsRunning(true);
+    setAppliedViewFilter(viewTopicEnabled ? viewFilter.trim() : "");
     try {
       const { session_id } = await apiClient.runKafkaTest({
         execution_mode: executionMode,
@@ -1221,14 +1229,28 @@ export default function KafkaTestTab() {
 
             {viewTopicEnabled && (
               <div className="flex flex-col gap-2">
-                <div className="text-sm text-muted-foreground">{result.view_topic.message}</div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm text-muted-foreground">{result.view_topic.message}</div>
+                  {result.view_topic.messages && result.view_topic.messages.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 gap-1.5"
+                      onClick={() => { setMessagesModalIndex(0); setMessagesModalOpen(true); }}
+                    >
+                      <Columns2 className="w-3.5 h-3.5" />
+                      Abrir em tela dividida
+                    </Button>
+                  )}
+                </div>
                 {result.view_topic.messages && result.view_topic.messages.length > 0 && (
                   <div className="border border-border rounded-md divide-y divide-border overflow-hidden">
                     {result.view_topic.messages.map((m, i) => (
                       <button
                         key={i}
                         type="button"
-                        onClick={() => setSelectedMessage(m)}
+                        onClick={() => { setMessagesModalIndex(i); setMessagesModalOpen(true); }}
                         className="w-full text-left px-2.5 py-1.5 hover:bg-muted/50 transition-colors flex items-center gap-3"
                       >
                         <span className="text-[10px] text-muted-foreground shrink-0">
@@ -1246,10 +1268,12 @@ export default function KafkaTestTab() {
                         ) : null}
                         {m.key && (
                           <span className="text-[10px] font-mono text-muted-foreground shrink-0 truncate max-w-[100px]">
-                            key: {m.key}
+                            key: <Highlight text={m.key} terms={[appliedViewFilter]} />
                           </span>
                         )}
-                        <span className="text-xs font-mono truncate flex-1 min-w-0">{m.payload}</span>
+                        <span className="text-xs font-mono truncate flex-1 min-w-0">
+                          <Highlight text={snippetAround(m.payload, [appliedViewFilter], 30)} terms={[appliedViewFilter]} />
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -1292,65 +1316,14 @@ export default function KafkaTestTab() {
         )}
       </div>
 
-      <Dialog open={!!selectedMessage} onOpenChange={(open) => !open && setSelectedMessage(null)}>
-        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
-          <DialogHeader>
-            <DialogTitle>Mensagem do tópico</DialogTitle>
-          </DialogHeader>
-          {selectedMessage && (
-            // Rolagem nativa no corpo inteiro: o ScrollArea (Radix) anterior dependia de uma altura
-            // definida (o modal só tem max-h), então o conteúdo era cortado sem barra de rolagem.
-            <div className="flex flex-col gap-3 min-h-0 flex-1 overflow-y-auto pr-1">
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>Partição: <span className="font-mono text-foreground">{selectedMessage.partition}</span></span>
-                <span>Offset: <span className="font-mono text-foreground">{selectedMessage.offset}</span></span>
-                {selectedMessage.timestamp_ms ? (
-                  <span>Timestamp: <span className="font-mono text-foreground">{new Date(selectedMessage.timestamp_ms).toLocaleString("pt-BR")}</span></span>
-                ) : null}
-              </div>
-              {selectedMessage.binary && (
-                <div className="text-xs rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400 p-2">
-                  Payload/key contém bytes que não são UTF-8 válido (dados binários — protobuf/Avro,
-                  ou um tópico interno do Kafka como <span className="font-mono">__consumer_offsets</span>).
-                  O kcat já substitui esses bytes por "�" antes de entregar o resultado — o texto abaixo
-                  não reflete os bytes originais com exatidão.
-                </div>
-              )}
-              {selectedMessage.key && (
-                <div>
-                  <div className="text-xs text-muted-foreground mb-1">Key</div>
-                  <pre className="text-xs font-mono whitespace-pre-wrap break-all rounded-md border border-border bg-muted/30 p-2">
-                    {selectedMessage.key}
-                  </pre>
-                </div>
-              )}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs text-muted-foreground">Payload</span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1.5"
-                    onClick={() => {
-                      navigator.clipboard
-                        .writeText(selectedMessage.payload)
-                        .then(() => toast.success("Mensagem copiada!"))
-                        .catch(() => toast.error("Não foi possível copiar a mensagem"));
-                    }}
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                    Copiar mensagem
-                  </Button>
-                </div>
-                <pre className="text-xs font-mono whitespace-pre-wrap break-all rounded-md border border-border bg-muted/30 p-2">
-                  {selectedMessage.payload}
-                </pre>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <KafkaMessagesModal
+        open={messagesModalOpen}
+        onOpenChange={setMessagesModalOpen}
+        messages={result?.view_topic.messages ?? []}
+        topic={topic}
+        serverFilter={appliedViewFilter}
+        initialIndex={messagesModalIndex}
+      />
 
       <Dialog open={topicsOverviewOpen} onOpenChange={setTopicsOverviewOpen}>
         <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
