@@ -3,6 +3,23 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — breadcrumb no pane direito da tela dividida (Setembro 2026)
+
+No split, o pane direito só tinha a barra de abas, sem mostrar o caminho do arquivo aberto. Agora há um breadcrumb abaixo das abas, no mesmo formato do pane esquerdo: raiz do repositório (resolvida pelo `repoId` da aba) e segmentos do caminho, que revelam o arquivo na tree ao clicar. O caminho completo aparece no tooltip. Também tem o ponto amarelo de "não salvo" e os botões "Copiar caminho" e "Revelar na tree".
+
+
+### Code Editor — comentário de bloco/linha para todas as linguagens (Setembro 2026)
+
+Pedido: comentar blocos de código com os atalhos do VS Code, por botão e pelo menu de contexto. O Monaco só comenta linguagens que têm language configuration, e o Code Editor abre muitos arquivos como `plaintext` (`.env`, `.conf`, `.lua`, `.cs`, …). Por isso, `lib/codeComments.ts` descobre a sintaxe pelo nome do arquivo, com uma tabela própria (~150 extensões/nomes e fallback pelo languageId), e faz as edições ele mesmo, com um passo de undo por ação. As ações são registradas nos dois painéis (principal e split) e sobrepõem os atalhos padrão do Monaco:
+
+- **Shift+Alt+A**: comenta/descomenta um bloco (`/* */`, `<!-- -->`, `"""`, `--[[ ]]`, `<# #>`…). Com a seleção vazia, age na linha do cursor. Reconhece o bloco já comentado mesmo com seleção parcial. Em linguagens sem comentário de bloco (YAML, shell, Dockerfile…), comenta cada linha selecionada.
+- **Ctrl+/** (e Ctrl+NumpadDivide): alterna o comentário de linha na menor indentação. Em linguagens sem comentário de linha (CSS, HTML), envolve cada linha em um bloco.
+- **Ctrl+K Ctrl+C** e **Ctrl+K Ctrl+U**: adicionam e removem comentário de linha.
+- Botão (ícone de balão com código) na barra do arquivo, que age no painel em foco, e as 4 ações no menu de contexto. Para arquivo com sintaxe desconhecida, aparece um toast de erro.
+
+**Estendido a todos os editores Monaco da aplicação** (YAML de recursos/Secrets/rollback, Command Runner, Pod Config Finder, Teams Broadcast, diffs): o novo `lib/monacoEditor.tsx` envolve `Editor`/`DiffEditor` do `@monaco-editor/react` e, no `beforeMount`, chama `installCommentActions(monaco)`. Essa função registra (uma vez) um `monaco.editor.onDidCreateEditor` que adiciona as 4 ações a todo editor criado, inclusive os dois lados de um DiffEditor (no lado readOnly a ação não faz nada). O registro é adiado com `queueMicrotask`, porque o evento dispara dentro do construtor do `StandaloneCodeEditor`, antes de o keybinding service existir. A sintaxe vem do basename da URI do model (prop `path`) ou, se não houver, do languageId; o Code Editor informa o nome do arquivo com `setCommentFileName`. O toast de sintaxe desconhecida passou a usar o `sonner`.
+
+
 ### Teste Kafka — autenticação por connection string do Azure Event Hub (Setembro 2026) ⏳ validação contra Event Hub real pendente
 
 Pedido: conectar a aba Teste Kafka ao Event Hub colando a connection string SAS (`Endpoint=sb://<ns>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...`), além das opções que já existiam. Antes dava para fazer isso manualmente (PLAIN, usuário `$ConnectionString`, senha igual à connection string, broker `<ns>...:9093`, TLS ligado), mas era fácil errar um dos passos.

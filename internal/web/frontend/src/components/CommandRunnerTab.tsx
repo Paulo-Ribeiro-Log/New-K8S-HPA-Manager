@@ -35,7 +35,7 @@ import {
   Layers,
 } from "lucide-react";
 import { toast } from "sonner";
-import Editor from "@monaco-editor/react";
+import Editor from "@/lib/monacoEditor";
 
 import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
