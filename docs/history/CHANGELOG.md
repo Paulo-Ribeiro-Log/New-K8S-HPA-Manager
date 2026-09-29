@@ -3,6 +3,22 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Editores Monaco — ações do menu de contexto e atalhos sumiam "de vez em quando" (Setembro 2026)
+
+**Sintoma:** as ações Encode/Decode Base64 e Cron ↔ Texto, com os atalhos Ctrl+Shift+E/D, às vezes não apareciam no menu de contexto dos editores YAML.
+
+**Causa:** o `MonacoYamlEditor` registrava essas ações uma vez só, no mount, e apenas se `readOnly` fosse false naquele momento. O `ResourceYamlPanel` usa `readOnly={loading}`. Na primeira abertura, o Monaco ainda está sendo baixado do CDN e o YAML chega antes, então as ações eram registradas. Nas aberturas seguintes, com o Monaco em cache, o editor montava durante o loading (readOnly) e ficava sem as ações para sempre. Outros chamadores que alternam `readOnly` depois do mount tinham o mesmo problema: Ingress/Namespaces (`isCreating`), HelmInstall (`isExecuting`), HelmReleaseDetails (`showRendered`), Services/VPAs/CronJobs (`viewMode`).
+
+**Correção:**
+- As ações agora são registradas sempre, com `precondition: "!editorReadonly"`: o Monaco esconde/desativa enquanto o editor está readOnly e reativa quando ele fica editável (validado no Chrome headless com Monaco 0.54).
+- O `onChange` passou a ser lido por ref (antes a closure do mount ficava congelada) e os `addCommand` duplicados de Ctrl+Shift+E/D foram removidos.
+- As ações de comentário (`codeComments.ts`) ganharam a mesma precondition.
+
+**ABNT2:** o Ctrl+/ não disparava no teclado ABNT2, porque o `KeyCode.Slash` é a posição do "/" no layout US (no ABNT2, a tecla ";"). Foi adicionado Ctrl+`KeyCode.ABNT_C1`, também validado no Chrome headless.
+
+**Achado paralelo, sem correção:** em runtime, o `@monaco-editor/react` carrega o Monaco **0.54.0 do jsDelivr**, não o 0.52 local do `package.json` (não há `loader.config`). Em rede que bloqueie o jsDelivr, nenhum editor carrega.
+
+
 ### Code Editor — breadcrumb no pane direito da tela dividida (Setembro 2026)
 
 No split, o pane direito só tinha a barra de abas, sem mostrar o caminho do arquivo aberto. Agora há um breadcrumb abaixo das abas, no mesmo formato do pane esquerdo: raiz do repositório (resolvida pelo `repoId` da aba) e segmentos do caminho, que revelam o arquivo na tree ao clicar. O caminho completo aparece no tooltip. Também tem o ponto amarelo de "não salvo" e os botões "Copiar caminho" e "Revelar na tree".
