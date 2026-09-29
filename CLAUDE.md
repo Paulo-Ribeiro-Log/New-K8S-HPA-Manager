@@ -19,14 +19,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 make build                              # backend Go (BUILD_PARALLEL=2 por padrão, WSL2; BUILD_PARALLEL=4 se sobrar RAM)
-./rebuild-web.sh -b                     # frontend + backend + restart em background (-n: só restart, -k: mata :8080, -s: status)
+./rebuild-web.sh -b                     # `make build-web` + restart em background (-n: só restart, -k: mata :8080, -s: status); log em /tmp/k8s-hpa-web.log, health em GET /health
+make web-build                          # só frontend: vite build + copia dist/ para internal/web/static/ (é o que gera os commits de assets)
 ./build/new-k8s-hpa web -f              # servidor em foreground (porta 8080); `web --ad` = bypass RBAC de emergência
 ./build/new-k8s-hpa autodiscover        # descobre clusters AKS+EKS+GKE em paralelo
 make web-dev                            # Vite HMR (5173) — rode o backend em paralelo
 
 go test -v ./internal/... -race                       # tudo, com race detector
 go test -run TestNome -v ./internal/web/handlers/...  # teste único
-SKIP_AZURE_TESTS=1 make test                          # sem az CLI autenticado (é o que a CI roda em ci.yml)
+SKIP_AZURE_TESTS=1 make test                          # sem az CLI autenticado (é o que a CI roda em ci.yml; sem -race)
 ./testes/test-rbac.sh                                 # suíte RBAC
 
 cd internal/web/frontend
@@ -40,7 +41,7 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - O arquivo é `makefile` (minúsculo).
 - `vite build` **não** type-checka. `npx tsc --noEmit -p .` também não (tsconfig raiz é "solution", retorna sucesso sempre) — use `-p tsconfig.app.json`. O repo tem dezenas de erros de tipo/lint pré-existentes (`Index.tsx`, `client.ts`, …); compare com o baseline via `git stash` em vez de tentar zerar.
 - `vendor/github.com/go-rod/rod/lib/cdp/client.go` tem **patch manual** (`consumeMessages` loga+`continue` em vez de `panic` em frame CDP malformado; comentário `PATCH MANUAL`). `go mod vendor` apaga o patch em silêncio — reaplique (o comentário no código cita uma seção "Notas de Build" que virou esta lista).
-- `go.mod` tem `godebug tlsmlkem=0` (o key share pós-quântico do Go 1.24+ trava handshake TLS em VPN/EKS privado). Não remover.
+- `go.mod` tem `godebug tlsmlkem=0` (o key share pós-quântico do Go 1.24+ trava handshake TLS em VPN/EKS privado). Não remover. O comentário no `go.mod` cita uma seção "Bug real corrigido — TLS handshake timeout…" deste arquivo que não existe mais aqui (procure nas notas detalhadas).
 - `make release`/`build-all` num host Linux geram binários **darwin com SQLite quebrado** (cgo desligado → stub do `go-sqlite3` compila mas falha em runtime). Release de verdade = workflow `release.yml` (runners macOS nativos, alvo `make release-single` com `GOOS`/`GOARCH` no ambiente). O `make release` em `ci.yml` é só smoke-test de compilação.
 - Não existe test runner de frontend. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
 
