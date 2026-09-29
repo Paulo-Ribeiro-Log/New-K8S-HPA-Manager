@@ -4462,6 +4462,36 @@ class APIClient {
     return this.request<import("./types").KafkaTestPodsResponse>(`/kafka-test/pods?${params.toString()}`);
   }
 
+  // ─── Cliente HTTP (menu Tools) ─────────────────────────────────────────────
+
+  /** Converte um comando cURL colado nos campos do Cliente HTTP */
+  async parseHttpClientCurl(curl: string): Promise<import("./types").HttpClientParsedCurl> {
+    return this.request<import("./types").HttpClientParsedCurl>("/http-client/parse-curl", {
+      method: "POST",
+      body: JSON.stringify({ curl }),
+    });
+  }
+
+  /** Envia a requisição pelo servidor ou por um pod do Deployment (curl em Ephemeral Container) */
+  async sendHttpClientRequest(
+    req: import("./types").HttpClientRequest
+  ): Promise<import("./types").HttpClientResponse> {
+    return this.request<import("./types").HttpClientResponse>("/http-client/send", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** Pods Running de um Deployment — seletor de pod/container do modo pod do Cliente HTTP */
+  async getHttpClientPods(
+    cluster: string,
+    namespace: string,
+    deployment: string
+  ): Promise<{ pods: import("./types").HttpClientPodOption[] }> {
+    const params = new URLSearchParams({ cluster, namespace, deployment });
+    return this.request<{ pods: import("./types").HttpClientPodOption[] }>(`/http-client/pods?${params.toString()}`);
+  }
+
   // ─── Teste de Banco de Dados sob Demanda ───────────────────────────────────
 
   /** Inicia o teste de banco de dados (ephemeral container psql/mysql/mongosh/redis-cli) e retorna session_id para SSE */

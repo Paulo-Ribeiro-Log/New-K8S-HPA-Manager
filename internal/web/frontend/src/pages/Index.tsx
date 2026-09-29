@@ -66,6 +66,7 @@ import CertificatesTab from "@/components/CertificatesTab";
 import AccessCheckTab from "@/components/AccessCheckTab";
 import LatencyTestTab from "@/components/LatencyTestTab";
 import KafkaTestTab from "@/components/KafkaTestTab";
+import HttpClientTab from "@/components/HttpClientTab";
 import DatabaseTestTab from "@/components/DatabaseTestTab";
 import NetDiscoveryTab from "@/components/NetDiscoveryTab";
 import VMsTab from "@/components/VMsTab";
@@ -1369,6 +1370,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Kafka Test Tab">
             <KafkaTestTab />
+          </ErrorBoundary>
+        );
+
+      case "http-client":
+        return (
+          <ErrorBoundary componentName="HTTP Client Tab">
+            <HttpClientTab />
           </ErrorBoundary>
         );
 

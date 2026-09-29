@@ -1252,6 +1252,17 @@ func (s *Server) setupRoutes() {
 		kafkaTest.POST("/topics/overview", rbacMiddleware.RequireSREGroup(), kafkaTestHandler.TopicsOverview)
 	}
 
+	// Cliente HTTP (menu Tools) — envia requisições HTTP (ou um cURL colado) a partir do servidor
+	// ou de um pod de um Deployment (curl num Ephemeral Container). Enviar fica atrás do RBAC de
+	// grupo porque o modo pod anexa um container ao pod.
+	httpClientHandler := handlers.NewHTTPClientHandler(s.kubeManager, s.historyTracker)
+	httpClient := api.Group("/http-client")
+	{
+		httpClient.POST("/parse-curl", httpClientHandler.ParseCurl)
+		httpClient.GET("/pods", httpClientHandler.ListPods)
+		httpClient.POST("/send", rbacMiddleware.RequireSREGroup(), httpClientHandler.Send)
+	}
+
 	// Descoberta de Rede — traceroute sob demanda (modo pod/local) com transmissão salto-a-salto
 	// via SSE, pra desenhar o grafo em tempo real no frontend (ver IP-ROUTE-DISCOVERY-PLAN.md).
 	// Fases 1-4 completas: traceroute + fingerprint de SO + DNS reverso/ASN/nuvem + cross-reference

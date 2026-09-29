@@ -3309,3 +3309,59 @@ export interface NodeNamespaceWorkloads {
   deployments: string[];
   otherPods: number; // DaemonSet/StatefulSet/Job/sem dono
 }
+
+// ─── Cliente HTTP (menu Tools) ────────────────────────────────────────────────
+
+export interface HttpClientHeader {
+  key: string;
+  value: string;
+}
+
+export type HttpClientExecutionMode = "server" | "pod";
+
+export interface HttpClientRequest {
+  execution_mode: HttpClientExecutionMode;
+  cluster?: string;
+  namespace?: string;
+  deployment?: string;
+  pod_name?: string;
+  container_name?: string;
+  method: string;
+  url: string;
+  headers: HttpClientHeader[];
+  body: string;
+  follow_redirects: boolean;
+  insecure_skip_verify: boolean;
+  timeout_ms: number;
+}
+
+// error preenchido = não houve resposta HTTP (DNS, conexão recusada, timeout, TLS…).
+// Status 4xx/5xx não é error.
+export interface HttpClientResponse {
+  status?: number;
+  status_text?: string;
+  headers?: HttpClientHeader[];
+  body: string;
+  body_is_binary?: boolean;
+  size_bytes: number;
+  truncated?: boolean;
+  duration_ms: number;
+  executed_from: string;
+  error?: string;
+}
+
+export interface HttpClientParsedCurl {
+  method: string;
+  url: string;
+  headers: HttpClientHeader[];
+  body: string;
+  follow_redirects: boolean;
+  insecure_skip_verify: boolean;
+  timeout_ms?: number;
+  warnings?: string[];
+}
+
+export interface HttpClientPodOption {
+  name: string;
+  containers: string[];
+}
