@@ -258,6 +258,9 @@ function run(
 
 export const BLOCK_COMMENT_ACTION_ID = "hpa.comments.toggleBlock";
 
+// Some do menu e desativa os atalhos enquanto o editor está readOnly (ex: lado original do diff).
+const EDITABLE = "!editorReadonly";
+
 // Registra as ações com os atalhos do VS Code e entradas no menu de contexto.
 // Ações registradas via addAction sobrepõem os atalhos padrão do Monaco.
 function registerCommentActions(editor: CodeEditor, monaco: Monaco) {
@@ -265,7 +268,7 @@ function registerCommentActions(editor: CodeEditor, monaco: Monaco) {
   const chordK = (k: number) => KeyMod.chord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | k);
   const lineAction = (id: string, label: string, mode: LineMode, keybindings: number[], order: number) =>
     editor.addAction({
-      id, label, keybindings, contextMenuGroupId: "1_modification", contextMenuOrder: order,
+      id, label, keybindings, precondition: EDITABLE, contextMenuGroupId: "1_modification", contextMenuOrder: order,
       run: ed => run(ed as CodeEditor, monaco, (model, sel, tokens) => lineCommentEdits(monaco, model, sel, tokens, mode)),
     });
 
@@ -273,12 +276,15 @@ function registerCommentActions(editor: CodeEditor, monaco: Monaco) {
     id: BLOCK_COMMENT_ACTION_ID,
     label: "Comentar/descomentar bloco",
     keybindings: [KeyMod.Shift | KeyMod.Alt | KeyCode.KeyA],
+    precondition: EDITABLE,
     contextMenuGroupId: "1_modification",
     contextMenuOrder: 10,
     run: ed => run(ed as CodeEditor, monaco, (model, sel, tokens) => blockCommentEdits(monaco, model, sel, tokens)),
   });
   lineAction("hpa.comments.toggleLine", "Comentar/descomentar linha(s)", "toggle",
-    [KeyMod.CtrlCmd | KeyCode.Slash, KeyMod.CtrlCmd | KeyCode.NumpadDivide], 11);
+    // ABNT_C1 = tecla "/" do teclado ABNT2 (ao lado do Shift direito); o KeyCode.Slash é a
+    // posição do "/" no layout US, que no ABNT2 é a tecla ";".
+    [KeyMod.CtrlCmd | KeyCode.Slash, KeyMod.CtrlCmd | KeyCode.ABNT_C1, KeyMod.CtrlCmd | KeyCode.NumpadDivide], 11);
   lineAction("hpa.comments.addLine", "Adicionar comentário de linha", "add", [chordK(KeyCode.KeyC)], 12);
   lineAction("hpa.comments.removeLine", "Remover comentário de linha", "remove", [chordK(KeyCode.KeyU)], 13);
 }

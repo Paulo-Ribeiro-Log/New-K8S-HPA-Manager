@@ -106,151 +106,81 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
     });
   };
 
+  // Lido por ref: handleMount roda uma vez só, e capturar `onChange` direto congelaria a
+  // primeira versão da função (closure antiga).
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; });
+
   const handleMount: OnMount = (editor, monacoInstance) => {
     editorRef.current = editor;
     monacoRef.current = monacoInstance;
 
     // Comando Ctrl+S para salvar
     editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
-      if (!onChange) return;
-      const currentValue = editor.getValue();
-      onChange(currentValue);
+      onChangeRef.current?.(editor.getValue());
     });
 
-    // Comando Ctrl+Shift+E para Encode Base64
-    if (!readOnly) {
-      editor.addCommand(
-        monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyE,
-        () => {
-          const selection = editor.getSelection();
-          if (!selection) return;
+    // Troca o texto selecionado pelo resultado de `transform` (null = não mexe).
+    const replaceSelection = (ed: MonacoEditorNS.editor.ICodeEditor, source: string, transform: (text: string) => string | null) => {
+      const selection = ed.getSelection();
+      if (!selection) return;
+      const selectedText = ed.getModel()?.getValueInRange(selection);
+      if (!selectedText) return;
+      try {
+        const result = transform(selectedText);
+        if (result === null) return;
+        ed.executeEdits(source, [{ range: selection, text: result, forceMoveMarkers: true }]);
+        onChangeRef.current?.(ed.getValue());
+      } catch (error) {
+        console.error(`Erro em ${source}:`, error);
+      }
+    };
 
-          const selectedText = editor.getModel()?.getValueInRange(selection);
-          if (!selectedText) return;
-
-          try {
-            const encoded = btoa(unescape(encodeURIComponent(selectedText)));
-            editor.executeEdits("encode-base64", [
-              { range: selection, text: encoded, forceMoveMarkers: true },
-            ]);
-            if (onChange) onChange(editor.getValue());
-          } catch (error) {
-            console.error("Erro ao encodar base64:", error);
-          }
-        }
-      );
-
-      // Comando Ctrl+Shift+D para Decode Base64
-      editor.addCommand(
-        monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyD,
-        () => {
-          const selection = editor.getSelection();
-          if (!selection) return;
-
-          const selectedText = editor.getModel()?.getValueInRange(selection);
-          if (!selectedText) return;
-
-          try {
-            const decoded = decodeURIComponent(escape(atob(selectedText)));
-            editor.executeEdits("decode-base64", [
-              { range: selection, text: decoded, forceMoveMarkers: true },
-            ]);
-            if (onChange) onChange(editor.getValue());
-          } catch (error) {
-            console.error("Erro ao decodar base64:", error);
-          }
-        }
-      );
-
-      // Menu de contexto (botão direito)
-      editor.addAction({
-        id: "encode-base64-action",
-        label: "Encode para Base64",
-        keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyE],
-        contextMenuGroupId: "1_modification",
-        contextMenuOrder: 1,
-        run: (ed) => {
-          const selection = ed.getSelection();
-          if (!selection) return;
-
-          const selectedText = ed.getModel()?.getValueInRange(selection);
-          if (!selectedText) return;
-
-          try {
-            const encoded = btoa(unescape(encodeURIComponent(selectedText)));
-            ed.executeEdits("encode-base64", [
-              { range: selection, text: encoded, forceMoveMarkers: true },
-            ]);
-            if (onChange) onChange(ed.getValue());
-          } catch (error) {
-            console.error("Erro ao encodar base64:", error);
-          }
-        },
-      });
-
-      editor.addAction({
-        id: "decode-base64-action",
-        label: "Decode de Base64",
-        keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyD],
-        contextMenuGroupId: "1_modification",
-        contextMenuOrder: 2,
-        run: (ed) => {
-          const selection = ed.getSelection();
-          if (!selection) return;
-
-          const selectedText = ed.getModel()?.getValueInRange(selection);
-          if (!selectedText) return;
-
-          try {
-            const decoded = decodeURIComponent(escape(atob(selectedText)));
-            ed.executeEdits("decode-base64", [
-              { range: selection, text: decoded, forceMoveMarkers: true },
-            ]);
-            if (onChange) onChange(ed.getValue());
-          } catch (error) {
-            console.error("Erro ao decodar base64:", error);
-          }
-        },
-      });
-
-      editor.addAction({
-        id: "cron-to-text-action",
-        label: "Cron → Texto legível",
-        contextMenuGroupId: "1_modification",
-        contextMenuOrder: 3,
-        run: (ed) => {
-          const selection = ed.getSelection();
-          if (!selection) return;
-          const selected = ed.getModel()?.getValueInRange(selection)?.trim();
-          if (!selected || !isValidCronExpression(selected)) return;
-          const explanation = explainCronExpression(selected);
-          if (!explanation) return;
-          ed.executeEdits("cron-to-text", [
-            { range: selection, text: explanation.readable, forceMoveMarkers: true },
-          ]);
-          if (onChange) onChange(ed.getValue());
-        },
-      });
-
-      editor.addAction({
-        id: "text-to-cron-action",
-        label: "Texto → Expressão Cron",
-        contextMenuGroupId: "1_modification",
-        contextMenuOrder: 4,
-        run: (ed) => {
-          const selection = ed.getSelection();
-          if (!selection) return;
-          const selected = ed.getModel()?.getValueInRange(selection)?.trim();
-          if (!selected) return;
-          const cron = textToCron(selected);
-          if (!cron) return;
-          ed.executeEdits("text-to-cron", [
-            { range: selection, text: cron, forceMoveMarkers: true },
-          ]);
-          if (onChange) onChange(ed.getValue());
-        },
-      });
-    }
+    // Ações de edição registradas SEMPRE, com precondition "!editorReadonly": o Monaco as esconde
+    // do menu e desativa os atalhos enquanto o editor está readOnly e as reativa sozinho quando
+    // ele fica editável. Antes eram registradas só se `readOnly` fosse false no mount — e como
+    // vários chamadores alternam readOnly depois (ex: ResourceYamlPanel usa readOnly={loading}),
+    // um editor montado durante o loading ficava sem essas ações para sempre.
+    const editable = "!editorReadonly";
+    const { KeyMod, KeyCode } = monacoInstance;
+    editor.addAction({
+      id: "encode-base64-action",
+      label: "Encode para Base64",
+      keybindings: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyE],
+      precondition: editable,
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 1,
+      run: (ed) => replaceSelection(ed, "encode-base64", (t) => btoa(unescape(encodeURIComponent(t)))),
+    });
+    editor.addAction({
+      id: "decode-base64-action",
+      label: "Decode de Base64",
+      keybindings: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyD],
+      precondition: editable,
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 2,
+      run: (ed) => replaceSelection(ed, "decode-base64", (t) => decodeURIComponent(escape(atob(t)))),
+    });
+    editor.addAction({
+      id: "cron-to-text-action",
+      label: "Cron → Texto legível",
+      precondition: editable,
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 3,
+      run: (ed) => replaceSelection(ed, "cron-to-text", (t) => {
+        const cron = t.trim();
+        if (!isValidCronExpression(cron)) return null;
+        return explainCronExpression(cron)?.readable ?? null;
+      }),
+    });
+    editor.addAction({
+      id: "text-to-cron-action",
+      label: "Texto → Expressão Cron",
+      precondition: editable,
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 4,
+      run: (ed) => replaceSelection(ed, "text-to-cron", (t) => textToCron(t.trim()) || null),
+    });
 
     // Verificação de espaços em branco em valores base64 — só faz sentido (e só aparece no menu
     // de contexto) quando o YAML aberto é um Secret; funciona mesmo em modo readOnly, já que só lê
