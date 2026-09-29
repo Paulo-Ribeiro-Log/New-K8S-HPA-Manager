@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import Editor, { DiffEditor, OnMount } from "@monaco-editor/react";
+import Editor, { DiffEditor, OnMount } from "@/lib/monacoEditor";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -72,8 +72,10 @@ import {
   Lock,
   Box,
   Braces,
+  MessageSquareCode,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { setCommentFileName, BLOCK_COMMENT_ACTION_ID } from "@/lib/codeComments";
 import { CodeEditorOpenFolderDialog } from "@/components/CodeEditorOpenFolderDialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -2341,6 +2343,9 @@ export function CodeEditorTab() {
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const saveFileRef = useRef<() => void>(() => {});
+  // Nome do arquivo em cada pane, para resolver a sintaxe de comentário (codeComments.ts)
+  const leftFileNameRef = useRef("");
+  const rightFileNameRef = useRef("");
   const openFileRef = useRef<(node: CodeEditorFileNode) => Promise<void>>(async () => {});
   const pendingNavigationRef = useRef<{ line: number; col: number } | null>(null);
   const editorRowRef = useRef<HTMLDivElement>(null);
@@ -2913,9 +2918,17 @@ export function CodeEditorTab() {
     }
   }
 
-  function handleSplitEditorMount(editor: MonacoEditorNS.editor.IStandaloneCodeEditor) {
+  function toggleBlockCommentInFocusedPane() {
+    const ed = focusedPane === "right" && splitActive ? splitEditorRef.current : editorRef.current;
+    if (!ed) return;
+    ed.focus();
+    ed.getAction(BLOCK_COMMENT_ACTION_ID)?.run();
+  }
+
+  const handleSplitEditorMount: OnMount = (editor) => {
     splitEditorRef.current = editor;
     editor.addCommand(2048 | 49, () => saveRightFile());
+    setCommentFileName(editor, () => rightFileNameRef.current);
     editor.onDidChangeCursorPosition(e => {
       if (focusedPane === "right") {
         setCursorLine(e.position.lineNumber);
@@ -2923,7 +2936,7 @@ export function CodeEditorTab() {
       }
     });
     editor.onDidFocusEditorWidget(() => setFocusedPane("right"));
-  }
+  };
 
   async function handleResetFile(filePath: string) {
     if (!selectedRepo) return;
@@ -3290,6 +3303,10 @@ export function CodeEditorTab() {
 
   // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
   useEffect(() => { saveFileRef.current = saveFile; });
+  useEffect(() => {
+    leftFileNameRef.current = activeTab?.node.name ?? "";
+    rightFileNameRef.current = openTabs[rightTabIdx]?.node.name ?? "";
+  });
   useEffect(() => { openFileRef.current = openFile; });
 
   // Sincroniza fontSize/wordWrap com Monaco sem recriar o editor
@@ -3357,6 +3374,7 @@ export function CodeEditorTab() {
     editor.addCommand(2048 | 49, () => saveFileRef.current()); // Ctrl+S
     editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
     editor.addCommand(2048 | 46, () => { setShowQuickOpen(true); setQuickOpenQuery(""); setQuickOpenIdx(0); }); // Ctrl+P
+    setCommentFileName(editor, () => leftFileNameRef.current);
     editor.onDidChangeCursorPosition(e => {
       setCursorLine(e.position.lineNumber);
       setCursorCol(e.position.column);
@@ -4644,6 +4662,11 @@ export function CodeEditorTab() {
                     onClick={() => setDiffFile(activeTab.node.path)}>
                     <Eye className="w-3 h-3" />
                   </Button>
+                  <Button variant="ghost" size="sm" className="h-6 text-xs gap-1 px-2"
+                    title={"Comentar/descomentar bloco (Shift+Alt+A)\nCtrl+/ comenta linhas · Ctrl+K Ctrl+C adiciona · Ctrl+K Ctrl+U remove\nTambém no menu de contexto (botão direito)"}
+                    onClick={toggleBlockCommentInFocusedPane}>
+                    <MessageSquareCode className="w-3 h-3" />
+                  </Button>
                   <Button variant="ghost" size="sm" className="h-6 text-xs gap-1 px-2" title="Formatar arquivo (Shift+Alt+F)" onClick={formatFile} disabled={formatting}>
                     {formatting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span className="font-mono font-bold text-[11px]">Fmt</span>}
                   </Button>
@@ -4730,6 +4753,53 @@ export function CodeEditorTab() {
                           );
                         })}
                       </div>
+                      {/* Breadcrumb do pane direito (mesmo formato do esquerdo) */}
+                      {openTabs[rightTabIdx] && (() => {
+                        const rTab = openTabs[rightTabIdx];
+                        const rRepo = repos.find(r => r.id === rTab.repoId) ?? selectedRepo;
+                        return (
+                          <div className="flex items-center gap-2 px-3 py-1 border-b border-border/50 flex-shrink-0 bg-card/20">
+                            <div className="flex items-center flex-1 min-w-0 overflow-hidden text-xs font-mono text-muted-foreground"
+                              title={rRepo ? `${rRepo.local_path}/${rTab.node.path}` : rTab.node.path}>
+                              {rRepo && (
+                                <span className="flex-shrink-0 truncate max-w-[160px]">
+                                  {repoRootName(rRepo)}<span className="opacity-30 mx-0.5 select-none">/</span>
+                                </span>
+                              )}
+                              {rTab.node.path.split("/").map((seg, i, arr) => {
+                                const isLast = i === arr.length - 1;
+                                return (
+                                  <span key={i} className="flex items-center flex-shrink-0">
+                                    {i > 0 && <span className="opacity-30 mx-0.5 select-none">/</span>}
+                                    {isLast ? (
+                                      <span className="text-foreground/80 truncate max-w-[200px]">{seg}</span>
+                                    ) : (
+                                      <button
+                                        className="hover:text-foreground hover:underline underline-offset-2 truncate max-w-[120px]"
+                                        onClick={() => { setSidePanel("files"); setRevealPath(rTab.node.path); }}
+                                        title={arr.slice(0, i + 1).join("/")}
+                                      >{seg}</button>
+                                    )}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                            {rTab.currentContent !== rTab.savedContent && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" title="Não salvo" />
+                            )}
+                            <div className="flex gap-1 flex-shrink-0">
+                              <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Copiar caminho"
+                                onClick={() => navigator.clipboard.writeText(rTab.node.path).then(() => addToast("success", "Caminho copiado"))}>
+                                <Copy className="w-3 h-3" />
+                              </Button>
+                              <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Revelar na tree"
+                                onClick={() => { setSidePanel("files"); setRevealPath(rTab.node.path); }}>
+                                <Locate className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })()}
                       {/* Editor do pane direito */}
                       {openTabs[rightTabIdx] && (
                         <Editor

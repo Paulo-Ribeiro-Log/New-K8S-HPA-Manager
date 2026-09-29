@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import Editor, { BeforeMount, OnMount } from "@monaco-editor/react";
+import Editor, { BeforeMount, OnMount } from "@/lib/monacoEditor";
 import type * as MonacoNS from "monaco-editor";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";

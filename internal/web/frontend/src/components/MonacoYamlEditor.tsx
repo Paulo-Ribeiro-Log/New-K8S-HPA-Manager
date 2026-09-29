@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import Editor, { OnChange, BeforeMount, OnMount } from "@monaco-editor/react";
-import { DiffEditor } from "@monaco-editor/react";
-import type { Monaco } from "@monaco-editor/react";
+import Editor, { OnChange, BeforeMount, OnMount } from "@/lib/monacoEditor";
+import { DiffEditor } from "@/lib/monacoEditor";
+import type { Monaco } from "@/lib/monacoEditor";
 import type * as MonacoEditorNS from "monaco-editor";
 import { configureMonacoYaml } from "monaco-yaml";
 import { toast } from "sonner";
