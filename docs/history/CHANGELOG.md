@@ -3,6 +3,21 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — Pull/Sync falhavam em branch não publicada e em branch divergente (Setembro 2026)
+
+**Sintoma:** Pull e Sync não atualizavam a branch. O handler `Pull` sempre executava `git pull origin <branch-atual>`, sem estratégia de reconciliação, e isso falhava em dois casos (reproduzidos com git 2.34):
+- **Branch ainda não publicada**, por exemplo criada a partir de `origin/main`: `fatal: couldn't find remote ref <branch>`. O Sync só encadeia o Push se o Pull der certo, então uma branch nova nunca era publicada pelo Sync.
+- **Branch divergente** (commit local e commit remoto), com o repositório sem `pull.rebase`: `fatal: Need to specify how to reconcile divergent branches`.
+
+**Correção:**
+- **Pull:** checa a branch com `ls-remote --exit-code` autenticado. Se ela não existe no remoto, conclui com sucesso ("nada para puxar") e o Sync segue para o Push. Outras falhas do ls-remote seguem para o pull, que mostra o erro real.
+- **Estratégia:** o Pull passou a usar `--rebase --autostash`, a mesma do pull automático do Push, que também ganhou `--autostash`.
+- **Upstream:** o Push envia para a URL com token, não para o remote `origin`, e por isso não atualizava `refs/remotes/origin/<branch>` nem o upstream. Branches criadas a partir de `origin/main` continuavam com upstream `origin/main`, e os contadores ↑/↓ comparavam com a `main`. Agora `trackRemoteBranch` atualiza a ref e liga a branch a `origin/<branch>` após Push e Pull.
+- **`SseDialog`:** passou a checar `res.ok`. Erro HTTP (401/500) chegava como JSON e o modal terminava vazio.
+
+**Testes:** `code_editor_sync_test.go` roda os handlers reais contra um remoto bare local: branch não publicada → Pull ok → Push publica e acerta o upstream; divergência com arquivo não commitado → rebase preserva o commit local e a modificação. Os dois falham no código antigo com as mensagens acima.
+
+
 ### Pods — Busca Config: "exit code 127" e "nenhuma ferramenta de extração" (Setembro 2026) ✅ validado em pods reais
 
 **Sintoma 1:** na maioria das vezes, a busca falhava com `stream: command terminated with exit code 127 (stderr: )`. O 127 é "comando não encontrado". O stderr vinha vazio porque o `2>/dev/null` do script de `find` engolia também a mensagem "find: not found" do shell. Correção (`findCandidatesWithFallback`): quando as duas tentativas com `find` saem com 127, roda `shWalkFindScript`, um varredor só com comandos embutidos do `sh` (for/case/[/printf), com os mesmos nomes (case-insensitive via `[aA]`), profundidade 6 e exclusões. Ele não tem `-xdev` (entra em volumes montados) e não traz tamanho. Validado contra o `find` real em Debian, BusyBox, Alpine e UBI minimal (mesma saída; sem `find`, o erro é mesmo 127). Se até o varredor der 127, o que falta é o `sh` → `errNoShell` → mensagem NO_SHELL legível. A leitura de arquivo solto usa `read` do shell se não houver `cat`. Não se sabe ainda quais imagens da frota não têm `find`: UBI minimal e .NET Azure Linux 3.0 têm.

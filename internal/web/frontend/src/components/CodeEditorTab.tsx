@@ -1961,6 +1961,16 @@ function SseDialog({ open, title, endpoint, body, onClose, onDone }: SseDialogPr
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
+      // Erro HTTP (401, 403, 500…) vem como JSON, não como SSE — sem esta checagem o modal
+      // terminava vazio, sem erro nem sucesso.
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let msg = text;
+        try { msg = JSON.parse(text).error || text; } catch (_) { /* não é JSON */ }
+        setError(`HTTP ${res.status}${msg ? `: ${msg}` : ""}`);
+        setRunning(false);
+        return;
+      }
       if (!res.body) { setError("Sem resposta"); setRunning(false); return; }
       const reader = res.body.getReader();
       const dec = new TextDecoder();

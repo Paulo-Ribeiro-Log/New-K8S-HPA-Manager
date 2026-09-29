@@ -779,6 +779,35 @@ func cleanRemoteURL(rawURL string) string {
 	return rawURL
 }
 
+// remoteBranchExists consulta o remoto (ls-remote autenticado). Só devolve (false, nil) quando o
+// remoto respondeu e a branch não existe (exit code 2 do --exit-code); qualquer outra falha vira erro.
+func remoteBranchExists(ctx context.Context, dir, token, branch string) (bool, error) {
+	cmd, cleanup := gitCmdWithToken(ctx, dir, token, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch)
+	defer cleanup()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+		return false, nil
+	}
+	return false, fmt.Errorf("ls-remote: %s", strings.TrimSpace(string(out)))
+}
+
+// trackRemoteBranch define origin/<branch> como upstream da branch atual (é o que alimenta os
+// contadores ↑/↓ do status). pushedHead=true: o Push envia para a URL com token, não para o remote
+// "origin", então o git não atualiza refs/remotes/origin/<branch> — aponta a ref para HEAD antes.
+func trackRemoteBranch(dir, branch string, pushedHead bool) {
+	if branch == "" || branch == "HEAD" || currentBranch(dir) != branch {
+		return
+	}
+	if pushedHead {
+		runGit(dir, "update-ref", "refs/remotes/origin/"+branch, "HEAD") //nolint:errcheck
+	}
+	runGit(dir, "branch", "--set-upstream-to=origin/"+branch) //nolint:errcheck
+}
+
 // Pull — POST /api/v1/code-editor/repos/:id/pull (SSE)
 func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	id := c.Param("id")
@@ -830,7 +859,27 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	// evitando o comportamento errado de "git pull <url>" que mescla FETCH_HEAD
 	// (branch padrão do remoto) em vez do branch rastreado atual.
 	branch := currentBranch(dir)
-	pullArgs := []string{"pull", "--progress", "origin"}
+
+	// Branch ainda não publicada: "git pull origin <branch>" falharia com "couldn't find remote
+	// ref" — e o botão Sync, que só faz o push se o pull der certo, nunca conseguiria publicá-la.
+	// Nada a puxar não é erro. Se o ls-remote falhar por outro motivo (auth, rede), segue para o
+	// pull, que mostra o erro real.
+	if branch != "" && branch != "HEAD" {
+		if exists, err := remoteBranchExists(ctx, dir, token, branch); err == nil && !exists {
+			sendSSE(fmt.Sprintf("Branch %q ainda não existe no remoto — nada para puxar (publique com Push).", branch))
+			fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+		}
+	}
+
+	// --rebase: sem estratégia explícita, o git >= 2.27 recusa o pull quando local e remoto
+	// divergiram ("Need to specify how to reconcile divergent branches") e o repo não tem
+	// pull.rebase configurado. Rebase é a mesma estratégia do pull automático do Push.
+	// --autostash: não falha por haver arquivos modificados sem commit.
+	pullArgs := []string{"pull", "--rebase", "--autostash", "--progress", "origin"}
 	if branch != "" {
 		pullArgs = append(pullArgs, branch)
 	}
@@ -869,6 +918,9 @@ func (h *CodeEditorHandler) Pull(c *gin.Context) {
 	if pullErr != nil {
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pullErr.Error())
 	} else {
+		// "git pull origin <branch>" atualiza refs/remotes/origin/<branch>; liga a branch local a
+		// ele (branches criadas a partir de origin/main ficavam com upstream origin/main).
+		trackRemoteBranch(dir, branch, false)
 		sendSSE("Pull concluído com sucesso.")
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 	}
@@ -1060,7 +1112,7 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		}
 
 		pullCtx, pullCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		pullCmd, pullCleanup := gitCmdWithToken(pullCtx, dir, token, "pull", "--rebase", "--progress", "origin", branch)
+		pullCmd, pullCleanup := gitCmdWithToken(pullCtx, dir, token, "pull", "--rebase", "--autostash", "--progress", "origin", branch)
 		defer pullCancel()
 		defer pullCleanup()
 
@@ -1136,6 +1188,7 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		if retryErr != nil {
 			fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", retryErr.Error())
 		} else {
+			trackRemoteBranch(dir, branch, true)
 			sendSSE("✅ Push concluído com sucesso.")
 			fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 		}
@@ -1148,6 +1201,7 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	if pushErr != nil {
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pushErr.Error())
 	} else {
+		trackRemoteBranch(dir, branch, true)
 		sendSSE("Push concluído com sucesso.")
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 	}
