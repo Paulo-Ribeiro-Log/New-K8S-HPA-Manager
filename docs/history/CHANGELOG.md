@@ -3,7 +3,7 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
-### Pods — Busca Config: "exit code 127" e "nenhuma ferramenta de extração" (Setembro 2026) ⏳ validação em pod real pendente
+### Pods — Busca Config: "exit code 127" e "nenhuma ferramenta de extração" (Setembro 2026) ✅ validado em pods reais
 
 **Sintoma 1:** na maioria das vezes, a busca falhava com `stream: command terminated with exit code 127 (stderr: )`. O 127 é "comando não encontrado". O stderr vinha vazio porque o `2>/dev/null` do script de `find` engolia também a mensagem "find: not found" do shell. Correção (`findCandidatesWithFallback`): quando as duas tentativas com `find` saem com 127, roda `shWalkFindScript`, um varredor só com comandos embutidos do `sh` (for/case/[/printf), com os mesmos nomes (case-insensitive via `[aA]`), profundidade 6 e exclusões. Ele não tem `-xdev` (entra em volumes montados) e não traz tamanho. Validado contra o `find` real em Debian, BusyBox, Alpine e UBI minimal (mesma saída; sem `find`, o erro é mesmo 127). Se até o varredor der 127, o que falta é o `sh` → `errNoShell` → mensagem NO_SHELL legível. A leitura de arquivo solto usa `read` do shell se não houver `cat`. Não se sabe ainda quais imagens da frota não têm `find`: UBI minimal e .NET Azure Linux 3.0 têm.
 
