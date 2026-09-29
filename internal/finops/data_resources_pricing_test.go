@@ -1,6 +1,19 @@
 package finops
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// skipIfRetailAPIThrottled pula (em vez de falhar) os testes _LiveAPI quando a Azure Retail
+// Prices API devolve 429 — rate limit da API pública, comum no runner compartilhado do CI, não
+// regressão do código de precificação.
+func skipIfRetailAPIThrottled(t *testing.T, pricingNote string) {
+	t.Helper()
+	if strings.Contains(pricingNote, "429") {
+		t.Skipf("Azure Retail Prices API em rate limit (429): %s", pricingNote)
+	}
+}
 
 func TestParseFlexServerFamily(t *testing.T) {
 	cases := []struct {
@@ -44,6 +57,7 @@ func TestPriceVirtualMachine_LiveAPI(t *testing.T) {
 	priceVirtualMachine(r, pricer, 5.2)
 
 	if r.MonthlyCostUSD <= 0 {
+		skipIfRetailAPIThrottled(t, r.PricingNote)
 		t.Fatalf("esperava MonthlyCostUSD > 0 pra Standard_D2s_v4, veio %v (nota: %s)", r.MonthlyCostUSD, r.PricingNote)
 	}
 	t.Logf("Standard_D2s_v4: $%.2f/mês (R$%.2f/mês)", r.MonthlyCostUSD, r.MonthlyCostBRL)
@@ -61,6 +75,7 @@ func TestPriceManagedDisk_LiveAPI(t *testing.T) {
 	priceManagedDisk(r, diskPricer, "brazilsouth", 5.2)
 
 	if r.MonthlyCostUSD <= 0 {
+		skipIfRetailAPIThrottled(t, r.PricingNote)
 		t.Fatalf("esperava MonthlyCostUSD > 0 pra disco Standard_LRS 64GB, veio %v (nota: %s)", r.MonthlyCostUSD, r.PricingNote)
 	}
 	t.Logf("Standard_LRS 64GB: $%.2f/mês (R$%.2f/mês)", r.MonthlyCostUSD, r.MonthlyCostBRL)
@@ -143,6 +158,7 @@ func TestPriceFlexibleServer_LiveAPI(t *testing.T) {
 	priceFlexibleServer(r, "brazilsouth", 5.2)
 
 	if r.MonthlyCostUSD <= 0 {
+		skipIfRetailAPIThrottled(t, r.PricingNote)
 		t.Fatalf("esperava MonthlyCostUSD > 0 pra PostgreSQL Flexible Server Standard_D2ds_v5, veio %v (nota: %s)", r.MonthlyCostUSD, r.PricingNote)
 	}
 	t.Logf("PostgreSQL Flexible Server Standard_D2ds_v5 (compute apenas): $%.2f/mês (R$%.2f/mês)", r.MonthlyCostUSD, r.MonthlyCostBRL)

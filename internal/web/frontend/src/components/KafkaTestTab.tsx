@@ -190,9 +190,14 @@ export default function KafkaTestTab() {
   const [mechanism, setMechanism] = useState<"PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512" | "OAUTHBEARER">("PLAIN");
   const [useTLS, setUseTLS] = useState(false);
   const [skipTLSVerify, setSkipTLSVerify] = useState(false);
-  const [credSource, setCredSource] = useState<"manual" | "secret">("manual");
+  const [credSource, setCredSource] = useState<"manual" | "connstring" | "secret">("manual");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  // Connection string SAS do Event Hub — digitada (credSource "connstring") ou lida inteira de uma
+  // chave do Secret (secretHoldsConnString). Backend força PLAIN+TLS e deriva o broker se vazio.
+  const [connectionString, setConnectionString] = useState("");
+  const [secretHoldsConnString, setSecretHoldsConnString] = useState(false);
+  const [connStringKey, setConnStringKey] = useState("connectionString");
   // Campos de OAUTHBEARER (Azure AD / Event Hub via service principal) — só usados quando
   // mechanism === "OAUTHBEARER", em vez de username/password/secret_ref.
   const [oauthClientId, setOauthClientId] = useState("");
@@ -211,6 +216,10 @@ export default function KafkaTestTab() {
 
   const [viewTopicEnabled, setViewTopicEnabled] = useState(false);
   const [viewMaxMessages, setViewMaxMessages] = useState(10);
+  // Busca por texto durante a leitura — filtrada no container do kcat, só o que casa volta.
+  const [viewFilter, setViewFilter] = useState("");
+  const [viewScanDepth, setViewScanDepth] = useState(20000);
+  const viewMaxCap = viewFilter.trim() ? 200 : 50;
 
   const [countOffsetsEnabled, setCountOffsetsEnabled] = useState(false);
 
@@ -264,11 +273,19 @@ export default function KafkaTestTab() {
   const usesK8sRef = saslEnabled && credSource === "secret";
   const needsCluster = executionMode === "pod" || usesK8sRef;
 
+  // Com connection string o broker é opcional — o backend deriva de Endpoint=sb://<host>/ (:9093).
+  const usesConnString =
+    saslEnabled && mechanism !== "OAUTHBEARER" &&
+    (credSource === "connstring" || (credSource === "secret" && secretHoldsConnString));
+  const connStringEndpoint = /endpoint\s*=\s*sb:\/\/([^/;:\s]+)/i.exec(connectionString)?.[1];
+  const brokerOk = !!broker.trim() || usesConnString;
+
   const canRun =
     (!needsCluster || !!cluster) &&
     (executionMode !== "pod" || (!!namespace && !!deployment)) &&
     dockerReady &&
-    !!broker.trim() &&
+    brokerOk &&
+    (!saslEnabled || credSource !== "connstring" || mechanism === "OAUTHBEARER" || !!connectionString.trim()) &&
     !isRunning &&
     (!needsTopic || !!topic.trim()) &&
     (!produceConsumeEnabled || confirmProduce) &&
@@ -291,6 +308,8 @@ export default function KafkaTestTab() {
               }
             : credSource === "manual"
             ? { username, password }
+            : credSource === "connstring"
+            ? { connection_string: connectionString.trim() }
             : {
                 secret_ref: {
                   namespace: secretNamespace || namespace,
@@ -298,6 +317,7 @@ export default function KafkaTestTab() {
                   username_key: usernameKey || "username",
                   password_key: passwordKey || "password",
                   base64_decode: secretBase64Decode,
+                  ...(secretHoldsConnString ? { connection_string_key: connStringKey || "connectionString" } : {}),
                 },
               }),
         }
@@ -323,7 +343,9 @@ export default function KafkaTestTab() {
         topic: needsTopic ? topic.trim() : undefined,
         confirm_produce: produceConsumeEnabled ? confirmProduce : false,
         view_topic: viewTopicEnabled,
-        view_max_messages: viewTopicEnabled ? viewMaxMessages : undefined,
+        view_max_messages: viewTopicEnabled ? Math.min(viewMaxMessages, viewMaxCap) : undefined,
+        view_filter: viewTopicEnabled && viewFilter.trim() ? viewFilter.trim() : undefined,
+        view_scan_depth: viewTopicEnabled && viewFilter.trim() ? viewScanDepth : undefined,
         count_offsets: countOffsetsEnabled,
         timeout_ms: timeoutMs,
       });
@@ -338,7 +360,7 @@ export default function KafkaTestTab() {
     (!needsCluster || !!cluster) &&
     (executionMode !== "pod" || (!!namespace && !!deployment)) &&
     dockerReady &&
-    !!broker.trim();
+    brokerOk;
 
   const searchTopics = async () => {
     if (!canSearchTopics) return;
@@ -642,9 +664,17 @@ export default function KafkaTestTab() {
         )}
 
         <div className="min-w-[280px] flex-1">
-          <label className="text-xs text-muted-foreground block mb-1">Broker (host:porta)</label>
+          <label className="text-xs text-muted-foreground block mb-1">
+            Broker (host:porta){usesConnString && <span className="text-muted-foreground/70"> — opcional com connection string</span>}
+          </label>
           <Input
-            placeholder="kfk-mht-prd01.com:9098"
+            placeholder={
+              usesConnString
+                ? connStringEndpoint
+                  ? `${connStringEndpoint}:9093 (da connection string)`
+                  : "<namespace>.servicebus.windows.net:9093 (da connection string)"
+                : "kfk-mht-prd01.com:9098"
+            }
             value={broker}
             onChange={(e) => setBroker(e.target.value)}
           />
@@ -691,6 +721,7 @@ export default function KafkaTestTab() {
               <label className="text-xs text-muted-foreground block mb-1">Mecanismo</label>
               <Select
                 value={mechanism}
+                disabled={usesConnString}
                 onValueChange={(v) => {
                   setMechanism(v as typeof mechanism);
                   // Event Hub via Azure AD (OAUTHBEARER) sempre exige SASL_SSL — liga TLS de
@@ -711,11 +742,11 @@ export default function KafkaTestTab() {
             </div>
 
             <div className="flex items-center gap-2">
-              <Switch checked={useTLS} onCheckedChange={setUseTLS} id="tls-toggle" />
+              <Switch checked={useTLS || usesConnString} disabled={usesConnString} onCheckedChange={setUseTLS} id="tls-toggle" />
               <label htmlFor="tls-toggle" className="text-sm cursor-pointer">Usar TLS</label>
             </div>
 
-            {useTLS && (
+            {(useTLS || usesConnString) && (
               <div className="flex items-center gap-2">
                 <Checkbox checked={skipTLSVerify} onCheckedChange={(v) => setSkipTLSVerify(!!v)} id="skip-tls" />
                 <label htmlFor="skip-tls" className="text-sm text-muted-foreground cursor-pointer">
@@ -769,6 +800,10 @@ export default function KafkaTestTab() {
                       <label htmlFor="cred-manual" className="text-sm cursor-pointer">Digitar manualmente</label>
                     </div>
                     <div className="flex items-center gap-1.5">
+                      <RadioGroupItem value="connstring" id="cred-connstring" />
+                      <label htmlFor="cred-connstring" className="text-sm cursor-pointer">Connection string (Event Hub)</label>
+                    </div>
+                    <div className="flex items-center gap-1.5">
                       <RadioGroupItem value="secret" id="cred-secret" />
                       <label htmlFor="cred-secret" className="text-sm cursor-pointer">Ler de um Secret do K8s</label>
                     </div>
@@ -786,6 +821,22 @@ export default function KafkaTestTab() {
                       <Input placeholder="ex: connection string completa (Event Hub)" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
                     </div>
                   </>
+                ) : credSource === "connstring" ? (
+                  <div className="w-full max-w-2xl">
+                    <label className="text-xs text-muted-foreground block mb-1">Connection string</label>
+                    <Input
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=..."
+                      value={connectionString}
+                      onChange={(e) => setConnectionString(e.target.value)}
+                      className="font-mono text-xs"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Autentica como PLAIN sobre TLS com usuário <code>$ConnectionString</code>.
+                      {connStringEndpoint && <> Broker: <code>{connStringEndpoint}:9093</code>.</>}
+                    </p>
+                  </div>
                 ) : (
                   <>
                     <div className="w-44">
@@ -800,13 +851,28 @@ export default function KafkaTestTab() {
                       <label className="text-xs text-muted-foreground block mb-1">Nome do Secret</label>
                       <Input value={secretName} onChange={(e) => setSecretName(e.target.value)} />
                     </div>
-                    <div className="w-36">
-                      <label className="text-xs text-muted-foreground block mb-1">Chave usuário</label>
-                      <Input value={usernameKey} onChange={(e) => setUsernameKey(e.target.value)} />
-                    </div>
-                    <div className="w-36">
-                      <label className="text-xs text-muted-foreground block mb-1">Chave senha</label>
-                      <Input value={passwordKey} onChange={(e) => setPasswordKey(e.target.value)} />
+                    {secretHoldsConnString ? (
+                      <div className="w-48">
+                        <label className="text-xs text-muted-foreground block mb-1">Chave da connection string</label>
+                        <Input value={connStringKey} onChange={(e) => setConnStringKey(e.target.value)} />
+                      </div>
+                    ) : (
+                      <>
+                        <div className="w-36">
+                          <label className="text-xs text-muted-foreground block mb-1">Chave usuário</label>
+                          <Input value={usernameKey} onChange={(e) => setUsernameKey(e.target.value)} />
+                        </div>
+                        <div className="w-36">
+                          <label className="text-xs text-muted-foreground block mb-1">Chave senha</label>
+                          <Input value={passwordKey} onChange={(e) => setPasswordKey(e.target.value)} />
+                        </div>
+                      </>
+                    )}
+                    <div className="w-full flex items-center gap-2">
+                      <Checkbox checked={secretHoldsConnString} onCheckedChange={(v) => setSecretHoldsConnString(!!v)} id="secret-connstring" />
+                      <label htmlFor="secret-connstring" className="text-xs text-muted-foreground cursor-pointer max-w-md">
+                        O Secret guarda a connection string completa do Event Hub (uma chave só; usuário vira <code>$ConnectionString</code>)
+                      </label>
                     </div>
                     <div className="w-full flex items-center gap-2">
                       <Checkbox checked={secretBase64Decode} onCheckedChange={(v) => setSecretBase64Decode(!!v)} id="secret-b64" />
@@ -923,17 +989,49 @@ export default function KafkaTestTab() {
         </div>
 
         {viewTopicEnabled && (
-          <div className="flex items-end gap-3 pl-8">
-            <div className="w-32">
-              <label className="text-xs text-muted-foreground block mb-1">Últimas N mensagens</label>
+          <div className="flex flex-wrap items-end gap-3 pl-8">
+            <div className="min-w-[260px] flex-1 max-w-md">
+              <label className="text-xs text-muted-foreground block mb-1">
+                Buscar texto <span className="text-muted-foreground/70">(opcional — key ou payload, sem diferenciar maiúsculas)</span>
+              </label>
+              <Input
+                spellCheck={false}
+                placeholder='ex: "SKU":"teste"'
+                value={viewFilter}
+                onChange={(e) => setViewFilter(e.target.value)}
+                className="font-mono text-xs"
+              />
+            </div>
+            {viewFilter.trim() && (
+              <div className="w-44">
+                <label className="text-xs text-muted-foreground block mb-1">Varrer últimas N por partição</label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={1000000}
+                  value={viewScanDepth}
+                  onChange={(e) => setViewScanDepth(Math.min(1000000, Math.max(1, Number(e.target.value) || 1)))}
+                />
+              </div>
+            )}
+            <div className="w-36">
+              <label className="text-xs text-muted-foreground block mb-1">
+                {viewFilter.trim() ? "Máx. resultados" : "Últimas N mensagens"}
+              </label>
               <Input
                 type="number"
                 min={1}
-                max={50}
-                value={viewMaxMessages}
-                onChange={(e) => setViewMaxMessages(Math.min(50, Math.max(1, Number(e.target.value) || 1)))}
+                max={viewMaxCap}
+                value={Math.min(viewMaxMessages, viewMaxCap)}
+                onChange={(e) => setViewMaxMessages(Math.min(viewMaxCap, Math.max(1, Number(e.target.value) || 1)))}
               />
             </div>
+            {viewFilter.trim() && (
+              <p className="w-full text-xs text-muted-foreground">
+                O filtro roda dentro do container do teste: só as mensagens que contêm o texto voltam para a tela. A busca
+                para ao atingir o máximo de resultados ou após 60s (resultado parcial).
+              </p>
+            )}
           </div>
         )}
 

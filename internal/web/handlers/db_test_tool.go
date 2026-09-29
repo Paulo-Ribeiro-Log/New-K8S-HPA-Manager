@@ -2235,9 +2235,12 @@ type dbExecFunc func(ctx context.Context, script string) (string, error)
 // sinal que ele não consegue interceptar pra fazer sua própria limpeza, podendo deixar o
 // container órfão rodando no daemon.
 func execLocalDocker(ctx context.Context, image, name, label, script string) (string, error) {
+	// --entrypoint sh: imagens de cliente como a do kcat têm ENTRYPOINT no próprio binário — sem
+	// isso, `image sh -c script` virava `kcat sh -c script` (só imprimia o uso). Nas imagens de
+	// banco o entrypoint já repassava `sh ...` via exec "$@", então o efeito é o mesmo.
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
 		"--name", name, "--label", label,
-		"--network", "host", image, "sh", "-c", script)
+		"--network", "host", "--entrypoint", "sh", image, "-c", script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
