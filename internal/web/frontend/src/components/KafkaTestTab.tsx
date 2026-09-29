@@ -1298,7 +1298,9 @@ export default function KafkaTestTab() {
             <DialogTitle>Mensagem do tópico</DialogTitle>
           </DialogHeader>
           {selectedMessage && (
-            <div className="flex flex-col gap-3 min-h-0 flex-1">
+            // Rolagem nativa no corpo inteiro: o ScrollArea (Radix) anterior dependia de uma altura
+            // definida (o modal só tem max-h), então o conteúdo era cortado sem barra de rolagem.
+            <div className="flex flex-col gap-3 min-h-0 flex-1 overflow-y-auto pr-1">
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                 <span>Partição: <span className="font-mono text-foreground">{selectedMessage.partition}</span></span>
                 <span>Offset: <span className="font-mono text-foreground">{selectedMessage.offset}</span></span>
@@ -1322,11 +1324,28 @@ export default function KafkaTestTab() {
                   </pre>
                 </div>
               )}
-              <div className="flex flex-col min-h-0 flex-1">
-                <div className="text-xs text-muted-foreground mb-1">Payload</div>
-                <ScrollArea className="flex-1 min-h-0 rounded-md border border-border bg-muted/30">
-                  <pre className="text-xs font-mono whitespace-pre-wrap break-all p-2">{selectedMessage.payload}</pre>
-                </ScrollArea>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-muted-foreground">Payload</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5"
+                    onClick={() => {
+                      navigator.clipboard
+                        .writeText(selectedMessage.payload)
+                        .then(() => toast.success("Mensagem copiada!"))
+                        .catch(() => toast.error("Não foi possível copiar a mensagem"));
+                    }}
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    Copiar mensagem
+                  </Button>
+                </div>
+                <pre className="text-xs font-mono whitespace-pre-wrap break-all rounded-md border border-border bg-muted/30 p-2">
+                  {selectedMessage.payload}
+                </pre>
               </div>
             </div>
           )}
