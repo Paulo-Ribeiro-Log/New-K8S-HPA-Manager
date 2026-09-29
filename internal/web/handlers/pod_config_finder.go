@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -102,10 +103,12 @@ func (h *PodHandler) resolvePodExecTarget(c *gin.Context) (namespace, podName, c
 // ordem de preferência: unzip é o mais universal e o único que extrai direto pro stdout sem
 // precisar de diretório temporário; jar vem de brinde em toda imagem com JDK — comum nesta
 // frota, Spring Boot; python3 como último recurso, presente em boa parte das imagens Debian/
-// Alpine mesmo sem unzip/jar). "none" quando nenhuma das 3 existe.
+// Alpine mesmo sem unzip/jar); por último "remote" — o zip é aberto no servidor lendo trechos do
+// arquivo via tail/head (pod_config_finder_remote_zip.go). "none" quando nem isso existe.
 const archiveDetectToolScript = `if command -v unzip >/dev/null 2>&1; then echo unzip; ` +
 	`elif command -v jar >/dev/null 2>&1; then echo jar; ` +
 	`elif command -v python3 >/dev/null 2>&1; then echo python3; ` +
+	`elif command -v wc >/dev/null 2>&1 && command -v tail >/dev/null 2>&1 && command -v head >/dev/null 2>&1; then echo ` + archiveToolRemote + `; ` +
 	`else echo none; fi`
 
 // archiveFindCandidatesScript localiza .jar/.war/.zip/.nupkg no container (.nupkg é o formato de
@@ -144,6 +147,58 @@ const configFileFindScriptNoPrintf = `find / -xdev -maxdepth 6 ` +
 	`-o -iname 'application*.properties' -o -iname 'bootstrap.yml' -o -iname 'bootstrap.yaml' \) ` +
 	`-print 2>/dev/null`
 
+// configFileNamePatterns/archiveNamePatterns são as mesmas convenções de nome dos scripts `find`
+// acima, usadas pelo varredor em shell puro (shWalkFindScript) quando a imagem não tem `find`.
+var (
+	configFileNamePatterns = []string{"appsettings*.json", "appsettings*.yml", "appsettings*.yaml", "web.config",
+		"application.yml", "application.yaml", "application*.properties", "bootstrap.yml", "bootstrap.yaml"}
+	archiveNamePatterns = []string{"*.jar", "*.war", "*.zip", "*.nupkg"}
+)
+
+// caseInsensitiveGlob transforma "web.config" em "[wW][eE][bB].[cC]..." — equivalente ao
+// `-iname` do find num `case` de shell.
+func caseInsensitiveGlob(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		lower, upper := strings.ToLower(string(r)), strings.ToUpper(string(r))
+		if lower != upper {
+			b.WriteString("[" + lower + upper + "]")
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// shWalkFindScript é o fallback de `find` pra imagens que têm `sh` mas não têm findutils: percorre
+// o sistema de arquivos só com comandos embutidos do shell (for/case/[/printf), mesma profundidade
+// (6) e mesmas exclusões (/proc, /sys, /dev) do find, sem seguir symlink de diretório. Diferença:
+// não tem `-xdev`, então entra em volumes montados (onde costuma estar a config de verdade). Sem
+// tamanho (saída no formato do fallback BusyBox). Termina com `exit 0` — um diretório ilegível no
+// meio não deve virar erro. `f` é global nas funções POSIX, mas a recursão não o usa depois de
+// voltar, e cada chamada tem seu próprio $1/$2.
+func shWalkFindScript(patterns []string) string {
+	globs := make([]string, len(patterns))
+	for i, p := range patterns {
+		globs[i] = caseInsensitiveGlob(p)
+	}
+	return `walk() { for f in "$1"/* "$1"/.[!.]*; do ` +
+		`case "$f" in /proc|/sys|/dev) continue;; esac; ` +
+		`if [ -d "$f" ] && [ ! -L "$f" ]; then [ "$2" -lt 6 ] && walk "$f" $(($2 + 1)); ` +
+		`elif [ -f "$f" ]; then case "${f##*/}" in ` + strings.Join(globs, "|") + `) printf '%s\n' "$f";; esac; fi; ` +
+		`done; }; walk "" 1; exit 0`
+}
+
+// errNoShell sinaliza que nem o varredor em shell puro rodou (código 127) — ou seja, o container
+// não tem `sh`, mesmo quando o runtime reporta isso como "exit code 127" em vez de
+// "executable file not found".
+var errNoShell = errors.New(`exec: "sh": executable file not found`)
+
+// isCommandNotFoundExit detecta o exec que terminou com 127 (comando não encontrado).
+func isCommandNotFoundExit(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "exit code 127")
+}
+
 // isNoShellExecError detecta o exec que falhou porque a imagem não tem `sh` (distroless, .NET
 // chiseled, etc.) — achado real: o runtime devolve `exec: "sh": executable file not found in
 // $PATH`. Nesse caso nenhum dos comandos desta ferramenta roda (find/cat/unzip dependem de sh),
@@ -151,6 +206,9 @@ const configFileFindScriptNoPrintf = `find / -xdev -maxdepth 6 ` +
 func isNoShellExecError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, errNoShell) {
+		return true
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "executable file not found") && strings.Contains(msg, `"sh"`)
@@ -181,7 +239,11 @@ func respondNoShell(c *gin.Context, container string, err error) bool {
 // devolvia erro cru ("stream: command terminated with exit code 1") pro usuário em vez da lista
 // que o find já tinha achado. Corrigido: candidatos não-vazios em stdout sempre valem, com erro
 // (`err`/`err2`) só decidindo o resultado quando as DUAS tentativas vierem realmente vazias.
-func findCandidatesWithFallback(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, container, withPrintf, noPrintf string) ([]ArchiveCandidate, error) {
+//
+// Terceira tentativa: as duas saíram com 127 ("comando não encontrado" — o `2>/dev/null` do script
+// engole a mensagem, por isso o stderr vinha vazio pro usuário) → a imagem não tem `find`; roda
+// shWalkFindScript(namePatterns). Se até ele der 127, o que falta é o próprio `sh` (errNoShell).
+func findCandidatesWithFallback(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, namespace, podName, container, withPrintf, noPrintf string, namePatterns []string) ([]ArchiveCandidate, error) {
 	out, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container, []string{"sh", "-c", withPrintf})
 	candidates := parseArchiveCandidatesWithSize(out)
 	if len(candidates) > 0 {
@@ -194,6 +256,16 @@ func findCandidatesWithFallback(ctx context.Context, clientset kubernetes.Interf
 	candidates2 := parseArchiveCandidatesNoSize(out2)
 	if len(candidates2) > 0 {
 		return candidates2, nil
+	}
+	if isCommandNotFoundExit(err) && isCommandNotFoundExit(err2) {
+		out3, err3 := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container, []string{"sh", "-c", shWalkFindScript(namePatterns)})
+		if isCommandNotFoundExit(err3) || isNoShellExecError(err3) {
+			return nil, errNoShell
+		}
+		if candidates3 := parseArchiveCandidatesNoSize(out3); len(candidates3) > 0 || err3 == nil {
+			return candidates3, nil
+		}
+		return nil, err3
 	}
 	if err != nil {
 		return nil, err
@@ -217,7 +289,7 @@ func (h *PodHandler) ListConfigCandidates(c *gin.Context) {
 	defer cancel()
 
 	fileCandidates, fileErr := findCandidatesWithFallback(ctx, clientset, restConfig, namespace, podName, container,
-		configFileFindScript, configFileFindScriptNoPrintf)
+		configFileFindScript, configFileFindScriptNoPrintf, configFileNamePatterns)
 	if respondNoShell(c, container, fileErr) {
 		return
 	}
@@ -226,7 +298,7 @@ func (h *PodHandler) ListConfigCandidates(c *gin.Context) {
 	}
 
 	archiveCandidates, archiveErr := findCandidatesWithFallback(ctx, clientset, restConfig, namespace, podName, container,
-		archiveFindCandidatesScript, archiveFindCandidatesScriptNoPrintf)
+		archiveFindCandidatesScript, archiveFindCandidatesScriptNoPrintf, archiveNamePatterns)
 	for i := range archiveCandidates {
 		archiveCandidates[i].Kind = "archive"
 	}
@@ -262,6 +334,14 @@ func (h *PodHandler) GetConfigFileContent(c *gin.Context) {
 
 	out, err := execCmdInPod(ctx, clientset, restConfig, namespace, podName, container,
 		[]string{"sh", "-c", "cat " + quoteShellArg(path)})
+	if isCommandNotFoundExit(err) {
+		// Imagem sem `cat`: lê só com o `read` embutido do shell (arquivo de config é texto).
+		out, err = execCmdInPod(ctx, clientset, restConfig, namespace, podName, container,
+			[]string{"sh", "-c", `while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "$l"; done < ` + quoteShellArg(path)})
+		if isCommandNotFoundExit(err) {
+			err = errNoShell
+		}
+	}
 	if respondNoShell(c, container, err) {
 		return
 	}
@@ -352,7 +432,7 @@ func detectArchiveTool(ctx context.Context, clientset kubernetes.Interface, rest
 	}
 	tool := strings.TrimSpace(out)
 	switch tool {
-	case "unzip", "jar", "python3":
+	case "unzip", "jar", "python3", archiveToolRemote:
 		return tool, nil
 	default:
 		return "none", nil
@@ -382,7 +462,17 @@ func (h *PodHandler) ListArchiveEntries(c *gin.Context) {
 	}
 	if tool == "none" {
 		c.JSON(http.StatusUnprocessableEntity, errorResponse("NO_ARCHIVE_TOOL",
-			"nenhuma ferramenta de extração encontrada no container (unzip, jar ou python3)"))
+			"nenhuma ferramenta de extração encontrada no container (unzip, jar ou python3), nem wc/tail/head para abrir o arquivo pelo servidor"))
+		return
+	}
+
+	if tool == archiveToolRemote {
+		zr, err := openRemoteZip(ctx, clientset, restConfig, namespace, podName, container, archivePath)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("ARCHIVE_LIST_ERROR", err.Error()))
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"entries": listZipEntries(zr), "tool": tool})
 		return
 	}
 
@@ -504,7 +594,32 @@ func (h *PodHandler) GetArchiveEntryContent(c *gin.Context) {
 	}
 	if tool == "none" {
 		c.JSON(http.StatusUnprocessableEntity, errorResponse("NO_ARCHIVE_TOOL",
-			"nenhuma ferramenta de extração encontrada no container (unzip, jar ou python3)"))
+			"nenhuma ferramenta de extração encontrada no container (unzip, jar ou python3), nem wc/tail/head para abrir o arquivo pelo servidor"))
+		return
+	}
+
+	if tool == archiveToolRemote {
+		zr, err := openRemoteZip(ctx, clientset, restConfig, namespace, podName, container, archivePath)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("ARCHIVE_EXTRACT_ERROR", err.Error()))
+			return
+		}
+		content, err := readZipEntry(zr, entry)
+		var tooLarge errZipEntryTooLarge
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusUnprocessableEntity, errorResponse("ARCHIVE_ENTRY_TOO_LARGE", err.Error()))
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusBadGateway, errorResponse("ARCHIVE_EXTRACT_ERROR", err.Error()))
+			return
+		}
+		if !utf8.ValidString(content) {
+			c.JSON(http.StatusUnprocessableEntity, errorResponse("ARCHIVE_ENTRY_BINARY",
+				"esta entrada não parece ser texto (binário/encoding não reconhecido) — não é possível exibir o conteúdo"))
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"content": content, "tool": tool})
 		return
 	}
 

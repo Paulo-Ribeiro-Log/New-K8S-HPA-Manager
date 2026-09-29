@@ -3,6 +3,13 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Pods — Busca Config: "exit code 127" e "nenhuma ferramenta de extração" (Setembro 2026) ⏳ validação em pod real pendente
+
+**Sintoma 1:** na maioria das vezes, a busca falhava com `stream: command terminated with exit code 127 (stderr: )`. O 127 é "comando não encontrado". O stderr vinha vazio porque o `2>/dev/null` do script de `find` engolia também a mensagem "find: not found" do shell. Correção (`findCandidatesWithFallback`): quando as duas tentativas com `find` saem com 127, roda `shWalkFindScript`, um varredor só com comandos embutidos do `sh` (for/case/[/printf), com os mesmos nomes (case-insensitive via `[aA]`), profundidade 6 e exclusões. Ele não tem `-xdev` (entra em volumes montados) e não traz tamanho. Validado contra o `find` real em Debian, BusyBox, Alpine e UBI minimal (mesma saída; sem `find`, o erro é mesmo 127). Se até o varredor der 127, o que falta é o `sh` → `errNoShell` → mensagem NO_SHELL legível. A leitura de arquivo solto usa `read` do shell se não houver `cat`. Não se sabe ainda quais imagens da frota não têm `find`: UBI minimal e .NET Azure Linux 3.0 têm.
+
+**Sintoma 2:** "nenhuma ferramenta de extração encontrada no container (unzip, jar ou python3)". Nova quarta opção `remote` (`pod_config_finder_remote_zip.go`): o zip é aberto no servidor com `archive/zip` sobre um `io.ReaderAt` que lê blocos de 512 KB do arquivo no container (`tail -c +N | head -c M`; tamanho via `wc -c`; cache de até 8 blocos por requisição). Como o índice do zip fica no fim, listar e extrair trafega poucos blocos, não o jar inteiro: um jar de teste com 3.003 entradas foi listado com 3 execs, mais 1 para extrair o `application.yml`. Validado com GNU coreutils e BusyBox. Entrada acima de 2 MB é recusada pelo tamanho do índice, antes de baixar. A alternativa de container efêmero (necessária só para imagens sem `sh`) ficou para depois.
+
+
 ### Editores Monaco — ações do menu de contexto e atalhos sumiam "de vez em quando" (Setembro 2026)
 
 **Sintoma:** as ações Encode/Decode Base64 e Cron ↔ Texto, com os atalhos Ctrl+Shift+E/D, às vezes não apareciam no menu de contexto dos editores YAML.
