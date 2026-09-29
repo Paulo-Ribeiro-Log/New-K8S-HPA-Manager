@@ -3,6 +3,19 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Teste Kafka — autenticação por connection string do Azure Event Hub (Setembro 2026) ⏳ validação contra Event Hub real pendente
+
+Pedido: conectar a aba Teste Kafka ao Event Hub colando a connection string SAS (`Endpoint=sb://<ns>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...`), além das opções que já existiam. Antes dava para fazer isso manualmente (PLAIN, usuário `$ConnectionString`, senha igual à connection string, broker `<ns>...:9093`, TLS ligado), mas era fácil errar um dos passos.
+
+Backend (`kafka_test_tool.go`): campo novo `sasl.connection_string` e `sasl.secret_ref.connection_string_key` (a chave do Secret guarda a connection string inteira; respeita `base64_decode`). `normalizeKafkaConnectionString` força PLAIN + TLS, valida a string (400 `INVALID_CONNECTION_STRING`) e deriva o broker de `Endpoint` (`:9093`) quando ele vem vazio; broker informado tem prioridade. Via Secret, o broker é derivado depois de ler o Secret (`resolveKafkaAuth`, que substituiu os três blocos iguais de resolução de credenciais em Run/ListTopics/TopicsOverview). O `kafka-log-dirs` do modo local funciona sem mudança (PLAIN com JAAS).
+
+Frontend (`KafkaTestTab`): terceira opção de credencial "Connection string (Event Hub)" (campo sempre visível, para permitir correções) e checkbox "O Secret guarda a connection string completa". Nesses modos, o broker fica opcional (placeholder mostra o derivado) e o mecanismo/TLS ficam travados em PLAIN/TLS.
+
+**Busca por texto na visualização de mensagens:** campo "Buscar texto" em "Visualizar mensagens existentes". Com texto preenchido, `runKafkaViewTopicFilteredStage` lê as últimas N mensagens por partição (`-o -N -e -J`, `auto.offset.reset=earliest`, default 20.000, teto 1.000.000) e filtra **dentro do container do kcat** com awk (substring sem diferenciar maiúsculas, a partir do campo `"key"` da linha JSON, para o nome do tópico não gerar falso positivo). Só as mensagens que casam voltam. A leitura para ao atingir o máximo de resultados (até 200; o kcat sai com "Broken pipe", tratado como sucesso) ou após 60s (resultado parcial). O filtro é escapado como string JSON (`kafkaJSONEscapeFilter`), porque o payload chega como string JSON (`"SKU":"x"` vira `\"SKU\":\"x\"`). Validado contra um Kafka local (30 mil mensagens, 3 partições; acentos, aspas, barra invertida, parada antecipada). Limitação: maiúsculas/minúsculas só são ignoradas em ASCII (`AÇÃO` não casa com `ação`).
+
+**Bug corrigido no modo local:** a imagem `ueisele/kcat` tem `ENTRYPOINT kcat`, então o `docker run … sh -c script` de `execLocalDocker` virava `kcat sh -c …` e o modo local do Teste Kafka só imprimia o uso do kcat. `execLocalDocker` passou a usar `--entrypoint sh` (nas imagens do Teste de Banco de Dados o entrypoint já repassava `sh` via `exec "$@"`).
+
+
 ### FinOps — "Discos desatachados" vira "Recursos órfãos" por jornada (Azure) (Setembro 2026) ⏳ validação no tenant pendente
 
 Relato: a aba listava os discos desatachados da subscription inteira do cluster. Pedido: filtrar pelas jornadas do seletor do cabeçalho e listar também os demais recursos desatachados/sem conexão há 7+ dias nos RGs da jornada, incluindo os RGs de dados `rg-<nome>-data-<env>`.

@@ -63,6 +63,18 @@ const (
 	kafkaTestViewDefaultMessages = 10
 	kafkaTestViewMaxMessages     = 50
 
+	// Busca por texto no estágio de visualização (ViewFilter): o filtro roda DENTRO do container do
+	// kcat (awk sobre o JSON de cada mensagem), então só as mensagens que casam trafegam de volta —
+	// varrer 20k+ mensagens não significa transferir 20k+ mensagens. A varredura para sozinha ao
+	// atingir o teto de resultados. Profundidade = últimas N mensagens POR PARTIÇÃO (-o -N).
+	kafkaTestViewFilterMaxResults = 200
+	kafkaTestViewScanDefaultDepth = 20000
+	kafkaTestViewScanMaxDepth     = 1000000
+	// Teto de tempo próprio da varredura filtrada — o TimeoutMs do request (máx. 15s) é pensado pra
+	// conectividade, curto demais pra varrer dezenas de milhares de mensagens. Estourou = resultado
+	// parcial (o que já casou é devolvido), não erro.
+	kafkaTestViewScanTimeoutSec = 60
+
 	// kafkaTopicsOverviewCap limita quantos tópicos entram na consulta de offsets em lote da
 	// visão geral (Partições + ~Mensagens, "TopicsOverview") — sem teto, um broker com centenas de
 	// tópicos geraria um comando `-Q` gigante (uma entrada -t por partição de cada tópico) e uma
@@ -156,6 +168,13 @@ type KafkaSASLConfig struct {
 	OAuthClientSecret     string `json:"oauth_client_secret,omitempty"`
 	OAuthTokenEndpointURL string `json:"oauth_token_endpoint_url,omitempty"`
 	OAuthScope            string `json:"oauth_scope,omitempty"`
+
+	// ConnectionString: connection string SAS do Azure Event Hub
+	// (`Endpoint=sb://<ns>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...`).
+	// Atalho pro PLAIN com usuário `$ConnectionString` — ver normalizeKafkaConnectionString, que
+	// força PLAIN+TLS e deriva o broker (`<ns>.servicebus.windows.net:9093`) quando vier vazio.
+	// Alternativa server-side: SecretRef.ConnectionStringKey.
+	ConnectionString string `json:"connection_string,omitempty"`
 }
 
 // KafkaSecretRef aponta pra um Secret K8s de onde ler username/password — nunca trafega de volta
@@ -171,6 +190,10 @@ type KafkaSecretRef struct {
 	// strings). O client-go já decodifica o base64 "de transporte" do Secret automaticamente — isso
 	// aqui é uma camada A MAIS em cima disso, opcional.
 	Base64Decode bool `json:"base64_decode,omitempty"`
+	// ConnectionStringKey: quando preenchida, a chave guarda a connection string COMPLETA do Event
+	// Hub (UsernameKey/PasswordKey ignoradas) — usuário vira `$ConnectionString` e senha o valor
+	// lido. Mesmo tratamento de ConnectionString manual (PLAIN+TLS, broker derivado).
+	ConnectionStringKey string `json:"connection_string_key,omitempty"`
 }
 
 // RunKafkaTestRequest é o body do POST /kafka-test/run.
@@ -204,7 +227,13 @@ type RunKafkaTestRequest struct {
 	// ViewTopic lê (só leitura, sem escrever nada — não precisa de ConfirmProduce) as últimas
 	// mensagens já existentes no tópico informado em Topic.
 	ViewTopic       bool `json:"view_topic"`
-	ViewMaxMessages int  `json:"view_max_messages,omitempty"` // default 10, teto 50
+	ViewMaxMessages int  `json:"view_max_messages,omitempty"` // default 10, teto 50 (200 com ViewFilter)
+	// ViewFilter: texto (substring, sem diferenciar maiúsculas) buscado na key/payload durante a
+	// leitura — em vez das últimas N mensagens, varre as últimas ViewScanDepth mensagens por
+	// partição e devolve só as que contêm o texto (até ViewMaxMessages). Ver
+	// runKafkaViewTopicFilteredStage.
+	ViewFilter    string `json:"view_filter,omitempty"`
+	ViewScanDepth int    `json:"view_scan_depth,omitempty"` // default 20000, teto 1.000.000
 	// CountOffsets lê (só leitura) os offsets mais antigo/mais recente de cada partição do tópico
 	// informado em Topic, e deriva a contagem de mensagens atualmente retidas — não precisa de
 	// ConfirmProduce, não escreve nada no broker.
@@ -255,6 +284,10 @@ type KafkaTopicViewResult struct {
 	Message   string         `json:"message"`
 	Messages  []KafkaMessage `json:"messages,omitempty"`
 	RawOutput string         `json:"raw_output"`
+	// Scanned/Partial só vêm preenchidos na busca por texto (ViewFilter): quantas mensagens foram
+	// lidas até parar, e se a varredura foi cortada pelo teto de tempo.
+	Scanned int64 `json:"scanned,omitempty"`
+	Partial bool  `json:"partial,omitempty"`
 }
 
 // KafkaOffsetPartition é o par de offsets (mais antigo/mais recente) de uma partição — Count é a
@@ -458,6 +491,23 @@ func resolveKafkaCredentials(ctx context.Context, clientset kubernetes.Interface
 		if getErr != nil {
 			return "", "", fmt.Errorf("falha ao ler secret %s/%s: %w", ref.Namespace, ref.Name, getErr)
 		}
+		if csKey := strings.TrimSpace(ref.ConnectionStringKey); csKey != "" {
+			csBytes, ok := secret.Data[csKey]
+			if !ok {
+				return "", "", fmt.Errorf("chave %q não encontrada no secret %s/%s", csKey, ref.Namespace, ref.Name)
+			}
+			cs := string(csBytes)
+			if ref.Base64Decode {
+				if cs, err = decodeSecretValueBase64(cs); err != nil {
+					return "", "", fmt.Errorf("valor da chave %q não é base64 válido (Base64Decode marcado): %w", csKey, err)
+				}
+			}
+			cs = strings.TrimSpace(cs)
+			if _, err := kafkaBrokerFromConnectionString(cs); err != nil {
+				return "", "", fmt.Errorf("chave %q do secret %s/%s: %w", csKey, ref.Namespace, ref.Name, err)
+			}
+			return kafkaEventHubConnectionStringUser, cs, nil
+		}
 		userKey := ref.UsernameKey
 		if userKey == "" {
 			userKey = "username"
@@ -487,7 +537,103 @@ func resolveKafkaCredentials(ctx context.Context, clientset kubernetes.Interface
 		}
 		return username, password, nil
 	}
+	if sasl.ConnectionString != "" {
+		return kafkaEventHubConnectionStringUser, sasl.ConnectionString, nil
+	}
 	return sasl.Username, sasl.Password, nil
+}
+
+// kafkaEventHubConnectionStringUser é o usuário SASL PLAIN fixo que o endpoint Kafka do Azure
+// Event Hub espera quando a senha é uma connection string SAS.
+const kafkaEventHubConnectionStringUser = "$ConnectionString"
+
+// kafkaEventHubKafkaPort é a porta do endpoint Kafka do Event Hub (sempre SASL_SSL).
+const kafkaEventHubKafkaPort = "9093"
+
+// kafkaBrokerFromConnectionString valida uma connection string SAS do Event Hub e devolve o
+// broker Kafka correspondente (`<host do Endpoint>:9093`). Valores podem conter `=` (a
+// SharedAccessKey é base64), por isso o split é só no primeiro `=` de cada par.
+func kafkaBrokerFromConnectionString(cs string) (string, error) {
+	fields := make(map[string]string)
+	for _, part := range strings.Split(cs, ";") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) == 2 {
+			fields[strings.ToLower(strings.TrimSpace(kv[0]))] = strings.TrimSpace(kv[1])
+		}
+	}
+	endpoint := fields["endpoint"]
+	if endpoint == "" {
+		return "", fmt.Errorf("connection string inválida: falta Endpoint=sb://<namespace>.servicebus.windows.net/")
+	}
+	if fields["sharedaccesssignature"] == "" && (fields["sharedaccesskeyname"] == "" || fields["sharedaccesskey"] == "") {
+		return "", fmt.Errorf("connection string inválida: falta SharedAccessKeyName/SharedAccessKey (ou SharedAccessSignature)")
+	}
+	host := endpoint
+	if i := strings.Index(host, "://"); i != -1 {
+		host = host[i+3:]
+	}
+	host = strings.TrimRight(host, "/")
+	if i := strings.IndexAny(host, "/:"); i != -1 {
+		host = host[:i]
+	}
+	if host == "" {
+		return "", fmt.Errorf("connection string inválida: Endpoint sem host")
+	}
+	return host + ":" + kafkaEventHubKafkaPort, nil
+}
+
+// kafkaUsesConnectionString diz se a config SASL autentica por connection string do Event Hub
+// (digitada ou lida de um Secret).
+func kafkaUsesConnectionString(sasl *KafkaSASLConfig) bool {
+	if sasl == nil {
+		return false
+	}
+	return strings.TrimSpace(sasl.ConnectionString) != "" ||
+		(sasl.SecretRef != nil && strings.TrimSpace(sasl.SecretRef.ConnectionStringKey) != "")
+}
+
+// normalizeKafkaConnectionString aplica o modo connection string antes da validação dos handlers:
+// força PLAIN + TLS (o endpoint Kafka do Event Hub só aceita SASL_SSL), valida a connection string
+// digitada e, se o broker veio vazio, devolve o derivado dela. Quando a connection string vem de
+// um Secret, o broker só é derivado depois de ler o Secret (resolveKafkaAuth). Sem connection
+// string, devolve o broker intacto.
+func normalizeKafkaConnectionString(broker string, sasl *KafkaSASLConfig) (string, error) {
+	if !kafkaUsesConnectionString(sasl) {
+		return broker, nil
+	}
+	sasl.Mechanism = kafkaSASLMechanismPlain
+	sasl.UseTLS = true
+	sasl.ConnectionString = strings.TrimSpace(sasl.ConnectionString)
+	if sasl.ConnectionString == "" {
+		return broker, nil
+	}
+	derived, err := kafkaBrokerFromConnectionString(sasl.ConnectionString)
+	if err != nil {
+		return "", err
+	}
+	if broker == "" {
+		return derived, nil
+	}
+	return broker, nil
+}
+
+// resolveKafkaAuth resolve credenciais + flags do kcat (compartilhado por Run/ListTopics/
+// TopicsOverview) e, no modo connection string via Secret sem broker informado, deriva o broker
+// da connection string lida.
+func resolveKafkaAuth(ctx context.Context, clientset kubernetes.Interface, broker string, sasl *KafkaSASLConfig) (resolvedBroker, username, password string, authFlags []string, err error) {
+	if sasl == nil {
+		return broker, "", "", nil, nil
+	}
+	username, password, err = resolveKafkaCredentials(ctx, clientset, sasl)
+	if err != nil {
+		return "", "", "", nil, err
+	}
+	if broker == "" && kafkaUsesConnectionString(sasl) {
+		if broker, err = kafkaBrokerFromConnectionString(password); err != nil {
+			return "", "", "", nil, err
+		}
+	}
+	return broker, username, password, buildKcatAuthFlags(sasl, username, password), nil
 }
 
 // decodeSecretValueBase64 decodifica uma string em base64 — tenta StdEncoding primeiro (com
@@ -787,11 +933,27 @@ func runKafkaViewTopicStage(ctx context.Context, run kafkaExecFunc, broker, topi
 		return KafkaTopicViewResult{Status: "failed", Message: "Falha ao ler mensagens do tópico", RawOutput: stdout}
 	}
 
+	messages := parseKcatJSONMessages(stdout)
+	if len(messages) == 0 {
+		return KafkaTopicViewResult{Status: "ok", Message: "Nenhuma mensagem encontrada no tópico (ou tópico vazio)", RawOutput: stdout}
+	}
+
+	return KafkaTopicViewResult{
+		Status:    "ok",
+		Message:   fmt.Sprintf("%d mensagem(ns) lida(s)", len(messages)) + kafkaBinaryNote(messages),
+		Messages:  messages,
+		RawOutput: stdout,
+	}
+}
+
+// parseKcatJSONMessages extrai as mensagens da saída `-C -J` do kcat, ignorando linhas de
+// diagnóstico (ex: "%4|...|...") e marcadores que não são JSON.
+func parseKcatJSONMessages(stdout string) []KafkaMessage {
 	var messages []KafkaMessage
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || !strings.HasPrefix(line, "{") {
-			continue // linha de diagnóstico do kcat (ex: "%4|...|..."), não é uma mensagem
+			continue
 		}
 		var raw kcatJSONMessage
 		if jsonErr := json.Unmarshal([]byte(line), &raw); jsonErr != nil {
@@ -806,27 +968,111 @@ func runKafkaViewTopicStage(ctx context.Context, run kafkaExecFunc, broker, topi
 			Binary:      strings.ContainsRune(raw.Key, utf8.RuneError) || strings.ContainsRune(raw.Payload, utf8.RuneError),
 		})
 	}
+	return messages
+}
 
-	if len(messages) == 0 {
-		return KafkaTopicViewResult{Status: "ok", Message: "Nenhuma mensagem encontrada no tópico (ou tópico vazio)", RawOutput: stdout}
-	}
-
+// kafkaBinaryNote devolve o aviso de mensagens binárias (não-UTF8) a anexar ao resumo, ou "".
+func kafkaBinaryNote(messages []KafkaMessage) string {
 	binaryCount := 0
 	for _, m := range messages {
 		if m.Binary {
 			binaryCount++
 		}
 	}
-	message := fmt.Sprintf("%d mensagem(ns) lida(s)", len(messages))
-	if binaryCount > 0 {
-		message += fmt.Sprintf(" — %d parece(m) conter dados binários (não-UTF8); exibição pode estar incompleta, ver nota na mensagem", binaryCount)
+	if binaryCount == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" — %d parece(m) conter dados binários (não-UTF8); exibição pode estar incompleta, ver nota na mensagem", binaryCount)
+}
+
+// kafkaScannedMarker é impresso pelo awk da busca filtrada com o total de mensagens lidas.
+const kafkaScannedMarker = "___KAFKA_VIEW_SCANNED___:"
+
+var kafkaScannedRegex = regexp.MustCompile(regexp.QuoteMeta(kafkaScannedMarker) + `(\d+)`)
+
+// kafkaViewFilterAwk filtra as linhas JSON do kcat pelo texto em ENVIRON["P"] (sem diferenciar
+// maiúsculas), a partir do campo "key" — assim o nome do tópico/broker no início da linha não gera
+// falso positivo. Para ao atingir ENVIRON["M"] resultados (o kcat morre com SIGPIPE em seguida) e
+// sempre imprime o total lido no END. O padrão vai por ENVIRON, não `-v`, porque `-v` interpreta
+// escapes e o padrão chega com `\"` (ver kafkaJSONEscapeFilter).
+const kafkaViewFilterAwk = `BEGIN { p = tolower(ENVIRON["P"]); m = ENVIRON["M"] + 0 }
+/^\{/ { n++; s = $0; i = index(s, "\"key\":"); if (i) s = substr(s, i)
+  if (index(tolower(s), p)) { print; k++; if (k >= m) exit } }
+END { print "` + kafkaScannedMarker + `" n + 0 }`
+
+// kafkaJSONEscapeFilter escreve o filtro do jeito que ele aparece DENTRO da linha JSON do kcat —
+// o payload vem como string JSON, então `"SKU":"x"` no payload aparece como `\"SKU\":\"x\"`.
+func kafkaJSONEscapeFilter(filter string) string {
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(filter)
+	s := strings.TrimSpace(buf.String())
+	return s[1 : len(s)-1]
+}
+
+// runKafkaViewTopicFilteredStage é a variante com busca por texto do estágio de visualização: lê
+// as últimas `scanDepth` mensagens de cada partição e devolve só as que contêm `filter` (até
+// `maxResults`). O filtro roda no próprio container (awk), então só o que casa trafega. stderr do
+// kcat vai para arquivo (senão o awk o descartaria como não-mensagem) e o código de saída real
+// vem de um arquivo .rc (ausente se o kcat foi morto pelo SIGPIPE); 124 = teto de tempo,
+// resultado parcial. Parar por ter atingido o teto de resultados é sucesso (ver stoppedEarly). `auto.offset.reset=earliest`
+// garante que uma profundidade maior que o retido comece do início, não do fim do tópico.
+func runKafkaViewTopicFilteredStage(ctx context.Context, run kafkaExecFunc, broker, topic, filter string, scanDepth, maxResults int, authFlags []string) KafkaTopicViewResult {
+	if scanDepth <= 0 {
+		scanDepth = kafkaTestViewScanDefaultDepth
+	}
+	if scanDepth > kafkaTestViewScanMaxDepth {
+		scanDepth = kafkaTestViewScanMaxDepth
+	}
+	if maxResults <= 0 {
+		maxResults = kafkaTestViewDefaultMessages
+	}
+	if maxResults > kafkaTestViewFilterMaxResults {
+		maxResults = kafkaTestViewFilterMaxResults
 	}
 
+	tmp := "/tmp/k8s-hpa-kview-" + uuid.New().String()
+	cmd := buildKcatCommand(broker, authFlags, "-C", "-t", topic, "-o", fmt.Sprintf("-%d", scanDepth), "-e", "-J", "-X", "auto.offset.reset=earliest")
+	script := wrapKafkaScript(fmt.Sprintf(
+		`{ timeout %[2]ds %[3]s 2>%[1]s.err; echo $? >%[1]s.rc; } | P=%[4]s M=%[5]d awk %[6]s; `+
+			`__krc=0; [ -f %[1]s.rc ] && __krc=$(cat %[1]s.rc); cat %[1]s.err 2>/dev/null; rm -f %[1]s.rc %[1]s.err; `+
+			`(exit $__krc)`,
+		tmp, kafkaTestViewScanTimeoutSec, cmd, quoteShellArg(kafkaJSONEscapeFilter(filter)), maxResults, quoteShellArg(kafkaViewFilterAwk)))
+
+	output, execErr := run(ctx, script)
+	if execErr != nil {
+		return KafkaTopicViewResult{Status: "failed", Message: "Falha ao executar a busca no pod", RawOutput: extractStderr(execErr)}
+	}
+	stdout, exitCode, ok := splitKafkaExitMarker(output)
+	messages := parseKcatJSONMessages(stdout)
+	// Atingir o teto de resultados encerra o awk e o kcat sai com "Output write error: Broken
+	// pipe" (código != 0) — é o caminho de sucesso, não falha.
+	stoppedEarly := len(messages) >= maxResults
+	partial := exitCode == 124
+	if !ok || (exitCode != 0 && !partial && !stoppedEarly) {
+		return KafkaTopicViewResult{Status: "failed", Message: "Falha ao buscar mensagens no tópico", RawOutput: stdout}
+	}
+
+	var scanned int64
+	if m := kafkaScannedRegex.FindStringSubmatch(stdout); len(m) == 2 {
+		scanned, _ = strconv.ParseInt(m[1], 10, 64)
+	}
+
+	message := fmt.Sprintf("%d mensagem(ns) com %q entre %d lida(s) (até %d por partição)", len(messages), filter, scanned, scanDepth)
+	if stoppedEarly {
+		message += fmt.Sprintf(" — parou ao atingir o limite de %d resultado(s)", maxResults)
+	}
+	if partial {
+		message += fmt.Sprintf(" — varredura interrompida após %ds, resultado parcial", kafkaTestViewScanTimeoutSec)
+	}
 	return KafkaTopicViewResult{
 		Status:    "ok",
-		Message:   message,
+		Message:   message + kafkaBinaryNote(messages),
 		Messages:  messages,
 		RawOutput: stdout,
+		Scanned:   scanned,
+		Partial:   partial,
 	}
 }
 
@@ -1011,7 +1257,14 @@ func (h *KafkaTestHandler) Run(c *gin.Context) {
 	req.Namespace = strings.TrimSpace(req.Namespace)
 	req.Deployment = strings.TrimSpace(req.Deployment)
 	req.Broker = strings.TrimSpace(req.Broker)
-	if req.Broker == "" {
+	broker, csErr := normalizeKafkaConnectionString(req.Broker, req.SASL)
+	if csErr != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_CONNECTION_STRING", csErr.Error()))
+		return
+	}
+	req.Broker = broker
+	// Connection string via Secret: o broker é derivado depois de ler o Secret (resolveKafkaAuth).
+	if req.Broker == "" && !kafkaUsesConnectionString(req.SASL) {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "broker é obrigatório"))
 		return
 	}
@@ -1066,6 +1319,7 @@ func (h *KafkaTestHandler) Run(c *gin.Context) {
 	if req.ViewMaxMessages < 0 {
 		req.ViewMaxMessages = 0
 	}
+	req.ViewFilter = strings.TrimSpace(req.ViewFilter)
 
 	if req.TimeoutMs <= 0 {
 		req.TimeoutMs = kafkaTestDefaultTimeoutMs
@@ -1211,7 +1465,14 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 	req.Namespace = strings.TrimSpace(req.Namespace)
 	req.Deployment = strings.TrimSpace(req.Deployment)
 	req.Broker = strings.TrimSpace(req.Broker)
-	if req.Broker == "" {
+	broker, csErr := normalizeKafkaConnectionString(req.Broker, req.SASL)
+	if csErr != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_CONNECTION_STRING", csErr.Error()))
+		return
+	}
+	req.Broker = broker
+	// Connection string via Secret: o broker é derivado depois de ler o Secret (resolveKafkaAuth).
+	if req.Broker == "" && !kafkaUsesConnectionString(req.SASL) {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "broker é obrigatório"))
 		return
 	}
@@ -1253,15 +1514,12 @@ func (h *KafkaTestHandler) ListTopics(c *gin.Context) {
 		}
 	}
 
-	var authFlags []string
-	if req.SASL != nil {
-		username, password, credErr := resolveKafkaCredentials(ctx, clientset, req.SASL)
-		if credErr != nil {
-			c.JSON(http.StatusBadRequest, errorResponse("CREDENTIALS_ERROR", credErr.Error()))
-			return
-		}
-		authFlags = buildKcatAuthFlags(req.SASL, username, password)
+	resolvedBroker, _, _, authFlags, credErr := resolveKafkaAuth(ctx, clientset, req.Broker, req.SASL)
+	if credErr != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("CREDENTIALS_ERROR", credErr.Error()))
+		return
 	}
+	req.Broker = resolvedBroker
 
 	var run kafkaExecFunc
 	if req.ExecutionMode == "local" {
@@ -1380,7 +1638,14 @@ func (h *KafkaTestHandler) TopicsOverview(c *gin.Context) {
 	req.Namespace = strings.TrimSpace(req.Namespace)
 	req.Deployment = strings.TrimSpace(req.Deployment)
 	req.Broker = strings.TrimSpace(req.Broker)
-	if req.Broker == "" {
+	broker, csErr := normalizeKafkaConnectionString(req.Broker, req.SASL)
+	if csErr != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_CONNECTION_STRING", csErr.Error()))
+		return
+	}
+	req.Broker = broker
+	// Connection string via Secret: o broker é derivado depois de ler o Secret (resolveKafkaAuth).
+	if req.Broker == "" && !kafkaUsesConnectionString(req.SASL) {
 		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMS", "broker é obrigatório"))
 		return
 	}
@@ -1423,17 +1688,12 @@ func (h *KafkaTestHandler) TopicsOverview(c *gin.Context) {
 		}
 	}
 
-	var authFlags []string
-	var saslUsername, saslPassword string
-	if req.SASL != nil {
-		var credErr error
-		saslUsername, saslPassword, credErr = resolveKafkaCredentials(ctx, clientset, req.SASL)
-		if credErr != nil {
-			c.JSON(http.StatusBadRequest, errorResponse("CREDENTIALS_ERROR", credErr.Error()))
-			return
-		}
-		authFlags = buildKcatAuthFlags(req.SASL, saslUsername, saslPassword)
+	resolvedBroker, saslUsername, saslPassword, authFlags, credErr := resolveKafkaAuth(ctx, clientset, req.Broker, req.SASL)
+	if credErr != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("CREDENTIALS_ERROR", credErr.Error()))
+		return
 	}
+	req.Broker = resolvedBroker
 
 	var run kafkaExecFunc
 	if req.ExecutionMode == "local" {
@@ -1615,17 +1875,12 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 		}
 	}
 
-	var username, password string
-	authFlags := []string(nil)
-	if req.SASL != nil {
-		var err error
-		username, password, err = resolveKafkaCredentials(ctx, clientset, req.SASL)
-		if err != nil {
-			fail("falha ao resolver credenciais", err)
-			return
-		}
-		authFlags = buildKcatAuthFlags(req.SASL, username, password)
+	resolvedBroker, _, _, authFlags, err := resolveKafkaAuth(ctx, clientset, req.Broker, req.SASL)
+	if err != nil {
+		fail("falha ao resolver credenciais", err)
+		return
 	}
+	req.Broker = resolvedBroker
 
 	var run kafkaExecFunc
 	var podName, containerName string
@@ -1703,8 +1958,13 @@ func (h *KafkaTestHandler) runTest(ctx context.Context, sessionID string, req Ru
 		if connectivity.Status != kafkaStageOK {
 			result.ViewTopic = KafkaTopicViewResult{Status: "skipped", Message: "Pulado — conectividade falhou antes de tentar ler o tópico"}
 		} else {
-			send("view_topic", "in_progress", fmt.Sprintf("Lendo mensagens existentes do tópico %q...", req.Topic), 0.9)
-			result.ViewTopic = runKafkaViewTopicStage(ctx, run, req.Broker, req.Topic, req.ViewMaxMessages, authFlags, req.TimeoutMs)
+			if req.ViewFilter != "" {
+				send("view_topic", "in_progress", fmt.Sprintf("Buscando %q no tópico %q...", req.ViewFilter, req.Topic), 0.9)
+				result.ViewTopic = runKafkaViewTopicFilteredStage(ctx, run, req.Broker, req.Topic, req.ViewFilter, req.ViewScanDepth, req.ViewMaxMessages, authFlags)
+			} else {
+				send("view_topic", "in_progress", fmt.Sprintf("Lendo mensagens existentes do tópico %q...", req.Topic), 0.9)
+				result.ViewTopic = runKafkaViewTopicStage(ctx, run, req.Broker, req.Topic, req.ViewMaxMessages, authFlags, req.TimeoutMs)
+			}
 		}
 	}
 
@@ -1743,6 +2003,9 @@ func (h *KafkaTestHandler) logHistory(req RunKafkaTestRequest, userInfo history.
 	}
 	if req.Topic != "" {
 		after["topic"] = req.Topic
+	}
+	if req.ViewTopic && req.ViewFilter != "" {
+		after["view_filter"] = req.ViewFilter
 	}
 	if req.SASL != nil {
 		after["sasl_mechanism"] = req.SASL.Mechanism

@@ -2259,6 +2259,9 @@ export interface KafkaSecretRef {
   // ele mesmo, uma string em base64 (não confundir com o base64 "de transporte" do próprio Secret
   // do K8s, que já é decodificado automaticamente antes de chegar aqui).
   base64_decode?: boolean;
+  // connection_string_key: chave que guarda a connection string COMPLETA do Event Hub —
+  // username_key/password_key são ignoradas quando preenchida.
+  connection_string_key?: string;
 }
 
 export interface KafkaSASLConfig {
@@ -2275,6 +2278,9 @@ export interface KafkaSASLConfig {
   oauth_client_secret?: string;
   oauth_token_endpoint_url?: string;
   oauth_scope?: string;
+  // connection_string: connection string SAS do Azure Event Hub — o backend força PLAIN + TLS,
+  // usuário "$ConnectionString" e deriva o broker (<namespace>.servicebus.windows.net:9093) se vazio.
+  connection_string?: string;
 }
 
 export interface RunKafkaTestRequest {
@@ -2302,7 +2308,12 @@ export interface RunKafkaTestRequest {
   // view_topic lê (só leitura, não precisa de confirm_produce) as últimas mensagens já
   // existentes no tópico informado em `topic`.
   view_topic: boolean;
-  view_max_messages?: number; // default 10, teto 50 (aplicado no backend)
+  view_max_messages?: number; // default 10, teto 50 (200 com view_filter) — aplicado no backend
+  // view_filter: texto buscado na key/payload durante a leitura (sem diferenciar maiúsculas) —
+  // o filtro roda no container do kcat, só as mensagens que casam voltam. Varre as últimas
+  // view_scan_depth mensagens por partição (default 20000, teto 1.000.000).
+  view_filter?: string;
+  view_scan_depth?: number;
   // count_offsets lê (só leitura, não precisa de confirm_produce) o offset mais antigo/mais
   // recente de cada partição do tópico informado em `topic` e deriva a contagem de mensagens
   // atualmente retidas.
@@ -2355,6 +2366,9 @@ export interface KafkaTopicViewResult {
   message: string;
   messages?: KafkaMessage[];
   raw_output: string;
+  // Só na busca por texto: mensagens lidas até parar e se a varredura foi cortada pelo tempo.
+  scanned?: number;
+  partial?: boolean;
 }
 
 export type KafkaOffsetCountStatus = 'ok' | 'not_found' | 'failed' | 'skipped';
