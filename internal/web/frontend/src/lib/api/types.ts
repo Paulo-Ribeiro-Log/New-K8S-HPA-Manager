@@ -83,7 +83,8 @@ export interface DynatracePodStatusResponse {
 }
 
 // Detalhe de deep monitoring por pod (GET /dynatrace/coverage/pods) — tooltip do ícone DT.
-// deep_monitoring_status: "Ativo" | "Nao resolvido" | "Sem servico".
+// deep_monitoring_status: "Ativo" | "Desativado" | "Reinicio pendente" | "Nao resolvido" | "Sem servico".
+// technology vem do serviço ou, sem serviço, do próprio processo.
 export interface DynatracePodCoverage {
   oneagent_version: string;
   processes: Array<{ process_name: string; technology: string; deep_monitoring_status: string }>;

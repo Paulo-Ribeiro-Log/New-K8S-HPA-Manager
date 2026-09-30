@@ -14,19 +14,23 @@ import (
 // 2 hosts, PGIs em namespace de app, em namespace excluído (kube-system) e um sem serviço.
 func coverageFakeTenant(t *testing.T) *httptest.Server {
 	t.Helper()
-	pgi := func(id, ns, host, pg string, services ...string) map[string]interface{} {
+	pgiWith := func(id, ns, host, pg string, extra map[string]interface{}, services ...string) map[string]interface{} {
 		svcRefs := []map[string]string{}
 		for _, s := range services {
 			svcRefs = append(svcRefs, map[string]string{"id": s, "type": "SERVICE"})
 		}
+		props := map[string]interface{}{
+			"metadata": []map[string]string{
+				{"key": "KUBERNETES_NAMESPACE", "value": ns},
+				{"key": "KUBERNETES_FULL_POD_NAME", "value": "pod-" + strings.ToLower(id)},
+			},
+		}
+		for k, v := range extra {
+			props[k] = v
+		}
 		return map[string]interface{}{
 			"entityId": id, "type": "PROCESS_GROUP_INSTANCE", "displayName": id,
-			"properties": map[string]interface{}{
-				"metadata": []map[string]string{
-					{"key": "KUBERNETES_NAMESPACE", "value": ns},
-					{"key": "KUBERNETES_FULL_POD_NAME", "value": "pod-" + strings.ToLower(id)},
-				},
-			},
+			"properties": props,
 			"fromRelationships": map[string]interface{}{
 				"isProcessOf":  []map[string]string{{"id": host, "type": "HOST"}},
 				"isInstanceOf": []map[string]string{{"id": pg, "type": "PROCESS_GROUP"}},
@@ -34,11 +38,23 @@ func coverageFakeTenant(t *testing.T) *httptest.Server {
 			"toRelationships": map[string]interface{}{"runsOnProcessGroupInstance": svcRefs},
 		}
 	}
+	pgi := func(id, ns, host, pg string, services ...string) map[string]interface{} {
+		return pgiWith(id, ns, host, pg, nil, services...)
+	}
+	state := func(actual string, restart bool) map[string]interface{} {
+		return map[string]interface{}{"actualMonitoringState": actual, "expectedMonitoringState": "on", "restartRequired": restart}
+	}
 	byID := map[string]map[string]interface{}{
 		"HOST-1":          {"entityId": "HOST-1", "type": "HOST", "properties": map[string]interface{}{"installerVersion": "1.305.2.20250101"}},
 		"HOST-2":          {"entityId": "HOST-2", "type": "HOST", "properties": map[string]interface{}{"installerVersion": "1.305.2.20250101"}},
 		"PROCESS_GROUP-A": {"entityId": "PROCESS_GROUP-A", "type": "PROCESS_GROUP", "displayName": "a-display", "properties": map[string]interface{}{"detectedName": "SpringBoot com.x.Api"}},
 		"PROCESS_GROUP-B": {"entityId": "PROCESS_GROUP-B", "type": "PROCESS_GROUP", "displayName": "worker-b"},
+		// Go sem serviço: tecnologia só no process group (runtime tem prioridade sobre framework).
+		"PROCESS_GROUP-C": {"entityId": "PROCESS_GROUP-C", "type": "PROCESS_GROUP", "displayName": "go-consumer", "properties": map[string]interface{}{
+			"softwareTechnologies": []map[string]string{{"type": "GRPC"}, {"type": "GO", "version": "1.22"}},
+		}},
+		"PROCESS_GROUP-D": {"entityId": "PROCESS_GROUP-D", "type": "PROCESS_GROUP", "displayName": "node-batch"},
+		"PROCESS_GROUP-E": {"entityId": "PROCESS_GROUP-E", "type": "PROCESS_GROUP", "displayName": "dotnet-job"},
 		"SERVICE-1":       {"entityId": "SERVICE-1", "type": "SERVICE", "properties": map[string]interface{}{"agentTechnologyType": "JAVA"}},
 		"SERVICE-2":       {"entityId": "SERVICE-2", "type": "SERVICE", "properties": map[string]interface{}{}},
 	}
@@ -46,7 +62,12 @@ func coverageFakeTenant(t *testing.T) *httptest.Server {
 		pgi("PGI-1", "loja", "HOST-1", "PROCESS_GROUP-A", "SERVICE-1"),
 		pgi("PGI-2", "loja", "HOST-2", "PROCESS_GROUP-A", "SERVICE-1"),
 		pgi("PGI-3", "loja", "HOST-2", "PROCESS_GROUP-B", "SERVICE-2"),
-		pgi("PGI-4", "loja", "HOST-1", "PROCESS_GROUP-B"),                     // sem serviço
+		pgi("PGI-4", "loja", "HOST-1", "PROCESS_GROUP-B"), // sem serviço, sem tipo/estado
+		pgiWith("PGI-6", "loja", "HOST-1", "PROCESS_GROUP-C", map[string]interface{}{"monitoringState": state("on", false)}),
+		pgiWith("PGI-7", "loja", "HOST-2", "PROCESS_GROUP-C", map[string]interface{}{"monitoringState": state("on", false)}),
+		pgiWith("PGI-8", "loja", "HOST-1", "PROCESS_GROUP-D", map[string]interface{}{"processType": "PROCESS_TYPE_NODE_JS", "monitoringState": state("off", false)}),
+		pgiWith("PGI-9", "loja", "HOST-1", "PROCESS_GROUP-E", map[string]interface{}{
+			"softwareTechnologies": []map[string]string{{"type": "DOTNET"}}, "monitoringState": state("off", true)}),
 		pgi("PGI-5", "kube-system", "HOST-1", "PROCESS_GROUP-A", "SERVICE-1"), // excluído
 	}
 	idRe := regexp.MustCompile(`"([^"]+)"`)
@@ -90,14 +111,20 @@ func TestGetDeepMonitoringCoverage(t *testing.T) {
 	if !report.HostGroupFound {
 		t.Fatal("host group deveria ter sido encontrado")
 	}
-	if report.ProcessesWithoutService != 1 {
-		t.Errorf("ProcessesWithoutService = %d, want 1", report.ProcessesWithoutService)
+	if report.ProcessesWithoutService != 5 {
+		t.Errorf("ProcessesWithoutService = %d, want 5", report.ProcessesWithoutService)
 	}
 
+	const v = "1.305.2.20250101"
 	want := []CoverageRow{
-		// technology "" ordena antes de "JAVA" (sort technology asc, como na DQL)
-		{Namespace: "loja", ServiceName: "worker-b", Technology: "", OneAgentVersion: "1.305.2.20250101", DeepMonitoringStatus: CoverageStatusUnresolved, HostCount: 1, PodCount: 1},
-		{Namespace: "loja", ServiceName: "SpringBoot com.x.Api", Technology: "JAVA", OneAgentVersion: "1.305.2.20250101", DeepMonitoringStatus: CoverageStatusActive, HostCount: 2, PodCount: 2},
+		// sort technology asc, depois nome; "" primeiro
+		{Namespace: "loja", ServiceName: "worker-b", Technology: "", OneAgentVersion: v, DeepMonitoringStatus: CoverageStatusUnresolved, HostCount: 1, PodCount: 1},
+		{Namespace: "loja", ServiceName: "worker-b", Technology: "", OneAgentVersion: v, DeepMonitoringStatus: CoverageStatusNoService, HostCount: 1, PodCount: 1},
+		{Namespace: "loja", ServiceName: "dotnet-job", Technology: "DOTNET", OneAgentVersion: v, DeepMonitoringStatus: CoverageStatusRestartPending, HostCount: 1, PodCount: 1},
+		// Go sem serviço: tipo descoberto e deep monitoring ativo pelo monitoringState do processo.
+		{Namespace: "loja", ServiceName: "go-consumer", Technology: "GO", OneAgentVersion: v, DeepMonitoringStatus: CoverageStatusActive, HostCount: 2, PodCount: 2},
+		{Namespace: "loja", ServiceName: "SpringBoot com.x.Api", Technology: "JAVA", OneAgentVersion: v, DeepMonitoringStatus: CoverageStatusActive, HostCount: 2, PodCount: 2},
+		{Namespace: "loja", ServiceName: "node-batch", Technology: "NODE_JS", OneAgentVersion: v, DeepMonitoringStatus: CoverageStatusOff, HostCount: 1, PodCount: 1},
 	}
 	if len(report.Rows) != len(want) {
 		t.Fatalf("rows = %+v, want %+v", report.Rows, want)
@@ -149,9 +176,14 @@ func TestGetPodCoverage(t *testing.T) {
 		api.Processes[0] != (PodCoverageProcess{ProcessName: "SpringBoot com.x.Api", Technology: "JAVA", DeepMonitoringStatus: CoverageStatusActive}) {
 		t.Errorf("loja/pod-pgi-1 = %+v", api)
 	}
-	// Processo sem serviço: fora da tabela, mas presente no detalhe do pod.
+	// Processo sem serviço e sem estado informado pelo Dynatrace.
 	if w := pods["loja/pod-pgi-4"]; w == nil || w.Processes[0].DeepMonitoringStatus != CoverageStatusNoService {
 		t.Errorf("loja/pod-pgi-4 = %+v, esperava status %q", w, CoverageStatusNoService)
+	}
+	// Go sem serviço: tipo e deep monitoring vêm do próprio processo.
+	if g := pods["loja/pod-pgi-6"]; g == nil || len(g.Processes) != 1 ||
+		g.Processes[0] != (PodCoverageProcess{ProcessName: "go-consumer", Technology: "GO", DeepMonitoringStatus: CoverageStatusActive}) {
+		t.Errorf("loja/pod-pgi-6 = %+v", g)
 	}
 	// Namespaces excluídos do relatório continuam com detalhe por pod.
 	if pods["kube-system/pod-pgi-5"] == nil {
