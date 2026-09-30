@@ -21,7 +21,8 @@ import (
 
 const localFolderPrefix = "local-"
 
-// maxBrowseEntries limita a listagem de subpastas de um diretório no navegador de pastas.
+// maxBrowseEntries limita a listagem de subpastas (e, separadamente, de arquivos) de um
+// diretório no navegador de pastas.
 const maxBrowseEntries = 2000
 
 var (
@@ -84,13 +85,19 @@ type browseEntry struct {
 	IsGit bool   `json:"is_git"`
 }
 
+type browseFile struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
 type browseShortcut struct {
 	Label string `json:"label"`
 	Path  string `json:"path"`
 }
 
 // BrowseFolders — GET /api/v1/code-editor/browse?path=...&hidden=1
-// Lista as subpastas de um diretório do servidor (navegador do "Abrir pasta").
+// Lista as subpastas e os arquivos de um diretório do servidor (navegador do "Abrir pasta").
 func (h *CodeEditorHandler) BrowseFolders(c *gin.Context) {
 	dir, err := resolveLocalPath(c.Query("path"))
 	if err != nil {
@@ -106,6 +113,7 @@ func (h *CodeEditorHandler) BrowseFolders(c *gin.Context) {
 	}
 
 	dirs := make([]browseEntry, 0, len(entries))
+	files := []browseFile{}
 	for _, e := range entries {
 		name := e.Name()
 		if !showHidden && strings.HasPrefix(name, ".") {
@@ -113,15 +121,25 @@ func (h *CodeEditorHandler) BrowseFolders(c *gin.Context) {
 		}
 		full := filepath.Join(dir, name)
 		fi, err := os.Stat(full) // segue links: link para pasta também é navegável
-		if err != nil || !fi.IsDir() {
+		if err != nil {
 			continue
 		}
-		dirs = append(dirs, browseEntry{Name: name, Path: full, IsGit: isGitDir(full)})
-		if len(dirs) >= maxBrowseEntries {
+		switch {
+		case fi.IsDir():
+			if len(dirs) < maxBrowseEntries {
+				dirs = append(dirs, browseEntry{Name: name, Path: full, IsGit: isGitDir(full)})
+			}
+		case fi.Mode().IsRegular():
+			if len(files) < maxBrowseEntries {
+				files = append(files, browseFile{Name: name, Path: full, Size: fi.Size()})
+			}
+		}
+		if len(dirs) >= maxBrowseEntries && len(files) >= maxBrowseEntries {
 			break
 		}
 	}
 	sort.Slice(dirs, func(i, j int) bool { return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name) })
+	sort.Slice(files, func(i, j int) bool { return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name) })
 
 	parent := ""
 	if dir != "/" {
@@ -133,6 +151,7 @@ func (h *CodeEditorHandler) BrowseFolders(c *gin.Context) {
 		"parent":    parent,
 		"is_git":    isGitDir(dir),
 		"dirs":      dirs,
+		"files":     files,
 		"shortcuts": browseShortcuts(),
 	})
 }

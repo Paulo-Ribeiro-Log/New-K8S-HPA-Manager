@@ -3,6 +3,22 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — "Abrir pasta" lista e busca arquivos (Setembro 2026)
+
+O navegador do "Abrir pasta" só listava subpastas. Agora `BrowseFolders` (`code_editor_local.go`) devolve também `files` (nome, caminho, tamanho; ocultos só com "Mostrar ocultas"; limite de `maxBrowseEntries` separado para pastas e arquivos). O diálogo ganhou um campo de busca por nome na pasta atual (pastas e arquivos) e lista os arquivos abaixo das pastas. Duplo clique num arquivo abre a pasta dele no editor e o arquivo numa aba (`pendingOpenFile` em `CodeEditorTab.tsx`). A busca é só na pasta atual, sem recursão.
+
+### Code Editor — botões "Atualizar" da sidebar pareciam não funcionar (Setembro 2026)
+
+**Sintoma:** clicar em Atualizar (árvore, Git/Source Control, Branches, Log, Tags) não dava sinal nenhum; em Branches às vezes demorava e nada mudava.
+
+**Causa:** os loaders faziam `catch (_) {}` e não tinham estado de loading; o spinner da árvore durava milissegundos; tree/status já eram atualizados pelo poll de 5s, então o clique trazia o mesmo dado; `ListBranches` roda `git fetch` (até 30s) e, se falhasse, só logava `Warn` e devolvia 200 com os remotos antigos. Respostas lentas também podiam sobrescrever o estado de outro repo após a troca.
+
+**Correção:**
+- `refreshManual` em `CodeEditorTab.tsx`: spinner no botão (mínimo ~400ms), botão desabilitado durante o refresh e toast de erro. Os loaders recebem `manual=true` para propagar o erro; poll e chamadas pós-ação continuam silenciosos.
+- Loaders descartam respostas de um repo que já não está selecionado (`selectedRepoIdRef`).
+- `ListBranches` devolve `fetch_error` quando o `git fetch` falha; o refresh manual mostra aviso de que os remotos podem estar desatualizados.
+
+
 ### Dynatrace — Cobertura: tipo da aplicação e deep monitoring sem depender de serviço (Setembro 2026) ⏳ validação no tenant pendente
 
 **Sintoma:** processos sem SERVICE no Dynatrace (workers/consumers, apps Go) sumiam da aba Cobertura e, no detalhe do pod, apareciam sem tecnologia e como "Sem serviço". Isso sugeria "sem deep monitoring", mas o Dynatrace mostra o tipo e a instrumentação desses processos normalmente.

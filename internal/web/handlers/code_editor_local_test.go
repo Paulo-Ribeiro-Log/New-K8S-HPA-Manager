@@ -49,6 +49,7 @@ func newLocalFolderTestRouter(t *testing.T) (*gin.Engine, *CodeEditorHandler) {
 	h.reposBase = filepath.Join(t.TempDir(), "repos")
 	r := gin.New()
 	r.GET("/repos", h.ListRepos)
+	r.GET("/browse", h.BrowseFolders)
 	r.POST("/open-folder", h.OpenFolder)
 	r.DELETE("/repos/:id", h.DeleteRepo)
 	r.GET("/repos/:id/tree", h.GetFileTree)
@@ -151,5 +152,34 @@ func TestGetFileTree_PulaSubpastaIlegivel(t *testing.T) {
 	var tree []FileNode
 	if code := doJSON(t, r, "GET", "/repos/"+opened.ID+"/tree", nil, &tree); code != 200 || len(tree) != 2 {
 		t.Fatalf("tree status %d, nós %+v", code, tree)
+	}
+}
+
+// O navegador do "Abrir pasta" lista subpastas e arquivos (ocultos só com hidden=1).
+func TestBrowseFolders_ListaPastasEArquivos(t *testing.T) {
+	r, _ := newLocalFolderTestRouter(t)
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "sub"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, "b.sh"), []byte("echo"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "A.yaml"), []byte("x: 1"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, ".oculto"), []byte("x"), 0644)
+
+	var res struct {
+		Dirs  []browseEntry `json:"dirs"`
+		Files []browseFile  `json:"files"`
+	}
+	if code := doJSON(t, r, "GET", "/browse?path="+dir, nil, &res); code != 200 {
+		t.Fatalf("browse status %d", code)
+	}
+	if len(res.Dirs) != 1 || res.Dirs[0].Name != "sub" {
+		t.Errorf("dirs = %+v", res.Dirs)
+	}
+	if len(res.Files) != 2 || res.Files[0].Name != "A.yaml" || res.Files[1].Name != "b.sh" || res.Files[1].Size != 4 {
+		t.Errorf("files = %+v", res.Files)
+	}
+
+	doJSON(t, r, "GET", "/browse?hidden=1&path="+dir, nil, &res)
+	if len(res.Files) != 3 {
+		t.Errorf("com hidden=1 esperava 3 arquivos, veio %+v", res.Files)
 	}
 }
