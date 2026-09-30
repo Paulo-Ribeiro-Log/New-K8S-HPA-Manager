@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -179,7 +181,7 @@ func (h *PodExecHandler) HandleDebug(c *gin.Context) {
 		h.sendOutput(conn, "\x1b[1;32m✓ Container ready!\x1b[0m\r\n\r\n")
 	}
 
-	// Step 3: Exec into ephemeral container
+	// Step 3: Exec into ephemeral container (o heartbeat é tocado já na abertura da sessão)
 	h.execInPod(ctx, conn, clientset, restConfig, namespace, podName, debugContainerName, shell, true, image, isReused)
 }
 
@@ -198,14 +200,14 @@ func (h *PodExecHandler) getOrCreateEphemeralContainer(
 
 	// Check for existing debug containers with the same image and target
 	for _, ec := range pod.Spec.EphemeralContainers {
-		if ec.Image == image && ec.TargetContainerName == targetContainer {
+		if ec.Image == image && ec.TargetContainerName == targetContainer && isWatchdogDebugContainer(ec) {
 			// Check if container is still running
 			for _, status := range pod.Status.EphemeralContainerStatuses {
 				if status.Name == ec.Name && status.State.Running != nil {
 					h.sendOutput(conn, "\r\n\x1b[1;32m♻️  Reusing existing ephemeral debug container...\x1b[0m\r\n")
 					h.sendOutput(conn, fmt.Sprintf("\x1b[1;33m🛠️  Container:\x1b[0m %s\r\n", ec.Name))
 					h.sendOutput(conn, fmt.Sprintf("\x1b[1;33m🎯 Target:\x1b[0m %s\r\n\r\n", targetContainer))
-					h.sendOutput(conn, "\x1b[1;36mℹ️  Note: Ephemeral containers persist until pod restart\x1b[0m\r\n\r\n")
+					h.sendOutput(conn, debugIdleNotice)
 					return ec.Name, true, nil
 				}
 			}
@@ -213,12 +215,12 @@ func (h *PodExecHandler) getOrCreateEphemeralContainer(
 	}
 
 	// No suitable existing container found, create a new one
-	debugContainerName := fmt.Sprintf("debug-%d", time.Now().Unix())
+	debugContainerName := nextDebugContainerName(pod)
 
 	h.sendOutput(conn, "\r\n\x1b[1;34m⚡ Creating ephemeral debug container...\x1b[0m\r\n")
 	h.sendOutput(conn, fmt.Sprintf("\x1b[1;33m🛠️  Image:\x1b[0m %s\r\n", image))
 	h.sendOutput(conn, fmt.Sprintf("\x1b[1;33m🎯 Target:\x1b[0m %s\r\n\r\n", targetContainer))
-	h.sendOutput(conn, "\x1b[1;36mℹ️  Note: Ephemeral containers persist until pod restart\x1b[0m\r\n\r\n")
+	h.sendOutput(conn, debugIdleNotice)
 
 	err = h.createEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName, targetContainer, image)
 	if err != nil {
@@ -226,6 +228,30 @@ func (h *PodExecHandler) getOrCreateEphemeralContainer(
 	}
 
 	return debugContainerName, false, nil
+}
+
+// debugContainerBaseName identifica no pod os containers de debug criados por esta ferramenta.
+const debugContainerBaseName = "k8s-hpa-test-debug"
+
+// nextDebugContainerName devolve debugContainerBaseName ou, se já usado no pod (ephemeral
+// containers encerrados continuam no spec e o nome precisa ser único), o primeiro sufixo -2, -3…
+// livre entre todos os containers do pod.
+func nextDebugContainerName(pod *corev1.Pod) string {
+	used := map[string]bool{}
+	for _, c := range pod.Spec.Containers {
+		used[c.Name] = true
+	}
+	for _, c := range pod.Spec.InitContainers {
+		used[c.Name] = true
+	}
+	for _, ec := range pod.Spec.EphemeralContainers {
+		used[ec.Name] = true
+	}
+	name := debugContainerBaseName
+	for i := 2; used[name]; i++ {
+		name = fmt.Sprintf("%s-%d", debugContainerBaseName, i)
+	}
+	return name
 }
 
 // createEphemeralContainer cria um ephemeral debug container
@@ -252,10 +278,7 @@ func (h *PodExecHandler) createEphemeralContainer(
 		EphemeralContainerCommon: corev1.EphemeralContainerCommon{
 			Name:            debugName,
 			Image:           image,
-			Stdin:           true,
-			StdinOnce:       true,
-			TTY:             true,
-			Command:         []string{"/bin/sh"},
+			Command:         debugWatchdogCommand,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 		},
 		TargetContainerName: targetContainer,
@@ -271,11 +294,8 @@ func (h *PodExecHandler) createEphemeralContainer(
 				{
 					"name":                debugName,
 					"image":               image,
-					"stdin":               true,
-					"stdinOnce":           true,
-					"tty":                 true,
 					"targetContainerName": targetContainer,
-					"command":             []string{"/bin/sh"},
+					"command":             debugWatchdogCommand,
 					"imagePullPolicy":     "IfNotPresent",
 				},
 			},
@@ -383,6 +403,30 @@ func (h *PodExecHandler) execInPod(
 		isReused:    isReused,
 	}
 
+	if isEphemeral {
+		runInDebug := func(script string) {
+			cmdCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if _, err := execCmdInPod(cmdCtx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script}); err != nil {
+				log.Printf("[DEBUG] %s/%s %s: %q falhou: %v", namespace, podName, containerName, script, err)
+			}
+		}
+		session.markActivity()
+		go runInDebug(debugTouchHeartbeat)
+		session.onHeartbeat = func() { go runInDebug(debugTouchHeartbeat) }
+		session.onTerminate = func() {
+			session.stopped.Store(true)
+			session.writeNotice("\r\n\x1b[1;33m⏹  Encerrando o container de debug...\x1b[0m\r\n")
+			runInDebug(debugStopUnconditional)
+		}
+		done := make(chan struct{})
+		defer close(done)
+		go session.watchIdle(done, func() {
+			session.stopped.Store(true)
+			runInDebug(debugStopIfNoOtherSession)
+		})
+	}
+
 	// Send welcome message
 	if isEphemeral && !isReused {
 		session.sendWelcomeMessage()
@@ -397,9 +441,14 @@ func (h *PodExecHandler) execInPod(
 		TerminalSizeQueue: session,
 	})
 
+	if session.stopped.Load() {
+		// Encerramento intencional (botão ou ociosidade): o fim do stream é esperado.
+		session.writeNotice("\x1b[1;32m✓ Container de debug encerrado.\x1b[0m\r\n")
+		return
+	}
 	if err != nil {
 		log.Printf("Stream error: %v", err)
-		h.sendError(conn, fmt.Sprintf("Stream error: %v", err))
+		session.writeNotice(fmt.Sprintf("\r\n\x1b[1;31m❌ Error: Stream error: %v\x1b[0m\r\n", err))
 	}
 }
 
@@ -436,6 +485,46 @@ func (h *PodExecHandler) sendError(conn *websocket.Conn, text string) {
 	conn.WriteJSON(msg)
 }
 
+// Ciclo de vida do ephemeral container de debug. A API do Kubernetes não permite remover um
+// ephemeral container do pod (a entrada fica no spec até o pod ser recriado); o que dá pra fazer é
+// ENCERRAR o processo principal dele — o container vai pra Terminated e para de consumir recursos.
+// Antes o processo principal era um `/bin/sh` esperando stdin pra sempre, então o container ficava
+// Running indefinidamente depois que o terminal fechava.
+//
+// `kill 1` NÃO serve: com targetContainerName o container compartilha o namespace de processos
+// do alvo, e o PID 1 ali é a própria aplicação. Por isso o processo principal virou um laço de
+// vigia que sai sozinho quando /tmp/.stop existe (botão "Encerrar container" ou ociosidade) ou
+// quando /tmp/.hb (heartbeat) fica debugHeartbeatMaxAgeSec sem ser tocado — backstop que funciona
+// mesmo com o browser fechado ou o servidor desligado. /tmp é do filesystem do próprio container
+// de debug, nunca do app. `stat -c %Y`/`date +%s` existem no BusyBox e no coreutils.
+const (
+	debugIdleTimeout        = 10 * time.Minute
+	debugIdleWarnBefore     = 1 * time.Minute
+	debugHeartbeatThrottle  = 60 * time.Second
+	debugHeartbeatMaxAgeSec = 660 // 11 min: margem sobre o timeout do servidor (heartbeat é throttled)
+	debugHeartbeatFile      = "/tmp/.hb"
+	debugStopFile           = "/tmp/.stop"
+	debugHeartbeatAgeExpr   = `$(( $(date +%s) - $(stat -c %Y ` + debugHeartbeatFile + ` 2>/dev/null || echo 0) ))`
+)
+
+var (
+	debugWatchdogCommand = []string{"/bin/sh", "-c",
+		"touch " + debugHeartbeatFile + "; rm -f " + debugStopFile + "; " +
+			"while [ ! -e " + debugStopFile + " ] && [ " + debugHeartbeatAgeExpr + " -lt " + fmt.Sprint(debugHeartbeatMaxAgeSec) + " ]; do sleep 15; done"}
+	debugTouchHeartbeat    = "touch " + debugHeartbeatFile
+	debugStopUnconditional = "touch " + debugStopFile
+	// Ociosidade de UMA sessão só encerra o container se nenhuma outra sessão (reuso) tocou o
+	// heartbeat nos últimos 2 min — sessões ativas tocam a cada debugHeartbeatThrottle.
+	debugStopIfNoOtherSession = "[ " + debugHeartbeatAgeExpr + " -ge 120 ] && touch " + debugStopFile + "; true"
+	debugIdleNotice           = "\x1b[1;36mℹ️  O container de debug é encerrado após 10 min sem atividade, ou pelo botão \"Encerrar container\".\x1b[0m\r\n\r\n"
+)
+
+// isWatchdogDebugContainer — só reaproveita containers criados com o laço de vigia; os antigos
+// (processo principal `/bin/sh`) nunca se encerram e não respondem ao botão.
+func isWatchdogDebugContainer(ec corev1.EphemeralContainer) bool {
+	return len(ec.Command) == len(debugWatchdogCommand) && strings.Join(ec.Command, "\x00") == strings.Join(debugWatchdogCommand, "\x00")
+}
+
 // TerminalSession implementa io.Reader, io.Writer e remotecommand.TerminalSizeQueue
 type TerminalSession struct {
 	conn        *websocket.Conn
@@ -443,6 +532,72 @@ type TerminalSession struct {
 	isEphemeral bool
 	image       string
 	isReused    bool
+
+	// Só no ephemeral debug: atividade (entrada ou saída) mantém o heartbeat; o monitor de
+	// ociosidade escreve avisos em paralelo ao stream, daí o mutex nas escritas no WebSocket.
+	writeMu       sync.Mutex
+	activityMu    sync.Mutex
+	lastActivity  time.Time
+	lastHeartbeat time.Time
+	onHeartbeat   func()
+	onTerminate   func()
+	stopped       atomic.Bool
+}
+
+// markActivity registra atividade e dispara o heartbeat no container, no máximo 1x por minuto.
+func (t *TerminalSession) markActivity() {
+	t.activityMu.Lock()
+	now := time.Now()
+	t.lastActivity = now
+	fire := t.onHeartbeat != nil && now.Sub(t.lastHeartbeat) >= debugHeartbeatThrottle
+	if fire {
+		t.lastHeartbeat = now
+	}
+	t.activityMu.Unlock()
+	if fire {
+		t.onHeartbeat()
+	}
+}
+
+func (t *TerminalSession) idleFor() time.Duration {
+	t.activityMu.Lock()
+	defer t.activityMu.Unlock()
+	return time.Since(t.lastActivity)
+}
+
+// writeNotice escreve uma mensagem do próprio servidor no terminal SEM contar como atividade.
+func (t *TerminalSession) writeNotice(text string) {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+	t.conn.WriteJSON(map[string]interface{}{"type": "output", "data": text})
+}
+
+// watchIdle avisa 1 min antes e, aos 10 min sem atividade, encerra o container (se nenhuma outra
+// sessão o estiver usando) e fecha o WebSocket — o que termina o stream do exec.
+func (t *TerminalSession) watchIdle(done <-chan struct{}, stop func()) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	warned := false
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			idle := t.idleFor()
+			switch {
+			case idle >= debugIdleTimeout:
+				t.writeNotice("\r\n\x1b[1;33m⏹  10 min sem atividade — encerrando o container de debug.\x1b[0m\r\n")
+				stop()
+				t.conn.Close()
+				return
+			case idle >= debugIdleTimeout-debugIdleWarnBefore && !warned:
+				warned = true
+				t.writeNotice("\r\n\x1b[1;33m⚠  Sem atividade há 9 min — o container de debug será encerrado em 1 min.\x1b[0m\r\n")
+			case idle < debugIdleTimeout-debugIdleWarnBefore:
+				warned = false
+			}
+		}
+	}
 }
 
 // Read lê input do WebSocket
@@ -462,7 +617,15 @@ func (t *TerminalSession) Read(p []byte) (int, error) {
 	}
 
 	switch msg.Type {
+	case "terminate":
+		if t.onTerminate != nil {
+			t.onTerminate()
+		}
+		return 0, nil
 	case "input":
+		if t.isEphemeral {
+			t.markActivity()
+		}
 		data := []byte(msg.Data)
 		// FIX: Prevenir buffer overflow - truncar se necessário
 		if len(data) > len(p) {
@@ -496,11 +659,17 @@ func (t *TerminalSession) Write(p []byte) (int, error) {
 		data = strings.ToValidUTF8(data, "�")
 	}
 
+	if t.isEphemeral {
+		t.markActivity()
+	}
+
 	msg := map[string]interface{}{
 		"type": "output",
 		"data": data,
 	}
+	t.writeMu.Lock()
 	err := t.conn.WriteJSON(msg)
+	t.writeMu.Unlock()
 	if err != nil {
 		return 0, err
 	}
