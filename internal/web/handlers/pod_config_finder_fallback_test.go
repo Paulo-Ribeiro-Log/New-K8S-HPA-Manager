@@ -50,3 +50,34 @@ func TestIsCommandNotFoundExitENoShell(t *testing.T) {
 		t.Error("errNoShell")
 	}
 }
+
+func TestIsFindPartialExit(t *testing.T) {
+	if !isFindPartialExit(fmt.Errorf("stream: command terminated with exit code 1 (stderr: )")) {
+		t.Error("exit code 1 do find (diretório ilegível) deveria ser parcial")
+	}
+	for _, e := range []error{
+		nil,
+		fmt.Errorf("stream: command terminated with exit code 127 (stderr: )"),
+		fmt.Errorf("stream: command terminated with exit code 137 (stderr: )"),
+		fmt.Errorf("stream: context deadline exceeded (stderr: )"),
+	} {
+		if isFindPartialExit(e) {
+			t.Errorf("%v não deveria ser tratado como exit 1 parcial", e)
+		}
+	}
+}
+
+func TestConfigFilePatternsCobremGo(t *testing.T) {
+	for _, p := range []string{"config*.yaml", "config*.yml", "config*.json", "config*.toml", ".env"} {
+		if !strings.Contains(configFileFindScript, "'"+p+"'") || !strings.Contains(configFileFindScriptNoPrintf, "'"+p+"'") {
+			t.Errorf("scripts find não cobrem %q", p)
+		}
+		found := false
+		for _, q := range configFileNamePatterns {
+			found = found || q == p
+		}
+		if !found {
+			t.Errorf("configFileNamePatterns não cobre %q", p)
+		}
+	}
+}

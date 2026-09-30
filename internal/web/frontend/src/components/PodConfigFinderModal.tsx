@@ -310,7 +310,8 @@ export function PodConfigFinderModal({
           <DialogDescription>
             Localiza e mostra arquivos de config do container, soltos ou empacotados — útil pra apps .NET cujo{" "}
             <code>appsettings.json</code>/<code>web.config</code> é arquivo solto na imagem, ou apps Java/Spring cujo{" "}
-            <code>application.yml</code> vem compilado dentro do próprio <code>.jar/.war/.zip</code>, sem ConfigMap.
+            <code>application.yml</code> vem compilado dentro do próprio <code>.jar/.war/.zip</code>, sem ConfigMap. Em apps Go
+            procura <code>config*.yaml/.json/.toml</code> e <code>.env</code> soltos na imagem.
           </DialogDescription>
         </DialogHeader>
 
@@ -356,6 +357,12 @@ export function PodConfigFinderModal({
 
         {archivesError && (
           <p className="text-xs text-destructive flex-shrink-0">{archivesError}</p>
+        )}
+        {!archivesLoading && !archivesError && candidates.length === 0 && (
+          <p className="text-xs text-muted-foreground flex-shrink-0">
+            Nenhum arquivo de config no container — a configuração provavelmente vem de variáveis de ambiente ou
+            de ConfigMap/Secret (comum em apps Go com binário único).
+          </p>
         )}
 
         <div className="flex-1 min-h-0 flex">
