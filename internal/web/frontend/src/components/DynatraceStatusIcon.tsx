@@ -17,15 +17,19 @@ interface DynatraceStatusIconProps {
   coverage?: DynatracePodCoverage;
 }
 
-const COVERAGE_STATUS: Record<string, { label: string; dot: string; text: string }> = {
+// Status de deep monitoring (dynatrace/coverage.go, coverageProcess.statusFor) — usado também
+// pela aba Cobertura Dynatrace.
+export const COVERAGE_STATUS: Record<string, { label: string; dot: string; text: string }> = {
   Ativo: { label: "Ativo", dot: "bg-green-500", text: "text-green-600 dark:text-green-400" },
+  "Reinicio pendente": { label: "Reinício pendente", dot: "bg-blue-500", text: "text-blue-600 dark:text-blue-400" },
+  Desativado: { label: "Desativado", dot: "bg-red-500", text: "text-red-600 dark:text-red-400" },
   "Nao resolvido": { label: "Não resolvido", dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" },
   "Sem servico": { label: "Sem serviço", dot: "bg-muted-foreground/40", text: "text-muted-foreground" },
 };
 
-// agentTechnologyType vem em maiúsculas com underscore (JAVA, DOTNET, NODE_JS...).
+// agentTechnologyType/softwareTechnologies vêm em maiúsculas com underscore (JAVA, DOTNET, NODE_JS...).
 const TECHNOLOGY_LABEL: Record<string, string> = {
-  JAVA: "Java", DOTNET: ".NET", NODE_JS: "Node.js", PYTHON: "Python", GO: "Go", PHP: "PHP",
+  JAVA: "Java", DOTNET: ".NET", DOTNET_CORE: ".NET Core", CLR: ".NET", NODE_JS: "Node.js", PYTHON: "Python", GO: "Go", PHP: "PHP",
   RUBY: "Ruby", NGINX: "NGINX", APACHE_HTTP_SERVER: "Apache", IIS: "IIS", ENVOY: "Envoy",
 };
 

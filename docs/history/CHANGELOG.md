@@ -3,6 +3,19 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Dynatrace — Cobertura: tipo da aplicação e deep monitoring sem depender de serviço (Setembro 2026) ⏳ validação no tenant pendente
+
+**Sintoma:** processos sem SERVICE no Dynatrace (workers/consumers, apps Go) sumiam da aba Cobertura e, no detalhe do pod, apareciam sem tecnologia e como "Sem serviço". Isso sugeria "sem deep monitoring", mas o Dynatrace mostra o tipo e a instrumentação desses processos normalmente.
+
+**Causa:** `dynatrace/coverage.go` tirava a tecnologia só de `SERVICE.agentTechnologyType` e fazia inner join com SERVICE, como na DQL do dashboard.
+
+**Correção:**
+- Tipo da aplicação: tecnologia do serviço, quando existe; senão a do próprio processo, via `softwareTechnologies[].type` do PGI e depois do PROCESS_GROUP (runtime como JAVA/GO/DOTNET/NODE_JS antes de framework), com `processType` como fallback.
+- Status: serviço com tecnologia → Ativo; senão `monitoringState` do PGI: `on` → Ativo, `restartRequired` → "Reinicio pendente", `off` → "Desativado". Só vira "Sem servico"/"Nao resolvido" quando o Dynatrace não informa o estado.
+- Processos sem serviço entram na tabela; `processes_without_service` segue como contagem informativa. Filtros de status da aba são montados a partir dos status presentes.
+- Os nomes `softwareTechnologies`/`processType`/`monitoringState` são os da Entities API v2, mas não foram validados contra o tenant.
+
+
 ### Pods — ephemeral container de debug (netshoot) ficava rodando para sempre (Setembro 2026) ⏳ validação em cluster real pendente
 
 **Sintoma:** depois de usar "Abrir shell no container" com ephemeral container, o netshoot continuava `Running` no pod.

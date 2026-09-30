@@ -51,9 +51,14 @@ import { PodLogsPanel } from "@/components/PodLogsPanel";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
 
 // Badges de deep monitoring no painel de detalhes do pod (status vindo de /dynatrace/coverage/pods).
-const DT_COVERAGE_LABEL: Record<string, string> = { Ativo: "Deep monitoring ativo", "Nao resolvido": "Não resolvido", "Sem servico": "Sem serviço" };
+const DT_COVERAGE_LABEL: Record<string, string> = {
+  Ativo: "Deep monitoring ativo", "Nao resolvido": "Não resolvido", "Sem servico": "Sem serviço",
+  Desativado: "Deep monitoring desativado", "Reinicio pendente": "Reinício pendente",
+};
 const DT_COVERAGE_BADGE: Record<string, string> = {
   Ativo: "bg-green-500/10 text-green-700 dark:text-green-400",
+  Desativado: "bg-red-500/10 text-red-700 dark:text-red-400",
+  "Reinicio pendente": "bg-blue-500/10 text-blue-700 dark:text-blue-400",
   "Nao resolvido": "bg-amber-500/10 text-amber-700 dark:text-amber-400",
   "Sem servico": "text-muted-foreground",
 };

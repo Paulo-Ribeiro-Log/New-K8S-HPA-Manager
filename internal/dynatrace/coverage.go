@@ -20,8 +20,12 @@ import (
 //	agentTechnologyType             → SERVICE.properties.agentTechnologyType
 //	ONEAGENT dt.agent.module.version→ HOST.properties (ver hostAgentVersion)
 //
-// Semântica mantida da DQL: o join com SERVICE é inner — processo sem serviço não entra nas linhas
-// (contado à parte em ProcessesWithoutService, para não sumir em silêncio).
+// Diferente da DQL original, o join com SERVICE NÃO é inner: o tipo da aplicação e o estado do
+// deep monitoring vêm do PRÓPRIO processo (PGI/PROCESS_GROUP — softwareTechnologies, processType,
+// monitoringState), como na tela de processos do Dynatrace. O serviço só complementa. Antes, sem
+// serviço o processo sumia da tabela e ficava sem tecnologia — associando "sem serviço" a "sem
+// deep monitoring", o que é falso: um worker/consumer Go ou Java sem endpoint HTTP é instrumentado
+// normalmente e só não gera SERVICE. ProcessesWithoutService continua sendo contado (informativo).
 
 // CoverageRow é uma linha do relatório — mesmas colunas da DQL.
 type CoverageRow struct {
@@ -52,8 +56,7 @@ const (
 var coverageExcludedNamespacePrefixes = []string{"kube-system", "dynatrace", "istio-system", "calico-system"}
 
 // PodCoverageProcess é um processo monitorado dentro de um pod, usado no tooltip do ícone DT
-// das listagens de pods. Status "Sem servico" = processo sem serviço detectado (fica fora da
-// tabela da Cobertura, mesma semântica de inner join da DQL, mas aparece aqui).
+// das listagens de pods. Status: ver coverageProcess.statusFor.
 type PodCoverageProcess struct {
 	ProcessName          string `json:"process_name"`
 	Technology           string `json:"technology"`
@@ -66,7 +69,11 @@ type PodCoverage struct {
 	Processes       []PodCoverageProcess `json:"processes"`
 }
 
-const CoverageStatusNoService = "Sem servico"
+const (
+	CoverageStatusNoService      = "Sem servico"
+	CoverageStatusOff            = "Desativado"
+	CoverageStatusRestartPending = "Reinicio pendente"
+)
 
 var coverageCache sync.Map // chave: baseURL|cluster → coverageCacheEntry
 
@@ -103,6 +110,14 @@ func (c *Client) GetPodCoverage(ctx context.Context, clusterName string) (pods m
 type coverageProcess struct {
 	id, namespace, podName, hostID, name, version string
 	techs                                         []string // uma por serviço; "" = serviço sem agentTechnologyType
+	procTech                                      string   // tecnologia do próprio processo (independe de serviço)
+	monitoring                                    processMonitoring
+}
+
+// processMonitoring = PGI.properties.monitoringState (estado do deep monitoring do processo).
+type processMonitoring struct {
+	actual          string // "on" / "off" / "" (desconhecido)
+	restartRequired bool
 }
 
 func (c *Client) coverage(ctx context.Context, clusterName string, refresh bool) (coverageCacheEntry, error) {
@@ -170,6 +185,8 @@ func (c *Client) collectCoverageProcesses(ctx context.Context, clusterName strin
 			p.serviceIDs = append(p.serviceIDs, s.EntityID.ID)
 			serviceIDs[s.EntityID.ID] = struct{}{}
 		}
+		p.procTech = processTechnology(e)
+		p.monitoring = processMonitoringState(e)
 		if p.hostID != "" {
 			hostIDs[p.hostID] = struct{}{}
 		}
@@ -201,6 +218,9 @@ func (c *Client) collectCoverageProcesses(ctx context.Context, clusterName strin
 			if p.name == "" {
 				p.name = pg.DisplayName
 			}
+			if p.procTech == "" {
+				p.procTech = processTechnology(pg)
+			}
 		}
 		if h, ok := hosts[p.hostID]; ok {
 			p.version = hostAgentVersion(h)
@@ -217,11 +237,90 @@ func (c *Client) collectCoverageProcesses(ctx context.Context, clusterName strin
 	return procs, true, nil
 }
 
-func coverageStatus(tech string) string {
-	if tech != "" {
-		return CoverageStatusActive
+// technologyFor: a do serviço quando ele a informa; senão a do próprio processo.
+func (p coverageProcess) technologyFor(serviceTech string) string {
+	if serviceTech != "" {
+		return serviceTech
 	}
-	return CoverageStatusUnresolved
+	return p.procTech
+}
+
+// statusFor decide o status do deep monitoring. Serviço com agentTechnologyType prova que o
+// OneAgent instrumentou o processo; sem isso, vale o monitoringState do próprio processo. Só cai
+// em "Sem servico"/"Nao resolvido" quando o Dynatrace não informa o estado do processo.
+func (p coverageProcess) statusFor(serviceTech string, hasService bool) string {
+	switch {
+	case serviceTech != "":
+		return CoverageStatusActive
+	case p.monitoring.actual == "on":
+		return CoverageStatusActive
+	case p.monitoring.restartRequired:
+		return CoverageStatusRestartPending
+	case p.monitoring.actual == "off":
+		return CoverageStatusOff
+	case !hasService:
+		return CoverageStatusNoService
+	default:
+		return CoverageStatusUnresolved
+	}
+}
+
+// serviceTechsOrNone devolve as tecnologias por serviço, ou [""] para processo sem serviço —
+// assim ele vira uma linha (com a tecnologia do processo) em vez de sumir.
+func (p coverageProcess) serviceTechsOrNone() []string {
+	if len(p.techs) == 0 {
+		return []string{""}
+	}
+	return p.techs
+}
+
+// coverageRuntimeTechs — tecnologias de runtime (o "tipo" da aplicação). softwareTechnologies
+// lista runtime E frameworks/servidores (ex: JAVA + APACHE_TOMCAT); o runtime tem prioridade.
+var coverageRuntimeTechs = map[string]bool{
+	"JAVA": true, "DOTNET": true, "DOTNET_CORE": true, "CLR": true, "NODE_JS": true, "GO": true,
+	"PHP": true, "PYTHON": true, "RUBY": true, "NGINX": true, "APACHE_HTTP_SERVER": true, "IIS": true,
+	"ENVOY": true, "ERLANG": true, "SDK": true,
+}
+
+// processTechnology lê o tipo da aplicação das properties de um PGI ou PROCESS_GROUP:
+// softwareTechnologies[].type (runtime primeiro) e, na falta, processType. Os nomes não foram
+// validados contra o tenant (sem acesso direto) — aceita as variações conhecidas da API v2.
+func processTechnology(e *Entity) string {
+	if e == nil {
+		return ""
+	}
+	first := ""
+	if list, ok := e.Properties["softwareTechnologies"].([]interface{}); ok {
+		for _, item := range list {
+			m, _ := item.(map[string]interface{})
+			t, _ := m["type"].(string)
+			if t == "" {
+				continue
+			}
+			if coverageRuntimeTechs[strings.ToUpper(t)] {
+				return t
+			}
+			if first == "" {
+				first = t
+			}
+		}
+	}
+	if first != "" {
+		return first
+	}
+	pt := strings.TrimPrefix(propString(e, "processType"), "PROCESS_TYPE_")
+	if pt == "" || strings.EqualFold(pt, "UNKNOWN") {
+		return ""
+	}
+	return pt
+}
+
+// processMonitoringState lê PGI.properties.monitoringState {actualMonitoringState, restartRequired}.
+func processMonitoringState(e *Entity) processMonitoring {
+	m, _ := e.Properties["monitoringState"].(map[string]interface{})
+	actual, _ := m["actualMonitoringState"].(string)
+	restart, _ := m["restartRequired"].(bool)
+	return processMonitoring{actual: strings.ToLower(actual), restartRequired: restart}
 }
 
 // aggregateCoverage = o summarize/sort da DQL, sobre os processos fora dos namespaces excluídos.
@@ -237,10 +336,9 @@ func aggregateCoverage(clusterName string, hostGroupFound bool, procs []coverage
 		}
 		if len(p.techs) == 0 {
 			report.ProcessesWithoutService++
-			continue
 		}
-		for _, tech := range p.techs {
-			k := rowKey{p.namespace, p.name, tech, p.version, coverageStatus(tech)}
+		for _, svcTech := range p.serviceTechsOrNone() {
+			k := rowKey{p.namespace, p.name, p.technologyFor(svcTech), p.version, p.statusFor(svcTech, len(p.techs) > 0)}
 			sets := agg[k]
 			if sets == nil {
 				sets = &rowSets{hosts: map[string]struct{}{}, procs: map[string]struct{}{}}
@@ -298,12 +396,12 @@ func podCoverageMap(procs []coverageProcess) map[string]*PodCoverage {
 		if pc.OneAgentVersion == "" {
 			pc.OneAgentVersion = p.version
 		}
-		if len(p.techs) == 0 {
-			pc.Processes = appendUniqueProcess(pc.Processes, PodCoverageProcess{ProcessName: p.name, DeepMonitoringStatus: CoverageStatusNoService})
-			continue
-		}
-		for _, tech := range p.techs {
-			pc.Processes = appendUniqueProcess(pc.Processes, PodCoverageProcess{ProcessName: p.name, Technology: tech, DeepMonitoringStatus: coverageStatus(tech)})
+		for _, svcTech := range p.serviceTechsOrNone() {
+			pc.Processes = appendUniqueProcess(pc.Processes, PodCoverageProcess{
+				ProcessName:          p.name,
+				Technology:           p.technologyFor(svcTech),
+				DeepMonitoringStatus: p.statusFor(svcTech, len(p.techs) > 0),
+			})
 		}
 	}
 	for _, pc := range pods {

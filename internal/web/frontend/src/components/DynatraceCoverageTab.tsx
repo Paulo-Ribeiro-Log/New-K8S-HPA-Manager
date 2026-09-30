@@ -17,9 +17,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { COVERAGE_STATUS } from "@/components/DynatraceStatusIcon";
 
 type CoverageData = Awaited<ReturnType<typeof apiClient.getDynatraceCoverage>>;
-type StatusFilter = "all" | "Ativo" | "Nao resolvido";
+type StatusFilter = string; // "all" ou um deep_monitoring_status
 type CoverageRow = NonNullable<CoverageData["rows"]>[number];
 const NO_ROWS: CoverageRow[] = [];
 
@@ -30,7 +31,8 @@ const csvCell = (v: string | number) => {
 
 // Cobertura de Deep Monitoring do Dynatrace por namespace — equivalente (via API clássica v2) à
 // DQL do dashboard de cobertura: processos × tecnologia × versão do OneAgent, com contagem de
-// hosts e pods. Usa o cluster selecionado globalmente.
+// hosts e pods. Diferente da DQL, processos sem serviço entram na tabela: tipo e status vêm do
+// próprio processo (ver dynatrace/coverage.go). Usa o cluster selecionado globalmente.
 export const DynatraceCoverageTab = ({ selectedCluster }: { selectedCluster?: string }) => {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
@@ -73,6 +75,12 @@ export const DynatraceCoverageTab = ({ selectedCluster }: { selectedCluster?: st
       versions: new Set(rows.map((r) => r.oneagent_version).filter(Boolean)).size,
     };
   }, [rows]);
+
+  // Filtros de status: só os que aparecem no relatório, "Ativo" primeiro.
+  const statuses = useMemo(
+    () => [...new Set(rows.map((r) => r.deep_monitoring_status))].sort((a, b) => (a === "Ativo" ? -1 : b === "Ativo" ? 1 : a.localeCompare(b))),
+    [rows],
+  );
 
   const handleRefresh = async () => {
     if (!selectedCluster) return;
@@ -173,7 +181,7 @@ export const DynatraceCoverageTab = ({ selectedCluster }: { selectedCluster?: st
               { label: "Namespaces", value: summary.namespaces },
               { label: "Pods (processos)", value: summary.pods },
               { label: "Pods com deep monitoring", value: `${summary.activePct}%` },
-              { label: "Linhas não resolvidas", value: summary.unresolved },
+              { label: "Linhas sem deep monitoring ativo", value: summary.unresolved },
               { label: "Versões de OneAgent", value: summary.versions },
             ].map((c) => (
               <Card key={c.label}>
@@ -187,7 +195,8 @@ export const DynatraceCoverageTab = ({ selectedCluster }: { selectedCluster?: st
 
           {(data.processes_without_service ?? 0) > 0 && (
             <p className="text-xs text-muted-foreground">
-              {data.processes_without_service} processo(s) sem serviço associado não aparecem na tabela (mesmo critério da DQL do dashboard).
+              {data.processes_without_service} processo(s) sem serviço associado — aparecem na tabela com o tipo e o status de deep
+              monitoring do próprio processo.
             </p>
           )}
 
@@ -198,7 +207,7 @@ export const DynatraceCoverageTab = ({ selectedCluster }: { selectedCluster?: st
               onChange={(e) => setSearch(e.target.value)}
               className="max-w-sm h-8"
             />
-            {(["all", "Ativo", "Nao resolvido"] as StatusFilter[]).map((s) => (
+            {["all", ...statuses].map((s) => (
               <Button
                 key={s}
                 size="sm"
@@ -206,7 +215,7 @@ export const DynatraceCoverageTab = ({ selectedCluster }: { selectedCluster?: st
                 className="h-8"
                 onClick={() => setStatusFilter(s)}
               >
-                {s === "all" ? "Todos" : s === "Ativo" ? "Ativo" : "Não resolvido"}
+                {s === "all" ? "Todos" : COVERAGE_STATUS[s]?.label ?? s}
               </Button>
             ))}
             <span className="text-xs text-muted-foreground ml-auto">
@@ -239,12 +248,10 @@ export const DynatraceCoverageTab = ({ selectedCluster }: { selectedCluster?: st
                         variant="outline"
                         className={cn(
                           "text-[10px]",
-                          r.deep_monitoring_status === "Ativo"
-                            ? "border-green-500/40 text-green-600 dark:text-green-400"
-                            : "border-amber-500/40 text-amber-600 dark:text-amber-400",
+                          COVERAGE_STATUS[r.deep_monitoring_status]?.text ?? "text-muted-foreground",
                         )}
                       >
-                        {r.deep_monitoring_status === "Ativo" ? "Ativo" : "Não resolvido"}
+                        {COVERAGE_STATUS[r.deep_monitoring_status]?.label ?? r.deep_monitoring_status}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right text-xs">{r.host_count}</TableCell>
