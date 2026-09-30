@@ -4,7 +4,7 @@ import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
 import "xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
-import { X, Maximize2, Minimize2, Copy, Check } from "lucide-react";
+import { X, Maximize2, Minimize2, Copy, Check, Power } from "lucide-react";
 import { toast } from "sonner";
 
 interface PodTerminalProps {
@@ -140,6 +140,7 @@ export const PodTerminal = ({
       terminal.writeln("\x1b[1;32m✓ Conectado!\x1b[0m\r");
       if (ephemeral) {
         terminal.writeln("\x1b[1;33m🛠️  nicolaka/netshoot\x1b[0m - Ephemeral Debug Container\r");
+        terminal.writeln("\x1b[1;36mEncerramento:\x1b[0m botão ⏻ no topo, ou automático após 10 min sem atividade\r");
       }
       terminal.writeln(`\x1b[1;36mPod:\x1b[0m ${pod}\r`);
       terminal.writeln(`\x1b[1;36mContainer:\x1b[0m ${container}\r`);
@@ -287,6 +288,14 @@ export const PodTerminal = ({
     };
   };
 
+  // Encerra o ephemeral container de debug (o backend cria /tmp/.stop e o laço de vigia sai).
+  // A API do Kubernetes não remove ephemeral containers do pod — ele fica como Terminated no spec.
+  const handleTerminateDebug = () => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "terminate" }));
+    toast.info("Encerrando o container de debug...");
+  };
+
   const handleCopySelection = () => {
     if (!xtermRef.current) return;
 
@@ -315,6 +324,18 @@ export const PodTerminal = ({
           <span className="text-xs text-muted-foreground">({shell})</span>
         </div>
         <div className="flex items-center gap-1">
+          {ephemeral && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleTerminateDebug}
+              disabled={!isConnected}
+              title="Encerrar container de debug (netshoot)"
+              className="h-7 w-7 text-destructive hover:text-destructive"
+            >
+              <Power className="w-3.5 h-3.5" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"

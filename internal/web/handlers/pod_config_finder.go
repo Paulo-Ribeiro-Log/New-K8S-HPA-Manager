@@ -129,14 +129,16 @@ const archiveFindCandidatesScriptNoPrintf = `find / -xdev -maxdepth 6 ` +
 // configFileFindScript localiza arquivos de configuração SOLTOS reconhecidos por convenção de
 // nome — cobre .NET (appsettings*.json/.yml/.yaml, web.config — normalmente copiados soltos na
 // imagem via Dockerfile COPY, nunca empacotados) e Spring Boot fora do jar (application.yml/
-// .properties, bootstrap.yml, quando não vêm compilados no jar). Lista fechada de nomes/
+// .properties, bootstrap.yml, quando não vêm compilados no jar) e apps Go (config*.yaml/.yml/.json/
+// .toml e .env — convenções de viper/koanf/godotenv, soltos na imagem ao lado do binário). Lista fechada de nomes/
 // convenções reais — não usa um wildcard genérico tipo "*.json"/"*.yml" pra não trazer ruído
 // (qualquer outro json/yaml do container que não seja config de aplicação).
 const configFileFindScript = `find / -xdev -maxdepth 6 ` +
 	`\( -path /proc -o -path /sys -o -path /dev \) -prune -o ` +
 	`-type f \( -iname 'appsettings*.json' -o -iname 'appsettings*.yml' -o -iname 'appsettings*.yaml' ` +
 	`-o -iname 'web.config' -o -iname 'application.yml' -o -iname 'application.yaml' ` +
-	`-o -iname 'application*.properties' -o -iname 'bootstrap.yml' -o -iname 'bootstrap.yaml' \) ` +
+	`-o -iname 'application*.properties' -o -iname 'bootstrap.yml' -o -iname 'bootstrap.yaml' ` +
+	`-o -iname 'config*.yaml' -o -iname 'config*.yml' -o -iname 'config*.json' -o -iname 'config*.toml' -o -iname '.env' \) ` +
 	`-printf '%s\t%p\n' 2>/dev/null`
 
 // configFileFindScriptNoPrintf é o fallback BusyBox de configFileFindScript (sem tamanho).
@@ -144,14 +146,16 @@ const configFileFindScriptNoPrintf = `find / -xdev -maxdepth 6 ` +
 	`\( -path /proc -o -path /sys -o -path /dev \) -prune -o ` +
 	`-type f \( -iname 'appsettings*.json' -o -iname 'appsettings*.yml' -o -iname 'appsettings*.yaml' ` +
 	`-o -iname 'web.config' -o -iname 'application.yml' -o -iname 'application.yaml' ` +
-	`-o -iname 'application*.properties' -o -iname 'bootstrap.yml' -o -iname 'bootstrap.yaml' \) ` +
+	`-o -iname 'application*.properties' -o -iname 'bootstrap.yml' -o -iname 'bootstrap.yaml' ` +
+	`-o -iname 'config*.yaml' -o -iname 'config*.yml' -o -iname 'config*.json' -o -iname 'config*.toml' -o -iname '.env' \) ` +
 	`-print 2>/dev/null`
 
 // configFileNamePatterns/archiveNamePatterns são as mesmas convenções de nome dos scripts `find`
 // acima, usadas pelo varredor em shell puro (shWalkFindScript) quando a imagem não tem `find`.
 var (
 	configFileNamePatterns = []string{"appsettings*.json", "appsettings*.yml", "appsettings*.yaml", "web.config",
-		"application.yml", "application.yaml", "application*.properties", "bootstrap.yml", "bootstrap.yaml"}
+		"application.yml", "application.yaml", "application*.properties", "bootstrap.yml", "bootstrap.yaml",
+		"config*.yaml", "config*.yml", "config*.json", "config*.toml", ".env"}
 	archiveNamePatterns = []string{"*.jar", "*.war", "*.zip", "*.nupkg"}
 )
 
@@ -267,13 +271,25 @@ func findCandidatesWithFallback(ctx context.Context, clientset kubernetes.Interf
 		}
 		return nil, err3
 	}
-	if err != nil {
-		return nil, err
+	for _, e := range []error{err, err2} {
+		if e != nil && !isFindPartialExit(e) {
+			return nil, e
+		}
 	}
-	if err2 != nil {
-		return nil, err2
-	}
-	return nil, nil // as duas tentativas rodaram limpo, só não acharam nada — não é erro.
+	return nil, nil // as tentativas rodaram (no máximo com diretórios ilegíveis), só não acharam nada — não é erro.
+}
+
+// isFindPartialExit detecta o exit code 1 do `find`: rodou até o fim, mas esbarrou em algum
+// diretório ilegível ("Permission denied", container non-root) — o `2>/dev/null` esconde a
+// mensagem, só sobra o código. Com a saída vazia isso significa "nada encontrado", não falha.
+//
+// BUG REAL corrigido — relatado ao vivo com app Go: a imagem não tem nenhum .jar/.zip nem
+// appsettings/application.yml, então as duas buscas voltavam vazias com exit 1 e a resposta era
+// CONFIG_FIND_ERROR "stream: command terminated with exit code 1 (stderr: )" em vez de lista vazia
+// (Java/.NET escapavam porque o find imprimia candidatos antes de bater na permissão). O BusyBox
+// find também sai com 1 ao recusar -printf — mesmo tratamento, o fallback sem -printf já cobre.
+func isFindPartialExit(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "exit code 1 (")
 }
 
 // ListConfigCandidates — GET /api/v1/pods/:cluster/:namespace/:name/config-candidates?container=
