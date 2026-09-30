@@ -3,6 +3,31 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Pods — ephemeral container de debug (netshoot) ficava rodando para sempre (Setembro 2026) ⏳ validação em cluster real pendente
+
+**Sintoma:** depois de usar "Abrir shell no container" com ephemeral container, o netshoot continuava `Running` no pod.
+
+**Causa:** o processo principal do container era um `/bin/sh` esperando stdin; a sessão usava um segundo shell via `exec`, então fechar o terminal nunca encerrava o container. A API do Kubernetes não permite remover ephemeral containers do spec, e `kill 1` mataria a aplicação (com `targetContainerName` o namespace de processos é compartilhado).
+
+**Correção (`podexec.go`):**
+- O processo principal virou um laço de vigia (`debugWatchdogCommand`) que sai quando existe `/tmp/.stop` ou quando `/tmp/.hb` fica 11 min sem ser tocado (backstop com browser fechado ou servidor desligado). `/tmp` é do próprio container de debug.
+- Entrada ou saída no terminal conta como atividade; o backend toca `/tmp/.hb` no máximo 1x/min. Com 9 min de ociosidade avisa no terminal; aos 10 min encerra o container (só se nenhuma outra sessão reaproveitando o mesmo container tocou o heartbeat nos últimos 2 min) e fecha a sessão.
+- Botão ⏻ "Encerrar container" no `PodTerminal` (mensagem WebSocket `terminate`) → `/tmp/.stop` incondicional.
+- Fechar a aba não encerra na hora: o container espera os 10 min e pode ser reaproveitado. Só são reaproveitados containers com o laço de vigia; os antigos (`/bin/sh`) ficam até o pod reiniciar.
+- O container encerrado continua como `Terminated` no spec, e a imagem fica no cache do node (GC do kubelet).
+- Nome do container: `k8s-hpa-test-debug` (antes `debug-<timestamp>`); se já existir no pod (encerrado continua no spec e o nome precisa ser único), `k8s-hpa-test-debug-2`, `-3`…
+- Testes rodam os scripts de verdade em `nicolaka/netshoot:v0.12` (pulados sem a imagem).
+
+
+### Pods — "Buscar arquivo de configuração" falhava em apps Go (Setembro 2026) ⏳ validação em cluster real pendente
+
+**Sintoma:** num pod de app Go, a ferramenta respondia `stream: command terminated with exit code 1 (stderr: )` e não listava nada.
+
+**Causa:** container non-root → o `find /` esbarra em diretório ilegível e sai com código 1 (o `2>/dev/null` esconde só a mensagem). Em Java/.NET o `find` imprimia candidatos antes e o resultado era aproveitado; numa imagem Go não há `.jar`/`appsettings`, a saída vinha vazia e `findCandidatesWithFallback` tratava o código 1 como erro nas duas buscas (`CONFIG_FIND_ERROR`).
+
+**Correção:** `isFindPartialExit` — exit 1 com saída vazia = "nada encontrado" (lista vazia, não erro); outros erros continuam subindo. A busca de arquivos soltos passou a cobrir convenções Go (`config*.yaml/.yml/.json/.toml`, `.env`), inclusive no varredor em `sh` puro. O modal cita Go e, com lista vazia, avisa que a config deve vir de env/ConfigMap/Secret.
+
+
 ### Tools — nova ferramenta "Cliente HTTP" (estilo Postman) (Setembro 2026) ⏳ validação em cluster real pendente
 
 Pedido: testar APIs como no Postman, a partir de um cURL colado (ex.: POST JSON no `frete-hub`). Ferramenta independente no menu Tools (`HttpClientTab`, rotas `/api/v1/http-client/*`, handlers `http_client_*.go`), sem coleções, ambientes nem scripts.
