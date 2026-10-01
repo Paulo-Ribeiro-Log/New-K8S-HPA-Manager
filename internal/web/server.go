@@ -1178,6 +1178,10 @@ func (s *Server) setupRoutes() {
 		policies.GET("", policyHandler.List)
 	}
 
+	// RBAC por namespace/grupo (squads.devops.k8s.io/<id> × RoleBindings) — só leitura
+	rbacOverviewHandler := handlers.NewRBACOverviewHandler(s.kubeManager)
+	api.GET("/rbac/overview", rbacOverviewHandler.Overview)
+
 	// Services
 	serviceHandler := handlers.NewServiceHandlerWithHistory(s.kubeManager, s.historyTracker)
 	services := api.Group("/services")

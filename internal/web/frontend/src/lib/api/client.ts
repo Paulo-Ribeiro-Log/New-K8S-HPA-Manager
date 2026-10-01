@@ -71,6 +71,7 @@ import type {
   EventSummary,
   ResourceQuotaSummary,
   NetworkPolicySummary,
+  RBACOverview,
   ServiceSummary,
   ServiceManifest,
   ServiceDiffResult,
@@ -2290,6 +2291,13 @@ class APIClient {
       `/resource-quotas?${params}`
     );
     return response.data?.quotas || [];
+  }
+
+  async getRBACOverview(cluster: string): Promise<RBACOverview> {
+    const params = new URLSearchParams({ cluster });
+    const response = await this.request<APIResponse<RBACOverview>>(`/rbac/overview?${params}`);
+    if (!response.data) throw new Error("Resposta vazia do /rbac/overview");
+    return response.data;
   }
 
   async getNetworkPolicies(

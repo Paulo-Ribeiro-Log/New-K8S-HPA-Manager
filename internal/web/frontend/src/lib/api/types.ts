@@ -587,6 +587,47 @@ export interface ResourceLimit {
   percent?: number;
 }
 
+// RBAC por namespace/grupo (GET /rbac/overview) — ver handlers/rbac_overview.go
+export interface RBACSquad {
+  namespace: string;
+  id: string; // sufixo de squads.devops.k8s.io/<id> (normalmente object ID do grupo no Entra ID)
+  name: string;
+  in_label: boolean;
+  in_annotation: boolean;
+}
+
+export interface RBACSubject {
+  kind: "Group" | "User" | "ServiceAccount" | string;
+  name: string;
+  namespace?: string;
+  apiGroup?: string;
+}
+
+export interface RBACPolicyRule {
+  verbs: string[];
+  apiGroups?: string[];
+  resources?: string[];
+  resourceNames?: string[];
+  nonResourceURLs?: string[];
+}
+
+export interface RBACBinding {
+  kind: "RoleBinding" | "ClusterRoleBinding";
+  name: string;
+  namespace?: string;
+  role_kind: "Role" | "ClusterRole" | string;
+  role_name: string;
+  subjects: RBACSubject[];
+}
+
+export interface RBACOverview {
+  namespaces: string[];
+  squads: RBACSquad[];
+  bindings: RBACBinding[];
+  roles: Record<string, RBACPolicyRule[]>; // chave "ClusterRole/<nome>" | "Role/<ns>/<nome>"
+  warnings: string[];
+}
+
 export interface NetworkPolicySummary {
   cluster: string;
   namespace: string;

@@ -3,6 +3,15 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Namespaces — RBAC e squads por namespace e por grupo (Outubro 2026) ⏳ validação em cluster real pendente
+
+Nova visão "RBAC e squads" na aba Namespaces (botão no cabeçalho, que abre "Por grupo", e botão "RBAC" nos detalhes do namespace, que abre "Por namespace"). Cruza as squads declaradas no namespace (label/annotation `squads.devops.k8s.io/<id>`, em que `<id>` costuma ser o object ID do grupo no Entra ID e o valor da annotation é o nome da squad) com os subjects das RoleBindings/ClusterRoleBindings.
+
+- Backend: `GET /api/v1/rbac/overview?cluster=` (`handlers/rbac_overview.go`, só leitura) devolve namespaces, squads, bindings e as regras das Roles/ClusterRoles referenciadas. Erros de permissão em um tipo de recurso viram `warnings`; só falha (403) se não conseguir ler nem RoleBindings nem ClusterRoleBindings.
+- "Por namespace": squads declaradas, com aviso quando não há binding para o ID, e quem tem acesso ao namespace, agrupado por subject e com as regras expansíveis. Filtros: ocultar `system:*`, ocultar ServiceAccounts, incluir ClusterRoleBindings.
+- "Por grupo": lista de grupos (subjects `Group` e IDs de squad), com busca por nome/ID. Para o grupo escolhido mostra o acesso cluster-wide e, por namespace, se está declarado como squad e quais bindings tem, sinalizando "declarado sem RoleBinding" e "RoleBinding sem declaração".
+- Limitações: IDs que não são de grupo (ex.: `squads.devops.k8s.io/10075`) aparecem, mas só casam com binding se algum subject tiver exatamente esse nome. Permissões via Azure RBAC for Kubernetes, EKS Access Policies e IAM do GKE não aparecem.
+
 ### Code Editor — "Abrir pasta" lista e busca arquivos (Setembro 2026)
 
 O navegador do "Abrir pasta" só listava subpastas. Agora `BrowseFolders` (`code_editor_local.go`) devolve também `files` (nome, caminho, tamanho; ocultos só com "Mostrar ocultas"; limite de `maxBrowseEntries` separado para pastas e arquivos). O diálogo ganhou um campo de busca por nome na pasta atual (pastas e arquivos) e lista os arquivos abaixo das pastas. Duplo clique num arquivo abre a pasta dele no editor e o arquivo numa aba (`pendingOpenFile` em `CodeEditorTab.tsx`). A busca é só na pasta atual, sem recursão.
