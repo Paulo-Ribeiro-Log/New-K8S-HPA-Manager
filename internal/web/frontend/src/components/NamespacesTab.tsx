@@ -4,7 +4,7 @@ import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal, ShieldCheck } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal, ShieldCheck, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
@@ -50,6 +50,7 @@ import { ProtectedAction } from "@/components/rbac";
 import { AWXCertModal } from "@/components/AWXCertModal";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import { NamespaceRbacModal } from "@/components/NamespaceRbacModal";
 
 interface NamespacesTabProps {
   cluster: string;
@@ -77,6 +78,8 @@ export const NamespacesTab = ({
   // sem seleção → "Workloads" (namespaces → deployments → pods, reaproveitando a DeploymentsTab
   // embutida). A visão geral do cluster (gráficos) fica num modal aberto pelo cabeçalho.
   const [overviewOpen, setOverviewOpen] = useState(false);
+  // Modal RBAC/squads: com namespace → abre "Por namespace"; sem → "Por grupo"
+  const [rbacModal, setRbacModal] = useState<{ open: boolean; namespace?: string }>({ open: false });
   const [workloadsNamespace, setWorkloadsNamespace] = useState("");
   const [workloadsSearch, setWorkloadsSearch] = useState("");
   // DeploymentsTab chama onNamespaceChange("") se o namespace sumir da lista — volta pra lista.
@@ -817,10 +820,17 @@ export const NamespacesTab = ({
   };
 
   const overviewButton = (
-    <Button variant="outline" size="sm" onClick={() => setOverviewOpen(true)} disabled={!cluster}>
-      <BarChart3 className="w-4 h-4 mr-1" />
-      Visão geral do cluster
-    </Button>
+    <div className="flex gap-2">
+      <Button variant="outline" size="sm" onClick={() => setRbacModal({ open: true })} disabled={!cluster}
+        title="Grupos do RBAC e squads (squads.devops.k8s.io) por namespace">
+        <KeyRound className="w-4 h-4 mr-1" />
+        RBAC e squads
+      </Button>
+      <Button variant="outline" size="sm" onClick={() => setOverviewOpen(true)} disabled={!cluster}>
+        <BarChart3 className="w-4 h-4 mr-1" />
+        Visão geral do cluster
+      </Button>
+    </div>
   );
 
   const searchedNamespaces = useMemo(() => {
@@ -1362,7 +1372,7 @@ export const NamespacesTab = ({
             </Card>
 
             {/* Botões para Modais de Observabilidade */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
               <Button
                 variant="outline"
                 size="sm"
@@ -1421,6 +1431,19 @@ export const NamespacesTab = ({
                 <Badge variant="secondary" className="text-xs">
                   {services.length}
                 </Badge>
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setRbacModal({ open: true, namespace: selectedNamespace.name })}
+                className="flex items-center justify-between gap-2"
+                title="Squads declaradas (squads.devops.k8s.io) e quem tem acesso via RBAC"
+              >
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-4 h-4" />
+                  <span>RBAC</span>
+                </div>
               </Button>
             </div>
           </div>
@@ -2495,6 +2518,13 @@ export const NamespacesTab = ({
 
       {renderDiffDialog()}
       {renderApplyConfirmDialog()}
+
+      <NamespaceRbacModal
+        open={rbacModal.open}
+        onOpenChange={(open) => setRbacModal((m) => ({ ...m, open }))}
+        cluster={cluster}
+        initialNamespace={rbacModal.namespace}
+      />
 
       {/* Visão geral do cluster — antes era o conteúdo do painel direito sem namespace selecionado */}
       <Dialog open={overviewOpen} onOpenChange={setOverviewOpen}>
