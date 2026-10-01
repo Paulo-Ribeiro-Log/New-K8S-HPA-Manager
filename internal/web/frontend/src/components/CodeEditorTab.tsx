@@ -2028,13 +2028,14 @@ interface BranchesPanelProps {
   repoId: string;
   branches: CodeEditorBranches | null;
   onRefresh: () => void;
+  refreshing?: boolean;
   onCheckout: (branch: string) => Promise<void>;
   onCreateBranch: () => void;
   onMerge: () => void;
   onBranchDiff: () => void;
 }
 
-function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerge, onBranchDiff }: BranchesPanelProps) {
+function BranchesPanel({ branches, onRefresh, refreshing, onCheckout, onCreateBranch, onMerge, onBranchDiff }: BranchesPanelProps) {
   const [checkingOut, setCheckingOut] = useState("");
   const [filter, setFilter] = useState("");
 
@@ -2065,8 +2066,9 @@ function BranchesPanel({ branches, onRefresh, onCheckout, onCreateBranch, onMerg
           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onBranchDiff} title="Comparar dois branches">
             <GitCompare className="w-3 h-3" />
           </Button>
-          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onRefresh} title="Atualizar">
-            <RefreshCw className="w-3 h-3" />
+          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onRefresh} disabled={refreshing}
+            title={refreshing ? "Atualizando (git fetch)…" : "Atualizar (git fetch)"}>
+            <RefreshCw className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} />
           </Button>
           <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={onCreateBranch} title="Novo branch">
             <Plus className="w-3 h-3" />
@@ -2159,8 +2161,17 @@ export function CodeEditorTab() {
   // nelas. Ref (não estado): selectRepo roda logo após setRepos, antes do re-render.
   const nonGitIdsRef = useRef<Set<string>>(new Set());
   const [selectedRepo, setSelectedRepo] = useState<CodeEditorRepo | null>(null);
+  // Id do repo selecionado no momento — os loaders descartam respostas que chegam depois de
+  // o usuário trocar/fechar o repo (ex: fetch lento de branches sobrescrevendo o repo novo).
+  const selectedRepoIdRef = useRef<string | null>(null);
+  selectedRepoIdRef.current = selectedRepo?.id ?? null;
   const [tree, setTree] = useState<CodeEditorFileNode[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
+  // Arquivo escolhido no "Abrir pasta": aberto assim que o repo da pasta estiver selecionado
+  // (openFile depende do selectedRepo do render, então não dá para chamar logo após selectRepo).
+  const [pendingOpenFile, setPendingOpenFile] = useState<{ repoId: string; path: string } | null>(null);
+  // Botões "Atualizar" da sidebar em andamento (tree/status/branches/log/tags)
+  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
 
   // Multi-tab state
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
@@ -2441,6 +2452,14 @@ export function CodeEditorTab() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTabIdx, activeTab?.node.path]);
 
+  useEffect(() => {
+    if (!pendingOpenFile || selectedRepo?.id !== pendingOpenFile.repoId) return;
+    const { path } = pendingOpenFile;
+    setPendingOpenFile(null);
+    openFile({ name: path.split("/").pop() ?? path, path, type: "file" });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOpenFile, selectedRepo?.id]);
+
   // ── persist selected repo ──
   useEffect(() => {
     if (selectedRepo) {
@@ -2512,6 +2531,7 @@ export function CodeEditorTab() {
       setSidePanel(p => (["source-control", "branches", "git", "log"].includes(p) ? "files" : p));
     }
     setSelectedRepo(repo);
+    selectedRepoIdRef.current = repo.id;
     setFocusedDirPath("");
     setOpenTabs([]);
     setActiveTabIdx(0);
@@ -2520,31 +2540,64 @@ export function CodeEditorTab() {
     await Promise.all([loadTree(repo.id), loadStatus(repo.id), loadBranches(repo.id), loadLog(repo.id), loadTags(repo.id)]);
   }
 
+  // Loaders: `manual=true` (clique em "Atualizar") propaga o erro para refreshManual mostrar
+  // um toast; nas chamadas automáticas (poll, pós-ação) o erro continua silencioso.
+  // Resposta de um repo que já não está selecionado é descartada.
+  const isCurrentRepo = (id: string) => selectedRepoIdRef.current === id;
+
   async function loadTree(id: string) {
     setTreeLoading(true);
-    try { setTree(await apiClient.codeEditorGetFileTree(id)); } catch (_) {}
+    try { const t = await apiClient.codeEditorGetFileTree(id); if (isCurrentRepo(id)) setTree(t); } catch (_) {}
     setTreeLoading(false);
   }
 
   // Igual a loadTree, mas sem alternar treeLoading — usado no poll silencioso em
   // background para não piscar um spinner sobre a árvore a cada ciclo.
-  async function loadTreeSilent(id: string) {
-    try { setTree(await apiClient.codeEditorGetFileTree(id)); } catch (_) {}
+  async function loadTreeSilent(id: string, manual = false) {
+    try { const t = await apiClient.codeEditorGetFileTree(id); if (isCurrentRepo(id)) setTree(t); }
+    catch (e) { if (manual) throw e; }
   }
 
-  async function loadStatus(id: string) {
+  async function loadStatus(id: string, manual = false) {
     if (nonGitIdsRef.current.has(id)) return;
-    try { setStatus(await apiClient.codeEditorGetStatus(id)); } catch (_) {}
+    try { const s = await apiClient.codeEditorGetStatus(id); if (isCurrentRepo(id)) setStatus(s); }
+    catch (e) { if (manual) throw e; }
   }
 
-  async function loadBranches(id: string) {
+  async function loadBranches(id: string, manual = false) {
     if (nonGitIdsRef.current.has(id)) return;
-    try { setBranches(await apiClient.codeEditorGetBranches(id)); } catch (_) {}
+    try {
+      const b = await apiClient.codeEditorGetBranches(id);
+      if (!isCurrentRepo(id)) return;
+      setBranches(b);
+      // O backend devolve os branches locais mesmo se o `git fetch` falhar — avisa que a
+      // lista de remotos pode estar desatualizada em vez de parecer que "não atualizou".
+      if (manual && b.fetch_error) addToast("error", `git fetch falhou — branches remotos podem estar desatualizados: ${b.fetch_error}`);
+    } catch (e) { if (manual) throw e; }
   }
 
-  async function loadLog(id: string) {
+  async function loadLog(id: string, manual = false) {
     if (nonGitIdsRef.current.has(id)) return;
-    try { setLog(await apiClient.codeEditorGetLog(id)); } catch (_) {}
+    try { const l = await apiClient.codeEditorGetLog(id); if (isCurrentRepo(id)) setLog(l); }
+    catch (e) { if (manual) throw e; }
+  }
+
+  // Executa um refresh manual com spinner no botão (mínimo ~400ms, senão a resposta local
+  // é tão rápida que o clique não dá sinal nenhum) e toast em caso de erro. Ignora cliques
+  // repetidos enquanto o mesmo refresh está em andamento.
+  async function refreshManual(key: string, fn: () => Promise<unknown>) {
+    if (refreshing[key]) return;
+    setRefreshing(r => ({ ...r, [key]: true }));
+    const started = Date.now();
+    try {
+      await fn();
+    } catch (e: any) {
+      addToast("error", `Erro ao atualizar: ${e?.message || e}`);
+    } finally {
+      const wait = 400 - (Date.now() - started);
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      setRefreshing(r => ({ ...r, [key]: false }));
+    }
   }
 
   async function openFile(node: CodeEditorFileNode) {
@@ -3054,12 +3107,12 @@ export function CodeEditorTab() {
     }
   }
 
-  async function loadTags(id: string) {
+  async function loadTags(id: string, manual = false) {
     if (nonGitIdsRef.current.has(id)) return;
     try {
       const r = await apiClient.codeEditorListTags(id);
-      setTags(r.tags ?? []);
-    } catch (_) {}
+      if (isCurrentRepo(id)) setTags(r.tags ?? []);
+    } catch (e) { if (manual) throw e; }
   }
 
   async function handleCreateTag(name: string, hash: string, message?: string) {
@@ -3859,8 +3912,9 @@ export function CodeEditorTab() {
                   <FolderPlus className="w-3 h-3" />
                 </Button>
                 <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Atualizar árvore"
-                  onClick={() => { loadTree(selectedRepo.id); loadStatus(selectedRepo.id); }}>
-                  <RefreshCw className={`w-3 h-3 ${treeLoading ? "animate-spin" : ""}`} />
+                  disabled={!!refreshing.tree}
+                  onClick={() => refreshManual("tree", () => Promise.all([loadTreeSilent(selectedRepo.id, true), loadStatus(selectedRepo.id, true)]))}>
+                  <RefreshCw className={`w-3 h-3 ${treeLoading || refreshing.tree ? "animate-spin" : ""}`} />
                 </Button>
                 <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Fechar repositório"
                   onClick={() => { setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0); }}>
@@ -4083,7 +4137,8 @@ export function CodeEditorTab() {
               <BranchesPanel
                 repoId={selectedRepo?.id ?? ""}
                 branches={selectedRepo ? branches : null}
-                onRefresh={() => selectedRepo && loadBranches(selectedRepo.id)}
+                onRefresh={() => { if (selectedRepo) refreshManual("branches", () => loadBranches(selectedRepo.id, true)); }}
+                refreshing={!!refreshing.branches}
                 onCheckout={handleCheckout}
                 onCreateBranch={() => setShowBranch(true)}
                 onMerge={() => setShowMerge(true)}
@@ -4149,8 +4204,9 @@ export function CodeEditorTab() {
                 </ScrollArea>
                 {selectedRepo && (
                   <div className="flex gap-1 p-2 border-t border-border/30 flex-shrink-0">
-                    <Button variant="outline" size="sm" className="flex-1 h-6 text-xs" onClick={() => loadStatus(selectedRepo.id)}>
-                      <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                    <Button variant="outline" size="sm" className="flex-1 h-6 text-xs" disabled={!!refreshing.status}
+                      onClick={() => refreshManual("status", () => loadStatus(selectedRepo.id, true))}>
+                      <RefreshCw className={`w-3 h-3 mr-1 ${refreshing.status ? "animate-spin" : ""}`} />Atualizar
                     </Button>
                     <Button size="sm" className="flex-1 h-6 text-xs" onClick={() => setShowCommit(true)} disabled={modifiedPaths.size === 0}>
                       <GitCommit className="w-3 h-3 mr-1" />Commit
@@ -4305,9 +4361,9 @@ export function CodeEditorTab() {
 
                 {selectedRepo && (
                   <div className="flex gap-1 p-2 border-t border-border/30 flex-shrink-0">
-                    <Button variant="outline" size="sm" className="flex-1 h-6 text-xs"
-                      onClick={() => loadStatus(selectedRepo.id)}>
-                      <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                    <Button variant="outline" size="sm" className="flex-1 h-6 text-xs" disabled={!!refreshing.status}
+                      onClick={() => refreshManual("status", () => loadStatus(selectedRepo.id, true))}>
+                      <RefreshCw className={`w-3 h-3 mr-1 ${refreshing.status ? "animate-spin" : ""}`} />Atualizar
                     </Button>
                     {(scmUnstagedFiles.length > 0 || scmUntrackedFiles.length > 0) && (
                       <Button size="sm" className="h-6 text-xs px-2"
@@ -4336,8 +4392,9 @@ export function CodeEditorTab() {
                   {logTab === "commits" && (
                           <div className="p-2 space-y-2">
                             {selectedRepo && (
-                              <Button variant="ghost" size="sm" className="w-full h-6 text-xs" onClick={() => loadLog(selectedRepo.id)}>
-                                <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                              <Button variant="ghost" size="sm" className="w-full h-6 text-xs" disabled={!!refreshing.log}
+                                onClick={() => refreshManual("log", () => loadLog(selectedRepo.id, true))}>
+                                <RefreshCw className={`w-3 h-3 mr-1 ${refreshing.log ? "animate-spin" : ""}`} />Atualizar
                               </Button>
                             )}
                             {log.map(entry => (
@@ -4371,8 +4428,9 @@ export function CodeEditorTab() {
                           <div className="p-2 space-y-1">
                             {selectedRepo && (
                               <div className="flex gap-1 mb-2">
-                                <Button variant="ghost" size="sm" className="flex-1 h-6 text-xs" onClick={() => loadTags(selectedRepo.id)}>
-                                  <RefreshCw className="w-3 h-3 mr-1" />Atualizar
+                                <Button variant="ghost" size="sm" className="flex-1 h-6 text-xs" disabled={!!refreshing.tags}
+                                  onClick={() => refreshManual("tags", () => loadTags(selectedRepo.id, true))}>
+                                  <RefreshCw className={`w-3 h-3 mr-1 ${refreshing.tags ? "animate-spin" : ""}`} />Atualizar
                                 </Button>
                                 <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setShowCreateTag({ hash: "" })}>
                                   <Plus className="w-3 h-3 mr-1" />Nova tag
@@ -5163,10 +5221,11 @@ export function CodeEditorTab() {
       <CodeEditorOpenFolderDialog
         open={showOpenFolder}
         onClose={() => setShowOpenFolder(false)}
-        onOpened={async (repo) => {
+        onOpened={async (repo, file) => {
           const fresh = await apiClient.codeEditorListRepos();
           setRepos(fresh);
           syncNonGitIds(fresh);
+          if (file) setPendingOpenFile({ repoId: repo.id, path: file });
           selectRepo(fresh.find(x => x.id === repo.id) ?? repo);
         }}
       />

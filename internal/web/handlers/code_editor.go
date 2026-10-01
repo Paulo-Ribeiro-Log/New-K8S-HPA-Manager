@@ -656,8 +656,13 @@ func (h *CodeEditorHandler) ListBranches(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	fetchCmd, cleanup := gitCmdWithToken(ctx, dir, token, "fetch", "--prune", "--quiet")
+	fetchErr := ""
 	if out, err := fetchCmd.CombinedOutput(); err != nil {
 		h.logger.Warn().Err(err).Str("repo", id).Str("output", string(out)).Msg("git fetch falhou em ListBranches — lista de branches remotos pode estar desatualizada")
+		fetchErr = strings.TrimSpace(string(out))
+		if fetchErr == "" {
+			fetchErr = err.Error()
+		}
 	}
 	cleanup()
 
@@ -675,11 +680,15 @@ func (h *CodeEditorHandler) ListBranches(c *gin.Context) {
 		remoteList = append(remoteList, r)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"current": current,
 		"local":   localList,
 		"remote":  remoteList,
-	})
+	}
+	if fetchErr != "" {
+		resp["fetch_error"] = fetchErr
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // CreateBranch — POST /api/v1/code-editor/repos/:id/branch

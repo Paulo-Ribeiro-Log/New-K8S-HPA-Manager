@@ -5564,6 +5564,7 @@ export interface CodeEditorBrowseResult {
   parent: string;
   is_git: boolean;
   dirs: Array<{ name: string; path: string; is_git: boolean }>;
+  files: Array<{ name: string; path: string; size: number }>;
   shortcuts: Array<{ label: string; path: string }>;
 }
 
@@ -5585,6 +5586,7 @@ export interface CodeEditorBranches {
   current: string;
   local: string[];
   remote: string[];
+  fetch_error?: string; // `git fetch` falhou — remotos podem estar desatualizados
 }
 
 export interface CodeEditorLogEntry {
