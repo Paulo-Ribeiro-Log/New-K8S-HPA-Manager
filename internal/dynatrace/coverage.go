@@ -362,7 +362,9 @@ func aggregateCoverage(clusterName string, hostGroupFound bool, procs []coverage
 			PodCount:             len(sets.procs),
 		})
 	}
-	// sort k8s_namespace asc, technology asc, process_name asc
+	// sort k8s_namespace asc, technology asc, process_name asc. As linhas vêm de um map, então
+	// o desempate final (status) é necessário para a ordem ser determinística — duas linhas do
+	// mesmo processo podem diferir só no status (ex: "Nao resolvido" × "Sem servico").
 	sort.Slice(report.Rows, func(i, j int) bool {
 		a, b := report.Rows[i], report.Rows[j]
 		if a.Namespace != b.Namespace {
@@ -374,7 +376,10 @@ func aggregateCoverage(clusterName string, hostGroupFound bool, procs []coverage
 		if a.ServiceName != b.ServiceName {
 			return a.ServiceName < b.ServiceName
 		}
-		return a.OneAgentVersion < b.OneAgentVersion
+		if a.OneAgentVersion != b.OneAgentVersion {
+			return a.OneAgentVersion < b.OneAgentVersion
+		}
+		return a.DeepMonitoringStatus < b.DeepMonitoringStatus
 	})
 	return report
 }
