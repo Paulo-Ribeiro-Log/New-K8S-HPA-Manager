@@ -543,6 +543,9 @@ export const PodsPanel = ({
       return;
     }
 
+    // Aba escondida: sem refresh (volta a buscar na hora quando a aba fica ativa)
+    if (!isActive) return;
+
     // Carregar imediatamente
     loadMetrics(selectedPod);
 
@@ -554,7 +557,8 @@ export const PodsPanel = ({
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [selectedPod]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPod, isActive]);
 
   const fetchPods = async (silent = false) => {
     if (!cluster) return;
@@ -619,6 +623,8 @@ export const PodsPanel = ({
   // o efeito/callback foi criado.
   const watchConnectedRef = useRef(false);
   watchConnectedRef.current = watchConnected;
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
 
   useEffect(() => {
     // Só assume os dados do Watch depois da 1ª leva chegar — evita um flash pra lista vazia no
@@ -638,7 +644,9 @@ export const PodsPanel = ({
     fetchPods();
     // Auto-refresh silencioso a cada 30 segundos — vira no-op enquanto o Watch está saudável,
     // mantido como rede de segurança pro caso dele cair sem reconectar.
-    const interval = setInterval(() => { if (!watchConnectedRef.current) fetchPods(true); }, 30000);
+    // Com a aba escondida o watch é desligado (connected=false) — sem o isActiveRef, o fallback
+    // passava a buscar a lista a cada 30s justamente quando ninguém estava olhando.
+    const interval = setInterval(() => { if (!watchConnectedRef.current && isActiveRef.current) fetchPods(true); }, 30000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cluster, selectedNamespace, showSystemNamespaces]);
@@ -655,6 +663,7 @@ export const PodsPanel = ({
   // Usando useEffect em pods evita todos os problemas de closure/timing
   useEffect(() => {
     if (!cluster || pods.length === 0) { setBatchMetrics(null); return; }
+    if (!isActive) return; // aba escondida: sem poll de métricas
     const fetchMetrics = async () => {
       try {
         let result: BatchPodMetrics;
@@ -675,7 +684,7 @@ export const PodsPanel = ({
     const id = setInterval(fetchMetrics, 10000);
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pods, cluster, selectedNamespace]);
+  }, [pods, cluster, selectedNamespace, isActive]);
 
   const filteredPods = useMemo(() => {
     let result = pods;
@@ -985,7 +994,7 @@ export const PodsPanel = ({
 
   // Auto-refresh de logs a cada 3 segundos quando habilitado
   useEffect(() => {
-    if (!isAutoRefreshingLogs || !selectedContainerForLogs || !selectedPod) return;
+    if (!isAutoRefreshingLogs || !selectedContainerForLogs || !selectedPod || !isActive) return;
 
     // Carrega imediatamente ao iniciar (silencioso para evitar toasts repetidos)
     handleLoadLogs(selectedContainerForLogs, true);
@@ -996,7 +1005,8 @@ export const PodsPanel = ({
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [isAutoRefreshingLogs, selectedContainerForLogs, selectedPod]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAutoRefreshingLogs, selectedContainerForLogs, selectedPod, isActive]);
 
   const getPhaseColor = (phase: string) => {
     switch (phase.toLowerCase()) {

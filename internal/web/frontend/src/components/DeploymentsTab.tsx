@@ -792,7 +792,7 @@ export const DeploymentsTab = ({
   // parte do payload de um evento de Watch, então precisam de um refresh PRÓPRIO, independente do
   // Watch estar conectado ou não. Mesmo padrão já usado em PodsPanel.tsx (aba Pods principal).
   useEffect(() => {
-    if (!monitorDeployment) return;
+    if (!monitorDeployment || !isActive) return; // aba escondida: sem poll de métricas
     const fetchMonitorMetrics = async () => {
       try {
         const m = await apiClient.getBatchPodMetrics(monitorDeployment.cluster, monitorDeployment.namespace);
@@ -802,7 +802,7 @@ export const DeploymentsTab = ({
     fetchMonitorMetrics();
     const id = setInterval(fetchMonitorMetrics, 10000);
     return () => clearInterval(id);
-  }, [monitorDeployment]);
+  }, [monitorDeployment, isActive]);
 
   useEffect(() => {
     selectedDeploymentRef.current = selectedDeployment;

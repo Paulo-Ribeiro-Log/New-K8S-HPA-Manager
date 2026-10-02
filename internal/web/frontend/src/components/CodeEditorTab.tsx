@@ -2156,7 +2156,10 @@ function BranchesPanel({ branches, onRefresh, refreshing, onCheckout, onCreateBr
 
 // ─── Main CodeEditorTab ─────────────────────────────────────────────────────
 
-export function CodeEditorTab() {
+// isActive: a aba fica sempre montada (display:none) depois da 1ª visita — ver hasBeenMounted em
+// pages/Index.tsx. Escondida, só os polls (diagnósticos LSP e árvore/status) pausam; o editor, os
+// atalhos (Ctrl+S via saveFileRef) e o estado continuam intactos.
+export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) {
   const [repos, setRepos] = useState<CodeEditorRepo[]>([]);
   // IDs de pastas locais sem Git ("Abrir pasta") — loadStatus/Branches/Log/Tags não consultam o Git
   // nelas. Ref (não estado): selectRepo roda logo após setRepos, antes do re-render.
@@ -2444,6 +2447,8 @@ export function CodeEditorTab() {
 
     const lang = extToLanguage(activeTab.node.name);
     if (lang !== "go" && lang !== "python") return;
+    // Aba escondida: sem poll de diagnósticos. Ao voltar, o efeito roda de novo e busca na hora.
+    if (!isActive) return;
 
     const repoId = activeTab.repoId;
     const filePath = activeTab.node.path;
@@ -2465,7 +2470,7 @@ export function CodeEditorTab() {
     const interval = setInterval(poll, 2500);
     return () => { alive = false; clearInterval(interval); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTabIdx, activeTab?.node.path]);
+  }, [activeTabIdx, activeTab?.node.path, isActive]);
 
   useEffect(() => {
     if (!pendingOpenFile || selectedRepo?.id !== pendingOpenFile.repoId) return;
@@ -2487,8 +2492,13 @@ export function CodeEditorTab() {
   // disparam loadStatus/loadTree diretamente — sem isso, a tab Arquivos e a Source Control
   // só atualizam com F5. Poll leve em background (sem spinner) + refresh imediato ao
   // recuperar foco da janela (ex: usuário volta do terminal ou de outro app).
+  // Pausa com a aba do app escondida (isActive) e com a aba do navegador em segundo plano; ao
+  // voltar para o Code Editor, atualiza na hora.
+  const wasActiveRef = useRef(isActive);
   useEffect(() => {
-    if (!selectedRepo) return;
+    const cameBack = isActive && !wasActiveRef.current;
+    wasActiveRef.current = isActive;
+    if (!selectedRepo || !isActive) return;
     const id = selectedRepo.id;
     let alive = true;
     const refresh = () => {
@@ -2496,7 +2506,8 @@ export function CodeEditorTab() {
       loadStatus(id);
       loadTreeSilent(id);
     };
-    const interval = setInterval(refresh, 5000);
+    if (cameBack) refresh();
+    const interval = setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 5000);
     const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", onVisible);
@@ -2506,7 +2517,8 @@ export function CodeEditorTab() {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [selectedRepo?.id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRepo?.id, isActive]);
 
   // ── carregamento inicial ──
   useEffect(() => {
