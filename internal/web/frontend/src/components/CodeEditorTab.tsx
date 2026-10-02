@@ -73,6 +73,7 @@ import {
   Box,
   Braces,
   MessageSquareCode,
+  PanelLeftClose,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { setCommentFileName, BLOCK_COMMENT_ACTION_ID } from "@/lib/codeComments";
@@ -2196,6 +2197,16 @@ export function CodeEditorTab() {
     const saved = localStorage.getItem("ce_sidebar_width");
     return saved ? parseInt(saved) : 224;
   });
+  // Sidebar recolhida = só a activity bar (ícones) à esquerda, como no VS Code. Clicar no
+  // ícone do painel ativo, no botão de recolher ou Ctrl+B alterna; abrir um painel por outro
+  // caminho (botão Commit, "revelar na árvore"...) expande de volta (openSidePanel).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem("ce_sidebar_collapsed") === "1"; } catch { return false; }
+  });
+  function openSidePanel(id: typeof sidePanel) {
+    setSidePanel(id);
+    setSidebarCollapsed(false);
+  }
 
   // Editor options
   const [showMinimap, setShowMinimap] = useState(false);
@@ -2406,6 +2417,10 @@ export function CodeEditorTab() {
   useEffect(() => {
     localStorage.setItem("ce_sidebar_width", String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    try { localStorage.setItem("ce_sidebar_collapsed", sidebarCollapsed ? "1" : "0"); } catch { /* storage indisponível */ }
+  }, [sidebarCollapsed]);
 
   // ── LSP: aplica navegação pendente após troca de aba (go-to-definition cross-file) ──
   useEffect(() => {
@@ -3418,6 +3433,20 @@ export function CodeEditorTab() {
     };
   }, [revealPath]);
 
+  // Ctrl+B: recolhe/expande a sidebar (atalho do VS Code). Só com a aba visível — o
+  // CodeEditorTab pode ficar montado com display:none enquanto outra aba está aberta.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === "b"
+          && editorPaneRef.current?.offsetParent) {
+        e.preventDefault();
+        setSidebarCollapsed(v => !v);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
   // Ctrl+P global (quando o Monaco não está focado)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -3792,7 +3821,7 @@ export function CodeEditorTab() {
 
         {selectedRepo && branches?.current && (
           <button
-            onClick={() => setSidePanel("branches")}
+            onClick={() => openSidePanel("branches")}
             className="flex items-center gap-1 text-xs bg-muted/60 border border-border/50 rounded px-2 py-1 hover:bg-muted text-foreground/80"
             title="Ver todos os branches"
           >
@@ -3827,7 +3856,7 @@ export function CodeEditorTab() {
               <Download className="w-3 h-3" />Pull
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => { setSidePanel("git"); setShowCommit(true); }}
+              onClick={() => { openSidePanel("git"); setShowCommit(true); }}
               disabled={modifiedPaths.size === 0}>
               <GitCommit className="w-3 h-3" />Commit
               {modifiedPaths.size > 0 && <span className="bg-yellow-500 text-black text-[10px] px-1 rounded-full">{modifiedPaths.size}</span>}
@@ -3838,7 +3867,7 @@ export function CodeEditorTab() {
               {status?.ahead && status.ahead !== "0" && <span className="bg-blue-500 text-white text-[10px] px-1 rounded-full">{status.ahead}</span>}
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => { setSidePanel("branches"); setShowBranch(true); }}>
+              onClick={() => { openSidePanel("branches"); setShowBranch(true); }}>
               <Plus className="w-3 h-3" />Branch
             </Button>
             {branches?.current && branches.current !== "main" && branches.current !== "master" && (
@@ -3874,32 +3903,43 @@ export function CodeEditorTab() {
 
       {/* ── Body ── */}
       <div className="flex flex-1 min-h-0">
+        {/* Activity bar — ícones dos painéis, sempre visível (como no VS Code) */}
+        <TooltipProvider delayDuration={400}>
+          <div className="flex-shrink-0 w-10 flex flex-col items-center border-r border-border/50 bg-card/20 py-1 gap-0.5">
+            {sidePanels.map(p => {
+              const active = sidePanel === p.id && !sidebarCollapsed;
+              return (
+                <Tooltip key={p.id}>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => {
+                        if (sidePanel === p.id) setSidebarCollapsed(v => !v);
+                        else openSidePanel(p.id);
+                      }}
+                      className={`relative w-10 h-10 flex items-center justify-center border-l-2 transition-colors ${active ? "text-foreground border-primary" : "text-muted-foreground border-transparent hover:text-foreground"}`}
+                    >
+                      <p.icon className="w-5 h-5" />
+                      {p.badge > 0 && (
+                        <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-primary" />
+                      )}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="text-xs">
+                    {p.label}{sidePanel === p.id ? (sidebarCollapsed ? " — expandir (Ctrl+B)" : " — recolher (Ctrl+B)") : ""}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
+          </div>
+        </TooltipProvider>
+
         {/* Sidebar */}
-        <div className="flex-shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: sidebarWidth }}>
-          {/* Tabs da sidebar */}
-          <div className="flex items-center border-b border-border/50 flex-shrink-0">
-            <TooltipProvider delayDuration={400}>
-              <div className="flex flex-1 min-w-0">
-                {sidePanels.map(p => (
-                  <Tooltip key={p.id}>
-                    <TooltipTrigger asChild>
-                      <button
-                        onClick={() => setSidePanel(p.id)}
-                        className={`relative flex-shrink-0 p-2 transition-colors ${sidePanel === p.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}
-                      >
-                        <p.icon className="w-4 h-4" />
-                        {p.badge > 0 && (
-                          <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary" />
-                        )}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="text-xs">
-                      {p.label}
-                    </TooltipContent>
-                  </Tooltip>
-                ))}
-              </div>
-            </TooltipProvider>
+        <div className={`flex-shrink-0 flex-col min-h-0 overflow-hidden ${sidebarCollapsed ? "hidden" : "flex"}`} style={{ width: sidebarWidth }}>
+          {/* Cabeçalho do painel */}
+          <div className="flex items-center border-b border-border/50 flex-shrink-0 h-8 pl-2">
+            <span className="flex-1 min-w-0 truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {sidePanels.find(p => p.id === sidePanel)?.label ?? ""}
+            </span>
             {/* Botões de ação da tree — visíveis apenas no painel Arquivos com repo aberto */}
             {sidePanel === "files" && selectedRepo && !grepMode && (
               <div className="flex gap-0.5 px-1 flex-shrink-0">
@@ -3922,6 +3962,10 @@ export function CodeEditorTab() {
                 </Button>
               </div>
             )}
+            <Button variant="ghost" size="sm" className="h-5 w-5 p-0 mr-1 flex-shrink-0" title="Recolher painel (Ctrl+B)"
+              onClick={() => setSidebarCollapsed(true)}>
+              <PanelLeftClose className="w-3.5 h-3.5" />
+            </Button>
           </div>
 
           {/* Conteúdo da sidebar */}
@@ -4639,7 +4683,9 @@ export function CodeEditorTab() {
           </div>
         </div>
 
-        <ResizeDivider onDrag={d => setSidebarWidth(w => Math.max(160, Math.min(520, w + d)))} />
+        {!sidebarCollapsed && (
+          <ResizeDivider onDrag={d => setSidebarWidth(w => Math.max(160, Math.min(520, w + d)))} />
+        )}
 
         {/* ── Área do editor ── */}
         <div ref={editorPaneRef} className="flex-1 flex flex-col min-h-0 min-w-0 relative">
@@ -4680,7 +4726,7 @@ export function CodeEditorTab() {
                   {selectedRepo && (
                     <button
                       className="hover:text-foreground hover:underline underline-offset-2 flex-shrink-0 truncate max-w-[160px]"
-                      onClick={() => { setSidePanel("files"); setFocusedDirPath(""); }}
+                      onClick={() => { openSidePanel("files"); setFocusedDirPath(""); }}
                     >{repoRootName(selectedRepo)}<span className="opacity-30 mx-0.5 select-none">/</span></button>
                   )}
                   {activeTab.node.path.split("/").map((seg, i, arr) => {
@@ -4693,7 +4739,7 @@ export function CodeEditorTab() {
                         ) : (
                           <button
                             className="hover:text-foreground hover:underline underline-offset-2 truncate max-w-[120px]"
-                            onClick={() => { setSidePanel("files"); setRevealPath(activeTab.node.path); }}
+                            onClick={() => { openSidePanel("files"); setRevealPath(activeTab.node.path); }}
                             title={arr.slice(0, i + 1).join("/")}
                           >{seg}</button>
                         )}
@@ -4708,7 +4754,7 @@ export function CodeEditorTab() {
                     <Copy className="w-3 h-3" />
                   </Button>
                   <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Revelar na tree"
-                    onClick={() => { setSidePanel("files"); setRevealPath(activeTab.node.path); }}>
+                    onClick={() => { openSidePanel("files"); setRevealPath(activeTab.node.path); }}>
                     <Locate className="w-3 h-3" />
                   </Button>
                   {activeTab.node.name.endsWith(".md") && (
@@ -4844,7 +4890,7 @@ export function CodeEditorTab() {
                                     ) : (
                                       <button
                                         className="hover:text-foreground hover:underline underline-offset-2 truncate max-w-[120px]"
-                                        onClick={() => { setSidePanel("files"); setRevealPath(rTab.node.path); }}
+                                        onClick={() => { openSidePanel("files"); setRevealPath(rTab.node.path); }}
                                         title={arr.slice(0, i + 1).join("/")}
                                       >{seg}</button>
                                     )}
@@ -4861,7 +4907,7 @@ export function CodeEditorTab() {
                                 <Copy className="w-3 h-3" />
                               </Button>
                               <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Revelar na tree"
-                                onClick={() => { setSidePanel("files"); setRevealPath(rTab.node.path); }}>
+                                onClick={() => { openSidePanel("files"); setRevealPath(rTab.node.path); }}>
                                 <Locate className="w-3 h-3" />
                               </Button>
                             </div>
@@ -5074,7 +5120,7 @@ export function CodeEditorTab() {
                     <Copy className="w-3 h-3" />Copiar caminho
                   </button>
                   <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
-                    onClick={() => { setSidePanel("files"); setRevealPath(contextMenu.node.path); setContextMenu(null); }}>
+                    onClick={() => { openSidePanel("files"); setRevealPath(contextMenu.node.path); setContextMenu(null); }}>
                     <Locate className="w-3 h-3" />Revelar na tree
                   </button>
                   <button className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground flex items-center gap-2"

@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — sidebar recolhível com activity bar (Outubro 2026)
+
+As abas da sidebar (Arquivos, Source Control, Branches, Git, Log, Replace, K8s) saíram da faixa horizontal no topo do painel e viraram uma activity bar vertical fixa à esquerda, como no VS Code. Clicar no ícone do painel ativo, no botão de recolher do cabeçalho ou usar Ctrl+B recolhe o painel e deixa só os ícones; o estado fica salvo em `localStorage` (`ce_sidebar_collapsed`). Abrir um painel por outro caminho (botão Commit, "revelar na árvore", branch atual no cabeçalho) expande a sidebar (`openSidePanel`). Recolhido, o painel fica com `display:none` (a árvore mantém as pastas expandidas) e o divisor de redimensionamento some. O Ctrl+B só age com a aba visível.
+
 ### Namespaces — RBAC e squads por namespace e por grupo (Outubro 2026) ⏳ validação em cluster real pendente
 
 Nova visão "RBAC e squads" na aba Namespaces (botão no cabeçalho, que abre "Por grupo", e botão "RBAC" nos detalhes do namespace, que abre "Por namespace"). Cruza as squads declaradas no namespace (label/annotation `squads.devops.k8s.io/<id>`, em que `<id>` costuma ser o object ID do grupo no Entra ID e o valor da annotation é o nome da squad) com os subjects das RoleBindings/ClusterRoleBindings.
