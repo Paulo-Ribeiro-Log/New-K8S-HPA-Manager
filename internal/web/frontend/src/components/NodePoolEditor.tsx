@@ -160,6 +160,28 @@ interface NodePoolEditorProps {
   refreshLabel?: string;
 }
 
+// Responsável pela remoção de um node (backend: nodepools_removed.go → initiated_by_kind)
+function initiatorKindLabel(kind?: string): string {
+  switch (kind) {
+    case "aks": return "AKS (autoscaler, scale do pool, upgrade)";
+    case "user": return "Ação manual de usuário";
+    case "service-principal": return "Automação (service principal)";
+    case "managed-identity": return "Automação (managed identity)";
+    case "platform": return "Plataforma Azure (spot, manutenção)";
+    default: return "";
+  }
+}
+
+function initiatorColor(kind?: string): string {
+  switch (kind) {
+    case "user": return "text-amber-600 dark:text-amber-400";
+    case "service-principal":
+    case "managed-identity": return "text-sky-600 dark:text-sky-400";
+    case "platform": return "text-purple-600 dark:text-purple-300";
+    default: return "text-foreground";
+  }
+}
+
 export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refreshing, refreshLabel = "Node Pool" }: NodePoolEditorProps) => {
   const staging = useStaging();
 
@@ -212,6 +234,8 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
   const [nodeSearch, setNodeSearch] = useState("");
   const [removedNodes, setRemovedNodes] = useState<Array<{
     name: string; removed_at: string; created_at: string; reason: string; source: string; details: string;
+    category?: "spot-eviction" | "scheduled-event";
+    initiated_by?: string; initiated_by_kind?: string; likely_cause?: string;
   }>>([]);
   const [removedLoading, setRemovedLoading] = useState(false);
   const [removedDebug, setRemovedDebug] = useState<string[]>([]);
@@ -229,6 +253,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
   const [autoscalerLoading, setAutoscalerLoading] = useState(false);
   const [removedDetail, setRemovedDetail] = useState<{
     name: string; details: string; reason: string; removed_at: string; created_at: string;
+    initiated_by?: string; initiated_by_kind?: string; likely_cause?: string;
     events?: Array<{ type: string; reason: string; age: string; count: number; from: string; message: string; timestamp: string }>;
     eventsLoading?: boolean;
   } | null>(null);
@@ -1579,9 +1604,10 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                       {removedNodes
                         .filter(n => !nodeSearch || n.name.toLowerCase().includes(nodeSearch.toLowerCase()))
                         .map(n => {
-                          const isUnhealthy = n.source === "k8s-node-notready" || n.source === "k8s-node-cordoned";
+                          const isUnhealthy = n.source === "k8s-node-notready" || n.source === "k8s-node-cordoned" || n.source === "k8s-node-scheduled-event";
                           const badgeLabel = n.source === "k8s-node-cordoned" ? "Isolado"
                             : n.source === "k8s-node-notready" ? "Não pronto"
+                            : n.source === "k8s-node-scheduled-event" ? "Ativo"
                             : "Removido";
                           const badgeClass = isUnhealthy
                             ? "text-[10px] px-1.5 py-0 h-4 flex-shrink-0 bg-amber-500/20 text-amber-600 border-amber-500/40"
@@ -1594,10 +1620,29 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                                 <Badge variant={isUnhealthy ? "outline" : "destructive"} className={badgeClass}>
                                   {badgeLabel}
                                 </Badge>
+                                {n.category === "spot-eviction" && (
+                                  <Badge variant="outline" title={n.reason}
+                                    className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0 bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/40">
+                                    Spot: despejo
+                                  </Badge>
+                                )}
+                                {n.category === "scheduled-event" && (
+                                  <Badge variant="outline" title={n.reason}
+                                    className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0 bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/40">
+                                    Evento agendado (Azure)
+                                  </Badge>
+                                )}
                               </div>
                             </TableCell>
-                            <TableCell>
-                              <span className="text-muted-foreground text-xs">—</span>
+                            <TableCell className="max-w-[220px]">
+                              {n.initiated_by ? (
+                                <span className={`text-[11px] leading-tight block truncate ${initiatorColor(n.initiated_by_kind)}`}
+                                  title={[`Responsável: ${n.initiated_by}`, n.likely_cause && `Causa provável: ${n.likely_cause}`].filter(Boolean).join("\n")}>
+                                  por {n.initiated_by}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground text-xs">—</span>
+                              )}
                             </TableCell>
                             <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
                             <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
@@ -1620,7 +1665,8 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                                 size="sm"
                                 className="h-7 text-xs gap-1"
                                 onClick={() => {
-                                  setRemovedDetail({ name: n.name, details: n.details, reason: n.reason, removed_at: n.removed_at, created_at: n.created_at, eventsLoading: true });
+                                  setRemovedDetail({ name: n.name, details: n.details, reason: n.reason, removed_at: n.removed_at, created_at: n.created_at,
+                                    initiated_by: n.initiated_by, initiated_by_kind: n.initiated_by_kind, likely_cause: n.likely_cause, eventsLoading: true });
                                   if (clusterWithAdmin) {
                                     apiClient.getNodeEvents(clusterWithAdmin, n.name)
                                       .then(r => setRemovedDetail(prev => prev ? { ...prev, events: r.events, eventsLoading: false } : null))
@@ -1954,6 +2000,8 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                     parts.push(`Node: ${removedDetail.name}`);
                     if (removedDetail.removed_at) parts.push(`Removido em: ${new Date(removedDetail.removed_at).toLocaleString("pt-BR")}`);
                     if (removedDetail.created_at) parts.push(`Tempo de vida: ${computeLifetime(removedDetail.created_at, removedDetail.removed_at)}`);
+                    if (removedDetail.initiated_by) parts.push(`\nResponsável: ${removedDetail.initiated_by}`);
+                    if (removedDetail.likely_cause) parts.push(`Causa provável: ${removedDetail.likely_cause}`);
                     if (removedDetail.reason) parts.push(`\nMotivo: ${removedDetail.reason}`);
                     if (removedDetail.events && removedDetail.events.length > 0) {
                       parts.push("\nEventos K8s:");
@@ -1973,6 +2021,23 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                 <button onClick={() => setRemovedDetail(null)} className="text-muted-foreground hover:text-foreground text-lg leading-none">✕</button>
               </div>
             </div>
+            {(removedDetail.initiated_by || removedDetail.likely_cause) && (
+              <div className="px-4 py-2 border-b border-border flex-shrink-0 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-0.5">Responsável</p>
+                  <p className={`text-sm font-semibold ${initiatorColor(removedDetail.initiated_by_kind)}`}>
+                    {removedDetail.initiated_by || "Não identificado"}
+                  </p>
+                  {removedDetail.initiated_by_kind && (
+                    <p className="text-[11px] text-muted-foreground">{initiatorKindLabel(removedDetail.initiated_by_kind)}</p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-0.5">Causa provável</p>
+                  <p className="text-xs">{removedDetail.likely_cause || "Não identificada"}</p>
+                </div>
+              </div>
+            )}
             {removedDetail.reason && (
               <div className="px-4 py-2 bg-muted/30 border-b border-border flex-shrink-0">
                 <p className="text-xs font-medium text-muted-foreground mb-0.5">Motivo</p>
