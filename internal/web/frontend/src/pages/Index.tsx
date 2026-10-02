@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, memo } from "react";
 import { useQueryClient, useIsFetching, type Query } from "@tanstack/react-query";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
@@ -124,6 +124,21 @@ import { AwsSsoLoginDialog } from "@/components/AwsSsoLoginDialog";
 import { useGcpSsoAuth } from "@/hooks/useGcpSsoAuth";
 import { GcpAuthDialog } from "@/components/GcpAuthDialog";
 
+// Abas "sempre montadas" (display:none depois da 1ª visita, ver hasBeenMounted) com memo: sem
+// isso, todo setState do Index (poll de HPAs/node pools, VPN, seleção, digitação...) re-renderizava
+// todas as abas já visitadas, mesmo escondidas — o custo crescia ao longo do dia conforme mais abas
+// eram abertas. Os props passados a elas precisam ser estáveis (setters, useCallback, primitivos).
+const MemoPodsPanel = memo(PodsPanel);
+const MemoConfigMapsTab = memo(ConfigMapsTab);
+const MemoDeploymentsTab = memo(DeploymentsTab);
+const MemoSecretsTab = memo(SecretsTab);
+const MemoContainersTab = memo(ContainersTab);
+const MemoIngressTab = memo(IngressTab);
+const MemoGatewayTab = memo(GatewayTab);
+const MemoHealthCheckingTab = memo(HealthCheckingTab);
+const MemoCodeEditorTab = memo(CodeEditorTab);
+const MemoAccessCheckTab = memo(AccessCheckTab);
+
 interface IndexProps {
   onLogout?: () => void;
 }
@@ -218,6 +233,8 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // Toggle para mostrar namespaces de sistema (default: false)
   const [showSystemNamespaces, setShowSystemNamespaces] = useState(false);
+  // Estável (memo das abas sempre montadas) — não usar `() => setShowSystemNamespaces(!showSystemNamespaces)` inline
+  const toggleSystemNamespaces = useCallback(() => setShowSystemNamespaces(v => !v), []);
 
   // HPA Selection state
   const [hpaSelectionMode, setHpaSelectionMode] = useState(false);
@@ -419,10 +436,10 @@ const Index = ({ onLogout }: IndexProps) => {
   };
 
   // Abre o modal de comparação com recurso pré-selecionado no painel esquerdo
-  const handleOpenCompare = (initial: CompareInitial) => {
+  const handleOpenCompare = useCallback((initial: CompareInitial) => {
     setCompareInitialLeft(initial);
     setCompareModalOpen(true);
-  };
+  }, []);
 
   // API Hooks
   const { clusters, loading: clustersLoading } = useClusters();
@@ -1731,13 +1748,13 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "pods" ? "block" : "none", height: "100%" }}>
           {(activeTab === "pods" || hasBeenMounted.current.pods) && (
             <ErrorBoundary componentName="Pods Panel">
-              <PodsPanel
+              <MemoPodsPanel
                 cluster={selectedCluster}
                 namespaces={namespaces}
                 selectedNamespace={podsNamespace}
                 onNamespaceChange={setPodsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
-                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onToggleSystemNamespaces={toggleSystemNamespaces}
                 isActive={activeTab === "pods"}
               />
             </ErrorBoundary>
@@ -1747,13 +1764,13 @@ const Index = ({ onLogout }: IndexProps) => {
         {/* ConfigMaps - sempre montado */}
         <div style={{ display: activeTab === "configmaps" ? "block" : "none", height: "100%" }}>
           {(activeTab === "configmaps" || hasBeenMounted.current.configmaps) && (
-            <ConfigMapsTab
+            <MemoConfigMapsTab
               cluster={selectedCluster}
               namespaces={namespaces}
               selectedNamespace={configMapsNamespace}
               onNamespaceChange={setConfigMapsNamespace}
               showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              onToggleSystemNamespaces={toggleSystemNamespaces}
               onOpenCompare={handleOpenCompare}
               isActive={activeTab === "configmaps"}
             />
@@ -1764,13 +1781,13 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "deployments" ? "block" : "none", height: "100%" }}>
           {(activeTab === "deployments" || hasBeenMounted.current.deployments) && (
             <ErrorBoundary componentName="Deployments Tab">
-              <DeploymentsTab
+              <MemoDeploymentsTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
                 selectedNamespace={deploymentsNamespace}
                 onNamespaceChange={setDeploymentsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
-                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onToggleSystemNamespaces={toggleSystemNamespaces}
                 onOpenCompare={handleOpenCompare}
                 isActive={activeTab === "deployments"}
               />
@@ -1782,13 +1799,13 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "secrets" ? "block" : "none", height: "100%" }}>
           {(activeTab === "secrets" || hasBeenMounted.current.secrets) && (
             <ErrorBoundary componentName="Secrets Tab">
-              <SecretsTab
+              <MemoSecretsTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
                 selectedNamespace={secretsNamespace}
                 onNamespaceChange={setSecretsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
-                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onToggleSystemNamespaces={toggleSystemNamespaces}
                 onOpenCompare={handleOpenCompare}
                 isActive={activeTab === "secrets"}
               />
@@ -1800,13 +1817,13 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "containers" ? "block" : "none", height: "100%" }}>
           {(activeTab === "containers" || hasBeenMounted.current.containers) && (
             <ErrorBoundary componentName="Containers Tab">
-              <ContainersTab
+              <MemoContainersTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
                 selectedNamespace={containersNamespace}
                 onNamespaceChange={setContainersNamespace}
                 showSystemNamespaces={showSystemNamespaces}
-                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onToggleSystemNamespaces={toggleSystemNamespaces}
                 isActive={activeTab === "containers"}
               />
             </ErrorBoundary>
@@ -1817,13 +1834,13 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "ingresses" ? "block" : "none", height: "100%" }}>
           {(activeTab === "ingresses" || hasBeenMounted.current.ingresses) && (
             <ErrorBoundary componentName="Ingress Tab">
-              <IngressTab
+              <MemoIngressTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
                 selectedNamespace={ingressNamespace}
                 onNamespaceChange={setIngressNamespace}
                 showSystemNamespaces={showSystemNamespaces}
-                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onToggleSystemNamespaces={toggleSystemNamespaces}
                 onOpenCompare={handleOpenCompare}
                 isActive={activeTab === "ingresses"}
               />
@@ -1835,13 +1852,13 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "gateways" ? "block" : "none", height: "100%" }}>
           {(activeTab === "gateways" || hasBeenMounted.current.gateways) && (
             <ErrorBoundary componentName="Gateway Tab">
-              <GatewayTab
+              <MemoGatewayTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
                 selectedNamespace={selectedNamespace}
                 onNamespaceChange={setSelectedNamespace}
                 showSystemNamespaces={showSystemNamespaces}
-                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onToggleSystemNamespaces={toggleSystemNamespaces}
                 onOpenCompare={handleOpenCompare}
               />
             </ErrorBoundary>
@@ -1852,7 +1869,7 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "healthcheck" ? "block" : "none", height: "100%" }}>
           {(activeTab === "healthcheck" || hasBeenMounted.current.healthcheck) && (
             <ErrorBoundary componentName="Health Checking Tab">
-              <HealthCheckingTab />
+              <MemoHealthCheckingTab />
             </ErrorBoundary>
           )}
         </div>
@@ -1861,7 +1878,7 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "code-editor" ? "flex" : "none", height: "100%", flexDirection: "column" }}>
           {(activeTab === "code-editor" || hasBeenMounted.current.codeEditor) && (
             <ErrorBoundary componentName="Code Editor Tab">
-              <CodeEditorTab />
+              <MemoCodeEditorTab isActive={activeTab === "code-editor"} />
             </ErrorBoundary>
           )}
         </div>
@@ -1870,7 +1887,7 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "access-check" ? "block" : "none", height: "100%" }}>
           {(activeTab === "access-check" || hasBeenMounted.current.accessCheck) && (
             <ErrorBoundary componentName="Access Check Tab">
-              <AccessCheckTab />
+              <MemoAccessCheckTab />
             </ErrorBoundary>
           )}
         </div>

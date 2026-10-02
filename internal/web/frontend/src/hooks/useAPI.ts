@@ -24,6 +24,12 @@ import type {
 } from "@/lib/api/types";
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
+// Polls do Index (HPAs, node pools): só troca o estado se o conteúdo mudou — cada setState com
+// array novo re-renderiza o Index inteiro, mesmo quando o cluster não mudou nada.
+function keepIfSame<T>(prev: T, next: T): T {
+  return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+}
+
 export function useClusters() {
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,8 +162,9 @@ export function useHPAs(cluster?: string, namespace?: string, showSystem: boolea
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getHPAs(cluster, namespace || undefined, true, showSystem)
-        .then(data => { if (!cancelled) setHPAs(data); })
+        .then(data => { if (!cancelled) setHPAs(prev => keepIfSame(prev, data)); })
         .catch(() => {});
     }, 30000);
     return () => { cancelled = true; clearInterval(interval); };
@@ -266,10 +273,11 @@ export function useNodePools(cluster?: string) {
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getNodePools(cluster)
         .then(({ pools, notSupported: ns }) => {
           if (!cancelled) {
-            setNodePools(pools);
+            setNodePools(prev => keepIfSame(prev, pools));
             setNotSupported(ns);
           }
         })

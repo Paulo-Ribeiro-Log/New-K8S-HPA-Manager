@@ -39,10 +39,12 @@ export function useVPNMonitor(options: UseVPNMonitorOptions = {}) {
     checkOnMount = true,
   } = options;
 
+  // Só estado que muda de verdade: cada setState aqui re-renderiza o Index inteiro. Antes,
+  // isChecking (true/false) e lastCheck/lastStatus (objetos novos) davam 2 renders por checagem
+  // mesmo sem nada mudar. isChecking/lastCheck viraram refs (ninguém os lia).
   const [isConnected, setIsConnected] = useState<boolean>(true);
-  const [isChecking, setIsChecking] = useState<boolean>(false);
-  const [lastCheck, setLastCheck] = useState<Date | null>(null);
   const [lastStatus, setLastStatus] = useState<VPNStatus | null>(null);
+  const lastCheckRef = useRef<Date | null>(null);
 
   const checkInProgressRef = useRef<boolean>(false);
   // Espelha isConnected sem depender do closure do state (lido dentro do callback de
@@ -62,7 +64,6 @@ export function useVPNMonitor(options: UseVPNMonitorOptions = {}) {
     }
 
     checkInProgressRef.current = true;
-    setIsChecking(true);
 
     try {
       const response = await fetch(`/api/v1/vpn/status?cluster=${encodeURIComponent(target)}`, {
@@ -72,8 +73,11 @@ export function useVPNMonitor(options: UseVPNMonitorOptions = {}) {
 
       const data: VPNStatus = await response.json();
 
-      setLastCheck(new Date());
-      setLastStatus(data);
+      lastCheckRef.current = new Date();
+      // timestamp muda a cada checagem — compara só o que importa
+      setLastStatus(prev =>
+        prev && prev.connected === data.connected && prev.message === data.message && prev.cloud_provider === data.cloud_provider
+          ? prev : data);
       setIsConnected(data.connected);
       isConnectedRef.current = data.connected;
       return data.connected;
@@ -82,7 +86,6 @@ export function useVPNMonitor(options: UseVPNMonitorOptions = {}) {
       isConnectedRef.current = false;
       return false;
     } finally {
-      setIsChecking(false);
       checkInProgressRef.current = false;
     }
   }, [cluster]);
@@ -125,8 +128,7 @@ export function useVPNMonitor(options: UseVPNMonitorOptions = {}) {
 
   return {
     isConnected,
-    isChecking,
-    lastCheck,
+    lastCheck: lastCheckRef.current,
     lastStatus,
     checkVPN,
   };

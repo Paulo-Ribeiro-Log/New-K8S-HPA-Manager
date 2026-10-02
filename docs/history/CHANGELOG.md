@@ -3,6 +3,19 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Navegador ficando lento ao longo do dia (Outubro 2026) ⏳ validação no browser pendente
+
+**Sintoma:** a aplicação deixava o navegador progressivamente mais lento durante o dia de trabalho.
+
+**Causa:** as abas "sempre montadas" (Pods, ConfigMaps, Deployments, Secrets, Containers, Ingress, Gateways, Health Check, Code Editor, Access Check; ver `hasBeenMounted` em `Index.tsx`) continuam montadas com `display:none` depois da 1ª visita, e duas coisas se acumulavam conforme mais abas eram abertas:
+- Timers rodando com a aba escondida: no `PodsPanel`, o fallback de 30s buscava a lista justamente quando a aba estava escondida (o watch desliga com `isActive=false`, e o fallback só checava `watchConnected`), além das métricas em lote (10s), métricas do pod (30s) e auto-refresh de logs (3s). No Code Editor, os diagnósticos do LSP (2,5s) e a árvore/`git status` (5s, árvore de até 20.000 nós). No `DeploymentsTab`, as métricas do drill-down (10s).
+- Nenhuma dessas abas era `memo`, e o `Index` muda de estado sozinho (HPAs a cada 30s e node pools a cada 60s sempre com array novo, VPN com 2 renders por checagem). Cada mudança re-renderizava todas as abas já visitadas.
+
+**Correção:**
+- Esses timers passaram a depender de `isActive`. O `CodeEditorTab` ganhou a prop `isActive`, que pausa só os dois polls: o editor continua montado e os atalhos (Ctrl+S via `saveFileRef`, correções `00d037e0`/`67e17d64`) não mudam. Ao voltar para a aba, a árvore/status e os diagnósticos são buscados na hora.
+- As abas sempre montadas são renderizadas via `memo` no `Index`, com props estáveis (`handleOpenCompare` em `useCallback`, `toggleSystemNamespaces` no lugar do toggle inline).
+- Os polls de HPAs/node pools pulam o ciclo com o navegador em segundo plano e só trocam o estado se o conteúdo mudou (`keepIfSame`). O `useVPNMonitor` não guarda mais `isChecking`/`lastCheck` em estado e só troca `lastStatus` quando `connected`/`message`/`cloud_provider` mudam.
+
 ### Code Editor — sidebar recolhível com activity bar (Outubro 2026)
 
 As abas da sidebar (Arquivos, Source Control, Branches, Git, Log, Replace, K8s) saíram da faixa horizontal no topo do painel e viraram uma activity bar vertical fixa à esquerda, como no VS Code. Clicar no ícone do painel ativo, no botão de recolher do cabeçalho ou usar Ctrl+B recolhe o painel e deixa só os ícones; o estado fica salvo em `localStorage` (`ce_sidebar_collapsed`). Abrir um painel por outro caminho (botão Commit, "revelar na árvore", branch atual no cabeçalho) expande a sidebar (`openSidePanel`). Recolhido, o painel fica com `display:none` (a árvore mantém as pastas expandidas) e o divisor de redimensionamento some. O Ctrl+B só age com a aba visível.
