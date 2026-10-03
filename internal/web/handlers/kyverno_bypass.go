@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"context"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
@@ -24,6 +24,12 @@ import (
 // namespace) estão dependendo do bypass agora — a label só é removida quando a última delas
 // termina, nunca no meio de outra ainda em andamento no mesmo namespace.
 //
+// Contador e label mudam juntos sob o mutex do namespace (kyvernoBypassState). Bug real corrigido:
+// com um contador atômico solto, a 2ª chamada via refs=2 e entrava em fn() enquanto a 1ª ainda
+// estava aplicando a label (chamada de API em andamento) — o patch dela chegava ao Kyverno SEM o
+// bypass. O inverso também era possível: uma remoção em andamento (refs→0) apagando a label que
+// uma chamada nova acabara de aplicar. Achado pelo teste de concorrência, que falhava às vezes.
+//
 // Habilitar é BEST-EFFORT (nunca bloqueia fn() mesmo se falhar): se o cluster genuinamente tiver
 // essa política Kyverno, a mutação em fn() vai falhar com o erro de admissão real (mensagem clara,
 // já validada ao vivo nesta app — ver CLAUDE.md); se o cluster não tiver, uma falha aqui (ex: RBAC
@@ -33,17 +39,25 @@ import (
 // de segurança que este mecanismo existe pra evitar.
 func (h *DeploymentRollbackHandler) withKyvernoBypass(ctx context.Context, kubeClient *kubeclient.Client, cluster, namespace string, fn func() error) error {
 	key := cluster + "/" + namespace
-	v, _ := h.kyvernoBypassRefs.LoadOrStore(key, new(int32))
-	counter := v.(*int32)
+	v, _ := h.kyvernoBypassRefs.LoadOrStore(key, &kyvernoBypassState{})
+	state := v.(*kyvernoBypassState)
 
-	if atomic.AddInt32(counter, 1) == 1 {
+	// Só segue para fn() depois que a label foi aplicada (ou a tentativa falhou): quem chega
+	// enquanto a 1ª chamada ainda aplica a label espera no mutex.
+	state.mu.Lock()
+	state.refs++
+	if state.refs == 1 {
 		if err := kubeClient.SetNamespaceKyvernoBypass(ctx, namespace, true); err != nil {
 			h.logf("não foi possível habilitar bypass Kyverno em %s/%s (best-effort, prosseguindo): %v", cluster, namespace, err)
 		}
 	}
+	state.mu.Unlock()
 
 	defer func() {
-		if atomic.AddInt32(counter, -1) == 0 {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		state.refs--
+		if state.refs == 0 {
 			// Contexto próprio, não o ctx da requisição (que já pode ter retornado até aqui) —
 			// mesmo racional de streamRolloutStatus usar context.Background() pro streaming.
 			disableCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -56,6 +70,13 @@ func (h *DeploymentRollbackHandler) withKyvernoBypass(ctx context.Context, kubeC
 	}()
 
 	return fn()
+}
+
+// kyvernoBypassState é o estado do bypass de um "cluster/namespace": refs e a label só mudam
+// com mu travado, então habilitar/remover a label nunca corre em paralelo com outra chamada.
+type kyvernoBypassState struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func (h *DeploymentRollbackHandler) logf(format string, args ...interface{}) {
