@@ -204,6 +204,16 @@ const MD_COMPONENTS: Components = {
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
+// Extensões com formatter no backend (FormatFile em handlers/code_editor.go: gofmt, jq, yq,
+// terraform fmt). Fonte única para o botão Fmt, o atalho e o "Fmt ao salvar" — antes o
+// "Fmt ao salvar" tinha uma lista própria (go/ts/js/python/json) que pulava YAML/Terraform e
+// tentava linguagens que o backend recusa, sempre em silêncio.
+const FORMATTABLE_EXTS = [".go", ".json", ".yaml", ".yml", ".tf", ".tfvars"];
+function isFormattable(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return FORMATTABLE_EXTS.some(ext => lower.endsWith(ext));
+}
+
 function extToLanguage(filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   const map: Record<string, string> = {
@@ -934,8 +944,10 @@ function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: 
 
   return (
     <Dialog open={open} onOpenChange={v => !v && !loading && onClose()}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
+      {/* max-w-3xl + rolagem interna: com max-w-lg, nomes de branch longos e mensagens de erro
+          (URLs, instruções) empurravam o conteúdo para fora do modal. */}
+      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <GitPullRequest className="w-4 h-4" />Criar Pull Request
           </DialogTitle>
@@ -952,14 +964,14 @@ function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: 
             </Button>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-3 flex-1 min-h-0 overflow-y-auto pr-1">
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">Branch origem → destino</label>
-              <div className="flex items-center gap-2 text-xs bg-muted rounded px-2 py-1.5 font-mono">
-                <span className="text-blue-400">{head}</span>
-                <span className="text-muted-foreground">→</span>
+              <div className="flex flex-wrap items-center gap-2 text-xs bg-muted rounded px-2 py-1.5 font-mono">
+                <span className="text-blue-400 break-all min-w-0" title={head}>{head}</span>
+                <span className="text-muted-foreground flex-shrink-0">→</span>
                 <select
-                  className="border-none outline-none flex-1 text-xs"
+                  className="border-none outline-none flex-1 min-w-[12rem] max-w-full text-xs"
                   style={{ background: "var(--muted)", color: "var(--foreground)" }}
                   value={base}
                   onChange={e => setBase(e.target.value)}
@@ -984,7 +996,7 @@ function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: 
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">Descrição (opcional)</label>
               <textarea
-                className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground resize-none h-24 outline-none focus:ring-1 focus:ring-ring"
+                className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1.5 text-foreground resize-y h-48 min-h-24 outline-none focus:ring-1 focus:ring-ring font-mono"
                 placeholder="O que essa mudança faz? Por quê? Como testar?"
                 value={body}
                 onChange={e => setBody(e.target.value)}
@@ -993,11 +1005,11 @@ function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: 
             </div>
             {error && (
               <div className="space-y-1.5 text-xs">
-                <div className="flex items-center gap-2 text-red-400">
-                  <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+                <div className="flex items-start gap-2 text-red-400 break-words min-w-0">
+                  <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" /><span className="min-w-0 break-words [overflow-wrap:anywhere]">{error}</span>
                 </div>
                 {errorInstructions.length > 0 && (
-                  <ol className="list-decimal list-inside space-y-0.5 text-muted-foreground pl-1">
+                  <ol className="list-decimal list-inside space-y-0.5 text-muted-foreground pl-1 [overflow-wrap:anywhere]">
                     {errorInstructions.map((step, i) => (
                       <li key={i}>{step.replace(/^\d+\.\s*/, "")}</li>
                     ))}
@@ -1008,7 +1020,7 @@ function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: 
           </div>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="flex-shrink-0">
           <Button variant="outline" onClick={onClose} disabled={loading}>
             {result ? "Fechar" : "Cancelar"}
           </Button>
@@ -2715,14 +2727,15 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     try {
       let contentToSave = contentSnapshot;
       let didFormat = false;
-      if (formatOnSave) {
-        const lang = extToLanguage(tabName);
-        if (["go", "typescript", "javascript", "python", "json"].includes(lang)) {
-          try {
-            const r = await apiClient.codeEditorFormatFile(tabRepoId, tabPath, contentSnapshot);
-            contentToSave = r.content;
-            didFormat = true;
-          } catch { /* format falhou — salva como está */ }
+      let formatError = "";
+      if (formatOnSave && isFormattable(tabName)) {
+        try {
+          const r = await apiClient.codeEditorFormatFile(tabRepoId, tabPath, contentSnapshot);
+          contentToSave = r.content;
+          didFormat = contentToSave !== contentSnapshot;
+        } catch (e: unknown) {
+          // Formatação falhou (ex: YAML inválido) — salva como está, mas avisa o motivo.
+          formatError = e instanceof Error ? e.message : "erro ao formatar";
         }
       }
       await apiClient.codeEditorWriteFile(tabRepoId, tabPath, contentToSave);
@@ -2740,7 +2753,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
           : t
       ));
       await loadStatus(tabRepoId);
-      addToast("success", `Salvo${didFormat ? " e formatado" : ""}: ${tabName}`);
+      if (formatError) addToast("error", `Salvo sem formatar (${tabName}): ${formatError}`);
+      else addToast("success", `Salvo${didFormat ? " e formatado" : ""}: ${tabName}`);
     } catch (e: any) {
       addToast("error", "Erro ao salvar: " + e.message);
     }
@@ -3260,11 +3274,15 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const [formatting, setFormatting] = useState(false);
 
   async function formatFile() {
-    if (!selectedRepo || !activeTab) return;
+    if (!activeTab) return;
+    if (!isFormattable(activeTab.node.name)) {
+      addToast("error", `Sem formatter para este tipo de arquivo (suportados: ${FORMATTABLE_EXTS.join(" ")})`);
+      return;
+    }
     setFormatting(true);
     try {
       const r = await apiClient.codeEditorFormatFile(
-        selectedRepo.id,
+        activeTab.repoId,
         activeTab.node.path,
         activeTab.currentContent,
       );
@@ -3276,6 +3294,12 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       setFormatting(false);
     }
   }
+
+  // Lido por ref no addCommand do Monaco: o handler é registrado uma vez só (no mount), e
+  // chamar formatFile direto congelava a versão do 1º render — sem arquivo ativo, ela saía no
+  // `if (!activeTab) return` e o atalho nunca fazia nada. Mesmo padrão do saveFileRef (Ctrl+S).
+  const formatFileRef = useRef(formatFile);
+  useEffect(() => { formatFileRef.current = formatFile; });
 
   // ── K8s integration (Fase 9) ──────────────────────────────────────────────
 
@@ -3476,7 +3500,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const handleEditorMount: OnMount = (editor, monacoInstance) => {
     editorRef.current = editor;
     editor.addCommand(2048 | 49, () => saveFileRef.current()); // Ctrl+S
-    editor.addCommand(512 | 1024 | 36, () => formatFile()); // Shift+Alt+F
+    editor.addCommand(512 | 1024 | 36, () => formatFileRef.current()); // Shift+Alt+F (VS Code)
+    editor.addCommand(2048 | 512 | 36, () => formatFileRef.current()); // Ctrl+Alt+F
     editor.addCommand(2048 | 46, () => { setShowQuickOpen(true); setQuickOpenQuery(""); setQuickOpenIdx(0); }); // Ctrl+P
     setCommentFileName(editor, () => leftFileNameRef.current);
     editor.onDidChangeCursorPosition(e => {
@@ -4793,7 +4818,10 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                     onClick={toggleBlockCommentInFocusedPane}>
                     <MessageSquareCode className="w-3 h-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" className="h-6 text-xs gap-1 px-2" title="Formatar arquivo (Shift+Alt+F)" onClick={formatFile} disabled={formatting}>
+                  <Button variant="ghost" size="sm" className="h-6 text-xs gap-1 px-2" title={activeTab && isFormattable(activeTab.node.name)
+                      ? "Formatar arquivo (Shift+Alt+F ou Ctrl+Alt+F)"
+                      : `Sem formatter para este tipo de arquivo — suportados: ${FORMATTABLE_EXTS.join(" ")}`}
+                    onClick={formatFile} disabled={formatting || !activeTab || !isFormattable(activeTab.node.name)}>
                     {formatting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span className="font-mono font-bold text-[11px]">Fmt</span>}
                   </Button>
                   <Button variant="outline" size="sm" className="h-6 text-xs gap-1" onClick={saveFile} disabled={!isModified}>
@@ -4991,7 +5019,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                 <button
                   onClick={() => { const n = !formatOnSave; setFormatOnSave(n); localStorage.setItem("ce_format_on_save", String(n)); }}
                   className={`flex items-center gap-1 px-1.5 rounded hover:bg-white/20 transition-colors ${formatOnSave ? "" : "opacity-50"}`}
-                  title={formatOnSave ? "Formatar ao salvar ativado — clique para desativar" : "Formatar ao salvar desativado — clique para ativar"}
+                  title={`${formatOnSave ? "Formatar ao salvar ativado — clique para desativar" : "Formatar ao salvar desativado — clique para ativar"}\nTipos formatados: ${FORMATTABLE_EXTS.join(" ")}`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${formatOnSave ? "bg-green-300" : "bg-white/30"}`} />
                   Fmt ao salvar
