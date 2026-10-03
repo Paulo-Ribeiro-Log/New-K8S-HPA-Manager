@@ -2542,6 +2542,11 @@ class APIClient {
       reason: string;
       source: string;
       details: string;
+      created_at?: string;
+      category?: "spot-eviction" | "scheduled-event"; // despejo spot | Azure Scheduled Event
+      initiated_by?: string; // quem removeu (identidade do AKS, usuário, service principal, plataforma)
+      initiated_by_kind?: "aks" | "user" | "service-principal" | "managed-identity" | "platform";
+      likely_cause?: string;
     }>;
   }> {
     return this.request(

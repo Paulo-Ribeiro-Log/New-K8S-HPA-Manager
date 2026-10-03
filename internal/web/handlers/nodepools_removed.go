@@ -27,6 +27,99 @@ type RemovedNodeInfo struct {
 	Reason    string `json:"reason"`
 	Source    string `json:"source"`  // "cluster-autoscaler" | "k8s-events" | "azure-activity"
 	Details   string `json:"details"` // linhas brutas para exibição
+	// Category destaca o tipo de interrupção quando identificado: "spot-eviction" (despejo de
+	// VM spot) | "scheduled-event" (Azure Scheduled Event: terminate/reboot/redeploy/freeze) | "".
+	Category string `json:"category,omitempty"`
+	// Quem executou a remoção e a causa provável — o que responde "por que esse node sumiu?".
+	InitiatedBy     string `json:"initiated_by,omitempty"`      // ex: "Identidade do control plane do AKS (…)", "Usuário x@y"
+	InitiatedByKind string `json:"initiated_by_kind,omitempty"` // aks | user | service-principal | managed-identity | platform
+	LikelyCause     string `json:"likely_cause,omitempty"`
+	// Quão específica é a LikelyCause: 2 = evento K8s/log do CA (ex: scale-down, despejo spot),
+	// 1 = deduzida do Activity Log (genérica). A mais específica prevalece no merge.
+	causePriority int
+}
+
+const (
+	nodeCategorySpot      = "spot-eviction"
+	nodeCategoryScheduled = "scheduled-event"
+)
+
+// classifyNodeInterruption identifica eventos/conditions de spot e de Azure Scheduled Events a
+// partir do reason/type e da mensagem. Ex. real: reason=SpotEvictionIncoming, msg="Preempt Started."
+// (o filtro antigo só olhava a mensagem, procurando "evict"/"terminat", e descartava esse evento).
+// Os Scheduled Events chegam ao K8s pelo node-problem-detector do AKS como eventos/conditions
+// "<Tipo>Scheduled" (ex: PreemptScheduled, TerminateScheduled) — Preempt é o despejo de spot.
+// eventCause descreve responsável/causa para eventos K8s reconhecíveis (0 = não reconhecido).
+func eventCause(reason, category string) (who, kind, cause string, priority int) {
+	switch category {
+	case nodeCategorySpot:
+		return "Plataforma Azure", initiatorPlatform, "Despejo de VM spot pelo Azure (falta de capacidade ou preço acima do máximo)", 2
+	case nodeCategoryScheduled:
+		if reason == "" {
+			return "Plataforma Azure", initiatorPlatform, "Manutenção agendada pelo Azure", 2
+		}
+		return "Plataforma Azure", initiatorPlatform, fmt.Sprintf("Manutenção agendada pelo Azure (%s)", reason), 2
+	}
+	switch reason {
+	case "ScaleDown", "ScaleDownEmpty", "RemovingNode":
+		return "cluster-autoscaler", initiatorAKS, "Scale-down do cluster autoscaler (node vazio ou subutilizado)", 2
+	}
+	return "", "", "", 0
+}
+
+func classifyNodeInterruption(reason, message string) string {
+	r, m := strings.ToLower(reason), strings.ToLower(message)
+	// O NPD também emite o estado "sem evento": reason NoVMEventScheduled, mensagem
+	// `Node condition VMEventScheduled is now: False, ... "VM has no scheduled event"` — sinal
+	// negativo (node saudável), não interrupção. Falso positivo real num node recém-criado.
+	if strings.HasPrefix(r, "no") || strings.Contains(m, "is now: false") ||
+		strings.Contains(m, "has no scheduled") || strings.Contains(m, "no scheduled event") {
+		return ""
+	}
+	if strings.Contains(r, "spot") || strings.Contains(r, "preempt") ||
+		strings.Contains(m, "preempt") || strings.Contains(m, "spot eviction") || strings.Contains(m, "spotevict") {
+		return nodeCategorySpot
+	}
+	for _, t := range []string{"terminatescheduled", "rebootscheduled", "redeployscheduled", "freezescheduled", "vmeventscheduled"} {
+		if strings.Contains(r, t) {
+			return nodeCategoryScheduled
+		}
+	}
+	if strings.Contains(m, "scheduled event") {
+		return nodeCategoryScheduled
+	}
+	return ""
+}
+
+// mergeRemovedNode junta a informação de uma fonte adicional num node já encontrado: a categoria
+// (spot/scheduled) prevalece sobre "sem categoria" e os detalhes são acumulados.
+func mergeRemovedNode(dst, src *RemovedNodeInfo) {
+	if dst.Category == "" && src.Category != "" {
+		dst.Category = src.Category
+		dst.Reason = src.Reason
+	}
+	// Causa: a mais específica vence (evento/log do CA > dedução do Activity Log). Responsável:
+	// o Activity Log identifica a identidade exata, então ele completa/substitui um genérico.
+	if src.LikelyCause != "" && src.causePriority > dst.causePriority {
+		dst.LikelyCause = src.LikelyCause
+		dst.causePriority = src.causePriority
+	}
+	if src.InitiatedBy != "" && (dst.InitiatedBy == "" || src.Source == "azure-activity") {
+		dst.InitiatedBy = src.InitiatedBy
+		dst.InitiatedByKind = src.InitiatedByKind
+	}
+	if dst.RemovedAt == "" {
+		dst.RemovedAt = src.RemovedAt
+	}
+	if src.Details != "" && !strings.Contains(dst.Details, src.Details) {
+		if dst.Details != "" {
+			dst.Details += "\n"
+		}
+		dst.Details += src.Details
+	}
+	if dst.CreatedAt == "" {
+		dst.CreatedAt = src.CreatedAt
+	}
 }
 
 var (
@@ -74,7 +167,9 @@ func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 	evtNodes, evtDebug := fetchNodeEventsV2(ctx, client, pool)
 	debugLines = append(debugLines, evtDebug...)
 	for _, n := range evtNodes {
-		if _, exists := removed[n.Name]; !exists {
+		if existing, ok := removed[n.Name]; ok {
+			mergeRemovedNode(existing, n)
+		} else {
 			removed[n.Name] = n
 		}
 	}
@@ -83,7 +178,9 @@ func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 	azNodes, azDebug := fetchAzureActivityLog(ctx, clusterCfg, pool)
 	debugLines = append(debugLines, azDebug...)
 	for _, n := range azNodes {
-		if _, exists := removed[n.Name]; !exists {
+		if existing, ok := removed[n.Name]; ok {
+			mergeRemovedNode(existing, n)
+		} else {
 			removed[n.Name] = n
 		}
 	}
@@ -92,7 +189,9 @@ func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 	unhealthyNodes, uhDebug := fetchUnhealthyNodes(ctx, client, pool)
 	debugLines = append(debugLines, uhDebug...)
 	for _, n := range unhealthyNodes {
-		if _, exists := removed[n.Name]; !exists {
+		if existing, ok := removed[n.Name]; ok {
+			mergeRemovedNode(existing, n)
+		} else {
 			removed[n.Name] = n
 		}
 	}
@@ -188,7 +287,9 @@ func fetchCALogs(ctx context.Context, client kubernetes.Interface, pool string) 
 		if _, ok := seen[nodeName]; ok {
 			contextBuf[nodeName] = append(contextBuf[nodeName], line)
 		} else {
-			seen[nodeName] = &RemovedNodeInfo{Name: nodeName, RemovedAt: currentTS, Reason: caLineSummary(line), Source: "cluster-autoscaler"}
+			seen[nodeName] = &RemovedNodeInfo{Name: nodeName, RemovedAt: currentTS, Reason: caLineSummary(line), Source: "cluster-autoscaler",
+				InitiatedBy: "cluster-autoscaler", InitiatedByKind: initiatorAKS,
+				LikelyCause: "Scale-down do cluster autoscaler (node vazio ou subutilizado)", causePriority: 2}
 			contextBuf[nodeName] = []string{line}
 		}
 	}
@@ -267,7 +368,8 @@ func fetchNodeEventsV2(ctx context.Context, client kubernetes.Interface, pool st
 		for _, evt := range events.Items {
 			total++
 			msgLower := strings.ToLower(evt.Message)
-			isRemoval := removalReasons[evt.Reason] ||
+			category := classifyNodeInterruption(evt.Reason, evt.Message)
+			isRemoval := category != "" || removalReasons[evt.Reason] ||
 				strings.Contains(msgLower, "scale down") ||
 				strings.Contains(msgLower, "removing node") ||
 				strings.Contains(msgLower, "terminat") ||
@@ -300,17 +402,30 @@ func fetchNodeEventsV2(ctx context.Context, client kubernetes.Interface, pool st
 			}
 			detail := fmt.Sprintf("[%s] ns=%s reason=%s: %s", ts, evt.Namespace, evt.Reason, evt.Message)
 
+			reason := fmt.Sprintf("%s: %s", evt.Reason, rtrunc(evt.Message, 120))
+			who, kind, cause, prio := eventCause(evt.Reason, category)
 			if existing, ok := seen[nodeName]; ok {
+				if prio > existing.causePriority {
+					existing.InitiatedBy, existing.InitiatedByKind, existing.LikelyCause, existing.causePriority = who, kind, cause, prio
+				}
 				existing.Details += "\n" + detail
 				if ts > existing.RemovedAt {
 					existing.RemovedAt = ts
-					existing.Reason = fmt.Sprintf("%s: %s", evt.Reason, rtrunc(evt.Message, 120))
+					if existing.Category == "" || category != "" {
+						existing.Reason = reason
+					}
+				}
+				// Spot/scheduled é a informação mais útil — não deixa um evento genérico mais
+				// recente (ex: NodeNotReady logo depois do despejo) esconder a causa.
+				if existing.Category == "" && category != "" {
+					existing.Category = category
+					existing.Reason = reason
 				}
 			} else {
 				seen[nodeName] = &RemovedNodeInfo{
 					Name: nodeName, RemovedAt: ts, Source: "k8s-events",
-					Reason:  fmt.Sprintf("%s: %s", evt.Reason, rtrunc(evt.Message, 120)),
-					Details: detail,
+					Reason: reason, Details: detail, Category: category,
+					InitiatedBy: who, InitiatedByKind: kind, LikelyCause: cause, causePriority: prio,
 				}
 			}
 		}
@@ -319,6 +434,7 @@ func fetchNodeEventsV2(ctx context.Context, client kubernetes.Interface, pool st
 		}
 	}
 	debug = append(debug, fmt.Sprintf("[Events] %d eventos verificados, %d relacionados a remoção, %d nodes únicos", total, matched, len(seen)))
+	debug = append(debug, "[Events] eventos K8s (inclusive SpotEvictionIncoming/Scheduled Events) ficam ~1h no cluster — despejos mais antigos aparecem só como remoção (Activity Log), sem a indicação de spot")
 
 	result := make([]*RemovedNodeInfo, 0, len(seen))
 	for _, n := range seen {
@@ -331,14 +447,284 @@ func fetchNodeEventsV2(ctx context.Context, client kubernetes.Interface, pool st
 
 type azActivityEntry struct {
 	OperationName struct {
-		Value string `json:"value"`
+		Value          string `json:"value"`
+		LocalizedValue string `json:"localizedValue"`
 	} `json:"operationName"`
 	EventTimestamp string `json:"eventTimestamp"`
 	Status         struct {
 		Value string `json:"value"`
 	} `json:"status"`
-	ResourceID string `json:"resourceId"`
-	Caller     string `json:"caller"`
+	ResourceID    string                 `json:"resourceId"`
+	Caller        string                 `json:"caller"`
+	CorrelationID string                 `json:"correlationId"`
+	Claims        map[string]interface{} `json:"claims"`
+	Properties    map[string]interface{} `json:"properties"`
+	HTTPRequest   struct {
+		ClientIPAddress string `json:"clientIpAddress"`
+	} `json:"httpRequest"`
+}
+
+// aksIdentities são as identidades do cluster usadas para reconhecer o "caller" do Activity Log.
+// Todos os valores em minúsculas (GUIDs e resource IDs).
+type aksIdentities struct {
+	ids       map[string]string // objectId/clientId/principalId → descrição
+	resources map[string]string // resource ID da managed identity → descrição
+}
+
+// aksResourceProviderAppID é o app first-party do AKS ("AzureContainerService"), que aparece como
+// appid quando a própria plataforma do AKS age no VMSS.
+const aksResourceProviderAppID = "7319c514-987d-4e9b-ac3d-d38c4f427f4c"
+
+// Tipos de responsável (InitiatedByKind).
+const (
+	initiatorAKS      = "aks"
+	initiatorUser     = "user"
+	initiatorSP       = "service-principal"
+	initiatorMI       = "managed-identity"
+	initiatorPlatform = "platform"
+)
+
+func claimStr(claims map[string]interface{}, key string) string {
+	if v, ok := claims[key]; ok {
+		if s, ok := v.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+// resolveActivityCaller traduz quem executou a operação (caller + claims) para algo legível.
+func resolveActivityCaller(e azActivityEntry, ids aksIdentities) (who, kind string) {
+	caller := strings.TrimSpace(e.Caller)
+	appID := strings.ToLower(claimStr(e.Claims, "appid"))
+	oid := strings.ToLower(claimStr(e.Claims, "http://schemas.microsoft.com/identity/claims/objectidentifier"))
+	if oid == "" {
+		oid = strings.ToLower(claimStr(e.Claims, "oid"))
+	}
+	mirid := strings.ToLower(claimStr(e.Claims, "xms_mirid"))
+
+	if mirid != "" {
+		if d, ok := ids.resources[mirid]; ok {
+			return d, initiatorAKS
+		}
+		if strings.Contains(mirid, "/providers/microsoft.containerservice/managedclusters/") {
+			return "Identidade do cluster AKS (system-assigned)", initiatorAKS
+		}
+		parts := strings.Split(mirid, "/")
+		return fmt.Sprintf("Managed identity %s", parts[len(parts)-1]), initiatorMI
+	}
+	for _, id := range []string{oid, appID, strings.ToLower(caller)} {
+		if d, ok := ids.ids[id]; ok && id != "" {
+			return d, initiatorAKS
+		}
+	}
+	if appID == aksResourceProviderAppID {
+		return "Serviço do AKS (Azure Container Service)", initiatorAKS
+	}
+	if strings.Contains(caller, "@") || strings.EqualFold(claimStr(e.Claims, "idtyp"), "user") {
+		name := claimStr(e.Claims, "name")
+		if name != "" && !strings.EqualFold(name, caller) {
+			return fmt.Sprintf("Usuário %s (%s)", name, caller), initiatorUser
+		}
+		return fmt.Sprintf("Usuário %s", caller), initiatorUser
+	}
+	if caller != "" {
+		if appID != "" && appID != strings.ToLower(caller) {
+			return fmt.Sprintf("Service principal %s (appid %s)", caller, appID), initiatorSP
+		}
+		return fmt.Sprintf("Service principal %s", caller), initiatorSP
+	}
+	return "Plataforma Azure", initiatorPlatform
+}
+
+// activityLikelyCause descreve a causa provável a partir de quem fez e do tipo de operação.
+func activityLikelyCause(kind, op string) string {
+	op = strings.ToLower(op)
+	wholeVMSS := strings.HasSuffix(op, "virtualmachinescalesets/delete")
+	switch kind {
+	case initiatorAKS:
+		if wholeVMSS {
+			return "Operação do AKS: node pool removido (VMSS inteiro excluído)"
+		}
+		return "Operação do AKS: scale-down do cluster autoscaler, redução manual do pool (portal/az aks nodepool scale) ou upgrade/reimage do pool"
+	case initiatorUser:
+		return "Ação manual de usuário (portal ou CLI) direto no VMSS"
+	case initiatorSP:
+		return "Automação com service principal (pipeline, Terraform ou script)"
+	case initiatorMI:
+		return "Automação com managed identity (fora do AKS)"
+	default:
+		return "Plataforma Azure (ex.: despejo de VM spot ou manutenção)"
+	}
+}
+
+// requestInstanceIDs extrai instanceIds do requestbody ({"instanceIds":["3","10"]}) — é por ele
+// que dá para chegar ao node exato quando a operação é "delete instances" no VMSS.
+func requestInstanceIDs(props map[string]interface{}) []string {
+	raw, _ := props["requestbody"].(string)
+	if raw == "" {
+		return nil
+	}
+	var body struct {
+		InstanceIDs []string `json:"instanceIds"`
+	}
+	if json.Unmarshal([]byte(raw), &body) != nil {
+		return nil
+	}
+	return body.InstanceIDs
+}
+
+// parseActivityRemovals transforma as entradas do Activity Log em nodes removidos, com responsável
+// e causa provável. Pura (sem az) para ser testável.
+func parseActivityRemovals(entries []azActivityEntry, ids aksIdentities, pool string) []*RemovedNodeInfo {
+	// instanceIds podem vir só numa das entradas da operação (Started/Accepted/Succeeded) —
+	// agrupa por correlationId.
+	instByCorr := map[string][]string{}
+	for _, e := range entries {
+		if inst := requestInstanceIDs(e.Properties); len(inst) > 0 && e.CorrelationID != "" {
+			instByCorr[e.CorrelationID] = inst
+		}
+	}
+
+	poolLower := strings.ToLower(pool)
+	seen := map[string]*RemovedNodeInfo{}
+	for _, e := range entries {
+		op := strings.ToLower(e.OperationName.Value)
+		if !strings.Contains(op, "delete") || !strings.Contains(op, "virtualmachine") {
+			continue
+		}
+		if !strings.EqualFold(e.Status.Value, "Succeeded") && !strings.EqualFold(e.Status.Value, "Accepted") {
+			continue
+		}
+
+		// .../virtualMachineScaleSets/<vmss>[/virtualMachines/<idx>]
+		vmss, vmIdx := "", ""
+		parts := strings.Split(e.ResourceID, "/")
+		for i, p := range parts {
+			if strings.EqualFold(p, "virtualmachinescalesets") && i+1 < len(parts) {
+				vmss = parts[i+1]
+				if i+3 < len(parts) && strings.EqualFold(parts[i+2], "virtualmachines") {
+					vmIdx = parts[i+3]
+				}
+				break
+			}
+		}
+		if vmss == "" || (pool != "" && !strings.Contains(strings.ToLower(vmss), poolLower)) {
+			continue
+		}
+
+		var names []string
+		instances := []string{vmIdx}
+		if vmIdx == "" {
+			instances = instByCorr[e.CorrelationID]
+		}
+		for _, idx := range instances {
+			if idx == "" {
+				continue
+			}
+			if n := vmssInstanceToNodeName(vmss, idx); n != "" {
+				names = append(names, n)
+			} else {
+				names = append(names, vmss+"-"+idx)
+			}
+		}
+		if len(names) == 0 {
+			names = []string{vmss} // instância não identificada: fica o VMSS
+		}
+
+		who, kind := resolveActivityCaller(e, ids)
+		cause := activityLikelyCause(kind, op)
+		opLabel := e.OperationName.LocalizedValue
+		if opLabel == "" {
+			opLabel = e.OperationName.Value
+		}
+		lines := []string{
+			fmt.Sprintf("[%s] %s (%s)", e.EventTimestamp, opLabel, e.Status.Value),
+			"Responsável: " + who,
+			"Causa provável: " + cause,
+			"ResourceId: " + e.ResourceID,
+			"Caller: " + e.Caller,
+		}
+		if v := claimStr(e.Claims, "appid"); v != "" {
+			lines = append(lines, "AppId: "+v)
+		}
+		if v := claimStr(e.Claims, "xms_mirid"); v != "" {
+			lines = append(lines, "Managed identity: "+v)
+		}
+		if e.HTTPRequest.ClientIPAddress != "" {
+			lines = append(lines, "IP de origem: "+e.HTTPRequest.ClientIPAddress)
+		}
+		if e.CorrelationID != "" {
+			lines = append(lines, "CorrelationId: "+e.CorrelationID)
+		}
+		if vmIdx == "" && len(instByCorr[e.CorrelationID]) == 0 {
+			lines = append(lines, "Instância não identificada no Activity Log (sem instanceIds) — exibindo o VMSS")
+		}
+		detail := strings.Join(lines, "\n")
+
+		for _, name := range names {
+			if _, exists := seen[name]; exists {
+				continue
+			}
+			seen[name] = &RemovedNodeInfo{
+				Name: name, RemovedAt: e.EventTimestamp, Source: "azure-activity",
+				Reason:      fmt.Sprintf("%s — %s", opLabel, who),
+				Details:     detail,
+				InitiatedBy: who, InitiatedByKind: kind, LikelyCause: cause, causePriority: 1,
+			}
+		}
+	}
+	result := make([]*RemovedNodeInfo, 0, len(seen))
+	for _, n := range seen {
+		result = append(result, n)
+	}
+	return result
+}
+
+// loadAKSIdentities lê as identidades do cluster a partir do JSON do `az aks show`.
+func loadAKSIdentities(raw []byte) (nodeRG string, ids aksIdentities) {
+	ids = aksIdentities{ids: map[string]string{}, resources: map[string]string{}}
+	var show struct {
+		NodeRG      string `json:"nodeRG"`
+		CPPrincipal string `json:"cpPrincipal"`
+		UAI         map[string]struct {
+			PrincipalID string `json:"principalId"`
+			ClientID    string `json:"clientId"`
+		} `json:"uai"`
+		Kubelet *struct {
+			ClientID   string `json:"clientId"`
+			ObjectID   string `json:"objectId"`
+			ResourceID string `json:"resourceId"`
+		} `json:"kubelet"`
+		SPClientID string `json:"spClientId"`
+	}
+	if json.Unmarshal(raw, &show) != nil {
+		return "", ids
+	}
+	add := func(id, desc string) {
+		if id = strings.ToLower(strings.TrimSpace(id)); id != "" && id != "msi" {
+			ids.ids[id] = desc
+		}
+	}
+	add(show.CPPrincipal, "Identidade do control plane do AKS (system-assigned)")
+	for res, v := range show.UAI {
+		parts := strings.Split(res, "/")
+		desc := fmt.Sprintf("Identidade do control plane do AKS (%s)", parts[len(parts)-1])
+		ids.resources[strings.ToLower(res)] = desc
+		add(v.PrincipalID, desc)
+		add(v.ClientID, desc)
+	}
+	if show.Kubelet != nil {
+		parts := strings.Split(show.Kubelet.ResourceID, "/")
+		desc := fmt.Sprintf("Identidade kubelet do AKS (%s)", parts[len(parts)-1])
+		if show.Kubelet.ResourceID != "" {
+			ids.resources[strings.ToLower(show.Kubelet.ResourceID)] = desc
+		}
+		add(show.Kubelet.ObjectID, desc)
+		add(show.Kubelet.ClientID, desc)
+	}
+	add(show.SPClientID, "Service principal do cluster AKS")
+	return strings.TrimSpace(show.NodeRG), ids
 }
 
 func fetchAzureActivityLog(ctx context.Context, clusterCfg *config.ClusterConfig, pool string) ([]*RemovedNodeInfo, []string) {
@@ -355,28 +741,28 @@ func fetchAzureActivityLog(ctx context.Context, clusterCfg *config.ClusterConfig
 	}
 	debug = append(debug, fmt.Sprintf("[AzureActivity] cluster=%s rg=%s", clusterCfg.Name, clusterCfg.ResourceGroup))
 
-	// Passo 1: obter o nodeResourceGroup (MC_...) via az aks show
+	// Passo 1: nodeResourceGroup (MC_...) + identidades do cluster (para reconhecer o caller)
 	clusterName := strings.TrimSuffix(clusterCfg.Name, "-admin")
-	nodeRGArgs := []string{"aks", "show",
+	showArgs := []string{"aks", "show",
 		"--name", clusterName,
 		"--resource-group", clusterCfg.ResourceGroup,
-		"--query", "nodeResourceGroup",
-		"-o", "tsv",
+		"--query", "{nodeRG:nodeResourceGroup, cpPrincipal:identity.principalId, uai:identity.userAssignedIdentities, kubelet:identityProfile.kubeletidentity, spClientId:servicePrincipalProfile.clientId}",
+		"-o", "json",
 	}
 	if clusterCfg.SubscriptionID != "" {
-		nodeRGArgs = append(nodeRGArgs, "--subscription", clusterCfg.SubscriptionID)
+		showArgs = append(showArgs, "--subscription", clusterCfg.SubscriptionID)
 	}
-	nodeRGOut, err := exec.CommandContext(ctx, "az", nodeRGArgs...).Output()
+	showOut, err := exec.CommandContext(ctx, "az", showArgs...).Output()
 	if err != nil {
 		debug = append(debug, fmt.Sprintf("[AzureActivity] az aks show falhou: %v", err))
 		return nil, debug
 	}
-	nodeRG := strings.TrimSpace(string(nodeRGOut))
+	nodeRG, ids := loadAKSIdentities(showOut)
 	if nodeRG == "" {
 		debug = append(debug, "[AzureActivity] nodeResourceGroup vazio")
 		return nil, debug
 	}
-	debug = append(debug, fmt.Sprintf("[AzureActivity] nodeResourceGroup=%s", nodeRG))
+	debug = append(debug, fmt.Sprintf("[AzureActivity] nodeResourceGroup=%s, %d identidades do cluster conhecidas", nodeRG, len(ids.ids)))
 
 	// Passo 2: activity log no nodeResourceGroup — últimos 7 dias
 	since := time.Now().UTC().Add(-7 * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
@@ -401,71 +787,8 @@ func fetchAzureActivityLog(ctx context.Context, clusterCfg *config.ClusterConfig
 	}
 	debug = append(debug, fmt.Sprintf("[AzureActivity] %d entradas no log de %s", len(entries), nodeRG))
 
-	poolLower := strings.ToLower(pool)
-	seen := map[string]*RemovedNodeInfo{}
-	matched := 0
-
-	for _, e := range entries {
-		op := strings.ToLower(e.OperationName.Value)
-		// Apenas operações de delete bem-sucedidas em VMs de VMSS
-		if !strings.Contains(op, "delete") || !strings.Contains(op, "virtualmachine") {
-			continue
-		}
-		if !strings.EqualFold(e.Status.Value, "Succeeded") && !strings.EqualFold(e.Status.Value, "Accepted") {
-			continue
-		}
-
-		// Extrair nome do node a partir do resourceId
-		// Ex: .../virtualMachineScaleSets/aks-userpool-12345678-vmss/virtualMachines/3
-		parts := strings.Split(e.ResourceID, "/")
-		// Encontrar o índice do VMSS e construir o nome do node
-		nodeName := ""
-		for i, p := range parts {
-			if strings.EqualFold(p, "virtualmachinescalesets") && i+1 < len(parts) {
-				vmssName := parts[i+1]
-				// Verificar se o próximo segmento é "virtualMachines" e pegar o índice
-				if i+3 < len(parts) && strings.EqualFold(parts[i+2], "virtualmachines") {
-					vmIdx := parts[i+3]
-					// Nome do node AKS: aks-<pool>-XXXXXXXX-vmss<idx_hex>
-					// O índice numérico precisa ser convertido para hex com 6 chars
-					if idx := vmssInstanceToNodeName(vmssName, vmIdx); idx != "" {
-						nodeName = idx
-					} else {
-						nodeName = vmssName + "-" + vmIdx
-					}
-				} else {
-					nodeName = vmssName
-				}
-				break
-			}
-		}
-
-		if nodeName == "" {
-			continue
-		}
-		if pool != "" && !strings.Contains(strings.ToLower(nodeName), poolLower) {
-			continue
-		}
-		matched++
-
-		ts := e.EventTimestamp
-		reason := fmt.Sprintf("Azure VMSS delete (status: %s)", e.Status.Value)
-		detail := fmt.Sprintf("[%s] %s\nResourceId: %s\nCaller: %s",
-			ts, e.OperationName.Value, e.ResourceID, e.Caller)
-
-		if _, exists := seen[nodeName]; !exists {
-			seen[nodeName] = &RemovedNodeInfo{
-				Name: nodeName, RemovedAt: ts, Reason: reason,
-				Source: "azure-activity", Details: detail,
-			}
-		}
-	}
-	debug = append(debug, fmt.Sprintf("[AzureActivity] %d operações de delete VM corresponderam, %d nodes únicos", matched, len(seen)))
-
-	result := make([]*RemovedNodeInfo, 0, len(seen))
-	for _, n := range seen {
-		result = append(result, n)
-	}
+	result := parseActivityRemovals(entries, ids, pool)
+	debug = append(debug, fmt.Sprintf("[AzureActivity] %d nodes removidos identificados", len(result)))
 	return result, debug
 }
 
@@ -514,8 +837,25 @@ func fetchUnhealthyNodes(ctx context.Context, client kubernetes.Interface, pool 
 			}
 		}
 
-		// Apenas inclui se não estiver pronto OU se estiver cordoned
-		if readyStatus == corev1.ConditionTrue && !cordoned {
+		// Conditions do node-problem-detector (AKS) para Scheduled Events ativos: ex.
+		// PreemptScheduled=True (spot prestes a ser despejado), TerminateScheduled=True.
+		category, catLine, catType := "", "", ""
+		for _, cond := range node.Status.Conditions {
+			if cond.Status != corev1.ConditionTrue {
+				continue
+			}
+			if cat := classifyNodeInterruption(string(cond.Type), cond.Message); cat != "" && cond.Type != corev1.NodeReady {
+				category, catType = cat, string(cond.Type)
+				catLine = fmt.Sprintf("Condition %s=True: %s %s", cond.Type, cond.Reason, cond.Message)
+				if !cond.LastTransitionTime.IsZero() {
+					lastTS = cond.LastTransitionTime.UTC().Format(time.RFC3339)
+				}
+				break
+			}
+		}
+
+		// Apenas inclui se não estiver pronto, se estiver cordoned ou com Scheduled Event ativo
+		if readyStatus == corev1.ConditionTrue && !cordoned && category == "" {
 			continue
 		}
 
@@ -531,18 +871,28 @@ func fetchUnhealthyNodes(ctx context.Context, client kubernetes.Interface, pool 
 
 		reason := fmt.Sprintf("%s: %s", label, rtrunc(readyMsg, 200))
 		details := fmt.Sprintf("Status Ready: %s\nCordoned: %v\nMensagem: %s", readyStatus, cordoned, readyMsg)
+		who, kind, cause, prio := eventCause(catType, category)
+		if category != "" {
+			if readyStatus == corev1.ConditionTrue && !cordoned {
+				source = "k8s-node-scheduled-event"
+			}
+			reason = rtrunc(catLine, 200)
+			details = catLine + "\n" + details
+		}
 
 		createdAt := ""
 		if !node.CreationTimestamp.IsZero() {
 			createdAt = node.CreationTimestamp.UTC().Format(time.RFC3339)
 		}
 		result = append(result, &RemovedNodeInfo{
-			Name:      name,
-			RemovedAt: lastTS,
-			CreatedAt: createdAt,
-			Reason:    reason,
-			Source:    source,
-			Details:   details,
+			Name:        name,
+			RemovedAt:   lastTS,
+			CreatedAt:   createdAt,
+			Reason:      reason,
+			Source:      source,
+			Details:     details,
+			Category:    category,
+			InitiatedBy: who, InitiatedByKind: kind, LikelyCause: cause, causePriority: prio,
 		})
 	}
 	debug = append(debug, fmt.Sprintf("[Unhealthy] %d nodes K8s analisados, %d não-saudáveis no pool", len(nodeList.Items), len(result)))

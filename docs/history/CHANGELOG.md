@@ -13,6 +13,26 @@
 
 Validado no Chrome headless com o frontend buildado e a API simulada: Shift+Alt+F e Ctrl+Alt+F chamam `/format` num `.go`; Ctrl+S num `.yaml` faz `/format` → grava o conteúdo formatado ("Salvo e formatado"); o modal de PR com branch de ~100 caracteres fica com 768px e nenhum elemento fora dele.
 
+### Node Pools — "Removidos" identifica despejo de spot e Azure Scheduled Events (Outubro 2026) ⏳ validação em cluster real pendente
+
+**Sintoma:** o evento `SpotEvictionIncoming node/aks-monitrngspot-…-vmss000000 … Preempt Started.` não aparecia na busca de nodes removidos (aba Node Pools → Nodes → "Removidos").
+
+**Causa:** `fetchNodeEventsV2` (`nodepools_removed.go`) procurava `evict`/`terminat`/`scale down` só na **mensagem**, e a lista de reasons não tinha `SpotEvictionIncoming`; "Preempt Started." não casava com nada.
+
+**Correção:**
+- `classifyNodeInterruption` olha reason/type e mensagem: spot (`SpotEvictionIncoming`, `Preempt*`, "spot eviction") e Azure Scheduled Events (`TerminateScheduled`, `RebootScheduled`, `RedeployScheduled`, `FreezeScheduled`, `VMEventScheduled`, "scheduled event").
+- Nodes que ainda existem com condition do node-problem-detector ativa (ex.: `PreemptScheduled=True`) entram na lista, mesmo Ready e sem cordon (source `k8s-node-scheduled-event`, badge "Ativo").
+- Campo novo `category` (`spot-eviction` | `scheduled-event`) com badges "Spot: despejo" e "Evento agendado (Azure)". Quando várias fontes acham o mesmo node, a categoria prevalece sobre um evento genérico mais recente (ex.: `NodeNotReady` logo depois do despejo) e os detalhes são acumulados (`mergeRemovedNode`).
+- Sinais negativos são ignorados: o NPD também emite `NoVMEventScheduled` ("Node condition VMEventScheduled is now: False … VM has no scheduled event") em nodes saudáveis. Reason começando com "No", "is now: False" e "no scheduled event" não contam como interrupção (falso positivo real num node recém-criado).
+- Limitação: eventos K8s ficam ~1h no cluster. Despejos mais antigos aparecem só como remoção (Activity Log), sem a indicação de spot.
+
+**Responsável e causa provável** (pedido: "deixar claro qual o motivo ou responsável pela deleção"; antes o Activity Log mostrava só "Azure VMSS delete" + `Caller` em GUID):
+- `az aks show` (mesma chamada do nodeResourceGroup) traz as identidades do cluster: control plane (system/user-assigned), kubelet e SP. `resolveActivityCaller` traduz caller/claims (`xms_mirid`, `appid`, `oid`, `name`, `idtyp`) em "Identidade do control plane do AKS (…)", "Identidade kubelet do AKS", "Serviço do AKS" (app first-party `7319c514-…`), "Usuário x@y", "Service principal …", "Managed identity …" ou "Plataforma Azure".
+- Causa provável: AKS → scale-down do autoscaler, scale manual do pool ou upgrade (ou pool removido, se o VMSS inteiro foi excluído); usuário → ação manual no VMSS; SP/MI → automação. Evento K8s/log do CA (scale-down, despejo spot, manutenção) é mais específico e prevalece (`causePriority`); o responsável exato vem do Activity Log.
+- `delete/action` no VMSS: os `instanceIds` do `properties.requestbody` (agrupados por `correlationId`, porque podem vir só na entrada "Started") viram o nome exato do node (`…vmss00000a`), em vez de só o nome do VMSS.
+- Frontend: "por <responsável>" na linha (cor por tipo) e bloco "Responsável / Causa provável" no modal "Ver motivo" (também no "Copiar").
+- Não validado contra um tenant real: o formato de `claims`/`requestbody` segue o JSON padrão do `az monitor activity-log list`.
+
 ### Navegador ficando lento ao longo do dia (Outubro 2026) ⏳ validação no browser pendente
 
 **Sintoma:** a aplicação deixava o navegador progressivamente mais lento durante o dia de trabalho.
