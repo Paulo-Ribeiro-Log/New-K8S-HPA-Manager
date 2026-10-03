@@ -3,6 +3,16 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Rollback — bypass Kyverno: corrida entre rollbacks simultâneos no mesmo namespace (Outubro 2026)
+
+**Sintoma:** `TestWithKyvernoBypass_ConcurrentCallsSameNamespace_LabelStaysUntilLast` falhava de vez em quando na CI (70 falhas em 500 execuções com `-race`).
+
+**Causa (bug real, não só do teste):** `withKyvernoBypass` (`handlers/kyverno_bypass.go`) usava um contador atômico solto. A 1ª chamada levava o contador a 1 e começava a aplicar a label (chamada de API); a 2ª levava a 2, concluía que não precisava aplicar e entrava em `fn()` antes de a label existir. Em produção, dois rollbacks simultâneos no mesmo namespace podiam mandar o patch do segundo ao Kyverno **sem o bypass**. O inverso também era possível: uma remoção em andamento (contador → 0) apagava a label que uma chamada nova acabara de aplicar.
+
+**Correção:** contador e label passam a mudar juntos sob um mutex por "cluster/namespace" (`kyvernoBypassState`). Quem chega enquanto a label está sendo aplicada espera, e a remoção não corre em paralelo com uma nova aplicação. Só são bloqueadas chamadas no mesmo namespace.
+
+**Teste novo:** `TestWithKyvernoBypass_SecondCallWaitsForLabel` reproduz a corrida de forma determinística, com um reactor que deixa o patch da label "lento". Ele falha na implementação antiga e passa na nova. Detalhe: dentro do `fn()` o teste não consulta a API, porque o clientset fake trava um mutex global durante os reactors, o que esconderia o bug. Depois da correção: 0 falhas em 500 execuções de todos os testes do bypass.
+
 ### Node Pools — "Removidos" identifica despejo de spot e Azure Scheduled Events (Outubro 2026) ⏳ validação em cluster real pendente
 
 **Sintoma:** o evento `SpotEvictionIncoming node/aks-monitrngspot-…-vmss000000 … Preempt Started.` não aparecia na busca de nodes removidos (aba Node Pools → Nodes → "Removidos").

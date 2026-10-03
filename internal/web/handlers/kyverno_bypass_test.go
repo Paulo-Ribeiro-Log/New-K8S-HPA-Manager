@@ -2,11 +2,15 @@ package handlers
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 )
@@ -134,4 +138,57 @@ func TestWithKyvernoBypass_DifferentNamespacesIndependentCounters(t *testing.T) 
 	if namespaceHasBypassLabel(t, cs, "ns-d1") || namespaceHasBypassLabel(t, cs, "ns-d2") {
 		t.Error("esperava as duas labels removidas após cada chamada independente terminar")
 	}
+}
+
+// TestWithKyvernoBypass_SecondCallWaitsForLabel reproduz de forma determinística o bug que deixava
+// o teste de concorrência instável: com a API lenta para aplicar a label, a 2ª chamada no mesmo
+// namespace entrava em fn() (via contador atômico já em 2) ANTES da label existir — em produção,
+// o patch dela chegava ao Kyverno sem o bypass. Agora ela espera a label ser aplicada.
+func TestWithKyvernoBypass_SecondCallWaitsForLabel(t *testing.T) {
+	h, kubeClient, cs := newBypassTestClient(t, "ns-e")
+
+	// O 1º patch do namespace (habilitar a label) fica "lento" até liberarmos.
+	patchStarted := make(chan struct{})
+	releasePatch := make(chan struct{})
+	var once sync.Once
+	cs.PrependReactor("patch", "namespaces", func(k8stesting.Action) (bool, runtime.Object, error) {
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			close(patchStarted)
+			<-releasePatch
+		}
+		return false, nil, nil // segue para o tracker do fake (aplica o patch de verdade)
+	})
+
+	done1 := make(chan struct{})
+	go func() {
+		_ = h.withKyvernoBypass(context.Background(), kubeClient, "cluster-1", "ns-e", func() error { return nil })
+		close(done1)
+	}()
+	<-patchStarted // 1ª chamada está no meio de aplicar a label
+
+	// fn() da 2ª chamada só sinaliza que entrou — sem chamar a API, porque o clientset fake trava
+	// um mutex global durante os reactors e um Get ali esperaria o patch lento terminar,
+	// escondendo o bug.
+	entered2 := make(chan struct{})
+	done2 := make(chan struct{})
+	go func() {
+		_ = h.withKyvernoBypass(context.Background(), kubeClient, "cluster-1", "ns-e", func() error {
+			close(entered2)
+			return nil
+		})
+		close(done2)
+	}()
+
+	select {
+	case <-entered2:
+		t.Fatal("2ª chamada entrou em fn() enquanto a label ainda estava sendo aplicada")
+	case <-time.After(100 * time.Millisecond):
+		// esperado: bloqueada até a 1ª terminar de aplicar a label
+	}
+	close(releasePatch)
+	<-entered2
+	<-done2
+	<-done1
 }

@@ -47,9 +47,10 @@ type DeploymentRollbackHandler struct {
 	historyTracker *history.HistoryTracker
 	logger         *zerolog.Logger
 	inProgress     sync.Map // "cluster/namespace/name" -> struct{} — bloqueia 2 rollbacks concorrentes no mesmo Deployment
-	// kyvernoBypassRefs — contador de referência por "cluster/namespace" (ver withKyvernoBypass,
-	// kyverno_bypass.go): evita remover a label de bypass no meio de outra mutação concorrente
-	// (Deployment DIFERENTE, mesmo namespace) que ainda depende dela.
+	// kyvernoBypassRefs — "cluster/namespace" → *kyvernoBypassState (ver withKyvernoBypass,
+	// kyverno_bypass.go): contador de referência + mutex, evita remover a label de bypass no meio
+	// de outra mutação concorrente (Deployment DIFERENTE, mesmo namespace) e impede que uma
+	// chamada entre em fn() antes da label estar aplicada.
 	kyvernoBypassRefs sync.Map
 	// helmService — opcional, injetado via SetHelmService depois da construção (ordem de init em
 	// server.go: helmService só existe depois deste handler já ter sido criado, evita reordenar um
