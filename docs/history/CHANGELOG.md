@@ -13,6 +13,16 @@
 
 **Teste novo:** `TestWithKyvernoBypass_SecondCallWaitsForLabel` reproduz a corrida de forma determinística, com um reactor que deixa o patch da label "lento". Ele falha na implementação antiga e passa na nova. Detalhe: dentro do `fn()` o teste não consulta a API, porque o clientset fake trava um mutex global durante os reactors, o que esconderia o bug. Depois da correção: 0 falhas em 500 execuções de todos os testes do bypass.
 
+### Code Editor — formatação (atalho e "Fmt ao salvar") e modal de PR (Outubro 2026)
+
+**Atalho de formatar não fazia nada:** `editor.addCommand(Shift+Alt+F, () => formatFile())` era registrado uma vez, no mount, e congelava o `formatFile` do 1º render, quando ainda não havia arquivo ativo; ele saía no `if (!activeTab) return`. Mesmo bug já corrigido no Ctrl+S (`00d037e0`). Agora o atalho usa `formatFileRef`, atualizado a cada render, e ganhou também **Ctrl+Alt+F**.
+
+**"Fmt ao salvar" não formatava:** tinha uma lista própria de linguagens (go/ts/js/python/json) diferente da do backend (`FormatFile`: `.go` gofmt, `.json` jq, `.yaml/.yml` yq, `.tf/.tfvars` terraform fmt). YAML e Terraform nunca eram formatados, e TS/JS/Python falhavam. Qualquer erro era engolido e o toast dizia só "Salvo". Agora `FORMATTABLE_EXTS`/`isFormattable` é a fonte única (botão Fmt, atalhos e salvar). Se a formatação falha, o arquivo é salvo como está e o toast mostra "Salvo sem formatar: <erro>". O botão Fmt fica desabilitado, com tooltip, para tipos sem formatter.
+
+**Modal "Criar Pull Request":** passou de `max-w-lg` para `max-w-3xl`, com rolagem interna (`max-h-[90vh]`). A linha origem → destino quebra (`flex-wrap`, `break-all`), mensagens de erro e instruções quebram (`overflow-wrap:anywhere`) e a descrição ficou maior e redimensionável.
+
+Validado no Chrome headless com o frontend buildado e a API simulada: Shift+Alt+F e Ctrl+Alt+F chamam `/format` num `.go`; Ctrl+S num `.yaml` faz `/format` → grava o conteúdo formatado ("Salvo e formatado"); o modal de PR com branch de ~100 caracteres fica com 768px e nenhum elemento fora dele.
+
 ### Node Pools — "Removidos" identifica despejo de spot e Azure Scheduled Events (Outubro 2026) ⏳ validação em cluster real pendente
 
 **Sintoma:** o evento `SpotEvictionIncoming node/aks-monitrngspot-…-vmss000000 … Preempt Started.` não aparecia na busca de nodes removidos (aba Node Pools → Nodes → "Removidos").
