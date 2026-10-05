@@ -21,6 +21,7 @@ import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigMo
 import NodePoolDiskDetailsModal from "./NodePoolDiskDetailsModal";
 import { formatVMSpecs, formatDiskSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
 import { useNodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
+import { getOSDiskInfo } from "@/lib/nodePoolDisk";
 import { useNodes, useNodeDetails } from "@/hooks/useNodes";
 import NodeDetailsModal from "./NodeDetailsModal";
 import { ProtectedAction } from "@/components/rbac";
@@ -193,6 +194,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
     clusterWithAdmin,
     nodePool?.name
   );
+  const osDisk = getOSDiskInfo(nodePool);
 
   // Refs for input fields to enable select-all behavior
   const nodeCountRef = useRef<HTMLInputElement>(null);
@@ -940,7 +942,72 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
         <CardContent className="space-y-3">
           <div className="text-sm">
             <Label className="text-muted-foreground">VM Size</Label>
-            <p className="font-medium">{nodePool.vm_size}</p>
+            <p className="font-medium">{nodePool.vm_size || "—"}</p>
+          </div>
+
+          {/* OS Disk — tipo/tamanho vêm do provider (AKS osDiskType/osDiskSizeGb), não dos labels do node */}
+          <div className="pt-2 border-t">
+            <div className="flex items-start gap-2 text-sm">
+              <HardDrive className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+              <div className="w-full space-y-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-muted-foreground">OS Disk</p>
+                  {osDisk.label ? (
+                    <Badge variant={osDisk.isEphemeral ? "default" : "secondary"} className="text-xs">
+                      {osDisk.isEphemeral ? "Ephemeral" : osDisk.label}
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-xs text-muted-foreground">tipo não informado pelo provider</Badge>
+                  )}
+                  {osDisk.sizeGB && <span className="font-medium">{osDisk.sizeGB} GiB</span>}
+                </div>
+                {osDisk.isEphemeral && (
+                  <p className="text-xs text-muted-foreground">
+                    Disco local da VM (cache/temp disk): sem custo de disco e menor latência, mas o conteúdo é perdido em reimage, redeploy ou upgrade do node.
+                  </p>
+                )}
+                {nodePool.kubelet_disk_type && (
+                  <p className="text-xs">
+                    <span className="text-muted-foreground">Kubelet disk:</span>{" "}
+                    <span className="font-medium">{nodePool.kubelet_disk_type}</span>
+                    <span className="text-muted-foreground">
+                      {nodePool.kubelet_disk_type === "Temporary"
+                        ? " — emptyDir, imagens e logs no temp disk da VM"
+                        : " — emptyDir, imagens e logs no disco de OS"}
+                    </span>
+                  </p>
+                )}
+                {diskMetrics && !diskMetricsLoading && (
+                  <div className="pt-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs text-muted-foreground">
+                        Uso atual ({diskMetrics.node_count} node{diskMetrics.node_count !== 1 ? "s" : ""})
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowDiskDetailsModal(true)}
+                        className="h-7 text-xs gap-1"
+                      >
+                        <HardDrive className="w-3 h-3" />
+                        Details
+                      </Button>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span>
+                        Used: {(diskMetrics.used_bytes / (1024**3)).toFixed(1)} / {(diskMetrics.total_bytes / (1024**3)).toFixed(1)} GiB
+                      </span>
+                      <span className={`font-medium ${
+                        diskMetrics.usage_percent > 80 ? 'text-destructive' :
+                        diskMetrics.usage_percent > 60 ? 'text-warning' : 'text-primary'
+                      }`}>
+                        {diskMetrics.usage_percent.toFixed(1)}%
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* VM Specs */}
@@ -965,35 +1032,13 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                       )}
                       {diskSpecsFormatted && (
                         <div className="mt-2 pt-2 border-t border-border/50">
-                          <p className="text-xs text-muted-foreground mb-1">Disk Performance</p>
+                          <p className="text-xs text-muted-foreground mb-1">Disk Performance (limites da VM)</p>
                           <p className="text-xs font-medium">{diskSpecsFormatted}</p>
-                        </div>
-                      )}
-                      {diskMetrics && !diskMetricsLoading && (
-                        <div className="mt-2 pt-2 border-t border-border/50">
-                          <div className="flex items-center justify-between mb-2">
-                            <p className="text-xs text-muted-foreground">Current Disk Usage ({diskMetrics.node_count} nodes)</p>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setShowDiskDetailsModal(true)}
-                              className="h-7 text-xs gap-1"
-                            >
-                              <HardDrive className="w-3 h-3" />
-                              Details
-                            </Button>
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between text-xs">
-                              <span>Used: {(diskMetrics.used_bytes / (1024**3)).toFixed(1)} GiB</span>
-                              <span className={`font-medium ${
-                                diskMetrics.usage_percent > 80 ? 'text-destructive' :
-                                diskMetrics.usage_percent > 60 ? 'text-warning' : 'text-primary'
-                              }`}>
-                                {diskMetrics.usage_percent.toFixed(1)}%
-                              </span>
-                            </div>
-                          </div>
+                          {vmSpecs.supportsEphemeralOS !== undefined && (
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {vmSpecs.supportsEphemeralOS ? "SKU suporta Ephemeral OS Disk" : "SKU não suporta Ephemeral OS Disk"}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1003,6 +1048,65 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
             }
             return null;
           })()}
+
+          {/* Detalhes do pool vindos do provider */}
+          {(nodePool.os_sku || nodePool.kubernetes_version || nodePool.node_image_version || nodePool.max_pods || nodePool.priority || (nodePool.availability_zones?.length ?? 0) > 0) && (
+            <div className="pt-2 border-t">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                {nodePool.os_sku && (
+                  <div>
+                    <p className="text-muted-foreground">OS / Imagem</p>
+                    <p className="font-medium break-all">{nodePool.os_sku}</p>
+                  </div>
+                )}
+                {nodePool.kubernetes_version && (
+                  <div>
+                    <p className="text-muted-foreground">Kubernetes</p>
+                    <p className="font-medium">{nodePool.kubernetes_version}</p>
+                  </div>
+                )}
+                {nodePool.node_image_version && (
+                  <div className="col-span-2">
+                    <p className="text-muted-foreground">Node image</p>
+                    <p className="font-medium font-mono break-all">{nodePool.node_image_version}</p>
+                  </div>
+                )}
+                {!!nodePool.max_pods && (
+                  <div>
+                    <p className="text-muted-foreground">Max pods por node</p>
+                    <p className="font-medium">{nodePool.max_pods}</p>
+                  </div>
+                )}
+                {nodePool.priority && (
+                  <div>
+                    <p className="text-muted-foreground">Prioridade</p>
+                    {nodePool.priority === "Spot" ? (
+                      <Badge variant="destructive" className="text-xs">Spot (pode ser removido)</Badge>
+                    ) : (
+                      <p className="font-medium">{nodePool.priority}</p>
+                    )}
+                  </div>
+                )}
+                {(nodePool.availability_zones?.length ?? 0) > 0 && (
+                  <div className="col-span-2">
+                    <p className="text-muted-foreground">Zonas</p>
+                    <p className="font-medium">{nodePool.availability_zones!.join(", ")}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {(nodePool.node_taints?.length ?? 0) > 0 && (
+            <div className="pt-2 border-t text-xs">
+              <p className="text-muted-foreground mb-1">Taints do pool</p>
+              <div className="flex flex-wrap gap-1">
+                {nodePool.node_taints!.map((t) => (
+                  <Badge key={t} variant="outline" className="font-mono text-[11px]">{t}</Badge>
+                ))}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1723,8 +1827,14 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                       <HardDrive className="w-5 h-5" />
                       Disk Usage - {nodePool.name}
                     </CardTitle>
-                    <CardDescription>
-                      {diskMetrics.node_count} node{diskMetrics.node_count !== 1 ? "s" : ""} in this pool
+                    <CardDescription className="flex items-center gap-2 flex-wrap">
+                      <span>{diskMetrics.node_count} node{diskMetrics.node_count !== 1 ? "s" : ""} in this pool</span>
+                      {osDisk.label && (
+                        <Badge variant={osDisk.isEphemeral ? "default" : "secondary"} className="text-xs">
+                          OS Disk: {osDisk.isEphemeral ? "Ephemeral" : osDisk.label}
+                        </Badge>
+                      )}
+                      {osDisk.sizeGB && <span>{osDisk.sizeGB} GiB provisionados por node</span>}
                     </CardDescription>
                   </div>
                   <Button onClick={() => refetchDiskMetrics()} variant="outline" size="sm" disabled={diskMetricsLoading}>
@@ -1934,6 +2044,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
         loading={diskMetricsLoading}
         vmSize={nodePool.vm_size}
         cluster={clusterWithAdmin}
+        osDisk={osDisk}
       />
 
       {/* Node Details Modal */}

@@ -3,6 +3,14 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Node Pools — tipo e tamanho do disco de OS (efêmero x gerenciado) e detalhes do pool (Outubro 2026)
+
+**Sintoma:** no card "VM Configuration" (aba Configuration) não aparecia o tipo nem o tamanho do disco de OS. No modal "Disk Details", todo node aparecia como "Managed Disk", inclusive em pools com Ephemeral OS Disk.
+
+**Causa:** o provider Azure não lia `osDiskType`/`osDiskSizeGb` do `az aks nodepool list`. O endpoint `/nodepools/disk-metrics` tentava adivinhar o tipo pelos labels do node, mas o label `storageprofile` (presente em todo node AKS, valor `managed`) curto-circuitava a checagem de `kubernetes.azure.com/ephemeral-os`. Além disso, esse label não diferencia disco efêmero de gerenciado.
+
+**Correção:** `models.NodePool` ganhou `disk_size_gb`/`disk_type` também no AKS (`osDiskSizeGb`/`osDiskType`) e no EKS (`diskSize`, só em node group sem launch template), além de `kubelet_disk_type`, `os_sku`, `kubernetes_version`, `node_image_version`, `max_pods`, `availability_zones`, `priority` (Spot), `node_taints` e `node_labels` (quando o provider expõe). O disk-metrics passa a classificar pelo tipo do pool que já está no cache do List (`cachedPoolOSDiskTypes`, sem chamar `az`), usando os labels só como fallback (`nodeOSDiskType`, com teste). O frontend usa o tipo do pool (`lib/nodePoolDisk.ts`) no card, na aba Disk e no modal, e o card mostra os detalhes do pool.
+
 ### Rollback — bypass Kyverno: corrida entre rollbacks simultâneos no mesmo namespace (Outubro 2026)
 
 **Sintoma:** `TestWithKyvernoBypass_ConcurrentCallsSameNamespace_LabelStaysUntilLast` falhava de vez em quando na CI (70 falhas em 500 execuções com `-race`).

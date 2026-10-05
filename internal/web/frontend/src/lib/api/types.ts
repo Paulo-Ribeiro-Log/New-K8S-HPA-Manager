@@ -787,6 +787,18 @@ export interface NodePool {
   subscription_name?: string; // Nome legível da subscription
   subscription_uuid?: string; // UUID real resolvido via az account show
   cluster_tags?: Record<string, string>; // Tags do cluster AKS
+  // Disco de OS e metadados do pool (preenchidos quando o provider expõe)
+  disk_size_gb?: number; // AKS osDiskSizeGb, GKE diskSizeGb, EKS diskSize (sem launch template)
+  disk_type?: string; // AKS "Ephemeral" | "Managed"; GKE "pd-balanced" | "pd-ssd" | ...
+  kubelet_disk_type?: string; // AKS "OS" | "Temporary"
+  os_sku?: string;
+  kubernetes_version?: string;
+  node_image_version?: string;
+  max_pods?: number;
+  availability_zones?: string[];
+  priority?: string; // "Regular" | "Spot"
+  node_taints?: string[];
+  node_labels?: Record<string, string>;
   modified: boolean;
   selected: boolean;
   applied_count: number;

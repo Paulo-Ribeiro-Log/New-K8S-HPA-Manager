@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,7 +61,21 @@ type gcpNodePool struct {
 		MachineType string `json:"machineType"`
 		DiskSizeGb  int32  `json:"diskSizeGb"` // tamanho do disco de boot em GB — GKE não expõe isso via label de node K8s, só aqui
 		DiskType    string `json:"diskType"`   // "pd-standard" | "pd-balanced" | "pd-ssd" | "pd-extreme"
+		ImageType   string `json:"imageType"`  // "COS_CONTAINERD" | "UBUNTU_CONTAINERD" ...
+		Spot        bool   `json:"spot"`
+		Preemptible bool   `json:"preemptible"`
+		Taints      []struct {
+			Key    string `json:"key"`
+			Value  string `json:"value"`
+			Effect string `json:"effect"`
+		} `json:"taints"`
 	} `json:"config"`
+	Version           string   `json:"version"`
+	Locations         []string `json:"locations"`
+	MaxPodsConstraint struct {
+		// int64: a API REST serializa como string, o gcloud pode emitir número — RawMessage aceita os dois
+		MaxPodsPerNode json.RawMessage `json:"maxPodsPerNode"`
+	} `json:"maxPodsConstraint"`
 	InitialNodeCount int32 `json:"initialNodeCount"`
 	Autoscaling      struct {
 		Enabled      bool  `json:"enabled"`
@@ -96,6 +111,15 @@ func (p *GCPNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 
 	pools := make([]models.NodePool, 0, len(raw))
 	for _, np := range raw {
+		priority := "Regular"
+		if np.Config.Spot || np.Config.Preemptible {
+			priority = "Spot"
+		}
+		var taints []string
+		for _, t := range np.Config.Taints {
+			taints = append(taints, fmt.Sprintf("%s=%s:%s", t.Key, t.Value, t.Effect))
+		}
+		maxPods, _ := strconv.Atoi(strings.Trim(string(np.MaxPodsConstraint.MaxPodsPerNode), `"`))
 		pools = append(pools, models.NodePool{
 			Name:               np.Name,
 			VMSize:             np.Config.MachineType,
@@ -108,6 +132,12 @@ func (p *GCPNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 			IsSystemPool:       np.Name == "default-pool",
 			DiskSizeGB:         np.Config.DiskSizeGb,
 			DiskType:           np.Config.DiskType,
+			OSSku:              np.Config.ImageType,
+			KubernetesVersion:  np.Version,
+			MaxPods:            int32(maxPods),
+			AvailabilityZones:  np.Locations,
+			Priority:           priority,
+			NodeTaints:         taints,
 		})
 	}
 	return pools, nil
