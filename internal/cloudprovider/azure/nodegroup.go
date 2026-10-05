@@ -119,6 +119,15 @@ func (p *AzureNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) (
 		if az.MaxCount != nil {
 			maxCount = *az.MaxCount
 		}
+		// currentOrchestratorVersion é a versão real (patch) rodando; orchestratorVersion pode ser só "1.29"
+		k8sVersion := az.CurrentOrchestratorVersion
+		if k8sVersion == "" {
+			k8sVersion = az.OrchestratorVersion
+		}
+		priority := az.ScaleSetPriority
+		if priority == "" {
+			priority = "Regular"
+		}
 		pools = append(pools, models.NodePool{
 			Name:               az.Name,
 			VMSize:             az.VmSize,
@@ -134,6 +143,17 @@ func (p *AzureNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) (
 			SubscriptionName:   subscriptionName,
 			SubscriptionUUID:   subscriptionUUID,
 			ClusterTags:        clusterTags,
+			DiskSizeGB:         az.OsDiskSizeGb,
+			DiskType:           az.OsDiskType,
+			KubeletDiskType:    az.KubeletDiskType,
+			OSSku:              az.OsSku,
+			KubernetesVersion:  k8sVersion,
+			NodeImageVersion:   az.NodeImageVersion,
+			MaxPods:            az.MaxPods,
+			AvailabilityZones:  az.AvailabilityZones,
+			Priority:           priority,
+			NodeTaints:         az.NodeTaints,
+			NodeLabels:         az.NodeLabels,
 		})
 	}
 
@@ -315,6 +335,19 @@ type azureNodePool struct {
 	EnableAutoScaling bool   `json:"enableAutoScaling"`
 	Mode              string `json:"mode"`
 	ProvisioningState string `json:"provisioningState"`
+
+	OsDiskType                 string            `json:"osDiskType"` // "Ephemeral" | "Managed"
+	OsDiskSizeGb               int32             `json:"osDiskSizeGb"`
+	KubeletDiskType            string            `json:"kubeletDiskType"` // "OS" | "Temporary"
+	OsSku                      string            `json:"osSku"`
+	OrchestratorVersion        string            `json:"orchestratorVersion"`
+	CurrentOrchestratorVersion string            `json:"currentOrchestratorVersion"`
+	NodeImageVersion           string            `json:"nodeImageVersion"`
+	MaxPods                    int32             `json:"maxPods"`
+	AvailabilityZones          []string          `json:"availabilityZones"`
+	ScaleSetPriority           string            `json:"scaleSetPriority"` // "Regular" | "Spot" (null = Regular)
+	NodeTaints                 []string          `json:"nodeTaints"`
+	NodeLabels                 map[string]string `json:"nodeLabels"`
 }
 
 // compile-time check

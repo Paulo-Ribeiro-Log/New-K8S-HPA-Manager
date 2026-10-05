@@ -1046,13 +1046,24 @@ type NodePool struct {
 	MinNodeCount       int32  `json:"min_node_count"`
 	MaxNodeCount       int32  `json:"max_node_count"`
 	AutoscalingEnabled bool   `json:"autoscaling_enabled"`
-	DiskSizeGB         int32  `json:"disk_size_gb,omitempty"` // tamanho do disco de boot/OS, quando o provider expõe (hoje só GKE via Container API)
-	DiskType           string `json:"disk_type,omitempty"`    // tipo do disco de boot/OS (ex: GKE "pd-balanced"/"pd-standard"/"pd-ssd")
-	Status             string `json:"status"`
-	IsSystemPool       bool   `json:"is_system_pool"`
-	Modified           bool   `json:"modified"`
-	Selected           bool   `json:"selected"`
-	AppliedCount       int    `json:"applied_count"` // Contador de quantas vezes foi aplicado
+	DiskSizeGB         int32  `json:"disk_size_gb,omitempty"`      // tamanho do disco de boot/OS (AKS osDiskSizeGb, GKE diskSizeGb, EKS diskSize sem launch template)
+	DiskType           string `json:"disk_type,omitempty"`         // tipo do disco de boot/OS: AKS "Ephemeral"/"Managed" (osDiskType), GKE "pd-balanced"/"pd-ssd"/...
+	KubeletDiskType    string `json:"kubelet_disk_type,omitempty"` // AKS: "OS" | "Temporary" — onde ficam emptyDir/imagens/logs do kubelet
+
+	// Metadados do pool para o analista (preenchidos quando o provider expõe)
+	OSSku             string            `json:"os_sku,omitempty"`             // AKS osSku (Ubuntu/AzureLinux/Windows2022) ou EKS amiType
+	KubernetesVersion string            `json:"kubernetes_version,omitempty"` // versão do kubelet no pool
+	NodeImageVersion  string            `json:"node_image_version,omitempty"` // AKS nodeImageVersion / EKS releaseVersion
+	MaxPods           int32             `json:"max_pods,omitempty"`
+	AvailabilityZones []string          `json:"availability_zones,omitempty"`
+	Priority          string            `json:"priority,omitempty"` // "Regular" | "Spot" (AKS scaleSetPriority, EKS capacityType)
+	NodeTaints        []string          `json:"node_taints,omitempty"`
+	NodeLabels        map[string]string `json:"node_labels,omitempty"` // labels definidas no pool (não as do node K8s)
+	Status            string            `json:"status"`
+	IsSystemPool      bool              `json:"is_system_pool"`
+	Modified          bool              `json:"modified"`
+	Selected          bool              `json:"selected"`
+	AppliedCount      int               `json:"applied_count"` // Contador de quantas vezes foi aplicado
 
 	// Sistema de execução sequencial para stress tests (máximo 2 nodes)
 	SequenceOrder  int    `json:"sequence_order"`  // 1 = primeiro, 2 = segundo, 0 = não marcado

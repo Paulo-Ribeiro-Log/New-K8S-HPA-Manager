@@ -106,6 +106,15 @@ type awsNodegroup struct {
 	CapacityType   string                `json:"capacityType"` // ON_DEMAND | SPOT
 	Labels         map[string]string     `json:"labels"`
 	LaunchTemplate *awsLaunchTemplateRef `json:"launchTemplate"`
+	DiskSize       int32                 `json:"diskSize"` // só vem preenchido sem launch template (com LT o disco é definido no template)
+	AmiType        string                `json:"amiType"`
+	Version        string                `json:"version"`
+	ReleaseVersion string                `json:"releaseVersion"`
+	Taints         []struct {
+		Key    string `json:"key"`
+		Value  string `json:"value"`
+		Effect string `json:"effect"`
+	} `json:"taints"`
 }
 
 // awsLaunchTemplateRef referencia o launch template de um node group que não expõe
@@ -196,6 +205,15 @@ func (p *AWSNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 				status = status + " (SPOT)"
 			}
 
+			priority := "Regular"
+			if ng.CapacityType == "SPOT" {
+				priority = "Spot"
+			}
+			var taints []string
+			for _, t := range ng.Taints {
+				taints = append(taints, fmt.Sprintf("%s=%s:%s", t.Key, t.Value, t.Effect))
+			}
+
 			results[idx] = result{
 				pool: models.NodePool{
 					Name:               ng.NodegroupName,
@@ -207,6 +225,13 @@ func (p *AWSNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]
 					Status:             status,
 					IsSystemPool:       false,         // EKS não tem conceito de system pool
 					ClusterName:        p.contextName, // ARN completo para K8s API (resolveContext)
+					DiskSizeGB:         ng.DiskSize,
+					OSSku:              ng.AmiType,
+					KubernetesVersion:  ng.Version,
+					NodeImageVersion:   ng.ReleaseVersion,
+					Priority:           priority,
+					NodeTaints:         taints,
+					NodeLabels:         ng.Labels,
 				},
 			}
 		}(i, ngName)

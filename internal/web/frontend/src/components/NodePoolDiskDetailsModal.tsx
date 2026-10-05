@@ -10,6 +10,7 @@ import type { StorageOverview } from "@/lib/api/storage-types";
 import type { NodeDiskStats } from "@/lib/api/types";
 import { useEffect, useState } from "react";
 import { apiClient } from "@/lib/api/client";
+import type { OSDiskInfo } from "@/lib/nodePoolDisk";
 
 interface NodePoolDiskDetailsModalProps {
   open: boolean;
@@ -18,6 +19,8 @@ interface NodePoolDiskDetailsModalProps {
   loading: boolean;
   vmSize?: string;
   cluster?: string;
+  /** Tipo/tamanho do disco de OS do pool vindo do provider — prevalece sobre o palpite por node do backend */
+  osDisk?: OSDiskInfo;
 }
 
 function formatBytesPerSec(bps: number): string {
@@ -109,7 +112,8 @@ export default function NodePoolDiskDetailsModal({
   diskMetrics,
   loading: _loading,
   vmSize,
-  cluster
+  cluster,
+  osDisk
 }: NodePoolDiskDetailsModalProps) {
   const [storageOverview, setStorageOverview] = useState<StorageOverview | null>(null);
   const [loadingStorage, setLoadingStorage] = useState(false);
@@ -197,6 +201,15 @@ export default function NodePoolDiskDetailsModal({
                       <span className="ml-2 font-medium">{vmSize}</span>
                     </div>
                   )}
+                  {osDisk?.label && (
+                    <div className="text-sm">
+                      <span className="text-muted-foreground">OS Disk:</span>
+                      <span className="ml-2 font-medium">
+                        {osDisk.isEphemeral ? "Ephemeral" : osDisk.label}
+                        {osDisk.sizeGB ? ` · ${osDisk.sizeGB} GiB` : ""}
+                      </span>
+                    </div>
+                  )}
                   {diskStats.length > 0 && diskStats[0].prometheus_available && (
                     <div className="text-xs text-muted-foreground flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
@@ -253,6 +266,11 @@ export default function NodePoolDiskDetailsModal({
                   {filteredNodes.map((node, idx) => {
                     const stats = diskStats.find(s => s.node_name === node.node_name);
                     const hasPressure = stats && (stats.disk_pressure || stats.memory_pressure || stats.pid_pressure);
+                    // Tipo do pool (provider) prevalece; o do backend por node é só fallback por labels
+                    const isEphemeral = osDisk?.isEphemeral ?? node.is_ephemeral;
+                    const diskTypeLabel = osDisk?.label
+                      ? (osDisk.isEphemeral ? "Ephemeral OS Disk" : `${osDisk.label} OS Disk`)
+                      : node.disk_type;
                     return (
                     <div key={idx} className="border rounded-lg p-4 bg-card">
                       <div className="flex items-start justify-between mb-3">
@@ -260,10 +278,10 @@ export default function NodePoolDiskDetailsModal({
                           <div className="flex items-center gap-2 mb-1 flex-wrap">
                             <h4 className="font-medium text-sm">{node.node_name}</h4>
                             <Badge
-                              variant={node.is_ephemeral ? "default" : "secondary"}
+                              variant={isEphemeral ? "default" : "secondary"}
                               className="text-xs"
                             >
-                              {node.is_ephemeral ? "Ephemeral" : "Managed Disk"}
+                              {diskTypeLabel}
                             </Badge>
                             {stats?.disk_pressure && (
                               <Badge variant="destructive" className="text-xs">DiskPressure</Badge>
@@ -275,7 +293,11 @@ export default function NodePoolDiskDetailsModal({
                               <Badge variant="destructive" className="text-xs">PIDPressure</Badge>
                             )}
                           </div>
-                          <p className="text-xs text-muted-foreground">{node.disk_type}</p>
+                          {osDisk?.sizeGB && (
+                            <p className="text-xs text-muted-foreground">
+                              Provisionado: {osDisk.sizeGB} GiB · filesystem raiz visto pelo node: {(node.total_bytes / (1024**3)).toFixed(1)} GiB
+                            </p>
+                          )}
                         </div>
                         {(node.usage_percent > 80 || hasPressure) ? (
                           <AlertTriangle className="w-5 h-5 text-destructive flex-shrink-0" />
@@ -307,7 +329,7 @@ export default function NodePoolDiskDetailsModal({
                             </div>
                             <div>
                               <span className="text-muted-foreground">Type:</span>
-                              <span className="ml-2 font-medium">{node.is_ephemeral ? "Ephemeral" : "Persistent"}</span>
+                              <span className="ml-2 font-medium">{isEphemeral ? "Ephemeral (local da VM)" : "Persistente"}</span>
                             </div>
                           </div>
                         </div>

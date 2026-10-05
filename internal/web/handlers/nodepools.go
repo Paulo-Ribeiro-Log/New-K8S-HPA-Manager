@@ -1549,6 +1549,55 @@ func (h *NodePoolHandler) getNodeDiskFromPrometheus(cluster string, nodeIPToName
 	return result
 }
 
+// cachedPoolOSDiskTypes devolve nome do pool → tipo de disco de OS (DiskType do provider) a partir
+// do cache do List, sem chamar az/aws/gcloud (o endpoint de disco não pode pagar ~5s de CLI). Ignora
+// a expiração: tipo de disco de OS é imutável no pool. O cache é chaveado pelo cluster como o
+// frontend mandou no List, que pode ter ou não o sufixo -admin, então tenta as duas formas.
+func (h *NodePoolHandler) cachedPoolOSDiskTypes(cluster string) map[string]string {
+	h.nodePoolCacheMu.RLock()
+	defer h.nodePoolCacheMu.RUnlock()
+	base := strings.TrimSuffix(cluster, "-admin")
+	for _, key := range []string{cluster, base, base + "-admin"} {
+		if entry, ok := h.nodePoolCache[key]; ok {
+			out := make(map[string]string, len(entry.pools))
+			for _, p := range entry.pools {
+				out[p.Name] = p.DiskType
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// nodeOSDiskType classifica o disco de OS de um node. A fonte confiável é o osDiskType do pool
+// (AKS "Ephemeral"/"Managed", vindo do provider). Bug real corrigido: antes só olhava labels do
+// node, mas o AKS põe `storageprofile=managed` também em pools com Ephemeral OS Disk (o label diz
+// "disco gerenciado vs. storage account legado", não efêmero vs. persistente), e a presença desse
+// label ainda curto-circuitava a checagem de `kubernetes.azure.com/ephemeral-os` — todo node
+// aparecia como "Managed Disk".
+func nodeOSDiskType(labels map[string]string, poolDiskType string) (bool, string) {
+	switch strings.ToLower(poolDiskType) {
+	case "ephemeral":
+		return true, "Ephemeral OS Disk"
+	case "managed":
+		return false, "Managed OS Disk"
+	}
+	if labels["kubernetes.azure.com/ephemeral-os"] == "true" || labels["storageprofile"] == "ephemeral" {
+		return true, "Ephemeral OS Disk"
+	}
+	if _, isGKE := labels["cloud.google.com/gke-nodepool"]; isGKE {
+		if poolDiskType != "" {
+			return false, "Persistent Disk (" + poolDiskType + ")"
+		}
+		return false, "Persistent Disk"
+	}
+	if _, isEKS := labels["eks.amazonaws.com/nodegroup"]; isEKS {
+		return false, "EBS Volume"
+	}
+	// AKS sem o pool no cache: não dá pra afirmar efêmero vs. gerenciado pelos labels
+	return false, "OS Disk (tipo desconhecido)"
+}
+
 // GetNodePoolDiskMetrics retorna métricas de disco agregadas por node pool.
 // Tenta buscar uso real via Prometheus node_exporter; se indisponível, usa os
 // valores estáticos da API Kubernetes (ephemeral-storage capacity/allocatable).
@@ -1609,6 +1658,9 @@ func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 	// Tentar buscar métricas reais do Prometheus
 	promDisk := h.getNodeDiskFromPrometheus(cluster, nodeIPToName, nodeNames)
 
+	// Tipo de disco de OS por pool vindo do provider (fonte confiável — ver nodeOSDiskType)
+	poolDisk := h.cachedPoolOSDiskTypes(cluster)
+
 	// Agrupar métricas por node pool
 	poolMetrics := make(map[string]*NodePoolDiskMetrics)
 
@@ -1631,23 +1683,7 @@ func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 			continue
 		}
 
-		// Determinar tipo de disco
-		isEphemeral := false
-		diskType := "Managed Disk"
-		// AKS — labels específicas de disco
-		if storageProfile, ok := node.Labels["storageprofile"]; ok {
-			if storageProfile == "ephemeral" {
-				isEphemeral = true
-				diskType = "Ephemeral OS Disk"
-			}
-		} else if node.Labels["kubernetes.azure.com/ephemeral-os"] == "true" {
-			isEphemeral = true
-			diskType = "Ephemeral OS Disk"
-		}
-		// GKE — disco por padrão é Persistent Disk (pd-standard/pd-ssd)
-		if _, isGKE := node.Labels["cloud.google.com/gke-nodepool"]; isGKE && diskType == "Managed Disk" {
-			diskType = "Persistent Disk"
-		}
+		isEphemeral, diskType := nodeOSDiskType(node.Labels, poolDisk[nodePool])
 
 		var totalBytes, usedBytes, availableBytes float64
 
