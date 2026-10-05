@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 make build                              # backend Go (BUILD_PARALLEL=2 por padrão, WSL2; BUILD_PARALLEL=4 se sobrar RAM)
-./rebuild-web.sh -b                     # `make build-web` + restart em background (-n: só restart, -k: mata :8080, -s: status); log em /tmp/k8s-hpa-web.log, health em GET /health
+./rebuild-web.sh -b                     # `make build-web` + restart em background (-n: só restart, -k: mata :8080, -s: status, -p: porta); log em /tmp/k8s-hpa-web.log, health em GET /health
 make web-build                          # só frontend: vite build + copia dist/ para internal/web/static/ (é o que gera os commits de assets)
 ./build/new-k8s-hpa web -f              # servidor em foreground (porta 8080); `web --ad` = bypass RBAC de emergência
 ./build/new-k8s-hpa autodiscover        # descobre clusters AKS+EKS+GKE em paralelo
@@ -28,6 +28,7 @@ make web-dev                            # Vite HMR (5173) — rode o backend em 
 go test -v ./internal/... -race                       # tudo, com race detector
 go test -run TestNome -v ./internal/web/handlers/...  # teste único
 SKIP_AZURE_TESTS=1 make test                          # sem az CLI autenticado (é o que a CI roda em ci.yml; sem -race)
+make test-coverage                                    # gera coverage.out + coverage.html
 ./testes/test-rbac.sh                                 # suíte RBAC
 
 cd internal/web/frontend
