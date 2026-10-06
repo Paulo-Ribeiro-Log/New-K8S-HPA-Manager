@@ -2429,6 +2429,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const saveFileRef = useRef<() => void>(() => {});
+  const saveRightFileRef = useRef<() => void>(() => {});
   // Nome do arquivo em cada pane, para resolver a sintaxe de comentário (codeComments.ts)
   const leftFileNameRef = useRef("");
   const rightFileNameRef = useRef("");
@@ -3073,7 +3074,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
   const handleSplitEditorMount: OnMount = (editor) => {
     splitEditorRef.current = editor;
-    editor.addCommand(2048 | 49, () => saveRightFile());
+    // addAction (escopo deste editor) + ref: o saveRightFile do mount ficava congelado no 1º render.
+    editor.addAction({ id: "ce.saveRight", label: "Salvar arquivo", keybindings: [2048 | 49], run: () => saveRightFileRef.current() }); // Ctrl+S
     setCommentFileName(editor, () => rightFileNameRef.current);
     editor.onDidChangeCursorPosition(e => {
       if (focusedPane === "right") {
@@ -3459,6 +3461,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
   // Mantém ref atualizado para evitar stale closure no addCommand do Monaco
   useEffect(() => { saveFileRef.current = saveFile; });
+  useEffect(() => { saveRightFileRef.current = saveRightFile; });
   useEffect(() => {
     leftFileNameRef.current = activeTab?.node.name ?? "";
     rightFileNameRef.current = openTabs[rightTabIdx]?.node.name ?? "";
@@ -3541,10 +3544,14 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
   const handleEditorMount: OnMount = (editor, monacoInstance) => {
     editorRef.current = editor;
-    editor.addCommand(2048 | 49, () => saveFileRef.current()); // Ctrl+S
-    editor.addCommand(512 | 1024 | 36, () => formatFileRef.current()); // Shift+Alt+F (VS Code)
-    editor.addCommand(2048 | 512 | 36, () => formatFileRef.current()); // Ctrl+Alt+F
-    editor.addCommand(2048 | 46, () => { setShowQuickOpen(true); setQuickOpenQuery(""); setQuickOpenIdx(0); }); // Ctrl+P
+    // Atalhos via addAction, nunca addCommand: no Monaco o addCommand registra o atalho no
+    // serviço de keybindings GLOBAL (sem escopo de editor e sem dispose no unmount) — vence o
+    // último registrado, então outro editor montado depois (janela direita do split,
+    // MonacoYamlEditor de outra aba, Teams) "roubava" o Ctrl+S daqui de forma intermitente.
+    // O addAction amarra o atalho a este editor (precondition editorId) e some no dispose.
+    editor.addAction({ id: "ce.save", label: "Salvar arquivo", keybindings: [2048 | 49], run: () => saveFileRef.current() }); // Ctrl+S
+    editor.addAction({ id: "ce.format", label: "Formatar arquivo", keybindings: [512 | 1024 | 36, 2048 | 512 | 36], run: () => formatFileRef.current() }); // Shift+Alt+F / Ctrl+Alt+F
+    editor.addAction({ id: "ce.quickOpen", label: "Abrir arquivo (Quick Open)", keybindings: [2048 | 46], run: () => { setShowQuickOpen(true); setQuickOpenQuery(""); setQuickOpenIdx(0); } }); // Ctrl+P
     setCommentFileName(editor, () => leftFileNameRef.current);
     editor.onDidChangeCursorPosition(e => {
       setCursorLine(e.position.lineNumber);
