@@ -2411,6 +2411,11 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const [focusedPane, setFocusedPane] = useState<"left" | "right">("left");
   const splitEditorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const [splitWidthPct, setSplitWidthPct] = useState(50);
+  // Diff entre as duas janelas do split — só existe com o split ativo (desligar o split desliga o diff)
+  const [splitDiff, setSplitDiff] = useState(false);
+  const [splitDiffSwapped, setSplitDiffSwapped] = useState(false);
+  const [splitDiffIgnoreWs, setSplitDiffIgnoreWs] = useState(false);
+  const [splitDiffCount, setSplitDiffCount] = useState<number | null>(null);
 
   // Confirm dialog (substitui confirm() nativo)
   const [confirmState, setConfirmState] = useState<{
@@ -3966,8 +3971,15 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
         {selectedRepo && openTabs.length > 0 && (
           <Button variant={splitActive ? "default" : "ghost"} size="sm" className="h-6 text-xs gap-1"
-            title="Dividir editor" onClick={() => setSplitActive(v => !v)}>
+            title="Dividir editor" onClick={() => { setSplitActive(v => !v); setSplitDiff(false); }}>
             <Columns2 className="w-3 h-3" />
+          </Button>
+        )}
+        {selectedRepo && splitActive && openTabs.length > 0 && (
+          <Button variant={splitDiff ? "default" : "ghost"} size="sm" className="h-6 text-xs gap-1"
+            title="Comparar (diff) os arquivos das duas janelas do editor dividido"
+            onClick={() => setSplitDiff(v => !v)}>
+            <GitCompare className="w-3 h-3" />Diff
           </Button>
         )}
         {selectedRepo && (
@@ -4876,7 +4888,68 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                   </Button>
                 </div>
               </div>
-              <div ref={editorRowRef} className="flex-1 min-h-0 flex flex-row">
+              <div ref={editorRowRef} className="flex-1 min-h-0 flex flex-row relative">
+                {/* Diff entre as janelas do split: sobreposto às duas, que continuam montadas por baixo
+                    (desmontar o Editor principal derrubaria refs/LSP/decorations ligados a editorRef). */}
+                {splitActive && splitDiff && openTabs[rightTabIdx] && (() => {
+                  const leftT = activeTab;
+                  const rightT = openTabs[rightTabIdx];
+                  const [orig, mod] = splitDiffSwapped ? [rightT, leftT] : [leftT, rightT];
+                  const same = leftT.repoId === rightT.repoId && leftT.node.path === rightT.node.path;
+                  return (
+                    <div className="absolute inset-0 z-10 flex flex-col bg-[#1e1e1e]">
+                      <div className="flex items-center gap-2 px-3 py-1 border-b border-border/50 flex-shrink-0 bg-card/20 text-xs">
+                        <GitCompare className="w-3 h-3 text-sky-400 flex-shrink-0" />
+                        <span className="font-mono text-red-300 truncate min-w-0" title={orig.node.path}>{orig.node.path}</span>
+                        <span className="text-muted-foreground flex-shrink-0">↔</span>
+                        <span className="font-mono text-emerald-300 truncate min-w-0" title={mod.node.path}>{mod.node.path}</span>
+                        <span className="text-muted-foreground flex-shrink-0">
+                          {same ? "· mesmo arquivo nas duas janelas" : splitDiffCount === null ? "" : splitDiffCount === 0 ? "· sem diferenças" : `· ${splitDiffCount} diferença${splitDiffCount > 1 ? "s" : ""}`}
+                        </span>
+                        <div className="ml-auto flex items-center gap-1 flex-shrink-0">
+                          <Button variant={splitDiffIgnoreWs ? "default" : "ghost"} size="sm" className="h-5 text-[11px] px-2"
+                            title="Ignorar espaços no início/fim das linhas" onClick={() => setSplitDiffIgnoreWs(v => !v)}>
+                            Ignorar espaços
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-5 text-[11px] px-2 gap-1" title="Inverter lados"
+                            onClick={() => setSplitDiffSwapped(v => !v)}>
+                            <ArrowRightLeft className="w-3 h-3" />Inverter
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Fechar diff (volta às duas janelas)"
+                            onClick={() => setSplitDiff(false)}>
+                            <X className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        <DiffEditor
+                          height="100%"
+                          original={orig.currentContent}
+                          modified={mod.currentContent}
+                          originalLanguage={extToLanguage(orig.node.name)}
+                          modifiedLanguage={extToLanguage(mod.node.name)}
+                          theme="vs-dark"
+                          onMount={ed => {
+                            setSplitDiffCount(null);
+                            ed.onDidUpdateDiff(() => setSplitDiffCount(ed.getLineChanges()?.length ?? 0));
+                          }}
+                          options={{
+                            readOnly: true,
+                            renderSideBySide: true,
+                            ignoreTrimWhitespace: splitDiffIgnoreWs,
+                            automaticLayout: true,
+                            minimap: { enabled: false },
+                            fontSize: fontSize,
+                            lineHeight: Math.round(fontSize * 1.55),
+                            fontFamily: "'Cascadia Code','Fira Code','Consolas','Courier New',monospace",
+                            wordWrap: wordWrap ? "on" : "off",
+                            scrollBeyondLastLine: false,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
                 {/* Pane esquerdo (principal) */}
                 <div
                   className="min-h-0 min-w-0 flex flex-col"
