@@ -74,10 +74,12 @@ import {
   Braces,
   MessageSquareCode,
   PanelLeftClose,
+  FileDiff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { setCommentFileName, BLOCK_COMMENT_ACTION_ID } from "@/lib/codeComments";
 import { CodeEditorOpenFolderDialog } from "@/components/CodeEditorOpenFolderDialog";
+import { ViewPlanModal } from "@/components/ViewPlanModal";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -2343,6 +2345,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const [conflictFiles, setConflictFiles] = useState<string[]>([]);
   const [showBranchDiff, setShowBranchDiff] = useState(false);
   const [showCreatePR, setShowCreatePR] = useState(false);
+  const [showViewPlan, setShowViewPlan] = useState(false);
   const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
   const [markdownPreviewWidth, setMarkdownPreviewWidth] = useState(() => {
     const saved = localStorage.getItem("ce_md_preview_width");
@@ -3912,6 +3915,13 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                 title={`Criar Pull Request: ${selectedRepo.owner}/${selectedRepo.repo}`}
                 onClick={() => setShowCreatePR(true)}>
                 <GitPullRequest className="w-3 h-3" />PR
+              </Button>
+            )}
+            {branches?.current && branches.current !== "main" && branches.current !== "master" && (
+              <Button variant="ghost" size="sm" className="h-6 text-xs gap-1"
+                title="Ver o plan do Atlantis no PR desta branch (somente leitura)"
+                onClick={() => setShowViewPlan(true)}>
+                <FileDiff className="w-3 h-3" />View Plan
               </Button>
             )}
           </>
@@ -5497,6 +5507,15 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
           head={branches.current}
           rawBranches={branches}
           profileId={activeProfileId()}
+        />
+      )}
+
+      {/* ── View Plan (Atlantis) ── */}
+      {showViewPlan && selectedRepo && (
+        <ViewPlanModal
+          repoId={selectedRepo.id}
+          profileId={activeProfileId()}
+          onClose={() => setShowViewPlan(false)}
         />
       )}
 

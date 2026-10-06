@@ -3,6 +3,14 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — "View Plan": plan do Atlantis do PR da branch atual (Outubro 2026)
+
+**Novo:** botão **View Plan** no cabeçalho do Code Editor (aparece fora de `main`/`master`). Ele mostra, só para leitura, o último plan que o Atlantis comentou no PR da branch atual: o conteúdo dos blocos `<details><summary>Show Output</summary>` com o diff do Terraform.
+
+**Backend:** `GET /api/v1/code-editor/repos/:id/pr/plan` (`handlers/code_editor_plan.go`). Acha o PR pela branch (`pulls?head=owner:branch`, aberto mais recente primeiro; `?pr=N` escolhe outro), pagina os comentários e pega o último que começa com `Ran Plan for`. Separa os projetos pelos títulos `### N.`. Plans grandes, que o Atlantis divide em vários comentários ("Continued plan output from previous comment."), são reemendados no ponto exato do corte. O token segue a mesma ordem do `CreatePR`: perfil informado → perfil ativo → store legado. Testes em `code_editor_plan_test.go`.
+
+**Frontend:** `ViewPlanModal.tsx`. Janela flutuante própria, sem o Dialog do shadcn e sem fundo/overlay (o editor continua utilizável por trás; por isso fecha só pelo X, não com Esc). Abre na metade direita da tela, é arrastável pelo cabeçalho (pointer capture, sempre com parte do cabeçalho visível) e com `resize: both`, posicionado por top/left em px para a alça acompanhar o mouse. Texto sem quebra de linha e rolagem nos dois eixos. Numeração de linhas fixa à esquerda e cores do diff (`+` verde, `-` vermelho, `~` amarelo, `-/+` magenta, `# … will be destroyed/replaced` em destaque). Seletor de projeto (select com o resumo +/~/- de cada um), seletor quando a branch tem mais de um PR, e botões Copiar e GitHub.
+
 ### Node Pools — tipo e tamanho do disco de OS (efêmero x gerenciado) e detalhes do pool (Outubro 2026)
 
 **Sintoma:** no card "VM Configuration" (aba Configuration) não aparecia o tipo nem o tamanho do disco de OS. No modal "Disk Details", todo node aparecia como "Managed Disk", inclusive em pools com Ephemeral OS Disk.

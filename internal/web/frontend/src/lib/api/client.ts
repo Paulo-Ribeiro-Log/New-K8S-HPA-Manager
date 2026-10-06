@@ -5491,6 +5491,15 @@ class APIClient {
     });
   }
 
+  // View Plan: último plan do Atlantis comentado no PR da branch atual (somente leitura)
+  async codeEditorGetPRPlan(id: string, pr?: number, profileId?: string): Promise<CodeEditorPRPlanResponse> {
+    const params = new URLSearchParams();
+    if (pr) params.set("pr", String(pr));
+    if (profileId) params.set("profile_id", profileId);
+    const qs = params.toString();
+    return this.request(`/code-editor/repos/${id}/pr/plan${qs ? `?${qs}` : ""}`);
+  }
+
   // ─── Port Forward ─────────────────────────────────────────────────────
 
   async getPortForwardPodPorts(cluster: string, namespace: string, pod: string): Promise<{ ports: PortForwardPodPort[]; phase: string }> {
@@ -5600,6 +5609,35 @@ export interface CodeEditorBranches {
   local: string[];
   remote: string[];
   fetch_error?: string; // `git fetch` falhou — remotos podem estar desatualizados
+}
+
+export interface CodeEditorPlanPR {
+  number: number;
+  title: string;
+  base: string;
+  state: string; // open | closed | merged
+  url: string;
+  updated_at: string;
+}
+
+export interface CodeEditorPlanProject {
+  label: string;   // ex: "dir: tms workspace: default"
+  content: string; // saída do plan, inteira (comentários divididos pelo Atlantis já reemendados)
+  summary: string; // "Plan: X to add, Y to change, Z to destroy." / "No changes. ..."
+  error: boolean;
+}
+
+export interface CodeEditorPRPlanResponse {
+  branch: string;
+  prs: CodeEditorPlanPR[];
+  pr: CodeEditorPlanPR | null;
+  plan: {
+    comment_url: string;
+    author: string;
+    created_at: string;
+    comments: number;
+    projects: CodeEditorPlanProject[];
+  } | null;
 }
 
 export interface CodeEditorLogEntry {
