@@ -880,8 +880,13 @@ export const TeamsBroadcastTab = () => {
 
   const handleMount: OnMount = (editor, monacoInstance) => {
     editorRef.current = editor;
-    editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
-      handleSaveRef.current?.();
+    // addAction (escopo deste editor), não addCommand: o addCommand é global no Monaco e
+    // roubava o Ctrl+S dos outros editores abertos (ex: Code Editor).
+    editor.addAction({
+      id: "teams.save",
+      label: "Salvar",
+      keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS],
+      run: () => { handleSaveRef.current?.(); },
     });
   };
 

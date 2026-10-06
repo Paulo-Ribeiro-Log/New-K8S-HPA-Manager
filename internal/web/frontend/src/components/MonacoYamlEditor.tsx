@@ -115,9 +115,13 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
     editorRef.current = editor;
     monacoRef.current = monacoInstance;
 
-    // Comando Ctrl+S para salvar
-    editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
-      onChangeRef.current?.(editor.getValue());
+    // Ctrl+S para salvar — addAction (escopo deste editor), não addCommand: o addCommand é
+    // global no Monaco e roubava o Ctrl+S dos outros editores abertos (ex: Code Editor).
+    editor.addAction({
+      id: "yaml.save",
+      label: "Salvar",
+      keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS],
+      run: () => { onChangeRef.current?.(editor.getValue()); },
     });
 
     // Troca o texto selecionado pelo resultado de `transform` (null = não mexe).
