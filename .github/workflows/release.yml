@@ -1,11 +1,13 @@
 name: Release
 
 # Disparo manual apenas (workflow_dispatch) — NÃO dispara automaticamente em push de tag.
-# Motivo: o fluxo de release documentado no CLAUDE.md (seção "Release") é manual via
-# `git tag vX.Y.Z && git push origin vX.Y.Z` seguido de `gh release create` explícito.
-# Um trigger automático em `push: tags: v*` corria em paralelo a esse fluxo manual e
-# publicava uma release duplicada/com nomes de binário desatualizados.
-# Para rodar: Actions → Release → Run workflow, escolhendo a tag desejada como "Use workflow from".
+# Este workflow é o fluxo oficial de release (ver docs/guides/DEVELOPMENT_COMMANDS.md):
+# `git tag vX.Y.Z && git push origin vX.Y.Z` e depois disparar este workflow na tag —
+# ele compila os binários e cria a release no GitHub (job final, action-gh-release).
+# Motivo do disparo manual: um trigger automático em `push: tags: v*` já correu em paralelo
+# a uma publicação manual e gerou release duplicada/com nomes de binário desatualizados.
+# Para rodar: Actions → Release → Run workflow, escolhendo a tag desejada como "Use workflow from"
+# (ou `gh workflow run release.yml --ref vX.Y.Z`).
 on:
   workflow_dispatch: {}
 
