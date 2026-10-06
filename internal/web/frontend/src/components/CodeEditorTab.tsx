@@ -808,7 +808,7 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
             if (d.error) setError(d.error);
             else { doneId = d.id; setSuccess(true); setLogs(l => [...l, "✅ Clone concluído com sucesso!"]); }
           }
-        } catch (_) {}
+        } catch { /* evento SSE que não é JSON (parcial/keep-alive): ignora */ }
       }
     }
     setCloning(false);
@@ -882,6 +882,32 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
   );
 }
 
+type LspDiagnostic = {
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  severity: number;
+  message: string;
+  source?: string;
+};
+
+// Estado global compartilhado com os providers do Monaco (LSP, marcadores, "ir para definição"),
+// que são registrados uma única vez por sessão e por isso leem o arquivo/repo ativo daqui.
+interface CodeEditorWindow {
+  __lspActiveRepoId?: string;
+  __lspActiveFilePath?: string;
+  __lspApplyDiagnostics?: (model: MonacoEditorNS.editor.ITextModel, diagnostics: LspDiagnostic[], owner?: string) => void;
+  __ceMarkerWatcherRegistered?: boolean;
+  __lspDefHandlerRegistered?: boolean;
+  __monacoGoLSPRegistered?: boolean;
+  __monacoPyLSPRegistered?: boolean;
+  __monacoTSConfigured?: boolean;
+}
+const ceWindow = window as unknown as CodeEditorWindow;
+
+// Mensagem de um erro capturado — `catch` entrega `unknown` (o client lança `Error`).
+function errMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e ?? "");
+}
+
 // ─── CreatePRModal ──────────────────────────────────────────────────────────
 
 interface CreatePRModalProps {
@@ -936,9 +962,11 @@ function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: 
     try {
       const pr = await apiClient.codeEditorCreatePR(repoId, title, body, head, base, profileId);
       setResult({ number: pr.number, url: pr.url });
-    } catch (e: any) {
-      setError(e?.message || "Erro ao criar Pull Request");
-      setErrorInstructions(Array.isArray(e?.details?.instructions) ? e.details.instructions : []);
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao criar Pull Request");
+      // client.ts anexa o corpo do erro da API em `details` (error_type/instructions)
+      const instructions = (e as { details?: { instructions?: unknown } } | null)?.details?.instructions;
+      setErrorInstructions(Array.isArray(instructions) ? instructions : []);
     } finally {
       setLoading(false);
     }
@@ -1071,8 +1099,8 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush, onRefresh
         onDone();
         if (andPush && onPush) onPush();
       }, 800);
-    } catch (e: any) {
-      setError(e.message || "Erro ao commitar");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao commitar");
     } finally {
       setLoading(false);
     }
@@ -1083,8 +1111,8 @@ function CommitDialog({ open, repoId, status, onClose, onDone, onPush, onRefresh
     try {
       await apiClient.codeEditorUnstage(repoId, [path]);
       onRefresh?.();
-    } catch (e: any) {
-      setError(e.message || "Erro ao remover arquivo");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao remover arquivo");
     } finally {
       setUnstaging(null);
     }
@@ -1593,8 +1621,8 @@ function BranchDialog({ open, repoId, currentBranch: cur, onClose, onDone }: Bra
       setGitOutput(result.message || `Branch '${result.branch}' criado.`);
       setCreatedBranch(result.branch);
       setTimeout(() => { onDone(result.branch); }, 1500);
-    } catch (e: any) {
-      setError(e.message || "Erro ao criar branch");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao criar branch");
     } finally {
       setLoading(false);
     }
@@ -1698,8 +1726,8 @@ function MergeDialog({ open, repoId, currentBranch, branches, onClose, onDone, o
       }
       setGitOutput(result.message);
       setTimeout(() => { onDone(); }, 1500);
-    } catch (e: any) {
-      setError(e.message || "Erro ao fazer merge");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao fazer merge");
     } finally {
       setLoading(false);
     }
@@ -1790,8 +1818,8 @@ function CreateFileDialog({ open, mode, repoId, basePath, onClose, onDone }: Cre
       }
       onDone(path.trim());
       onClose();
-    } catch (e: any) {
-      setError(e.message || "Erro ao criar");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao criar");
     } finally {
       setLoading(false);
     }
@@ -1856,8 +1884,8 @@ function RenameDialog({ open, repoId, node, onClose, onDone }: RenameDialogProps
       await apiClient.codeEditorRenameFile(repoId, node.path, newPath.trim());
       onDone(node.path, newPath.trim());
       onClose();
-    } catch (e: any) {
-      setError(e.message || "Erro ao renomear");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao renomear");
     } finally {
       setLoading(false);
     }
@@ -2003,11 +2031,14 @@ function SseDialog({ open, title, endpoint, body, onClose, onDone }: SseDialogPr
             const d = JSON.parse(dl.slice(5));
             if (d.message) setLogs(l => [...l, d.message]);
             if (d.done) { if (d.error) setError(d.error); else setSuccess(true); }
-          } catch (_) {}
+          } catch { /* evento SSE que não é JSON (parcial/keep-alive): ignora */ }
         }
       }
       setRunning(false);
     })().catch(e => { setError(e.message); setRunning(false); });
+  // Só na abertura: `body`/`endpoint` costumam chegar como objetos novos a cada render do pai —
+  // como dependências, repetiriam a operação git (push/pull/clone) com o modal ainda aberto.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight; }, [logs]);
@@ -2380,6 +2411,11 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const [focusedPane, setFocusedPane] = useState<"left" | "right">("left");
   const splitEditorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
   const [splitWidthPct, setSplitWidthPct] = useState(50);
+  // Diff entre as duas janelas do split — só existe com o split ativo (desligar o split desliga o diff)
+  const [splitDiff, setSplitDiff] = useState(false);
+  const [splitDiffSwapped, setSplitDiffSwapped] = useState(false);
+  const [splitDiffIgnoreWs, setSplitDiffIgnoreWs] = useState(false);
+  const [splitDiffCount, setSplitDiffCount] = useState<number | null>(null);
 
   // Confirm dialog (substitui confirm() nativo)
   const [confirmState, setConfirmState] = useState<{
@@ -2425,10 +2461,10 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
   const activeTab = openTabs[activeTabIdx] ?? null;
   const isModified = activeTab ? activeTab.currentContent !== activeTab.savedContent : false;
-  const modifiedPaths = new Set((status?.files ?? []).map(f => f.path));
+  const modifiedPaths = useMemo(() => new Set((status?.files ?? []).map(f => f.path)), [status]);
   const gitFileStatusMap = new Map((status?.files ?? []).map(f => [f.path, f.status]));
   // Propaga o status (modificado/erro) até as pastas ancestrais colapsadas, como o VSCode faz
-  const modifiedDirs = useMemo(() => collectAncestorDirs(modifiedPaths), [status]);
+  const modifiedDirs = useMemo(() => collectAncestorDirs(modifiedPaths), [modifiedPaths]);
   const errorDirs = useMemo(() => collectAncestorDirs(filesWithErrors), [filesWithErrors]);
 
   // ── persist sidebar width ──
@@ -2473,7 +2509,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       try {
         const result = await apiClient.lspDiagnostics(repoId, lang, filePath);
         if (!alive) return;
-        const applyFn = (window as any).__lspApplyDiagnostics;
+        const applyFn = ceWindow.__lspApplyDiagnostics;
         if (applyFn && editorRef.current) {
           const model = editorRef.current.getModel();
           const owner = lang === "python" ? "pyright" : "gopls";
@@ -2496,11 +2532,12 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   }, [pendingOpenFile, selectedRepo?.id]);
 
   // ── persist selected repo ──
+  const selectedRepoId = selectedRepo?.id;
   useEffect(() => {
-    if (selectedRepo) {
-      localStorage.setItem("ce_last_repo", selectedRepo.id);
+    if (selectedRepoId) {
+      localStorage.setItem("ce_last_repo", selectedRepoId);
     }
-  }, [selectedRepo?.id]);
+  }, [selectedRepoId]);
 
   // ── Refresh silencioso de status/tree: cobre mudanças feitas fora do save do editor
   // (terminal integrado, git via CLI, arquivos criados/editados externamente) que não
@@ -2546,6 +2583,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         if (active) localStorage.setItem("ce_default_profile", active.id);
       }
     }).catch(() => { /* silencioso */ });
+  // Só na montagem (carregamento inicial).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadRepos() {
@@ -2559,7 +2598,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         const found = fresh.find(r => r.id === lastId);
         if (found) selectRepo(found);
       }
-    } catch (_) {}
+    } catch { /* falha ao listar: mantém a lista de repos atual */ }
   }
 
   function syncNonGitIds(list: CodeEditorRepo[]) {
@@ -2589,7 +2628,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
   async function loadTree(id: string) {
     setTreeLoading(true);
-    try { const t = await apiClient.codeEditorGetFileTree(id); if (isCurrentRepo(id)) setTree(t); } catch (_) {}
+    try { const t = await apiClient.codeEditorGetFileTree(id); if (isCurrentRepo(id)) setTree(t); } catch { /* falha ao carregar: mantém a árvore atual */ }
     setTreeLoading(false);
   }
 
@@ -2633,8 +2672,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     const started = Date.now();
     try {
       await fn();
-    } catch (e: any) {
-      addToast("error", `Erro ao atualizar: ${e?.message || e}`);
+    } catch (e) {
+      addToast("error", `Erro ao atualizar: ${errMessage(e)}`);
     } finally {
       const wait = 400 - (Date.now() - started);
       if (wait > 0) await new Promise(r => setTimeout(r, wait));
@@ -2672,15 +2711,15 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         apiClient.lspOpen(repoId, lang, node.path, content).catch(() => {});
       }
       lspActivate(repoId, node.path);
-    } catch (e: any) {
-      addToast("error", "Erro ao abrir: " + e.message);
+    } catch (e) {
+      addToast("error", "Erro ao abrir: " + errMessage(e));
     }
   }
 
   // Atualiza vars globais usadas pelos providers Monaco
   function lspActivate(repoId: string, filePath: string) {
-    (window as any).__lspActiveRepoId = repoId;
-    (window as any).__lspActiveFilePath = filePath;
+    ceWindow.__lspActiveRepoId = repoId;
+    ceWindow.__lspActiveFilePath = filePath;
   }
 
   async function closeTab(idx: number) {
@@ -2758,8 +2797,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       await loadStatus(tabRepoId);
       if (formatError) addToast("error", `Salvo sem formatar (${tabName}): ${formatError}`);
       else addToast("success", `Salvo${didFormat ? " e formatado" : ""}: ${tabName}`);
-    } catch (e: any) {
-      addToast("error", "Erro ao salvar: " + e.message);
+    } catch (e) {
+      addToast("error", "Erro ao salvar: " + errMessage(e));
     }
   }
 
@@ -2776,8 +2815,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       setOpenTabs([]);
       setActiveTabIdx(0);
       await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadTree(selectedRepo.id)]);
-    } catch (e: any) {
-      if (e.message === "cancelado") throw e;
+    } catch (e) {
+      if (errMessage(e) === "cancelado") throw e;
 
       // git recusa o checkout quando há mudanças não commitadas que conflitam com o
       // branch de destino ("Your local changes ... would be overwritten by checkout").
@@ -2792,8 +2831,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
           const result = await apiClient.codeEditorCheckoutBranch(selectedRepo.id, branch);
           showGitResult("success", "Branch alternado", `Stash feito e alternado para: ${result.branch}`);
           await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadTree(selectedRepo.id)]);
-        } catch (retryErr: any) {
-          showGitResult("error", "Erro ao trocar de branch", retryErr.message || "Erro ao fazer stash e trocar de branch");
+        } catch (retryErr) {
+          showGitResult("error", "Erro ao trocar de branch", errMessage(retryErr) || "Erro ao fazer stash e trocar de branch");
         }
       };
 
@@ -2829,7 +2868,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     try {
       const r = await apiClient.codeEditorGrepFiles(selectedRepo.id, searchQuery);
       setGrepResults(r.matches ?? []);
-    } catch (_) {}
+    } catch { /* busca falhou: mantém os resultados anteriores */ }
   }
 
   async function handleDeleteFile(node: CodeEditorFileNode) {
@@ -2843,8 +2882,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       await loadTree(selectedRepo.id);
       await loadStatus(selectedRepo.id);
       addToast("success", `Deletado: ${node.name}`);
-    } catch (e: any) {
-      addToast("error", e.message || "Erro ao deletar");
+    } catch (e) {
+      addToast("error", errMessage(e) || "Erro ao deletar");
     }
   }
 
@@ -2917,8 +2956,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       await loadTree(selectedRepo.id);
       await loadStatus(selectedRepo.id);
       addToast("success", `${clipboard.op === "cut" ? "Movido" : "Copiado"}: ${to.split("/").pop()}`);
-    } catch (e: any) {
-      addToast("error", e.message || `Erro ao ${clipboard.op === "cut" ? "mover" : "copiar"}`);
+    } catch (e) {
+      addToast("error", errMessage(e) || `Erro ao ${clipboard.op === "cut" ? "mover" : "copiar"}`);
     }
   }
 
@@ -2938,8 +2977,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       await loadTree(selectedRepo.id);
       await loadStatus(selectedRepo.id);
       addToast("success", `Movido: ${filename}`);
-    } catch (e: any) {
-      addToast("error", e.message || "Erro ao mover");
+    } catch (e) {
+      addToast("error", errMessage(e) || "Erro ao mover");
     }
   }
 
@@ -3020,8 +3059,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       ));
       await loadStatus(tab.repoId);
       addToast("success", `Salvo: ${tab.node.name}`);
-    } catch (e: any) {
-      addToast("error", "Erro ao salvar: " + e.message);
+    } catch (e) {
+      addToast("error", "Erro ao salvar: " + errMessage(e));
     }
   }
 
@@ -3060,8 +3099,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       }
       await loadStatus(selectedRepo.id);
       addToast("success", `Revertido: ${filePath}`);
-    } catch (e: any) {
-      addToast("error", e.message || "Erro ao reverter");
+    } catch (e) {
+      addToast("error", errMessage(e) || "Erro ao reverter");
     }
   }
 
@@ -3079,8 +3118,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         showGitResult("success", "Stash", r.message || "Stash aplicado");
       }
       await Promise.all([loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
-    } catch (e: any) {
-      showGitResult("error", "Erro no stash", e.message || `Erro no stash ${action}`);
+    } catch (e) {
+      showGitResult("error", "Erro no stash", errMessage(e) || `Erro no stash ${action}`);
     } finally {
       setStashLoading(null);
     }
@@ -3094,13 +3133,13 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   async function handleScmStage(paths: string[]) {
     if (!selectedRepo) return;
     try { await apiClient.codeEditorStageFiles(selectedRepo.id, paths); }
-    catch (e: any) { addToast("error", e.message || "Erro ao adicionar ao staging"); }
+    catch (e) { addToast("error", errMessage(e) || "Erro ao adicionar ao staging"); }
     await loadStatus(selectedRepo.id);
   }
   async function handleScmUnstage(paths: string[]) {
     if (!selectedRepo) return;
     try { await apiClient.codeEditorUnstage(selectedRepo.id, paths); }
-    catch (e: any) { addToast("error", e.message || "Erro ao remover do staging"); }
+    catch (e) { addToast("error", errMessage(e) || "Erro ao remover do staging"); }
     await loadStatus(selectedRepo.id);
   }
   async function handleScmCommit(andPush: boolean) {
@@ -3115,7 +3154,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       } else {
         showGitResult("success", "Commit", "Commit criado com sucesso");
       }
-    } catch (e: any) { showGitResult("error", "Erro ao commitar", e.message || "Erro ao commitar"); }
+    } catch (e) { showGitResult("error", "Erro ao commitar", errMessage(e) || "Erro ao commitar"); }
     setScmLoading(false);
   }
 
@@ -3135,7 +3174,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       }
       await loadRepos();
       addToast("success", isLocal ? `Pasta ${target?.local_path} fechada` : `Repositório ${id} removido`);
-    } catch (e: any) { addToast("error", e.message); }
+    } catch (e) { addToast("error", errMessage(e)); }
   }
 
   async function handleCherryPick(hash: string) {
@@ -3146,8 +3185,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       showGitResult("success", "Cherry-pick", "Cherry-pick aplicado");
       await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
       return r.message;
-    } catch (e: any) {
-      showGitResult("error", "Erro no cherry-pick", e.message || "Erro no cherry-pick");
+    } catch (e) {
+      showGitResult("error", "Erro no cherry-pick", errMessage(e) || "Erro no cherry-pick");
     }
   }
 
@@ -3165,8 +3204,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       await apiClient.codeEditorCreateTag(selectedRepo.id, name, hash, message);
       showGitResult("success", "Tag", `Tag ${name} criada`);
       await loadTags(selectedRepo.id);
-    } catch (e: any) {
-      showGitResult("error", "Erro ao criar tag", e.message || "Erro ao criar tag");
+    } catch (e) {
+      showGitResult("error", "Erro ao criar tag", errMessage(e) || "Erro ao criar tag");
     }
   }
 
@@ -3177,8 +3216,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       await apiClient.codeEditorDeleteTag(selectedRepo.id, name);
       showGitResult("success", "Tag", `Tag ${name} removida`);
       await loadTags(selectedRepo.id);
-    } catch (e: any) {
-      showGitResult("error", "Erro ao deletar tag", e.message || "Erro ao deletar tag");
+    } catch (e) {
+      showGitResult("error", "Erro ao deletar tag", errMessage(e) || "Erro ao deletar tag");
     }
   }
 
@@ -3242,8 +3281,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         await loadTree(selectedRepo.id);
         await loadStatus(selectedRepo.id);
       }
-    } catch (e: any) {
-      addToast("error", e.message || "Erro no upload");
+    } catch (e) {
+      addToast("error", errMessage(e) || "Erro no upload");
     }
   }
 
@@ -3267,8 +3306,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         addToast("success", `Substituição aplicada em ${r.modified_files} arquivo(s)`);
         await loadStatus(selectedRepo.id);
       }
-    } catch (e: any) {
-      setReplaceError(e.message || "Erro na substituição");
+    } catch (e) {
+      setReplaceError(errMessage(e) || "Erro na substituição");
     } finally {
       setReplaceLoading(false);
     }
@@ -3291,8 +3330,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       );
       updateTabContent(r.content);
       addToast("success", "Formatado com sucesso");
-    } catch (e: any) {
-      addToast("error", e.message || "Erro ao formatar");
+    } catch (e) {
+      addToast("error", errMessage(e) || "Erro ao formatar");
     } finally {
       setFormatting(false);
     }
@@ -3311,8 +3350,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     const content = activeTab?.currentContent ?? "";
     if (!content.includes("apiVersion:") || !content.includes("kind:")) return null;
     const kind = content.match(/^kind:\s*(\S+)/m)?.[1] ?? "";
-    const name = content.match(/^  name:\s*(\S+)/m)?.[1] ?? content.match(/^name:\s*(\S+)/m)?.[1] ?? "";
-    const ns = content.match(/^  namespace:\s*(\S+)/m)?.[1] ?? content.match(/^namespace:\s*(\S+)/m)?.[1] ?? "";
+    const name = content.match(/^ {2}name:\s*(\S+)/m)?.[1] ?? content.match(/^name:\s*(\S+)/m)?.[1] ?? "";
+    const ns = content.match(/^ {2}namespace:\s*(\S+)/m)?.[1] ?? content.match(/^namespace:\s*(\S+)/m)?.[1] ?? "";
     if (!kind) return null;
     return { kind, name, namespace: ns };
   }, [activeTab?.currentContent]);
@@ -3329,7 +3368,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         }
       })
       .catch(() => {});
-  }, [sidePanel]);
+  }, [sidePanel, k8sContexts.length, k8sCluster]);
 
   // Auto-scroll ao adicionar linhas de output
   useEffect(() => {
@@ -3375,11 +3414,11 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
             const d = JSON.parse(dl.slice(5));
             if (d.line !== undefined) setK8sOutput(o => [...o, { text: d.line, kind: classifyK8sLine(d.line) }]);
             if (d.done && d.error) setK8sOutput(o => [...o, { text: `Erro: ${d.error}`, kind: "err" }]);
-          } catch (_) {}
+          } catch { /* evento SSE que não é JSON (parcial/keep-alive): ignora */ }
         }
       }
-    } catch (e: any) {
-      setK8sOutput(o => [...o, { text: `Erro: ${e.message}`, kind: "err" }]);
+    } catch (e) {
+      setK8sOutput(o => [...o, { text: `Erro: ${errMessage(e)}`, kind: "err" }]);
     } finally {
       setK8sRunning(null);
     }
@@ -3411,8 +3450,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         setActiveTabIdx(openTabs.length);
       }
       addToast("success", `${k8sManifest.kind}/${k8sManifest.name} carregado`);
-    } catch (e: any) {
-      setK8sOutput([{ text: `Erro: ${e.message}`, kind: "err" }]);
+    } catch (e) {
+      setK8sOutput([{ text: `Erro: ${errMessage(e)}`, kind: "err" }]);
     } finally {
       setK8sRunning(null);
     }
@@ -3517,10 +3556,10 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     // O Monaco reaproveita um único model entre abas (não há prop `path` no <Editor>),
     // então só é possível saber o status de erro do arquivo atualmente ativo — reflete
     // isso em filesWithErrors sempre que os markers mudam (LSP go/python ou TS/JS nativo).
-    if (!(window as any).__ceMarkerWatcherRegistered) {
-      (window as any).__ceMarkerWatcherRegistered = true;
+    if (!ceWindow.__ceMarkerWatcherRegistered) {
+      ceWindow.__ceMarkerWatcherRegistered = true;
       monacoInstance.editor.onDidChangeMarkers(() => {
-        const filePath = (window as any).__lspActiveFilePath as string | undefined;
+        const filePath = ceWindow.__lspActiveFilePath as string | undefined;
         if (!filePath) return;
         const markers = monacoInstance.editor.getModelMarkers({});
         const hasError = markers.some(m => m.severity === monacoInstance.MarkerSeverity.Error);
@@ -3536,8 +3575,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
     // ── TypeScript/JavaScript — worker built-in do Monaco ──────────────────
     // Configura uma única vez (flag global para evitar reconfiguração)
-    if (!(window as any).__monacoTSConfigured) {
-      (window as any).__monacoTSConfigured = true;
+    if (!ceWindow.__monacoTSConfigured) {
+      ceWindow.__monacoTSConfigured = true;
       const ts = monacoInstance.languages.typescript;
 
       const compilerOpts = {
@@ -3568,9 +3607,12 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     // openCodeEditor do serviço interno para usar nosso sistema de abas.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const editorSvc = (editor as any)._codeEditorService;
-    if (editorSvc && typeof editorSvc.openCodeEditor === 'function' && !(window as any).__lspDefHandlerRegistered) {
-      (window as any).__lspDefHandlerRegistered = true;
-      editorSvc.openCodeEditor = async (input: any) => {
+    if (editorSvc && typeof editorSvc.openCodeEditor === 'function' && !ceWindow.__lspDefHandlerRegistered) {
+      ceWindow.__lspDefHandlerRegistered = true;
+      editorSvc.openCodeEditor = async (input: {
+        resource?: MonacoEditorNS.Uri;
+        options?: { selection?: { startLineNumber?: number; startColumn?: number } };
+      }) => {
         const uri = input?.resource;
         if (!uri || uri.scheme !== 'lspdef') return null;
 
@@ -3581,7 +3623,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         const line: number = input.options?.selection?.startLineNumber ?? 1;
         const col: number  = input.options?.selection?.startColumn  ?? 1;
 
-        const activeFilePath = (window as any).__lspActiveFilePath as string | undefined;
+        const activeFilePath = ceWindow.__lspActiveFilePath as string | undefined;
         if (filePath === activeFilePath) {
           // Mesmo arquivo — navega direto
           editorRef.current?.revealLineInCenter(line);
@@ -3598,8 +3640,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     }
 
     // ── Go via gopls — providers registrados uma vez por sessão ──────────────
-    if (!(window as any).__monacoGoLSPRegistered) {
-      (window as any).__monacoGoLSPRegistered = true;
+    if (!ceWindow.__monacoGoLSPRegistered) {
+      ceWindow.__monacoGoLSPRegistered = true;
 
       // mapa LSP kind → Monaco kind
       const lspKindToMonaco = (k: number): MonacoEditorNS.languages.CompletionItemKind => {
@@ -3624,8 +3666,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       const compDisp = monacoInstance.languages.registerCompletionItemProvider("go", {
         triggerCharacters: [".", "(", " ", "\t"],
         provideCompletionItems: async (model, position) => {
-          const repoId = (window as any).__lspActiveRepoId as string | undefined;
-          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          const repoId = ceWindow.__lspActiveRepoId as string | undefined;
+          const filePath = ceWindow.__lspActiveFilePath as string | undefined;
           if (!repoId || !filePath) return { suggestions: [] };
           try {
             const result = await apiClient.lspComplete(
@@ -3654,8 +3696,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       // Hover provider
       const hoverDisp = monacoInstance.languages.registerHoverProvider("go", {
         provideHover: async (model, position) => {
-          const repoId = (window as any).__lspActiveRepoId as string | undefined;
-          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          const repoId = ceWindow.__lspActiveRepoId as string | undefined;
+          const filePath = ceWindow.__lspActiveFilePath as string | undefined;
           if (!repoId || !filePath) return null;
           try {
             const result = await apiClient.lspHover(
@@ -3680,8 +3722,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       // Definition provider
       const defDisp = monacoInstance.languages.registerDefinitionProvider("go", {
         provideDefinition: async (_model, position) => {
-          const repoId = (window as any).__lspActiveRepoId as string | undefined;
-          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          const repoId = ceWindow.__lspActiveRepoId as string | undefined;
+          const filePath = ceWindow.__lspActiveFilePath as string | undefined;
           if (!repoId || !filePath) return null;
           try {
             const result = await apiClient.lspDefinition(
@@ -3706,9 +3748,9 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       lspProviderDisposables.current = [compDisp, hoverDisp, defDisp];
 
       // expõe helper de diagnósticos globalmente (genérico por owner/source)
-      (window as any).__lspApplyDiagnostics = (
+      ceWindow.__lspApplyDiagnostics = (
         model: MonacoEditorNS.editor.ITextModel,
-        diagnostics: Array<{ range: { start: { line: number; character: number }; end: { line: number; character: number } }; severity: number; message: string; source?: string }>,
+        diagnostics: LspDiagnostic[],
         owner = "lsp"
       ) => {
         const markers = diagnostics.map(d => ({
@@ -3725,8 +3767,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     }
 
     // ── Python via pyright — providers registrados uma vez por sessão ────────
-    if (!(window as any).__monacoPyLSPRegistered) {
-      (window as any).__monacoPyLSPRegistered = true;
+    if (!ceWindow.__monacoPyLSPRegistered) {
+      ceWindow.__monacoPyLSPRegistered = true;
 
       const lspKindToMonaco = (k: number): MonacoEditorNS.languages.CompletionItemKind => {
         const m = monacoInstance.languages.CompletionItemKind;
@@ -3742,8 +3784,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       monacoInstance.languages.registerCompletionItemProvider("python", {
         triggerCharacters: [".", "(", " ", "\t", "["],
         provideCompletionItems: async (model, position) => {
-          const repoId = (window as any).__lspActiveRepoId as string | undefined;
-          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          const repoId = ceWindow.__lspActiveRepoId as string | undefined;
+          const filePath = ceWindow.__lspActiveFilePath as string | undefined;
           if (!repoId || !filePath) return { suggestions: [] };
           try {
             const result = await apiClient.lspComplete(
@@ -3771,8 +3813,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
       monacoInstance.languages.registerHoverProvider("python", {
         provideHover: async (model, position) => {
-          const repoId = (window as any).__lspActiveRepoId as string | undefined;
-          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          const repoId = ceWindow.__lspActiveRepoId as string | undefined;
+          const filePath = ceWindow.__lspActiveFilePath as string | undefined;
           if (!repoId || !filePath) return null;
           try {
             const result = await apiClient.lspHover(
@@ -3796,8 +3838,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
       monacoInstance.languages.registerDefinitionProvider("python", {
         provideDefinition: async (_model, position) => {
-          const repoId = (window as any).__lspActiveRepoId as string | undefined;
-          const filePath = (window as any).__lspActiveFilePath as string | undefined;
+          const repoId = ceWindow.__lspActiveRepoId as string | undefined;
+          const filePath = ceWindow.__lspActiveFilePath as string | undefined;
           if (!repoId || !filePath) return null;
           try {
             const result = await apiClient.lspDefinition(
@@ -3929,8 +3971,15 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
         {selectedRepo && openTabs.length > 0 && (
           <Button variant={splitActive ? "default" : "ghost"} size="sm" className="h-6 text-xs gap-1"
-            title="Dividir editor" onClick={() => setSplitActive(v => !v)}>
+            title="Dividir editor" onClick={() => { setSplitActive(v => !v); setSplitDiff(false); }}>
             <Columns2 className="w-3 h-3" />
+          </Button>
+        )}
+        {selectedRepo && splitActive && openTabs.length > 0 && (
+          <Button variant={splitDiff ? "default" : "ghost"} size="sm" className="h-6 text-xs gap-1"
+            title="Comparar (diff) os arquivos das duas janelas do editor dividido"
+            onClick={() => setSplitDiff(v => !v)}>
+            <GitCompare className="w-3 h-3" />Diff
           </Button>
         )}
         {selectedRepo && (
@@ -4839,7 +4888,68 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                   </Button>
                 </div>
               </div>
-              <div ref={editorRowRef} className="flex-1 min-h-0 flex flex-row">
+              <div ref={editorRowRef} className="flex-1 min-h-0 flex flex-row relative">
+                {/* Diff entre as janelas do split: sobreposto às duas, que continuam montadas por baixo
+                    (desmontar o Editor principal derrubaria refs/LSP/decorations ligados a editorRef). */}
+                {splitActive && splitDiff && openTabs[rightTabIdx] && (() => {
+                  const leftT = activeTab;
+                  const rightT = openTabs[rightTabIdx];
+                  const [orig, mod] = splitDiffSwapped ? [rightT, leftT] : [leftT, rightT];
+                  const same = leftT.repoId === rightT.repoId && leftT.node.path === rightT.node.path;
+                  return (
+                    <div className="absolute inset-0 z-10 flex flex-col bg-[#1e1e1e]">
+                      <div className="flex items-center gap-2 px-3 py-1 border-b border-border/50 flex-shrink-0 bg-card/20 text-xs">
+                        <GitCompare className="w-3 h-3 text-sky-400 flex-shrink-0" />
+                        <span className="font-mono text-red-300 truncate min-w-0" title={orig.node.path}>{orig.node.path}</span>
+                        <span className="text-muted-foreground flex-shrink-0">↔</span>
+                        <span className="font-mono text-emerald-300 truncate min-w-0" title={mod.node.path}>{mod.node.path}</span>
+                        <span className="text-muted-foreground flex-shrink-0">
+                          {same ? "· mesmo arquivo nas duas janelas" : splitDiffCount === null ? "" : splitDiffCount === 0 ? "· sem diferenças" : `· ${splitDiffCount} diferença${splitDiffCount > 1 ? "s" : ""}`}
+                        </span>
+                        <div className="ml-auto flex items-center gap-1 flex-shrink-0">
+                          <Button variant={splitDiffIgnoreWs ? "default" : "ghost"} size="sm" className="h-5 text-[11px] px-2"
+                            title="Ignorar espaços no início/fim das linhas" onClick={() => setSplitDiffIgnoreWs(v => !v)}>
+                            Ignorar espaços
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-5 text-[11px] px-2 gap-1" title="Inverter lados"
+                            onClick={() => setSplitDiffSwapped(v => !v)}>
+                            <ArrowRightLeft className="w-3 h-3" />Inverter
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0" title="Fechar diff (volta às duas janelas)"
+                            onClick={() => setSplitDiff(false)}>
+                            <X className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        <DiffEditor
+                          height="100%"
+                          original={orig.currentContent}
+                          modified={mod.currentContent}
+                          originalLanguage={extToLanguage(orig.node.name)}
+                          modifiedLanguage={extToLanguage(mod.node.name)}
+                          theme="vs-dark"
+                          onMount={ed => {
+                            setSplitDiffCount(null);
+                            ed.onDidUpdateDiff(() => setSplitDiffCount(ed.getLineChanges()?.length ?? 0));
+                          }}
+                          options={{
+                            readOnly: true,
+                            renderSideBySide: true,
+                            ignoreTrimWhitespace: splitDiffIgnoreWs,
+                            automaticLayout: true,
+                            minimap: { enabled: false },
+                            fontSize: fontSize,
+                            lineHeight: Math.round(fontSize * 1.55),
+                            fontFamily: "'Cascadia Code','Fira Code','Consolas','Courier New',monospace",
+                            wordWrap: wordWrap ? "on" : "off",
+                            scrollBeyondLastLine: false,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
                 {/* Pane esquerdo (principal) */}
                 <div
                   className="min-h-0 min-w-0 flex flex-col"
@@ -5824,6 +5934,9 @@ function RepoTerminal({ repoId, repoName, height, font, visible, onFontChange, o
       ws.close();
       term.dispose();
     };
+  // Recria o terminal só ao trocar de repo. A fonte é aplicada pelo efeito de [font] abaixo,
+  // sem recriar — com `font` aqui, trocar a fonte fecharia a sessão do shell.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoId]);
 
   // Refit quando o painel é redimensionado verticalmente
@@ -6049,7 +6162,7 @@ function parseConflicts(content: string): { blocks: ConflictBlock[]; hasConflict
 function rebuildContent(original: string, blocks: ConflictBlock[]): string {
   if (blocks.length === 0) return original;
   // Reconstrói o arquivo substituindo cada bloco de conflito pela escolha
-  let content = original;
+  const content = original;
   // Substitui de trás para frente para manter índices de linha
   const lines = content.split("\n");
   const positions: { start: number; end: number; replacement: string }[] = [];
@@ -6126,8 +6239,8 @@ function ConflictResolverModal({ repoId, files, onClose, onDone, onAbort }: Conf
       // Avança para o próximo arquivo com conflito
       const next = files.find(f => f !== selectedFile && !resolvedFiles.has(f));
       if (next) setSelectedFile(next);
-    } catch (e: any) {
-      setError(e.message || "Erro ao salvar");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao salvar");
     } finally {
       setSaving(false);
     }
@@ -6138,8 +6251,8 @@ function ConflictResolverModal({ repoId, files, onClose, onDone, onAbort }: Conf
     try {
       await apiClient.codeEditorCommitMerge(repoId);
       onDone();
-    } catch (e: any) {
-      setError(e.message || "Erro ao fazer commit");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao fazer commit");
     } finally {
       setCommitting(false);
     }
@@ -6150,8 +6263,8 @@ function ConflictResolverModal({ repoId, files, onClose, onDone, onAbort }: Conf
     try {
       await apiClient.codeEditorAbortMerge(repoId);
       onAbort();
-    } catch (e: any) {
-      setError(e.message || "Erro ao abortar");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao abortar");
     } finally {
       setAborting(false);
     }
@@ -6309,8 +6422,8 @@ function BranchDiffModal({ repoId, branches, onClose }: BranchDiffModalProps) {
       const r = await apiClient.codeEditorGetBranchDiff(repoId, from, to);
       setDiff(r.diff);
       setFilesSummary(r.files);
-    } catch (e: any) {
-      setError(e.message || "Erro ao comparar");
+    } catch (e) {
+      setError(errMessage(e) || "Erro ao comparar");
     } finally {
       setLoading(false);
     }

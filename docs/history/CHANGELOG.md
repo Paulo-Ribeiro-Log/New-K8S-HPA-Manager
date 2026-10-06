@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — Diff entre as janelas do editor dividido (Outubro 2026)
+
+**Novo:** com "Dividir editor" ativo, aparece no cabeçalho o botão **Diff**, que compara o arquivo da janela esquerda com o da direita (Monaco `DiffEditor`, lado a lado, somente leitura). O botão não existe fora do split, e desligar o split desliga o diff. O diff fica sobreposto às duas janelas, que continuam montadas por baixo (desmontar o editor principal quebraria refs, LSP e decorations ligados ao `editorRef`). A barra do diff mostra os dois caminhos, a contagem de diferenças (`getLineChanges`), "Ignorar espaços" (`ignoreTrimWhitespace`, desligado por padrão porque espaço importa em YAML) e "Inverter" lados. Compara o conteúdo atual das abas, inclusive o que ainda não foi salvo.
+
 ### Code Editor — "View Plan": plan do Atlantis do PR da branch atual (Outubro 2026)
 
 **Novo:** botão **View Plan** no cabeçalho do Code Editor (aparece fora de `main`/`master`). Ele mostra, só para leitura, o último plan que o Atlantis comentou no PR da branch atual: o conteúdo dos blocos `<details><summary>Show Output</summary>` com o diff do Terraform.
