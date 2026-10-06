@@ -60,38 +60,26 @@ k8s-hpa-web start/stop/status/logs/restart            # Gerenciar servidor web
 
 ## Creating GitHub Releases
 
+A release oficial é gerada pelo workflow `.github/workflows/release.yml` (disparo manual, `workflow_dispatch`):
+
 ```bash
-# 1. Configurar GitHub token (apenas primeira vez)
-./setup-github-token.sh
-
-# 2. Criar RELEASE_NOTES_vX.X.X.md com descrição da versão
-
-# 3. Compilar binários para todas as plataformas
-make release
-
-# 4. Criar release no GitHub (método recomendado - script genérico)
-./create-release.sh 1.0.5
-
-# Ou deixar o script detectar versão via git tag
+# 1. Criar e publicar a tag
 git tag v1.0.5
-./create-release.sh
+git push origin v1.0.5
 
-# Script específico de versão (se existir)
-./create-release-v1.0.4.sh
+# 2. Disparar o workflow apontando para a tag
+#    GitHub → Actions → Release → Run workflow → "Use workflow from": v1.0.5
+gh workflow run release.yml --ref v1.0.5   # equivalente via CLI
 ```
 
-**O script `create-release.sh`**:
-- ✅ Busca token automaticamente em múltiplas localizações
-- ✅ Funciona para qualquer versão (genérico e reutilizável)
-- ✅ Detecta versão via git tag ou argumento
-- ✅ Verifica se binários existem antes de criar release
-- ✅ Pede confirmação antes de publicar
-- ✅ Cria release no GitHub com release notes
-- ✅ Faz upload automático dos 4 binários (Linux, macOS Intel/ARM, Windows)
+**O workflow `release.yml`**:
+- ✅ Valida que o ref é uma tag `v*`
+- ✅ Builda o frontend uma vez e reutiliza nos jobs de cada plataforma
+- ✅ Compila com `make release-single` em runners nativos (Linux amd64, macOS Intel/ARM) com CGO ligado
+- ✅ Faz smoke-test do SQLite real nos binários macOS
+- ✅ Cria a release no GitHub com os binários anexados
 
-📚 **Documentação de releases:**
-- `GITHUB_TOKEN_SETUP.md` - Guia completo de configuração de token
-- `.env.example` - Template para configuração de token
+⚠️ **Não use `make release` + `./create-release.sh` para publicar**: num host Linux o `make release` gera binários darwin com SQLite quebrado (cgo desligado). Os scripts `create-release*.sh` da raiz são legado.
 
 ## Building and Running (TUI)
 

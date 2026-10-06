@@ -18,11 +18,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Comandos
 
 ```bash
-make build                              # backend Go (BUILD_PARALLEL=2 por padrão, WSL2; BUILD_PARALLEL=4 se sobrar RAM)
-./rebuild-web.sh -b                     # `make build-web` + restart em background (-n: só restart, -k: mata :8080, -s: status, -p: porta); log em /tmp/k8s-hpa-web.log, health em GET /health
+make build                              # backend Go 1.25 (versão da CI); BUILD_PARALLEL=2 por padrão (WSL2), BUILD_PARALLEL=4 se sobrar RAM
+./rebuild-web.sh -b                     # `make build-web` + restart em background (-f: foreground, -n: só restart, -k: mata :8080, -s: status, -p: porta, --ai-provider/--model: sobe já com provedor de IA); log em /tmp/k8s-hpa-web.log, health em GET /health
 make web-build                          # só frontend: vite build + copia dist/ para internal/web/static/ (é o que gera os commits de assets)
 ./build/new-k8s-hpa web -f              # servidor em foreground (porta 8080); `web --ad` = bypass RBAC de emergência
 ./build/new-k8s-hpa autodiscover        # descobre clusters AKS+EKS+GKE em paralelo
+# outros subcomandos (cmd/): version, diagnose-ca [url] (CA customizada), teams-discover (mapeia APIs internas do Teams)
 make web-dev                            # Vite HMR (5173) — rode o backend em paralelo
 
 go test -v ./internal/... -race                       # tudo, com race detector
@@ -45,6 +46,7 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - `go.mod` tem `godebug tlsmlkem=0` (o key share pós-quântico do Go 1.24+ trava handshake TLS em VPN/EKS privado). Não remover. O comentário no `go.mod` cita a seção "Bug real corrigido — TLS handshake timeout…", que hoje está em `docs/history/CLAUDE-DETAILED-NOTES.md` (~linha 326).
 - `make release`/`build-all` num host Linux geram binários **darwin com SQLite quebrado** (cgo desligado → stub do `go-sqlite3` compila mas falha em runtime; detecção em `internal/storage/sqlite_health.go`). Release de verdade = workflow `release.yml` (runners macOS nativos, alvo `make release-single` com `GOOS`/`GOARCH` no ambiente). O `make release` em `ci.yml` é só smoke-test de compilação.
 - Não existe test runner de frontend. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
+- A raiz tem muitos scripts soltos (`create-release*.sh`, `create_release.sh`, `web-server*.sh`, `new-web-server.sh`, `teste.*`, …). O fluxo oficial é `make` + `rebuild-web.sh` (dev) e `release.yml` (release); `install.sh`/`auto-update.sh`/`uninstall.sh` são os instaladores do usuário final. Não tome os demais como referência.
 
 ## Arquitetura (visão geral)
 
