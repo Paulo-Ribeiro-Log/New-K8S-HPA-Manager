@@ -914,6 +914,10 @@ func (s *Server) setupRoutes() {
 	api.POST("/batch/apply", rbacMiddleware.RequireSREGroup(), cronJobHandler.ApplyBatchManifest)
 	api.POST("/jobs", rbacMiddleware.RequireSREGroup(), cronJobHandler.ApplyBatchManifest)
 	api.POST("/cronjobs/new", rbacMiddleware.RequireSREGroup(), cronJobHandler.ApplyBatchManifest)
+	// Exclusão com prévia (Jobs do CronJob, Helm/Argo/Flux) e precondition de UID
+	api.GET("/cronjobs/:cluster/:namespace/:name/delete-preview", cronJobHandler.CronJobDeletePreview)
+	api.DELETE("/cronjobs/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), cronJobHandler.DeleteCronJob)
+	api.DELETE("/jobs/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), cronJobHandler.DeleteJob)
 
 	// Prometheus Stack
 	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager, s.historyTracker)
