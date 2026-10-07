@@ -2871,28 +2871,14 @@ class APIClient {
     );
   }
 
-  async createJob(cluster: string, namespace: string, yamlContent: string, dryRun = false): Promise<{ name: string; namespace: string; dry_run: boolean }> {
-    const response = await this.request<APIResponse<{ name: string; namespace: string; dry_run: boolean }>>(
-      "/jobs",
-      {
-        method: "POST",
-        body: JSON.stringify({ cluster, namespace, yaml: yamlContent, dry_run: dryRun }),
-      }
-    );
-    if (response.error) throw new Error(response.error || "Erro ao criar Job");
-    return response.data!;
-  }
-
-  async createCronJob(cluster: string, namespace: string, yamlContent: string, dryRun = false): Promise<{ name: string; namespace: string; schedule: string; dry_run: boolean }> {
-    const response = await this.request<APIResponse<{ name: string; namespace: string; schedule: string; dry_run: boolean }>>(
-      "/cronjobs/new",
-      {
-        method: "POST",
-        body: JSON.stringify({ cluster, namespace, yaml: yamlContent, dry_run: dryRun }),
-      }
-    );
-    if (response.error) throw new Error(response.error || "Erro ao criar CronJob");
-    return response.data!;
+  // Cria/aplica Job ou CronJob (+ ServiceAccount/ConfigMap/Role/RoleBinding no mesmo YAML).
+  // O backend faz dry-run de todos os documentos (passa pelo Gatekeeper/Kyverno) e só aplica se
+  // tudo passar; erros de validação vêm em `resources` (HTTP 200), erros do pedido lançam.
+  async applyBatchManifest(cluster: string, namespace: string, yamlContent: string, dryRun = false): Promise<BatchApplyResponse> {
+    return this.request<BatchApplyResponse>("/batch/apply", {
+      method: "POST",
+      body: JSON.stringify({ cluster, namespace, yaml: yamlContent, dry_run: dryRun }),
+    });
   }
 
   async updateCronJob(
@@ -5615,6 +5601,33 @@ export interface CodeEditorBranches {
   local: string[];
   remote: string[];
   fetch_error?: string; // `git fetch` falhou — remotos podem estar desatualizados
+}
+
+export interface BatchViolation {
+  engine: string; // Gatekeeper | Kyverno | webhook
+  policy?: string;
+  rule?: string;
+  message: string;
+}
+
+export interface BatchResourceResult {
+  kind: string;
+  name: string;
+  namespace: string;
+  action: "create" | "update" | "";
+  status: "ok" | "error" | "pending";
+  error?: string;
+  hint?: string;
+  violations?: BatchViolation[];
+}
+
+export interface BatchApplyResponse {
+  success: boolean;
+  dry_run: boolean;
+  applied: boolean; // false = parou na validação (nada mudou no cluster)
+  namespace: string;
+  resources: BatchResourceResult[];
+  warnings?: string[];
 }
 
 export interface CodeEditorPlanPR {

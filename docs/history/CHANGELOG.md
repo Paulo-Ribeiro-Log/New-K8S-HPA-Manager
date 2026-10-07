@@ -3,6 +3,25 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### CronJobs — criar Job/CronJob: refeito (multi-documento, dry-run com Gatekeeper/Kyverno, resultado por recurso) (Outubro 2026)
+
+**Sintoma:** o botão "Novo" (Job/CronJob) não funcionava.
+
+**Causas (bugs reais):**
+- **Sucesso aparecia como erro:** o backend respondia `{ success, name, ... }` sem `data`, e o frontend lia `response.data!.name` — o recurso era criado, mas a tela mostrava "Cannot read properties of undefined" (e a 2ª tentativa dava "already exists").
+- **YAML com vários documentos:** `sigs.k8s.io/yaml` lia só o 1º documento, sem checar o `kind`. Um manifesto como SA + Role + RoleBinding + CronJob virava um "CronJob" montado a partir da ServiceAccount (sem schedule nem containers), recusado pela API; SA/Role/RoleBinding nunca eram criados.
+- **Namespace sobrescrito só no metadata:** os `subjects` da RoleBinding continuavam no namespace antigo.
+- O modelo padrão (`busybox:latest`, sem requests/limits nem securityContext) era recusado por políticas comuns de Gatekeeper/Kyverno.
+
+**Correção:** `POST /api/v1/batch/apply` (`handlers/batch_apply.go`; `/jobs` e `/cronjobs/new` viraram aliases; `CreateJobFromYAML`/`CreateCronJobFromYAML` removidos). Aceita multi-documento com `ServiceAccount`, `ConfigMap`, `Role`, `RoleBinding`, `Job` e `CronJob` (só de namespace; precisa ter um Job/CronJob), aplica nessa ordem e:
+- **Duas fases:** dry-run no servidor de **todos** os documentos — passa pelos webhooks do Gatekeeper/Kyverno — e só aplica se tudo passar. Sem rollback se algo falhar no meio: a resposta diz o que já foi aplicado e o que ficou pendente.
+- **Server-side apply** com `fieldValidation=Strict` e `fieldManager=k8s-hpa-manager` (cria ou atualiza, como `kubectl apply`; campo inexistente é erro). Job existente é recusado (Jobs são imutáveis) com orientação; Job só com `generateName` usa POST.
+- **Namespace:** o do seletor (ou o do YAML) vale para todos; documento em outro namespace é recusado, não movido. Subjects ServiceAccount sem namespace recebem o do manifesto.
+- **Política barrando:** mensagens do Gatekeeper (`[constraint] msg`) e do Kyverno (`policy:` / `regra: msg`) viram `violations` (engine/política/regra/mensagem). Dicas para escalada de RBAC (Role com permissão que o usuário não tem), conflito de field manager (Helm/kubectl) e campo inexistente.
+- **Avisos:** `serviceAccountName`/Role referenciados que não estão no YAML nem no cluster.
+- **Histórico:** registra `apply_batch_manifest` no `HistoryTracker`.
+- **Frontend:** `apiClient.applyBatchManifest`; o modal mostra o resultado por recurso (criar/atualizar, status, violações, dica, avisos) em vez de um toast; modelos novos com tag fixa, requests/limits e non-root. Testes com o formato do manifesto real (SA + Role + RoleBinding + CronJob) e um servidor HTTP que imita a API (dry-run, apply, recusa do Kyverno, Job existente, generateName).
+
 ### CronJobs — painel direito com agendamento, último job e execução atrasada (Outubro 2026)
 
 **Bug corrigido:** a tabela marcava como "Falhou" todo CronJob com `failed_jobs > 0`, mas `successful_jobs`/`failed_jobs` são os **limites** de histórico do spec (`successful/failedJobsHistoryLimit`), não contagens. Como o padrão do `failedJobsHistoryLimit` é 1, quase todo CronJob aparecia como falho. O detalhe (`CronJobEditor`) mostrava esses limites como "Sucessos/Falhas". Os campos continuam com o mesmo nome por compatibilidade; as contagens reais vêm em `history_succeeded`/`history_failed`.
