@@ -11,6 +11,10 @@
 
 **Correção:** todos os atalhos passaram para `editor.addAction({ keybindings })`, que é amarrado ao editor (precondition `editorId`) e removido no dispose. No Code Editor: Ctrl+S, Shift+Alt+F, Ctrl+Alt+F e Ctrl+P. No `MonacoYamlEditor` e no `TeamsBroadcastTab`: Ctrl+S. O Ctrl+S da janela direita lê `saveRightFileRef`. Regra: **não use `addCommand` para atalhos de editor**, use `addAction`.
 
+### Nodes — tabela de nodes no painel direito (estilo k9s) (Outubro 2026)
+
+**Novo:** o 1º nível do painel direito da aba Nodes (navegação por node, sem node selecionado) era uma lista só com nome, pool e quantidade de pods. Virou uma tabela com as colunas do k9s: NAME, STATUS (como no `kubectl get nodes`: `Ready,SchedulingDisabled`, mais as pressures), POOL, TAINTS (quantidade; a lista no tooltip), VERSION, PODS (uso/capacidade), CPU, MEM, %CPU, %MEM, CPU/A, MEM/A (allocatable) e AGE. Unidades como no `kubectl top`: CPU em millicores, memória em Mi/Gi. % ≥75 em amarelo e ≥90 em vermelho. Ordenação clicando no cabeçalho (números começam do maior). Clique na linha continua abrindo os namespaces do node; o checkbox de lote continua. Só frontend: os dados já vinham em `ClusterNodeSummary`.
+
 ### Code Editor — Diff entre as janelas do editor dividido (Outubro 2026)
 
 **Novo:** com "Dividir editor" ativo, aparece no cabeçalho o botão **Diff**, que compara o arquivo da janela esquerda com o da direita (Monaco `DiffEditor`, lado a lado, somente leitura). O botão não existe fora do split, e desligar o split desliga o diff. O diff fica sobreposto às duas janelas, que continuam montadas por baixo (desmontar o editor principal quebraria refs, LSP e decorations ligados ao `editorRef`). A barra do diff mostra os dois caminhos, a contagem de diferenças (`getLineChanges`), "Ignorar espaços" (`ignoreTrimWhitespace`, desligado por padrão porque espaço importa em YAML) e "Inverter" lados. Compara o conteúdo atual das abas, inclusive o que ainda não foi salvo.

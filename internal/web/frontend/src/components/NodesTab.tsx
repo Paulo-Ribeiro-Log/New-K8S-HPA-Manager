@@ -58,6 +58,32 @@ type StatusFilter = "all" | "ready" | "notready" | "cordoned";
 const fmtCores = (m: number) => (m / 1000).toFixed(m >= 10000 ? 0 : 1);
 const fmtGiB = (b: number) => (b / 1024 ** 3).toFixed(1);
 const pct = (used: number, total: number) => (used >= 0 && total > 0 ? Math.round((used / total) * 100) : null);
+// Unidades no estilo do k9s/kubectl top: CPU em millicores, memória em Mi/Gi.
+const fmtMilli = (m: number) => (m < 0 ? "—" : `${Math.round(m)}m`);
+const fmtMem = (b: number) => (b < 0 ? "—" : b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)}Gi` : `${Math.round(b / 1024 ** 2)}Mi`);
+const pctClass = (v: number | null) => (v === null ? "text-muted-foreground" : v >= 90 ? "text-red-500 font-semibold" : v >= 75 ? "text-amber-500" : "");
+
+// Status no formato do `kubectl get nodes` ("Ready,SchedulingDisabled"), mais as pressures.
+const nodeStatusText = (n: ClusterNodeSummary) =>
+  [n.status, n.unschedulable ? "SchedulingDisabled" : "", ...n.pressures].filter(Boolean).join(",");
+
+// Colunas da tabela de nodes do painel direito (estilo k9s). `sort` devolve o valor de ordenação.
+type NodeColKey = "name" | "status" | "pool" | "taints" | "version" | "pods" | "cpu" | "mem" | "pcpu" | "pmem" | "cpua" | "mema" | "age";
+const NODE_COLS: { key: NodeColKey; label: string; title: string; num?: boolean; sort: (n: ClusterNodeSummary) => number | string }[] = [
+  { key: "name", label: "NAME", title: "Nome do node", sort: n => n.name },
+  { key: "status", label: "STATUS", title: "Status do node (como no kubectl get nodes) e pressures", sort: n => nodeStatusText(n) },
+  { key: "pool", label: "POOL", title: "Node pool / node group", sort: n => n.nodePool ?? "" },
+  { key: "taints", label: "TAINTS", title: "Quantidade de taints (passe o mouse na célula para ver)", num: true, sort: n => n.taints.length },
+  { key: "version", label: "VERSION", title: "Versão do kubelet", sort: n => n.kubeletVersion },
+  { key: "pods", label: "PODS", title: "Pods no node / capacidade", num: true, sort: n => n.podsCount },
+  { key: "cpu", label: "CPU", title: "Uso de CPU (Metrics Server), em millicores", num: true, sort: n => n.cpuUsageMillis },
+  { key: "mem", label: "MEM", title: "Uso de memória (Metrics Server)", num: true, sort: n => n.memUsageBytes },
+  { key: "pcpu", label: "%CPU", title: "Uso de CPU / CPU allocatable", num: true, sort: n => pct(n.cpuUsageMillis, n.cpuAllocatableMillis) ?? -1 },
+  { key: "pmem", label: "%MEM", title: "Uso de memória / memória allocatable", num: true, sort: n => pct(n.memUsageBytes, n.memAllocatableBytes) ?? -1 },
+  { key: "cpua", label: "CPU/A", title: "CPU allocatable (o que o scheduler pode distribuir entre os pods)", num: true, sort: n => n.cpuAllocatableMillis },
+  { key: "mema", label: "MEM/A", title: "Memória allocatable (o que o scheduler pode distribuir entre os pods)", num: true, sort: n => n.memAllocatableBytes },
+  { key: "age", label: "AGE", title: "Idade do node", num: true, sort: n => -new Date(n.createdAt).getTime() },
+];
 
 // Pools que ficariam sem nenhum node Ready aceitando pods se `targets` entrarem em cordon (cordon
 // direto, em lote ou o cordon que o drain faz). Usado nos avisos das confirmações.
@@ -770,6 +796,7 @@ function NodeWorkloadsNavigator({
   const [node, setNode] = useState("");
   const [namespace, setNamespace] = useState("");
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<{ key: NodeColKey; desc: boolean }>({ key: "name", desc: false });
   // DeploymentsTab chama onNamespaceChange("") se o namespace sumir — volta para a lista.
   const handleNamespaceChange = useCallback((ns: string) => setNamespace(ns), []);
 
@@ -882,41 +909,98 @@ function NodeWorkloadsNavigator({
     );
   }
 
-  // Nível 1: nodes.
-  const list = nodes.filter(n => !q || [n.name, n.nodePool, n.zone].some(v => v?.toLowerCase().includes(q)));
+  // Nível 1: nodes, em tabela no estilo do k9s (colunas ordenáveis pelo cabeçalho).
+  const filteredNodes = nodes.filter(n => !q || [n.name, n.nodePool, n.zone, n.kubeletVersion].some(v => v?.toLowerCase().includes(q)));
+  const sortCol = NODE_COLS.find(c => c.key === sort.key) ?? NODE_COLS[0];
+  const list = [...filteredNodes].sort((a, b) => {
+    const va = sortCol.sort(a);
+    const vb = sortCol.sort(b);
+    const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
+    return sort.desc ? -cmp : cmp;
+  });
+  // Números: o 1º clique ordena do maior para o menor; texto: A→Z.
+  const toggleSort = (key: NodeColKey) =>
+    setSort(prev => (prev.key === key ? { key, desc: !prev.desc } : { key, desc: !!NODE_COLS.find(c => c.key === key)?.num }));
+  const td = "px-2 py-1.5 whitespace-nowrap";
   return (
     <div className="flex flex-col h-full min-h-0 gap-2">
-      {searchBox("Filtrar nodes...")}
+      {searchBox("Filtrar nodes (nome, pool, zona, versão)...")}
       <div className="flex items-center justify-between gap-2 flex-shrink-0">
         {selectAllRow(list, q ? "Todos os filtrados" : "Todos")}
         <p className="text-xs text-muted-foreground">clique no node para ver os namespaces com pods nele</p>
       </div>
-      <div className="flex-1 overflow-auto min-h-0 border border-border/50 rounded-md divide-y divide-border/50">
+      <div className="flex-1 overflow-auto min-h-0 border border-border/50 rounded-md">
         {list.length === 0 ? (
           <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">Nenhum node corresponde à busca</div>
         ) : (
-          list.map(n => (
-            <button key={n.name} onClick={() => setNode(n.name)} className={`${row} hover:bg-primary/10 ${checked.has(n.name) ? "bg-primary/5" : ""}`}>
-              <span className="flex items-center gap-2 min-w-0">
-                {/* Checkbox — clique faz toggle sem abrir o node */}
-                <span className="flex items-center" onClick={e => { e.stopPropagation(); onToggle(n.name, !checked.has(n.name)); }}>
-                  <Checkbox checked={checked.has(n.name)} onCheckedChange={() => {}} className="w-3.5 h-3.5 rounded-full pointer-events-none" />
-                </span>
-                <span className={`h-2 w-2 rounded-full flex-shrink-0 ${n.status === "Ready" ? "bg-green-500" : "bg-red-500"}`} title={n.status} />
-                <span className="font-medium truncate" title={n.name}>{n.name}</span>
-                {n.unschedulable && (
-                  <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-500 rounded text-[10px] flex-shrink-0">cordoned</span>
-                )}
-              </span>
-              <span className="flex items-center gap-2 flex-shrink-0 text-[11px] text-muted-foreground">
-                {n.nodePool && <span className="font-mono">{n.nodePool}</span>}
-                <span>· {n.podsCount} pod(s)</span>
-                <ChevronRight className="w-4 h-4" />
-              </span>
-            </button>
-          ))
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 z-10 bg-card text-muted-foreground">
+              <tr className="border-b border-border/60">
+                <th className="w-6 px-2" />
+                {NODE_COLS.map(c => (
+                  <th
+                    key={c.key}
+                    title={c.title}
+                    onClick={() => toggleSort(c.key)}
+                    className={`${td} font-medium text-[10px] tracking-wide cursor-pointer select-none hover:text-foreground ${c.num ? "text-right" : "text-left"}`}
+                  >
+                    {c.label}
+                    {sort.key === c.key && <span className="ml-0.5">{sort.desc ? "↓" : "↑"}</span>}
+                  </th>
+                ))}
+                <th className="w-6" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/40">
+              {list.map(n => {
+                const pcpu = pct(n.cpuUsageMillis, n.cpuAllocatableMillis);
+                const pmem = pct(n.memUsageBytes, n.memAllocatableBytes);
+                const podsPct = pct(n.podsCount, n.podsCapacity);
+                return (
+                  <tr
+                    key={n.name}
+                    onClick={() => setNode(n.name)}
+                    className={`cursor-pointer hover:bg-primary/10 ${checked.has(n.name) ? "bg-primary/5" : ""}`}
+                  >
+                    {/* Checkbox — clique faz toggle sem abrir o node */}
+                    <td className="px-2" onClick={e => { e.stopPropagation(); onToggle(n.name, !checked.has(n.name)); }}>
+                      <Checkbox checked={checked.has(n.name)} onCheckedChange={() => {}} className="w-3.5 h-3.5 rounded-full pointer-events-none" />
+                    </td>
+                    <td className={`${td} font-medium font-mono`} title={n.name}>{n.name}</td>
+                    <td className={`${td} font-mono`} title={nodeStatusText(n)}>
+                      <span className="flex items-center gap-1.5">
+                        <span className={`h-2 w-2 rounded-full flex-shrink-0 ${n.status === "Ready" ? (n.unschedulable ? "bg-amber-500" : "bg-green-500") : "bg-red-500"}`} />
+                        <span className={n.status === "Ready" ? "text-green-600 dark:text-green-400" : "text-red-500 font-semibold"}>{n.status}</span>
+                        {n.unschedulable && <span className="text-amber-500">,SchedulingDisabled</span>}
+                        {n.pressures.map(p => <span key={p} className="text-red-500 font-semibold">,{p}</span>)}
+                      </span>
+                    </td>
+                    <td className={`${td} font-mono text-muted-foreground`}>{n.nodePool ?? "—"}</td>
+                    <td className={`${td} text-right font-mono`} title={n.taints.length ? n.taints.join("\n") : "sem taints"}>
+                      <span className={n.taints.length ? "underline decoration-dotted cursor-help" : "text-muted-foreground"}>{n.taints.length}</span>
+                    </td>
+                    <td className={`${td} font-mono text-muted-foreground`}>{n.kubeletVersion}</td>
+                    <td className={`${td} text-right font-mono ${pctClass(podsPct)}`} title={podsPct === null ? undefined : `${podsPct}% da capacidade`}>
+                      {n.podsCount}<span className="text-muted-foreground">/{n.podsCapacity}</span>
+                    </td>
+                    <td className={`${td} text-right font-mono`}>{fmtMilli(n.cpuUsageMillis)}</td>
+                    <td className={`${td} text-right font-mono`}>{fmtMem(n.memUsageBytes)}</td>
+                    <td className={`${td} text-right font-mono ${pctClass(pcpu)}`}>{pcpu === null ? "—" : `${pcpu}%`}</td>
+                    <td className={`${td} text-right font-mono ${pctClass(pmem)}`}>{pmem === null ? "—" : `${pmem}%`}</td>
+                    <td className={`${td} text-right font-mono text-muted-foreground`}>{fmtMilli(n.cpuAllocatableMillis)}</td>
+                    <td className={`${td} text-right font-mono text-muted-foreground`}>{fmtMem(n.memAllocatableBytes)}</td>
+                    <td className={`${td} text-right text-muted-foreground`} title={n.createdAt}>{n.age}</td>
+                    <td className="pr-2 text-muted-foreground"><ChevronRight className="w-4 h-4" /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         )}
       </div>
+      {nodes.some(n => n.cpuUsageMillis < 0) && (
+        <p className="text-[11px] text-muted-foreground flex-shrink-0">CPU/MEM/%: "—" = Metrics Server não respondeu para o node.</p>
+      )}
       {bulkBar && <div className="flex-shrink-0">{bulkBar}</div>}
     </div>
   );
