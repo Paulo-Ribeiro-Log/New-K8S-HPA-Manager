@@ -62,6 +62,7 @@ import {
   ChevronUp,
   XCircle,
   ShieldAlert,
+  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient, type BatchApplyResponse } from "@/lib/api/client";
@@ -70,6 +71,7 @@ import type { Namespace } from "@/lib/api/types";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { CronJobMonitorTable } from "@/components/CronJobMonitorTable";
+import { DeleteCronJobDialog, CronJobJobsDialog } from "@/components/CronJobDeleteDialogs";
 
 interface CronJobsTabProps {
   cluster: string;
@@ -128,7 +130,7 @@ export function CronJobsTab({
   const [isApplying, setIsApplying] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [jobsDialogOpen, setJobsDialogOpen] = useState(false);
   const [describeOpen, setDescribeOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
@@ -788,6 +790,12 @@ ${BATCH_POD_SPEC("          ")}
         </Button>
       </ProtectedAction>
 
+      {/* Jobs do CronJob */}
+      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setJobsDialogOpen(true)} title="Ver e apagar os Jobs deste CronJob">
+        <Layers className="h-3 w-3 mr-1" />
+        Jobs
+      </Button>
+
       {/* Describe */}
       <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={handleViewDescribe}>
         <FileText className="h-3 w-3 mr-1" />
@@ -989,47 +997,27 @@ ${BATCH_POD_SPEC("          ")}
         </DialogContent>
       </Dialog>
 
-      {/* Modal Confirmar Delete */}
-      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-red-600">
-              <AlertTriangle className="h-5 w-5" />
-              Deletar CronJob
-            </DialogTitle>
-            <DialogDescription>
-              Essa ação é irreversível. Deseja deletar o CronJob{" "}
-              <strong>{selectedCronJob?.name}</strong> do namespace{" "}
-              <strong>{selectedCronJob?.namespace}</strong>?
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeleteConfirmOpen(false)} disabled={isDeleting}>
-              Cancelar
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={isDeleting}
-              onClick={async () => {
-                if (!selectedCronJob) return;
-                setIsDeleting(true);
-                try {
-                  // Usar update com delete via kubectl — não há endpoint delete ainda,
-                  // mas podemos reutilizar o padrão via kubectl describe / apply
-                  // Por ora usamos o updateCronJob para sinalizar (placeholder — adicionar endpoint delete se necessário)
-                  toast.info("Delete não implementado ainda via UI. Use kubectl.");
-                  setDeleteConfirmOpen(false);
-                } finally {
-                  setIsDeleting(false);
-                }
-              }}
-            >
-              {isDeleting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Deletar
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Deletar CronJob (prévia, escolha sobre os Jobs, nome digitado, UID) */}
+      {deleteConfirmOpen && selectedCronJob && (
+        <DeleteCronJobDialog
+          cluster={cluster}
+          namespace={selectedCronJob.namespace}
+          name={selectedCronJob.name}
+          onClose={() => setDeleteConfirmOpen(false)}
+          onDeleted={() => { handleClearSelection(); fetchCronJobs(); }}
+        />
+      )}
+
+      {/* Jobs do CronJob (listar/apagar) */}
+      {jobsDialogOpen && selectedCronJob && (
+        <CronJobJobsDialog
+          cluster={cluster}
+          namespace={selectedCronJob.namespace}
+          name={selectedCronJob.name}
+          onClose={() => setJobsDialogOpen(false)}
+          onChanged={silentFetchCronJobs}
+        />
+      )}
 
       {/* Modal Describe */}
       <Dialog open={describeOpen} onOpenChange={setDescribeOpen}>

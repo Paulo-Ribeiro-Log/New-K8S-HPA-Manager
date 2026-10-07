@@ -2881,6 +2881,31 @@ class APIClient {
     });
   }
 
+  // Prévia para apagar um CronJob (Jobs dele, rodando ou não, e se é gerenciado por Helm/Argo/Flux).
+  // Também serve para listar os Jobs do CronJob.
+  async getCronJobDeletePreview(cluster: string, namespace: string, name: string): Promise<CronJobDeletePreview> {
+    return this.request<CronJobDeletePreview>(
+      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/delete-preview`
+    );
+  }
+
+  // Apaga o CronJob só se o UID ainda for o da prévia. jobs: "delete" (Jobs e pods junto) | "keep" (órfãos).
+  async deleteCronJob(cluster: string, namespace: string, name: string, uid: string, jobs: "delete" | "keep"): Promise<{ success: boolean; message: string }> {
+    const q = new URLSearchParams({ uid, jobs });
+    return this.request(
+      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}?${q.toString()}`,
+      { method: "DELETE" }
+    );
+  }
+
+  // Apaga um Job e os pods dele, só se o UID ainda for o informado.
+  async deleteJob(cluster: string, namespace: string, name: string, uid: string): Promise<{ success: boolean; message: string }> {
+    return this.request(
+      `/jobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}?uid=${encodeURIComponent(uid)}`,
+      { method: "DELETE" }
+    );
+  }
+
   async updateCronJob(
     cluster: string,
     namespace: string,
@@ -5601,6 +5626,28 @@ export interface CodeEditorBranches {
   local: string[];
   remote: string[];
   fetch_error?: string; // `git fetch` falhou — remotos podem estar desatualizados
+}
+
+export interface CronJobJobInfo {
+  name: string;
+  uid: string;
+  status: "Running" | "Succeeded" | "Failed";
+  start_time?: string;
+  completion_time?: string;
+  duration_seconds: number;
+  active_pods: number;
+  managed_by?: string;
+}
+
+export interface CronJobDeletePreview {
+  name: string;
+  namespace: string;
+  uid: string;
+  schedule: string;
+  suspended: boolean;
+  managed_by?: string; // Helm/Argo CD/Flux: seria recriado pela origem
+  jobs: CronJobJobInfo[];
+  active_jobs: number;
 }
 
 export interface BatchViolation {

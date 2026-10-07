@@ -3,6 +3,17 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### CronJobs — deletar CronJob e Jobs com prévia, escolha e proteção por UID (Outubro 2026)
+
+**Antes:** "Deletar CronJob" era um placeholder ("Delete não implementado ainda via UI. Use kubectl."); Jobs nem apareciam na tela.
+
+**Backend (`handlers/cronjobs_delete.go`):**
+- `GET /cronjobs/:cluster/:namespace/:name/delete-preview`: UID, schedule, se é gerenciado por **Helm/Argo CD/Flux** (seria recriado no próximo sync) e os Jobs **deste** CronJob (pelo UID do dono, não pelo nome), com status, início, duração e pods ativos.
+- `DELETE /cronjobs/:cluster/:namespace/:name?uid=&jobs=delete|keep`: `jobs=delete` → propagação `Background` (Jobs e pods vão junto); `keep` → `Orphan`. Precondition de UID: só apaga o objeto mostrado na prévia (recriado no meio tempo → 409). O histórico guarda o **manifesto completo** (sem status/UID), pronto para recriar.
+- `DELETE /jobs/:cluster/:namespace/:name?uid=`: propagação `Background` **explícita** — na API `batch/v1` o padrão de um Job é `Orphan` (os pods ficariam para trás; o `kubectl` é que usa Background por padrão). Também com precondition de UID e histórico.
+
+**Frontend (`CronJobDeleteDialogs.tsx`):** "Deletar CronJob" abre a prévia, avisa Helm/Argo/Flux, exige escolher o que fazer com os Jobs (sem opção pré-marcada; destaca os que estão rodando) e digitar o nome. Botão **Jobs** na barra do CronJob lista os Jobs com exclusão por linha; Job rodando exige marcar que a execução será interrompida.
+
 ### CronJobs — criar Job/CronJob: refeito (multi-documento, dry-run com Gatekeeper/Kyverno, resultado por recurso) (Outubro 2026)
 
 **Sintoma:** o botão "Novo" (Job/CronJob) não funcionava.
