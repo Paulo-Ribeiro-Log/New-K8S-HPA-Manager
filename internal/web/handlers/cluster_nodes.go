@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 	authorizationv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
@@ -141,6 +143,67 @@ func (h *ClusterNodeHandler) Workloads(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
+}
+
+// Pods — GET /api/v1/cluster-nodes/:cluster/:name/pods
+// Todos os pods agendados no node, de todos os namespaces e de qualquer dono (Deployment,
+// DaemonSet, StatefulSet, Job, pods de sistema...) — o `kubectl get pods -A --field-selector
+// spec.nodeName=<node>` —, no mesmo formato PodSummary da aba Pods, mais as métricas do
+// metrics-server (mesmo shape do /pods/batch-metrics) para a PodMonitorTable.
+func (h *ClusterNodeHandler) Pods(c *gin.Context) {
+	cluster, name := c.Param("cluster"), c.Param("name")
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", fmt.Sprintf("falha ao conectar no cluster %s: %v", cluster, err)))
+		return
+	}
+	ctx := c.Request.Context()
+	list, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + name})
+	if err != nil {
+		writeNodeError(c, "PODS_ERROR", err)
+		return
+	}
+
+	// Métricas por namespace (a API de métricas é por namespace e indexa por nome de pod),
+	// reaproveitando a lista já obtida em vez de listar os pods de novo.
+	kc := kubeclient.NewClient(clientset, cluster)
+	byNs := map[string][]corev1.Pod{}
+	for _, p := range list.Items {
+		byNs[p.Namespace] = append(byNs[p.Namespace], p)
+	}
+	metrics := &kubeclient.BatchPodMetricsResult{Available: true, Pods: map[string]kubeclient.BatchPodMetricsSingle{}}
+	for ns, pods := range byNs {
+		m, _ := kc.GetBatchPodMetricsForPods(ctx, ns, pods)
+		if m == nil || !m.Available {
+			metrics.Available = false
+			if m != nil {
+				metrics.Error = m.Error
+			}
+			break // metrics-server fora: não adianta tentar os outros namespaces
+		}
+		for k, v := range m.Pods {
+			metrics.Pods[k] = v
+		}
+	}
+
+	sort.Slice(list.Items, func(i, j int) bool {
+		a, b := list.Items[i], list.Items[j]
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		return a.Name < b.Name
+	})
+	conv := &PodHandler{} // convertToPodSummary não usa estado do handler
+	out := make([]PodSummary, 0, len(list.Items))
+	for i := range list.Items {
+		p := &list.Items[i]
+		var pm *kubeclient.BatchPodMetricsSingle
+		if v, ok := metrics.Pods[p.Name]; ok {
+			pm = &v
+		}
+		out = append(out, conv.convertToPodSummary(cluster, p, pm))
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"pods": out, "metrics": metrics}})
 }
 
 // Describe — GET /api/v1/cluster-nodes/:cluster/:name/describe

@@ -585,6 +585,12 @@ class APIClient {
     return response.data;
   }
 
+  // Todos os pods agendados no node (qualquer namespace/dono) + métricas, para a PodMonitorTable
+  async getClusterNodePods(cluster: string, name: string): Promise<{ pods: PodSummary[]; metrics: BatchPodMetrics }> {
+    const response = await this.request<APIResponse<{ pods: PodSummary[]; metrics: BatchPodMetrics }>>(this.clusterNodePath(cluster, name, "/pods"));
+    return response.data ?? { pods: [], metrics: { available: false, pods: {} } };
+  }
+
   async getClusterNodeWorkloads(cluster: string, name: string): Promise<NodeNamespaceWorkloads[]> {
     const response = await this.request<APIResponse<NodeNamespaceWorkloads[]>>(this.clusterNodePath(cluster, name, "/workloads"));
     return response.data ?? [];
