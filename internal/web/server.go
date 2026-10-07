@@ -803,6 +803,7 @@ func (s *Server) setupRoutes() {
 		clusterNodes.GET("/:cluster/:name", clusterNodeHandler.Get)
 		clusterNodes.GET("/:cluster/:name/describe", clusterNodeHandler.Describe)
 		clusterNodes.GET("/:cluster/:name/workloads", clusterNodeHandler.Workloads)
+		clusterNodes.GET("/:cluster/:name/pods", clusterNodeHandler.Pods) // todos os pods do node (qualquer namespace/dono)
 		clusterNodes.PUT("/:cluster/:name", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.Apply)
 		clusterNodes.DELETE("/:cluster/:name", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.Delete)
 		clusterNodes.POST("/:cluster/:name/cordon", rbacMiddleware.RequireSREGroup(), clusterNodeHandler.Cordon)
