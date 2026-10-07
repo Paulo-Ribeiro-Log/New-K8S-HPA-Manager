@@ -34,6 +34,41 @@ type Trend = 'up' | 'down' | 'stable';
 type SortKey = 'usage' | 'name' | 'p95';
 type ViewMode = 'table' | 'cards';
 
+// Quanto os contadores de descarte subiram desde a leitura anterior (mesmo cluster/pool, nesta sessão).
+// null = sem leitura anterior, contador não lido, ou nó reiniciado (contador voltou a zero).
+type DropDelta = { drop: number; earlyDrop: number; insertFailed: number; sinceSec: number } | null;
+type DropDeltaMap = Record<string, DropDelta>;
+
+// Contador lido de fato (o backend manda -1 quando /proc/net/stat/nf_conntrack não existe)
+function known(v: number | undefined): v is number {
+  return v !== undefined && v >= 0;
+}
+
+function fmtDuration(sec: number): string {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}min`;
+  return `${m}min`;
+}
+
+// Tabela cheia = drop (pacote descartado) OU early_drop (conexão antiga despejada para abrir
+// espaço — o kernel só faz isso com a tabela cheia). Só olhar drop esconde nós que vivem
+// cheios mas conseguem despejar a tempo (visto em AKS: drop=5, early_drop≈1,9 mi).
+// 'active' = aconteceu desde a leitura anterior; 'past' = aconteceu em algum momento desde o boot.
+function dropLevel(node: ConntrackNodeStats, delta: DropDelta): 'active' | 'past' | 'none' | 'unknown' {
+  if (!known(node.drop) && !known(node.early_drop)) return 'unknown';
+  if (delta && (delta.drop > 0 || delta.earlyDrop > 0)) return 'active';
+  return (node.drop ?? 0) > 0 || (node.early_drop ?? 0) > 0 ? 'past' : 'none';
+}
+
+// Motivo do "—" quando os contadores não foram lidos
+function dropUnknownReason(node: ConntrackNodeStats): string {
+  if (node.drop === undefined) return 'Backend sem suporte a contadores de descarte (reinicie o servidor)';
+  return node.drop_error || 'Contadores de descarte indisponíveis neste nó';
+}
+
 function computeHistStats(points: ConntrackHistoryPoint[]): HistStats | null {
   if (!points.length) return null;
   const pcts = points.map((p) => p.usage_pct);
@@ -247,9 +282,127 @@ function HistoryChart({
 
 // ─── NodeCard (view cards) ────────────────────────────────────────────────────
 
+// ─── Descartes (table full) ───────────────────────────────────────────────────
+
+function DropCell({ node, delta }: { node: ConntrackNodeStats; delta: DropDelta }) {
+  const level = dropLevel(node, delta);
+  if (level === 'unknown') return <span className="text-muted-foreground" title={dropUnknownReason(node)}>—</span>;
+  const color = level === 'active' ? 'text-red-500 font-semibold' : level === 'past' ? 'text-amber-500' : 'text-green-500';
+  const title = [
+    known(node.drop) ? `drop (tabela cheia, pacote descartado): ${fmt(node.drop)}` : '',
+    known(node.early_drop) ? `early_drop (tabela cheia, conexão antiga despejada): ${fmt(node.early_drop)}` : '',
+    known(node.insert_failed) ? `insert_failed: ${fmt(node.insert_failed)}` : '',
+    known(node.uptime_seconds) ? `acumulado desde o boot (há ${fmtDuration(node.uptime_seconds)})` : 'acumulado desde o boot',
+    node.drop_source ? `fonte: ${node.drop_source}` : '',
+  ].filter(Boolean).join('\n');
+  return (
+    <span className={`tabular-nums leading-tight text-center ${color}`} title={title}>
+      <span className="block">
+        drop {known(node.drop) ? fmt(node.drop) : '—'}
+        {delta && delta.drop > 0 && <span className="ml-1 text-[10px]">(+{fmt(delta.drop)})</span>}
+      </span>
+      {known(node.early_drop) && (
+        <span className="block text-[10px]">
+          early {fmt(node.early_drop)}
+          {delta && delta.earlyDrop > 0 && <span className="ml-1">(+{fmt(delta.earlyDrop)})</span>}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function DropDetails({ node, delta }: { node: ConntrackNodeStats; delta: DropDelta }) {
+  if (dropLevel(node, delta) === 'unknown') {
+    return <p className="text-[10px] text-muted-foreground">Descartes: {dropUnknownReason(node)}.</p>;
+  }
+  const level = dropLevel(node, delta);
+  // Colunas da tabela por CPU: o que cada contador significa vai no title do cabeçalho e na legenda
+  const cols = [
+    { key: 'drop' as const, label: 'drop', total: node.drop, d: delta?.drop, hot: 'text-red-500',
+      help: 'Tabela cheia e não deu para despejar nada: o pacote foi descartado ("nf_conntrack: table full, dropping packet")' },
+    { key: 'early_drop' as const, label: 'early_drop', total: node.early_drop, d: delta?.earlyDrop, hot: 'text-amber-500',
+      help: 'Tabela cheia: o kernel despejou uma conexão antiga (não confirmada) para abrir espaço' },
+    { key: 'insert_failed' as const, label: 'insert_failed', total: node.insert_failed, d: delta?.insertFailed, hot: 'text-amber-500',
+      help: 'Falha ao inserir a entrada na tabela (ex: corrida de pacotes UDP simultâneos, comum no DNS)' },
+  ];
+  const cell = (v: number | undefined, hot: string) =>
+    <span className={known(v) && v > 0 ? hot : ''}>{known(v) ? fmt(v) : '—'}</span>;
+  const perCpu = node.drop_per_cpu ?? [];
+  return (
+    <div className={`rounded-md border px-3 py-2 text-xs space-y-2 ${
+      level === 'active' ? 'border-red-500/50 bg-red-500/5' : level === 'past' ? 'border-amber-500/40 bg-amber-500/5' : 'border-border/60 bg-muted/20'
+    }`}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="font-medium">
+          Descartes do conntrack{' '}
+          {level === 'active' && <span className="text-red-500">— tabela enchendo agora</span>}
+          {level === 'past' && <span className="text-amber-500">— a tabela já encheu desde o boot</span>}
+          {level === 'none' && <span className="text-green-500">— a tabela nunca encheu</span>}
+        </span>
+        <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+          {known(node.uptime_seconds) ? `acumulado desde o boot (há ${fmtDuration(node.uptime_seconds)})` : 'acumulado desde o boot'}
+          {node.drop_source && ` · fonte: ${node.drop_source}`}
+        </span>
+      </div>
+
+      {/* Tabela por CPU + total (o kernel mantém um contador por CPU) */}
+      <table className="w-auto border-collapse font-mono text-[11px] tabular-nums">
+        <thead>
+          <tr className="text-muted-foreground">
+            <th className="border border-border/60 px-2 py-1 text-left font-medium">CPU</th>
+            {cols.map((c) => (
+              <th key={c.key} className="border border-border/60 px-3 py-1 text-right font-medium cursor-help" title={c.help}>{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {perCpu.map((r) => (
+            <tr key={r.cpu}>
+              <td className="border border-border/60 px-2 py-0.5 text-muted-foreground">cpu{r.cpu}</td>
+              {cols.map((c) => (
+                <td key={c.key} className="border border-border/60 px-3 py-0.5 text-right">{cell(r[c.key], c.hot)}</td>
+              ))}
+            </tr>
+          ))}
+          <tr className="font-semibold bg-muted/30">
+            <td className="border border-border/60 px-2 py-1">total</td>
+            {cols.map((c) => (
+              <td key={c.key} className="border border-border/60 px-3 py-1 text-right whitespace-nowrap">
+                {cell(c.total, c.hot)}
+                {delta && (
+                  <span className={`ml-1.5 text-[10px] font-normal ${c.d && c.d > 0 ? 'text-red-500' : 'text-muted-foreground'}`}>
+                    (+{fmt(c.d ?? 0)})
+                  </span>
+                )}
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+
+      {/* Legenda: o que cada contador significa e o que fazer */}
+      <ul className="text-[10px] text-muted-foreground space-y-0.5">
+        {cols.map((c) => (
+          <li key={c.key}><span className="font-mono text-foreground/80">{c.label}</span>: {c.help}.</li>
+        ))}
+        {level !== 'none' && (
+          <li className="pt-0.5">
+            drop/early_drop &gt; 0 significam que a tabela atingiu o limite (nf_conntrack_max = {node.max > 0 ? fmt(node.max) : '—'}).
+            Se continuarem subindo, aumente o nf_conntrack_max do pool ou reduza conexões curtas (keep-alive, pooling).
+          </li>
+        )}
+      </ul>
+      {delta && (
+        <p className="text-[10px] text-muted-foreground">Variação (+N) desde a leitura anterior, há {fmtDuration(Math.max(delta.sinceSec, 60))}.</p>
+      )}
+    </div>
+  );
+}
+
 function NodeCard({
-  node, history, histLoading, histStats, trend, capacityRec, compareOffsets, compareHistoryMap,
+  node, history, histLoading, histStats, trend, capacityRec, compareOffsets, compareHistoryMap, dropDelta,
 }: {
+  dropDelta: DropDelta;
   node: ConntrackNodeStats;
   history?: ConntrackNodeHistoryResponse;
   histLoading: boolean;
@@ -312,6 +465,8 @@ function NodeCard({
               </div>
             </div>
 
+            <DropDetails node={node} delta={dropDelta} />
+
             {/* Metadados */}
             <div className="flex items-center justify-between text-[10px] text-muted-foreground">
               <div className="flex gap-4">
@@ -351,11 +506,29 @@ function NodeCard({
 // ─── SummaryStrip ─────────────────────────────────────────────────────────────
 
 function SummaryStrip({
-  nodes, histMap,
+  nodes, histMap, dropDeltas,
 }: {
   nodes: ConntrackNodeStats[];
   histMap: Record<string, ConntrackNodeHistoryResponse>;
+  dropDeltas: DropDeltaMap;
 }) {
+  const dropActive = nodes.filter((n) => dropLevel(n, dropDeltas[n.node_name] ?? null) === 'active').length;
+  const dropPast = nodes.filter((n) => dropLevel(n, dropDeltas[n.node_name] ?? null) === 'past').length;
+  const dropKnown = nodes.some((n) => dropLevel(n, null) !== 'unknown');
+  // Nós em que a tabela já encheu, com os números de cada um (tooltip do bloco)
+  const fullNodes = nodes.filter((n) => {
+    const l = dropLevel(n, dropDeltas[n.node_name] ?? null);
+    return l === 'active' || l === 'past';
+  });
+  const sumOf = (pick: (n: ConntrackNodeStats) => number | undefined) =>
+    fullNodes.reduce((acc, n) => acc + (known(pick(n)) ? pick(n)! : 0), 0);
+  const fullDetail = fullNodes
+    .map((n) => {
+      const d = dropDeltas[n.node_name];
+      const inc = d ? ` (+${fmt(d.drop)} / +${fmt(d.earlyDrop)} desde a leitura anterior)` : '';
+      return `${n.node_name}: drop ${known(n.drop) ? fmt(n.drop) : '—'} · early_drop ${known(n.early_drop) ? fmt(n.early_drop) : '—'}${inc}`;
+    })
+    .join('\n');
   const atRisk = nodes.filter((n) => n.status === 'warning' || n.status === 'critical').length;
   const worst = nodes.reduce((a, b) => (a.usage_pct > b.usage_pct ? a : b), nodes[0]);
   const avgPct = nodes.reduce((s, n) => s + n.usage_pct, 0) / nodes.length;
@@ -376,12 +549,22 @@ function SummaryStrip({
       color: worst.usage_pct >= 90 ? 'text-red-500' : worst.usage_pct >= 70 ? 'text-amber-500' : 'text-green-500',
     },
     { label: 'Uso médio', value: `${avgPct.toFixed(1)}%`, sub: 'todos os nodes', color: barFill(avgPct) },
+    {
+      label: 'Tabela cheia (descartes)',
+      value: !dropKnown ? '—' : String(dropActive + dropPast),
+      sub: !dropKnown ? 'contadores indisponíveis'
+        : fullNodes.length === 0 ? 'nenhum node encheu'
+        : `${dropActive > 0 ? `${dropActive} enchendo agora · ` : ''}drop ${fmt(sumOf((n) => n.drop))} · early ${fmt(sumOf((n) => n.early_drop))}`,
+      title: !dropKnown ? undefined
+        : `Nodes em que a tabela de conntrack já encheu desde o boot (drop ou early_drop > 0)${fullDetail ? `:\n${fullDetail}` : ''}`,
+      color: !dropKnown ? 'text-muted-foreground' : dropActive > 0 ? 'text-red-500' : dropPast > 0 ? 'text-amber-500' : 'text-green-500',
+    },
   ];
 
   return (
-    <div className="grid grid-cols-4 gap-3">
+    <div className="grid grid-cols-5 gap-3">
       {tiles.map((t) => (
-        <div key={t.label} className="rounded-md border border-border/60 px-3 py-2 bg-muted/20">
+        <div key={t.label} className="rounded-md border border-border/60 px-3 py-2 bg-muted/20" title={'title' in t ? t.title : undefined}>
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{t.label}</p>
           <p className={`text-lg font-bold tabular-nums leading-tight ${t.color ?? ''}`}>{t.value}</p>
           <p className="text-[10px] text-muted-foreground truncate">{t.sub}</p>
@@ -393,11 +576,12 @@ function SummaryStrip({
 
 // ─── ConntrackTableRow (grid-based, expansível) ───────────────────────────────
 
-const COL_WIDTHS = [220, 140, 160, 80, 80, 130, 130, 100, 140];
+const COL_WIDTHS = [220, 140, 160, 80, 80, 130, 130, 150, 100, 140];
 
 function ConntrackTableRow({
-  node, history, histLoading, histStats, trend, capacityRec, gridTemplate, compareOffsets, compareHistoryMap,
+  node, history, histLoading, histStats, trend, capacityRec, gridTemplate, compareOffsets, compareHistoryMap, dropDelta,
 }: {
+  dropDelta: DropDelta;
   node: ConntrackNodeStats;
   history?: ConntrackNodeHistoryResponse;
   histLoading: boolean;
@@ -444,6 +628,9 @@ function ConntrackTableRow({
         <div className="py-2 px-3 flex items-center justify-center text-xs tabular-nums text-muted-foreground">
           {node.max_map_count && node.max_map_count > 0 ? fmt(node.max_map_count) : '—'}
         </div>
+        <div className="py-2 px-3 flex items-center justify-center text-xs">
+          <DropCell node={node} delta={dropDelta} />
+        </div>
         <div className="py-2 px-3 flex items-center">
           <StatusBadge status={node.status} />
         </div>
@@ -470,6 +657,7 @@ function ConntrackTableRow({
               ))}
             </div>
           )}
+          <DropDetails node={node} delta={dropDelta} />
           <p className="text-[10px] text-muted-foreground">
             via {node.probe_method}{node.buckets > 0 ? ` · buckets: ${fmt(node.buckets)}` : ''}
           </p>
@@ -532,6 +720,30 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
   const [sortKey, setSortKey] = useState<SortKey>('usage');
   const [tableHeight, setTableHeight] = useState(320);
   const { resize, gridTemplate } = useResizableColumns(COL_WIDTHS);
+  const [dropDeltas, setDropDeltas] = useState<DropDeltaMap>({});
+  // Última leitura dos contadores por nó, para calcular a variação na próxima. Fica ligada ao
+  // cluster/pool: trocar de pool começa do zero (sem variação na 1ª leitura).
+  const prevDropsRef = useRef<{ key: string; at: number; byNode: Record<string, ConntrackNodeStats> }>({ key: '', at: 0, byNode: {} });
+
+  const updateDropDeltas = (ns: ConntrackNodeStats[]) => {
+    const key = `${cluster}|${nodepool}`;
+    const now = Date.now();
+    const prev = prevDropsRef.current.key === key ? prevDropsRef.current : null;
+    const deltas: DropDeltaMap = {};
+    for (const n of ns) {
+      const p = prev?.byNode[n.node_name];
+      // Contador menor que antes = nó reiniciou; sem base de comparação
+      const ok = p && known(n.drop) && known(p.drop) && n.drop >= p.drop;
+      deltas[n.node_name] = ok ? {
+        drop: n.drop! - p.drop!,
+        earlyDrop: known(n.early_drop) && known(p.early_drop) ? Math.max(0, n.early_drop - p.early_drop) : 0,
+        insertFailed: known(n.insert_failed) && known(p.insert_failed) ? Math.max(0, n.insert_failed - p.insert_failed) : 0,
+        sinceSec: Math.round((now - prev!.at) / 1000),
+      } : null;
+    }
+    setDropDeltas(deltas);
+    prevDropsRef.current = { key, at: now, byNode: Object.fromEntries(ns.map((n) => [n.node_name, n])) };
+  };
 
   const fetchHistory = async (ns: ConntrackNodeStats[]) => {
     if (!ns.length) return;
@@ -573,11 +785,12 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
     try {
       const data = await apiClient.getConntrackStats(cluster, nodepool);
       setNodes(data.nodes);
+      updateDropDeltas(data.nodes);
       setFetchedAt(data.fetched_at);
       fetchHistory(data.nodes);
       compareOffsets.forEach((offset) => fetchCompareHistory(offset, data.nodes));
-    } catch (e: any) {
-      setError(e?.message ?? 'Erro ao buscar estatísticas de conntrack');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erro ao buscar estatísticas de conntrack');
     } finally {
       setLoading(false);
     }
@@ -586,9 +799,10 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
   // Scan automático e silencioso: ao abrir a aba Conntrack (mount) e ao trocar de node
   // pool com a aba já aberta (troca de props sem remount, já que NodePoolEditor não é
   // remontado na troca de pool). O botão "Atualizar" continua disponível pra re-scan manual.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // fetchStats fica de fora das dependências: é recriada a cada render e dispararia scan em loop.
   useEffect(() => {
     fetchStats();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cluster, nodepool]);
 
   // Pré-calcula histStats, trend e capacityRec para cada node
@@ -718,7 +932,7 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
       {nodes.length > 0 && (
         <>
           {/* Summary */}
-          <SummaryStrip nodes={nodes} histMap={historyMap} />
+          <SummaryStrip nodes={nodes} histMap={historyMap} dropDeltas={dropDeltas} />
 
           {filteredSorted.length === 0 && (
             <div className="text-center py-8 text-muted-foreground text-sm">
@@ -743,8 +957,9 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
                     { label: 'Buckets', idx: 4, center: true },
                     { label: 'nf_conntrack_max', idx: 5, center: true, title: 'sysctl net.netfilter.nf_conntrack_max' },
                     { label: 'vm.max_map_count', idx: 6, center: true, title: 'sysctl vm.max_map_count' },
-                    { label: 'Status', idx: 7 },
-                    { label: 'Recomendação', idx: 8 },
+                    { label: 'Descartes', idx: 7, center: true, title: 'Tabela cheia, acumulado desde o boot: drop = pacotes descartados ("nf_conntrack: table full"), early = conexões antigas despejadas para abrir espaço. (+N) = desde a leitura anterior' },
+                    { label: 'Status', idx: 8 },
+                    { label: 'Recomendação', idx: 9 },
                   ].map(({ label, idx, center, title }: { label: string; idx: number; center?: boolean; title?: string }) => (
                     <span key={label} title={title} className={`relative overflow-hidden pr-4 flex items-center px-3 py-2 ${center ? 'justify-center' : ''}`}>
                       {label}
@@ -766,6 +981,7 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
                       gridTemplate={gridTemplate}
                       compareOffsets={compareOffsets}
                       compareHistoryMap={compareHistoryMap}
+                      dropDelta={dropDeltas[node.node_name] ?? null}
                     />
                   ))}
                 </div>
@@ -788,6 +1004,7 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
                   capacityRec={capacityRec}
                   compareOffsets={compareOffsets}
                   compareHistoryMap={compareHistoryMap}
+                  dropDelta={dropDeltas[node.node_name] ?? null}
                 />
               ))}
             </div>
