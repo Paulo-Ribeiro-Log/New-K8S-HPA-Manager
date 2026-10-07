@@ -1235,15 +1235,6 @@ function NodeWorkloadsNavigator({
 
 // ─── Tudo o que roda num node (painel direito com node aberto) ────────────────
 
-// Cor por tipo de dono no resumo do node
-const OWNER_KIND_COLOR: Record<string, string> = {
-  Deployment: "text-blue-600 dark:text-blue-400",
-  DaemonSet: "text-purple-600 dark:text-purple-400",
-  StatefulSet: "text-teal-600 dark:text-teal-400",
-  Job: "text-amber-600 dark:text-amber-400",
-  ReplicaSet: "text-blue-600 dark:text-blue-400",
-  Pod: "text-muted-foreground",
-};
 
 function NodePodsView({ cluster, node, onBack }: { cluster: string; node: string; onBack: () => void }) {
   const [search, setSearch] = useState("");
@@ -1265,72 +1256,9 @@ function NodePodsView({ cluster, node, onBack }: { cluster: string; node: string
     checkError: dtCheckError,
   } = useDynatracePodStatus(cluster, userPermsForDT?.email || "");
 
-  // Resumo por dono: "Deployment/teste1 ×2" = 2 réplicas do teste1 neste node (não as do deployment inteiro)
-  const owners = useMemo(() => {
-    const m = new Map<string, { kind: string; name: string; namespace: string; count: number; ready: number }>();
-    for (const p of pods) {
-      const owner = p.ownerWorkload || `Pod/${p.name}`;
-      const [kind, ...rest] = owner.split("/");
-      const key = `${p.namespace}/${owner}`;
-      const e = m.get(key) ?? { kind, name: rest.join("/"), namespace: p.namespace, count: 0, ready: 0 };
-      e.count++;
-      if (p.phase === "Running" && p.readyContainers === p.totalContainers) e.ready++;
-      m.set(key, e);
-    }
-    return [...m.values()].sort((a, b) => a.kind.localeCompare(b.kind) || a.namespace.localeCompare(b.namespace) || a.name.localeCompare(b.name));
-  }, [pods]);
-  const kindCounts = useMemo(() => {
-    const c: Record<string, number> = {};
-    for (const o of owners) c[o.kind] = (c[o.kind] ?? 0) + o.count;
-    return Object.entries(c).sort((a, b) => b[1] - a[1]);
-  }, [owners]);
 
   return (
     <div className="flex flex-col h-full min-h-0 gap-2">
-      {/* Resumo: o que roda no node, agrupado por dono */}
-      <div className="flex-shrink-0 rounded-lg border border-border/60 bg-muted/10 px-3 py-2 space-y-1.5">
-        <div className="flex items-center gap-2 flex-wrap text-xs">
-          <span className="font-medium">Neste node:</span>
-          {podsQuery.isLoading ? (
-            <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-          ) : (
-            <>
-              <span className="font-mono">{pods.length} pod(s)</span>
-              {kindCounts.map(([kind, n]) => (
-                <span key={kind} className={`font-mono ${OWNER_KIND_COLOR[kind] ?? ""}`}>· {kind} {n}</span>
-              ))}
-            </>
-          )}
-          {search && (
-            <button onClick={() => setSearch("")} className="ml-auto text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1">
-              <X className="w-3 h-3" /> limpar filtro de workload
-            </button>
-          )}
-        </div>
-        {owners.length > 0 && (
-          <div className="flex flex-wrap gap-1 max-h-24 overflow-auto">
-            {owners.map(o => {
-              const active = search === o.name;
-              return (
-                <button
-                  key={`${o.namespace}/${o.kind}/${o.name}`}
-                  onClick={() => setSearch(active ? "" : o.name)}
-                  title={`${o.kind} ${o.namespace}/${o.name}: ${o.count} pod(s) neste node, ${o.ready} pronto(s). Clique para filtrar a tabela.`}
-                  className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
-                    active ? "border-primary bg-primary/15" : "border-border/60 hover:border-primary/50"
-                  }`}
-                >
-                  <span className={OWNER_KIND_COLOR[o.kind] ?? ""}>{o.kind}</span>
-                  <span className="text-muted-foreground">{o.namespace}/</span>
-                  <span>{o.name}</span>
-                  <span className={o.ready < o.count ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground"}>×{o.count}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
       {podsQuery.error ? (
         <div className="p-3 text-sm text-red-400">{podsQuery.error instanceof Error ? podsQuery.error.message : String(podsQuery.error)}</div>
       ) : (
@@ -1353,6 +1281,7 @@ function NodePodsView({ cluster, node, onBack }: { cluster: string; node: string
             backLabel="Nodes"
             searchQuery={search}
             onSearchQueryChange={setSearch}
+            showOwnerKind
           />
         </div>
       )}
