@@ -14,6 +14,14 @@
 
 Os contadores são acumulados desde o boot. Para um descarte antigo não alarmar para sempre, o frontend guarda a leitura anterior (mesmo cluster/pool, na sessão) e mostra a variação `(+N)`: vermelho = a tabela encheu desde a leitura anterior, amarelo = encheu em algum momento desde o boot, verde = nunca encheu. Contador menor que o anterior (nó reiniciado) zera a base. Aparece na coluna "Descartes" da tabela (totais de `drop` e `early_drop`), no detalhe expandido e nos cards (tabela **por CPU**, `drop_per_cpu`, com linha de total, `(+N)` e legenda do que cada contador significa), e num 5º bloco do resumo (quantos nós já encheram, soma de drop/early desses nós e, no tooltip, os números de cada um). Kernel sem procfs de conntrack → `-1` → "—". Parser testado em `nodepools_conntrack_stat_test.go`.
 
+### Code Editor — Ctrl+S funcionando de forma intermitente (Outubro 2026)
+
+**Sintoma:** o Ctrl+S do Code Editor às vezes não salvava. Voltava a funcionar depois de reabrir um arquivo.
+
+**Causa:** no Monaco (0.52), `editor.addCommand` registra o atalho no serviço de keybindings **global**, sem escopo de editor e sem remoção quando o editor é desmontado. Vale o último registrado. Três lugares registravam Ctrl+S assim: a janela direita do split (`saveRightFile`, ainda por cima com a closure do mount congelada), o `MonacoYamlEditor` das outras abas/modais e o `TeamsBroadcastTab`. Abrir qualquer um deles depois do Code Editor fazia o Ctrl+S chamar o "salvar" desse outro editor, mesmo já fechado. Reabrir um arquivo recriava o editor principal, que registrava de novo e voltava a vencer.
+
+**Correção:** todos os atalhos passaram para `editor.addAction({ keybindings })`, que é amarrado ao editor (precondition `editorId`) e removido no dispose. No Code Editor: Ctrl+S, Shift+Alt+F, Ctrl+Alt+F e Ctrl+P. No `MonacoYamlEditor` e no `TeamsBroadcastTab`: Ctrl+S. O Ctrl+S da janela direita lê `saveRightFileRef`. Regra: **não use `addCommand` para atalhos de editor**, use `addAction`.
+
 ### Code Editor — Diff entre as janelas do editor dividido (Outubro 2026)
 
 **Novo:** com "Dividir editor" ativo, aparece no cabeçalho o botão **Diff**, que compara o arquivo da janela esquerda com o da direita (Monaco `DiffEditor`, lado a lado, somente leitura). O botão não existe fora do split, e desligar o split desliga o diff. O diff fica sobreposto às duas janelas, que continuam montadas por baixo (desmontar o editor principal quebraria refs, LSP e decorations ligados ao `editorRef`). A barra do diff mostra os dois caminhos, a contagem de diferenças (`getLineChanges`), "Ignorar espaços" (`ignoreTrimWhitespace`, desligado por padrão porque espaço importa em YAML) e "Inverter" lados. Compara o conteúdo atual das abas, inclusive o que ainda não foi salvo.
