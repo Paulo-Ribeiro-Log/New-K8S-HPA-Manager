@@ -29,11 +29,24 @@ type ConntrackNodeStats struct {
 	Buckets  int64  `json:"buckets"`
 	// MaxMapCount é o sysctl vm.max_map_count do nó (não é de conntrack, mas é lido no mesmo
 	// exec — /proc/sys/vm é global do host, visível de qualquer container). -1 = não lido.
-	MaxMapCount int64   `json:"max_map_count"`
-	UsagePct    float64 `json:"usage_pct"`
-	Status      string  `json:"status"` // ok / warning / critical / error
-	ProbeMethod string  `json:"probe_method"`
-	Error       string  `json:"error,omitempty"`
+	MaxMapCount int64 `json:"max_map_count"`
+	// Contadores de descarte do conntrack (somados entre CPUs, acumulados desde o boot do nó),
+	// lidos de /proc/net/stat/nf_conntrack ou, se o kernel não tiver esse arquivo (ex: AKS
+	// 5.15-azure, sem CONFIG_NF_CONNTRACK_PROCFS), de `conntrack -S` (netlink). -1 = não lido.
+	//   Drop:         tabela cheia e pacote descartado — o "nf_conntrack: table full, dropping packet" do dmesg
+	//   EarlyDrop:    tabela cheia e uma conexão antiga despejada para abrir espaço
+	//   InsertFailed: falha ao inserir a entrada (ex: corrida de DNS via UDP)
+	Drop          int64               `json:"drop"`
+	EarlyDrop     int64               `json:"early_drop"`
+	InsertFailed  int64               `json:"insert_failed"`
+	DropPerCPU    []ConntrackCPUDrops `json:"drop_per_cpu,omitempty"` // os mesmos contadores, por CPU
+	DropSource    string              `json:"drop_source,omitempty"`  // "procfs" | "conntrack -S"
+	DropError     string              `json:"drop_error,omitempty"`   // por que os contadores não foram lidos
+	UptimeSeconds int64               `json:"uptime_seconds"`         // uptime do nó, para dar escala aos contadores (-1 = não lido)
+	UsagePct      float64             `json:"usage_pct"`
+	Status        string              `json:"status"` // ok / warning / critical / error
+	ProbeMethod   string              `json:"probe_method"`
+	Error         string              `json:"error,omitempty"`
 }
 
 // ConntrackResponse resposta do endpoint de conntrack
@@ -180,7 +193,7 @@ func resolveAllClusterNodes(ctx context.Context, clientset kubernetes.Interface)
 // mecanismo de múltiplos candidatos + busca em TODOS os namespaces (não só kube-system) generaliza
 // bem pra qualquer agente hostNetwork com shell que o cluster tiver (Datadog, Dynatrace, etc.).
 func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restConfig *rest.Config, nodeName string) ConntrackNodeStats {
-	stats := ConntrackNodeStats{NodeName: nodeName, Status: "error"}
+	stats := ConntrackNodeStats{NodeName: nodeName, Status: "error", Drop: -1, EarlyDrop: -1, InsertFailed: -1, UptimeSeconds: -1}
 
 	candidates, err := findHostNetworkPodCandidates(ctx, clientset, nodeName)
 	if err != nil || len(candidates) == 0 {
@@ -191,14 +204,20 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 		return stats
 	}
 
-	// Ler os quatro sysctls em um único exec
+	// Ler os quatro sysctls, os contadores de descarte e o uptime em um único exec.
+	// /proc/net é por network namespace — num pod hostNetwork é o do host.
 	cmd := []string{
 		"sh", "-c",
 		"printf '%s\\n%s\\n%s\\n%s\\n' " +
 			"$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo -1) " +
 			"$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo -1) " +
 			"$(cat /proc/sys/net/netfilter/nf_conntrack_buckets 2>/dev/null || echo -1) " +
-			"$(cat /proc/sys/vm/max_map_count 2>/dev/null || echo -1)",
+			"$(cat /proc/sys/vm/max_map_count 2>/dev/null || echo -1); " +
+			"echo " + conntrackStatMarker + "; " +
+			"if [ -r /proc/net/stat/nf_conntrack ]; then echo procfs; cat /proc/net/stat/nf_conntrack; " +
+			"elif command -v conntrack >/dev/null 2>&1; then echo conntrack-S; conntrack -S 2>&1; " +
+			"else echo none; fi; " +
+			"echo " + conntrackUptimeMarker + "; cat /proc/uptime 2>/dev/null",
 	}
 
 	var lastErr error
@@ -211,7 +230,8 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 			continue
 		}
 
-		lines := strings.Split(strings.TrimSpace(output), "\n")
+		sysctlPart, statPart, uptimePart := splitConntrackProbeOutput(output)
+		lines := strings.Split(strings.TrimSpace(sysctlPart), "\n")
 		if len(lines) < 2 {
 			lastErr = fmt.Errorf("resposta inesperada: %q", output)
 			continue
@@ -227,6 +247,10 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 		if len(lines) >= 4 {
 			stats.MaxMapCount = parseInt64(lines[3])
 		}
+		dc := parseDropCounters(statPart)
+		stats.Drop, stats.EarlyDrop, stats.InsertFailed = dc.Drop, dc.EarlyDrop, dc.InsertFailed
+		stats.DropPerCPU, stats.DropSource, stats.DropError = dc.PerCPU, dc.Source, dc.Err
+		stats.UptimeSeconds = parseUptimeSeconds(uptimePart)
 		if stats.Max > 0 {
 			stats.UsagePct = float64(stats.Count) / float64(stats.Max) * 100
 		}
@@ -243,6 +267,163 @@ func probeConntrack(ctx context.Context, clientset kubernetes.Interface, restCon
 
 	stats.Error = fmt.Sprintf("exec falhou em todos os %d candidato(s) hostNetwork (%s): %v", len(triedPods), strings.Join(triedPods, ", "), lastErr)
 	return stats
+}
+
+const (
+	conntrackStatMarker   = "--NFSTAT--"
+	conntrackUptimeMarker = "--UPTIME--"
+)
+
+// splitConntrackProbeOutput separa a saída do exec do probeConntrack em: sysctls (1 por
+// linha), conteúdo de /proc/net/stat/nf_conntrack e conteúdo de /proc/uptime.
+func splitConntrackProbeOutput(output string) (sysctls, stat, uptime string) {
+	sysctls, rest, _ := strings.Cut(output, conntrackStatMarker)
+	stat, uptime, _ = strings.Cut(rest, conntrackUptimeMarker)
+	return sysctls, stat, uptime
+}
+
+// ConntrackCPUDrops são os contadores de descarte de uma CPU (-1 = coluna ausente nesta fonte/kernel).
+type ConntrackCPUDrops struct {
+	CPU          int   `json:"cpu"`
+	Drop         int64 `json:"drop"`
+	EarlyDrop    int64 `json:"early_drop"`
+	InsertFailed int64 `json:"insert_failed"`
+}
+
+// dropCounters é o resultado da leitura dos contadores de descarte de um nó.
+type dropCounters struct {
+	Drop, EarlyDrop, InsertFailed int64 // somados entre as CPUs (-1 = não lido)
+	PerCPU                        []ConntrackCPUDrops
+	Source, Err                   string
+}
+
+// parseDropCounters interpreta a seção de contadores do exec: a 1ª linha diz a fonte
+// ("procfs", "conntrack-S" ou "none") e o resto é a saída dela.
+func parseDropCounters(section string) dropCounters {
+	res := dropCounters{Drop: -1, EarlyDrop: -1, InsertFailed: -1}
+	head, body, _ := strings.Cut(strings.TrimSpace(section), "\n")
+	switch strings.TrimSpace(head) {
+	case "procfs":
+		res.Source = "procfs"
+		res.PerCPU = parseNfConntrackStat(body)
+	case "conntrack-S":
+		res.Source = "conntrack -S"
+		res.PerCPU = parseConntrackS(body)
+	case "none":
+		res.Err = "kernel sem /proc/net/stat/nf_conntrack e pod sem o binário conntrack"
+		return res
+	default:
+		res.Err = "leitura dos contadores não executada no nó"
+		return res
+	}
+	res.Drop, res.EarlyDrop, res.InsertFailed = sumCPUDrops(res.PerCPU)
+	if res.Drop < 0 && res.EarlyDrop < 0 && res.InsertFailed < 0 {
+		msg := strings.TrimSpace(body)
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		res.Err = fmt.Sprintf("%s sem os contadores esperados: %s", res.Source, msg)
+		res.PerCPU = nil
+	}
+	return res
+}
+
+// sumCPUDrops soma cada contador entre as CPUs; contador ausente em todas → -1.
+func sumCPUDrops(rows []ConntrackCPUDrops) (drop, earlyDrop, insertFailed int64) {
+	drop, earlyDrop, insertFailed = -1, -1, -1
+	add := func(total *int64, v int64) {
+		if v < 0 {
+			return
+		}
+		if *total < 0 {
+			*total = 0
+		}
+		*total += v
+	}
+	for _, r := range rows {
+		add(&drop, r.Drop)
+		add(&earlyDrop, r.EarlyDrop)
+		add(&insertFailed, r.InsertFailed)
+	}
+	return
+}
+
+// parseConntrackS lê a saída de `conntrack -S`: uma linha por CPU no formato
+// "cpu=0 found=986 ... insert_failed=4 drop=4 early_drop=939985 ...". Linhas sem "cpu="
+// (ex: "Operation not permitted" sem CAP_NET_ADMIN) são ignoradas.
+func parseConntrackS(text string) []ConntrackCPUDrops {
+	var rows []ConntrackCPUDrops
+	for _, line := range strings.Split(text, "\n") {
+		row := ConntrackCPUDrops{CPU: -1, Drop: -1, EarlyDrop: -1, InsertFailed: -1}
+		for _, field := range strings.Fields(line) {
+			k, v, ok := strings.Cut(field, "=")
+			if !ok {
+				continue
+			}
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				continue
+			}
+			switch k {
+			case "cpu":
+				row.CPU = int(n)
+			case "drop":
+				row.Drop = n
+			case "early_drop":
+				row.EarlyDrop = n
+			case "insert_failed":
+				row.InsertFailed = n
+			}
+		}
+		if row.CPU >= 0 {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// parseNfConntrackStat lê /proc/net/stat/nf_conntrack: a 1ª linha traz os nomes das colunas
+// (variam entre versões de kernel, por isso a busca é pelo nome); as demais são uma por CPU,
+// na ordem, com valores em hexa.
+func parseNfConntrackStat(text string) []ConntrackCPUDrops {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) < 2 {
+		return nil
+	}
+	cols := map[string]int{}
+	for i, name := range strings.Fields(lines[0]) {
+		cols[name] = i
+	}
+	var rows []ConntrackCPUDrops
+	for cpu, l := range lines[1:] {
+		f := strings.Fields(l)
+		get := func(name string) int64 {
+			idx, ok := cols[name]
+			if !ok || idx >= len(f) {
+				return -1
+			}
+			v, err := strconv.ParseInt(f[idx], 16, 64)
+			if err != nil {
+				return -1
+			}
+			return v
+		}
+		rows = append(rows, ConntrackCPUDrops{CPU: cpu, Drop: get("drop"), EarlyDrop: get("early_drop"), InsertFailed: get("insert_failed")})
+	}
+	return rows
+}
+
+// parseUptimeSeconds lê o 1º campo de /proc/uptime ("12345.67 54321.00"). -1 se não lido.
+func parseUptimeSeconds(text string) int64 {
+	f := strings.Fields(text)
+	if len(f) == 0 {
+		return -1
+	}
+	v, err := strconv.ParseFloat(f[0], 64)
+	if err != nil {
+		return -1
+	}
+	return int64(v)
 }
 
 // hostNetworkPodCandidate identifica um pod hostNetwork:true Running num nó, candidato a exec
