@@ -58,7 +58,21 @@ interface PodMonitorTableProps {
   // pausa em vez de continuar buscando dados em segundo plano pra sempre. Default true (sempre
   // ativo) pra não quebrar quem não passa esse prop.
   isActive?: boolean;
+  /** Mostra a coluna KIND (tipo do dono: Deployment, DaemonSet, StatefulSet, Job...) logo depois
+   * de NAME, com filtro e ordenação — usado na lista de pods de um node (aba Nodes), onde os pods
+   * vêm de donos diferentes. Desligada por padrão: nas outras telas os pods são de um único dono. */
+  showOwnerKind?: boolean;
 }
+
+// Tipo do dono a partir de ownerWorkload ("Deployment/checkout-api" → "Deployment"; sem dono → "Pod").
+const ownerKind = (p: PodSummary) => (p.ownerWorkload ? p.ownerWorkload.split("/")[0] : "Pod");
+const OWNER_KIND_COLOR: Record<string, string> = {
+  Deployment: "text-blue-600 dark:text-blue-400",
+  ReplicaSet: "text-blue-600 dark:text-blue-400",
+  DaemonSet: "text-purple-600 dark:text-purple-400",
+  StatefulSet: "text-teal-600 dark:text-teal-400",
+  Job: "text-amber-600 dark:text-amber-400",
+};
 
 function ColumnFilter({
   label,
@@ -213,7 +227,7 @@ function extractImageVersion(image?: string): string {
   return tag;
 }
 
-type PodSortKey = "name" | "ready" | "restarts" | "cpu" | "mem" | "age" | "node" | "dt";
+type PodSortKey = "name" | "ready" | "restarts" | "cpu" | "mem" | "age" | "node" | "dt" | "kind";
 type StatusSortMode = null | "running" | "error" | "completed";
 
 // Prioridade por LABEL (não pelo enum DynatraceMonitoringStatus) — o filtro/sort da coluna DT
@@ -293,6 +307,7 @@ export const PodMonitorTable = ({
   searchQuery: controlledSearchQuery,
   onSearchQueryChange,
   isActive = true,
+  showOwnerKind = false,
 }: PodMonitorTableProps) => {
   const dtCoverage = useDynatracePodCoverage(cluster, dtClusterSupported);
   const [uncontrolledSearchQuery, setUncontrolledSearchQuery] = useState("");
@@ -312,7 +327,12 @@ export const PodMonitorTable = ({
   const [sortKey, setSortKey] = useState<PodSortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [statusSortMode, setStatusSortMode] = useState<StatusSortMode>(null);
-  const { resize, gridTemplate } = useResizableColumns(INITIAL_WIDTHS);
+  // Com KIND ligado, a coluna entra no índice 2 e as seguintes deslocam 1 (`ko`) nos resize().
+  const ko = showOwnerKind ? 1 : 0;
+  const { resize, gridTemplate } = useResizableColumns(
+    showOwnerKind ? [...INITIAL_WIDTHS.slice(0, 2), 110, ...INITIAL_WIDTHS.slice(2)] : INITIAL_WIDTHS,
+  );
+  const [kindFilter, setKindFilter] = useState<Set<string>>(new Set());
 
   const handleSort = (key: PodSortKey) => {
     setStatusSortMode(null);
@@ -441,14 +461,16 @@ export const PodMonitorTable = ({
 
   const hasCpuFilter = cpuTopN !== null;
   const hasMemFilter = memTopN !== null;
-  const hasFilters = statusFilter.size > 0 || nodeFilter.size > 0 || namespaceFilter.size > 0 || dtStatusFilter.size > 0 || hasCpuFilter || hasMemFilter;
-  const activeFilterCount = statusFilter.size + nodeFilter.size + namespaceFilter.size + dtStatusFilter.size + (hasCpuFilter ? 1 : 0) + (hasMemFilter ? 1 : 0);
+  const hasFilters = statusFilter.size > 0 || nodeFilter.size > 0 || namespaceFilter.size > 0 || dtStatusFilter.size > 0 || kindFilter.size > 0 || hasCpuFilter || hasMemFilter;
+  const activeFilterCount = statusFilter.size + nodeFilter.size + namespaceFilter.size + dtStatusFilter.size + kindFilter.size + (hasCpuFilter ? 1 : 0) + (hasMemFilter ? 1 : 0);
+  const uniqueKinds = useMemo(() => [...new Set(pods.map(ownerKind))].sort(), [pods]);
 
   const clearAllFilters = () => {
     setStatusFilter(new Set());
     setNodeFilter(new Set());
     setNamespaceFilter(new Set());
     setDtStatusFilter(new Set());
+    setKindFilter(new Set());
     setCpuTopN(null);
     setMemTopN(null);
     setSearchQuery("");
@@ -464,9 +486,12 @@ export const PodMonitorTable = ({
         (p.phase ?? "").toLowerCase().includes(q) ||
         (p.statusReason ?? "").toLowerCase().includes(q) ||
         (p.nodeName ?? "").toLowerCase().includes(q) ||
-        (p.podIP ?? "").toLowerCase().includes(q)
+        (p.podIP ?? "").toLowerCase().includes(q) ||
+        (p.ownerWorkload ?? "").toLowerCase().includes(q)
       );
     }
+    if (kindFilter.size > 0)
+      result = result.filter((p) => kindFilter.has(ownerKind(p)));
     if (statusFilter.size > 0)
       result = result.filter((p) => {
         const effectiveStatus = p.statusReason === "NotReady" ? "NotReady" : (p.status || p.phase || "");
@@ -512,6 +537,7 @@ export const PodMonitorTable = ({
           case "age":      va = a.createdAt ? new Date(a.createdAt).getTime() : 0; vb = b.createdAt ? new Date(b.createdAt).getTime() : 0; break;
           case "node":     va = a.nodeName ?? ""; vb = b.nodeName ?? ""; break;
           case "dt":       va = DT_LABEL_PRIORITY[dtStatusLabelForPod(a)]; vb = DT_LABEL_PRIORITY[dtStatusLabelForPod(b)]; break;
+          case "kind":     va = `${ownerKind(a)}/${a.ownerWorkload ?? a.name}`; vb = `${ownerKind(b)}/${b.ownerWorkload ?? b.name}`; break;
         }
         if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb as string) : (vb as string).localeCompare(va);
         return sortDir === "asc" ? (va as number) - (vb as number) : (vb as number) - (va as number);
@@ -519,7 +545,7 @@ export const PodMonitorTable = ({
     }
 
     return result;
-  }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, dtStatusFilter, cpuTopN, memTopN, sortKey, sortDir, statusSortMode, metrics, dtClusterSupported, dtMonitoredKeys]);
+  }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, dtStatusFilter, kindFilter, cpuTopN, memTopN, sortKey, sortDir, statusSortMode, metrics, dtClusterSupported, dtMonitoredKeys]);
 
   // Helpers de seleção
   const podKey = (p: PodSummary) => `${p.namespace}/${p.name}`;
@@ -740,6 +766,12 @@ export const PodMonitorTable = ({
               DT: {v} <X className="w-2.5 h-2.5" />
             </Badge>
           ))}
+          {Array.from(kindFilter).map((v) => (
+            <Badge key={`k-${v}`} variant="secondary" className="text-[10px] h-5 gap-1 cursor-pointer hover:bg-destructive/20"
+              onClick={() => { const n = new Set(kindFilter); n.delete(v); setKindFilter(n); }}>
+              kind: {v} <X className="w-2.5 h-2.5" />
+            </Badge>
+          ))}
           {hasCpuFilter && (
             <Badge variant="secondary" className="text-[10px] h-5 gap-1 cursor-pointer hover:bg-destructive/20"
               onClick={() => setCpuTopN(null)}>
@@ -777,9 +809,16 @@ export const PodMonitorTable = ({
             : <SortBtn label="NAME" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />}
           <ResizeHandle onResize={(d) => resize(1, d)} />
         </span>
+        {showOwnerKind && (
+          <span className="relative overflow-hidden pr-4 flex items-center" title="Tipo do dono do pod (Deployment, DaemonSet, StatefulSet, Job...)">
+            <ColumnFilter label="KIND" options={uniqueKinds} selected={kindFilter} onChange={setKindFilter} />
+            <SortIcon colKey="kind" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+            <ResizeHandle onResize={(d) => resize(2, d)} />
+          </span>
+        )}
         <span className="relative overflow-hidden pr-4 text-muted-foreground uppercase text-[10px]">
           VERSION
-          <ResizeHandle onResize={(d) => resize(2, d)} />
+          <ResizeHandle onResize={(d) => resize(2 + ko, d)} />
         </span>
         {/* DT — fixo, sem resize (status de monitoramento Dynatrace); filtro+sort operam sobre o
             rótulo pt-BR já resolvido (DT_STATUS_LABEL), não o enum interno. Justificado à
@@ -796,16 +835,16 @@ export const PodMonitorTable = ({
         <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="READY" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
           <SortIcon colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(4, d)} />
+          <ResizeHandle onResize={(d) => resize(4 + ko, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="STATUS" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
           <StatusSortIcon mode={statusSortMode} onCycle={cycleStatusSort} />
-          <ResizeHandle onResize={(d) => resize(5, d)} />
+          <ResizeHandle onResize={(d) => resize(5 + ko, d)} />
         </span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(6, d)} />
+          <ResizeHandle onResize={(d) => resize(6 + ko, d)} />
         </span>
         {/* CPU — TopNFilter mostra só os N pods de maior consumo atual (Top 5/10/20), sem precisar
             digitar número; SortIcon continua disponível pra ordenar manualmente a lista toda. */}
@@ -815,7 +854,7 @@ export const PodMonitorTable = ({
           {metrics && !metrics.available && (
             <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
           )}
-          <ResizeHandle onResize={(d) => resize(7, d)} />
+          <ResizeHandle onResize={(d) => resize(7 + ko, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center gap-1">
           <TopNFilter label="MEM" value={memTopN} onChange={setMemTopN} />
@@ -823,16 +862,16 @@ export const PodMonitorTable = ({
           {metrics && !metrics.available && (
             <span title={metrics.error || "Métricas indisponíveis (metrics-server pode não estar instalado neste cluster)"} className="text-amber-500 dark:text-amber-400 text-[10px] cursor-help">⚠</span>
           )}
-          <ResizeHandle onResize={(d) => resize(8, d)} />
+          <ResizeHandle onResize={(d) => resize(8 + ko, d)} />
         </span>
         <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="NODE" options={uniqueNodes} selected={nodeFilter} onChange={setNodeFilter} />
           <SortIcon colKey="node" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(9, d)} />
+          <ResizeHandle onResize={(d) => resize(9 + ko, d)} />
         </span>
         <span className="relative overflow-hidden pr-4">
           <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-          <ResizeHandle onResize={(d) => resize(10, d)} />
+          <ResizeHandle onResize={(d) => resize(10 + ko, d)} />
         </span>
       </div>
 
@@ -899,6 +938,13 @@ export const PodMonitorTable = ({
                 )}
                 <span className="truncate block" title={pod.name}>{pod.name}</span>
               </span>
+
+              {/* KIND — tipo do dono (só com showOwnerKind); o nome do dono vai no tooltip */}
+              {showOwnerKind && (
+                <span className={`truncate ${OWNER_KIND_COLOR[ownerKind(pod)] ?? "text-muted-foreground"}`} title={pod.ownerWorkload || "sem dono (pod avulso)"}>
+                  {ownerKind(pod)}
+                </span>
+              )}
 
               {/* VERSION */}
               <span className="truncate text-muted-foreground text-[10px] flex items-center" title={pod.containers[0]?.image ?? ""}>
