@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Explorer — editor YAML com no mínimo 40 linhas (Outubro 2026)
+
+O Monaco da aba Explorer mostrava ~12 linhas. Mudar o `height` do editor não adiantava: o `TabsContent` da aba YAML estava na cadeia flex (`flex-1 min-h-0`) e ficava só com a altura que sobrava do painel, e o wrapper do `MonacoYamlEditor` (`h-full` + `overflow-hidden`) cortava o editor nessa altura, qualquer que fosse o `height` passado. Agora o `TabsContent` é `flex-none` com altura própria `max(820px, calc(100vh - 350px))` (40 linhas × 20px de `lineHeight` + 14px da barra horizontal, no mínimo; mais em telas altas) e o editor usa `height="100%"`; o painel direito (`overflow-auto`) rola quando passa da tela. A aba Logs e o editor em tela cheia não mudaram.
+
 ### CronJobs — deletar CronJob e Jobs com prévia, escolha e proteção por UID (Outubro 2026)
 
 **Antes:** "Deletar CronJob" era um placeholder ("Delete não implementado ainda via UI. Use kubectl."); Jobs nem apareciam na tela.

@@ -956,14 +956,21 @@ export const ResourceExplorerTab = ({
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="yaml" className="flex-1 min-h-0 mt-2">
-          <MonacoYamlEditor
-            value={editorValue}
-            onChange={handleEditorChange}
-            originalValue={originalYaml}
-            mode={viewMode}
-            height="calc(100vh - 350px)"
-          />
+        {/* Fora da cadeia flex (flex-none + altura própria): com flex-1 min-h-0 o TabsContent
+            ficava com a altura que sobrava do painel e o wrapper do MonacoYamlEditor (h-full +
+            overflow-hidden) cortava o editor nela — ~12 linhas visíveis, qualquer que fosse o
+            `height`. Mínimo de 40 linhas (lineHeight 20px × 40 + 14px da barra horizontal ≈ 820px);
+            em telas maiores ocupa a altura disponível. O painel direito rola se passar da tela. */}
+        <TabsContent value="yaml" className="flex-none mt-2">
+          <div style={{ height: "max(820px, calc(100vh - 350px))" }}>
+            <MonacoYamlEditor
+              value={editorValue}
+              onChange={handleEditorChange}
+              originalValue={originalYaml}
+              mode={viewMode}
+              height="100%"
+            />
+          </div>
         </TabsContent>
 
         <TabsContent value="logs" className="flex flex-col flex-1 min-h-0 mt-2 gap-2">
