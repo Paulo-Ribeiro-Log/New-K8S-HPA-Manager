@@ -60,9 +60,11 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
+  XCircle,
+  ShieldAlert,
 } from "lucide-react";
 import { toast } from "sonner";
-import { apiClient } from "@/lib/api/client";
+import { apiClient, type BatchApplyResponse } from "@/lib/api/client";
 import type { CronJob } from "@/lib/api/types";
 import type { Namespace } from "@/lib/api/types";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
@@ -143,6 +145,8 @@ export function CronJobsTab({
   const [newJobYaml, setNewJobYaml] = useState("");
   const [newJobNamespace, setNewJobNamespace] = useState("");
   const [isCreatingJob, setIsCreatingJob] = useState(false);
+  // Resultado do último Validar/Aplicar (por recurso). Some ao editar o YAML (ficaria desatualizado).
+  const [applyResult, setApplyResult] = useState<BatchApplyResponse | null>(null);
   const [isLoadingJobTemplate, setIsLoadingJobTemplate] = useState(false);
 
   // GitHub commit section (dentro do modal Novo Job)
@@ -396,39 +400,68 @@ export function CronJobsTab({
     }
   };
 
-  const defaultJobTemplate = () => `apiVersion: batch/v1
+  // Modelos já compatíveis com políticas comuns de Gatekeeper/Kyverno (tag fixa, requests/limits,
+  // non-root, sem privilégio) — o modelo antigo (busybox:latest, sem nada disso) era recusado por elas.
+  const BATCH_TEMPLATE_HEADER = `# Pode incluir no mesmo YAML (separados por ---) o que o Job/CronJob precisa:
+# ServiceAccount, ConfigMap, Role e RoleBinding. Tudo é validado (dry-run, inclusive pelas
+# políticas do cluster) antes de qualquer coisa ser criada.
+`;
+  const BATCH_POD_SPEC = (indent: string) => [
+    "restartPolicy: Never",
+    "securityContext:",
+    "  runAsNonRoot: true",
+    "  runAsUser: 65532",
+    "  runAsGroup: 65532",
+    "  seccompProfile:",
+    "    type: RuntimeDefault",
+    "containers:",
+    "  - name: job",
+    "    image: busybox:1.36",
+    '    command: ["sh", "-c", "echo Hello"]',
+    "    securityContext:",
+    "      allowPrivilegeEscalation: false",
+    "      readOnlyRootFilesystem: true",
+    "      capabilities:",
+    '        drop: ["ALL"]',
+    "    resources:",
+    "      requests:",
+    "        cpu: 10m",
+    "        memory: 16Mi",
+    "      limits:",
+    "        cpu: 100m",
+    "        memory: 64Mi",
+  ].map((l) => indent + l).join("\n");
+
+  const defaultJobTemplate = () => `${BATCH_TEMPLATE_HEADER}apiVersion: batch/v1
 kind: Job
 metadata:
-  generateName: job-
+  generateName: meu-job-
 spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600
   template:
     spec:
-      containers:
-        - name: job
-          image: busybox:latest
-          command: ["echo", "Hello from Job"]
-      restartPolicy: Never
-  backoffLimit: 3
+${BATCH_POD_SPEC("      ")}
 `;
 
-  const defaultCronJobTemplate = () => `apiVersion: batch/v1
+  const defaultCronJobTemplate = () => `${BATCH_TEMPLATE_HEADER}apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: meu-cronjob
 spec:
   schedule: "0 2 * * *"
+  # timeZone: America/Sao_Paulo   # sem isso o horário é UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
       template:
         spec:
-          containers:
-            - name: job
-              image: busybox:latest
-              command: ["echo", "Hello from CronJob"]
-          restartPolicy: Never
-      backoffLimit: 3
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 1
+${BATCH_POD_SPEC("          ")}
 `;
 
   const handleOpenNewJob = (type: "job" | "cronjob" = "job") => {
@@ -436,6 +469,7 @@ spec:
     setNewJobType(type);
     setNewJobNamespace(ns);
     setNewJobYaml(type === "cronjob" ? defaultCronJobTemplate() : defaultJobTemplate());
+    setApplyResult(null);
     setNewJobOpen(true);
   };
 
@@ -455,39 +489,24 @@ spec:
     }
   };
 
+  // Validar (dry-run) ou Aplicar. Erros de validação/política vêm por recurso em applyResult e
+  // ficam visíveis no modal; só erro do pedido em si (YAML inválido, kind não aceito...) vira toast.
   const handleCreateResource = async (dryRun = false) => {
     setIsCreatingJob(true);
+    setApplyResult(null);
     try {
-      if (newJobType === "cronjob") {
-        const result = await apiClient.createCronJob(cluster, newJobNamespace, newJobYaml, dryRun);
-        if (dryRun) {
-          toast.success("Validação OK", {
-            description: `CronJob "${result.name}" seria criado em ${result.namespace} (schedule: ${result.schedule})`,
-          });
-        } else {
-          toast.success("CronJob criado com sucesso", {
-            description: `${result.namespace}/${result.name} · ${result.schedule}`,
-          });
-          setNewJobOpen(false);
-          fetchCronJobs();
-        }
-      } else {
-        const result = await apiClient.createJob(cluster, newJobNamespace, newJobYaml, dryRun);
-        if (dryRun) {
-          toast.success("Validação OK", {
-            description: `Job "${result.name || "(gerado no apply)"}" seria criado em ${result.namespace}`,
-          });
-        } else {
-          toast.success("Job criado com sucesso", {
-            description: `${result.namespace}/${result.name}`,
-          });
-          setNewJobOpen(false);
-          fetchCronJobs();
-        }
+      const result = await apiClient.applyBatchManifest(cluster, newJobNamespace, newJobYaml, dryRun);
+      setApplyResult(result);
+      if (result.success && !dryRun) {
+        const main = result.resources.find((r) => r.kind === "CronJob" || r.kind === "Job");
+        toast.success("Aplicado com sucesso", {
+          description: `${result.resources.length} recurso(s) em ${result.namespace}${main ? ` · ${main.kind} ${main.name}` : ""}`,
+        });
+        setNewJobOpen(false);
+        fetchCronJobs();
       }
     } catch (err) {
-      const label = newJobType === "cronjob" ? "CronJob" : "Job";
-      toast.error(dryRun ? "Erro na validação" : `Erro ao criar ${label}`, {
+      toast.error(dryRun ? "Erro na validação" : "Erro ao aplicar", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
       });
     } finally {
@@ -1124,7 +1143,7 @@ spec:
               Novo {newJobType === "cronjob" ? "CronJob" : "Job"}
             </DialogTitle>
             <DialogDescription>
-              Cria {newJobType === "cronjob" ? "um CronJob agendado" : "um Job de execução única"} diretamente via API Kubernetes.
+              Cria {newJobType === "cronjob" ? "um CronJob agendado" : "um Job de execução única"} via API Kubernetes, junto com ServiceAccount/ConfigMap/Role/RoleBinding se estiverem no mesmo YAML. Tudo é validado antes (dry-run, inclusive pelas políticas Gatekeeper/Kyverno) e só é criado se tudo passar.
             </DialogDescription>
           </DialogHeader>
 
@@ -1136,6 +1155,7 @@ spec:
                 onClick={() => {
                   setNewJobType(t);
                   setNewJobYaml(t === "cronjob" ? defaultCronJobTemplate() : defaultJobTemplate());
+                  setApplyResult(null);
                 }}
                 className={`px-4 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
                   newJobType === t
@@ -1160,10 +1180,10 @@ spec:
           <div className="flex items-center gap-2 flex-shrink-0">
             <Select value={newJobNamespace || "__none__"} onValueChange={(v) => setNewJobNamespace(v === "__none__" ? "" : v)}>
               <SelectTrigger className="h-8 flex-1">
-                <SelectValue placeholder="Namespace (obrigatório)" />
+                <SelectValue placeholder="Namespace (ou o declarado no YAML)" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__none__">— Selecione o namespace —</SelectItem>
+                <SelectItem value="__none__">— Usar o namespace declarado no YAML —</SelectItem>
                 {namespaces
                   .filter(ns => showSystemNamespaces || !systemNamespaces.has(ns.name))
                   .map(ns => <SelectItem key={ns.name} value={ns.name}>{ns.name}</SelectItem>)
@@ -1186,10 +1206,12 @@ spec:
           <div className="flex-1 overflow-hidden min-h-0" style={{ minHeight: 300 }}>
             <MonacoYamlEditor
               value={newJobYaml}
-              onChange={(v) => setNewJobYaml(v ?? "")}
-              height={400}
+              onChange={(v) => { setNewJobYaml(v ?? ""); setApplyResult(null); }}
+              height={applyResult ? 260 : 400}
             />
           </div>
+
+          {applyResult && <BatchApplyResultPanel result={applyResult} />}
 
           {/* Seção: Salvar no GitHub */}
           <div className="flex-shrink-0 border border-border rounded-md overflow-hidden">
@@ -1273,7 +1295,7 @@ spec:
             <Button
               variant="outline"
               onClick={() => handleCreateResource(true)}
-              disabled={isCreatingJob || !newJobNamespace}
+              disabled={isCreatingJob || !newJobYaml.trim()}
             >
               {isCreatingJob ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}
               Validar (dry-run)
@@ -1281,15 +1303,83 @@ spec:
             <ProtectedAction>
               <Button
                 onClick={() => handleCreateResource(false)}
-                disabled={isCreatingJob || !newJobNamespace}
+                disabled={isCreatingJob || !newJobYaml.trim()}
+                title="Valida tudo de novo e só cria/atualiza se tudo passar"
               >
                 {isCreatingJob ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Play className="w-4 h-4 mr-1" />}
-                Criar {newJobType === "cronjob" ? "CronJob" : "Job"}
+                Validar e aplicar
               </Button>
             </ProtectedAction>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+// Resultado de Validar/Aplicar, por recurso: ação (criar/atualizar), status, erro, dica e as
+// violações de política (Gatekeeper/Kyverno) já separadas em política/regra/mensagem.
+function BatchApplyResultPanel({ result }: { result: BatchApplyResponse }) {
+  const okCount = result.resources.filter((r) => r.status === "ok").length;
+  const header = result.success
+    ? result.dry_run
+      ? { cls: "border-green-500/40 bg-green-500/5 text-green-700 dark:text-green-400", text: `Validação OK — ${okCount} recurso(s) passariam, inclusive pelas políticas do cluster. Nada foi alterado.` }
+      : { cls: "border-green-500/40 bg-green-500/5 text-green-700 dark:text-green-400", text: `Aplicado: ${okCount} recurso(s) em ${result.namespace}.` }
+    : result.applied
+    ? { cls: "border-red-500/40 bg-red-500/5 text-red-700 dark:text-red-400", text: `Falhou durante a aplicação: ${okCount} recurso(s) JÁ foram aplicados; os marcados como pendentes não. Corrija e aplique de novo.` }
+    : { cls: "border-red-500/40 bg-red-500/5 text-red-700 dark:text-red-400", text: "Bloqueado na validação — nada foi alterado no cluster." };
+  return (
+    <div className={`flex-shrink-0 rounded-md border text-xs max-h-64 overflow-auto ${header.cls}`}>
+      <div className="px-3 py-2 font-medium border-b border-current/20 flex items-center gap-1.5">
+        {result.success ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+        {header.text}
+      </div>
+      <div className="divide-y divide-border/50 text-foreground">
+        {result.resources.map((r) => (
+          <div key={`${r.kind}/${r.name}`} className="px-3 py-1.5 space-y-1">
+            <div className="flex items-center gap-2 font-mono">
+              {r.status === "ok" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                : r.status === "pending" ? <Clock className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                : <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
+              <span className="text-muted-foreground">{r.kind}</span>
+              <span className="font-medium">{r.name}</span>
+              {r.action && r.status !== "pending" && (
+                <Badge variant="outline" className={`text-[10px] h-4 px-1 ${r.action === "update" ? "border-amber-500/50 text-amber-600 dark:text-amber-400" : ""}`}>
+                  {r.action === "update" ? "atualizar (já existe)" : "criar"}
+                </Badge>
+              )}
+              {r.status === "pending" && <span className="text-[10px] text-muted-foreground">não aplicado</span>}
+            </div>
+            {r.violations && r.violations.length > 0 && (
+              <ul className="ml-5 space-y-0.5">
+                {r.violations.map((v, i) => (
+                  <li key={i} className="flex items-start gap-1.5">
+                    <ShieldAlert className="w-3 h-3 mt-0.5 text-red-500 flex-shrink-0" />
+                    <span>
+                      <span className="font-medium">{v.engine}</span>
+                      {v.policy && <span className="font-mono"> · {v.policy}</span>}
+                      {v.rule && <span className="font-mono text-muted-foreground"> / {v.rule}</span>}
+                      <span className="text-muted-foreground">: </span>
+                      <span className="whitespace-pre-wrap">{v.message}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {r.error && (!r.violations || r.violations.length === 0) && (
+              <p className="ml-5 text-red-600 dark:text-red-400 whitespace-pre-wrap break-words font-mono text-[11px]">{r.error}</p>
+            )}
+            {r.hint && <p className="ml-5 text-muted-foreground">{r.hint}</p>}
+          </div>
+        ))}
+      </div>
+      {result.warnings && result.warnings.length > 0 && (
+        <div className="px-3 py-1.5 border-t border-border/50 text-amber-700 dark:text-amber-400 space-y-0.5">
+          {result.warnings.map((w, i) => (
+            <p key={i} className="flex items-start gap-1.5"><AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />{w}</p>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

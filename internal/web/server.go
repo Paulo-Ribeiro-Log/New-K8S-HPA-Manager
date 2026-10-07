@@ -909,8 +909,11 @@ func (s *Server) setupRoutes() {
 	api.PUT("/cronjobs/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), cronJobHandler.Update)
 	api.PUT("/cronjobs/:cluster/:namespace/:name/yaml", rbacMiddleware.RequireSREGroup(), cronJobHandler.Apply)
 	api.POST("/cronjobs/:cluster/:namespace/:name/trigger", rbacMiddleware.RequireSREGroup(), cronJobHandler.Trigger)
-	api.POST("/jobs", rbacMiddleware.RequireSREGroup(), cronJobHandler.CreateJob)
-	api.POST("/cronjobs/new", rbacMiddleware.RequireSREGroup(), cronJobHandler.CreateCronJob)
+	// Criação de Job/CronJob (+ ServiceAccount/ConfigMap/Role/RoleBinding no mesmo YAML): dry-run de
+	// tudo e só depois aplica. /jobs e /cronjobs/new ficam como aliases do mesmo fluxo.
+	api.POST("/batch/apply", rbacMiddleware.RequireSREGroup(), cronJobHandler.ApplyBatchManifest)
+	api.POST("/jobs", rbacMiddleware.RequireSREGroup(), cronJobHandler.ApplyBatchManifest)
+	api.POST("/cronjobs/new", rbacMiddleware.RequireSREGroup(), cronJobHandler.ApplyBatchManifest)
 
 	// Prometheus Stack
 	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager, s.historyTracker)
