@@ -3,6 +3,17 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Node Pools — Conntrack: contador de descartes ("nf_conntrack: table full") (Outubro 2026)
+
+**Novo:** a aba Conntrack mostra, por nó, os contadores de descarte do kernel. O mesmo exec que lê os sysctls no pod hostNetwork passa a ler `/proc/net/stat/nf_conntrack` (colunas somadas entre CPUs, valores em hexa, colunas buscadas pelo nome do cabeçalho porque variam entre kernels) e `/proc/uptime`:
+- `drop`: tabela cheia e pacote descartado. É o que gera `nf_conntrack: table full, dropping packet` no dmesg.
+- `early_drop`: tabela cheia e uma conexão antiga despejada para abrir espaço.
+- `insert_failed`: falha ao inserir a entrada (ex: corrida de DNS via UDP).
+
+**Achado real (AKS, kernel `5.15.0-1111-azure`):** esse kernel não tem `/proc/net/stat/nf_conntrack` (sem `CONFIG_NF_CONNTRACK_PROCFS`), e a 1ª versão mostrava "—" num nó com 82% de uso. Agora, se o arquivo não existir, o exec usa `conntrack -S` (netlink; o kube-proxy tem o binário e privilégio), e o backend devolve `drop_source` ou, se nenhuma fonte funcionar, `drop_error` (mostrado no tooltip). No mesmo nó: `drop`=5, mas `early_drop`≈1,9 milhão. Por isso o alerta considera `drop` **ou** `early_drop`: os dois só acontecem com a tabela cheia, e olhar só o `drop` escondia o nó.
+
+Os contadores são acumulados desde o boot. Para um descarte antigo não alarmar para sempre, o frontend guarda a leitura anterior (mesmo cluster/pool, na sessão) e mostra a variação `(+N)`: vermelho = a tabela encheu desde a leitura anterior, amarelo = encheu em algum momento desde o boot, verde = nunca encheu. Contador menor que o anterior (nó reiniciado) zera a base. Aparece na coluna "Descartes" da tabela (totais de `drop` e `early_drop`), no detalhe expandido e nos cards (tabela **por CPU**, `drop_per_cpu`, com linha de total, `(+N)` e legenda do que cada contador significa), e num 5º bloco do resumo (quantos nós já encheram, soma de drop/early desses nós e, no tooltip, os números de cada um). Kernel sem procfs de conntrack → `-1` → "—". Parser testado em `nodepools_conntrack_stat_test.go`.
+
 ### Code Editor — Diff entre as janelas do editor dividido (Outubro 2026)
 
 **Novo:** com "Dividir editor" ativo, aparece no cabeçalho o botão **Diff**, que compara o arquivo da janela esquerda com o da direita (Monaco `DiffEditor`, lado a lado, somente leitura). O botão não existe fora do split, e desligar o split desliga o diff. O diff fica sobreposto às duas janelas, que continuam montadas por baixo (desmontar o editor principal quebraria refs, LSP e decorations ligados ao `editorRef`). A barra do diff mostra os dois caminhos, a contagem de diferenças (`getLineChanges`), "Ignorar espaços" (`ignoreTrimWhitespace`, desligado por padrão porque espaço importa em YAML) e "Inverter" lados. Compara o conteúdo atual das abas, inclusive o que ainda não foi salvo.

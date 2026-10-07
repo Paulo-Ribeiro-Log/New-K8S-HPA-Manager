@@ -1839,6 +1839,15 @@ export interface ConntrackNodeStats {
   max: number;
   buckets: number;
   max_map_count?: number; // sysctl vm.max_map_count (-1/ausente = não lido)
+  // Contadores de descarte do conntrack, acumulados desde o boot do nó (-1/ausente = não lido).
+  // Fonte: /proc/net/stat/nf_conntrack ou `conntrack -S` (kernels sem o procfs, ex: AKS 5.15-azure)
+  drop?: number;          // tabela cheia → pacote descartado ("nf_conntrack: table full, dropping packet")
+  early_drop?: number;    // tabela cheia → conexão antiga despejada para abrir espaço
+  insert_failed?: number; // falha ao inserir a entrada (ex: corrida de DNS via UDP)
+  drop_per_cpu?: { cpu: number; drop: number; early_drop: number; insert_failed: number }[]; // mesmos contadores, por CPU (-1 = ausente)
+  drop_source?: string; // "procfs" | "conntrack -S"
+  drop_error?: string;  // por que os contadores não foram lidos
+  uptime_seconds?: number;
   usage_pct: number;
   status: 'ok' | 'warning' | 'critical' | 'error';
   probe_method: string;
