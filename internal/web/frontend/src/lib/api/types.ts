@@ -1005,8 +1005,34 @@ export interface CronJob {
   suspend: boolean | null;
   last_schedule_time?: string;
   active_jobs: number;
+  // ATENÇÃO: successful_jobs/failed_jobs são os LIMITES de histórico do spec
+  // (successfulJobsHistoryLimit/failedJobsHistoryLimit), não contagens de execuções.
   successful_jobs: number;
   failed_jobs: number;
+  // Agendamento (calculado no backend)
+  time_zone?: string;            // spec.timeZone, CRON_TZ= ou "UTC"
+  next_schedule_time?: string;   // RFC3339
+  schedule_error?: string;       // expressão que o backend não conseguiu interpretar
+  last_schedule_at?: string;     // RFC3339
+  last_successful_time?: string; // RFC3339
+  missed?: boolean;              // execução esperada já passou sem rodar
+  missed_since?: string;         // RFC3339
+  // Configuração
+  concurrency_policy?: string;   // Allow | Forbid | Replace
+  starting_deadline_seconds?: number;
+  image?: string;
+  containers?: number;
+  created_at?: string;
+  // Jobs retidos pelo histórico
+  history_succeeded?: number;
+  history_failed?: number;
+  last_job?: {
+    name: string;
+    status: "Running" | "Succeeded" | "Failed";
+    start_time?: string;
+    completion_time?: string;
+    duration_seconds: number;
+  };
 }
 
 export interface CronJobUpdate {

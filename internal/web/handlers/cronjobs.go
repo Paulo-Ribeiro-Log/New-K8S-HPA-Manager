@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pmezard/go-difflib/difflib"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -39,8 +40,43 @@ type CronJobResponse struct {
 	Suspend          *bool   `json:"suspend"`
 	LastScheduleTime *string `json:"last_schedule_time,omitempty"`
 	ActiveJobs       int     `json:"active_jobs"`
-	SuccessfulJobs   int32   `json:"successful_jobs"`
-	FailedJobs       int32   `json:"failed_jobs"`
+	// Atenção: successful_jobs/failed_jobs são os LIMITES de histórico do spec
+	// (successfulJobsHistoryLimit/failedJobsHistoryLimit), não contagens — mantidos com esse nome
+	// por compatibilidade. As contagens reais dos Jobs retidos estão em history_succeeded/failed.
+	SuccessfulJobs int32 `json:"successful_jobs"`
+	FailedJobs     int32 `json:"failed_jobs"`
+
+	// Agendamento (calculado aqui; o K8s não expõe a próxima execução)
+	TimeZone         string  `json:"time_zone"`                    // spec.timeZone, CRON_TZ= da expressão ou "UTC" (padrão do controller)
+	NextScheduleTime *string `json:"next_schedule_time,omitempty"` // RFC3339
+	ScheduleError    string  `json:"schedule_error,omitempty"`     // expressão que o parser não entendeu
+	LastScheduleAt   *string `json:"last_schedule_at,omitempty"`   // RFC3339 (last_schedule_time sem fuso fica por compatibilidade)
+	LastSuccessfulAt *string `json:"last_successful_time,omitempty"`
+	// Missed: a execução esperada depois da última (ou da criação) já passou além da tolerância
+	// (startingDeadlineSeconds ou 5min), sem job ativo e sem estar suspenso.
+	Missed      bool    `json:"missed"`
+	MissedSince *string `json:"missed_since,omitempty"`
+
+	// Configuração
+	ConcurrencyPolicy       string `json:"concurrency_policy"`
+	StartingDeadlineSeconds *int64 `json:"starting_deadline_seconds,omitempty"`
+	Image                   string `json:"image,omitempty"` // 1º container do template
+	Containers              int    `json:"containers"`
+	CreatedAt               string `json:"created_at"`
+
+	// Jobs retidos pelo histórico (preenchido no List, com uma listagem de Jobs por requisição)
+	HistorySucceeded int             `json:"history_succeeded"`
+	HistoryFailed    int             `json:"history_failed"`
+	LastJob          *CronJobLastJob `json:"last_job,omitempty"`
+}
+
+// CronJobLastJob é o Job mais recente criado pelo CronJob.
+type CronJobLastJob struct {
+	Name            string  `json:"name"`
+	Status          string  `json:"status"` // Running | Succeeded | Failed
+	StartTime       *string `json:"start_time,omitempty"`
+	CompletionTime  *string `json:"completion_time,omitempty"`
+	DurationSeconds int64   `json:"duration_seconds"` // até agora, se ainda rodando
 }
 
 // List retorna todos os CronJobs do cluster (todos os namespaces ou filtrado)
@@ -83,9 +119,26 @@ func (h *CronJobHandler) List(c *gin.Context) {
 		return
 	}
 
+	// Jobs dos CronJobs: uma listagem só (mesmo escopo de namespace), agrupada pelo CronJob dono.
+	// Falhar aqui não derruba a lista — só faltam último job e contagens.
+	jobsByCronJob := map[string][]batchv1.Job{}
+	if jobList, err := client.BatchV1().Jobs(namespaceFilter).List(c.Request.Context(), metav1.ListOptions{}); err == nil {
+		for _, j := range jobList.Items {
+			for _, ref := range j.OwnerReferences {
+				if ref.Kind == "CronJob" {
+					key := j.Namespace + "/" + ref.Name
+					jobsByCronJob[key] = append(jobsByCronJob[key], j)
+				}
+			}
+		}
+	}
+
+	now := time.Now()
 	cronJobs := make([]CronJobResponse, 0, len(cronJobList.Items))
 	for _, cj := range cronJobList.Items {
-		cronJobs = append(cronJobs, convertCronJobToResponse(&cj))
+		resp := convertCronJobToResponse(&cj)
+		applyCronJobJobs(&resp, jobsByCronJob[cj.Namespace+"/"+cj.Name], now)
+		cronJobs = append(cronJobs, resp)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": cronJobs, "count": len(cronJobs)})
@@ -447,25 +500,124 @@ func convertCronJobToResponse(cj *batchv1.CronJob) CronJobResponse {
 	if cj.Status.LastScheduleTime != nil {
 		timeStr := cj.Status.LastScheduleTime.Format("2006-01-02 15:04:05")
 		resp.LastScheduleTime = &timeStr
+		resp.LastScheduleAt = rfc3339(cj.Status.LastScheduleTime.Time)
 	}
+	if cj.Status.LastSuccessfulTime != nil {
+		resp.LastSuccessfulAt = rfc3339(cj.Status.LastSuccessfulTime.Time)
+	}
+	resp.ConcurrencyPolicy = string(cj.Spec.ConcurrencyPolicy)
+	if resp.ConcurrencyPolicy == "" {
+		resp.ConcurrencyPolicy = string(batchv1.AllowConcurrent)
+	}
+	resp.StartingDeadlineSeconds = cj.Spec.StartingDeadlineSeconds
+	resp.CreatedAt = cj.CreationTimestamp.UTC().Format(time.RFC3339)
+	if cs := cj.Spec.JobTemplate.Spec.Template.Spec.Containers; len(cs) > 0 {
+		resp.Image = cs[0].Image
+		resp.Containers = len(cs)
+	}
+	applyCronJobSchedule(&resp, cj, time.Now())
 	return resp
 }
 
-func describeCronSchedule(schedule string) string {
-	switch schedule {
-	case "0 * * * *":
-		return "A cada hora"
-	case "*/5 * * * *":
-		return "A cada 5 minutos"
-	case "0 0 * * *":
-		return "Todo dia à meia-noite"
-	case "0 2 * * *":
-		return "Todo dia às 2:00 AM"
-	case "0 0 * * 0":
-		return "Todo domingo à meia-noite"
-	default:
-		return schedule
+func rfc3339(t time.Time) *string {
+	s := t.UTC().Format(time.RFC3339)
+	return &s
+}
+
+// applyCronJobSchedule calcula fuso, próxima execução e execução perdida.
+func applyCronJobSchedule(resp *CronJobResponse, cj *batchv1.CronJob, now time.Time) {
+	sched, err := parseCron(cj.Spec.Schedule)
+	if err != nil {
+		resp.ScheduleError = err.Error()
+		resp.TimeZone = "UTC"
+		return
 	}
+	tz := "UTC" // sem spec.timeZone o controller usa o fuso do kube-controller-manager — UTC nos managed (AKS/EKS/GKE)
+	if cj.Spec.TimeZone != nil && *cj.Spec.TimeZone != "" {
+		tz = *cj.Spec.TimeZone
+	} else if sched.tz != "" {
+		tz = sched.tz
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		loc, tz = time.UTC, "UTC"
+	}
+	resp.TimeZone = tz
+
+	if next := sched.next(now.In(loc)); !next.IsZero() {
+		resp.NextScheduleTime = rfc3339(next)
+	}
+
+	if (cj.Spec.Suspend != nil && *cj.Spec.Suspend) || len(cj.Status.Active) > 0 {
+		return
+	}
+	base := cj.CreationTimestamp.Time
+	if cj.Status.LastScheduleTime != nil {
+		base = cj.Status.LastScheduleTime.Time
+	}
+	grace := 5 * time.Minute
+	if cj.Spec.StartingDeadlineSeconds != nil && time.Duration(*cj.Spec.StartingDeadlineSeconds)*time.Second > grace {
+		grace = time.Duration(*cj.Spec.StartingDeadlineSeconds) * time.Second
+	}
+	if expected := sched.next(base.In(loc)); !expected.IsZero() && now.After(expected.Add(grace)) {
+		resp.Missed = true
+		resp.MissedSince = rfc3339(expected)
+	}
+}
+
+// applyCronJobJobs preenche as contagens reais e o último Job a partir dos Jobs retidos.
+func applyCronJobJobs(resp *CronJobResponse, jobs []batchv1.Job, now time.Time) {
+	var last *batchv1.Job
+	for i := range jobs {
+		j := &jobs[i]
+		switch status, _ := cronJobJobStatus(j); status {
+		case "Succeeded":
+			resp.HistorySucceeded++
+		case "Failed":
+			resp.HistoryFailed++
+		}
+		if last == nil || j.CreationTimestamp.After(last.CreationTimestamp.Time) {
+			last = j
+		}
+	}
+	if last == nil {
+		return
+	}
+	status, finished := cronJobJobStatus(last)
+	lj := &CronJobLastJob{Name: last.Name, Status: status}
+	start := last.CreationTimestamp.Time
+	if last.Status.StartTime != nil {
+		start = last.Status.StartTime.Time
+	}
+	lj.StartTime = rfc3339(start)
+	end := now
+	if !finished.IsZero() {
+		end = finished
+		lj.CompletionTime = rfc3339(finished)
+	}
+	if d := end.Sub(start); d > 0 {
+		lj.DurationSeconds = int64(d.Seconds())
+	}
+	resp.LastJob = lj
+}
+
+// cronJobJobStatus classifica o Job pelas condições (Complete/Failed); sem condição final, está rodando.
+func cronJobJobStatus(j *batchv1.Job) (string, time.Time) {
+	for _, cond := range j.Status.Conditions {
+		if cond.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch cond.Type {
+		case batchv1.JobComplete:
+			if j.Status.CompletionTime != nil {
+				return "Succeeded", j.Status.CompletionTime.Time
+			}
+			return "Succeeded", cond.LastTransitionTime.Time
+		case batchv1.JobFailed:
+			return "Failed", cond.LastTransitionTime.Time
+		}
+	}
+	return "Running", time.Time{}
 }
 
 func getHistoryCount(limit *int32) int32 {

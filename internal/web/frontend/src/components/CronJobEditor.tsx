@@ -241,13 +241,16 @@ export const CronJobEditor = ({ cronJob, selectedCluster, onRefetch }: CronJobEd
             <p className="text-xs text-muted-foreground mb-1">Jobs Ativos</p>
             <p className="text-lg font-bold text-foreground">{cronJob.active_jobs}</p>
           </div>
-          <div className="p-3 bg-green-50 dark:bg-green-950/20 rounded-lg">
-            <p className="text-xs text-muted-foreground mb-1">Sucessos</p>
-            <p className="text-lg font-bold text-green-600">{cronJob.successful_jobs}</p>
+          {/* Contagem real dos Jobs retidos (history_*); successful_jobs/failed_jobs são só os limites de histórico */}
+          <div className="p-3 bg-green-50 dark:bg-green-950/20 rounded-lg" title="Jobs com sucesso ainda retidos no cluster">
+            <p className="text-xs text-muted-foreground mb-1">Sucessos (histórico)</p>
+            <p className="text-lg font-bold text-green-600">{cronJob.history_succeeded ?? "—"}</p>
+            <p className="text-[10px] text-muted-foreground">limite: {cronJob.successful_jobs}</p>
           </div>
-          <div className="p-3 bg-red-50 dark:bg-red-950/20 rounded-lg">
-            <p className="text-xs text-muted-foreground mb-1">Falhas</p>
-            <p className="text-lg font-bold text-red-600">{cronJob.failed_jobs}</p>
+          <div className="p-3 bg-red-50 dark:bg-red-950/20 rounded-lg" title="Jobs com falha ainda retidos no cluster">
+            <p className="text-xs text-muted-foreground mb-1">Falhas (histórico)</p>
+            <p className="text-lg font-bold text-red-600">{cronJob.history_failed ?? "—"}</p>
+            <p className="text-[10px] text-muted-foreground">limite: {cronJob.failed_jobs}</p>
           </div>
         </div>
 
