@@ -335,6 +335,12 @@ func (p *AWSNodeGroupProvider) AbortOperation(_ context.Context, _, _ string) er
 	return cloudprovider.ErrNotSupported
 }
 
+// ReconcileNodeGroup não tem equivalente no EKS (node group DEGRADED se resolve pelos health
+// issues do próprio node group ou com update-nodegroup-version).
+func (p *AWSNodeGroupProvider) ReconcileNodeGroup(_ context.Context, _, _ string) error {
+	return cloudprovider.ErrNotSupported
+}
+
 // classifyAWSError transforma erros brutos do AWS CLI em mensagens acionáveis.
 func classifyAWSError(err error, clusterName, profile string) error {
 	msg := err.Error()

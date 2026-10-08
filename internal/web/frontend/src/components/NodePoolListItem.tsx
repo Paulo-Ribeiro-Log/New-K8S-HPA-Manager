@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,8 +14,15 @@ interface NodePoolListItemProps {
   onClick: () => void;
   onProgressClick?: () => void;
   onReconcile?: () => void;
+  isReconciling?: boolean;
   onAbort?: () => void;
 }
+
+// provisioningState da AKS que pede reconcile (a última operação no pool falhou ou foi abortada)
+const RECONCILABLE = new Set(["Failed", "Canceled"]);
+// Operação em andamento no provider (AKS PascalCase; EKS/GKE em caixa alta)
+const TRANSITIONAL = new Set(["Creating", "Updating", "Scaling", "Upgrading", "Deleting", "Starting", "Stopping", "Migrating",
+  "CREATING", "UPDATING", "DELETING", "PROVISIONING", "RECONCILING", "STOPPING"]);
 
 export const NodePoolListItem = ({
   nodePool,
@@ -25,8 +33,13 @@ export const NodePoolListItem = ({
   onClick,
   onProgressClick,
   onReconcile,
+  isReconciling = false,
   onAbort,
 }: NodePoolListItemProps) => {
+  const [confirmReconcile, setConfirmReconcile] = useState(false);
+  const status = nodePool.status ?? "";
+  const needsReconcile = RECONCILABLE.has(status);
+  const transitional = TRANSITIONAL.has(status) || status.includes("CREATING") || status.includes("UPDATING") || status.includes("DELETING");
   const handleClick = () => {
     if (isApplying && onProgressClick) {
       onProgressClick();
@@ -87,15 +100,15 @@ export const NodePoolListItem = ({
               <Badge variant="default" className="text-xs">System</Badge>
             )}
             {(() => {
-              const s = nodePool.status ?? "";
-              const ok = s === "Succeeded" || s.startsWith("ACTIVE");
-              const warn = s.includes("CREATING") || s.includes("UPDATING") || s.includes("DELETING");
+              const ok = status === "Succeeded" || status.startsWith("ACTIVE");
               return (
                 <Badge
-                  variant={ok ? "outline" : warn ? "secondary" : "destructive"}
-                  className="text-xs"
+                  variant={ok ? "outline" : transitional ? "secondary" : "destructive"}
+                  className="text-xs gap-1"
+                  title={`Estado no provider: ${status || "desconhecido"}`}
                 >
-                  {ok ? "Active" : s}
+                  {transitional && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {ok ? "Active" : status || "?"}
                 </Badge>
               );
             })()}
@@ -134,8 +147,8 @@ export const NodePoolListItem = ({
           {nodePool.resource_group || nodePool.cluster_name}
         </div>
 
-        {/* Mensagem de erro + botão Reconcile */}
-        {applyResult === "error" && (
+        {/* Falha: erro do apply desta sessão e/ou pool em Failed/Canceled no provider + Reconcile */}
+        {(applyResult === "error" || needsReconcile) && (
           <div className="space-y-1.5 mt-1">
             {applyError && (
               <div className="flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded p-2">
@@ -143,16 +156,48 @@ export const NodePoolListItem = ({
                 <span className="break-all">{applyError}</span>
               </div>
             )}
-            {onReconcile && (
+            {needsReconcile && (
+              <div className="flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded p-2">
+                <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                <span>
+                  {status === "Canceled"
+                    ? "A última operação neste pool foi abortada (Canceled)."
+                    : "A última operação neste pool falhou (provisioningState: Failed)."}{" "}
+                  Novas alterações podem ser recusadas até reconciliar.
+                </span>
+              </div>
+            )}
+            {onReconcile && needsReconcile && !confirmReconcile && (
               <Button
                 size="sm"
                 variant="outline"
+                disabled={isReconciling}
                 className="w-full h-7 text-xs border-amber-400 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
-                onClick={(e) => { e.stopPropagation(); onReconcile(); }}
+                onClick={(e) => { e.stopPropagation(); setConfirmReconcile(true); }}
               >
-                <RotateCw className="w-3 h-3 mr-1.5" />
-                Reconcile — Tentar novamente
+                {isReconciling ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> : <RotateCw className="w-3 h-3 mr-1.5" />}
+                {isReconciling ? "Iniciando reconcile..." : "Reconcile"}
               </Button>
+            )}
+            {onReconcile && needsReconcile && confirmReconcile && (
+              <div className="text-xs rounded border border-amber-400/60 bg-amber-50 dark:bg-amber-950/20 p-2 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                <p className="text-amber-700 dark:text-amber-300">
+                  Reaplica a configuração <strong>atual</strong> do pool na Azure, sem mudar tamanho, contagem nem autoscaler
+                  (<span className="font-mono">az aks nodepool update</span> sem parâmetros). O pool passa para Updating e pode levar vários minutos;
+                  nodes com problema podem ser reimageados/recriados.
+                </p>
+                <div className="flex gap-1.5 justify-end">
+                  <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setConfirmReconcile(false)}>Cancelar</Button>
+                  <Button
+                    size="sm"
+                    className="h-6 text-xs bg-amber-600 hover:bg-amber-700 text-white"
+                    onClick={() => { setConfirmReconcile(false); onReconcile(); }}
+                  >
+                    <RotateCw className="w-3 h-3 mr-1" />
+                    Confirmar reconcile
+                  </Button>
+                </div>
+              </div>
             )}
           </div>
         )}

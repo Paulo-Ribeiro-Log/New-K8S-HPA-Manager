@@ -10,6 +10,15 @@ import (
 // ErrNotSupported é retornado quando uma operação não é suportada pelo cloud provider.
 var ErrNotSupported = errors.New("operação não suportada por este cloud provider")
 
+// ReconcileStateError é retornado quando o estado atual do node group não permite reconcile
+// (ex: operação em andamento, ou já está saudável). State é o estado lido do provider.
+type ReconcileStateError struct {
+	State  string
+	Reason string
+}
+
+func (e *ReconcileStateError) Error() string { return e.Reason }
+
 // NodeGroupProvider abstrai operações de node groups/pools por cloud provider.
 // AzureNodeGroupProvider usa az CLI; AWSNodeGroupProvider usa aws CLI.
 type NodeGroupProvider interface {
@@ -25,6 +34,11 @@ type NodeGroupProvider interface {
 	// AbortOperation cancela uma operação em andamento no provider.
 	// Retorna ErrNotSupported se o provider não suportar abort.
 	AbortOperation(ctx context.Context, cluster, group string) error
+
+	// ReconcileNodeGroup reaplica a configuração ATUAL do grupo (sem mudanças) para tirá-lo de
+	// um estado de falha. Valida o estado antes (ReconcileStateError se não for o caso) e não
+	// espera a operação terminar. Retorna ErrNotSupported se o provider não tiver equivalente.
+	ReconcileNodeGroup(ctx context.Context, cluster, group string) error
 
 	// ValidateAuth verifica se a autenticação com o cloud provider está ativa.
 	ValidateAuth(ctx context.Context) error

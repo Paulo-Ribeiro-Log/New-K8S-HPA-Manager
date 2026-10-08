@@ -3,6 +3,17 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Node Pools — Reconcile de node pool em Failed/Canceled voltou (e passou a ser o reconcile oficial da AKS) (Outubro 2026)
+
+**Sintoma:** o botão "Reconcile" de node pool com erro tinha sumido.
+
+**Causa:** o botão vivia no `NodePoolTab.tsx`, que é código morto desde que a aba passou a ser renderizada pelo `Index.tsx`. O `NodePoolListItem` continuava sabendo mostrar o botão, mas só quando recebia `onReconcile` — e o `Index.tsx` nunca passou essa prop (nem `onAbort`, que sumiu junto). Mesmo antes, o "reconcile" só aparecia depois de um apply que falhou **na mesma sessão** e reaplicava as mudanças do staging: um pool em `Failed` por outro motivo (autoscaler, upgrade, portal, outra pessoa) nunca mostrava o botão.
+
+**Correção (boas práticas da AKS):**
+- **Backend:** `POST /api/v1/nodepools/:cluster/:resource_group/:name/reconcile` (`ReconcileNodeGroup` na interface `NodeGroupProvider`; EKS/GKE → 501). Na AKS roda o reconcile documentado pela própria CLI ("Reconcile the nodepool back to its current state"): `az aks nodepool update` **sem nenhuma mudança**, com `--subscription` no comando (sem o `az account set` global, que corre contra operações paralelas em outra subscription) e `--no-wait`. Antes, lê o `provisioningState` na hora: só `Failed`/`Canceled`; operação em andamento (Updating/Scaling...) ou `Succeeded` → 409 com o motivo. Invalida o cache e registra no histórico.
+- **Cache:** o cache de 2min da listagem cai para 15s enquanto algum pool está em transição (Updating etc.), senão o progresso do reconcile só aparecia minutos depois.
+- **Frontend:** o reconcile aparece pelo **estado real do pool** (`Failed`/`Canceled`, sempre o da listagem atual — não o do staging), com explicação e confirmação em dois cliques; estados em transição aparecem com spinner (antes caíam no vermelho de erro); o `Index.tsx` passa `onReconcile`/`onAbort` e atualiza a lista a cada 15s enquanto houver pool em transição. Abortar → `Canceled` → Reconcile volta a ser o fluxo completo.
+
 ### Explorer — editor YAML com no mínimo 40 linhas (Outubro 2026)
 
 O Monaco da aba Explorer mostrava ~12 linhas. Mudar o `height` do editor não adiantava: o `TabsContent` da aba YAML estava na cadeia flex (`flex-1 min-h-0`) e ficava só com a altura que sobrava do painel, e o wrapper do `MonacoYamlEditor` (`h-full` + `overflow-hidden`) cortava o editor nessa altura, qualquer que fosse o `height` passado. Agora o `TabsContent` é `flex-none` com altura própria `max(820px, calc(100vh - 350px))` (40 linhas × 20px de `lineHeight` + 14px da barra horizontal, no mínimo; mais em telas altas) e o editor usa `height="100%"`; o painel direito (`overflow-auto`) rola quando passa da tela. A aba Logs e o editor em tela cheia não mudaram.

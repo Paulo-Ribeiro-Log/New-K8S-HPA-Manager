@@ -470,6 +470,52 @@ const Index = ({ onLogout }: IndexProps) => {
   const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
   const { nodePools, loading: nodePoolsLoading, notSupported: nodePoolsNotSupported, error: nodePoolsError, refetch: refetchNodePools } = useNodePools(selectedCluster);
 
+  // ── Reconcile / Abort de node pool ──
+  // Reconcile (AKS): pool em Failed/Canceled → reaplica a config atual (o backend valida o estado).
+  // Abort: cancela a operação em andamento na Azure (o pool vai para Canceled → reconcile).
+  const [reconcilingNodePools, setReconcilingNodePools] = useState<Set<string>>(new Set());
+  const refetchNodePoolsRef = useRef(refetchNodePools);
+  refetchNodePoolsRef.current = refetchNodePools;
+
+  const handleReconcileNodePool = useCallback(async (pool: NodePool) => {
+    setReconcilingNodePools(prev => new Set(prev).add(pool.name));
+    try {
+      const r = await apiClient.reconcileNodePool(pool.cluster_name, pool.resource_group, pool.name);
+      toast.success(`Reconcile iniciado: ${pool.name}`, { description: r.message });
+      setNodePoolResults(prev => { const next = { ...prev }; delete next[pool.name]; return next; });
+      setNodePoolErrors(prev => { const next = { ...prev }; delete next[pool.name]; return next; });
+    } catch (err) {
+      toast.error(`Reconcile de ${pool.name} não iniciado`, { description: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setReconcilingNodePools(prev => { const next = new Set(prev); next.delete(pool.name); return next; });
+      refetchNodePoolsRef.current();
+    }
+  }, []);
+
+  const handleAbortNodePool = useCallback(async (pool: NodePool) => {
+    // Cancela o fetch do apply em andamento (NodePoolApplyModal) e a operação na Azure.
+    window.dispatchEvent(new CustomEvent("nodePoolAbort", { detail: { poolName: pool.name } }));
+    try {
+      const r = await apiClient.abortNodePoolOperation(pool.cluster_name, pool.resource_group, pool.name);
+      toast.warning(`Operação abortada: ${pool.name}`, { description: r.message });
+    } catch (err) {
+      toast.info("Nenhuma operação ativa para abortar", { description: err instanceof Error ? err.message : String(err) });
+    } finally {
+      refetchNodePoolsRef.current();
+    }
+  }, []);
+
+  // Enquanto algum pool está em transição (ex: reconcile em andamento), atualiza a cada 15s —
+  // o refresh automático normal é de 60s. O backend também encurta o cache nesses estados.
+  const hasTransitionalNodePool = nodePools.some(p =>
+    ["Creating", "Updating", "Scaling", "Upgrading", "Deleting", "Starting", "Stopping", "Migrating",
+     "CREATING", "UPDATING", "DELETING", "PROVISIONING", "RECONCILING", "STOPPING"].includes(p.status ?? ""));
+  useEffect(() => {
+    if (!hasTransitionalNodePool || activeTab !== "nodepools") return;
+    const id = setInterval(() => refetchNodePoolsRef.current(), 15_000);
+    return () => clearInterval(id);
+  }, [hasTransitionalNodePool, activeTab]);
+
 
   // Auto-select cluster ao carregar: restaura o último cluster usado (localStorage) se ele
   // ainda existir na lista atual; cai no primeiro cluster só quando não há nada salvo ou o
@@ -1207,7 +1253,8 @@ const Index = ({ onLogout }: IndexProps) => {
                         return (
                           <NodePoolListItem
                             key={`${pool.cluster_name}-${pool.name}`}
-                            nodePool={displayPool}
+                            // status sempre o da listagem atual: o do staging pode estar velho
+                            nodePool={{ ...displayPool, status: pool.status }}
                             isSelected={
                               selectedNodePool?.name === pool.name &&
                               selectedNodePool?.cluster_name === pool.cluster_name
@@ -1217,6 +1264,9 @@ const Index = ({ onLogout }: IndexProps) => {
                             applyError={nodePoolErrors[pool.name]}
                             onClick={() => setSelectedNodePool(displayPool)}
                             onProgressClick={() => setShowNodePoolApplyModal(true)}
+                            onReconcile={() => handleReconcileNodePool(pool)}
+                            isReconciling={reconcilingNodePools.has(pool.name)}
+                            onAbort={() => handleAbortNodePool(pool)}
                           />
                         );
                       })

@@ -841,6 +841,7 @@ func (s *Server) setupRoutes() {
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
 	api.POST("/nodepools/:cluster/:resource_group/:name/abort", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Abort)
+	api.POST("/nodepools/:cluster/:resource_group/:name/reconcile", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Reconcile) // reaplica a config atual (pool em Failed/Canceled)
 	api.POST("/nodepools/apply-sequential", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ApplySequential)
 	api.POST("/nodepools/sequence/execute", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExecuteSequence) // NOVO: Cordon/Drain sequencing
 

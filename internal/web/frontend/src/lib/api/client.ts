@@ -2794,6 +2794,15 @@ class APIClient {
     );
   }
 
+  // Reconcile (AKS): reaplica a config atual do pool para tirá-lo de Failed/Canceled. O backend
+  // valida o estado na hora (409 se em andamento/saudável; 501 fora da AKS) e não espera terminar.
+  async reconcileNodePool(cluster: string, resourceGroup: string, name: string): Promise<{ success: boolean; message: string }> {
+    return this.request(
+      `/nodepools/${encodeURIComponent(cluster)}/${encodeURIComponent(resourceGroup)}/${encodeURIComponent(name)}/reconcile`,
+      { method: "POST" }
+    );
+  }
+
   async applyNodePoolsSequential(
     nodePools: NodePool[]
   ): Promise<{ success: boolean; message: string }> {
