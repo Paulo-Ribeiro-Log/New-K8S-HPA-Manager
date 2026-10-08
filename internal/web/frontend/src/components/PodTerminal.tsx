@@ -3,8 +3,9 @@ import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
 import "xterm/css/xterm.css";
+import { attachTerminalClipboard, decodeTerminalOutput, encodeTerminalInput } from "@/lib/xtermShared";
 import { Button } from "@/components/ui/button";
-import { X, Maximize2, Minimize2, Copy, Check, Power } from "lucide-react";
+import { X, Maximize2, Minimize2, Copy, Check, Power, FileCode } from "lucide-react";
 import { toast } from "sonner";
 
 interface PodTerminalProps {
@@ -17,7 +18,20 @@ interface PodTerminalProps {
   onToggleFullscreen: () => void;
   onClose: () => void;
   ephemeral?: boolean;
+  // "tshoot": pod netshoot próprio no namespace, criado pela sessão e APAGADO pelo servidor ao
+  // sair (kubectl run --rm). `pod`/`container` são ignorados nesse modo.
+  // "node": shell no node (kubectl debug node/<node>), pod privilegiado apagado ao sair.
+  mode?: "shell" | "debug" | "tshoot" | "node";
+  node?: string; // modo "node"
+  // Ephemeral Debug com --rm: o servidor encerra o container quando a última sessão termina
+  // (a API não remove ephemeral containers do pod — ele vira Terminated).
+  rm?: boolean;
 }
+
+// Roda um script local dentro do shell remoto, como `bash < script.sh` (heredoc, sem arquivo no pod).
+const SCRIPT_DELIM = "__K8S_HPA_SCRIPT_EOF__";
+const scriptHeredoc = (text: string) =>
+  `bash -s <<'${SCRIPT_DELIM}'\n${text.replace(/\r\n/g, "\n").replace(/\n?$/, "\n")}${SCRIPT_DELIM}\n`;
 
 export const PodTerminal = ({
   cluster,
@@ -29,7 +43,13 @@ export const PodTerminal = ({
   onToggleFullscreen,
   onClose,
   ephemeral = false,
+  mode: modeProp,
+  node = "",
+  rm = false,
 }: PodTerminalProps) => {
+  const mode = modeProp ?? (ephemeral ? "debug" : "shell");
+  const sendRef = useRef<(data: string) => void>(() => {});
+  const scriptInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -38,15 +58,21 @@ export const PodTerminal = ({
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!terminalRef.current) return;
+    const el = terminalRef.current; // elemento DOM (a prop `container` é o nome do container do pod)
+    if (!el) return;
 
-    // Inicializar terminal com suporte a PT-BR
+    // Mesma base do terminal do Code Editor (RepoTerminal): bytes crus em base64 nos dois
+    // sentidos, copiar/colar de lib/xtermShared e refit pelo tamanho real do container. Antes
+    // havia um remapeamento "ABNT2" manual de teclas (quebrava acentos com tecla morta e mandava
+    // caractere errado em outros layouts), o colar vazava os marcadores de bracketed paste e o
+    // tamanho só era reajustado no resize da janela — com a largura do shell remoto diferente da
+    // do xterm, editar linhas longas embaralhava o texto.
     const terminal = new Terminal({
       cursorBlink: true,
       fontSize: 14,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      convertEol: true, // Converte \n para \r\n automaticamente
-      scrollback: 10000, // Histórico de 10k linhas
+      convertEol: true,
+      scrollback: 10000,
       theme: {
         background: "#1e1e1e",
         foreground: "#d4d4d4",
@@ -74,218 +100,142 @@ export const PodTerminal = ({
     });
 
     const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
-
     terminal.loadAddon(fitAddon);
-    terminal.loadAddon(webLinksAddon);
-
-    terminal.open(terminalRef.current);
+    terminal.loadAddon(new WebLinksAddon());
+    terminal.open(el);
     fitAddon.fit();
 
     xtermRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
-    // Conectar WebSocket
-    connectWebSocket(terminal);
-
-    // Resize handler
-    const handleResize = () => {
-      if (fitAddonRef.current) {
-        fitAddonRef.current.fit();
-        // Enviar novo tamanho para o servidor
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          const dims = {
-            type: "resize",
-            cols: terminal.cols,
-            rows: terminal.rows,
-          };
-          wsRef.current.send(JSON.stringify(dims));
-        }
-      }
-    };
-
-    window.addEventListener("resize", handleResize);
-
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-      terminal.dispose();
-    };
-  }, [cluster, namespace, pod, container, shell, ephemeral]);
-
-  const connectWebSocket = (terminal: Terminal) => {
-    // Construir URL do WebSocket
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
-    const endpoint = ephemeral ? "debug" : "shell";
-    
-    // Obter token de autenticação
-    const token = localStorage.getItem("auth_token");
-    
-    const wsUrl = `${protocol}//${host}/api/v1/pods/${cluster}/${namespace}/${pod}/${endpoint}?container=${container}&shell=${shell}${ephemeral ? '&image=nicolaka/netshoot' : ''}&token=${encodeURIComponent(token)}`;
-
-    console.log("[PodTerminal] Connecting to WebSocket:", wsUrl.replace(/token=[^&]+/, 'token=***'));
-    
-    terminal.writeln(ephemeral 
-      ? "\x1b[1;34m⚡ Criando ephemeral debug container...\x1b[0m\r"
-      : "\x1b[1;34m⚡ Conectando ao pod...\x1b[0m\r");
+    const token = localStorage.getItem("auth_token") ?? "";
+    let wsUrl: string;
+    if (mode === "tshoot") {
+      wsUrl = `${protocol}//${window.location.host}/api/v1/tshoot/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/ws?${new URLSearchParams({ token }).toString()}`;
+    } else if (mode === "node") {
+      wsUrl = `${protocol}//${window.location.host}/api/v1/node-shell/${encodeURIComponent(cluster)}/${encodeURIComponent(node)}/ws?${new URLSearchParams({ namespace, token }).toString()}`;
+    } else {
+      const params = new URLSearchParams({ container, shell, token });
+      if (mode === "debug") params.set("image", "nicolaka/netshoot");
+      if (mode === "debug" && rm) params.set("rm", "true");
+      wsUrl = `${protocol}//${window.location.host}/api/v1/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/${mode === "debug" ? "debug" : "shell"}?${params.toString()}`;
+      terminal.writeln(mode === "debug"
+        ? "\x1b[1;34m⚡ Criando ephemeral debug container...\x1b[0m"
+        : "\x1b[1;34m⚡ Conectando ao pod...\x1b[0m");
+    }
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    const sendResize = () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", size: { cols: terminal.cols, rows: terminal.rows } }));
+      }
+    };
+    const sendRawInput = (data: string) => {
+      if (!data || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "input", data: encodeTerminalInput(data) }));
+    };
+
     ws.onopen = () => {
       setIsConnected(true);
-      terminal.writeln("\x1b[1;32m✓ Conectado!\x1b[0m\r");
-      if (ephemeral) {
-        terminal.writeln("\x1b[1;33m🛠️  nicolaka/netshoot\x1b[0m - Ephemeral Debug Container\r");
-        terminal.writeln("\x1b[1;36mEncerramento:\x1b[0m botão ⏻ no topo, ou automático após 10 min sem atividade\r");
+      if (mode === "tshoot") {
+        terminal.writeln("\x1b[1;33m🧪 Pod de troubleshooting (nicolaka/netshoot) com --rm\x1b[0m — apagado pelo servidor ao sair (exit ou fechar o terminal)");
+      } else if (mode === "node") {
+        terminal.writeln(`\x1b[1;33m🖥️  Shell no node ${node} (nicolaka/netshoot, privilegiado) com --rm\x1b[0m — apagado pelo servidor ao sair`);
+      } else {
+        terminal.writeln("\x1b[1;32m✓ Conectado!\x1b[0m");
+        if (mode === "debug") {
+          terminal.writeln("\x1b[1;33m🛠️  nicolaka/netshoot\x1b[0m - Ephemeral Debug Container");
+          terminal.writeln(rm
+            ? "\x1b[1;36mEncerramento (--rm):\x1b[0m ao sair (exit ou fechar o terminal), pelo botão ⏻, ou após 10 min sem atividade"
+            : "\x1b[1;36mEncerramento:\x1b[0m botão ⏻ no topo, ou automático após 10 min sem atividade");
+        }
+        terminal.writeln(`\x1b[1;36mPod:\x1b[0m ${pod}`);
+        terminal.writeln(`\x1b[1;36mContainer:\x1b[0m ${container}`);
+        terminal.writeln(`\x1b[1;36mShell:\x1b[0m ${shell}`);
       }
-      terminal.writeln(`\x1b[1;36mPod:\x1b[0m ${pod}\r`);
-      terminal.writeln(`\x1b[1;36mContainer:\x1b[0m ${container}\r`);
-      terminal.writeln(`\x1b[1;36mShell:\x1b[0m ${shell}\r`);
-      terminal.writeln(`\x1b[1;36mLocale:\x1b[0m C.UTF-8 (suporta acentuação)\r`);
-      terminal.writeln(`\x1b[1;36mTeclado:\x1b[0m ABNT2 (ç automático)\r`);
-      terminal.writeln(`\x1b[1;36mAtalhos:\x1b[0m Ctrl+C=Copiar | Ctrl+V=Colar\r`);
-      terminal.writeln("\x1b[2m─────────────────────────────────\x1b[0m\r\n");
-
-      // Enviar dimensões iniciais
-      const dims = {
-        type: "resize",
-        cols: terminal.cols,
-        rows: terminal.rows,
-      };
-      ws.send(JSON.stringify(dims));
-
-      // Handler para input do terminal com suporte a ABNT2 e copiar/colar
-      terminal.attachCustomKeyEventHandler((event) => {
-        if (event.type !== "keydown") return true;
-
-        // CTRL+C = Copiar (não enviar SIGINT)
-        if (event.ctrlKey && event.key === "c" && terminal.hasSelection()) {
-          event.preventDefault();
-          const selection = terminal.getSelection();
-          navigator.clipboard.writeText(selection);
-          console.log("[Terminal] Copiado:", selection.substring(0, 50) + "...");
-          return false; // Bloqueia xterm de processar
-        }
-
-        // CTRL+V = Colar — deixa o xterm processar nativamente (evento DOM "paste" na
-        // textarea oculta, capturado por terminal.onData abaixo). Não interceptar aqui:
-        // navigator.clipboard.readText() exige contexto seguro (HTTPS/localhost) e
-        // permissão explícita, falhando silenciosamente em acesso via IP/hostname HTTP
-        // e ao colar texto copiado de fora do navegador.
-
-        // Mapeamento ABNT2 customizado por KeyCode
-        // O navegador detecta o layout físico do teclado, não o layout lógico
-        // Precisamos interceptar os keycodes e mapear para ABNT2
-        
-        // Debug completo - mostre TODAS as teclas para diagnóstico (comentado para produção)
-        // console.log("[Keyboard DEBUG]", {
-        //   key: event.key,
-        //   code: event.code,
-        //   shift: event.shiftKey,
-        //   ctrl: event.ctrlKey,
-        //   alt: event.altKey,
-        //   charCode: event.key.charCodeAt(0),
-        // });
-
-        // Semicolon -> ç/Ç (tecla do ç no ABNT2)
-        if (event.code === "Semicolon" && !event.ctrlKey && !event.altKey) {
-          event.preventDefault();
-          const char = event.shiftKey ? "Ç" : "ç";
-          // Envia via WebSocket para o backend processar corretamente
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "input", data: char }));
-          }
-          return false; // Bloqueia processamento padrão do xterm
-        }
-
-        // Quote -> ~/ (til/crase no ABNT2)
-        if (event.code === "Quote" && !event.ctrlKey && !event.altKey) {
-          event.preventDefault();
-          const char = event.shiftKey ? "`" : "~";
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "input", data: char }));
-          }
-          return false;
-        }
-
-        // BracketLeft -> ´/` (acento agudo no ABNT2)
-        if (event.code === "BracketLeft" && !event.ctrlKey && !event.altKey) {
-          event.preventDefault();
-          const char = event.shiftKey ? "`" : "´";
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "input", data: char }));
-          }
-          return false;
-        }
-
-        // BracketRight -> [/{ (colchetes no ABNT2)
-        if (event.code === "BracketRight" && !event.ctrlKey && !event.altKey) {
-          event.preventDefault();
-          const char = event.shiftKey ? "{" : "[";
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "input", data: char }));
-          }
-          return false;
-        }
-
-        // Backslash (acima do Enter) -> ]/} (colchetes fechamento no ABNT2)
-        if (event.code === "Backslash" && !event.ctrlKey && !event.altKey) {
-          event.preventDefault();
-          const char = event.shiftKey ? "}" : "]";
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "input", data: char }));
-          }
-          return false;
-        }
-        
-        return true; // Deixa xterm processar outras teclas
-      });
-
-      terminal.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "input", data }));
-        }
-      });
+      terminal.writeln("\x1b[1;36mAtalhos:\x1b[0m Ctrl+C com texto selecionado = copiar (sem seleção = interromper) | Ctrl+V = colar");
+      terminal.writeln("\x1b[2m─────────────────────────────────\x1b[0m");
+      fitAddon.fit();
+      sendResize();
+      terminal.focus();
     };
 
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
         if (message.type === "output" && message.data) {
-          terminal.write(message.data);
+          terminal.write(decodeTerminalOutput(message.data));
         } else if (message.type === "error") {
-          terminal.writeln(`\r\n\x1b[1;31m✗ Erro: ${message.data}\x1b[0m\r`);
+          terminal.writeln(`\r\n\x1b[1;31m✗ Erro: ${message.data}\x1b[0m`);
         }
-      } catch (e) {
-        // Mensagem raw (sem JSON)
+      } catch {
         terminal.write(event.data);
       }
     };
 
-    ws.onerror = (error) => {
-      console.error("[PodTerminal] WebSocket error:", error);
-      console.error("[PodTerminal] WebSocket URL was:", wsUrl);
-      console.error("[PodTerminal] ReadyState:", ws.readyState);
+    ws.onerror = () => {
       setIsConnected(false);
-      terminal.writeln("\r\n\x1b[1;31m✗ Erro na conexão WebSocket\x1b[0m\r");
-      terminal.writeln(`\x1b[2mURL: ${wsUrl}\x1b[0m\r`);
-      toast.error("Erro na conexão", {
-        description: "Não foi possível conectar ao pod. Verifique o console (F12) para mais detalhes.",
-      });
+      terminal.writeln("\r\n\x1b[1;31m✗ Erro na conexão WebSocket\x1b[0m");
+      toast.error("Erro na conexão", { description: "Não foi possível conectar ao pod." });
     };
 
     ws.onclose = (event) => {
-      console.log("[PodTerminal] WebSocket closed:", event.code, event.reason);
       setIsConnected(false);
-      terminal.writeln("\r\n\x1b[1;33m⚠ Conexão fechada\x1b[0m\r");
+      terminal.writeln("\r\n\x1b[1;33m⚠ Conexão fechada\x1b[0m");
       if (event.code !== 1000) {
-        terminal.writeln(`\x1b[2mCódigo: ${event.code}, Razão: ${event.reason || 'N/A'}\x1b[0m\r`);
+        terminal.writeln(`\x1b[2mCódigo: ${event.code}, Razão: ${event.reason || "N/A"}\x1b[0m`);
       }
     };
+
+    // Teclado: o xterm já recebe o caractere certo do layout do sistema (ABNT2 incluso, com teclas
+    // mortas) — nada de remapear tecla por posição física.
+    const dataSub = terminal.onData(sendRawInput);
+    sendRef.current = sendRawInput;
+    const detachClipboard = attachTerminalClipboard(terminal, el, sendRawInput);
+
+    // Refit sempre que o container muda de tamanho (tela cheia, modal, janela) e avisa o shell
+    // remoto — larguras diferentes entre xterm e PTY embaralham a edição de linhas longas.
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (el.clientWidth === 0 || el.clientHeight === 0) return; // escondido
+        const { cols, rows } = terminal;
+        fitAddon.fit();
+        if (terminal.cols !== cols || terminal.rows !== rows) sendResize();
+      });
+    });
+    observer.observe(el);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      detachClipboard();
+      dataSub.dispose();
+      ws.close();
+      terminal.dispose();
+    };
+  }, [cluster, namespace, pod, container, shell, mode, node, rm]);
+
+  // "Rodar script": lê um .sh local e executa no shell remoto (bash -s <<heredoc), como
+  // `bash < script.sh` — a saída aparece no terminal.
+  const handleRunScript = async (file: File | undefined) => {
+    if (!file) return;
+    const text = await file.text();
+    if (!text.trim()) {
+      toast.error("Script vazio");
+      return;
+    }
+    if (text.includes(SCRIPT_DELIM)) {
+      toast.error("O script contém o delimitador reservado; não é possível enviá-lo assim");
+      return;
+    }
+    sendRef.current(scriptHeredoc(text));
+    xtermRef.current?.focus();
+    toast.info(`Executando ${file.name}`);
   };
 
   // Encerra o ephemeral container de debug (o backend cria /tmp/.stop e o laço de vigia sai).
@@ -319,12 +269,38 @@ export const PodTerminal = ({
             }`}
           />
           <span className="text-sm font-medium">
-            Terminal: {pod} / {container}
+            {mode === "tshoot" ? `Troubleshooting (--rm): ${namespace}`
+              : mode === "node" ? `Shell no node (--rm): ${node}`
+              : `Terminal: ${pod} / ${container}`}
           </span>
-          <span className="text-xs text-muted-foreground">({shell})</span>
+          <span className="text-xs text-muted-foreground">
+            ({mode === "tshoot" || mode === "node" ? "netshoot · bash" : shell}{mode === "debug" && rm ? " · --rm" : ""})
+          </span>
         </div>
         <div className="flex items-center gap-1">
-          {ephemeral && (
+          {(mode === "tshoot" || mode === "debug" || mode === "node") && (
+            <>
+              <input
+                ref={scriptInputRef}
+                type="file"
+                accept=".sh,.bash,text/x-shellscript,text/plain"
+                className="hidden"
+                onChange={(e) => { handleRunScript(e.target.files?.[0]); e.target.value = ""; }}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => scriptInputRef.current?.click()}
+                disabled={!isConnected}
+                title="Executar um script local (.sh) no shell, como `bash < script.sh`"
+                className="h-7 text-xs gap-1"
+              >
+                <FileCode className="w-3.5 h-3.5" />
+                Rodar script
+              </Button>
+            </>
+          )}
+          {mode === "debug" && (
             <Button
               variant="ghost"
               size="icon"
@@ -389,7 +365,7 @@ export const PodTerminal = ({
               : "Desconectado"}
           </span>
           <span className="font-mono">
-            {namespace} / {cluster}
+            {mode === "tshoot" || mode === "node" || (mode === "debug" && rm) ? "--rm: removido ao sair · " : ""}{mode === "node" ? node : namespace} / {cluster}
           </span>
         </div>
       </div>

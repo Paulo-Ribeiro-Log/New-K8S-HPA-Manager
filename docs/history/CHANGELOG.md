@@ -3,6 +3,33 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Pods/Namespaces — pod de troubleshooting com --rm (kubectl run tshoot --rm) (Outubro 2026)
+
+**Novo:** opção "🧪 Pod de troubleshooting (--rm)" no shell das abas Pods e Namespaces — o equivalente a `kubectl run tshoot --rm -it --image nicolaka/netshoot --restart=Never -- bash`. WS `GET /api/v1/tshoot/:cluster/:namespace/ws` (`handlers/tshoot.go`): a mesma conexão cria o pod `tshoot-xxxxxx`, espera ficar Running (mostra o progresso; falha na hora com ImagePullBackOff etc.; recusa de Gatekeeper/Kyverno aparece no terminal, sem bypass), abre o `bash` com TTY e, quando a sessão termina por qualquer motivo (`exit`, terminal fechado, conexão caída), **o servidor apaga o pod** (grace 0). Backstops se o servidor morrer: `activeDeadlineSeconds` de 4h (sem `sleep infinity`) e, ao abrir um novo tshoot no namespace, apaga as sobras que já terminaram (nunca pods Running — podem ser sessões de outra instância do app). Criação e remoção vão para o histórico (`PodExecHandler` recebe o `HistoryTracker`).
+
+**`--rm` no Ephemeral Debug Container:** checkbox `--rm` (padrão ligado) nas abas Pods/Namespaces → `?rm=true` no WS `/debug`. A API não permite remover um ephemeral container do pod (nem o `kubectl debug` remove), então o `--rm` faz o máximo possível: quando a **última** sessão local naquele container termina (contador `acquire/releaseDebugSession` por cluster/ns/pod/container — outra aba pode estar usando), o servidor encerra o container (cria `/tmp/.stop`; o laço de vigia sai e ele vira Terminated). A entrada continua no spec até o pod ser recriado.
+
+**Shell no node (`kubectl debug node/<node>`), também com `--rm`:** item "Shell no node (--rm)" no menu de cada node da aba Nodes → WS `GET /api/v1/node-shell/:cluster/:node/ws?namespace=default`. Pod netshoot privilegiado com `nodeName`, `hostPID`/`hostNetwork`/`hostIPC`, `/` do node em `/host` (`chroot /host`) e toleration `Exists` (sobe em node de sistema/cordonado). Usa o mesmo ciclo `runRmPodSession` do tshoot (cria, espera, bash com TTY, apaga ao sair, backstops e histórico). Políticas que barram privileged/hostPath recusam na criação e a mensagem aparece no terminal.
+
+**Rodar script:** botão no terminal (tshoot, shell no node e Ephemeral Debug) que executa um `.sh` local no shell remoto via `bash -s <<'…'` — como `bash < script.sh`.
+
+**Removido:** o "Debug Pod Standalone" da aba Namespaces (o browser criava o pod com `sleep infinity` e só o apagava ao fechar o modal — fechar a aba/navegador deixava o pod para sempre; `exit` não apagava nada) e a rota `POST /pods/:cluster/:namespace/debug` + `apiClient.createDebugPod`.
+
+### Pods — shell e Ephemeral Debug Container: edição de linha embaralhada (agora igual ao terminal do Code Editor) (Outubro 2026)
+
+**Sintoma:** no shell de pods/Ephemeral Debug, apagar ou editar a linha deixava o texto embaralhado, sem apagar e sem mostrar o retorno do comando.
+
+**Causa principal (bug real):** o frontend mandava o redimensionamento como `{type:"resize", cols, rows}`, mas o backend (`TerminalSession.Read`, `podexec.go`) só lia `{type:"resize", size:{cols, rows}}` — **todo resize era ignorado** e o PTY remoto nunca recebia tamanho (0 colunas). Com largura zero o readline não consegue apagar nem redesenhar a linha.
+
+**Outras causas, no mesmo componente:**
+- Saída passava por `string(p)` + `ToValidUTF8`: sequência UTF-8/de controle partida entre dois `Write` virava `�`.
+- Entrada maior que o buffer do exec era **truncada** (colar grande perdia o final).
+- Remapeamento "ABNT2" manual por posição física de tecla (`´ ~ [ ] ç`), enviado por fora do xterm: quebrava acento com tecla morta e mandava caractere errado em outros layouts.
+- Colar pelo xterm vazava os marcadores de bracketed paste (`^[[200~…~`) na linha.
+- Refit só no resize da janela (tela cheia/modal não reajustavam); URL do WebSocket sem `encodeURIComponent` (cluster EKS com `/` no ARN quebrava a rota).
+
+**Correção — mesmo terminal do Code Editor:** protocolo em base64 dos bytes crus nos dois sentidos (como `code_editor_terminal.go`), entrada excedente guardada para a próxima leitura, resize aceito nos dois formatos (e tamanho 0 ignorado). No frontend, `lib/xtermShared.ts` (codificar entrada, decodificar saída, copiar com seleção e colar sem bracketed paste) passa a ser usado pelo `RepoTerminal` do Code Editor **e** pelo `PodTerminal`; o `PodTerminal` perdeu o remapeamento de teclas e ganhou `ResizeObserver` (refit + resize para o PTY sempre que o tamanho muda). Testes da sessão com conexão falsa: base64, colar grande, resize nos dois formatos, bytes UTF-8 partidos.
+
 ### Node Pools — Reconcile de node pool em Failed/Canceled voltou (e passou a ser o reconcile oficial da AKS) (Outubro 2026)
 
 **Sintoma:** o botão "Reconcile" de node pool com erro tinha sumido.
