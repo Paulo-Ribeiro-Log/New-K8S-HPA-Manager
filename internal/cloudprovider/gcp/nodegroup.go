@@ -250,6 +250,11 @@ func (p *GCPNodeGroupProvider) AbortOperation(_ context.Context, _, _ string) er
 	return cloudprovider.ErrNotSupported
 }
 
+// ReconcileNodeGroup não tem equivalente no gcloud GKE.
+func (p *GCPNodeGroupProvider) ReconcileNodeGroup(_ context.Context, _, _ string) error {
+	return cloudprovider.ErrNotSupported
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 // run executa um comando com timeout e retorna stdout.

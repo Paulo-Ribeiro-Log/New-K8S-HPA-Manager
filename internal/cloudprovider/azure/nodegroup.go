@@ -260,6 +260,59 @@ func (p *AzureNodeGroupProvider) AbortOperation(ctx context.Context, _, group st
 	return nil
 }
 
+// ReconcileNodeGroup faz o reconcile oficial de node pool da AKS: `az aks nodepool update` sem
+// nenhuma mudança reaplica (PUT) o modelo atual do pool e o tira de Failed/Canceled — exemplo
+// "Reconcile the nodepool back to its current state" da própria ajuda do comando.
+//   - Estado lido na hora (não confia no cache/tela): só Failed/Canceled. Operação em andamento
+//     faria o PUT falhar; Succeeded não tem o que reconciliar.
+//   - --subscription no próprio comando, sem `az account set` (que é global e corre contra
+//     outras operações em paralelo em outra subscription).
+//   - --no-wait: a requisição volta quando a Azure aceita; o progresso aparece no
+//     provisioningState (Updating → Succeeded/Failed) da listagem.
+func (p *AzureNodeGroupProvider) ReconcileNodeGroup(ctx context.Context, _, group string) error {
+	stateCtx, stateCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer stateCancel()
+	out, err := exec.CommandContext(stateCtx, "az", azureNodePoolStateArgs(p.subscription, p.resourceGroup, p.clusterName, group)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("falha ao ler o estado do node pool: %s", strings.TrimSpace(string(out)))
+	}
+	if err := checkReconcileState(strings.TrimSpace(string(out))); err != nil {
+		return err
+	}
+
+	recCtx, recCancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer recCancel()
+	out, err = exec.CommandContext(recCtx, "az", azureReconcileArgs(p.subscription, p.resourceGroup, p.clusterName, group)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("az aks nodepool update (reconcile) falhou: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func azureNodePoolStateArgs(subscription, rg, cluster, pool string) []string {
+	return []string{"aks", "nodepool", "show", "--subscription", subscription, "--resource-group", rg,
+		"--cluster-name", cluster, "--name", pool, "--query", "provisioningState", "-o", "tsv"}
+}
+
+func azureReconcileArgs(subscription, rg, cluster, pool string) []string {
+	return []string{"aks", "nodepool", "update", "--subscription", subscription, "--resource-group", rg,
+		"--cluster-name", cluster, "--name", pool, "--no-wait"}
+}
+
+// checkReconcileState decide se o provisioningState permite reconcile.
+func checkReconcileState(state string) error {
+	switch state {
+	case "Failed", "Canceled":
+		return nil
+	case "Succeeded":
+		return &cloudprovider.ReconcileStateError{State: state, Reason: "o node pool está Succeeded — não há o que reconciliar"}
+	case "":
+		return &cloudprovider.ReconcileStateError{State: state, Reason: "não foi possível ler o provisioningState do node pool"}
+	default: // Creating, Updating, Scaling, Upgrading, Deleting, Starting, Stopping...
+		return &cloudprovider.ReconcileStateError{State: state, Reason: fmt.Sprintf("o node pool está em %s (operação em andamento) — aguarde terminar; se travar, aborte a operação antes de reconciliar", state)}
+	}
+}
+
 // --- helpers internos ---
 
 func (p *AzureNodeGroupProvider) setSubscription(ctx context.Context) error {

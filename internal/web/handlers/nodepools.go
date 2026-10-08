@@ -40,6 +40,31 @@ type nodePoolCacheEntry struct {
 // chamadas az CLI a cada refresh do React Query (que roda a cada ~30s).
 const nodePoolCacheTTL = 2 * time.Minute
 
+// nodePoolCacheTransitionalTTL vale enquanto algum pool está em transição (ex: reconcile em
+// andamento, Updating): sem isso o progresso só aparecia 2min depois de cada mudança de estado.
+const nodePoolCacheTransitionalTTL = 15 * time.Second
+
+// nodePoolCacheExpiry escolhe o TTL do cache pelo estado dos pools.
+func nodePoolCacheExpiry(pools []models.NodePool) time.Time {
+	for _, p := range pools {
+		if isTransitionalPoolStatus(p.Status) {
+			return time.Now().Add(nodePoolCacheTransitionalTTL)
+		}
+	}
+	return time.Now().Add(nodePoolCacheTTL)
+}
+
+// isTransitionalPoolStatus: operação em andamento no provider (AKS provisioningState em
+// PascalCase; EKS em CAIXA ALTA; GKE PROVISIONING/RECONCILING/STOPPING).
+func isTransitionalPoolStatus(s string) bool {
+	switch s {
+	case "Creating", "Updating", "Scaling", "Upgrading", "Deleting", "Starting", "Stopping", "Migrating",
+		"CREATING", "UPDATING", "DELETING", "PROVISIONING", "RECONCILING", "STOPPING":
+		return true
+	}
+	return false
+}
+
 // NodePoolHandler gerencia requisições relacionadas a Node Pools
 type NodePoolHandler struct {
 	kubeManager     *config.KubeConfigManager
@@ -86,7 +111,7 @@ func (h *NodePoolHandler) getNodePoolsCached(ctx context.Context, cluster string
 	}
 
 	h.nodePoolCacheMu.Lock()
-	h.nodePoolCache[cluster] = &nodePoolCacheEntry{pools: pools, exp: time.Now().Add(nodePoolCacheTTL)}
+	h.nodePoolCache[cluster] = &nodePoolCacheEntry{pools: pools, exp: nodePoolCacheExpiry(pools)}
 	h.nodePoolCacheMu.Unlock()
 
 	return pools, nil
@@ -295,7 +320,7 @@ func (h *NodePoolHandler) List(c *gin.Context) {
 
 	// Salvar no cache para os próximos 2 minutos
 	h.nodePoolCacheMu.Lock()
-	h.nodePoolCache[cluster] = &nodePoolCacheEntry{pools: nodePools, exp: time.Now().Add(nodePoolCacheTTL)}
+	h.nodePoolCache[cluster] = &nodePoolCacheEntry{pools: nodePools, exp: nodePoolCacheExpiry(nodePools)}
 	h.nodePoolCacheMu.Unlock()
 	log.Debug().Str("cluster", cluster).Int("count", len(nodePools)).Msgf("[NodePool.List] OK, cacheado por %v", nodePoolCacheTTL)
 
