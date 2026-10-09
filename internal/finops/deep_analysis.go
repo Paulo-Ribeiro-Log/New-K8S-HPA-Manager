@@ -130,9 +130,13 @@ type DeepAnalysisInput struct {
 	// SKUCatalogStatus: fresh | stale | loading | unavailable | "" (não se aplica, ex.: fora da AKS).
 	SKUCatalogStatus    string
 	SKUCatalogFetchedAt *time.Time
-	Headroom            float64
-	Warnings            []string
-	Now                 time.Time
+	// Coverage: cobertura de reserva/Savings Plan do pool (Cost Management); nil = nunca consultada.
+	Coverage *PoolCoverage
+	// SKUHints: SKUs que já rodam sob reserva/Savings Plan na frota (chave: SKU em minúsculas).
+	SKUHints map[string]*SKUCoverageHint
+	Headroom float64
+	Warnings []string
+	Now      time.Time
 }
 
 // ── Saída ────────────────────────────────────────────────────────────────────────────────────────
@@ -178,6 +182,8 @@ type DeepPoolOverview struct {
 	PriceSource    string   `json:"price_source,omitempty"`
 	MonthlyCostBRL float64  `json:"monthly_cost_brl"`
 	ExchangeRate   float64  `json:"exchange_rate"`
+	// Coverage: custo efetivo e cobertura de reserva/Savings Plan (nil = não consultada).
+	Coverage *DeepCoverage `json:"coverage,omitempty"`
 }
 
 // DeepResource é a visão de alocação de um recurso no pool (CPU em millicores, memória em Mi).
@@ -344,7 +350,11 @@ type DeepSimulation struct {
 	EphemeralOSDisk *bool    `json:"ephemeral_os_disk,omitempty"`
 	Zones           []string `json:"zones,omitempty"`
 	VCPUsPerCore    int      `json:"vcpus_per_core,omitempty"`
-	Notes           []string `json:"notes"`
+	// Coverage: custo efetivo pior/melhor caso com a reserva do pool (cenário recomendado).
+	Coverage *DeepCoverageScenario `json:"coverage,omitempty"`
+	// ReservedHint: este SKU (ou a série) já roda sob reserva/Savings Plan na frota.
+	ReservedHint *SKUCoverageHint `json:"reserved_hint,omitempty"`
+	Notes        []string         `json:"notes"`
 }
 
 // DeepFinding é um achado do diagnóstico.
@@ -434,7 +444,7 @@ func buildDeepOverview(in DeepAnalysisInput) DeepPoolOverview {
 	if priority == "" {
 		priority = "regular"
 	}
-	return DeepPoolOverview{
+	ov := DeepPoolOverview{
 		VMSize:         in.VMSize,
 		VCPU:           in.CurrentSpec.VCPU,
 		MemGB:          in.CurrentSpec.MemGB,
@@ -452,6 +462,8 @@ func buildDeepOverview(in DeepAnalysisInput) DeepPoolOverview {
 		MonthlyCostBRL: round2(price.USDHour * HoursPerMonth * float64(len(in.Nodes)) * in.ExchangeRate),
 		ExchangeRate:   in.ExchangeRate,
 	}
+	ov.Coverage = buildDeepCoverage(in.Coverage, price.USDHour*HoursPerMonth*in.ExchangeRate, len(in.Nodes))
+	return ov
 }
 
 func deepPct(part, whole float64) float64 {
@@ -1011,6 +1023,10 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 			s.SavingsRecommendedBRL = round2(ov.MonthlyCostBRL - s.CostRecommendedBRL)
 		}
 		s.NodeLossImpactPct = round2(100 / float64(s.NodesRecommended))
+		s.ReservedHint = in.SKUHints[strings.ToLower(spec.VMSize)]
+		if hasPrice && p.USDHour > 0 {
+			s.Coverage = deepCoverageScenario(ov.Coverage, in.CurrentSpec, spec, s.NodesRecommended, p.USDHour*HoursPerMonth*in.ExchangeRate)
+		}
 		if s.NodeLossImpactPct > deepNodeLossWarnPct {
 			s.Notes = append(s.Notes, fmt.Sprintf("Perder 1 node derruba %.0f%% do pool.", s.NodeLossImpactPct))
 		}
@@ -1035,6 +1051,10 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 		ap, bp := a.PriceUSDHour > 0, b.PriceUSDHour > 0
 		if ap != bp {
 			return ap
+		}
+		// Com reserva no pool, o custo de tabela engana: ordena pelo custo efetivo no pior caso.
+		if a.Coverage != nil && b.Coverage != nil {
+			return a.Coverage.WorstMonthlyBRL < b.Coverage.WorstMonthlyBRL
 		}
 		return a.CostRecommendedBRL < b.CostRecommendedBRL
 	})
@@ -1137,8 +1157,27 @@ func buildDeepFindings(a PoolDeepAnalysis) []DeepFinding {
 	}
 
 	// Melhor alternativa factível com preço (excluindo a atual).
-	var cur *DeepSimulation
-	var best *DeepSimulation
+	cov := a.Overview.Coverage
+	covOK := cov != nil && cov.Computable
+	if cov != nil {
+		switch {
+		case covOK && cov.Reservation >= coverageWarnShare:
+			add("warning", "pool_reserved", fmt.Sprintf("Pool coberto por reserva: custo real %s/mês, não %s de tabela", brlInt(cov.EffectiveMonthlyBRL), brlInt(a.Overview.MonthlyCostBRL)),
+				fmt.Sprintf("Reserva cobre ~%s do custo efetivo (~%.0f de %d nodes, desconto de ~%.0f%% sobre a tabela; Cost Management, %d dias). A reserva segue paga até vencer ou ser trocada: a simulação mostra o custo efetivo de cada SKU no pior caso (reserva ociosa) e no melhor (reserva reaproveitada por outro pool/cluster no escopo dela).",
+					pct(cov.Reservation), cov.ReservedNodes, a.Overview.Nodes, cov.TableDiscountPct, cov.WindowDays))
+		case !covOK && cov.Note != "":
+			add("info", "pool_coverage_uncomputable", "Cobertura de reserva/Savings Plan sem cenários", cov.Note)
+		}
+	}
+
+	// Economia comparada ao custo EFETIVO quando há cobertura calculável (pior caso decide); senão, tabela.
+	savings := func(s *DeepSimulation) float64 {
+		if covOK && s.Coverage != nil {
+			return s.Coverage.WorstSavingsBRL
+		}
+		return s.SavingsRecommendedBRL
+	}
+	var cur, best *DeepSimulation
 	for i := range a.Simulation {
 		s := &a.Simulation[i]
 		if s.IsCurrent {
@@ -1148,18 +1187,51 @@ func buildDeepFindings(a PoolDeepAnalysis) []DeepFinding {
 		if !s.Feasible || !s.Available || s.PriceUSDHour <= 0 || s.NodeLossImpactPct > deepNodeLossWarnPct {
 			continue
 		}
-		if best == nil || s.CostRecommendedBRL < best.CostRecommendedBRL {
+		if best == nil || savings(s) > savings(best) {
 			best = s
 		}
 	}
-	if cur != nil && cur.Feasible && cur.SavingsRecommendedBRL > 0 {
-		add("info", "rightsizing_savings", "Economia só com o ajuste de requests (mesma VM)",
-			fmt.Sprintf("%s: %d → %d nodes, economia estimada de R$ %s/mês.", cur.VMSize, a.Overview.Nodes, cur.NodesRecommended, mdBrl(cur.SavingsRecommendedBRL)))
+	if cur != nil && cur.Feasible {
+		switch {
+		case covOK && cur.Coverage != nil:
+			c := cur.Coverage
+			add("info", "rightsizing_savings", "Ajuste de requests mantendo a VM (com a reserva)",
+				fmt.Sprintf("%s: %d → %d nodes. Custo efetivo de %s/mês (pior caso) a %s/mês (melhor caso), contra %s/mês hoje. %s",
+					cur.VMSize, a.Overview.Nodes, cur.NodesRecommended, brlInt(c.WorstMonthlyBRL), brlInt(c.BestMonthlyBRL), brlInt(cov.EffectiveMonthlyBRL), c.Note))
+		case cur.SavingsRecommendedBRL > 0:
+			add("info", "rightsizing_savings", "Economia só com o ajuste de requests (mesma VM)",
+				fmt.Sprintf("%s: %d → %d nodes, economia estimada de R$ %s/mês.", cur.VMSize, a.Overview.Nodes, cur.NodesRecommended, mdBrl(cur.SavingsRecommendedBRL)))
+		}
 	}
-	if best != nil && best.SavingsRecommendedBRL > 0 {
-		add("info", "vm_change_savings", "Melhor alternativa de VM (após ajuste de requests)",
-			fmt.Sprintf("%s (%d vCPU / %d GB, %s): %d nodes, R$ %s/mês, economia de R$ %s/mês.",
-				best.VMSize, best.VCPU, best.MemGB, best.CPU, best.NodesRecommended, mdBrl(best.CostRecommendedBRL), mdBrl(best.SavingsRecommendedBRL)))
+	if best != nil {
+		switch {
+		case covOK && best.Coverage != nil:
+			c := best.Coverage
+			if c.BestSavingsBRL > 0 {
+				sev, verb := "info", "economiza"
+				if c.WorstSavingsBRL < 0 {
+					sev, verb = "warning", "só economiza se a reserva atual for reaproveitada"
+				}
+				add(sev, "vm_change_savings", "Melhor alternativa de VM considerando a reserva",
+					fmt.Sprintf("%s (%d vCPU / %d GB, %s): %d nodes, custo efetivo de %s/mês (pior caso) a %s/mês (melhor caso) — %s: de %s a %s por mês. %s",
+						best.VMSize, best.VCPU, best.MemGB, best.CPU, best.NodesRecommended, brlInt(c.WorstMonthlyBRL), brlInt(c.BestMonthlyBRL),
+						verb, brlInt(c.WorstSavingsBRL), brlInt(c.BestSavingsBRL), c.Note))
+			}
+		case best.SavingsRecommendedBRL > 0:
+			add("info", "vm_change_savings", "Melhor alternativa de VM (após ajuste de requests)",
+				fmt.Sprintf("%s (%d vCPU / %d GB, %s): %d nodes, R$ %s/mês, economia de R$ %s/mês.",
+					best.VMSize, best.VCPU, best.MemGB, best.CPU, best.NodesRecommended, mdBrl(best.CostRecommendedBRL), mdBrl(best.SavingsRecommendedBRL)))
+		}
+	}
+	var hinted []string
+	for _, s := range a.Simulation {
+		if !s.IsCurrent && s.ReservedHint != nil && s.ReservedHint.Scope == HintScopeSKU && s.Available && s.Feasible {
+			hinted = append(hinted, s.VMSize)
+		}
+	}
+	if len(hinted) > 0 {
+		add("info", "fleet_reserved_skus", "SKUs da simulação que já rodam sob reserva/Savings Plan na frota",
+			strings.Join(hinted, ", ")+". Se houver capacidade reservada ociosa nelas (não visível sem o papel Reservations Reader), a troca pode sair mais barata que o preço de tabela.")
 	}
 
 	sevRank := map[string]int{"critical": 0, "warning": 1, "info": 2}

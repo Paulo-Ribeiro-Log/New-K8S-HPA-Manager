@@ -26,7 +26,10 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 	}
 	w("| **Pods em execução** | %d |\n", ov.PodsRunning)
 	if ov.PriceUSDHour > 0 {
-		w("| **Custo estimado** | R$ %s/mês (US$ %s/h por node, câmbio %s) |\n", mdBrl(ov.MonthlyCostBRL), mdNum(ov.PriceUSDHour, 3), mdNum(ov.ExchangeRate, 2))
+		w("| **Custo de tabela** | R$ %s/mês (US$ %s/h por node, câmbio %s) |\n", mdBrl(ov.MonthlyCostBRL), mdNum(ov.PriceUSDHour, 3), mdNum(ov.ExchangeRate, 2))
+	}
+	if c := ov.Coverage; c != nil {
+		w("| **Custo efetivo** | **R$ %s/mês** (Cost Management, %d dias): %s |\n", mdBrl(c.EffectiveMonthlyBRL), c.WindowDays, mdCoverageShares(c))
 	}
 	w("| **Gerado em** | %s |\n", a.GeneratedAt.Format("02/01/2006 15:04"))
 	w("| **Fontes** | %s |\n\n", deepSources(a))
@@ -163,7 +166,20 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 			w(" Catálogo de SKUs da região: %s.", mdCatalogLabel(a.SKUCatalogStatus))
 		}
 		w("\n\n")
-		w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais | Requests recomendados | Economia/mês | Observações |\n|---|---|---|---|---|---|---|---|\n")
+		cov := a.Overview.Coverage
+		covOK := cov != nil && cov.Computable
+		if covOK {
+			w("**Com a reserva do pool:** custo efetivo hoje de R$ %s/mês; a reserva cobre ~%s de %d nodes (desconto de ~%s%% sobre a tabela). "+
+				"Para cada SKU, o custo efetivo depois do ajuste vai do **pior caso** (a reserva atual segue paga e ociosa) ao **melhor caso** (a reserva é reaproveitada por outro pool/cluster no escopo dela ou trocada). A ordem da tabela segue o pior caso.\n\n",
+				mdBrl(cov.EffectiveMonthlyBRL), mdNum(cov.ReservedNodes, 1), ov.Nodes, mdNum(cov.TableDiscountPct, 0))
+		} else if cov != nil && cov.Note != "" {
+			w("**Reserva/Savings Plan:** %s\n\n", cov.Note)
+		}
+		if covOK {
+			w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais | Requests recomendados (tabela) | Custo efetivo (pior / melhor) | Economia efetiva (pior / melhor) | Observações |\n|---|---|---|---|---|---|---|---|---|\n")
+		} else {
+			w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais | Requests recomendados | Economia/mês | Observações |\n|---|---|---|---|---|---|---|---|\n")
+		}
 		for _, s := range a.Simulation {
 			name := "`" + s.VMSize + "`"
 			if s.IsCurrent {
@@ -173,11 +189,27 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 			if !s.SMT {
 				cpu += " (sem SMT)"
 			}
-			w("| %s | %d / %d | %s | %s / %s%s | %s | %s | %s | %s |\n", name, s.VCPU, s.MemGB, cpu,
+			notes := s.Notes
+			if s.ReservedHint != nil {
+				notes = append([]string{"🏷️ " + s.ReservedHint.Note}, notes...)
+			}
+			if covOK && s.Coverage != nil {
+				notes = append(notes, s.Coverage.Note)
+			}
+			base := fmt.Sprintf("| %s | %d / %d | %s | %s / %s%s | %s | %s", name, s.VCPU, s.MemGB, cpu,
 				mdCores(s.AllocCPUMillis), mdGib(s.AllocMemMi), mdIfStr(s.AllocEstimated, " (est.)"),
 				mdSimCell(s.Feasible, s.NodesCurrentReq, s.CostCurrentReqBRL, s.LimitingCurrentReq, s.PriceUSDHour),
-				mdSimCell(s.Feasible, s.NodesRecommended, s.CostRecommendedBRL, s.LimitingRecommended, s.PriceUSDHour),
-				mdSavingsCell(s), mdDash(strings.Join(s.Notes, " ")))
+				mdSimCell(s.Feasible, s.NodesRecommended, s.CostRecommendedBRL, s.LimitingRecommended, s.PriceUSDHour))
+			if covOK {
+				eff, sav := "—", "—"
+				if c := s.Coverage; c != nil {
+					eff = fmt.Sprintf("R$ %s / R$ %s", mdBrl(c.WorstMonthlyBRL), mdBrl(c.BestMonthlyBRL))
+					sav = fmt.Sprintf("%s / %s", mdSignedBRL(c.WorstSavingsBRL), mdSignedBRL(c.BestSavingsBRL))
+				}
+				w("%s | %s | %s | %s |\n", base, eff, sav, mdDash(strings.Join(notes, " ")))
+			} else {
+				w("%s | %s | %s |\n", base, mdSavingsCell(s), mdDash(strings.Join(notes, " ")))
+			}
 		}
 		w("\n")
 	}
@@ -194,7 +226,7 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 	w("- **Request recomendado:** CPU = P95 × 1,2 (mínimo 50m); memória = max(P95, uso atual) × 1,2; limit de memória = max(P95, pico) × 1,3. Em workloads com HPA por utilização, o request é elevado para a utilização projetada não passar do alvo.\n")
 	w("- **Alocável de SKUs candidatas:** fórmula de reserva da AKS (Kubernetes ≥ 1.29): CPU 60m/100m/140m + 10m por core acima de 4; memória min(20 MB × maxPods + 50 MB, 25%%) + 100 Mi de eviction. A SKU atual usa o alocável medido nos nodes.\n")
 	w("- **Uso P95 (Σ workloads):** soma dos P95 por pod dos workloads com histórico no relatório, mais o uso ao vivo dos DaemonSets (o histórico de um DaemonSet é o pior node do cluster inteiro, não deste pool). Não inclui o consumo do sistema do node (o uso ao vivo inclui). A soma é conservadora, porque os picos de pods diferentes não acontecem ao mesmo tempo.\n")
-	w("- **Preços:** tabela sob demanda (Azure Retail Prices). Reservas, Savings Plan e Spot não estão refletidos.\n")
+	w("- **Preços:** tabela sob demanda (Azure Retail Prices). Com cobertura de reserva consultada (Cost Management), o custo efetivo usa o custo amortizado do pool; nodes reservados = nodes atuais − custo sob demanda ÷ tabela por node (supõe os nodes atuais durante a janela). Reserva de mesma série vale com flexibilidade de tamanho, na proporção dos vCPUs. Com Savings Plan relevante não há cenário numérico.\n")
 	return b.String()
 }
 
@@ -432,4 +464,26 @@ func mdCatalogLabel(st string) string {
 		return "carregando — disponibilidade não verificada"
 	}
 	return "indisponível — disponibilidade não verificada"
+}
+
+// mdCoverageShares descreve a divisão do custo efetivo por modelo de preço ("99% reserva, 1% sob demanda").
+func mdCoverageShares(c *DeepCoverage) string {
+	var parts []string
+	for _, x := range []struct {
+		v     float64
+		label string
+	}{{c.Reservation, "reserva"}, {c.SavingsPlan, "Savings Plan"}, {c.OnDemand, "sob demanda"}, {c.Spot, "Spot"}} {
+		if x.v >= 0.005 {
+			parts = append(parts, fmt.Sprintf("%.0f%% %s", x.v*100, x.label))
+		}
+	}
+	return mdDash(strings.Join(parts, ", "))
+}
+
+// mdSignedBRL formata economia: positivo = economia, negativo = custo maior.
+func mdSignedBRL(v float64) string {
+	if v >= 0 {
+		return "R$ " + mdBrl(v)
+	}
+	return "**+R$ " + mdBrl(-v) + "**"
 }

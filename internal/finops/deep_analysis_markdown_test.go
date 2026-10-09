@@ -53,3 +53,20 @@ func TestRenderDeepAnalysisMarkdownSemHistorico(t *testing.T) {
 		t.Error("verbo de formatação quebrado")
 	}
 }
+
+func TestRenderDeepAnalysisMarkdownComReserva(t *testing.T) {
+	in := fixtureCalculofrete(true, true)
+	in.Coverage = BuildPoolCoverage(map[string]float64{"reservation": 2809, "ondemand": 41}, "BRL", 30, in.Now)
+	in.Prices["standard_f4s_v2"] = DeepPrice{USDHour: 0.262, Source: "api"}
+	in.ExchangeRate = 4.99
+	in.SKUHints = map[string]*SKUCoverageHint{"standard_d4s_v5": {Kind: HintKindSavingsPlan, Scope: HintScopeSKU, Note: "Standard_D4s_v5 já roda sob Savings Plan na frota."}}
+	md := RenderDeepAnalysisMarkdown(BuildPoolDeepAnalysis(in))
+	for _, want := range []string{"| **Custo efetivo** |", "% reserva", "**Com a reserva do pool:**", "Custo efetivo (pior / melhor)", "Economia efetiva (pior / melhor)", "🏷️ Standard_D4s_v5 já roda sob Savings Plan"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("relatório sem %q", want)
+		}
+	}
+	if strings.Contains(md, "%!") {
+		t.Error("verbo de formatação quebrado")
+	}
+}

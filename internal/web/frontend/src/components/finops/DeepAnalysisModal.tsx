@@ -17,7 +17,7 @@ import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { fmtBRL, fmtMi, fmtMillis } from "@/lib/finopsFormat";
 import type {
-  DeepFinding, DeepResource, DeepSimulation, DeepWorkloadRow, PoolDeepAnalysis,
+  DeepCoverage, DeepFinding, DeepResource, DeepSimulation, DeepWorkloadRow, PoolDeepAnalysis,
 } from "@/types/finopsDeepAnalysis";
 
 type Section = "summary" | "allocation" | "daemonsets" | "workloads" | "hpa" | "simulation";
@@ -140,11 +140,26 @@ function recCell(cur: number, rec: number, fmt: (v: number) => string) {
   );
 }
 
-function SimulationTable({ sims }: { sims: DeepSimulation[] }) {
+function coverageShares(c: DeepCoverage) {
+  return [
+    [c.reservation, "reserva"], [c.savings_plan, "Savings Plan"], [c.on_demand, "sob demanda"], [c.spot, "Spot"],
+  ].filter(([v]) => (v as number) >= 0.005).map(([v, l]) => `${Math.round((v as number) * 100)}% ${l}`).join(", ");
+}
+
+function SignedBRL({ v }: { v: number }) {
+  return v >= 0
+    ? <span className="text-emerald-600 dark:text-emerald-400 font-medium">{fmtBRL(v)}</span>
+    : <span className="text-red-600 dark:text-red-400">+{fmtBRL(-v)}</span>;
+}
+
+function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?: DeepCoverage }) {
+  const covOK = !!coverage?.computable;
   const best = useMemo(() => {
     const ok = sims.filter(s => !s.is_current && s.feasible && s.available && s.price_usd_hour > 0 && s.node_loss_impact_pct <= 15);
-    return ok.sort((a, b) => a.cost_recommended_brl - b.cost_recommended_brl)[0]?.vm_size;
-  }, [sims]);
+    // Com reserva no pool, decide pela economia efetiva no pior caso; senão, pelo custo de tabela.
+    const key = (s: DeepSimulation) => (covOK && s.coverage ? -s.coverage.worst_savings_brl : s.cost_recommended_brl);
+    return ok.sort((a, b) => key(a) - key(b))[0]?.vm_size;
+  }, [sims, covOK]);
   return (
     <Table>
       <TableHeader>
@@ -154,8 +169,11 @@ function SimulationTable({ sims }: { sims: DeepSimulation[] }) {
           <TableHead>CPU</TableHead>
           <TableHead>Alocável/node</TableHead>
           <TableHead>Requests atuais</TableHead>
-          <TableHead>Requests recomendados</TableHead>
-          <TableHead>Economia/mês</TableHead>
+          <TableHead>Requests recomendados{covOK && " (tabela)"}</TableHead>
+          {covOK ? (<>
+            <TableHead>Custo efetivo pior / melhor</TableHead>
+            <TableHead>Economia efetiva pior / melhor</TableHead>
+          </>) : <TableHead>Economia/mês</TableHead>}
           <TableHead>Observações</TableHead>
         </TableRow>
       </TableHeader>
@@ -170,6 +188,11 @@ function SimulationTable({ sims }: { sims: DeepSimulation[] }) {
                 {s.is_current && <Badge variant="outline" className="ml-1 text-[10px]">atual</Badge>}
                 {s.vm_size === best && <Badge className="ml-1 text-[10px] bg-emerald-600">melhor</Badge>}
                 {s.catalog_known && !s.available && <Badge variant="destructive" className="ml-1 text-[10px]">indisponível</Badge>}
+                {s.reserved_hint && (
+                  <Badge variant="outline" className="ml-1 text-[10px] border-violet-500 text-violet-600 dark:text-violet-400" title={s.reserved_hint.note}>
+                    {s.reserved_hint.kind === "reservation" ? "reserva" : "Savings Plan"} na frota{s.reserved_hint.scope === "series" ? " (série)" : ""}
+                  </Badge>
+                )}
               </TableCell>
               <TableCell className="text-xs">{s.vcpu} / {s.mem_gb}</TableCell>
               <TableCell className="text-xs">
@@ -181,12 +204,21 @@ function SimulationTable({ sims }: { sims: DeepSimulation[] }) {
               </TableCell>
               <TableCell className="text-xs whitespace-nowrap">{cell(s.nodes_current_req, s.cost_current_req_brl, s.limiting_current_req)}</TableCell>
               <TableCell className="text-xs whitespace-nowrap font-medium">{cell(s.nodes_recommended, s.cost_recommended_brl, s.limiting_recommended)}</TableCell>
-              <TableCell className="text-xs whitespace-nowrap">
-                {!s.feasible || s.price_usd_hour <= 0 ? "—" : s.savings_recommended_brl >= 0
-                  ? <span className="text-emerald-600 dark:text-emerald-400 font-medium">{fmtBRL(s.savings_recommended_brl)}</span>
-                  : <span className="text-red-600 dark:text-red-400">+{fmtBRL(-s.savings_recommended_brl)}</span>}
+              {covOK ? (<>
+                <TableCell className="text-xs whitespace-nowrap">
+                  {s.coverage ? `${fmtBRL(s.coverage.worst_monthly_brl)} / ${fmtBRL(s.coverage.best_monthly_brl)}` : "—"}
+                </TableCell>
+                <TableCell className="text-xs whitespace-nowrap">
+                  {s.coverage ? <><SignedBRL v={s.coverage.worst_savings_brl} /> / <SignedBRL v={s.coverage.best_savings_brl} /></> : "—"}
+                </TableCell>
+              </>) : (
+                <TableCell className="text-xs whitespace-nowrap">
+                  {!s.feasible || s.price_usd_hour <= 0 ? "—" : <SignedBRL v={s.savings_recommended_brl} />}
+                </TableCell>
+              )}
+              <TableCell className="text-[11px] text-muted-foreground max-w-[320px]">
+                {[...s.notes, ...(covOK && s.coverage ? [s.coverage.note] : [])].join(" ") || "—"}
               </TableCell>
-              <TableCell className="text-[11px] text-muted-foreground max-w-[280px]">{s.notes.join(" ") || "—"}</TableCell>
             </TableRow>
           );
         })}
@@ -324,7 +356,12 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                   <Stat label="VM" value={ov.vm_size.replace("Standard_", "")} sub={`${ov.vcpu} vCPU / ${ov.mem_gb} GB${ov.cpu ? ` · ${ov.cpu}` : ""}`} />
                   <Stat label="Nodes" value={String(ov.nodes)} sub={`${ov.priority === "spot" ? "Spot" : "Regular"}${ov.os_disk ? ` · disco ${ov.os_disk}` : ""} · ${ov.zones.length || "?"} zona(s)`} />
-                  <Stat label="Custo/mês" value={ov.monthly_cost_brl ? fmtBRL(ov.monthly_cost_brl) : "—"} sub={ov.price_usd_hour ? `US$ ${ov.price_usd_hour.toFixed(3)}/h por node` : "preço indisponível"} />
+                  {ov.coverage ? (
+                    <Stat label="Custo efetivo/mês" value={fmtBRL(ov.coverage.effective_monthly_brl)}
+                      sub={`${coverageShares(ov.coverage)} · tabela ${ov.monthly_cost_brl ? fmtBRL(ov.monthly_cost_brl) : "—"}`} />
+                  ) : (
+                    <Stat label="Custo/mês (tabela)" value={ov.monthly_cost_brl ? fmtBRL(ov.monthly_cost_brl) : "—"} sub={ov.price_usd_hour ? `US$ ${ov.price_usd_hour.toFixed(3)}/h por node · sem dado de reserva` : "preço indisponível"} />
+                  )}
                   <Stat label="CPU reservada / usada" value={`${pctFmt(al.cpu.request_pct)} / ${al.cpu.has_live ? pctFmt(al.cpu.usage_live_pct) : "—"}`} sub={`gargalo de agendamento: ${al.scheduling_bound === "cpu" ? "CPU" : "memória"}`} />
                   <Stat label="Memória reservada / usada" value={`${pctFmt(al.mem.request_pct)} / ${al.mem.has_live ? pctFmt(al.mem.usage_live_pct) : "—"}`} sub={al.real_bottleneck ? `gargalo real: ${al.real_bottleneck === "cpu" ? "CPU" : "memória"}` : "sem uso real"} />
                 </div>
@@ -523,7 +560,19 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
                   Alocável "(est.)" vem da fórmula de reserva da AKS. Preços de tabela sob demanda.
                   {data.sku_catalog_status === "loading" && " Catálogo de SKUs da região ainda carregando: disponibilidade não verificada."}
                 </p>
-                <SimulationTable sims={data.simulation} />
+                {ov.coverage?.computable && (
+                  <Alert>
+                    <AlertDescription className="text-xs">
+                      <strong>Reserva no pool:</strong> custo efetivo hoje de {fmtBRL(ov.coverage.effective_monthly_brl)}/mês ({coverageShares(ov.coverage)}, Cost Management, {ov.coverage.window_days} dias).
+                      A reserva cobre ~{ov.coverage.reserved_nodes.toFixed(1)} de {ov.nodes} nodes, com desconto de ~{Math.round(ov.coverage.table_discount_pct)}% sobre a tabela.
+                      O custo efetivo de cada SKU vai do <strong>pior caso</strong> (a reserva atual segue paga e ociosa) ao <strong>melhor caso</strong> (a reserva é reaproveitada por outro pool/cluster ou trocada); a tabela é ordenada pelo pior caso.
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {ov.coverage && !ov.coverage.computable && ov.coverage.note && (
+                  <Alert><AlertDescription className="text-xs"><strong>Reserva/Savings Plan:</strong> {ov.coverage.note}</AlertDescription></Alert>
+                )}
+                <SimulationTable sims={data.simulation} coverage={ov.coverage} />
               </div>
             )}
           </div>

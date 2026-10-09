@@ -78,6 +78,11 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - Rollback de Deployment: 6 modos (K8s nativo, Helm, Nexus, Imagem, Spinnaker, Arquivos), todos com bypass automático da label Kyverno `devops.k8s.io/kyverno-bypass` (ref-counted por namespace, removida no fim).
 - Sessão Teams/ServiceNow usam perfis de browser **separados** (`teams-session/` vs `rod-session/`); nunca misture.
 
+**FinOps — custos e Deep Analysis** (`FINOPS-DEEP-ANALYSIS-PLAN.md`)
+- Custo de troca de VM **nunca** só com preço de tabela: pools costumam estar sob reserva (calculofrete: R$ 14,7 mil efetivos × R$ 48,6 mil de tabela). Use a cobertura gravada (`poolCoverage`/`skuCoverageIndex` no handler; `coverage.go`, `deep_analysis_coverage.go`) e siga a regra de não dar número quando seria chute (Savings Plan ≥ 20%, moeda ≠ BRL, Spot).
+- Deep Analysis: lógica pura em `internal/finops/deep_analysis*.go` (`BuildPoolDeepAnalysis` recebe tudo coletado; testes com fixture do calculofrete), coleta em `CollectPoolDeepInput`, handler em `finops_deep_analysis.go`. O histórico do `FinOpsReport` guarda o **maior** P95 entre os pods — para DaemonSet é o pior node do cluster inteiro; não multiplique por pods do pool.
+- Specs de VM: `GetVMSpecs` infere memória pelo nome (família F = 2 GB/vCPU, errado para Fas_v6/Fams_v6) — para a Deep Analysis use `DeepSpecFor`. Catálogo de SKUs: `az rest` em `Microsoft.Compute/skus?$filter=location eq '<região>'` (~5 s); **não** use `az vm list-skus` (não termina em 8 min no brazilsouth).
+
 **Aba VMs / EC2** (já mesclada em `origin/main`; histórico em `git log --grep 'feat(vms'`)
 - `cloudprovider.VMProvider` + `cloudprovider/aws/ec2.go` (inventário e start/stop/reboot). Rotas `/api/v1/vms/*` em `server.go`: leitura sem RBAC de grupo, escrita/terminal/túnel atrás de `RequireSREGroup()`.
 - Dois transportes para acessar a VM: **SSH direto** (`internal/vmssh`: client `golang.org/x/crypto/ssh`, `known_hosts` compartilhado com confirmação TOFU, terminal WebSocket, SFTP) e **SSM** (Session Manager: terminal, túnel `aws ssm start-session` para SFTP, e modo "SSM sem SSH" via `cloudprovider/aws/ssm_command.go` + `vm_sftp_ssm.go`).
