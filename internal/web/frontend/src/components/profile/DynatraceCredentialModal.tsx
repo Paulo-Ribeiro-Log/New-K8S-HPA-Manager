@@ -15,15 +15,15 @@ import { CheckCircle2, XCircle, Info, Loader2, AlertTriangle, Eye, EyeOff, User 
 import { toast } from 'sonner';
 import { useUserPermissions } from '@/hooks/useUserPermissions';
 import { CloudAccountHintField } from '@/components/CloudAccountHintField';
-import { apiClient } from '@/lib/api/client';
+import { apiClient, type DynatraceConfigResponse } from '@/lib/api/client';
 import type { CredentialModalProps } from '@/types/profile';
 
 type DtEnv = 'prd' | 'hlg';
 type TestResult = { success: boolean; latency_ms?: number; error?: string };
 
-// Identidade vinculada ao login real (RBAC/JWT) — não mais um "ai_email" digitado manualmente.
-// Ver DYNATRACE-PROFILE-MIGRATION-PLAN.md: o backend deriva o e-mail via InjectUserEmail(), o
-// mesmo mecanismo já usado por GitHubCredentialModal/Nexus/ServiceNow/AWX.
+// Identidade Dynatrace decidida no backend (dynatrace_identity.go): o e-mail do Perfil SSO quando
+// cadastrado; senão o do login do app (conta ativa do az, que o usuário não escolhe). O modal só
+// mostra qual está valendo — para trocar, edita-se o Perfil SSO.
 export function DynatraceCredentialModal({ open, onOpenChange, onSaved }: CredentialModalProps) {
   const { data: userPerms } = useUserPermissions();
   const rbacEmail = userPerms?.email || '';
@@ -43,6 +43,16 @@ export function DynatraceCredentialModal({ open, onOpenChange, onSaved }: Creden
   const [hlgToken, setHlgToken] = useState('');
   const [showHlgToken, setShowHlgToken] = useState(false);
   const [hlgHasToken, setHlgHasToken] = useState(false);
+  const [identity, setIdentity] = useState<{ email: string; source: "sso" | "login"; loginEmail: string; storedUnderLogin: boolean } | null>(null);
+  const applyIdentity = (cfg: DynatraceConfigResponse) => {
+    if (!cfg.identity_email) return;
+    setIdentity({
+      email: cfg.identity_email,
+      source: cfg.identity_source ?? "login",
+      loginEmail: cfg.login_email ?? "",
+      storedUnderLogin: cfg.stored_under_login ?? false,
+    });
+  };
 
   const loadConfig = async () => {
     setLoadingConfig(true);
@@ -53,6 +63,7 @@ export function DynatraceCredentialModal({ open, onOpenChange, onSaved }: Creden
       setHasToken(cfg.has_token ?? false);
       setHlgUrl(cfg.hlg_base_url ?? '');
       setHlgHasToken(cfg.hlg_has_token ?? false);
+      applyIdentity(cfg);
     } catch {
       // silencioso — modal fica com os campos vazios, usuário pode configurar do zero
     } finally {
@@ -110,6 +121,7 @@ export function DynatraceCredentialModal({ open, onOpenChange, onSaved }: Creden
       setHlgUrl(result.hlg_base_url ?? '');
       setHlgHasToken(result.hlg_has_token ?? false);
       setHlgToken('');
+      applyIdentity(result);
       toast.success('Configuração Dynatrace salva');
       onSaved?.();
     } catch (error) {
@@ -160,13 +172,30 @@ export function DynatraceCredentialModal({ open, onOpenChange, onSaved }: Creden
 
         <div className="overflow-y-auto flex-1 min-h-0 pr-1">
           <div className="space-y-4 py-2">
-            {/* Identidade vinculada (RBAC) */}
-            <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/50 border text-sm">
-              <User className="h-4 w-4 text-muted-foreground shrink-0" />
-              <div className="min-w-0">
-                <p className="text-[11px] text-muted-foreground">Token vinculado ao usuário</p>
-                <p className="font-mono font-medium truncate">{rbacEmail || 'Carregando...'}</p>
+            {/* Identidade Dynatrace: e-mail do Perfil SSO (preferido) ou do login */}
+            <div className="px-3 py-2 rounded-md bg-muted/50 border text-sm space-y-1">
+              <div className="flex items-center gap-2">
+                <User className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-[11px] text-muted-foreground">
+                    E-mail do Dynatrace{" "}
+                    {identity && (identity.source === "sso"
+                      ? <span className="text-green-600 dark:text-green-400">· do Perfil SSO</span>
+                      : <span className="text-amber-600 dark:text-amber-400">· do login (conta ativa do az)</span>)}
+                  </p>
+                  <p className="font-mono font-medium truncate">{identity?.email || rbacEmail || 'Carregando...'}</p>
+                </div>
               </div>
+              {identity?.source === "login" && (
+                <p className="text-[11px] text-muted-foreground">
+                  Para usar seu e-mail corporativo, cadastre-o em <span className="font-medium">Credenciais → Perfil SSO</span> e reabra esta tela.
+                </p>
+              )}
+              {identity?.storedUnderLogin && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                  A configuração atual ainda está sob o e-mail do login ({identity.loginEmail}). Ao salvar, ela passa para {identity.email}.
+                </p>
+              )}
             </div>
 
             {loadingConfig ? (

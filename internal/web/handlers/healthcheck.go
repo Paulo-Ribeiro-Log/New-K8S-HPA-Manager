@@ -85,7 +85,8 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 	// AnalyzeOneAgentSignal, que continuam usando req.AIEmail — sem entanglement aqui).
 	if (req.CheckDynatrace || req.CheckOneAgentSignals) && h.tokensStore != nil {
 		if userEmail := c.GetString("user_email"); userEmail != "" {
-			if tokens, err := h.tokensStore.GetTokens(userEmail); err == nil && tokens != nil {
+			// Mesma identidade dos demais endpoints Dynatrace (Perfil SSO → login) — dynatrace_identity.go
+			if tokens, key := dynatraceTokensFor(h.tokensStore, userEmail); key != "" {
 				req.DynatraceURL = tokens.DynatraceURL
 				req.DynatraceToken = tokens.DynatraceToken
 				req.DynatraceTagFilter = tokens.DynatraceTagFilter

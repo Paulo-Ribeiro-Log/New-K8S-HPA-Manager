@@ -67,10 +67,10 @@ func (h *DynatraceHandler) clientForUser(aiEmail, cluster string) (*dtclient.Cli
 // fallback para env vars DT_API_URL/DT_API_TOKEN dentro de dtclient.NewClient.
 func dynatraceClientForCluster(store *storage.UserTokensStore, userEmail, cluster string) (*dtclient.Client, error) {
 	var dtURL, dtToken string
-	if userEmail != "" && store != nil {
-		if tokens, err := store.GetTokens(userEmail); err == nil && tokens != nil {
-			dtURL, dtToken = tokens.DynatraceCredsForCluster(cluster)
-		}
+	// Identidade = e-mail do Perfil SSO (se cadastrado), com leitura de fallback no e-mail do
+	// login — ver dynatrace_identity.go.
+	if tokens, _ := dynatraceTokensFor(store, userEmail); tokens != nil {
+		dtURL, dtToken = tokens.DynatraceCredsForCluster(cluster)
 	}
 	return dtclient.NewClient(dtURL, dtToken)
 }
@@ -85,26 +85,27 @@ func dynatraceClientForCluster(store *storage.UserTokensStore, userEmail, cluste
 // usuário logado já está sempre disponível.
 func (h *DynatraceHandler) GetConfig(c *gin.Context) {
 	userEmail := c.GetString("user_email")
-
-	tokens := &storage.UserTokens{}
-	if userEmail != "" && h.tokensStore != nil {
-		if t, err := h.tokensStore.GetTokens(userEmail); err == nil && t != nil {
-			tokens = t
-		}
-	}
-
-	c.JSON(http.StatusOK, dynatraceConfigResponse(tokens))
+	tokens, foundUnder := dynatraceTokensFor(h.tokensStore, userEmail)
+	c.JSON(http.StatusOK, dynatraceConfigResponse(tokens, userEmail, foundUnder))
 }
 
 // dynatraceConfigResponse é o corpo de GET/POST /dynatrace/config — nunca expõe os tokens.
-func dynatraceConfigResponse(t *storage.UserTokens) gin.H {
+// identity_email/identity_source: sob qual e-mail as credenciais ficam e de onde ele veio ("sso" =
+// Perfil SSO; "login" = login do app, conta ativa do az). stored_under_login: as credenciais
+// lidas ainda estão sob o e-mail do login (antes desta correção) — o próximo Salvar as move.
+func dynatraceConfigResponse(t *storage.UserTokens, loginEmail, foundUnder string) gin.H {
+	identity, source := dynatraceIdentity(loginEmail)
 	return gin.H{
-		"base_url":      t.DynatraceURL,
-		"has_token":     t.DynatraceToken != "",
-		"enabled":       t.DynatraceURL != "" && t.DynatraceToken != "",
-		"tag_filter":    t.DynatraceTagFilter,
-		"hlg_base_url":  t.DynatraceHLGURL,
-		"hlg_has_token": t.DynatraceHLGToken != "",
+		"base_url":           t.DynatraceURL,
+		"has_token":          t.DynatraceToken != "",
+		"enabled":            t.DynatraceURL != "" && t.DynatraceToken != "",
+		"tag_filter":         t.DynatraceTagFilter,
+		"hlg_base_url":       t.DynatraceHLGURL,
+		"hlg_has_token":      t.DynatraceHLGToken != "",
+		"identity_email":     identity,
+		"identity_source":    source,
+		"login_email":        loginEmail,
+		"stored_under_login": foundUnder != "" && !strings.EqualFold(foundUnder, identity),
 	}
 }
 
@@ -139,14 +140,25 @@ func (h *DynatraceHandler) SaveConfig(c *gin.Context) {
 		return
 	}
 
-	existingTokens, err := h.tokensStore.GetTokens(userEmail)
+	// Grava sob a identidade (Perfil SSO, se cadastrado). O registro dela é a base do merge (pode
+	// ter chaves de IA); sem credencial Dynatrace nele ainda, as do registro antigo (login) servem
+	// de ponto de partida — salvar sem redigitar o token não o perde.
+	identity, _ := dynatraceIdentity(userEmail)
+	existingTokens, err := h.tokensStore.GetTokens(identity)
 	if err != nil {
-		log.Error().Err(err).Str("user_email", userEmail).Msg("Dynatrace SaveConfig: falha ao buscar tokens existentes")
+		log.Error().Err(err).Str("user_email", identity).Msg("Dynatrace SaveConfig: falha ao buscar tokens existentes")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get existing tokens"})
 		return
 	}
 	if existingTokens == nil {
-		existingTokens = &storage.UserTokens{UserEmail: userEmail}
+		existingTokens = &storage.UserTokens{UserEmail: identity}
+	}
+	if existingTokens.DynatraceURL == "" && existingTokens.DynatraceToken == "" {
+		if legacy, key := dynatraceTokensFor(h.tokensStore, userEmail); key != "" && !strings.EqualFold(key, identity) {
+			existingTokens.DynatraceURL, existingTokens.DynatraceToken = legacy.DynatraceURL, legacy.DynatraceToken
+			existingTokens.DynatraceTagFilter = legacy.DynatraceTagFilter
+			existingTokens.DynatraceHLGURL, existingTokens.DynatraceHLGToken = legacy.DynatraceHLGURL, legacy.DynatraceHLGToken
+		}
 	}
 
 	// URL e token só sobrescrevem se vierem não-vazios (permite salvar só a tag filter sem
@@ -172,12 +184,12 @@ func (h *DynatraceHandler) SaveConfig(c *gin.Context) {
 		existingTokens.PreferredProvider = "ollama"
 	}
 
-	if err := h.tokensStore.SaveTokens(userEmail, existingTokens); err != nil {
+	if err := h.tokensStore.SaveTokens(identity, existingTokens); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save dynatrace config"})
 		return
 	}
 
-	c.JSON(http.StatusOK, dynatraceConfigResponse(existingTokens))
+	c.JSON(http.StatusOK, dynatraceConfigResponse(existingTokens, userEmail, identity))
 }
 
 // ─── POST /api/v1/dynatrace/test ──────────────────────────────────────────────
@@ -198,10 +210,7 @@ func (h *DynatraceHandler) TestConnection(c *gin.Context) {
 	if req.Env == "hlg" {
 		// Sem o fallback pra PRD de DynatraceCredsForCluster — testar o HLG sem ele configurado
 		// daria "conectado" contra o tenant errado.
-		var tokens *storage.UserTokens
-		if h.tokensStore != nil && userEmail != "" {
-			tokens, _ = h.tokensStore.GetTokens(userEmail)
-		}
+		tokens, _ := dynatraceTokensFor(h.tokensStore, userEmail)
 		if tokens == nil || tokens.DynatraceHLGURL == "" || tokens.DynatraceHLGToken == "" {
 			c.JSON(http.StatusOK, gin.H{"success": false, "error": "tenant de homologação não configurado (URL e token)"})
 			return

@@ -4615,14 +4615,7 @@ class APIClient {
   // pelo cliente (ver DYNATRACE-PROFILE-MIGRATION-PLAN.md). Os demais métodos Dynatrace abaixo
   // (management-zones, problems, etc.) continuam recebendo aiEmail explicitamente — contrato
   // inalterado nesses.
-  async getDynatraceConfig(): Promise<{
-    base_url: string;
-    has_token: boolean;
-    enabled: boolean;
-    tag_filter: string;
-    hlg_base_url?: string;
-    hlg_has_token?: boolean;
-  }> {
+  async getDynatraceConfig(): Promise<DynatraceConfigResponse> {
     return this.request(`/dynatrace/config`);
   }
 
@@ -4633,14 +4626,7 @@ class APIClient {
     // Tenant de homologação (clusters -hlg/-dev/-stg/...). URL vazia remove o tenant HLG.
     dynatrace_hlg_url?: string;
     dynatrace_hlg_token?: string;
-  }): Promise<{
-    base_url: string;
-    has_token: boolean;
-    enabled: boolean;
-    tag_filter: string;
-    hlg_base_url?: string;
-    hlg_has_token?: boolean;
-  }> {
+  }): Promise<DynatraceConfigResponse> {
     return this.request(`/dynatrace/config`, {
       method: "POST",
       body: JSON.stringify(payload),
@@ -5660,6 +5646,21 @@ export interface CodeEditorBranches {
   local: string[];
   remote: string[];
   fetch_error?: string; // `git fetch` falhou — remotos podem estar desatualizados
+}
+
+// GET/POST /dynatrace/config. identity_*: sob qual e-mail as credenciais Dynatrace ficam —
+// o do Perfil SSO quando cadastrado ("sso"), senão o do login do app/conta ativa do az ("login").
+export interface DynatraceConfigResponse {
+  base_url: string;
+  has_token: boolean;
+  enabled: boolean;
+  tag_filter: string;
+  hlg_base_url?: string;
+  hlg_has_token?: boolean;
+  identity_email?: string;
+  identity_source?: "sso" | "login";
+  login_email?: string;
+  stored_under_login?: boolean; // credencial ainda sob o e-mail do login; o próximo Salvar a move
 }
 
 export interface CronJobJobInfo {
