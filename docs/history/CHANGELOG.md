@@ -3,6 +3,24 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### FinOps — Deep Analysis de node pool (Outubro 2026)
+
+Nova aba **Deep Analysis** no FinOps: cada pool do último relatório abre um modal com o diagnóstico completo, que antes era feito à mão com `kubectl describe/top`, spec dos pods, HPAs e `az vm list-skus` (caso real: `calculofrete` em `akspriv-oferta-prd`). Plano e decisões em `FINOPS-DEEP-ANALYSIS-PLAN.md`.
+
+**Backend (`GET /api/v1/finops/deep-analysis?cluster=&pool=[&headroom=][&format=markdown]`, só leitura):**
+- Coleta ao vivo **só do pool** (`finops.CollectPoolDeepInput`): nodes (alocável, zona, região, SKU, Spot, disco de SO pelo label `kubernetes.azure.com/storageprofile`), pods Running neles (dono resolvido como no relatório), HPAs dos namespaces do pool e uso do metrics-server. Histórico (P95/picos/HPA) vem do **último relatório em cache**, sem re-scan. ~3 s no `calculofrete` (51 nodes, 748 pods).
+- Lógica pura em `finops.BuildPoolDeepAnalysis`: diagnóstico de alocação (recurso que trava o agendamento × gargalo real), custo fixo de DaemonSets por node, workloads com uso de memória acima do request, overcommit de limits, request/limit recomendados, achados priorizados.
+- **HPA × request:** a utilização do HPA é uso ÷ request; com o recomendado puro (P95 × 1,2) um HPA por memória com alvo 70% passaria do alvo. O recomendado é elevado para a utilização projetada ficar no alvo (exceto HPA fixo, min = max). Também detecta HPA por memória preso no máximo (padrão JVM) e réplicas definidas pelo `minReplicas`.
+- **Throttling de CPU** por pod via Prometheus (`container_cpu_cfs_throttled_periods_total` ÷ `container_cpu_cfs_periods_total`, P95 em até 7 dias, só dos namespaces do pool).
+- **Simulação de nodes por SKU** (mesmo nº de vCPU nas séries D/E/F das gerações atuais e o dobro): requests atuais × recomendados, descontando DaemonSets, com ocupação-alvo e mínimo de 3 nodes. Alocável das candidatas pela fórmula de reserva da AKS (validada contra a F4s_v2 real: 3860m / ~5,8 GiB); a SKU atual usa o alocável medido. Tabela própria de SKUs (`DeepSpecFor`) porque `GetVMSpecs` infere F = 2 GB/vCPU, errado para Fas_v6/Fams_v6.
+- **Catálogo de SKUs por região** (`finops.SKUCatalogStore`): disponibilidade/restrição da assinatura, disco efêmero, zonas e SMT, via `az rest` em `Microsoft.Compute/skus` com filtro de região no servidor (~5 s) — `az vm list-skus` não terminou em 8 min no brazilsouth. Cache em `~/.k8s-hpa-manager/finops-sku-catalog-<região>.json` (7 dias); a primeira análise da região espera até 20 s pela carga.
+- **Relatório Markdown** (`format=markdown`, `RenderDeepAnalysisMarkdown`).
+
+**Achado real corrigido durante a validação:** o histórico do relatório guarda o **maior** P95 entre os pods de um workload; para DaemonSet isso é o pior node do cluster inteiro (fluentd: 500m contra 133m de média no pool) e inflava a soma de P95 do pool (70 → 31,5 cores). DaemonSets usam o uso ao vivo.
+
+**Frontend:** `finops/DeepAnalysisTab.tsx` + `finops/DeepAnalysisModal.tsx` (abas manuais: Resumo, Alocação e nodes, DaemonSets, Workloads, HPAs e throttling, Simulação de VMs; ocupação-alvo 70/80/90%; Exportar Markdown). Métodos `getFinOpsDeepAnalysis`/`getFinOpsDeepAnalysisMarkdown` em `lib/api/client.ts`, tipos em `types/finopsDeepAnalysis.ts`.
+
+
 ### Node Pools — Reconcile de node pool em Failed/Canceled voltou (e passou a ser o reconcile oficial da AKS) (Outubro 2026)
 
 **Sintoma:** o botão "Reconcile" de node pool com erro tinha sumido.
