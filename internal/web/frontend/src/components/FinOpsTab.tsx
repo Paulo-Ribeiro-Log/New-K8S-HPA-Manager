@@ -32,6 +32,7 @@ import { StorageTab } from "./finops/StorageTab";
 import { OpportunitiesTab } from "./finops/OpportunitiesTab";
 import { RelatorioTab } from "./finops/RelatorioTab";
 import { UnattachedDisksTab } from "./finops/UnattachedDisksTab";
+import { DeepAnalysisTab } from "./finops/DeepAnalysisTab";
 import { DataResourcesPanel } from "./DataResourcesPanel";
 
 export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?: string; journeys?: string[] }) => {
@@ -507,6 +508,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
                 Rightsizing
                 <RightsizingTabBadge cluster={cluster} />
               </TabsTrigger>
+              <TabsTrigger value="deep-analysis">Deep Analysis</TabsTrigger>
               </>)}
               <TabsTrigger value="data">Recursos de Dados</TabsTrigger>
               <TabsTrigger value="disks">Recursos Órfãos</TabsTrigger>
@@ -539,6 +541,9 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
               </TabsContent>
               <TabsContent value="rightsizing" className="mt-0 h-full">
                 <RightsizingTab cluster={cluster} />
+              </TabsContent>
+              <TabsContent value="deep-analysis" className="mt-0 h-full">
+                <DeepAnalysisTab cluster={cluster} pools={report.node_pools ?? []} />
               </TabsContent>
               </>)}
               <TabsContent value="data" className="mt-0 h-full">

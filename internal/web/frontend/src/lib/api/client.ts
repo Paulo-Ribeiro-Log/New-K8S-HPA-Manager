@@ -156,6 +156,8 @@ import type {
   HistoryFilter,
 } from "@/types/ai";
 
+import type { PoolDeepAnalysis } from "@/types/finopsDeepAnalysis";
+
 import type {
   HealthCheckRequest,
   HealthCheckRunResponse,
@@ -3972,6 +3974,43 @@ class APIClient {
       },
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.text();
+  }
+
+  // ==================== FinOps — Deep Analysis ====================
+
+  private deepAnalysisQuery(cluster: string, pool: string, headroom?: number): string {
+    const params = new URLSearchParams({ cluster, pool });
+    if (headroom) params.set("headroom", String(headroom));
+    return params.toString();
+  }
+
+  /**
+   * Deep Analysis de um node pool (FINOPS-DEEP-ANALYSIS-PLAN.md)
+   * GET /api/v1/finops/deep-analysis?cluster=X&pool=Y[&headroom=0.8]
+   */
+  async getFinOpsDeepAnalysis(cluster: string, pool: string, headroom?: number): Promise<PoolDeepAnalysis> {
+    return this.request<PoolDeepAnalysis>(`/finops/deep-analysis?${this.deepAnalysisQuery(cluster, pool, headroom)}`);
+  }
+
+  /**
+   * Relatório Markdown da Deep Analysis (mesma análise, format=markdown).
+   * O request() genérico sempre interpreta JSON — aqui a resposta é texto.
+   */
+  async getFinOpsDeepAnalysisMarkdown(cluster: string, pool: string, headroom?: number): Promise<string> {
+    if (this.isTokenExpired() || this.isTokenNearExpiry()) {
+      await this.tryRefreshToken();
+    }
+    const headers: Record<string, string> = {};
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const response = await fetch(
+      `${API_BASE_URL}/finops/deep-analysis?${this.deepAnalysisQuery(cluster, pool, headroom)}&format=markdown`,
+      { headers },
+    );
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${response.status}`);
+    }
     return response.text();
   }
 

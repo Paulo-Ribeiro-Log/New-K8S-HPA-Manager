@@ -901,6 +901,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/timeline/compare-saved", finOpsHandler.CompareSnapshots)
 	api.GET("/finops/timeline/saved", finOpsHandler.GetSavedTimelines)
 	api.GET("/finops/vm-alternatives", finOpsHandler.GetVMAlternatives)
+	api.GET("/finops/deep-analysis", finOpsHandler.GetDeepAnalysis) // Deep Analysis de node pool (FINOPS-DEEP-ANALYSIS-PLAN.md) — leitura, sem RBAC extra
 	api.GET("/finops/data-resources", finOpsHandler.GetDataResources) // RG de dados (rg-<nome>-data-<env>) — SQL/Storage/Redis/Cosmos/ServiceBus fora do cluster K8s
 	api.POST("/finops/storage/refresh", rbacMiddleware.RequireSREGroup(), finOpsHandler.RefreshDiskPricing)
 	api.GET("/finops/unattached-disks", finOpsHandler.GetUnattachedDisks) // discos desatachados (Azure/GCP/AWS) — só leitura; a app nunca exclui, devolve o comando de exclusão pra copiar

@@ -32,8 +32,9 @@ type FinOpsHandler struct {
 	gcpPricer        *finops.GCPPricer               // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
 	diskPricer       *finops.DiskPricer              // nil = análise de storage omitida (Azure only)
 	exchange         *finops.ExchangeRateProvider
-	aiHandler        *AIDiagnosticsHandler // opcional — nil se AI não configurado
-	dtTokenStore     dtTokenReader         // para criar DTEnricher sob demanda
+	skuCatalog       *finops.SKUCatalogStore // catálogo de capacidades de SKU por região (Deep Analysis)
+	aiHandler        *AIDiagnosticsHandler   // opcional — nil se AI não configurado
+	dtTokenStore     dtTokenReader           // para criar DTEnricher sob demanda
 
 	// awsPricers cacheia um *finops.AWSPricer por (region, profile) — diferente de
 	// AzurePricer/GCPPricer (uma única região/instância pra todo o servidor), EKS pode ter
@@ -111,6 +112,7 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		gcpPricer:        gcpPricer,
 		diskPricer:       diskPricer,
 		exchange:         finops.NewExchangeRateProvider(),
+		skuCatalog:       finops.NewSKUCatalogStore(""),
 		aiHandler:        aiHandler,
 		dtTokenStore:     dtTokens,
 		awsPricers:       make(map[string]*finops.AWSPricer),
