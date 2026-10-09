@@ -1,6 +1,41 @@
 // Tipos da Deep Analysis de node pool — espelham internal/finops/deep_analysis*.go
 // (GET /api/v1/finops/deep-analysis). Ver FINOPS-DEEP-ANALYSIS-PLAN.md.
 
+export interface DeepCoverage {
+  reservation: number;
+  savings_plan: number;
+  on_demand: number;
+  spot: number;
+  effective_monthly_brl: number;
+  reserved_monthly_brl: number;
+  savings_plan_monthly_brl: number;
+  on_demand_monthly_brl: number;
+  reserved_nodes: number;
+  reserved_node_monthly_brl: number;
+  table_discount_pct: number;
+  currency?: string;
+  window_days: number;
+  fetched_at: string;
+  computable: boolean;
+  note?: string;
+}
+
+export interface DeepCoverageScenario {
+  basis: "same_sku" | "same_series" | "other_series";
+  worst_monthly_brl: number;
+  best_monthly_brl: number;
+  worst_savings_brl: number;
+  best_savings_brl: number;
+  idle_reserved_nodes: number;
+  note: string;
+}
+
+export interface SKUCoverageHint {
+  kind: "reservation" | "savings_plan";
+  scope: "sku" | "series";
+  note: string;
+}
+
 export interface DeepPoolOverview {
   vm_size: string;
   vcpu: number;
@@ -18,6 +53,7 @@ export interface DeepPoolOverview {
   price_source?: string;
   monthly_cost_brl: number;
   exchange_rate: number;
+  coverage?: DeepCoverage;
 }
 
 export interface DeepResource {
@@ -185,6 +221,8 @@ export interface DeepSimulation {
   ephemeral_os_disk?: boolean;
   zones?: string[];
   vcpus_per_core?: number;
+  coverage?: DeepCoverageScenario;
+  reserved_hint?: SKUCoverageHint;
   notes: string[];
 }
 

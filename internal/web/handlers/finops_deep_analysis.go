@@ -136,6 +136,7 @@ func (h *FinOpsHandler) doDeepAnalysis(ctx context.Context, cluster, pool string
 		Warnings:     warnings,
 	}
 	h.attachDeepHistory(cluster, &in)
+	h.attachDeepCoverage(cluster, pool, spec, candidates, &in)
 	if len(candidates) > 0 {
 		h.attachSKUCatalog(col.Region, &in)
 	}
@@ -258,4 +259,38 @@ func (h *FinOpsHandler) attachSKUCatalog(region string, in *finops.DeepAnalysisI
 	case status == finops.SKUCatalogUnavailable:
 		in.Warnings = append(in.Warnings, "Região do pool desconhecida: disponibilidade das SKUs não foi verificada.")
 	}
+}
+
+// attachDeepCoverage anexa a cobertura de reserva/Savings Plan do pool (gravada pelo FinOps a partir do
+// Cost Management) e os SKUs que já rodam cobertos na frota. Sem cobertura gravada para o cluster
+// (AKS), dispara em segundo plano o mesmo refresh automático do scan (no máximo um por cluster).
+func (h *FinOpsHandler) attachDeepCoverage(cluster, pool string, spec finops.DeepSKUSpec, candidates []finops.DeepSKUSpec, in *finops.DeepAnalysisInput) {
+	if !strings.HasPrefix(strings.ToLower(spec.VMSize), "standard_") {
+		return
+	}
+	covByPool := h.poolCoverage(cluster)
+	in.Coverage = covByPool[strings.ToLower(pool)]
+	ix := h.skuCoverageIndex()
+	if !ix.Empty() {
+		in.SKUHints = map[string]*finops.SKUCoverageHint{}
+		for _, s := range append([]finops.DeepSKUSpec{spec}, candidates...) {
+			if hint := ix.Hint(s.VMSize); hint != nil {
+				in.SKUHints[strings.ToLower(s.VMSize)] = hint
+			}
+		}
+	}
+	if in.Coverage != nil {
+		return
+	}
+	if len(covByPool) == 0 {
+		in.Warnings = append(in.Warnings, "Cobertura de reserva/Savings Plan ainda não consultada para este cluster: os custos usam preço de tabela. A consulta ao Cost Management foi disparada em segundo plano — clique em Atualizar em ~1 minuto.")
+		go func() {
+			_, _, _ = h.deepCoverageSF.Do(cluster, func() (interface{}, error) {
+				h.autoRefreshCoverage(context.Background(), cluster)
+				return nil, nil
+			})
+		}()
+		return
+	}
+	in.Warnings = append(in.Warnings, "Sem cobertura de reserva/Savings Plan para este pool no Cost Management: os custos usam preço de tabela.")
 }

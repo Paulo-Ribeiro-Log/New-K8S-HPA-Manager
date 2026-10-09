@@ -26,9 +26,11 @@ número de desperdício", e sim o **diagnóstico do pool**:
 | Preço e specs por SKU | `CloudPricer` (`pricerForCluster`) | Custo das alternativas |
 | Benchmark de CPU por SKU | `vm_perf.go` (`PerfSet`) | Comparação de desempenho (quando medido) |
 | node → pool | `nodePoolLabelFromNode` | Escopo da coleta |
+| Cobertura de reserva/Savings Plan por pool e índice de SKUs cobertos na frota (Cost Management) | `coverage.go`, `sku_coverage.go`, `poolCoverage`/`skuCoverageIndex` (handler) | Custo efetivo e cenários pior/melhor caso na simulação |
 
 O que **não** existe (é o escopo deste plano): diagnóstico de alocação, custo de DaemonSet por node,
-overcommit, interação request×HPA, throttling, simulação de nº de nodes, capacidades de SKU e o relatório.
+overcommit, interação request×HPA, throttling, simulação de nº de nodes com custo efetivo (reserva), capacidades
+de SKU e o relatório.
 
 ## Arquitetura
 
@@ -45,7 +47,9 @@ GET /api/v1/finops/deep-analysis?cluster=X&pool=Y[&headroom=0.8][&format=markdow
         │    (sem cache: segue só com o ao vivo, com aviso "rode Analisar para ter histórico")
         │
         ├─ Prometheus (best-effort, F2): throttling por pod do pool
-        ├─ catálogo de SKUs (F3): `az vm list-skus -l <região>` com cache em disco (24h)
+        ├─ catálogo de SKUs (F3): `az rest` em Microsoft.Compute/skus (filtro de região), cache em disco (7 dias)
+        ├─ cobertura de reserva/Savings Plan do pool + índice de SKUs da frota (já gravados pelo FinOps;
+        │    sem dado, dispara o refresh automático em segundo plano)
         │
         └─ finops.BuildPoolDeepAnalysis(input) → PoolDeepAnalysis   (lógica PURA, testável)
 ```
@@ -154,7 +158,9 @@ AMD Milan, Das_v6/Fas_v6 → AMD Genoa, …). Alerta quando o pool usa disco ef�
 `go test ./internal/finops/... ./internal/web/handlers/... -race`, `go vet`, `go fmt`, `make build`;
 frontend: `npx tsc --noEmit -p tsconfig.app.json` comparado ao baseline e `./rebuild-web.sh -b`.
 Validação real (pelo usuário, com VPN): Deep Analysis do `calculofrete` deve reproduzir os números da
-análise manual (166c reservados / ~23c usados, ~1,8 GiB de DaemonSet por node, ~15–16 nodes de 16 GB).
+análise manual (166c reservados / ~23c usados, ~1,8 GiB de DaemonSet por node) e mostrar o custo efetivo
+(~R$ 14,7 mil/mês, 99% reserva) em vez do de tabela. A simulação é mais conservadora que a conta manual
+(~20 nodes de 16 GB contra ~16): request recomendado com +20% sobre o P95 e ocupação-alvo de 80%.
 
 ## Validação com dados reais (calculofrete, 09/10/2026)
 
@@ -164,3 +170,18 @@ Bateu com a análise manual: 166 cores reservados, 209 GiB de memória reservada
 ≥ 90%, ~1,8 GiB e 510m de DaemonSet por node. Ajustes feitos a partir dela: soma de P95 com DaemonSets
 ao vivo (o histórico deles é o pior node do cluster), HPA fixo sem ajuste de request, throttling < 1%
 fora da tabela, catálogo via `az rest`.
+
+## Reserva / Savings Plan na simulação (complemento)
+
+A simulação usava só preço de tabela. No `calculofrete` o custo efetivo (Cost Management) é ~R$ 14,7 mil/mês
+com 99% sob reserva (desconto ~70%), contra R$ 48,6 mil de tabela — a economia de troca de VM mostrada era
+ilusória. Agora (`deep_analysis_coverage.go`):
+
+- Base = custo efetivo do pool (cobertura gravada pelo FinOps, `poolCoverage`). Nodes reservados =
+  nodes atuais − (sob demanda + Savings Plan) ÷ tabela por node; custo efetivo por node reservado = reserva ÷ nodes reservados.
+- Por SKU, cenário de requests recomendados: **mesmo SKU/mesma série** (flexibilidade de tamanho, proporção
+  de vCPUs) → reserva segue cobrindo, excedente a preço de tabela, sobra = reserva ociosa; **outra série** →
+  pior caso reserva ociosa + tudo a tabela, melhor caso só a tabela.
+- Sem número quando não dá sem chute (mesmas regras de `coverage.go`): Savings Plan ≥ 20%, moeda ≠ BRL, Spot.
+- Ordenação, melhor alternativa e achados pelo **pior caso efetivo**; selo nas SKUs já cobertas na frota (`skuCoverageIndex`).
+- Premissa explícita: os nodes atuais rodaram a janela inteira (pool com autoscaling forte distorce a estimativa de nodes reservados).

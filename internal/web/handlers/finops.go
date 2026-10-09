@@ -54,6 +54,7 @@ type FinOpsHandler struct {
 	// nunca aceita filtro de namespace, GetReport é opt-in e aceita namespaces — uma chave que
 	// colidisse entre os dois devolveria a resposta errada pro chamador errado.
 	reportSF          singleflight.Group
+	deepCoverageSF    singleflight.Group // refresh de cobertura disparado pela Deep Analysis (um por cluster)
 	rightsizingScanSF singleflight.Group
 
 	// Descoberta de discos desatachados (finops_unattached_disks.go): a listagem no cloud custa
