@@ -2479,20 +2479,6 @@ class APIClient {
     return response.data as PodsSummary;
   }
 
-  async createDebugPod(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string }> {
-    const response = await this.request<APIResponse<{ success: boolean; message: string }>>(
-      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/debug`,
-      {
-        method: "POST",
-        body: JSON.stringify({ name }),
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    return response.data as { success: boolean; message: string };
-  }
-
   async updateHPA(
     cluster: string,
     namespace: string,

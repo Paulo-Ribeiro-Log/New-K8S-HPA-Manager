@@ -709,7 +709,7 @@ func (s *Server) setupRoutes() {
 
 	// WebSocket endpoints (com auth via query param + RBAC SRE-only)
 	// Usa WebSocketJWTAuthMiddleware para aceitar token via query parameter (dual-mode JWT/estático)
-	podExecHandler := handlers.NewPodExecHandler(s.kubeManager)
+	podExecHandler := handlers.NewPodExecHandler(s.kubeManager, s.historyTracker)
 
 	wsShell := s.router.Group("/api/v1/pods/:cluster/:namespace/:name")
 	wsShell.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
@@ -718,6 +718,19 @@ func (s *Server) setupRoutes() {
 		wsShell.GET("/shell", podExecHandler.HandleShell)
 		wsShell.GET("/debug", podExecHandler.HandleDebug)
 	}
+
+	// Pod de troubleshooting (netshoot) com --rm: criado pela sessão e apagado pelo servidor ao
+	// sair (como `kubectl run tshoot --rm -it --image nicolaka/netshoot --restart=Never -- bash`).
+	wsTshoot := s.router.Group("/api/v1/tshoot/:cluster/:namespace")
+	wsTshoot.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
+	wsTshoot.Use(rbacMiddleware.RequireSREGroup())
+	wsTshoot.GET("/ws", podExecHandler.HandleTshoot)
+
+	// Shell no node (kubectl debug node/<node>) com --rm: pod privilegiado no node, apagado ao sair.
+	wsNodeShell := s.router.Group("/api/v1/node-shell/:cluster/:node")
+	wsNodeShell.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
+	wsNodeShell.Use(rbacMiddleware.RequireSREGroup())
+	wsNodeShell.GET("/ws", podExecHandler.HandleNodeShell)
 
 	// RBAC - Endpoints públicos de permissões (apenas GET, sem proteção extra)
 	api.GET("/permissions", rbacMiddleware.GetUserPermissions())
@@ -1103,7 +1116,6 @@ func (s *Server) setupRoutes() {
 		pods.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Delete)
 		pods.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), podHandler.Restart)
 		pods.POST("/:cluster/:namespace/:name/kill", rbacMiddleware.RequireSREGroup(), podHandler.Kill)
-		pods.POST("/:cluster/:namespace/debug", rbacMiddleware.RequireSREGroup(), podHandler.CreateDebugPod)
 
 		// Batch Operations (SRE-only)
 		pods.POST("/:cluster/batch/delete", rbacMiddleware.RequireSREGroup(), podHandler.BatchDelete)

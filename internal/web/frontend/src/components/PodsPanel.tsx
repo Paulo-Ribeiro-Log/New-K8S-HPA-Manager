@@ -160,6 +160,10 @@ export const PodsPanel = ({
   const [selectedShellContainer, setSelectedShellContainer] = useState("");
   const [selectedShellType, setSelectedShellType] = useState("/bin/bash");
   const [useEphemeralDebug, setUseEphemeralDebug] = useState(false);
+  // --rm no Ephemeral Debug: encerra o container ao sair (padrão ligado)
+  const [ephemeralRm, setEphemeralRm] = useState(true);
+  // Pod de troubleshooting próprio (netshoot) no namespace do pod, apagado ao sair (--rm)
+  const [useTshoot, setUseTshoot] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   const [showFileTransferModal, setShowFileTransferModal] = useState(false);
@@ -1965,10 +1969,11 @@ export const PodsPanel = ({
             <div className="space-y-3">
               <Label>Tipo de Shell</Label>
               <RadioGroup 
-                value={useEphemeralDebug ? "ephemeral" : selectedShellType} 
+                value={useTshoot ? "tshoot" : useEphemeralDebug ? "ephemeral" : selectedShellType}
                 onValueChange={(value) => {
-                  if (value === "ephemeral") {
-                    setUseEphemeralDebug(true);
+                  setUseTshoot(value === "tshoot");
+                  if (value === "ephemeral" || value === "tshoot") {
+                    setUseEphemeralDebug(value === "ephemeral");
                     setSelectedShellType("/bin/bash");
                   } else {
                     setUseEphemeralDebug(false);
@@ -2017,6 +2022,33 @@ export const PodsPanel = ({
                     <div className="text-xs mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded">
                       <span className="text-yellow-300">ℹ️ Nota:</span> Ephemeral containers persistem até o pod reiniciar. Containers existentes serão reutilizados automaticamente.
                     </div>
+                    <div
+                      role="checkbox"
+                      aria-checked={ephemeralRm}
+                      className="flex items-start gap-2 text-xs mt-2 p-2 rounded border border-blue-500/30 bg-blue-500/5 cursor-pointer"
+                      // dentro do <Label> do rádio: sem preventDefault o clique também selecionaria a opção
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEphemeralRm(v => !v); }}
+                    >
+                      <Checkbox checked={ephemeralRm} className="mt-0.5 pointer-events-none" tabIndex={-1} />
+                      <span>
+                        <code className="font-semibold">--rm</code>: encerrar o container de debug ao sair (exit ou fechar o terminal).
+                        <span className="text-muted-foreground"> A API do Kubernetes não remove ephemeral containers do pod: ele para (Terminated) e a entrada some quando o pod for recriado.</span>
+                      </span>
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded bg-green-500/10 border border-green-500/20 hover:bg-green-500/20 transition-colors">
+                  <RadioGroupItem value="tshoot" id="tshoot" className="mt-0.5" />
+                  <Label htmlFor="tshoot" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium">🧪 Pod de troubleshooting (--rm)</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Equivale a <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">kubectl run tshoot --rm -it --image nicolaka/netshoot --restart=Never -- bash</code> no namespace{selectedPod ? <> <span className="font-medium">{selectedPod.namespace}</span></> : null}
+                    </div>
+                    <div className="text-xs mt-2 p-2 bg-green-500/10 border border-green-500/20 rounded space-y-1">
+                      <div><span className="text-green-300">✓ Apagado ao sair:</span> o servidor remove o pod no <code>exit</code>, ao fechar o terminal ou se a conexão cair</div>
+                      <div><span className="text-green-300">✓ Rodar script:</span> botão no terminal executa um <code>.sh</code> local, como <code>bash &lt; script.sh</code></div>
+                      <div><span className="text-muted-foreground">Pod independente: não vê processos/arquivos deste pod (para isso, use o Ephemeral Debug).</span></div>
+                    </div>
                   </Label>
                 </div>
               </RadioGroup>
@@ -2041,14 +2073,14 @@ export const PodsPanel = ({
             </Button>
             <Button
               onClick={() => {
-                if (!selectedShellContainer) {
+                if (!selectedShellContainer && !useTshoot) {
                   toast.error("Selecione um container");
                   return;
                 }
                 setShellModalOpen(false);
                 setTerminalOpen(true);
               }}
-              disabled={!selectedShellContainer}
+              disabled={!selectedShellContainer && !useTshoot}
             >
               <Terminal className="w-4 h-4 mr-2" />
               Conectar
@@ -2069,14 +2101,15 @@ export const PodsPanel = ({
           ? "w-screen h-screen max-w-none max-h-none p-0 m-0 rounded-none"
           : "max-w-6xl h-[85vh] p-0"
         }>
-          {selectedPod && selectedShellContainer && (
+          {selectedPod && (selectedShellContainer || useTshoot) && (
             <PodTerminal
               cluster={selectedPod.cluster}
               namespace={selectedPod.namespace}
               pod={selectedPod.name}
               container={selectedShellContainer}
               shell={selectedShellType}
-              ephemeral={useEphemeralDebug}
+              mode={useTshoot ? "tshoot" : useEphemeralDebug ? "debug" : "shell"}
+              rm={useEphemeralDebug && ephemeralRm}
               isFullscreen={terminalFullscreen}
               onToggleFullscreen={() => setTerminalFullscreen(!terminalFullscreen)}
               onClose={() => setTerminalOpen(false)}

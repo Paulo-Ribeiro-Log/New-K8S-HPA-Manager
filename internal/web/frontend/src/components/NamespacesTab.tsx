@@ -3,6 +3,7 @@ import { SplitView } from "@/components/SplitView";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal, ShieldCheck, KeyRound } from "lucide-react";
 import { toast } from "sonner";
@@ -139,12 +140,11 @@ export const NamespacesTab = ({
   const [selectedShellContainer, setSelectedShellContainer] = useState("");
   const [selectedShellType, setSelectedShellType] = useState("/bin/bash");
   const [useEphemeralDebug, setUseEphemeralDebug] = useState(false);
+  // --rm no Ephemeral Debug: encerra o container ao sair (padrão ligado)
+  const [ephemeralRm, setEphemeralRm] = useState(true);
   const [useStandaloneDebugPod, setUseStandaloneDebugPod] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
-  const [creatingDebugPod, setCreatingDebugPod] = useState(false);
-  const [debugPodName, setDebugPodName] = useState("");
-  const [isStandalonePod, setIsStandalonePod] = useState(false);
 
   // AWX Integration
   const [awxConfigured, setAwxConfigured] = useState(false);
@@ -2683,19 +2683,14 @@ export const NamespacesTab = ({
                 <div className="flex items-start space-x-2 p-2 rounded bg-green-500/10 border border-green-500/20 hover:bg-green-500/20 transition-colors">
                   <RadioGroupItem value="standalone" id="standalone" className="mt-0.5" />
                   <Label htmlFor="standalone" className="font-normal cursor-pointer flex-1">
-                    <div className="font-medium flex items-center gap-2">
-                      <span>🚀 Debug Pod Standalone</span>
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-600 dark:text-green-400 font-semibold">NOVO</span>
-                    </div>
+                    <div className="font-medium">🧪 Pod de troubleshooting (--rm)</div>
                     <div className="text-xs text-muted-foreground mt-0.5">
-                      <span className="font-medium">nicolaka/netshoot</span> • Cria um pod dedicado de debug no namespace
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      Ideal para testes de rede, DNS e conectividade sem afetar pods existentes
+                      Equivale a <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">kubectl run tshoot --rm -it --image nicolaka/netshoot --restart=Never -- bash</code> no namespace
                     </div>
                     <div className="text-xs mt-2 p-2 bg-green-500/10 border border-green-500/20 rounded space-y-1">
-                      <div><span className="text-green-300">✓ Auto-limpeza:</span> Pod é removido automaticamente ao fechar o terminal</div>
-                      <div><span className="text-green-300">✓ Independente:</span> Não afeta outros pods do namespace</div>
+                      <div><span className="text-green-300">✓ Apagado ao sair:</span> o servidor remove o pod no <code>exit</code>, ao fechar o terminal ou se a conexão cair</div>
+                      <div><span className="text-green-300">✓ Rodar script:</span> botão no terminal executa um <code>.sh</code> local, como <code>bash &lt; script.sh</code></div>
+                      <div><span className="text-green-300">✓ Independente:</span> não afeta outros pods do namespace</div>
                     </div>
                   </Label>
                 </div>
@@ -2722,6 +2717,19 @@ export const NamespacesTab = ({
                     <div className="text-xs mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded">
                       <span className="text-yellow-300">ℹ️ Nota:</span> Ephemeral containers persistem até o pod reiniciar. Containers existentes serão reutilizados automaticamente.
                     </div>
+                    <div
+                      role="checkbox"
+                      aria-checked={ephemeralRm}
+                      className="flex items-start gap-2 text-xs mt-2 p-2 rounded border border-blue-500/30 bg-blue-500/5 cursor-pointer"
+                      // dentro do <Label> do rádio: sem preventDefault o clique também selecionaria a opção
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEphemeralRm(v => !v); }}
+                    >
+                      <Checkbox checked={ephemeralRm} className="mt-0.5 pointer-events-none" tabIndex={-1} />
+                      <span>
+                        <code className="font-semibold">--rm</code>: encerrar o container de debug ao sair (exit ou fechar o terminal).
+                        <span className="text-muted-foreground"> A API do Kubernetes não remove ephemeral containers do pod: ele para (Terminated) e a entrada some quando o pod for recriado.</span>
+                      </span>
+                    </div>
                   </Label>
                 </div>
               </RadioGroup>
@@ -2746,89 +2754,26 @@ export const NamespacesTab = ({
               Cancelar
             </Button>
             <Button
-              onClick={async () => {
-                if (useStandaloneDebugPod) {
-                  // Criar debug pod standalone
-                  setCreatingDebugPod(true);
-                  try {
-                    const podName = `debug-${selectedNamespace.name}-${Date.now()}`;
-                    await apiClient.createDebugPod(cluster, selectedNamespace.name, podName);
-                    setDebugPodName(podName);
-                    setShellModalOpen(false);
-                    
-                    toast.info("Aguardando pod estar pronto...", { duration: 3000 });
-                    
-                    // Aguardar pod estar pronto com polling
-                    let attempts = 0;
-                    const maxAttempts = 30; // 30 segundos
-                    let createdPod: PodSummary | undefined;
-                    
-                    while (attempts < maxAttempts) {
-                      await new Promise(resolve => setTimeout(resolve, 1000));
-                      await loadNamespacePods();
-                      
-                      // Precisamos aguardar a próxima atualização do estado
-                      const pods = await apiClient.getPods(cluster, [selectedNamespace.name]);
-                      createdPod = pods.find(p => p.name === podName);
-                      
-                      if (createdPod && createdPod.phase === "Running") {
-                        break;
-                      }
-                      attempts++;
-                    }
-                    
-                    if (createdPod && createdPod.phase === "Running") {
-                      setSelectedPodForShell(createdPod);
-                      setSelectedShellContainer("netshoot");
-                      setIsStandalonePod(true);
-                      setTerminalOpen(true);
-                      toast.success("Debug pod pronto e conectado!");
-                    } else {
-                      toast.warning("Debug pod criado mas ainda não está Running. Verifique na aba Pods.");
-                    }
-                  } catch (err) {
-                    toast.error("Erro ao criar debug pod", {
-                      description: err instanceof Error ? err.message : "Erro desconhecido"
-                    });
-                  } finally {
-                    setCreatingDebugPod(false);
-                  }
-                } else {
-                  if (!selectedPodForShell || !selectedShellContainer) {
-                    toast.error("Selecione um pod e container");
-                    return;
-                  }
-                  setIsStandalonePod(false);
-                  setShellModalOpen(false);
-                  setTerminalOpen(true);
+              onClick={() => {
+                // Pod de troubleshooting: o servidor cria, espera, abre o shell e apaga ao sair (--rm)
+                if (!useStandaloneDebugPod && (!selectedPodForShell || !selectedShellContainer)) {
+                  toast.error("Selecione um pod e container");
+                  return;
                 }
+                setShellModalOpen(false);
+                setTerminalOpen(true);
               }}
-              disabled={creatingDebugPod || (!useStandaloneDebugPod && (!selectedPodForShell || !selectedShellContainer))}
+              disabled={!useStandaloneDebugPod && (!selectedPodForShell || !selectedShellContainer)}
             >
-              {creatingDebugPod ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Terminal className="w-4 h-4 mr-2" />
-              )}
-              {creatingDebugPod ? "Criando..." : "Conectar"}
+              <Terminal className="w-4 h-4 mr-2" />
+              Conectar
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Modal do Terminal */}
-      <Dialog open={terminalOpen} onOpenChange={async (open) => {
-        if (!open && isStandalonePod && selectedPodForShell && selectedNamespace) {
-          // Deletar pod standalone ao fechar
-          try {
-            await apiClient.deletePod(cluster, selectedNamespace.name, selectedPodForShell.name);
-            toast.success("Debug pod removido automaticamente");
-          } catch (err) {
-            console.error("Erro ao remover debug pod:", err);
-          }
-          setIsStandalonePod(false);
-          setSelectedPodForShell(null);
-        }
+      <Dialog open={terminalOpen} onOpenChange={(open) => {
         setTerminalOpen(open);
         if (!open) {
           setTerminalFullscreen(false);
@@ -2838,29 +2783,18 @@ export const NamespacesTab = ({
           ? "w-screen h-screen max-w-none max-h-none p-0 m-0 rounded-none"
           : "max-w-6xl h-[85vh] p-0"
         }>
-          {selectedPodForShell && selectedShellContainer && selectedNamespace && (
+          {selectedNamespace && (useStandaloneDebugPod || (selectedPodForShell && selectedShellContainer)) && (
             <PodTerminal
               cluster={cluster}
               namespace={selectedNamespace.name}
-              pod={selectedPodForShell.name}
+              pod={selectedPodForShell?.name ?? ""}
               container={selectedShellContainer}
               shell={selectedShellType}
-              ephemeral={useEphemeralDebug}
+              mode={useStandaloneDebugPod ? "tshoot" : useEphemeralDebug ? "debug" : "shell"}
+              rm={useEphemeralDebug && ephemeralRm}
               isFullscreen={terminalFullscreen}
               onToggleFullscreen={() => setTerminalFullscreen(!terminalFullscreen)}
-              onClose={async () => {
-                if (isStandalonePod) {
-                  try {
-                    await apiClient.deletePod(cluster, selectedNamespace.name, selectedPodForShell.name);
-                    toast.success("Debug pod removido automaticamente");
-                  } catch (err) {
-                    console.error("Erro ao remover debug pod:", err);
-                  }
-                  setIsStandalonePod(false);
-                  setSelectedPodForShell(null);
-                }
-                setTerminalOpen(false);
-              }}
+              onClose={() => setTerminalOpen(false)}
             />
           )}
         </DialogContent>

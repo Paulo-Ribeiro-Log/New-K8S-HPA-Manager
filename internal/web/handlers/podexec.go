@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -23,12 +23,14 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 )
 
 // PodExecHandler gerencia execução de comandos e debug em pods
 type PodExecHandler struct {
-	kubeManager *config.KubeConfigManager
-	upgrader    websocket.Upgrader
+	kubeManager    *config.KubeConfigManager
+	historyTracker *history.HistoryTracker // criação/remoção do pod tshoot (--rm)
+	upgrader       websocket.Upgrader
 }
 
 // allowedOrigins lista as origens permitidas para WebSocket
@@ -44,9 +46,10 @@ var allowedOrigins = map[string]bool{
 }
 
 // NewPodExecHandler cria um novo handler de exec
-func NewPodExecHandler(km *config.KubeConfigManager) *PodExecHandler {
+func NewPodExecHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *PodExecHandler {
 	return &PodExecHandler{
-		kubeManager: km,
+		kubeManager:    km,
+		historyTracker: ht,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				origin := r.Header.Get("Origin")
@@ -114,7 +117,7 @@ func (h *PodExecHandler) HandleShell(c *gin.Context) {
 	log.Printf("[SHELL] WebSocket upgrade successful")
 
 	// Execute shell
-	h.execInPod(c.Request.Context(), conn, clientset, restConfig, namespace, podName, containerName, shell, false, "", false)
+	h.execInPod(c.Request.Context(), conn, clientset, restConfig, namespace, podName, containerName, shell, false, "", false, false)
 }
 
 // HandleDebug cria ephemeral debug container e conecta
@@ -182,7 +185,7 @@ func (h *PodExecHandler) HandleDebug(c *gin.Context) {
 	}
 
 	// Step 3: Exec into ephemeral container (o heartbeat é tocado já na abertura da sessão)
-	h.execInPod(ctx, conn, clientset, restConfig, namespace, podName, debugContainerName, shell, true, image, isReused)
+	h.execInPod(ctx, conn, clientset, restConfig, namespace, podName, debugContainerName, shell, true, image, isReused, c.Query("rm") == "true")
 }
 
 // getOrCreateEphemeralContainer verifica se já existe um container de debug ou cria um novo
@@ -364,6 +367,7 @@ func (h *PodExecHandler) execInPod(
 	isEphemeral bool,
 	image string,
 	isReused bool,
+	rmOnExit bool, // ephemeral: encerra o container quando a última sessão local terminar (--rm)
 ) {
 	// Create exec request with UTF-8 locale support
 	// Use C.UTF-8 which is available in most containers (more universal than pt_BR)
@@ -403,14 +407,16 @@ func (h *PodExecHandler) execInPod(
 		isReused:    isReused,
 	}
 
-	if isEphemeral {
-		runInDebug := func(script string) {
-			cmdCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if _, err := execCmdInPod(cmdCtx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script}); err != nil {
-				log.Printf("[DEBUG] %s/%s %s: %q falhou: %v", namespace, podName, containerName, script, err)
-			}
+	runInDebug := func(script string) {
+		cmdCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, err := execCmdInPod(cmdCtx, clientset, restConfig, namespace, podName, containerName, []string{"sh", "-c", script}); err != nil {
+			log.Printf("[DEBUG] %s/%s %s: %q falhou: %v", namespace, podName, containerName, script, err)
 		}
+	}
+	debugKey := restConfig.Host + "/" + namespace + "/" + podName + "/" + containerName
+	if isEphemeral {
+		acquireDebugSession(debugKey)
 		session.markActivity()
 		go runInDebug(debugTouchHeartbeat)
 		session.onHeartbeat = func() { go runInDebug(debugTouchHeartbeat) }
@@ -441,6 +447,18 @@ func (h *PodExecHandler) execInPod(
 		TerminalSizeQueue: session,
 	})
 
+	if isEphemeral {
+		// --rm: a API não remove ephemeral containers do pod; o que dá é encerrar o processo
+		// (vira Terminated e para de consumir). Só quando a última sessão local nesse container
+		// termina — outra aba ainda pode estar usando.
+		remaining := releaseDebugSession(debugKey)
+		if rmOnExit && remaining == 0 && !session.stopped.Load() {
+			session.stopped.Store(true)
+			runInDebug(debugStopUnconditional)
+			session.writeNotice("\r\n\x1b[1;32m🗑  Container de debug encerrado (--rm).\x1b[0m \x1b[2mA entrada continua no spec do pod até ele ser recriado (limite da API).\x1b[0m\r\n")
+			return
+		}
+	}
 	if session.stopped.Load() {
 		// Encerramento intencional (botão ou ociosidade): o fim do stream é esperado.
 		session.writeNotice("\x1b[1;32m✓ Container de debug encerrado.\x1b[0m\r\n")
@@ -469,20 +487,45 @@ func (h *PodExecHandler) getClientAndConfig(cluster string) (kubernetes.Interfac
 
 // sendOutput envia output para o WebSocket
 func (h *PodExecHandler) sendOutput(conn *websocket.Conn, text string) {
-	msg := map[string]interface{}{
-		"type": "output",
-		"data": text,
-	}
-	conn.WriteJSON(msg)
+	conn.WriteJSON(terminalOutputMsg([]byte(text)))
+}
+
+// terminalOutputMsg — saída do terminal em base64 dos bytes crus (mesmo protocolo do terminal do
+// Code Editor). Antes ia como string JSON passada por ToValidUTF8: uma sequência UTF-8 ou de
+// controle partida entre dois Write() virava "�" e corrompia a tela.
+func terminalOutputMsg(b []byte) map[string]interface{} {
+	return map[string]interface{}{"type": "output", "data": base64.StdEncoding.EncodeToString(b)}
 }
 
 // sendError envia erro para o WebSocket
 func (h *PodExecHandler) sendError(conn *websocket.Conn, text string) {
-	msg := map[string]interface{}{
-		"type": "output",
-		"data": fmt.Sprintf("\r\n\x1b[1;31m❌ Error: %s\x1b[0m\r\n", text),
+	conn.WriteJSON(terminalOutputMsg([]byte(fmt.Sprintf("\r\n\x1b[1;31m❌ Error: %s\x1b[0m\r\n", text))))
+}
+
+// Sessões ativas por container de debug neste servidor (reuso: várias abas no mesmo container).
+// O --rm só encerra o container quando a última delas termina.
+var debugSessions = struct {
+	sync.Mutex
+	m map[string]int
+}{m: map[string]int{}}
+
+func acquireDebugSession(key string) {
+	debugSessions.Lock()
+	debugSessions.m[key]++
+	debugSessions.Unlock()
+}
+
+// releaseDebugSession devolve quantas sessões continuam abertas no container.
+func releaseDebugSession(key string) int {
+	debugSessions.Lock()
+	defer debugSessions.Unlock()
+	n := debugSessions.m[key] - 1
+	if n <= 0 {
+		delete(debugSessions.m, key)
+		return 0
 	}
-	conn.WriteJSON(msg)
+	debugSessions.m[key] = n
+	return n
 }
 
 // Ciclo de vida do ephemeral container de debug. A API do Kubernetes não permite remover um
@@ -527,7 +570,7 @@ func isWatchdogDebugContainer(ec corev1.EphemeralContainer) bool {
 
 // TerminalSession implementa io.Reader, io.Writer e remotecommand.TerminalSizeQueue
 type TerminalSession struct {
-	conn        *websocket.Conn
+	conn        terminalConn
 	sizeCh      chan remotecommand.TerminalSize
 	isEphemeral bool
 	image       string
@@ -542,6 +585,16 @@ type TerminalSession struct {
 	onHeartbeat   func()
 	onTerminate   func()
 	stopped       atomic.Bool
+
+	// Entrada recebida e ainda não entregue ao exec (colar maior que o buffer do Read).
+	pending []byte
+}
+
+// terminalConn é o que a sessão usa do WebSocket (*websocket.Conn satisfaz; testes usam um fake).
+type terminalConn interface {
+	ReadJSON(v interface{}) error
+	WriteJSON(v interface{}) error
+	Close() error
 }
 
 // markActivity registra atividade e dispara o heartbeat no container, no máximo 1x por minuto.
@@ -569,7 +622,7 @@ func (t *TerminalSession) idleFor() time.Duration {
 func (t *TerminalSession) writeNotice(text string) {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	t.conn.WriteJSON(map[string]interface{}{"type": "output", "data": text})
+	t.conn.WriteJSON(terminalOutputMsg([]byte(text)))
 }
 
 // watchIdle avisa 1 min antes e, aos 10 min sem atividade, encerra o container (se nenhuma outra
@@ -602,6 +655,11 @@ func (t *TerminalSession) watchIdle(done <-chan struct{}, stop func()) {
 
 // Read lê input do WebSocket
 func (t *TerminalSession) Read(p []byte) (int, error) {
+	if len(t.pending) > 0 {
+		n := copy(p, t.pending)
+		t.pending = t.pending[n:]
+		return n, nil
+	}
 	var msg struct {
 		Type string `json:"type"`
 		Data string `json:"data"`
@@ -609,6 +667,11 @@ func (t *TerminalSession) Read(p []byte) (int, error) {
 			Cols uint16 `json:"cols"`
 			Rows uint16 `json:"rows"`
 		} `json:"size,omitempty"`
+		// Formato achatado {type:"resize", cols, rows} (o do terminal do Code Editor). O frontend
+		// antigo mandava assim e este Read só lia `size` — todo resize era ignorado e o PTY ficava
+		// sem tamanho (0 colunas): o readline não conseguia apagar nem redesenhar a linha.
+		Cols uint16 `json:"cols"`
+		Rows uint16 `json:"rows"`
 	}
 
 	err := t.conn.ReadJSON(&msg)
@@ -626,21 +689,23 @@ func (t *TerminalSession) Read(p []byte) (int, error) {
 		if t.isEphemeral {
 			t.markActivity()
 		}
-		data := []byte(msg.Data)
-		// FIX: Prevenir buffer overflow - truncar se necessário
-		if len(data) > len(p) {
-			log.Printf("[SHELL] Warning: Input truncated from %d to %d bytes", len(data), len(p))
-			data = data[:len(p)]
+		// Entrada em base64 (bytes crus, UTF-8 intacto). Maior que p: o resto fica em pending e
+		// sai nas próximas leituras — antes era truncado e um colar grande perdia o final.
+		data, err := base64.StdEncoding.DecodeString(msg.Data)
+		if err != nil {
+			return 0, fmt.Errorf("entrada do terminal inválida (base64): %w", err)
 		}
 		n := copy(p, data)
+		t.pending = append(t.pending[:0], data[n:]...)
 		return n, nil
 	case "resize":
+		cols, rows := msg.Cols, msg.Rows
 		if msg.Size != nil {
+			cols, rows = msg.Size.Cols, msg.Size.Rows
+		}
+		if cols > 0 && rows > 0 {
 			select {
-			case t.sizeCh <- remotecommand.TerminalSize{
-				Width:  msg.Size.Cols,
-				Height: msg.Size.Rows,
-			}:
+			case t.sizeCh <- remotecommand.TerminalSize{Width: cols, Height: rows}:
 			default:
 			}
 		}
@@ -652,23 +717,12 @@ func (t *TerminalSession) Read(p []byte) (int, error) {
 
 // Write escreve output para o WebSocket
 func (t *TerminalSession) Write(p []byte) (int, error) {
-	// FIX: Validar UTF-8 para evitar JSON corrompido
-	data := string(p)
-	if !utf8.ValidString(data) {
-		// Substituir bytes inválidos por caractere de substituição Unicode
-		data = strings.ToValidUTF8(data, "�")
-	}
-
 	if t.isEphemeral {
 		t.markActivity()
 	}
 
-	msg := map[string]interface{}{
-		"type": "output",
-		"data": data,
-	}
 	t.writeMu.Lock()
-	err := t.conn.WriteJSON(msg)
+	err := t.conn.WriteJSON(terminalOutputMsg(p))
 	t.writeMu.Unlock()
 	if err != nil {
 		return 0, err

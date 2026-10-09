@@ -25,6 +25,7 @@ import {
   ListFilter,
   Check,
   Flame,
+  TerminalSquare,
 } from "lucide-react";
 import { apiClient } from "@/lib/api/client";
 import { useDynatracePodStatus } from "@/hooks/useAPI";
@@ -34,6 +35,7 @@ import { formatAge, formatBytes, formatMillicores } from "@/lib/monitorUtils";
 import type { ClusterNodeSummary, Namespace, NodeDrainEvent, NodeDrainOptions, PodSummary } from "@/lib/api/types";
 import { PodMonitorTable } from "@/components/PodMonitorTable";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
+import { PodTerminal } from "@/components/PodTerminal";
 import { SplitView } from "@/components/SplitView";
 import { ResourceYamlPanel } from "@/components/ResourceYamlPanel";
 import { Button } from "@/components/ui/button";
@@ -344,6 +346,9 @@ export const NodesTab = ({ cluster, namespaces, showSystemNamespaces }: NodesTab
   const [drainNodes, setDrainNodes] = useState<string[] | null>(null);
   const [confirmSchedulable, setConfirmSchedulable] = useState<{ node: ClusterNodeSummary; schedulable: boolean } | null>(null);
   const [deleteNode, setDeleteNode] = useState<string | null>(null);
+  // Shell no node (kubectl debug node/<node>) com --rm: pod privilegiado apagado ao sair
+  const [nodeShell, setNodeShell] = useState<string | null>(null);
+  const [nodeShellFullscreen, setNodeShellFullscreen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   // Seleção múltipla para cordon/uncordon em lote (independente do node aberto à direita).
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -452,6 +457,12 @@ export const NodesTab = ({ cluster, namespaces, showSystemNamespaces }: NodesTab
           <FileText className="w-4 h-4 mr-2" />
           Describe
         </DropdownMenuItem>
+        <ProtectedAction showWarning={false}>
+          <DropdownMenuItem onClick={() => setNodeShell(node.name)} title="Pod privilegiado no node com o / do host em /host (como kubectl debug node), apagado ao sair">
+            <TerminalSquare className="w-4 h-4 mr-2" />
+            Shell no node (--rm)
+          </DropdownMenuItem>
+        </ProtectedAction>
         <ProtectedAction showWarning={false}>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -927,6 +938,29 @@ export const NodesTab = ({ cluster, namespaces, showSystemNamespaces }: NodesTab
           onFinished={() => { refresh(); setYamlReloadToken(t => t + 1); }}
         />
       )}
+
+      {/* Shell no node (--rm): o servidor cria o pod no node, abre o bash e o apaga ao sair */}
+      <Dialog open={!!nodeShell} onOpenChange={open => { if (!open) { setNodeShell(null); setNodeShellFullscreen(false); } }}>
+        <DialogContent className={nodeShellFullscreen
+          ? "w-screen h-screen max-w-none max-h-none p-0 m-0 rounded-none"
+          : "max-w-6xl h-[85vh] p-0"
+        }>
+          {nodeShell && (
+            <PodTerminal
+              cluster={cluster}
+              namespace="default"
+              pod=""
+              container=""
+              shell="bash"
+              mode="node"
+              node={nodeShell}
+              isFullscreen={nodeShellFullscreen}
+              onToggleFullscreen={() => setNodeShellFullscreen(v => !v)}
+              onClose={() => { setNodeShell(null); setNodeShellFullscreen(false); }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
 
       {deleteNode && (
         <DeleteNodeDialog
