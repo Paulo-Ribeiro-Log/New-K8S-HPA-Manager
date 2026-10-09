@@ -1,7 +1,7 @@
 // Deep Analysis de um node pool (FINOPS-DEEP-ANALYSIS-PLAN.md): diagnóstico de alocação, DaemonSets,
 // workloads, HPAs/throttling e simulação de VMs, com exportação em Markdown. Abas manuais com useState
 // (o <Tabs> do shadcn quebra a cadeia flex dentro de modal — ver CLAUDE.md).
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
-  AlertTriangle, Download, Info, Loader2, Microscope, OctagonAlert, RefreshCw,
+  AlertTriangle, ChevronDown, ChevronUp, Download, Info, Loader2, Microscope, OctagonAlert, RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -154,72 +154,129 @@ function SignedBRL({ v }: { v: number }) {
 
 function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?: DeepCoverage }) {
   const covOK = !!coverage?.computable;
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const toggle = (vm: string) => setOpen(prev => {
+    const next = new Set(prev);
+    if (next.has(vm)) next.delete(vm); else next.add(vm);
+    return next;
+  });
   const best = useMemo(() => {
     const ok = sims.filter(s => !s.is_current && s.feasible && s.available && s.price_usd_hour > 0 && s.node_loss_impact_pct <= 15);
     // Com reserva no pool, decide pela economia efetiva no pior caso; senão, pelo custo de tabela.
     const key = (s: DeepSimulation) => (covOK && s.coverage ? -s.coverage.worst_savings_brl : s.cost_recommended_brl);
     return ok.sort((a, b) => key(a) - key(b))[0]?.vm_size;
   }, [sims, covOK]);
+  const colCount = covOK ? 8 : 7;
+
+  // Células em duas linhas (valor principal + detalhe), sem whitespace-nowrap nas longas: a tabela precisa
+  // caber na largura do modal. Observações longas (notas de reserva) ficam na linha expandida.
+  const nodesCell = (s: DeepSimulation, n: number, cost: number, lim: string) => {
+    if (!s.feasible || n === 0) return <span className="text-muted-foreground">não comporta</span>;
+    return (
+      <>
+        <div className="font-medium">{n} nodes</div>
+        <div className="text-[11px] text-muted-foreground">
+          {s.price_usd_hour > 0 ? fmtBRL(cost) : "sem preço"} · {LIMITING[lim] ?? lim}
+        </div>
+      </>
+    );
+  };
+
   return (
-    <Table>
+    <Table className="text-xs">
       <TableHeader>
         <TableRow>
           <TableHead>VM</TableHead>
-          <TableHead>vCPU / GB</TableHead>
-          <TableHead>CPU</TableHead>
+          <TableHead>Configuração</TableHead>
           <TableHead>Alocável/node</TableHead>
           <TableHead>Requests atuais</TableHead>
           <TableHead>Requests recomendados{covOK && " (tabela)"}</TableHead>
           {covOK ? (<>
-            <TableHead>Custo efetivo pior / melhor</TableHead>
-            <TableHead>Economia efetiva pior / melhor</TableHead>
+            <TableHead>Custo efetivo</TableHead>
+            <TableHead>Economia efetiva</TableHead>
           </>) : <TableHead>Economia/mês</TableHead>}
-          <TableHead>Observações</TableHead>
+          <TableHead className="w-[1%]" />
         </TableRow>
       </TableHeader>
       <TableBody>
         {sims.map(s => {
-          const cell = (n: number, cost: number, lim: string) => !s.feasible || n === 0 ? "não comporta"
-            : `${n} nodes${s.price_usd_hour > 0 ? ` · ${fmtBRL(cost)}` : ""} (${LIMITING[lim] ?? lim})`;
+          const notes = [
+            ...(s.reserved_hint ? [s.reserved_hint.note] : []),
+            ...s.notes,
+            ...(covOK && s.coverage ? [s.coverage.note] : []),
+          ];
+          const isOpen = open.has(s.vm_size);
+          const rowCls = s.is_current ? "bg-muted/40" : !s.available ? "opacity-50" : s.vm_size === best ? "bg-emerald-500/5" : "";
           return (
-            <TableRow key={s.vm_size} className={s.is_current ? "bg-muted/40" : !s.available ? "opacity-50" : s.vm_size === best ? "bg-emerald-500/5" : ""}>
-              <TableCell className="font-mono text-xs whitespace-nowrap">
-                {s.vm_size}
-                {s.is_current && <Badge variant="outline" className="ml-1 text-[10px]">atual</Badge>}
-                {s.vm_size === best && <Badge className="ml-1 text-[10px] bg-emerald-600">melhor</Badge>}
-                {s.catalog_known && !s.available && <Badge variant="destructive" className="ml-1 text-[10px]">indisponível</Badge>}
-                {s.reserved_hint && (
-                  <Badge variant="outline" className="ml-1 text-[10px] border-violet-500 text-violet-600 dark:text-violet-400" title={s.reserved_hint.note}>
-                    {s.reserved_hint.kind === "reservation" ? "reserva" : "Savings Plan"} na frota{s.reserved_hint.scope === "series" ? " (série)" : ""}
-                  </Badge>
+            <Fragment key={s.vm_size}>
+              <TableRow key={s.vm_size} className={`${rowCls} align-top`}>
+                <TableCell>
+                  <div className="font-mono whitespace-nowrap">{s.vm_size}</div>
+                  {(s.is_current || s.vm_size === best || (s.catalog_known && !s.available) || s.reserved_hint) && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {s.is_current && <Badge variant="outline" className="text-[10px]">atual</Badge>}
+                      {s.vm_size === best && <Badge className="text-[10px] bg-emerald-600">melhor</Badge>}
+                      {s.catalog_known && !s.available && <Badge variant="destructive" className="text-[10px]">indisponível</Badge>}
+                      {s.reserved_hint && (
+                        <Badge variant="outline" className="text-[10px] border-violet-500 text-violet-600 dark:text-violet-400" title={s.reserved_hint.note}>
+                          {s.reserved_hint.kind === "reservation" ? "reserva" : "Savings Plan"} na frota{s.reserved_hint.scope === "series" ? " (série)" : ""}
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <div className="whitespace-nowrap">{s.vcpu} vCPU / {s.mem_gb} GB</div>
+                  <div className="text-[11px] text-muted-foreground">{s.cpu ?? "—"}</div>
+                  {(!s.smt || s.ephemeral_os_disk === false) && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {!s.smt && <Badge variant="secondary" className="text-[10px]">sem SMT</Badge>}
+                      {s.ephemeral_os_disk === false && <Badge variant="outline" className="text-[10px]">sem disco efêmero</Badge>}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <div className="whitespace-nowrap">{cores(s.alloc_cpu_millis)}</div>
+                  <div className="whitespace-nowrap">{gib(s.alloc_mem_mi)}</div>
+                  {s.alloc_estimated && <div className="text-[11px] text-muted-foreground">estimado</div>}
+                </TableCell>
+                <TableCell>{nodesCell(s, s.nodes_current_req, s.cost_current_req_brl, s.limiting_current_req)}</TableCell>
+                <TableCell>{nodesCell(s, s.nodes_recommended, s.cost_recommended_brl, s.limiting_recommended)}</TableCell>
+                {covOK ? (<>
+                  <TableCell>
+                    {s.coverage ? (<>
+                      <div className="whitespace-nowrap"><span className="text-muted-foreground">pior </span>{fmtBRL(s.coverage.worst_monthly_brl)}</div>
+                      <div className="whitespace-nowrap"><span className="text-muted-foreground">melhor </span>{fmtBRL(s.coverage.best_monthly_brl)}</div>
+                    </>) : "—"}
+                  </TableCell>
+                  <TableCell>
+                    {s.coverage ? (<>
+                      <div className="whitespace-nowrap"><span className="text-muted-foreground">pior </span><SignedBRL v={s.coverage.worst_savings_brl} /></div>
+                      <div className="whitespace-nowrap"><span className="text-muted-foreground">melhor </span><SignedBRL v={s.coverage.best_savings_brl} /></div>
+                    </>) : "—"}
+                  </TableCell>
+                </>) : (
+                  <TableCell>{!s.feasible || s.price_usd_hour <= 0 ? "—" : <SignedBRL v={s.savings_recommended_brl} />}</TableCell>
                 )}
-              </TableCell>
-              <TableCell className="text-xs">{s.vcpu} / {s.mem_gb}</TableCell>
-              <TableCell className="text-xs">
-                {s.cpu ?? "—"}{!s.smt && <Badge variant="secondary" className="ml-1 text-[10px]">sem SMT</Badge>}
-                {s.ephemeral_os_disk === false && <Badge variant="outline" className="ml-1 text-[10px]">sem disco efêmero</Badge>}
-              </TableCell>
-              <TableCell className="text-xs whitespace-nowrap">
-                {cores(s.alloc_cpu_millis)} / {gib(s.alloc_mem_mi)}{s.alloc_estimated && <span className="text-muted-foreground"> (est.)</span>}
-              </TableCell>
-              <TableCell className="text-xs whitespace-nowrap">{cell(s.nodes_current_req, s.cost_current_req_brl, s.limiting_current_req)}</TableCell>
-              <TableCell className="text-xs whitespace-nowrap font-medium">{cell(s.nodes_recommended, s.cost_recommended_brl, s.limiting_recommended)}</TableCell>
-              {covOK ? (<>
-                <TableCell className="text-xs whitespace-nowrap">
-                  {s.coverage ? `${fmtBRL(s.coverage.worst_monthly_brl)} / ${fmtBRL(s.coverage.best_monthly_brl)}` : "—"}
+                <TableCell>
+                  {notes.length > 0 && (
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => toggle(s.vm_size)}>
+                      {isOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      <span className="ml-1">{notes.length}</span>
+                    </Button>
+                  )}
                 </TableCell>
-                <TableCell className="text-xs whitespace-nowrap">
-                  {s.coverage ? <><SignedBRL v={s.coverage.worst_savings_brl} /> / <SignedBRL v={s.coverage.best_savings_brl} /></> : "—"}
-                </TableCell>
-              </>) : (
-                <TableCell className="text-xs whitespace-nowrap">
-                  {!s.feasible || s.price_usd_hour <= 0 ? "—" : <SignedBRL v={s.savings_recommended_brl} />}
-                </TableCell>
+              </TableRow>
+              {isOpen && (
+                <TableRow key={`${s.vm_size}-notas`} className={rowCls}>
+                  <TableCell colSpan={colCount} className="pt-0">
+                    <ul className="list-disc pl-5 space-y-0.5 text-[11px] text-muted-foreground">
+                      {notes.map(n => <li key={n}>{n}</li>)}
+                    </ul>
+                  </TableCell>
+                </TableRow>
               )}
-              <TableCell className="text-[11px] text-muted-foreground max-w-[320px]">
-                {[...s.notes, ...(covOK && s.coverage ? [s.coverage.note] : [])].join(" ") || "—"}
-              </TableCell>
-            </TableRow>
+            </Fragment>
           );
         })}
       </TableBody>
