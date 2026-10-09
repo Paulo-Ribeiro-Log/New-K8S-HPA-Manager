@@ -395,6 +395,8 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 
 	// SSO Profile (perfil SSO corporativo: email + matrícula + senha compartilhada)
 	ssoProfileHandler := handlers.NewSSOProfileHandler(baseDir)
+	// Identidade Dynatrace = e-mail do Perfil SSO (quando cadastrado) — ver dynatrace_identity.go
+	handlers.SetDynatraceSSOProfileDir(baseDir)
 	fmt.Println("ℹ️  Perfil SSO corporativo: configure em Credenciais → Perfil SSO")
 
 	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)

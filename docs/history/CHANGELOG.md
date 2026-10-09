@@ -3,6 +3,14 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Dynatrace — identidade passa a ser o e-mail do Perfil SSO (não dava para alterar o e-mail) (Outubro 2026)
+
+**Sintoma:** não dava para alterar o e-mail do Dynatrace; ele não usava o e-mail do Perfil SSO do usuário.
+
+**Causa:** desde a migração do Dynatrace para o Perfil (`DYNATRACE-PROFILE-MIGRATION-PLAN.md`), a credencial ficava gravada sob o `user_email` do JWT. Esse e-mail não é escolhido pelo usuário: o `Login` pega a **conta ativa do Azure CLI** (`az account show`), muitas vezes uma identidade administrativa (`<matrícula>.ca@...`). O modal só exibia esse e-mail (somente leitura), o Perfil SSO era ignorado e trocar a conta do `az` fazia a configuração "sumir".
+
+**Correção:** `handlers/dynatrace_identity.go` — a identidade Dynatrace é o **e-mail do Perfil SSO** quando cadastrado (`sso_profile.json`, mesmo arquivo do auto-login SSO; o servidor informa o diretório via `SetDynatraceSSOProfileDir`), senão o do login. Leitura com **fallback** para o e-mail do login (onde as credenciais estavam antes): ninguém precisa reconfigurar, e o próximo Salvar grava sob o e-mail do SSO levando URL/token/HLG/filtro do registro antigo. Vale em todos os pontos: `dynatraceClientForCluster` (problems, investigação, badge DT de pods, comportamento de deployment), `GET/POST /dynatrace/config`, `POST /dynatrace/test` (inclusive HLG) e Health Check. `GET /dynatrace/config` devolve `identity_email`/`identity_source`/`login_email`/`stored_under_login`; o modal mostra o e-mail em uso e a origem ("do Perfil SSO" / "do login"), com dica para cadastrar o Perfil SSO e aviso quando a credencial ainda está sob o login. Testes com SQLite real: identidade, fallback do legado e Salvar movendo para o SSO sem perder o token.
+
 ### FinOps — Deep Analysis de node pool (Outubro 2026)
 
 Nova aba **Deep Analysis** no FinOps: cada pool do último relatório abre um modal com o diagnóstico completo, que antes era feito à mão com `kubectl describe/top`, spec dos pods, HPAs e `az vm list-skus` (caso real: `calculofrete` em `akspriv-oferta-prd`). Plano e decisões em `FINOPS-DEEP-ANALYSIS-PLAN.md`.

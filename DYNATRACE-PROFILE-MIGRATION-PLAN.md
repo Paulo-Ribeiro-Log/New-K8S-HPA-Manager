@@ -212,6 +212,14 @@ pra GCP/AWS, sem nenhuma mudança de contrato de autenticação. Validado ao viv
 real: salvar/ler `dynatrace_email` em `/api/v1/user/cloud-account-hints` funcionando, dado de
 teste limpo do banco real depois.
 
+### Achado extra #3 — identidade presa à conta do `az` (corrigido)
+
+O `user_email` do JWT vem da conta ativa do Azure CLI no `Login` (`az account show`), não de algo
+que o usuário escolhe — na prática uma identidade administrativa (`<matrícula>.ca@...`). Com a
+credencial Dynatrace gravada sob ele, não havia como alterar o e-mail e trocar de conta no `az`
+"sumia" com a configuração. Corrigido em `handlers/dynatrace_identity.go`: identidade = e-mail do
+Perfil SSO (quando cadastrado), com leitura de fallback no e-mail do login. Ver CHANGELOG.
+
 ### Fase 5 — Verificação 🟡 parcial
 
 - [x] `go build ./...`, `gofmt -l`, `SKIP_AZURE_TESTS=1 go test ./internal/... -race` — OK em

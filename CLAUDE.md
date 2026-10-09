@@ -77,6 +77,7 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - Watch (informer do client-go via SSE) só em Pods/Deployments/HPAs; o resto é polling. `usePodsWatch`/`pods_watch.go` são o molde.
 - Rollback de Deployment: 6 modos (K8s nativo, Helm, Nexus, Imagem, Spinnaker, Arquivos), todos com bypass automático da label Kyverno `devops.k8s.io/kyverno-bypass` (ref-counted por namespace, removida no fim).
 - Sessão Teams/ServiceNow usam perfis de browser **separados** (`teams-session/` vs `rod-session/`); nunca misture.
+- Credencial Dynatrace: leia sempre via `dynatraceTokensFor`/`dynatraceClientForCluster` (`handlers/dynatrace_identity.go`: e-mail do Perfil SSO, com fallback no e-mail do login), **nunca** `tokensStore.GetTokens(user_email)` direto — o `user_email` do JWT é a conta ativa do `az`, não o e-mail corporativo.
 
 **FinOps — custos e Deep Analysis** (`FINOPS-DEEP-ANALYSIS-PLAN.md`)
 - Custo de troca de VM **nunca** só com preço de tabela: pools costumam estar sob reserva (calculofrete: R$ 14,7 mil efetivos × R$ 48,6 mil de tabela). Use a cobertura gravada (`poolCoverage`/`skuCoverageIndex` no handler; `coverage.go`, `deep_analysis_coverage.go`) e siga a regra de não dar número quando seria chute (Savings Plan ≥ 20%, moeda ≠ BRL, Spot).
