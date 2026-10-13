@@ -70,11 +70,15 @@ interface HistoryViewerProps {
   onOpenChange: (open: boolean) => void;
 }
 
+// Entradas renderizadas por vez — o histórico passa de milhares e o diff de cada uma é DOM pesado
+const PAGE_SIZE = 200;
+
 export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [stats, setStats] = useState<HistoryStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // Filtros
   const [filterAction, setFilterAction] = useState<string>("all");
@@ -86,7 +90,6 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
 
   useEffect(() => {
     if (open) {
-      fetchHistory();
       fetchStats();
     }
   }, [open]);
@@ -118,22 +121,11 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
       }
 
       const queryString = params.toString();
-      const url = `/api/v1/history${queryString ? `?${queryString}` : ""}`;
-
-      const token = localStorage.getItem("auth_token");
-      const response = await fetch(url, {
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const data = await response.json();
+      const data = await apiClient.get<{ entries: HistoryEntry[] | null }>(
+        `/history${queryString ? `?${queryString}` : ""}`
+      );
       setEntries(data.entries || []);
+      setVisibleCount(PAGE_SIZE);
     } catch (error: any) {
       console.error("Failed to fetch history:", error);
       toast.error("Erro ao carregar histórico", {
@@ -151,19 +143,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
 
   const fetchStats = async () => {
     try {
-      const token = localStorage.getItem("auth_token");
-      const response = await fetch("/api/v1/history/stats", {
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await apiClient.get<HistoryStats>("/history/stats");
       setStats(data);
     } catch (error: any) {
       console.error("Failed to fetch stats:", error);
@@ -215,11 +195,11 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
     const rows = entries.map((entry) => [
       entry.id,
       new Date(entry.timestamp).toLocaleString(),
-      entry.action,
-      entry.resource,
-      entry.cluster,
-      entry.status,
-      entry.duration_ms.toString(),
+      entry.action || "",
+      entry.resource || "",
+      entry.cluster || "",
+      entry.status || "",
+      String(entry.duration_ms ?? 0),
       entry.session_name || "",
       entry.error_msg || "",
     ]);
@@ -261,6 +241,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
   };
 
   const getActionBadgeColor = (action: string): string => {
+    action = action || "";
     if (action.includes("update")) return "bg-blue-500";
     if (action.includes("delete")) return "bg-red-500";
     if (action.includes("rollout")) return "bg-purple-500";
@@ -275,9 +256,10 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
     return <AlertCircle className="w-4 h-4 text-yellow-600" />;
   };
 
-  // Extrair valores únicos para filtros
-  const uniqueActions = Array.from(new Set(entries.map((e) => e.action)));
-  const uniqueClusters = Array.from(new Set(entries.map((e) => e.cluster)));
+  // Extrair valores únicos para filtros. Vazios ficam de fora: <SelectItem value=""> lança
+  // exceção no Radix e derrubava a página inteira (entradas antigas têm cluster "").
+  const uniqueActions = Array.from(new Set(entries.map((e) => e.action).filter(Boolean)));
+  const uniqueClusters = Array.from(new Set(entries.map((e) => e.cluster).filter(Boolean)));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -473,7 +455,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
             </div>
           ) : (
             <div className="space-y-1 p-2">
-              {entries.map((entry) => {
+              {entries.slice(0, visibleCount).map((entry) => {
                 const isExpanded = expandedEntries.has(entry.id);
                 return (
                   <div
@@ -503,13 +485,13 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
 
                         <div>
                           <Badge className={`${getActionBadgeColor(entry.action)} text-white text-xs`}>
-                            {entry.action.replace(/_/g, " ")}
+                            {(entry.action || "-").replace(/_/g, " ")}
                           </Badge>
                         </div>
 
                         <div className="flex items-center gap-1 text-xs">
                           <Server className="w-3 h-3 text-slate-400" />
-                          {entry.cluster}
+                          {entry.cluster || "-"}
                         </div>
 
                         <div className="col-span-2 text-xs font-mono truncate">
@@ -625,6 +607,16 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
                   </div>
                 );
               })}
+              {entries.length > visibleCount && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                >
+                  Mostrar mais ({entries.length - visibleCount} restantes)
+                </Button>
+              )}
             </div>
           )}
         </div>

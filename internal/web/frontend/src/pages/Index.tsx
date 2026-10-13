@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, memo } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient, useIsFetching, type Query } from "@tanstack/react-query";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
@@ -151,7 +152,16 @@ interface IndexProps {
 const LAST_CLUSTER_STORAGE_KEY = "k8s_hpa_last_selected_cluster";
 
 const Index = ({ onLogout }: IndexProps) => {
-  const [activeTab, setActiveTab] = useState("dashboard");
+  // A aba ativa vive no state da entrada do histórico (sempre na rota "/"): cada troca de aba
+  // empilha uma entrada, então voltar/avançar do browser (Alt+←, botão do mouse) troca de aba em
+  // vez de sair da aplicação. Sem state (1ª entrada) = dashboard.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const historyTab = (location.state as { tab?: string } | null)?.tab ?? "dashboard";
+  const [activeTab, setActiveTab] = useState(historyTab);
+  useEffect(() => {
+    setActiveTab(historyTab);
+  }, [historyTab]);
   const [selectedCluster, setSelectedCluster] = useState(() => {
     try {
       return localStorage.getItem(LAST_CLUSTER_STORAGE_KEY) || "";
@@ -415,7 +425,7 @@ const Index = ({ onLogout }: IndexProps) => {
   }, [vpnConnected]);
 
   // Wrapper para setActiveTab que dispara evento e verifica VPN
-  const handleTabChange = async (newTab: string) => {
+  const handleTabChange = (newTab: string) => {
     // "Edição Lado a Lado" abre modal, não troca de aba
     if (newTab === "resource-compare") {
       setCompareInitialLeft(undefined);
@@ -428,11 +438,13 @@ const Index = ({ onLogout }: IndexProps) => {
       window.dispatchEvent(new Event("tabChanged"));
     }
 
-    // Verificar VPN ao mudar de tab
-    await checkVPN();
-
-    // Mudar tab
+    // Mudar tab já; a checagem de VPN roda em segundo plano (só atualiza o banner). Com await,
+    // cada clique esperava o dial TCP do /vpn/status ao API server (~2s na VPN, até 8s de timeout).
+    if (newTab !== activeTab) {
+      navigate("/", { state: { tab: newTab } });
+    }
     setActiveTab(newTab);
+    void checkVPN();
   };
 
   // Abre o modal de comparação com recurso pré-selecionado no painel esquerdo
@@ -2091,10 +2103,12 @@ const Index = ({ onLogout }: IndexProps) => {
         onOpenChange={setShowLogViewer}
       />
 
-      <HistoryViewer
-        open={showHistoryViewer}
-        onOpenChange={setShowHistoryViewer}
-      />
+      <ErrorBoundary componentName="Change History">
+        <HistoryViewer
+          open={showHistoryViewer}
+          onOpenChange={setShowHistoryViewer}
+        />
+      </ErrorBoundary>
 
       {/* Modal de Notas — escopado por cluster+aba ativa; lembretes gerais viram um toggle de escopo dentro do próprio modal */}
       <NotesModal
