@@ -291,7 +291,7 @@ func (h *IngressHandler) Apply(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -491,7 +491,7 @@ func (h *IngressHandler) Create(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(startTime).Milliseconds(),
 		}
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

@@ -584,7 +584,7 @@ func (h *HTTPClientHandler) logHistory(c *gin.Context, req HTTPClientRequest, st
 			status, errMsg = "failed", resp.Error
 		}
 	}
-	h.historyTracker.Log(history.HistoryEntry{
+	h.historyTracker.Log(c, history.HistoryEntry{
 		UserEmail: userInfo.Email,
 		UserName:  userInfo.Name,
 		Action:    "http_client_request",

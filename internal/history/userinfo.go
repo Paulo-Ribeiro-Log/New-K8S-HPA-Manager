@@ -2,8 +2,6 @@ package history
 
 import (
 	"context"
-	"os/exec"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,57 +12,47 @@ type UserInfo struct {
 	Name  string
 }
 
-// GetCurrentUserInfo obtém informações do usuário atual
-// Compatível com SSO futuro (JWT via gin.Context) e RBAC atual (Azure CLI)
-func GetCurrentUserInfo(c *gin.Context) UserInfo {
-	var userInfo UserInfo
+type userCtxKey struct{}
 
-	// Tentar obter do contexto primeiro (SSO via JWT - preparado para futuro)
-	if email, exists := c.Get("user_email"); exists {
-		userInfo.Email = email.(string)
-	}
-
-	if name, exists := c.Get("user_name"); exists {
-		userInfo.Name = name.(string)
-	}
-
-	// Se não encontrou no contexto, usar Azure CLI (RBAC atual)
-	if userInfo.Email == "" {
-		userInfo.Email = getCurrentUserEmailFromAzureCLI()
-	}
-
-	// Se ainda não tem nome, tentar extrair do email
-	if userInfo.Name == "" && userInfo.Email != "" {
-		// Extrair nome do email (ex: joao.silva@empresa.com → João Silva)
-		parts := strings.Split(userInfo.Email, "@")
-		if len(parts) > 0 {
-			nameParts := strings.Split(parts[0], ".")
-			if len(nameParts) >= 2 {
-				// Capitalizar primeira letra de cada parte
-				firstName := strings.Title(nameParts[0])
-				lastName := strings.Title(nameParts[1])
-				userInfo.Name = firstName + " " + lastName
-			} else {
-				userInfo.Name = strings.Title(parts[0])
-			}
-		}
-	}
-
-	return userInfo
+// WithUser devolve um ctx que carrega o autor das operações. O middleware JWT coloca o usuário
+// do token no c.Request.Context() — assim código fora dos handlers (ex: kubernetes.Client) que só
+// recebe ctx também grava o autor no histórico.
+func WithUser(ctx context.Context, u UserInfo) context.Context {
+	return context.WithValue(ctx, userCtxKey{}, u)
 }
 
-// getCurrentUserEmailFromAzureCLI obtém email do usuário via Azure CLI
-// (usado quando não há SSO - desenvolvimento local)
-func getCurrentUserEmailFromAzureCLI() string {
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "az", "account", "show", "--query", "user.name", "-o", "tsv")
+// DetachedUserContext é um ctx sem prazo/cancelamento que só carrega o autor de ctx — para
+// goroutines que gravam no histórico depois que a requisição já terminou.
+func DetachedUserContext(ctx context.Context) context.Context {
+	return WithUser(context.Background(), UserFromContext(ctx))
+}
 
-	output, err := cmd.Output()
-	if err != nil {
-		// Em caso de erro, retornar vazio (não travar aplicação)
-		return ""
+// UserFromContext lê o autor de um ctx: chave própria (WithUser) ou, num *gin.Context, as chaves
+// "user_email"/"user_name" setadas pelo middleware. Sem usuário, devolve vazio.
+func UserFromContext(ctx context.Context) UserInfo {
+	if ctx == nil {
+		return UserInfo{}
 	}
+	if u, ok := ctx.Value(userCtxKey{}).(UserInfo); ok && u.Email != "" {
+		return u
+	}
+	if c, ok := ctx.(*gin.Context); ok {
+		if c.Request != nil {
+			if u, ok := c.Request.Context().Value(userCtxKey{}).(UserInfo); ok && u.Email != "" {
+				return u
+			}
+		}
+		var u UserInfo
+		u.Email = c.GetString("user_email")
+		u.Name = c.GetString("user_name")
+		return u
+	}
+	return UserInfo{}
+}
 
-	email := strings.TrimSpace(string(output))
-	return email
+// GetCurrentUserInfo obtém o usuário da requisição (claims do JWT, via middleware). Antes caía
+// no `az account show` sem timeout quando o contexto não tinha e-mail — travava a operação
+// auditada e gravava a conta do az, não quem fez o login.
+func GetCurrentUserInfo(c *gin.Context) UserInfo {
+	return UserFromContext(c)
 }

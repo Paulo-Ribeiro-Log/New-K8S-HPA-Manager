@@ -126,7 +126,7 @@ func (h *PodHandler) SFTPDownload(c *gin.Context) {
 
 	if h.historyTracker != nil {
 		userInfo := GetUserInfoForHistory(c)
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			UserEmail: userInfo.Email,
 			UserName:  userInfo.Name,
 			Action:    "sftp_download",
@@ -192,7 +192,7 @@ func (h *PodHandler) SFTPUpload(c *gin.Context) {
 
 	if h.historyTracker != nil {
 		userInfo := GetUserInfoForHistory(c)
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			UserEmail: userInfo.Email,
 			UserName:  userInfo.Name,
 			Action:    "sftp_upload",
@@ -250,7 +250,11 @@ func (h *PodHandler) SFTPRename(c *gin.Context) {
 	}
 	defer session.Close()
 
-	if err := session.Client.Rename(req.OldPath, req.NewPath); err != nil {
+	start := time.Now()
+	err := session.Client.Rename(req.OldPath, req.NewPath)
+	logOperation(c, h.historyTracker, "sftp_rename", c.Param("namespace")+"/"+c.Param("name"), c.Param("cluster"), nil,
+		map[string]interface{}{"from": req.OldPath, "to": req.NewPath}, start, err)
+	if err != nil {
 		c.JSON(http.StatusBadGateway, errorResponse("SFTP_RENAME_ERROR", err.Error()))
 		return
 	}
@@ -289,7 +293,7 @@ func (h *PodHandler) SFTPRemove(c *gin.Context) {
 
 	if h.historyTracker != nil {
 		userInfo := GetUserInfoForHistory(c)
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			UserEmail: userInfo.Email,
 			UserName:  userInfo.Name,
 			Action:    "sftp_remove",

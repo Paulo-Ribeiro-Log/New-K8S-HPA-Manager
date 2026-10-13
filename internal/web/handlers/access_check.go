@@ -240,5 +240,5 @@ func (h *AccessCheckHandler) logAccessCheck(c *gin.Context, cluster, namespace, 
 		"verb":            verb,
 		"resource":        resource,
 	}, 0, errMsg)
-	h.historyTracker.Log(entry)
+	h.historyTracker.Log(c, entry)
 }

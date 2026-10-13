@@ -107,7 +107,7 @@ func (h *CommandRunnerHandler) Execute(c *gin.Context) {
 	}
 
 	sessionID := uuid.New().String()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(history.DetachedUserContext(c))
 	h.cancelFuncs.Store(sessionID, cancel)
 	go func() {
 		h.runParallel(ctx, sessionID, req)
@@ -318,7 +318,7 @@ func (h *CommandRunnerHandler) runParallel(sessionCtx context.Context, sessionID
 		for _, t := range req.Targets {
 			clusterNames = append(clusterNames, t.Cluster)
 		}
-		h.historyTracker.Log(history.HistoryEntry{
+		h.historyTracker.Log(sessionCtx, history.HistoryEntry{
 			Action:   "command_runner",
 			Resource: req.Type + ": " + truncate(req.Command, 60),
 			Cluster:  strings.Join(clusterNames, ","),

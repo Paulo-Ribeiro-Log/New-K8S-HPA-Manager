@@ -291,7 +291,7 @@ func (h *ConfigMapHandler) Apply(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -565,7 +565,7 @@ func (h *ConfigMapHandler) Create(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(startTime).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}

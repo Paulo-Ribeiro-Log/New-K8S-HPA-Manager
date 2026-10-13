@@ -158,7 +158,7 @@ func (h *CronJobHandler) ApplyBatchManifest(c *gin.Context) {
 		}
 		entry := CreateHistoryEntry(c, "apply_batch_manifest", ns+"/"+batchMainName(objs), req.Cluster, status, nil,
 			map[string]interface{}{"resources": names, "yaml": req.YAML}, time.Since(start).Milliseconds(), failMsg)
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}

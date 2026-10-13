@@ -302,7 +302,7 @@ func (h *SecretHandler) Apply(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -598,7 +598,7 @@ func (h *SecretHandler) Create(c *gin.Context) {
 			Status:   "success",
 			Duration: duration.Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -886,7 +886,7 @@ func (h *SecretHandler) ResyncAKV(c *gin.Context) {
 			After:    map[string]interface{}{"annotation": annotation, "command": command},
 			Status:   status,
 		}
-		if logErr := h.historyTracker.Log(entry); logErr != nil {
+		if logErr := h.historyTracker.Log(c, entry); logErr != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", logErr)
 		}
 	}

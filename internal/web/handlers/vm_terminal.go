@@ -336,7 +336,7 @@ func (h *VMTerminalHandler) HandleSSMTerminal(c *gin.Context) {
 // terminal nesta VM".
 func (h *VMTerminalHandler) logConnection(c *gin.Context, instanceID, addr, status, errMsg string) {
 	entry := CreateHistoryEntry(c, "vm-ssh-connect", instanceID, addr, status, nil, nil, 0, errMsg)
-	if err := h.historyTracker.Log(entry); err != nil {
+	if err := h.historyTracker.Log(c, entry); err != nil {
 		log.Warn().Err(err).Msg("erro ao registrar conexão SSH de VM no history tracker")
 	}
 }

@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/rollbackfiles"
 )
 
@@ -20,17 +24,26 @@ import (
 // RollbackFilesHandler expõe a pasta gerenciada de artefatos de rollback + navegação/leitura/
 // escrita em diretórios externos arbitrários do servidor.
 type RollbackFilesHandler struct {
-	store *rollbackfiles.Store
+	store          *rollbackfiles.Store
+	historyTracker *history.HistoryTracker
+}
+
+// logRollbackFileWrite grava no Change History a escrita de um arquivo de rollback (caminho e
+// SHA-256 do conteúdo — o conteúdo em si pode ter segredo).
+func (h *RollbackFilesHandler) logRollbackFileWrite(c *gin.Context, path, content string, start time.Time, err error) {
+	sum := sha256.Sum256([]byte(content))
+	logOperation(c, h.historyTracker, "rollback_file_write", path, "", nil,
+		map[string]interface{}{"path": path, "bytes": len(content), "sha256": hex.EncodeToString(sum[:])}, start, err)
 }
 
 // NewRollbackFilesHandler cria o handler — falha só se ~/.k8s-hpa-manager/rollback-artifacts/ não
 // puder ser criada (permissão, disco cheio, etc.).
-func NewRollbackFilesHandler() (*RollbackFilesHandler, error) {
+func NewRollbackFilesHandler(ht *history.HistoryTracker) (*RollbackFilesHandler, error) {
 	store, err := rollbackfiles.NewStore()
 	if err != nil {
 		return nil, err
 	}
-	return &RollbackFilesHandler{store: store}, nil
+	return &RollbackFilesHandler{store: store, historyTracker: ht}, nil
 }
 
 // List — GET /api/v1/rollback-files
@@ -89,7 +102,10 @@ func (h *RollbackFilesHandler) Write(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
 		return
 	}
-	if err := h.store.Write(name, []byte(req.Content)); err != nil {
+	start := time.Now()
+	err := h.store.Write(name, []byte(req.Content))
+	h.logRollbackFileWrite(c, "rollback-artifacts/"+name, req.Content, start, err)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("WRITE_ERROR", err.Error()))
 		return
 	}
@@ -150,7 +166,10 @@ func (h *RollbackFilesHandler) WriteExternal(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
 		return
 	}
-	if err := rollbackfiles.WriteFileAtPath(req.Path, []byte(req.Content)); err != nil {
+	start := time.Now()
+	err := rollbackfiles.WriteFileAtPath(req.Path, []byte(req.Content))
+	h.logRollbackFileWrite(c, req.Path, req.Content, start, err)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("WRITE_ERROR", err.Error()))
 		return
 	}

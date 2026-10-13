@@ -2020,7 +2020,7 @@ func (h *KafkaTestHandler) logHistory(req RunKafkaTestRequest, userInfo history.
 		after["count_offsets_status"] = result.OffsetCount.Status
 	}
 
-	h.historyTracker.Log(history.HistoryEntry{
+	h.historyTracker.Log(context.Background(), history.HistoryEntry{
 		UserEmail: userInfo.Email,
 		UserName:  userInfo.Name,
 		Action:    "kafka_test",

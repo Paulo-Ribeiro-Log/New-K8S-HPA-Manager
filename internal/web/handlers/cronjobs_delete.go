@@ -276,7 +276,7 @@ func (h *CronJobHandler) recordBatchDeleteMap(c *gin.Context, action, resource, 
 		a = after[0]
 	}
 	entry := CreateHistoryEntry(c, action, resource, cluster, status, before, a, time.Since(start).Milliseconds(), errMsg)
-	if logErr := h.historyTracker.Log(entry); logErr != nil {
+	if logErr := h.historyTracker.Log(c, entry); logErr != nil {
 		fmt.Printf("warning: failed to record history entry: %v\n", logErr)
 	}
 }

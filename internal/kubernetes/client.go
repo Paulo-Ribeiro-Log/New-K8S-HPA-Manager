@@ -2352,7 +2352,7 @@ func (c *Client) TriggerRollout(ctx context.Context, hpa models.HPA) error {
 	if err != nil {
 		// Log failure no audit
 		if c.historyTracker != nil {
-			c.historyTracker.Log(history.HistoryEntry{
+			c.historyTracker.Log(ctx, history.HistoryEntry{
 				Action:   history.ActionRolloutDeployment,
 				Resource: fmt.Sprintf("%s/%s", hpa.Namespace, deploymentName),
 				Cluster:  c.cluster,
@@ -2366,7 +2366,7 @@ func (c *Client) TriggerRollout(ctx context.Context, hpa models.HPA) error {
 
 	// Log success no audit
 	if c.historyTracker != nil {
-		c.historyTracker.Log(history.HistoryEntry{
+		c.historyTracker.Log(ctx, history.HistoryEntry{
 			Action:   history.ActionRolloutDeployment,
 			Resource: fmt.Sprintf("%s/%s", hpa.Namespace, deploymentName),
 			Cluster:  c.cluster,
@@ -2424,7 +2424,7 @@ func (c *Client) TriggerDaemonSetRollout(ctx context.Context, hpa models.HPA) er
 	if err != nil {
 		// Log failure no audit
 		if c.historyTracker != nil {
-			c.historyTracker.Log(history.HistoryEntry{
+			c.historyTracker.Log(ctx, history.HistoryEntry{
 				Action:   history.ActionRolloutDaemonSet,
 				Resource: fmt.Sprintf("%s/%s", hpa.Namespace, targetName),
 				Cluster:  c.cluster,
@@ -2438,7 +2438,7 @@ func (c *Client) TriggerDaemonSetRollout(ctx context.Context, hpa models.HPA) er
 
 	// Log success no audit
 	if c.historyTracker != nil {
-		c.historyTracker.Log(history.HistoryEntry{
+		c.historyTracker.Log(ctx, history.HistoryEntry{
 			Action:   history.ActionRolloutDaemonSet,
 			Resource: fmt.Sprintf("%s/%s", hpa.Namespace, targetName),
 			Cluster:  c.cluster,
@@ -2500,7 +2500,7 @@ func (c *Client) TriggerStatefulSetRollout(ctx context.Context, hpa models.HPA) 
 	if err != nil {
 		// Log failure no audit
 		if c.historyTracker != nil {
-			c.historyTracker.Log(history.HistoryEntry{
+			c.historyTracker.Log(ctx, history.HistoryEntry{
 				Action:   history.ActionRolloutStatefulSet,
 				Resource: fmt.Sprintf("%s/%s", hpa.Namespace, statefulSetName),
 				Cluster:  c.cluster,
@@ -2514,7 +2514,7 @@ func (c *Client) TriggerStatefulSetRollout(ctx context.Context, hpa models.HPA) 
 
 	// Log success no audit
 	if c.historyTracker != nil {
-		c.historyTracker.Log(history.HistoryEntry{
+		c.historyTracker.Log(ctx, history.HistoryEntry{
 			Action:   history.ActionRolloutStatefulSet,
 			Resource: fmt.Sprintf("%s/%s", hpa.Namespace, statefulSetName),
 			Cluster:  c.cluster,

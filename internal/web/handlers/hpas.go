@@ -258,7 +258,7 @@ func (h *HPAHandler) Update(c *gin.Context) {
 		if h.historyTracker != nil && beforeState != nil {
 			duration := time.Since(startTime).Milliseconds()
 			userInfo := GetUserInfoForHistory(c)
-			h.historyTracker.Log(history.HistoryEntry{
+			h.historyTracker.Log(c, history.HistoryEntry{
 				UserEmail: userInfo.Email,
 				UserName:  userInfo.Name,
 				Action:    history.ActionUpdateHPA,
@@ -319,7 +319,7 @@ func (h *HPAHandler) Update(c *gin.Context) {
 	if h.historyTracker != nil {
 		duration := time.Since(startTime).Milliseconds()
 		userInfo := GetUserInfoForHistory(c)
-		h.historyTracker.Log(history.HistoryEntry{
+		h.historyTracker.Log(c, history.HistoryEntry{
 			UserEmail: userInfo.Email,
 			UserName:  userInfo.Name,
 			Action:    history.ActionUpdateHPA,

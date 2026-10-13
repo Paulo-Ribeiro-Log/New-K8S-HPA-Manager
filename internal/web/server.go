@@ -1,7 +1,7 @@
 package web
 
 import (
-	// "context"  // TODO: Remover após migração completa para V2
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/base64"
@@ -251,8 +251,12 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 
 	historyTracker, err := history.NewHistoryTracker(baseDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create history tracker: %w", err)
+		// Não derruba o servidor (ex: binário sem cgo, SQLite stub) — o tracker nil não grava nada,
+		// então avisa alto: as operações deixam de ser auditadas.
+		fmt.Printf("❌ Change History indisponível (%v) — operações NÃO serão registradas\n", err)
+		historyTracker = nil
 	}
+	historyTracker.StartRetention(context.Background())
 
 	// Base de conhecimento de incidentes — registros curados/confirmados por
 	// analista (sintoma, causa raiz, resolução real), separada do histórico
@@ -691,7 +695,7 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Version (sem auth - informação pública)
-	versionHandler := handlers.NewVersionHandler()
+	versionHandler := handlers.NewVersionHandler(s.historyTracker)
 	s.router.GET("/api/v1/version", versionHandler.GetVersion)
 	s.router.POST("/api/v1/version/update", versionHandler.SelfUpdate)
 
@@ -903,7 +907,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/timeline/compare-saved", finOpsHandler.CompareSnapshots)
 	api.GET("/finops/timeline/saved", finOpsHandler.GetSavedTimelines)
 	api.GET("/finops/vm-alternatives", finOpsHandler.GetVMAlternatives)
-	api.GET("/finops/deep-analysis", finOpsHandler.GetDeepAnalysis) // Deep Analysis de node pool (FINOPS-DEEP-ANALYSIS-PLAN.md) — leitura, sem RBAC extra
+	api.GET("/finops/deep-analysis", finOpsHandler.GetDeepAnalysis)   // Deep Analysis de node pool (FINOPS-DEEP-ANALYSIS-PLAN.md) — leitura, sem RBAC extra
 	api.GET("/finops/data-resources", finOpsHandler.GetDataResources) // RG de dados (rg-<nome>-data-<env>) — SQL/Storage/Redis/Cosmos/ServiceBus fora do cluster K8s
 	api.POST("/finops/storage/refresh", rbacMiddleware.RequireSREGroup(), finOpsHandler.RefreshDiskPricing)
 	api.GET("/finops/unattached-disks", finOpsHandler.GetUnattachedDisks) // discos desatachados (Azure/GCP/AWS) — só leitura; a app nunca exclui, devolve o comando de exclusão pra copiar
@@ -1387,7 +1391,7 @@ func (s *Server) setupRoutes() {
 	}
 	helmCLI := helmclient.NewCLIClient(helmOptions...)
 	helmService := helmservice.NewService(s.kubeManager, helmCLI)
-	helmHandler := handlers.NewHelmHandler(helmService)
+	helmHandler := handlers.NewHelmHandler(helmService, s.historyTracker)
 	// deploymentRollbackHandler foi construído antes de helmService existir (ordem de
 	// inicialização deste arquivo) — injeta a dependência aqui, só usada pelo Modo Helm do
 	// Rollback de Deployment (HelmRollbackWithBypass).
@@ -1435,7 +1439,7 @@ func (s *Server) setupRoutes() {
 	// padrão de leitura de outras ferramentas desta app); escrita/exclusão atrás de
 	// RequireSREGroup() — mesmo nível de confiança já dado a outras ferramentas com acesso ao
 	// filesystem do host do servidor (ex: Command Runner).
-	rollbackFilesHandler, err := handlers.NewRollbackFilesHandler()
+	rollbackFilesHandler, err := handlers.NewRollbackFilesHandler(s.historyTracker)
 	if err != nil {
 		fmt.Printf("⚠️  Failed to initialize Rollback Files handler: %v\n", err)
 	} else {
@@ -1746,7 +1750,7 @@ func (s *Server) setupRoutes() {
 
 	// Criar logger para GitHub handler
 	githubLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "github-releases").Logger()
-	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, githubTokenStore, s.kubeManager, &githubLogger)
+	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, githubTokenStore, s.kubeManager, &githubLogger, s.historyTracker)
 
 	// Rotas que precisam de token individual do usuário (usar middleware InjectUserEmail)
 	api.GET("/github/repos", rbacMiddleware.InjectUserEmail(), githubHandler.GetRepos)
@@ -1845,7 +1849,7 @@ func (s *Server) setupRoutes() {
 		teamsGroup.GET("/docker-session", teamsHandler.GetDockerSession)
 		teamsGroup.GET("/docker-status", teamsHandler.DockerStatus)
 
-		broadcastHandler := handlers.NewTeamsBroadcastHandler(&githubLogger)
+		broadcastHandler := handlers.NewTeamsBroadcastHandler(&githubLogger, s.historyTracker)
 		teamsGroup.GET("/broadcast/chats", broadcastHandler.GetChats)
 		teamsGroup.POST("/broadcast/chats/scan", broadcastHandler.ScanChats)
 		teamsGroup.GET("/broadcast/templates", broadcastHandler.ListTemplates)
@@ -1963,7 +1967,7 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/lsp/status", lspHandler.Status)
 		// Fase 9 — Integração K8s
 		k8sEditorLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "code-editor-k8s").Logger()
-		k8sHandler := handlers.NewCodeEditorK8sHandler(codeEditorHandler.ReposBase(), &k8sEditorLogger)
+		k8sHandler := handlers.NewCodeEditorK8sHandler(codeEditorHandler.ReposBase(), &k8sEditorLogger, s.historyTracker)
 		codeEditor.GET("/k8s/contexts", k8sHandler.ListContexts)
 		codeEditor.POST("/repos/:id/k8s/diff", k8sHandler.Diff)
 		codeEditor.POST("/repos/:id/k8s/dry-run", k8sHandler.DryRun)
@@ -2035,7 +2039,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/history/stats", historyHandler.GetHistoryStats)
 	api.GET("/history/cordon-drain", historyHandler.GetCordonDrainHistory) // Endpoint específico para Cordon/Drain
 	api.GET("/history/:id", historyHandler.GetHistoryEntry)
-	api.DELETE("/history", historyHandler.ClearHistory)
+	// Sem DELETE /history: é registro de auditoria; só a retenção automática remove entradas.
 
 	// Notifications - KISS implementation (in-app para ambientes corporativos)
 	notificationHandler := handlers.NewNotificationHandler(s.notificationManager)

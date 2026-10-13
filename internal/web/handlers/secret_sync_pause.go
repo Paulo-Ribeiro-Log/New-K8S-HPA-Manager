@@ -215,7 +215,7 @@ func (h *SecretHandler) PauseSync(c *gin.Context) {
 	}
 
 	if h.historyTracker != nil {
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			Action:   "pause_secret_sync",
 			Resource: fmt.Sprintf("%s/%s", namespace, name),
 			Cluster:  cluster,
@@ -270,7 +270,7 @@ func (h *SecretHandler) ResumeSync(c *gin.Context) {
 	}
 
 	if h.historyTracker != nil {
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			Action:   "resume_secret_sync",
 			Resource: fmt.Sprintf("%s/%s", namespace, name),
 			Cluster:  cluster,

@@ -1,25 +1,58 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	helmservice "k8s-hpa-manager/internal/helm"
+	"k8s-hpa-manager/internal/history"
 	helm "k8s-hpa-manager/internal/pkg/helm"
 )
 
 // HelmHandler serve as the HTTP layer for helm operations.
 type HelmHandler struct {
-	service *helmservice.Service
+	service        *helmservice.Service
+	historyTracker *history.HistoryTracker
 }
 
 // NewHelmHandler builds a new HelmHandler instance.
-func NewHelmHandler(service *helmservice.Service) *HelmHandler {
-	return &HelmHandler{service: service}
+func NewHelmHandler(service *helmservice.Service, ht *history.HistoryTracker) *HelmHandler {
+	return &HelmHandler{service: service, historyTracker: ht}
+}
+
+// logHelm grava install/upgrade/rollback/uninstall no Change History. Dry-run não altera nada e
+// não é registrado. O values não vai para o histórico (pode conter segredo): só tamanho e SHA-256,
+// suficientes para saber se dois deploys usaram o mesmo values.
+func (h *HelmHandler) logHelm(c *gin.Context, cluster string, req helm.HelmActionRequest, start time.Time, err error) {
+	if req.DryRun {
+		return
+	}
+	after := map[string]interface{}{"release": req.ReleaseName, "namespace": req.Namespace}
+	if req.ChartRef != "" {
+		after["chart"] = req.ChartRef
+	}
+	if req.Version != "" {
+		after["version"] = req.Version
+	}
+	if req.TargetRevision > 0 {
+		after["target_revision"] = req.TargetRevision
+	}
+	if req.Force {
+		after["force"] = true
+	}
+	if req.ValuesYAML != "" {
+		sum := sha256.Sum256([]byte(req.ValuesYAML))
+		after["values_sha256"] = hex.EncodeToString(sum[:])
+		after["values_bytes"] = len(req.ValuesYAML)
+	}
+	logOperation(c, h.historyTracker, "helm_"+string(req.Action), req.Namespace+"/"+req.ReleaseName, cluster, nil, after, start, err)
 }
 
 // List returns helm releases for the provided cluster/namespace.
@@ -204,20 +237,19 @@ func (h *HelmHandler) Install(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Execute(
-		c.Request.Context(),
-		cluster,
-		helm.HelmActionRequest{
-			Namespace:   payload.Namespace,
-			ReleaseName: payload.ReleaseName,
-			Action:      helm.ActionInstall,
-			ChartRef:    payload.ChartRef,
-			Version:     payload.Version,
-			ValuesYAML:  payload.ValuesYAML,
-			Force:       payload.Force,
-			DryRun:      payload.DryRun,
-		},
-	)
+	actionReq := helm.HelmActionRequest{
+		Namespace:   payload.Namespace,
+		ReleaseName: payload.ReleaseName,
+		Action:      helm.ActionInstall,
+		ChartRef:    payload.ChartRef,
+		Version:     payload.Version,
+		ValuesYAML:  payload.ValuesYAML,
+		Force:       payload.Force,
+		DryRun:      payload.DryRun,
+	}
+	start := time.Now()
+	resp, err := h.service.Execute(c.Request.Context(), cluster, actionReq)
+	h.logHelm(c, cluster, actionReq, start, err)
 	if err != nil {
 		h.respondInternalError(c, "INSTALL_ERROR", err)
 		return
@@ -249,20 +281,19 @@ func (h *HelmHandler) Upgrade(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Execute(
-		c.Request.Context(),
-		cluster,
-		helm.HelmActionRequest{
-			Namespace:   payload.Namespace,
-			ReleaseName: release,
-			Action:      helm.ActionUpgrade,
-			ChartRef:    payload.ChartRef,
-			Version:     payload.Version,
-			ValuesYAML:  payload.ValuesYAML,
-			Force:       payload.Force,
-			DryRun:      payload.DryRun,
-		},
-	)
+	actionReq := helm.HelmActionRequest{
+		Namespace:   payload.Namespace,
+		ReleaseName: release,
+		Action:      helm.ActionUpgrade,
+		ChartRef:    payload.ChartRef,
+		Version:     payload.Version,
+		ValuesYAML:  payload.ValuesYAML,
+		Force:       payload.Force,
+		DryRun:      payload.DryRun,
+	}
+	start := time.Now()
+	resp, err := h.service.Execute(c.Request.Context(), cluster, actionReq)
+	h.logHelm(c, cluster, actionReq, start, err)
 	if err != nil {
 		h.respondInternalError(c, "UPGRADE_ERROR", err)
 		return
@@ -299,19 +330,18 @@ func (h *HelmHandler) Rollback(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Execute(
-		c.Request.Context(),
-		cluster,
-		helm.HelmActionRequest{
-			Namespace:      payload.Namespace,
-			ReleaseName:    release,
-			Action:         helm.ActionRollback,
-			TargetRevision: payload.TargetRevision,
-			Force:          payload.Force,
-			Wait:           payload.Wait,
-			RecreatePods:   payload.RecreatePods,
-		},
-	)
+	actionReq := helm.HelmActionRequest{
+		Namespace:      payload.Namespace,
+		ReleaseName:    release,
+		Action:         helm.ActionRollback,
+		TargetRevision: payload.TargetRevision,
+		Force:          payload.Force,
+		Wait:           payload.Wait,
+		RecreatePods:   payload.RecreatePods,
+	}
+	start := time.Now()
+	resp, err := h.service.Execute(c.Request.Context(), cluster, actionReq)
+	h.logHelm(c, cluster, actionReq, start, err)
 	if err != nil {
 		h.respondInternalError(c, "ROLLBACK_ERROR", err)
 		return
@@ -339,15 +369,14 @@ func (h *HelmHandler) Uninstall(c *gin.Context) {
 
 	namespace := strings.TrimSpace(c.Query("namespace"))
 
-	resp, err := h.service.Execute(
-		c.Request.Context(),
-		cluster,
-		helm.HelmActionRequest{
-			Namespace:   namespace,
-			ReleaseName: release,
-			Action:      helm.ActionUninstall,
-		},
-	)
+	actionReq := helm.HelmActionRequest{
+		Namespace:   namespace,
+		ReleaseName: release,
+		Action:      helm.ActionUninstall,
+	}
+	start := time.Now()
+	resp, err := h.service.Execute(c.Request.Context(), cluster, actionReq)
+	h.logHelm(c, cluster, actionReq, start, err)
 	if err != nil {
 		h.respondInternalError(c, "UNINSTALL_ERROR", err)
 		return

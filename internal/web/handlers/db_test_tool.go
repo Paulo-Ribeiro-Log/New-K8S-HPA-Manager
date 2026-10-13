@@ -2809,7 +2809,7 @@ func (h *DBTestHandler) logHistory(req RunDBTestRequest, userInfo history.UserIn
 		resource = req.Engine + " (connection string)"
 	}
 
-	h.historyTracker.Log(history.HistoryEntry{
+	h.historyTracker.Log(context.Background(), history.HistoryEntry{
 		UserEmail: userInfo.Email,
 		UserName:  userInfo.Name,
 		Action:    "db_test",

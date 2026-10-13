@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"k8s-hpa-manager/internal/history"
@@ -23,6 +24,28 @@ func checkForbidden(c *gin.Context, err error) bool {
 		return true
 	}
 	return false
+}
+
+// logOperation grava uma operação no Change History: autor vem do JWT da requisição, status e
+// mensagem de erro derivam de err, duração conta desde start. tracker nil não grava nada.
+func logOperation(c *gin.Context, tracker *history.HistoryTracker, action, resource, cluster string, before, after map[string]interface{}, start time.Time, err error) {
+	if tracker == nil {
+		return
+	}
+	status, msg := history.StatusSuccess, ""
+	if err != nil {
+		status, msg = history.StatusFailed, err.Error()
+	}
+	_ = tracker.Log(c, history.HistoryEntry{
+		Action:   action,
+		Resource: resource,
+		Cluster:  cluster,
+		Before:   before,
+		After:    after,
+		Status:   status,
+		ErrorMsg: msg,
+		Duration: time.Since(start).Milliseconds(),
+	})
 }
 
 // GetUserInfoForHistory obtém informações do usuário para auditoria

@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/storage"
 )
 
@@ -30,18 +31,20 @@ type GitHubReleasesHandler struct {
 	kubeConfigManager  interface {
 		GetClient(cluster string) (kubernetes.Interface, error)
 	}
-	logger *zerolog.Logger
+	logger         *zerolog.Logger
+	historyTracker *history.HistoryTracker
 }
 
 // NewGitHubReleasesHandler cria novo handler
 func NewGitHubReleasesHandler(registry *storage.DeploymentRegistry, tokenStore *storage.GitHubTokenStore, kubeManager interface {
 	GetClient(cluster string) (kubernetes.Interface, error)
-}, logger *zerolog.Logger) *GitHubReleasesHandler {
+}, logger *zerolog.Logger, ht *history.HistoryTracker) *GitHubReleasesHandler {
 	return &GitHubReleasesHandler{
 		deploymentRegistry: registry,
 		tokenStore:         tokenStore,
 		kubeConfigManager:  kubeManager,
 		logger:             logger,
+		historyTracker:     ht,
 	}
 }
 
@@ -1638,7 +1641,10 @@ func (h *GitHubReleasesHandler) CommitFile(c *gin.Context) {
 		SHA:     existingSHA,
 	}
 
+	commitStart := time.Now()
 	result, _, err := client.Repositories.CreateFile(ctx, req.Owner, req.Repo, filePath, opts)
+	logOperation(c, h.historyTracker, "github_commit_file", req.Owner+"/"+req.Repo+"/"+filePath, "", nil,
+		map[string]interface{}{"branch": req.Branch, "message": req.Message, "bytes": len(req.Content), "created": existingSHA == nil}, commitStart, err)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("erro ao commitar: %v", err)})
 		return

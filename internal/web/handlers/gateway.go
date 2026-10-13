@@ -311,7 +311,7 @@ func (h *GatewayHandler) Create(c *gin.Context) {
 	}
 
 	if !req.DryRun && h.historyTracker != nil {
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			Action:   "create_gateway",
 			Resource: fmt.Sprintf("%s/%s", namespace, kind),
 			Cluster:  cluster,
@@ -361,7 +361,7 @@ func (h *GatewayHandler) Apply(c *gin.Context) {
 	}
 
 	if !req.DryRun && h.historyTracker != nil {
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			Action:   "apply_gateway",
 			Resource: fmt.Sprintf("%s/%s", namespace, name),
 			Cluster:  cluster,
@@ -405,7 +405,7 @@ func (h *GatewayHandler) Delete(c *gin.Context) {
 	}
 
 	if h.historyTracker != nil {
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			Action:   "delete_gateway",
 			Resource: fmt.Sprintf("%s/%s", namespace, name),
 			Cluster:  cluster,

@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"k8s-hpa-manager/internal/history"
@@ -22,10 +23,26 @@ func NewHistoryHandler(tracker *history.HistoryTracker) *HistoryHandler {
 	}
 }
 
-// GetHistory retorna histórico com filtros opcionais
-// GET /api/v1/history?action=update_hpa&cluster=akspriv-prod&start_date=2025-01-01
+// parseHistoryDate lê AAAA-MM-DD no fuso local (o dia do usuário, não o UTC).
+func parseHistoryDate(v string) time.Time {
+	if v == "" {
+		return time.Time{}
+	}
+	t, err := time.ParseInLocation("2006-01-02", v, time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// GetHistory retorna o histórico filtrado e paginado (mais recentes primeiro).
+// GET /api/v1/history?action=&cluster=&resource=&status=&user_email=&session_name=&start_date=&end_date=&limit=&offset=
 func (h *HistoryHandler) GetHistory(c *gin.Context) {
-	// Parse filtros da query string
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	offset, _ := strconv.Atoi(c.Query("offset"))
 	filter := history.HistoryFilter{
 		Action:      c.Query("action"),
 		Cluster:     c.Query("cluster"),
@@ -33,36 +50,23 @@ func (h *HistoryHandler) GetHistory(c *gin.Context) {
 		Status:      c.Query("status"),
 		UserEmail:   c.Query("user_email"),
 		SessionName: c.Query("session_name"),
+		StartDate:   parseHistoryDate(c.Query("start_date")),
+		EndDate:     parseHistoryDate(c.Query("end_date")),
+		Limit:       limit,
+		Offset:      offset,
 	}
 
-	// Parse datas
-	if startDateStr := c.Query("start_date"); startDateStr != "" {
-		if t, err := time.Parse("2006-01-02", startDateStr); err == nil {
-			filter.StartDate = t
-		}
+	entries, total, err := h.tracker.Query(filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-
-	if endDateStr := c.Query("end_date"); endDateStr != "" {
-		if t, err := time.Parse("2006-01-02", endDateStr); err == nil {
-			filter.EndDate = t // Não adiciona 24h - a comparação será feita apenas por data
-		}
-	}
-
-	// Buscar histórico filtrado
-	var entries []history.HistoryEntry
-	if filter.Action == "" && filter.Cluster == "" && filter.Resource == "" &&
-		filter.Status == "" && filter.UserEmail == "" && filter.SessionName == "" &&
-		filter.StartDate.IsZero() && filter.EndDate.IsZero() {
-		// Sem filtros, retornar todos
-		entries = h.tracker.GetAll()
-	} else {
-		// Com filtros
-		entries = h.tracker.GetFiltered(filter)
-	}
-
 	c.JSON(http.StatusOK, gin.H{
-		"entries": entries,
-		"count":   len(entries),
+		"entries":  entries,
+		"count":    len(entries),
+		"total":    total,
+		"offset":   offset,
+		"has_more": offset+len(entries) < total,
 	})
 }
 
@@ -80,70 +84,42 @@ func (h *HistoryHandler) GetHistoryEntry(c *gin.Context) {
 	c.JSON(http.StatusOK, entry)
 }
 
-// ClearHistory limpa todo o histórico
-// DELETE /api/v1/history
-func (h *HistoryHandler) ClearHistory(c *gin.Context) {
-	if err := h.tracker.Clear(); err != nil {
+// Não existe endpoint para apagar o histórico: é um registro de auditoria. Entradas saem só pela
+// retenção automática (history.RetentionDays).
+
+// GetHistoryStats retorna estatísticas do histórico inteiro (status, ação, cluster, usuário)
+// GET /api/v1/history/stats
+func (h *HistoryHandler) GetHistoryStats(c *gin.Context) {
+	stats, err := h.tracker.Stats()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "History cleared successfully"})
-}
-
-// GetHistoryStats retorna estatísticas do histórico
-// GET /api/v1/history/stats
-func (h *HistoryHandler) GetHistoryStats(c *gin.Context) {
-	entries := h.tracker.GetAll()
-
-	stats := map[string]interface{}{
-		"total":      len(entries),
-		"success":    0,
-		"failed":     0,
-		"by_action":  make(map[string]int),
-		"by_cluster": make(map[string]int),
-	}
-
-	for _, entry := range entries {
-		// Count by status
-		if entry.Status == history.StatusSuccess {
-			stats["success"] = stats["success"].(int) + 1
-		} else if entry.Status == history.StatusFailed {
-			stats["failed"] = stats["failed"].(int) + 1
-		}
-
-		// Count by action
-		byAction := stats["by_action"].(map[string]int)
-		byAction[entry.Action]++
-
-		// Count by cluster
-		byCluster := stats["by_cluster"].(map[string]int)
-		byCluster[entry.Cluster]++
-	}
-
-	c.JSON(http.StatusOK, stats)
+	c.JSON(http.StatusOK, gin.H{
+		"total":          stats.Total,
+		"success":        stats.Success,
+		"failed":         stats.Failed,
+		"by_action":      stats.ByAction,
+		"by_cluster":     stats.ByCluster,
+		"by_user":        stats.ByUser,
+		"retention_days": history.RetentionDays,
+	})
 }
 
 // GetCordonDrainHistory retorna histórico de operações Cordon/Drain com estatísticas
 // GET /api/v1/history/cordon-drain?cluster=prod&start_date=2025-01-01
 func (h *HistoryHandler) GetCordonDrainHistory(c *gin.Context) {
 	// Parse filtros da query string
-	cluster := c.Query("cluster")
-
-	var startDate, endDate time.Time
-	if startDateStr := c.Query("start_date"); startDateStr != "" {
-		if t, err := time.Parse("2006-01-02", startDateStr); err == nil {
-			startDate = t
-		}
+	allEntries, _, err := h.tracker.Query(history.HistoryFilter{
+		Actions:   []string{history.ActionCordonNode, history.ActionDrainNode, history.ActionNodePoolSequence},
+		Cluster:   c.Query("cluster"),
+		StartDate: parseHistoryDate(c.Query("start_date")),
+		EndDate:   parseHistoryDate(c.Query("end_date")),
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	if endDateStr := c.Query("end_date"); endDateStr != "" {
-		if t, err := time.Parse("2006-01-02", endDateStr); err == nil {
-			endDate = t.Add(24 * time.Hour)
-		}
-	}
-
-	// Buscar todas as entradas do histórico
-	allEntries := h.tracker.GetAll()
 
 	// Estrutura de resposta
 	response := gin.H{
@@ -173,17 +149,6 @@ func (h *HistoryHandler) GetCordonDrainHistory(c *gin.Context) {
 
 	// Filtrar e processar entradas
 	for _, entry := range allEntries {
-		// Aplicar filtros
-		if cluster != "" && entry.Cluster != cluster {
-			continue
-		}
-		if !startDate.IsZero() && entry.Timestamp.Before(startDate) {
-			continue
-		}
-		if !endDate.IsZero() && entry.Timestamp.After(endDate) {
-			continue
-		}
-
 		// Classificar por tipo de operação
 		switch entry.Action {
 		case history.ActionCordonNode:

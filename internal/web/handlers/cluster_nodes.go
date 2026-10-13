@@ -54,7 +54,7 @@ func (h *ClusterNodeHandler) recordNode(c *gin.Context, node, action, status str
 		return
 	}
 	entry := CreateHistoryEntry(c, action, "node/"+node, c.Param("cluster"), status, before, after, time.Since(start).Milliseconds(), errMsg)
-	if err := h.historyTracker.Log(entry); err != nil {
+	if err := h.historyTracker.Log(c, entry); err != nil {
 		log.Warn().Err(err).Str("action", action).Msg("falha ao registrar histórico")
 	}
 }

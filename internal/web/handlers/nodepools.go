@@ -153,7 +153,12 @@ func (h *NodePoolHandler) Abort(c *gin.Context) {
 	nodePoolName := c.Param("name")
 
 	provider := h.kubeManager.GetNodeGroupProvider(cluster)
-	if err := provider.AbortOperation(c.Request.Context(), cluster, nodePoolName); err != nil {
+	start := time.Now()
+	err := provider.AbortOperation(c.Request.Context(), cluster, nodePoolName)
+	if !errors.Is(err, cloudprovider.ErrNotSupported) {
+		logOperation(c, h.historyTracker, history.ActionAbortNodePool, c.Param("resource_group")+"/"+nodePoolName, cluster, nil, nil, start, err)
+	}
+	if err != nil {
 		if errors.Is(err, cloudprovider.ErrNotSupported) {
 			c.JSON(http.StatusNotImplemented, gin.H{
 				"success": false,
@@ -413,6 +418,8 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	// Se configuração de Cordon/Drain foi fornecida, executar ANTES de aplicar mudanças
 	if req.CordonDrainConfig != nil {
 		cfg := req.CordonDrainConfig
+		cdStart := time.Now()
+		cdResource := resourceGroup + "/" + nodePoolName
 
 		// Obter client Kubernetes para executar cordon/drain
 		kubeManager, err := config.NewKubeConfigManager("")
@@ -508,6 +515,8 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 			for i, nodeName := range nodes {
 				if err := k8sClient.CordonNode(ctx, nodeName); err != nil {
 					reporter.SendError("cordon", fmt.Sprintf("Failed to cordon node %s: %v", nodeName, err))
+					logOperation(c, h.historyTracker, history.ActionCordonNode, cdResource, cluster, nil,
+						map[string]interface{}{"nodes": cordonedNodes, "failed_node": nodeName, "rolled_back": true}, cdStart, err)
 
 					// ROLLBACK: Uncordon nodes já processados
 					rollbackCordon()
@@ -529,6 +538,8 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 			}
 
 			reporter.SendCordonCompleted(totalNodes)
+			logOperation(c, h.historyTracker, history.ActionCordonNode, cdResource, cluster,
+				map[string]interface{}{"schedulable": true}, map[string]interface{}{"schedulable": false, "nodes": nodes}, cdStart, nil)
 		}
 
 		// Fase DRAIN
@@ -648,6 +659,8 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 
 				if err := k8sClient.DrainNode(ctx, nodeName, drainOpts); err != nil {
 					reporter.SendError("drain", fmt.Sprintf("Failed to drain node %s: %v", nodeName, err))
+					logOperation(c, h.historyTracker, history.ActionDrainNode, cdResource, cluster, nil,
+						map[string]interface{}{"nodes": nodes, "failed_node": nodeName, "pods_evicted": totalPodsEvicted, "rolled_back": true}, cdStart, err)
 
 					// ROLLBACK: Uncordon todos os nodes em caso de falha no drain
 					rollbackCordon()
@@ -670,6 +683,8 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 			}
 
 			reporter.SendDrainCompleted(totalNodes, totalPodsEvicted)
+			logOperation(c, h.historyTracker, history.ActionDrainNode, cdResource, cluster, nil,
+				map[string]interface{}{"nodes": nodes, "pods_evicted": totalPodsEvicted}, cdStart, nil)
 		}
 
 		// Enviar evento de início da operação Azure
@@ -682,7 +697,25 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		reporter.SendAzureStarted()
 	}
 
+	// Estado anterior para o Change History (cache de node pools; sem cache, 1 listagem na nuvem)
+	applyStart := time.Now()
+	var poolBefore map[string]interface{}
+	if pools, err := h.getNodePoolsCached(c.Request.Context(), cluster, false); err == nil {
+		for _, p := range pools {
+			if p.Name == nodePoolName {
+				poolBefore = nodePoolHistoryState(p.NodeCount, p.MinNodeCount, p.MaxNodeCount, p.AutoscalingEnabled)
+				break
+			}
+		}
+	}
+	poolResource := resourceGroup + "/" + nodePoolName
+	poolAfter := nodePoolHistoryState(op.NodeCount, op.MinNodeCount, op.MaxNodeCount, op.AutoscalingEnabled)
+	if req.CordonDrainConfig != nil {
+		poolAfter["cordon_drain"] = true
+	}
+
 	if err := applyOpViaProvider(c.Request.Context(), provider, cluster, op); err != nil {
+		logOperation(c, h.historyTracker, history.ActionApplyNodePool, poolResource, cluster, poolBefore, poolAfter, applyStart, err)
 		if reporter != nil {
 			reporter.SendError("azure", fmt.Sprintf("Failed to update node pool: %v", err))
 		}
@@ -695,6 +728,8 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		})
 		return
 	}
+
+	logOperation(c, h.historyTracker, history.ActionApplyNodePool, poolResource, cluster, poolBefore, poolAfter, applyStart, nil)
 
 	if reporter != nil {
 		reporter.SendAzureCompleted()
@@ -956,7 +991,7 @@ func (h *NodePoolHandler) ExecuteSequence(c *gin.Context) {
 	progressCh := h.progressManager.CreateSession(sessionID)
 
 	// Executar sequenciamento em goroutine para não bloquear
-	go h.executeSequenceAsync(client, origin, dest, req, sessionID, progressCh)
+	go h.executeSequenceAsync(history.DetachedUserContext(c), client, origin, dest, req, sessionID, progressCh)
 
 	// Retornar sucesso imediato (operação assíncrona)
 	c.JSON(202, gin.H{
@@ -1052,7 +1087,7 @@ func (h *NodePoolHandler) SequenceProgress(c *gin.Context) {
 }
 
 // executeSequenceAsync executa o sequenciamento de forma assíncrona
-func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest NodePoolSequenceConfig, req SequenceExecuteRequest, sessionID string, progressCh chan ProgressEvent) {
+func (h *NodePoolHandler) executeSequenceAsync(userCtx context.Context, client interface{}, origin, dest NodePoolSequenceConfig, req SequenceExecuteRequest, sessionID string, progressCh chan ProgressEvent) {
 	ctx := context.Background()
 	startTime := time.Now()
 
@@ -1165,7 +1200,7 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 				fmt.Printf(" ❌ FAILED: %v\n", err)
 				// Log failure no audit
 				if h.historyTracker != nil {
-					h.historyTracker.Log(history.HistoryEntry{
+					h.historyTracker.Log(userCtx, history.HistoryEntry{
 						Action:   history.ActionCordonNode,
 						Resource: nodeName,
 						Cluster:  req.Cluster,
@@ -1180,7 +1215,7 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 
 			// Log success no audit (por node)
 			if h.historyTracker != nil {
-				h.historyTracker.Log(history.HistoryEntry{
+				h.historyTracker.Log(userCtx, history.HistoryEntry{
 					Action:   history.ActionCordonNode,
 					Resource: fmt.Sprintf("%s/%s", origin.Name, nodeName),
 					Cluster:  req.Cluster,
@@ -1257,7 +1292,7 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 				fmt.Printf("   ❌ FAILED: %v\n", err)
 				// Log failure no audit
 				if h.historyTracker != nil {
-					h.historyTracker.Log(history.HistoryEntry{
+					h.historyTracker.Log(userCtx, history.HistoryEntry{
 						Action:   history.ActionDrainNode,
 						Resource: fmt.Sprintf("%s/%s", origin.Name, nodeName),
 						Cluster:  req.Cluster,
@@ -1285,7 +1320,7 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 
 			// Log success no audit (por node)
 			if h.historyTracker != nil {
-				h.historyTracker.Log(history.HistoryEntry{
+				h.historyTracker.Log(userCtx, history.HistoryEntry{
 					Action:   history.ActionDrainNode,
 					Resource: fmt.Sprintf("%s/%s", origin.Name, nodeName),
 					Cluster:  req.Cluster,
@@ -1347,7 +1382,7 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 
 	// Log da sequência completa no audit
 	if h.historyTracker != nil {
-		h.historyTracker.Log(history.HistoryEntry{
+		h.historyTracker.Log(userCtx, history.HistoryEntry{
 			Action:   history.ActionNodePoolSequence,
 			Resource: fmt.Sprintf("%s → %s", origin.Name, dest.Name),
 			Cluster:  req.Cluster,
@@ -2273,4 +2308,14 @@ func (h *NodePoolHandler) GetNodeDetails(c *gin.Context) {
 		"success": true,
 		"data":    details,
 	})
+}
+
+// nodePoolHistoryState é o recorte de um node pool gravado no Change History (antes/depois).
+func nodePoolHistoryState(count, min, max int32, autoscaling bool) map[string]interface{} {
+	return map[string]interface{}{
+		"node_count":          count,
+		"min_node_count":      min,
+		"max_node_count":      max,
+		"autoscaling_enabled": autoscaling,
+	}
 }
