@@ -3,6 +3,14 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Change History em branco e navegação lenta entre abas (Outubro 2026)
+
+**Change History → página em branco.** Entradas antigas do histórico têm `cluster` vazio (106 de 2.203 na máquina do usuário). O filtro de Cluster do `HistoryViewer` gerava `<SelectItem value="">`, que o Radix rejeita com exceção; sem error boundary, o React desmontava a SPA inteira. Correção: valores vazios fora dos filtros de Ação/Cluster, `entry.action`/`cluster`/`duration_ms` tolerantes a vazio, `fetch` direto trocado por `apiClient` (refresh de JWT), modal envolto em `ErrorBoundary` no `Index.tsx` e renderização em blocos de 200 ("Mostrar mais"), porque os milhares de entradas eram renderizados de uma vez.
+
+**Navegação lenta.** `handleTabChange` fazia `await checkVPN()` **antes** de `setActiveTab`. O `/api/v1/vpn/status` faz dial TCP ao API server do cluster, sem cache (~2 s na VPN, até 8 s de timeout), então cada clique em aba esperava esse tempo. Agora a aba troca na hora e a checagem roda em segundo plano, só atualizando o banner.
+
+**Voltar do browser saía da aplicação.** As abas eram só estado do React (`activeTab`), sem entrada no histórico; voltar/avançar (Alt+←, botões do mouse) levava à página anterior ao app. Agora `handleTabChange` faz `navigate("/", { state: { tab } })` e o `activeTab` segue o `location.state` (sem state = dashboard): cada troca de aba vira uma entrada do histórico. Efeito colateral: um reload (F5) mantém a aba em que se estava.
+
 ### Dynatrace — identidade passa a ser o e-mail do Perfil SSO (não dava para alterar o e-mail) (Outubro 2026)
 
 **Sintoma:** não dava para alterar o e-mail do Dynatrace; ele não usava o e-mail do Perfil SSO do usuário.
