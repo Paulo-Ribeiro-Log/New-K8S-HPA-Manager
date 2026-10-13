@@ -326,7 +326,7 @@ func (h *ServiceHandler) Apply(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

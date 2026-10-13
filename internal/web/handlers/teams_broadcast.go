@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"mime"
 	"net/http"
 	"os"
@@ -20,6 +22,8 @@ import (
 
 	"k8s-hpa-manager/internal/teams"
 	"k8s-hpa-manager/internal/web/sse"
+
+	"k8s-hpa-manager/internal/history"
 )
 
 type BroadcastChat struct {
@@ -85,16 +89,17 @@ type FetchMessageRequest struct {
 }
 
 type TeamsBroadcastHandler struct {
-	logger      *zerolog.Logger
-	tracker     *sse.ProgressTracker
-	scanning    bool
-	scanMu      sync.Mutex
-	sending     bool
-	sendMu      sync.Mutex
-	fetchingMsg bool
-	fetchMsgMu  sync.Mutex
-	deleting    bool
-	deleteMu    sync.Mutex
+	logger         *zerolog.Logger
+	tracker        *sse.ProgressTracker
+	historyTracker *history.HistoryTracker
+	scanning       bool
+	scanMu         sync.Mutex
+	sending        bool
+	sendMu         sync.Mutex
+	fetchingMsg    bool
+	fetchMsgMu     sync.Mutex
+	deleting       bool
+	deleteMu       sync.Mutex
 }
 
 // DeleteMessagesTarget identifica uma mensagem já enviada a apagar — thread_id + o message_id
@@ -109,11 +114,34 @@ type DeleteMessagesRequest struct {
 	Targets []DeleteMessagesTarget `json:"targets"`
 }
 
-func NewTeamsBroadcastHandler(logger *zerolog.Logger) *TeamsBroadcastHandler {
+func NewTeamsBroadcastHandler(logger *zerolog.Logger, ht *history.HistoryTracker) *TeamsBroadcastHandler {
 	return &TeamsBroadcastHandler{
-		logger:  logger,
-		tracker: GetProgressTracker(),
+		logger:         logger,
+		tracker:        GetProgressTracker(),
+		historyTracker: ht,
 	}
+}
+
+// logBroadcast grava no Change History um envio/exclusão em massa no Teams: quantos chats, quantos
+// deram certo — sem o texto da mensagem nem os IDs dos chats (dados pessoais de conversas).
+func (h *TeamsBroadcastHandler) logBroadcast(ctx context.Context, action string, total, ok int, start time.Time, err error) {
+	status, msg := history.StatusSuccess, ""
+	switch {
+	case err != nil:
+		status, msg = history.StatusFailed, err.Error()
+	case ok == 0 && total > 0:
+		status = history.StatusFailed
+	case ok < total:
+		status = history.StatusPartial
+	}
+	_ = h.historyTracker.Log(ctx, history.HistoryEntry{
+		Action:   action,
+		Resource: fmt.Sprintf("%d chat(s)", total),
+		After:    map[string]interface{}{"total": total, "ok": ok, "failed": total - ok},
+		Status:   status,
+		ErrorMsg: msg,
+		Duration: time.Since(start).Milliseconds(),
+	})
 }
 
 // normalizeSearch remove acentos e converte para minúsculas para busca tolerante.
@@ -370,7 +398,11 @@ func (h *TeamsBroadcastHandler) DeleteMessages(c *gin.Context) {
 
 	h.logger.Info().Int("targets", len(targets)).Msg("[Broadcast] Apagando mensagens...")
 
+	deleteStart := time.Now()
 	results, err := teams.DeleteMessages(sessionDir, targets, h.logger)
+	if err != nil {
+		h.logBroadcast(c, "teams_broadcast_delete", len(targets), 0, deleteStart, err)
+	}
 	if err != nil {
 		h.logger.Error().Err(err).Msg("[Broadcast] Erro ao apagar mensagens")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -383,6 +415,7 @@ func (h *TeamsBroadcastHandler) DeleteMessages(c *gin.Context) {
 			deleted++
 		}
 	}
+	h.logBroadcast(c, "teams_broadcast_delete", len(targets), deleted, deleteStart, nil)
 	c.JSON(http.StatusOK, gin.H{"deleted": deleted, "failed": len(results) - deleted, "results": results})
 }
 
@@ -539,6 +572,8 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 		Progress: 0,
 	})
 
+	userCtx := history.DetachedUserContext(c)
+	sendStart := time.Now()
 	go func() {
 		defer func() {
 			h.sendMu.Lock()
@@ -576,6 +611,7 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 
 		results, err := teams.SendBatch(teamsSessionDir, req.ThreadIDs, htmlContent, onProgress, h.logger)
 		if err != nil {
+			h.logBroadcast(userCtx, "teams_broadcast_send", total, sent, sendStart, err)
 			h.logger.Error().Err(err).Msg("[Broadcast] Erro no envio")
 			h.tracker.SendToClient(sessionID, sse.ProgressEvent{
 				ID:      sessionID,
@@ -596,6 +632,8 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 				failed++
 			}
 		}
+
+		h.logBroadcast(userCtx, "teams_broadcast_send", total, sent, sendStart, nil)
 
 		raw, _ := json.Marshal(gin.H{"sent": sent, "failed": failed, "results": results})
 		h.tracker.SendToClient(sessionID, sse.ProgressEvent{

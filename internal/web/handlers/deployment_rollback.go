@@ -195,7 +195,7 @@ func (h *DeploymentRollbackHandler) Rollback(c *gin.Context) {
 		}
 		if h.historyTracker != nil {
 			entry := CreateHistoryEntry(c, "rollback_deployment", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
-			_ = h.historyTracker.Log(entry)
+			_ = h.historyTracker.Log(c, entry)
 		}
 		c.JSON(status, errorResponse(code, err.Error()))
 		return
@@ -212,7 +212,7 @@ func (h *DeploymentRollbackHandler) Rollback(c *gin.Context) {
 			"images":         deploymentImages(updated),
 		}
 		entry := CreateHistoryEntry(c, "rollback_deployment", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", beforeMap, afterMap, time.Since(start).Milliseconds(), "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	sessionID := fmt.Sprintf("deploy-rollback-%s", uuid.New().String())
@@ -292,7 +292,7 @@ func (h *DeploymentRollbackHandler) SetImage(c *gin.Context) {
 		h.inProgress.Delete(lockKey)
 		if h.historyTracker != nil {
 			entry := CreateHistoryEntry(c, "rollback_deployment_image", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
-			_ = h.historyTracker.Log(entry)
+			_ = h.historyTracker.Log(c, entry)
 		}
 		c.JSON(http.StatusInternalServerError, errorResponse("SET_IMAGE_ERROR", err.Error()))
 		return
@@ -308,7 +308,7 @@ func (h *DeploymentRollbackHandler) SetImage(c *gin.Context) {
 			"reason": req.Reason,
 		}
 		entry := CreateHistoryEntry(c, "rollback_deployment_image", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", beforeMap, afterMap, time.Since(start).Milliseconds(), "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	sessionID := fmt.Sprintf("deploy-rollback-%s", uuid.New().String())
@@ -394,7 +394,7 @@ func (h *DeploymentRollbackHandler) ApplyManifest(c *gin.Context) {
 		h.inProgress.Delete(lockKey)
 		if h.historyTracker != nil {
 			entry := CreateHistoryEntry(c, "rollback_deployment_manifest", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
-			_ = h.historyTracker.Log(entry)
+			_ = h.historyTracker.Log(c, entry)
 		}
 		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
 		return
@@ -410,7 +410,7 @@ func (h *DeploymentRollbackHandler) ApplyManifest(c *gin.Context) {
 			"reason": req.Reason,
 		}
 		entry := CreateHistoryEntry(c, "rollback_deployment_manifest", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", beforeMap, afterMap, time.Since(start).Milliseconds(), "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	sessionID := fmt.Sprintf("deploy-rollback-%s", uuid.New().String())
@@ -515,7 +515,7 @@ func (h *DeploymentRollbackHandler) HelmRollbackWithBypass(c *gin.Context) {
 	if err != nil {
 		if h.historyTracker != nil {
 			entry := CreateHistoryEntry(c, "rollback_deployment_helm", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
-			_ = h.historyTracker.Log(entry)
+			_ = h.historyTracker.Log(c, entry)
 		}
 		c.JSON(http.StatusInternalServerError, errorResponse("HELM_ROLLBACK_ERROR", err.Error()))
 		return
@@ -528,7 +528,7 @@ func (h *DeploymentRollbackHandler) HelmRollbackWithBypass(c *gin.Context) {
 			"reason":         req.Reason,
 		}
 		entry := CreateHistoryEntry(c, "rollback_deployment_helm", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", nil, afterMap, time.Since(start).Milliseconds(), "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -632,7 +632,7 @@ func (h *DeploymentRollbackHandler) HelmUpgradeWithBypass(c *gin.Context) {
 	if err != nil {
 		if h.historyTracker != nil {
 			entry := CreateHistoryEntry(c, "rollback_deployment_helm_values", fmt.Sprintf("%s/%s", namespace, name), cluster, "failed", nil, nil, time.Since(start).Milliseconds(), err.Error())
-			_ = h.historyTracker.Log(entry)
+			_ = h.historyTracker.Log(c, entry)
 		}
 		c.JSON(http.StatusInternalServerError, errorResponse("HELM_UPGRADE_ERROR", err.Error()))
 		return
@@ -644,7 +644,7 @@ func (h *DeploymentRollbackHandler) HelmUpgradeWithBypass(c *gin.Context) {
 			"reason":  req.Reason,
 		}
 		entry := CreateHistoryEntry(c, "rollback_deployment_helm_values", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", nil, afterMap, time.Since(start).Milliseconds(), "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

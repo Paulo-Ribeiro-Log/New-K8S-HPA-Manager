@@ -332,6 +332,7 @@ func (h *VMSFTPHandler) VMSFTPRenameSSM(c *gin.Context) {
 		})
 		return
 	}
+	h.logAction(c, "vm-sftp-rename-ssm", c.Param("instanceId"), fmt.Sprintf("profile=%s region=%s", req.Profile, req.Region), "success", map[string]interface{}{"from": req.OldPath, "to": req.NewPath}, "")
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 

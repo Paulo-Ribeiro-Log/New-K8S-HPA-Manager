@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -25,13 +25,13 @@ import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import {
   History,
   RefreshCw,
-  Trash2,
   Download,
   ChevronDown,
   ChevronRight,
   Calendar,
   Clock,
   Server,
+  User,
   Activity,
   CheckCircle2,
   XCircle,
@@ -46,15 +46,23 @@ import { apiClient } from "@/lib/api/client";
 interface HistoryEntry {
   id: string;
   timestamp: string;
+  user_email?: string;
+  user_name?: string;
   action: string;
   resource: string;
   cluster: string;
-  before: Record<string, any>;
-  after: Record<string, any>;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
   status: string;
   error_msg?: string;
   duration_ms: number;
   session_name?: string;
+}
+
+interface HistoryPage {
+  entries: HistoryEntry[] | null;
+  total: number;
+  has_more: boolean;
 }
 
 interface HistoryStats {
@@ -63,6 +71,8 @@ interface HistoryStats {
   failed: number;
   by_action: Record<string, number>;
   by_cluster: Record<string, number>;
+  by_user: Record<string, number>;
+  retention_days?: number;
 }
 
 interface HistoryViewerProps {
@@ -70,19 +80,62 @@ interface HistoryViewerProps {
   onOpenChange: (open: boolean) => void;
 }
 
-// Entradas renderizadas por vez — o histórico passa de milhares e o diff de cada uma é DOM pesado
+// Entradas por página — a paginação é no servidor (SQLite); o diff de cada entrada é DOM pesado.
 const PAGE_SIZE = 200;
+
+// ── Diff por chave ─────────────────────────────────────────────────────────────
+// Antes comparava o JSON linha a linha pela posição: uma chave a mais no meio desalinhava todo o
+// resto. Agora achata before/after em caminhos ("spec.replicas") e compara chave a chave.
+type DiffRow = { path: string; kind: "added" | "removed" | "changed"; before?: string; after?: string };
+
+function flatten(value: unknown, prefix: string, out: Record<string, string>) {
+  if (value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0) {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) flatten(v, prefix ? `${prefix}.${k}` : k, out);
+    return;
+  }
+  out[prefix || "(valor)"] = JSON.stringify(value);
+}
+
+function diffEntries(before: Record<string, unknown> | null, after: Record<string, unknown> | null): DiffRow[] {
+  const b: Record<string, string> = {};
+  const a: Record<string, string> = {};
+  if (before) flatten(before, "", b);
+  if (after) flatten(after, "", a);
+  const rows: DiffRow[] = [];
+  for (const path of Array.from(new Set([...Object.keys(b), ...Object.keys(a)])).sort()) {
+    if (!(path in a)) rows.push({ path, kind: "removed", before: b[path] });
+    else if (!(path in b)) rows.push({ path, kind: "added", after: a[path] });
+    else if (a[path] !== b[path]) rows.push({ path, kind: "changed", before: b[path], after: a[path] });
+  }
+  return rows;
+}
+
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// Célula de CSV sem injeção de fórmula: Excel/LibreOffice executam células que começam com
+// = + - @ (ou tab/CR) — prefixa com aspa simples para virarem texto.
+function csvCell(value: unknown): string {
+  let s = value === null || value === undefined ? "" : String(value);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return `"${s.replace(/"/g, '""')}"`;
+}
 
 export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [stats, setStats] = useState<HistoryStats | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  // Descarta respostas antigas quando o filtro muda no meio de uma busca
+  const requestSeq = useRef(0);
 
   // Filtros
   const [filterAction, setFilterAction] = useState<string>("all");
   const [filterCluster, setFilterCluster] = useState<string>("all");
+  const [filterUser, setFilterUser] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterResource, setFilterResource] = useState<string>("");
   const [filterStartDate, setFilterStartDate] = useState<Date | undefined>(undefined);
@@ -98,38 +151,46 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
   useEffect(() => {
     if (open) {
       const timer = setTimeout(() => {
-        fetchHistory();
+        fetchHistory(0);
       }, 300); // Debounce de 300ms para evitar muitas requisições
       return () => clearTimeout(timer);
     }
-  }, [open, filterAction, filterCluster, filterStatus, filterResource, filterStartDate]);
+  }, [open, filterAction, filterCluster, filterUser, filterStatus, filterResource, filterStartDate]);
 
-  const fetchHistory = async () => {
-    setLoading(true);
+  const buildParams = (offset: number, limit: number) => {
+    const params = new URLSearchParams();
+    if (filterAction !== "all") params.append("action", filterAction);
+    if (filterCluster !== "all") params.append("cluster", filterCluster);
+    if (filterUser !== "all") params.append("user_email", filterUser);
+    if (filterStatus !== "all") params.append("status", filterStatus);
+    if (filterResource) params.append("resource", filterResource);
+    if (filterStartDate) {
+      // Formatar data como YYYY-MM-DD e enviar start e end para filtrar apenas o dia específico
+      const dateStr = format(filterStartDate, "yyyy-MM-dd");
+      params.append("start_date", dateStr);
+      params.append("end_date", dateStr);
+    }
+    params.append("limit", String(limit));
+    params.append("offset", String(offset));
+    return params.toString();
+  };
+
+  const fetchHistory = async (offset: number) => {
+    const seq = ++requestSeq.current;
+    if (offset === 0) setLoading(true);
+    else setLoadingMore(true);
     try {
-      // Construir query params com filtros
-      const params = new URLSearchParams();
-      if (filterAction !== "all") params.append("action", filterAction);
-      if (filterCluster !== "all") params.append("cluster", filterCluster);
-      if (filterStatus !== "all") params.append("status", filterStatus);
-      if (filterResource) params.append("resource", filterResource);
-      if (filterStartDate) {
-        // Formatar data como YYYY-MM-DD e enviar start e end para filtrar apenas o dia específico
-        const dateStr = format(filterStartDate, "yyyy-MM-dd");
-        params.append("start_date", dateStr);
-        params.append("end_date", dateStr);
-      }
-
-      const queryString = params.toString();
-      const data = await apiClient.get<{ entries: HistoryEntry[] | null }>(
-        `/history${queryString ? `?${queryString}` : ""}`
-      );
-      setEntries(data.entries || []);
-      setVisibleCount(PAGE_SIZE);
-    } catch (error: any) {
+      const data = await apiClient.get<HistoryPage>(`/history?${buildParams(offset, PAGE_SIZE)}`);
+      if (seq !== requestSeq.current) return;
+      const page = data.entries || [];
+      setEntries((prev) => (offset === 0 ? page : [...prev, ...page]));
+      setTotal(data.total ?? page.length);
+      setHasMore(!!data.has_more);
+    } catch (error: unknown) {
+      if (seq !== requestSeq.current) return;
       console.error("Failed to fetch history:", error);
       toast.error("Erro ao carregar histórico", {
-        description: error.message,
+        description: errorMessage(error),
         style: {
           background: '#fee2e2',
           border: '1px solid #fca5a5',
@@ -137,7 +198,10 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
         },
       });
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
@@ -145,84 +209,78 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
     try {
       const data = await apiClient.get<HistoryStats>("/history/stats");
       setStats(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("Failed to fetch stats:", error);
     }
   };
 
   const handleRefresh = () => {
-    fetchHistory();
+    fetchHistory(0);
     fetchStats();
   };
 
-  const handleClearHistory = async () => {
-    if (!confirm("Tem certeza que deseja limpar TODO o histórico? Esta ação não pode ser desfeita.")) {
-      return;
-    }
-
-    try {
-      await apiClient.delete("/history");
-      toast.success("Histórico limpo com sucesso");
-      fetchHistory();
-      fetchStats();
-    } catch (error: any) {
-      console.error("Failed to clear history:", error);
-      toast.error("Erro ao limpar histórico", {
-        description: error.response?.data?.error?.message || error.message,
-      });
-    }
-  };
-
-  const handleExportCSV = () => {
-    if (entries.length === 0) {
+  // Exporta TODAS as entradas do filtro atual (não só as carregadas na tela), em lotes de 1000.
+  const handleExportCSV = async () => {
+    if (total === 0) {
       toast.error("Nenhum dado para exportar");
       return;
     }
+    setExporting(true);
+    try {
+      const all: HistoryEntry[] = [];
+      for (let offset = 0; ; offset += 1000) {
+        const data = await apiClient.get<HistoryPage>(`/history?${buildParams(offset, 1000)}`);
+        all.push(...(data.entries || []));
+        if (!data.has_more) break;
+      }
 
-    // Criar CSV
-    const headers = [
-      "ID",
-      "Timestamp",
-      "Action",
-      "Resource",
-      "Cluster",
-      "Status",
-      "Duration (ms)",
-      "Session",
-      "Error",
-    ];
+      const headers = [
+        "ID",
+        "Timestamp",
+        "User",
+        "Action",
+        "Resource",
+        "Cluster",
+        "Status",
+        "Duration (ms)",
+        "Session",
+        "Error",
+      ];
+      const rows = all.map((entry) => [
+        entry.id,
+        new Date(entry.timestamp).toLocaleString(),
+        entry.user_email || "",
+        entry.action || "",
+        entry.resource || "",
+        entry.cluster || "",
+        entry.status || "",
+        String(entry.duration_ms ?? 0),
+        entry.session_name || "",
+        entry.error_msg || "",
+      ]);
+      const csvContent = [
+        headers.map(csvCell).join(","),
+        ...rows.map((row) => row.map(csvCell).join(",")),
+      ].join("\n");
 
-    const rows = entries.map((entry) => [
-      entry.id,
-      new Date(entry.timestamp).toLocaleString(),
-      entry.action || "",
-      entry.resource || "",
-      entry.cluster || "",
-      entry.status || "",
-      String(entry.duration_ms ?? 0),
-      entry.session_name || "",
-      entry.error_msg || "",
-    ]);
+      // Download
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      link.setAttribute("href", url);
+      link.setAttribute("download", `history_${new Date().toISOString()}.csv`);
+      link.style.visibility = "hidden";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
 
-    const csvContent = [
-      headers.join(","),
-      ...rows.map((row) =>
-        row.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(",")
-      ),
-    ].join("\n");
-
-    // Download
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", `history_${new Date().toISOString()}.csv`);
-    link.style.visibility = "hidden";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    toast.success("CSV exportado com sucesso");
+      toast.success(`CSV exportado (${all.length} entradas)`);
+    } catch (error: unknown) {
+      toast.error("Erro ao exportar CSV", { description: errorMessage(error) });
+    } finally {
+      setExporting(false);
+    }
   };
 
   const toggleExpanded = (id: string) => {
@@ -236,17 +294,18 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
   };
 
   const formatDuration = (ms: number): string => {
+    if (!ms) return "-";
     if (ms < 1000) return `${ms}ms`;
     return `${(ms / 1000).toFixed(2)}s`;
   };
 
   const getActionBadgeColor = (action: string): string => {
     action = action || "";
-    if (action.includes("update")) return "bg-blue-500";
-    if (action.includes("delete")) return "bg-red-500";
-    if (action.includes("rollout")) return "bg-purple-500";
-    if (action.includes("suspend")) return "bg-orange-500";
-    if (action.includes("resume")) return "bg-green-500";
+    if (action.includes("update") || action.includes("apply") || action.includes("scale")) return "bg-blue-500";
+    if (action.includes("delete") || action.includes("remove") || action.includes("kill") || action.includes("uninstall")) return "bg-red-500";
+    if (action.includes("rollout") || action.includes("restart") || action.includes("rollback")) return "bg-purple-500";
+    if (action.includes("suspend") || action.includes("cordon") || action.includes("drain") || action.includes("abort")) return "bg-orange-500";
+    if (action.includes("resume") || action.includes("create") || action.includes("install")) return "bg-green-500";
     return "bg-gray-500";
   };
 
@@ -256,10 +315,13 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
     return <AlertCircle className="w-4 h-4 text-yellow-600" />;
   };
 
-  // Extrair valores únicos para filtros. Vazios ficam de fora: <SelectItem value=""> lança
-  // exceção no Radix e derrubava a página inteira (entradas antigas têm cluster "").
-  const uniqueActions = Array.from(new Set(entries.map((e) => e.action).filter(Boolean)));
-  const uniqueClusters = Array.from(new Set(entries.map((e) => e.cluster).filter(Boolean)));
+  // Opções dos filtros vêm das estatísticas do histórico inteiro (não só da página carregada).
+  // Vazios ficam de fora: <SelectItem value=""> lança exceção no Radix e derrubava a página.
+  const optionsFrom = (m?: Record<string, number>) =>
+    Object.keys(m || {}).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const uniqueActions = optionsFrom(stats?.by_action);
+  const uniqueClusters = optionsFrom(stats?.by_cluster);
+  const uniqueUsers = optionsFrom(stats?.by_user);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -308,7 +370,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
         )}
 
         {/* Filtros */}
-        <div className="grid grid-cols-5 gap-2 mb-4">
+        <div className="grid grid-cols-6 gap-2 mb-4">
           <div>
             <Label className="text-xs">Ação</Label>
             <Select value={filterAction} onValueChange={setFilterAction}>
@@ -344,6 +406,23 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
           </div>
 
           <div>
+            <Label className="text-xs">Usuário</Label>
+            <Select value={filterUser} onValueChange={setFilterUser}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos</SelectItem>
+                {uniqueUsers.map((user) => (
+                  <SelectItem key={user} value={user}>
+                    {user}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
             <Label className="text-xs">Status</Label>
             <Select value={filterStatus} onValueChange={setFilterStatus}>
               <SelectTrigger className="h-8 text-xs">
@@ -353,6 +432,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
                 <SelectItem value="all">Todos</SelectItem>
                 <SelectItem value="success">Sucesso</SelectItem>
                 <SelectItem value="failed">Falha</SelectItem>
+                <SelectItem value="partial">Parcial</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -427,19 +507,14 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
             Atualizar
           </Button>
-          <Button onClick={handleExportCSV} size="sm" variant="outline">
-            <Download className="w-4 h-4 mr-2" />
+          <Button onClick={handleExportCSV} size="sm" variant="outline" disabled={exporting || total === 0}>
+            <Download className={`w-4 h-4 mr-2 ${exporting ? "animate-pulse" : ""}`} />
             Exportar CSV
           </Button>
-          <Button
-            onClick={handleClearHistory}
-            size="sm"
-            variant="destructive"
-            className="ml-auto"
-          >
-            <Trash2 className="w-4 h-4 mr-2" />
-            Limpar Histórico
-          </Button>
+          <span className="ml-auto text-xs text-muted-foreground">
+            {total > 0 && `Mostrando ${entries.length} de ${total}`}
+            {stats?.retention_days ? ` · retenção de ${stats.retention_days} dias, somente leitura` : ""}
+          </span>
         </div>
 
         {/* Entries List */}
@@ -455,7 +530,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
             </div>
           ) : (
             <div className="space-y-1 p-2">
-              {entries.slice(0, visibleCount).map((entry) => {
+              {entries.map((entry) => {
                 const isExpanded = expandedEntries.has(entry.id);
                 return (
                   <div
@@ -475,7 +550,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
 
                       {getStatusIcon(entry.status)}
 
-                      <div className="flex-1 grid grid-cols-6 gap-2 text-sm">
+                      <div className="flex-1 grid grid-cols-8 gap-2 text-sm min-w-0">
                         <div className="flex items-center gap-2">
                           <Calendar className="w-3 h-3 text-slate-400" />
                           <span className="font-mono text-xs">
@@ -489,12 +564,17 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
                           </Badge>
                         </div>
 
-                        <div className="flex items-center gap-1 text-xs">
-                          <Server className="w-3 h-3 text-slate-400" />
-                          {entry.cluster || "-"}
+                        <div className="flex items-center gap-1 text-xs truncate" title={entry.user_email || ""}>
+                          <User className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                          <span className="truncate">{entry.user_name || entry.user_email || "-"}</span>
                         </div>
 
-                        <div className="col-span-2 text-xs font-mono truncate">
+                        <div className="flex items-center gap-1 text-xs truncate">
+                          <Server className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                          <span className="truncate">{entry.cluster || "-"}</span>
+                        </div>
+
+                        <div className="col-span-3 text-xs font-mono truncate" title={entry.resource}>
                           {entry.resource}
                         </div>
 
@@ -508,74 +588,39 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
                     {/* Expanded Details */}
                     {isExpanded && (
                       <div className="border-t p-3 bg-slate-50 dark:bg-slate-900/50">
-                        {/* GitHub-style Unified Diff */}
                         <div className="border rounded font-mono text-xs bg-white dark:bg-slate-950">
                           <div className="bg-slate-100 dark:bg-slate-800 px-3 py-1 text-slate-600 dark:text-slate-400 font-semibold border-b">
                             Changes
                           </div>
                           {(() => {
-                            const beforeJSON = JSON.stringify(entry.before, null, 2);
-                            const afterJSON = JSON.stringify(entry.after, null, 2);
-                            const beforeLines = beforeJSON.split('\n');
-                            const afterLines = afterJSON.split('\n');
-
-                            // Simple line-by-line diff
-                            const diffLines: Array<{ type: 'unchanged' | 'removed' | 'added'; content: string }> = [];
-
-                            beforeLines.forEach((line, i) => {
-                              if (afterLines[i] !== line) {
-                                diffLines.push({ type: 'removed', content: line });
-                                if (afterLines[i]) {
-                                  diffLines.push({ type: 'added', content: afterLines[i] });
-                                }
-                              } else {
-                                diffLines.push({ type: 'unchanged', content: line });
-                              }
-                            });
-
-                            // Add remaining lines from after if it's longer
-                            if (afterLines.length > beforeLines.length) {
-                              afterLines.slice(beforeLines.length).forEach(line => {
-                                diffLines.push({ type: 'added', content: line });
-                              });
+                            const rows = diffEntries(entry.before, entry.after);
+                            if (rows.length === 0) {
+                              return <div className="px-3 py-2 text-slate-500">Sem detalhes de antes/depois</div>;
                             }
-
-                            return diffLines.map((line, i) => {
-                              if (line.type === 'unchanged') {
-                                return (
-                                  <div key={i} className="flex">
-                                    <span className="w-8 flex-shrink-0 text-center text-slate-400 select-none bg-slate-50 dark:bg-slate-900/30">
-
-                                    </span>
-                                    <pre className="flex-1 px-3 py-1 text-slate-600 dark:text-slate-400 overflow-x-auto">
-                                      {line.content}
-                                    </pre>
-                                  </div>
-                                );
-                              } else if (line.type === 'removed') {
-                                return (
-                                  <div key={i} className="flex bg-red-50 dark:bg-red-950/30">
+                            return rows.map((row) => (
+                              <div key={row.path} className="border-b last:border-b-0">
+                                {row.before !== undefined && (
+                                  <div className="flex bg-red-50 dark:bg-red-950/30">
                                     <span className="w-8 flex-shrink-0 text-center text-red-600 dark:text-red-400 select-none bg-red-100 dark:bg-red-900/30 font-bold">
                                       -
                                     </span>
-                                    <pre className="flex-1 px-3 py-1 text-red-700 dark:text-red-300 overflow-x-auto">
-                                      {line.content}
+                                    <pre className="flex-1 px-3 py-1 text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap break-all">
+                                      {row.path}: {row.before}
                                     </pre>
                                   </div>
-                                );
-                              } else {
-                                return (
-                                  <div key={i} className="flex bg-green-50 dark:bg-green-950/30">
+                                )}
+                                {row.after !== undefined && (
+                                  <div className="flex bg-green-50 dark:bg-green-950/30">
                                     <span className="w-8 flex-shrink-0 text-center text-green-600 dark:text-green-400 select-none bg-green-100 dark:bg-green-900/30 font-bold">
                                       +
                                     </span>
-                                    <pre className="flex-1 px-3 py-1 text-green-700 dark:text-green-300 overflow-x-auto">
-                                      {line.content}
+                                    <pre className="flex-1 px-3 py-1 text-green-700 dark:text-green-300 overflow-x-auto whitespace-pre-wrap break-all">
+                                      {row.path}: {row.after}
                                     </pre>
                                   </div>
-                                );
-                              }
-                            });
+                                )}
+                              </div>
+                            ));
                           })()}
                         </div>
 
@@ -588,6 +633,13 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
                             <p className="text-xs bg-red-50 dark:bg-red-900/20 p-2 rounded border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300">
                               {entry.error_msg}
                             </p>
+                          </div>
+                        )}
+
+                        {/* Usuário */}
+                        {entry.user_email && (
+                          <div className="mt-2 text-xs text-slate-600 dark:text-slate-400">
+                            <span className="font-semibold">Usuário:</span> {entry.user_name ? `${entry.user_name} <${entry.user_email}>` : entry.user_email}
                           </div>
                         )}
 
@@ -607,14 +659,15 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
                   </div>
                 );
               })}
-              {entries.length > visibleCount && (
+              {hasMore && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="w-full"
-                  onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                  disabled={loadingMore}
+                  onClick={() => fetchHistory(entries.length)}
                 >
-                  Mostrar mais ({entries.length - visibleCount} restantes)
+                  {loadingMore ? "Carregando..." : `Mostrar mais (${total - entries.length} restantes)`}
                 </Button>
               )}
             </div>

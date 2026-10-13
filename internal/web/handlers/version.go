@@ -7,15 +7,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/updater"
 )
 
 // VersionHandler lida com requisições de versão
-type VersionHandler struct{}
+type VersionHandler struct {
+	historyTracker *history.HistoryTracker
+}
 
 // NewVersionHandler cria novo handler de versão
-func NewVersionHandler() *VersionHandler {
-	return &VersionHandler{}
+func NewVersionHandler(ht *history.HistoryTracker) *VersionHandler {
+	return &VersionHandler{historyTracker: ht}
 }
 
 // GetVersion retorna versão atual e verifica updates disponíveis
@@ -48,6 +51,9 @@ func (h *VersionHandler) GetVersion(c *gin.Context) {
 // SelfUpdate executa o script de instalação para atualizar o binário
 // POST /api/v1/version/update
 func (h *VersionHandler) SelfUpdate(c *gin.Context) {
+	// Registra o pedido: o processo é substituído pela atualização, não há "depois" para gravar.
+	logOperation(c, h.historyTracker, "self_update", "new-k8s-hpa", "", nil,
+		map[string]interface{}{"from_version": updater.Version}, time.Now(), nil)
 	c.JSON(200, gin.H{"success": true, "message": "Atualização iniciada. O servidor será reiniciado em breve."})
 
 	go func() {

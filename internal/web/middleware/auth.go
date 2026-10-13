@@ -6,7 +6,17 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"k8s-hpa-manager/internal/auth"
+	"k8s-hpa-manager/internal/history"
 )
+
+// setIdentity publica o usuário do JWT para os handlers (c.Get "user_email"/"user_name") e para
+// código que só recebe ctx (c.Request.Context()) — é daí que o Change History tira o autor.
+func setIdentity(c *gin.Context, claims *auth.JWTClaims) {
+	c.Set("jwt_claims", claims)
+	c.Set("user_email", claims.Email)
+	c.Set("user_name", claims.Name)
+	c.Request = c.Request.WithContext(history.WithUser(c.Request.Context(), history.UserInfo{Email: claims.Email, Name: claims.Name}))
+}
 
 // JWTAuthMiddleware valida o token Bearer em modo dual:
 //   - Se jwtManager.IsConfigured(): exige JWT assinado; injeta claims no contexto via "jwt_claims"
@@ -40,7 +50,7 @@ func JWTAuthMiddleware(jwtManager *auth.JWTManager, staticToken string) gin.Hand
 				c.Abort()
 				return
 			}
-			c.Set("jwt_claims", claims)
+			setIdentity(c, claims)
 			c.Next()
 			return
 		}
@@ -86,7 +96,7 @@ func WebSocketJWTAuthMiddleware(jwtManager *auth.JWTManager, staticToken string)
 				c.Abort()
 				return
 			}
-			c.Set("jwt_claims", claims)
+			setIdentity(c, claims)
 			c.Next()
 			return
 		}
@@ -100,4 +110,3 @@ func WebSocketJWTAuthMiddleware(jwtManager *auth.JWTManager, staticToken string)
 		c.Next()
 	}
 }
-

@@ -256,7 +256,7 @@ func (h *PodExecHandler) recordTshoot(c *gin.Context, action, namespace, name, c
 	}
 	entry := CreateHistoryEntry(c, action, namespace+"/"+name, cluster, status, nil,
 		map[string]interface{}{"image": tshootImage, "rm": true}, time.Since(start).Milliseconds(), errMsg)
-	if err := h.historyTracker.Log(entry); err != nil {
+	if err := h.historyTracker.Log(c, entry); err != nil {
 		log.Printf("[TSHOOT] falha ao registrar histórico: %v", err)
 	}
 }

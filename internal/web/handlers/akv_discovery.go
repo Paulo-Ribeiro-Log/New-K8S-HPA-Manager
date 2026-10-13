@@ -327,7 +327,7 @@ func (h *AKVDiscoveryHandler) Start(c *gin.Context) {
 		status = "error"
 	}
 	if h.historyTracker != nil {
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			Action:   "akv_discovery_start",
 			Resource: fmt.Sprintf("%s/%s", req.Namespace, name),
 			Cluster:  req.Cluster,
@@ -463,7 +463,7 @@ func (h *AKVDiscoveryHandler) Stop(c *gin.Context) {
 		status = "error"
 	}
 	if h.historyTracker != nil {
-		_ = h.historyTracker.Log(history.HistoryEntry{
+		_ = h.historyTracker.Log(c, history.HistoryEntry{
 			Action:   "akv_discovery_stop",
 			Resource: fmt.Sprintf("%s/%s", namespace, name),
 			Cluster:  cluster,

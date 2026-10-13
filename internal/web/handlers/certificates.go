@@ -195,7 +195,10 @@ func (h *CertificatesHandler) Copy(c *gin.Context) {
 		Strs("targetNamespaces", req.TargetNamespaces).
 		Msg("Copiando certificado TLS")
 
+	start := time.Now()
 	copied, err := h.scanner.CopyCertificate(c.Request.Context(), req)
+	logOperation(c, h.historyTracker, "cert_copy", req.SourceNamespace+"/"+req.SecretName, req.SourceCluster, nil,
+		map[string]interface{}{"target_clusters": req.TargetClusters, "target_namespaces": req.TargetNamespaces, "copied": copied}, start, err)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -256,7 +259,11 @@ func (h *CertificatesHandler) Upload(c *gin.Context) {
 		Strs("targetNamespaces", req.TargetNamespaces).
 		Msg("Upload de certificado TLS")
 
+	start := time.Now()
 	uploaded, err := h.scanner.UploadCertificate(c.Request.Context(), req)
+	// Sem tls.crt/tls.key no histórico: só destino e o resultado.
+	logOperation(c, h.historyTracker, "cert_upload", req.Name, strings.Join(req.TargetClusters, ","), nil,
+		map[string]interface{}{"target_clusters": req.TargetClusters, "target_namespaces": req.TargetNamespaces, "uploaded": uploaded}, start, err)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -608,7 +615,7 @@ func (h *CertificatesHandler) Rollback(c *gin.Context) {
 		"restored_backup_id": meta.BackupID,
 	}
 	entry := CreateHistoryEntry(c, "cert-rollback", fmt.Sprintf("%s/%s", namespace, name), cluster, "success", before, after, 0, "")
-	if err := h.historyTracker.Log(entry); err != nil {
+	if err := h.historyTracker.Log(c, entry); err != nil {
 		log.Warn().Err(err).Msg("erro ao registrar rollback de certificado no history tracker")
 	}
 

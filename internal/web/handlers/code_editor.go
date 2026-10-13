@@ -1000,7 +1000,7 @@ func (h *CodeEditorHandler) Commit(c *gin.Context) {
 			msg = "[amend] " + msg
 		}
 		userInfo := GetUserInfoForHistory(c)
-		h.historyTracker.Log(history.HistoryEntry{ //nolint:errcheck
+		h.historyTracker.Log(c, history.HistoryEntry{ //nolint:errcheck
 			UserEmail: userInfo.Email,
 			UserName:  userInfo.Name,
 			Action:    "code_editor_commit",
@@ -1047,6 +1047,14 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		branch = currentBranch(dir)
 	}
 
+	// Change History: o resultado final do push (inclusive o retry após pull --rebase).
+	pushStart := time.Now()
+	pushOutcome := fmt.Errorf("push não concluído")
+	defer func() {
+		logOperation(c, h.historyTracker, "code_editor_push", id+"@"+branch, "", nil,
+			map[string]interface{}{"repo_id": id, "branch": branch}, pushStart, pushOutcome)
+	}()
+
 	token := req.Token
 	if token == "" {
 		token = h.resolveProfileToken(c, req.ProfileID)
@@ -1075,6 +1083,7 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
+		pushOutcome = fmt.Errorf("%s", err.Error())
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
 		if flusher != nil {
 			flusher.Flush()
@@ -1148,6 +1157,7 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 
 		if pullErr != nil {
 			sendSSE("❌ Pull --rebase falhou. Resolva os conflitos e tente novamente.")
+			pushOutcome = fmt.Errorf("%s", pullErr.Error())
 			fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pullErr.Error())
 			if flusher != nil {
 				flusher.Flush()
@@ -1195,10 +1205,12 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 		retryWg.Wait()
 
 		if retryErr != nil {
+			pushOutcome = fmt.Errorf("%s", retryErr.Error())
 			fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", retryErr.Error())
 		} else {
 			trackRemoteBranch(dir, branch, true)
 			sendSSE("✅ Push concluído com sucesso.")
+			pushOutcome = nil
 			fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 		}
 		if flusher != nil {
@@ -1208,10 +1220,12 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	}
 
 	if pushErr != nil {
+		pushOutcome = fmt.Errorf("%s", pushErr.Error())
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", pushErr.Error())
 	} else {
 		trackRemoteBranch(dir, branch, true)
 		sendSSE("Push concluído com sucesso.")
+		pushOutcome = nil
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 	}
 	if flusher != nil {
@@ -2595,6 +2609,8 @@ func (h *CodeEditorHandler) CreatePR(c *gin.Context) {
 		State   string `json:"state"`
 	}
 	_ = json.Unmarshal(respBody, &pr)
+	logOperation(c, h.historyTracker, "code_editor_create_pr", req.Head+" → "+req.Base, "", nil,
+		map[string]interface{}{"repo_id": c.Param("id"), "number": pr.Number, "url": pr.HTMLURL, "title": pr.Title}, time.Now(), nil)
 	c.JSON(http.StatusCreated, gin.H{
 		"number": pr.Number,
 		"url":    pr.HTMLURL,

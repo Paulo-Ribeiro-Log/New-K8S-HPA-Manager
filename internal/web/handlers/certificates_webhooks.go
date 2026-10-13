@@ -83,7 +83,7 @@ func (h *CertificatesHandler) UpdateMutatingWebhookCABundle(c *gin.Context) {
 		"newNotAfter":  result.NewNotAfter,
 	}
 	entry := CreateHistoryEntry(c, "webhook-cabundle-update", req.ConfigName, req.Cluster, "success", before, after, 0, "")
-	if err := h.historyTracker.Log(entry); err != nil {
+	if err := h.historyTracker.Log(c, entry); err != nil {
 		log.Warn().Err(err).Msg("erro ao registrar atualização de caBundle no history tracker")
 	}
 

@@ -3,7 +3,11 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -12,17 +16,51 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
+
+	"k8s-hpa-manager/internal/history"
 )
 
 // CodeEditorK8sHandler expõe ações kubectl integradas ao editor de código.
 type CodeEditorK8sHandler struct {
-	reposBase string
-	logger    *zerolog.Logger
+	reposBase      string
+	logger         *zerolog.Logger
+	historyTracker *history.HistoryTracker
 }
 
 // NewCodeEditorK8sHandler cria o handler de integração K8s para o editor.
-func NewCodeEditorK8sHandler(reposBase string, logger *zerolog.Logger) *CodeEditorK8sHandler {
-	return &CodeEditorK8sHandler{reposBase: reposBase, logger: logger}
+func NewCodeEditorK8sHandler(reposBase string, logger *zerolog.Logger, ht *history.HistoryTracker) *CodeEditorK8sHandler {
+	return &CodeEditorK8sHandler{reposBase: reposBase, logger: logger, historyTracker: ht}
+}
+
+// manifestObjects lista "Kind namespace/name" de cada documento do manifesto, para o Change
+// History saber o que um apply mexeu sem gravar o conteúdo (pode ser um Secret).
+func manifestObjects(content string) []string {
+	dec := k8syaml.NewYAMLOrJSONDecoder(strings.NewReader(content), 4096)
+	var objs []string
+	for {
+		var doc struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
+			} `json:"metadata"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			if !errors.Is(err, io.EOF) {
+				objs = append(objs, "(manifesto não interpretável)")
+			}
+			return objs
+		}
+		if doc.Kind == "" {
+			continue
+		}
+		ref := doc.Metadata.Name
+		if doc.Metadata.Namespace != "" {
+			ref = doc.Metadata.Namespace + "/" + ref
+		}
+		objs = append(objs, doc.Kind+" "+ref)
+	}
 }
 
 // ListContexts retorna a lista de contexts do kubeconfig local.
@@ -82,7 +120,12 @@ func (h *CodeEditorK8sHandler) Apply(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	h.streamKubectl(c, req.Cluster, req.Content, 120*time.Second, "apply", "-f", "-")
+	start := time.Now()
+	err := h.streamKubectl(c, req.Cluster, req.Content, 120*time.Second, "apply", "-f", "-")
+	objs := manifestObjects(req.Content)
+	sum := sha256.Sum256([]byte(req.Content))
+	logOperation(c, h.historyTracker, "code_editor_k8s_apply", strings.Join(objs, ", "), req.Cluster, nil,
+		map[string]interface{}{"objects": objs, "manifest_sha256": hex.EncodeToString(sum[:]), "repo_id": c.Param("id")}, start, err)
 }
 
 // GetResource executa `kubectl get <kind> <name> -n <ns> -o yaml` de forma síncrona.
@@ -116,7 +159,7 @@ func (h *CodeEditorK8sHandler) GetResource(c *gin.Context) {
 
 // streamKubectl executa um comando kubectl com stdin e transmite a saída via SSE.
 // Linhas de stderr e stdout são mescladas em ordem para refletir o output real do kubectl.
-func (h *CodeEditorK8sHandler) streamKubectl(c *gin.Context, cluster, stdin string, timeout time.Duration, args ...string) {
+func (h *CodeEditorK8sHandler) streamKubectl(c *gin.Context, cluster, stdin string, timeout time.Duration, args ...string) error {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -136,7 +179,7 @@ func (h *CodeEditorK8sHandler) streamKubectl(c *gin.Context, cluster, stdin stri
 	if err != nil {
 		fmt.Fprintf(c.Writer, "data: {\"line\":\"erro interno: %s\",\"done\":true,\"error\":true}\n\n", err.Error())
 		c.Writer.Flush()
-		return
+		return err
 	}
 	cmd.Stdout = pw
 	cmd.Stderr = pw
@@ -146,7 +189,7 @@ func (h *CodeEditorK8sHandler) streamKubectl(c *gin.Context, cluster, stdin stri
 		pr.Close()
 		fmt.Fprintf(c.Writer, "data: {\"line\":\"kubectl não encontrado: %s\",\"done\":true,\"error\":true}\n\n", err.Error())
 		c.Writer.Flush()
-		return
+		return err
 	}
 
 	// Lê linhas em goroutine
@@ -178,4 +221,5 @@ func (h *CodeEditorK8sHandler) streamKubectl(c *gin.Context, cluster, stdin stri
 		fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
 	}
 	c.Writer.Flush()
+	return cmdErr
 }

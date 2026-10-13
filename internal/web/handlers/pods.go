@@ -497,7 +497,7 @@ func (h *PodHandler) Delete(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -593,7 +593,7 @@ func (h *PodHandler) Kill(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -698,7 +698,7 @@ func (h *PodHandler) Restart(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -1177,7 +1177,7 @@ func (h *PodHandler) Apply(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -1355,7 +1355,7 @@ func (h *PodHandler) DownloadFromPod(c *gin.Context) {
 			ErrorMsg: errorMsg,
 			Duration: time.Since(startTime).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("Warning: failed to log download audit: %v\n", err)
 		}
 	}
@@ -1547,7 +1547,7 @@ func (h *PodHandler) DownloadMultipleFromPod(c *gin.Context) {
 			ErrorMsg: errorMsg,
 			Duration: time.Since(startTime).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("Warning: failed to log batch download audit: %v\n", err)
 		}
 	}
@@ -1727,7 +1727,7 @@ func (h *PodHandler) BatchDelete(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -1831,7 +1831,7 @@ func (h *PodHandler) BatchKill(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -1947,7 +1947,7 @@ func (h *PodHandler) BatchRestart(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}

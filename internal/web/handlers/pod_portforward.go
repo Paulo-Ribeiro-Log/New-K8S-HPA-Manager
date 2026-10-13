@@ -142,7 +142,7 @@ func (h *PortForwardHandler) Start(c *gin.Context) {
 			status = "failed"
 			errMsg = err.Error()
 		}
-		h.historyTracker.Log(history.HistoryEntry{
+		h.historyTracker.Log(c, history.HistoryEntry{
 			UserEmail: userInfo.Email,
 			UserName:  userInfo.Name,
 			Action:    "portforward_start",
@@ -182,7 +182,7 @@ func (h *PortForwardHandler) Stop(c *gin.Context) {
 			status = "failed"
 			errMsg = err.Error()
 		}
-		h.historyTracker.Log(history.HistoryEntry{
+		h.historyTracker.Log(c, history.HistoryEntry{
 			UserEmail: userInfo.Email,
 			UserName:  userInfo.Name,
 			Action:    "portforward_stop",

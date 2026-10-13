@@ -668,7 +668,7 @@ func (h *LatencyTestHandler) logHistory(req RunLatencyTestRequest, userInfo hist
 			after["error_count"] = result.ErrorCount
 		}
 
-		h.historyTracker.Log(history.HistoryEntry{
+		h.historyTracker.Log(context.Background(), history.HistoryEntry{
 			UserEmail: userInfo.Email,
 			UserName:  userInfo.Name,
 			Action:    "latency_test",

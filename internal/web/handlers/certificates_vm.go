@@ -274,7 +274,7 @@ func (h *VMCertificatesHandler) TransferCertificate(c *gin.Context) {
 			"remote_cert_path": req.RemoteCertPath,
 			"remote_key_path":  req.RemoteKeyPath,
 		}, 0, "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -373,7 +373,7 @@ func (h *VMCertificatesHandler) TransferCertificateViaSSM(c *gin.Context) {
 			"remote_cert_path": req.RemoteCertPath,
 			"remote_key_path":  req.RemoteKeyPath,
 		}, 0, "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
@@ -635,7 +635,7 @@ func (h *VMCertificatesHandler) RestartService(c *gin.Context) {
 		entry := CreateHistoryEntry(c, "vm-service-restart", c.Param("instanceId"), sftpTargetLabel(c), "success", nil, map[string]interface{}{
 			"service_name": serviceName,
 		}, 0, "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "status": status})
@@ -723,7 +723,7 @@ func (h *VMCertificatesHandler) RestartServiceViaSSM(c *gin.Context) {
 		entry := CreateHistoryEntry(c, "vm-service-restart-ssm", instanceID, fmt.Sprintf("profile=%s region=%s", req.Profile, req.Region), "success", nil, map[string]interface{}{
 			"service_name": serviceName,
 		}, 0, "")
-		_ = h.historyTracker.Log(entry)
+		_ = h.historyTracker.Log(c, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "status": status})

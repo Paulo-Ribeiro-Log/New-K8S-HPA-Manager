@@ -219,7 +219,7 @@ func (h *VMHandler) powerAction(c *gin.Context, action string, fn func(*awsprovi
 	}
 
 	entry := CreateHistoryEntry(c, action, instanceID, req.Profile+"/"+req.Region, status, nil, nil, 0, errMsg)
-	if logErr := h.historyTracker.Log(entry); logErr != nil {
+	if logErr := h.historyTracker.Log(c, entry); logErr != nil {
 		log.Warn().Err(logErr).Msg("erro ao registrar ação de VM no history tracker")
 	}
 

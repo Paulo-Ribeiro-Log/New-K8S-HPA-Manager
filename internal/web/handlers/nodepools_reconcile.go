@@ -32,7 +32,7 @@ func (h *NodePoolHandler) Reconcile(c *gin.Context) {
 		}
 		entry := CreateHistoryEntry(c, "reconcile_nodepool", c.Param("resource_group")+"/"+pool, cluster, result,
 			nil, map[string]interface{}{"operation": "az aks nodepool update (sem mudanças)"}, time.Since(start).Milliseconds(), errMsg)
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			log.Warn().Err(err).Msg("falha ao registrar reconcile no histórico")
 		}
 	}

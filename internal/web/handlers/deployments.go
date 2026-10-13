@@ -361,7 +361,7 @@ func (h *DeploymentHandler) Apply(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -598,7 +598,9 @@ func (h *DeploymentHandler) RolloutRestart(c *gin.Context) {
 
 	// Executar rollout restart (adicionar annotation para forçar restart)
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.RolloutRestartDeployment(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "restart_deployment", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
@@ -691,7 +693,13 @@ func (h *DeploymentHandler) Scale(c *gin.Context) {
 
 	// Executar scale
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	var scaleBefore map[string]interface{}
+	if obj, gerr := clientset.AppsV1().Deployments(namespace).Get(c.Request.Context(), name, metav1.GetOptions{}); gerr == nil && obj.Spec.Replicas != nil {
+		scaleBefore = map[string]interface{}{"replicas": *obj.Spec.Replicas}
+	}
+	start := time.Now()
 	err = kubeClient.ScaleDeployment(c.Request.Context(), namespace, name, *req.Replicas)
+	logOperation(c, h.historyTracker, "scale_deployment", namespace+"/"+name, cluster, scaleBefore, map[string]interface{}{"replicas": *req.Replicas}, start, err)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
@@ -874,7 +882,9 @@ func (h *DeploymentHandler) BatchRestart(c *gin.Context) {
 			Name:      depRef.Name,
 		}
 
+		start := time.Now()
 		err := kubeClient.RolloutRestartDeployment(ctx, depRef.Namespace, depRef.Name)
+		logOperation(c, h.historyTracker, "restart_deployment", depRef.Namespace+"/"+depRef.Name, cluster, nil, map[string]interface{}{"batch": true}, start, err)
 		if err != nil {
 			result.Success = false
 			result.Error = err.Error()

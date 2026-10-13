@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"k8s-hpa-manager/internal/history"
 )
 
 // NodePoolSequentialRequest representa a requisição de execução sequencial
@@ -74,8 +76,17 @@ func (h *NodePoolHandler) ApplySequential(c *gin.Context) {
 		return
 	}
 
+	// Estado anterior de cada pool para o Change History (cache de node pools)
+	poolsBefore := map[string]map[string]interface{}{}
+	if pools, err := h.getNodePoolsCached(c.Request.Context(), req.Cluster, false); err == nil {
+		for _, p := range pools {
+			poolsBefore[p.Name] = nodePoolHistoryState(p.NodeCount, p.MinNodeCount, p.MaxNodeCount, p.AutoscalingEnabled)
+		}
+	}
+
 	results := make([]gin.H, 0)
 	for i, poolOp := range req.NodePools {
+		stepStart := time.Now()
 		stepNum := i + 1
 		result := gin.H{
 			"step":      stepNum,
@@ -85,7 +96,11 @@ func (h *NodePoolHandler) ApplySequential(c *gin.Context) {
 
 		fmt.Printf("\n🔄 [Step %d/%d] Aplicando node pool '%s' (*%d)...\n", stepNum, len(req.NodePools), poolOp.Name, poolOp.Order)
 
-		if err := applyOpViaProvider(context.Background(), provider, req.Cluster, poolOp); err != nil {
+		err := applyOpViaProvider(context.Background(), provider, req.Cluster, poolOp)
+		after := nodePoolHistoryState(poolOp.NodeCount, poolOp.MinNodeCount, poolOp.MaxNodeCount, poolOp.AutoscalingEnabled)
+		after["sequential_step"] = stepNum
+		logOperation(c, h.historyTracker, history.ActionApplyNodePool, poolOp.Name, req.Cluster, poolsBefore[poolOp.Name], after, stepStart, err)
+		if err != nil {
 			result["success"] = false
 			result["error"] = err.Error()
 			result["message"] = fmt.Sprintf("❌ Falha ao aplicar node pool '%s': %v", poolOp.Name, err)

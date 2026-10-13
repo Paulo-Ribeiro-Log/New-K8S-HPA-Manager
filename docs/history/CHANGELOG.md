@@ -3,6 +3,22 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Change History — SQLite, autoria, cobertura e somente-inclusão (Outubro 2026)
+
+Análise do Change History achou problemas de integridade, segurança e cobertura. Tudo corrigido:
+
+**Armazenamento (`internal/history/tracker.go`):** JSON soltos em `history/AAAA-MM/` (0644, gravação assíncrona e não atômica, só as últimas 1000 entradas dos últimos 3 meses visíveis — 2.214 no disco) viraram SQLite em `~/.k8s-hpa-manager/history.db` (0600, WAL, gravação síncrona, índices por data/ação/cluster/usuário). Os JSON são importados uma vez (`history_meta.json_imported`) e a pasta vira `history-json-backup/` com 0700/0600. Filtros, paginação (`limit`/`offset`, `total`, `has_more`) e estatísticas rodam no banco sobre o histórico inteiro. Medido com o histórico real: importação única 0,4 s, banco 2,3 MB (JSON: 9,7 MB), reabrir 1 ms, primeira página 8 ms; benchmark com 100 mil entradas: gravação 0,5 ms, página de 200 em 2 ms, busca parcial por recurso 50 ms.
+
+**Somente-inclusão:** removidos `DELETE /api/v1/history` e o botão "Limpar Histórico" — o `Clear()` antigo procurava `history/*.json` e nunca apagava nada do disco (tudo voltava no restart), e qualquer usuário logado podia "apagar" a auditoria sem rastro. Triggers recusam UPDATE e DELETE de entradas dentro da retenção; só `PurgeExpired` (365 dias, na subida e a cada 24 h) remove algo.
+
+**Autoria:** 65% das entradas não tinham usuário. O middleware JWT validava o token mas não publicava o e-mail (só 3 rotas usavam `InjectUserEmail`), e `GetCurrentUserInfo` caía em `az account show` **sem timeout** dentro da requisição. Agora `setIdentity` (middleware) põe e-mail/nome nas chaves do gin e no `c.Request.Context()`; `HistoryTracker.Log(ctx, entry)` preenche o autor pelo ctx (compilador obrigou a revisar os 85 pontos de gravação); goroutines usam `history.DetachedUserContext(c)`. Sem fallback para o `az`.
+
+**Status:** `error` (21 entradas) normalizado para `failed` na gravação e na importação — as estatísticas contavam só `failed`.
+
+**Cobertura — operações que não eram registradas:** alteração de Node Pool (contagem/autoscaler, com estado anterior do cache) e as fases de cordon/drain do mesmo fluxo, abort de node pool, aplicação sequencial; Helm install/upgrade/rollback/uninstall (values só como SHA-256 + tamanho, dry-run não registra); scale e restart de Deployment/StatefulSet (com réplicas anteriores) e restart de DaemonSet e em lote; `kubectl apply` do Code Editor (objetos aplicados + SHA-256 do manifesto); push e criação de PR no Code Editor; commit de arquivo via GitHub; escrita de arquivos de rollback (inclusive caminhos externos); cópia e upload de certificado (sem o par cert/key); envio e exclusão em massa no Teams (só contagens — sem texto nem chats); renomear via SFTP em pod e VM (SSH e SSM); self-update. Helper novo `logOperation` em `handlers/helpers.go`.
+
+**Interface (`HistoryViewer.tsx`):** coluna e filtro de usuário; opções de Ação/Cluster/Usuário vêm das estatísticas do histórico inteiro; paginação no servidor ("Mostrar mais"); diff por chave (antes, linha a linha pela posição — uma chave a mais desalinhava tudo); status "Parcial"; CSV exporta todas as entradas do filtro (não só as carregadas), com usuário, e neutraliza injeção de fórmula (`= + - @`).
+
 ### Change History em branco e navegação lenta entre abas (Outubro 2026)
 
 **Change History → página em branco.** Entradas antigas do histórico têm `cluster` vazio (106 de 2.203 na máquina do usuário). O filtro de Cluster do `HistoryViewer` gerava `<SelectItem value="">`, que o Radix rejeita com exceção; sem error boundary, o React desmontava a SPA inteira. Correção: valores vazios fora dos filtros de Ação/Cluster, `entry.action`/`cluster`/`duration_ms` tolerantes a vazio, `fetch` direto trocado por `apiClient` (refresh de JWT), modal envolto em `ErrorBoundary` no `Index.tsx` e renderização em blocos de 200 ("Mostrar mais"), porque os milhares de entradas eram renderizados de uma vez.

@@ -1308,7 +1308,7 @@ func (h *NetDiscoveryHandler) logHistory(req RunNetDiscoveryRequest, userInfo hi
 		after["reached"] = result.Reached
 	}
 
-	h.historyTracker.Log(history.HistoryEntry{
+	h.historyTracker.Log(context.Background(), history.HistoryEntry{
 		UserEmail: userInfo.Email,
 		UserName:  userInfo.Name,
 		Action:    "net_discovery",

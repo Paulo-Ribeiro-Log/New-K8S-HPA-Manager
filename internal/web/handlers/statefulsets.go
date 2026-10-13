@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"k8s-hpa-manager/internal/config"
@@ -293,7 +294,7 @@ func (h *StatefulSetHandler) Apply(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -537,7 +538,9 @@ func (h *StatefulSetHandler) RolloutRestart(c *gin.Context) {
 
 	// Executar rollout restart
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.RolloutRestartStatefulSet(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "restart_statefulset", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if checkForbidden(c, err) {
 			return
@@ -633,7 +636,13 @@ func (h *StatefulSetHandler) Scale(c *gin.Context) {
 
 	// Executar scale
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	var scaleBefore map[string]interface{}
+	if obj, gerr := clientset.AppsV1().StatefulSets(namespace).Get(c.Request.Context(), name, metav1.GetOptions{}); gerr == nil && obj.Spec.Replicas != nil {
+		scaleBefore = map[string]interface{}{"replicas": *obj.Spec.Replicas}
+	}
+	start := time.Now()
 	err = kubeClient.ScaleStatefulSet(c.Request.Context(), namespace, name, *req.Replicas)
+	logOperation(c, h.historyTracker, "scale_statefulset", namespace+"/"+name, cluster, scaleBefore, map[string]interface{}{"replicas": *req.Replicas}, start, err)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{

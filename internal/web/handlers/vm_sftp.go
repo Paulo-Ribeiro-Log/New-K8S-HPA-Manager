@@ -376,7 +376,7 @@ func (h *VMSFTPHandler) logAction(c *gin.Context, action, instanceID, addr, stat
 		return
 	}
 	entry := CreateHistoryEntry(c, action, instanceID, addr, status, nil, extra, 0, errMsg)
-	_ = h.historyTracker.Log(entry)
+	_ = h.historyTracker.Log(c, entry)
 }
 
 // VMSFTPFileEntry é a projeção JSON de uma entrada de diretório — mesmo shape de SFTPFileEntry
@@ -610,6 +610,7 @@ func (h *VMSFTPHandler) VMSFTPRename(c *gin.Context) {
 		})
 		return
 	}
+	h.logAction(c, "vm-sftp-rename", c.Param("instanceId"), sftpTargetLabel(c), "success", map[string]interface{}{"from": req.OldPath, "to": req.NewPath}, "")
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 

@@ -290,7 +290,7 @@ func (h *DaemonSetHandler) Apply(c *gin.Context) {
 			Status:   "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
-		if err := h.historyTracker.Log(entry); err != nil {
+		if err := h.historyTracker.Log(c, entry); err != nil {
 			fmt.Printf("warning: failed to record history entry: %v\n", err)
 		}
 	}
@@ -530,7 +530,9 @@ func (h *DaemonSetHandler) RolloutRestart(c *gin.Context) {
 
 	// Executar rollout restart
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.RolloutRestartDaemonSet(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "restart_daemonset", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if checkForbidden(c, err) {
 			return
