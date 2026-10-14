@@ -1,8 +1,10 @@
-import { useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Check,
+  ChevronDown,
+  ChevronUp,
   ChevronsUpDown,
   ClipboardPaste,
   Copy,
@@ -12,11 +14,13 @@ import {
   PencilLine,
   Plus,
   RotateCw,
+  Search,
   Send,
   Trash2,
   Wand2,
 } from "lucide-react";
 import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
+import { HttpClientJsonView } from "@/components/HttpClientJsonView";
 import { ProtectedAction } from "@/components/rbac";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -103,14 +107,47 @@ function statusColor(status?: number) {
 }
 
 // Indenta o corpo quando é JSON válido; senão devolve como veio.
-function prettyBody(body: string): { text: string; isJson: boolean } {
+function prettyBody(body: string): { text: string; isJson: boolean; parsed?: unknown } {
   const trimmed = body.trim();
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return { text: body, isJson: false };
   try {
-    return { text: JSON.stringify(JSON.parse(trimmed), null, 2), isJson: true };
+    const parsed = JSON.parse(trimmed);
+    return { text: JSON.stringify(parsed, null, 2), isJson: true, parsed };
   } catch {
     return { text: body, isJson: false };
   }
+}
+
+// Acima disso a aba "Formatado" (uma árvore de componentes) fica pesada demais — usa-se o "Corpo".
+const FORMATTED_MAX_BYTES = 2 * 1024 * 1024;
+// Teto de trechos destacados no "Corpo" (cada um vira um <mark>).
+const MAX_MARKS = 2000;
+
+// Corpo cru com as ocorrências da busca destacadas; data-m numera cada uma para a navegação ↑/↓.
+function highlightRaw(text: string, query: string, current: number): { nodes: React.ReactNode[]; count: number } {
+  if (!query) return { nodes: [text], count: 0 };
+  const lower = text.toLowerCase();
+  const nodes: React.ReactNode[] = [];
+  let from = 0;
+  let count = 0;
+  let i = lower.indexOf(query);
+  while (i !== -1 && count < MAX_MARKS) {
+    if (i > from) nodes.push(text.slice(from, i));
+    nodes.push(
+      <mark
+        key={i}
+        data-m={count}
+        className={cn("rounded-sm text-inherit", count === current ? "bg-orange-400/80" : "bg-yellow-300/70 dark:bg-yellow-500/50")}
+      >
+        {text.slice(i, i + query.length)}
+      </mark>
+    );
+    count++;
+    from = i + query.length;
+    i = lower.indexOf(query, from);
+  }
+  if (from < text.length) nodes.push(text.slice(from));
+  return { nodes, count };
 }
 
 function copyText(text: string, label: string) {
@@ -151,7 +188,11 @@ export default function HttpClientTab() {
   const [sending, setSending] = useState(false);
   const [response, setResponse] = useState<HttpClientResponse | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [responseTab, setResponseTab] = useState<"body" | "headers">("body");
+  const [responseTab, setResponseTab] = useState<"formatted" | "body" | "headers">("body");
+  const [responseSearch, setResponseSearch] = useState("");
+  const [matchIdx, setMatchIdx] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const responseBodyRef = useRef<HTMLDivElement>(null);
   const [responseOpen, setResponseOpen] = useState(false);
 
   const { data: namespaces = [] } = useQuery({
@@ -178,7 +219,11 @@ export default function HttpClientTab() {
     !!url.trim() && !sending && (executionMode === "server" || (!!cluster && !!namespace && !!deployment));
 
   // Execuções salvas no servidor (SQLite, por usuário) — a lista abaixo da resposta.
-  const { data: executionsData, isLoading: executionsLoading } = useQuery({
+  const {
+    data: executionsData,
+    isLoading: executionsLoading,
+    error: executionsError,
+  } = useQuery({
     queryKey: ["http-client-executions"],
     queryFn: () => apiClient.getHttpClientExecutions(),
   });
@@ -191,7 +236,9 @@ export default function HttpClientTab() {
     try {
       const resp = await apiClient.sendHttpClientRequest(req);
       setResponse(resp);
-      setResponseTab("body");
+      setResponseTab(!resp.body_is_binary && prettyBody(resp.body).isJson && resp.body.length <= FORMATTED_MAX_BYTES ? "formatted" : "body");
+      setResponseSearch("");
+      setMatchIdx(0);
       // Abre o modal direto quando houve resposta HTTP; erro sem resposta fica só no resumo.
       setResponseOpen(!!resp.status);
     } catch (err) {
@@ -290,6 +337,27 @@ export default function HttpClientTab() {
     setHeaders((prev) => prev.map((h, idx) => (idx === i ? { ...h, [field]: value } : h)));
 
   const pretty = useMemo(() => (response ? prettyBody(response.body) : { text: "", isJson: false }), [response]);
+  const canFormat = !!response && !response.body_is_binary && pretty.isJson && response.body.length <= FORMATTED_MAX_BYTES;
+  // Deferido: em corpo grande, digitar na busca não trava a cada tecla.
+  const searchQuery = useDeferredValue(responseSearch.trim().toLowerCase());
+  const rawHighlight = useMemo(
+    () => (responseTab === "body" ? highlightRaw(pretty.text, searchQuery, matchIdx) : { nodes: [pretty.text], count: 0 }),
+    [pretty.text, searchQuery, matchIdx, responseTab]
+  );
+  const visibleHeaders = (response?.headers ?? []).filter(
+    (h) => !searchQuery || `${h.key}: ${h.value}`.toLowerCase().includes(searchQuery)
+  );
+
+  useEffect(() => setMatchIdx(0), [searchQuery, responseTab]);
+  useEffect(() => {
+    if (responseTab !== "body" || !searchQuery) return;
+    responseBodyRef.current?.querySelector(`[data-m="${matchIdx}"]`)?.scrollIntoView({ block: "center" });
+  }, [matchIdx, searchQuery, responseTab, rawHighlight]);
+
+  const stepMatch = (delta: number) => {
+    if (rawHighlight.count === 0) return;
+    setMatchIdx((i) => (i + delta + rawHighlight.count) % rawHighlight.count);
+  };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -576,6 +644,10 @@ export default function HttpClientTab() {
           </div>
           {executionsLoading ? (
             <p className="text-xs text-muted-foreground">Carregando...</p>
+          ) : executionsError ? (
+            <p className="text-xs text-destructive">
+              Não foi possível carregar as execuções: {executionsError instanceof Error ? executionsError.message : String(executionsError)}
+            </p>
           ) : executions.length === 0 ? (
             <p className="text-xs text-muted-foreground">Nenhuma execução ainda. Cada envio aparece aqui para re-executar.</p>
           ) : (
@@ -641,7 +713,16 @@ export default function HttpClientTab() {
       {/* Altura FIXA (h-[85vh], não só max-h): a área de conteúdo usa flex-1 min-h-0 + overflow-auto,
           que só rola quando o pai tem altura definida. Abas manuais (shadcn <Tabs> quebra a cadeia flex). */}
       <Dialog open={responseOpen && !!response} onOpenChange={setResponseOpen}>
-        <DialogContent className="max-w-5xl h-[85vh] flex flex-col gap-3">
+        <DialogContent
+          className="max-w-5xl h-[85vh] flex flex-col gap-3"
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+              e.preventDefault();
+              searchRef.current?.focus();
+              searchRef.current?.select();
+            }
+          }}
+        >
           <DialogHeader>
             <DialogTitle className="flex flex-wrap items-center gap-3">
               Resposta
@@ -663,7 +744,8 @@ export default function HttpClientTab() {
               <div className="flex items-center justify-between border-b border-border">
                 <div className="flex items-center gap-1">
                   {([
-                    ["body", "Corpo"],
+                    ...(canFormat ? ([["formatted", "Formatado"]] as const) : []),
+                    ["body", pretty.isJson ? "Corpo (JSON)" : "Corpo"],
                     ["headers", `Headers (${response.headers?.length ?? 0})`],
                   ] as const).map(([id, label]) => (
                     <button
@@ -679,7 +761,44 @@ export default function HttpClientTab() {
                     </button>
                   ))}
                 </div>
-                {responseTab === "body" && !response.body_is_binary && response.body !== "" && (
+                <div className="flex items-center gap-1 mb-1 ml-auto mr-2">
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                    <Input
+                      ref={searchRef}
+                      value={responseSearch}
+                      onChange={(e) => setResponseSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          stepMatch(e.shiftKey ? -1 : 1);
+                        } else if (e.key === "Escape" && responseSearch) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setResponseSearch("");
+                        }
+                      }}
+                      placeholder="Buscar trecho (Ctrl+F)"
+                      className="h-7 w-56 pl-7 text-xs"
+                    />
+                  </div>
+                  {responseTab === "body" && searchQuery && (
+                    <>
+                      <span className="text-xs text-muted-foreground tabular-nums min-w-[3.5rem] text-center">
+                        {rawHighlight.count === 0
+                          ? "0 de 0"
+                          : `${matchIdx + 1} de ${rawHighlight.count}${rawHighlight.count >= MAX_MARKS ? "+" : ""}`}
+                      </span>
+                      <Button type="button" variant="ghost" size="icon" className="h-7 w-7" title="Anterior (Shift+Enter)" onClick={() => stepMatch(-1)}>
+                        <ChevronUp className="w-4 h-4" />
+                      </Button>
+                      <Button type="button" variant="ghost" size="icon" className="h-7 w-7" title="Próximo (Enter)" onClick={() => stepMatch(1)}>
+                        <ChevronDown className="w-4 h-4" />
+                      </Button>
+                    </>
+                  )}
+                </div>
+                {(responseTab === "body" || responseTab === "formatted") && !response.body_is_binary && response.body !== "" && (
                   <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 mb-1" onClick={() => copyText(pretty.text, "Corpo")}>
                     <Copy className="w-3.5 h-3.5" />
                     Copiar corpo
@@ -705,7 +824,9 @@ export default function HttpClientTab() {
                 </p>
               )}
 
-              <div className="flex-1 min-h-0 overflow-auto rounded-md border border-border bg-muted/30">
+              <div ref={responseBodyRef} className="flex-1 min-h-0 overflow-auto rounded-md border border-border bg-muted/30">
+                {responseTab === "formatted" && canFormat && <HttpClientJsonView data={pretty.parsed} query={searchQuery} />}
+
                 {responseTab === "body" &&
                   (response.body_is_binary ? (
                     <p className="p-3 text-sm text-muted-foreground">
@@ -714,12 +835,15 @@ export default function HttpClientTab() {
                   ) : response.body === "" ? (
                     <p className="p-3 text-sm text-muted-foreground">Resposta sem corpo.</p>
                   ) : (
-                    <pre className="text-xs font-mono whitespace-pre-wrap break-all p-3">{pretty.text}</pre>
+                    <pre className="text-xs font-mono whitespace-pre-wrap break-all p-3">{rawHighlight.nodes}</pre>
                   ))}
 
                 {responseTab === "headers" && (
                   <div className="divide-y divide-border">
-                    {(response.headers ?? []).map((h, i) => (
+                    {searchQuery && visibleHeaders.length === 0 && (
+                      <p className="p-3 text-xs text-muted-foreground">Nenhum header contém "{responseSearch.trim()}".</p>
+                    )}
+                    {visibleHeaders.map((h, i) => (
                       <div key={i} className="flex gap-3 px-3 py-1.5 text-xs font-mono">
                         <span className="text-muted-foreground shrink-0 w-64 truncate" title={h.key}>{h.key}</span>
                         <span className="break-all">{h.value}</span>
