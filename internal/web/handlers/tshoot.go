@@ -93,6 +93,98 @@ func nodeShellPodSpec(namespace, name, node, user string) *corev1.Pod {
 	return p
 }
 
+// podNetShellPodSpec: o --rm do "Ephemeral Debug". Ephemeral containers não saem do pod alvo
+// (a API recusa remover — ficam Terminated no spec até o pod ser recriado), então nada é
+// anexado a ele: este pod netshoot privilegiado sobe no MESMO node, com hostPID, e o shell entra
+// (nsenter) nos namespaces de rede e hostname de um processo do pod alvo — mesmo IP, mesmas
+// regras de iptables/Istio, ferramentas do netshoot. Ao sair, este pod é apagado e o alvo
+// fica intocado.
+func podNetShellPodSpec(namespace, name, node, targetPod, user string) *corev1.Pod {
+	p := tshootPodSpec(namespace, name, user)
+	p.Labels["app.kubernetes.io/name"] = "pod-netshell"
+	p.Annotations["k8s-hpa-manager.io/target-pod"] = targetPod
+	p.Annotations["k8s-hpa-manager.io/purpose"] = "debug de rede do pod " + targetPod + " (--rm): apagado ao fim da sessão, nada é anexado ao pod alvo"
+	privileged := true
+	p.Spec.NodeName = node
+	p.Spec.HostPID = true
+	p.Spec.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists}}
+	c := &p.Spec.Containers[0]
+	c.Name = "netshell"
+	c.SecurityContext = &corev1.SecurityContext{Privileged: &privileged}
+	return p
+}
+
+// podNetShellCommand acha, pelo cgroup, um processo do container alvo no node (hostPID) e abre o
+// bash nos namespaces de rede e hostname dele. containerID vem do status do pod
+// ("containerd://<id>"); só o <id> aparece no cgroup.
+func podNetShellCommand(containerID string) string {
+	if _, id, ok := strings.Cut(containerID, "://"); ok {
+		containerID = id
+	}
+	// id vazio casaria com qualquer cgroup (inclusive o PID 1 do node): recusa.
+	script := `id=` + quoteShellArg(containerID) + `
+[ ${#id} -ge 12 ] || { echo "id de container inválido: '$id'"; exit 1; }
+for f in /proc/[0-9]*/cgroup; do
+  if grep -q "$id" "$f" 2>/dev/null; then
+    p=${f#/proc/}; p=${p%/cgroup}
+    exec nsenter -t "$p" -n -u -- bash
+  fi
+done
+echo "processo do container $id não encontrado neste node"; exit 1`
+	return "sh -c " + quoteShellArg(script)
+}
+
+func newPodNetShellName() string {
+	return "netshell-" + strings.TrimPrefix(newTshootName(), "tshoot-")
+}
+
+// targetContainerID escolhe o container do pod alvo para o nsenter: o pedido, se estiver
+// rodando; senão o primeiro rodando (a rede é a mesma para todos os containers do pod).
+func targetContainerID(pod *corev1.Pod, want string) (string, error) {
+	var first string
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Running == nil || cs.ContainerID == "" {
+			continue
+		}
+		if cs.Name == want {
+			return cs.ContainerID, nil
+		}
+		if first == "" {
+			first = cs.ContainerID
+		}
+	}
+	if first == "" {
+		return "", fmt.Errorf("nenhum container do pod %s está rodando", pod.Name)
+	}
+	return first, nil
+}
+
+// handlePodNetShell — HandleDebug com rm=true (ver podNetShellPodSpec).
+func (h *PodExecHandler) handlePodNetShell(c *gin.Context, namespace, podName, container string) {
+	clientset, _, err := h.getClientAndConfig(c.Param("cluster"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to get client: %v", err)})
+		return
+	}
+	target, err := clientset.CoreV1().Pods(namespace).Get(c.Request.Context(), podName, metav1.GetOptions{})
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("pod %s: %v", podName, err)})
+		return
+	}
+	containerID, err := targetContainerID(target, container)
+	if err != nil || target.Spec.NodeName == "" {
+		if err == nil {
+			err = fmt.Errorf("o pod %s não está num node", podName)
+		}
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	pod := podNetShellPodSpec(namespace, newPodNetShellName(), target.Spec.NodeName, podName, GetUserInfoForHistory(c).Email)
+	h.runRmPodSession(c, pod, "pod_netshell", fmt.Sprintf(
+		"\x1b[1;33mRede do pod %s:\x1b[0m mesmo IP e regras (iptables/Istio) do pod, com as ferramentas do netshoot. Nada foi anexado ao pod.\r\n", podName),
+		podNetShellCommand(containerID))
+}
+
 func newNodeShellName() string {
 	return "node-shell-" + strings.TrimPrefix(newTshootName(), "tshoot-")
 }
@@ -171,7 +263,7 @@ func waitTshootReady(ctx context.Context, client kubernetes.Interface, namespace
 func (h *PodExecHandler) HandleTshoot(c *gin.Context) {
 	namespace := c.Param("namespace")
 	pod := tshootPodSpec(namespace, newTshootName(), GetUserInfoForHistory(c).Email)
-	h.runRmPodSession(c, pod, "tshoot", "")
+	h.runRmPodSession(c, pod, "tshoot", "", "bash")
 }
 
 // HandleNodeShell — WS /api/v1/node-shell/:cluster/:node/ws?namespace=<ns>
@@ -181,13 +273,13 @@ func (h *PodExecHandler) HandleNodeShell(c *gin.Context) {
 	namespace := c.DefaultQuery("namespace", "default")
 	pod := nodeShellPodSpec(namespace, newNodeShellName(), node, GetUserInfoForHistory(c).Email)
 	h.runRmPodSession(c, pod, "node_shell",
-		"\x1b[1;33mDica:\x1b[0m \x1b[1mchroot /host\x1b[0m entra no sistema do próprio node (o / dele está montado em /host).\r\n")
+		"\x1b[1;33mDica:\x1b[0m \x1b[1mchroot /host\x1b[0m entra no sistema do próprio node (o / dele está montado em /host).\r\n", "bash")
 }
 
-// runRmPodSession é o ciclo comum dos pods com --rm (tshoot e shell no node): limpa sobras,
-// cria o pod, espera Running, abre o bash com TTY e APAGA o pod quando a sessão termina por
-// qualquer motivo (exit, terminal fechado, conexão caída). kind vai para o histórico.
-func (h *PodExecHandler) runRmPodSession(c *gin.Context, pod *corev1.Pod, kind, readyHint string) {
+// runRmPodSession é o ciclo comum dos pods com --rm (tshoot, shell no node e rede de um pod):
+// limpa sobras, cria o pod, espera Running, abre `shell` com TTY e APAGA o pod quando a sessão
+// termina por qualquer motivo (exit, terminal fechado, conexão caída). kind vai para o histórico.
+func (h *PodExecHandler) runRmPodSession(c *gin.Context, pod *corev1.Pod, kind, readyHint, shell string) {
 	cluster, namespace, name := c.Param("cluster"), pod.Namespace, pod.Name
 	clientset, restConfig, err := h.getClientAndConfig(cluster)
 	if err != nil {
@@ -247,7 +339,7 @@ func (h *PodExecHandler) runRmPodSession(c *gin.Context, pod *corev1.Pod, kind, 
 	}
 	h.sendOutput(conn, fmt.Sprintf("\x1b[1;32m✓ Pod %s pronto.\x1b[0m Saia com \x1b[1mexit\x1b[0m (ou fechando o terminal) — o pod é apagado em seguida.\r\n%s\r\n", name, readyHint))
 
-	h.execInPod(ctx, conn, clientset, restConfig, namespace, name, pod.Spec.Containers[0].Name, "bash", false, "", false, false)
+	h.execInPod(ctx, conn, clientset, restConfig, namespace, name, pod.Spec.Containers[0].Name, shell, false, "", false)
 }
 
 func (h *PodExecHandler) recordTshoot(c *gin.Context, action, namespace, name, cluster, status, errMsg string, start time.Time) {

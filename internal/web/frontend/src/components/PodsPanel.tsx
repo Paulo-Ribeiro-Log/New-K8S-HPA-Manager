@@ -1931,15 +1931,18 @@ export const PodsPanel = ({
 
       {/* Modal de Configuração do Shell */}
       <Dialog open={shellModalOpen} onOpenChange={setShellModalOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
+        {/* Altura limitada e só o miolo rola: com as 4 opções o conteúdo passava da tela e
+            empurrava Cancelar/Conectar para fora. */}
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle>Abrir Shell no Container</DialogTitle>
             <DialogDescription>
               Escolha o container e o tipo de shell para conectar
             </DialogDescription>
           </DialogHeader>
-          
-          <div className="space-y-4 py-4">
+
+          <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="space-y-4 py-4 pr-2">
             {/* Seleção de Container */}
             <div className="space-y-2">
               <Label htmlFor="container-select">Container</Label>
@@ -2020,7 +2023,7 @@ export const PodsPanel = ({
                       <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">ethtool</code>
                     </div>
                     <div className="text-xs mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded">
-                      <span className="text-yellow-300">ℹ️ Nota:</span> Ephemeral containers persistem até o pod reiniciar. Containers existentes serão reutilizados automaticamente.
+                      <span className="text-yellow-300">ℹ️ Nota:</span> sem <code>--rm</code>, o container fica anexado ao pod (Terminated depois de encerrado) até o pod ser recriado — a API do Kubernetes não remove ephemeral containers. Containers existentes são reutilizados.
                     </div>
                     <div
                       role="checkbox"
@@ -2031,8 +2034,8 @@ export const PodsPanel = ({
                     >
                       <Checkbox checked={ephemeralRm} className="mt-0.5 pointer-events-none" tabIndex={-1} />
                       <span>
-                        <code className="font-semibold">--rm</code>: encerrar o container de debug ao sair (exit ou fechar o terminal).
-                        <span className="text-muted-foreground"> A API do Kubernetes não remove ephemeral containers do pod: ele para (Terminated) e a entrada some quando o pod for recriado.</span>
+                        <code className="font-semibold">--rm</code>: não deixa nada no pod. Em vez de anexar um container, sobe um netshoot temporário no mesmo node que entra na rede do pod (mesmo IP e regras de iptables/Istio) e é apagado ao sair.
+                        <span className="text-muted-foreground"> Precisa de permissão para pod privilegiado no namespace; não vê processos/arquivos do pod.</span>
                       </span>
                     </div>
                   </Label>
@@ -2063,8 +2066,9 @@ export const PodsPanel = ({
               </div>
             )}
           </div>
+          </div>
 
-          <DialogFooter>
+          <DialogFooter className="flex-shrink-0">
             <Button
               variant="outline"
               onClick={() => setShellModalOpen(false)}

@@ -23,8 +23,9 @@ interface PodTerminalProps {
   // "node": shell no node (kubectl debug node/<node>), pod privilegiado apagado ao sair.
   mode?: "shell" | "debug" | "tshoot" | "node";
   node?: string; // modo "node"
-  // Ephemeral Debug com --rm: o servidor encerra o container quando a última sessão termina
-  // (a API não remove ephemeral containers do pod — ele vira Terminated).
+  // Ephemeral Debug com --rm: nada é anexado ao pod (ephemeral containers não saem do pod) — o
+  // servidor sobe um netshoot temporário no mesmo node, entra na rede do pod (nsenter) e o apaga
+  // ao sair.
   rm?: boolean;
 }
 
@@ -71,7 +72,8 @@ export const PodTerminal = ({
       cursorBlink: true,
       fontSize: 14,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      convertEol: true,
+      // Sem convertEol: o PTY já manda \r\n, e um \n cru de vim/less/top é "desce o cursor" —
+      // virar quebra de linha embaralhava a tela (e o que se copiava dela).
       scrollback: 10000,
       theme: {
         background: "#1e1e1e",
@@ -120,9 +122,8 @@ export const PodTerminal = ({
       if (mode === "debug") params.set("image", "nicolaka/netshoot");
       if (mode === "debug" && rm) params.set("rm", "true");
       wsUrl = `${protocol}//${window.location.host}/api/v1/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/${mode === "debug" ? "debug" : "shell"}?${params.toString()}`;
-      terminal.writeln(mode === "debug"
-        ? "\x1b[1;34m⚡ Criando ephemeral debug container...\x1b[0m"
-        : "\x1b[1;34m⚡ Conectando ao pod...\x1b[0m");
+      if (mode !== "debug") terminal.writeln("\x1b[1;34m⚡ Conectando ao pod...\x1b[0m");
+      else if (!rm) terminal.writeln("\x1b[1;34m⚡ Criando ephemeral debug container...\x1b[0m");
     }
 
     const ws = new WebSocket(wsUrl);
@@ -146,17 +147,17 @@ export const PodTerminal = ({
         terminal.writeln(`\x1b[1;33m🖥️  Shell no node ${node} (nicolaka/netshoot, privilegiado) com --rm\x1b[0m — apagado pelo servidor ao sair`);
       } else {
         terminal.writeln("\x1b[1;32m✓ Conectado!\x1b[0m");
-        if (mode === "debug") {
+        if (mode === "debug" && rm) {
+          terminal.writeln("\x1b[1;33m🛠️  nicolaka/netshoot na rede do pod\x1b[0m (--rm) — pod temporário no mesmo node, apagado ao sair; nada é anexado ao pod");
+        } else if (mode === "debug") {
           terminal.writeln("\x1b[1;33m🛠️  nicolaka/netshoot\x1b[0m - Ephemeral Debug Container");
-          terminal.writeln(rm
-            ? "\x1b[1;36mEncerramento (--rm):\x1b[0m ao sair (exit ou fechar o terminal), pelo botão ⏻, ou após 10 min sem atividade"
-            : "\x1b[1;36mEncerramento:\x1b[0m botão ⏻ no topo, ou automático após 10 min sem atividade");
+          terminal.writeln("\x1b[1;36mEncerramento:\x1b[0m botão ⏻ no topo, ou automático após 10 min sem atividade");
         }
         terminal.writeln(`\x1b[1;36mPod:\x1b[0m ${pod}`);
         terminal.writeln(`\x1b[1;36mContainer:\x1b[0m ${container}`);
         terminal.writeln(`\x1b[1;36mShell:\x1b[0m ${shell}`);
       }
-      terminal.writeln("\x1b[1;36mAtalhos:\x1b[0m Ctrl+C com texto selecionado = copiar (sem seleção = interromper) | Ctrl+V = colar");
+      terminal.writeln("\x1b[1;36mAtalhos:\x1b[0m Ctrl+C com texto selecionado (ou Ctrl+Shift+C) = copiar, sem seleção = interromper | Ctrl+V = colar");
       terminal.writeln("\x1b[2m─────────────────────────────────\x1b[0m");
       fitAddon.fit();
       sendResize();
@@ -274,7 +275,7 @@ export const PodTerminal = ({
               : `Terminal: ${pod} / ${container}`}
           </span>
           <span className="text-xs text-muted-foreground">
-            ({mode === "tshoot" || mode === "node" ? "netshoot · bash" : shell}{mode === "debug" && rm ? " · --rm" : ""})
+            ({mode === "tshoot" || mode === "node" ? "netshoot · bash" : mode === "debug" && rm ? "netshoot · rede do pod · --rm" : shell})
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -300,7 +301,7 @@ export const PodTerminal = ({
               </Button>
             </>
           )}
-          {mode === "debug" && (
+          {mode === "debug" && !rm && (
             <Button
               variant="ghost"
               size="icon"

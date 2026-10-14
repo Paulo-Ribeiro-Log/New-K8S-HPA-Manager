@@ -117,7 +117,7 @@ func (h *PodExecHandler) HandleShell(c *gin.Context) {
 	log.Printf("[SHELL] WebSocket upgrade successful")
 
 	// Execute shell
-	h.execInPod(c.Request.Context(), conn, clientset, restConfig, namespace, podName, containerName, shell, false, "", false, false)
+	h.execInPod(c.Request.Context(), conn, clientset, restConfig, namespace, podName, containerName, shell, false, "", false)
 }
 
 // HandleDebug cria ephemeral debug container e conecta
@@ -144,6 +144,13 @@ func (h *PodExecHandler) HandleDebug(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "container parameter is required",
 		})
+		return
+	}
+
+	// --rm: nada de ephemeral container (a API não deixa removê-lo do pod) — pod temporário no
+	// mesmo node que entra na rede do alvo e é apagado ao sair.
+	if c.Query("rm") == "true" {
+		h.handlePodNetShell(c, namespace, podName, targetContainer)
 		return
 	}
 
@@ -185,7 +192,7 @@ func (h *PodExecHandler) HandleDebug(c *gin.Context) {
 	}
 
 	// Step 3: Exec into ephemeral container (o heartbeat é tocado já na abertura da sessão)
-	h.execInPod(ctx, conn, clientset, restConfig, namespace, podName, debugContainerName, shell, true, image, isReused, c.Query("rm") == "true")
+	h.execInPod(ctx, conn, clientset, restConfig, namespace, podName, debugContainerName, shell, true, image, isReused)
 }
 
 // getOrCreateEphemeralContainer verifica se já existe um container de debug ou cria um novo
@@ -367,7 +374,6 @@ func (h *PodExecHandler) execInPod(
 	isEphemeral bool,
 	image string,
 	isReused bool,
-	rmOnExit bool, // ephemeral: encerra o container quando a última sessão local terminar (--rm)
 ) {
 	// Create exec request with UTF-8 locale support
 	// Use C.UTF-8 which is available in most containers (more universal than pt_BR)
@@ -448,16 +454,7 @@ func (h *PodExecHandler) execInPod(
 	})
 
 	if isEphemeral {
-		// --rm: a API não remove ephemeral containers do pod; o que dá é encerrar o processo
-		// (vira Terminated e para de consumir). Só quando a última sessão local nesse container
-		// termina — outra aba ainda pode estar usando.
-		remaining := releaseDebugSession(debugKey)
-		if rmOnExit && remaining == 0 && !session.stopped.Load() {
-			session.stopped.Store(true)
-			runInDebug(debugStopUnconditional)
-			session.writeNotice("\r\n\x1b[1;32m🗑  Container de debug encerrado (--rm).\x1b[0m \x1b[2mA entrada continua no spec do pod até ele ser recriado (limite da API).\x1b[0m\r\n")
-			return
-		}
+		releaseDebugSession(debugKey)
 	}
 	if session.stopped.Load() {
 		// Encerramento intencional (botão ou ociosidade): o fim do stream é esperado.
