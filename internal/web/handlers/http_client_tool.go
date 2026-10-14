@@ -23,6 +23,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
+	"k8s-hpa-manager/internal/storage"
 )
 
 // http_client_tool.go — ferramenta "Cliente HTTP" (menu Tools): monta e envia uma requisição HTTP
@@ -87,10 +88,11 @@ type HTTPClientResponse struct {
 type HTTPClientHandler struct {
 	kubeManager    *config.KubeConfigManager
 	historyTracker *history.HistoryTracker
+	executions     *storage.HTTPClientExecutionStore // nil = lista de execuções desligada
 }
 
-func NewHTTPClientHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *HTTPClientHandler {
-	return &HTTPClientHandler{kubeManager: km, historyTracker: ht}
+func NewHTTPClientHandler(km *config.KubeConfigManager, ht *history.HistoryTracker, executions *storage.HTTPClientExecutionStore) *HTTPClientHandler {
+	return &HTTPClientHandler{kubeManager: km, historyTracker: ht, executions: executions}
 }
 
 // ParseCurl — POST /api/v1/http-client/parse-curl {"curl": "..."}.
@@ -172,13 +174,92 @@ func (h *HTTPClientHandler) Send(c *gin.Context) {
 		if err != nil {
 			c.JSON(http.StatusBadGateway, errorResponse("POD_EXEC_ERROR", err.Error()))
 			h.logHistory(c, req, start, nil, err)
+			h.saveExecution(c, req, HTTPClientResponse{DurationMs: time.Since(start).Milliseconds(), Error: err.Error()})
 			return
 		}
 	} else {
 		resp = sendFromServer(c.Request.Context(), req)
 	}
 	h.logHistory(c, req, start, &resp, nil)
+	h.saveExecution(c, req, resp)
 	c.JSON(http.StatusOK, resp)
+}
+
+// saveExecution grava a execução na lista do usuário (para re-executar). Falha aqui não derruba
+// a requisição — a resposta já existe.
+func (h *HTTPClientHandler) saveExecution(c *gin.Context, req HTTPClientRequest, resp HTTPClientResponse) {
+	if h.executions == nil {
+		return
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return
+	}
+	e := &storage.HTTPClientExecution{
+		UserEmail:     history.UserFromContext(c).Email,
+		Request:       string(raw),
+		Method:        req.Method,
+		URL:           req.URL,
+		ExecutionMode: req.ExecutionMode,
+		Cluster:       req.Cluster,
+		Status:        resp.Status,
+		StatusText:    resp.StatusText,
+		DurationMs:    resp.DurationMs,
+		SizeBytes:     resp.SizeBytes,
+		ExecutedFrom:  resp.ExecutedFrom,
+		Error:         resp.Error,
+	}
+	if err := h.executions.Add(e); err != nil {
+		fmt.Printf("⚠️  Cliente HTTP: falha ao gravar execução: %v\n", err)
+	}
+}
+
+// HTTPClientExecutionItem é uma execução da lista, com a requisição já decodificada.
+type HTTPClientExecutionItem struct {
+	storage.HTTPClientExecution
+	Request HTTPClientRequest `json:"request"`
+}
+
+// ListExecutions — GET /api/v1/http-client/executions?limit=. Só as do usuário logado.
+func (h *HTTPClientHandler) ListExecutions(c *gin.Context) {
+	if h.executions == nil {
+		c.JSON(http.StatusOK, gin.H{"executions": []HTTPClientExecutionItem{}})
+		return
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	list, err := h.executions.List(history.UserFromContext(c).Email, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("STORE_ERROR", err.Error()))
+		return
+	}
+	items := make([]HTTPClientExecutionItem, 0, len(list))
+	for _, e := range list {
+		item := HTTPClientExecutionItem{HTTPClientExecution: e}
+		if err := json.Unmarshal([]byte(e.Request), &item.Request); err != nil {
+			continue
+		}
+		items = append(items, item)
+	}
+	c.JSON(http.StatusOK, gin.H{"executions": items})
+}
+
+// DeleteExecution — DELETE /api/v1/http-client/executions/:id. Só remove execução do próprio usuário.
+func (h *HTTPClientHandler) DeleteExecution(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || h.executions == nil {
+		c.JSON(http.StatusNotFound, errorResponse("NOT_FOUND", "execução não encontrada"))
+		return
+	}
+	ok, err := h.executions.Delete(history.UserFromContext(c).Email, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("STORE_ERROR", err.Error()))
+		return
+	}
+	if !ok {
+		c.JSON(http.StatusNotFound, errorResponse("NOT_FOUND", "execução não encontrada"))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // normalizeHTTPClientRequest valida e aplica defaults. Devolve a mensagem de erro, ou "".
