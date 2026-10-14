@@ -1287,12 +1287,21 @@ func (s *Server) setupRoutes() {
 	// Cliente HTTP (menu Tools) — envia requisições HTTP (ou um cURL colado) a partir do servidor
 	// ou de um pod de um Deployment (curl num Ephemeral Container). Enviar fica atrás do RBAC de
 	// grupo porque o modo pod anexa um container ao pod.
-	httpClientHandler := handlers.NewHTTPClientHandler(s.kubeManager, s.historyTracker)
+	// As execuções (requisição inteira, para re-executar) ficam num SQLite próprio, por usuário.
+	var httpClientExecutions *storage.HTTPClientExecutionStore
+	if store, err := storage.NewHTTPClientExecutionStore(filepath.Join(baseDir, "http_client_executions.db")); err != nil {
+		fmt.Printf("⚠️  Cliente HTTP: lista de execuções desligada: %v\n", err)
+	} else {
+		httpClientExecutions = store
+	}
+	httpClientHandler := handlers.NewHTTPClientHandler(s.kubeManager, s.historyTracker, httpClientExecutions)
 	httpClient := api.Group("/http-client")
 	{
 		httpClient.POST("/parse-curl", httpClientHandler.ParseCurl)
 		httpClient.GET("/pods", httpClientHandler.ListPods)
 		httpClient.POST("/send", rbacMiddleware.RequireSREGroup(), httpClientHandler.Send)
+		httpClient.GET("/executions", httpClientHandler.ListExecutions)
+		httpClient.DELETE("/executions/:id", httpClientHandler.DeleteExecution)
 	}
 
 	// Descoberta de Rede — traceroute sob demanda (modo pod/local) com transmissão salto-a-salto

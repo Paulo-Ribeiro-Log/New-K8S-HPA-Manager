@@ -7,9 +7,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
+
+	"k8s-hpa-manager/internal/storage"
 )
 
 // Exemplo real que motivou a ferramenta.
@@ -221,5 +227,66 @@ func TestHTTPClientCurlScriptNaImagem(t *testing.T) {
 	}
 	if r := run(HTTPClientRequest{Method: "GET", URL: "http://host-que-nao-existe.invalid/"}); r.Error == "" || r.Status != 0 {
 		t.Errorf("DNS inexistente deveria virar Error: %+v", r)
+	}
+}
+
+// Cada envio vira uma execução na lista do usuário, com a requisição inteira para re-executar.
+func TestHTTPClientExecutionsSalvaEListaPorUsuario(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	alvo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer alvo.Close()
+
+	store, err := storage.NewHTTPClientExecutionStore(filepath.Join(t.TempDir(), "exec.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	h := NewHTTPClientHandler(nil, nil, store)
+
+	as := func(email string) gin.HandlerFunc {
+		return func(c *gin.Context) { c.Set("user_email", email) }
+	}
+	r := gin.New()
+	r.POST("/send", as("ana@corp"), h.Send)
+	r.GET("/ana", as("ana@corp"), h.ListExecutions)
+	r.GET("/bia", as("bia@corp"), h.ListExecutions)
+	r.DELETE("/bia/:id", as("bia@corp"), h.DeleteExecution)
+
+	body := `{"method":"POST","url":"` + alvo.URL + `/x?a=1","headers":[{"key":"Authorization","value":"Bearer t"}],"body":"{}"}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("send: %d %s", w.Code, w.Body.String())
+	}
+
+	var lista struct {
+		Executions []HTTPClientExecutionItem `json:"executions"`
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ana", nil))
+	if err := json.Unmarshal(w.Body.Bytes(), &lista); err != nil {
+		t.Fatal(err)
+	}
+	if len(lista.Executions) != 1 {
+		t.Fatalf("execuções da ana = %d, quer 1", len(lista.Executions))
+	}
+	e := lista.Executions[0]
+	if e.Status != http.StatusCreated || e.Request.Method != "POST" || e.Request.URL != alvo.URL+"/x?a=1" ||
+		e.Request.Body != "{}" || len(e.Request.Headers) != 1 || e.Request.ExecutionMode != "server" {
+		t.Errorf("execução gravada incompleta: %+v", e)
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/bia", nil))
+	if !strings.Contains(w.Body.String(), `"executions":[]`) {
+		t.Errorf("bia vê execuções da ana: %s", w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/bia/"+strconv.FormatInt(e.ID, 10), nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("bia apagou execução da ana: %d", w.Code)
 	}
 }

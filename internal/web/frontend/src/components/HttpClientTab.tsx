@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Check,
@@ -7,8 +7,11 @@ import {
   ClipboardPaste,
   Copy,
   Eye,
+  History,
   Loader2,
+  PencilLine,
   Plus,
+  RotateCw,
   Send,
   Trash2,
   Wand2,
@@ -29,7 +32,13 @@ import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { formatBytes } from "@/lib/monitorUtils";
 import { cn } from "@/lib/utils";
-import type { HttpClientExecutionMode, HttpClientHeader, HttpClientResponse } from "@/lib/api/types";
+import type {
+  HttpClientExecution,
+  HttpClientExecutionMode,
+  HttpClientHeader,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "@/lib/api/types";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
@@ -113,6 +122,7 @@ function copyText(text: string, label: string) {
 
 export default function HttpClientTab() {
   const { clusters } = useClusters();
+  const queryClient = useQueryClient();
 
   // Onde a requisição é executada.
   const [executionMode, setExecutionMode] = useState<HttpClientExecutionMode>("server");
@@ -167,25 +177,19 @@ export default function HttpClientTab() {
   const canSend =
     !!url.trim() && !sending && (executionMode === "server" || (!!cluster && !!namespace && !!deployment));
 
-  const send = async () => {
-    if (!canSend) return;
+  // Execuções salvas no servidor (SQLite, por usuário) — a lista abaixo da resposta.
+  const { data: executionsData, isLoading: executionsLoading } = useQuery({
+    queryKey: ["http-client-executions"],
+    queryFn: () => apiClient.getHttpClientExecutions(),
+  });
+  const executions = executionsData?.executions ?? [];
+
+  const execute = async (req: HttpClientRequest) => {
     setSending(true);
     setSendError(null);
     setResponse(null);
     try {
-      const resp = await apiClient.sendHttpClientRequest({
-        execution_mode: executionMode,
-        ...(executionMode === "pod"
-          ? { cluster, namespace, deployment, pod_name: podName || undefined, container_name: containerName || undefined }
-          : {}),
-        method,
-        url: url.trim(),
-        headers: filledHeaders,
-        body: bodyAllowed ? body : "",
-        follow_redirects: followRedirects,
-        insecure_skip_verify: insecure,
-        timeout_ms: timeoutMs,
-      });
+      const resp = await apiClient.sendHttpClientRequest(req);
       setResponse(resp);
       setResponseTab("body");
       // Abre o modal direto quando houve resposta HTTP; erro sem resposta fica só no resumo.
@@ -194,6 +198,56 @@ export default function HttpClientTab() {
       setSendError(err instanceof Error ? err.message : "Falha ao enviar a requisição");
     } finally {
       setSending(false);
+      queryClient.invalidateQueries({ queryKey: ["http-client-executions"] });
+    }
+  };
+
+  const send = () => {
+    if (!canSend) return;
+    void execute({
+      execution_mode: executionMode,
+      ...(executionMode === "pod"
+        ? { cluster, namespace, deployment, pod_name: podName || undefined, container_name: containerName || undefined }
+        : {}),
+      method,
+      url: url.trim(),
+      headers: filledHeaders,
+      body: bodyAllowed ? body : "",
+      follow_redirects: followRedirects,
+      insecure_skip_verify: insecure,
+      timeout_ms: timeoutMs,
+    });
+  };
+
+  // Põe a requisição salva no formulário (para editar ou conferir o que será re-executado).
+  const loadExecution = (req: HttpClientRequest) => {
+    setExecutionMode(req.execution_mode === "pod" ? "pod" : "server");
+    setCluster(req.cluster ?? "");
+    setNamespace(req.namespace ?? "");
+    setDeployment(req.deployment ?? "");
+    setPodName(req.pod_name ?? "");
+    setContainerName(req.container_name ?? "");
+    setMethod(METHODS.includes(req.method) ? req.method : "GET");
+    setUrl(req.url);
+    setHeaders(req.headers?.length ? req.headers : [{ key: "", value: "" }]);
+    setBody(req.body ?? "");
+    setFollowRedirects(req.follow_redirects);
+    setInsecure(req.insecure_skip_verify);
+    setTimeoutMs(req.timeout_ms || 30000);
+  };
+
+  const reexecute = (e: HttpClientExecution) => {
+    if (sending) return;
+    loadExecution(e.request);
+    void execute(e.request);
+  };
+
+  const removeExecution = async (id: number) => {
+    try {
+      await apiClient.deleteHttpClientExecution(id);
+      queryClient.invalidateQueries({ queryKey: ["http-client-executions"] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Não foi possível remover a execução");
     }
   };
 
@@ -511,6 +565,77 @@ export default function HttpClientTab() {
             )}
           </>
         )}
+
+        <div className="mt-2 flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <History className="w-4 h-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Execuções</h3>
+            <span className="text-xs text-muted-foreground">
+              {executions.length > 0 ? `${executions.length} — guardadas no servidor (as 200 mais recentes)` : ""}
+            </span>
+          </div>
+          {executionsLoading ? (
+            <p className="text-xs text-muted-foreground">Carregando...</p>
+          ) : executions.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Nenhuma execução ainda. Cada envio aparece aqui para re-executar.</p>
+          ) : (
+            <div className="max-h-[420px] overflow-y-auto rounded-md border border-border divide-y divide-border">
+              {executions.map((e) => (
+                <div key={e.id} className="flex items-center gap-3 px-3 py-1.5 text-xs hover:bg-muted/40">
+                  <span className="text-muted-foreground shrink-0 tabular-nums" title={e.created_at}>
+                    {new Date(e.created_at).toLocaleString("pt-BR")}
+                  </span>
+                  <Badge variant="outline" className={cn("font-mono shrink-0", statusColor(e.error && !e.status ? undefined : e.status))}>
+                    {e.status ? e.status : "erro"}
+                  </Badge>
+                  <span className="font-mono font-semibold shrink-0 w-16">{e.method}</span>
+                  <span className="font-mono truncate flex-1 min-w-0" title={e.error ? `${e.url}\n${e.error}` : e.url}>
+                    {e.url}
+                  </span>
+                  <span className="text-muted-foreground shrink-0 truncate max-w-[220px]" title={e.executed_from || e.execution_mode}>
+                    {e.execution_mode === "pod" ? `pod · ${e.request.namespace}/${e.request.deployment}` : "servidor"}
+                  </span>
+                  <span className="text-muted-foreground font-mono shrink-0 w-16 text-right">{e.duration_ms} ms</span>
+                  <div className="flex items-center shrink-0">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      title="Abrir no formulário (sem enviar)"
+                      onClick={() => loadExecution(e.request)}
+                    >
+                      <PencilLine className="w-3.5 h-3.5" />
+                    </Button>
+                    <ProtectedAction>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title="Re-executar"
+                        disabled={sending}
+                        onClick={() => reexecute(e)}
+                      >
+                        <RotateCw className="w-3.5 h-3.5" />
+                      </Button>
+                    </ProtectedAction>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      title="Remover da lista"
+                      onClick={() => removeExecution(e.id)}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Altura FIXA (h-[85vh], não só max-h): a área de conteúdo usa flex-1 min-h-0 + overflow-auto,
