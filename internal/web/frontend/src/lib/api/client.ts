@@ -4556,6 +4556,16 @@ class APIClient {
     return this.request<{ pods: import("./types").HttpClientPodOption[] }>(`/http-client/pods?${params.toString()}`);
   }
 
+  /** Execuções salvas do Cliente HTTP (do usuário logado, mais recentes primeiro) */
+  async getHttpClientExecutions(): Promise<{ executions: import("./types").HttpClientExecution[] }> {
+    return this.request<{ executions: import("./types").HttpClientExecution[] }>("/http-client/executions");
+  }
+
+  /** Remove uma execução salva do Cliente HTTP */
+  async deleteHttpClientExecution(id: number): Promise<void> {
+    await this.request(`/http-client/executions/${encodeURIComponent(String(id))}`, { method: "DELETE" });
+  }
+
   // ─── Teste de Banco de Dados sob Demanda ───────────────────────────────────
 
   /** Inicia o teste de banco de dados (ephemeral container psql/mysql/mongosh/redis-cli) e retorna session_id para SSE */

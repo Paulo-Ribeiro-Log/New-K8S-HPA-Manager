@@ -3454,3 +3454,20 @@ export interface HttpClientPodOption {
   name: string;
   containers: string[];
 }
+
+// Execução salva (SQLite, por usuário): a requisição inteira + resumo da resposta.
+export interface HttpClientExecution {
+  id: number;
+  created_at: string;
+  request: HttpClientRequest;
+  method: string;
+  url: string;
+  execution_mode: HttpClientExecutionMode;
+  cluster?: string;
+  status?: number;
+  status_text?: string;
+  duration_ms: number;
+  size_bytes: number;
+  executed_from?: string;
+  error?: string;
+}

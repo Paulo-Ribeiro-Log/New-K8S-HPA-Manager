@@ -16,6 +16,9 @@
 - O `PodTerminal` não usa mais `convertEol`: o PTY já manda `\r\n`, e o `\n` cru do vim, less e top embaralhava a tela.
 
 Testado no terminal do Code Editor, em headless: Ctrl+V não envia nada; colar com CRLF e tab no prompt e no `cat -A` não gera linhas em branco nem autocompletar.
+### Cliente HTTP — lista de execuções com re-executar (Outubro 2026)
+
+Cada envio do Cliente HTTP (modo servidor ou pod, com sucesso ou erro) vira uma execução em `~/.k8s-hpa-manager/http_client_executions.db` (`storage.HTTPClientExecutionStore`; SQLite com WAL; banco, `-wal` e `-shm` com 0600). Cada execução guarda a requisição inteira (método, URL com query, headers, corpo, modo e alvo do pod, opções) para poder ser re-executada. Da resposta, fica só o resumo: status, tempo, tamanho, origem e erro. O corpo da resposta não é guardado: pode ser grande e é refeito ao re-executar. A lista é por usuário (e-mail do JWT) e mantém as 200 mais recentes. Rotas: `GET /api/v1/http-client/executions` e `DELETE /api/v1/http-client/executions/:id`; só é possível remover execuções próprias. Na aba, a lista "Execuções" fica abaixo da resposta e cada linha tem três ações: abrir no formulário (sem enviar), re-executar (carrega no formulário e envia a requisição salva, atrás de `ProtectedAction`, como o Enviar) e remover. O Change History continua gravando só método e host+caminho (`http_client_request`). Os headers e o corpo ficam apenas neste banco local do usuário.
 
 ### Change History — SQLite, autoria, cobertura e somente-inclusão (Outubro 2026)
 
