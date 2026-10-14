@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -101,5 +102,55 @@ func TestNodeShellPodSpec(t *testing.T) {
 	// mesmos backstops do tshoot: label da limpeza de sobras e prazo máximo de vida
 	if p.Labels[tshootLabel] != "true" || p.Spec.ActiveDeadlineSeconds == nil || p.Spec.RestartPolicy != corev1.RestartPolicyNever {
 		t.Error("node shell precisa dos mesmos backstops do --rm")
+	}
+}
+
+// O --rm do Ephemeral Debug não pode tocar o pod alvo: pod próprio no mesmo node, com hostPID
+// para o nsenter, apagável pelo mesmo ciclo do tshoot (label).
+func TestPodNetShellPodSpec(t *testing.T) {
+	p := podNetShellPodSpec("app-ns", newPodNetShellName(), "aks-node-1", "api-7d9f-xk2", "sre@empresa.com")
+	if p.Spec.NodeName != "aks-node-1" || !p.Spec.HostPID || p.Spec.HostNetwork {
+		t.Errorf("node=%q hostPID=%v hostNetwork=%v; quer o node do alvo, hostPID e rede própria", p.Spec.NodeName, p.Spec.HostPID, p.Spec.HostNetwork)
+	}
+	if sc := p.Spec.Containers[0].SecurityContext; sc == nil || sc.Privileged == nil || !*sc.Privileged {
+		t.Error("nsenter precisa de container privilegiado")
+	}
+	if p.Labels[tshootLabel] != "true" || !strings.HasPrefix(p.Name, "netshell-") || p.Namespace != "app-ns" {
+		t.Errorf("labels=%v name=%s ns=%s", p.Labels, p.Name, p.Namespace)
+	}
+	if len(p.Spec.Volumes) != 0 {
+		t.Error("não precisa montar o / do node")
+	}
+}
+
+func TestTargetContainerID(t *testing.T) {
+	running := corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p"}, Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{
+		{Name: "istio-proxy", ContainerID: "containerd://aaa", State: running},
+		{Name: "app", ContainerID: "containerd://bbb", State: running},
+		{Name: "parado", ContainerID: "containerd://ccc"},
+	}}}
+	for want, id := range map[string]string{"app": "containerd://bbb", "parado": "containerd://aaa", "": "containerd://aaa"} {
+		if got, err := targetContainerID(pod, want); err != nil || got != id {
+			t.Errorf("targetContainerID(%q) = %q, %v; quer %q", want, got, err, id)
+		}
+	}
+	if _, err := targetContainerID(&corev1.Pod{}, "app"); err == nil {
+		t.Error("pod sem container rodando deveria dar erro")
+	}
+}
+
+// O script acha o processo pelo cgroup e entra na rede dele; roda de verdade num /proc falso não
+// dá (caminho fixo), então valida sintaxe e que o id vai sem o prefixo do runtime.
+func TestPodNetShellCommand(t *testing.T) {
+	cmd := podNetShellCommand("containerd://0123abcd")
+	if !strings.HasPrefix(cmd, "sh -c '") || strings.Contains(cmd, "containerd://") || !strings.Contains(cmd, "0123abcd") {
+		t.Fatalf("comando inesperado: %s", cmd)
+	}
+	if !strings.Contains(cmd, "nsenter -t \"$p\" -n -u -- bash") {
+		t.Errorf("sem nsenter na rede do alvo: %s", cmd)
+	}
+	if out, err := exec.Command("sh", "-c", strings.Replace(cmd, "sh -c ", "sh -n -c ", 1)).CombinedOutput(); err != nil {
+		t.Errorf("sintaxe: %v %s", err, out)
 	}
 }

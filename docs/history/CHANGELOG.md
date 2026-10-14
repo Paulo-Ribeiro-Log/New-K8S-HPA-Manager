@@ -3,6 +3,20 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Abrir Shell — --rm sem rastro no pod, modal e copiar/colar do terminal (Outubro 2026)
+
+**--rm do Ephemeral Debug deixava o container no pod.** A API do Kubernetes não remove ephemeral containers: `spec.ephemeralContainers` só aceita inclusão. O `--rm` antigo só encerrava o processo, e o container continuava listado no pod como Terminated até o pod ser recriado. Agora, com `--rm`, nada é anexado ao pod alvo. `handlePodNetShell` (`tshoot.go`) cria um pod netshoot privilegiado e com `hostPID` no **mesmo node** e acha, pelo cgroup, um processo do container alvo; o ID vem do status do pod e um ID vazio é recusado, porque casaria com o PID 1 do node. Em seguida abre o bash com `nsenter -n -u` na rede e no hostname dele, com o mesmo IP e as mesmas regras de iptables/Istio. Esse pod passa pelo mesmo ciclo do tshoot (`runRmPodSession`): é apagado ao sair, com o terminal fechado ou se a conexão cair. Testado num container real: o shell assume o hostname e o IP do alvo. Limites: exige permissão para pod privilegiado no namespace e não vê processos nem arquivos do pod. Sem `--rm`, o Ephemeral Debug funciona como antes.
+
+**Modal "Abrir Shell no Container" (PodsPanel).** Com as quatro opções, o conteúdo passava da altura da tela e escondia Cancelar/Conectar. Agora a altura é limitada a 90vh, só o miolo rola e o rodapé fica fixo, como no modal do NamespacesTab.
+
+**Copiar/colar no terminal (`lib/xtermShared.ts`, vale também para o terminal do Code Editor).**
+- O xterm traduzia Ctrl+V em `^V` (`\x16`) antes de o browser colar. No bash isso é "inserir o próximo caractere literalmente": o primeiro caractere colado (ou o ESC do bracketed paste, que aparecia como `^[[200~`) entrava sujo.
+- O colar mandava o texto cru: o `\r\n` do Windows virava dois Enter e tabs disparavam o autocompletar.
+- Agora Ctrl/Cmd+V vai só para o evento nativo de colar, o texto passa por `pasteIntoTerminal` (quebras viram CR, ESC é removido, e os marcadores de bracketed paste entram quando o shell os pediu) e Ctrl+Shift+C copia.
+- O `PodTerminal` não usa mais `convertEol`: o PTY já manda `\r\n`, e o `\n` cru do vim, less e top embaralhava a tela.
+
+Testado no terminal do Code Editor, em headless: Ctrl+V não envia nada; colar com CRLF e tab no prompt e no `cat -A` não gera linhas em branco nem autocompletar.
+
 ### Change History — SQLite, autoria, cobertura e somente-inclusão (Outubro 2026)
 
 Análise do Change History achou problemas de integridade, segurança e cobertura. Tudo corrigido:
