@@ -3,6 +3,23 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Cliente HTTP — resposta "Formatado", busca no modal e erro da lista de execuções (Outubro 2026)
+
+**Aba "Formatado"** (`HttpClientJsonView.tsx`). Abre por padrão quando o corpo é JSON de até 2 MB. Mostra uma árvore recolhível com:
+- rótulos legíveis (`prazoEntrega` vira "Prazo entrega"; a chave original fica no tooltip);
+- Sim/Não nos booleanos e números em destaque;
+- resumo de cada objeto ou lista ("3 campos", "1 item");
+- rótulo nos itens de lista vindo do primeiro campo identificador (`nome`, `descricao`, `tipo`, `id`…), como em "Item 1 — Normal".
+
+Até o 4º nível a árvore fica aberta; os níveis abaixo começam recolhidos. O "Corpo (JSON)" continua com o texto indentado.
+
+**Busca no modal** (Ctrl+F foca o campo):
+- No "Formatado", filtra a árvore e mantém abertos os ramos até cada trecho encontrado. Se a chave de um objeto casa, aparece o objeto inteiro.
+- No "Corpo", destaca as ocorrências, com contador e navegação ↑/↓ (Enter e Shift+Enter).
+- Em "Headers", filtra a lista.
+
+**Lista de execuções.** Quando a lista falhava ao carregar, a aba mostrava "Nenhuma execução ainda", e o caso parecia perda de dados. Aconteceu com um servidor rodando um binário sem a rota, que respondia 404. Agora o erro aparece na própria lista.
+
 ### Abrir Shell — --rm sem rastro no pod, modal e copiar/colar do terminal (Outubro 2026)
 
 **--rm do Ephemeral Debug deixava o container no pod.** A API do Kubernetes não remove ephemeral containers: `spec.ephemeralContainers` só aceita inclusão. O `--rm` antigo só encerrava o processo, e o container continuava listado no pod como Terminated até o pod ser recriado. Agora, com `--rm`, nada é anexado ao pod alvo. `handlePodNetShell` (`tshoot.go`) cria um pod netshoot privilegiado e com `hostPID` no **mesmo node** e acha, pelo cgroup, um processo do container alvo; o ID vem do status do pod e um ID vazio é recusado, porque casaria com o PID 1 do node. Em seguida abre o bash com `nsenter -n -u` na rede e no hostname dele, com o mesmo IP e as mesmas regras de iptables/Istio. Esse pod passa pelo mesmo ciclo do tshoot (`runRmPodSession`): é apagado ao sair, com o terminal fechado ou se a conexão cair. Testado num container real: o shell assume o hostname e o IP do alvo. Limites: exige permissão para pod privilegiado no namespace e não vê processos nem arquivos do pod. Sem `--rm`, o Ephemeral Debug funciona como antes.
