@@ -3946,7 +3946,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
               <Download className="w-3 h-3" />Pull
             </Button>
             <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
-              onClick={() => { openSidePanel("git"); setShowCommit(true); }}
+              // Só o modal: trocar o painel lateral para "git" tirava o usuário da árvore no meio da edição.
+              onClick={() => setShowCommit(true)}
               disabled={modifiedPaths.size === 0}>
               <GitCommit className="w-3 h-3" />Commit
               {modifiedPaths.size > 0 && <span className="bg-yellow-500 text-black text-[10px] px-1 rounded-full">{modifiedPaths.size}</span>}
