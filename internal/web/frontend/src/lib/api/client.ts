@@ -5215,7 +5215,8 @@ class APIClient {
   }
 
   async codeEditorGetFileTree(id: string): Promise<CodeEditorFileNode[]> {
-    return this.request(`/code-editor/repos/${id}/tree`);
+    // Servidor antigo devolvia null para repo vazio.
+    return (await this.request<CodeEditorFileNode[] | null>(`/code-editor/repos/${encodeURIComponent(id)}/tree`)) ?? [];
   }
 
   async codeEditorReadFile(id: string, path: string): Promise<{ content: string; path: string }> {

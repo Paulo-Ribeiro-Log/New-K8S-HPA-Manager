@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -152,6 +153,22 @@ func TestGetFileTree_PulaSubpastaIlegivel(t *testing.T) {
 	var tree []FileNode
 	if code := doJSON(t, r, "GET", "/repos/"+opened.ID+"/tree", nil, &tree); code != 200 || len(tree) != 2 {
 		t.Fatalf("tree status %d, nós %+v", code, tree)
+	}
+}
+
+// Pasta vazia devolve [] (não null): o frontend itera a resposta.
+func TestGetFileTree_PastaVaziaDevolveListaVazia(t *testing.T) {
+	r, _ := newLocalFolderTestRouter(t)
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, ".git"), 0755) // ignorada: o repo continua "vazio"
+
+	var opened RepoInfo
+	doJSON(t, r, "POST", "/open-folder", map[string]string{"path": dir}, &opened)
+	req := httptest.NewRequest("GET", "/repos/"+opened.ID+"/tree", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatalf("tree status %d, corpo %q; quer 200 e []", w.Code, w.Body.String())
 	}
 }
 
