@@ -3,6 +3,23 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — autocomplete e busca por trechos no "Abrir pasta" (Outubro 2026)
+
+**Autocomplete no campo de caminho** (`CodeEditorOpenFolderDialog.tsx`). Enquanto você digita, o modal lista a pasta antes da última `/` (ou `\`) e sugere as pastas e os arquivos que casam com o trecho final. Sem barra, a busca é na pasta aberta no modal. A listagem de cada pasta é guardada em cache enquanto o modal está aberto. Teclas:
+- ↑/↓ escolhe a sugestão;
+- Tab ou Enter completa. Uma pasta completada ganha `/` e já mostra as subpastas dela;
+- um arquivo abre a pasta dele com o arquivo no editor;
+- Esc fecha só a lista, sem fechar o modal (`onEscapeKeyDown`);
+- com o caminho terminando em `/`, Enter navega como antes.
+
+**Busca por trechos**, a mesma no autocomplete e no filtro da lista:
+- o texto é dividido em trechos por espaço, e cada trecho precisa aparecer no nome, em qualquer ordem: "atl pr" acha `feat-migrate-terraform-cloud-to-atlantis-prd`;
+- maiúsculas e acentos não importam: "relatorio" acha `Relatório_Final.xlsx`;
+- cada trecho também casa ignorando os separadores `-`, `_` e `.`: "iacsre" acha `casas-bahia-iac-srelogistica`;
+- os trechos encontrados ficam destacados no nome.
+
+Com caminho longo, o modal estourava a largura. Isso foi corrigido com `min-w-0` no conteúdo. Testado em headless: sugestão, Tab encadeando nas subpastas, Esc e Enter num arquivo.
+
 ### Code Editor — Commit da barra não tira mais o usuário da árvore (Outubro 2026)
 
 O botão **Commit** da barra superior chamava `openSidePanel("git")` antes de abrir o modal. Isso trocava o painel lateral de "Arquivos" para "Git" e interrompia a navegação na árvore no meio da edição. Como o commit (e o push encadeado) acontece só no modal, o botão agora apenas abre o modal e o painel fica onde estava. Testado em headless num repo com remoto bare local: o painel permanece em "Arquivos" antes, durante e depois do "Commitar e Fazer Push", a aba do arquivo continua aberta e o commit chega ao remoto.
