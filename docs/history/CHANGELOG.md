@@ -7,6 +7,10 @@
 
 O botão **Commit** da barra superior chamava `openSidePanel("git")` antes de abrir o modal. Isso trocava o painel lateral de "Arquivos" para "Git" e interrompia a navegação na árvore no meio da edição. Como o commit (e o push encadeado) acontece só no modal, o botão agora apenas abre o modal e o painel fica onde estava. Testado em headless num repo com remoto bare local: o painel permanece em "Arquivos" antes, durante e depois do "Commitar e Fazer Push", a aba do arquivo continua aberta e o commit chega ao remoto.
 
+### Code Editor — aba quebrava em repo sem arquivos (Outubro 2026)
+
+Num repositório vazio (recém-criado, só com `.git`), `GET /code-editor/repos/:id/tree` devolvia `null`, e a aba quebrava com `TypeError: n is not iterable` ao iterar a árvore. Agora o handler devolve `[]`, coberto por `TestGetFileTree_PastaVaziaDevolveListaVazia`. O `codeEditorGetFileTree` do client também trata `null` como lista vazia, para o caso de um servidor antigo.
+
 ### Cliente HTTP — resposta "Formatado", busca no modal e erro da lista de execuções (Outubro 2026)
 
 **Aba "Formatado"** (`HttpClientJsonView.tsx`). Abre por padrão quando o corpo é JSON de até 2 MB. Mostra uma árvore recolhível com:
