@@ -452,6 +452,10 @@ func (h *CodeEditorHandler) GetFileTree(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if root.Children == nil {
+		// Repo sem arquivos (ex.: recém-criado): `null` quebrava o frontend, que itera a lista.
+		root.Children = []*FileNode{}
+	}
 	c.JSON(http.StatusOK, root.Children)
 }
 
