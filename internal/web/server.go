@@ -1710,6 +1710,7 @@ func (s *Server) setupRoutes() {
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
+	api.GET("/azure/login-status", handlers.AzureLoginStatus)
 
 	// Alerts (Prometheus Alertmanager Integration)
 	alertsHandler := handlers.NewAlertsHandler()

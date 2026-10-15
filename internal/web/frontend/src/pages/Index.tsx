@@ -124,6 +124,7 @@ import { useAwsSsoAuth } from "@/hooks/useAwsSsoAuth";
 import { AwsSsoLoginDialog } from "@/components/AwsSsoLoginDialog";
 import { useGcpSsoAuth } from "@/hooks/useGcpSsoAuth";
 import { GcpAuthDialog } from "@/components/GcpAuthDialog";
+import { AzureLoginBanner } from "@/components/AzureLoginBanner";
 
 // Abas "sempre montadas" (display:none depois da 1ª visita, ver hasBeenMounted) com memo: sem
 // isso, todo setState do Index (poll de HPAs/node pools, VPN, seleção, digitação...) re-renderizava
@@ -1602,6 +1603,7 @@ const Index = ({ onLogout }: IndexProps) => {
 
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
+      <AzureLoginBanner />
       <VpnWarningDialog
         open={vpnDialogState.open}
         cloudProvider={vpnDialogState.cloud}

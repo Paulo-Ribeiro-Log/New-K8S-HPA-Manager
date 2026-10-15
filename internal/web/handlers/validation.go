@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"github.com/gin-gonic/gin"
+
+	"k8s-hpa-manager/internal/azlogin"
 	"k8s-hpa-manager/internal/web/validators"
 )
 
@@ -42,14 +44,18 @@ func (h *ValidationHandler) Validate(c *gin.Context) {
 		status.VPNConnected = true
 	}
 
-	// 2. Validar Azure CLI (requisito CRÍTICO)
-	if err := validators.ValidateAzureAuth(); err != nil {
-		status.Success = false
-		status.AzureAuth = false
-		status.Errors = append(status.Errors, "Azure CLI não autenticado")
-		status.Warnings = append(status.Warnings, "Execute 'az login' no servidor para autenticar")
-	} else {
+	// 2. Validar Azure CLI (requisito CRÍTICO). Só "valid" conta: timeout/erro de rede é
+	// indeterminado, não autenticado (antes o timeout passava como sucesso).
+	switch st := azlogin.Check(c.Request.Context(), false); st.State {
+	case azlogin.StateValid:
 		status.AzureAuth = true
+	case azlogin.StateLoginRequired:
+		status.Success = false
+		status.Errors = append(status.Errors, "Login do Azure expirado")
+		status.Warnings = append(status.Warnings, "Execute 'az login' no terminal do servidor")
+	default:
+		status.Success = false
+		status.Errors = append(status.Errors, "Não foi possível confirmar o login do Azure: "+st.Detail)
 	}
 
 	// Retornar status

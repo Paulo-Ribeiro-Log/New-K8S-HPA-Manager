@@ -112,7 +112,7 @@ func (h *AutoDiscoverHandler) HandleAutoDiscover(c *gin.Context) {
 			defer wg.Done()
 			aksConfigs, aksErrors := manager.AutoDiscoverAllClusters(func(msg string) {
 				progressChan <- AutoDiscoverProgress{Phase: "processing", Message: msg, Provider: "aks"}
-			})
+			}, false)
 			mu.Lock()
 			pr.aksConfigs = aksConfigs
 			pr.aksErrors = aksErrors
@@ -233,7 +233,7 @@ func (h *AutoDiscoverHandler) HandleAutoDiscoverSync(c *gin.Context) {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		cfgs, errs := manager.AutoDiscoverAllClusters(nil)
+		cfgs, errs := manager.AutoDiscoverAllClusters(nil, false)
 		mu.Lock()
 		aksConfigs, aksErrors = cfgs, errs
 		mu.Unlock()

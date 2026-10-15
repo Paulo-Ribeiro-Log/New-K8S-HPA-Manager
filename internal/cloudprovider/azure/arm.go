@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"k8s-hpa-manager/internal/azlogin"
 )
 
 const (
@@ -41,7 +43,7 @@ func NewARMClient(ctx context.Context, subscription string) (*ARMClient, error) 
 	if subscription == "" {
 		token, err := azCLIOutput(ctx, "account", "get-access-token", "--resource", armBaseURL+"/", "--query", "accessToken", "--output", "tsv")
 		if err != nil {
-			return nil, fmt.Errorf("obter token do Azure (az login expirado?): %w", err)
+			return nil, fmt.Errorf("obter token do Azure: %w", err)
 		}
 		return &ARMClient{token: token, http: &http.Client{Timeout: 60 * time.Second}}, nil
 	}
@@ -56,7 +58,7 @@ func NewARMClient(ctx context.Context, subscription string) (*ARMClient, error) 
 	token, err := azCLIOutput(ctx, "account", "get-access-token",
 		"--subscription", subID, "--resource", armBaseURL+"/", "--query", "accessToken", "--output", "tsv")
 	if err != nil {
-		return nil, fmt.Errorf("obter token do Azure (az login expirado?): %w", err)
+		return nil, fmt.Errorf("obter token do Azure: %w", err)
 	}
 	return &ARMClient{SubscriptionID: subID, token: token, http: &http.Client{Timeout: 60 * time.Second}}, nil
 }
@@ -232,7 +234,8 @@ func azCLIOutput(ctx context.Context, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, "az", args...).Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+			stderr := strings.TrimSpace(string(exitErr.Stderr))
+			return "", azlogin.Classify(fmt.Errorf("%w: %s", err, stderr), stderr)
 		}
 		return "", err
 	}

@@ -69,7 +69,7 @@ func (h *NodePoolHandler) ApplySequential(c *gin.Context) {
 		c.JSON(401, gin.H{
 			"success": false,
 			"error": gin.H{
-				"code":    "CLOUD_AUTH_FAILED",
+				"code":    cloudAuthErrorCode(err),
 				"message": fmt.Sprintf("Cloud authentication failed: %v", err),
 			},
 		})

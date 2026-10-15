@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"k8s-hpa-manager/internal/azlogin"
 	"k8s-hpa-manager/internal/cloudprovider"
 	"k8s-hpa-manager/internal/models"
 	"k8s-hpa-manager/internal/web/validators"
@@ -72,15 +73,7 @@ func (p *AzureNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) (
 		output, err := cmd.Output()
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
-				stderr := string(exitErr.Stderr)
-				if strings.Contains(stderr, "AADSTS") ||
-					strings.Contains(stderr, "expired") ||
-					strings.Contains(stderr, "authentication") ||
-					strings.Contains(stderr, "az login") {
-					listErr = fmt.Errorf("Azure CLI não autenticado. Execute no servidor: az login")
-				} else {
-					listErr = fmt.Errorf("az aks nodepool list falhou: %s", stderr)
-				}
+				listErr = azFailed("az aks nodepool list falhou", exitErr.Stderr)
 			} else {
 				listErr = fmt.Errorf("falha ao executar az: %w", err)
 			}
@@ -178,7 +171,7 @@ func (p *AzureNodeGroupProvider) ScaleNodeGroup(ctx context.Context, _, group st
 		"--node-count", fmt.Sprintf("%d", count),
 	).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("az aks nodepool scale falhou: %s", strings.TrimSpace(string(out)))
+		return azFailed("az aks nodepool scale falhou", out)
 	}
 	return nil
 }
@@ -220,7 +213,7 @@ func (p *AzureNodeGroupProvider) SetAutoscaling(ctx context.Context, _, group st
 		}
 		out, err := exec.CommandContext(opCtx, enableArgs[0], enableArgs[1:]...).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("az aks nodepool update falhou: %s", strings.TrimSpace(string(out)))
+			return azFailed("az aks nodepool update falhou", out)
 		}
 		return nil
 	}
@@ -234,7 +227,7 @@ func (p *AzureNodeGroupProvider) SetAutoscaling(ctx context.Context, _, group st
 	}
 	out, err := exec.CommandContext(opCtx, disableArgs[0], disableArgs[1:]...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("az aks nodepool update falhou: %s", strings.TrimSpace(string(out)))
+		return azFailed("az aks nodepool update falhou", out)
 	}
 	return nil
 }
@@ -255,7 +248,7 @@ func (p *AzureNodeGroupProvider) AbortOperation(ctx context.Context, _, group st
 		"--name", group,
 	).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("az aks nodepool operation-abort falhou: %s", strings.TrimSpace(string(out)))
+		return azFailed("az aks nodepool operation-abort falhou", out)
 	}
 	return nil
 }
@@ -274,7 +267,7 @@ func (p *AzureNodeGroupProvider) ReconcileNodeGroup(ctx context.Context, _, grou
 	defer stateCancel()
 	out, err := exec.CommandContext(stateCtx, "az", azureNodePoolStateArgs(p.subscription, p.resourceGroup, p.clusterName, group)...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("falha ao ler o estado do node pool: %s", strings.TrimSpace(string(out)))
+		return azFailed("falha ao ler o estado do node pool", out)
 	}
 	if err := checkReconcileState(strings.TrimSpace(string(out))); err != nil {
 		return err
@@ -284,7 +277,7 @@ func (p *AzureNodeGroupProvider) ReconcileNodeGroup(ctx context.Context, _, grou
 	defer recCancel()
 	out, err = exec.CommandContext(recCtx, "az", azureReconcileArgs(p.subscription, p.resourceGroup, p.clusterName, group)...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("az aks nodepool update (reconcile) falhou: %s", strings.TrimSpace(string(out)))
+		return azFailed("az aks nodepool update (reconcile) falhou", out)
 	}
 	return nil
 }
@@ -315,12 +308,19 @@ func checkReconcileState(state string) error {
 
 // --- helpers internos ---
 
+// azFailed monta o erro de um comando az com a saída dele; login expirado vira
+// azlogin.ErrLoginRequired (a rota responde AZ_LOGIN_REQUIRED e a UI mostra o aviso).
+func azFailed(what string, out []byte) error {
+	output := strings.TrimSpace(string(out))
+	return azlogin.Classify(fmt.Errorf("%s: %s", what, output), output)
+}
+
 func (p *AzureNodeGroupProvider) setSubscription(ctx context.Context) error {
 	subCtx, subCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer subCancel()
 	out, err := exec.CommandContext(subCtx, "az", "account", "set", "--subscription", p.subscription).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("falha ao configurar subscription Azure: %s", strings.TrimSpace(string(out)))
+		return azFailed("falha ao configurar subscription Azure", out)
 	}
 	return nil
 }

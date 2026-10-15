@@ -3,83 +3,27 @@ package validators
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"k8s-hpa-manager/internal/azlogin"
 )
 
-// ValidateAzureAuth valida Azure CLI e faz login se necessário (igual ao TUI)
+// ValidateAzureAuth confere se o login do Azure CLI ainda vale (azlogin.Check, com cache de 60 s).
+// Nunca roda `az login`: numa requisição web ninguém está no terminal do servidor para concluir o
+// login, e a requisição ficava presa esperando. Login expirado → azlogin.ErrLoginRequired.
+// Estado indeterminado (timeout/rede) não bloqueia: a operação real roda e, se falhar por login,
+// o erro dela é classificado (azlogin.Classify).
 func ValidateAzureAuth() error {
-	// Criar contexto com timeout de 5 segundos
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-
-	// 1. Verificar se Azure CLI está instalado
-	checkCmd := exec.CommandContext(ctx, "az", "version", "--only-show-errors")
-	checkCmd.Stdout = nil
-	checkCmd.Stderr = nil
-	if err := checkCmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil // Timeout - ignorar
-		}
-		return fmt.Errorf("Azure CLI not installed")
+	switch st := azlogin.Check(ctx, false); st.State {
+	case azlogin.StateNotInstalled:
+		return fmt.Errorf("Azure CLI não instalado")
+	case azlogin.StateLoginRequired:
+		return fmt.Errorf("%w\n%s", azlogin.ErrLoginRequired, st.Detail)
 	}
-
-	// 2. Verificar se está autenticado
-	accountCmd := exec.CommandContext(ctx, "az", "account", "show", "--only-show-errors")
-	accountCmd.Stdout = nil
-	accountCmd.Stderr = nil
-	if err := accountCmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil // Timeout - ignorar
-		}
-		// Não autenticado - fazer login
-		return performAzureLogin()
-	}
-
-	// 3. Verificar se token está válido
-	tokenCmd := exec.CommandContext(ctx, "az", "account", "get-access-token", "--only-show-errors")
-	tokenCmd.Stdout = nil
-	tokenCmd.Stderr = nil
-	if err := tokenCmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil // Timeout - ignorar
-		}
-		// Token expirado - fazer login
-		return performAzureLogin()
-	}
-
-	return nil
-}
-
-// performAzureLogin executa az login (igual ao TUI em cmd/root.go)
-func performAzureLogin() error {
-	fmt.Println("\n🔐 Iniciando login no Azure AD...")
-	fmt.Println("📌 Uma janela do navegador será aberta para autenticação.")
-
-	// Login simples sem forçar tenant/subscription (igual ao TUI)
-	loginCmd := exec.Command("az", "login", "--only-show-errors")
-	loginCmd.Stdin = os.Stdin
-
-	// Silenciar output inicial
-	loginCmd.Stdout = nil
-	loginCmd.Stderr = nil
-
-	err := loginCmd.Run()
-	if err != nil {
-		// Retry com output visível para debug
-		fmt.Println("\n⚠️  Erro no login. Tentando novamente com output detalhado...")
-		retryCmd := exec.Command("az", "login")
-		retryCmd.Stdout = os.Stdout
-		retryCmd.Stderr = os.Stderr
-		retryCmd.Stdin = os.Stdin
-		if retryErr := retryCmd.Run(); retryErr != nil {
-			return fmt.Errorf("❌ falha no login Azure: %w", retryErr)
-		}
-	}
-
-	fmt.Println("\n✅ Login Azure AD concluído com sucesso!")
 	return nil
 }
 

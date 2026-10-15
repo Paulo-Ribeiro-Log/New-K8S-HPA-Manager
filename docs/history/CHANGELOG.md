@@ -3,6 +3,39 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Login do Azure CLI — detecção confiável de expiração e aviso na UI (Outubro 2026)
+
+**Problema.** Depois de horas, o refresh token do `az` expira por política do tenant: Conditional Access/sign-in frequency (`AADSTS70043`), revogação ou troca de senha. A aplicação não percebia, por quatro motivos:
+- **Login JWT:** usava `az account show`, que só lê o perfil local e funciona com o login expirado.
+- **Refresh do JWT:** nunca consultava o `az`.
+- **`ValidateAzureAuth`:** rodava três comandos `az` dentro de 5 s no total e tratava timeout como sucesso. O timeout acontece justamente quando o `az` precisa renovar pela rede.
+- **`az login` em requisição:** `ValidateAuth` dos Node Pools, `loadAllAzureSubscriptions` e `EnsureAzureLogin` abriam `az login` interativo sem timeout, no terminal do servidor. A requisição web ficava presa.
+
+**Correção.**
+- **Pacote `internal/azlogin`.**
+  - `Check(ctx, force)` roda `az account get-access-token` com limite de 20 s e guarda o resultado em cache por 60 s, com chamadas simultâneas serializadas.
+  - Estados: `valid` (com `expires_on`), `login_required`, `unknown` (timeout ou rede, nunca conta como válido) e `not_installed`.
+  - `Classify(err, output)` reconhece login expirado na saída do `az` (`AADSTS`, `az login`, `interaction_required`, `invalid_grant`, CAE) e devolve `ErrLoginRequired`. Também marca o cache.
+- **Sem `az login` em requisição web.**
+  - `ValidateAzureAuth` usa `azlogin.Check`. Login expirado devolve `ErrLoginRequired`. O estado `unknown` não bloqueia: a operação real roda, e o erro dela é classificado.
+  - `AutoDiscoverAllClusters` ganhou `allowInteractiveLogin`, como o do EKS: `true` só no comando `new-k8s-hpa autodiscover`.
+  - `EnsureAzureLogin`, sem uso, foi removido.
+- **Erros classificados.** Passam por `azlogin.Classify`:
+  - os comandos `az` dos Node Pools: list, scale, autoscaling, abort, reconcile e subscription;
+  - o cliente ARM (FinOps);
+  - os tokens do Graph (grupos AAD);
+  - o `az account list` do autodiscover.
+
+  As rotas de Node Pools respondem `AZ_LOGIN_REQUIRED` em vez de `CLOUD_AUTH_FAILED`. `GET /api/v1/validate` só considera o Azure autenticado no estado `valid`.
+- **Aviso na UI.**
+  - Nova rota `GET /api/v1/azure/login-status[?force=1]`.
+  - Novo componente `AzureLoginBanner`, no topo do Index. Aparece pelo evento `azure-login-required` do `client.ts` (código `AZ_LOGIN_REQUIRED` ou "az login" na mensagem) e por uma checagem a cada 5 min.
+  - Botões "Copiar comando" e "Verificar de novo".
+
+**Testes.**
+- Unitários em `internal/azlogin`: estados, timeout virando `unknown`, cache, parse do `expiresOn` e `Classify`. Unitário de `cloudAuthErrorCode`.
+- E2E headless com um `az` falso no PATH, que devolve `AADSTS70043` e depois volta a funcionar: o banner aparece e some no "Verificar de novo"; `/validate` reporta login expirado; o servidor nunca chama `az login`.
+
 ### Code Editor — autocomplete e busca por trechos no "Abrir pasta" (Outubro 2026)
 
 **Autocomplete no campo de caminho** (`CodeEditorOpenFolderDialog.tsx`). Enquanto você digita, o modal lista a pasta antes da última `/` (ou `\`) e sugere as pastas e os arquivos que casam com o trecho final. Sem barra, a busca é na pasta aberta no modal. A listagem de cada pasta é guardada em cache enquanto o modal está aberto. Teclas:

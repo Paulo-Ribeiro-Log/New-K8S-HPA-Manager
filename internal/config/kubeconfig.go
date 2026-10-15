@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd/api"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
+	"k8s-hpa-manager/internal/azlogin"
 	"k8s-hpa-manager/internal/cloudprovider"
 	awsprovider "k8s-hpa-manager/internal/cloudprovider/aws"
 	azureprovider "k8s-hpa-manager/internal/cloudprovider/azure"
@@ -1752,12 +1753,14 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 // loadAllAzureSubscriptions carrega IDs e nomes das subscriptions disponíveis via Azure CLI.
 // Retorna (ids []string, names map[id]name, error).
 // Chamada uma única vez em AutoDiscoverAllClusters.
-// Se o token estiver expirado, tenta renovar automaticamente via az login.
-func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFunc func(string)) ([]string, map[string]string, error) {
+// Login expirado: no CLI (allowInteractiveLogin) abre `az login`; no servidor web devolve
+// azlogin.ErrLoginRequired — ver allowInteractiveLogin em AutoDiscoverEKSClusters.
+func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFunc func(string), allowInteractiveLogin bool) ([]string, map[string]string, error) {
 	// Validar token antes de qualquer operação
-	tokCtx, tokCancel := context.WithTimeout(ctx, 15*time.Second)
-	defer tokCancel()
-	if err := exec.CommandContext(tokCtx, "az", "account", "get-access-token", "--only-show-errors").Run(); err != nil {
+	if st := azlogin.Check(ctx, true); st.State == azlogin.StateLoginRequired {
+		if !allowInteractiveLogin {
+			return nil, nil, fmt.Errorf("%w\n%s", azlogin.ErrLoginRequired, st.Detail)
+		}
 		if logFunc != nil {
 			logFunc("[AKS] 🔑 Token Azure expirado — abrindo autenticador...")
 		}
@@ -1774,7 +1777,10 @@ func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFu
 	out, err := exec.CommandContext(listCtx, "az", "account", "list",
 		"--query", "[].{id:id,name:name}", "-o", "json", "--only-show-errors").CombinedOutput()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to list subscriptions (erro 401 indica token expirado - execute 'az login'): %w\nOutput: %s", err, string(out))
+		if cerr := azlogin.Classify(err, string(out)); cerr != err {
+			return nil, nil, cerr
+		}
+		return nil, nil, fmt.Errorf("failed to list subscriptions: %w\nOutput: %s", err, string(out))
 	}
 
 	var entries []struct {
@@ -2007,7 +2013,8 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(ctx context.Context,
 //
 // Antes: 5 clusters × 10 subscriptions = 50 processos az simultâneos (cada az = Python cold-start ~100MB)
 // Agora: 4 subscriptions simultâneas → ≤4 processos az ao mesmo tempo
-func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]ClusterConfig, []error) {
+// allowInteractiveLogin: mesmo significado de AutoDiscoverEKSClusters (true só no comando CLI).
+func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string), allowInteractiveLogin bool) ([]ClusterConfig, []error) {
 	clusters := k.DiscoverClusters()
 
 	var aksClusters []models.Cluster
@@ -2031,7 +2038,7 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	if logFunc != nil {
 		logFunc("[AKS] 📋 Carregando subscriptions Azure...")
 	}
-	subscriptions, subNames, err := k.loadAllAzureSubscriptions(ctx, logFunc)
+	subscriptions, subNames, err := k.loadAllAzureSubscriptions(ctx, logFunc, allowInteractiveLogin)
 	if err != nil {
 		return nil, []error{err}
 	}
@@ -2200,7 +2207,7 @@ func (k *KubeConfigManager) SwitchAzureContext(contextName string) error {
 	if clusterConfig == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		subscriptions, _, err := k.loadAllAzureSubscriptions(ctx, nil)
+		subscriptions, _, err := k.loadAllAzureSubscriptions(ctx, nil, false) // chamado pelo handler web: sem az login
 		if err != nil {
 			return fmt.Errorf("could not find Azure configuration for cluster %s: %w", contextName, err)
 		}

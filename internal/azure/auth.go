@@ -136,21 +136,6 @@ func (a *AuthManager) IsAuthenticated() bool {
 	return a.credential != nil
 }
 
-// EnsureAzureLogin verifica se estamos logados no Azure e faz login se necessário
-func EnsureAzureLogin() error {
-	// Verificar se Azure CLI está autenticado
-	cmd := exec.Command("az", "account", "show")
-	err := cmd.Run()
-	if err == nil {
-		return nil // Já está logado
-	}
-
-	// Se não está logado, tentar fazer login
-	fmt.Printf("🔄 Azure CLI não está autenticado. Tentando fazer login...\n")
-	loginCmd := exec.Command("az", "login")
-	return loginCmd.Run()
-}
-
 // SetAzureCliContext verifica se o Azure CLI está autenticado
 func (a *AuthManager) SetAzureCliContext(ctx context.Context) error {
 	if !a.IsAuthenticated() {

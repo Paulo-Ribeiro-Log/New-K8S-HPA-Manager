@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"k8s-hpa-manager/internal/azlogin"
 )
 
 // AADGroupLookup resolve, via Microsoft Graph REST API (token obtido pelo `az cli`), a
@@ -69,7 +71,7 @@ func getGraphAccessToken(ctx context.Context) (string, error) {
 		"--resource", "https://graph.microsoft.com",
 		"--query", "accessToken", "-o", "tsv").Output()
 	if err != nil {
-		return "", fmt.Errorf("falha ao obter token Graph via az cli: %w", err)
+		return "", azlogin.Classify(fmt.Errorf("falha ao obter token Graph via az cli: %w", err), "")
 	}
 	token := strings.TrimSpace(string(out))
 	if token == "" {

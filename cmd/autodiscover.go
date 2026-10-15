@@ -69,7 +69,7 @@ GKE: parseia contexts gke_* do kubeconfig + gcloud container clusters list
 
 		go func() {
 			defer wg.Done()
-			cfgs, errs := manager.AutoDiscoverAllClusters(log)
+			cfgs, errs := manager.AutoDiscoverAllClusters(log, true)
 			mu.Lock()
 			aksConfigs, aksErrors = cfgs, errs
 			mu.Unlock()

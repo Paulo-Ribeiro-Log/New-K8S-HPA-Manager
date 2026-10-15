@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"k8s-hpa-manager/internal/azlogin"
 )
 
 // ADGroup representa um grupo do Azure AD
@@ -72,7 +74,7 @@ func (r *RBACManager) GetUserGroups(ctx context.Context, email string) ([]ADGrou
 		"--resource", "https://graph.microsoft.com", "--query", "accessToken", "-o", "tsv")
 	tokenOut, err := tokenCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get graph token: %w", err)
+		return nil, azlogin.Classify(fmt.Errorf("failed to get graph token: %w", err), "")
 	}
 	token := strings.TrimSpace(string(tokenOut))
 

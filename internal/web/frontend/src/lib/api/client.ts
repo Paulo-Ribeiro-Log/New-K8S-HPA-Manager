@@ -427,6 +427,14 @@ class APIClient {
         window.dispatchEvent(new CustomEvent("gcp-sso-token-expired"));
       }
 
+      // Login do Azure CLI do servidor expirado (azlogin.ErrLoginRequired no backend): código
+      // AZ_LOGIN_REQUIRED nas rotas de Node Pools; nas demais o erro vem só no texto, que sempre
+      // traz "az login" (a mensagem é única, em internal/azlogin). Mostra o AzureLoginBanner.
+      const azCode = rawError?.error?.code ?? rawError?.code;
+      if (azCode === "AZ_LOGIN_REQUIRED" || (message && message.includes("az login"))) {
+        window.dispatchEvent(new CustomEvent("azure-login-required", { detail: { message } }));
+      }
+
       // Token rejeitado pelo servidor (inválido, expirado ou formato errado)
       // Força re-login para que o usuário obtenha um JWT válido
       if (response.status === 401) {
@@ -4557,6 +4565,11 @@ class APIClient {
   }
 
   /** Execuções salvas do Cliente HTTP (do usuário logado, mais recentes primeiro) */
+  /** Estado do login do Azure CLI no servidor (cache de 60 s no backend; force ignora o cache). */
+  async getAzureLoginStatus(force = false): Promise<AzureLoginStatus> {
+    return this.request<AzureLoginStatus>(`/azure/login-status${force ? "?force=1" : ""}`);
+  }
+
   async getHttpClientExecutions(): Promise<{ executions: import("./types").HttpClientExecution[] }> {
     return this.request<{ executions: import("./types").HttpClientExecution[] }>("/http-client/executions");
   }
@@ -5627,6 +5640,13 @@ export interface CodeEditorRepo {
   size?: string; // ex: "42M"
   is_local?: boolean; // pasta local aberta via "Abrir pasta" (não clonada) — fechar remove só o vínculo
   is_git?: boolean;
+}
+
+export interface AzureLoginStatus {
+  state: "valid" | "login_required" | "unknown" | "not_installed";
+  expires_on?: string;
+  detail?: string;
+  checked_at: string;
 }
 
 export interface CodeEditorBrowseResult {
