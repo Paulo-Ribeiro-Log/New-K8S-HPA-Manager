@@ -1,21 +1,25 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Loader2, RefreshCw, X, Server, Search, Sparkles, Boxes, Gauge, Info, AlertTriangle } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import ResourceGauge from "@/components/ResourceGauge";
-import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard } from "@/lib/finopsFormat";
+import { ExemptBadge } from "@/components/finops/ExemptionDialog";
+import type { FinOpsWorkload } from "@/components/finops/types";
+import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard, kubectlResource, GitOpsNote } from "@/lib/finopsFormat";
 import { DollarSign, TrendingDown, Layers } from "lucide-react";
 import { ComposedChart, Line, XAxis, YAxis, ReferenceLine, ReferenceDot } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { useRightsizingReport } from "@/hooks/useRightsizingReport";
+import { apiClient } from "@/lib/api/client";
 import { PerfBadge, CurrentPerfLine, PerfBenchmarkButton, type PerfComparison, type PerfInfo } from "@/components/finops/PerfBenchmark";
 import { CoverageLine, CoverageWarningBox, CoverageRefreshButton, ReservedHintChip, type PoolCoverage, type CoverageWarning, type ReservedHint } from "@/components/finops/PricingCoverage";
+import { isPrometheusNotFound, type MetricsFailureReason } from "./finops/helpers";
+import { PrometheusNotFoundText } from "./finops/PrometheusNotFoundText";
 
 // ─── Tipos (shape de GET/POST /api/v1/finops/rightsizing, ver
 //      internal/web/handlers/finops_rightsizing.go / internal/storage/finops_rightsizing_store.go) ──
@@ -23,6 +27,7 @@ import { CoverageLine, CoverageWarningBox, CoverageRefreshButton, ReservedHintCh
 interface WorkloadRecommendation {
   namespace: string;
   workload: string;
+  kind?: string;
   node_pool?: string;
   node_name?: string;
   pods: number;
@@ -69,6 +74,12 @@ interface WorkloadRecommendation {
   metrics_source?: string;
   window_days: number;
   generated_at: string;
+  // Isenção (vinda do relatório principal — ApplyExemptions): ativa zera o desperdício nesta tela.
+  is_exempt?: boolean;
+  exempt_active?: boolean;
+  exempt_reason?: string;
+  exempt_threshold?: number;
+  exempt_replicas?: number;
 }
 
 // Uso current (live)/top (pico histórico) de um node único onde workloads rodam — ver
@@ -182,45 +193,6 @@ interface WorkloadHistoryResponse {
   mem_mi?: WorkloadHistoryPoint[];
 }
 
-const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("auth_token")}` });
-
-/** F2.1 (FINOPS-IMPROVEMENTS-PLAN.md) — Rightsizing era a única das 8 abas do FinOps sem badge
- *  de contagem/urgência na TabsTrigger, sem nenhum sinal visual de que ali existe economia em
- *  R$. Mostra a economia potencial (melhor alternativa por pool, somada — nunca soma TODAS as
- *  até-3 alternativas de um mesmo pool, que dobraria/triplicaria a mesma oportunidade) quando
- *  há alguma relevante (> R$10/mês, mesmo limiar de "vale a pena mostrar" já usado nos cards de
- *  alternativa); cai pro número de workloads que precisam de atenção (`verdict != "ok"`) quando
- *  não há economia de tier mas ainda há algo a rever. Silencioso (sem badge) só quando os dois
- *  são zero — mesmo princípio de "badge só no caso relevante" já usado no CompanyAppBadge de
- *  DeploymentsTab.tsx. */
-export function RightsizingTabBadge({ cluster }: { cluster: string }) {
-  const { data } = useRightsizingReport(cluster);
-  const { totalSavings, attentionCount } = useMemo(() => {
-    let savings = 0;
-    for (const pool of data?.node_pools ?? []) {
-      const best = Math.max(0, ...pool.alternatives.map((a) => a.monthly_savings_brl));
-      if (best > 10) savings += best;
-    }
-    const attention = (data?.workloads ?? []).filter((w) => w.verdict !== "ok").length;
-    return { totalSavings: savings, attentionCount: attention };
-  }, [data]);
-
-  if (totalSavings > 10) {
-    return (
-      <Badge className="ml-1 text-[10px] bg-green-600" title={`Economia potencial de tier de VM: ${fmtBRL(totalSavings)}/mês`}>
-        -{fmtBRL(totalSavings)}
-      </Badge>
-    );
-  }
-  if (attentionCount > 0) {
-    return (
-      <Badge variant="destructive" className="ml-1 text-[10px]" title={`${attentionCount} workload(s) precisam de atenção (verdict diferente de "ok")`}>
-        {attentionCount}
-      </Badge>
-    );
-  }
-  return null;
-}
 
 function workloadCardId(w: WorkloadRecommendation) {
   return `rightsizing-wl-${w.namespace}-${w.workload}`;
@@ -304,7 +276,9 @@ function buildResizeCommand(w: WorkloadRecommendation): string | null {
 
   if (reqParts.length === 0 && limParts.length === 0) return null;
 
-  let cmd = `kubectl set resources deployment ${w.workload} -n ${w.namespace}`;
+  const target = kubectlResource(w.kind);
+  if (!target) return null;
+  let cmd = `kubectl set resources ${target} ${w.workload} -n ${w.namespace}`;
   if (reqParts.length > 0) cmd += ` --requests=${reqParts.join(",")}`;
   if (limParts.length > 0) cmd += ` --limits=${limParts.join(",")}`;
   return cmd;
@@ -345,7 +319,7 @@ function NodeUsageBadge({ node }: { node?: NodeUsageInfo }) {
         CPU agora <span className={`font-semibold ${pctColorClass(cpuNow)}`}>{cpuNow.toFixed(0)}%</span>
         {cpuTop > 0 && (
           <>
-            {" "}(pico <span className={`font-semibold ${pctColorClass(cpuTop)}`}>{cpuTop.toFixed(0)}%</span>
+            {" "}(pico 7d <span className={`font-semibold ${pctColorClass(cpuTop)}`}>{cpuTop.toFixed(0)}%</span>
             {cpuTopAt && <> em {cpuTopAt}</>})
           </>
         )}
@@ -354,7 +328,7 @@ function NodeUsageBadge({ node }: { node?: NodeUsageInfo }) {
         Mem agora <span className={`font-semibold ${pctColorClass(memNow)}`}>{memNow.toFixed(0)}%</span>
         {memTop > 0 && (
           <>
-            {" "}(pico <span className={`font-semibold ${pctColorClass(memTop)}`}>{memTop.toFixed(0)}%</span>
+            {" "}(pico 7d <span className={`font-semibold ${pctColorClass(memTop)}`}>{memTop.toFixed(0)}%</span>
             {memTopAt && <> em {memTopAt}</>})
           </>
         )}
@@ -599,14 +573,8 @@ function WorkloadNodeDetailModal({
   // desmonta o componente, cancelando a query via React Query; nunca roda no scan em lote).
   const { data: historyResp, isLoading: historyLoading } = useQuery<WorkloadHistoryResponse>({
     queryKey: ["finops-workload-history", cluster, workload.namespace, workload.workload, workload.window_days],
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/v1/finops/rightsizing/history?cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(workload.namespace)}&workload=${encodeURIComponent(workload.workload)}&days=${workload.window_days}`,
-        { headers: authHeaders() }
-      );
-      if (!r.ok) throw new Error("workload-history error");
-      return r.json();
-    },
+    queryFn: () => apiClient.get<WorkloadHistoryResponse>(
+      `/finops/rightsizing/history?cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(workload.namespace)}&workload=${encodeURIComponent(workload.workload)}&days=${workload.window_days}`),
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
@@ -675,8 +643,8 @@ function WorkloadNodeDetailModal({
                           {age && <span className="text-muted-foreground" title={fmtOccurredAtFull(n.node_created_at)}>(existe há {age})</span>}
                           {n.metrics_available ? (
                             <>
-                              <span>CPU <span className={`font-semibold ${pctColorClass(n.cpu_current_pct ?? 0)}`}>{(n.cpu_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.cpu_top_pct ?? 0).toFixed(0)}%{cpuTopAt ? ` em ${cpuTopAt}` : ""})</span>
-                              <span>Mem <span className={`font-semibold ${pctColorClass(n.mem_current_pct ?? 0)}`}>{(n.mem_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.mem_top_pct ?? 0).toFixed(0)}%{memTopAt ? ` em ${memTopAt}` : ""})</span>
+                              <span>CPU <span className={`font-semibold ${pctColorClass(n.cpu_current_pct ?? 0)}`}>{(n.cpu_current_pct ?? 0).toFixed(0)}%</span> (pico 7d {(n.cpu_top_pct ?? 0).toFixed(0)}%{cpuTopAt ? ` em ${cpuTopAt}` : ""})</span>
+                              <span>Mem <span className={`font-semibold ${pctColorClass(n.mem_current_pct ?? 0)}`}>{(n.mem_current_pct ?? 0).toFixed(0)}%</span> (pico 7d {(n.mem_top_pct ?? 0).toFixed(0)}%{memTopAt ? ` em ${memTopAt}` : ""})</span>
                               {(n.cpu_top_pct ?? 0) === 0 && (n.mem_top_pct ?? 0) === 0 && (
                                 <span className="italic text-muted-foreground">sem pico registrado{age ? " (node jovem, ou genuinamente sem uso no período)" : ""}</span>
                               )}
@@ -739,6 +707,7 @@ function WorkloadNodeDetailModal({
             <div className="border rounded-lg p-3 space-y-3 bg-muted/20">
               <div className="flex items-center justify-between">
                 <VerdictBadge verdict={workload.verdict} />
+                <ExemptBadge w={workload as unknown as FinOpsWorkload} />
                 {(workload.waste_brl ?? 0) > 0 && <span className="text-xs font-semibold text-red-500">-{fmtBRL(workload.waste_brl!)}/mês de desperdício</span>}
               </div>
 
@@ -856,6 +825,7 @@ function WorkloadNodeDetailModal({
                 <div>
                   <p className="text-[10px] text-muted-foreground mb-1">Ação recomendada (request + limit):</p>
                   <KubectlBlock cmd={resizeCmd} />
+                  <GitOpsNote />
                 </div>
               )}
             </div>
@@ -908,6 +878,7 @@ function WorkloadCard({
           </div>
           <div className="flex flex-col items-end gap-1 shrink-0">
             <VerdictBadge verdict={w.verdict} />
+            <ExemptBadge w={w as unknown as FinOpsWorkload} />
             {(w.waste_brl ?? 0) > 0 && (
               <span className="text-xs font-semibold text-red-500">-{fmtBRL(w.waste_brl!)}/mês</span>
             )}
@@ -998,6 +969,7 @@ function WorkloadCard({
           <div>
             <p className="text-[10px] text-muted-foreground mb-1">Ação recomendada (request + limit):</p>
             <KubectlBlock cmd={resizeCmd} />
+            <GitOpsNote />
           </div>
         )}
       </CardContent>
@@ -1103,7 +1075,17 @@ function NodePoolTierCard({
   );
 }
 
-export function RightsizingTab({ cluster }: { cluster: string }) {
+// costFactor: custo efetivo ÷ tabela do pool (reserva/Savings Plan, do relatório principal) — o
+// waste_brl do scan é em preço de tabela. committedPool: pool sob reserva/Savings Plan/Spot, onde a
+// economia só se realiza liberando nodes.
+export function RightsizingTab({ cluster, provider, costFactor, committedPool, exemptions }: {
+  cluster: string;
+  provider?: string;
+  costFactor?: (pool?: string) => number;
+  committedPool?: (pool?: string) => boolean;
+  // "namespace/workload" → isenção do relatório principal (o scan do Rightsizing não aplica isenções).
+  exemptions?: Map<string, Pick<WorkloadRecommendation, "is_exempt" | "exempt_active" | "exempt_reason" | "exempt_threshold" | "exempt_replicas">>;
+}) {
   const queryClient = useQueryClient();
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -1124,16 +1106,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
     setScanning(true);
     setScanError(null);
     try {
-      const r = await fetch(`/api/v1/finops/rightsizing/scan?cluster=${encodeURIComponent(cluster)}`, {
-        method: "POST",
-        headers: authHeaders(),
-        signal: controller.signal,
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      const fresh: RightsizingResponse = await r.json();
+      const fresh = await apiClient.post<RightsizingResponse>(`/finops/rightsizing/scan?cluster=${encodeURIComponent(cluster)}`, undefined, { signal: controller.signal });
       queryClient.setQueryData(["finops-rightsizing", cluster], fresh);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -1152,9 +1125,13 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   };
 
   const workloads = useMemo(() => {
-    const list = data?.workloads ?? [];
+    const list = (data?.workloads ?? []).map((w) => {
+      const ex = exemptions?.get(`${w.namespace}/${w.workload}`);
+      const withEx = ex ? { ...w, ...ex, ...(ex.exempt_active ? { waste_brl: 0 } : {}) } : w;
+      return costFactor && withEx.waste_brl ? { ...withEx, waste_brl: withEx.waste_brl * costFactor(w.node_pool) } : withEx;
+    });
     return [...list].sort((a, b) => (b.waste_brl ?? 0) - (a.waste_brl ?? 0));
-  }, [data]);
+  }, [data, costFactor, exemptions]);
 
   const namespaces = useMemo(() => Array.from(new Set(workloads.map((w) => w.namespace))).sort(), [workloads]);
 
@@ -1190,6 +1167,8 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   }, [workloads, namespaceFilter, verdictFilter, search]);
 
   const totalWaste = workloads.reduce((sum, w) => sum + (w.waste_brl ?? 0), 0);
+  const committedWaste = committedPool ? workloads.filter((w) => committedPool(w.node_pool)).reduce((sum, w) => sum + (w.waste_brl ?? 0), 0) : 0;
+  const effectiveBasis = !!costFactor && workloads.some((w) => costFactor(w.node_pool) !== 1);
 
   // P95 agregado do CLUSTER (não só por pool) — pedido explícito do usuário: "preciso que o
   // percentil de uso dos clusters... seja evidenciado nas análises". Média ponderada por
@@ -1234,8 +1213,9 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   // problema estrutural de cobertura) — só presente na resposta de um scan FRESCO (ver
   // RightsizingResponse.metrics_collection_error); undefined = leitura persistida (GET, sem essa
   // informação disponível), mantém a mensagem genérica/conservadora de antes.
-  const metricsFailureReason: "timeout" | "transient" | "structural" | "unknown" =
+  const metricsFailureReason: MetricsFailureReason =
     data?.metrics_collection_error === undefined ? "unknown"
+      : isPrometheusNotFound(data.metrics_collection_error) ? "not_found"
       : data.metrics_collection_timeout ? "timeout"
       : data.metrics_collection_error === "" ? "structural" : "transient";
 
@@ -1286,7 +1266,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <CoverageRefreshButton cluster={cluster} />
+          <CoverageRefreshButton cluster={cluster} provider={provider} />
           <PerfBenchmarkButton
             cluster={cluster}
             pools={(data?.node_pools ?? []).map((p) => ({ name: p.node_pool, sku: p.current_sku }))}
@@ -1325,6 +1305,8 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
                 Dynatrace instalado / sem Prometheus com as métricas de container) do que uma falha transitória. "Reanalisar agora" não deve resolver
                 sozinho — verifique se Dynatrace/Prometheus estão de fato configurados e coletando dados para este cluster.
               </>
+            ) : metricsFailureReason === "not_found" ? (
+              <PrometheusNotFoundText />
             ) : metricsFailureReason === "transient" ? (
               <>
                 Pelo menos uma consulta a Dynatrace/Prometheus falhou de verdade durante este scan ({data?.metrics_collection_error}) — é mais
@@ -1359,7 +1341,8 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
         <>
           {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <SummaryCard icon={DollarSign} label="Desperdício Total" value={fmtBRL(totalWaste)} color="text-red-500" />
+            <SummaryCard icon={DollarSign} label={effectiveBasis ? "Desperdício (efetivo)" : "Desperdício Total"} value={fmtBRL(totalWaste)} color="text-red-500"
+              sub={committedWaste > 0 ? `${fmtBRL(committedWaste)} em pools sob reserva: só economiza liberando nodes` : undefined} />
             <SummaryCard icon={TrendingDown} label="Workloads Analisados" value={String(workloads.length)} color="text-blue-500" />
             <SummaryCard icon={Layers} label="Node Pools" value={String(data.node_pools?.length ?? 0)} color="text-purple-500" />
             <SummaryCard

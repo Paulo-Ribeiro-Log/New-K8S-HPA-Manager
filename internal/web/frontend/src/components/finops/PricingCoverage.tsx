@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { apiClient } from "@/lib/api/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { BadgePercent, Loader2, AlertTriangle } from "lucide-react";
@@ -45,7 +46,6 @@ export interface CoverageWarning {
   scenarios?: SwapScenarios;
 }
 
-const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("auth_token")}` });
 
 function ago(iso: string): string {
   const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
@@ -139,22 +139,17 @@ export function CoverageWarningBox({ warning }: { warning?: CoverageWarning }) {
   );
 }
 
-export function CoverageRefreshButton({ cluster }: { cluster: string }) {
+export function CoverageRefreshButton({ cluster, provider }: { cluster: string; provider?: string }) {
   const queryClient = useQueryClient();
   const [loading, setLoading] = useState(false);
-  const notAzure = cluster.startsWith("arn:aws:eks:") || cluster.startsWith("gke_");
+  // A cobertura vem do Cost Management do Azure (só AKS). provider = cloud_provider do cluster.
+  const notAzure = !!provider && provider !== "aks";
 
   const refresh = async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/v1/finops/pricing-coverage/refresh", {
-        method: "POST",
-        headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ cluster }),
-      });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error((body as { error?: string }).error ?? `Erro ${r.status}`);
-      const b = body as { pools: unknown[]; window_days: number; from: string; to: string; sku_index?: { skus: number; error?: string } };
+      const b = await apiClient.post<{ pools: unknown[]; window_days: number; from: string; to: string; sku_index?: { skus: number; error?: string } }>(
+        "/finops/pricing-coverage/refresh", { cluster });
       toast.success(`Cobertura atualizada: ${b.pools.length} pool(s), ${b.from} → ${b.to}` +
         (b.sku_index && !b.sku_index.error ? ` · ${b.sku_index.skus} SKU(s) com reserva/Savings Plan na frota` : ""));
       if (b.sku_index?.error) toast.warning(`Índice de SKUs não atualizado: ${b.sku_index.error}`);

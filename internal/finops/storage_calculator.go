@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -236,29 +237,70 @@ func (s *StorageCalculator) Calculate(
 	return items, summary, nil
 }
 
-// OSDiskForNodePool detecta o tamanho do disco OS dos nodes de um pool AKS.
-// Retorna (sizeGB, source) onde source é "label" ou "default".
+// OSDiskInfo é o disco de SO dos nodes de um pool AKS, lido dos próprios nodes.
+type OSDiskInfo struct {
+	SizeGB    int    // tamanho do disco (gerenciado: tamanho do tier; efêmero: o que o node expõe)
+	Source    string // "label" | "node" | "default"
+	Ephemeral bool   // disco efêmero: fica no cache/disco temporário da VM, sem custo à parte
+	AzureType string // "Premium SSD" | "Standard SSD" | "Standard HDD" (só para gerenciado)
+}
+
+// OSDiskForNodePool detecta o disco de SO dos nodes de um pool AKS. Bug real corrigido: lia só o
+// label kubernetes.azure.com/os-disk-size-gb, que o AKS não coloca nos nodes — todo pool saía
+// como Premium SSD P10 de 128 GB, inclusive os de disco EFÊMERO (ex.: monitoringspot, 64 GB no
+// cache da VM, sem custo). Agora:
+//   - kubernetes.azure.com/storageprofile = "ephemeral" | "managed";
+//   - kubernetes.azure.com/storagetier = Premium_LRS | StandardSSD_LRS | Standard_LRS;
+//   - tamanho pela capacidade ephemeral-storage do node (o sistema de arquivos do disco do SO
+//     quando o kubelet usa o disco do SO, o padrão do AKS), arredondada para cima em GiB.
 func (s *StorageCalculator) OSDiskForNodePool(
 	ctx context.Context,
 	client kubernetes.Interface,
 	poolName string,
-) (int, string) {
+) OSDiskInfo {
+	def := OSDiskInfo{SizeGB: 128, Source: "default", AzureType: "Premium SSD"}
 	nodeList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{
 		LabelSelector: "kubernetes.azure.com/agentpool=" + poolName,
 	})
 	if err != nil || len(nodeList.Items) == 0 {
-		return 128, "default"
+		return def
 	}
+	return osDiskFromNode(nodeList.Items[0])
+}
 
-	// Todos os nodes do pool têm o mesmo tamanho de OS disk — verificar no primeiro
-	if sizeStr, ok := nodeList.Items[0].Labels["kubernetes.azure.com/os-disk-size-gb"]; ok {
+func osDiskFromNode(n corev1.Node) OSDiskInfo {
+	info := OSDiskInfo{SizeGB: 128, Source: "default", AzureType: "Premium SSD"}
+	labels := n.Labels
+	info.Ephemeral = strings.EqualFold(labels["kubernetes.azure.com/storageprofile"], "ephemeral")
+	switch strings.ToLower(labels["kubernetes.azure.com/storagetier"]) {
+	case "standardssd_lrs", "standardssd_zrs":
+		info.AzureType = "Standard SSD"
+	case "standard_lrs":
+		info.AzureType = "Standard HDD"
+	}
+	// Todos os nodes do pool têm o mesmo disco — basta o primeiro.
+	if sizeStr, ok := labels["kubernetes.azure.com/os-disk-size-gb"]; ok {
 		var size int
 		if _, err := fmt.Sscanf(sizeStr, "%d", &size); err == nil && size > 0 {
-			return size, "label"
+			info.SizeGB, info.Source = size, "label"
+			return info
 		}
 	}
-
-	return 128, "default"
+	if q, ok := n.Status.Capacity[corev1.ResourceEphemeralStorage]; ok && q.Value() > 0 {
+		gib := int(math.Ceil(float64(q.Value()) / (1 << 30)))
+		info.SizeGB, info.Source = gib, "node"
+		if !info.Ephemeral {
+			// Gerenciado: o sistema de arquivos é um pouco menor que o disco (128 GB → ~124 GiB);
+			// o tier cobrado é o menor que comporta o tamanho visto.
+			for _, t := range managedDiskTiers[info.AzureType] {
+				if t.GB >= float64(gib) {
+					info.SizeGB = int(t.GB)
+					break
+				}
+			}
+		}
+	}
+	return info
 }
 
 // groupPVCsByWorkload cria um mapa workloadRef → []PVCCostItem para enriquecer FinOpsWorkloads

@@ -24,6 +24,7 @@ make web-build                          # só frontend: vite build + copia dist/
 ./build/new-k8s-hpa web -f              # servidor em foreground (porta 8080); `web --ad` = bypass RBAC de emergência
 ./build/new-k8s-hpa autodiscover        # descobre clusters AKS+EKS+GKE em paralelo
 # outros subcomandos (cmd/): version, diagnose-ca [url] (CA customizada), teams-discover (mapeia APIs internas do Teams)
+make web-install                        # npm install do frontend (clone novo)
 make web-dev                            # Vite HMR (5173) — rode o backend em paralelo
 
 go test -v ./internal/... -race                       # tudo, com race detector
@@ -45,7 +46,7 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - `vendor/github.com/go-rod/rod/lib/cdp/client.go` tem **patch manual** (`consumeMessages` loga+`continue` em vez de `panic` em frame CDP malformado; comentário `PATCH MANUAL`). `go mod vendor` apaga o patch em silêncio — reaplique (o comentário no código cita uma seção "Notas de Build" que virou esta lista).
 - `go.mod` tem `godebug tlsmlkem=0` (o key share pós-quântico do Go 1.24+ trava handshake TLS em VPN/EKS privado). Não remover. O comentário no `go.mod` cita a seção "Bug real corrigido — TLS handshake timeout…", que hoje está em `docs/history/CLAUDE-DETAILED-NOTES.md` (~linha 326).
 - `make release`/`build-all` num host Linux geram binários **darwin com SQLite quebrado** (cgo desligado → stub do `go-sqlite3` compila mas falha em runtime; detecção em `internal/storage/sqlite_health.go`). Release de verdade = workflow `release.yml` (runners macOS nativos, alvo `make release-single` com `GOOS`/`GOARCH` no ambiente). O `make release` em `ci.yml` é só smoke-test de compilação.
-- Não existe test runner de frontend. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
+- Não existe test runner de frontend, e a CI (`ci.yml`) não roda `tsc` nem `eslint` — erro de tipo só aparece se você rodar à mão. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
 - A raiz tem muitos scripts soltos (`create-release*.sh`, `create_release.sh`, `web-server*.sh`, `new-web-server.sh`, `teste.*`, …). O fluxo oficial é `make` + `rebuild-web.sh` (dev) e `release.yml` (release); `install.sh`/`auto-update.sh`/`uninstall.sh` são os instaladores do usuário final. Não tome os demais como referência.
 
 ## Arquitetura (visão geral)
@@ -79,7 +80,10 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - Sessão Teams/ServiceNow usam perfis de browser **separados** (`teams-session/` vs `rod-session/`); nunca misture.
 - Credencial Dynatrace: leia sempre via `dynatraceTokensFor`/`dynatraceClientForCluster` (`handlers/dynatrace_identity.go`: e-mail do Perfil SSO, com fallback no e-mail do login), **nunca** `tokensStore.GetTokens(user_email)` direto — o `user_email` do JWT é a conta ativa do `az`, não o e-mail corporativo.
 
-**FinOps — custos e Deep Analysis** (`FINOPS-DEEP-ANALYSIS-PLAN.md`)
+**FinOps — custos e Deep Analysis** (`FINOPS-DEEP-ANALYSIS-PLAN.md`; revisão das abas em andamento: checklist em `FINOPS-REVISAO-PLAN.md`)
+- `cpu_request_millis`/`mem_request_mi` do `FinOpsWorkload` são **por pod** (total = × `pods`; por pool, use `pool_pods`). Capacidade, custo ocioso e scale-down por pool: use `components/finops/capacity.ts` (capacidade alocável dos nodes; ocupação = recurso mais cheio, maior entre request e uso), não refaça a conta na aba. Valores em reais do relatório são de **tabela**; pools com `coverage` (reserva/Savings Plan) entram pelo custo efetivo: para exibir, use `toEffectiveReport`/`poolCostFactors`; economia em pool sob reserva nunca é "certa" (`isCommittedPool`).
+- A ociosa por pool existe em duas implementações que precisam andar juntas: `computePoolUsage` (`capacity.ts`) e `finops/idle.go` (ranking multi-cluster, no backend).
+- Cobertura e custo efetivo dos discos (`attachCostData`) e isenções (`applyExemptions`) entram na **leitura** do relatório (`doGetReport` depois de gravar o cache, `GetLastReport`). O cache guarda o relatório sem isenção: não grave o relatório depois de aplicá-las.
 - Custo de troca de VM **nunca** só com preço de tabela: pools costumam estar sob reserva (calculofrete: R$ 14,7 mil efetivos × R$ 48,6 mil de tabela). Use a cobertura gravada (`poolCoverage`/`skuCoverageIndex` no handler; `coverage.go`, `deep_analysis_coverage.go`) e siga a regra de não dar número quando seria chute (Savings Plan ≥ 20%, moeda ≠ BRL, Spot).
 - Deep Analysis: lógica pura em `internal/finops/deep_analysis*.go` (`BuildPoolDeepAnalysis` recebe tudo coletado; testes com fixture do calculofrete), coleta em `CollectPoolDeepInput`, handler em `finops_deep_analysis.go`. O histórico do `FinOpsReport` guarda o **maior** P95 entre os pods — para DaemonSet é o pior node do cluster inteiro; não multiplique por pods do pool.
 - Specs de VM: `GetVMSpecs` infere memória pelo nome (família F = 2 GB/vCPU, errado para Fas_v6/Fams_v6) — para a Deep Analysis use `DeepSpecFor`. Catálogo de SKUs: `az rest` em `Microsoft.Compute/skus?$filter=location eq '<região>'` (~5 s); **não** use `az vm list-skus` (não termina em 8 min no brazilsouth).

@@ -122,6 +122,21 @@ func (h *FinOpsHandler) refreshPoolCoverage(ctx context.Context, arm *azure.ARMC
 	if serr := h.rightsizingStore.ReplacePoolPricingCoverage(cluster, rows); serr != nil {
 		return "", from, to, nil, &coverageErr{http.StatusInternalServerError, "cobertura consultada, mas falhou ao gravar: " + serr.Error()}
 	}
+	// Custo efetivo dos discos (SO por pool e PVCs) na mesma janela — complementar: falha só registra.
+	if disks, derr := arm.DiskCostByResource(ctx, nodeRG, from, to); derr != nil {
+		log.Warn().Err(derr).Str("cluster", cluster).Msg("FinOps/Coverage: custo dos discos não consultado (segue com preço de tabela)")
+	} else {
+		var drows []storage.DiskCost
+		for pool, v := range disks.OSByPool {
+			drows = append(drows, storage.DiskCost{Kind: "os", Name: pool, Cost: v, Currency: disks.Currency, WindowDays: days, FetchedAt: fetchedAt})
+		}
+		for name, v := range disks.ByDisk {
+			drows = append(drows, storage.DiskCost{Kind: "disk", Name: name, Cost: v, Currency: disks.Currency, WindowDays: days, FetchedAt: fetchedAt})
+		}
+		if serr := h.rightsizingStore.ReplaceDiskCost(cluster, drows); serr != nil {
+			log.Warn().Err(serr).Str("cluster", cluster).Msg("FinOps/Coverage: falha ao gravar o custo dos discos")
+		}
+	}
 	return nodeRG, from, to, summary, nil
 }
 
@@ -213,6 +228,9 @@ func (h *FinOpsHandler) RefreshPricingCoverage(c *gin.Context) {
 // que isso (o Cost Management limita chamadas e o dado só muda ~1x por dia).
 const coverageRefreshTTL = 6 * time.Hour
 
+// coverageRetryAfter: intervalo mínimo entre tentativas automáticas no mesmo cluster.
+const coverageRetryAfter = 30 * time.Minute
+
 // autoRefreshCoverage é o refresh do scan: atualiza a cobertura do cluster e o índice de SKUs da
 // subscription quando estão velhos. Best-effort e limitado no tempo — nunca falha nem atrasa o scan
 // além do teto: qualquer erro só é registrado (ex: sem permissão de custos, VPN, 429).
@@ -223,6 +241,19 @@ func (h *FinOpsHandler) autoRefreshCoverage(parent context.Context, cluster stri
 	if config.DetectCloudProvider(h.kubeManager.GetServerURL(cluster), cluster) != config.CloudProviderAKS {
 		return
 	}
+	// Uma tentativa por cluster a cada coverageRetryAfter, dê certo ou não (o "Atualizar cobertura"
+	// manual não passa por aqui).
+	h.coverageTriedMu.Lock()
+	if h.coverageTried == nil {
+		h.coverageTried = map[string]time.Time{}
+	}
+	if t, ok := h.coverageTried[cluster]; ok && time.Since(t) < coverageRetryAfter {
+		h.coverageTriedMu.Unlock()
+		return
+	}
+	h.coverageTried[cluster] = time.Now()
+	h.coverageTriedMu.Unlock()
+
 	poolStale := true
 	if rows, err := h.rightsizingStore.ListPoolPricingCoverage(cluster); err == nil && len(rows) > 0 {
 		poolStale = time.Since(rows[0].FetchedAt) > coverageRefreshTTL
@@ -313,4 +344,18 @@ func (h *FinOpsHandler) poolCoverage(cluster string) map[string]*finops.PoolCove
 		}
 	}
 	return out
+}
+
+// attachCostData anexa ao relatório o que vem do Cost Management e muda depois do scan: cobertura
+// de reserva/Savings Plan por pool e custo efetivo dos discos. Use em toda leitura do relatório.
+func (h *FinOpsHandler) attachCostData(cluster string, report *finops.FinOpsReport) {
+	if report == nil {
+		return
+	}
+	finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(cluster))
+	if h.rightsizingStore != nil {
+		if rows, err := h.rightsizingStore.ListDiskCost(cluster); err == nil {
+			finops.AttachDiskCost(report, rows)
+		}
+	}
 }

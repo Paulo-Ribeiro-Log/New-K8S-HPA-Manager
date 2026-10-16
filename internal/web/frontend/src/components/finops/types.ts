@@ -3,6 +3,9 @@
 // RightsizingTab.tsx/DataResourcesPanel.tsx (componentes próprios) e útil pros consumidores destas
 // abas não precisarem importar o arquivo inteiro só pra ler um tipo.
 
+
+import type { PoolCoverage } from "./PricingCoverage";
+
 export interface FinOpsPool {
   name: string;
   vm_size: string;
@@ -16,12 +19,19 @@ export interface FinOpsPool {
   monthly_cost_brl: number;
   total_cpu_millicores: number;
   total_memory_mi: number;
+  // Alocável somado dos nodes vivos (status.allocatable); ausente em relatório antigo.
+  allocatable_cpu_millicores?: number;
+  allocatable_memory_mi?: number;
+  allocatable_nodes?: number;
+  // Reserva / Savings Plan / sob demanda / spot no custo efetivo do pool (Cost Management, só AKS).
+  coverage?: PoolCoverage;
   // Storage — disco OS por nó
   os_disk_sku?: string;
   os_disk_tier?: string;
   os_disk_gb?: number;
   os_disk_cost_usd?: number;
   os_disk_cost_brl?: number;
+  os_disk_effective_brl?: number; // custo efetivo do disco do SO (Cost Management)
   total_cost_usd?: number;
   total_cost_brl?: number;
 }
@@ -41,11 +51,22 @@ export interface FinOpsWorkload {
   mem_request_mi: number;
   cpu_limit_millis?: number;
   mem_limit_mi?: number;
+  cpu_limit_recommended_millis?: number;
+  mem_limit_recommended_mi?: number;
+  kind?: string; // Deployment | StatefulSet | DaemonSet | Job | ReplicaSet | Pod
+  // Pool com mais pods do workload (best-effort, pela label do node; vazio se não reconhecida).
+  node_pool?: string;
+  pool_pods?: Record<string, number>; // pods em cada pool (DaemonSet tem em vários)
+  // Só no frontend (toEffectiveReport): valores em reais no custo efetivo do pool, e pool sob
+  // reserva/Savings Plan/Spot (economia nele não é certa).
+  cost_basis?: "effective" | "table";
+  committed?: boolean;
   cost_share_usd: number;
   cost_share_brl: number;
   hpa_min: number;
   hpa_max: number;
   hpa_current: number;
+  hpa_name?: string; // nome do HPA (pode diferir do workload)
   hpa_cost_min_brl: number;
   hpa_cost_max_brl: number;
   hpa_cost_current_brl: number;
@@ -63,6 +84,15 @@ export interface FinOpsWorkload {
   hpa_min_observed?: number;
   hpa_scale_events?: number;
   hpa_never_scaled?: boolean;
+  // Isenção (aplicada pelo backend na leitura do relatório — FINOPS-EXEMPTIONS-PLAN.md).
+  // exempt_active: dentro do limite de réplicas → verdict "ok" e waste 0; os originais vêm em exempt_original_*.
+  is_exempt?: boolean;
+  exempt_reason?: string;
+  exempt_threshold?: number;
+  exempt_active?: boolean;
+  exempt_replicas?: number;
+  exempt_original_verdict?: string;
+  exempt_original_waste_brl?: number;
   avg_replicas_cost_brl?: number;
   waste_brl?: number;
   metrics_source?: "dynatrace" | "prometheus" | "";
@@ -108,6 +138,7 @@ export interface FinOpsSummary {
   // true quando a ÚNICA causa foram timeouts das queries pesadas de container do Prometheus (as
   // leves de HPA responderam) — o Prometheus está no ar; a orientação é uma janela menor.
   metrics_collection_timeout?: boolean;
+  prometheus_url?: string; // endpoint consultado no scan (vazio = sem Prometheus)
 }
 
 export interface PVCCostItem {
@@ -125,6 +156,7 @@ export interface PVCCostItem {
   reclaim_policy: string;
   workload_ref: string;
   is_orphaned: boolean;
+  effective_cost_brl?: number; // custo efetivo no mês (Cost Management, disco pvc-<uid>)
   price_source: string;
 }
 
@@ -375,4 +407,141 @@ export interface OrphanResourcesResponse {
   scanned_at: string;
   from_cache: boolean;
   warnings: string[];
+}
+
+// Custo faturado (Cost Management, amortizado) dos RGs do cluster AKS — GET /finops/billed-cost.
+export interface BilledService {
+  service: string;
+  cost: number;
+}
+
+export interface BilledCostResponse {
+  available: boolean;
+  reason?: string;
+  cluster: string;
+  provider?: "aks" | "eks" | "gke";
+  currency?: string;
+  window_days?: number;
+  from?: string;
+  to?: string;
+  fetched_at?: string;
+  total: number;
+  services?: BilledService[];
+  resource_groups?: { name: string; role: "cluster" | "nodes" | "data"; total: number; services: BilledService[] }[];
+}
+
+// Isenção por workload — GET/POST/DELETE /finops/exemptions.
+export interface FinOpsExemption {
+  id: number;
+  cluster: string;
+  namespace: string;
+  workload: string;
+  max_replicas_threshold: number;
+  reason: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Linha da visão multi-cluster — GET /finops/overview (internal/finops/overview.go).
+export interface ClusterOverview {
+  cluster: string;
+  journey?: string;
+  environment?: string;
+  generated_at: string;
+  compute_table_brl: number;
+  compute_brl: number;
+  storage_brl: number;
+  total_brl: number;
+  covered_pools: number;
+  waste_brl: number;
+  waste_committed_brl: number;
+  orphan_storage_brl: number;
+  idle_brl: number;
+  workloads: number;
+  nodes: number;
+  pools: number;
+  oom_risk: number;
+  no_request: number;
+  hpa_removable: number;
+  superprovisioned: number;
+  exempt: number;
+  metrics_coverage_pct: number;
+}
+
+// Recomendação enviada para aplicar + estado no relatório mais recente — GET /finops/actions.
+export interface FinOpsActionRow {
+  id: number;
+  cluster: string;
+  namespace: string;
+  workload: string;
+  channel: "staging" | "values" | "kubectl";
+  created_by?: string;
+  created_at: string;
+  baseline_report_at: string;
+  baseline_pods: number;
+  baseline_hpa_min: number;
+  baseline_hpa_max: number;
+  baseline_cpu_millis: number;
+  baseline_mem_mi: number;
+  baseline_cost_brl: number;
+  baseline_waste_brl: number;
+  expected_saving_brl: number;
+  target_hpa_min?: number;
+  target_hpa_max?: number;
+  target_cpu_millis?: number;
+  target_mem_mi?: number;
+  evaluation: {
+    status: "aguardando_scan" | "nao_encontrado" | "pendente" | "parcial" | "aplicada";
+    report_at?: string;
+    current_pods?: number;
+    current_hpa_min?: number;
+    current_hpa_max?: number;
+    current_cpu_millis?: number;
+    current_mem_mi?: number;
+    current_cost_brl?: number;
+    current_waste_brl?: number;
+    realized_saving_brl: number;
+    applied: number;
+    targets: number;
+  };
+}
+
+// Showback — GET /finops/showback (internal/finops/showback.go).
+export interface ShowbackRow {
+  cluster: string;
+  namespace: string; // "(não alocado)" = capacidade ociosa + disco do SO
+  owner?: string;
+  owner_label?: string;
+  workloads: number;
+  compute_brl: number;
+  storage_brl: number;
+  waste_brl: number;
+  total_brl: number;
+}
+
+// Reserva para a carga base — GET /finops/base-reservations (internal/finops/base_reservation.go).
+export interface CommitmentOption {
+  kind: "reservation" | "savings_plan";
+  term: "1y" | "3y";
+  monthly_node_brl: number;
+  saving_month_brl: number;
+  saving_pct: number;
+  commitment_brl: number;
+}
+
+export interface BaseReservationSuggestion {
+  pool: string;
+  vm_size: string;
+  nodes: number;
+  autoscaling: boolean;
+  min_nodes?: number;
+  base_nodes: number;
+  base_source: "hpa_min" | "autoscaler_min" | "fixed";
+  nodes_at_hpa_min: number;
+  covered_nodes: number;
+  suggested_nodes: number;
+  on_demand_node_brl: number;
+  options?: CommitmentOption[];
+  skip?: string;
 }

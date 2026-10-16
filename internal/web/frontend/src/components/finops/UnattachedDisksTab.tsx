@@ -73,7 +73,9 @@ const priceNote = (d: UnattachedDiskItem) => {
   }
 };
 
-export function UnattachedDisksTab({ cluster, journeys, azureScope = false }: { cluster: string; journeys?: string[]; azureScope?: boolean }) {
+// orphanPVCs: "ns/nome" dos PVCs sem pod já listados em "Volumes do cluster" (mesma aba) — o disco
+// deles aparece aqui como "Em uso por PV"; a etiqueta evita contar o mesmo disco duas vezes.
+export function UnattachedDisksTab({ cluster, journeys, azureScope = false, orphanPVCs }: { cluster: string; journeys?: string[]; azureScope?: boolean; orphanPVCs?: Set<string> }) {
   const diskQuery = useUnattachedDisks(cluster, !azureScope);
   const orphanQuery = useOrphanResources(cluster, journeys ?? [], azureScope);
   const orphans = azureScope ? orphanQuery.data : undefined;
@@ -334,7 +336,12 @@ export function UnattachedDisksTab({ cluster, journeys, azureScope = false }: { 
                           </TableCell>
                           <TableCell className="max-w-[280px]">
                             <div className="font-mono truncate" title={d.name}>{d.name}</div>
-                            {pvcLabel && <div className="text-[10px] text-muted-foreground truncate" title={pvcLabel}>PVC {pvcLabel}</div>}
+                            {pvcLabel && (
+                              <div className="text-[10px] text-muted-foreground truncate" title={pvcLabel}>
+                                PVC {pvcLabel}
+                                {orphanPVCs?.has(pvcLabel) && <span className="ml-1 rounded bg-fuchsia-500/10 px-1 text-fuchsia-600 dark:text-fuchsia-400">PVC sem pod — já em Volumes do cluster</span>}
+                              </div>
+                            )}
                           </TableCell>
                           <TableCell className="whitespace-nowrap">{d.disk_type}</TableCell>
                           <TableCell className="text-right">{Math.round(d.size_gb)}</TableCell>

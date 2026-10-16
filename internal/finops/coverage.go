@@ -71,6 +71,14 @@ func BuildPoolCoverage(costByModel map[string]float64, currency string, windowDa
 	}
 }
 
+// AttachPoolCoverage anexa a cobertura gravada a cada pool do relatório (chave em minúsculas, como
+// em poolCoverage no handler). Pool sem cobertura fica com nil — inclusive se tinha uma antiga.
+func AttachPoolCoverage(pools []FinOpsPool, byPool map[string]*PoolCoverage) {
+	for i := range pools {
+		pools[i].Coverage = byPool[strings.ToLower(pools[i].Name)]
+	}
+}
+
 // CoverageWarning é o aviso, por alternativa de SKU, de que a economia mostrada (preço de tabela)
 // pode não se realizar porque o pool está sob reserva/Savings Plan.
 type CoverageWarning struct {

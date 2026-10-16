@@ -1,6 +1,14 @@
 # FinOps — Sistema de Isenções por Workload
 
-Plano de implementação. Continuar de qualquer chat lendo este arquivo + `CLAUDE.md` + `FINOPS-DT-METRICS.md`.
+**Status: ✅ implementado (outubro de 2026, branch `feat/finops-relatorio-nodepools`).** Diferenças em relação ao plano abaixo:
+- a isenção é aplicada na **leitura** (`GetReport` depois de gravar o cache e `GetLastReport`), não guardada no relatório;
+- o limite compara o maior entre as réplicas atuais (HPA ou pods) e o pico do histórico (`hpa_max_observed`);
+- o Summary é ajustado por desconto (contadores e economia), sem extrair `BuildSummary`; o veredito e o desperdício originais ficam em `exempt_original_*`;
+- `FinOpsExemption` mora em `internal/storage` (o `finops` já importa `storage`);
+- na tela, os isentos ativos já saem da lista porque o veredito vira "ok": em vez do filtro "Ocultar isentos", há a seção "N workloads isentos" nas Oportunidades;
+- falta mostrar a isenção no Rightsizing.
+
+Plano de implementação original:
 
 **Contexto:** A aba FinOps analisa workloads K8s e sugere ações como "remover HPA" quando um deployment nunca
 escala além de 1 réplica (max=1). Em ambientes HLG, muitas aplicações são intencionalmente configuradas com

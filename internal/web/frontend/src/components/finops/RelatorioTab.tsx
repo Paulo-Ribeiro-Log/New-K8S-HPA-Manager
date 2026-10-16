@@ -1,565 +1,343 @@
-// F5.1 (FINOPS-IMPROVEMENTS-PLAN.md) — extraído de FinOpsTab.tsx (mesmo padrão já usado pra
-// RightsizingTab.tsx/DataResourcesPanel.tsx), sem mudança de comportamento.
-
-import { useRef, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+// Aba Relatório do FinOps: visão executiva do cluster — para onde vai o dinheiro, eficiência,
+// tendência, maiores custos, plano de ação com economia, riscos e qualidade dos dados — e o mesmo
+// conteúdo em PDF. Os números vêm de capacity.ts (mesma conta do Node Pools e do rateio do backend).
+import { useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from "recharts";
-import { AlertTriangle, CheckCircle2, Loader2, Info, Download } from "lucide-react";
+import {
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Treemap, BarChart, Bar, XAxis, YAxis,
+  CartesianGrid, AreaChart, Area, LineChart, Line, ReferenceArea,
+} from "recharts";
+import {
+  Download, Loader2, CircleDollarSign, CalendarRange, PiggyBank, Gauge, Wallet, Activity,
+  LayoutGrid, BarChart3, ListChecks, ShieldAlert, Info, Server, CheckCircle2,
+} from "lucide-react";
 import { toast } from "sonner";
-import { fmtBRL, fmtUSD, VerdictBadge } from "@/lib/finopsFormat";
-import type { FinOpsReport } from "./types";
+import { fmtBRL } from "@/lib/finopsFormat";
+import { apiClient } from "@/lib/api/client";
+import type { FinOpsReport, FinOpsWorkload } from "./types";
+import { buildActionPlan, computeCostBreakdown, computeEfficiency, computePoolUsage, poolCostFactors } from "./capacity";
+import { AXIS_TICK, COST_COLORS, RingGauge, SectionTitle, TooltipBox, TooltipRow } from "./charts";
+import { BilledCostPanel, billedToBRL, useBilledCost } from "./BilledCostPanel";
 
-interface Finding {
-  priority: "critical" | "high" | "medium";
-  category: "compute" | "storage" | "hpa" | "nodepool";
+interface Risk {
+  count: number;
   title: string;
   detail: string;
-  savingBRL: number;
-  action: string;
+  tone: "bad" | "warn" | "info";
 }
 
-const CATEGORY_LABEL: Record<string, string> = {
-  compute: "Compute",
-  storage: "Storage",
-  hpa: "HPA",
-  nodepool: "Node Pool",
+const PRIORITY = {
+  critical: { label: "Crítico", cls: "bg-rose-500/10 text-rose-700 dark:text-rose-300", bar: "#f43f5e", rgb: [225, 29, 72] },
+  high:     { label: "Alto",    cls: "bg-amber-500/10 text-amber-700 dark:text-amber-300", bar: "#f59e0b", rgb: [217, 119, 6] },
+  medium:   { label: "Médio",   cls: "bg-sky-500/10 text-sky-700 dark:text-sky-300", bar: "#0ea5e9", rgb: [2, 132, 199] },
+} as const;
+
+const RISK_TONE = {
+  bad: "border-rose-500/30 bg-rose-500/5",
+  warn: "border-amber-500/30 bg-amber-500/5",
+  info: "border-border bg-muted/30",
 };
 
-const CATEGORY_COLOR: Record<string, string> = {
-  compute: "#6366f1",
-  storage: "#8b5cf6",
-  hpa: "#f59e0b",
-  nodepool: "#0ea5e9",
-};
+const shortBRL = (v: number) => (v >= 1000 ? `R$ ${(v / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mil` : fmtBRL(v));
+const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
+const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
-export function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: FinOpsReport; windowDays: number; cluster: string }) {
+// Cor do namespace pela fração de desperdício.
+function wasteColor(ratio: number): string {
+  if (ratio >= 0.35) return COST_COLORS.idle;
+  if (ratio >= 0.15) return COST_COLORS.waste;
+  return COST_COLORS.productive;
+}
+
+// Célula do treemap de namespaces.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function NamespaceCell(props: any) {
+  const { x, y, width, height, name, value, ratio, depth } = props;
+  // O Treemap também desenha o nó raiz (depth 0), sem nome.
+  if (depth !== 1 || width <= 0 || height <= 0) return null;
+  const fill = wasteColor(ratio ?? 0);
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={height} rx={8} fill={fill} fillOpacity={0.88} stroke="hsl(var(--card))" strokeWidth={3} />
+      {width > 70 && height > 34 && (
+        <>
+          <text x={x + 9} y={y + 20} fontSize={11} fontWeight={600} fill="#fff">{trunc(String(name), Math.floor(width / 7))}</text>
+          <text x={x + 9} y={y + 35} fontSize={10} fill="#fff" fillOpacity={0.85}>{shortBRL(value)}</text>
+        </>
+      )}
+    </g>
+  );
+}
+
+function Panel({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <Card className={`shadow-sm ${className}`}><CardContent className="p-5">{children}</CardContent></Card>;
+}
+
+export function RelatorioTab({ report, cluster, provider }: { report: FinOpsReport; windowDays: number; cluster: string; provider?: string }) {
   const { summary } = report;
-  const workloads  = report.workloads  ?? [];
-  const node_pools = report.node_pools ?? [];
-  const storage = report.storage;
-  const pvcs = report.pvcs ?? [];
-  const contentRef = useRef<HTMLDivElement>(null);
-  const pieChartRef = useRef<HTMLDivElement>(null);
+  const workloads = report.workloads ?? [];
+  const pools = report.node_pools ?? [];
   const [exporting, setExporting] = useState(false);
+  const [activeSlice, setActiveSlice] = useState<string | null>(null);
 
-  // ── Breakdown de custo ────────────────────────────────────────────────────
-  // storage.total_monthly_cost_brl = somente PVCs (OS disk fica em os_disk_cost_brl)
-  const computeCost  = summary.total_monthly_cost_brl;
-  const pvcCost      = storage?.total_monthly_cost_brl ?? 0;   // PVCs apenas
-  const osDiskCost   = storage?.os_disk_cost_brl ?? 0;          // Disco OS separado
-  const storageCost  = pvcCost + osDiskCost;                    // storage real = PVC + OS disk
-  const totalCost    = summary.total_with_storage_brl ?? (computeCost + storageCost);
-  const orphanedCost = storage?.orphaned_cost_brl ?? 0;
-  const pvcActiveCost = Math.max(0, pvcCost - orphanedCost);   // PVCs montados (sem orfãos)
+  const cost = computeCostBreakdown(report);
+  const eff = computeEfficiency(pools, workloads);
+  const { pools: poolUsage } = computePoolUsage(pools, workloads);
+  // Pools com cobertura do Cost Management: custo efetivo (com reserva/Savings Plan) × tabela.
+  const covered = poolUsage.filter(u => u.effectiveBRL !== null);
+  const coveredTable = covered.reduce((s, u) => s + u.costBRL, 0);
+  const coveredEffective = covered.reduce((s, u) => s + (u.effectiveBRL ?? 0), 0);
+  const reservedPools = pools.filter(p => (p.coverage?.reservation ?? 0) >= 0.2 || (p.coverage?.savings_plan ?? 0) >= 0.2);
+  const hasMetrics = workloads.some(w => (w.cpu_p95_millis ?? 0) > 0 || (w.mem_p95_mi ?? 0) > 0);
 
-  // Desperdício identificado no compute
-  const prometheusWaste = workloads.reduce((s, w) => s + (w.waste_brl ?? 0), 0);
-  const hpaExcessCost   = workloads
-    .filter(w => w.verdict === "superprovisioned" || w.verdict === "hpa_removable")
-    .reduce((s, w) => s + Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl), 0);
-  const computeWaste        = prometheusWaste > 0 ? prometheusWaste : hpaExcessCost;
-  const totalIdentifiedWaste = computeWaste + orphanedCost;
-  const savingPct = totalCost > 0 ? Math.round(totalIdentifiedWaste / totalCost * 100) : 0;
+  // ── Para onde vai o dinheiro ──────────────────────────────────────────────
+  const slices = [
+    { key: "productive", name: hasMetrics ? "Em uso pelos workloads" : "Reservado pelos workloads", value: cost.productiveBRL, color: COST_COLORS.productive,
+      hint: hasMetrics ? "request compatível com o uso real" : "sem métrica de uso: não dá para separar o desperdício" },
+    { key: "waste", name: "Request acima do uso", value: cost.wasteBRL, color: COST_COLORS.waste, hint: "reservado e não usado (P95 + 20%)" },
+    { key: "idle", name: "Capacidade ociosa", value: cost.idleBRL, color: COST_COLORS.idle, hint: "nodes pagos que nem request nem uso ocupam (pelo recurso mais cheio de cada pool)" },
+    { key: "os", name: "Disco do SO", value: cost.osDiskBRL, color: COST_COLORS.osDisk, hint: cost.diskEffective ? "discos dos nodes (custo efetivo do Cost Management)" : "discos dos nodes (preço de tabela)" },
+    { key: "pvc", name: "Volumes (PVC)", value: cost.pvcBRL, color: COST_COLORS.pvc, hint: "PVCs montados" },
+    { key: "orphan", name: "Volumes órfãos", value: cost.orphanBRL, color: COST_COLORS.orphan, hint: "PVCs sem pod" },
+  ].filter(s => s.value >= 1);
+  const sliceTotal = slices.reduce((s, x) => s + x.value, 0);
+  const hovered = slices.find(s => s.key === activeSlice) ?? null;
 
-  // ── Pie chart ─────────────────────────────────────────────────────────────
-  const prodCompute = Math.max(0, computeCost - computeWaste);
+  // ── Plano de ação (economia) ──────────────────────────────────────────────
+  const { actions, totalSaving } = buildActionPlan(report);
+  const savingPct = pct(totalSaving, cost.totalBRL);
 
-  // Cores para tipos de storage (até 6 tipos individuais antes de agrupar em "Outros")
-  const STORAGE_COLORS = ["#0ea5e9", "#8b5cf6", "#06b6d4", "#a78bfa", "#38bdf8", "#7c3aed"];
+  // ── Riscos e pontos de atenção ────────────────────────────────────────────
+  const count = (v: FinOpsWorkload["verdict"]) => workloads.filter(w => w.verdict === v).length;
+  const fallbackPools = pools.filter(p => p.price_source !== "api").length;
+  const risks: Risk[] = [
+    { count: count("oom_risk"), title: "Risco de OOM ou throttling", detail: "uso P95 encostado no request — subir o request antes de reduzir qualquer coisa", tone: "bad" as const },
+    { count: count("no_request"), title: "Sem requests definidos", detail: "o scheduler não reserva recurso e o custo é estimado", tone: "warn" as const },
+    { count: count("fixed_high_cost"), title: "Custo alto com réplicas fixas", detail: "candidatos a HPA", tone: "warn" as const },
+    { count: count("hpa_removable"), title: "HPA que nunca escalou", detail: "min e max sem efeito prático no período", tone: "info" as const },
+    { count: summary.no_data_count ?? count("sem_dados"), title: "Sem métrica de uso", detail: "desperdício não calculado para estes workloads", tone: "info" as const },
+    { count: fallbackPools, title: "Pools com preço estimado", detail: "a API de preços não respondeu para o SKU", tone: "info" as const },
+  ].filter(r => r.count > 0);
 
-  // Quebrar storage por tipo real (by_storage_class) excluindo custo de orfãos
-  // proporcionalmente — o desperdício já entra no slice "Desperdício identificado".
-  // Nota: osDiskCost NÃO faz parte de by_storage_class — é adicionado separadamente.
-  const byClass = (storage?.by_storage_class ?? [])
-    .filter(sc => sc.monthly_cost_brl > 0)
-    .sort((a, b) => b.monthly_cost_brl - a.monthly_cost_brl);
+  // ── Namespaces e workloads ────────────────────────────────────────────────
+  // Custo e desperdício dos workloads no custo efetivo do pool deles (quando há cobertura).
+  const factorOf = poolCostFactors(report);
+  const nsWaste = new Map<string, number>();
+  const nsCost = new Map<string, number>();
+  workloads.forEach(w => {
+    const f = factorOf(w.node_pool);
+    nsWaste.set(w.namespace, (nsWaste.get(w.namespace) ?? 0) + (w.waste_brl ?? 0) * f);
+    nsCost.set(w.namespace, (nsCost.get(w.namespace) ?? 0) + w.cost_share_brl * f);
+  });
+  const nsData = [...(report.namespaces ?? [])]
+    .map(n => ({ ...n, monthly_cost_brl: nsCost.get(n.namespace) ?? n.monthly_cost_brl }))
+    .filter(n => n.monthly_cost_brl > 0)
+    .sort((a, b) => b.monthly_cost_brl - a.monthly_cost_brl)
+    .slice(0, 18)
+    .map(n => ({ name: n.namespace, size: Math.round(n.monthly_cost_brl), waste: nsWaste.get(n.namespace) ?? 0, ratio: (nsWaste.get(n.namespace) ?? 0) / n.monthly_cost_brl, workloads: n.workload_count }));
 
-  // orphanedCost é de PVCs — ratio contra pvcCost (não storageCost que inclui OS disk)
-  const orphanRatio = pvcCost > 0 ? orphanedCost / pvcCost : 0;
-  const storageSlices: { name: string; value: number; fill: string }[] = [];
-
-  // 1. Disco OS (sempre separado — não é PVC, não sofre orphan ratio)
-  if (osDiskCost > 0) {
-    storageSlices.push({ name: "Disco OS", value: Math.round(osDiskCost), fill: STORAGE_COLORS[0] });
-  }
-
-  // 2. PVCs: breakdown por tipo se disponível, senão bucket genérico
-  if (byClass.length > 0) {
-    const TOP = 4; // 4 tipos + "Outros" para não ultrapassar 6 cores
-    const topItems = byClass.slice(0, TOP);
-    const restCost = byClass.slice(TOP).reduce((s, sc) => s + sc.monthly_cost_brl, 0);
-    let pvcSliceTotal = 0;
-    topItems.forEach((sc, i) => {
-      const prodCost = Math.round(sc.monthly_cost_brl * (1 - orphanRatio));
-      if (prodCost > 0) {
-        storageSlices.push({ name: sc.azure_type || sc.storage_class, value: prodCost, fill: STORAGE_COLORS[i + 1] ?? "#64748b" });
-        pvcSliceTotal += prodCost;
-      }
-    });
-    if (restCost > 0) {
-      const prodRest = Math.round(restCost * (1 - orphanRatio));
-      if (prodRest > 0) {
-        storageSlices.push({ name: "Outros PVCs", value: prodRest, fill: "#64748b" });
-        pvcSliceTotal += prodRest;
-      }
-    }
-    // Fallback: se todos ficaram zerados pelo orphanRatio mas há PVCs ativos, mostra agregado
-    if (pvcSliceTotal === 0 && pvcActiveCost > 0) {
-      storageSlices.push({ name: "PVCs ativos", value: Math.round(pvcActiveCost), fill: STORAGE_COLORS[1] });
-    }
-  } else if (pvcActiveCost > 0) {
-    // Sem breakdown por tipo — bucket genérico
-    storageSlices.push({ name: "PVCs ativos", value: Math.round(pvcActiveCost), fill: STORAGE_COLORS[1] });
-  }
-
-  const pieData = [
-    ...(prodCompute > 0          ? [{ name: "Compute produtivo",       value: Math.round(prodCompute),       fill: "#6366f1" }] : []),
-    ...storageSlices,
-    ...(totalIdentifiedWaste > 0 ? [{ name: "Desperdício identificado", value: Math.round(totalIdentifiedWaste), fill: "#ef4444" }] : []),
-  ];
-  // ── Achados ───────────────────────────────────────────────────────────────
-  const findings: Finding[] = [];
-
-  // 1. PVCs orfãos
-  if (orphanedCost > 0 && (storage?.orphaned_pvc_count ?? 0) > 0) {
-    const retainCount = pvcs.filter(p => p.is_orphaned && p.reclaim_policy === "Retain").length;
-    findings.push({
-      priority: "critical",
-      category: "storage",
-      title: `${storage!.orphaned_pvc_count} PVC(s) orfão(s) sem workload`,
-      detail: `Discos provisionados sem nenhum pod montando${retainCount > 0 ? ` · ${retainCount} com reclaimPolicy=Retain (disco persiste após delete do PVC)` : ""}`,
-      savingBRL: orphanedCost,
-      action: "Aba Armazenamento → seção PVCs Orfãos",
-    });
-  }
-
-  // 2. Desperdício Prometheus
-  if (prometheusWaste > 50) {
-    const wasteful = workloads
-      .filter(w => (w.waste_brl ?? 0) > 50)
-      .sort((a, b) => (b.waste_brl ?? 0) - (a.waste_brl ?? 0));
-    findings.push({
-      priority: prometheusWaste > 500 ? "critical" : "high",
-      category: "compute",
-      title: `${wasteful.length} workload(s) com CPU/Mem acima do uso real (Prometheus)`,
-      detail: wasteful.slice(0, 3).map(w =>
-        `${w.workload}: ${Math.round(w.cpu_request_millis)}m req vs ${Math.round(w.cpu_avg_millis ?? 0)}m uso (desperd. ${fmtBRL(w.waste_brl!)})`
-      ).join(" · "),
-      savingBRL: prometheusWaste,
-      action: "Aba Oportunidades → reduzir CPU/Mem requests",
-    });
-  }
-
-  // 3. Superprovisionados (HPA, sem Prometheus)
-  const superWkl = workloads.filter(w => w.verdict === "superprovisioned");
-  if (superWkl.length > 0 && prometheusWaste <= 50) {
-    const saving = superWkl.reduce((s, w) => s + Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl), 0);
-    findings.push({
-      priority: saving > 500 ? "critical" : "high",
-      category: "hpa",
-      title: `${superWkl.length} workload(s) superprovisionados (HPA ≤ 35% do máximo)`,
-      detail: superWkl.slice(0, 3).map(w =>
-        `${w.workload}: ${w.hpa_current}/${w.hpa_max} réplicas (min ${w.hpa_min})`
-      ).join(" · "),
-      savingBRL: saving,
-      action: "Aba Oportunidades → reduzir minReplicas",
-    });
-  }
-
-  // 4. HPA removível
-  const hpaRem = workloads.filter(w => w.verdict === "hpa_removable");
-  if (hpaRem.length > 0) {
-    const saving = hpaRem.reduce((s, w) => s + Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl), 0);
-    findings.push({
-      priority: "medium",
-      category: "hpa",
-      title: `${hpaRem.length} workload(s) com HPA que nunca escalou`,
-      detail: hpaRem.slice(0, 3).map(w =>
-        `${w.workload}: HPA ${w.hpa_min}–${w.hpa_max} rep, sempre em ${w.hpa_min}`
-      ).join(" · "),
-      savingBRL: saving,
-      action: "Aba HPA Histórico → considerar remover HPA",
-    });
-  }
-
-  // 5. Scale-down de Node Pool
-  const totalCPU    = node_pools.reduce((s, p) => s + p.total_cpu_millicores, 0);
-  const totalCPUReq = workloads.reduce((s, w) => s + w.cpu_request_millis, 0);
-  const totalNodes  = node_pools.reduce((s, p) => s + p.node_count, 0);
-  const allocPct    = totalCPU > 0 ? Math.round(totalCPUReq / totalCPU * 100) : null;
-  if (allocPct !== null && allocPct < 45 && totalNodes > 3) {
-    const userPools = node_pools.filter(p => p.mode !== "System" && p.node_count > 2);
-    const potSaving = userPools.reduce((s, p) => {
-      const removable = Math.max(0, Math.floor(p.node_count * (1 - (allocPct / 60))));
-      return s + removable * (p.monthly_cost_brl / p.node_count);
-    }, 0);
-    if (potSaving > 0) {
-      findings.push({
-        priority: allocPct < 30 ? "high" : "medium",
-        category: "nodepool",
-        title: `Cluster com ${allocPct}% de CPU alocada — candidato a scale-down`,
-        detail: `${totalNodes} nodes · ${(totalCPUReq / 1000).toFixed(0)} vCPUs requested de ${(totalCPU / 1000).toFixed(0)} disponíveis`,
-        savingBRL: Math.round(potSaving),
-        action: "Aba Node Pools → verificar recomendações de scale-down",
-      });
-    }
-  }
-
-  // 6. Sem requests definidos
-  const noReq = workloads.filter(w => w.verdict === "no_request");
-  if (noReq.length > 0) {
-    findings.push({
-      priority: "medium",
-      category: "compute",
-      title: `${noReq.length} workload(s) sem CPU/Mem requests — custo não mensurável`,
-      detail: `${noReq.slice(0, 3).map(w => w.workload).join(", ")}${noReq.length > 3 ? ` +${noReq.length - 3}` : ""}`,
-      savingBRL: 0,
-      action: "Definir resources.requests em todos os Deployments",
-    });
-  }
-
-  findings.sort((a, b) => b.savingBRL - a.savingBRL);
-  const totalSaving = findings.reduce((s, f) => s + f.savingBRL, 0);
-
-  // ── Top workloads por custo total ─────────────────────────────────────────
   const topWorkloads = workloads
-    .map(w => ({ ...w, totalCostBRL: w.cost_share_brl + (w.storage_cost_brl ?? 0) }))
-    .sort((a, b) => b.totalCostBRL - a.totalCostBRL)
+    .map(w => {
+      const f = factorOf(w.node_pool);
+      const compute = w.cost_share_brl * f;
+      const waste = Math.min((w.waste_brl ?? 0) * f, compute);
+      return { name: w.workload, ns: w.namespace, needed: Math.round(compute - waste), waste: Math.round(waste), storage: Math.round(w.storage_cost_brl ?? 0), total: compute + (w.storage_cost_brl ?? 0) };
+    })
+    .sort((a, b) => b.total - a.total)
     .slice(0, 10);
 
-  const PRIORITY_COLOR = { critical: "#ef4444", high: "#f59e0b", medium: "#6366f1" };
-  const PRIORITY_LABEL = { critical: "Crítico", high: "Alto", medium: "Médio" };
+  // ── Tendência (mesma query do Dashboard/Node Pools) ───────────────────────
+  const { data: tl } = useQuery({
+    queryKey: ["finops-timeline-dashboard", cluster, 30],
+    queryFn: () => apiClient.getFinOpsTimeline(cluster, 30),
+    enabled: !!cluster,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const nodeTrend = (tl?.nodes ?? []).map(n => ({ date: n.date.slice(5), nodes: n.node_count }));
+  const effByDate = new Map<string, { date: string; cpu?: number; mem?: number }>();
+  (tl?.cpu ?? []).forEach(p => { if (p.req_millis > 0) effByDate.set(p.date, { ...(effByDate.get(p.date) ?? { date: p.date.slice(5) }), cpu: pct(p.used_millis, p.req_millis) }); });
+  (tl?.mem ?? []).forEach(p => { if (p.req_mi > 0) effByDate.set(p.date, { ...(effByDate.get(p.date) ?? { date: p.date.slice(5) }), mem: pct(p.used_mi, p.req_mi) }); });
+  const effTrend = [...effByDate.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
 
-  // ── Rótulos externos do pie com anti-colisão (stacking lateral) ─────────────
-  // Algoritmo: pré-computa midAngles a partir dos dados, separa em grupos
-  // esquerdo/direito, resolve sobreposições empurrando labels verticalmente,
-  // e desenha connector em cotovelo (polyline) do segmento até o label ajustado.
-  const RADIAN = Math.PI / 180;
+  // ── Fatura (Cost Management) — a mesma consulta do painel, para o PDF ────
+  const { data: billed } = useBilledCost(cluster, !!provider);
+  const billedFactor = billedToBRL(billed, report.exchange_rate);
 
-  // Armazena os midAngles REAIS que o Recharts passa ao renderPieLabel.
-  // O Recharts aplica minAngle={3} e paddingAngle={2}, então os ângulos reais diferem
-  // dos calculados por proporção bruta. Usamos os reais para isLeft e origY precisos.
-  const _realMidAngles = useRef<Map<number, number>>(new Map());
+  // ── Qualidade dos dados ───────────────────────────────────────────────────
+  const enriched = summary.metrics_workloads_enriched ?? workloads.filter(w => (w.cpu_p95_millis ?? 0) > 0).length;
+  const coverage = pct(enriched, summary.workloads_analyzed || workloads.length);
+  const dtCount = workloads.filter(w => w.metrics_source === "dynatrace").length;
+  const promCount = workloads.filter(w => w.metrics_source === "prometheus").length;
+  const generated = new Date(report.generated_at);
+  const exempt = workloads.filter(w => w.exempt_active);
+  const exemptWaste = exempt.reduce((s, w) => s + (w.exempt_original_waste_brl ?? 0) * factorOf(w.node_pool), 0);
 
-  const _labelCache = useRef<{ key: string; positions: Map<number, {
-    lx: number; ly: number; origY: number; isLeft: boolean; pct: number;
-  }> }>({ key: "", positions: new Map() });
-
-  const _computeLabelPositions = (
-    cx: number, cy: number, outerRadius: number,
-    angles: Map<number, number>, // index → midAngle real do Recharts
-  ) => {
-    const total = pieData.reduce((s, d) => s + d.value, 0);
-    if (total === 0) return new Map<number, { lx: number; ly: number; origY: number; isLeft: boolean; pct: number }>();
-
-    const R = outerRadius + 34;
-    const MIN_GAP = 28; // bloco de texto = ~20px; 28px garante 8px de espaço entre labels
-    const Y_MIN = cy - outerRadius - 30;
-    const Y_MAX = cy + outerRadius + 50;
-
-    // 1. Posição bruta usando midAngles REAIS do Recharts (ou fallback por proporção se ainda não disponíveis)
-    const raw = pieData.map((d, i) => {
-      const realAngle = angles.get(i);
-      let cosA: number, sinA: number;
-      if (realAngle !== undefined) {
-        cosA = Math.cos(-realAngle * RADIAN);
-        sinA = Math.sin(-realAngle * RADIAN);
-      } else {
-        // fallback: proporcional (só no primeiro render antes de _realMidAngles estar preenchido)
-        const pct = d.value / total;
-        const cumPct = pieData.slice(0, i).reduce((s, dd) => s + dd.value / total, 0);
-        const mid = (cumPct + pct / 2) * 360;
-        cosA = Math.cos(-mid * RADIAN);
-        sinA = Math.sin(-mid * RADIAN);
-      }
-      return {
-        i, cosA, sinA,
-        origY: cy + R * sinA, adjY: cy + R * sinA,
-        pct: d.value / total,
-        isLeft: cosA < 0,
-      };
-    });
-
-    // 2. Separar em grupos L/R, ordenar por Y
-    const left  = raw.filter(x => x.isLeft).sort((a, b) => a.adjY - b.adjY);
-    const right = raw.filter(x => !x.isLeft).sort((a, b) => a.adjY - b.adjY);
-
-    // 3. Resolver colisões: push-down → push-up → shift de grupo para dentro dos limites
-    const resolve = (grp: typeof left) => {
-      if (grp.length <= 1) return;
-      for (let i = 1; i < grp.length; i++)
-        if (grp[i].adjY - grp[i - 1].adjY < MIN_GAP)
-          grp[i] = { ...grp[i], adjY: grp[i - 1].adjY + MIN_GAP };
-      for (let i = grp.length - 2; i >= 0; i--)
-        if (grp[i + 1].adjY - grp[i].adjY < MIN_GAP)
-          grp[i] = { ...grp[i], adjY: grp[i + 1].adjY - MIN_GAP };
-      const overflow = grp[grp.length - 1].adjY - Y_MAX;
-      if (overflow > 0)
-        for (let i = 0; i < grp.length; i++) grp[i] = { ...grp[i], adjY: grp[i].adjY - overflow };
-      const underflow = Y_MIN - grp[0].adjY;
-      if (underflow > 0)
-        for (let i = 0; i < grp.length; i++) grp[i] = { ...grp[i], adjY: grp[i].adjY + underflow };
-    };
-    resolve(left);
-    resolve(right);
-
-    // 4. Coluna x fixa por lado
-    const COL_L = cx - R - 10;
-    const COL_R = cx + R + 10;
-
-    const positions = new Map<number, { lx: number; ly: number; origY: number; isLeft: boolean; pct: number }>();
-    for (const it of [...left, ...right])
-      positions.set(it.i, { lx: it.isLeft ? COL_L : COL_R, ly: it.adjY, origY: it.origY, isLeft: it.isLeft, pct: it.pct });
-    return positions;
-  };
-
-  const renderPieLabel = ({ cx, cy, midAngle, outerRadius, index, name, value }: {
-    cx: number; cy: number; midAngle: number; outerRadius: number;
-    index: number; name: string; value: number;
-  }) => {
-    // Registrar o midAngle real do Recharts (inclui minAngle e paddingAngle)
-    _realMidAngles.current.set(index, midAngle);
-
-    // Recalcular posições apenas quando o conjunto de ângulos mudar
-    const angleKey = Array.from(_realMidAngles.current.entries())
-      .sort(([a], [b]) => a - b).map(([i, v]) => `${i}:${v.toFixed(1)}`).join(",");
-    const cacheKey = `${cx.toFixed(0)},${cy.toFixed(0)},${outerRadius},${angleKey}`;
-
-    if (_labelCache.current.key !== cacheKey) {
-      _labelCache.current = {
-        key: cacheKey,
-        positions: _computeLabelPositions(cx, cy, outerRadius, _realMidAngles.current),
-      };
-    }
-
-    const pos = _labelCache.current.positions.get(index);
-    if (!pos) return null;
-
-    const cosA = Math.cos(-midAngle * RADIAN);
-    const sinA = Math.sin(-midAngle * RADIAN);
-    const sx = cx + (outerRadius + 5) * cosA;
-    const sy = cy + (outerRadius + 5) * sinA;
-    const kneeX = pos.lx + (pos.isLeft ? 12 : -12);
-    const anchor = pos.isLeft ? "end" : "start";
-    const tx = pos.lx + (pos.isLeft ? -3 : 3);
-    const shortName = name.length > 18 ? name.slice(0, 17) + "…" : name;
-
-    return (
-      <g>
-        <polyline
-          points={`${sx},${sy} ${kneeX},${pos.origY} ${pos.lx},${pos.ly}`}
-          fill="none" stroke="#64748b" strokeWidth={0.8} opacity={0.7}
-        />
-        <circle cx={pos.lx} cy={pos.ly} r={1.5} fill="#64748b" opacity={0.7} />
-        <text x={tx} y={pos.ly - 5} textAnchor={anchor} fontSize={9} fontWeight={600} fill="#e2e8f0">
-          {shortName}
-        </text>
-        <text x={tx} y={pos.ly + 6} textAnchor={anchor} fontSize={9} fill="#94a3b8">
-          {fmtBRL(value)} ({Math.round(pos.pct * 100)}%)
-        </text>
-      </g>
-    );
-  };
-
-  // ── Exportar PDF ──────────────────────────────────────────────────────────
+  // ── PDF ───────────────────────────────────────────────────────────────────
   const exportPDF = async () => {
     setExporting(true);
     try {
       const { default: jsPDF } = await import("jspdf");
       const { default: autoTable } = await import("jspdf-autotable");
-
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      const pageW = 210;
-      const margin = 14;
-      const contentW = pageW - margin * 2;
-      let y = margin;
-
-      // ── Helpers de desenho ───────────────────────────────────────────────
-      const drawDonutSlice = (
-        cx: number, cy: number, rIn: number, rOut: number,
-        startA: number, endA: number, col: [number, number, number],
-      ) => {
-        const span = endA - startA;
-        if (Math.abs(span) < 0.002) return; // skip slices too thin to draw
-        const steps = Math.max(24, Math.ceil(Math.abs(span) * 18));
-        const pts: [number, number][] = [];
-        for (let s = 0; s <= steps; s++) {
-          const a = startA + (s / steps) * span;
-          pts.push([cx + rOut * Math.cos(a), cy + rOut * Math.sin(a)]);
-        }
-        for (let s = steps; s >= 0; s--) {
-          const a = startA + (s / steps) * span;
-          pts.push([cx + rIn * Math.cos(a), cy + rIn * Math.sin(a)]);
-        }
-        doc.setFillColor(...col);
-        doc.setDrawColor(255, 255, 255);
-        doc.setLineWidth(0.4);
-        const rel = pts.slice(1).map((p, i) => [p[0] - pts[i][0], p[1] - pts[i][1]] as [number, number]);
-        doc.lines(rel, pts[0][0], pts[0][1], [1, 1], "FD", true);
-      };
-
-      // ── Cabeçalho ───────────────────────────────────────────────────────
-      doc.setFillColor(15, 23, 42);
-      doc.rect(0, 0, pageW, 20, "F");
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(13); doc.setFont("helvetica", "bold");
-      doc.text("FinOps — Relatório Executivo", margin, 12);
-      doc.setFontSize(8.5); doc.setFont("helvetica", "normal");
-      doc.text(`Cluster: ${cluster}   ·   ${new Date().toLocaleDateString("pt-BR", { dateStyle: "long" })}`, margin, 17.5);
-      y = 28;
-
-      // ── KPI cards ───────────────────────────────────────────────────────
-      const kpis = [
-        { label: "Custo Total/mês",         value: fmtBRL(totalCost),      sub: storageCost > 0 ? "Compute + Storage" : fmtUSD(summary.total_monthly_cost_usd) },
-        { label: "Desperdício Identificado", value: totalIdentifiedWaste > 0 ? fmtBRL(totalIdentifiedWaste) : "Nenhum", sub: savingPct > 0 ? `${savingPct}% do orçamento` : "" },
-        { label: "Achados",                 value: `${findings.length}`,   sub: `${findings.filter(f => f.priority === "critical").length} críticos · ${findings.filter(f => f.priority === "high").length} altos` },
-        { label: "Saving Potencial/mês",    value: totalSaving > 0 ? fmtBRL(totalSaving) : "—", sub: totalCost > 0 && totalSaving > 0 ? `${Math.round(totalSaving / totalCost * 100)}% de redução` : "" },
-      ];
-      const kpiW = (contentW - 6) / 4;
-      kpis.forEach((kpi, i) => {
-        const kx = margin + i * (kpiW + 2);
-        doc.setFillColor(241, 245, 249); doc.roundedRect(kx, y, kpiW, 18, 1.5, 1.5, "F");
-        doc.setFontSize(6.5); doc.setTextColor(100, 116, 139); doc.setFont("helvetica", "normal");
-        doc.text(kpi.label, kx + 3, y + 5.5);
-        doc.setFontSize(10); doc.setTextColor(30, 41, 59); doc.setFont("helvetica", "bold");
-        doc.text(kpi.value, kx + 3, y + 12);
-        if (kpi.sub) {
-          doc.setFontSize(6); doc.setTextColor(100, 116, 139); doc.setFont("helvetica", "normal");
-          doc.text(kpi.sub, kx + 3, y + 17);
-        }
-      });
-      y += 24;
-
-      // ── Gráfico donut + legenda (vetorial) ──────────────────────────────
-      doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
-      doc.text("Composição do Custo", margin, y);
-      y += 5;
-
-      const hexToRGB = (hex: string): [number, number, number] => {
+      const W = 210, M = 14, CW = W - M * 2;
+      const money = (v: number) => fmtBRL(v).replace(/\u00a0/g, " ");
+      const rgb = (hex: string): [number, number, number] => {
         const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
         return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [150, 150, 150];
       };
+      const title = (text: string, y: number) => {
+        doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(15, 23, 42);
+        doc.text(text, M, y);
+        doc.setDrawColor(99, 102, 241); doc.setLineWidth(0.6); doc.line(M, y + 1.5, M + 12, y + 1.5);
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const lastY = () => (doc as any).lastAutoTable.finalY as number;
+      const ensure = (y: number, need: number) => (y + need > 282 ? (doc.addPage(), M) : y);
 
-      // Filtrar itens com valor > 0 para não quebrar o desenho
-      const pieDataValid = pieData.filter(seg => seg.value > 0);
-      const totalPie = pieDataValid.reduce((s, d) => s + d.value, 0);
-      const donutCX = margin + 36;
-      const donutCY = y + 30;
-      const rOut = 26;
-      const rIn  = 13;
+      // Faixa de título
+      doc.setFillColor(30, 27, 75); doc.rect(0, 0, W, 30, "F");
+      doc.setFillColor(79, 70, 229); doc.rect(0, 28, W, 2, "F");
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(16); doc.setFont("helvetica", "bold"); doc.text("Relatório FinOps", M, 13);
+      doc.setFontSize(9); doc.setFont("helvetica", "normal");
+      doc.text(`${cluster.replace(/-admin$/, "")}  ·  ${generated.toLocaleString("pt-BR")}  ·  câmbio USD/BRL ${report.exchange_rate.toFixed(4)}`, M, 21);
+      let y = 38;
 
-      if (totalPie > 0) {
-        let startA = -Math.PI / 2;
-        pieDataValid.forEach(seg => {
-          const angle = (seg.value / totalPie) * Math.PI * 2;
-          drawDonutSlice(donutCX, donutCY, rIn, rOut, startA, startA + angle, hexToRGB(seg.fill));
-          startA += angle;
-        });
-        doc.setFillColor(255, 255, 255);
-        doc.setDrawColor(255, 255, 255);
-        doc.circle(donutCX, donutCY, rIn - 0.3, "F");
-        doc.setFontSize(7); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
-        doc.text("Total", donutCX - 4, donutCY - 1.5);
-        doc.setFontSize(6.5); doc.setFont("helvetica", "normal");
-        doc.text(fmtBRL(totalPie), donutCX - 6, donutCY + 3.5);
-      }
-
-      // Legenda ao lado — apenas itens com valor > 0
-      const lx = margin + 72;
-      let ly = y + 4;
-      const barMaxW = 38;
-      pieDataValid.forEach(seg => {
-        const col = hexToRGB(seg.fill);
-        const pct = totalPie > 0 ? Math.round(seg.value / totalPie * 100) : 0;
-        // barra de fundo sempre visível; barra preenchida só se pct > 0
-        doc.setFillColor(230, 232, 240); doc.rect(lx, ly + 4.5, barMaxW, 2.5, "F");
-        const barW = barMaxW * pct / 100;
-        if (barW > 0.1) { doc.setFillColor(...col); doc.rect(lx, ly + 4.5, barW, 2.5, "F"); }
-        doc.setFillColor(...col); doc.rect(lx, ly, 3.5, 3.5, "F");
-        doc.setFontSize(8.5); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
-        doc.text(seg.name, lx + 5.5, ly + 3.2);
-        doc.setFontSize(7.5); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 116, 139);
-        doc.text(`${fmtBRL(seg.value)}  (${pct}%)`, lx, ly + 10.5);
-        ly += 17;
+      // Indicadores
+      const kpis: [string, string, string][] = [
+        [cost.coveredPools > 0 ? "Custo mensal (efetivo)" : "Custo mensal (tabela)", money(cost.totalBRL), cost.coveredPools > 0 ? `compute de tabela ${money(cost.tableComputeBRL)}` : `compute ${money(cost.computeBRL)}`],
+        ["Projeção anual", money(cost.totalBRL * 12), "no ritmo atual"],
+        ["Economia possível", totalSaving > 0 ? `${money(totalSaving)}/mês` : "-", totalSaving > 0 ? `${savingPct}% do custo · ${money(totalSaving * 12)}/ano` : actions.length > 0 ? "nada certo (reservas)" : "nenhuma ação"],
+        ["Eficiência de CPU", eff.cpuUse !== null ? `${eff.cpuUse}%` : "-", "uso médio / request"],
+      ];
+      const kw = (CW - 9) / 4;
+      kpis.forEach(([label, value, sub], i) => {
+        const x = M + i * (kw + 3);
+        doc.setFillColor(248, 250, 252); doc.setDrawColor(226, 232, 240); doc.roundedRect(x, y, kw, 22, 2, 2, "FD");
+        doc.setFontSize(7); doc.setTextColor(100, 116, 139); doc.setFont("helvetica", "normal"); doc.text(label.toUpperCase(), x + 3, y + 6);
+        doc.setFontSize(12); doc.setTextColor(15, 23, 42); doc.setFont("helvetica", "bold"); doc.text(value, x + 3, y + 13.5);
+        doc.setFontSize(6.5); doc.setTextColor(100, 116, 139); doc.setFont("helvetica", "normal"); doc.text(doc.splitTextToSize(sub, kw - 6)[0], x + 3, y + 19);
       });
-      // Avança y pela altura real da seção
-      y += Math.max(68, pieDataValid.length * 17 + 8);
+      y += 31;
 
-      // ── Divisor ─────────────────────────────────────────────────────────
-      doc.setDrawColor(226, 232, 240); doc.setLineWidth(0.3);
-      doc.line(margin, y, margin + contentW, y);
-      y += 6;
+      // Para onde vai o dinheiro: barra empilhada + legenda
+      title("Para onde vai o dinheiro", y); y += 7;
+      let bx = M;
+      slices.forEach(s => {
+        const w = (s.value / sliceTotal) * CW;
+        doc.setFillColor(...rgb(s.color)); doc.rect(bx, y, w, 7, "F");
+        bx += w;
+      });
+      y += 12;
+      slices.forEach((s, i) => {
+        const col = i % 2, row = Math.floor(i / 2);
+        const x = M + col * (CW / 2), yy = y + row * 9;
+        doc.setFillColor(...rgb(s.color)); doc.roundedRect(x, yy - 3, 3, 3, 0.5, 0.5, "F");
+        doc.setFontSize(8.5); doc.setTextColor(15, 23, 42); doc.setFont("helvetica", "bold"); doc.text(s.name, x + 5, yy);
+        doc.setFont("helvetica", "normal"); doc.setTextColor(100, 116, 139);
+        doc.text(`${money(s.value)}  ·  ${pct(s.value, sliceTotal)}%`, x + CW / 2 - 4, yy, { align: "right" });
+      });
+      y += Math.ceil(slices.length / 2) * 9 + 4;
 
-      // ── Achados priorizados ──────────────────────────────────────────────
-      if (findings.length > 0) {
-        doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
-        doc.text(`Achados Priorizados  —  Saving potencial: ${fmtBRL(totalSaving)}/mês`, margin, y);
-        y += 2;
+      // Eficiência
+      doc.setFontSize(8); doc.setTextColor(71, 85, 105);
+      const e = (v: number | null) => (v === null ? "-" : `${v}%`);
+      doc.text(`Eficiência (uso / request): CPU ${e(eff.cpuUse)} · memória ${e(eff.memUse)}     Alocação (request / capacidade): CPU ${e(eff.cpuAlloc)} · memória ${e(eff.memAlloc)}`, M, y);
+      y += 9;
+
+      // Plano de ação
+      y = ensure(y, 30);
+      title(`Plano de ação  ·  ${totalSaving > 0 ? `${money(totalSaving)}/mês` : "sem economia identificada"}`, y); y += 4;
+      if (actions.length > 0) {
         autoTable(doc, {
           startY: y,
-          head: [["Prioridade", "Categoria", "Título", "Evidência", "Saving/mês"]],
-          body: findings.map(f => [
-            PRIORITY_LABEL[f.priority],
-            CATEGORY_LABEL[f.category],
-            f.title,
-            f.detail.length > 70 ? f.detail.slice(0, 70) + "…" : f.detail,
-            f.savingBRL > 0 ? fmtBRL(f.savingBRL) : "—",
-          ]),
-          theme: "grid",
-          styles: { fontSize: 7, cellPadding: 2.2, overflow: "linebreak" },
-          headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5 },
-          columnStyles: {
-            0: { cellWidth: 18, fontStyle: "bold" },
-            1: { cellWidth: 20 },
-            2: { cellWidth: 52 },
-            3: { cellWidth: 64 },
-            4: { cellWidth: 24, halign: "right" },
+          head: [["Prioridade", "Ação", "Onde", "Economia/mês"]],
+          body: actions.map(a => [PRIORITY[a.priority].label, `${a.title}\n${a.detail}`, a.where, a.savingBRL > 0 ? money(a.savingBRL) : "sem economia certa"]),
+          theme: "plain",
+          styles: { fontSize: 7.5, cellPadding: 2.4, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: { bottom: 0.2 } },
+          headStyles: { fillColor: [238, 242, 255], textColor: [55, 48, 163], fontStyle: "bold" },
+          columnStyles: { 0: { cellWidth: 20, fontStyle: "bold" }, 1: { cellWidth: 100 }, 2: { cellWidth: 34 }, 3: { cellWidth: 28, halign: "right", fontStyle: "bold" } },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          didParseCell: (d: any) => {
+            if (d.section === "body" && d.column.index === 0) d.cell.styles.textColor = PRIORITY[actions[d.row.index].priority].rgb;
           },
-          didParseCell: (data: any) => {
-            if (data.section === "body" && data.column.index === 0) {
-              const p = findings[data.row.index]?.priority;
-              if (p === "critical") data.cell.styles.textColor = [220, 38, 38];
-              else if (p === "high") data.cell.styles.textColor = [217, 119, 6];
-              else data.cell.styles.textColor = [99, 102, 241];
-            }
-          },
-          margin: { left: margin, right: margin },
+          margin: { left: M, right: M },
         });
-        y = (doc as any).lastAutoTable.finalY + 8;
+        y = lastY() + 9;
+      } else {
+        y += 6;
       }
 
-      // ── Top 10 Workloads ─────────────────────────────────────────────────
-      if (y > 240) { doc.addPage(); y = margin; }
-      const hasStorageCols = topWorkloads.some(w => (w.storage_cost_brl ?? 0) > 0);
-      doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
-      doc.text("Top 10 Workloads — Custo Total (Compute + Storage)", margin, y);
-      y += 2;
+      // Riscos
+      if (risks.length > 0) {
+        y = ensure(y, 30);
+        title("Riscos e pontos de atenção", y); y += 4;
+        autoTable(doc, {
+          startY: y,
+          head: [["Qtd.", "Ponto", "Por que importa"]],
+          body: risks.map(r => [String(r.count), r.title, r.detail]),
+          theme: "plain",
+          styles: { fontSize: 7.5, cellPadding: 2.2, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: { bottom: 0.2 } },
+          headStyles: { fillColor: [254, 242, 242], textColor: [153, 27, 27], fontStyle: "bold" },
+          columnStyles: { 0: { cellWidth: 14, halign: "center", fontStyle: "bold" }, 1: { cellWidth: 56 } },
+          margin: { left: M, right: M },
+        });
+        y = lastY() + 9;
+      }
+
+      // Pools
+      y = ensure(y, 30);
+      title("Node pools", y); y += 4;
       autoTable(doc, {
         startY: y,
-        head: [hasStorageCols
-          ? ["#", "Namespace", "Workload", "Compute", "Storage", "Total/mês", "%", "Veredicto"]
-          : ["#", "Namespace", "Workload", "Compute/mês", "Total/mês", "%", "Veredicto"]
-        ],
-        body: topWorkloads.map((w, i) => hasStorageCols
-          ? [`${i + 1}`, w.namespace, w.workload, fmtBRL(w.cost_share_brl), fmtBRL(w.storage_cost_brl ?? 0), fmtBRL(w.totalCostBRL), totalCost > 0 ? `${Math.round(w.totalCostBRL / totalCost * 100)}%` : "—", w.verdict]
-          : [`${i + 1}`, w.namespace, w.workload, fmtBRL(w.cost_share_brl), fmtBRL(w.totalCostBRL), totalCost > 0 ? `${Math.round(w.totalCostBRL / totalCost * 100)}%` : "—", w.verdict]
-        ),
+        head: [["Pool", "VM", "Nodes", "Custo/mês", "CPU req.", "Mem req.", "Ociosa", "Sugestão"]],
+        body: poolUsage.map(u => [
+          u.pool.name, u.pool.vm_size, String(u.pool.node_count), money(u.costBRL),
+          `${pct(u.reqCPU, u.capCPU)}%`, `${pct(u.reqMem, u.capMem)}%`,
+          u.workloads > 0 ? money(u.idleCostBRL) : "-",
+          u.removable > 0 ? `${u.pool.node_count} para ${u.safeNodes} (-${money(u.savingBRL)})` : "-",
+        ]),
         theme: "striped",
         styles: { fontSize: 7, cellPadding: 2 },
-        headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5 },
-        margin: { left: margin, right: margin },
+        headStyles: { fillColor: [30, 27, 75], textColor: [255, 255, 255], fontStyle: "bold" },
+        margin: { left: M, right: M },
       });
+      y = lastY() + 9;
 
-      // ── Rodapé ───────────────────────────────────────────────────────────
-      const finalY = (doc as any).lastAutoTable.finalY + 6;
-      doc.setFontSize(7); doc.setFont("helvetica", "italic"); doc.setTextColor(148, 163, 184);
-      doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")} · K8s HPA Manager · FinOps`, margin, finalY);
+      // Top workloads
+      y = ensure(y, 30);
+      title("Maiores custos por workload", y); y += 4;
+      autoTable(doc, {
+        startY: y,
+        head: [["#", "Namespace", "Workload", "Compute", "Desperdício", "Storage", "Total/mês"]],
+        body: topWorkloads.map((w, i) => [String(i + 1), w.ns, w.name, money(w.needed + w.waste), w.waste > 0 ? money(w.waste) : "-", w.storage > 0 ? money(w.storage) : "-", money(w.total)]),
+        theme: "striped",
+        styles: { fontSize: 7, cellPadding: 2 },
+        headStyles: { fillColor: [30, 27, 75], textColor: [255, 255, 255], fontStyle: "bold" },
+        columnStyles: { 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right", fontStyle: "bold" } },
+        margin: { left: M, right: M },
+      });
+      y = lastY() + 8;
 
-      doc.save(`finops-relatorio-${cluster}-${new Date().toISOString().slice(0, 10)}.pdf`);
-      toast.success("PDF exportado com sucesso");
+      // Notas
+      y = ensure(y, 16);
+      doc.setFontSize(7); doc.setFont("helvetica", "italic"); doc.setTextColor(100, 116, 139);
+      const notes = [
+        `Métricas de uso: ${coverage}% dos workloads (${enriched}/${summary.workloads_analyzed}), janela de ${report.window_days || 0} dias.`,
+        "Preços de tabela pay-as-you-go: reservas e Savings Plan não estão descontados. Ociosidade pelo recurso mais ocupado de cada pool, sobre a capacidade alocável.",
+        ...(covered.length > 0 ? [`Cost Management em ${covered.length} de ${pools.length} pools: ${money(coveredEffective)} efetivos contra ${money(coveredTable)} de tabela.`] : []),
+        ...(billed?.available && billedFactor !== null ? [`Fatura (amortizada, ${billed.from} a ${billed.to}, ${(billed.resource_groups ?? []).map(r => r.name).join(", ")}): ${money(billed.total * billedFactor)}.`] : []),
+        ...(exempt.length > 0 ? [`Isentos: ${exempt.length} workload(s) fora do desperdício e do plano (${exempt.map(w => w.workload).slice(0, 8).join(", ")}${exempt.length > 8 ? ", …" : ""}).`] : []),
+        ...(reservedPools.length > 0 ? [`Sob reserva/Savings Plan (${reservedPools.map(p => p.name).join(", ")}): a economia de tirar nodes conta só a parte sob demanda.`] : []),
+        `Gerado por K8s HPA Manager em ${new Date().toLocaleString("pt-BR")}.`,
+      ];
+      doc.text(notes, M, y);
+
+      doc.save(`finops-relatorio-${cluster.replace(/-admin$/, "")}-${new Date().toISOString().slice(0, 10)}.pdf`);
+      toast.success("PDF exportado");
     } catch (err) {
       toast.error("Erro ao exportar PDF: " + (err as Error).message);
     } finally {
@@ -568,249 +346,311 @@ export function RelatorioTab({ report, windowDays: _windowDays, cluster }: { rep
   };
 
   return (
-    <div className="space-y-4">
-      {/* ── Botão exportar ─────────────────────────────────────────────────── */}
-      <div className="flex justify-end">
-        <Button variant="outline" size="sm" onClick={exportPDF} disabled={exporting} className="gap-1.5">
-          {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-          {exporting ? "Gerando PDF…" : "Exportar PDF"}
-        </Button>
-      </div>
+    <div className="space-y-4 pb-6">
+      {/* ── Capa ─────────────────────────────────────────────────────────── */}
+      <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-indigo-600 via-indigo-700 to-violet-800 p-6 text-white shadow-lg">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
+        <div className="pointer-events-none absolute -bottom-24 left-1/3 h-56 w-56 rounded-full bg-fuchsia-400/20 blur-3xl" />
+        <div className="relative flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-indigo-200">Relatório FinOps</p>
+            <h2 className="mt-1 text-2xl font-semibold">{cluster.replace(/-admin$/, "")}</h2>
+            <p className="mt-1 text-sm text-indigo-100/80">
+              {generated.toLocaleString("pt-BR", { dateStyle: "long", timeStyle: "short" })}
+              {report.window_days > 0 && <> · histórico de {report.window_days} dias</>}
+              {" · "}USD/BRL {report.exchange_rate.toFixed(4)}
+            </p>
+          </div>
+          <Button size="sm" onClick={exportPDF} disabled={exporting}
+            className="gap-1.5 bg-white/15 text-white hover:bg-white/25 border border-white/20 backdrop-blur">
+            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            {exporting ? "Gerando PDF…" : "Exportar PDF"}
+          </Button>
+        </div>
 
-      <div ref={contentRef} className="space-y-4">
-
-      {/* ── KPI cards ──────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] text-muted-foreground">Custo Total Real/mês</p>
-            <p className="text-lg font-bold text-foreground leading-tight">{fmtBRL(totalCost)}</p>
-            <p className="text-[10px] text-muted-foreground">
-              {storageCost > 0
-                ? `Compute ${fmtBRL(computeCost)} · Storage ${fmtBRL(storageCost)}`
-                : fmtUSD(summary.total_monthly_cost_usd)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className={totalIdentifiedWaste > 0 ? "border-red-200 dark:border-red-900/40" : ""}>
-          <CardContent className="p-3">
-            <p className="text-[10px] text-muted-foreground">Desperdício Identificado</p>
-            <p className={`text-lg font-bold leading-tight ${totalIdentifiedWaste > 0 ? "text-red-500" : "text-green-500"}`}>
-              {totalIdentifiedWaste > 0 ? fmtBRL(totalIdentifiedWaste) : "Nenhum"}
-            </p>
-            <p className="text-[10px] text-muted-foreground">
-              {savingPct > 0 ? `${savingPct}% do orçamento total` : "nenhum desperdício confirmado"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] text-muted-foreground">Achados</p>
-            <p className="text-lg font-bold leading-tight">{findings.length}</p>
-            <p className="text-[10px] text-muted-foreground">
-              {findings.filter(f => f.priority === "critical").length} críticos ·{" "}
-              {findings.filter(f => f.priority === "high").length} altos
-            </p>
-          </CardContent>
-        </Card>
-        <Card className={totalSaving > 0 ? "border-green-200 dark:border-green-900/40" : ""}>
-          <CardContent className="p-3">
-            <p className="text-[10px] text-muted-foreground">Saving Potencial/mês</p>
-            <p className={`text-lg font-bold leading-tight ${totalSaving > 0 ? "text-green-500" : "text-muted-foreground"}`}>
-              {totalSaving > 0 ? fmtBRL(totalSaving) : "—"}
-            </p>
-            <p className="text-[10px] text-muted-foreground">
-              {totalCost > 0 && totalSaving > 0
-                ? `${Math.round(totalSaving / totalCost * 100)}% de redução possível`
-                : "sem ações identificadas"}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Composição do custo + achados ─────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-        {/* Pie chart */}
-        <Card>
-          <CardHeader className="pb-1 pt-3 px-4">
-            <CardTitle className="text-sm">Composição do Custo</CardTitle>
-          </CardHeader>
-          <CardContent className="px-4 pb-3" ref={pieChartRef}>
-            {/* [&_svg]:bg-transparent → remove o fundo branco que o Recharts injeta no SVG */}
-            <div className="[&_svg]:bg-transparent [&_svg]:!fill-none">
-            <ResponsiveContainer width="100%" height={260}>
-              <PieChart margin={{ top: 20, right: 10, bottom: 20, left: 10 }}
-                {...({ overflow: "visible" } as any)}>
-                <Pie
-                  data={pieData}
-                  dataKey="value"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={50}
-                  outerRadius={72}
-                  paddingAngle={2}
-                  minAngle={3}
-                  label={renderPieLabel}
-                  labelLine={false}
-                >
-                  {pieData.map((e, i) => <Cell key={i} fill={e.fill} />)}
-                </Pie>
-                <Tooltip
-                  cursor={false}
-                  content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null;
-                    const d = payload[0];
-                    return (
-                      <div style={{ background: "hsl(var(--card) / 0.97)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}>
-                        <p className="font-semibold mb-1" style={{ color: d.payload.fill }}>{d.name}</p>
-                        <p className="text-foreground">{fmtBRL(d.value as number)}</p>
-                      </div>
-                    );
-                  }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+        <div className="relative mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {[
+            { icon: CircleDollarSign, label: cost.coveredPools > 0 ? "Custo mensal (efetivo)" : "Custo mensal (tabela)", value: fmtBRL(cost.totalBRL), sub: cost.coveredPools > 0
+              ? `com reserva/Savings Plan em ${cost.coveredPools} de ${pools.length} pools · compute de tabela ${shortBRL(cost.tableComputeBRL)}`
+              : `compute ${shortBRL(cost.computeBRL)}${cost.totalBRL > cost.computeBRL ? ` · storage ${shortBRL(cost.totalBRL - cost.computeBRL)}` : ""}` },
+            { icon: CalendarRange, label: "Projeção anual", value: shortBRL(cost.totalBRL * 12), sub: "no ritmo atual" },
+            { icon: PiggyBank, label: "Economia possível", value: totalSaving > 0 ? fmtBRL(totalSaving) : "—", sub: totalSaving > 0 ? `${savingPct}% do custo · ${shortBRL(totalSaving * 12)}/ano`
+              : actions.length > 0 ? "nada certo: as ações dependem de reaproveitar reservas" : "nenhuma ação identificada" },
+            { icon: Gauge, label: "Eficiência de CPU", value: eff.cpuUse !== null ? `${eff.cpuUse}%` : "—", sub: eff.cpuUse !== null ? "uso médio ÷ request" : "sem métrica de uso" },
+          ].map(k => (
+            <div key={k.label} className="rounded-xl bg-white/10 p-4 ring-1 ring-white/15 backdrop-blur">
+              <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-indigo-100/80"><k.icon className="h-3.5 w-3.5" />{k.label}</p>
+              <p className="mt-1.5 text-2xl font-semibold tabular-nums">{k.value}</p>
+              <p className="mt-0.5 text-xs text-indigo-100/70">{k.sub}</p>
             </div>
-          </CardContent>
-        </Card>
-
-        {/* Resumo por dimensão */}
-        <Card>
-          <CardHeader className="pb-1 pt-3 px-4">
-            <CardTitle className="text-sm">Dimensões de Custo</CardTitle>
-          </CardHeader>
-          <CardContent className="px-4 pb-3 space-y-2">
-            {pieData.map((slice, i) => {
-              // Subtítulo contextual por tipo de slice
-              const nodeCount = node_pools.reduce((s, p) => s + p.node_count, 0);
-              const sub =
-                slice.name === "Compute produtivo" ? `${nodeCount} nodes · ${node_pools.length} pools` :
-                slice.name === "Disco OS"           ? `${nodeCount} discos OS` :
-                slice.name === "Desperdício identificado" ? `${savingPct}% do custo total` :
-                slice.name === "PVCs ativos" || slice.name.startsWith("Outros") ?
-                  `${storage?.pvc_count ?? 0} PVCs · ${Math.round(storage?.total_capacity_gb ?? 0)} GB` :
-                  // tipos de storage class individuais (Premium SSD, Standard HDD, etc.)
-                  (() => {
-                    const sc = storage?.by_storage_class?.find(s => s.azure_type === slice.name || s.storage_class === slice.name);
-                    return sc ? `${sc.pvc_count} PVC${sc.pvc_count !== 1 ? "s" : ""} · ${Math.round(sc.total_gb)} GB` : "";
-                  })();
-              return (
-                <div key={i} className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: slice.fill }} />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline justify-between gap-1">
-                      <span className="text-xs font-medium truncate">{slice.name}</span>
-                      <span className="text-xs font-bold shrink-0">{fmtBRL(slice.value)}</span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-muted mt-0.5 overflow-hidden">
-                      <div className="h-full rounded-full"
-                        style={{ width: `${Math.min(100, totalCost > 0 ? slice.value / totalCost * 100 : 0)}%`, background: slice.fill }} />
-                    </div>
-                    {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
+          ))}
+        </div>
       </div>
 
-      {/* ── Achados prioritizados ─────────────────────────────────────────── */}
-      {findings.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2 pt-3 px-4">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-orange-500" />
-              Achados ({findings.length}) — saving potencial total: <span className="text-green-500 font-bold">{fmtBRL(totalSaving)}/mês</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="px-4 pb-4 space-y-2">
-            {findings.map((f, i) => (
-              <div key={i} className="flex items-start gap-3 p-3 rounded-lg border border-border bg-muted/20 hover:bg-muted/40 transition-colors">
-                {/* Priority indicator */}
-                <div className="w-1 self-stretch rounded-full shrink-0" style={{ background: PRIORITY_COLOR[f.priority] }} />
-                <div className="flex-1 min-w-0 space-y-1">
-                  <div className="flex items-start justify-between gap-2 flex-wrap">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <Badge className="text-[9px] px-1.5 py-0" style={{ background: PRIORITY_COLOR[f.priority] + "22", color: PRIORITY_COLOR[f.priority], border: `1px solid ${PRIORITY_COLOR[f.priority]}40` }}>
-                        {PRIORITY_LABEL[f.priority]}
-                      </Badge>
-                      <Badge variant="outline" className="text-[9px] px-1.5 py-0" style={{ color: CATEGORY_COLOR[f.category] }}>
-                        {CATEGORY_LABEL[f.category]}
-                      </Badge>
-                      <span className="text-xs font-semibold">{f.title}</span>
-                    </div>
-                    {f.savingBRL > 0 && (
-                      <span className="text-xs font-bold text-green-500 shrink-0">−{fmtBRL(f.savingBRL)}/mês</span>
-                    )}
+      <BilledCostPanel cluster={cluster} provider={provider} cost={cost} exchangeRate={report.exchange_rate} />
+
+      {/* ── Dinheiro + eficiência ────────────────────────────────────────── */}
+      <div className="grid gap-4 xl:grid-cols-5">
+        <Panel className="xl:col-span-3">
+          <SectionTitle icon={Wallet} title="Para onde vai o dinheiro" sub="Custo mensal dividido entre o que é usado, o que sobra e o que é armazenamento" />
+          <div className="grid items-center gap-4 md:grid-cols-[220px_1fr]">
+            <div className="relative h-[220px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  {/* Sem tooltip: a fatia sob o mouse aparece no centro da rosca (o tooltip caía em cima do total). */}
+                  <Pie data={slices} dataKey="value" nameKey="name" innerRadius={72} outerRadius={104} paddingAngle={2} cornerRadius={5} stroke="none" startAngle={90} endAngle={-270}
+                    onMouseEnter={(_, i) => setActiveSlice(slices[i]?.key ?? null)} onMouseLeave={() => setActiveSlice(null)}>
+                    {slices.map(s => <Cell key={s.key} fill={s.color} fillOpacity={hovered && hovered.key !== s.key ? 0.35 : 1} className="transition-opacity" />)}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+                {hovered ? (
+                  <>
+                    <span className="max-w-[8.5rem] text-[11px] font-medium leading-tight" style={{ color: hovered.color }}>{hovered.name}</span>
+                    <span className="text-xl font-semibold tabular-nums">{shortBRL(hovered.value)}</span>
+                    <span className="text-[11px] text-muted-foreground">{pct(hovered.value, sliceTotal)}% do total</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground">total/mês</span>
+                    <span className="text-xl font-semibold tabular-nums">{shortBRL(sliceTotal)}</span>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="space-y-2.5">
+              {slices.map(s => (
+                <div key={s.key} onMouseEnter={() => setActiveSlice(s.key)} onMouseLeave={() => setActiveSlice(null)}
+                  className={`rounded-md px-1 -mx-1 transition-opacity ${hovered && hovered.key !== s.key ? "opacity-50" : ""}`}>
+                  <div className="flex items-baseline justify-between gap-2 text-sm">
+                    <span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: s.color }} />{s.name}</span>
+                    <span className="tabular-nums font-medium">{fmtBRL(s.value)} <span className="text-xs text-muted-foreground">{pct(s.value, sliceTotal)}%</span></span>
                   </div>
-                  <p className="text-[11px] text-muted-foreground leading-snug">{f.detail}</p>
-                  <p className="text-[10px] text-blue-400 flex items-center gap-1">
-                    <Info className="h-3 w-3 inline" /> {f.action}
+                  <div className="mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${pct(s.value, sliceTotal)}%`, background: s.color }} />
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">{s.hint}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Panel>
+
+        <Panel className="xl:col-span-2">
+          <SectionTitle icon={Gauge} title="Eficiência" sub="Faixa saudável: 60–85%" />
+          <div className="grid grid-cols-2 gap-y-5">
+            <RingGauge value={eff.cpuUse} label="CPU usada" hint="uso médio ÷ request" />
+            <RingGauge value={eff.memUse} label="Memória usada" hint="uso médio ÷ request" />
+            <RingGauge value={eff.cpuAlloc} label="CPU reservada" hint="requests ÷ capacidade dos nodes" goodFrom={65} goodTo={90} />
+            <RingGauge value={eff.memAlloc} label="Memória reservada" hint="requests ÷ capacidade dos nodes" goodFrom={65} goodTo={90} />
+          </div>
+        </Panel>
+      </div>
+
+      {/* ── Tendência ────────────────────────────────────────────────────── */}
+      {(nodeTrend.length > 3 || effTrend.length > 3) && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {nodeTrend.length > 3 && (
+            <Panel>
+              <SectionTitle icon={Server} title="Nodes — 30 dias" />
+              <ResponsiveContainer width="100%" height={170}>
+                <AreaChart data={nodeTrend} margin={{ left: -18, right: 6, top: 6, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="rel-nodes" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#6366f1" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid vertical={false} stroke="hsl(var(--border))" strokeDasharray="3 3" />
+                  <XAxis dataKey="date" tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={24} />
+                  <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} allowDecimals={false} domain={[0, "auto"]} />
+                  <Tooltip cursor={{ stroke: "hsl(var(--border))" }} content={({ active, payload, label }) =>
+                    active && payload?.length ? <TooltipBox title={label}><TooltipRow color="#6366f1" label="Nodes" value={payload[0].value} /></TooltipBox> : null} />
+                  <Area type="monotone" dataKey="nodes" stroke="#6366f1" strokeWidth={2.5} fill="url(#rel-nodes)" dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </Panel>
+          )}
+          {effTrend.length > 3 && (
+            <Panel>
+              <SectionTitle icon={Activity} title="Eficiência — 30 dias" sub="uso ÷ request por dia" />
+              <ResponsiveContainer width="100%" height={170}>
+                <LineChart data={effTrend} margin={{ left: -18, right: 6, top: 6, bottom: 0 }}>
+                  <CartesianGrid vertical={false} stroke="hsl(var(--border))" strokeDasharray="3 3" />
+                  <ReferenceArea y1={60} y2={85} fill={COST_COLORS.productive} fillOpacity={0.08} />
+                  <XAxis dataKey="date" tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={24} />
+                  <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} unit="%" domain={[0, (max: number) => Math.max(100, max)]} />
+                  <Tooltip cursor={{ stroke: "hsl(var(--border))" }} content={({ active, payload, label }) =>
+                    active && payload?.length ? (
+                      <TooltipBox title={label}>
+                        {payload.map(p => <TooltipRow key={String(p.dataKey)} color={p.color} label={p.dataKey === "cpu" ? "CPU" : "Memória"} value={`${p.value}%`} />)}
+                      </TooltipBox>) : null} />
+                  <Line type="monotone" dataKey="cpu" stroke="#6366f1" strokeWidth={2.5} dot={false} connectNulls />
+                  <Line type="monotone" dataKey="mem" stroke="#14b8a6" strokeWidth={2.5} dot={false} connectNulls />
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="mt-1 flex gap-4 text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 rounded bg-indigo-500" />CPU</span>
+                <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 rounded bg-teal-500" />Memória</span>
+                <span className="flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm bg-emerald-500/20" />faixa saudável</span>
+              </div>
+            </Panel>
+          )}
+        </div>
+      )}
+
+      {/* ── Namespaces + workloads ───────────────────────────────────────── */}
+      <div className="grid gap-4 xl:grid-cols-2">
+        {nsData.length > 0 && (
+          <Panel>
+            <SectionTitle icon={LayoutGrid} title="Custo por namespace"
+              sub={<>{cost.coveredPools > 0 && "Custo efetivo · "}Área = custo · cor = desperdício: <span style={{ color: COST_COLORS.productive }}>até 15%</span>, <span style={{ color: COST_COLORS.waste }}>15–35%</span>, <span style={{ color: COST_COLORS.idle }}>acima de 35%</span></>} />
+            <ResponsiveContainer width="100%" height={300}>
+              <Treemap data={nsData} dataKey="size" nameKey="name" isAnimationActive={false} content={<NamespaceCell />}>
+                <Tooltip content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0].payload as typeof nsData[number];
+                  return (
+                    <TooltipBox title={d.name}>
+                      <TooltipRow label="custo/mês" value={fmtBRL(d.size)} />
+                      <TooltipRow color={wasteColor(d.ratio)} label="desperdício" value={`${fmtBRL(d.waste)} (${Math.round(d.ratio * 100)}%)`} />
+                      <TooltipRow label="workloads" value={d.workloads} />
+                    </TooltipBox>
+                  );
+                }} />
+              </Treemap>
+            </ResponsiveContainer>
+          </Panel>
+        )}
+
+        {topWorkloads.length > 0 && (
+          <Panel>
+            <SectionTitle icon={BarChart3} title="Maiores custos por workload" sub="Compute necessário, desperdício e storage" />
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={topWorkloads} layout="vertical" margin={{ left: 0, right: 12, top: 0, bottom: 0 }} barCategoryGap={6}>
+                <CartesianGrid horizontal={false} stroke="hsl(var(--border))" strokeDasharray="3 3" />
+                <XAxis type="number" tick={AXIS_TICK} axisLine={false} tickLine={false} tickFormatter={v => shortBRL(v)} />
+                <YAxis type="category" dataKey="name" width={130} tick={AXIS_TICK} axisLine={false} tickLine={false} tickFormatter={v => trunc(String(v), 20)} />
+                <Tooltip cursor={{ fill: "hsl(var(--muted) / 0.5)" }} content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0].payload as typeof topWorkloads[number];
+                  return (
+                    <TooltipBox title={<>{d.name} <span className="font-normal text-muted-foreground">· {d.ns}</span></>}>
+                      <TooltipRow color={COST_COLORS.productive} label="necessário" value={fmtBRL(d.needed)} />
+                      {d.waste > 0 && <TooltipRow color={COST_COLORS.waste} label="desperdício" value={fmtBRL(d.waste)} />}
+                      {d.storage > 0 && <TooltipRow color={COST_COLORS.pvc} label="storage" value={fmtBRL(d.storage)} />}
+                      <TooltipRow label="total/mês" value={fmtBRL(d.total)} />
+                    </TooltipBox>
+                  );
+                }} />
+                <Bar dataKey="needed" stackId="c" fill={COST_COLORS.productive} />
+                <Bar dataKey="waste" stackId="c" fill={COST_COLORS.waste} />
+                <Bar dataKey="storage" stackId="c" fill={COST_COLORS.pvc} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Panel>
+        )}
+      </div>
+
+      {/* ── Plano de ação ────────────────────────────────────────────────── */}
+      <Panel>
+        <SectionTitle icon={ListChecks} title="Plano de ação"
+          sub="Ordenado pela economia mensal; prioridade pelo peso no custo total"
+          right={totalSaving > 0 && (
+            <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-sm font-semibold text-emerald-700 dark:text-emerald-300 tabular-nums">
+              −{fmtBRL(totalSaving)}/mês
+            </span>
+          )} />
+        {actions.length === 0 ? (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+            {hasMetrics ? "Nenhuma economia identificada neste cluster." : "Nenhuma economia identificada — rode Analisar com a análise histórica para medir o uso real."}
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {actions.map(a => (
+              <div key={a.title} className="relative flex items-center gap-4 overflow-hidden rounded-xl border p-4 pl-5">
+                <span className="absolute inset-y-0 left-0 w-1" style={{ background: PRIORITY[a.priority].bar }} />
+                <div className="min-w-0 flex-1">
+                  <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${PRIORITY[a.priority].cls}`}>{PRIORITY[a.priority].label}</span>
+                    {a.title}
                   </p>
+                  <p className="mt-1 truncate text-xs text-muted-foreground" title={a.detail}>{a.detail}</p>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">Onde: {a.where}</p>
+                </div>
+                <div className="shrink-0 text-right">
+                  {a.savingBRL > 0 ? (
+                    <>
+                      <p className="text-base font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">−{fmtBRL(a.savingBRL)}</p>
+                      <p className="text-[11px] text-muted-foreground">{pct(a.savingBRL, cost.totalBRL)}% do custo</p>
+                    </>
+                  ) : (
+                    <p className="text-sm font-medium text-amber-600" title="Sob reserva/Savings Plan: só economiza se a reserva liberada for reaproveitada">sem economia certa</p>
+                  )}
                 </div>
               </div>
             ))}
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        )}
+      </Panel>
 
-      {findings.length === 0 && (
-        <Card className="border-green-200 dark:border-green-900/40">
-          <CardContent className="p-4 flex items-center gap-2 text-green-600">
-            <CheckCircle2 className="h-4 w-4" />
-            <span className="text-sm font-medium">Nenhum problema identificado — cluster otimizado.</span>
-          </CardContent>
-        </Card>
-      )}
+      {/* ── Riscos + qualidade dos dados ─────────────────────────────────── */}
+      <div className="grid gap-4 xl:grid-cols-3">
+        <Panel className="xl:col-span-2">
+          <SectionTitle icon={ShieldAlert} title="Riscos e pontos de atenção" sub="O que conferir antes de cortar custo" />
+          {risks.length === 0 ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground"><CheckCircle2 className="h-4 w-4 text-emerald-500" />Nenhum ponto de atenção.</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {risks.map(r => (
+                <div key={r.title} className={`flex gap-3 rounded-xl border p-3 ${RISK_TONE[r.tone]}`}>
+                  <span className="text-2xl font-semibold tabular-nums leading-none">{r.count}</span>
+                  <div>
+                    <p className="text-sm font-medium">{r.title}</p>
+                    <p className="text-xs text-muted-foreground">{r.detail}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
 
-      {/* ── Top 10 workloads por custo total ──────────────────────────────── */}
-      <Card>
-        <CardHeader className="pb-2 pt-3 px-4">
-          <CardTitle className="text-sm">Top 10 Workloads — Custo Total (Compute + Storage)</CardTitle>
-        </CardHeader>
-        <Table>
-          <TableHeader>
-            <TableRow className="text-[11px]">
-              <TableHead>Namespace / Workload</TableHead>
-              <TableHead className="text-right">Compute</TableHead>
-              {topWorkloads.some(w => (w.storage_cost_brl ?? 0) > 0) && (
-                <TableHead className="text-right text-purple-400">Storage</TableHead>
+        <Panel>
+          <SectionTitle icon={Info} title="Qualidade dos dados" />
+          <div className="space-y-3 text-sm">
+            <div>
+              <div className="flex justify-between text-xs"><span>Workloads com métrica de uso</span><span className="font-medium tabular-nums">{coverage}%</span></div>
+              <div className="mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${coverage}%`, background: coverage >= 80 ? COST_COLORS.productive : coverage >= 40 ? COST_COLORS.waste : COST_COLORS.idle }} />
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {enriched} de {summary.workloads_analyzed}{dtCount > 0 && ` · Dynatrace ${dtCount}`}{promCount > 0 && ` · Prometheus ${promCount}`}
+              </p>
+            </div>
+            <ul className="space-y-1.5 text-xs text-muted-foreground">
+              <li>Janela: {report.window_days > 0 ? `${report.window_days} dias` : "sem análise histórica"}</li>
+              <li>{cost.coveredPools > 0
+                ? `Compute pelo custo efetivo do Cost Management nos pools com cobertura; discos ${cost.diskEffective ? "também pelo custo efetivo" : "em preço de tabela"}`
+                : "Preços de tabela pay-as-you-go: reservas e Savings Plan não descontados"}</li>
+              {covered.length > 0 && (
+                <li>Cobertura do Cost Management em {covered.length} de {pools.length} pools: {fmtBRL(coveredEffective)} efetivos contra {fmtBRL(coveredTable)} de tabela</li>
               )}
-              <TableHead className="text-right font-bold">Total</TableHead>
-              <TableHead className="text-right">% do total</TableHead>
-              <TableHead>Veredicto</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {topWorkloads.map((w, i) => (
-              <TableRow key={i} className="text-xs">
-                <TableCell className="max-w-[180px]">
-                  <p className="text-muted-foreground text-[10px] truncate">{w.namespace}</p>
-                  <p className="font-medium truncate">{w.workload}</p>
-                </TableCell>
-                <TableCell className="text-right font-mono">{fmtBRL(w.cost_share_brl)}</TableCell>
-                {topWorkloads.some(x => (x.storage_cost_brl ?? 0) > 0) && (
-                  <TableCell className="text-right font-mono text-purple-400">
-                    {(w.storage_cost_brl ?? 0) > 0 ? fmtBRL(w.storage_cost_brl!) : <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-                )}
-                <TableCell className="text-right font-bold">{fmtBRL(w.totalCostBRL)}</TableCell>
-                <TableCell className="text-right">
-                  <span className="text-muted-foreground text-[10px]">
-                    {totalCost > 0 ? `${Math.round(w.totalCostBRL / totalCost * 100)}%` : "—"}
-                  </span>
-                </TableCell>
-                <TableCell><VerdictBadge verdict={w.verdict} /></TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Card>
-
-      </div>{/* fim ref={contentRef} */}
+              {reservedPools.length > 0 && (
+                <li className="text-amber-600">
+                  {reservedPools.map(p => p.name).join(", ")} sob reserva/Savings Plan: a economia de tirar nodes conta só a parte certa (sob demanda); o valor de tabela depende de reaproveitar a reserva
+                </li>
+              )}
+              <li>Ociosidade pelo recurso mais ocupado de cada pool (maior entre request e uso), sobre a capacidade alocável dos nodes</li>
+              {fallbackPools > 0 && <li className="text-amber-600">{fallbackPools} pool(s) com preço estimado</li>}
+              {exempt.length > 0 && (
+                <li>{exempt.length} workload(s) isento(s) fora do desperdício e do plano{exemptWaste > 0 && ` (${fmtBRL(exemptWaste)}/mês que seriam desperdício)`} — ver Workloads → Oportunidades</li>
+              )}
+            </ul>
+          </div>
+        </Panel>
+      </div>
     </div>
   );
 }

@@ -798,6 +798,16 @@ type nodeMetricQuerySet struct {
 	valueByInstance, rangeByInstance string
 }
 
+// nodePeakMaxDays: teto da janela do pico de node. As subqueries [Nd:5m] com join no
+// node_uname_info sobre todos os nodes são as mais caras da análise; com 30 dias, num cluster de 41
+// nodes, passavam dos 60 s do gateway (504). O pico de node é contexto no Rightsizing (o node
+// está apertado?), e uma semana cobre o ciclo semanal de carga.
+const nodePeakMaxDays = 7
+
+func (e *PrometheusEnricher) nodePeakWindow() int {
+	return min(e.window, nodePeakMaxDays)
+}
+
 func nodeCPUTopQueries(windowDays int) nodeMetricQuerySet {
 	return nodeMetricQuerySet{
 		valueByNodename: fmt.Sprintf(`max_over_time((sum by (nodename) (rate(node_cpu_seconds_total{mode!="idle"}[5m]) * on(instance) group_left(nodename) node_uname_info))[%dd:5m]) * 1000`, windowDays),
@@ -835,11 +845,11 @@ func (e *PrometheusEnricher) nodeTopUsage(ctx context.Context, nodeNames []strin
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		cpu = e.nodeMetricTopUsage(ctx, nodeNames, nodeCPUTopQueries(e.window), 1, "cpu")
+		cpu = e.nodeMetricTopUsage(ctx, nodeNames, nodeCPUTopQueries(e.nodePeakWindow()), 1, "cpu")
 	}()
 	go func() {
 		defer wg.Done()
-		mem = e.nodeMetricTopUsage(ctx, nodeNames, nodeMemTopQueries(e.window), 1.0/1048576, "mem")
+		mem = e.nodeMetricTopUsage(ctx, nodeNames, nodeMemTopQueries(e.nodePeakWindow()), 1.0/1048576, "mem")
 	}()
 	wg.Wait()
 	return cpu, mem
@@ -870,6 +880,13 @@ func (e *PrometheusEnricher) nodeMetricTopUsage(ctx context.Context, nodeNames [
 		e.queryNodenameMetricPeakValue(ctx, q.valueByNodename, label+"_top_value_by_nodename"),
 		scale,
 	)
+
+	// nil = a query FALHOU (504/timeout), diferente de "rodou e não achou" (mapa vazio): o fallback
+	// por instance é tão pesado quanto e falharia igual — no oferta-prd eram 2 × 60 s de 504 sem
+	// dado nenhum, disputando o Prometheus com as queries dos workloads.
+	if valueByNodename == nil {
+		return map[string]promPeakSample{}
+	}
 
 	allCoveredByNodename := len(nodeNames) > 0
 	for _, name := range nodeNames {
@@ -1035,8 +1052,8 @@ func (e *PrometheusEnricher) queryInstanceMetricRangeMax(ctx context.Context, qu
 	defer cancel()
 
 	end := time.Now()
-	start := end.Add(-time.Duration(e.window) * 24 * time.Hour)
-	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(e.window)}
+	start := end.Add(-time.Duration(e.nodePeakWindow()) * 24 * time.Hour)
+	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(e.nodePeakWindow())}
 
 	result, _, err := e.api.QueryRange(qctx, query, r)
 	if err != nil {
@@ -1106,8 +1123,8 @@ func (e *PrometheusEnricher) queryNodenameMetricRangeMax(ctx context.Context, qu
 	defer cancel()
 
 	end := time.Now()
-	start := end.Add(-time.Duration(e.window) * 24 * time.Hour)
-	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(e.window)}
+	start := end.Add(-time.Duration(e.nodePeakWindow()) * 24 * time.Hour)
+	r := v1.Range{Start: start, End: end, Step: rangeStepForWindow(e.nodePeakWindow())}
 
 	result, _, err := e.api.QueryRange(qctx, query, r)
 	if err != nil {

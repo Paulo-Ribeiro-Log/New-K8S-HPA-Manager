@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -310,12 +311,14 @@ func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, w
 		log.Debug().Err(metricsErr).Str("cluster", cluster).Msg("FinOps/Rightsizing: metrics-server indisponível, uso 'current' ao vivo ficará vazio")
 		metricsClient = nil
 	}
+	waitExtras := h.prefetchScanExtras(ctx, cluster, true)
 	report, err := calc.BuildReport(ctx, cluster, k8sClient, pools, nil, dtEnricher, enricher, metricsClient)
+	liveNodeGroups := waitExtras()
 	if err != nil {
 		return http.StatusInternalServerError, gin.H{"error": "Falha ao gerar análise: " + err.Error()}
 	}
 
-	workloadRecs, tierSuggestions, nodeUsageRecs, persistErr := h.persistRightsizingFromReport(ctx, cluster, report, windowDays, pricer)
+	workloadRecs, tierSuggestions, nodeUsageRecs, persistErr := h.persistRightsizingFromReport(ctx, cluster, report, windowDays, pricer, liveNodeGroups)
 	if persistErr != nil {
 		return http.StatusInternalServerError, gin.H{"error": "Falha ao persistir análise: " + persistErr.Error()}
 	}
@@ -362,12 +365,13 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 	report *finops.FinOpsReport,
 	windowDays int,
 	pricer finops.CloudPricer,
+	liveNodeGroups map[string]models.NodePool, // min/max/autoscaling ao vivo (prefetchScanExtras); vazio = sem dado
 ) (workloadRecs []storage.WorkloadRecommendation, tierSuggestions []storage.NodePoolTierSuggestion, nodeUsageRecs []storage.NodeUsage, err error) {
 	now := time.Now()
 
-	// Atualiza (best-effort, com TTL) a cobertura de reserva/Savings Plan do cluster e o índice de SKUs
-	// cobertos da subscription ANTES de sugerir tiers: o índice decide quais alternativas são oferecidas.
-	h.autoRefreshCoverage(ctx, cluster)
+	// A cobertura de reserva/Savings Plan e o índice de SKUs já foram atualizados (best-effort, com
+	// TTL) em paralelo com o BuildReport — prefetchScanExtras. O índice decide quais alternativas
+	// são oferecidas.
 	skuIndex := h.skuCoverageIndex()
 
 	// ── Workloads: persiste o snapshot + agrega uso real recomendado por pool ──────────────────
@@ -405,6 +409,7 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 		workloadRecs = append(workloadRecs, storage.WorkloadRecommendation{
 			Namespace:                 wl.Namespace,
 			Workload:                  wl.Workload,
+			Kind:                      wl.Kind,
 			NodePool:                  wl.NodePool,
 			NodeName:                  wl.NodeName,
 			Pods:                      wl.Pods,
@@ -496,27 +501,8 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 	provider := config.DetectCloudProvider(h.kubeManager.GetServerURL(cluster), cluster)
 	rate, _ := h.exchange.Get()
 
-	// Min/max de node count + autoscaling — só disponível via chamada ao cloud provider (az/
-	// gcloud/aws CLI), não vem do Node Pool Registry (snapshot leve, só nome/vm_size/node_count).
-	// Best-effort: falha aqui (VPN/CLI indisponível) não aborta o scan — o modal de detalhe só
-	// fica sem min/max/autoscaling pra esse pool, tudo o mais continua funcionando.
-	liveNodeGroups := make(map[string]models.NodePool)
-	if npProvider := h.kubeManager.GetNodeGroupProvider(cluster); npProvider != nil {
-		// Timing explícito — chamada CLI (az/gcloud/aws), já documentada como podendo levar até
-		// 60s sozinha; candidata real à lentidão relatada ("definitivamente... scan de 2
-		// minutos... não parece haver nenhum paralelismo"). Não dá pra paralelizar (é 1 chamada
-		// só, não um loop por pool), mas expor o tempo aqui tira a adivinhação de qual fase é a
-		// culpada da próxima vez que o scan estiver lento.
-		listStart := time.Now()
-		groups, npErr := npProvider.ListNodeGroups(ctx, cluster)
-		log.Info().Str("cluster", cluster).Str("step", "npProvider.ListNodeGroups").Dur("elapsed", time.Since(listStart)).Msg("FinOps/timing")
-		if npErr != nil {
-			log.Warn().Err(npErr).Str("cluster", cluster).Msg("FinOps/Rightsizing: falha ao buscar min/max de node count ao vivo — cenário de resize de node count ficará incompleto")
-		} else {
-			for _, g := range groups {
-				liveNodeGroups[g.Name] = g
-			}
-		}
+	if liveNodeGroups == nil {
+		liveNodeGroups = map[string]models.NodePool{}
 	}
 
 	tierSuggestions = make([]storage.NodePoolTierSuggestion, 0, len(report.NodePools))
@@ -785,4 +771,40 @@ func (h *FinOpsHandler) GetWorkloadHistory(c *gin.Context) {
 		"cpu_millis": cpu,
 		"mem_mi":     mem,
 	})
+}
+
+// prefetchScanExtras dispara, EM PARALELO com o BuildReport, as chamadas lentas ao cloud que não
+// dependem do relatório: o refresh da cobertura de reserva/Savings Plan (Cost Management, ~15 s
+// quando vencida) e, com withNodeGroups, o min/max/autoscaling dos pools (`az aks nodepool list`,
+// ~13 s). Antes rodavam em série depois do BuildReport — no abastecimento-prd eram 33 s de 63 s
+// da análise. Devolve a função que espera as duas terminarem e entrega os node groups
+// (best-effort: falha só deixa o mapa vazio, nunca aborta o scan).
+func (h *FinOpsHandler) prefetchScanExtras(ctx context.Context, cluster string, withNodeGroups bool) func() map[string]models.NodePool {
+	var wg sync.WaitGroup
+	groups := map[string]models.NodePool{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h.autoRefreshCoverage(ctx, cluster)
+	}()
+	if npProvider := h.kubeManager.GetNodeGroupProvider(cluster); withNodeGroups && npProvider != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			listStart := time.Now()
+			list, err := npProvider.ListNodeGroups(ctx, cluster)
+			log.Info().Str("cluster", cluster).Str("step", "npProvider.ListNodeGroups").Dur("elapsed", time.Since(listStart)).Msg("FinOps/timing")
+			if err != nil {
+				log.Warn().Err(err).Str("cluster", cluster).Msg("FinOps/Rightsizing: falha ao buscar min/max de node count ao vivo — cenário de resize de node count ficará incompleto")
+				return
+			}
+			for _, g := range list {
+				groups[g.Name] = g
+			}
+		}()
+	}
+	return func() map[string]models.NodePool {
+		wg.Wait()
+		return groups
+	}
 }

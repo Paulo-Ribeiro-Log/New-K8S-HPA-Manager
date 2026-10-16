@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
+import { apiClient } from "@/lib/api/client";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,6 @@ import { fmtBRL } from "@/lib/finopsFormat";
 //   - de USO REAL (botão "Analisar uso real"): CPU/memória de VM e CPU/memória/storage de
 //     Flexible Server via Azure Monitor (internal/finops/data_resources_resizing.go).
 
-const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("auth_token")}` });
 
 type Verdict = "recommended" | "consider" | "info";
 
@@ -157,10 +157,7 @@ const bestSavings = (r: AzureDataResource) =>
   Math.max(0, ...(r.recommendations ?? []).filter((x) => x.verdict !== "info").map((x) => x.monthly_savings_brl ?? 0));
 
 async function fetchDataResources(cluster: string, analyze: boolean): Promise<DataResourcesResponse> {
-  const url = `/api/v1/finops/data-resources?cluster=${encodeURIComponent(cluster)}${analyze ? `&analyze=true&days=${ANALYSIS_DAYS}` : ""}`;
-  const r = await fetch(url, { headers: authHeaders() });
-  if (!r.ok) throw new Error(`Erro ${r.status}`);
-  return r.json();
+  return apiClient.get(`/finops/data-resources?cluster=${encodeURIComponent(cluster)}${analyze ? `&analyze=true&days=${ANALYSIS_DAYS}` : ""}`);
 }
 
 export function DataResourcesPanel({ cluster }: { cluster: string }) {
