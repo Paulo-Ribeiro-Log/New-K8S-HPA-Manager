@@ -59,8 +59,10 @@ type FinOpsPool struct {
 	OSDiskGB      int     `json:"os_disk_gb,omitempty"`
 	OSDiskCostUSD float64 `json:"os_disk_cost_usd,omitempty"`
 	OSDiskCostBRL float64 `json:"os_disk_cost_brl,omitempty"`
-	TotalCostUSD  float64 `json:"total_cost_usd,omitempty"` // MonthlyCostUSD + OSDiskCostUSD
-	TotalCostBRL  float64 `json:"total_cost_brl,omitempty"`
+	// Custo efetivo do disco do SO no mês (Cost Management, AttachDiskCost); 0 = sem dado.
+	OSDiskEffectiveBRL float64 `json:"os_disk_effective_brl,omitempty"`
+	TotalCostUSD       float64 `json:"total_cost_usd,omitempty"` // MonthlyCostUSD + OSDiskCostUSD
+	TotalCostBRL       float64 `json:"total_cost_brl,omitempty"`
 }
 
 // FinOpsNamespace agrega o custo alocado de todos os workloads de um namespace
@@ -296,6 +298,8 @@ type PVCCostItem struct {
 	WorkloadRef    string  `json:"workload_ref"`   // "namespace/deployment" se detectável
 	IsOrphaned     bool    `json:"is_orphaned"`    // true se nenhum pod montando
 	PriceSource    string  `json:"price_source"`   // "api" | "fallback"
+	// Custo efetivo no mês (Cost Management, pelo disco pvc-<uid>; AttachDiskCost); 0 = sem dado.
+	EffectiveCostBRL float64 `json:"effective_cost_brl,omitempty"`
 }
 
 // StorageClassBreakdown agrega custo de PVCs por StorageClass

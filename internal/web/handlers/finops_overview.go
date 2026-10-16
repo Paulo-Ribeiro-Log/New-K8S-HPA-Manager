@@ -57,7 +57,7 @@ func (h *FinOpsHandler) GetOverview(c *gin.Context) {
 		if report.Cluster == "" {
 			report.Cluster = row.Cluster
 		}
-		finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(row.Cluster))
+		h.attachCostData(row.Cluster, &report)
 		h.applyExemptions(row.Cluster, &report)
 		o := finops.SummarizeCluster(&report)
 		o.Cluster = row.Cluster

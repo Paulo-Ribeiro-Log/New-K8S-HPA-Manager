@@ -941,6 +941,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/billed-cost", finOpsHandler.GetBilledCost)             // custo faturado (Cost Management, amortizado 30d) dos RGs do AKS — só leitura, cache 6 h
 	api.GET("/finops/overview", finOpsHandler.GetOverview)                  // visão multi-cluster: resumo do último relatório gravado de cada cluster, sem scan
 	api.GET("/finops/showback", finOpsHandler.GetShowback)                  // custo por namespace/dono por mês (foto do último scan do mês)
+	api.GET("/finops/node-hours", finOpsHandler.GetNodeHours)               // nodes por pool por hora da semana (Prometheus, 7 dias) — card "Fora do horário"
 	api.GET("/finops/base-reservations", finOpsHandler.GetBaseReservations) // reserva/Savings Plan para a carga base dos pools (Retail Prices API) — só leitura
 	api.GET("/finops/exemptions", finOpsHandler.ListExemptions)
 	api.GET("/finops/actions", finOpsHandler.ListActions)

@@ -122,6 +122,21 @@ func (h *FinOpsHandler) refreshPoolCoverage(ctx context.Context, arm *azure.ARMC
 	if serr := h.rightsizingStore.ReplacePoolPricingCoverage(cluster, rows); serr != nil {
 		return "", from, to, nil, &coverageErr{http.StatusInternalServerError, "cobertura consultada, mas falhou ao gravar: " + serr.Error()}
 	}
+	// Custo efetivo dos discos (SO por pool e PVCs) na mesma janela — complementar: falha só registra.
+	if disks, derr := arm.DiskCostByResource(ctx, nodeRG, from, to); derr != nil {
+		log.Warn().Err(derr).Str("cluster", cluster).Msg("FinOps/Coverage: custo dos discos não consultado (segue com preço de tabela)")
+	} else {
+		var drows []storage.DiskCost
+		for pool, v := range disks.OSByPool {
+			drows = append(drows, storage.DiskCost{Kind: "os", Name: pool, Cost: v, Currency: disks.Currency, WindowDays: days, FetchedAt: fetchedAt})
+		}
+		for name, v := range disks.ByDisk {
+			drows = append(drows, storage.DiskCost{Kind: "disk", Name: name, Cost: v, Currency: disks.Currency, WindowDays: days, FetchedAt: fetchedAt})
+		}
+		if serr := h.rightsizingStore.ReplaceDiskCost(cluster, drows); serr != nil {
+			log.Warn().Err(serr).Str("cluster", cluster).Msg("FinOps/Coverage: falha ao gravar o custo dos discos")
+		}
+	}
 	return nodeRG, from, to, summary, nil
 }
 
@@ -329,4 +344,18 @@ func (h *FinOpsHandler) poolCoverage(cluster string) map[string]*finops.PoolCove
 		}
 	}
 	return out
+}
+
+// attachCostData anexa ao relatório o que vem do Cost Management e muda depois do scan: cobertura
+// de reserva/Savings Plan por pool e custo efetivo dos discos. Use em toda leitura do relatório.
+func (h *FinOpsHandler) attachCostData(cluster string, report *finops.FinOpsReport) {
+	if report == nil {
+		return
+	}
+	finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(cluster))
+	if h.rightsizingStore != nil {
+		if rows, err := h.rightsizingStore.ListDiskCost(cluster); err == nil {
+			finops.AttachDiskCost(report, rows)
+		}
+	}
 }

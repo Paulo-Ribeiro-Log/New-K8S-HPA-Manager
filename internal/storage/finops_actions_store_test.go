@@ -25,6 +25,15 @@ func TestFinOpsActionsStore(t *testing.T) {
 	if err != nil || len(list) != 2 || list[0].Channel != "values" || list[1].TargetCPUMillis != 300 {
 		t.Fatalf("lista (mais recente primeiro): %+v err=%v", list, err)
 	}
+	dup := base
+	dup.Channel = "values"
+	if id, err := s.FindRecent(dup, time.Now().Add(-24*time.Hour)); err != nil || id == 0 {
+		t.Errorf("FindRecent deveria achar a ação igual: id=%d err=%v", id, err)
+	}
+	dup.TargetCPUMillis = 400
+	if id, _ := s.FindRecent(dup, time.Now().Add(-24*time.Hour)); id != 0 {
+		t.Errorf("alvo diferente não é duplicata: id=%d", id)
+	}
 	if found, _ := s.Delete("outro", id1); found {
 		t.Error("delete não pode apagar ação de outro cluster")
 	}

@@ -36,7 +36,7 @@ func (h *FinOpsHandler) lastReport(cluster string) (*finops.FinOpsReport, error)
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, err
 	}
-	finops.AttachPoolCoverage(r.NodePools, h.poolCoverage(cluster))
+	h.attachCostData(cluster, &r)
 	h.applyExemptions(cluster, &r)
 	return &r, nil
 }
@@ -102,6 +102,10 @@ func (h *FinOpsHandler) RecordAction(c *gin.Context) {
 		BaselineCostBRL: w.CostShareBRL, BaselineWasteBRL: w.WasteBRL, ExpectedSavingBRL: req.ExpectedSavingBRL,
 		TargetHPAMin: req.TargetHPAMin, TargetHPAMax: req.TargetHPAMax,
 		TargetCPUMillis: req.TargetCPUMillis, TargetMemMi: req.TargetMemMi,
+	}
+	if dup, _ := h.actionsStore.FindRecent(a, time.Now().Add(-24*time.Hour)); dup > 0 {
+		c.JSON(http.StatusOK, gin.H{"id": dup, "duplicate": true})
+		return
 	}
 	id, err := h.actionsStore.Insert(a)
 	logOperation(c, h.historyTracker, "finops_action_"+req.Channel, req.Namespace+"/"+req.Workload, req.Cluster, nil,

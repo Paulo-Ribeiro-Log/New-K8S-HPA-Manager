@@ -1,6 +1,7 @@
-// Custo faturado (Cost Management, amortizado, 30 dias) × custo estimado pelo relatório. Só AKS: o
-// backend lê o RG do AKS e o RG de nodes (finops_billed_cost.go). A diferença mostra o que a
-// estimativa não vê (rede, load balancer, Log Analytics, plano do AKS) e o desconto das reservas.
+// Custo faturado (amortizado, 30 dias) × custo estimado pelo relatório (finops_billed_cost.go): AKS
+// pelo Cost Management (RG do AKS, RG de nodes e RG de dados), EKS pelo Cost Explorer (tag
+// aws:eks:cluster-name), GKE pelo export de billing no BigQuery. A diferença mostra o que a
+// estimativa não vê (rede, load balancer, monitoramento, plano do cluster) e o desconto das reservas.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Receipt, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,15 @@ export function billedToBRL(data: BilledCostResponse | undefined, exchangeRate: 
   return null;
 }
 
+// Serviços que correspondem ao compute e aos discos estimados, por provedor. No GKE o "Compute
+// Engine" inclui os discos (PD), então compute e discos vão juntos.
+const SERVICES: Record<string, { cloud: string; compute: string[]; disks: string[] }> = {
+  aks: { cloud: "Azure", compute: ["Virtual Machines"], disks: ["Storage"] },
+  eks: { cloud: "AWS", compute: ["Amazon Elastic Compute Cloud - Compute", "EC2 - Other"], disks: [] },
+  gke: { cloud: "Google Cloud", compute: ["Compute Engine"], disks: [] },
+};
+const ROLE: Record<string, string> = { cluster: "cluster", nodes: "nodes", data: "dados" };
+
 const signedPct = (a: number, b: number) => {
   if (b <= 0) return "—";
   const p = Math.round(((a - b) / b) * 100);
@@ -41,8 +51,9 @@ export function BilledCostPanel({ cluster, provider, cost, exchangeRate }: {
   exchangeRate: number;
 }) {
   const queryClient = useQueryClient();
-  const { data, isLoading, isFetching } = useBilledCost(cluster, provider === "aks");
-  if (provider !== "aks") return null;
+  const { data, isLoading, isFetching } = useBilledCost(cluster, !!provider);
+  if (!provider) return null;
+  const map = SERVICES[data?.provider ?? provider] ?? SERVICES.aks;
 
   const refresh = async () => {
     const fresh = await apiClient.getFinOpsBilledCost<BilledCostResponse>(cluster, true);
@@ -52,7 +63,7 @@ export function BilledCostPanel({ cluster, provider, cost, exchangeRate }: {
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 rounded-xl border bg-card p-4 text-xs text-muted-foreground shadow-sm">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Consultando a fatura do Azure (Cost Management)…
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Consultando a fatura ({map.cloud})…
       </div>
     );
   }
@@ -69,17 +80,22 @@ export function BilledCostPanel({ cluster, provider, cost, exchangeRate }: {
   const money = (v: number) => factor !== null ? fmtBRL(v * factor) : `${v.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} ${data.currency}`;
   const brl = (v: number) => v * (factor ?? 1);
   const services = data.services ?? [];
-  const billedOf = (name: string) => services.filter(s => s.service === name).reduce((s, x) => s + x.cost, 0);
-  const vm = billedOf("Virtual Machines");
-  const disks = billedOf("Storage");
-  const others = services.filter(s => s.service !== "Virtual Machines" && s.service !== "Storage");
+  const billedOf = (names: string[]) => services.filter(s => names.includes(s.service)).reduce((s, x) => s + x.cost, 0);
+  const vm = billedOf(map.compute);
+  const disks = billedOf(map.disks);
+  const known = [...map.compute, ...map.disks];
+  const dataRG = (data.resource_groups ?? []).find(r => r.role === "data");
+  const others = services.filter(s => !known.includes(s.service));
   const othersTotal = others.reduce((s, x) => s + x.cost, 0);
   const estDisks = cost.osDiskBRL + cost.pvcBRL + cost.orphanBRL;
+  const joined = map.disks.length === 0; // EKS/GKE: o serviço de compute já inclui os discos
 
   const rows = [
-    { label: "Compute (VMs dos nodes)", billed: brl(vm), est: cost.computeBRL as number | null },
-    { label: "Discos (SO, PVCs e órfãos)", billed: brl(disks), est: estDisks as number | null },
-    { label: "Não estimado pela ferramenta", billed: brl(othersTotal), est: null },
+    joined
+      ? { label: "Compute e discos dos nodes", billed: brl(vm), est: (cost.computeBRL + estDisks) as number | null }
+      : { label: "Compute (VMs dos nodes)", billed: brl(vm), est: cost.computeBRL as number | null },
+    ...(joined ? [] : [{ label: "Discos (SO, PVCs e órfãos)", billed: brl(disks), est: estDisks as number | null }]),
+    { label: dataRG ? "Não estimado (inclui o RG de dados)" : "Não estimado pela ferramenta", billed: brl(othersTotal), est: null },
   ].filter(r => r.billed > 0 || (r.est ?? 0) > 0);
   const max = Math.max(1, ...rows.flatMap(r => [r.billed, r.est ?? 0]));
   const billedTotal = brl(data.total);
@@ -87,8 +103,8 @@ export function BilledCostPanel({ cluster, provider, cost, exchangeRate }: {
 
   return (
     <div className="rounded-xl border bg-card p-5 shadow-sm">
-      <SectionTitle icon={Receipt} title="Fatura do Azure × estimativa"
-        sub={`Custo amortizado (com reservas e Savings Plan) de ${data.from?.split("-").reverse().join("/")} a ${data.to?.split("-").reverse().join("/")}, nos RGs do AKS e dos nodes`}
+      <SectionTitle icon={Receipt} title={`Fatura da ${map.cloud} × estimativa`}
+        sub={`Custo amortizado (com reservas e Savings Plan) de ${data.from?.split("-").reverse().join("/")} a ${data.to?.split("-").reverse().join("/")}`}
         right={
           <Button size="sm" variant="ghost" className="h-7 gap-1.5 text-xs" onClick={refresh} disabled={isFetching}
             title={`Consultado ${data.fetched_at ? new Date(data.fetched_at).toLocaleString("pt-BR") : ""} — o Cost Management atualiza ~1 vez por dia`}>
@@ -158,8 +174,8 @@ export function BilledCostPanel({ cluster, provider, cost, exchangeRate }: {
       )}
 
       <p className="mt-3 text-[11px] text-muted-foreground">
-        A fatura cobre {data.window_days} dias e só os RGs do cluster ({(data.resource_groups ?? []).map(r => r.name).join(", ")}); a estimativa é mensal e não inclui
-        rede, load balancer, monitoramento nem os recursos de dados em outros RGs.
+        A fatura cobre {data.window_days} dias e os escopos {(data.resource_groups ?? []).map(r => `${r.name} (${ROLE[r.role] ?? r.role}: ${money(r.total)})`).join(", ")}; a estimativa é mensal e não inclui
+        rede, load balancer, monitoramento{dataRG ? " nem os recursos de dados" : ""}.
       </p>
     </div>
   );

@@ -31,6 +31,7 @@ type ClusterOverview struct {
 	WasteBRL           float64 `json:"waste_brl"`           // request acima do uso, no custo efetivo
 	WasteCommittedBRL  float64 `json:"waste_committed_brl"` // parte em pools sob reserva/SP/Spot (só vira dinheiro liberando nodes)
 	OrphanStorageBRL   float64 `json:"orphan_storage_brl"`  // PVCs sem pod
+	IdleBRL            float64 `json:"idle_brl"`            // capacidade ociosa dos nodes (efetivo) — idle.go
 	Workloads          int     `json:"workloads"`
 	Nodes              int     `json:"nodes"`
 	Pools              int     `json:"pools"`
@@ -79,7 +80,8 @@ func SummarizeCluster(r *FinOpsReport) ClusterOverview {
 		o.ComputeTableBRL = r.Summary.TotalMonthlyCostBRL
 		o.ComputeBRL = r.Summary.TotalMonthlyCostBRL
 	}
-	o.StorageBRL = r.Storage.OSDiskCostBRL + r.Storage.TotalMonthlyCostBRL
+	osBRL, pvcTotal, _ := diskCosts(r)
+	o.StorageBRL = osBRL + pvcTotal
 	o.OrphanStorageBRL = r.Storage.OrphanedCostBRL
 	o.TotalBRL = o.ComputeBRL + o.StorageBRL
 
@@ -114,6 +116,13 @@ func SummarizeCluster(r *FinOpsReport) ClusterOverview {
 		case "superprovisioned":
 			o.Superprovisioned++
 		}
+	}
+	o.IdleBRL = IdleBRL(r)
+	// Mesmo teto da tela: o desperdício cabe no compute que a ociosa não ocupa.
+	if room := o.ComputeBRL - o.IdleBRL; o.WasteBRL > room && o.WasteBRL > 0 && room >= 0 {
+		scale := room / o.WasteBRL
+		o.WasteBRL *= scale
+		o.WasteCommittedBRL *= scale
 	}
 	if o.WasteBRL > o.ComputeBRL && o.WasteBRL > 0 {
 		scale := o.ComputeBRL / o.WasteBRL

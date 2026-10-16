@@ -37,3 +37,23 @@ func TestSummarizeCluster(t *testing.T) {
 		t.Errorf("contadores: %+v", o)
 	}
 }
+
+func TestIdleBRL(t *testing.T) {
+	// 4 nodes de 4 vCPU / 8 GiB alocáveis; CPU 50% requisitada, memória 75% em uso → ocupação 75%.
+	r := &FinOpsReport{
+		NodePools: []FinOpsPool{
+			{Name: "app", NodeCount: 4, MonthlyCostBRL: 1000, AllocatableNodes: 4, AllocatableCPUMillicores: 16000, AllocatableMemoryMi: 32768},
+			{Name: "vazio", NodeCount: 2, MonthlyCostBRL: 500, VMCPUCores: 4, VMMemoryGB: 8},
+		},
+		Workloads: []FinOpsWorkload{
+			{NodePool: "app", Pods: 4, CPURequestMillis: 2000, MemRequestMi: 4096, MemAvgMi: 6144},
+		},
+	}
+	if occ := PoolOccupancy(r); occ["app"] != 0.75 {
+		t.Errorf("ocupação = %v, want 0,75 (memória em uso)", occ["app"])
+	}
+	// Pool sem workload atribuído fica fora (mesma regra da tela).
+	if got := IdleBRL(r); got != 250 {
+		t.Errorf("ociosa = %v, want 250", got)
+	}
+}

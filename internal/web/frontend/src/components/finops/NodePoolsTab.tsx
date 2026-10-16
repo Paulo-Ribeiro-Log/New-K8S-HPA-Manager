@@ -162,7 +162,10 @@ function PoolCard({ usage, color, provider, clusterScaledUp, onDeepAnalysis }: {
               Disco OS efêmero · ~{pool.os_disk_gb} GB · sem custo à parte
             </span>
           ) : pool.os_disk_tier && (
-            <span className="text-muted-foreground">Disco OS {pool.os_disk_tier} ({pool.os_disk_sku}) · {pool.os_disk_gb} GB{pool.os_disk_cost_brl ? ` · ${fmtBRL(pool.os_disk_cost_brl)}/mês` : ""}</span>
+            <span className="text-muted-foreground" title={pool.os_disk_effective_brl ? `Custo efetivo (Cost Management); tabela: ${fmtBRL(pool.os_disk_cost_brl ?? 0)}/mês` : "Preço de tabela"}>
+              Disco OS {pool.os_disk_tier} ({pool.os_disk_sku}) · {pool.os_disk_gb} GB
+              {(pool.os_disk_effective_brl ?? 0) > 0 ? ` · ${fmtBRL(pool.os_disk_effective_brl!)}/mês efetivo` : pool.os_disk_cost_brl ? ` · ${fmtBRL(pool.os_disk_cost_brl)}/mês` : ""}
+            </span>
           )}
           {usage.workloads > 0 && (
             <span className="font-medium" style={{ color: idlePct >= 40 ? COST_COLORS.idle : undefined }}
@@ -291,7 +294,7 @@ export function NodePoolsTab({ pools, workloads, cluster, provider, reportAt }: 
       {provider === "aks" && !["hlg", "dev", "qa"].includes(environmentOf(cluster)) && reportAt && <BaseReservationCard cluster={cluster} reportAt={reportAt} />}
 
       {/* Ambiente não produtivo: quanto economiza desligando fora do horário */}
-      {["hlg", "dev", "qa"].includes(environmentOf(cluster)) && <OffHoursCard pools={pools} cluster={cluster} provider={provider} />}
+      {["hlg", "dev", "qa"].includes(environmentOf(cluster)) && <OffHoursCard pools={pools} cluster={cluster} provider={provider} namespaces={[...new Set(workloads.map(w => w.namespace))].sort()} />}
 
       {unassigned > 0 && (
         <p className="text-xs text-muted-foreground flex items-center gap-1.5">

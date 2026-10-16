@@ -3,6 +3,7 @@ package finops
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func TestOwnerFromLabels(t *testing.T) {
@@ -53,5 +54,28 @@ func TestBuildShowback(t *testing.T) {
 	}
 	if !near(total, 4000*f+1000+50+20) {
 		t.Errorf("a soma do showback deve fechar com o custo do cluster: %v", total)
+	}
+}
+
+func TestAccrueShowback(t *testing.T) {
+	day := func(d int) time.Time { return time.Date(2026, 10, d, 0, 0, 0, 0, time.Local) }
+	snaps := []ShowbackSnapshot{
+		{Day: day(5), Rows: []ShowbackRow{{Cluster: "c", Namespace: "pay", TotalBRL: 3650, ComputeBRL: 3650}}},
+		{Day: day(10), Rows: []ShowbackRow{{Cluster: "c", Namespace: "pay", TotalBRL: 7300, ComputeBRL: 7300}, {Cluster: "c", Namespace: "novo", TotalBRL: 365}}},
+	}
+	rows, days := AccrueShowback(snaps, day(1), day(14))
+	// Dias 5–9 a 3650/mês (120/dia) + dias 10–14 a 7300 (240/dia); 1–4 sem foto.
+	if days != 10 {
+		t.Errorf("dias cobertos = %d, want 10", days)
+	}
+	by := map[string]ShowbackRow{}
+	for _, r := range rows {
+		by[r.Namespace] = r
+	}
+	if math.Abs(by["pay"].TotalBRL-1800) > 0.01 || math.Abs(by["novo"].TotalBRL-60) > 0.01 {
+		t.Errorf("acumulado: %+v", by)
+	}
+	if rows, days := AccrueShowback(nil, day(1), day(2)); rows != nil || days != 0 {
+		t.Error("sem foto não acumula nada")
 	}
 }

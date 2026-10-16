@@ -142,3 +142,18 @@ func (s *FinOpsActionsStore) Delete(cluster string, id int64) (found bool, err e
 	n, _ := res.RowsAffected()
 	return n > 0, nil
 }
+
+// FindRecent devolve o id de uma ação igual (mesmo workload, canal e alvo) criada depois de since;
+// 0 quando não há. Evita duplicar o acompanhamento quando o mesmo kubectl é copiado de novo.
+func (s *FinOpsActionsStore) FindRecent(a FinOpsAction, since time.Time) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`
+SELECT id FROM finops_actions WHERE cluster = ? AND namespace = ? AND workload = ? AND channel = ?
+  AND target_hpa_min = ? AND target_hpa_max = ? AND target_cpu_millis = ? AND target_mem_mi = ? AND created_at >= ?
+ORDER BY id DESC LIMIT 1`, a.Cluster, a.Namespace, a.Workload, a.Channel, a.TargetHPAMin, a.TargetHPAMax,
+		a.TargetCPUMillis, a.TargetMemMi, since).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
+}

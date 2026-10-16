@@ -391,7 +391,7 @@ func (h *FinOpsHandler) doGetReport(
 	// Cobertura de reserva/Savings Plan por pool (Cost Management, só AKS, atualizada com TTL em
 	// prefetchScanExtras). Vai no relatório para o Node Pools/Relatório não tratarem preço de tabela
 	// como economia certa.
-	finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(cluster))
+	h.attachCostData(cluster, report)
 
 	// Cacheia o relatório recém-gerado como "último scan" deste cluster — bug real corrigido,
 	// relatado pelo usuário: "sempre que chamamos a aba finops, ela vem vazia... ajuste para que
@@ -461,7 +461,7 @@ func (h *FinOpsHandler) GetLastReport(c *gin.Context) {
 		c.Data(http.StatusOK, "application/json; charset=utf-8", reportJSON)
 		return
 	}
-	finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(cluster))
+	h.attachCostData(cluster, &report)
 	h.applyExemptions(cluster, &report)
 	c.JSON(http.StatusOK, report)
 }

@@ -98,7 +98,7 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
       hint: hasMetrics ? "request compatível com o uso real" : "sem métrica de uso: não dá para separar o desperdício" },
     { key: "waste", name: "Request acima do uso", value: cost.wasteBRL, color: COST_COLORS.waste, hint: "reservado e não usado (P95 + 20%)" },
     { key: "idle", name: "Capacidade ociosa", value: cost.idleBRL, color: COST_COLORS.idle, hint: "nodes pagos que nem request nem uso ocupam (pelo recurso mais cheio de cada pool)" },
-    { key: "os", name: "Disco do SO", value: cost.osDiskBRL, color: COST_COLORS.osDisk, hint: "discos dos nodes" },
+    { key: "os", name: "Disco do SO", value: cost.osDiskBRL, color: COST_COLORS.osDisk, hint: cost.diskEffective ? "discos dos nodes (custo efetivo do Cost Management)" : "discos dos nodes (preço de tabela)" },
     { key: "pvc", name: "Volumes (PVC)", value: cost.pvcBRL, color: COST_COLORS.pvc, hint: "PVCs montados" },
     { key: "orphan", name: "Volumes órfãos", value: cost.orphanBRL, color: COST_COLORS.orphan, hint: "PVCs sem pod" },
   ].filter(s => s.value >= 1);
@@ -163,7 +163,7 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
   const effTrend = [...effByDate.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
 
   // ── Fatura (Cost Management) — a mesma consulta do painel, para o PDF ────
-  const { data: billed } = useBilledCost(cluster, provider === "aks");
+  const { data: billed } = useBilledCost(cluster, !!provider);
   const billedFactor = billedToBRL(billed, report.exchange_rate);
 
   // ── Qualidade dos dados ───────────────────────────────────────────────────
@@ -329,7 +329,7 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
         `Métricas de uso: ${coverage}% dos workloads (${enriched}/${summary.workloads_analyzed}), janela de ${report.window_days || 0} dias.`,
         "Preços de tabela pay-as-you-go: reservas e Savings Plan não estão descontados. Ociosidade pelo recurso mais ocupado de cada pool, sobre a capacidade alocável.",
         ...(covered.length > 0 ? [`Cost Management em ${covered.length} de ${pools.length} pools: ${money(coveredEffective)} efetivos contra ${money(coveredTable)} de tabela.`] : []),
-        ...(billed?.available && billedFactor !== null ? [`Fatura do Azure (amortizada, ${billed.from} a ${billed.to}, RGs do AKS e dos nodes): ${money(billed.total * billedFactor)}.`] : []),
+        ...(billed?.available && billedFactor !== null ? [`Fatura (amortizada, ${billed.from} a ${billed.to}, ${(billed.resource_groups ?? []).map(r => r.name).join(", ")}): ${money(billed.total * billedFactor)}.`] : []),
         ...(exempt.length > 0 ? [`Isentos: ${exempt.length} workload(s) fora do desperdício e do plano (${exempt.map(w => w.workload).slice(0, 8).join(", ")}${exempt.length > 8 ? ", …" : ""}).`] : []),
         ...(reservedPools.length > 0 ? [`Sob reserva/Savings Plan (${reservedPools.map(p => p.name).join(", ")}): a economia de tirar nodes conta só a parte sob demanda.`] : []),
         `Gerado por K8s HPA Manager em ${new Date().toLocaleString("pt-BR")}.`,
@@ -632,7 +632,7 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
             <ul className="space-y-1.5 text-xs text-muted-foreground">
               <li>Janela: {report.window_days > 0 ? `${report.window_days} dias` : "sem análise histórica"}</li>
               <li>{cost.coveredPools > 0
-                ? `Compute pelo custo efetivo do Cost Management nos pools com cobertura; demais pools e discos em preço de tabela`
+                ? `Compute pelo custo efetivo do Cost Management nos pools com cobertura; discos ${cost.diskEffective ? "também pelo custo efetivo" : "em preço de tabela"}`
                 : "Preços de tabela pay-as-you-go: reservas e Savings Plan não descontados"}</li>
               {covered.length > 0 && (
                 <li>Cobertura do Cost Management em {covered.length} de {pools.length} pools: {fmtBRL(coveredEffective)} efetivos contra {fmtBRL(coveredTable)} de tabela</li>

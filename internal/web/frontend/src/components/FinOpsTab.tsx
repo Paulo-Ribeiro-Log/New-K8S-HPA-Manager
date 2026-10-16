@@ -101,7 +101,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
   });
 
   // Fatura real (Cost Management) — a mesma consulta do painel do Relatório (cache por cluster).
-  const { data: billed } = useBilledCost(cluster, provider === "aks" && !!report);
+  const { data: billed } = useBilledCost(cluster, !!provider && !!report);
   const billedFactor = report ? billedToBRL(billed, report.exchange_rate) : null;
 
   // Um relatório novo muda o ranking multi-cluster ("Todos os clusters").
@@ -130,9 +130,14 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
   // GET /finops/report/last só lê um cache já persistido no backend (SQLite) — nunca consulta
   // Dynatrace/Prometheus/K8s. Só busca se a queryKey ainda não tiver dado (evita sobrescrever um
   // relatório recém-buscado ao vivo nesta mesma sessão, e evita rebuscar à toa).
+  // Enquanto o último scan é lido, a barra de abas fica oculta: sem relatório a aba ativa cai em
+  // "Armazenamento e Órfãos", e a tela abria nela (bug relatado: "quando chamamos a aba finops a
+  // tela vem em uma tab estranha e não do dashboard").
+  const [restoredCluster, setRestoredCluster] = useState<string | null>(null);
+  const restoring = !!cluster && restoredCluster !== cluster && !report;
   useEffect(() => {
     if (!cluster) return;
-    if (queryClient.getQueryData(["finops-report", cluster])) return;
+    if (queryClient.getQueryData(["finops-report", cluster])) { setRestoredCluster(cluster); return; }
     let cancelled = false;
     (async () => {
       try {
@@ -142,6 +147,8 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
       } catch {
         // best-effort e silencioso — sem cache, a tela simplesmente fica no estado vazio já
         // existente ("Selecione um cluster e clique em Analisar"), nunca um erro visível.
+      } finally {
+        if (!cancelled) setRestoredCluster(cluster);
       }
     })();
     return () => {
@@ -251,7 +258,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
               : "Selecione um cluster para começar"}
             {billed?.available && billedFactor !== null && (
               <span className="ml-1.5 font-medium text-indigo-600 dark:text-indigo-400"
-                title={`Custo amortizado no Cost Management, ${billed.from} a ${billed.to}, RGs do AKS e dos nodes`}>
+                title={`Custo amortizado, ${billed.from} a ${billed.to}: ${(billed.resource_groups ?? []).map(r => r.name).join(", ")}`}>
                 · faturado em {billed.window_days} dias: {fmtBRL(billed.total * billedFactor)}
               </span>
             )}
@@ -460,7 +467,12 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
 
       {/* Abas: as que dependem do relatório só aparecem com ele; "Recursos Órfãos" consulta o
           cloud direto e fica disponível assim que há um cluster selecionado. */}
-      {cluster && !isFetching && (
+      {cluster && !isFetching && restoring && (
+        <div className="flex items-center gap-2 py-6 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando o último scan…
+        </div>
+      )}
+      {cluster && !isFetching && !restoring && (
         <>
           {!report && !error && (
             <p className="text-xs text-muted-foreground">

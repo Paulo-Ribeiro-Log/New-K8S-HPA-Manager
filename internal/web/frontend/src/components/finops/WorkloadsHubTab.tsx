@@ -1,7 +1,7 @@
 // Aba Workloads do FinOps (Fase 2 do FINOPS-REVISAO-PLAN.md): junta o Rightsizing (request/limit
 // por workload, scan e histórico próprios) e as Oportunidades (ações por workload: HPA, requests,
 // riscos). Abas manuais — shadcn <Tabs> quebra a cadeia flex (ver CLAUDE.md).
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Gauge, ListChecks, Send } from "lucide-react";
 import { RightsizingTab } from "@/components/RightsizingTab";
 import type { FinOpsReport } from "./types";
@@ -19,6 +19,12 @@ export function WorkloadsHubTab({ cluster, report, provider }: { cluster: string
   const factorOf = poolCostFactors(report);
   const committedPools = new Set((report.node_pools ?? []).filter(isCommittedPool).map(p => p.name));
   const opportunities = workloads.filter(isOpportunity).length;
+  // Isenções do relatório (o scan do Rightsizing não as aplica) — chave "namespace/workload".
+  const exemptions = useMemo(() => new Map(
+    (report.workloads ?? []).filter(w => w.is_exempt).map(w => [`${w.namespace}/${w.workload}`, {
+      is_exempt: true, exempt_active: w.exempt_active, exempt_reason: w.exempt_reason,
+      exempt_threshold: w.exempt_threshold, exempt_replicas: w.exempt_replicas,
+    }])), [report.workloads]);
 
   const btn = (v: View, label: string, Icon: typeof Gauge, count?: number) => (
     <button
@@ -47,7 +53,8 @@ export function WorkloadsHubTab({ cluster, report, provider }: { cluster: string
       ) : view === "rightsizing" ? (
         <RightsizingTab cluster={cluster} provider={provider}
           costFactor={factorOf}
-          committedPool={pool => !!pool && committedPools.has(pool)} />
+          committedPool={pool => !!pool && committedPools.has(pool)}
+          exemptions={exemptions} />
       ) : (
         <OpportunitiesTab
           cluster={cluster}

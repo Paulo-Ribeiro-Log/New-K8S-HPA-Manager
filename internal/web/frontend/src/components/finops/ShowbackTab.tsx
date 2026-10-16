@@ -38,17 +38,27 @@ export function ShowbackTab({ cluster }: { cluster: string }) {
   });
   const [scope, setScope] = useState<"cluster" | "all">("cluster");
   const [by, setBy] = useState<"namespace" | "owner">("namespace");
+  const [mode, setMode] = useState<"accrued" | "rate">("accrued");
+  const [spread, setSpread] = useState(false);
   const { data, isLoading, error } = useQuery({
     queryKey: ["finops-showback", month, scope === "all" ? "" : cluster],
     queryFn: () => {
       const params = new URLSearchParams({ month });
       if (scope === "cluster") params.set("cluster", cluster);
-      return apiClient.get<{ month: string; months: string[]; rows: ShowbackRow[]; report_at: Record<string, string> }>(`/finops/showback?${params}`);
+      return apiClient.get<{
+        month: string; months: string[]; rows: ShowbackRow[]; accrued_rows: ShowbackRow[]; report_at: Record<string, string>;
+        coverage: Record<string, { days: number; scans: number; first_day: string }>; period_days: number;
+      }>(`/finops/showback?${params}`);
     },
     staleTime: 60_000,
   });
 
-  const rows = data?.rows ?? [];
+  const baseRows = (mode === "accrued" ? data?.accrued_rows : data?.rows) ?? [];
+  // Rateio: o "(não alocado)" de cada cluster dividido entre os namespaces dele, proporcional ao compute.
+  const rows = spread ? spreadUnallocated(baseRows) : baseRows;
+  const coverage = Object.values(data?.coverage ?? {});
+  const daysMin = coverage.length ? Math.min(...coverage.map(c => c.days)) : 0;
+  const scans = coverage.reduce((s, c) => s + c.scans, 0);
   const map = new Map<string, Line>();
   for (const r of rows) {
     const unallocated = r.namespace === UNALLOCATED;
@@ -90,12 +100,12 @@ export function ShowbackTab({ cluster }: { cluster: string }) {
       return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const num = (v: number) => v.toFixed(2).replace(".", ",");
-    const header = ["Mês", "Cluster", "Namespace", "Dono", "Label do dono", "Workloads", "Compute (R$)", "Storage (R$)", "Total (R$)", "Request acima do uso (R$)"];
+    const header = [mode === "accrued" ? "Mês (acumulado)" : "Mês (ritmo mensal)", "Cluster", "Namespace", "Dono", "Label do dono", "Workloads", "Compute (R$)", "Storage (R$)", "Total (R$)", "Request acima do uso (R$)"];
     const body = rows.map(r => [month, r.cluster, r.namespace, r.owner ?? "", r.owner_label ?? "", r.workloads, num(r.compute_brl), num(r.storage_brl), num(r.total_brl), num(r.waste_brl)].map(esc).join(";"));
     const blob = new Blob(["﻿" + [header.join(";"), ...body].join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `finops-showback-${scope === "all" ? "todos" : shortCluster(cluster)}-${month}.csv`;
+    a.download = `finops-showback-${scope === "all" ? "todos" : shortCluster(cluster)}-${month}-${mode === "accrued" ? "acumulado" : "ritmo"}${spread ? "-rateado" : ""}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
     toast.success("CSV exportado");
@@ -105,7 +115,7 @@ export function ShowbackTab({ cluster }: { cluster: string }) {
     <div className="space-y-4 pb-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">
-          Custo mensal por namespace ou dono (label do namespace: <code>owner</code>, <code>team</code>, <code>squad</code>…). Cada mês é a foto do último Analisar dele; compute no custo efetivo.
+          Custo mensal por namespace ou dono (label do namespace: <code>owner</code>, <code>team</code>, <code>squad</code>…). "Acumulado" soma o mês dia a dia (cada dia usa o último Analisar até ele); "Ritmo mensal" é o último Analisar. Compute e discos no custo efetivo quando há dado do Cost Management.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <select value={month} onChange={e => setMonth(e.target.value)} className="h-8 rounded border bg-background px-2 text-xs">
@@ -123,6 +133,18 @@ export function ShowbackTab({ cluster }: { cluster: string }) {
               </button>
             ))}
           </div>
+          <div className="flex rounded-md border p-0.5 text-xs">
+            {(["accrued", "rate"] as const).map(v => (
+              <button key={v} onClick={() => setMode(v)}
+                title={v === "accrued" ? "Soma dia a dia do mês: cada dia usa o último Analisar até ele" : "Custo mensal pelo último Analisar do mês"}
+                className={`rounded px-2.5 py-1 ${mode === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                {v === "accrued" ? "Acumulado" : "Ritmo mensal"}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-1 text-xs text-muted-foreground cursor-pointer" title="Divide o não alocado (ociosa + disco do SO) entre os namespaces, proporcional ao compute">
+            <input type="checkbox" checked={spread} onChange={e => setSpread(e.target.checked)} className="h-3.5 w-3.5" /> ratear não alocado
+          </label>
           <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={exportCSV} disabled={rows.length === 0}>
             <Download className="h-3.5 w-3.5" /> CSV
           </Button>
@@ -140,8 +162,13 @@ export function ShowbackTab({ cluster }: { cluster: string }) {
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatTile icon={Wallet} label="Custo do mês" value={fmtBRL(total)} sub={scope === "all" ? `${Object.keys(data?.report_at ?? {}).length} cluster(s)` : "cluster inteiro"} />
-            <StatTile icon={Users} label="Alocado a namespaces" value={`${pct(allocated, total)}%`} sub={`${fmtBRL(total - allocated)} não alocado (ociosa e sistema)`} />
+            <StatTile icon={Wallet} label={mode === "accrued" ? "Acumulado no mês" : "Ritmo mensal"} value={fmtBRL(total)}
+              sub={mode === "accrued"
+                ? `${daysMin} de ${data?.period_days ?? 0} dias com dado · ${scans} scan(s)${daysMin < (data?.period_days ?? 0) ? " — dias antes do 1º scan não entram" : ""}`
+                : `último Analisar do mês${scope === "all" ? ` · ${Object.keys(data?.report_at ?? {}).length} cluster(s)` : ""}`}
+              tone={mode === "accrued" && daysMin < (data?.period_days ?? 0) ? "warn" : "default"} />
+            <StatTile icon={Users} label="Alocado a namespaces" value={`${pct(allocated, total)}%`}
+              sub={spread ? "não alocado rateado pelo compute" : `${fmtBRL(total - allocated)} não alocado (ociosa e sistema)`} />
             <StatTile icon={Users} label="Namespaces com dono" value={`${withOwner} de ${nsCount}`}
               sub={withOwner < nsCount ? "coloque o label owner/team no namespace" : "todos identificados"} tone={withOwner < nsCount ? "warn" : "good"} />
             <StatTile icon={PiggyBank} label="Request acima do uso" value={fmtBRL(waste)} sub={`${pct(waste, allocated)}% do alocado`} tone={waste > 0 ? "warn" : "good"} />
@@ -208,4 +235,22 @@ export function ShowbackTab({ cluster }: { cluster: string }) {
       )}
     </div>
   );
+}
+
+// Rateio do "(não alocado)" de cada cluster entre os namespaces dele, proporcional ao compute.
+function spreadUnallocated(rows: ShowbackRow[]): ShowbackRow[] {
+  const out: ShowbackRow[] = [];
+  const byCluster = new Map<string, ShowbackRow[]>();
+  rows.forEach(r => byCluster.set(r.cluster, [...(byCluster.get(r.cluster) ?? []), r]));
+  for (const list of byCluster.values()) {
+    const un = list.find(r => r.namespace === UNALLOCATED);
+    const rest = list.filter(r => r.namespace !== UNALLOCATED);
+    const base = rest.reduce((s, r) => s + r.compute_brl, 0);
+    if (!un || base <= 0) { out.push(...list); continue; }
+    for (const r of rest) {
+      const share = un.total_brl * (r.compute_brl / base);
+      out.push({ ...r, compute_brl: r.compute_brl + share, total_brl: r.total_brl + share });
+    }
+  }
+  return out;
 }

@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS finops_report_cache (
     report_json  TEXT NOT NULL,
     generated_at DATETIME NOT NULL
 );
+CREATE TABLE IF NOT EXISTS finops_showback_day (
+    cluster   TEXT NOT NULL,
+    day       TEXT NOT NULL,
+    rows_json TEXT NOT NULL,
+    report_at DATETIME NOT NULL,
+    PRIMARY KEY (cluster, day)
+);
 CREATE TABLE IF NOT EXISTS finops_showback_month (
     cluster   TEXT NOT NULL,
     month     TEXT NOT NULL,
@@ -168,6 +175,42 @@ func (s *FinOpsReportCacheStore) ShowbackMonths() ([]string, error) {
 			return nil, err
 		}
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SaveShowbackDay grava (sobrescreve) a foto do showback do cluster no dia (AAAA-MM-DD).
+func (s *FinOpsReportCacheStore) SaveShowbackDay(cluster, day string, rowsJSON []byte, reportAt time.Time) error {
+	_, err := s.db.Exec(`
+INSERT INTO finops_showback_day (cluster, day, rows_json, report_at) VALUES (?, ?, ?, ?)
+ON CONFLICT(cluster, day) DO UPDATE SET rows_json = excluded.rows_json, report_at = excluded.report_at
+WHERE excluded.report_at >= finops_showback_day.report_at`, cluster, day, string(rowsJSON), reportAt)
+	return err
+}
+
+// ShowbackDay é a foto do showback de um cluster num dia.
+type ShowbackDay struct {
+	Cluster  string
+	Day      string
+	RowsJSON []byte
+}
+
+// ListShowbackDays devolve as fotos diárias do mês (AAAA-MM), por cluster e dia.
+func (s *FinOpsReportCacheStore) ListShowbackDays(month string) ([]ShowbackDay, error) {
+	rows, err := s.db.Query(`SELECT cluster, day, rows_json FROM finops_showback_day WHERE day LIKE ? ORDER BY cluster, day`, month+"-%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ShowbackDay
+	for rows.Next() {
+		var d ShowbackDay
+		var raw string
+		if err := rows.Scan(&d.Cluster, &d.Day, &raw); err != nil {
+			return nil, err
+		}
+		d.RowsJSON = []byte(raw)
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }

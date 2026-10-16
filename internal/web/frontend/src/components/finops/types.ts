@@ -31,6 +31,7 @@ export interface FinOpsPool {
   os_disk_gb?: number;
   os_disk_cost_usd?: number;
   os_disk_cost_brl?: number;
+  os_disk_effective_brl?: number; // custo efetivo do disco do SO (Cost Management)
   total_cost_usd?: number;
   total_cost_brl?: number;
 }
@@ -154,6 +155,7 @@ export interface PVCCostItem {
   reclaim_policy: string;
   workload_ref: string;
   is_orphaned: boolean;
+  effective_cost_brl?: number; // custo efetivo no mês (Cost Management, disco pvc-<uid>)
   price_source: string;
 }
 
@@ -416,6 +418,7 @@ export interface BilledCostResponse {
   available: boolean;
   reason?: string;
   cluster: string;
+  provider?: "aks" | "eks" | "gke";
   currency?: string;
   window_days?: number;
   from?: string;
@@ -423,7 +426,7 @@ export interface BilledCostResponse {
   fetched_at?: string;
   total: number;
   services?: BilledService[];
-  resource_groups?: { name: string; role: "cluster" | "nodes"; total: number; services: BilledService[] }[];
+  resource_groups?: { name: string; role: "cluster" | "nodes" | "data"; total: number; services: BilledService[] }[];
 }
 
 // Isenção por workload — GET/POST/DELETE /finops/exemptions.
@@ -453,6 +456,7 @@ export interface ClusterOverview {
   waste_brl: number;
   waste_committed_brl: number;
   orphan_storage_brl: number;
+  idle_brl: number;
   workloads: number;
   nodes: number;
   pools: number;

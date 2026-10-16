@@ -2,6 +2,8 @@
 // RightsizingTab.tsx/DataResourcesPanel.tsx), sem mudança de comportamento.
 
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { apiClient } from "@/lib/api/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList } from "recharts";
@@ -125,6 +127,17 @@ export function OpportunitiesTab({ cluster, workloads, windowDays, historicalRan
   const toggleGroup = (type: string) =>
     setCollapsedGroups(prev => { const n = new Set(prev); n.has(type) ? n.delete(type) : n.add(type); return n; });
 
+  // Copiar um kubectl registra a recomendação no acompanhamento (o backend ignora repetição em 24 h).
+  const queryClient = useQueryClient();
+  const trackKubectl = (w: OpItem) => {
+    const t = actionTargets(w, w.rec);
+    if (!hasTargets(t)) return;
+    apiClient.recordFinOpsAction({
+      cluster, namespace: w.namespace, workload: w.workload, channel: "kubectl", expected_saving_brl: w.saving,
+      target_hpa_min: t.minReplicas, target_hpa_max: t.maxReplicas, target_cpu_millis: t.cpuMillis, target_mem_mi: t.memMi,
+    }).then(() => queryClient.invalidateQueries({ queryKey: ["finops-actions", cluster] })).catch(() => { /* best-effort */ });
+  };
+
   // ── Render card ───────────────────────────────────────────────────────────────
   const renderCard = (w: OpItem) => {
     const key = itemKey(w);
@@ -225,7 +238,7 @@ export function OpportunitiesTab({ cluster, workloads, windowDays, historicalRan
             ))}
             {w.rec.kubectlList.length > 0 && (
               <div className="mt-1.5 space-y-1.5">
-                {w.rec.kubectlList.map((cmd, ci) => <KubectlBlock key={ci} cmd={cmd} />)}
+                {w.rec.kubectlList.map((cmd, ci) => <KubectlBlock key={ci} cmd={cmd} onCopy={() => trackKubectl(w)} />)}
                 <GitOpsNote />
               </div>
             )}

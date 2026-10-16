@@ -8,6 +8,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Loader2, RefreshCw, X, Server, Search, Sparkles, Boxes, Gauge, Info, AlertTriangle } from "lucide-react";
 import ResourceGauge from "@/components/ResourceGauge";
+import { ExemptBadge } from "@/components/finops/ExemptionDialog";
+import type { FinOpsWorkload } from "@/components/finops/types";
 import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard, kubectlResource, GitOpsNote } from "@/lib/finopsFormat";
 import { DollarSign, TrendingDown, Layers } from "lucide-react";
 import { ComposedChart, Line, XAxis, YAxis, ReferenceLine, ReferenceDot } from "recharts";
@@ -70,6 +72,12 @@ interface WorkloadRecommendation {
   metrics_source?: string;
   window_days: number;
   generated_at: string;
+  // Isenção (vinda do relatório principal — ApplyExemptions): ativa zera o desperdício nesta tela.
+  is_exempt?: boolean;
+  exempt_active?: boolean;
+  exempt_reason?: string;
+  exempt_threshold?: number;
+  exempt_replicas?: number;
 }
 
 // Uso current (live)/top (pico histórico) de um node único onde workloads rodam — ver
@@ -697,6 +705,7 @@ function WorkloadNodeDetailModal({
             <div className="border rounded-lg p-3 space-y-3 bg-muted/20">
               <div className="flex items-center justify-between">
                 <VerdictBadge verdict={workload.verdict} />
+                <ExemptBadge w={workload as unknown as FinOpsWorkload} />
                 {(workload.waste_brl ?? 0) > 0 && <span className="text-xs font-semibold text-red-500">-{fmtBRL(workload.waste_brl!)}/mês de desperdício</span>}
               </div>
 
@@ -867,6 +876,7 @@ function WorkloadCard({
           </div>
           <div className="flex flex-col items-end gap-1 shrink-0">
             <VerdictBadge verdict={w.verdict} />
+            <ExemptBadge w={w as unknown as FinOpsWorkload} />
             {(w.waste_brl ?? 0) > 0 && (
               <span className="text-xs font-semibold text-red-500">-{fmtBRL(w.waste_brl!)}/mês</span>
             )}
@@ -1066,11 +1076,13 @@ function NodePoolTierCard({
 // costFactor: custo efetivo ÷ tabela do pool (reserva/Savings Plan, do relatório principal) — o
 // waste_brl do scan é em preço de tabela. committedPool: pool sob reserva/Savings Plan/Spot, onde a
 // economia só se realiza liberando nodes.
-export function RightsizingTab({ cluster, provider, costFactor, committedPool }: {
+export function RightsizingTab({ cluster, provider, costFactor, committedPool, exemptions }: {
   cluster: string;
   provider?: string;
   costFactor?: (pool?: string) => number;
   committedPool?: (pool?: string) => boolean;
+  // "namespace/workload" → isenção do relatório principal (o scan do Rightsizing não aplica isenções).
+  exemptions?: Map<string, Pick<WorkloadRecommendation, "is_exempt" | "exempt_active" | "exempt_reason" | "exempt_threshold" | "exempt_replicas">>;
 }) {
   const queryClient = useQueryClient();
   const [scanning, setScanning] = useState(false);
@@ -1111,10 +1123,13 @@ export function RightsizingTab({ cluster, provider, costFactor, committedPool }:
   };
 
   const workloads = useMemo(() => {
-    const list = (data?.workloads ?? []).map((w) =>
-      costFactor && w.waste_brl ? { ...w, waste_brl: w.waste_brl * costFactor(w.node_pool) } : w);
+    const list = (data?.workloads ?? []).map((w) => {
+      const ex = exemptions?.get(`${w.namespace}/${w.workload}`);
+      const withEx = ex ? { ...w, ...ex, ...(ex.exempt_active ? { waste_brl: 0 } : {}) } : w;
+      return costFactor && withEx.waste_brl ? { ...withEx, waste_brl: withEx.waste_brl * costFactor(w.node_pool) } : withEx;
+    });
     return [...list].sort((a, b) => (b.waste_brl ?? 0) - (a.waste_brl ?? 0));
-  }, [data, costFactor]);
+  }, [data, costFactor, exemptions]);
 
   const namespaces = useMemo(() => Array.from(new Set(workloads.map((w) => w.namespace))).sort(), [workloads]);
 

@@ -70,6 +70,15 @@ A conta agora fica em `components/finops/capacity.ts`, a fonte única. O próxim
 
 **Fase 3 — isenções por workload** (`FINOPS-EXEMPTIONS-PLAN.md`). Um workload pode ser isento (ex.: HPA 1/1 de HLG, decisão de projeto) com um limite de réplicas e um motivo. Enquanto as réplicas atuais e o pico do histórico ficam dentro do limite, ele sai do desperdício, das oportunidades, do plano de ação e dos contadores. Passou do limite, a isenção para de valer sozinha e o badge âmbar avisa. A regra roda na leitura do relatório, então criar ou remover não pede novo scan. Store `finops_exemptions.db`, `finops.ApplyExemptions` e rotas `GET/POST/DELETE /finops/exemptions` (com Change History), todos com teste. Na tela: botão "Isentar" em cada oportunidade, modal com limite e motivo, seção "N workloads isentos" e linha no Relatório e no PDF.
 
+**Fase 3 — sobras resolvidas.**
+- **Discos pelo custo efetivo:** junto com a cobertura de reserva, o Cost Management passa a ler o serviço Storage do RG de nodes, por recurso: o disco do SO no VMSS do pool e cada PVC no disco `pvc-<uid>`. `attachCostData` anexa na leitura, e Relatório, Node Pools, ranking e showback usam.
+- **Fatura completa:** o AKS inclui o RG de dados, em qualquer subscription. EKS lê o Cost Explorer pela tag `aws:eks:cluster-name`, que precisa estar ativada como cost allocation tag. GKE lê o export de billing no BigQuery, com a tabela em `K8S_HPA_GKE_BILLING_TABLE`. O painel compara compute e discos com os serviços de cada nuvem.
+- **Isenções no Rightsizing:** badge e desperdício zerado nos isentos ativos.
+- **Ociosa no ranking "Todos os clusters":** porte para Go da conta do `capacity.ts` (`finops/idle.go`), com KPI, coluna e barra.
+- **kubectl copiado no acompanhamento:** canal kubectl; a mesma ação repetida em 24 h não duplica.
+- **Showback por soma diária:** foto por dia (`finops_showback_day`), mês acumulado dia a dia (`AccrueShowback`) ou pelo ritmo mensal, e rateio opcional do não alocado proporcional ao compute.
+- **Fora do horário com dado real:** horas-node por pool dos últimos 7 dias no Prometheus (`GET /finops/node-hours`); a economia sai do que de fato roda fora do horário. O botão "Automatizar" gera o CronJob que escala os deployments a 0 e de volta.
+
 **Relatório — rosca "Para onde vai o dinheiro".** O tooltip semitransparente ficava em cima do total no centro da rosca, e os dois textos se sobrepunham. Agora a rosca não tem tooltip: a fatia sob o mouse (ou a linha da legenda) aparece no centro, com nome, valor e % do total, e as demais ficam esmaecidas. O `TooltipBox` dos outros gráficos ficou opaco.
 
 **Fase 3 — showback, fora do horário e reserva para a carga base.**

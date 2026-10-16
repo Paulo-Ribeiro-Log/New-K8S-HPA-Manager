@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { Layers, Wallet, PiggyBank, ShieldAlert, Loader2, ArrowRight, Clock } from "lucide-react";
+import { Layers, Wallet, PiggyBank, ShieldAlert, Loader2, ArrowRight, Clock, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiClient } from "@/lib/api/client";
 import { fmtBRL } from "@/lib/finopsFormat";
@@ -22,6 +22,7 @@ interface Group {
   sub: string;
   total: number;
   waste: number;
+  idle: number;
   wasteCommitted: number;
   risks: number;
   nodes: number;
@@ -37,10 +38,11 @@ function group(rows: ClusterOverview[], by: "cluster" | "journey"): Group[] {
     const key = by === "cluster" ? r.cluster : (r.journey || "sem jornada");
     const g = map.get(key) ?? {
       key, label: by === "cluster" ? shortName(r.cluster) : key, sub: "",
-      total: 0, waste: 0, wasteCommitted: 0, risks: 0, nodes: 0, oldestDays: 0, clusters: [],
+      total: 0, waste: 0, idle: 0, wasteCommitted: 0, risks: 0, nodes: 0, oldestDays: 0, clusters: [],
     };
     g.total += r.total_brl;
     g.waste += r.waste_brl;
+    g.idle += r.idle_brl ?? 0;
     g.wasteCommitted += r.waste_committed_brl;
     g.risks += r.oom_risk;
     g.nodes += r.nodes;
@@ -85,12 +87,13 @@ export function ClustersOverviewTab({ currentCluster, onOpen }: { currentCluster
 
   const total = rows.reduce((s, r) => s + r.total_brl, 0);
   const waste = rows.reduce((s, r) => s + r.waste_brl, 0);
+  const idle = rows.reduce((s, r) => s + (r.idle_brl ?? 0), 0);
   const wasteCommitted = rows.reduce((s, r) => s + r.waste_committed_brl, 0);
   const risks = rows.reduce((s, r) => s + r.oom_risk, 0);
   const stale = rows.filter(r => daysAgo(r.generated_at) > STALE_DAYS).length;
   const groups = group(rows, by);
   const max = Math.max(1, ...groups.map(g => g.total));
-  const chart = groups.slice(0, 12).map(g => ({ name: g.label, desperdicio: Math.round(g.waste), restante: Math.round(Math.max(0, g.total - g.waste)), total: g.total }));
+  const chart = groups.slice(0, 12).map(g => ({ name: g.label, desperdicio: Math.round(g.waste), ociosa: Math.round(g.idle), restante: Math.round(Math.max(0, g.total - g.waste - g.idle)), total: g.total }));
 
   return (
     <div className="space-y-4 pb-6">
@@ -114,17 +117,18 @@ export function ClustersOverviewTab({ currentCluster, onOpen }: { currentCluster
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <StatTile icon={Layers} label="Clusters analisados" value={rows.length}
           sub={stale > 0 ? `${stale} com relatório de mais de ${STALE_DAYS} dias` : "todos analisados na última semana"} tone={stale > 0 ? "warn" : "default"} />
         <StatTile icon={Wallet} label="Custo mensal" value={shortBRL(total)} sub={`${shortBRL(total * 12)}/ano no ritmo atual`} />
         <StatTile icon={PiggyBank} label="Request acima do uso" value={shortBRL(waste)}
           sub={wasteCommitted > 0 ? `${shortBRL(waste - wasteCommitted)} sob demanda · ${shortBRL(wasteCommitted)} sob reserva` : `${pct(waste, total)}% do custo`} tone={waste > 0 ? "warn" : "good"} />
+        <StatTile icon={Server} label="Capacidade ociosa" value={shortBRL(idle)} sub={`${pct(idle, total)}% do custo · nodes que nem request nem uso ocupam`} tone={idle > total * 0.2 ? "bad" : idle > total * 0.1 ? "warn" : "good"} />
         <StatTile icon={ShieldAlert} label="Risco de OOM" value={risks} sub="workloads com uso encostado no request" tone={risks > 0 ? "bad" : "good"} />
       </div>
 
       <div className="rounded-xl border bg-card p-5 shadow-sm">
-        <SectionTitle icon={Wallet} title={by === "cluster" ? "Custo por cluster" : "Custo por jornada"} sub="Mensal; a parte âmbar é request acima do uso" />
+        <SectionTitle icon={Wallet} title={by === "cluster" ? "Custo por cluster" : "Custo por jornada"} sub="Mensal; vermelho = capacidade ociosa, âmbar = request acima do uso" />
         <ResponsiveContainer width="100%" height={Math.max(180, chart.length * 30)}>
           <BarChart data={chart} layout="vertical" margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
             <CartesianGrid strokeDasharray="3 3" horizontal={false} opacity={0.35} />
@@ -133,9 +137,11 @@ export function ClustersOverviewTab({ currentCluster, onOpen }: { currentCluster
             <Tooltip cursor={{ fill: "hsl(var(--muted) / 0.4)" }} content={({ active, payload, label }) => active && payload?.length ? (
               <TooltipBox title={label}>
                 <TooltipRow label="custo/mês" value={fmtBRL((payload[0].payload as { total: number }).total)} />
+                <TooltipRow color={COST_COLORS.idle} label="capacidade ociosa" value={fmtBRL(payload.find(p => p.dataKey === "ociosa")?.value as number)} />
                 <TooltipRow color={COST_COLORS.waste} label="request acima do uso" value={fmtBRL(payload.find(p => p.dataKey === "desperdicio")?.value as number)} />
               </TooltipBox>) : null} />
             <Bar dataKey="restante" stackId="a" fill="#6366f1" fillOpacity={0.8} maxBarSize={18} />
+            <Bar dataKey="ociosa" stackId="a" fill={COST_COLORS.idle} fillOpacity={0.85} maxBarSize={18} />
             <Bar dataKey="desperdicio" stackId="a" fill={COST_COLORS.waste} radius={[0, 4, 4, 0]} maxBarSize={18} />
           </BarChart>
         </ResponsiveContainer>
@@ -149,6 +155,7 @@ export function ClustersOverviewTab({ currentCluster, onOpen }: { currentCluster
                 <th className="px-4 py-2 text-left font-medium">{by === "cluster" ? "Cluster" : "Jornada"}</th>
                 <th className="px-3 py-2 text-right font-medium">Custo/mês</th>
                 <th className="px-3 py-2 text-left font-medium w-48">Participação</th>
+                <th className="px-3 py-2 text-right font-medium">Ociosa</th>
                 <th className="px-3 py-2 text-right font-medium">Request acima do uso</th>
                 <th className="px-3 py-2 text-right font-medium">Risco OOM</th>
                 <th className="px-3 py-2 text-right font-medium">Nodes</th>
@@ -179,6 +186,10 @@ export function ClustersOverviewTab({ currentCluster, onOpen }: { currentCluster
                       <p className="mt-0.5 text-[10px] text-muted-foreground">{pct(g.total, total)}% do total</p>
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums">
+                      {g.idle >= 1 ? <span className="text-rose-600 dark:text-rose-400 font-medium">{fmtBRL(g.idle)}</span> : "—"}
+                      {g.idle >= 1 && <p className="text-[10px] text-muted-foreground">{pct(g.idle, g.total)}% do custo</p>}
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">
                       {g.waste >= 1 ? <span className="text-amber-600 dark:text-amber-400 font-medium">{fmtBRL(g.waste)}</span> : "—"}
                       {g.waste >= 1 && <p className="text-[10px] text-muted-foreground">{pct(g.waste, g.total)}% do custo{g.wasteCommitted >= 1 ? ` · ${pct(g.wasteCommitted, g.waste)}% sob reserva` : ""}</p>}
                     </td>
@@ -204,7 +215,7 @@ export function ClustersOverviewTab({ currentCluster, onOpen }: { currentCluster
         </div>
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Não entra aqui a capacidade ociosa dos nodes (está no Node Pools e no Relatório de cada cluster). Relatório com mais de {STALE_DAYS} dias aparece em âmbar: rode Analisar de novo para atualizar.
+        Ociosa pela mesma conta do Node Pools (recurso mais cheio de cada pool, maior entre request e uso, sobre a capacidade alocável). Relatório com mais de {STALE_DAYS} dias aparece em âmbar: rode Analisar de novo para atualizar.
       </p>
     </div>
   );

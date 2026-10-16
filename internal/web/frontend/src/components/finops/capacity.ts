@@ -263,6 +263,7 @@ export interface CostBreakdown {
   totalBRL: number;
   coveredPools: number;    // pools pelo custo efetivo
   tableComputeBRL: number; // o compute em preço de tabela, para comparação
+  diskEffective: boolean;  // discos pelo custo efetivo (Cost Management)
 }
 
 export function computeCostBreakdown(report: FinOpsReport): CostBreakdown {
@@ -277,10 +278,20 @@ export function computeCostBreakdown(report: FinOpsReport): CostBreakdown {
   const idleBRL = Math.min(computeBRL, usage.reduce((s, u) => s + u.idleCostBRL * (factor.get(u.pool.name) ?? 1), 0));
   const wasteRaw = workloads.reduce((s, w) => s + (w.waste_brl ?? 0) * (factor.get(w.node_pool ?? "") ?? 1), 0);
   const wasteBRL = Math.min(computeBRL - idleBRL, wasteRaw);
-  const osDiskBRL = storage?.os_disk_cost_brl ?? 0;
-  const orphanBRL = storage?.orphaned_cost_brl ?? 0;
-  const pvcBRL = Math.max(0, (storage?.total_monthly_cost_brl ?? 0) - orphanBRL);
-  const totalBRL = coveredPools > 0
+  // Discos: custo efetivo do Cost Management quando gravado (AttachDiskCost), senão tabela.
+  const pools = report.node_pools ?? [];
+  const pvcs = report.pvcs ?? [];
+  const osEffective = pools.some(p => (p.os_disk_effective_brl ?? 0) > 0);
+  const pvcEffective = pvcs.some(p => (p.effective_cost_brl ?? 0) > 0);
+  const osDiskBRL = osEffective
+    ? pools.reduce((s, p) => s + ((p.os_disk_effective_brl ?? 0) > 0 ? p.os_disk_effective_brl! : (p.os_disk_cost_brl ?? 0)), 0)
+    : storage?.os_disk_cost_brl ?? 0;
+  const pvcCost = (p: (typeof pvcs)[number]) => ((p.effective_cost_brl ?? 0) > 0 ? p.effective_cost_brl! : p.monthly_cost_brl);
+  const orphanBRL = pvcEffective ? pvcs.filter(p => p.is_orphaned).reduce((s, p) => s + pvcCost(p), 0) : storage?.orphaned_cost_brl ?? 0;
+  const pvcBRL = pvcEffective
+    ? pvcs.filter(p => !p.is_orphaned).reduce((s, p) => s + pvcCost(p), 0)
+    : Math.max(0, (storage?.total_monthly_cost_brl ?? 0) - orphanBRL);
+  const totalBRL = coveredPools > 0 || osEffective || pvcEffective
     ? computeBRL + osDiskBRL + pvcBRL + orphanBRL
     : summary.total_with_storage_brl ?? (computeBRL + osDiskBRL + pvcBRL + orphanBRL);
   return {
@@ -290,6 +301,7 @@ export function computeCostBreakdown(report: FinOpsReport): CostBreakdown {
     idleBRL,
     osDiskBRL, pvcBRL, orphanBRL, totalBRL,
     coveredPools, tableComputeBRL,
+    diskEffective: osEffective || pvcEffective,
   };
 }
 
@@ -429,8 +441,20 @@ export function offFraction(s: OffHoursSchedule): number {
   return Math.min(1, hours / 168);
 }
 
+/** Hora da semana (0 = segunda 00h) está dentro do horário desligado? */
+export function isOffHour(h: number, s: OffHoursSchedule): boolean {
+  const wd = Math.floor(h / 24), hr = h % 24;
+  if (s.weekends && wd >= 5) return true;
+  if (s.offStart === s.offEnd) return false;
+  return s.offStart > s.offEnd ? hr >= s.offStart || hr < s.offEnd : hr >= s.offStart && hr < s.offEnd;
+}
+
 export interface OffHoursPool {
   pool: FinOpsPool;
+  measured: boolean;         // a fração veio das horas-node reais (Prometheus), não de "ligado 24 h"
+  share: number;             // fração das horas-node do pool que cai no horário desligado
+  offNodes: number | null;   // média de nodes fora do horário hoje (medido)
+  onNodes: number | null;    // média de nodes no horário hoje (medido)
   monthlyBRL: number;        // custo mensal na base usada (efetivo quando há cobertura)
   savingBRL: number;         // economia mensal com o pool desligado fora do horário
   committed: boolean;        // sob reserva/Savings Plan: a economia não é certa
@@ -446,14 +470,35 @@ export interface OffHoursEstimate {
 
 /** Economia de desligar fora do horário. Reserva/Savings Plan ≥ 20% → a economia não é certa (o
  *  compromisso é pago de qualquer jeito); Spot e sob demanda economizam de verdade. */
-export function offHoursEstimate(nodePools: FinOpsPool[], s: OffHoursSchedule): OffHoursEstimate {
+export function offHoursEstimate(nodePools: FinOpsPool[], s: OffHoursSchedule, nodeHours?: Record<string, number[]>): OffHoursEstimate {
   const fraction = offFraction(s);
   const pools = nodePools.map(p => {
+    // Com o perfil medido: economia = parte das horas-node que hoje roda fora do horário (se o
+    // pool já desce à noite, sobra menos para economizar). Sem perfil: supõe ligado 24 h.
+    const prof = nodeHours?.[p.name.toLowerCase()] ?? nodeHours?.[p.name];
+    let share = fraction, offNodes: number | null = null, onNodes: number | null = null, measured = false;
+    if (prof && prof.length === 168) {
+      // -1 = hora sem amostra: fica fora da conta. Precisa de dado nas duas faixas para valer.
+      let off = 0, on = 0, nOff = 0, nOn = 0;
+      prof.forEach((v, h) => {
+        if (v < 0) return;
+        if (isOffHour(h, s)) { off += v; nOff++; } else { on += v; nOn++; }
+      });
+      if (nOff >= 12 && nOn >= 12) {
+        offNodes = off / nOff;
+        onNodes = on / nOn;
+        // Horas-node fora do horário na semana inteira, pela média de cada faixa.
+        const offH = Math.round(fraction * 168);
+        const total = offNodes * offH + onNodes * (168 - offH);
+        share = total > 0 ? (offNodes * offH) / total : 0;
+        measured = true;
+      }
+    }
     const eff = effectiveMonthlyBRL(p.coverage);
     const monthlyBRL = eff ?? p.monthly_cost_brl;
     const c = p.coverage;
     const committed = !!c && (c.reservation >= COVERAGE_SHARE || c.savings_plan >= COVERAGE_SHARE);
-    return { pool: p, monthlyBRL, savingBRL: monthlyBRL * fraction, committed, stays: p.mode?.toLowerCase() === "system" };
+    return { pool: p, monthlyBRL, savingBRL: monthlyBRL * share, committed, stays: p.mode?.toLowerCase() === "system", measured, share, offNodes, onNodes };
   });
   const sum = (list: OffHoursPool[]) => ({
     certainBRL: list.filter(p => !p.committed).reduce((a, p) => a + p.savingBRL, 0),

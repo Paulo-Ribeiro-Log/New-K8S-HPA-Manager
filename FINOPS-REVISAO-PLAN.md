@@ -113,24 +113,24 @@ Estrutura final, de 12 para 7 abas: **Dashboard · Relatório · Workloads · No
   - economia em pool sob reserva aparece como condicional ("só liberando nodes");
   - o HPA não mostra valores em reais;
   - as alternativas de SKU seguem em preço de tabela, com o aviso de cobertura.
-- [ ] O custo efetivo cobre só compute (`Virtual Machines`); discos do SO e PVCs seguem em preço de tabela.
+- [x] Discos pelo custo efetivo: o refresh da cobertura também lê o serviço Storage do RG de nodes por recurso (disco do SO no VMSS do pool, PVC no disco `pvc-<uid>`), grava em `disk_cost` e `attachCostData` anexa na leitura (`os_disk_effective_brl`, `effective_cost_brl`). Relatório, Node Pools, ranking e showback usam.
 
 ## Fase 3 — Funções que faltam (por prioridade)
 
 - [x] **Custo faturado de verdade.** Painel "Fatura do Azure × estimativa" no Relatório e valor no cabeçalho: custo amortizado de 30 dias do RG do AKS + RG de nodes, por serviço (`GET /finops/billed-cost`, `BilledCostPanel.tsx`). Só AKS.
-  - [ ] Sobra: RG de dados (pode estar em outra subscription, ver `resolveDataRG`) e EKS/GKE (Cost Explorer / BigQuery billing export) ficam de fora.
+  - [x] RG de dados entra na fatura do AKS (`billedDataRG`, qualquer subscription do tenant); EKS pelo Cost Explorer (tag `aws:eks:cluster-name`, precisa estar ativada como cost allocation tag); GKE pelo export de billing no BigQuery (`K8S_HPA_GKE_BILLING_TABLE`). EKS/GKE sem validação contra conta real.
 - [x] **Isenções por workload** (`FINOPS-EXEMPTIONS-PLAN.md`). Store `finops_exemptions.db`, `finops.ApplyExemptions` aplicada na leitura do relatório (o cache guarda o relatório sem isenção, então criar ou remover não pede novo scan), rotas `GET/POST/DELETE /finops/exemptions` com Change History. Na tela: botão "Isentar", badge e seção "N workloads isentos" nas Oportunidades, linha na Qualidade dos dados e nota no PDF.
-  - [ ] Sobra: o Rightsizing (dados do store próprio) ainda não mostra a isenção.
+  - [x] O Rightsizing mostra a isenção (badge) e zera o desperdício dos isentos ativos, com as isenções do relatório principal.
 - [x] **Visão por jornada ou multi-cluster.** Sub-aba "Todos os clusters": ranking por cluster ou jornada (filtro de ambiente) com custo efetivo, request acima do uso (separando o que está sob reserva), risco de OOM, nodes e idade do relatório; "Abrir" leva ao cluster. `GET /finops/overview` lê o `finops-report-cache.db`, reaplica cobertura e isenções e resume com `finops.SummarizeCluster` (testado).
-  - [ ] Sobra: a capacidade ociosa dos nodes não entra no ranking (a conta está em `capacity.ts`, no frontend).
+  - [x] Ociosa no ranking: porte da conta para Go (`finops/idle.go`, `PoolOccupancy`/`IdleBRL`) — mantenha igual ao `computePoolUsage`.
 - [x] **Aplicar e acompanhar.** Cada oportunidade tem "Enviar ao Staging" (busca o HPA real e preenche min/max e requests; nada é aplicado sem confirmar no Staging) e "Patch de values" (YAML para o chart). O envio grava a foto do workload no servidor (`finops_actions.db`, `POST /finops/actions`, com Change History), e a visão Workloads → Acompanhamento compara com o relatório mais recente (`finops.EvaluateAction`: aguardando scan, não aplicada, parcial, aplicada; economia realizada = custo na foto − custo agora).
   - O Staging grava requests só no 1º container: o envio só leva os requests quando o 1º container tem o request do pod inteiro, e sobe o limit quando o request novo passaria dele.
-  - [ ] Sobra: o `kubectl` copiado não entra no acompanhamento (o canal existe no backend).
+  - [x] Copiar um `kubectl` nas Oportunidades registra a ação (canal kubectl); o backend ignora a mesma ação repetida em 24 h (`FindRecent`).
 - [ ] **Scan agendado com alerta no Teams** quando o custo ou o desperdício passa de um limite. *Adiado por decisão do usuário (outubro de 2026).*
 - [x] **Showback.** Sub-aba "Showback": custo por namespace ou dono (label do namespace: `owner`, `team`, `squad`, `time`, `app.kubernetes.io/part-of`…), deste cluster ou de todos, por mês, com CSV. Linha "(não alocado)" para a ociosa e o disco do SO, assim a soma fecha com o custo do cluster. Cada Analisar grava a foto do mês (`finops_showback_month`); `GET /finops/showback`, `finops.BuildShowback` (testado).
-  - [ ] Sobra: o mês é a foto do último scan, não a soma diária; não há rateio da parte não alocada.
+  - [x] Soma diária: cada Analisar grava a foto do dia (`finops_showback_day`) e o mês é acumulado dia a dia (`AccrueShowback`), com a cobertura de dias na tela; alterna com o ritmo mensal. Rateio opcional do não alocado proporcional ao compute.
 - [x] **Ambientes não produtivos fora do horário.** Card "Fora do horário" no Node Pools (HLG/dev/QA): horário configurável, economia de parar o cluster ou de escalar os pools User a 0, sem contar como certa a economia de pool sob reserva/Savings Plan; comandos `az aks stop` e autoscaler com min 0 (`offHoursEstimate` em `capacity.ts`).
-  - [ ] Sobra: supõe o ambiente ligado 24 h hoje (a timeline não tem granularidade por hora) e não automatiza o agendamento.
+  - [x] Usa as horas-node medidas (Prometheus, 7 dias, por pool: `GET /finops/node-hours`) e gera o CronJob que escala os deployments a 0 e de volta (America/Sao_Paulo, réplicas guardadas em anotação).
 - [x] **Reserva para a carga base.** Card "Reserva para a carga base" no Node Pools (AKS, fora de HLG). A carga base é o maior entre o min do autoscaler e os nodes que os requests pedem com todo HPA no mínimo (DaemonSets abatidos, 85% de aproveitamento), menos o que a cobertura já põe sob reserva/SP. Preço de reserva e Savings Plan de 1 e 3 anos da Retail Prices API (`FetchCommitmentPrices`: duas consultas, porque a reserva só vem com `priceType eq 'Reservation'`). `GET /finops/base-reservations`, `finops.SuggestBaseReservations` (testados).
   - Achado: a Retail Prices API não publica reserva de VM FSv2 no brazilsouth (só Savings Plan); D4s_v5 tem reserva.
 

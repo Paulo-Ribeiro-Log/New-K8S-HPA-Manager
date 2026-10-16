@@ -46,3 +46,18 @@ func TestAccumulateRGServiceCost_ColunaFaltando(t *testing.T) {
 		t.Error("esperava erro sem a coluna ResourceGroupName")
 	}
 }
+
+func TestAccumulateDiskCost(t *testing.T) {
+	body := []byte(`{"properties":{"columns":[{"name":"Cost"},{"name":"ResourceId"},{"name":"Currency"}],"rows":[
+	  [120.5,"/subscriptions/s/resourcegroups/mc_x/providers/microsoft.compute/virtualmachinescalesets/aks-calculofrete-22930315-vmss","BRL"],
+	  [30,"/subscriptions/s/resourceGroups/MC_x/providers/Microsoft.Compute/disks/pvc-ABC-123","BRL"],
+	  [5,"/subscriptions/s/resourcegroups/mc_x/providers/microsoft.compute/snapshots/snap1","BRL"]
+	]}}`)
+	out := DiskCost{OSByPool: map[string]float64{}, ByDisk: map[string]float64{}}
+	if _, err := accumulateDiskCost(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.OSByPool["calculofrete"] != 120.5 || out.ByDisk["pvc-abc-123"] != 30 || len(out.ByDisk) != 1 || out.Currency != "BRL" {
+		t.Errorf("disk cost: %+v", out)
+	}
+}

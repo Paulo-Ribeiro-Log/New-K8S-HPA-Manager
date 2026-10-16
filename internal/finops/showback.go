@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -113,14 +114,15 @@ func BuildShowback(r *FinOpsReport) []ShowbackRow {
 		allocated += c
 		row.WasteBRL += math.Min(w.WasteBRL, math.Max(w.CostShareBRL, 0)) * f(w.NodePool)
 	}
-	for ns, v := range r.Storage.ByNamespace {
+	osBRL, _, pvcByNS := diskCosts(r)
+	for ns, v := range pvcByNS {
 		get(ns).StorageBRL += v
 	}
 	compute := 0.0
 	for _, p := range r.NodePools {
 		compute += p.MonthlyCostBRL * f(p.Name)
 	}
-	if rest := compute + r.Storage.OSDiskCostBRL - allocated; rest >= 1 {
+	if rest := compute + osBRL - allocated; rest >= 1 {
 		get(UnallocatedNamespace).ComputeBRL = rest
 	}
 	out := make([]ShowbackRow, 0, len(rows))
@@ -133,4 +135,50 @@ func BuildShowback(r *FinOpsReport) []ShowbackRow {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TotalBRL > out[j].TotalBRL })
 	return out
+}
+
+// ShowbackSnapshot é a foto do showback de um dia (ritmo mensal do último scan daquele dia).
+type ShowbackSnapshot struct {
+	Day  time.Time // meia-noite local do dia
+	Rows []ShowbackRow
+}
+
+// AccrueShowback soma o custo dia a dia do mês: cada dia, de from até until (inclusive), usa a foto
+// mais recente até ele, ao ritmo de 12/365 do valor mensal. Dias antes da primeira foto não entram
+// (devolvidos em daysCovered). snaps precisa estar em ordem de dia.
+func AccrueShowback(snaps []ShowbackSnapshot, from, until time.Time) (rows []ShowbackRow, daysCovered int) {
+	if len(snaps) == 0 || until.Before(from) {
+		return nil, 0
+	}
+	const perDay = 12.0 / 365
+	acc := map[string]*ShowbackRow{}
+	i := -1
+	for d := from; !d.After(until); d = d.AddDate(0, 0, 1) {
+		for i+1 < len(snaps) && !snaps[i+1].Day.After(d) {
+			i++
+		}
+		if i < 0 {
+			continue
+		}
+		daysCovered++
+		for _, r := range snaps[i].Rows {
+			k := r.Cluster + "/" + r.Namespace
+			a := acc[k]
+			if a == nil {
+				a = &ShowbackRow{Cluster: r.Cluster, Namespace: r.Namespace}
+				acc[k] = a
+			}
+			a.Owner, a.OwnerLabel, a.Workloads = r.Owner, r.OwnerLabel, r.Workloads
+			a.ComputeBRL += r.ComputeBRL * perDay
+			a.StorageBRL += r.StorageBRL * perDay
+			a.WasteBRL += r.WasteBRL * perDay
+			a.TotalBRL += r.TotalBRL * perDay
+		}
+	}
+	for _, a := range acc {
+		a.ComputeBRL, a.StorageBRL, a.WasteBRL, a.TotalBRL = round2(a.ComputeBRL), round2(a.StorageBRL), round2(a.WasteBRL), round2(a.TotalBRL)
+		rows = append(rows, *a)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].TotalBRL > rows[j].TotalBRL })
+	return rows, daysCovered
 }
