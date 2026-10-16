@@ -80,6 +80,7 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
   const workloads = report.workloads ?? [];
   const pools = report.node_pools ?? [];
   const [exporting, setExporting] = useState(false);
+  const [activeSlice, setActiveSlice] = useState<string | null>(null);
 
   const cost = computeCostBreakdown(report);
   const eff = computeEfficiency(pools, workloads);
@@ -102,6 +103,7 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
     { key: "orphan", name: "Volumes órfãos", value: cost.orphanBRL, color: COST_COLORS.orphan, hint: "PVCs sem pod" },
   ].filter(s => s.value >= 1);
   const sliceTotal = slices.reduce((s, x) => s + x.value, 0);
+  const hovered = slices.find(s => s.key === activeSlice) ?? null;
 
   // ── Plano de ação (economia) ──────────────────────────────────────────────
   const { actions, totalSaving } = buildActionPlan(report);
@@ -395,24 +397,32 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
             <div className="relative h-[220px]">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={slices} dataKey="value" nameKey="name" innerRadius={72} outerRadius={104} paddingAngle={2} cornerRadius={5} stroke="none" startAngle={90} endAngle={-270}>
-                    {slices.map(s => <Cell key={s.key} fill={s.color} />)}
+                  {/* Sem tooltip: a fatia sob o mouse aparece no centro da rosca (o tooltip caía em cima do total). */}
+                  <Pie data={slices} dataKey="value" nameKey="name" innerRadius={72} outerRadius={104} paddingAngle={2} cornerRadius={5} stroke="none" startAngle={90} endAngle={-270}
+                    onMouseEnter={(_, i) => setActiveSlice(slices[i]?.key ?? null)} onMouseLeave={() => setActiveSlice(null)}>
+                    {slices.map(s => <Cell key={s.key} fill={s.color} fillOpacity={hovered && hovered.key !== s.key ? 0.35 : 1} className="transition-opacity" />)}
                   </Pie>
-                  <Tooltip content={({ active, payload }) => active && payload?.length ? (
-                    <TooltipBox title={payload[0].name}>
-                      <TooltipRow color={(payload[0].payload as { color: string }).color} label="por mês" value={fmtBRL(payload[0].value as number)} />
-                      <TooltipRow label="do total" value={`${pct(payload[0].value as number, sliceTotal)}%`} />
-                    </TooltipBox>) : null} />
                 </PieChart>
               </ResponsiveContainer>
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">total/mês</span>
-                <span className="text-xl font-semibold tabular-nums">{shortBRL(sliceTotal)}</span>
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+                {hovered ? (
+                  <>
+                    <span className="max-w-[8.5rem] text-[11px] font-medium leading-tight" style={{ color: hovered.color }}>{hovered.name}</span>
+                    <span className="text-xl font-semibold tabular-nums">{shortBRL(hovered.value)}</span>
+                    <span className="text-[11px] text-muted-foreground">{pct(hovered.value, sliceTotal)}% do total</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground">total/mês</span>
+                    <span className="text-xl font-semibold tabular-nums">{shortBRL(sliceTotal)}</span>
+                  </>
+                )}
               </div>
             </div>
             <div className="space-y-2.5">
               {slices.map(s => (
-                <div key={s.key}>
+                <div key={s.key} onMouseEnter={() => setActiveSlice(s.key)} onMouseLeave={() => setActiveSlice(null)}
+                  className={`rounded-md px-1 -mx-1 transition-opacity ${hovered && hovered.key !== s.key ? "opacity-50" : ""}`}>
                   <div className="flex items-baseline justify-between gap-2 text-sm">
                     <span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: s.color }} />{s.name}</span>
                     <span className="tabular-nums font-medium">{fmtBRL(s.value)} <span className="text-xs text-muted-foreground">{pct(s.value, sliceTotal)}%</span></span>

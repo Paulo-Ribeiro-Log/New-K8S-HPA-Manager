@@ -17,7 +17,7 @@ export const AXIS_TICK = { fontSize: 10, fill: "hsl(var(--muted-foreground))" };
 // Caixa de tooltip dos gráficos Recharts.
 export function TooltipBox({ title, children }: { title?: ReactNode; children: ReactNode }) {
   return (
-    <div className="rounded-lg border bg-popover/95 backdrop-blur px-3 py-2 text-xs shadow-xl">
+    <div className="rounded-lg border bg-popover px-3 py-2 text-xs shadow-xl">
       {title && <p className="font-semibold mb-1 text-foreground">{title}</p>}
       <div className="space-y-0.5 text-muted-foreground">{children}</div>
     </div>
