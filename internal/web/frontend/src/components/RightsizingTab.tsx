@@ -18,6 +18,8 @@ import { useRightsizingReport } from "@/hooks/useRightsizingReport";
 import { apiClient } from "@/lib/api/client";
 import { PerfBadge, CurrentPerfLine, PerfBenchmarkButton, type PerfComparison, type PerfInfo } from "@/components/finops/PerfBenchmark";
 import { CoverageLine, CoverageWarningBox, CoverageRefreshButton, ReservedHintChip, type PoolCoverage, type CoverageWarning, type ReservedHint } from "@/components/finops/PricingCoverage";
+import { isPrometheusNotFound, type MetricsFailureReason } from "./finops/helpers";
+import { PrometheusNotFoundText } from "./finops/PrometheusNotFoundText";
 
 // ─── Tipos (shape de GET/POST /api/v1/finops/rightsizing, ver
 //      internal/web/handlers/finops_rightsizing.go / internal/storage/finops_rightsizing_store.go) ──
@@ -1211,8 +1213,9 @@ export function RightsizingTab({ cluster, provider, costFactor, committedPool, e
   // problema estrutural de cobertura) — só presente na resposta de um scan FRESCO (ver
   // RightsizingResponse.metrics_collection_error); undefined = leitura persistida (GET, sem essa
   // informação disponível), mantém a mensagem genérica/conservadora de antes.
-  const metricsFailureReason: "timeout" | "transient" | "structural" | "unknown" =
+  const metricsFailureReason: MetricsFailureReason =
     data?.metrics_collection_error === undefined ? "unknown"
+      : isPrometheusNotFound(data.metrics_collection_error) ? "not_found"
       : data.metrics_collection_timeout ? "timeout"
       : data.metrics_collection_error === "" ? "structural" : "transient";
 
@@ -1302,6 +1305,8 @@ export function RightsizingTab({ cluster, provider, costFactor, committedPool, e
                 Dynatrace instalado / sem Prometheus com as métricas de container) do que uma falha transitória. "Reanalisar agora" não deve resolver
                 sozinho — verifique se Dynatrace/Prometheus estão de fato configurados e coletando dados para este cluster.
               </>
+            ) : metricsFailureReason === "not_found" ? (
+              <PrometheusNotFoundText />
             ) : metricsFailureReason === "transient" ? (
               <>
                 Pelo menos uma consulta a Dynatrace/Prometheus falhou de verdade durante este scan ({data?.metrics_collection_error}) — é mais

@@ -24,8 +24,20 @@ export function metricsCollectionLikelyFailed(summary: FinOpsSummary): boolean {
  *  sozinho, precisa configurar DT/Prometheus pra este cluster.
  *  "unknown" = relatório antigo (cache SQLite de antes deste campo existir, ver GetLastReport/
  *  GetRightsizing) sem essa informação disponível — mantém a mensagem genérica/conservadora. */
-export function metricsFailureReason(summary: FinOpsSummary): "timeout" | "transient" | "structural" | "unknown" {
+export type MetricsFailureReason = "timeout" | "transient" | "structural" | "not_found" | "unknown";
+
+/** "not_found": TODAS as falhas foram HTTP 404 do Prometheus — o endereço responde, mas não há
+ *  Prometheus nele (típico: o host padrão prometheus-<nome>-<env>.viavarejo.com.br não existe e o
+ *  ingress devolve 404). Não é transitório: reanalisar não resolve, precisa do prometheusUrl. */
+export function isPrometheusNotFound(err?: string): boolean {
+  if (!err) return false;
+  const parts = err.split("; ").filter(Boolean);
+  return parts.length > 0 && parts.every(p => p.startsWith("Prometheus/") && /\b404\b/.test(p));
+}
+
+export function metricsFailureReason(summary: FinOpsSummary): MetricsFailureReason {
   if (summary.metrics_collection_error === undefined) return "unknown";
+  if (isPrometheusNotFound(summary.metrics_collection_error)) return "not_found";
   // "timeout": só as queries PESADAS de container estouraram o tempo (as de HPA responderam) —
   // o Prometheus está no ar, então "esperar alguns minutos" não resolve: precisa de janela menor.
   if (summary.metrics_collection_timeout) return "timeout";

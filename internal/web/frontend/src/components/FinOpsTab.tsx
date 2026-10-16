@@ -19,6 +19,7 @@ import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import type { FinOpsReport } from "./finops/types";
 import { financeProviderInfo, isOpportunity, metricsCollectionLikelyFailed, metricsFailureReason } from "./finops/helpers";
+import { PrometheusNotFoundText } from "./finops/PrometheusNotFoundText";
 import { DashboardTab } from "./finops/DashboardTab";
 import { NodePoolsTab } from "./finops/NodePoolsTab";
 import { HPAHistoryTab } from "./finops/HPAHistoryTab";
@@ -284,7 +285,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
                     <CommandGroup>
                       {clusterOptions.map(c => (
                         <CommandItem key={c} value={c.replace("-admin", "")}
-                          onSelect={() => { setCluster(c); setClusterOpen(false); }}>
+                          onSelect={() => { setCluster(c); setSubTab("dashboard"); setClusterOpen(false); }}>
                           <Check className={`mr-2 h-3.5 w-3.5 ${cluster === c ? "opacity-100" : "opacity-0"}`} />
                           {c.replace("-admin", "")}
                         </CommandItem>
@@ -409,6 +410,8 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
                       (sem OneAgent Dynatrace instalado / sem Prometheus com as métricas de container) do que uma falha transitória. "Reanalisar" não deve
                       resolver sozinho — verifique se Dynatrace/Prometheus estão de fato configurados e coletando dados para este cluster.
                     </>
+                  ) : reason === "not_found" ? (
+                    <PrometheusNotFoundText url={report.summary.prometheus_url} />
                   ) : reason === "transient" ? (
                     <>
                       Pelo menos uma consulta a Dynatrace/Prometheus falhou de verdade durante este scan ({report.summary.metrics_collection_error}) —

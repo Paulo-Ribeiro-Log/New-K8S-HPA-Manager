@@ -299,8 +299,8 @@ func (h *FinOpsHandler) doGetReport(
 
 	// Prometheus (fallback) — URL auto-descoberta pelo cluster se não fornecida
 	var enricher *finops.PrometheusEnricher
+	promURL := promURLParam
 	if withPrometheus {
-		promURL := promURLParam
 		requiresGCPAuth := false
 		if promURL == "" {
 			promURL = discovery.GetPrometheusURL(cluster)
@@ -392,6 +392,9 @@ func (h *FinOpsHandler) doGetReport(
 	// prefetchScanExtras). Vai no relatório para o Node Pools/Relatório não tratarem preço de tabela
 	// como economia certa.
 	h.attachCostData(cluster, report)
+	if enricher != nil {
+		report.Summary.PrometheusURL = promURL
+	}
 
 	// Cacheia o relatório recém-gerado como "último scan" deste cluster — bug real corrigido,
 	// relatado pelo usuário: "sempre que chamamos a aba finops, ela vem vazia... ajuste para que

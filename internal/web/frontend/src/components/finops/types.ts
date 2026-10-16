@@ -138,6 +138,7 @@ export interface FinOpsSummary {
   // true quando a ÚNICA causa foram timeouts das queries pesadas de container do Prometheus (as
   // leves de HPA responderam) — o Prometheus está no ar; a orientação é uma janela menor.
   metrics_collection_timeout?: boolean;
+  prometheus_url?: string; // endpoint consultado no scan (vazio = sem Prometheus)
 }
 
 export interface PVCCostItem {

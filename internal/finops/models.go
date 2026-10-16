@@ -277,6 +277,10 @@ type FinOpsSummary struct {
 	// a orientação certa é reanalisar com uma janela menor, não "esperar alguns minutos". Ver
 	// PrometheusEnricher.HeavyQueryTimeoutsOnly.
 	MetricsCollectionTimeout bool `json:"metrics_collection_timeout,omitempty"`
+
+	// PrometheusURL — endpoint do Prometheus consultado no scan (vazio = sem Prometheus). Vai no
+	// banner quando todas as consultas dão 404 (host padrão inexistente para o cluster).
+	PrometheusURL string `json:"prometheus_url,omitempty"`
 }
 
 // ── Storage types ─────────────────────────────────────────────────────────────
