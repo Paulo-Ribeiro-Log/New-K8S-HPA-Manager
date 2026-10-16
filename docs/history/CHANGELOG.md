@@ -70,6 +70,12 @@ A conta agora fica em `components/finops/capacity.ts`, a fonte única. O próxim
 
 **Fase 3 — isenções por workload** (`FINOPS-EXEMPTIONS-PLAN.md`). Um workload pode ser isento (ex.: HPA 1/1 de HLG, decisão de projeto) com um limite de réplicas e um motivo. Enquanto as réplicas atuais e o pico do histórico ficam dentro do limite, ele sai do desperdício, das oportunidades, do plano de ação e dos contadores. Passou do limite, a isenção para de valer sozinha e o badge âmbar avisa. A regra roda na leitura do relatório, então criar ou remover não pede novo scan. Store `finops_exemptions.db`, `finops.ApplyExemptions` e rotas `GET/POST/DELETE /finops/exemptions` (com Change History), todos com teste. Na tela: botão "Isentar" em cada oportunidade, modal com limite e motivo, seção "N workloads isentos" e linha no Relatório e no PDF.
 
+**Fase 3 — showback, fora do horário e reserva para a carga base.**
+- **Showback** (sub-aba nova): custo do mês por namespace ou por dono (label do namespace: `owner`, `team`, `squad`…), deste cluster ou de todos, com CSV. A linha "(não alocado)" fecha a conta com o custo do cluster. Cada Analisar grava a foto do mês. `GET /finops/showback`, `finops.BuildShowback`; o relatório passou a ler os labels dos namespaces (`attachNamespaceOwners`).
+- **Fora do horário** (Node Pools, só HLG/dev/QA): economia de parar o cluster ou de escalar os pools User a 0 à noite e no fim de semana, com horário configurável. Pool sob reserva/Savings Plan não conta como economia certa.
+- **Reserva para a carga base** (Node Pools, AKS fora de HLG): por pool, a carga base é o maior entre o min do autoscaler e os nodes que os requests pedem com todo HPA no mínimo, menos o que já está sob reserva/SP. A economia de reserva e Savings Plan de 1 e 3 anos usa o preço público da Retail Prices API. A API só devolve reserva com `priceType eq 'Reservation'` explícito, e não publica reserva de VM FSv2 no brazilsouth.
+- O scan agendado com alerta no Teams ficou para depois.
+
 **Fase 3 — aplicar e acompanhar.** Nas Oportunidades, cada recomendação com alvo concreto ganhou dois botões:
 - **Enviar ao Staging:** busca o HPA no cluster e põe no Staging o min/max e os requests recomendados (P95 + 20%). A aplicação segue o fluxo normal do Staging. O Staging grava requests só no 1º container, então os requests só vão quando esse container carrega o request do pod inteiro; o limit sobe quando o request novo passaria dele.
 - **Patch de values:** bloco YAML para o chart (Helm/Argo/Flux).

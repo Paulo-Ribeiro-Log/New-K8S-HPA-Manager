@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS finops_report_cache (
     report_json  TEXT NOT NULL,
     generated_at DATETIME NOT NULL
 );
+CREATE TABLE IF NOT EXISTS finops_showback_month (
+    cluster   TEXT NOT NULL,
+    month     TEXT NOT NULL,
+    rows_json TEXT NOT NULL,
+    report_at DATETIME NOT NULL,
+    PRIMARY KEY (cluster, month)
+);
 `
 
 // NewFinOpsReportCacheStore abre (ou cria) o banco SQLite do cache de último relatório FinOps.
@@ -106,6 +113,61 @@ func (s *FinOpsReportCacheStore) ListAll() ([]CachedReport, error) {
 		}
 		r.ReportJSON = []byte(raw)
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ShowbackMonth é o showback de um cluster num mês (YYYY-MM): a foto do último scan do mês.
+type ShowbackMonth struct {
+	Cluster  string
+	Month    string
+	RowsJSON []byte
+	ReportAt time.Time
+}
+
+// SaveShowback grava (sobrescreve) o showback do cluster no mês.
+func (s *FinOpsReportCacheStore) SaveShowback(cluster, month string, rowsJSON []byte, reportAt time.Time) error {
+	_, err := s.db.Exec(`
+INSERT INTO finops_showback_month (cluster, month, rows_json, report_at) VALUES (?, ?, ?, ?)
+ON CONFLICT(cluster, month) DO UPDATE SET rows_json = excluded.rows_json, report_at = excluded.report_at
+WHERE excluded.report_at >= finops_showback_month.report_at`, cluster, month, string(rowsJSON), reportAt)
+	return err
+}
+
+// ListShowback devolve o showback de todos os clusters no mês.
+func (s *FinOpsReportCacheStore) ListShowback(month string) ([]ShowbackMonth, error) {
+	rows, err := s.db.Query(`SELECT cluster, month, rows_json, report_at FROM finops_showback_month WHERE month = ? ORDER BY cluster`, month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ShowbackMonth
+	for rows.Next() {
+		var m ShowbackMonth
+		var raw string
+		if err := rows.Scan(&m.Cluster, &m.Month, &raw, &m.ReportAt); err != nil {
+			return nil, err
+		}
+		m.RowsJSON = []byte(raw)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ShowbackMonths lista os meses com showback gravado, do mais recente para o mais antigo.
+func (s *FinOpsReportCacheStore) ShowbackMonths() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT month FROM finops_showback_month ORDER BY month DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }

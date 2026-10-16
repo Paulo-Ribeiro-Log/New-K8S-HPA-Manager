@@ -24,6 +24,7 @@ make web-build                          # só frontend: vite build + copia dist/
 ./build/new-k8s-hpa web -f              # servidor em foreground (porta 8080); `web --ad` = bypass RBAC de emergência
 ./build/new-k8s-hpa autodiscover        # descobre clusters AKS+EKS+GKE em paralelo
 # outros subcomandos (cmd/): version, diagnose-ca [url] (CA customizada), teams-discover (mapeia APIs internas do Teams)
+make web-install                        # npm install do frontend (clone novo)
 make web-dev                            # Vite HMR (5173) — rode o backend em paralelo
 
 go test -v ./internal/... -race                       # tudo, com race detector
@@ -45,7 +46,7 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - `vendor/github.com/go-rod/rod/lib/cdp/client.go` tem **patch manual** (`consumeMessages` loga+`continue` em vez de `panic` em frame CDP malformado; comentário `PATCH MANUAL`). `go mod vendor` apaga o patch em silêncio — reaplique (o comentário no código cita uma seção "Notas de Build" que virou esta lista).
 - `go.mod` tem `godebug tlsmlkem=0` (o key share pós-quântico do Go 1.24+ trava handshake TLS em VPN/EKS privado). Não remover. O comentário no `go.mod` cita a seção "Bug real corrigido — TLS handshake timeout…", que hoje está em `docs/history/CLAUDE-DETAILED-NOTES.md` (~linha 326).
 - `make release`/`build-all` num host Linux geram binários **darwin com SQLite quebrado** (cgo desligado → stub do `go-sqlite3` compila mas falha em runtime; detecção em `internal/storage/sqlite_health.go`). Release de verdade = workflow `release.yml` (runners macOS nativos, alvo `make release-single` com `GOOS`/`GOARCH` no ambiente). O `make release` em `ci.yml` é só smoke-test de compilação.
-- Não existe test runner de frontend. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
+- Não existe test runner de frontend, e a CI (`ci.yml`) não roda `tsc` nem `eslint` — erro de tipo só aparece se você rodar à mão. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
 - A raiz tem muitos scripts soltos (`create-release*.sh`, `create_release.sh`, `web-server*.sh`, `new-web-server.sh`, `teste.*`, …). O fluxo oficial é `make` + `rebuild-web.sh` (dev) e `release.yml` (release); `install.sh`/`auto-update.sh`/`uninstall.sh` são os instaladores do usuário final. Não tome os demais como referência.
 
 ## Arquitetura (visão geral)

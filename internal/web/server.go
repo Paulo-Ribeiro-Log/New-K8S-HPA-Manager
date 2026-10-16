@@ -936,10 +936,12 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/deep-analysis", finOpsHandler.GetDeepAnalysis)   // Deep Analysis de node pool (FINOPS-DEEP-ANALYSIS-PLAN.md) — leitura, sem RBAC extra
 	api.GET("/finops/data-resources", finOpsHandler.GetDataResources) // RG de dados (rg-<nome>-data-<env>) — SQL/Storage/Redis/Cosmos/ServiceBus fora do cluster K8s
 	api.POST("/finops/storage/refresh", rbacMiddleware.RequireSREGroup(), finOpsHandler.RefreshDiskPricing)
-	api.GET("/finops/unattached-disks", finOpsHandler.GetUnattachedDisks) // discos desatachados (Azure/GCP/AWS) — só leitura; a app nunca exclui, devolve o comando de exclusão pra copiar
-	api.GET("/finops/orphan-resources", finOpsHandler.GetOrphanResources) // Azure: discos + demais recursos órfãos nos RGs das jornadas do cabeçalho — só leitura
-	api.GET("/finops/billed-cost", finOpsHandler.GetBilledCost)           // custo faturado (Cost Management, amortizado 30d) dos RGs do AKS — só leitura, cache 6 h
-	api.GET("/finops/overview", finOpsHandler.GetOverview)                // visão multi-cluster: resumo do último relatório gravado de cada cluster, sem scan
+	api.GET("/finops/unattached-disks", finOpsHandler.GetUnattachedDisks)   // discos desatachados (Azure/GCP/AWS) — só leitura; a app nunca exclui, devolve o comando de exclusão pra copiar
+	api.GET("/finops/orphan-resources", finOpsHandler.GetOrphanResources)   // Azure: discos + demais recursos órfãos nos RGs das jornadas do cabeçalho — só leitura
+	api.GET("/finops/billed-cost", finOpsHandler.GetBilledCost)             // custo faturado (Cost Management, amortizado 30d) dos RGs do AKS — só leitura, cache 6 h
+	api.GET("/finops/overview", finOpsHandler.GetOverview)                  // visão multi-cluster: resumo do último relatório gravado de cada cluster, sem scan
+	api.GET("/finops/showback", finOpsHandler.GetShowback)                  // custo por namespace/dono por mês (foto do último scan do mês)
+	api.GET("/finops/base-reservations", finOpsHandler.GetBaseReservations) // reserva/Savings Plan para a carga base dos pools (Retail Prices API) — só leitura
 	api.GET("/finops/exemptions", finOpsHandler.ListExemptions)
 	api.GET("/finops/actions", finOpsHandler.ListActions)
 	api.POST("/finops/actions", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), finOpsHandler.RecordAction)

@@ -69,6 +69,9 @@ type FinOpsNamespace struct {
 	WorkloadCount  int     `json:"workload_count"`
 	MonthlyCostUSD float64 `json:"monthly_cost_usd"`
 	MonthlyCostBRL float64 `json:"monthly_cost_brl"`
+	// Dono do namespace pelo primeiro label conhecido (ver namespaceOwnerLabels) — showback.
+	Owner      string `json:"owner,omitempty"`
+	OwnerLabel string `json:"owner_label,omitempty"`
 }
 
 // FinOpsWorkload representa um workload K8s com custo proporcional alocado.

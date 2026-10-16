@@ -410,6 +410,7 @@ func (h *FinOpsHandler) doGetReport(
 
 	// Isenções depois do cache: o cache guarda o relatório sem elas (aplicadas de novo a cada leitura).
 	h.applyExemptions(cluster, report)
+	h.saveShowback(cluster, report) // foto do mês para o showback (já com cobertura e isenções)
 
 	log.Info().
 		Str("cluster", cluster).

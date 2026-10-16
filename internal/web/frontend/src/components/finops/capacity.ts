@@ -405,3 +405,59 @@ export function buildActionPlan(report: FinOpsReport): { actions: Action[]; tota
   actions.sort((a, b) => b.savingBRL - a.savingBRL);
   return { actions, totalSaving: actions.reduce((s, a) => s + a.savingBRL, 0) };
 }
+
+// ─── Ambientes não produtivos fora do horário (Fase 3) ────────────────────────
+
+/** Ambiente pelo nome do cluster (mesmos apelidos do backend, finops/environment.go). */
+export function environmentOf(cluster: string): string {
+  const aliases: Record<string, string> = { prd: "prd", prod: "prd", hlg: "hlg", hml: "hlg", stg: "hlg", uat: "hlg", qa: "qa", dev: "dev", sit: "hlg" };
+  let env = "";
+  for (const tok of cluster.toLowerCase().split(/[-_./: ]+/)) if (aliases[tok]) env = aliases[tok];
+  return env;
+}
+
+export interface OffHoursSchedule {
+  offStart: number;     // hora em que desliga (0–23)
+  offEnd: number;       // hora em que liga
+  weekends: boolean;    // desligado sábado e domingo inteiros
+}
+
+/** Fração da semana com o ambiente desligado. */
+export function offFraction(s: OffHoursSchedule): number {
+  const night = (s.offEnd - s.offStart + 24) % 24; // horas desligado por dia útil
+  const hours = s.weekends ? 5 * night + 48 : 7 * night; // sem fim de semana: só as noites
+  return Math.min(1, hours / 168);
+}
+
+export interface OffHoursPool {
+  pool: FinOpsPool;
+  monthlyBRL: number;        // custo mensal na base usada (efetivo quando há cobertura)
+  savingBRL: number;         // economia mensal com o pool desligado fora do horário
+  committed: boolean;        // sob reserva/Savings Plan: a economia não é certa
+  stays: boolean;            // pool System (no "escalar a 0" fica ligado)
+}
+
+export interface OffHoursEstimate {
+  fraction: number;
+  stopCluster: { certainBRL: number; committedBRL: number };   // az aks stop: todos os pools
+  scaleUserPools: { certainBRL: number; committedBRL: number }; // pools User a 0, System fica
+  pools: OffHoursPool[];
+}
+
+/** Economia de desligar fora do horário. Reserva/Savings Plan ≥ 20% → a economia não é certa (o
+ *  compromisso é pago de qualquer jeito); Spot e sob demanda economizam de verdade. */
+export function offHoursEstimate(nodePools: FinOpsPool[], s: OffHoursSchedule): OffHoursEstimate {
+  const fraction = offFraction(s);
+  const pools = nodePools.map(p => {
+    const eff = effectiveMonthlyBRL(p.coverage);
+    const monthlyBRL = eff ?? p.monthly_cost_brl;
+    const c = p.coverage;
+    const committed = !!c && (c.reservation >= COVERAGE_SHARE || c.savings_plan >= COVERAGE_SHARE);
+    return { pool: p, monthlyBRL, savingBRL: monthlyBRL * fraction, committed, stays: p.mode?.toLowerCase() === "system" };
+  });
+  const sum = (list: OffHoursPool[]) => ({
+    certainBRL: list.filter(p => !p.committed).reduce((a, p) => a + p.savingBRL, 0),
+    committedBRL: list.filter(p => p.committed).reduce((a, p) => a + p.savingBRL, 0),
+  });
+  return { fraction, stopCluster: sum(pools), scaleUserPools: sum(pools.filter(p => !p.stays)), pools };
+}

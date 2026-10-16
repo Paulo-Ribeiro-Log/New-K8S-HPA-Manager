@@ -11,9 +11,11 @@ import { AlertTriangle, Loader2, Activity, Boxes, CircleDollarSign, Cpu, MemoryS
 import { fmtBRL, POOL_COLORS, KubectlBlock } from "@/lib/finopsFormat";
 import { apiClient } from "@/lib/api/client";
 import type { FinOpsPool, FinOpsWorkload } from "./types";
-import { computePoolUsage, type PoolUsage } from "./capacity";
+import { computePoolUsage, environmentOf, type PoolUsage } from "./capacity";
 import { CoverageLine, CoverageWarningBox, ReservedHintChip, type CoverageWarning, type ReservedHint } from "./PricingCoverage";
 import { DeepAnalysisModal } from "./DeepAnalysisModal";
+import { OffHoursCard } from "./OffHoursCard";
+import { BaseReservationCard } from "./BaseReservationCard";
 import { AXIS_TICK, COST_COLORS, CapacityBar, SectionTitle, StatTile, TooltipBox, TooltipRow } from "./charts";
 
 interface VMAlternativeItem {
@@ -218,11 +220,12 @@ function PoolCard({ usage, color, provider, clusterScaledUp, onDeepAnalysis }: {
 
 // ─── Aba ─────────────────────────────────────────────────────────────────────
 
-export function NodePoolsTab({ pools, workloads, cluster, provider }: {
+export function NodePoolsTab({ pools, workloads, cluster, provider, reportAt }: {
   pools: FinOpsPool[];
   workloads: FinOpsWorkload[];
   cluster: string;
   provider?: string;
+  reportAt?: string; // generated_at do relatório (chave do cache das sugestões de reserva)
 }) {
   const { pools: usage, unassigned } = computePoolUsage(pools, workloads);
   const [deepPool, setDeepPool] = useState<string | null>(null);
@@ -283,6 +286,12 @@ export function NodePoolsTab({ pools, workloads, cluster, provider }: {
               : `scale-down em ${suggested} pool(s): −${fmtBRL(totalSaving)}/mês certos${uncertainSaving ? " (reserva/Savings Plan: veja cada card)" : ""}`}
           </>} />
       </div>
+
+      {/* Produção: reserva/Savings Plan para os nodes que nunca saem */}
+      {provider === "aks" && !["hlg", "dev", "qa"].includes(environmentOf(cluster)) && reportAt && <BaseReservationCard cluster={cluster} reportAt={reportAt} />}
+
+      {/* Ambiente não produtivo: quanto economiza desligando fora do horário */}
+      {["hlg", "dev", "qa"].includes(environmentOf(cluster)) && <OffHoursCard pools={pools} cluster={cluster} provider={provider} />}
 
       {unassigned > 0 && (
         <p className="text-xs text-muted-foreground flex items-center gap-1.5">

@@ -226,8 +226,9 @@ func (c *Calculator) BuildReport(
 	// reclassifyNoDataVerdicts.
 	reclassifyNoDataVerdicts(workloads)
 
-	// 5. Agregar por namespace
+	// 5. Agregar por namespace (+ dono pelos labels do namespace, para o showback)
 	nsMap := aggregateNamespaces(workloads)
+	attachNamespaceOwners(ctx, client, nsMap)
 
 	// 6. Montar summary base (compute)
 	summary := buildSummary(workloads, nsMap, clusterCostUSD, rate)

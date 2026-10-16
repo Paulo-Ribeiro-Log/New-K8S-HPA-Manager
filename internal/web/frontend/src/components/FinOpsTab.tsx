@@ -24,6 +24,7 @@ import { NodePoolsTab } from "./finops/NodePoolsTab";
 import { HPAHistoryTab } from "./finops/HPAHistoryTab";
 import { RelatorioTab } from "./finops/RelatorioTab";
 import { ClustersOverviewTab } from "./finops/ClustersOverviewTab";
+import { ShowbackTab } from "./finops/ShowbackTab";
 import { billedToBRL, useBilledCost } from "./finops/BilledCostPanel";
 import { fmtBRL } from "@/lib/finopsFormat";
 import { WorkloadsHubTab } from "./finops/WorkloadsHubTab";
@@ -105,14 +106,17 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
 
   // Um relatório novo muda o ranking multi-cluster ("Todos os clusters").
   useEffect(() => {
-    if (report?.generated_at) queryClient.invalidateQueries({ queryKey: ["finops-overview"] });
+    if (report?.generated_at) {
+      queryClient.invalidateQueries({ queryKey: ["finops-overview"] });
+      queryClient.invalidateQueries({ queryKey: ["finops-showback"] });
+    }
   }, [report?.generated_at, queryClient]);
 
   // Contadores das abas (mesmas contas das próprias abas) e a aba ativa: sem relatório só existem
   // "Armazenamento e Órfãos" e, no AKS, "Recursos de Dados".
   const actionCount = report ? buildActionPlan(report).actions.length : 0;
   const opportunityCount = (report?.workloads ?? []).filter(isOpportunity).length;
-  const withoutReport = provider === "aks" ? ["storage", "data", "overview"] : ["storage", "overview"];
+  const withoutReport = provider === "aks" ? ["storage", "data", "overview", "showback"] : ["storage", "overview", "showback"];
   const activeSubTab = subTab === "data" && provider !== "aks"
     ? (report ? "dashboard" : "storage")
     : report || withoutReport.includes(subTab) ? subTab : "storage";
@@ -461,7 +465,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
           {!report && !error && (
             <p className="text-xs text-muted-foreground">
               Clique em <strong>Analisar</strong> para liberar Dashboard, Relatório, Workloads e as demais abas —
-              Armazenamento e Órfãos e Todos os clusters já estão disponíveis abaixo.
+              Armazenamento e Órfãos, Showback e Todos os clusters já estão disponíveis abaixo.
             </p>
           )}
           <Tabs value={activeSubTab} onValueChange={setSubTab} className="flex-1 flex flex-col min-h-0">
@@ -494,6 +498,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
                 )}
               </TabsTrigger>
               {provider === "aks" && <TabsTrigger value="data">Recursos de Dados</TabsTrigger>}
+              <TabsTrigger value="showback">Showback</TabsTrigger>
               <TabsTrigger value="overview">Todos os clusters</TabsTrigger>
             </TabsList>
 
@@ -510,7 +515,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
               </TabsContent>
               <TabsContent value="nodepools" className="mt-0 h-full">
                 <NodePoolsTab pools={report.node_pools ?? []} workloads={report.workloads ?? []} cluster={cluster}
-                  provider={provider} />
+                  provider={provider} reportAt={report.generated_at} />
               </TabsContent>
               <TabsContent value="hpa-history" className="mt-0 h-full">
                 <HPAHistoryTab cluster={cluster} days={hpaHistoryDays} setDays={setHpaHistoryDays} />
@@ -524,6 +529,9 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
                   <DataResourcesPanel cluster={cluster} />
                 </TabsContent>
               )}
+              <TabsContent value="showback" className="mt-0 h-full">
+                <ShowbackTab cluster={cluster} />
+              </TabsContent>
               <TabsContent value="overview" className="mt-0 h-full">
                 <ClustersOverviewTab currentCluster={cluster} onOpen={c => { setCluster(c); setSubTab("dashboard"); }} />
               </TabsContent>

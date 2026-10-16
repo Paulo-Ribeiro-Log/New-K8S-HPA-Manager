@@ -501,3 +501,42 @@ export interface FinOpsActionRow {
     targets: number;
   };
 }
+
+// Showback — GET /finops/showback (internal/finops/showback.go).
+export interface ShowbackRow {
+  cluster: string;
+  namespace: string; // "(não alocado)" = capacidade ociosa + disco do SO
+  owner?: string;
+  owner_label?: string;
+  workloads: number;
+  compute_brl: number;
+  storage_brl: number;
+  waste_brl: number;
+  total_brl: number;
+}
+
+// Reserva para a carga base — GET /finops/base-reservations (internal/finops/base_reservation.go).
+export interface CommitmentOption {
+  kind: "reservation" | "savings_plan";
+  term: "1y" | "3y";
+  monthly_node_brl: number;
+  saving_month_brl: number;
+  saving_pct: number;
+  commitment_brl: number;
+}
+
+export interface BaseReservationSuggestion {
+  pool: string;
+  vm_size: string;
+  nodes: number;
+  autoscaling: boolean;
+  min_nodes?: number;
+  base_nodes: number;
+  base_source: "hpa_min" | "autoscaler_min" | "fixed";
+  nodes_at_hpa_min: number;
+  covered_nodes: number;
+  suggested_nodes: number;
+  on_demand_node_brl: number;
+  options?: CommitmentOption[];
+  skip?: string;
+}

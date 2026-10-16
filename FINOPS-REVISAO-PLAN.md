@@ -1,6 +1,6 @@
 # Plano: revisão das abas do FinOps (consolidação + funções que faltam)
 
-**Status**: 🟡 em andamento. Fases 0, 1 e 2 concluídas (branch `feat/finops-relatorio-nodepools`); Fase 3 em andamento (custo faturado, isenções, visão multi-cluster e aplicar/acompanhar feitos).
+**Status**: 🟡 em andamento. Fases 0, 1 e 2 concluídas (branch `feat/finops-relatorio-nodepools`); Fase 3 concluída, exceto o scan agendado com alerta no Teams (adiado).
 
 Para continuar em outro chat, leia este arquivo e o `CLAUDE.md`, e marque cada item `[x]` ao terminar. Faça um PR por fase, seguindo o padrão do repo: commit do código + commit `chore(web)` com os assets.
 
@@ -126,10 +126,13 @@ Estrutura final, de 12 para 7 abas: **Dashboard · Relatório · Workloads · No
 - [x] **Aplicar e acompanhar.** Cada oportunidade tem "Enviar ao Staging" (busca o HPA real e preenche min/max e requests; nada é aplicado sem confirmar no Staging) e "Patch de values" (YAML para o chart). O envio grava a foto do workload no servidor (`finops_actions.db`, `POST /finops/actions`, com Change History), e a visão Workloads → Acompanhamento compara com o relatório mais recente (`finops.EvaluateAction`: aguardando scan, não aplicada, parcial, aplicada; economia realizada = custo na foto − custo agora).
   - O Staging grava requests só no 1º container: o envio só leva os requests quando o 1º container tem o request do pod inteiro, e sobe o limit quando o request novo passaria dele.
   - [ ] Sobra: o `kubectl` copiado não entra no acompanhamento (o canal existe no backend).
-- [ ] **Scan agendado com alerta no Teams** quando o custo ou o desperdício passa de um limite.
-- [ ] **Showback.** Custo por namespace ou label de dono, exportável por mês.
-- [ ] **Ambientes não produtivos fora do horário.** Estimar quanto se economiza parando o AKS ou escalando os pools de HLG à noite e no fim de semana.
-- [ ] **Reserva para a carga base.** Sugerir reserva ou Savings Plan pelo mínimo estável de nodes de cada pool, cruzando com a cobertura atual.
+- [ ] **Scan agendado com alerta no Teams** quando o custo ou o desperdício passa de um limite. *Adiado por decisão do usuário (outubro de 2026).*
+- [x] **Showback.** Sub-aba "Showback": custo por namespace ou dono (label do namespace: `owner`, `team`, `squad`, `time`, `app.kubernetes.io/part-of`…), deste cluster ou de todos, por mês, com CSV. Linha "(não alocado)" para a ociosa e o disco do SO, assim a soma fecha com o custo do cluster. Cada Analisar grava a foto do mês (`finops_showback_month`); `GET /finops/showback`, `finops.BuildShowback` (testado).
+  - [ ] Sobra: o mês é a foto do último scan, não a soma diária; não há rateio da parte não alocada.
+- [x] **Ambientes não produtivos fora do horário.** Card "Fora do horário" no Node Pools (HLG/dev/QA): horário configurável, economia de parar o cluster ou de escalar os pools User a 0, sem contar como certa a economia de pool sob reserva/Savings Plan; comandos `az aks stop` e autoscaler com min 0 (`offHoursEstimate` em `capacity.ts`).
+  - [ ] Sobra: supõe o ambiente ligado 24 h hoje (a timeline não tem granularidade por hora) e não automatiza o agendamento.
+- [x] **Reserva para a carga base.** Card "Reserva para a carga base" no Node Pools (AKS, fora de HLG). A carga base é o maior entre o min do autoscaler e os nodes que os requests pedem com todo HPA no mínimo (DaemonSets abatidos, 85% de aproveitamento), menos o que a cobertura já põe sob reserva/SP. Preço de reserva e Savings Plan de 1 e 3 anos da Retail Prices API (`FetchCommitmentPrices`: duas consultas, porque a reserva só vem com `priceType eq 'Reservation'`). `GET /finops/base-reservations`, `finops.SuggestBaseReservations` (testados).
+  - Achado: a Retail Prices API não publica reserva de VM FSv2 no brazilsouth (só Savings Plan); D4s_v5 tem reserva.
 
 ## Verificação (a cada item)
 
