@@ -240,3 +240,73 @@ export function buildRecommendation(w: FinOpsWorkload, windowDays: number, histo
 
   return { lines, safeMin, safeMax, savingBRL, exposureBRL, needsPrometheus, kubectlList };
 }
+
+// ─── Aplicar e acompanhar (Fase 3) ────────────────────────────────────────────
+
+/** Alvo concreto de uma recomendação (undefined = não muda). Requests são POR POD. */
+export interface ActionTargets {
+  minReplicas?: number;
+  maxReplicas?: number;
+  cpuMillis?: number;
+  memMi?: number;
+}
+
+/** Alvo da recomendação: réplicas de buildRecommendation e requests pelo recomendado (P95 + 20%)
+ *  quando difere ≥ 15% do atual — para baixo (desperdício) ou para cima (risco de OOM). */
+export function actionTargets(w: FinOpsWorkload, rec: Recommendation): ActionTargets {
+  const t: ActionTargets = {};
+  if (rec.safeMin !== undefined && rec.safeMin < w.hpa_min && w.hpa_max > 0) t.minReplicas = rec.safeMin;
+  if (rec.safeMax !== undefined && rec.safeMax < w.hpa_max) t.maxReplicas = rec.safeMax;
+  const differs = (rec2: number | undefined, cur: number) =>
+    !!rec2 && rec2 > 0 && cur > 0 && (rec2 < cur * 0.85 || (w.verdict === "oom_risk" && rec2 > cur));
+  if (differs(w.cpu_recommended_millis, w.cpu_request_millis)) t.cpuMillis = Math.ceil(w.cpu_recommended_millis! / 5) * 5;
+  if (differs(w.mem_recommended_mi, w.mem_request_mi)) t.memMi = Math.ceil(w.mem_recommended_mi! / 16) * 16;
+  return t;
+}
+
+export const hasTargets = (t: ActionTargets) =>
+  t.minReplicas !== undefined || t.maxReplicas !== undefined || t.cpuMillis !== undefined || t.memMi !== undefined;
+
+/** "500m" → 500, "1.5" → 1500, "2" → 2000 (millicores). NaN se não reconhecer. */
+export function parseCpuMillis(q?: string): number {
+  if (!q) return NaN;
+  const s = q.trim();
+  return s.endsWith("m") ? parseFloat(s) : parseFloat(s) * 1000;
+}
+
+/** "512Mi" → 512, "1Gi" → 1024, "1G" → ~954, bytes → MiB. NaN se não reconhecer. */
+export function parseMemMi(q?: string): number {
+  if (!q) return NaN;
+  const m = /^([\d.]+)\s*([KMGTE]i?|k)?$/.exec(q.trim());
+  if (!m) return NaN;
+  const v = parseFloat(m[1]);
+  const mult: Record<string, number> = {
+    Ki: 1 / 1024, Mi: 1, Gi: 1024, Ti: 1024 * 1024,
+    k: 1000 / 1048576, K: 1000 / 1048576, M: 1e6 / 1048576, G: 1e9 / 1048576, T: 1e12 / 1048576,
+  };
+  return m[2] ? v * (mult[m[2]] ?? NaN) : v / 1048576;
+}
+
+export const cpuQty = (millis: number) => `${Math.round(millis)}m`;
+export const memQty = (mi: number) => `${Math.round(mi)}Mi`;
+
+/** Bloco YAML de values (Helm) com o alvo — as chaves variam por chart, é ponto de partida. */
+export function valuesPatch(w: FinOpsWorkload, t: ActionTargets): string {
+  const lines = [`# ${w.namespace}/${w.workload} — recomendação FinOps (P95 + 20%, requests POR POD)`,
+    "# As chaves variam por chart: ajuste ao values do seu repositório (Helm/Argo/Flux)."];
+  if (t.cpuMillis !== undefined || t.memMi !== undefined) {
+    lines.push("resources:", "  requests:");
+    if (t.cpuMillis !== undefined) lines.push(`    cpu: ${cpuQty(t.cpuMillis)}`);
+    if (t.memMi !== undefined) lines.push(`    memory: ${memQty(t.memMi)}`);
+    const memLimit = w.mem_limit_mi ?? 0;
+    if (t.memMi !== undefined && memLimit > 0 && t.memMi > memLimit) {
+      lines.push("  limits:", `    memory: ${memQty(Math.max(t.memMi, w.mem_limit_recommended_mi ?? 0))}  # o limit atual (${memQty(memLimit)}) ficaria abaixo do request`);
+    }
+  }
+  if (t.minReplicas !== undefined || t.maxReplicas !== undefined) {
+    lines.push("autoscaling:");
+    if (t.minReplicas !== undefined) lines.push(`  minReplicas: ${t.minReplicas}`);
+    if (t.maxReplicas !== undefined) lines.push(`  maxReplicas: ${t.maxReplicas}`);
+  }
+  return lines.join("\n");
+}

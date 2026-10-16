@@ -82,3 +82,30 @@ func (s *FinOpsReportCacheStore) Get(cluster string) (reportJSON []byte, generat
 	}
 	return []byte(raw), generatedAt, true, nil
 }
+
+// CachedReport é uma linha do cache: o último relatório de um cluster.
+type CachedReport struct {
+	Cluster     string
+	ReportJSON  []byte
+	GeneratedAt time.Time
+}
+
+// ListAll devolve o último relatório de todos os clusters (visão multi-cluster do FinOps).
+func (s *FinOpsReportCacheStore) ListAll() ([]CachedReport, error) {
+	rows, err := s.db.Query(`SELECT cluster, report_json, generated_at FROM finops_report_cache ORDER BY cluster`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CachedReport
+	for rows.Next() {
+		var r CachedReport
+		var raw string
+		if err := rows.Scan(&r.Cluster, &raw, &r.GeneratedAt); err != nil {
+			return nil, err
+		}
+		r.ReportJSON = []byte(raw)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

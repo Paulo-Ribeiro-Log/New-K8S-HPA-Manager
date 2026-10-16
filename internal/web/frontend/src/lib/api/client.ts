@@ -4048,6 +4048,22 @@ class APIClient {
     return this.request<T>(`/finops/billed-cost?${params}`);
   }
 
+  /** Recomendações enviadas para aplicar + acompanhamento — /api/v1/finops/actions. */
+  async recordFinOpsAction(body: {
+    cluster: string; namespace: string; workload: string; channel: "staging" | "values" | "kubectl";
+    expected_saving_brl: number; target_hpa_min?: number; target_hpa_max?: number; target_cpu_millis?: number; target_mem_mi?: number;
+  }): Promise<{ id: number }> {
+    return this.request(`/finops/actions`, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async listFinOpsActions<T>(cluster: string): Promise<{ actions: T[] }> {
+    return this.request(`/finops/actions?${new URLSearchParams({ cluster })}`);
+  }
+
+  async deleteFinOpsAction(cluster: string, id: number): Promise<void> {
+    await this.request(`/finops/actions?${new URLSearchParams({ cluster, id: String(id) })}`, { method: "DELETE" });
+  }
+
   /** Isenções por workload do FinOps — GET/POST/DELETE /api/v1/finops/exemptions. */
   async upsertFinOpsExemption(body: { cluster: string; namespace: string; workload: string; max_replicas_threshold: number; reason: string }): Promise<void> {
     await this.request(`/finops/exemptions`, { method: "POST", body: JSON.stringify(body) });

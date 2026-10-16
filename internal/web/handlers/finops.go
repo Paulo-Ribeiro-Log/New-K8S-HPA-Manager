@@ -30,7 +30,8 @@ type FinOpsHandler struct {
 	rightsizingStore *storage.FinOpsRightsizingStore // pode ser nil se DB não disponível — ver finops_rightsizing.go
 	reportCacheStore *storage.FinOpsReportCacheStore // pode ser nil se DB não disponível — cache do último GET /finops/report por cluster, ver GetLastReport
 	exemptionsStore  *storage.FinOpsExemptionsStore  // pode ser nil — isenções por workload (finops_exemptions.go), aplicadas na leitura
-	historyTracker   *history.HistoryTracker         // pode ser nil — Change History das isenções
+	historyTracker   *history.HistoryTracker         // pode ser nil — Change History das isenções e ações
+	actionsStore     *storage.FinOpsActionsStore     // pode ser nil — recomendações enviadas e acompanhamento (finops_actions.go)
 	pricer           *finops.AzurePricer             // AKS — também usado como fallback pra providers sem pricer próprio
 	gcpPricer        *finops.GCPPricer               // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
 	diskPricer       *finops.DiskPricer              // nil = análise de storage omitida (Azure only)

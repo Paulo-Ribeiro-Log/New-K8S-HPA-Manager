@@ -8,7 +8,8 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { TrendingDown, CheckCircle2, ChevronDown, ChevronUp, ShieldCheck } from "lucide-react";
 import { fmtBRL, fmtMillis, fmtMi, KubectlBlock, VerdictBadge, GitOpsNote } from "@/lib/finopsFormat";
 import type { FinOpsSummary, FinOpsWorkload, Recommendation } from "./types";
-import { buildRecommendation, isOpportunity } from "./helpers";
+import { actionTargets, buildRecommendation, hasTargets, isOpportunity } from "./helpers";
+import { ApplyRecommendation } from "./ApplyRecommendation";
 import { ExemptBadge, ExemptionDialog } from "./ExemptionDialog";
 
 const ACTION_TYPE_LABELS: Record<string, string> = {
@@ -228,6 +229,14 @@ export function OpportunitiesTab({ cluster, workloads, windowDays, historicalRan
                 <GitOpsNote />
               </div>
             )}
+            {(() => {
+              const t = actionTargets(w, w.rec);
+              return hasTargets(t) ? (
+                <div className="mt-2 border-t pt-2">
+                  <ApplyRecommendation cluster={cluster} w={w} targets={t} expectedSaving={w.saving} />
+                </div>
+              ) : null;
+            })()}
           </div>
         </CardContent>
       </Card>

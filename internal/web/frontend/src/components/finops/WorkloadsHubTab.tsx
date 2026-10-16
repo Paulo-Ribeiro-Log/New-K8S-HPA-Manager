@@ -2,14 +2,15 @@
 // por workload, scan e histórico próprios) e as Oportunidades (ações por workload: HPA, requests,
 // riscos). Abas manuais — shadcn <Tabs> quebra a cadeia flex (ver CLAUDE.md).
 import { useState } from "react";
-import { Gauge, ListChecks } from "lucide-react";
+import { Gauge, ListChecks, Send } from "lucide-react";
 import { RightsizingTab } from "@/components/RightsizingTab";
 import type { FinOpsReport } from "./types";
 import { OpportunitiesTab } from "./OpportunitiesTab";
+import { ActionsTrackingTab } from "./ActionsTrackingTab";
 import { isOpportunity } from "./helpers";
 import { isCommittedPool, poolCostFactors, toEffectiveReport } from "./capacity";
 
-type View = "rightsizing" | "opportunities";
+type View = "rightsizing" | "opportunities" | "tracking";
 
 export function WorkloadsHubTab({ cluster, report, provider }: { cluster: string; report: FinOpsReport; provider?: string }) {
   const [view, setView] = useState<View>("rightsizing");
@@ -39,8 +40,11 @@ export function WorkloadsHubTab({ cluster, report, provider }: { cluster: string
       <div className="inline-flex rounded-lg bg-muted p-1">
         {btn("rightsizing", "Request e limit", Gauge)}
         {btn("opportunities", "Oportunidades", ListChecks, opportunities)}
+        {btn("tracking", "Acompanhamento", Send)}
       </div>
-      {view === "rightsizing" ? (
+      {view === "tracking" ? (
+        <ActionsTrackingTab cluster={cluster} report={report} />
+      ) : view === "rightsizing" ? (
         <RightsizingTab cluster={cluster} provider={provider}
           costFactor={factorOf}
           committedPool={pool => !!pool && committedPools.has(pool)} />

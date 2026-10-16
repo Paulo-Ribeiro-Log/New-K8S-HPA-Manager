@@ -1,6 +1,6 @@
 # Plano: revisão das abas do FinOps (consolidação + funções que faltam)
 
-**Status**: 🟡 em andamento. Fases 0, 1 e 2 concluídas (branch `feat/finops-relatorio-nodepools`); Fase 3 em andamento (custo faturado e isenções feitos).
+**Status**: 🟡 em andamento. Fases 0, 1 e 2 concluídas (branch `feat/finops-relatorio-nodepools`); Fase 3 em andamento (custo faturado, isenções, visão multi-cluster e aplicar/acompanhar feitos).
 
 Para continuar em outro chat, leia este arquivo e o `CLAUDE.md`, e marque cada item `[x]` ao terminar. Faça um PR por fase, seguindo o padrão do repo: commit do código + commit `chore(web)` com os assets.
 
@@ -121,11 +121,11 @@ Estrutura final, de 12 para 7 abas: **Dashboard · Relatório · Workloads · No
   - [ ] Sobra: RG de dados (pode estar em outra subscription, ver `resolveDataRG`) e EKS/GKE (Cost Explorer / BigQuery billing export) ficam de fora.
 - [x] **Isenções por workload** (`FINOPS-EXEMPTIONS-PLAN.md`). Store `finops_exemptions.db`, `finops.ApplyExemptions` aplicada na leitura do relatório (o cache guarda o relatório sem isenção, então criar ou remover não pede novo scan), rotas `GET/POST/DELETE /finops/exemptions` com Change History. Na tela: botão "Isentar", badge e seção "N workloads isentos" nas Oportunidades, linha na Qualidade dos dados e nota no PDF.
   - [ ] Sobra: o Rightsizing (dados do store próprio) ainda não mostra a isenção.
-- [ ] **Visão por jornada ou multi-cluster.** Ranking de custo e desperdício a partir do `finops-report-cache.db`, sem novo scan.
-- [ ] **Aplicar e acompanhar.**
-  - Mandar a recomendação para o Staging (HPA/resources) ou gerar o patch de values.
-  - Registrar no Change History.
-  - Medir a economia realizada no próximo scan.
+- [x] **Visão por jornada ou multi-cluster.** Sub-aba "Todos os clusters": ranking por cluster ou jornada (filtro de ambiente) com custo efetivo, request acima do uso (separando o que está sob reserva), risco de OOM, nodes e idade do relatório; "Abrir" leva ao cluster. `GET /finops/overview` lê o `finops-report-cache.db`, reaplica cobertura e isenções e resume com `finops.SummarizeCluster` (testado).
+  - [ ] Sobra: a capacidade ociosa dos nodes não entra no ranking (a conta está em `capacity.ts`, no frontend).
+- [x] **Aplicar e acompanhar.** Cada oportunidade tem "Enviar ao Staging" (busca o HPA real e preenche min/max e requests; nada é aplicado sem confirmar no Staging) e "Patch de values" (YAML para o chart). O envio grava a foto do workload no servidor (`finops_actions.db`, `POST /finops/actions`, com Change History), e a visão Workloads → Acompanhamento compara com o relatório mais recente (`finops.EvaluateAction`: aguardando scan, não aplicada, parcial, aplicada; economia realizada = custo na foto − custo agora).
+  - O Staging grava requests só no 1º container: o envio só leva os requests quando o 1º container tem o request do pod inteiro, e sobe o limit quando o request novo passaria dele.
+  - [ ] Sobra: o `kubectl` copiado não entra no acompanhamento (o canal existe no backend).
 - [ ] **Scan agendado com alerta no Teams** quando o custo ou o desperdício passa de um limite.
 - [ ] **Showback.** Custo por namespace ou label de dono, exportável por mês.
 - [ ] **Ambientes não produtivos fora do horário.** Estimar quanto se economiza parando o AKS ou escalando os pools de HLG à noite e no fim de semana.

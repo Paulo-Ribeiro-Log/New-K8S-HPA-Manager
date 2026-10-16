@@ -50,6 +50,8 @@ export interface FinOpsWorkload {
   mem_request_mi: number;
   cpu_limit_millis?: number;
   mem_limit_mi?: number;
+  cpu_limit_recommended_millis?: number;
+  mem_limit_recommended_mi?: number;
   kind?: string; // Deployment | StatefulSet | DaemonSet | Job | ReplicaSet | Pod
   // Pool com mais pods do workload (best-effort, pela label do node; vazio se não reconhecida).
   node_pool?: string;
@@ -435,4 +437,67 @@ export interface FinOpsExemption {
   created_by?: string;
   created_at: string;
   updated_at: string;
+}
+
+// Linha da visão multi-cluster — GET /finops/overview (internal/finops/overview.go).
+export interface ClusterOverview {
+  cluster: string;
+  journey?: string;
+  environment?: string;
+  generated_at: string;
+  compute_table_brl: number;
+  compute_brl: number;
+  storage_brl: number;
+  total_brl: number;
+  covered_pools: number;
+  waste_brl: number;
+  waste_committed_brl: number;
+  orphan_storage_brl: number;
+  workloads: number;
+  nodes: number;
+  pools: number;
+  oom_risk: number;
+  no_request: number;
+  hpa_removable: number;
+  superprovisioned: number;
+  exempt: number;
+  metrics_coverage_pct: number;
+}
+
+// Recomendação enviada para aplicar + estado no relatório mais recente — GET /finops/actions.
+export interface FinOpsActionRow {
+  id: number;
+  cluster: string;
+  namespace: string;
+  workload: string;
+  channel: "staging" | "values" | "kubectl";
+  created_by?: string;
+  created_at: string;
+  baseline_report_at: string;
+  baseline_pods: number;
+  baseline_hpa_min: number;
+  baseline_hpa_max: number;
+  baseline_cpu_millis: number;
+  baseline_mem_mi: number;
+  baseline_cost_brl: number;
+  baseline_waste_brl: number;
+  expected_saving_brl: number;
+  target_hpa_min?: number;
+  target_hpa_max?: number;
+  target_cpu_millis?: number;
+  target_mem_mi?: number;
+  evaluation: {
+    status: "aguardando_scan" | "nao_encontrado" | "pendente" | "parcial" | "aplicada";
+    report_at?: string;
+    current_pods?: number;
+    current_hpa_min?: number;
+    current_hpa_max?: number;
+    current_cpu_millis?: number;
+    current_mem_mi?: number;
+    current_cost_brl?: number;
+    current_waste_brl?: number;
+    realized_saving_brl: number;
+    applied: number;
+    targets: number;
+  };
 }
