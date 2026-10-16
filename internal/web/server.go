@@ -115,6 +115,9 @@ type Server struct {
 	// FinOps Report Cache Store (cache do último GET /finops/report por cluster)
 	finopsReportCacheStore *storage.FinOpsReportCacheStore
 
+	// FinOps Exemptions Store (isenções por workload, aplicadas na leitura do relatório)
+	finopsExemptionsStore *storage.FinOpsExemptionsStore
+
 	// SNAT History Store (histórico de snapshots SNAT para projeção de crescimento)
 	snatHistoryStore *storage.SNATHistoryStore
 
@@ -446,6 +449,15 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ FinOps Report Cache Store inicializado (último relatório por cluster)")
 	}
 
+	// FinOps Exemptions Store (isenções por workload — FINOPS-EXEMPTIONS-PLAN.md)
+	var finopsExemptionsStore *storage.FinOpsExemptionsStore
+	if store, err := storage.NewFinOpsExemptionsStore(filepath.Join(baseDir, "finops_exemptions.db")); err != nil {
+		fmt.Printf("⚠️  FinOps Exemptions Store: falha ao criar store: %v\n", err)
+	} else {
+		finopsExemptionsStore = store
+		fmt.Println("✅ FinOps Exemptions Store inicializado (isenções por workload)")
+	}
+
 	// SNAT History Store (histórico de snapshots para projeção de crescimento)
 	var snatHistoryStore *storage.SNATHistoryStore
 	snatHistoryDBPath := filepath.Join(baseDir, "snat_history.db")
@@ -543,6 +555,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		finopsTimelineStore:       finopsTimelineStore,       // Snapshots históricos HPA para comparação
 		finopsRightsizingStore:    finopsRightsizingStore,    // Análises persistidas de rightsizing (request/limit + tier de VM)
 		finopsReportCacheStore:    finopsReportCacheStore,    // Cache do último GET /finops/report por cluster
+		finopsExemptionsStore:     finopsExemptionsStore,     // Isenções por workload do FinOps
 		snatHistoryStore:          snatHistoryStore,          // Histórico SNAT para projeção de crescimento
 		latencyTestHistoryStore:   latencyTestHistoryStore,   // Histórico de testes de latência (grafo Fase 6.4)
 		netDiscoveryRegistryStore: netDiscoveryRegistryStore, // Cache de cross-reference K8s da Descoberta de Rede (Fase 4)
@@ -878,6 +891,7 @@ func (s *Server) setupRoutes() {
 
 	// FinOps — análise de custo real de clusters AKS (Azure Pricing API + alocação por workload)
 	finOpsHandler := handlers.NewFinOpsHandler(s.kubeManager, s.npRegistryStore, s.finopsTimelineStore, s.finopsRightsizingStore, s.finopsReportCacheStore, s.aiHandler, s.aiTokensStore)
+	finOpsHandler.SetExemptionsStore(s.finopsExemptionsStore, s.historyTracker)
 	api.GET("/finops/report", finOpsHandler.GetReport)
 	api.GET("/finops/report/last", finOpsHandler.GetLastReport)
 	api.GET("/finops/rightsizing", finOpsHandler.GetRightsizing)
@@ -913,6 +927,9 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/unattached-disks", finOpsHandler.GetUnattachedDisks) // discos desatachados (Azure/GCP/AWS) — só leitura; a app nunca exclui, devolve o comando de exclusão pra copiar
 	api.GET("/finops/orphan-resources", finOpsHandler.GetOrphanResources) // Azure: discos + demais recursos órfãos nos RGs das jornadas do cabeçalho — só leitura
 	api.GET("/finops/billed-cost", finOpsHandler.GetBilledCost)           // custo faturado (Cost Management, amortizado 30d) dos RGs do AKS — só leitura, cache 6 h
+	api.GET("/finops/exemptions", finOpsHandler.ListExemptions)
+	api.POST("/finops/exemptions", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), finOpsHandler.UpsertExemption)
+	api.DELETE("/finops/exemptions", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), finOpsHandler.DeleteExemption)
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)

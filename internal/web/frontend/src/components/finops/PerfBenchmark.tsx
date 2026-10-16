@@ -144,11 +144,10 @@ export function PerfBadge({ perf }: { perf?: PerfComparison }) {
   );
 }
 
-/** Linha "CPU medida" do SKU atual do pool (ou aviso de que nunca foi medido). */
+/** Linha "CPU medida" do SKU atual do pool. Sem medição não mostra nada: o aviso "sem medição"
+ *  já aparece nas alternativas de SKU, e repetir "CPU não medida" em todo pool só poluía o card. */
 export function CurrentPerfLine({ perf }: { perf?: PerfInfo }) {
-  if (!perf) {
-    return <p className="text-[10px] text-muted-foreground italic">CPU não medida</p>;
-  }
+  if (!perf) return null;
   const fleet = perf.scope === "fleet";
   return (
     <p

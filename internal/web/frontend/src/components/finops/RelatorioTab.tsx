@@ -170,6 +170,8 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
   const dtCount = workloads.filter(w => w.metrics_source === "dynatrace").length;
   const promCount = workloads.filter(w => w.metrics_source === "prometheus").length;
   const generated = new Date(report.generated_at);
+  const exempt = workloads.filter(w => w.exempt_active);
+  const exemptWaste = exempt.reduce((s, w) => s + (w.exempt_original_waste_brl ?? 0) * factorOf(w.node_pool), 0);
 
   // ── PDF ───────────────────────────────────────────────────────────────────
   const exportPDF = async () => {
@@ -326,6 +328,7 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
         "Preços de tabela pay-as-you-go: reservas e Savings Plan não estão descontados. Ociosidade pelo recurso mais ocupado de cada pool, sobre a capacidade alocável.",
         ...(covered.length > 0 ? [`Cost Management em ${covered.length} de ${pools.length} pools: ${money(coveredEffective)} efetivos contra ${money(coveredTable)} de tabela.`] : []),
         ...(billed?.available && billedFactor !== null ? [`Fatura do Azure (amortizada, ${billed.from} a ${billed.to}, RGs do AKS e dos nodes): ${money(billed.total * billedFactor)}.`] : []),
+        ...(exempt.length > 0 ? [`Isentos: ${exempt.length} workload(s) fora do desperdício e do plano (${exempt.map(w => w.workload).slice(0, 8).join(", ")}${exempt.length > 8 ? ", …" : ""}).`] : []),
         ...(reservedPools.length > 0 ? [`Sob reserva/Savings Plan (${reservedPools.map(p => p.name).join(", ")}): a economia de tirar nodes conta só a parte sob demanda.`] : []),
         `Gerado por K8s HPA Manager em ${new Date().toLocaleString("pt-BR")}.`,
       ];
@@ -631,6 +634,9 @@ export function RelatorioTab({ report, cluster, provider }: { report: FinOpsRepo
               )}
               <li>Ociosidade pelo recurso mais ocupado de cada pool (maior entre request e uso), sobre a capacidade alocável dos nodes</li>
               {fallbackPools > 0 && <li className="text-amber-600">{fallbackPools} pool(s) com preço estimado</li>}
+              {exempt.length > 0 && (
+                <li>{exempt.length} workload(s) isento(s) fora do desperdício e do plano{exemptWaste > 0 && ` (${fmtBRL(exemptWaste)}/mês que seriam desperdício)`} — ver Workloads → Oportunidades</li>
+              )}
             </ul>
           </div>
         </Panel>

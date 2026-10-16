@@ -81,6 +81,15 @@ export interface FinOpsWorkload {
   hpa_min_observed?: number;
   hpa_scale_events?: number;
   hpa_never_scaled?: boolean;
+  // Isenção (aplicada pelo backend na leitura do relatório — FINOPS-EXEMPTIONS-PLAN.md).
+  // exempt_active: dentro do limite de réplicas → verdict "ok" e waste 0; os originais vêm em exempt_original_*.
+  is_exempt?: boolean;
+  exempt_reason?: string;
+  exempt_threshold?: number;
+  exempt_active?: boolean;
+  exempt_replicas?: number;
+  exempt_original_verdict?: string;
+  exempt_original_waste_brl?: number;
   avg_replicas_cost_brl?: number;
   waste_brl?: number;
   metrics_source?: "dynatrace" | "prometheus" | "";
@@ -413,4 +422,17 @@ export interface BilledCostResponse {
   total: number;
   services?: BilledService[];
   resource_groups?: { name: string; role: "cluster" | "nodes"; total: number; services: BilledService[] }[];
+}
+
+// Isenção por workload — GET/POST/DELETE /finops/exemptions.
+export interface FinOpsExemption {
+  id: number;
+  cluster: string;
+  namespace: string;
+  workload: string;
+  max_replicas_threshold: number;
+  reason: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
 }

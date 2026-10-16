@@ -17,6 +17,7 @@ import (
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/dynatrace"
 	"k8s-hpa-manager/internal/finops"
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/storage"
 )
@@ -28,6 +29,8 @@ type FinOpsHandler struct {
 	timelineStore    *storage.FinOpsTimelineStore    // pode ser nil se DB não disponível
 	rightsizingStore *storage.FinOpsRightsizingStore // pode ser nil se DB não disponível — ver finops_rightsizing.go
 	reportCacheStore *storage.FinOpsReportCacheStore // pode ser nil se DB não disponível — cache do último GET /finops/report por cluster, ver GetLastReport
+	exemptionsStore  *storage.FinOpsExemptionsStore  // pode ser nil — isenções por workload (finops_exemptions.go), aplicadas na leitura
+	historyTracker   *history.HistoryTracker         // pode ser nil — Change History das isenções
 	pricer           *finops.AzurePricer             // AKS — também usado como fallback pra providers sem pricer próprio
 	gcpPricer        *finops.GCPPricer               // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
 	diskPricer       *finops.DiskPricer              // nil = análise de storage omitida (Azure only)
@@ -84,6 +87,11 @@ type FinOpsHandler struct {
 
 	// Custo faturado (Cost Management) dos RGs do cluster — o dado muda ~1x por dia e a API limita
 	// chamadas, então fica em cache por cluster (finops_billed_cost.go).
+	// Última tentativa de refresh automático da cobertura por cluster (finops_coverage.go): sem isso,
+	// um cluster sem permissão de custos repetia a consulta (e a espera) a cada análise.
+	coverageTriedMu sync.Mutex
+	coverageTried   map[string]time.Time
+
 	billedSF    singleflight.Group
 	billedMu    sync.Mutex
 	billedCache map[string]billedCostResponse
@@ -350,7 +358,11 @@ func (h *FinOpsHandler) doGetReport(
 		log.Debug().Err(metricsErr).Str("cluster", cluster).Msg("FinOps: metrics-server indisponível, uso 'current' ao vivo ficará vazio")
 		metricsClient = nil
 	}
+	// Cobertura (Cost Management) e node groups (az) em paralelo com o relatório — ver prefetchScanExtras.
+	willPersist := persistRightsizing && h.rightsizingStore != nil && len(namespaces) == 0 && (dtEnricher != nil || enricher != nil)
+	waitExtras := h.prefetchScanExtras(ctx, cluster, willPersist)
 	report, err := calc.BuildReport(ctx, cluster, k8sClient, pools, namespaces, dtEnricher, enricher, metricsClient)
+	liveNodeGroups := waitExtras()
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
 		return http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()}
@@ -366,8 +378,8 @@ func (h *FinOpsHandler) doGetReport(
 	// Só roda sem filtro de namespace (persistir um relatório PARCIAL sobrescreveria a análise
 	// completa do cluster no store) e só quando há alguma fonte de uso real (mesma exigência já
 	// documentada em ScanRightsizing — "rightsizing exige uso real histórico").
-	if persistRightsizing && h.rightsizingStore != nil && len(namespaces) == 0 && (dtEnricher != nil || enricher != nil) {
-		if _, _, _, perr := h.persistRightsizingFromReport(ctx, cluster, report, windowDays, pricer); perr != nil {
+	if willPersist {
+		if _, _, _, perr := h.persistRightsizingFromReport(ctx, cluster, report, windowDays, pricer, liveNodeGroups); perr != nil {
 			log.Warn().Err(perr).Str("cluster", cluster).
 				Msg("FinOps: falha ao persistir rightsizing a partir do relatório principal (best-effort, não afeta o relatório em si)")
 		} else {
@@ -375,10 +387,9 @@ func (h *FinOpsHandler) doGetReport(
 		}
 	}
 
-	// Cobertura de reserva/Savings Plan por pool (Cost Management, só AKS, com TTL — o rightsizing
-	// acima já pode ter atualizado). Vai no relatório para o Node Pools/Relatório não tratarem preço
-	// de tabela como economia certa.
-	h.autoRefreshCoverage(ctx, cluster)
+	// Cobertura de reserva/Savings Plan por pool (Cost Management, só AKS, atualizada com TTL em
+	// prefetchScanExtras). Vai no relatório para o Node Pools/Relatório não tratarem preço de tabela
+	// como economia certa.
 	finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(cluster))
 
 	// Cacheia o relatório recém-gerado como "último scan" deste cluster — bug real corrigido,
@@ -395,6 +406,9 @@ func (h *FinOpsHandler) doGetReport(
 			log.Warn().Err(serr).Str("cluster", cluster).Msg("FinOps: falha ao persistir cache de último scan (best-effort, não afeta o relatório em si)")
 		}
 	}
+
+	// Isenções depois do cache: o cache guarda o relatório sem elas (aplicadas de novo a cada leitura).
+	h.applyExemptions(cluster, report)
 
 	log.Info().
 		Str("cluster", cluster).
@@ -446,6 +460,7 @@ func (h *FinOpsHandler) GetLastReport(c *gin.Context) {
 		return
 	}
 	finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(cluster))
+	h.applyExemptions(cluster, &report)
 	c.JSON(http.StatusOK, report)
 }
 

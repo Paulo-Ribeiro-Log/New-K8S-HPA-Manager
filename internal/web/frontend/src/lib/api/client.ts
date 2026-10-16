@@ -4048,6 +4048,16 @@ class APIClient {
     return this.request<T>(`/finops/billed-cost?${params}`);
   }
 
+  /** Isenções por workload do FinOps — GET/POST/DELETE /api/v1/finops/exemptions. */
+  async upsertFinOpsExemption(body: { cluster: string; namespace: string; workload: string; max_replicas_threshold: number; reason: string }): Promise<void> {
+    await this.request(`/finops/exemptions`, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async deleteFinOpsExemption(cluster: string, namespace: string, workload: string): Promise<void> {
+    const params = new URLSearchParams({ cluster, namespace, workload });
+    await this.request(`/finops/exemptions?${params}`, { method: "DELETE" });
+  }
+
   // ==================== Resource Explorer ====================
 
   /**

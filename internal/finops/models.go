@@ -148,6 +148,17 @@ type FinOpsWorkload struct {
 	HPAScaleEvents int     `json:"hpa_scale_events,omitempty"` // qtd de mudanças no período
 	HPANeverScaled bool    `json:"hpa_never_scaled,omitempty"` // nunca saiu do mínimo → remover HPA
 
+	// Isenção (FINOPS-EXEMPTIONS-PLAN.md, ApplyExemptions): anexada na LEITURA do relatório.
+	// ExemptActive = as réplicas estão dentro do limite e a análise do workload foi suprimida
+	// (Verdict "ok", WasteBRL 0); o veredito e o desperdício originais ficam em ExemptOriginal*.
+	IsExempt               bool    `json:"is_exempt,omitempty"`
+	ExemptReason           string  `json:"exempt_reason,omitempty"`
+	ExemptThreshold        int     `json:"exempt_threshold,omitempty"`
+	ExemptActive           bool    `json:"exempt_active,omitempty"`
+	ExemptReplicas         int     `json:"exempt_replicas,omitempty"` // réplicas comparadas com o limite
+	ExemptOriginalVerdict  string  `json:"exempt_original_verdict,omitempty"`
+	ExemptOriginalWasteBRL float64 `json:"exempt_original_waste_brl,omitempty"`
+
 	// Custo estimado baseado em réplicas médias reais (mais preciso que snapshot)
 	AvgReplicasCostBRL float64 `json:"avg_replicas_cost_brl,omitempty"`
 

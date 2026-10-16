@@ -309,7 +309,7 @@ function NodeUsageBadge({ node }: { node?: NodeUsageInfo }) {
         CPU agora <span className={`font-semibold ${pctColorClass(cpuNow)}`}>{cpuNow.toFixed(0)}%</span>
         {cpuTop > 0 && (
           <>
-            {" "}(pico <span className={`font-semibold ${pctColorClass(cpuTop)}`}>{cpuTop.toFixed(0)}%</span>
+            {" "}(pico 7d <span className={`font-semibold ${pctColorClass(cpuTop)}`}>{cpuTop.toFixed(0)}%</span>
             {cpuTopAt && <> em {cpuTopAt}</>})
           </>
         )}
@@ -318,7 +318,7 @@ function NodeUsageBadge({ node }: { node?: NodeUsageInfo }) {
         Mem agora <span className={`font-semibold ${pctColorClass(memNow)}`}>{memNow.toFixed(0)}%</span>
         {memTop > 0 && (
           <>
-            {" "}(pico <span className={`font-semibold ${pctColorClass(memTop)}`}>{memTop.toFixed(0)}%</span>
+            {" "}(pico 7d <span className={`font-semibold ${pctColorClass(memTop)}`}>{memTop.toFixed(0)}%</span>
             {memTopAt && <> em {memTopAt}</>})
           </>
         )}
@@ -633,8 +633,8 @@ function WorkloadNodeDetailModal({
                           {age && <span className="text-muted-foreground" title={fmtOccurredAtFull(n.node_created_at)}>(existe há {age})</span>}
                           {n.metrics_available ? (
                             <>
-                              <span>CPU <span className={`font-semibold ${pctColorClass(n.cpu_current_pct ?? 0)}`}>{(n.cpu_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.cpu_top_pct ?? 0).toFixed(0)}%{cpuTopAt ? ` em ${cpuTopAt}` : ""})</span>
-                              <span>Mem <span className={`font-semibold ${pctColorClass(n.mem_current_pct ?? 0)}`}>{(n.mem_current_pct ?? 0).toFixed(0)}%</span> (pico {(n.mem_top_pct ?? 0).toFixed(0)}%{memTopAt ? ` em ${memTopAt}` : ""})</span>
+                              <span>CPU <span className={`font-semibold ${pctColorClass(n.cpu_current_pct ?? 0)}`}>{(n.cpu_current_pct ?? 0).toFixed(0)}%</span> (pico 7d {(n.cpu_top_pct ?? 0).toFixed(0)}%{cpuTopAt ? ` em ${cpuTopAt}` : ""})</span>
+                              <span>Mem <span className={`font-semibold ${pctColorClass(n.mem_current_pct ?? 0)}`}>{(n.mem_current_pct ?? 0).toFixed(0)}%</span> (pico 7d {(n.mem_top_pct ?? 0).toFixed(0)}%{memTopAt ? ` em ${memTopAt}` : ""})</span>
                               {(n.cpu_top_pct ?? 0) === 0 && (n.mem_top_pct ?? 0) === 0 && (
                                 <span className="italic text-muted-foreground">sem pico registrado{age ? " (node jovem, ou genuinamente sem uso no período)" : ""}</span>
                               )}

@@ -68,6 +68,22 @@ A conta agora fica em `components/finops/capacity.ts`, a fonte única. O próxim
 
 **Fase 3 — custo faturado.** O Relatório ganhou o painel "Fatura do Azure × estimativa" (só AKS): custo amortizado dos últimos 30 dias (até ontem) no Cost Management, somando o RG do AKS e o RG de nodes (`MC_...`), por serviço. O painel compara compute e discos com o que o relatório estima e lista à parte o que a estimativa não vê (Log Analytics, load balancer, rede, plano do AKS). O cabeçalho mostra o faturado e o PDF ganha uma nota. Backend: `GET /finops/billed-cost` (`finops_billed_cost.go`, cache de 6 h + singleflight; falha de login ou de permissão volta `available: false` com o motivo) e `ARMClient.CostByResourceGroupAndService` (`cost_billed.go`), ambos com teste.
 
+**Fase 3 — isenções por workload** (`FINOPS-EXEMPTIONS-PLAN.md`). Um workload pode ser isento (ex.: HPA 1/1 de HLG, decisão de projeto) com um limite de réplicas e um motivo. Enquanto as réplicas atuais e o pico do histórico ficam dentro do limite, ele sai do desperdício, das oportunidades, do plano de ação e dos contadores. Passou do limite, a isenção para de valer sozinha e o badge âmbar avisa. A regra roda na leitura do relatório, então criar ou remover não pede novo scan. Store `finops_exemptions.db`, `finops.ApplyExemptions` e rotas `GET/POST/DELETE /finops/exemptions` (com Change History), todos com teste. Na tela: botão "Isentar" em cada oportunidade, modal com limite e motivo, seção "N workloads isentos" e linha no Relatório e no PDF.
+
+**Análise mais rápida.** Pelo log de uma análise real do oferta-prd (2 min 56 s): o pico dos nodes no Prometheus (subquery `[30d:5m]` com join no `node_uname_info`, 41 nodes) levava 135 s e terminava em 504 nas duas tentativas, disputando o Prometheus com as queries dos workloads. Depois do cálculo, ainda vinham ~30 s em série: cobertura do Cost Management e `az aks nodepool list`. Mudanças:
+- o pico de node usa no máximo 7 dias (`nodePeakMaxDays`, rótulo "pico 7d" no Rightsizing) e, quando a query por `nodename` falha, não tenta o fallback por `instance`, que é tão pesado quanto;
+- cobertura e node groups rodam em paralelo com o `BuildReport` (`prefetchScanExtras`), no relatório e no scan do Rightsizing;
+- o refresh automático da cobertura tenta no máximo 1 vez a cada 30 min por cluster (antes repetia a cada análise quando faltava permissão).
+
+As queries dos workloads (P95, média e pico de 30 dias) não mudaram.
+
+**Disco do SO dos pools AKS.** Todo pool aparecia como Premium SSD P10 de 128 GB, porque o tamanho vinha do label `kubernetes.azure.com/os-disk-size-gb`, que o AKS não coloca nos nodes. Agora o disco é lido dos nodes (`osDiskFromNode`, com teste):
+- `kubernetes.azure.com/storageprofile` diz se é efêmero; nesse caso o disco fica no cache da VM e não tem custo à parte (`os_disk_sku: "Efêmero"`);
+- `kubernetes.azure.com/storagetier` diz o tipo (Premium, Standard SSD, Standard HDD);
+- a capacidade `ephemeral-storage` do node dá o tamanho, convertido no tier cobrado.
+
+**Rightsizing.** A linha "CPU não medida" saiu dos cards dos pools quando o benchmark de CPU nunca rodou: ela se repetia em todos os pools, e o aviso continua nas alternativas de SKU.
+
 
 ### Code Editor — autocomplete e busca por trechos no "Abrir pasta" (Outubro 2026)
 

@@ -46,6 +46,7 @@ export function WorkloadsHubTab({ cluster, report, provider }: { cluster: string
           committedPool={pool => !!pool && committedPools.has(pool)} />
       ) : (
         <OpportunitiesTab
+          cluster={cluster}
           workloads={workloads}
           summary={report.summary}
           windowDays={report.window_days || 30}

@@ -1,6 +1,6 @@
 # Plano: revisão das abas do FinOps (consolidação + funções que faltam)
 
-**Status**: 🟡 em andamento. Fases 0, 1 e 2 concluídas (branch `feat/finops-relatorio-nodepools`); Fase 3 em andamento (custo faturado feito).
+**Status**: 🟡 em andamento. Fases 0, 1 e 2 concluídas (branch `feat/finops-relatorio-nodepools`); Fase 3 em andamento (custo faturado e isenções feitos).
 
 Para continuar em outro chat, leia este arquivo e o `CLAUDE.md`, e marque cada item `[x]` ao terminar. Faça um PR por fase, seguindo o padrão do repo: commit do código + commit `chore(web)` com os assets.
 
@@ -119,7 +119,8 @@ Estrutura final, de 12 para 7 abas: **Dashboard · Relatório · Workloads · No
 
 - [x] **Custo faturado de verdade.** Painel "Fatura do Azure × estimativa" no Relatório e valor no cabeçalho: custo amortizado de 30 dias do RG do AKS + RG de nodes, por serviço (`GET /finops/billed-cost`, `BilledCostPanel.tsx`). Só AKS.
   - [ ] Sobra: RG de dados (pode estar em outra subscription, ver `resolveDataRG`) e EKS/GKE (Cost Explorer / BigQuery billing export) ficam de fora.
-- [ ] **Isenções por workload.** Implementar o `FINOPS-EXEMPTIONS-PLAN.md` (o plano está escrito, mas o store não existe). Sem isso, os HPAs 1/1 de HLG continuam como desperdício.
+- [x] **Isenções por workload** (`FINOPS-EXEMPTIONS-PLAN.md`). Store `finops_exemptions.db`, `finops.ApplyExemptions` aplicada na leitura do relatório (o cache guarda o relatório sem isenção, então criar ou remover não pede novo scan), rotas `GET/POST/DELETE /finops/exemptions` com Change History. Na tela: botão "Isentar", badge e seção "N workloads isentos" nas Oportunidades, linha na Qualidade dos dados e nota no PDF.
+  - [ ] Sobra: o Rightsizing (dados do store próprio) ainda não mostra a isenção.
 - [ ] **Visão por jornada ou multi-cluster.** Ranking de custo e desperdício a partir do `finops-report-cache.db`, sem novo scan.
 - [ ] **Aplicar e acompanhar.**
   - Mandar a recomendação para o Staging (HPA/resources) ou gerar o patch de values.

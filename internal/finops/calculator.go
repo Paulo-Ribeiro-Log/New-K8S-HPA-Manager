@@ -473,14 +473,18 @@ func (c *Calculator) osDiskCostForPool(
 		return diskType, "", size, round2(pricePerGBMonth * float64(size)), true
 	}
 
-	// Default: AKS (c.pricer é *AzurePricer nesse caso).
-	sizeGB, _ = storageCalc.OSDiskForNodePool(ctx, client, poolName)
-	tier = ResolveManagedDiskTier("Premium SSD", float64(sizeGB)) // AKS default: Premium SSD
-	priceUSD, _, err := c.diskPricer.GetDiskPrice("Premium SSD", tier, defaultPricingRegion)
+	// Default: AKS (c.pricer é *AzurePricer nesse caso). Disco do SO lido dos nodes do pool.
+	disk := storageCalc.OSDiskForNodePool(ctx, client, poolName)
+	if disk.Ephemeral {
+		// Efêmero: fica no cache/disco temporário da VM, já pago no preço dela.
+		return "Efêmero", "", disk.SizeGB, 0, true
+	}
+	tier = ResolveManagedDiskTier(disk.AzureType, float64(disk.SizeGB))
+	priceUSD, _, err := c.diskPricer.GetDiskPrice(disk.AzureType, tier, defaultPricingRegion)
 	if err != nil {
 		return "", "", 0, 0, false
 	}
-	return "Premium SSD", tier, sizeGB, priceUSD, true
+	return disk.AzureType, tier, disk.SizeGB, priceUSD, true
 }
 
 // calculatePoolCosts retorna os FinOpsPools com preço real, a capacidade total do cluster

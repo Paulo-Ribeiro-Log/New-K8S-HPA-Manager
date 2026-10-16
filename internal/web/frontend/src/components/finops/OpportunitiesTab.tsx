@@ -5,10 +5,11 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList } from "recharts";
-import { TrendingDown, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
+import { TrendingDown, CheckCircle2, ChevronDown, ChevronUp, ShieldCheck } from "lucide-react";
 import { fmtBRL, fmtMillis, fmtMi, KubectlBlock, VerdictBadge, GitOpsNote } from "@/lib/finopsFormat";
 import type { FinOpsSummary, FinOpsWorkload, Recommendation } from "./types";
 import { buildRecommendation, isOpportunity } from "./helpers";
+import { ExemptBadge, ExemptionDialog } from "./ExemptionDialog";
 
 const ACTION_TYPE_LABELS: Record<string, string> = {
   hpa_min:           "Reduzir HPA min",
@@ -38,7 +39,8 @@ function deriveActionType(w: FinOpsWorkload, rec: Recommendation): string {
   return "other";
 }
 
-export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }: {
+export function OpportunitiesTab({ cluster, workloads, windowDays, historicalRan = true }: {
+  cluster: string;
   workloads: FinOpsWorkload[];
   summary?: FinOpsSummary;
   windowDays: number;
@@ -57,6 +59,11 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
   const [selectedKeys, setSelectedKeys]     = useState<Set<string>>(new Set());
   // ── Grupos (2c) ──────────────────────────────────────────────────────────────
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  // ── Isenções ─────────────────────────────────────────────────────────────────
+  const [exemptTarget, setExemptTarget]     = useState<FinOpsWorkload | null>(null);
+  const [showExempt, setShowExempt]         = useState(false);
+  const exemptActive = workloads.filter(w => w.exempt_active);
+  const exemptWaste  = exemptActive.reduce((s, w) => s + (w.exempt_original_waste_brl ?? 0), 0);
 
   type OpItem = FinOpsWorkload & { rec: Recommendation; saving: number; actionType: string };
 
@@ -139,6 +146,12 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
                 <span className="font-semibold text-sm">{w.workload}</span>
                 <span className="text-xs text-muted-foreground">{w.namespace}</span>
                 <VerdictBadge verdict={w.verdict} />
+                <ExemptBadge w={w} />
+                <button onClick={() => setExemptTarget(w)}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title="Isentar este workload (ex.: HPA 1/1 de HLG é decisão de projeto, não desperdício)">
+                  <ShieldCheck className="h-3 w-3" /> {w.is_exempt ? "Editar isenção" : "Isentar"}
+                </button>
               </div>
               <div className="text-right flex-shrink-0 space-y-0.5">
                 <p className="text-[10px] text-muted-foreground">custo atual{w.cost_basis === "effective" ? " (efetivo)" : ""}</p>
@@ -221,6 +234,39 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
     );
   };
 
+  // ── Isentos ativos (fora da lista e das contas) ──────────────────────────────
+  const exemptSection = exemptActive.length > 0 && (
+    <div className="rounded-lg border border-dashed">
+      <button className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-muted/40" onClick={() => setShowExempt(v => !v)}>
+        <span className="flex items-center gap-2 text-xs font-semibold">
+          {showExempt ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          <ShieldCheck className="h-3.5 w-3.5 text-slate-500" /> {exemptActive.length} workload{exemptActive.length !== 1 ? "s" : ""} isento{exemptActive.length !== 1 ? "s" : ""}
+        </span>
+        <span className="text-[11px] text-muted-foreground">{exemptWaste > 0 ? `${fmtBRL(exemptWaste)}/mês de desperdício fora da conta` : "fora da lista e da economia"}</span>
+      </button>
+      {showExempt && (
+        <div className="divide-y border-t">
+          {exemptActive.map(w => (
+            <div key={`${w.namespace}/${w.workload}`} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+              <div className="min-w-0">
+                <p><span className="font-semibold">{w.workload}</span> <span className="text-muted-foreground">{w.namespace}</span></p>
+                <p className="text-[11px] text-muted-foreground">
+                  {w.exempt_reason || "sem motivo"} · até {w.exempt_threshold} réplica(s), hoje {w.exempt_replicas}
+                  {w.exempt_original_verdict && w.exempt_original_verdict !== "ok" && <> · seria: <VerdictBadge verdict={w.exempt_original_verdict} /></>}
+                  {(w.exempt_original_waste_brl ?? 0) > 0 && <> · {fmtBRL(w.exempt_original_waste_brl!)}/mês</>}
+                </p>
+              </div>
+              <button onClick={() => setExemptTarget(w)} className="shrink-0 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">Editar</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+  const exemptDialog = (
+    <ExemptionDialog cluster={cluster} workload={exemptTarget} open={!!exemptTarget} onOpenChange={v => { if (!v) setExemptTarget(null); }} />
+  );
+
   // ── Estado vazio ──────────────────────────────────────────────────────────────
   if (allOpportunities.length === 0) {
     return (
@@ -232,6 +278,8 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
             <p className="text-sm mt-1">Todos os workloads estão classificados como eficientes.</p>
           </CardContent>
         </Card>
+        {exemptSection}
+        {exemptDialog}
       </div>
     );
   }
@@ -366,6 +414,8 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
         </span>
       </div>
 
+      {exemptSection}
+
       {/* ── Sem resultados após filtro ────────────────────────────────────────── */}
       {opportunities.length === 0 ? (
         <Card>
@@ -404,6 +454,8 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
           })}
         </div>
       )}
+
+      {exemptDialog}
 
       {/* ── Barra sticky de seleção (2b) ─────────────────────────────────────── */}
       {selectedKeys.size > 0 && (

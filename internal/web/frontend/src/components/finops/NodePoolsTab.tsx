@@ -155,8 +155,12 @@ function PoolCard({ usage, color, provider, clusterScaledUp, onDeepAnalysis }: {
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t pt-3 text-xs">
           <span className="text-muted-foreground">{usage.workloads} workloads</span>
-          {pool.os_disk_tier && (
-            <span className="text-muted-foreground">Disco OS {pool.os_disk_tier} · {pool.os_disk_gb} GB{pool.os_disk_cost_brl ? ` · ${fmtBRL(pool.os_disk_cost_brl)}` : ""}</span>
+          {pool.os_disk_sku === "Efêmero" ? (
+            <span className="text-muted-foreground" title="Disco do SO no cache/disco temporário da VM: já está no preço da VM, sem custo à parte. Tamanho visto pelo node (sistema de arquivos).">
+              Disco OS efêmero · ~{pool.os_disk_gb} GB · sem custo à parte
+            </span>
+          ) : pool.os_disk_tier && (
+            <span className="text-muted-foreground">Disco OS {pool.os_disk_tier} ({pool.os_disk_sku}) · {pool.os_disk_gb} GB{pool.os_disk_cost_brl ? ` · ${fmtBRL(pool.os_disk_cost_brl)}/mês` : ""}</span>
           )}
           {usage.workloads > 0 && (
             <span className="font-medium" style={{ color: idlePct >= 40 ? COST_COLORS.idle : undefined }}
