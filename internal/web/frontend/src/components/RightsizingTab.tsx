@@ -1,19 +1,19 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Loader2, RefreshCw, X, Server, Search, Sparkles, Boxes, Gauge, Info, AlertTriangle } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import ResourceGauge from "@/components/ResourceGauge";
-import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard } from "@/lib/finopsFormat";
+import { fmtBRL, fmtMillis, fmtMi, VerdictBadge, KubectlBlock, SummaryCard, kubectlResource, GitOpsNote } from "@/lib/finopsFormat";
 import { DollarSign, TrendingDown, Layers } from "lucide-react";
 import { ComposedChart, Line, XAxis, YAxis, ReferenceLine, ReferenceDot } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { useRightsizingReport } from "@/hooks/useRightsizingReport";
+import { apiClient } from "@/lib/api/client";
 import { PerfBadge, CurrentPerfLine, PerfBenchmarkButton, type PerfComparison, type PerfInfo } from "@/components/finops/PerfBenchmark";
 import { CoverageLine, CoverageWarningBox, CoverageRefreshButton, ReservedHintChip, type PoolCoverage, type CoverageWarning, type ReservedHint } from "@/components/finops/PricingCoverage";
 
@@ -23,6 +23,7 @@ import { CoverageLine, CoverageWarningBox, CoverageRefreshButton, ReservedHintCh
 interface WorkloadRecommendation {
   namespace: string;
   workload: string;
+  kind?: string;
   node_pool?: string;
   node_name?: string;
   pods: number;
@@ -182,45 +183,6 @@ interface WorkloadHistoryResponse {
   mem_mi?: WorkloadHistoryPoint[];
 }
 
-const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("auth_token")}` });
-
-/** F2.1 (FINOPS-IMPROVEMENTS-PLAN.md) — Rightsizing era a única das 8 abas do FinOps sem badge
- *  de contagem/urgência na TabsTrigger, sem nenhum sinal visual de que ali existe economia em
- *  R$. Mostra a economia potencial (melhor alternativa por pool, somada — nunca soma TODAS as
- *  até-3 alternativas de um mesmo pool, que dobraria/triplicaria a mesma oportunidade) quando
- *  há alguma relevante (> R$10/mês, mesmo limiar de "vale a pena mostrar" já usado nos cards de
- *  alternativa); cai pro número de workloads que precisam de atenção (`verdict != "ok"`) quando
- *  não há economia de tier mas ainda há algo a rever. Silencioso (sem badge) só quando os dois
- *  são zero — mesmo princípio de "badge só no caso relevante" já usado no CompanyAppBadge de
- *  DeploymentsTab.tsx. */
-export function RightsizingTabBadge({ cluster }: { cluster: string }) {
-  const { data } = useRightsizingReport(cluster);
-  const { totalSavings, attentionCount } = useMemo(() => {
-    let savings = 0;
-    for (const pool of data?.node_pools ?? []) {
-      const best = Math.max(0, ...pool.alternatives.map((a) => a.monthly_savings_brl));
-      if (best > 10) savings += best;
-    }
-    const attention = (data?.workloads ?? []).filter((w) => w.verdict !== "ok").length;
-    return { totalSavings: savings, attentionCount: attention };
-  }, [data]);
-
-  if (totalSavings > 10) {
-    return (
-      <Badge className="ml-1 text-[10px] bg-green-600" title={`Economia potencial de tier de VM: ${fmtBRL(totalSavings)}/mês`}>
-        -{fmtBRL(totalSavings)}
-      </Badge>
-    );
-  }
-  if (attentionCount > 0) {
-    return (
-      <Badge variant="destructive" className="ml-1 text-[10px]" title={`${attentionCount} workload(s) precisam de atenção (verdict diferente de "ok")`}>
-        {attentionCount}
-      </Badge>
-    );
-  }
-  return null;
-}
 
 function workloadCardId(w: WorkloadRecommendation) {
   return `rightsizing-wl-${w.namespace}-${w.workload}`;
@@ -304,7 +266,9 @@ function buildResizeCommand(w: WorkloadRecommendation): string | null {
 
   if (reqParts.length === 0 && limParts.length === 0) return null;
 
-  let cmd = `kubectl set resources deployment ${w.workload} -n ${w.namespace}`;
+  const target = kubectlResource(w.kind);
+  if (!target) return null;
+  let cmd = `kubectl set resources ${target} ${w.workload} -n ${w.namespace}`;
   if (reqParts.length > 0) cmd += ` --requests=${reqParts.join(",")}`;
   if (limParts.length > 0) cmd += ` --limits=${limParts.join(",")}`;
   return cmd;
@@ -599,14 +563,8 @@ function WorkloadNodeDetailModal({
   // desmonta o componente, cancelando a query via React Query; nunca roda no scan em lote).
   const { data: historyResp, isLoading: historyLoading } = useQuery<WorkloadHistoryResponse>({
     queryKey: ["finops-workload-history", cluster, workload.namespace, workload.workload, workload.window_days],
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/v1/finops/rightsizing/history?cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(workload.namespace)}&workload=${encodeURIComponent(workload.workload)}&days=${workload.window_days}`,
-        { headers: authHeaders() }
-      );
-      if (!r.ok) throw new Error("workload-history error");
-      return r.json();
-    },
+    queryFn: () => apiClient.get<WorkloadHistoryResponse>(
+      `/finops/rightsizing/history?cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(workload.namespace)}&workload=${encodeURIComponent(workload.workload)}&days=${workload.window_days}`),
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
@@ -856,6 +814,7 @@ function WorkloadNodeDetailModal({
                 <div>
                   <p className="text-[10px] text-muted-foreground mb-1">Ação recomendada (request + limit):</p>
                   <KubectlBlock cmd={resizeCmd} />
+                  <GitOpsNote />
                 </div>
               )}
             </div>
@@ -998,6 +957,7 @@ function WorkloadCard({
           <div>
             <p className="text-[10px] text-muted-foreground mb-1">Ação recomendada (request + limit):</p>
             <KubectlBlock cmd={resizeCmd} />
+            <GitOpsNote />
           </div>
         )}
       </CardContent>
@@ -1103,7 +1063,15 @@ function NodePoolTierCard({
   );
 }
 
-export function RightsizingTab({ cluster }: { cluster: string }) {
+// costFactor: custo efetivo ÷ tabela do pool (reserva/Savings Plan, do relatório principal) — o
+// waste_brl do scan é em preço de tabela. committedPool: pool sob reserva/Savings Plan/Spot, onde a
+// economia só se realiza liberando nodes.
+export function RightsizingTab({ cluster, provider, costFactor, committedPool }: {
+  cluster: string;
+  provider?: string;
+  costFactor?: (pool?: string) => number;
+  committedPool?: (pool?: string) => boolean;
+}) {
   const queryClient = useQueryClient();
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -1124,16 +1092,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
     setScanning(true);
     setScanError(null);
     try {
-      const r = await fetch(`/api/v1/finops/rightsizing/scan?cluster=${encodeURIComponent(cluster)}`, {
-        method: "POST",
-        headers: authHeaders(),
-        signal: controller.signal,
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      const fresh: RightsizingResponse = await r.json();
+      const fresh = await apiClient.post<RightsizingResponse>(`/finops/rightsizing/scan?cluster=${encodeURIComponent(cluster)}`, undefined, { signal: controller.signal });
       queryClient.setQueryData(["finops-rightsizing", cluster], fresh);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -1152,9 +1111,10 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   };
 
   const workloads = useMemo(() => {
-    const list = data?.workloads ?? [];
+    const list = (data?.workloads ?? []).map((w) =>
+      costFactor && w.waste_brl ? { ...w, waste_brl: w.waste_brl * costFactor(w.node_pool) } : w);
     return [...list].sort((a, b) => (b.waste_brl ?? 0) - (a.waste_brl ?? 0));
-  }, [data]);
+  }, [data, costFactor]);
 
   const namespaces = useMemo(() => Array.from(new Set(workloads.map((w) => w.namespace))).sort(), [workloads]);
 
@@ -1190,6 +1150,8 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
   }, [workloads, namespaceFilter, verdictFilter, search]);
 
   const totalWaste = workloads.reduce((sum, w) => sum + (w.waste_brl ?? 0), 0);
+  const committedWaste = committedPool ? workloads.filter((w) => committedPool(w.node_pool)).reduce((sum, w) => sum + (w.waste_brl ?? 0), 0) : 0;
+  const effectiveBasis = !!costFactor && workloads.some((w) => costFactor(w.node_pool) !== 1);
 
   // P95 agregado do CLUSTER (não só por pool) — pedido explícito do usuário: "preciso que o
   // percentil de uso dos clusters... seja evidenciado nas análises". Média ponderada por
@@ -1286,7 +1248,7 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <CoverageRefreshButton cluster={cluster} />
+          <CoverageRefreshButton cluster={cluster} provider={provider} />
           <PerfBenchmarkButton
             cluster={cluster}
             pools={(data?.node_pools ?? []).map((p) => ({ name: p.node_pool, sku: p.current_sku }))}
@@ -1359,7 +1321,8 @@ export function RightsizingTab({ cluster }: { cluster: string }) {
         <>
           {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <SummaryCard icon={DollarSign} label="Desperdício Total" value={fmtBRL(totalWaste)} color="text-red-500" />
+            <SummaryCard icon={DollarSign} label={effectiveBasis ? "Desperdício (efetivo)" : "Desperdício Total"} value={fmtBRL(totalWaste)} color="text-red-500"
+              sub={committedWaste > 0 ? `${fmtBRL(committedWaste)} em pools sob reserva: só economiza liberando nodes` : undefined} />
             <SummaryCard icon={TrendingDown} label="Workloads Analisados" value={String(workloads.length)} color="text-blue-500" />
             <SummaryCard icon={Layers} label="Node Pools" value={String(data.node_pools?.length ?? 0)} color="text-purple-500" />
             <SummaryCard

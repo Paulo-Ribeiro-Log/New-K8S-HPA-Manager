@@ -3,6 +3,72 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### FinOps — Relatório e Node Pools refeitos, abas consolidadas (Outubro 2026)
+
+**Relatório.** Refeito como visão executiva:
+- capa com custo mensal, projeção anual, economia possível e eficiência de CPU;
+- "Para onde vai o dinheiro": rosca com o custo em uso, o request acima do uso, a capacidade sem request, o disco do SO, os PVCs e os PVCs órfãos;
+- medidores de eficiência (uso ÷ request e request ÷ capacidade);
+- tendência de 30 dias (nodes e eficiência);
+- treemap de namespaces colorido pelo desperdício;
+- maiores custos por workload, empilhados;
+- plano de ação com economia por item;
+- riscos e qualidade dos dados.
+
+O PDF foi refeito com o mesmo conteúdo.
+
+**Node Pools.** Cada pool ganhou um card com barras de capacidade, requisitado e em uso, o custo da capacidade sem request e a sugestão de scale-down do próprio pool. O comando `az aks nodepool scale` aparece só para AKS.
+
+**Erros corrigidos:**
+- o Node Pools e o Relatório somavam o `cpu_request_millis` sem multiplicar por pods (o campo é por pod). A "CPU alocada" saía muito baixa e havia sugestões falsas de scale-down;
+- o scale-down usava a utilização do cluster inteiro para todos os pools;
+- as "Alternativas de SKU" chamavam `/finops/vm-alternatives` sem `cluster`, levavam 400 e mostravam sempre "Nenhuma alternativa".
+
+**Correções da Fase 1** (`FINOPS-REVISAO-PLAN.md`):
+- a "economia possível" é uma só (`buildActionPlan`), no Dashboard e no Relatório;
+- o cabeçalho diz "custo estimado", com a fonte certa por provider, pelo `cloud_provider` e não pelo prefixo do nome;
+- a projeção do Dashboard não fixa mais o ano;
+- todo HTTP do FinOps passa pelo `apiClient`;
+- `/finops/vm-alternatives?pool=` traz o aviso de reserva/Savings Plan;
+- o relatório expõe o `kind` do workload, e os comandos `kubectl set resources`/`autoscale` usam deployment, statefulset ou daemonset, com uma nota sobre Helm/GitOps.
+
+**Fase 2: de 12 para 7 abas.** A nova estrutura é Dashboard, Relatório, Workloads, Node Pools, HPA, Armazenamento e Órfãos e Recursos de Dados (só AKS):
+- a aba Workloads junta o Rightsizing ("Request e limit") e as Oportunidades;
+- a Deep Analysis virou um botão em cada pool;
+- Armazenamento e Recursos Órfãos viraram uma aba só, e o disco de um PVC sem pod ganha uma etiqueta para não ser contado de novo;
+- o Dashboard perdeu o card de oportunidades (que trazia uma economia divergente) e o gráfico de réplicas dos HPAs;
+- o relatório passa a trazer o `hpa_name`, usado no `kubectl patch hpa`.
+
+**Correção: capacidade ociosa do Node Pools.** O caso real foi o oferta-prd, em que o card mostrava "Capacidade sem request R$ 45.215" e o pool calculofrete (51–54 nodes) custava R$ 60.672. A conta tinha quatro erros:
+- somava os 7 pools sem dizer isso;
+- tirava a média entre CPU e memória. No calculofrete, a CPU estava 74,5% reservada e a memória 49,8%, e a média dizia que metade do pool sobrava, mas é a CPU que limita;
+- ignorava o uso acima do request: a memória estava 58,5% em uso;
+- usava a capacidade nominal da VM.
+
+Agora a parte ociosa considera o recurso mais ocupado de cada pool (o maior entre request e uso), sobre a capacidade **alocável** dos nodes. O backend passa a mandar o `allocatable_*` por pool e o `pool_pods` por workload, porque os pods de um DaemonSet iam todos para o pool dominante. A barra do recurso que limita o pool ganha a etiqueta "limita o pool", e o card diz "Ociosa (todos os pools)" e qual é o maior pool. Com o mesmo relatório e ainda na capacidade nominal, os valores caem para R$ 13.121 no calculofrete e R$ 28.987 no total. O Relatório usa a mesma conta.
+
+**Reserva / Savings Plan no Node Pools e no Relatório.** No oferta-prd, os 7 pools estão sob reserva: são R$ 24,9 mil efetivos contra R$ 102,9 mil de tabela. Mesmo assim, as abas mostravam valores de tabela como economia.
+
+O relatório agora traz a `coverage` de cada pool (`finops.AttachPoolCoverage`: no "Analisar", com o refresh automático de TTL 6h, e no `/report/last`, com a cobertura gravada). As mesmas regras do `coverage.go` valem para o scale-down e para o ajuste de requests:
+- **sob reserva:** o certo é só a fatia sob demanda de hoje; o valor de tabela é o melhor caso, se a reserva liberada for reaproveitada por outras VMs do SKU;
+- **Savings Plan, Spot ou moeda ≠ BRL:** sem número, só o aviso.
+
+O que mudou na tela:
+- **Node Pools:** mostra o custo efetivo por pool, a barra de cobertura e a parte ociosa pelo custo efetivo;
+- **Relatório:** a decomposição, o treemap e os maiores custos usam o custo efetivo nos pools com cobertura (fator efetivo ÷ tabela do pool), e a "Economia possível" soma só o que é certo.
+
+O custo do Cost Management é só de `Virtual Machines`, então os discos do SO continuam em preço de tabela, sem contagem dupla.
+
+O mesmo vale para o Dashboard, o Workloads (Rightsizing e Oportunidades), o CSV e o cabeçalho, via `toEffectiveReport` e o fator por pool:
+- o Dashboard mostra "Economia certa";
+- as Oportunidades separam a economia de pools sob demanda da de pools sob reserva/Savings Plan;
+- o CSV ganha as colunas "Base do custo" e "Pool sob reserva/SP".
+
+A conta agora fica em `components/finops/capacity.ts`, a fonte única. O próximo passo está em `FINOPS-REVISAO-PLAN.md`. Testado em headless com relatório falso, nos temas claro e escuro, e com o PDF.
+
+**Fase 3 — custo faturado.** O Relatório ganhou o painel "Fatura do Azure × estimativa" (só AKS): custo amortizado dos últimos 30 dias (até ontem) no Cost Management, somando o RG do AKS e o RG de nodes (`MC_...`), por serviço. O painel compara compute e discos com o que o relatório estima e lista à parte o que a estimativa não vê (Log Analytics, load balancer, rede, plano do AKS). O cabeçalho mostra o faturado e o PDF ganha uma nota. Backend: `GET /finops/billed-cost` (`finops_billed_cost.go`, cache de 6 h + singleflight; falha de login ou de permissão volta `available: false` com o motivo) e `ARMClient.CostByResourceGroupAndService` (`cost_billed.go`), ambos com teste.
+
+
 ### Code Editor — autocomplete e busca por trechos no "Abrir pasta" (Outubro 2026)
 
 **Autocomplete no campo de caminho** (`CodeEditorOpenFolderDialog.tsx`). Enquanto você digita, o modal lista a pasta antes da última `/` (ou `\`) e sugere as pastas e os arquivos que casam com o trecho final. Sem barra, a busca é na pasta aberta no modal. A listagem de cada pasta é guardada em cache enquanto o modal está aberto. Teclas:

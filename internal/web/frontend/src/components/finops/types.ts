@@ -3,6 +3,9 @@
 // RightsizingTab.tsx/DataResourcesPanel.tsx (componentes próprios) e útil pros consumidores destas
 // abas não precisarem importar o arquivo inteiro só pra ler um tipo.
 
+
+import type { PoolCoverage } from "./PricingCoverage";
+
 export interface FinOpsPool {
   name: string;
   vm_size: string;
@@ -16,6 +19,12 @@ export interface FinOpsPool {
   monthly_cost_brl: number;
   total_cpu_millicores: number;
   total_memory_mi: number;
+  // Alocável somado dos nodes vivos (status.allocatable); ausente em relatório antigo.
+  allocatable_cpu_millicores?: number;
+  allocatable_memory_mi?: number;
+  allocatable_nodes?: number;
+  // Reserva / Savings Plan / sob demanda / spot no custo efetivo do pool (Cost Management, só AKS).
+  coverage?: PoolCoverage;
   // Storage — disco OS por nó
   os_disk_sku?: string;
   os_disk_tier?: string;
@@ -41,11 +50,20 @@ export interface FinOpsWorkload {
   mem_request_mi: number;
   cpu_limit_millis?: number;
   mem_limit_mi?: number;
+  kind?: string; // Deployment | StatefulSet | DaemonSet | Job | ReplicaSet | Pod
+  // Pool com mais pods do workload (best-effort, pela label do node; vazio se não reconhecida).
+  node_pool?: string;
+  pool_pods?: Record<string, number>; // pods em cada pool (DaemonSet tem em vários)
+  // Só no frontend (toEffectiveReport): valores em reais no custo efetivo do pool, e pool sob
+  // reserva/Savings Plan/Spot (economia nele não é certa).
+  cost_basis?: "effective" | "table";
+  committed?: boolean;
   cost_share_usd: number;
   cost_share_brl: number;
   hpa_min: number;
   hpa_max: number;
   hpa_current: number;
+  hpa_name?: string; // nome do HPA (pode diferir do workload)
   hpa_cost_min_brl: number;
   hpa_cost_max_brl: number;
   hpa_cost_current_brl: number;
@@ -375,4 +393,24 @@ export interface OrphanResourcesResponse {
   scanned_at: string;
   from_cache: boolean;
   warnings: string[];
+}
+
+// Custo faturado (Cost Management, amortizado) dos RGs do cluster AKS — GET /finops/billed-cost.
+export interface BilledService {
+  service: string;
+  cost: number;
+}
+
+export interface BilledCostResponse {
+  available: boolean;
+  reason?: string;
+  cluster: string;
+  currency?: string;
+  window_days?: number;
+  from?: string;
+  to?: string;
+  fetched_at?: string;
+  total: number;
+  services?: BilledService[];
+  resource_groups?: { name: string; role: "cluster" | "nodes"; total: number; services: BilledService[] }[];
 }

@@ -157,6 +157,7 @@ import type {
 } from "@/types/ai";
 
 import type { PoolDeepAnalysis } from "@/types/finopsDeepAnalysis";
+import type { TimelineReport } from "@/components/finops/types";
 
 import type {
   HealthCheckRequest,
@@ -457,12 +458,14 @@ class APIClient {
   }
 
   // Generic HTTP methods (used by hooks like useUserPermissions)
-  async get<T = any>(endpoint: string): Promise<T> {
-    return this.request<T>(endpoint, { method: 'GET' });
+  // init: opções extras do fetch (ex.: { signal } para cancelar).
+  async get<T = any>(endpoint: string, init?: RequestInit): Promise<T> {
+    return this.request<T>(endpoint, { ...init, method: 'GET' });
   }
 
-  async post<T = any>(endpoint: string, data?: any): Promise<T> {
+  async post<T = any>(endpoint: string, data?: any, init?: RequestInit): Promise<T> {
     return this.request<T>(endpoint, {
+      ...init,
       method: 'POST',
       body: data ? JSON.stringify(data) : undefined,
     });
@@ -4012,6 +4015,37 @@ class APIClient {
       throw new Error(body.error || `HTTP ${response.status}`);
     }
     return response.text();
+  }
+
+  /**
+   * Série diária do cluster (nodes, CPU/Mem usado × request, réplicas de HPA).
+   * GET /api/v1/finops/timeline?cluster=X&days=N
+   */
+  async getFinOpsTimeline(cluster: string, days: number): Promise<TimelineReport> {
+    const params = new URLSearchParams({ cluster, days: String(days) });
+    return this.request<TimelineReport>(`/finops/timeline?${params}`);
+  }
+
+  /**
+   * SKUs alternativos para um node pool, pela utilização de CPU/Mem do pool.
+   * GET /api/v1/finops/vm-alternatives?cluster=X&pool=P&sku=Y&cpu_pct=N&mem_pct=N&node_count=N
+   * (com pool, o backend anexa o aviso de reserva/Savings Plan do pool).
+   */
+  async getFinOpsVMAlternatives<T>(cluster: string, pool: string, sku: string, cpuPct: number, memPct: number, nodeCount: number): Promise<T> {
+    const params = new URLSearchParams({
+      cluster, pool, sku, cpu_pct: String(cpuPct), mem_pct: String(memPct), node_count: String(nodeCount),
+    });
+    return this.request<T>(`/finops/vm-alternatives?${params}`);
+  }
+
+  /**
+   * Custo faturado (Cost Management, amortizado, 30 dias) dos RGs do cluster AKS, por serviço.
+   * GET /api/v1/finops/billed-cost?cluster=X[&refresh=true] — cache de 6 h no backend.
+   */
+  async getFinOpsBilledCost<T>(cluster: string, refresh = false): Promise<T> {
+    const params = new URLSearchParams({ cluster });
+    if (refresh) params.set("refresh", "true");
+    return this.request<T>(`/finops/billed-cost?${params}`);
   }
 
   // ==================== Resource Explorer ====================

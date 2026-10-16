@@ -41,6 +41,18 @@ type FinOpsPool struct {
 	MonthlyCostBRL     float64 `json:"monthly_cost_brl"`
 	TotalCPUMillicores int64   `json:"total_cpu_millicores"`
 	TotalMemoryMi      int64   `json:"total_memory_mi"`
+	// Capacidade ALOCÁVEL somada dos nodes vivos do pool (status.allocatable: o que sobra para os
+	// pods depois da reserva do kubelet/SO — numa F4s_v2 de 8 GB, bem menos memória que a nominal).
+	// AllocatableNodes = quantos nodes entraram na soma (pode diferir de NodeCount, que vem do
+	// registry). Vazio quando a listagem de nodes falhou.
+	AllocatableCPUMillicores int64 `json:"allocatable_cpu_millicores,omitempty"`
+	AllocatableMemoryMi      int64 `json:"allocatable_memory_mi,omitempty"`
+	AllocatableNodes         int   `json:"allocatable_nodes,omitempty"`
+	// Coverage: quanto do custo efetivo do pool vem de reserva / Savings Plan / sob demanda / spot
+	// (Cost Management, gravado por pool). Anexado na leitura (AttachPoolCoverage); nil = nunca
+	// consultado ou cluster fora do Azure. Os custos acima são de TABELA; com reserva, a economia de
+	// tirar nodes não se realiza enquanto a reserva seguir paga.
+	Coverage *PoolCoverage `json:"coverage,omitempty"`
 	// Custo de disco OS por pool (preenchido quando DiskPricer disponível)
 	OSDiskSKU     string  `json:"os_disk_sku,omitempty"`
 	OSDiskTier    string  `json:"os_disk_tier,omitempty"`
@@ -64,6 +76,7 @@ type FinOpsNamespace struct {
 type FinOpsWorkload struct {
 	Namespace        string  `json:"namespace"`
 	Workload         string  `json:"workload"`
+	Kind             string  `json:"kind,omitempty"` // Deployment | StatefulSet | DaemonSet | Job | ReplicaSet | Pod (vazio em relatório antigo)
 	Pods             int     `json:"pods"`
 	CPURequestMillis float64 `json:"cpu_request_millis"` // request configurado POR POD (média entre os pods; total = × Pods)
 	MemRequestMi     float64 `json:"mem_request_mi"`
@@ -73,6 +86,9 @@ type FinOpsWorkload struct {
 	// ver nodePoolLabelFromNode em calculator.go; vazio se o node não tiver label reconhecida).
 	// Usado pra agregar uso real por pool na sugestão de tier de VM (ver SuggestVMTier).
 	NodePool string `json:"node_pool,omitempty"`
+	// PoolPods: pods do workload em cada pool (DaemonSet e workloads espalhados têm pods em vários).
+	// A conta de capacidade por pool usa isto; NodePool é só o pool dominante.
+	PoolPods map[string]int `json:"pool_pods,omitempty"`
 	// NodeName é o node com mais pods deste workload (mesmo critério de NodePool, mas o nome
 	// literal do node — usado pra correlacionar com NodeUsage, ver live_metrics.go).
 	NodeName          string  `json:"node_name,omitempty"`
@@ -81,6 +97,7 @@ type FinOpsWorkload struct {
 	HPAMin            int     `json:"hpa_min"`
 	HPAMax            int     `json:"hpa_max"`
 	HPACurrent        int     `json:"hpa_current"`
+	HPAName           string  `json:"hpa_name,omitempty"` // nome do HPA (pode diferir do workload); vazio sem HPA ou em relatório antigo
 	HPACostMinBRL     float64 `json:"hpa_cost_min_brl"`
 	HPACostMaxBRL     float64 `json:"hpa_cost_max_brl"`
 	HPACostCurrentBRL float64 `json:"hpa_cost_current_brl"`

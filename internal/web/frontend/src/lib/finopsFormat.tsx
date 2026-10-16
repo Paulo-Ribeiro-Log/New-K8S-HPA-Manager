@@ -39,6 +39,27 @@ export const verdictConfig: Record<string, { label: string; color: string; fill:
 
 export const POOL_COLORS = ["#6366f1", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", "#ec4899"];
 
+/** Recurso do `kubectl set resources`/`autoscale` para o tipo do workload (kind do backend).
+ *  Sem kind (relatório antigo) assume deployment. null = não há objeto para alterar direto (Job,
+ *  ReplicaSet solto, Pod avulso): o ajuste vai no que cria o pod. */
+export function kubectlResource(kind: string | undefined, forAutoscale = false): string | null {
+  switch (kind) {
+    case undefined: case "": case "Deployment": return "deployment";
+    case "StatefulSet": return "statefulset";
+    case "DaemonSet": return forAutoscale ? null : "daemonset";
+    default: return null;
+  }
+}
+
+/** Aviso sob os comandos sugeridos: objeto gerenciado por Helm/GitOps volta ao valor antigo. */
+export function GitOpsNote() {
+  return (
+    <p className="text-[10px] text-muted-foreground italic">
+      Se o workload é gerenciado por Helm, Argo CD ou Flux, aplique a mudança nos values/manifestos: o kubectl é desfeito no próximo deploy.
+    </p>
+  );
+}
+
 /** Exibe um comando kubectl com botão de copiar. */
 export function KubectlBlock({ cmd }: { cmd: string }) {
   const [copied, setCopied] = useState(false);

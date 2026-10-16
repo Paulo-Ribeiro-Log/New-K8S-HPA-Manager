@@ -5,7 +5,7 @@
 // vivem aqui por serem funções puras sem estado de UI, mesma separação já convencionada neste
 // diretório (types vs. lógica vs. componente).
 
-import { fmtBRL, fmtMillis, fmtMi } from "@/lib/finopsFormat";
+import { fmtBRL, fmtMillis, fmtMi, kubectlResource } from "@/lib/finopsFormat";
 import type { FinOpsSummary, FinOpsWorkload, Recommendation } from "./types";
 
 /** true quando Prometheus/Dynatrace foram tentados mas NENHUM workload recebeu dado real de uso
@@ -33,20 +33,28 @@ export function metricsFailureReason(summary: FinOpsSummary): "timeout" | "trans
 }
 
 /**
- * Rótulo do cloud provider + fonte de preço real usada pelo backend pra este cluster
- * (FinOpsHandler.pricerForCluster, internal/web/handlers/finops.go). Mesma detecção por prefixo
- * de context já usada no backend (gke_/arn:aws:eks:) — sem chamada de API extra.
- * EKS ainda cai no AzurePricer (nenhum AWSPricer implementado) — texto avisa que o preço pode
- * estar incorreto em vez de fingir suporte completo.
+ * Rótulo do cloud provider + fonte do preço usado pelo backend para o cluster
+ * (FinOpsHandler.pricerForCluster). O provider vem do cloud_provider do cluster
+ * (config.DetectCloudProvider no backend) — nunca do prefixo do nome.
  */
-export function financeProviderInfo(clusterName: string): { label: string; source: string } {
-  if (clusterName.startsWith("gke_")) {
-    return { label: "GKE", source: "GCP Cloud Billing Catalog API (São Paulo)" };
+export function financeProviderInfo(provider?: string): { label: string; source: string } {
+  switch (provider) {
+    case "gke":
+      return { label: "GKE", source: "GCP Cloud Billing Catalog API (preço de tabela)" };
+    case "eks":
+      return { label: "EKS", source: "AWS Price List API (on-demand, preço de tabela)" };
+    case "aks":
+      return { label: "AKS", source: "Azure Retail Prices API (pay-as-you-go, preço de tabela)" };
+    default:
+      return { label: "", source: "preço de tabela do provedor" };
   }
-  if (clusterName.startsWith("arn:aws:eks:")) {
-    return { label: "EKS", source: "Azure Pricing API (fallback — sem pricer AWS ainda, preço pode estar incorreto)" };
-  }
-  return { label: "AKS", source: "Azure Pricing API (pay-as-you-go, Brasil Sul)" };
+}
+
+/** Workload com alguma ação a sugerir (aba Workloads → Oportunidades e o badge da aba). */
+export function isOpportunity(w: FinOpsWorkload): boolean {
+  return w.verdict === "superprovisioned" || w.verdict === "hpa_removable" ||
+    w.verdict === "no_request" || w.verdict === "oom_risk" ||
+    w.verdict === "fixed_high_cost" || (w.waste_brl ?? 0) > 0;
 }
 
 // ─── Recomendações concretas ──────────────────────────────────────────────────
@@ -184,22 +192,28 @@ export function buildRecommendation(w: FinOpsWorkload, windowDays: number, histo
     lines.push({ text: `Adicionar HPA permite escalar down em baixa demanda` });
     const hpaMin = Math.max(1, Math.ceil(w.pods * 0.5));
     const hpaMax = Math.max(hpaMin + 1, w.pods * 2);
-    kubectlList.push(
-      `kubectl autoscale deployment ${w.workload} -n ${w.namespace} --min=${hpaMin} --max=${hpaMax} --cpu-percent=70`
-    );
+    const target = kubectlResource(w.kind, true);
+    if (target) {
+      kubectlList.push(
+        `kubectl autoscale ${target} ${w.workload} -n ${w.namespace} --min=${hpaMin} --max=${hpaMax} --cpu-percent=70`
+      );
+    } else {
+      lines.push({ text: `${w.kind} não aceita HPA direto — ajuste no objeto que cria os pods` });
+    }
   }
 
+  const hpaName = w.hpa_name || w.workload; // relatório antigo não traz o nome do HPA
   if (safeMin !== undefined && safeMin < w.hpa_min && safeMax !== undefined && safeMax < w.hpa_max) {
     kubectlList.push(
-      `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin},"maxReplicas":${safeMax}}}'`
+      `kubectl patch hpa ${hpaName} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin},"maxReplicas":${safeMax}}}'`
     );
   } else if (safeMin !== undefined && safeMin < w.hpa_min) {
     kubectlList.push(
-      `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin}}}'`
+      `kubectl patch hpa ${hpaName} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin}}}'`
     );
   } else if (safeMax !== undefined && safeMax < w.hpa_max) {
     kubectlList.push(
-      `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"maxReplicas":${safeMax}}}'`
+      `kubectl patch hpa ${hpaName} -n ${w.namespace} -p '{"spec":{"maxReplicas":${safeMax}}}'`
     );
   }
 
@@ -213,9 +227,12 @@ export function buildRecommendation(w: FinOpsWorkload, windowDays: number, histo
     const parts: string[] = [];
     if (hasCpuRec) parts.push(`cpu=${Math.round(w.cpu_recommended_millis!)}m`);
     if (hasMemRec) parts.push(`memory=${Math.round(w.mem_recommended_mi!)}Mi`);
-    kubectlList.push(
-      `kubectl set resources deployment ${w.workload} -n ${w.namespace} --requests=${parts.join(",")}`
-    );
+    const target = kubectlResource(w.kind);
+    if (target) {
+      kubectlList.push(`kubectl set resources ${target} ${w.workload} -n ${w.namespace} --requests=${parts.join(",")}`);
+    } else {
+      lines.push({ text: `Requests sugeridos (${parts.join(", ")}): ajuste no objeto que cria os pods (${w.kind})` });
+    }
   }
 
   // waste_brl Prometheus é mais preciso que estimativa HPA

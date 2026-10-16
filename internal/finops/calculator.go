@@ -24,6 +24,7 @@ type clusterCapacity = ClusterCapacity
 type rawWorkload struct {
 	Namespace        string
 	Workload         string
+	Kind             string
 	Pods             int
 	CPURequestMillis float64
 	MemRequestMi     float64
@@ -32,6 +33,7 @@ type rawWorkload struct {
 	HPAMin           int
 	HPAMax           int
 	HPACurrent       int
+	HPAName          string
 	// PoolPodCounts conta quantos pods deste workload rodam em cada node pool — na prática quase
 	// sempre 1 pool só (afinidade/taint), mas cobre o caso raro de split sem quebrar. Usado só pra
 	// escolher o NodePool "principal" do workload (allocateCosts) — nunca pra ratear custo, que
@@ -144,9 +146,16 @@ func (c *Calculator) BuildReport(
 	// 2. Coletar workloads do cluster (pods + HPAs) + mapa pod→workload para o enricher +
 	// mapa node→pool (reaproveitado abaixo pra NodeUsage).
 	stepStart = time.Now()
-	rawWorkloads, podToWorkload, nodeToPool, err := collectWorkloads(ctx, client, namespaces)
+	rawWorkloads, podToWorkload, nodeToPool, allocByPool, err := collectWorkloads(ctx, client, namespaces)
 	if err != nil {
 		return nil, err
+	}
+	for i := range finOpsPools {
+		if a, ok := allocByPool[finOpsPools[i].Name]; ok {
+			finOpsPools[i].AllocatableCPUMillicores = a.cpuMillis
+			finOpsPools[i].AllocatableMemoryMi = a.memMi
+			finOpsPools[i].AllocatableNodes = a.nodes
+		}
 	}
 	logTiming("collectWorkloads", stepStart, map[string]interface{}{"workloads": len(rawWorkloads)})
 
@@ -529,15 +538,22 @@ func (c *Calculator) calculatePoolCosts(
 // Retorna: lista de rawWorkload + mapa "ns/pod" → "ns/workload" para o enricher Prometheus +
 // mapa "node" → "pool" (usado tanto pro NodePool dos workloads quanto pra NodeUsage, ver
 // Calculator.BuildReport).
+// poolAllocatable soma o status.allocatable dos nodes vivos de um pool.
+type poolAllocatable struct {
+	cpuMillis int64
+	memMi     int64
+	nodes     int
+}
+
 func collectWorkloads(
 	ctx context.Context,
 	client kubernetes.Interface,
 	namespaces []string,
-) ([]rawWorkload, map[string]string, map[string]string, error) {
+) ([]rawWorkload, map[string]string, map[string]string, map[string]poolAllocatable, error) {
 	// 1. Listar todos os ReplicaSets para resolver RS → Deployment
 	rsItems, err := listAllReplicaSets(ctx, client)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	rsOwner := make(map[string]string) // "ns/rs-name" → deployment name
 	for _, rs := range rsItems {
@@ -551,9 +567,12 @@ func collectWorkloads(
 	// 2. Listar HPAs (todos os namespaces)
 	hpaList, err := client.AutoscalingV2().HorizontalPodAutoscalers("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	type hpaInfo struct{ min, max, current int }
+	type hpaInfo struct {
+		name              string
+		min, max, current int
+	}
 	hpaMap := make(map[string]hpaInfo)
 	for _, h := range hpaList.Items {
 		min := 1
@@ -562,6 +581,7 @@ func collectWorkloads(
 		}
 		key := h.Namespace + "/" + h.Spec.ScaleTargetRef.Name
 		hpaMap[key] = hpaInfo{
+			name:    h.Name,
 			min:     min,
 			max:     int(h.Spec.MaxReplicas),
 			current: int(h.Status.CurrentReplicas),
@@ -574,7 +594,7 @@ func collectWorkloads(
 		FieldSelector: "status.phase=Running",
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// 3b. Listar Nodes (uma única vez) e resolver node → pool — necessário pra saber em qual pool
@@ -582,10 +602,16 @@ func collectWorkloads(
 	// Best-effort: falha aqui não aborta o relatório inteiro, só deixa NodePool vazio nos
 	// workloads (a sugestão de tier fica sem dado pro pool afetado, resto do relatório intacto).
 	nodeToPool := make(map[string]string)
+	allocByPool := make(map[string]poolAllocatable)
 	if nodeList, nodeErr := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{}); nodeErr == nil {
 		for _, n := range nodeList.Items {
 			if pool := nodePoolLabelFromNode(n.Labels); pool != "" {
 				nodeToPool[n.Name] = pool
+				a := allocByPool[pool]
+				a.cpuMillis += n.Status.Allocatable.Cpu().MilliValue()
+				a.memMi += n.Status.Allocatable.Memory().Value() / (1024 * 1024)
+				a.nodes++
+				allocByPool[pool] = a
 			}
 		}
 	} else {
@@ -613,9 +639,11 @@ func collectWorkloads(
 			workloadMap[key] = &rawWorkload{
 				Namespace:     pod.Namespace,
 				Workload:      workloadName,
+				Kind:          ResolveWorkloadKind(pod, rsOwner),
 				HPAMin:        h.min,
 				HPAMax:        h.max,
 				HPACurrent:    h.current,
+				HPAName:       h.name,
 				PoolPodCounts: make(map[string]int),
 				NodePodCounts: make(map[string]int),
 			}
@@ -644,7 +672,7 @@ func collectWorkloads(
 	for _, wl := range workloadMap {
 		result = append(result, *wl)
 	}
-	return result, podToWorkload, nodeToPool, nil
+	return result, podToWorkload, nodeToPool, allocByPool, nil
 }
 
 // allocateCosts distribui o custo do cluster proporcionalmente entre os workloads.
@@ -698,18 +726,21 @@ func allocateCosts(
 		fw := FinOpsWorkload{
 			Namespace:         wl.Namespace,
 			Workload:          wl.Workload,
+			Kind:              wl.Kind,
 			Pods:              wl.Pods,
 			CPURequestMillis:  round2(wl.CPURequestMillis / podCount),
 			MemRequestMi:      round2(wl.MemRequestMi / podCount),
 			CPULimitMillis:    round2(wl.CPULimitMillis / podCount),
 			MemLimitMi:        round2(wl.MemLimitMi / podCount),
 			NodePool:          dominantPool(wl.PoolPodCounts),
+			PoolPods:          wl.PoolPodCounts,
 			NodeName:          dominantPool(wl.NodePodCounts),
 			CostShareUSD:      round2(costShareUSD),
 			CostShareBRL:      round2(costShareUSD * rate),
 			HPAMin:            hpaMin,
 			HPAMax:            hpaMax,
 			HPACurrent:        hpaCurrent,
+			HPAName:           wl.HPAName,
 			HPACostMinBRL:     round2(podCostUSD * float64(hpaMin) * rate),
 			HPACostMaxBRL:     round2(podCostUSD * float64(hpaMax) * rate),
 			HPACostCurrentBRL: round2(podCostUSD * float64(hpaCurrent) * rate),
@@ -851,6 +882,24 @@ func ResolveWorkload(pod *corev1.Pod, rsOwner map[string]string) string {
 	}
 	// Pod avulso — usar nome sem hash
 	return stripHash(pod.Name)
+}
+
+// ResolveWorkloadKind devolve o tipo do dono do pod, pela mesma cadeia de ResolveWorkload:
+// Deployment, StatefulSet, DaemonSet, Job, ReplicaSet (sem Deployment) ou Pod (avulso). Usado para
+// os comandos sugeridos (`kubectl set resources <kind>`) apontarem para o objeto certo.
+func ResolveWorkloadKind(pod *corev1.Pod, rsOwner map[string]string) string {
+	for _, ref := range pod.OwnerReferences {
+		switch ref.Kind {
+		case "ReplicaSet":
+			if _, ok := rsOwner[pod.Namespace+"/"+ref.Name]; ok {
+				return "Deployment"
+			}
+			return "ReplicaSet"
+		case "StatefulSet", "DaemonSet", "Job":
+			return ref.Kind
+		}
+	}
+	return "Pod"
 }
 
 // stripHash remove o último segmento de hash de um nome K8s

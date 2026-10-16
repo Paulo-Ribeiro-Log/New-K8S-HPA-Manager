@@ -405,6 +405,7 @@ func (h *FinOpsHandler) persistRightsizingFromReport(
 		workloadRecs = append(workloadRecs, storage.WorkloadRecommendation{
 			Namespace:                 wl.Namespace,
 			Workload:                  wl.Workload,
+			Kind:                      wl.Kind,
 			NodePool:                  wl.NodePool,
 			NodeName:                  wl.NodeName,
 			Pods:                      wl.Pods,

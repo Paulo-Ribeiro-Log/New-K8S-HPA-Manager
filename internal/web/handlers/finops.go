@@ -81,6 +81,12 @@ type FinOpsHandler struct {
 	// guardado por cluster (finops_data_resources.go).
 	dataRGMu    sync.Mutex
 	dataRGCache map[string]cachedDataRG
+
+	// Custo faturado (Cost Management) dos RGs do cluster — o dado muda ~1x por dia e a API limita
+	// chamadas, então fica em cache por cluster (finops_billed_cost.go).
+	billedSF    singleflight.Group
+	billedMu    sync.Mutex
+	billedCache map[string]billedCostResponse
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -120,6 +126,7 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 
 		unattachedDisksCache: make(map[string]cachedUnattachedDisks),
 		orphanCache:          make(map[string]cachedOrphanScan),
+		billedCache:          make(map[string]billedCostResponse),
 		dataUsageCache:       make(map[string]cachedDataUsage),
 		dataRGCache:          make(map[string]cachedDataRG),
 	}
@@ -368,6 +375,12 @@ func (h *FinOpsHandler) doGetReport(
 		}
 	}
 
+	// Cobertura de reserva/Savings Plan por pool (Cost Management, só AKS, com TTL — o rightsizing
+	// acima já pode ter atualizado). Vai no relatório para o Node Pools/Relatório não tratarem preço
+	// de tabela como economia certa.
+	h.autoRefreshCoverage(ctx, cluster)
+	finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(cluster))
+
 	// Cacheia o relatório recém-gerado como "último scan" deste cluster — bug real corrigido,
 	// relatado pelo usuário: "sempre que chamamos a aba finops, ela vem vazia... ajuste para que
 	// venha com a exibição do último scan". Antes o relatório só existia no cache em memória do
@@ -426,7 +439,14 @@ func (h *FinOpsHandler) GetLastReport(c *gin.Context) {
 	}
 
 	log.Debug().Str("cluster", cluster).Time("generated_at", generatedAt).Msg("FinOps: último relatório restaurado do cache (sem re-scan)")
-	c.Data(http.StatusOK, "application/json; charset=utf-8", reportJSON)
+	// A cobertura muda depois do scan ("Atualizar cobertura" no Rightsizing): reanexa a gravada agora.
+	var report finops.FinOpsReport
+	if err := json.Unmarshal(reportJSON, &report); err != nil {
+		c.Data(http.StatusOK, "application/json; charset=utf-8", reportJSON)
+		return
+	}
+	finops.AttachPoolCoverage(report.NodePools, h.poolCoverage(cluster))
+	c.JSON(http.StatusOK, report)
 }
 
 // GetPricing godoc
@@ -700,7 +720,11 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 }
 
 // GetVMAlternatives godoc
-// GET /api/v1/finops/vm-alternatives?cluster=X&sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3
+// GET /api/v1/finops/vm-alternatives?cluster=X&sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3[&pool=Y]
+//
+// Com pool, cada alternativa traz o aviso de cobertura do pool (reserva/Savings Plan gravados por
+// "Atualizar cobertura" no Rightsizing) — a economia é de preço de tabela e não se realiza inteira
+// num pool coberto. O ReservedHint (SKU já coberto na frota) vem sempre.
 //
 // Retorna até 3 SKUs/instance types alternativos sugeridos para o VM size informado, levando em
 // conta os percentuais de utilização de CPU e Memória do pool para identificar o gargalo.
@@ -736,6 +760,11 @@ func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
 	if alternatives == nil {
 		alternatives = []finops.VMAlternative{}
 	}
+	var poolCov *finops.PoolCoverage
+	if pool := c.Query("pool"); pool != "" {
+		poolCov = h.poolCoverage(cluster)[strings.ToLower(pool)]
+	}
+	annotateAlternativesCoverage(sku, alternatives, poolCov, h.skuCoverageIndex(), nodeCount, rate)
 
 	cpu, mem := pricer.GetVMSpecs(sku)
 	c.JSON(http.StatusOK, gin.H{
@@ -748,6 +777,26 @@ func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
 		"node_count":   nodeCount,
 		"alternatives": alternatives,
 	})
+}
+
+// annotateAlternativesCoverage marca nas alternativas o SKU já coberto na frota (ReservedHint) e,
+// com a cobertura do pool, o aviso de reserva/Savings Plan e os cenários da troca — mesma regra da
+// leitura do rightsizing (nodePoolTierResponses). Não altera a economia calculada.
+func annotateAlternativesCoverage(sku string, alts []finops.VMAlternative, poolCov *finops.PoolCoverage, skuIndex finops.SKUCoverageIndex, nodeCount int, rate float64) {
+	for i := range alts {
+		alt := &alts[i]
+		alt.ReservedHint = skuIndex.Hint(alt.VMSize)
+		alt.CoverageWarning = finops.AssessCoverageWarning(sku, alt.VMSize, poolCov)
+		if w := alt.CoverageWarning; w != nil && w.Level == finops.CoverageLevelReservation {
+			w.Scenarios = finops.AssessSwapScenarios(sku, alt.VMSize, poolCov, finops.SwapInputs{
+				NodeCount:       nodeCount,
+				AltPriceUSDHour: alt.PriceUSDHour,
+				ExchangeRate:    rate,
+				TableSavingsBRL: alt.MonthlySavingsBRL,
+				CostDeltaPct:    alt.CostDeltaPct,
+			})
+		}
+	}
 }
 
 // GetSavedTimelines godoc

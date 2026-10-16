@@ -912,6 +912,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/finops/storage/refresh", rbacMiddleware.RequireSREGroup(), finOpsHandler.RefreshDiskPricing)
 	api.GET("/finops/unattached-disks", finOpsHandler.GetUnattachedDisks) // discos desatachados (Azure/GCP/AWS) — só leitura; a app nunca exclui, devolve o comando de exclusão pra copiar
 	api.GET("/finops/orphan-resources", finOpsHandler.GetOrphanResources) // Azure: discos + demais recursos órfãos nos RGs das jornadas do cabeçalho — só leitura
+	api.GET("/finops/billed-cost", finOpsHandler.GetBilledCost)           // custo faturado (Cost Management, amortizado 30d) dos RGs do AKS — só leitura, cache 6 h
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)

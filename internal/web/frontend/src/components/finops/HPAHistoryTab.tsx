@@ -15,6 +15,7 @@ import {
   ArrowUpDown, Info, ChevronDown, ChevronUp, Activity, GitCompare, Database,
 } from "lucide-react";
 import { SummaryCard } from "@/lib/finopsFormat";
+import { apiClient } from "@/lib/api/client";
 import type { HPADayPoint, HPATimeline, TimelineReport, TimelineCompareResponse, TimelineSnapshotMeta } from "./types";
 
 type SortField = "workload" | "util" | "daysAtMax" | "daysAtMin";
@@ -392,9 +393,6 @@ export function HPAHistoryTab({
   const [selectedSnap1, setSelectedSnap1] = useState<string>("");
   const [selectedSnap2, setSelectedSnap2] = useState<string>("");
 
-  const token = localStorage.getItem("auth_token");
-  const authHeaders = { Authorization: `Bearer ${token}` };
-
   // ── Timeline principal (useQuery preserva dados ao trocar de aba) ──────────
   const {
     data: timeline,
@@ -404,15 +402,7 @@ export function HPAHistoryTab({
   } = useQuery<TimelineReport>({
     queryKey: ["finops-hpa-history", cluster, days],
     queryFn: async () => {
-      const r = await fetch(
-        `/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=${days}`,
-        { headers: authHeaders }
-      );
-      if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        throw new Error((e as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      return r.json();
+      return apiClient.get(`/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=${days}`);
     },
     enabled: false,       // só busca ao clicar no botão
     staleTime: 10 * 60 * 1000, // dados sobrevivem 10 min ao trocar de aba
@@ -429,15 +419,7 @@ export function HPAHistoryTab({
   } = useQuery<TimelineCompareResponse>({
     queryKey: ["finops-hpa-compare", cluster, days],
     queryFn: async () => {
-      const r = await fetch(
-        `/api/v1/finops/timeline/compare?cluster=${encodeURIComponent(cluster)}&days=${days}`,
-        { headers: authHeaders }
-      );
-      if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        throw new Error((e as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      return r.json();
+      return apiClient.get(`/finops/timeline/compare?cluster=${encodeURIComponent(cluster)}&days=${days}`);
     },
     enabled: false,
     staleTime: 10 * 60 * 1000,
@@ -448,12 +430,7 @@ export function HPAHistoryTab({
   const { data: savedData } = useQuery<{ count: number; snapshots: TimelineSnapshotMeta[] }>({
     queryKey: ["finops-hpa-saved", cluster],
     queryFn: async () => {
-      const r = await fetch(
-        `/api/v1/finops/timeline/saved?cluster=${encodeURIComponent(cluster)}`,
-        { headers: authHeaders }
-      );
-      if (!r.ok) return { count: 0, snapshots: [] };
-      return r.json();
+      return apiClient.get(`/finops/timeline/saved?cluster=${encodeURIComponent(cluster)}`).catch(() => ({ count: 0, snapshots: [] }));
     },
     enabled: !!cluster,
     staleTime: 60 * 1000,
@@ -468,15 +445,7 @@ export function HPAHistoryTab({
   } = useQuery<TimelineCompareResponse>({
     queryKey: ["finops-hpa-compare-snapshot", cluster, days, selectedSnap1],
     queryFn: async () => {
-      const r = await fetch(
-        `/api/v1/finops/timeline/compare-snapshot?cluster=${encodeURIComponent(cluster)}&days=${days}&snapshot_id=${encodeURIComponent(selectedSnap1)}`,
-        { headers: authHeaders }
-      );
-      if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        throw new Error((e as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      return r.json();
+      return apiClient.get(`/finops/timeline/compare-snapshot?cluster=${encodeURIComponent(cluster)}&days=${days}&snapshot_id=${encodeURIComponent(selectedSnap1)}`);
     },
     enabled: false,
     staleTime: 10 * 60 * 1000,
@@ -491,15 +460,7 @@ export function HPAHistoryTab({
   } = useQuery<TimelineCompareResponse & { current_period?: string; previous_period?: string; current_saved_at?: string }>({
     queryKey: ["finops-hpa-compare-saved", cluster, selectedSnap1, selectedSnap2],
     queryFn: async () => {
-      const r = await fetch(
-        `/api/v1/finops/timeline/compare-saved?cluster=${encodeURIComponent(cluster)}&snap1=${encodeURIComponent(selectedSnap1)}&snap2=${encodeURIComponent(selectedSnap2)}`,
-        { headers: authHeaders }
-      );
-      if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        throw new Error((e as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      return r.json();
+      return apiClient.get(`/finops/timeline/compare-saved?cluster=${encodeURIComponent(cluster)}&snap1=${encodeURIComponent(selectedSnap1)}&snap2=${encodeURIComponent(selectedSnap2)}`);
     },
     enabled: false,
     staleTime: 10 * 60 * 1000,

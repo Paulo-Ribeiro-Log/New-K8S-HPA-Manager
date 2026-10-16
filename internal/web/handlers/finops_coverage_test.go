@@ -124,3 +124,25 @@ func TestAutoRefreshCoverage_SemStoreNaoFazNada(t *testing.T) {
 		t.Errorf("sem store a cobertura é vazia: %+v", got)
 	}
 }
+
+// /finops/vm-alternatives (aba Node Pools) com a mesma regra da leitura do rightsizing: o pool em
+// reserva ganha o aviso e os cenários; sem cobertura consultada, nada muda.
+func TestAnnotateAlternativesCoverage(t *testing.T) {
+	alts := []finops.VMAlternative{{VMSize: "Standard_D4s_v5", PriceUSDHour: 0.192, CostDeltaPct: -26.7, MonthlySavingsBRL: 13665, Verdict: "recommended"}}
+	cov := &finops.PoolCoverage{Reservation: 0.99, OnDemand: 0.01, WindowDays: 30, FetchedAt: time.Now(), EffectiveCost: 15023, Currency: "BRL"}
+	annotateAlternativesCoverage("Standard_F4s_v2", alts, cov, finops.SKUCoverageIndex{}, 52, 5.1426)
+
+	w := alts[0].CoverageWarning
+	if w == nil || w.Level != finops.CoverageLevelReservation || w.Scenarios == nil || w.Scenarios.BestCaseSavingsBRL != 13665 {
+		t.Fatalf("pool em reserva precisa do aviso com cenários: %+v", w)
+	}
+	if alts[0].MonthlySavingsBRL != 13665 {
+		t.Errorf("o aviso NÃO pode alterar a economia: %v", alts[0].MonthlySavingsBRL)
+	}
+
+	plain := []finops.VMAlternative{{VMSize: "Standard_D4s_v5", Verdict: "consider"}}
+	annotateAlternativesCoverage("Standard_F4s_v2", plain, nil, finops.SKUCoverageIndex{}, 3, 5.1426)
+	if plain[0].CoverageWarning != nil || plain[0].ReservedHint != nil {
+		t.Errorf("sem cobertura consultada, nada de aviso: %+v", plain[0])
+	}
+}

@@ -6,9 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList } from "recharts";
 import { TrendingDown, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
-import { fmtBRL, fmtMillis, fmtMi, KubectlBlock, VerdictBadge } from "@/lib/finopsFormat";
+import { fmtBRL, fmtMillis, fmtMi, KubectlBlock, VerdictBadge, GitOpsNote } from "@/lib/finopsFormat";
 import type { FinOpsSummary, FinOpsWorkload, Recommendation } from "./types";
-import { buildRecommendation } from "./helpers";
+import { buildRecommendation, isOpportunity } from "./helpers";
 
 const ACTION_TYPE_LABELS: Record<string, string> = {
   hpa_min:           "Reduzir HPA min",
@@ -62,9 +62,7 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
 
   // ── Build lista completa de oportunidades ─────────────────────────────────────
   const allOpportunities: OpItem[] = workloads
-    .filter(w => w.verdict === "superprovisioned" || w.verdict === "hpa_removable" ||
-                 w.verdict === "no_request" || w.verdict === "oom_risk" ||
-                 w.verdict === "fixed_high_cost" || (w.waste_brl ?? 0) > 0)
+    .filter(isOpportunity)
     .map(w => {
       const rec = buildRecommendation(w, windowDays, historicalRan);
       const saving = rec.savingBRL > 0
@@ -75,6 +73,9 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
     .sort((a, b) => b.saving !== a.saving ? b.saving - a.saving : b.rec.exposureBRL - a.rec.exposureBRL);
 
   const totalSaving          = allOpportunities.reduce((s, o) => s + o.saving, 0);
+  // Parte em pools sob reserva/Savings Plan/Spot: só vira dinheiro liberando nodes.
+  const committedSaving      = allOpportunities.filter(o => o.committed).reduce((s, o) => s + o.saving, 0);
+  const effectiveBasis       = workloads.some(w => w.cost_basis === "effective");
   const totalExposure        = allOpportunities.reduce((s, o) => s + o.rec.exposureBRL, 0);
   const totalWaste           = workloads.reduce((s, w) => s + (w.waste_brl ?? 0), 0);
   const needsPrometheusCount = allOpportunities.filter(o => o.rec.needsPrometheus).length;
@@ -140,7 +141,7 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
                 <VerdictBadge verdict={w.verdict} />
               </div>
               <div className="text-right flex-shrink-0 space-y-0.5">
-                <p className="text-[10px] text-muted-foreground">custo atual</p>
+                <p className="text-[10px] text-muted-foreground">custo atual{w.cost_basis === "effective" ? " (efetivo)" : ""}</p>
                 <p className="text-sm font-semibold">{fmtBRL(w.cost_share_brl)}/mês</p>
                 {(w.avg_replicas_cost_brl ?? 0) > 0 && w.avg_replicas_cost_brl !== w.cost_share_brl && (
                   <p className="text-[10px] text-muted-foreground">
@@ -149,9 +150,15 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
                 )}
                 {w.saving > 0 ? (
                   <>
-                    <p className="text-[10px] text-muted-foreground mt-1">economia estimada</p>
-                    <p className="text-base font-bold text-green-600">-{fmtBRL(w.saving)}/mês</p>
-                    <p className="text-[10px] text-muted-foreground">/ano: -{fmtBRL(w.saving * 12)}</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">{w.committed ? "economia se liberar nodes" : "economia estimada"}</p>
+                    <p className={`text-base font-bold ${w.committed ? "text-amber-600" : "text-green-600"}`}>-{fmtBRL(w.saving)}/mês</p>
+                    {w.committed ? (
+                      <p className="text-[10px] text-muted-foreground max-w-[13rem]" title="O pool está sob reserva/Savings Plan/Spot: reduzir o request só economiza quando os nodes liberados saem do pool e o compromisso é reaproveitado por outra carga">
+                        pool sob reserva: não é economia certa
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-muted-foreground">/ano: -{fmtBRL(w.saving * 12)}</p>
+                    )}
                   </>
                 ) : w.rec.exposureBRL > 0 ? (
                   <>
@@ -205,6 +212,7 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
             {w.rec.kubectlList.length > 0 && (
               <div className="mt-1.5 space-y-1.5">
                 {w.rec.kubectlList.map((cmd, ci) => <KubectlBlock key={ci} cmd={cmd} />)}
+                <GitOpsNote />
               </div>
             )}
           </div>
@@ -244,7 +252,13 @@ export function OpportunitiesTab({ workloads, windowDays, historicalRan = true }
             {"."}
           </span>
           {totalWaste > 0 && <span className="block">Desperdício real (P95): <strong className="text-red-600">{fmtBRL(totalWaste)}/mês = {fmtBRL(totalWaste * 12)}/ano</strong></span>}
-          {totalSaving > 0 && <span className="block">Economia imediata estimada: <strong className="text-green-600">{fmtBRL(totalSaving)}/mês = {fmtBRL(totalSaving * 12)}/ano</strong></span>}
+          {totalSaving - committedSaving > 0 && <span className="block">Economia estimada (pools sob demanda): <strong className="text-green-600">{fmtBRL(totalSaving - committedSaving)}/mês = {fmtBRL((totalSaving - committedSaving) * 12)}/ano</strong></span>}
+          {committedSaving > 0 && (
+            <span className="block text-amber-700 dark:text-amber-400">
+              Em pools sob reserva/Savings Plan: <strong>{fmtBRL(committedSaving)}/mês</strong> — só vira economia liberando nodes e reaproveitando o compromisso
+            </span>
+          )}
+          {effectiveBasis && <span className="block text-[11px] text-muted-foreground">Valores pelo custo efetivo (Cost Management) nos pools com cobertura.</span>}
           {!hasPrometheus && totalExposure > 0 && (
             <span className="block text-amber-700 dark:text-amber-400">
               Exposição máxima: <strong>{fmtBRL(totalExposure)}/mês</strong> — ative Prometheus para recomendar valores seguros

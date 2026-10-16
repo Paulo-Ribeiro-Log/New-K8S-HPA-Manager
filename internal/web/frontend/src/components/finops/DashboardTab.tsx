@@ -1,43 +1,39 @@
 // F5.1 (FINOPS-IMPROVEMENTS-PLAN.md) — extraído de FinOpsTab.tsx (mesmo padrão já usado pra
-// RightsizingTab.tsx/DataResourcesPanel.tsx), sem mudança de comportamento.
+// RightsizingTab.tsx/DataResourcesPanel.tsx). Fase 2 do FINOPS-REVISAO-PLAN.md: sem o card de
+// oportunidades (Workloads → Oportunidades) e sem o gráfico de réplicas (aba HPA).
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  Legend, ComposedChart, Line, Area, ReferenceLine,
+  ComposedChart, Line, Area, ReferenceLine,
 } from "recharts";
 import {
-  TrendingDown, CheckCircle2, Loader2, Server, Layers, CircleDollarSign, Activity,
+  Loader2, Server, Layers, CircleDollarSign, Activity,
 } from "lucide-react";
-import { fmtBRL, fmtUSD, VerdictBadge } from "@/lib/finopsFormat";
+import { fmtBRL, fmtUSD } from "@/lib/finopsFormat";
 import { DataResourcesPanel } from "@/components/DataResourcesPanel";
 import type { FinOpsReport, TimelineReport } from "./types";
-import { buildRecommendation } from "./helpers";
+import { buildActionPlan, toEffectiveReport } from "./capacity";
+import { apiClient } from "@/lib/api/client";
 
-const LINE_COLORS = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#84cc16","#f97316","#14b8a6"];
 
-export function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsReport }) {
-  const { summary } = report;
-  const node_pools = report.node_pools ?? [];
-  const workloads  = report.workloads  ?? [];
-  const namespaces = report.namespaces ?? [];
+export function DashboardTab({ cluster, report, provider }: { cluster: string; report: FinOpsReport; provider?: string }) {
+  // Valores em reais no custo efetivo dos pools com cobertura de reserva/Savings Plan.
+  const view = toEffectiveReport(report);
+  const effective = view !== report;
+  const { summary } = view;
+  const node_pools = view.node_pools ?? [];
+  const workloads  = view.workloads  ?? [];
+  const namespaces = view.namespaces ?? [];
   const [days, setDays] = useState(30);
 
   // ── Fetch timeline ──────────────────────────────────────────────────────────
   const { data: tl, isLoading: tlLoading } = useQuery<TimelineReport>({
     queryKey: ["finops-timeline-dashboard", cluster, days],
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=${days}`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
-      );
-      if (!r.ok) throw new Error(`Timeline: ${r.status}`);
-      return r.json();
-    },
+    queryFn: () => apiClient.getFinOpsTimeline(cluster, days),
     enabled: !!cluster,
     staleTime: 5 * 60 * 1000,
     retry: false,
@@ -63,9 +59,9 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
     ? Math.round(hpaWkl.reduce((s, w) => s + w.hpa_current, 0) / hpaWkl.reduce((s, w) => s + w.hpa_max, 0) * 100)
     : null;
 
-  const totalSavings = summary.potential_savings_brl > 0
-    ? summary.potential_savings_brl
-    : summary.hpa_savings_if_min_brl;
+  // Mesma economia do Relatório (capacity.ts), sem dupla contagem.
+  const plan = buildActionPlan(report);
+  const totalSavings = plan.totalSaving;
 
   // ── Main timeline: custo diário + eficiência % ───────────────────────────────
   type MainPoint = { date: string; custo: number | null; cpuEff: number | null; memEff: number | null; nodes: number | null };
@@ -110,20 +106,20 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
     const denom = n * sumX2 - sumX * sumX;
     const slope = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
     const intercept = (sumY - slope * sumX) / n;
-    // Função auxiliar para somar dias à string "MM-DD"
-    const addDays = (mmdd: string, d: number) => {
-      const [mm, day] = mmdd.split("-").map(Number);
-      const dt = new Date(2026, mm - 1, day + d);
+    // Soma dias à última data completa da série (YYYY-MM-DD) e devolve "MM-DD".
+    const lastISO = [...(tl?.nodes ?? []), ...(tl?.cpu ?? []), ...(tl?.mem ?? [])].map(p => p.date).sort().pop() ?? "";
+    const addDays = (iso: string, d: number) => {
+      const dt = new Date(`${iso}T00:00:00`);
+      dt.setDate(dt.getDate() + d);
       return `${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
     };
-    const lastDate = mainTimeline[mainTimeline.length - 1]?.date ?? "";
     // Ponto de ponte: último ponto real também recebe projecao
     const extended: MainPointExt[] = mainTimeline.map(p => ({ ...p }));
     extended[extended.length - 1].projecao = Math.max(0, Math.round(intercept + slope * (n - 1)));
     // 30 dias de projeção
     for (let i = 1; i <= 30; i++) {
       extended.push({
-        date: addDays(lastDate, i),
+        date: addDays(lastISO, i),
         custo: null,
         cpuEff: null,
         memEff: null,
@@ -162,40 +158,6 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
     { total: r.total, wastePct: r.wastePct },
   ]));
 
-  // ── Opportunities table ───────────────────────────────────────────────────────
-  const windowDays = report.window_days || 30;
-  const opportunities = workloads
-    .map(w => {
-      const rec = buildRecommendation(w, windowDays, report.window_days > 0);
-      // Prioridade: waste_brl (Prometheus) > estimativa HPA > fallback
-      const saving = rec.savingBRL > 0
-        ? rec.savingBRL
-        : w.verdict === "superprovisioned" ? w.hpa_cost_current_brl - w.hpa_cost_min_brl
-        : w.verdict === "hpa_removable"    ? w.hpa_cost_current_brl - w.hpa_cost_min_brl
-        : 0;
-      return { ...w, saving, rec };
-    })
-    .filter(w => w.saving > 5 || (w.verdict !== "ok" && w.cost_share_brl > 50))
-    .sort((a, b) => b.saving - a.saving)
-    .slice(0, 12);
-
-  const opTotalSaving = opportunities.reduce((s, o) => s + o.saving, 0);
-
-  // ── HPA top-8 for chart ───────────────────────────────────────────────────────
-  const top8HPAs = (tl?.hpas ?? [])
-    .map(h => ({ ...h, maxObs: Math.max(...h.series.map(p => p.max_replicas), 0) }))
-    .sort((a, b) => b.maxObs - a.maxObs).slice(0, 8);
-
-  const hpaAllDates = [...new Set((tl?.hpas ?? []).flatMap(h => h.series.map(p => p.date)))].sort();
-  const hpaChartData = hpaAllDates.map(date => {
-    const entry: Record<string, number | string> = { date: date.slice(5) };
-    top8HPAs.forEach((h, i) => {
-      const pt = h.series.find(p => p.date === date);
-      entry[`h${i}`] = pt ? Math.round(pt.avg_replicas) : 0;
-    });
-    return entry;
-  });
-
   // ── Nodes ─────────────────────────────────────────────────────────────────────
   const nodesData = (tl?.nodes ?? []).map(n => ({
     date: n.date.slice(5),
@@ -211,7 +173,7 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
         <Card className="col-span-1">
           <CardContent className="p-3">
             <p className="text-[10px] text-muted-foreground">
-              {(summary.total_with_storage_brl ?? 0) > 0 ? "Compute/mês" : "Custo/mês"}
+              {(summary.total_with_storage_brl ?? 0) > 0 ? "Compute/mês" : "Custo/mês"}{effective ? " (efetivo)" : ""}
             </p>
             <p className="text-lg font-bold text-blue-600 leading-tight">{fmtBRL(summary.total_monthly_cost_brl)}</p>
             {(summary.total_with_storage_brl ?? 0) > 0 ? (
@@ -232,6 +194,11 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
               </>
             ) : (
               <p className="text-[10px] text-muted-foreground">{fmtUSD(summary.total_monthly_cost_usd)}</p>
+            )}
+            {effective && (
+              <p className="text-[10px] text-muted-foreground" title="Pools com cobertura do Cost Management pelo custo efetivo (reserva/Savings Plan); demais pools e discos em preço de tabela">
+                tabela: {fmtBRL(report.summary.total_monthly_cost_brl)}
+              </p>
             )}
           </CardContent>
         </Card>
@@ -283,12 +250,14 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
           </CardContent>
         </Card>
         {/* Desperdício */}
-        <Card className="col-span-1 border-red-200 dark:border-red-900/40">
+        <Card className="col-span-1 border-green-200 dark:border-green-900/40">
           <CardContent className="p-3">
-            <p className="text-[10px] text-muted-foreground">Desperdício/mês</p>
-            <p className="text-lg font-bold text-red-500 leading-tight">{fmtBRL(totalSavings)}</p>
+            <p className="text-[10px] text-muted-foreground">Economia certa/mês</p>
+            <p className="text-lg font-bold text-green-600 leading-tight">{fmtBRL(totalSavings)}</p>
             <p className="text-[10px] text-muted-foreground">
-              {summary.total_monthly_cost_brl > 0 ? Math.round(totalSavings / summary.total_monthly_cost_brl * 100) : 0}% do custo total
+              {totalSavings === 0 && plan.actions.length > 0
+                ? "as ações dependem de reaproveitar reservas"
+                : `${(summary.total_with_storage_brl ?? summary.total_monthly_cost_brl) > 0 ? Math.round(totalSavings / (summary.total_with_storage_brl ?? summary.total_monthly_cost_brl) * 100) : 0}% do custo total`}
             </p>
           </CardContent>
         </Card>
@@ -311,11 +280,13 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
           compacto; a versão completa (lista expansível por recurso) continua em Armazenamento,
           sem mudança. O próprio componente já é silencioso quando o cluster não tem RG de dados
           (nota discreta, nunca alarme) — reaproveitado tal como está, sem duplicar lógica. */}
-      <Card>
-        <CardContent className="p-3">
-          <DataResourcesPanel cluster={cluster} />
-        </CardContent>
-      </Card>
+      {provider === "aks" && (
+        <Card>
+          <CardContent className="p-3">
+            <DataResourcesPanel cluster={cluster} />
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── 2. Window selector ──────────────────────────────────────────────── */}
       <div className="flex items-center gap-2">
@@ -343,7 +314,7 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
             <CircleDollarSign className="h-4 w-4 text-amber-500" />
             Custo Diário × Eficiência de Uso
             <span className="text-[10px] font-normal text-muted-foreground">
-              {hasEfficiency ? "barras = custo R$/dia · linhas = eficiência % · tracejado = projeção 30d" : "barras = custo estimado R$/dia · tracejado = projeção 30d (regressão linear)"}
+              {hasEfficiency ? "barras = custo estimado R$/dia (nodes × custo médio por node) · linhas = eficiência % · tracejado = projeção 30d" : "barras = custo estimado R$/dia (nodes × custo médio por node) · tracejado = projeção 30d (regressão linear)"}
             </span>
           </CardTitle>
         </CardHeader>
@@ -482,57 +453,8 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
         </Card>
       </div>
 
-      {/* ── 4. HPA Réplicas | Nodes Ready ────────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* HPA Réplicas */}
-        <Card>
-          <CardHeader className="pb-1 pt-3 px-4">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Activity className="h-4 w-4 text-violet-500" />
-              HPA Réplicas — top {top8HPAs.length}
-              <span className="text-[10px] font-normal text-muted-foreground">(avg diário)</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="px-2 pb-3">
-            {hpaChartData.length === 0 ? (
-              <div className="flex items-center justify-center h-[170px] text-xs text-muted-foreground gap-2">
-                {tlLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4 opacity-30" />}
-                {tlLoading ? "Carregando…" : "Sem HPAs com histórico (Prometheus)"}
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height={170}>
-                <ComposedChart data={hpaChartData} margin={{ left: 4, right: 8, top: 4, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.3} />
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={24} allowDecimals={false} />
-                  <Tooltip content={({ active, payload, label }) => {
-                    if (!active || !payload?.length) return null;
-                    return (
-                      <div style={{ background: "hsl(var(--card) / 0.97)", backdropFilter: "blur(8px)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}>
-                        <p className="font-medium mb-1">{label}</p>
-                        {payload.filter(p => (p.value as number) > 0).map((p, i) => {
-                          const idx = parseInt((p.dataKey as string).replace("h",""));
-                          return <p key={i} style={{ color: p.color }}>{top8HPAs[idx]?.workload}: {p.value} répl.</p>;
-                        })}
-                      </div>
-                    );
-                  }} />
-                  <Legend iconType="plainline" iconSize={12} wrapperStyle={{ fontSize: 9, paddingTop: 4 }}
-                    formatter={(_v: unknown, entry: { dataKey?: unknown }) => {
-                      const idx = parseInt(((entry.dataKey as string) ?? "").replace("h",""));
-                      return top8HPAs[idx]?.workload ?? String(entry.dataKey ?? "");
-                    }} />
-                  {top8HPAs.map((_, i) => (
-                    <Line key={i} type="monotone" dataKey={`h${i}`}
-                      stroke={LINE_COLORS[i % LINE_COLORS.length]}
-                      strokeWidth={1.5} dot={false} connectNulls />
-                  ))}
-                </ComposedChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-
+      {/* ── 4. Nodes Ready ─────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-4">
         {/* Nodes Ready */}
         <Card>
           <CardHeader className="pb-1 pt-3 px-4">
@@ -577,119 +499,6 @@ export function DashboardTab({ cluster, report }: { cluster: string; report: Fin
         </Card>
       </div>
 
-      {/* ── 5. Oportunidades de Economia (último painel) ──────────────────────── */}
-      <Card className="border-amber-200 dark:border-amber-900/40">
-        <CardHeader className="pb-1 pt-3 px-4">
-          <CardTitle className="text-sm flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <TrendingDown className="h-4 w-4 text-red-500" />
-              Oportunidades de Economia
-              {windowDays > 0 && (
-                <span className="text-[10px] font-normal text-muted-foreground">({windowDays}d de histórico Prometheus)</span>
-              )}
-            </span>
-            {opTotalSaving > 0 && (
-              <span className="text-[10px] font-semibold text-green-600 dark:text-green-400">
-                Potencial total: {fmtBRL(opTotalSaving)}/mês
-              </span>
-            )}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {opportunities.length === 0 ? (
-            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground gap-2">
-              <CheckCircle2 className="h-4 w-4 text-green-500" />
-              Nenhuma oportunidade significativa identificada
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="text-[10px] text-muted-foreground">
-                  <TableHead className="pl-4">Workload</TableHead>
-                  <TableHead>Recomendação concreta</TableHead>
-                  <TableHead className="text-right">Custo atual</TableHead>
-                  <TableHead className="text-right text-green-600">Economia/mês</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {opportunities.map((w, i) => (
-                  <TableRow key={i} className={`text-xs align-top ${
-                    w.verdict === "superprovisioned" ? "bg-red-50/40 dark:bg-red-950/10" :
-                    w.verdict === "oom_risk"         ? "bg-yellow-50/40 dark:bg-yellow-950/10" :
-                    w.verdict === "hpa_removable"    ? "bg-purple-50/40 dark:bg-purple-950/10" : ""
-                  }`}>
-                    <TableCell className="pl-4 py-2 min-w-[130px]">
-                      <p className="font-medium truncate max-w-[160px]">{w.workload}</p>
-                      <p className="text-[10px] text-muted-foreground truncate max-w-[160px]">{w.namespace}</p>
-                      <div className="mt-1">
-                        <VerdictBadge verdict={w.verdict} />
-                      </div>
-                      {w.hpa_max > 0 && (
-                        <p className="text-[10px] text-muted-foreground mt-1 font-mono">
-                          HPA: {w.hpa_min}↔{w.hpa_current}↔{w.hpa_max}
-                          {w.hpa_avg_replicas ? ` · avg ${w.hpa_avg_replicas.toFixed(1)}` : ""}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell className="py-2 max-w-[340px]">
-                      <div className="space-y-0.5">
-                        {w.rec.lines.map((line, li) => (
-                          <p key={li} className={`text-[11px] leading-snug ${
-                            line.highlight
-                              ? "font-semibold text-foreground"
-                              : "text-muted-foreground"
-                          }`}>
-                            {line.highlight && (
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5 mb-px" />
-                            )}
-                            {line.text}
-                          </p>
-                        ))}
-                        {(w.rec.kubectlList ?? []).length > 0 && (
-                          <p className="text-[10px] font-mono bg-muted/50 rounded px-1.5 py-0.5 mt-1 truncate text-muted-foreground" title={w.rec.kubectlList[0]}>
-                            $ {w.rec.kubectlList[0]}
-                          </p>
-                        )}
-                        {w.rec.safeMin !== undefined && w.hpa_min > 0 && (
-                          <p className="text-[10px] text-green-600 dark:text-green-400 font-medium mt-0.5">
-                            Economia estimada: {fmtBRL((w.hpa_min - w.rec.safeMin) * (w.pods > 0 ? w.cost_share_brl / w.pods : 0))}/mês por réplica removida
-                          </p>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-[11px] py-2 whitespace-nowrap">
-                      {fmtBRL(w.cost_share_brl)}
-                      {w.hpa_cost_min_brl > 0 && w.hpa_cost_min_brl < w.cost_share_brl && (
-                        <p className="text-[10px] text-muted-foreground">
-                          mín: {fmtBRL(w.hpa_cost_min_brl)}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right py-2 whitespace-nowrap">
-                      {w.saving > 0
-                        ? (
-                          <div>
-                            <span className="text-green-600 font-bold text-sm">-{fmtBRL(w.saving)}</span>
-                            <p className="text-[10px] text-muted-foreground">/ano: -{fmtBRL(w.saving * 12)}</p>
-                          </div>
-                        )
-                        : <span className="text-muted-foreground font-mono text-[11px]">—</span>}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-          {opTotalSaving > 0 && (
-            <div className="px-4 py-2 border-t bg-green-50/50 dark:bg-green-950/10 flex justify-between items-center">
-              <span className="text-[10px] text-muted-foreground">Aplicando todas as recomendações acima:</span>
-              <span className="text-xs font-bold text-green-600">
-                -{fmtBRL(opTotalSaving)}/mês · -{fmtBRL(opTotalSaving * 12)}/ano
-              </span>
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }
