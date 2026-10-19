@@ -165,6 +165,18 @@ func (c *Collector) Collect(ctx context.Context, cluster, namespace, name string
 		}
 		in.Pods = append(in.Pods, pi)
 	}
+	for _, p := range in.Pods {
+		if p.Node == "" && p.SchedulingMessage != "" {
+			// Há pod não agendado: lê os nodes para dizer, um a um, por que ele não cabe.
+			nodes, err := c.Client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+			if err != nil {
+				in.NodesError = "sem permissão ou falha ao listar os nodes: " + err.Error()
+			} else {
+				in.Nodes = nodes.Items
+			}
+			break
+		}
+	}
 	if len(in.Events) > maxEvents {
 		in.Events = in.Events[:maxEvents]
 	}
@@ -192,6 +204,15 @@ func podInfo(pod *corev1.Pod) PodInfo {
 			pi.LastTermReason, pi.LastExitCode = t.Reason, t.ExitCode
 		} else if t := cs.State.Terminated; t != nil {
 			pi.LastTermReason, pi.LastExitCode = t.Reason, t.ExitCode
+		}
+	}
+	pi.NodeSelector, pi.Tolerations = pod.Spec.NodeSelector, pod.Spec.Tolerations
+	if aff := pod.Spec.Affinity; aff != nil && aff.NodeAffinity != nil {
+		pi.NodeAffinity = aff.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse {
+			pi.SchedulingMessage = cond.Message
 		}
 	}
 	if pi.WaitingReason == "" && pod.Status.Phase == corev1.PodPending {
