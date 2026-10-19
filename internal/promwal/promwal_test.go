@@ -233,15 +233,91 @@ func TestCollectEDeep(t *testing.T) {
 	}
 }
 
-func TestDeepSemNoNaoMonta(t *testing.T) {
+func TestDeepPulaPodSemNo(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	var calls []string
 	c := &Collector{Client: cs, Run: fakeRunner(&calls)}
 	in := &Input{Namespace: "monitoring", Name: "prom", Pods: []PodInfo{{Name: "p-0", PVC: "data-p-0"}}}
-	if errs := c.CollectDeep(context.Background(), in); len(errs) != 1 {
-		t.Fatalf("pod sem nó deveria gerar erro e não criar pod, errs=%v", errs)
+	if errs := c.CollectDeep(context.Background(), in); len(errs) != 0 {
+		t.Fatalf("pod sem nó não é falha da análise profunda, vieram erros: %v", errs)
+	}
+	if len(in.DeepSkipped) != 1 || in.DeepSkipped[0] != "p-0" || len(in.Deep) != 0 {
+		t.Fatalf("deveria registrar o pod como pulado: %+v", in)
 	}
 	if pods, _ := cs.CoreV1().Pods("monitoring").List(context.Background(), metav1.ListOptions{}); len(pods.Items) != 0 {
 		t.Error("não deveria ter criado pod")
+	}
+	if len(calls) != 0 {
+		t.Errorf("não deveria ter executado nada no cluster: %v", calls)
+	}
+}
+
+// A mensagem real do scheduler de um cluster de homologação (pod Pending do Prometheus).
+const realSchedMsg = "0/3 nodes are available: 1 node(s) had untolerated taint(s), 2 node(s) didn't match Pod's node affinity/selector. no new claims to deallocate, preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling."
+
+func TestSchedulingCause(t *testing.T) {
+	cause, placement := schedulingCause(realSchedMsg)
+	for _, want := range []string{"não foi agendado", "nenhum dos 3 nodes", "1 node(s) com taint que o pod não tolera", "2 node(s) não batem com o nodeSelector/nodeAffinity"} {
+		if !strings.Contains(cause, want) {
+			t.Errorf("causa sem %q: %s", want, cause)
+		}
+	}
+	if !placement {
+		t.Error("taint/affinity deveriam apontar para tolerations/nodeSelector")
+	}
+
+	cause, placement = schedulingCause("0/5 nodes are available: 3 Insufficient memory, 2 Insufficient cpu.")
+	if !strings.Contains(cause, "3 node(s) sem memory livre") || !strings.Contains(cause, "2 node(s) sem cpu livre") || placement {
+		t.Errorf("recursos insuficientes: %q placement=%v", cause, placement)
+	}
+	if c, _ := schedulingCause("algo que o scheduler inventou"); !strings.Contains(c, "algo que o scheduler inventou") {
+		t.Errorf("mensagem desconhecida deve voltar como veio: %q", c)
+	}
+	if c, _ := schedulingCause(""); c != "" {
+		t.Errorf("sem mensagem não há causa: %q", c)
+	}
+}
+
+func TestAnalisePodNaoAgendado(t *testing.T) {
+	in := Input{
+		MemoryLimitBytes: 8 * gi, // no teto: se fosse OOM, o veredito seria limpar_wal
+		Pods:             []PodInfo{{Name: "p-0", Phase: "Pending", WaitingReason: "Pending", SchedulingMessage: realSchedMsg, PVC: "data-p-0"}},
+		DeepSkipped:      []string{"p-0"},
+		Events:           []string{"p-0: FailedScheduling " + realSchedMsg},
+	}
+	r := Analyze(in, testNow)
+	if r.Verdict != VerdictInvestigate || len(r.AffectedReplicas) != 0 {
+		t.Fatalf("pod nunca agendado é investigar, sem réplica para limpar: %s %v", r.Verdict, r.AffectedReplicas)
+	}
+	pod := r.Pods[0]
+	if !strings.Contains(pod.Cause, "1 node(s) com taint") || strings.Contains(pod.Cause, "nem OOM") {
+		t.Errorf("a causa deveria ser o agendamento, não o genérico: %q", pod.Cause)
+	}
+	ev := strings.Join(pod.Evidence, "|")
+	if !strings.Contains(ev, "análise profunda não se aplica") {
+		t.Errorf("evidências sem a nota da análise profunda: %s", ev)
+	}
+	if pod.Placement == nil {
+		t.Error("pod não agendado deveria trazer o diagnóstico por node (a dica genérica de placement só vale sem ele)")
+	}
+	for _, w := range r.Warnings {
+		if strings.Contains(w, "Análise profunda falhou") {
+			t.Errorf("pod não agendado não deve gerar aviso de falha: %s", w)
+		}
+	}
+}
+
+func TestCollectLeMotivoDeAgendamento(t *testing.T) {
+	pod := crashPod("prometheus-prom-0", "")
+	pod.Status = corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{
+		{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable", Message: realSchedMsg},
+	}}
+	c := &Collector{Client: fake.NewSimpleClientset(pod), Run: fakeRunner(new([]string))}
+	in, err := c.Collect(context.Background(), "ctx", "monitoring", "prom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Pods) != 1 || in.Pods[0].SchedulingMessage != realSchedMsg || in.Pods[0].Node != "" {
+		t.Fatalf("pod lido errado: %+v", in.Pods)
 	}
 }

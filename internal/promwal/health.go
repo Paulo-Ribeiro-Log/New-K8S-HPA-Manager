@@ -150,6 +150,9 @@ func classifyHealth(cr prometheusCR, pods []corev1.Pod, histDates []time.Time, n
 		if reason != "" {
 			desc += ": " + reason
 		}
+		if cause, _ := schedulingCause(p.SchedulingMessage); cause != "" && p.Node == "" {
+			desc += " — " + cause
+		}
 		if p.Restarts > 0 {
 			desc += fmt.Sprintf(" (%d restart(s))", p.Restarts)
 		}

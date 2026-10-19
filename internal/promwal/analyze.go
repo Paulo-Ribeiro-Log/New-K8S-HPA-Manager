@@ -127,10 +127,28 @@ func analyzePod(in Input, p PodInfo) PodReport {
 		pr.Evidence = append(pr.Evidence, "replay do WAL chegou ao segmento "+st.segment)
 	}
 
+	skipped := false
+	for _, n := range in.DeepSkipped {
+		skipped = skipped || n == p.Name
+	}
+	if skipped {
+		pr.Evidence = append(pr.Evidence, "análise profunda não se aplica: o pod não tem nó (não foi agendado), então não há volume montado para medir")
+	}
+	schedCause, placement := schedulingCause(p.SchedulingMessage)
+	if p.Node == "" && schedCause != "" {
+		pr.Placement = diagnosePlacement(p, in.Nodes, in.NodesError)
+	}
+	if placement && pr.Placement == nil {
+		pr.Evidence = append(pr.Evidence, placementHint)
+	}
+
 	switch {
 	case st.corruption:
 		pr.Verdict, pr.Cause = VerdictCleanWAL, "WAL corrompido (o log registra erro de leitura/corrupção)"
 		pr.Evidence = append(pr.Evidence, "log com marcador de corrupção do WAL")
+	case p.Node == "" && schedCause != "":
+		// Nunca foi agendado: não há WAL com problema, o replay nem começou. Apagar dados não ajuda.
+		pr.Verdict, pr.Cause = VerdictInvestigate, schedCause
 	case isOOM(p) && st.ready:
 		// Morreu depois de servir: o WAL não é a causa, apagá-lo não resolve.
 		pr.Verdict, pr.Cause = VerdictIncreaseMemory, "OOM em operação normal (depois do replay): falta memória, não é problema de WAL"
