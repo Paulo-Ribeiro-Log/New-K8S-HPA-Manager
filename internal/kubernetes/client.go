@@ -5096,6 +5096,29 @@ type ResourcePatchRequest struct {
 	ContainerName string // Nome do container a atualizar (opcional, padrão: primeiro container)
 }
 
+// resourceApplyYAML monta o manifesto mínimo do Server-Side Apply do editor de recursos: só identificação, réplicas e o
+// resources do container alterado. Serializar o objeto lido do clientset mandaria um manifesto sem apiVersion/kind (o
+// TypeMeta vem vazio) e ainda com managedFields/status, que o kubectl rejeita.
+func resourceApplyYAML(kind, namespace, name, containerName string, replicas *int32, res corev1.ResourceRequirements) (string, error) {
+	spec := map[string]interface{}{
+		"template": map[string]interface{}{
+			"spec": map[string]interface{}{
+				"containers": []interface{}{map[string]interface{}{"name": containerName, "resources": res}},
+			},
+		},
+	}
+	if replicas != nil {
+		spec["replicas"] = *replicas
+	}
+	out, err := yaml.Marshal(map[string]interface{}{
+		"apiVersion": "apps/v1",
+		"kind":       kind,
+		"metadata":   map[string]interface{}{"name": name, "namespace": namespace},
+		"spec":       spec,
+	})
+	return string(out), err
+}
+
 // PatchDeploymentResources atualiza apenas os recursos (CPU/memória) de um Deployment
 // usando Server-Side Apply para compatibilidade com Helm
 func (c *Client) PatchDeploymentResources(ctx context.Context, namespace, name string, req ResourcePatchRequest) (*appsv1.Deployment, error) {
@@ -5159,7 +5182,7 @@ func (c *Client) PatchDeploymentResources(ctx context.Context, namespace, name s
 	}
 
 	// Converter para YAML e usar Apply com Server-Side Apply
-	yamlBytes, err := yaml.Marshal(deployment)
+	yamlBytes, err := resourceApplyYAML("Deployment", namespace, name, container.Name, deployment.Spec.Replicas, container.Resources)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal deployment: %w", err)
 	}
@@ -5231,7 +5254,7 @@ func (c *Client) PatchStatefulSetResources(ctx context.Context, namespace, name 
 	}
 
 	// Converter para YAML e usar Apply com Server-Side Apply
-	yamlBytes, err := yaml.Marshal(sts)
+	yamlBytes, err := resourceApplyYAML("StatefulSet", namespace, name, container.Name, sts.Spec.Replicas, container.Resources)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal statefulset: %w", err)
 	}
@@ -5299,7 +5322,7 @@ func (c *Client) PatchDaemonSetResources(ctx context.Context, namespace, name st
 	}
 
 	// Converter para YAML e usar Apply com Server-Side Apply
-	yamlBytes, err := yaml.Marshal(ds)
+	yamlBytes, err := resourceApplyYAML("DaemonSet", namespace, name, container.Name, nil, container.Resources)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal daemonset: %w", err)
 	}
