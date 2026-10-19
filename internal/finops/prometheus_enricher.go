@@ -130,6 +130,14 @@ func NewPrometheusEnricher(prometheusURL string, windowDays int, requiresGCPAuth
 	}, nil
 }
 
+// Probe testa se o endpoint serve a API do Prometheus com uma consulta constante (`vector(1)`:
+// não toca em série nenhuma, então não pesa nem em cluster grande). Erro = o
+// Prometheus não está presente/alcançável (404, DNS, timeout, auth) — ver probePrometheus no handler.
+func (e *PrometheusEnricher) Probe(ctx context.Context) error {
+	_, _, err := e.api.Query(ctx, "vector(1)", time.Now())
+	return err
+}
+
 // SetPodMapping define o mapa "ns/pod" → "ns/workload" para agregação de métricas.
 // Deve ser chamado pelo calculator antes de EnrichWorkloads.
 func (e *PrometheusEnricher) SetPodMapping(m map[string]string) {

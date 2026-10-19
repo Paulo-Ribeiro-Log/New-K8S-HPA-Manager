@@ -139,6 +139,7 @@ export interface FinOpsSummary {
   // leves de HPA responderam) — o Prometheus está no ar; a orientação é uma janela menor.
   metrics_collection_timeout?: boolean;
   prometheus_url?: string; // endpoint consultado no scan (vazio = sem Prometheus)
+  prometheus_unavailable?: string; // motivo quando o teste de presença falhou e o scan seguiu sem Prometheus
 }
 
 export interface PVCCostItem {

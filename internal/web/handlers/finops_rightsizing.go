@@ -278,8 +278,15 @@ func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, w
 		log.Warn().Err(enricherErr).Str("prometheus_url", promURL).Msg("FinOps/Rightsizing: falha ao criar enricher Prometheus, seguindo só com Dynatrace (se houver)")
 		enricher = nil
 	}
+	promReason := "Prometheus inacessível"
+	if enricher != nil {
+		if st := h.probePrometheus(ctx, promURL, requiresGCPAuth); !st.Available {
+			enricher = nil
+			promReason = "Prometheus indisponível em " + promURL + ": " + st.Reason
+		}
+	}
 	if dtEnricher == nil && enricher == nil {
-		return http.StatusBadRequest, gin.H{"error": "Nenhuma fonte de métricas disponível (Dynatrace não configurado e Prometheus inacessível) — rightsizing exige uso real histórico."}
+		return http.StatusBadRequest, gin.H{"error": "Nenhuma fonte de métricas disponível (Dynatrace não configurado e " + promReason + ") — rightsizing exige uso real histórico."}
 	}
 
 	pools, err := h.npRegistryStore.GetAll(cluster)

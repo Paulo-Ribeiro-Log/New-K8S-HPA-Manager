@@ -96,6 +96,10 @@ type FinOpsHandler struct {
 	billedSF    singleflight.Group
 	billedMu    sync.Mutex
 	billedCache map[string]billedCostResponse
+
+	// Último teste de presença do Prometheus por URL (finops_prometheus_status.go).
+	promStatusMu    sync.Mutex
+	promStatusCache map[string]promStatus
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -300,6 +304,7 @@ func (h *FinOpsHandler) doGetReport(
 	// Prometheus (fallback) — URL auto-descoberta pelo cluster se não fornecida
 	var enricher *finops.PrometheusEnricher
 	promURL := promURLParam
+	promUnavailable := "" // motivo quando o teste de presença do Prometheus falhou
 	if withPrometheus {
 		requiresGCPAuth := false
 		if promURL == "" {
@@ -314,6 +319,11 @@ func (h *FinOpsHandler) doGetReport(
 			return http.StatusBadRequest, gin.H{"error": "Falha ao conectar ao Prometheus: " + err.Error()}
 		}
 		log.Info().Str("prometheus_url", promURL).Int("window_days", windowDays).Msg("FinOps: enricher Prometheus criado")
+		// Prometheus presente? Sem isso, um endpoint inexistente virava dezenas de consultas com erro.
+		if st := h.probePrometheus(ctx, promURL, requiresGCPAuth); !st.Available {
+			enricher = nil
+			promUnavailable = st.Reason
+		}
 	}
 
 	if h.npRegistryStore == nil {
@@ -349,6 +359,9 @@ func (h *FinOpsHandler) doGetReport(
 	if storagePromURL == "" {
 		storagePromURL = discovery.GetPrometheusURL(cluster)
 		storageRequiresGCPAuth = discovery.RequiresGCPAuth(cluster)
+	}
+	if promUnavailable != "" && storagePromURL == promURL {
+		storagePromURL = "" // mesmo endpoint que acabou de falhar no teste
 	}
 	pricer := h.pricerForCluster(cluster)
 	calc := finops.NewCalculator(pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
@@ -392,9 +405,10 @@ func (h *FinOpsHandler) doGetReport(
 	// prefetchScanExtras). Vai no relatório para o Node Pools/Relatório não tratarem preço de tabela
 	// como economia certa.
 	h.attachCostData(cluster, report)
-	if enricher != nil {
+	if enricher != nil || promUnavailable != "" {
 		report.Summary.PrometheusURL = promURL
 	}
+	report.Summary.PrometheusUnavailable = promUnavailable
 
 	// Cacheia o relatório recém-gerado como "último scan" deste cluster — bug real corrigido,
 	// relatado pelo usuário: "sempre que chamamos a aba finops, ela vem vazia... ajuste para que

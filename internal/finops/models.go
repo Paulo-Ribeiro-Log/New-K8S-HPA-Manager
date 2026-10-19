@@ -281,6 +281,9 @@ type FinOpsSummary struct {
 	// PrometheusURL — endpoint do Prometheus consultado no scan (vazio = sem Prometheus). Vai no
 	// banner quando todas as consultas dão 404 (host padrão inexistente para o cluster).
 	PrometheusURL string `json:"prometheus_url,omitempty"`
+	// PrometheusUnavailable — motivo quando o teste de presença (`vector(1)`) falhou antes do scan: a
+	// análise seguiu sem Prometheus (só Dynatrace, se houver).
+	PrometheusUnavailable string `json:"prometheus_unavailable,omitempty"`
 }
 
 // ── Storage types ─────────────────────────────────────────────────────────────

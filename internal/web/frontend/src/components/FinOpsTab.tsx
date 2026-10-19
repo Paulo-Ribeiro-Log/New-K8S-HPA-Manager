@@ -101,6 +101,15 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
     retry: false,
   });
 
+  // Prometheus presente no cluster? Consulta constante (`vector(1)`) antes de analisar — o scan testa de novo.
+  const { data: promStatus, isFetching: promChecking } = useQuery<{ available: boolean; url: string; reason?: string }>({
+    queryKey: ["finops-prom-status", cluster],
+    queryFn: () => apiClient.get(`/finops/prometheus-status?cluster=${encodeURIComponent(cluster)}`),
+    enabled: !!cluster && withPrometheus,
+    staleTime: 2 * 60 * 1000,
+    retry: false,
+  });
+
   // Fatura real (Cost Management) — a mesma consulta do painel do Relatório (cache por cluster).
   const { data: billed } = useBilledCost(cluster, !!provider && !!report);
   const billedFactor = report ? billedToBRL(billed, report.exchange_rate) : null;
@@ -110,6 +119,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
     if (report?.generated_at) {
       queryClient.invalidateQueries({ queryKey: ["finops-overview"] });
       queryClient.invalidateQueries({ queryKey: ["finops-showback"] });
+      queryClient.invalidateQueries({ queryKey: ["finops-prom-status"] }); // o scan testou de novo
     }
   }, [report?.generated_at, queryClient]);
 
@@ -340,6 +350,16 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
               <Activity className="h-3 w-3" />
               <span title="Fonte primária: Dynatrace (quando configurado). Fallback: Prometheus">Análise histórica</span>
             </label>
+            {withPrometheus && (promChecking ? (
+              <span className="flex items-center gap-1 text-[11px] text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />Prometheus…</span>
+            ) : promStatus && (
+              <span title={`${promStatus.url}${promStatus.reason ? ` — ${promStatus.reason}` : ""}`}
+                className={`max-w-md truncate rounded-full px-2 py-0.5 text-[11px] ring-1 ${promStatus.available
+                  ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/30 dark:text-emerald-400"
+                  : "bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:text-amber-400"}`}>
+                {promStatus.available ? "Prometheus ok" : `Prometheus indisponível: ${promStatus.reason ?? "sem motivo"}`}
+              </span>
+            ))}
             {withPrometheus && (
               <Select value={String(windowDays)} onValueChange={v => setWindowDays(Number(v))}>
                 <SelectTrigger className="h-7 w-24 text-xs">
@@ -381,6 +401,20 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
       {/* Relatório */}
       {report && !isFetching && (
         <>
+          {report.summary.prometheus_unavailable && (
+            <Alert className="border-amber-200 bg-amber-50 dark:bg-amber-950/20">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <AlertDescription className="text-sm text-amber-800 dark:text-amber-300">
+                <strong>Análise feita sem Prometheus:</strong> {report.summary.prometheus_unavailable}
+                {report.summary.prometheus_url && <> (<code className="text-xs">{report.summary.prometheus_url}</code>)</>}.
+                {(report.summary.metrics_workloads_enriched ?? 0) > 0
+                  ? " O uso real veio só do Dynatrace."
+                  : " Sem uso real, desperdício, CPU/Mem e oportunidades não refletem o consumo."}{" "}
+                Para um endereço fora do padrão, informe <code className="text-xs">prometheusUrl</code> do cluster em{" "}
+                <code className="text-xs">~/.k8s-hpa-manager/clusters-config.json</code> e reinicie o servidor.
+              </AlertDescription>
+            </Alert>
+          )}
           {metricsCollectionLikelyFailed(report.summary) && (() => {
             const reason = metricsFailureReason(report.summary);
             return (
