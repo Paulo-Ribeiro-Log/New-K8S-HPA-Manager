@@ -3,6 +3,12 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Prometheus — editar CPU/memória/réplicas falhava com "apiVersion not set, kind not set" (Outubro 2026)
+
+`PatchDeploymentResources`, `PatchStatefulSetResources` e `PatchDaemonSetResources` serializavam o objeto lido do clientset, cujo `TypeMeta` vem vazio, e o `kubectl apply --server-side` recusava o manifesto sem `apiVersion`/`kind` (e ainda levaria `managedFields`/`status`). Agora mandam um manifesto mínimo (`resourceApplyYAML`): identificação, réplicas e o `resources` do container alterado.
+
+**Segunda parte: "atualizou" mas voltava.** Se o StatefulSet é controlado por um recurso `Prometheus` (prometheus-operator), o operator desfazia a edição direta. `PatchStatefulSetResources` agora detecta o dono (`ownerReferences` com `controller:true`) e faz `kubectl patch` no `spec.resources`/`spec.replicas` do recurso `Prometheus`; só o container `prometheus` é editável por esse caminho (os demais dão erro explicando). O `helm upgrade` ainda reescreve o recurso com os values do Helm.
+
 ### Prometheus — análise: pod não agendado (Outubro 2026)
 
 Primeiro uso em cluster real (Prometheus com pod Pending por taint e node affinity) mostrou dois pontos fracos, corrigidos em `internal/promwal`: o pod sem nó não entra mais na análise profunda (antes virava um aviso "Análise profunda falhou — pod sem PVC ou ainda sem nó") e passa a ter a nota "análise profunda não se aplica"; e o motivo do scheduler (`PodScheduled=False`) vira a causa do pod, traduzido (taint não tolerado, nodeSelector/affinity, recurso insuficiente, volume em outra zona) com a dica de conferir tolerations/nodeSelector/affinity e o node pool. O resumo da verificação de integridade (`/prometheus/wal/health`) traz a mesma causa.

@@ -5096,6 +5096,29 @@ type ResourcePatchRequest struct {
 	ContainerName string // Nome do container a atualizar (opcional, padrão: primeiro container)
 }
 
+// resourceApplyYAML monta o manifesto mínimo do Server-Side Apply do editor de recursos: só identificação, réplicas e o
+// resources do container alterado. Serializar o objeto lido do clientset mandaria um manifesto sem apiVersion/kind (o
+// TypeMeta vem vazio) e ainda com managedFields/status, que o kubectl rejeita.
+func resourceApplyYAML(kind, namespace, name, containerName string, replicas *int32, res corev1.ResourceRequirements) (string, error) {
+	spec := map[string]interface{}{
+		"template": map[string]interface{}{
+			"spec": map[string]interface{}{
+				"containers": []interface{}{map[string]interface{}{"name": containerName, "resources": res}},
+			},
+		},
+	}
+	if replicas != nil {
+		spec["replicas"] = *replicas
+	}
+	out, err := yaml.Marshal(map[string]interface{}{
+		"apiVersion": "apps/v1",
+		"kind":       kind,
+		"metadata":   map[string]interface{}{"name": name, "namespace": namespace},
+		"spec":       spec,
+	})
+	return string(out), err
+}
+
 // PatchDeploymentResources atualiza apenas os recursos (CPU/memória) de um Deployment
 // usando Server-Side Apply para compatibilidade com Helm
 func (c *Client) PatchDeploymentResources(ctx context.Context, namespace, name string, req ResourcePatchRequest) (*appsv1.Deployment, error) {
@@ -5159,13 +5182,91 @@ func (c *Client) PatchDeploymentResources(ctx context.Context, namespace, name s
 	}
 
 	// Converter para YAML e usar Apply com Server-Side Apply
-	yamlBytes, err := yaml.Marshal(deployment)
+	yamlBytes, err := resourceApplyYAML("Deployment", namespace, name, container.Name, deployment.Spec.Replicas, container.Resources)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal deployment: %w", err)
 	}
 
 	// Usar ApplyDeployment com Force=true para resolver conflitos com Helm
 	return c.ApplyDeployment(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false, true)
+}
+
+// prometheusOwnerName devolve o nome do recurso Prometheus (monitoring.coreos.com) que controla o StatefulSet, ou "".
+func prometheusOwnerName(sts *appsv1.StatefulSet) string {
+	for _, o := range sts.OwnerReferences {
+		if o.Controller != nil && *o.Controller && o.Kind == "Prometheus" && strings.HasPrefix(o.APIVersion, "monitoring.coreos.com/") {
+			return o.Name
+		}
+	}
+	return ""
+}
+
+// buildPrometheusResourcesPatch monta o merge patch do spec do recurso Prometheus: só os campos pedidos.
+func buildPrometheusResourcesPatch(req ResourcePatchRequest) (string, error) {
+	requests := map[string]string{}
+	limits := map[string]string{}
+	for _, f := range []struct {
+		dst        map[string]string
+		key, value string
+	}{
+		{requests, "cpu", req.CPURequest}, {requests, "memory", req.MemoryRequest},
+		{limits, "cpu", req.CPULimit}, {limits, "memory", req.MemoryLimit},
+	} {
+		if f.value == "" {
+			continue
+		}
+		if _, err := resource.ParseQuantity(f.value); err != nil {
+			return "", fmt.Errorf("quantidade inválida %q para %s: %w", f.value, f.key, err)
+		}
+		f.dst[f.key] = f.value
+	}
+	spec := map[string]interface{}{}
+	if len(requests) > 0 || len(limits) > 0 {
+		res := map[string]interface{}{}
+		if len(requests) > 0 {
+			res["requests"] = requests
+		}
+		if len(limits) > 0 {
+			res["limits"] = limits
+		}
+		spec["resources"] = res
+	}
+	if req.Replicas != nil {
+		spec["replicas"] = *req.Replicas
+	}
+	if len(spec) == 0 {
+		return "", fmt.Errorf("nada para alterar")
+	}
+	out, err := json.Marshal(map[string]interface{}{"spec": spec})
+	return string(out), err
+}
+
+// patchPrometheusOwnerResources altera spec.resources/spec.replicas do recurso Prometheus dono do StatefulSet (via
+// kubectl: não há dynamic client). O spec.resources do recurso vale para o container "prometheus".
+func (c *Client) patchPrometheusOwnerResources(ctx context.Context, sts *appsv1.StatefulSet, crName string, req ResourcePatchRequest) (*appsv1.StatefulSet, error) {
+	if len(sts.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("statefulset %s/%s has no containers", sts.Namespace, sts.Name)
+	}
+	container := req.ContainerName
+	if container == "" {
+		container = sts.Spec.Template.Spec.Containers[0].Name
+	}
+	if container != "prometheus" {
+		return nil, fmt.Errorf("o StatefulSet %s/%s é gerenciado pelo recurso Prometheus %s, e só o container \"prometheus\" tem os recursos definidos nele (container pedido: %q)", sts.Namespace, sts.Name, crName, container)
+	}
+	patch, err := buildPrometheusResourcesPatch(req)
+	if err != nil {
+		return nil, err
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, "kubectl", "patch", "prometheus.monitoring.coreos.com", crName,
+		"-n", sts.Namespace, "--type", "merge", "-p", patch, "--context", c.cluster).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to patch prometheus %s/%s in cluster %s: %w\n%s", sts.Namespace, crName, c.cluster, err, string(out))
+	}
+	return c.clientset.AppsV1().StatefulSets(sts.Namespace).Get(ctx, sts.Name, metav1.GetOptions{})
 }
 
 // PatchStatefulSetResources atualiza apenas os recursos (CPU/memória) de um StatefulSet
@@ -5175,6 +5276,12 @@ func (c *Client) PatchStatefulSetResources(ctx context.Context, namespace, name 
 	sts, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get statefulset %s/%s: %w", namespace, name, err)
+	}
+
+	// StatefulSet gerado pelo prometheus-operator: o operator reescreve o StatefulSet a partir do recurso Prometheus e
+	// desfaz qualquer edição direta, então a alteração vai para o recurso dono.
+	if crName := prometheusOwnerName(sts); crName != "" {
+		return c.patchPrometheusOwnerResources(ctx, sts, crName, req)
 	}
 
 	// Encontrar o container correto
@@ -5231,7 +5338,7 @@ func (c *Client) PatchStatefulSetResources(ctx context.Context, namespace, name 
 	}
 
 	// Converter para YAML e usar Apply com Server-Side Apply
-	yamlBytes, err := yaml.Marshal(sts)
+	yamlBytes, err := resourceApplyYAML("StatefulSet", namespace, name, container.Name, sts.Spec.Replicas, container.Resources)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal statefulset: %w", err)
 	}
@@ -5299,7 +5406,7 @@ func (c *Client) PatchDaemonSetResources(ctx context.Context, namespace, name st
 	}
 
 	// Converter para YAML e usar Apply com Server-Side Apply
-	yamlBytes, err := yaml.Marshal(ds)
+	yamlBytes, err := resourceApplyYAML("DaemonSet", namespace, name, container.Name, nil, container.Resources)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal daemonset: %w", err)
 	}
