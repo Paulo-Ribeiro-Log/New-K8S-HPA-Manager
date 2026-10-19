@@ -4,15 +4,21 @@
 import { Card } from "@/components/ui/card";
 import { AlertTriangle } from "lucide-react";
 import { useAllAlerts } from "@/hooks/useAlerts";
+import { usePrometheusHealthAlerts } from "@/hooks/usePrometheusHealth";
 import { cn } from "@/lib/utils";
 
 interface CriticalAlertsBannerProps {
   cluster: string;
+  /** Leva à aba Prometheus: usado quando o único alerta crítico é a integridade do Prometheus. */
+  onOpenPrometheus?: () => void;
 }
 
-export function CriticalAlertsBanner({ cluster }: CriticalAlertsBannerProps) {
+export function CriticalAlertsBanner({ cluster, onOpenPrometheus }: CriticalAlertsBannerProps) {
   console.log(`[CriticalAlertsBanner] Rendering with cluster: ${cluster}`);
   const { summary, hpaAlerts, nodePoolAlerts, loading } = useAllAlerts(cluster);
+  // Integridade do Prometheus (independente do Alertmanager): soma ao número de críticos.
+  const prom = usePrometheusHealthAlerts(cluster);
+  const promCritical = prom.items.filter((i) => i.severity === "critical").length;
 
   // Não mostrar se carregando ou sem dados
   if (loading || !summary) {
@@ -33,11 +39,15 @@ export function CriticalAlertsBanner({ cluster }: CriticalAlertsBannerProps) {
 
   const criticalHPAAlerts = hpaAlerts.filter((a) => a.severity === "critical");
   const criticalNodeAlerts = nodePoolAlerts.filter((a) => a.severity === "critical");
-  const hasCritical = summary.critical > 0;
+  const alertmanagerCritical = summary.critical > 0;
+  const totalCritical = summary.critical + promCritical;
+  const hasCritical = totalCritical > 0;
 
   const handleClick = () => {
-    if (hasCritical) {
+    if (alertmanagerCritical) {
       window.open(`/alerts/${cluster}`, '_blank');
+    } else if (promCritical > 0) {
+      onOpenPrometheus?.();
     }
   };
 
@@ -61,7 +71,7 @@ export function CriticalAlertsBanner({ cluster }: CriticalAlertsBannerProps) {
               "text-2xl font-bold",
               hasCritical ? "text-red-600 dark:text-red-400" : "text-primary"
             )}>
-              {summary.critical}
+              {totalCritical}
             </p>
           </div>
           {hasCritical && (
@@ -69,6 +79,8 @@ export function CriticalAlertsBanner({ cluster }: CriticalAlertsBannerProps) {
               {criticalHPAAlerts.length > 0 && `${criticalHPAAlerts.length} HPA${criticalHPAAlerts.length > 1 ? "s" : ""}`}
               {criticalHPAAlerts.length > 0 && criticalNodeAlerts.length > 0 && " • "}
               {criticalNodeAlerts.length > 0 && `${criticalNodeAlerts.length} Node${criticalNodeAlerts.length > 1 ? "s" : ""}`}
+              {(criticalHPAAlerts.length > 0 || criticalNodeAlerts.length > 0) && promCritical > 0 && " • "}
+              {promCritical > 0 && "Prometheus"}
             </p>
           )}
         </div>

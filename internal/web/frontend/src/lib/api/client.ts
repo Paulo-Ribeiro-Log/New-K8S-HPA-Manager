@@ -11,6 +11,9 @@ import type {
   NodeDetailsResponse,
   CronJob,
   PrometheusResource,
+  PrometheusWALReport,
+  PrometheusWALHealth,
+  PrometheusWALCleanupRequest,
   ValidationStatus,
   APIError,
   APIResponse,
@@ -2948,6 +2951,48 @@ class APIClient {
         body: JSON.stringify(resource),
       }
     );
+  }
+
+  /** Diagnóstico do WAL do Prometheus. deep=true monta o PVC read-only em pod temporário (lento). */
+  async analyzePrometheusWAL(
+    cluster: string,
+    namespace: string,
+    name: string,
+    deep: boolean
+  ): Promise<PrometheusWALReport> {
+    const params = new URLSearchParams({ cluster, namespace });
+    if (name) params.append("name", name);
+    if (deep) params.append("deep", "true");
+    return this.request<PrometheusWALReport>(`/prometheus/wal/analyze?${params.toString()}`);
+  }
+
+  /** Integridade leve do Prometheus do cluster (só API do K8s; cache de 45 s no servidor). */
+  async getPrometheusWALHealth(cluster: string): Promise<PrometheusWALHealth> {
+    return this.request<PrometheusWALHealth>(`/prometheus/wal/health?cluster=${encodeURIComponent(cluster)}`);
+  }
+
+  /** Dispara a limpeza do WAL (SRE). Responde 202 e roda em segundo plano; acompanhe pelo stream SSE. */
+  async startPrometheusWALCleanup(body: PrometheusWALCleanupRequest): Promise<{ operation_id: string }> {
+    return this.request("/prometheus/wal/cleanup", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  /** URL do SSE de progresso da limpeza — token via query param (EventSource não aceita headers). */
+  getPrometheusWALProgressURL(operationId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/prometheus/wal/progress/${encodeURIComponent(operationId)}?token=${encodeURIComponent(token || "")}`;
+  }
+
+  /** Cancela a limpeza em curso; o servidor religa o Prometheus antes de encerrar. */
+  async cancelPrometheusWALCleanup(operationId: string): Promise<void> {
+    await this.request(`/prometheus/wal/cancel/${encodeURIComponent(operationId)}`, { method: "POST" });
+  }
+
+  /** Religa um Prometheus deixado desligado por uma limpeza interrompida. */
+  async restorePrometheusWAL(cluster: string, namespace: string, name: string): Promise<{ restored_replicas: number }> {
+    return this.request("/prometheus/wal/restore", {
+      method: "POST",
+      body: JSON.stringify({ cluster, namespace, name }),
+    });
   }
 
   // Sessions
