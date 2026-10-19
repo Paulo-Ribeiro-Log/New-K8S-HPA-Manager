@@ -216,6 +216,31 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
                   <Badge variant="outline" className="text-[10px]">{VERDICTS[p.verdict].label}</Badge>
                 </div>
                 <p className="text-xs mt-1">{p.cause}</p>
+                {p.placement && (
+                  <div className="mt-2 rounded-md bg-amber-500/10 border border-amber-500/30 p-2 space-y-1.5 text-xs">
+                    <p className="font-semibold">Por que o pod não cabe em nenhum node</p>
+                    <p>{p.placement.summary}</p>
+                    {p.placement.nodes && p.placement.nodes.length > 0 && (
+                      <ul className="space-y-1">
+                        {p.placement.nodes.map((n) => (
+                          <li key={n.node} className="flex gap-1.5">
+                            <span className={n.fits ? "text-green-600" : "text-red-600"} aria-label={n.fits ? "serve" : "não serve"}>
+                              {n.fits ? "✔" : "✖"}
+                            </span>
+                            <span className="min-w-0">
+                              <span className="font-mono break-all">{n.node}</span>
+                              {n.pool && <span className="text-muted-foreground"> · pool {n.pool}</span>}
+                              {n.reasons && n.reasons.length > 0 && (
+                                <span className="block text-muted-foreground">{n.reasons.join("; ")}</span>
+                              )}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="text-[11px] text-muted-foreground">{p.placement.note}</p>
+                  </div>
+                )}
                 {p.evidence && p.evidence.length > 0 && (
                   <ul className="mt-1 list-disc pl-4 text-xs text-muted-foreground">
                     {p.evidence.map((e) => (

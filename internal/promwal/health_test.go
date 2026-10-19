@@ -173,3 +173,16 @@ func TestKubectlArgs(t *testing.T) {
 		t.Errorf("sem namespace não pode levar -n: %s", got)
 	}
 }
+
+func TestHealthResumoDePodNaoAgendado(t *testing.T) {
+	pod := hpod("prometheus-prom-0", false, 0, "Pending", "", time.Hour)
+	pod.Status.Phase = corev1.PodPending
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Message: realSchedMsg}}
+	got := classifyHealth(cr(nil, 1), []corev1.Pod{pod}, nil, testNow)
+	if got.State != HealthDown || got.Severity != SeverityCritical {
+		t.Fatalf("pod Pending há 1 h é fora do ar crítico: %+v", got)
+	}
+	if !strings.Contains(got.Summary, "1 node(s) com taint") || !strings.Contains(got.Summary, "nodeSelector/nodeAffinity") {
+		t.Errorf("o resumo deveria trazer o motivo do agendamento: %s", got.Summary)
+	}
+}

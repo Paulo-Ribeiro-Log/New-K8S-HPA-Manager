@@ -3,7 +3,11 @@
 // análise profunda (PVC montado read-only), removido ao final.
 package promwal
 
-import "time"
+import (
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 // Verdict é o resultado da análise, do menos para o mais destrutivo.
 type Verdict string
@@ -26,7 +30,13 @@ type PodInfo struct {
 	Restarts       int32
 	LastTermReason string // OOMKilled, Error…
 	LastExitCode   int32
-	LogTail        string // últimas linhas do container anterior (ou do atual, se não houve anterior)
+	// SchedulingMessage: motivo do scheduler quando o pod não foi agendado (condição PodScheduled=False).
+	SchedulingMessage string
+	// Restrições de agendamento do pod (para o diagnóstico por node de um pod não agendado).
+	NodeSelector map[string]string
+	NodeAffinity *corev1.NodeSelector
+	Tolerations  []corev1.Toleration
+	LogTail      string // últimas linhas do container anterior (ou do atual, se não houve anterior)
 }
 
 // DeepInfo é o que a análise profunda leu do PVC (somente leitura).
@@ -63,6 +73,11 @@ type Input struct {
 	Pods   []PodInfo
 	Events []string // mensagens de eventos Warning recentes
 	Deep   []DeepInfo
+	// DeepSkipped: pods que ficaram fora da análise profunda por não terem nó (sem onde montar o PVC).
+	DeepSkipped []string
+	// Nodes do cluster, lidos só quando há pod não agendado (diagnóstico por node); NodesError se a leitura falhou.
+	Nodes      []corev1.Node
+	NodesError string
 }
 
 // PodReport é o diagnóstico de um pod.
@@ -72,6 +87,8 @@ type PodReport struct {
 	Verdict  Verdict  `json:"verdict"`
 	Cause    string   `json:"cause"`
 	Evidence []string `json:"evidence,omitempty"`
+	// Placement: diagnóstico node a node quando o pod não foi agendado.
+	Placement *Placement `json:"placement,omitempty"`
 }
 
 // DeepReport é a análise profunda de um PVC, pronta para a UI.

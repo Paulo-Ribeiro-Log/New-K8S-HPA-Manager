@@ -43,6 +43,19 @@ Não monta volume e não cria pod. Coleta:
 - **Recurso Prometheus (CRD)** via `kubectl get -o json` (o projeto não usa dynamic client): réplicas, retenção,
   limits/requests de memória, tamanho do PVC.
 - **Pods `prometheus-<nome>-N`**: `restartCount`, `lastState.terminated` (`OOMKilled`, exit 137), nó, tempo em CrashLoop.
+- **Pod nunca agendado** (condição `PodScheduled=False`, a mesma mensagem do evento `FailedScheduling`): vira
+  veredito `investigar` com a causa traduzida (ex.: "nenhum dos 3 nodes serve: 1 node(s) com taint que o pod não
+  tolera; 2 node(s) não batem com o nodeSelector/nodeAffinity") e a dica de conferir tolerations, nodeSelector,
+  affinity e se o node pool está ativo. Não há WAL com problema (o replay nem começou), então nunca indica limpeza.
+- **Diagnóstico por node** (só para pod nunca agendado): lê as restrições do pod (`nodeSelector`, `nodeAffinity`
+  obrigatória, tolerations) e os nodes do cluster, e avalia node a node: label faltando ou com outro valor,
+  expressões de `nodeAffinity` (In, NotIn, Exists, DoesNotExist, Gt, Lt), taint não tolerado e node cordonado. O
+  resumo nomeia o bloqueio, por exemplo "nenhum dos 3 nodes atende a nodeSelector (app=abastecimento): 0 de 3 têm o
+  label", ou "só o node X atende ao seletor, mas tem o taint Y". Se algum node passa em tudo isso, o resumo diz que o
+  bloqueio é outro (recursos livres, afinidade entre pods, volume). **Limites:** não avalia recursos livres,
+  afinidade entre pods nem volume (é um diagnóstico, não uma reprodução do scheduler). A listagem de nodes é a
+  única leitura cluster-wide da análise: sem permissão, o diagnóstico vira "não foi possível diagnosticar por node" e
+  a análise segue normal. Só roda quando há pod não agendado.
 - **Logs do container anterior** (`--previous`, com timeout e limite de linhas):
   - `replaying WAL` / `WAL segment loaded` → progresso do replay antes de morrer;
   - `corruption` / `unexpected end of segment` → **corrupção** (causa diferente de OOM).
@@ -59,6 +72,9 @@ Só roda quando o usuário marca explicitamente a opção (`deep=true`), porque 
 - Lê os `meta.json` dos blocos, o tamanho de `wal/` e de `chunks_head/`.
 - Calcula o **intervalo de dados que seria perdido**: do `maxTime` do último bloco até agora.
 - O pod é removido ao final, mesmo em erro.
+
+Pods **sem nó** (nunca agendados) ficam fora da análise profunda: não há volume montado para medir. Isso não é
+tratado como falha: o pod aparece com a nota "análise profunda não se aplica" e nenhum aviso de erro.
 
 Sem a análise profunda, o veredito `limpar_wal` ainda pode aparecer, mas a janela de dados perdidos fica como
 "desconhecida" e o diálogo de limpeza pede para rodá-la antes de continuar.

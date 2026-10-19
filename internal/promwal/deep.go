@@ -108,6 +108,11 @@ func (c *Collector) CollectDeep(ctx context.Context, in *Input) []error {
 		if p.Ready {
 			continue
 		}
+		if p.Node == "" {
+			// Pod não agendado: não há nó nem volume montado. Não é falha da análise, só não se aplica.
+			in.DeepSkipped = append(in.DeepSkipped, p.Name)
+			continue
+		}
 		d, err := c.deepOne(ctx, in.Namespace, in.Cluster, p, sp)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", p.Name, err))
@@ -120,8 +125,8 @@ func (c *Collector) CollectDeep(ctx context.Context, in *Input) []error {
 
 func (c *Collector) deepOne(ctx context.Context, ns, cluster string, p PodInfo, sp stsSpec) (DeepInfo, error) {
 	d := DeepInfo{Pod: p.Name, PVC: p.PVC}
-	if p.PVC == "" || p.Node == "" {
-		return d, fmt.Errorf("pod sem PVC ou ainda sem nó (não foi agendado): não dá para montar o volume")
+	if p.PVC == "" {
+		return d, fmt.Errorf("pod sem PVC: não dá para montar o volume")
 	}
 	pod := tempPod("prometheus-wal-analyze", deepPodLabelVal, p.PVC, p.Node, sp, true)
 	name, err := c.startTempPod(ctx, ns, pod, deepReadyWait)

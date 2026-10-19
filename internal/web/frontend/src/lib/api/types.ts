@@ -1056,9 +1056,19 @@ export interface PrometheusResource {
 // Análise do WAL (GET /prometheus/wal/analyze) — docs: PROMETHEUS-WAL-CLEANUP.md
 export type PrometheusWALVerdict = 'saudavel' | 'aumentar_memoria' | 'limpar_wal' | 'investigar';
 
+/** Diagnóstico node a node de um pod que não foi agendado. */
+export interface PrometheusWALPlacement {
+  nodes?: { node: string; pool?: string; fits: boolean; reasons?: string[] }[];
+  summary: string;
+  note: string;
+  /** Por que não foi possível diagnosticar (ex.: sem permissão para listar nodes). */
+  unavailable?: string;
+}
+
 export interface PrometheusWALPodReport {
   pod: string;
   pvc?: string;
+  placement?: PrometheusWALPlacement;
   verdict: PrometheusWALVerdict;
   cause: string;
   evidence?: string[];
