@@ -1,10 +1,5 @@
-// F5.1 (FINOPS-IMPROVEMENTS-PLAN.md) — este arquivo tinha 4589 linhas num único componente
-// gigante. Extraído em internal/web/frontend/src/components/finops/ (mesmo padrão já usado pra
-// RightsizingTab.tsx/DataResourcesPanel.tsx): types.ts (interfaces compartilhadas), helpers.ts
-// (buildRecommendation/financeProviderInfo/metricsCollectionLikelyFailed) e um arquivo por aba
-// (DashboardTab/NodePoolsTab/WorkloadsTab/HPAHistoryTab/StorageTab/OpportunitiesTab/
-// RelatorioTab.tsx) — Rightsizing já era arquivo próprio desde antes (RightsizingTab.tsx). Este
-// arquivo agora só orquestra: fetch do relatório principal + a barra de abas.
+// Aba FinOps: busca do relatório principal + barra de sub-abas. Cada sub-aba vive em
+// components/finops/ (estrutura e próximos passos em FINOPS-REVISAO-PLAN.md).
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,18 +16,21 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
-import { RightsizingTab, RightsizingTabBadge } from "@/components/RightsizingTab";
+import { apiClient } from "@/lib/api/client";
 import type { FinOpsReport } from "./finops/types";
-import { financeProviderInfo, metricsCollectionLikelyFailed, metricsFailureReason } from "./finops/helpers";
+import { financeProviderInfo, isOpportunity, metricsCollectionLikelyFailed, metricsFailureReason } from "./finops/helpers";
+import { PrometheusNotFoundText } from "./finops/PrometheusNotFoundText";
 import { DashboardTab } from "./finops/DashboardTab";
 import { NodePoolsTab } from "./finops/NodePoolsTab";
-import { WorkloadsTab } from "./finops/WorkloadsTab";
 import { HPAHistoryTab } from "./finops/HPAHistoryTab";
-import { StorageTab } from "./finops/StorageTab";
-import { OpportunitiesTab } from "./finops/OpportunitiesTab";
 import { RelatorioTab } from "./finops/RelatorioTab";
-import { UnattachedDisksTab } from "./finops/UnattachedDisksTab";
-import { DeepAnalysisTab } from "./finops/DeepAnalysisTab";
+import { ClustersOverviewTab } from "./finops/ClustersOverviewTab";
+import { ShowbackTab } from "./finops/ShowbackTab";
+import { billedToBRL, useBilledCost } from "./finops/BilledCostPanel";
+import { fmtBRL } from "@/lib/finopsFormat";
+import { WorkloadsHubTab } from "./finops/WorkloadsHubTab";
+import { StorageOrphansTab } from "./finops/StorageOrphansTab";
+import { buildActionPlan, toEffectiveReport } from "./finops/capacity";
 import { DataResourcesPanel } from "./DataResourcesPanel";
 
 export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?: string; journeys?: string[] }) => {
@@ -49,6 +47,8 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
     : clusterOptions[0] ?? "";
 
   const [cluster, setCluster] = useState(defaultCluster);
+  const provider = (clusters ?? []).find(c => c.context === cluster)?.cloud_provider;
+  const finance = financeProviderInfo(provider);
   const [clusterOpen, setClusterOpen] = useState(false);
   const [withPrometheus, setWithPrometheus] = useState(true);
   const [windowDays, setWindowDays] = useState(30);
@@ -64,7 +64,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
   // Estado persistente da aba HPA Histórico (sobrevive a troca de tabs)
   const [hpaHistoryDays, setHpaHistoryDays] = useState(30);
 
-  // Sub-aba ativa. Controlada (não defaultValue) porque "Recursos Órfãos" não depende do
+  // Sub-aba ativa. Controlada (não defaultValue) porque "Armazenamento e Órfãos" não depende do
   // relatório principal — a barra de abas precisa existir mesmo sem "Analisar" ter rodado.
   const [subTab, setSubTab] = useState("dashboard");
 
@@ -84,7 +84,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
   const { data: report, isFetching, error, refetch } = useQuery<FinOpsReport>({
     queryKey: ["finops-report", cluster],
     queryFn: async ({ signal }) => {
-      let url = `/api/v1/finops/report?cluster=${encodeURIComponent(cluster)}`;
+      let url = `/finops/report?cluster=${encodeURIComponent(cluster)}`;
       if (withPrometheus) {
         // persist_rightsizing=true: o MESMO relatório que esta chamada já constrói (Dynatrace/
         // Prometheus/K8s/storage) também alimenta a aba Rightsizing (ver RightsizingTab.tsx) — o
@@ -94,20 +94,43 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
         // logo em seguida, porque a versão anterior disparava um 2º scan completo do zero).
         url += `&with_prometheus=true&window_days=${windowDaysRef.current}&persist_rightsizing=true`;
       }
-      const r = await fetch(url, {
-        signal,
-        headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      return r.json();
+      return apiClient.get<FinOpsReport>(url, { signal });
     },
     enabled: false,        // nunca re-fetcha automaticamente ao montar
     staleTime: Infinity,   // cache permanece válido indefinidamente
     retry: false,
   });
+
+  // Prometheus presente no cluster? Consulta constante (`vector(1)`) antes de analisar — o scan testa de novo.
+  const { data: promStatus, isFetching: promChecking } = useQuery<{ available: boolean; url: string; reason?: string }>({
+    queryKey: ["finops-prom-status", cluster],
+    queryFn: () => apiClient.get(`/finops/prometheus-status?cluster=${encodeURIComponent(cluster)}`),
+    enabled: !!cluster && withPrometheus,
+    staleTime: 2 * 60 * 1000,
+    retry: false,
+  });
+
+  // Fatura real (Cost Management) — a mesma consulta do painel do Relatório (cache por cluster).
+  const { data: billed } = useBilledCost(cluster, !!provider && !!report);
+  const billedFactor = report ? billedToBRL(billed, report.exchange_rate) : null;
+
+  // Um relatório novo muda o ranking multi-cluster ("Todos os clusters").
+  useEffect(() => {
+    if (report?.generated_at) {
+      queryClient.invalidateQueries({ queryKey: ["finops-overview"] });
+      queryClient.invalidateQueries({ queryKey: ["finops-showback"] });
+      queryClient.invalidateQueries({ queryKey: ["finops-prom-status"] }); // o scan testou de novo
+    }
+  }, [report?.generated_at, queryClient]);
+
+  // Contadores das abas (mesmas contas das próprias abas) e a aba ativa: sem relatório só existem
+  // "Armazenamento e Órfãos" e, no AKS, "Recursos de Dados".
+  const actionCount = report ? buildActionPlan(report).actions.length : 0;
+  const opportunityCount = (report?.workloads ?? []).filter(isOpportunity).length;
+  const withoutReport = provider === "aks" ? ["storage", "data", "overview", "showback"] : ["storage", "overview", "showback"];
+  const activeSubTab = subTab === "data" && provider !== "aks"
+    ? (report ? "dashboard" : "storage")
+    : report || withoutReport.includes(subTab) ? subTab : "storage";
 
   // Restaura o último scan já feito (sem NUNCA disparar um re-scan) sempre que o cluster muda ou
   // a aba monta — bug real corrigido, relatado pelo usuário: "sempre que chamamos a aba finops,
@@ -118,22 +141,25 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
   // GET /finops/report/last só lê um cache já persistido no backend (SQLite) — nunca consulta
   // Dynatrace/Prometheus/K8s. Só busca se a queryKey ainda não tiver dado (evita sobrescrever um
   // relatório recém-buscado ao vivo nesta mesma sessão, e evita rebuscar à toa).
+  // Enquanto o último scan é lido, a barra de abas fica oculta: sem relatório a aba ativa cai em
+  // "Armazenamento e Órfãos", e a tela abria nela (bug relatado: "quando chamamos a aba finops a
+  // tela vem em uma tab estranha e não do dashboard").
+  const [restoredCluster, setRestoredCluster] = useState<string | null>(null);
+  const restoring = !!cluster && restoredCluster !== cluster && !report;
   useEffect(() => {
     if (!cluster) return;
-    if (queryClient.getQueryData(["finops-report", cluster])) return;
+    if (queryClient.getQueryData(["finops-report", cluster])) { setRestoredCluster(cluster); return; }
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(`/api/v1/finops/report/last?cluster=${encodeURIComponent(cluster)}`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
-        });
-        if (!r.ok || cancelled) return;
-        const data = await r.json();
+        const data = await apiClient.get<FinOpsReport & { scanned?: boolean }>(`/finops/report/last?cluster=${encodeURIComponent(cluster)}`);
         if (cancelled || data?.scanned === false) return;
         queryClient.setQueryData(["finops-report", cluster], data);
       } catch {
         // best-effort e silencioso — sem cache, a tela simplesmente fica no estado vazio já
         // existente ("Selecione um cluster e clique em Analisar"), nunca um erro visível.
+      } finally {
+        if (!cancelled) setRestoredCluster(cluster);
       }
     })();
     return () => {
@@ -159,9 +185,10 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
       "CPU Request (m)", "Mem Request (Mi)",
       ...(hasP95 ? ["CPU P95 (m)", "Mem P95 (Mi)", "Desperdício R$/mês"] : []),
       "Custo R$/mês", "HPA Min", "HPA Atual", "HPA Max",
-      "Custo HPA Min R$", "Custo HPA Max R$", "Veredicto",
+      "Custo HPA Min R$", "Custo HPA Max R$", "Veredicto", "Base do custo", "Pool sob reserva/SP",
     ].join(",");
-    const rows = report.workloads.map(w =>
+    // Valores em reais no custo efetivo dos pools com cobertura (reserva/Savings Plan).
+    const rows = (toEffectiveReport(report).workloads ?? []).map(w =>
       [w.namespace, w.workload, w.pods,
        Math.round(w.cpu_request_millis), Math.round(w.mem_request_mi),
        ...(hasP95 ? [Math.round(w.cpu_p95_millis ?? 0), Math.round(w.mem_p95_mi ?? 0), (w.waste_brl ?? 0).toFixed(2)] : []),
@@ -169,6 +196,8 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
        w.hpa_min, w.hpa_current, w.hpa_max,
        w.hpa_cost_min_brl.toFixed(2), w.hpa_cost_max_brl.toFixed(2),
        w.verdict,
+       w.cost_basis === "effective" ? "efetivo" : "tabela",
+       w.committed ? "sim" : "não",
       ].join(",")
     );
     const csv = [header, ...rows].join("\n");
@@ -211,20 +240,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
     setAiLoading(true);
     setAiAnalysis(null);
     try {
-      const r = await fetch("/api/v1/finops/analyze", {
-        signal: aiAbortRef.current.signal,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
-        },
-        body: JSON.stringify({ ai_email: aiEmail, report }),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
-      }
-      const data = await r.json();
+      const data = await apiClient.post<{ analysis: string }>("/finops/analyze", { ai_email: aiEmail, report }, { signal: aiAbortRef.current.signal });
       setAiAnalysis(data.analysis);
       setAiExpanded(true);
       toast.success("Análise AI concluída");
@@ -243,12 +259,20 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
             <CircleDollarSign className="h-5 w-5 text-blue-500" />
-            FinOps — Análise de Custo{cluster ? ` ${financeProviderInfo(cluster).label}` : ""}
+            FinOps — Análise de Custo{finance.label ? ` ${finance.label}` : ""}
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             {cluster
-              ? `Custo real baseado na ${financeProviderInfo(cluster).source}`
+              ? (report?.node_pools ?? []).some(p => p.coverage)
+                ? `Custo efetivo (Cost Management, com reserva/Savings Plan) nos pools com cobertura; demais valores pela ${finance.source}`
+                : `Custo estimado pela ${finance.source} — reservas e Savings Plan não descontados`
               : "Selecione um cluster para começar"}
+            {billed?.available && billedFactor !== null && (
+              <span className="ml-1.5 font-medium text-indigo-600 dark:text-indigo-400"
+                title={`Custo amortizado, ${billed.from} a ${billed.to}: ${(billed.resource_groups ?? []).map(r => r.name).join(", ")}`}>
+                · faturado em {billed.window_days} dias: {fmtBRL(billed.total * billedFactor)}
+              </span>
+            )}
           </p>
         </div>
         <div className="flex flex-col gap-2 items-end">
@@ -271,7 +295,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
                     <CommandGroup>
                       {clusterOptions.map(c => (
                         <CommandItem key={c} value={c.replace("-admin", "")}
-                          onSelect={() => { setCluster(c); setClusterOpen(false); }}>
+                          onSelect={() => { setCluster(c); setSubTab("dashboard"); setClusterOpen(false); }}>
                           <Check className={`mr-2 h-3.5 w-3.5 ${cluster === c ? "opacity-100" : "opacity-0"}`} />
                           {c.replace("-admin", "")}
                         </CommandItem>
@@ -326,6 +350,16 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
               <Activity className="h-3 w-3" />
               <span title="Fonte primária: Dynatrace (quando configurado). Fallback: Prometheus">Análise histórica</span>
             </label>
+            {withPrometheus && (promChecking ? (
+              <span className="flex items-center gap-1 text-[11px] text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />Prometheus…</span>
+            ) : promStatus && (
+              <span title={`${promStatus.url}${promStatus.reason ? ` — ${promStatus.reason}` : ""}`}
+                className={`max-w-md truncate rounded-full px-2 py-0.5 text-[11px] ring-1 ${promStatus.available
+                  ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/30 dark:text-emerald-400"
+                  : "bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:text-amber-400"}`}>
+                {promStatus.available ? "Prometheus ok" : `Prometheus indisponível: ${promStatus.reason ?? "sem motivo"}`}
+              </span>
+            ))}
             {withPrometheus && (
               <Select value={String(windowDays)} onValueChange={v => setWindowDays(Number(v))}>
                 <SelectTrigger className="h-7 w-24 text-xs">
@@ -346,7 +380,7 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
       {isFetching && (
         <div className="flex-1 flex items-center justify-center gap-3 text-muted-foreground">
           <Loader2 className="h-6 w-6 animate-spin" />
-          <span>Coletando dados do cluster e preços Azure...</span>
+          <span>Coletando dados do cluster e preços{finance.label ? ` (${finance.label})` : ""}...</span>
         </div>
       )}
 
@@ -367,6 +401,20 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
       {/* Relatório */}
       {report && !isFetching && (
         <>
+          {report.summary.prometheus_unavailable && (
+            <Alert className="border-amber-200 bg-amber-50 dark:bg-amber-950/20">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <AlertDescription className="text-sm text-amber-800 dark:text-amber-300">
+                <strong>Análise feita sem Prometheus:</strong> {report.summary.prometheus_unavailable}
+                {report.summary.prometheus_url && <> (<code className="text-xs">{report.summary.prometheus_url}</code>)</>}.
+                {(report.summary.metrics_workloads_enriched ?? 0) > 0
+                  ? " O uso real veio só do Dynatrace."
+                  : " Sem uso real, desperdício, CPU/Mem e oportunidades não refletem o consumo."}{" "}
+                Para um endereço fora do padrão, informe <code className="text-xs">prometheusUrl</code> do cluster em{" "}
+                <code className="text-xs">~/.k8s-hpa-manager/clusters-config.json</code> e reinicie o servidor.
+              </AlertDescription>
+            </Alert>
+          )}
           {metricsCollectionLikelyFailed(report.summary) && (() => {
             const reason = metricsFailureReason(report.summary);
             return (
@@ -396,6 +444,8 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
                       (sem OneAgent Dynatrace instalado / sem Prometheus com as métricas de container) do que uma falha transitória. "Reanalisar" não deve
                       resolver sozinho — verifique se Dynatrace/Prometheus estão de fato configurados e coletando dados para este cluster.
                     </>
+                  ) : reason === "not_found" ? (
+                    <PrometheusNotFoundText url={report.summary.prometheus_url} />
                   ) : reason === "transient" ? (
                     <>
                       Pelo menos uma consulta a Dynatrace/Prometheus falhou de verdade durante este scan ({report.summary.metrics_collection_error}) —
@@ -454,25 +504,34 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
 
       {/* Abas: as que dependem do relatório só aparecem com ele; "Recursos Órfãos" consulta o
           cloud direto e fica disponível assim que há um cluster selecionado. */}
-      {cluster && !isFetching && (
+      {cluster && !isFetching && restoring && (
+        <div className="flex items-center gap-2 py-6 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando o último scan…
+        </div>
+      )}
+      {cluster && !isFetching && !restoring && (
         <>
           {!report && !error && (
             <p className="text-xs text-muted-foreground">
-              Clique em <strong>Analisar</strong> para liberar Dashboard, Node Pools, Workloads e as demais abas —
-              Recursos Órfãos já está disponível abaixo.
+              Clique em <strong>Analisar</strong> para liberar Dashboard, Relatório, Workloads e as demais abas —
+              Armazenamento e Órfãos, Showback e Todos os clusters já estão disponíveis abaixo.
             </p>
           )}
-          <Tabs value={report || subTab === "data" ? subTab : "disks"} onValueChange={setSubTab} className="flex-1 flex flex-col min-h-0">
-            <TabsList className="w-fit">
+          <Tabs value={activeSubTab} onValueChange={setSubTab} className="flex-1 flex flex-col min-h-0">
+            <TabsList className="w-fit flex-wrap h-auto">
               {report && (<>
               <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
-              <TabsTrigger value="nodepools">
-                Node Pools
-                <Badge variant="secondary" className="ml-1 text-[10px]">{(report.node_pools ?? []).length}</Badge>
+              <TabsTrigger value="report">
+                Relatório
+                {actionCount > 0 && <Badge className="ml-1 text-[10px] bg-orange-500">{actionCount}</Badge>}
               </TabsTrigger>
               <TabsTrigger value="workloads">
                 Workloads
-                <Badge variant="secondary" className="ml-1 text-[10px]">{report.summary.workloads_analyzed}</Badge>
+                {opportunityCount > 0 && <Badge variant="destructive" className="ml-1 text-[10px]">{opportunityCount}</Badge>}
+              </TabsTrigger>
+              <TabsTrigger value="nodepools">
+                Node Pools
+                <Badge variant="secondary" className="ml-1 text-[10px]">{(report.node_pools ?? []).length}</Badge>
               </TabsTrigger>
               <TabsTrigger value="hpa-history">
                 HPA {report.window_days > 0 ? `${report.window_days}d` : "Histórico"}
@@ -480,81 +539,50 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
                   <Badge className="ml-1 text-[10px] bg-purple-600">{report.summary.hpa_removable_count}</Badge>
                 )}
               </TabsTrigger>
-              {report.storage && (
-                <TabsTrigger value="storage">
-                  Armazenamento
-                  {(report.storage.orphaned_pvc_count ?? 0) > 0 && (
-                    <Badge variant="destructive" className="ml-1 text-[10px]">{report.storage.orphaned_pvc_count}</Badge>
-                  )}
-                </TabsTrigger>
-              )}
-              <TabsTrigger value="opportunities">
-                Oportunidades
-                {(report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.summary.fixed_high_cost_count ?? 0)) > 0 && (
-                  <Badge variant="destructive" className="ml-1 text-[10px]">
-                    {report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.summary.fixed_high_cost_count ?? 0)}
-                  </Badge>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="report">
-                Relatório
-                {(report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.storage?.orphaned_pvc_count ?? 0)) > 0 && (
-                  <Badge className="ml-1 text-[10px] bg-orange-500">
-                    {report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.storage?.orphaned_pvc_count ?? 0)}
-                  </Badge>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="rightsizing">
-                Rightsizing
-                <RightsizingTabBadge cluster={cluster} />
-              </TabsTrigger>
-              <TabsTrigger value="deep-analysis">Deep Analysis</TabsTrigger>
               </>)}
-              <TabsTrigger value="data">Recursos de Dados</TabsTrigger>
-              <TabsTrigger value="disks">Recursos Órfãos</TabsTrigger>
+              <TabsTrigger value="storage">
+                Armazenamento e Órfãos
+                {(report?.storage?.orphaned_pvc_count ?? 0) > 0 && (
+                  <Badge variant="destructive" className="ml-1 text-[10px]">{report?.storage?.orphaned_pvc_count}</Badge>
+                )}
+              </TabsTrigger>
+              {provider === "aks" && <TabsTrigger value="data">Recursos de Dados</TabsTrigger>}
+              <TabsTrigger value="showback">Showback</TabsTrigger>
+              <TabsTrigger value="overview">Todos os clusters</TabsTrigger>
             </TabsList>
 
             <div className="flex-1 overflow-auto mt-3">
               {report && (<>
               <TabsContent value="dashboard" className="mt-0 h-full">
-                <DashboardTab cluster={cluster} report={report} />
+                <DashboardTab cluster={cluster} report={report} provider={provider} />
               </TabsContent>
-              <TabsContent value="nodepools" className="mt-0 h-full">
-                <NodePoolsTab pools={report.node_pools ?? []} workloads={report.workloads ?? []} cluster={cluster} />
+              <TabsContent value="report" className="mt-0 h-full">
+                <RelatorioTab report={report} windowDays={report.window_days || windowDays} cluster={cluster} provider={provider} />
               </TabsContent>
               <TabsContent value="workloads" className="mt-0 h-full">
-                <WorkloadsTab workloads={report.workloads ?? []} windowDays={report.window_days || windowDays} />
+                <WorkloadsHubTab cluster={cluster} report={report} provider={provider} />
+              </TabsContent>
+              <TabsContent value="nodepools" className="mt-0 h-full">
+                <NodePoolsTab pools={report.node_pools ?? []} workloads={report.workloads ?? []} cluster={cluster}
+                  provider={provider} reportAt={report.generated_at} />
               </TabsContent>
               <TabsContent value="hpa-history" className="mt-0 h-full">
                 <HPAHistoryTab cluster={cluster} days={hpaHistoryDays} setDays={setHpaHistoryDays} />
               </TabsContent>
-              {report.storage && (
-                <TabsContent value="storage" className="mt-0 h-full">
-                  <StorageTab cluster={cluster} pvcs={report.pvcs ?? []} storage={report.storage} />
+              </>)}
+              <TabsContent value="storage" className="mt-0 h-full">
+                <StorageOrphansTab cluster={cluster} report={report} journeys={journeys} provider={provider} />
+              </TabsContent>
+              {provider === "aks" && (
+                <TabsContent value="data" className="mt-0 h-full">
+                  <DataResourcesPanel cluster={cluster} />
                 </TabsContent>
               )}
-              <TabsContent value="opportunities" className="mt-0 h-full">
-                <OpportunitiesTab workloads={report.workloads ?? []} summary={report.summary} windowDays={report.window_days || windowDays} historicalRan={report.window_days > 0} />
+              <TabsContent value="showback" className="mt-0 h-full">
+                <ShowbackTab cluster={cluster} />
               </TabsContent>
-              <TabsContent value="report" className="mt-0 h-full">
-                <RelatorioTab report={report} windowDays={report.window_days || windowDays} cluster={cluster} />
-              </TabsContent>
-              <TabsContent value="rightsizing" className="mt-0 h-full">
-                <RightsizingTab cluster={cluster} />
-              </TabsContent>
-              <TabsContent value="deep-analysis" className="mt-0 h-full">
-                <DeepAnalysisTab cluster={cluster} pools={report.node_pools ?? []} />
-              </TabsContent>
-              </>)}
-              <TabsContent value="data" className="mt-0 h-full">
-                <DataResourcesPanel cluster={cluster} />
-              </TabsContent>
-              <TabsContent value="disks" className="mt-0 h-full">
-                <UnattachedDisksTab
-                  cluster={cluster}
-                  journeys={journeys}
-                  azureScope={(clusters ?? []).find(c => c.context === cluster)?.cloud_provider === "aks"}
-                />
+              <TabsContent value="overview" className="mt-0 h-full">
+                <ClustersOverviewTab currentCluster={cluster} onOpen={c => { setCluster(c); setSubTab("dashboard"); }} />
               </TabsContent>
             </div>
           </Tabs>

@@ -19,6 +19,7 @@ type WorkloadRecommendation struct {
 	Cluster          string  `json:"cluster"`
 	Namespace        string  `json:"namespace"`
 	Workload         string  `json:"workload"`
+	Kind             string  `json:"kind,omitempty"` // Deployment | StatefulSet | DaemonSet | ... (vazio em análise antiga)
 	NodePool         string  `json:"node_pool,omitempty"`
 	Pods             int     `json:"pods"`
 	CPURequestMillis float64 `json:"cpu_request_millis"`
@@ -244,6 +245,7 @@ var finopsRightsizingMigrations = []string{
 	`ALTER TABLE workload_recommendations ADD COLUMN hpa_min_observed INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE workload_recommendations ADD COLUMN hpa_scale_events INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE workload_recommendations ADD COLUMN hpa_never_scaled INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workload_recommendations ADD COLUMN kind TEXT`,
 	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN node_count INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN min_node_count INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE nodepool_tier_suggestions ADD COLUMN max_node_count INTEGER NOT NULL DEFAULT 0`,
@@ -324,7 +326,7 @@ func (s *FinOpsRightsizingStore) ReplaceWorkloadRecommendations(cluster string, 
 
 	stmt, err := tx.Prepare(`
 INSERT INTO workload_recommendations (
-    cluster, namespace, workload, node_pool, node_name, pods,
+    cluster, namespace, workload, kind, node_pool, node_name, pods,
     cpu_request_millis, mem_request_mi, cpu_limit_millis, mem_limit_mi,
     cpu_p95_millis, mem_p95_mi, cpu_max_millis, mem_max_mi,
     cpu_current_millis, mem_current_mi,
@@ -333,7 +335,7 @@ INSERT INTO workload_recommendations (
     hpa_scale_events, hpa_never_scaled,
     cpu_max_at, mem_max_at, oldest_pod_started_at,
     verdict, waste_brl, metrics_source, window_days, generated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -341,7 +343,7 @@ INSERT INTO workload_recommendations (
 
 	for _, r := range recs {
 		if _, err := stmt.Exec(
-			cluster, r.Namespace, r.Workload, r.NodePool, r.NodeName, r.Pods,
+			cluster, r.Namespace, r.Workload, r.Kind, r.NodePool, r.NodeName, r.Pods,
 			r.CPURequestMillis, r.MemRequestMi, r.CPULimitMillis, r.MemLimitMi,
 			r.CPUP95Millis, r.MemP95Mi, r.CPUMaxMillis, r.MemMaxMi,
 			r.CPUCurrentMillis, r.MemCurrentMi,
@@ -382,7 +384,7 @@ func (s *FinOpsRightsizingStore) GetWorkloadRecommendations(cluster string) ([]W
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-SELECT cluster, namespace, workload, node_pool, node_name, pods,
+SELECT cluster, namespace, workload, kind, node_pool, node_name, pods,
        cpu_request_millis, mem_request_mi, cpu_limit_millis, mem_limit_mi,
        cpu_p95_millis, mem_p95_mi, cpu_max_millis, mem_max_mi,
        cpu_current_millis, mem_current_mi,
@@ -400,10 +402,10 @@ FROM workload_recommendations WHERE cluster = ? ORDER BY waste_brl DESC`, cluste
 	recs := make([]WorkloadRecommendation, 0)
 	for rows.Next() {
 		var r WorkloadRecommendation
-		var nodePool, nodeName, verdict, metricsSource sql.NullString
+		var kind, nodePool, nodeName, verdict, metricsSource sql.NullString
 		var cpuMaxAt, memMaxAt, oldestPodStartedAt sql.NullTime
 		if err := rows.Scan(
-			&r.Cluster, &r.Namespace, &r.Workload, &nodePool, &nodeName, &r.Pods,
+			&r.Cluster, &r.Namespace, &r.Workload, &kind, &nodePool, &nodeName, &r.Pods,
 			&r.CPURequestMillis, &r.MemRequestMi, &r.CPULimitMillis, &r.MemLimitMi,
 			&r.CPUP95Millis, &r.MemP95Mi, &r.CPUMaxMillis, &r.MemMaxMi,
 			&r.CPUCurrentMillis, &r.MemCurrentMi,
@@ -415,6 +417,7 @@ FROM workload_recommendations WHERE cluster = ? ORDER BY waste_brl DESC`, cluste
 		); err != nil {
 			return nil, err
 		}
+		r.Kind = kind.String
 		r.NodePool = nodePool.String
 		r.NodeName = nodeName.String
 		r.Verdict = verdict.String

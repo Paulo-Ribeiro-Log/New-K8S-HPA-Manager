@@ -17,6 +17,7 @@ import (
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/dynatrace"
 	"k8s-hpa-manager/internal/finops"
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/storage"
 )
@@ -28,6 +29,9 @@ type FinOpsHandler struct {
 	timelineStore    *storage.FinOpsTimelineStore    // pode ser nil se DB não disponível
 	rightsizingStore *storage.FinOpsRightsizingStore // pode ser nil se DB não disponível — ver finops_rightsizing.go
 	reportCacheStore *storage.FinOpsReportCacheStore // pode ser nil se DB não disponível — cache do último GET /finops/report por cluster, ver GetLastReport
+	exemptionsStore  *storage.FinOpsExemptionsStore  // pode ser nil — isenções por workload (finops_exemptions.go), aplicadas na leitura
+	historyTracker   *history.HistoryTracker         // pode ser nil — Change History das isenções e ações
+	actionsStore     *storage.FinOpsActionsStore     // pode ser nil — recomendações enviadas e acompanhamento (finops_actions.go)
 	pricer           *finops.AzurePricer             // AKS — também usado como fallback pra providers sem pricer próprio
 	gcpPricer        *finops.GCPPricer               // GKE — nil se falhou ao inicializar (cai pro AzurePricer, preço errado mas não quebra)
 	diskPricer       *finops.DiskPricer              // nil = análise de storage omitida (Azure only)
@@ -81,6 +85,21 @@ type FinOpsHandler struct {
 	// guardado por cluster (finops_data_resources.go).
 	dataRGMu    sync.Mutex
 	dataRGCache map[string]cachedDataRG
+
+	// Custo faturado (Cost Management) dos RGs do cluster — o dado muda ~1x por dia e a API limita
+	// chamadas, então fica em cache por cluster (finops_billed_cost.go).
+	// Última tentativa de refresh automático da cobertura por cluster (finops_coverage.go): sem isso,
+	// um cluster sem permissão de custos repetia a consulta (e a espera) a cada análise.
+	coverageTriedMu sync.Mutex
+	coverageTried   map[string]time.Time
+
+	billedSF    singleflight.Group
+	billedMu    sync.Mutex
+	billedCache map[string]billedCostResponse
+
+	// Último teste de presença do Prometheus por URL (finops_prometheus_status.go).
+	promStatusMu    sync.Mutex
+	promStatusCache map[string]promStatus
 }
 
 // dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
@@ -120,6 +139,7 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 
 		unattachedDisksCache: make(map[string]cachedUnattachedDisks),
 		orphanCache:          make(map[string]cachedOrphanScan),
+		billedCache:          make(map[string]billedCostResponse),
 		dataUsageCache:       make(map[string]cachedDataUsage),
 		dataRGCache:          make(map[string]cachedDataRG),
 	}
@@ -283,8 +303,9 @@ func (h *FinOpsHandler) doGetReport(
 
 	// Prometheus (fallback) — URL auto-descoberta pelo cluster se não fornecida
 	var enricher *finops.PrometheusEnricher
+	promURL := promURLParam
+	promUnavailable := "" // motivo quando o teste de presença do Prometheus falhou
 	if withPrometheus {
-		promURL := promURLParam
 		requiresGCPAuth := false
 		if promURL == "" {
 			promURL = discovery.GetPrometheusURL(cluster)
@@ -298,6 +319,11 @@ func (h *FinOpsHandler) doGetReport(
 			return http.StatusBadRequest, gin.H{"error": "Falha ao conectar ao Prometheus: " + err.Error()}
 		}
 		log.Info().Str("prometheus_url", promURL).Int("window_days", windowDays).Msg("FinOps: enricher Prometheus criado")
+		// Prometheus presente? Sem isso, um endpoint inexistente virava dezenas de consultas com erro.
+		if st := h.probePrometheus(ctx, promURL, requiresGCPAuth); !st.Available {
+			enricher = nil
+			promUnavailable = st.Reason
+		}
 	}
 
 	if h.npRegistryStore == nil {
@@ -334,6 +360,9 @@ func (h *FinOpsHandler) doGetReport(
 		storagePromURL = discovery.GetPrometheusURL(cluster)
 		storageRequiresGCPAuth = discovery.RequiresGCPAuth(cluster)
 	}
+	if promUnavailable != "" && storagePromURL == promURL {
+		storagePromURL = "" // mesmo endpoint que acabou de falhar no teste
+	}
 	pricer := h.pricerForCluster(cluster)
 	calc := finops.NewCalculator(pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL, storageRequiresGCPAuth)
 	// metrics-server é opcional/best-effort (ex: EKS sem metrics-server instalado) — nil aqui só
@@ -343,7 +372,11 @@ func (h *FinOpsHandler) doGetReport(
 		log.Debug().Err(metricsErr).Str("cluster", cluster).Msg("FinOps: metrics-server indisponível, uso 'current' ao vivo ficará vazio")
 		metricsClient = nil
 	}
+	// Cobertura (Cost Management) e node groups (az) em paralelo com o relatório — ver prefetchScanExtras.
+	willPersist := persistRightsizing && h.rightsizingStore != nil && len(namespaces) == 0 && (dtEnricher != nil || enricher != nil)
+	waitExtras := h.prefetchScanExtras(ctx, cluster, willPersist)
 	report, err := calc.BuildReport(ctx, cluster, k8sClient, pools, namespaces, dtEnricher, enricher, metricsClient)
+	liveNodeGroups := waitExtras()
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
 		return http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()}
@@ -359,14 +392,23 @@ func (h *FinOpsHandler) doGetReport(
 	// Só roda sem filtro de namespace (persistir um relatório PARCIAL sobrescreveria a análise
 	// completa do cluster no store) e só quando há alguma fonte de uso real (mesma exigência já
 	// documentada em ScanRightsizing — "rightsizing exige uso real histórico").
-	if persistRightsizing && h.rightsizingStore != nil && len(namespaces) == 0 && (dtEnricher != nil || enricher != nil) {
-		if _, _, _, perr := h.persistRightsizingFromReport(ctx, cluster, report, windowDays, pricer); perr != nil {
+	if willPersist {
+		if _, _, _, perr := h.persistRightsizingFromReport(ctx, cluster, report, windowDays, pricer, liveNodeGroups); perr != nil {
 			log.Warn().Err(perr).Str("cluster", cluster).
 				Msg("FinOps: falha ao persistir rightsizing a partir do relatório principal (best-effort, não afeta o relatório em si)")
 		} else {
 			log.Info().Str("cluster", cluster).Msg("FinOps: rightsizing persistido a partir do relatório principal (sem re-scan)")
 		}
 	}
+
+	// Cobertura de reserva/Savings Plan por pool (Cost Management, só AKS, atualizada com TTL em
+	// prefetchScanExtras). Vai no relatório para o Node Pools/Relatório não tratarem preço de tabela
+	// como economia certa.
+	h.attachCostData(cluster, report)
+	if enricher != nil || promUnavailable != "" {
+		report.Summary.PrometheusURL = promURL
+	}
+	report.Summary.PrometheusUnavailable = promUnavailable
 
 	// Cacheia o relatório recém-gerado como "último scan" deste cluster — bug real corrigido,
 	// relatado pelo usuário: "sempre que chamamos a aba finops, ela vem vazia... ajuste para que
@@ -382,6 +424,10 @@ func (h *FinOpsHandler) doGetReport(
 			log.Warn().Err(serr).Str("cluster", cluster).Msg("FinOps: falha ao persistir cache de último scan (best-effort, não afeta o relatório em si)")
 		}
 	}
+
+	// Isenções depois do cache: o cache guarda o relatório sem elas (aplicadas de novo a cada leitura).
+	h.applyExemptions(cluster, report)
+	h.saveShowback(cluster, report) // foto do mês para o showback (já com cobertura e isenções)
 
 	log.Info().
 		Str("cluster", cluster).
@@ -426,7 +472,15 @@ func (h *FinOpsHandler) GetLastReport(c *gin.Context) {
 	}
 
 	log.Debug().Str("cluster", cluster).Time("generated_at", generatedAt).Msg("FinOps: último relatório restaurado do cache (sem re-scan)")
-	c.Data(http.StatusOK, "application/json; charset=utf-8", reportJSON)
+	// A cobertura muda depois do scan ("Atualizar cobertura" no Rightsizing): reanexa a gravada agora.
+	var report finops.FinOpsReport
+	if err := json.Unmarshal(reportJSON, &report); err != nil {
+		c.Data(http.StatusOK, "application/json; charset=utf-8", reportJSON)
+		return
+	}
+	h.attachCostData(cluster, &report)
+	h.applyExemptions(cluster, &report)
+	c.JSON(http.StatusOK, report)
 }
 
 // GetPricing godoc
@@ -700,7 +754,11 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 }
 
 // GetVMAlternatives godoc
-// GET /api/v1/finops/vm-alternatives?cluster=X&sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3
+// GET /api/v1/finops/vm-alternatives?cluster=X&sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3[&pool=Y]
+//
+// Com pool, cada alternativa traz o aviso de cobertura do pool (reserva/Savings Plan gravados por
+// "Atualizar cobertura" no Rightsizing) — a economia é de preço de tabela e não se realiza inteira
+// num pool coberto. O ReservedHint (SKU já coberto na frota) vem sempre.
 //
 // Retorna até 3 SKUs/instance types alternativos sugeridos para o VM size informado, levando em
 // conta os percentuais de utilização de CPU e Memória do pool para identificar o gargalo.
@@ -736,6 +794,11 @@ func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
 	if alternatives == nil {
 		alternatives = []finops.VMAlternative{}
 	}
+	var poolCov *finops.PoolCoverage
+	if pool := c.Query("pool"); pool != "" {
+		poolCov = h.poolCoverage(cluster)[strings.ToLower(pool)]
+	}
+	annotateAlternativesCoverage(sku, alternatives, poolCov, h.skuCoverageIndex(), nodeCount, rate)
 
 	cpu, mem := pricer.GetVMSpecs(sku)
 	c.JSON(http.StatusOK, gin.H{
@@ -748,6 +811,26 @@ func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
 		"node_count":   nodeCount,
 		"alternatives": alternatives,
 	})
+}
+
+// annotateAlternativesCoverage marca nas alternativas o SKU já coberto na frota (ReservedHint) e,
+// com a cobertura do pool, o aviso de reserva/Savings Plan e os cenários da troca — mesma regra da
+// leitura do rightsizing (nodePoolTierResponses). Não altera a economia calculada.
+func annotateAlternativesCoverage(sku string, alts []finops.VMAlternative, poolCov *finops.PoolCoverage, skuIndex finops.SKUCoverageIndex, nodeCount int, rate float64) {
+	for i := range alts {
+		alt := &alts[i]
+		alt.ReservedHint = skuIndex.Hint(alt.VMSize)
+		alt.CoverageWarning = finops.AssessCoverageWarning(sku, alt.VMSize, poolCov)
+		if w := alt.CoverageWarning; w != nil && w.Level == finops.CoverageLevelReservation {
+			w.Scenarios = finops.AssessSwapScenarios(sku, alt.VMSize, poolCov, finops.SwapInputs{
+				NodeCount:       nodeCount,
+				AltPriceUSDHour: alt.PriceUSDHour,
+				ExchangeRate:    rate,
+				TableSavingsBRL: alt.MonthlySavingsBRL,
+				CostDeltaPct:    alt.CostDeltaPct,
+			})
+		}
+	}
 }
 
 // GetSavedTimelines godoc

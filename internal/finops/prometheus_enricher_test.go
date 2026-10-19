@@ -655,3 +655,28 @@ func TestPrometheusEnricher_CollectionErrors_DistinguishesRealFailureFromEmptyCo
 		}
 	})
 }
+
+// TestNodeMetricTopUsage_SkipsFallbackWhenNodenameQueryFails: a query por nodename falhou (504 do
+// gateway) — o fallback por instance, tão pesado quanto, não deve rodar.
+func TestNodeMetricTopUsage_SkipsFallbackWhenNodenameQueryFails(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusGatewayTimeout)
+	}))
+	defer srv.Close()
+	e, err := NewPrometheusEnricher(srv.URL, 30, false)
+	if err != nil {
+		t.Fatalf("NewPrometheusEnricher: %v", err)
+	}
+	out := e.nodeMetricTopUsage(t.Context(), []string{"node-a"}, nodeCPUTopQueries(e.nodePeakWindow()), 1, "cpu")
+	if len(out) != 0 {
+		t.Fatalf("sem dado esperado, veio %+v", out)
+	}
+	if calls != 1 {
+		t.Fatalf("esperava só a query por nodename (sem fallback), veio %d chamada(s)", calls)
+	}
+	if e.nodePeakWindow() != nodePeakMaxDays {
+		t.Fatalf("janela do pico de node deveria ser limitada a %d dias, veio %d", nodePeakMaxDays, e.nodePeakWindow())
+	}
+}

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { apiClient } from "@/lib/api/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Cpu, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -76,7 +77,6 @@ interface PerfRunResult {
   error?: string;
 }
 
-const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("auth_token")}` });
 
 /** "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz" → "Xeon Platinum 8370C @ 2.80GHz". */
 function shortCPU(model: string): string {
@@ -144,11 +144,10 @@ export function PerfBadge({ perf }: { perf?: PerfComparison }) {
   );
 }
 
-/** Linha "CPU medida" do SKU atual do pool (ou aviso de que nunca foi medido). */
+/** Linha "CPU medida" do SKU atual do pool. Sem medição não mostra nada: o aviso "sem medição"
+ *  já aparece nas alternativas de SKU, e repetir "CPU não medida" em todo pool só poluía o card. */
 export function CurrentPerfLine({ perf }: { perf?: PerfInfo }) {
-  if (!perf) {
-    return <p className="text-[10px] text-muted-foreground italic">CPU não medida</p>;
-  }
+  if (!perf) return null;
   const fleet = perf.scope === "fleet";
   return (
     <p
@@ -177,11 +176,7 @@ export function PerfBenchmarkButton({ cluster, pools }: { cluster: string; pools
 
   const stored = useQuery<{ nodes: PerfNode[]; sku_summary: PerfSKUSummary[] }>({
     queryKey: ["finops-perf-benchmark", cluster],
-    queryFn: async () => {
-      const r = await fetch(`/api/v1/finops/perf-benchmark?cluster=${encodeURIComponent(cluster)}`, { headers: authHeaders() });
-      if (!r.ok) throw new Error(`Erro ${r.status}`);
-      return r.json();
-    },
+    queryFn: () => apiClient.get(`/finops/perf-benchmark?cluster=${encodeURIComponent(cluster)}`),
     enabled: open && !!cluster,
     staleTime: 30 * 1000,
   });
@@ -195,14 +190,9 @@ export function PerfBenchmarkButton({ cluster, pools }: { cluster: string; pools
     setError(null);
     setLastRun(null);
     try {
-      const r = await fetch("/api/v1/finops/perf-benchmark", {
-        method: "POST",
-        headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ cluster, namespace: namespace.trim() || "default", node_pools: chosen, nodes_per_pool: Number(perPool) }),
-      });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error((body as { error?: string }).error ?? `Erro ${r.status}`);
-      setLastRun((body as { results: PerfRunResult[] }).results);
+      const body = await apiClient.post<{ results: PerfRunResult[] }>("/finops/perf-benchmark",
+        { cluster, namespace: namespace.trim() || "default", node_pools: chosen, nodes_per_pool: Number(perPool) });
+      setLastRun(body.results);
       // O comparativo nas sugestões é montado na LEITURA — recarrega pra as etiquetas aparecerem.
       await queryClient.invalidateQueries({ queryKey: ["finops-rightsizing", cluster] });
       await queryClient.invalidateQueries({ queryKey: ["finops-perf-benchmark", cluster] });

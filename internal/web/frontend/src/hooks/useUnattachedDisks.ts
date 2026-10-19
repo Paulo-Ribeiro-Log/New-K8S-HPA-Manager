@@ -1,20 +1,13 @@
 import { useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { OrphanResourcesResponse, UnattachedDisksReport } from "@/components/finops/types";
+import { apiClient } from "@/lib/api/client";
 
-// Mesma convenção de useRightsizingReport.ts (hooks do FinOps usam fetch direto + header de auth).
 // O backend guarda a listagem do cloud em cache de 5min; "Atualizar" manda refresh=true e ignora
 // esse cache. Só lê — a app nunca exclui disco.
-const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("auth_token")}` });
 
 async function fetchUnattachedDisks(cluster: string, refresh: boolean, signal?: AbortSignal): Promise<UnattachedDisksReport> {
-  const url = `/api/v1/finops/unattached-disks?cluster=${encodeURIComponent(cluster)}${refresh ? "&refresh=true" : ""}`;
-  const r = await fetch(url, { signal, headers: authHeaders() });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
-  }
-  return r.json();
+  return apiClient.get(`/finops/unattached-disks?cluster=${encodeURIComponent(cluster)}${refresh ? "&refresh=true" : ""}`, { signal });
 }
 
 export function useUnattachedDisks(cluster: string, enabled = true) {
@@ -47,12 +40,7 @@ async function fetchOrphanResources(cluster: string, journeys: string[], refresh
   const params = new URLSearchParams({ cluster });
   if (journeys.length > 0) params.set("journeys", journeys.join(","));
   if (refresh) params.set("refresh", "true");
-  const r = await fetch(`/api/v1/finops/orphan-resources?${params.toString()}`, { signal, headers: authHeaders() });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
-  }
-  return r.json();
+  return apiClient.get(`/finops/orphan-resources?${params.toString()}`, { signal });
 }
 
 // Recursos órfãos (Azure) nos resource groups das jornadas selecionadas no cabeçalho (journeys

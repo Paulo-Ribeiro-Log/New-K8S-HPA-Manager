@@ -165,3 +165,15 @@ func TestBrlInt(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachPoolCoverage(t *testing.T) {
+	pools := []FinOpsPool{{Name: "CalculoFrete"}, {Name: "frete", Coverage: &PoolCoverage{Reservation: 1}}}
+	cov := map[string]*PoolCoverage{"calculofrete": {Reservation: 0.99, OnDemand: 0.01}}
+	AttachPoolCoverage(pools, cov)
+	if pools[0].Coverage == nil || pools[0].Coverage.Reservation != 0.99 {
+		t.Errorf("pool com cobertura gravada (chave em minúsculas): %+v", pools[0].Coverage)
+	}
+	if pools[1].Coverage != nil {
+		t.Errorf("pool sem cobertura gravada não pode manter a antiga: %+v", pools[1].Coverage)
+	}
+}

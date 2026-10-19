@@ -11,6 +11,9 @@ import type {
   NodeDetailsResponse,
   CronJob,
   PrometheusResource,
+  PrometheusWALReport,
+  PrometheusWALHealth,
+  PrometheusWALCleanupRequest,
   ValidationStatus,
   APIError,
   APIResponse,
@@ -157,6 +160,7 @@ import type {
 } from "@/types/ai";
 
 import type { PoolDeepAnalysis } from "@/types/finopsDeepAnalysis";
+import type { TimelineReport } from "@/components/finops/types";
 
 import type {
   HealthCheckRequest,
@@ -457,12 +461,14 @@ class APIClient {
   }
 
   // Generic HTTP methods (used by hooks like useUserPermissions)
-  async get<T = any>(endpoint: string): Promise<T> {
-    return this.request<T>(endpoint, { method: 'GET' });
+  // init: opções extras do fetch (ex.: { signal } para cancelar).
+  async get<T = any>(endpoint: string, init?: RequestInit): Promise<T> {
+    return this.request<T>(endpoint, { ...init, method: 'GET' });
   }
 
-  async post<T = any>(endpoint: string, data?: any): Promise<T> {
+  async post<T = any>(endpoint: string, data?: any, init?: RequestInit): Promise<T> {
     return this.request<T>(endpoint, {
+      ...init,
       method: 'POST',
       body: data ? JSON.stringify(data) : undefined,
     });
@@ -2947,6 +2953,48 @@ class APIClient {
     );
   }
 
+  /** Diagnóstico do WAL do Prometheus. deep=true monta o PVC read-only em pod temporário (lento). */
+  async analyzePrometheusWAL(
+    cluster: string,
+    namespace: string,
+    name: string,
+    deep: boolean
+  ): Promise<PrometheusWALReport> {
+    const params = new URLSearchParams({ cluster, namespace });
+    if (name) params.append("name", name);
+    if (deep) params.append("deep", "true");
+    return this.request<PrometheusWALReport>(`/prometheus/wal/analyze?${params.toString()}`);
+  }
+
+  /** Integridade leve do Prometheus do cluster (só API do K8s; cache de 45 s no servidor). */
+  async getPrometheusWALHealth(cluster: string): Promise<PrometheusWALHealth> {
+    return this.request<PrometheusWALHealth>(`/prometheus/wal/health?cluster=${encodeURIComponent(cluster)}`);
+  }
+
+  /** Dispara a limpeza do WAL (SRE). Responde 202 e roda em segundo plano; acompanhe pelo stream SSE. */
+  async startPrometheusWALCleanup(body: PrometheusWALCleanupRequest): Promise<{ operation_id: string }> {
+    return this.request("/prometheus/wal/cleanup", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  /** URL do SSE de progresso da limpeza — token via query param (EventSource não aceita headers). */
+  getPrometheusWALProgressURL(operationId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/prometheus/wal/progress/${encodeURIComponent(operationId)}?token=${encodeURIComponent(token || "")}`;
+  }
+
+  /** Cancela a limpeza em curso; o servidor religa o Prometheus antes de encerrar. */
+  async cancelPrometheusWALCleanup(operationId: string): Promise<void> {
+    await this.request(`/prometheus/wal/cancel/${encodeURIComponent(operationId)}`, { method: "POST" });
+  }
+
+  /** Religa um Prometheus deixado desligado por uma limpeza interrompida. */
+  async restorePrometheusWAL(cluster: string, namespace: string, name: string): Promise<{ restored_replicas: number }> {
+    return this.request("/prometheus/wal/restore", {
+      method: "POST",
+      body: JSON.stringify({ cluster, namespace, name }),
+    });
+  }
+
   // Sessions
   async getSessions(): Promise<Session[]> {
     const response = await this.request<{ sessions: Session[]; count: number }>(
@@ -4012,6 +4060,63 @@ class APIClient {
       throw new Error(body.error || `HTTP ${response.status}`);
     }
     return response.text();
+  }
+
+  /**
+   * Série diária do cluster (nodes, CPU/Mem usado × request, réplicas de HPA).
+   * GET /api/v1/finops/timeline?cluster=X&days=N
+   */
+  async getFinOpsTimeline(cluster: string, days: number): Promise<TimelineReport> {
+    const params = new URLSearchParams({ cluster, days: String(days) });
+    return this.request<TimelineReport>(`/finops/timeline?${params}`);
+  }
+
+  /**
+   * SKUs alternativos para um node pool, pela utilização de CPU/Mem do pool.
+   * GET /api/v1/finops/vm-alternatives?cluster=X&pool=P&sku=Y&cpu_pct=N&mem_pct=N&node_count=N
+   * (com pool, o backend anexa o aviso de reserva/Savings Plan do pool).
+   */
+  async getFinOpsVMAlternatives<T>(cluster: string, pool: string, sku: string, cpuPct: number, memPct: number, nodeCount: number): Promise<T> {
+    const params = new URLSearchParams({
+      cluster, pool, sku, cpu_pct: String(cpuPct), mem_pct: String(memPct), node_count: String(nodeCount),
+    });
+    return this.request<T>(`/finops/vm-alternatives?${params}`);
+  }
+
+  /**
+   * Custo faturado (Cost Management, amortizado, 30 dias) dos RGs do cluster AKS, por serviço.
+   * GET /api/v1/finops/billed-cost?cluster=X[&refresh=true] — cache de 6 h no backend.
+   */
+  async getFinOpsBilledCost<T>(cluster: string, refresh = false): Promise<T> {
+    const params = new URLSearchParams({ cluster });
+    if (refresh) params.set("refresh", "true");
+    return this.request<T>(`/finops/billed-cost?${params}`);
+  }
+
+  /** Recomendações enviadas para aplicar + acompanhamento — /api/v1/finops/actions. */
+  async recordFinOpsAction(body: {
+    cluster: string; namespace: string; workload: string; channel: "staging" | "values" | "kubectl";
+    expected_saving_brl: number; target_hpa_min?: number; target_hpa_max?: number; target_cpu_millis?: number; target_mem_mi?: number;
+  }): Promise<{ id: number }> {
+    return this.request(`/finops/actions`, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async listFinOpsActions<T>(cluster: string): Promise<{ actions: T[] }> {
+    return this.request(`/finops/actions?${new URLSearchParams({ cluster })}`);
+  }
+
+  async deleteFinOpsAction(cluster: string, id: number): Promise<void> {
+    await this.request(`/finops/actions?${new URLSearchParams({ cluster, id: String(id) })}`, { method: "DELETE" });
+  }
+
+  /** Isenções por workload do FinOps — GET/POST/DELETE /api/v1/finops/exemptions. */
+  async upsertFinOpsExemption(body: { cluster: string; namespace: string; workload: string; max_replicas_threshold: number; reason: string }): Promise<void> {
+    await this.request(`/finops/exemptions`, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async deleteFinOpsExemption(cluster: string, namespace: string, workload: string): Promise<void> {
+    const params = new URLSearchParams({ cluster, namespace, workload });
+    await this.request(`/finops/exemptions?${params}`, { method: "DELETE" });
   }
 
   // ==================== Resource Explorer ====================

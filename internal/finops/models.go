@@ -41,14 +41,28 @@ type FinOpsPool struct {
 	MonthlyCostBRL     float64 `json:"monthly_cost_brl"`
 	TotalCPUMillicores int64   `json:"total_cpu_millicores"`
 	TotalMemoryMi      int64   `json:"total_memory_mi"`
+	// Capacidade ALOCÁVEL somada dos nodes vivos do pool (status.allocatable: o que sobra para os
+	// pods depois da reserva do kubelet/SO — numa F4s_v2 de 8 GB, bem menos memória que a nominal).
+	// AllocatableNodes = quantos nodes entraram na soma (pode diferir de NodeCount, que vem do
+	// registry). Vazio quando a listagem de nodes falhou.
+	AllocatableCPUMillicores int64 `json:"allocatable_cpu_millicores,omitempty"`
+	AllocatableMemoryMi      int64 `json:"allocatable_memory_mi,omitempty"`
+	AllocatableNodes         int   `json:"allocatable_nodes,omitempty"`
+	// Coverage: quanto do custo efetivo do pool vem de reserva / Savings Plan / sob demanda / spot
+	// (Cost Management, gravado por pool). Anexado na leitura (AttachPoolCoverage); nil = nunca
+	// consultado ou cluster fora do Azure. Os custos acima são de TABELA; com reserva, a economia de
+	// tirar nodes não se realiza enquanto a reserva seguir paga.
+	Coverage *PoolCoverage `json:"coverage,omitempty"`
 	// Custo de disco OS por pool (preenchido quando DiskPricer disponível)
 	OSDiskSKU     string  `json:"os_disk_sku,omitempty"`
 	OSDiskTier    string  `json:"os_disk_tier,omitempty"`
 	OSDiskGB      int     `json:"os_disk_gb,omitempty"`
 	OSDiskCostUSD float64 `json:"os_disk_cost_usd,omitempty"`
 	OSDiskCostBRL float64 `json:"os_disk_cost_brl,omitempty"`
-	TotalCostUSD  float64 `json:"total_cost_usd,omitempty"` // MonthlyCostUSD + OSDiskCostUSD
-	TotalCostBRL  float64 `json:"total_cost_brl,omitempty"`
+	// Custo efetivo do disco do SO no mês (Cost Management, AttachDiskCost); 0 = sem dado.
+	OSDiskEffectiveBRL float64 `json:"os_disk_effective_brl,omitempty"`
+	TotalCostUSD       float64 `json:"total_cost_usd,omitempty"` // MonthlyCostUSD + OSDiskCostUSD
+	TotalCostBRL       float64 `json:"total_cost_brl,omitempty"`
 }
 
 // FinOpsNamespace agrega o custo alocado de todos os workloads de um namespace
@@ -57,6 +71,9 @@ type FinOpsNamespace struct {
 	WorkloadCount  int     `json:"workload_count"`
 	MonthlyCostUSD float64 `json:"monthly_cost_usd"`
 	MonthlyCostBRL float64 `json:"monthly_cost_brl"`
+	// Dono do namespace pelo primeiro label conhecido (ver namespaceOwnerLabels) — showback.
+	Owner      string `json:"owner,omitempty"`
+	OwnerLabel string `json:"owner_label,omitempty"`
 }
 
 // FinOpsWorkload representa um workload K8s com custo proporcional alocado.
@@ -64,6 +81,7 @@ type FinOpsNamespace struct {
 type FinOpsWorkload struct {
 	Namespace        string  `json:"namespace"`
 	Workload         string  `json:"workload"`
+	Kind             string  `json:"kind,omitempty"` // Deployment | StatefulSet | DaemonSet | Job | ReplicaSet | Pod (vazio em relatório antigo)
 	Pods             int     `json:"pods"`
 	CPURequestMillis float64 `json:"cpu_request_millis"` // request configurado POR POD (média entre os pods; total = × Pods)
 	MemRequestMi     float64 `json:"mem_request_mi"`
@@ -73,6 +91,9 @@ type FinOpsWorkload struct {
 	// ver nodePoolLabelFromNode em calculator.go; vazio se o node não tiver label reconhecida).
 	// Usado pra agregar uso real por pool na sugestão de tier de VM (ver SuggestVMTier).
 	NodePool string `json:"node_pool,omitempty"`
+	// PoolPods: pods do workload em cada pool (DaemonSet e workloads espalhados têm pods em vários).
+	// A conta de capacidade por pool usa isto; NodePool é só o pool dominante.
+	PoolPods map[string]int `json:"pool_pods,omitempty"`
 	// NodeName é o node com mais pods deste workload (mesmo critério de NodePool, mas o nome
 	// literal do node — usado pra correlacionar com NodeUsage, ver live_metrics.go).
 	NodeName          string  `json:"node_name,omitempty"`
@@ -81,6 +102,7 @@ type FinOpsWorkload struct {
 	HPAMin            int     `json:"hpa_min"`
 	HPAMax            int     `json:"hpa_max"`
 	HPACurrent        int     `json:"hpa_current"`
+	HPAName           string  `json:"hpa_name,omitempty"` // nome do HPA (pode diferir do workload); vazio sem HPA ou em relatório antigo
 	HPACostMinBRL     float64 `json:"hpa_cost_min_brl"`
 	HPACostMaxBRL     float64 `json:"hpa_cost_max_brl"`
 	HPACostCurrentBRL float64 `json:"hpa_cost_current_brl"`
@@ -130,6 +152,17 @@ type FinOpsWorkload struct {
 	HPAMinObserved int     `json:"hpa_min_observed,omitempty"` // mínimo visto
 	HPAScaleEvents int     `json:"hpa_scale_events,omitempty"` // qtd de mudanças no período
 	HPANeverScaled bool    `json:"hpa_never_scaled,omitempty"` // nunca saiu do mínimo → remover HPA
+
+	// Isenção (FINOPS-EXEMPTIONS-PLAN.md, ApplyExemptions): anexada na LEITURA do relatório.
+	// ExemptActive = as réplicas estão dentro do limite e a análise do workload foi suprimida
+	// (Verdict "ok", WasteBRL 0); o veredito e o desperdício originais ficam em ExemptOriginal*.
+	IsExempt               bool    `json:"is_exempt,omitempty"`
+	ExemptReason           string  `json:"exempt_reason,omitempty"`
+	ExemptThreshold        int     `json:"exempt_threshold,omitempty"`
+	ExemptActive           bool    `json:"exempt_active,omitempty"`
+	ExemptReplicas         int     `json:"exempt_replicas,omitempty"` // réplicas comparadas com o limite
+	ExemptOriginalVerdict  string  `json:"exempt_original_verdict,omitempty"`
+	ExemptOriginalWasteBRL float64 `json:"exempt_original_waste_brl,omitempty"`
 
 	// Custo estimado baseado em réplicas médias reais (mais preciso que snapshot)
 	AvgReplicasCostBRL float64 `json:"avg_replicas_cost_brl,omitempty"`
@@ -244,6 +277,13 @@ type FinOpsSummary struct {
 	// a orientação certa é reanalisar com uma janela menor, não "esperar alguns minutos". Ver
 	// PrometheusEnricher.HeavyQueryTimeoutsOnly.
 	MetricsCollectionTimeout bool `json:"metrics_collection_timeout,omitempty"`
+
+	// PrometheusURL — endpoint do Prometheus consultado no scan (vazio = sem Prometheus). Vai no
+	// banner quando todas as consultas dão 404 (host padrão inexistente para o cluster).
+	PrometheusURL string `json:"prometheus_url,omitempty"`
+	// PrometheusUnavailable — motivo quando o teste de presença (`vector(1)`) falhou antes do scan: a
+	// análise seguiu sem Prometheus (só Dynatrace, se houver).
+	PrometheusUnavailable string `json:"prometheus_unavailable,omitempty"`
 }
 
 // ── Storage types ─────────────────────────────────────────────────────────────
@@ -265,6 +305,8 @@ type PVCCostItem struct {
 	WorkloadRef    string  `json:"workload_ref"`   // "namespace/deployment" se detectável
 	IsOrphaned     bool    `json:"is_orphaned"`    // true se nenhum pod montando
 	PriceSource    string  `json:"price_source"`   // "api" | "fallback"
+	// Custo efetivo no mês (Cost Management, pelo disco pvc-<uid>; AttachDiskCost); 0 = sem dado.
+	EffectiveCostBRL float64 `json:"effective_cost_brl,omitempty"`
 }
 
 // StorageClassBreakdown agrega custo de PVCs por StorageClass

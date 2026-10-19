@@ -861,6 +861,17 @@ export function useUpdatePrometheusResource() {
   });
 }
 
+export function useAnalyzePrometheusWAL() {
+  return useMutation({
+    mutationFn: ({ cluster, namespace, name, deep }: {
+      cluster: string;
+      namespace: string;
+      name: string;
+      deep: boolean;
+    }) => apiClient.analyzePrometheusWAL(cluster, namespace, name, deep),
+  });
+}
+
 export function useServices(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
   const [services, setServices] = useState<ServiceSummary[]>([]);
   const [loading, setLoading] = useState(false);

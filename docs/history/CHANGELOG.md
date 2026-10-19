@@ -3,6 +3,117 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Prometheus — análise e limpeza do WAL, fases 1 a 7 (Outubro 2026)
+
+Nova rota `GET /api/v1/prometheus/wal/analyze` (pacote `internal/promwal`): diagnostica um Prometheus que não sobe e devolve o veredito `saudavel`, `aumentar_memoria`, `limpar_wal` ou `investigar`, com evidências (OOM, progresso do replay, corrupção, eventos) e avisos (Helm/Argo, réplica saudável, Thanos). Somente leitura; `deep=true` monta o PVC read-only em pod temporário (fixado no nó do pod) para calcular a janela de dados que seria perdida. Para `aumentar_memoria` só informa o valor sugerido. O script `scripts/prometheus-wal-cleanup.sh` segue como fallback. **Fase 2:** painel "Diagnóstico do WAL" (`PrometheusWalPanel.tsx`) no editor de StatefulSets da aba Prometheus, com opção de análise profunda; para `aumentar_memoria`, o botão abre o editor de recursos existente já com o limit sugerido (nada é aplicado sozinho). **Fase 3 (backend):** `POST /prometheus/wal/cleanup` (SRE) executa a limpeza em Go com progresso por SSE (`/prometheus/wal/progress/:id`), cancelamento e restauração (`/cancel/:id`, `/restore`). Guard-rails: `analysis_id` de uso único (10 min), veredito `limpar_wal`, análise profunda da réplica, confirmação `APAGAR` + nome, checagem de permissões antes de desligar. A anotação `hpa-manager/wal-cleanup-original-replicas` no recurso Prometheus garante o religar (também após queda do servidor). **Fase 4:** botão "Limpar WAL…" no painel (liberado só com a análise profunda das réplicas afetadas) abre `PrometheusWalCleanupDialog`: seleção de réplicas, janela de dados perdida, confirmação `APAGAR` + nome do recurso, progresso por SSE (o diálogo não fecha enquanto roda) e cancelamento que religa o Prometheus. Se uma limpeza anterior ficou pendente, o painel oferece "Restaurar". **Fase 5:** contador de reincidência. Cada limpeza em que algo foi apagado grava anotações persistentes no recurso Prometheus (`hpa-manager/wal-cleanup-count|last-at|history`, no mesmo patch que religa) e já constava no Change History; a análise une as duas fontes (deduplicando) e avisa quando há 2 ou mais limpezas em 30 dias (`recurrence` no relatório, destaque no painel e no diálogo, sem bloquear). **Fase 6 (backend):** `GET /prometheus/wal/health?cluster=X` verifica a integridade dos recursos Prometheus do cluster usando só a API do Kubernetes (cache de 45 s): `desligado_por_limpeza` e `fora_do_ar` (críticos), `reincidente` (aviso), `iniciando`, `desligado`, `saudavel`. Sem alcance ou sem permissão volta `verifiable: false` (nunca alerta falso). **Fase 7:** o frontend consulta essa rota quando o cluster fica ativo (e a cada 60 s enquanto ativo, `usePrometheusHealth`) e mostra os problemas como alertas (`PrometheusHealthAlerts`, com o botão "Abrir diagnóstico do WAL" e um toast por problema novo); o card "Alertas Críticos" soma os críticos do Prometheus. Detalhes em `PROMETHEUS-WAL-CLEANUP.md`.
+
+### FinOps — Relatório e Node Pools refeitos, abas consolidadas (Outubro 2026)
+
+**Relatório.** Refeito como visão executiva:
+- capa com custo mensal, projeção anual, economia possível e eficiência de CPU;
+- "Para onde vai o dinheiro": rosca com o custo em uso, o request acima do uso, a capacidade sem request, o disco do SO, os PVCs e os PVCs órfãos;
+- medidores de eficiência (uso ÷ request e request ÷ capacidade);
+- tendência de 30 dias (nodes e eficiência);
+- treemap de namespaces colorido pelo desperdício;
+- maiores custos por workload, empilhados;
+- plano de ação com economia por item;
+- riscos e qualidade dos dados.
+
+O PDF foi refeito com o mesmo conteúdo.
+
+**Node Pools.** Cada pool ganhou um card com barras de capacidade, requisitado e em uso, o custo da capacidade sem request e a sugestão de scale-down do próprio pool. O comando `az aks nodepool scale` aparece só para AKS.
+
+**Erros corrigidos:**
+- o Node Pools e o Relatório somavam o `cpu_request_millis` sem multiplicar por pods (o campo é por pod). A "CPU alocada" saía muito baixa e havia sugestões falsas de scale-down;
+- o scale-down usava a utilização do cluster inteiro para todos os pools;
+- as "Alternativas de SKU" chamavam `/finops/vm-alternatives` sem `cluster`, levavam 400 e mostravam sempre "Nenhuma alternativa".
+
+**Correções da Fase 1** (`FINOPS-REVISAO-PLAN.md`):
+- a "economia possível" é uma só (`buildActionPlan`), no Dashboard e no Relatório;
+- o cabeçalho diz "custo estimado", com a fonte certa por provider, pelo `cloud_provider` e não pelo prefixo do nome;
+- a projeção do Dashboard não fixa mais o ano;
+- todo HTTP do FinOps passa pelo `apiClient`;
+- `/finops/vm-alternatives?pool=` traz o aviso de reserva/Savings Plan;
+- o relatório expõe o `kind` do workload, e os comandos `kubectl set resources`/`autoscale` usam deployment, statefulset ou daemonset, com uma nota sobre Helm/GitOps.
+
+**Fase 2: de 12 para 7 abas.** A nova estrutura é Dashboard, Relatório, Workloads, Node Pools, HPA, Armazenamento e Órfãos e Recursos de Dados (só AKS):
+- a aba Workloads junta o Rightsizing ("Request e limit") e as Oportunidades;
+- a Deep Analysis virou um botão em cada pool;
+- Armazenamento e Recursos Órfãos viraram uma aba só, e o disco de um PVC sem pod ganha uma etiqueta para não ser contado de novo;
+- o Dashboard perdeu o card de oportunidades (que trazia uma economia divergente) e o gráfico de réplicas dos HPAs;
+- o relatório passa a trazer o `hpa_name`, usado no `kubectl patch hpa`.
+
+**Correção: capacidade ociosa do Node Pools.** O caso real foi o oferta-prd, em que o card mostrava "Capacidade sem request R$ 45.215" e o pool calculofrete (51–54 nodes) custava R$ 60.672. A conta tinha quatro erros:
+- somava os 7 pools sem dizer isso;
+- tirava a média entre CPU e memória. No calculofrete, a CPU estava 74,5% reservada e a memória 49,8%, e a média dizia que metade do pool sobrava, mas é a CPU que limita;
+- ignorava o uso acima do request: a memória estava 58,5% em uso;
+- usava a capacidade nominal da VM.
+
+Agora a parte ociosa considera o recurso mais ocupado de cada pool (o maior entre request e uso), sobre a capacidade **alocável** dos nodes. O backend passa a mandar o `allocatable_*` por pool e o `pool_pods` por workload, porque os pods de um DaemonSet iam todos para o pool dominante. A barra do recurso que limita o pool ganha a etiqueta "limita o pool", e o card diz "Ociosa (todos os pools)" e qual é o maior pool. Com o mesmo relatório e ainda na capacidade nominal, os valores caem para R$ 13.121 no calculofrete e R$ 28.987 no total. O Relatório usa a mesma conta.
+
+**Reserva / Savings Plan no Node Pools e no Relatório.** No oferta-prd, os 7 pools estão sob reserva: são R$ 24,9 mil efetivos contra R$ 102,9 mil de tabela. Mesmo assim, as abas mostravam valores de tabela como economia.
+
+O relatório agora traz a `coverage` de cada pool (`finops.AttachPoolCoverage`: no "Analisar", com o refresh automático de TTL 6h, e no `/report/last`, com a cobertura gravada). As mesmas regras do `coverage.go` valem para o scale-down e para o ajuste de requests:
+- **sob reserva:** o certo é só a fatia sob demanda de hoje; o valor de tabela é o melhor caso, se a reserva liberada for reaproveitada por outras VMs do SKU;
+- **Savings Plan, Spot ou moeda ≠ BRL:** sem número, só o aviso.
+
+O que mudou na tela:
+- **Node Pools:** mostra o custo efetivo por pool, a barra de cobertura e a parte ociosa pelo custo efetivo;
+- **Relatório:** a decomposição, o treemap e os maiores custos usam o custo efetivo nos pools com cobertura (fator efetivo ÷ tabela do pool), e a "Economia possível" soma só o que é certo.
+
+O custo do Cost Management é só de `Virtual Machines`, então os discos do SO continuam em preço de tabela, sem contagem dupla.
+
+O mesmo vale para o Dashboard, o Workloads (Rightsizing e Oportunidades), o CSV e o cabeçalho, via `toEffectiveReport` e o fator por pool:
+- o Dashboard mostra "Economia certa";
+- as Oportunidades separam a economia de pools sob demanda da de pools sob reserva/Savings Plan;
+- o CSV ganha as colunas "Base do custo" e "Pool sob reserva/SP".
+
+A conta agora fica em `components/finops/capacity.ts`, a fonte única. O próximo passo está em `FINOPS-REVISAO-PLAN.md`. Testado em headless com relatório falso, nos temas claro e escuro, e com o PDF.
+
+**Fase 3 — custo faturado.** O Relatório ganhou o painel "Fatura do Azure × estimativa" (só AKS): custo amortizado dos últimos 30 dias (até ontem) no Cost Management, somando o RG do AKS e o RG de nodes (`MC_...`), por serviço. O painel compara compute e discos com o que o relatório estima e lista à parte o que a estimativa não vê (Log Analytics, load balancer, rede, plano do AKS). O cabeçalho mostra o faturado e o PDF ganha uma nota. Backend: `GET /finops/billed-cost` (`finops_billed_cost.go`, cache de 6 h + singleflight; falha de login ou de permissão volta `available: false` com o motivo) e `ARMClient.CostByResourceGroupAndService` (`cost_billed.go`), ambos com teste.
+
+**Fase 3 — isenções por workload** (`FINOPS-EXEMPTIONS-PLAN.md`). Um workload pode ser isento (ex.: HPA 1/1 de HLG, decisão de projeto) com um limite de réplicas e um motivo. Enquanto as réplicas atuais e o pico do histórico ficam dentro do limite, ele sai do desperdício, das oportunidades, do plano de ação e dos contadores. Passou do limite, a isenção para de valer sozinha e o badge âmbar avisa. A regra roda na leitura do relatório, então criar ou remover não pede novo scan. Store `finops_exemptions.db`, `finops.ApplyExemptions` e rotas `GET/POST/DELETE /finops/exemptions` (com Change History), todos com teste. Na tela: botão "Isentar" em cada oportunidade, modal com limite e motivo, seção "N workloads isentos" e linha no Relatório e no PDF.
+
+**Fase 3 — sobras resolvidas.**
+- **Discos pelo custo efetivo:** junto com a cobertura de reserva, o Cost Management passa a ler o serviço Storage do RG de nodes, por recurso: o disco do SO no VMSS do pool e cada PVC no disco `pvc-<uid>`. `attachCostData` anexa na leitura, e Relatório, Node Pools, ranking e showback usam.
+- **Fatura completa:** o AKS inclui o RG de dados, em qualquer subscription. EKS lê o Cost Explorer pela tag `aws:eks:cluster-name`, que precisa estar ativada como cost allocation tag. GKE lê o export de billing no BigQuery, com a tabela em `K8S_HPA_GKE_BILLING_TABLE`. O painel compara compute e discos com os serviços de cada nuvem.
+- **Isenções no Rightsizing:** badge e desperdício zerado nos isentos ativos.
+- **Ociosa no ranking "Todos os clusters":** porte para Go da conta do `capacity.ts` (`finops/idle.go`), com KPI, coluna e barra.
+- **kubectl copiado no acompanhamento:** canal kubectl; a mesma ação repetida em 24 h não duplica.
+- **Showback por soma diária:** foto por dia (`finops_showback_day`), mês acumulado dia a dia (`AccrueShowback`) ou pelo ritmo mensal, e rateio opcional do não alocado proporcional ao compute.
+- **Fora do horário com dado real:** horas-node por pool dos últimos 7 dias no Prometheus (`GET /finops/node-hours`); a economia sai do que de fato roda fora do horário. O botão "Automatizar" gera o CronJob que escala os deployments a 0 e de volta.
+
+**Relatório — rosca "Para onde vai o dinheiro".** O tooltip semitransparente ficava em cima do total no centro da rosca, e os dois textos se sobrepunham. Agora a rosca não tem tooltip: a fatia sob o mouse (ou a linha da legenda) aparece no centro, com nome, valor e % do total, e as demais ficam esmaecidas. O `TooltipBox` dos outros gráficos ficou opaco.
+
+**Fase 3 — showback, fora do horário e reserva para a carga base.**
+- **Showback** (sub-aba nova): custo do mês por namespace ou por dono (label do namespace: `owner`, `team`, `squad`…), deste cluster ou de todos, com CSV. A linha "(não alocado)" fecha a conta com o custo do cluster. Cada Analisar grava a foto do mês. `GET /finops/showback`, `finops.BuildShowback`; o relatório passou a ler os labels dos namespaces (`attachNamespaceOwners`).
+- **Fora do horário** (Node Pools, só HLG/dev/QA): economia de parar o cluster ou de escalar os pools User a 0 à noite e no fim de semana, com horário configurável. Pool sob reserva/Savings Plan não conta como economia certa.
+- **Reserva para a carga base** (Node Pools, AKS fora de HLG): por pool, a carga base é o maior entre o min do autoscaler e os nodes que os requests pedem com todo HPA no mínimo, menos o que já está sob reserva/SP. A economia de reserva e Savings Plan de 1 e 3 anos usa o preço público da Retail Prices API. A API só devolve reserva com `priceType eq 'Reservation'` explícito, e não publica reserva de VM FSv2 no brazilsouth.
+- O scan agendado com alerta no Teams ficou para depois.
+
+**Fase 3 — aplicar e acompanhar.** Nas Oportunidades, cada recomendação com alvo concreto ganhou dois botões:
+- **Enviar ao Staging:** busca o HPA no cluster e põe no Staging o min/max e os requests recomendados (P95 + 20%). A aplicação segue o fluxo normal do Staging. O Staging grava requests só no 1º container, então os requests só vão quando esse container carrega o request do pod inteiro; o limit sobe quando o request novo passaria dele.
+- **Patch de values:** bloco YAML para o chart (Helm/Argo/Flux).
+
+Os dois gravam o envio com a foto do workload, tirada do último relatório no servidor (`finops_actions.db`, `GET/POST/DELETE /finops/actions`, com Change History). A visão Workloads → **Acompanhamento** compara a foto com o relatório mais recente (`finops.EvaluateAction`): aguardando scan, não aplicada, parcial ou aplicada (≥ 80% do caminho até o alvo), mais a economia realizada contra a esperada. Testado (Go e headless de ponta a ponta com o patch de values).
+
+**Fase 3 — visão multi-cluster.** Nova sub-aba "Todos os clusters" no FinOps: o ranking sai do último relatório gravado de cada cluster, sem novo scan, por cluster ou por jornada (tag de jornada do `clusters-config.json`, ou o nome do cluster), com filtro de ambiente. Cada linha traz custo efetivo, request acima do uso (com a parte sob reserva), risco de OOM, nodes e idade do relatório (em âmbar depois de 7 dias), e o botão "Abrir" leva ao cluster. Backend: `GET /finops/overview` (`finops_overview.go`) reaplica a cobertura e as isenções e resume com `finops.SummarizeCluster` (`overview.go`), com as mesmas regras e tetos da tela de um cluster. Testado.
+
+**Análise mais rápida.** Pelo log de uma análise real do oferta-prd (2 min 56 s): o pico dos nodes no Prometheus (subquery `[30d:5m]` com join no `node_uname_info`, 41 nodes) levava 135 s e terminava em 504 nas duas tentativas, disputando o Prometheus com as queries dos workloads. Depois do cálculo, ainda vinham ~30 s em série: cobertura do Cost Management e `az aks nodepool list`. Mudanças:
+- o pico de node usa no máximo 7 dias (`nodePeakMaxDays`, rótulo "pico 7d" no Rightsizing) e, quando a query por `nodename` falha, não tenta o fallback por `instance`, que é tão pesado quanto;
+- cobertura e node groups rodam em paralelo com o `BuildReport` (`prefetchScanExtras`), no relatório e no scan do Rightsizing;
+- o refresh automático da cobertura tenta no máximo 1 vez a cada 30 min por cluster (antes repetia a cada análise quando faltava permissão).
+
+As queries dos workloads (P95, média e pico de 30 dias) não mudaram.
+
+**Disco do SO dos pools AKS.** Todo pool aparecia como Premium SSD P10 de 128 GB, porque o tamanho vinha do label `kubernetes.azure.com/os-disk-size-gb`, que o AKS não coloca nos nodes. Agora o disco é lido dos nodes (`osDiskFromNode`, com teste):
+- `kubernetes.azure.com/storageprofile` diz se é efêmero; nesse caso o disco fica no cache da VM e não tem custo à parte (`os_disk_sku: "Efêmero"`);
+- `kubernetes.azure.com/storagetier` diz o tipo (Premium, Standard SSD, Standard HDD);
+- a capacidade `ephemeral-storage` do node dá o tamanho, convertido no tier cobrado.
+
+**Rightsizing.** A linha "CPU não medida" saiu dos cards dos pools quando o benchmark de CPU nunca rodou: ela se repetia em todos os pools, e o aviso continua nas alternativas de SKU.
+
+
 ### Code Editor — autocomplete e busca por trechos no "Abrir pasta" (Outubro 2026)
 
 **Autocomplete no campo de caminho** (`CodeEditorOpenFolderDialog.tsx`). Enquanto você digita, o modal lista a pasta antes da última `/` (ou `\`) e sugere as pastas e os arquivos que casam com o trecho final. Sem barra, a busca é na pasta aberta no modal. A listagem de cada pasta é guardada em cache enquanto o modal está aberto. Teclas:
