@@ -5191,6 +5191,84 @@ func (c *Client) PatchDeploymentResources(ctx context.Context, namespace, name s
 	return c.ApplyDeployment(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false, true)
 }
 
+// prometheusOwnerName devolve o nome do recurso Prometheus (monitoring.coreos.com) que controla o StatefulSet, ou "".
+func prometheusOwnerName(sts *appsv1.StatefulSet) string {
+	for _, o := range sts.OwnerReferences {
+		if o.Controller != nil && *o.Controller && o.Kind == "Prometheus" && strings.HasPrefix(o.APIVersion, "monitoring.coreos.com/") {
+			return o.Name
+		}
+	}
+	return ""
+}
+
+// buildPrometheusResourcesPatch monta o merge patch do spec do recurso Prometheus: só os campos pedidos.
+func buildPrometheusResourcesPatch(req ResourcePatchRequest) (string, error) {
+	requests := map[string]string{}
+	limits := map[string]string{}
+	for _, f := range []struct {
+		dst        map[string]string
+		key, value string
+	}{
+		{requests, "cpu", req.CPURequest}, {requests, "memory", req.MemoryRequest},
+		{limits, "cpu", req.CPULimit}, {limits, "memory", req.MemoryLimit},
+	} {
+		if f.value == "" {
+			continue
+		}
+		if _, err := resource.ParseQuantity(f.value); err != nil {
+			return "", fmt.Errorf("quantidade inválida %q para %s: %w", f.value, f.key, err)
+		}
+		f.dst[f.key] = f.value
+	}
+	spec := map[string]interface{}{}
+	if len(requests) > 0 || len(limits) > 0 {
+		res := map[string]interface{}{}
+		if len(requests) > 0 {
+			res["requests"] = requests
+		}
+		if len(limits) > 0 {
+			res["limits"] = limits
+		}
+		spec["resources"] = res
+	}
+	if req.Replicas != nil {
+		spec["replicas"] = *req.Replicas
+	}
+	if len(spec) == 0 {
+		return "", fmt.Errorf("nada para alterar")
+	}
+	out, err := json.Marshal(map[string]interface{}{"spec": spec})
+	return string(out), err
+}
+
+// patchPrometheusOwnerResources altera spec.resources/spec.replicas do recurso Prometheus dono do StatefulSet (via
+// kubectl: não há dynamic client). O spec.resources do recurso vale para o container "prometheus".
+func (c *Client) patchPrometheusOwnerResources(ctx context.Context, sts *appsv1.StatefulSet, crName string, req ResourcePatchRequest) (*appsv1.StatefulSet, error) {
+	if len(sts.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("statefulset %s/%s has no containers", sts.Namespace, sts.Name)
+	}
+	container := req.ContainerName
+	if container == "" {
+		container = sts.Spec.Template.Spec.Containers[0].Name
+	}
+	if container != "prometheus" {
+		return nil, fmt.Errorf("o StatefulSet %s/%s é gerenciado pelo recurso Prometheus %s, e só o container \"prometheus\" tem os recursos definidos nele (container pedido: %q)", sts.Namespace, sts.Name, crName, container)
+	}
+	patch, err := buildPrometheusResourcesPatch(req)
+	if err != nil {
+		return nil, err
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, "kubectl", "patch", "prometheus.monitoring.coreos.com", crName,
+		"-n", sts.Namespace, "--type", "merge", "-p", patch, "--context", c.cluster).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to patch prometheus %s/%s in cluster %s: %w\n%s", sts.Namespace, crName, c.cluster, err, string(out))
+	}
+	return c.clientset.AppsV1().StatefulSets(sts.Namespace).Get(ctx, sts.Name, metav1.GetOptions{})
+}
+
 // PatchStatefulSetResources atualiza apenas os recursos (CPU/memória) de um StatefulSet
 // usando Server-Side Apply para compatibilidade com Helm
 func (c *Client) PatchStatefulSetResources(ctx context.Context, namespace, name string, req ResourcePatchRequest) (*appsv1.StatefulSet, error) {
@@ -5198,6 +5276,12 @@ func (c *Client) PatchStatefulSetResources(ctx context.Context, namespace, name 
 	sts, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get statefulset %s/%s: %w", namespace, name, err)
+	}
+
+	// StatefulSet gerado pelo prometheus-operator: o operator reescreve o StatefulSet a partir do recurso Prometheus e
+	// desfaz qualquer edição direta, então a alteração vai para o recurso dono.
+	if crName := prometheusOwnerName(sts); crName != "" {
+		return c.patchPrometheusOwnerResources(ctx, sts, crName, req)
 	}
 
 	// Encontrar o container correto
