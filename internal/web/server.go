@@ -983,6 +983,19 @@ func (s *Server) setupRoutes() {
 	api.GET("/prometheus", prometheusHandler.List)
 
 	// Prometheus Stack - Write Operations (SRE-only)
+	// Prometheus Stack - análise do WAL (leitura; deep=true cria pod temporário read-only e é registrado no histórico)
+	prometheusWALHandler := handlers.NewPrometheusWALHandler(s.kubeManager, s.historyTracker)
+	api.GET("/prometheus/wal/analyze", prometheusWALHandler.Analyze)
+	// Integridade do Prometheus do cluster ativo (só API do K8s, cache de 45 s): base dos alertas de "fora do ar" e reincidência
+	api.GET("/prometheus/wal/health", prometheusWALHandler.Health)
+	// Limpeza do WAL (SRE): exige analysis_id com veredito limpar_wal + confirmação digitada; progresso por SSE
+	api.POST("/prometheus/wal/cleanup", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Cleanup)
+	api.POST("/prometheus/wal/cancel/:id", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Cancel)
+	api.POST("/prometheus/wal/restore", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Restore)
+	s.router.GET("/api/v1/prometheus/wal/progress/:id",
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+		prometheusWALHandler.Stream)
+
 	api.PUT("/prometheus/:cluster/:namespace/:type/:name", rbacMiddleware.RequireSREGroup(), prometheusHandler.Update)
 	api.POST("/prometheus/:cluster/:namespace/:type/:name/rollout", rbacMiddleware.RequireSREGroup(), prometheusHandler.Rollout)
 

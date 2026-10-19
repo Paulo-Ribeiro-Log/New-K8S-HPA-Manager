@@ -53,6 +53,7 @@ import { GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB, useNotes } from "@/hooks/useN
 import { StagingPanel } from "@/components/StagingPanel";
 import { VPNWarningBanner } from "@/components/VPNWarningBanner";
 import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
+import { PrometheusHealthAlerts } from "@/components/PrometheusHealthAlerts";
 import { CronJobsTab } from "@/components/CronJobsTab";
 import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
@@ -1723,9 +1724,14 @@ const Index = ({ onLogout }: IndexProps) => {
           />
           {/* Card de Alertas Críticos */}
           {selectedCluster && (
-            <CriticalAlertsBanner cluster={selectedCluster} />
+            <CriticalAlertsBanner cluster={selectedCluster} onOpenPrometheus={() => handleTabChange("prometheus")} />
           )}
         </div>
+      )}
+
+      {/* Integridade do Prometheus do cluster ativo (fora do ar, limpeza interrompida, reincidência do WAL) */}
+      {selectedCluster && (
+        <PrometheusHealthAlerts cluster={selectedCluster} onOpenPrometheus={() => handleTabChange("prometheus")} />
       )}
 
       {/* Banner de VPN desconectada — específico para o cluster/cloud selecionado */}

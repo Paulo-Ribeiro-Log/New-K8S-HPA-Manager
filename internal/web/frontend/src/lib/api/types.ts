@@ -1053,6 +1053,101 @@ export interface PrometheusResource {
   memory_usage?: string;
 }
 
+// Análise do WAL (GET /prometheus/wal/analyze) — docs: PROMETHEUS-WAL-CLEANUP.md
+export type PrometheusWALVerdict = 'saudavel' | 'aumentar_memoria' | 'limpar_wal' | 'investigar';
+
+export interface PrometheusWALPodReport {
+  pod: string;
+  pvc?: string;
+  verdict: PrometheusWALVerdict;
+  cause: string;
+  evidence?: string[];
+}
+
+export interface PrometheusWALDeepReport {
+  pod: string;
+  pvc: string;
+  blocks: number;
+  last_block_ends_at?: string;
+  lost_window_hours: number;
+  wal_bytes: number;
+  chunks_head_bytes: number;
+}
+
+export interface PrometheusWALRecurrence {
+  count_30d: number;
+  total: number;
+  last_at?: string;
+  dates?: string[];
+  /** 2 ou mais limpezas em 30 dias: problema crônico, a causa não é o WAL em si. */
+  recurrent: boolean;
+}
+
+// Integridade do Prometheus do cluster ativo (GET /prometheus/wal/health) — base dos alertas.
+export type PrometheusHealthState =
+  | 'desligado_por_limpeza' | 'fora_do_ar' | 'reincidente' | 'iniciando' | 'desligado' | 'saudavel' | 'nao_verificavel';
+
+export interface PrometheusHealthItem {
+  namespace: string;
+  name: string;
+  state: PrometheusHealthState;
+  severity?: 'critical' | 'warning';
+  summary: string;
+  pods?: { name: string; ready: boolean; restarts: number; reason?: string }[];
+  recurrence: PrometheusWALRecurrence;
+  pending_restore_replicas?: number;
+}
+
+export interface PrometheusWALHealth {
+  cluster: string;
+  checked_at: string;
+  /** false = não deu para consultar o cluster (VPN/permissão): nunca vira alerta. */
+  verifiable: boolean;
+  reason?: string;
+  operator_present: boolean;
+  items: PrometheusHealthItem[];
+}
+
+export interface PrometheusWALReport {
+  analysis_id: string;
+  cluster: string;
+  namespace: string;
+  name: string;
+  verdict: PrometheusWALVerdict;
+  summary: string;
+  pods: PrometheusWALPodReport[];
+  warnings?: string[];
+  events?: string[];
+  deep?: PrometheusWALDeepReport[];
+  suggested_memory?: string;
+  affected_replicas?: string[];
+  /** Limpeza anterior interrompida: o Prometheus foi desligado e não religou (réplicas originais). */
+  pending_restore_replicas?: number;
+  recurrence: PrometheusWALRecurrence;
+  created_at: string;
+}
+
+export interface PrometheusWALCleanupRequest {
+  analysis_id: string;
+  replicas: string[];
+  confirm: string;
+  confirm_name: string;
+}
+
+export interface PrometheusWALCleanupResult {
+  cleaned: {
+    pod: string;
+    pvc: string;
+    last_block_ends_at?: string;
+    wal_bytes: number;
+    chunks_head_bytes: number;
+    blocks_preserved: number;
+  }[];
+  restored: boolean;
+  ready: boolean;
+  warnings?: string[];
+}
+
 export interface PrometheusResourceUpdate {
   cpu_request: string;
   memory_request: string;

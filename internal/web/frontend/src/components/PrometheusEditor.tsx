@@ -6,6 +6,7 @@ import { Loader2, Activity, Save, X, RefreshCcw } from "lucide-react";
 import type { PrometheusResource } from "@/lib/api/types";
 import { useUpdatePrometheusResource } from "@/hooks/useAPI";
 import { toast } from "sonner";
+import { PrometheusWalPanel } from "@/components/PrometheusWalPanel";
 
 interface PrometheusEditorProps {
   resource: PrometheusResource | null;
@@ -35,13 +36,13 @@ export const PrometheusEditor = ({ resource, selectedCluster, onRefetch }: Prome
     );
   }
 
-  const handleEdit = () => {
+  const handleEdit = (memoryLimit?: string) => {
     setEditedValues({
       replicas: resource.replicas,
       cpu_request: resource.current_cpu_request || '',
       memory_request: resource.current_memory_request || '',
       cpu_limit: resource.current_cpu_limit || '',
-      memory_limit: resource.current_memory_limit || '',
+      memory_limit: memoryLimit || resource.current_memory_limit || '',
     });
     setIsEditing(true);
   };
@@ -221,7 +222,7 @@ export const PrometheusEditor = ({ resource, selectedCluster, onRefetch }: Prome
             {/* Action Button - Apenas Editar */}
             <Button
               className="w-full"
-              onClick={handleEdit}
+              onClick={() => handleEdit()}
             >
               <Save className="w-4 h-4 mr-2" />
               Editar Recursos
@@ -329,6 +330,16 @@ export const PrometheusEditor = ({ resource, selectedCluster, onRefetch }: Prome
           </div>
         )}
       </div>
+
+      {/* Diagnóstico do WAL: só faz sentido no StatefulSet do Prometheus */}
+      {resource.type.toLowerCase() === 'statefulset' && (
+        <PrometheusWalPanel
+          resource={resource}
+          selectedCluster={selectedCluster}
+          onSuggestMemory={(memory) => handleEdit(memory)}
+          onChanged={onRefetch}
+        />
+      )}
     </div>
   );
 };
