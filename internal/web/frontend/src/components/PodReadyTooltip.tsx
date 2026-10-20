@@ -39,7 +39,9 @@ export function PodReadyTooltip({ pod, children, className }: PodReadyTooltipPro
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-2 ${className ?? ""}`}>
+        {/* title="" cancela o title herdado da linha (<button title="Enter para detalhes…">), senão o tooltip nativo
+            do navegador aparece junto com este. */}
+        <span title="" className={className}>
           {label}
         </span>
       </TooltipTrigger>
