@@ -736,6 +736,7 @@ func (s *Server) setupRoutes() {
 	// API v1 (com auth — dual-mode: JWT quando configurado, token estático como fallback)
 	api := s.router.Group("/api/v1")
 	api.Use(middleware.JWTAuthMiddleware(s.jwtManager, s.token))
+	registerProfilingRoutes(api) // só com K8S_HPA_PPROF=1
 
 	// WebSocket endpoints (com auth via query param + RBAC SRE-only)
 	// Usa WebSocketJWTAuthMiddleware para aceitar token via query parameter (dual-mode JWT/estático)

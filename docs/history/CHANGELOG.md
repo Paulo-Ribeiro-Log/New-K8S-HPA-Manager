@@ -3,6 +3,12 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Servidor — watches órfãos e profiling opcional (Outubro 2026)
+
+**Watch órfão.** Os watches de Pods/Deployments/HPAs (`watch_common.go`) só eram cancelados pelo `Cancel()` explícito do frontend; ao fechar a aba, dar F5 ou perder a rede, o stream SSE caía mas o Informer seguia vivo até reiniciar o servidor, guardando todos os objetos do namespace (cluster inteiro, na aba Pods) em memória e uma conexão aberta com a API do cluster, a cada recarga. Agora a sessão conta as conexões SSE e é cancelada depois de 30 s sem nenhuma (cobre a reconexão automática do EventSource e a sessão que nunca recebeu stream).
+
+**Profiling.** Com `K8S_HPA_PPROF=1` o servidor expõe, atrás do JWT de `/api/v1`, `GET /debug/runtime` (heap, goroutines, GC) e `GET /debug/pprof/:name` (heap, goroutine, allocs, profile de CPU...). Desligado por padrão: sem a variável, a rota não existe. É a forma de medir o consumo real de memória quando o servidor estiver lento.
+
 ### Pods — tooltip dos containers na coluna Ready (Outubro 2026)
 
 O "2/2" / "1/2" da coluna Ready dos pods (lista do painel Pods, tabela de monitoramento e aba Containers) ganhou um tooltip com os containers do pod: nome, estado (com o motivo, ex.: CrashLoopBackOff), restarts e um ponto verde/laranja de pronto. A conta do K8s só inclui os containers normais (sidecars como istio-proxy entram), então os init e efêmeros aparecem no tooltip em um bloco à parte, "fora da contagem". Componente compartilhado `PodReadyTooltip`.

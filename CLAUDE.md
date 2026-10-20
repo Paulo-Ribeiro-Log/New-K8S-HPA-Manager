@@ -22,6 +22,7 @@ make build                              # backend Go 1.25 (versão da CI); BUILD
 ./rebuild-web.sh -b                     # `make build-web` + restart em background (-f: foreground, -n: só restart, -k: mata :8080, -s: status, -p: porta, --ai-provider/--model/--ollama-model: sobe já com provedor de IA); log em /tmp/k8s-hpa-web.log, health em GET /health
 make web-build                          # só frontend: vite build + copia dist/ para internal/web/static/ (é o que gera os commits de assets)
 ./build/new-k8s-hpa web -f              # servidor em foreground (porta 8080); `web --ad` = bypass RBAC de emergência
+K8S_HPA_PPROF=1 ./build/new-k8s-hpa web -f   # + /api/v1/debug/runtime e /debug/pprof/:name (JWT) para medir memória/CPU do servidor
 ./build/new-k8s-hpa autodiscover        # descobre clusters AKS+EKS+GKE em paralelo
 # outros subcomandos (cmd/): version, diagnose-ca [url] (CA customizada), teams-discover (mapeia APIs internas do Teams)
 make web-install                        # npm install do frontend (clone novo)
