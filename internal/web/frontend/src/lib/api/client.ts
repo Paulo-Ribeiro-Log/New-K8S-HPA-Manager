@@ -9,6 +9,7 @@ import type {
   NodePool,
   NodesListResponse,
   NodeDetailsResponse,
+  NodeConsumers,
   CronJob,
   PrometheusResource,
   PrometheusUpdateResult,
@@ -2725,6 +2726,16 @@ class APIClient {
     const cacheBuster = Date.now();
     const response = await this.request<APIResponse<NodeDetailsResponse>>(
       `/nodes/${encodeURIComponent(cluster)}/${encodeURIComponent(nodePoolName)}/${encodeURIComponent(nodeName)}?_t=${cacheBuster}`
+    );
+    if (!response.data) {
+      throw new Error('No data returned from server');
+    }
+    return response.data;
+  }
+
+  async getNodeConsumers(cluster: string, nodePoolName: string, nodeName: string): Promise<NodeConsumers> {
+    const response = await this.request<APIResponse<NodeConsumers>>(
+      `/nodes/${encodeURIComponent(cluster)}/${encodeURIComponent(nodePoolName)}/${encodeURIComponent(nodeName)}/consumers`
     );
     if (!response.data) {
       throw new Error('No data returned from server');

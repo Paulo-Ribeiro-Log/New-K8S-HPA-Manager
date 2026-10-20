@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Node Pools — maiores consumidores de um node (Outubro 2026)
+
+Na aba Node Pools, tab Nodes, cada node da lista ganhou o botão "Consumidores", que abre um modal com os pods do node ordenados pelo consumo atual de memória ou CPU (alternável), top 10 com "Ver todos". Cada pod mostra uso, request e limit com uma barra em % da capacidade alocável do node, o dono (ReplicaSet vira Deployment) e, ao clicar, o consumo por container (sidecars). Rota nova `GET /api/v1/nodes/:cluster/:nodepool/:node/consumers` (`kubernetes.GetNodeConsumers`, só leitura): pods pelo `spec.nodeName`, métricas do Metrics Server buscadas só nos namespaces do node (ou no cluster todo se forem mais de 10). Sem Metrics Server, a lista vem ordenada pelo request, com aviso.
+
 ### Prometheus — editar CPU/memória/réplicas falhava com "apiVersion not set, kind not set" (Outubro 2026)
 
 `PatchDeploymentResources`, `PatchStatefulSetResources` e `PatchDaemonSetResources` serializavam o objeto lido do clientset, cujo `TypeMeta` vem vazio, e o `kubectl apply --server-side` recusava o manifesto sem `apiVersion`/`kind` (e ainda levaria `managedFields`/`status`). Agora mandam um manifesto mínimo (`resourceApplyYAML`): identificação, réplicas e o `resources` do container alterado.
