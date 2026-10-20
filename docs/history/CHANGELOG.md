@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Pods — tooltip dos containers na coluna Ready (Outubro 2026)
+
+O "2/2" / "1/2" da coluna Ready dos pods (lista do painel Pods, tabela de monitoramento e aba Containers) ganhou um tooltip com os containers do pod: nome, estado (com o motivo, ex.: CrashLoopBackOff), restarts e um ponto verde/laranja de pronto. A conta do K8s só inclui os containers normais (sidecars como istio-proxy entram), então os init e efêmeros aparecem no tooltip em um bloco à parte, "fora da contagem". Componente compartilhado `PodReadyTooltip`.
+
 ### Node Pools — maiores consumidores de um node (Outubro 2026)
 
 Na aba Node Pools, tab Nodes, cada node da lista ganhou o botão "Consumidores", que abre um modal com os pods do node ordenados pelo consumo atual de memória ou CPU (alternável), top 10 com "Ver todos". Cada pod mostra uso, request e limit com uma barra em % da capacidade alocável do node, o dono (ReplicaSet vira Deployment) e, ao clicar, o consumo por container (sidecars). Rota nova `GET /api/v1/nodes/:cluster/:nodepool/:node/consumers` (`kubernetes.GetNodeConsumers`, só leitura): pods pelo `spec.nodeName`, métricas do Metrics Server buscadas só nos namespaces do node (ou no cluster todo se forem mais de 10). Sem Metrics Server, a lista vem ordenada pelo request, com aviso.

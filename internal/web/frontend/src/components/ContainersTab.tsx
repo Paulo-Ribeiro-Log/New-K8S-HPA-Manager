@@ -27,6 +27,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ContainerMonitorTable } from "@/components/ContainerMonitorTable";
+import { PodReadyTooltip } from "@/components/PodReadyTooltip";
 
 interface ContainersTabProps {
   cluster: string;
@@ -344,7 +345,7 @@ export const ContainersTab = ({
               <div className="grid grid-cols-2 gap-2 text-xs mb-2">
                 <div>
                   <span className="text-muted-foreground">Containers:</span>
-                  <span className="ml-1 font-medium">{pod.readyContainers}/{pod.totalContainers}</span>
+                  <span className="ml-1 font-medium"><PodReadyTooltip pod={pod} /></span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Restarts:</span>
