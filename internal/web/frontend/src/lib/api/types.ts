@@ -1053,6 +1053,18 @@ export interface PrometheusResource {
   memory_usage?: string;
 }
 
+/** Resposta do PUT /prometheus/:cluster/:namespace/:type/:name (editor de recursos). */
+export interface PrometheusUpdateResult {
+  success: boolean;
+  message: string;
+  /** "Prometheus/<nome>" quando o StatefulSet é gerado por um recurso Prometheus: a alteração foi feita nele. */
+  managedBy?: string;
+  /** O workload já reflete os valores pedidos (conferido depois do apply). */
+  applied: boolean;
+  /** O que ainda diverge quando applied=false. */
+  pending?: string[];
+}
+
 // Análise do WAL (GET /prometheus/wal/analyze) — docs: PROMETHEUS-WAL-CLEANUP.md
 export type PrometheusWALVerdict = 'saudavel' | 'aumentar_memoria' | 'limpar_wal' | 'investigar';
 
