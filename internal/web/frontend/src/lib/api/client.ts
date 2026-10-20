@@ -12,6 +12,7 @@ import type {
   NodeConsumers,
   CronJob,
   PrometheusResource,
+  PrometheusUpdateResult,
   PrometheusWALReport,
   PrometheusWALHealth,
   PrometheusWALCleanupRequest,
@@ -2952,7 +2953,7 @@ class APIClient {
     type: string,
     name: string,
     resource: Partial<PrometheusResource>
-  ): Promise<PrometheusResource> {
+  ): Promise<PrometheusUpdateResult> {
     return this.request(
       `/prometheus/${encodeURIComponent(cluster)}/${encodeURIComponent(
         namespace

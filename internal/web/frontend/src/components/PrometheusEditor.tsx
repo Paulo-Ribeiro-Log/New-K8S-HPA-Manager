@@ -56,7 +56,7 @@ export const PrometheusEditor = ({ resource, selectedCluster, onRefetch }: Prome
     if (!editedValues) return;
 
     try {
-      await updateResourceMutation.mutateAsync({
+      const result = await updateResourceMutation.mutateAsync({
         cluster: selectedCluster,
         namespace: resource.namespace,
         type: resource.type.toLowerCase(),
@@ -70,9 +70,20 @@ export const PrometheusEditor = ({ resource, selectedCluster, onRefetch }: Prome
         }
       });
 
-      toast.success("Recurso atualizado com sucesso", {
-        description: `${resource.namespace}/${resource.name}`
-      });
+      const alvo = `${resource.namespace}/${resource.name}`;
+      if (!result.applied) {
+        toast.warning("Salvo, mas o workload ainda não reflete o valor", {
+          description: `${alvo}: ${(result.pending ?? []).join('; ')}. Se o operator ou o Helm desfizer, ajuste o recurso dono ou os values do Helm.`,
+          duration: 12000,
+        });
+      } else if (result.managedBy) {
+        toast.success("Recurso atualizado no recurso dono", {
+          description: `${alvo} é gerado por ${result.managedBy}; a alteração foi feita nele e o pod é recriado. Um helm upgrade desfaz: ajuste também os values do Helm.`,
+          duration: 12000,
+        });
+      } else {
+        toast.success("Recurso atualizado com sucesso", { description: alvo });
+      }
 
       setIsEditing(false);
       setEditedValues(null);
