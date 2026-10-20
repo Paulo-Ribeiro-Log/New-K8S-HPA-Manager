@@ -209,11 +209,18 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 	ctx := c.Request.Context()
 	start := time.Now()
 
+	managedBy := ""
 	switch resourceType {
 	case "deployment":
 		_, err = kubeClient.PatchDeploymentResources(ctx, namespace, name, patchReq)
 	case "statefulset":
-		_, err = kubeClient.PatchStatefulSetResources(ctx, namespace, name, patchReq)
+		var sts *appsv1.StatefulSet
+		sts, err = kubeClient.PatchStatefulSetResources(ctx, namespace, name, patchReq)
+		if err == nil && sts != nil {
+			if owner := kubernetes.PrometheusOwnerName(sts); owner != "" {
+				managedBy = "Prometheus/" + owner
+			}
+		}
 	case "daemonset":
 		_, err = kubeClient.PatchDaemonSetResources(ctx, namespace, name, patchReq)
 	default:
@@ -260,9 +267,23 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 		}
 	}
 
+	// Confere o resultado em vez de confiar só no apply: com um recurso Prometheus dono, o operator regera o StatefulSet
+	// alguns segundos depois; sem dono, o valor tem que estar lá já.
+	wait := time.Duration(0)
+	if managedBy != "" {
+		wait = 20 * time.Second
+	}
+	diffs, verr := kubeClient.ResourcesApplied(ctx, resourceType, namespace, name, patchReq, wait)
+	if verr != nil {
+		diffs = append(diffs, fmt.Sprintf("não foi possível conferir: %v", verr))
+	}
+
 	c.JSON(200, gin.H{
-		"success": true,
-		"message": fmt.Sprintf("Resource '%s' updated successfully using Server-Side Apply", name),
+		"success":   true,
+		"message":   fmt.Sprintf("Resource '%s' updated successfully using Server-Side Apply", name),
+		"managedBy": managedBy,
+		"applied":   len(diffs) == 0,
+		"pending":   diffs,
 	})
 }
 

@@ -9,6 +9,8 @@
 
 **Segunda parte: "atualizou" mas voltava.** Se o StatefulSet é controlado por um recurso `Prometheus` (prometheus-operator), o operator desfazia a edição direta. `PatchStatefulSetResources` agora detecta o dono (`ownerReferences` com `controller:true`) e faz `kubectl patch` no `spec.resources`/`spec.replicas` do recurso `Prometheus`; só o container `prometheus` é editável por esse caminho (os demais dão erro explicando). O `helm upgrade` ainda reescreve o recurso com os values do Helm.
 
+**Terceira parte: confere o resultado.** Depois do apply, o `PUT /prometheus/:cluster/:namespace/:type/:name` compara requests/limits/réplicas com o workload (por quantidade, não por texto; até 20 s quando há operator dono, que leva alguns segundos para regerar o StatefulSet) e devolve `applied`, `pending` e `managedBy`. A tela deixa de dizer só "atualizado": avisa quando o valor ainda não refletiu, e, com dono Prometheus, que a mudança foi feita nele e que um `helm upgrade` a desfaz.
+
 ### Prometheus — análise: pod não agendado (Outubro 2026)
 
 Primeiro uso em cluster real (Prometheus com pod Pending por taint e node affinity) mostrou dois pontos fracos, corrigidos em `internal/promwal`: o pod sem nó não entra mais na análise profunda (antes virava um aviso "Análise profunda falhou — pod sem PVC ou ainda sem nó") e passa a ter a nota "análise profunda não se aplica"; e o motivo do scheduler (`PodScheduled=False`) vira a causa do pod, traduzido (taint não tolerado, nodeSelector/affinity, recurso insuficiente, volume em outra zona) com a dica de conferir tolerations/nodeSelector/affinity e o node pool. O resumo da verificação de integridade (`/prometheus/wal/health`) traz a mesma causa.

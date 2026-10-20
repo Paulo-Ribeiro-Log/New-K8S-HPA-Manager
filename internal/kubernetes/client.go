@@ -5191,14 +5191,101 @@ func (c *Client) PatchDeploymentResources(ctx context.Context, namespace, name s
 	return c.ApplyDeployment(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false, true)
 }
 
-// prometheusOwnerName devolve o nome do recurso Prometheus (monitoring.coreos.com) que controla o StatefulSet, ou "".
-func prometheusOwnerName(sts *appsv1.StatefulSet) string {
+// PrometheusOwnerName devolve o nome do recurso Prometheus (monitoring.coreos.com) que controla o StatefulSet, ou "".
+func PrometheusOwnerName(sts *appsv1.StatefulSet) string {
 	for _, o := range sts.OwnerReferences {
 		if o.Controller != nil && *o.Controller && o.Kind == "Prometheus" && strings.HasPrefix(o.APIVersion, "monitoring.coreos.com/") {
 			return o.Name
 		}
 	}
 	return ""
+}
+
+// ResourcesApplied confere se o workload já reflete o que o editor pediu (requests/limits do container e réplicas),
+// esperando até timeout (o prometheus-operator leva alguns segundos para regerar o StatefulSet). Devolve o que ainda
+// diverge, vazio quando está tudo aplicado.
+func (c *Client) ResourcesApplied(ctx context.Context, resourceType, namespace, name string, req ResourcePatchRequest, timeout time.Duration) ([]string, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		diffs, err := c.resourceDiffs(ctx, resourceType, namespace, name, req)
+		if err != nil || len(diffs) == 0 || !time.Now().Before(deadline) {
+			return diffs, err
+		}
+		select {
+		case <-ctx.Done():
+			return diffs, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (c *Client) resourceDiffs(ctx context.Context, resourceType, namespace, name string, req ResourcePatchRequest) ([]string, error) {
+	var containers []corev1.Container
+	var replicas *int32
+	switch resourceType {
+	case "deployment":
+		d, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		containers, replicas = d.Spec.Template.Spec.Containers, d.Spec.Replicas
+	case "statefulset":
+		s, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		containers, replicas = s.Spec.Template.Spec.Containers, s.Spec.Replicas
+	case "daemonset":
+		d, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		containers = d.Spec.Template.Spec.Containers
+	default:
+		return nil, fmt.Errorf("invalid resource type: %s", resourceType)
+	}
+	return resourceDiffsOf(containers, replicas, req), nil
+}
+
+// resourceDiffsOf compara os campos pedidos com o container (o nomeado em req, senão o primeiro).
+func resourceDiffsOf(containers []corev1.Container, replicas *int32, req ResourcePatchRequest) []string {
+	if len(containers) == 0 {
+		return []string{"workload sem containers"}
+	}
+	ct := containers[0]
+	if req.ContainerName != "" {
+		for _, x := range containers {
+			if x.Name == req.ContainerName {
+				ct = x
+			}
+		}
+	}
+	var diffs []string
+	check := func(label, want string, list corev1.ResourceList, key corev1.ResourceName) {
+		if want == "" {
+			return
+		}
+		w, err := resource.ParseQuantity(want)
+		if err != nil {
+			return
+		}
+		got, ok := list[key]
+		if !ok || got.Cmp(w) != 0 {
+			cur := "(vazio)"
+			if ok {
+				cur = got.String()
+			}
+			diffs = append(diffs, fmt.Sprintf("%s: pedido %s, atual %s", label, want, cur))
+		}
+	}
+	check("cpu request", req.CPURequest, ct.Resources.Requests, corev1.ResourceCPU)
+	check("memória request", req.MemoryRequest, ct.Resources.Requests, corev1.ResourceMemory)
+	check("cpu limit", req.CPULimit, ct.Resources.Limits, corev1.ResourceCPU)
+	check("memória limit", req.MemoryLimit, ct.Resources.Limits, corev1.ResourceMemory)
+	if req.Replicas != nil && (replicas == nil || *replicas != *req.Replicas) {
+		diffs = append(diffs, fmt.Sprintf("réplicas: pedido %d", *req.Replicas))
+	}
+	return diffs
 }
 
 // buildPrometheusResourcesPatch monta o merge patch do spec do recurso Prometheus: só os campos pedidos.
@@ -5280,7 +5367,7 @@ func (c *Client) PatchStatefulSetResources(ctx context.Context, namespace, name 
 
 	// StatefulSet gerado pelo prometheus-operator: o operator reescreve o StatefulSet a partir do recurso Prometheus e
 	// desfaz qualquer edição direta, então a alteração vai para o recurso dono.
-	if crName := prometheusOwnerName(sts); crName != "" {
+	if crName := PrometheusOwnerName(sts); crName != "" {
 		return c.patchPrometheusOwnerResources(ctx, sts, crName, req)
 	}
 
