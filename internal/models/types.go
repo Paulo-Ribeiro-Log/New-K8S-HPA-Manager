@@ -1949,6 +1949,44 @@ type PodOnNode struct {
 	MemoryUsagePct float64 `json:"memory_usage_pct,omitempty"` // % do limit (ou request se sem limit)
 }
 
+// NodeConsumerContainer é o consumo atual de um container de um pod (Metrics Server).
+type NodeConsumerContainer struct {
+	Name          string `json:"name"`
+	CPUUsageM     int64  `json:"cpu_usage_m"`
+	MemUsageBytes int64  `json:"mem_usage_bytes"`
+}
+
+// NodeConsumer é um pod do node com o consumo atual e o que ele reservou (requests/limits somados dos containers).
+type NodeConsumer struct {
+	Name            string                  `json:"name"`
+	Namespace       string                  `json:"namespace"`
+	Workload        string                  `json:"workload"` // dono do pod (Deployment, StatefulSet, DaemonSet, Job...) ou o próprio pod
+	WorkloadKind    string                  `json:"workload_kind"`
+	Phase           string                  `json:"phase"`
+	RestartCount    int                     `json:"restart_count"`
+	CPUUsageM       int64                   `json:"cpu_usage_m"`
+	MemUsageBytes   int64                   `json:"mem_usage_bytes"`
+	CPURequestM     int64                   `json:"cpu_request_m"`
+	MemRequestBytes int64                   `json:"mem_request_bytes"`
+	CPULimitM       int64                   `json:"cpu_limit_m"`
+	MemLimitBytes   int64                   `json:"mem_limit_bytes"`
+	HasMetrics      bool                    `json:"has_metrics"`
+	Containers      []NodeConsumerContainer `json:"containers,omitempty"` // do maior para o menor consumo de memória
+}
+
+// NodeConsumers é a resposta da análise de maiores consumidores de um node.
+type NodeConsumers struct {
+	Node                string         `json:"node"`
+	CPUAllocatableM     int64          `json:"cpu_allocatable_m"`
+	MemAllocatableBytes int64          `json:"mem_allocatable_bytes"`
+	CPUUsageM           int64          `json:"cpu_usage_m"`     // uso do node pelo Metrics Server (0 se indisponível)
+	MemUsageBytes       int64          `json:"mem_usage_bytes"` // idem
+	CPURequestedM       int64          `json:"cpu_requested_m"`
+	MemRequestedBytes   int64          `json:"mem_requested_bytes"`
+	MetricsAvailable    bool           `json:"metrics_available"`
+	Pods                []NodeConsumer `json:"pods"`
+}
+
 // NodeDetailsResponse é o payload completo retornado pela API
 type NodeDetailsResponse struct {
 	Node            NodeInfo    `json:"node"`
