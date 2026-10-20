@@ -16,6 +16,7 @@ import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
 import { useDynatracePodCoverage } from "@/hooks/useAPI";
 import { DynatraceStatusIcon, resolveDynatraceStatus, DT_STATUS_LABEL, DT_STATUS_PRIORITY } from "@/components/DynatraceStatusIcon";
 import { AllPodsLogsModal } from "@/components/AllPodsLogsModal";
+import { PodReadyTooltip } from "@/components/PodReadyTooltip";
 
 const EMPTY_DT_SET = new Set<string>();
 
@@ -969,7 +970,7 @@ export const PodMonitorTable = ({
               </span>
 
               {/* READY */}
-              <span>{pod.readyContainers}/{pod.totalContainers}</span>
+              <span><PodReadyTooltip pod={pod} /></span>
 
               {/* STATUS — dot de saúde geral do pod (fase/motivo) + texto. O dot morou numa coluna
                   própria antes, colada à coluna DT (status de monitoramento Dynatrace) — os dois
