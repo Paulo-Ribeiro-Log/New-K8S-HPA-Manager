@@ -66,11 +66,12 @@ function resourceColor(pct: number): string {
 }
 
 function NodeResourcesTable({
-  nodes, loading, onRefresh,
+  nodes, loading, onRefresh, onConsumers,
 }: {
   nodes: NodeResourceInfo[];
   loading: boolean;
   onRefresh: () => void;
+  onConsumers: (nodeName: string) => void;
 }) {
   if (loading) {
     return (
@@ -106,6 +107,7 @@ function NodeResourcesTable({
               <TableHead className="text-xs">CPU Solicitado</TableHead>
               <TableHead className="text-xs">Memória Solicitada</TableHead>
               <TableHead className="text-xs text-center">Pods</TableHead>
+              <TableHead className="text-xs text-right">Consumidores</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -139,6 +141,17 @@ function NodeResourcesTable({
                 <TableCell className="text-xs text-center">
                   <span className="tabular-nums">{n.pod_count}</span>
                   {n.pod_capacity > 0 && <span className="text-muted-foreground"> / {n.pod_capacity}</span>}
+                </TableCell>
+                <TableCell className="text-right">
+                  <Button
+                    onClick={() => onConsumers(n.node_name)}
+                    variant="ghost"
+                    size="sm"
+                    title="Pods que mais consomem CPU e memória neste node"
+                  >
+                    <BarChart3 className="w-4 h-4 mr-2" />
+                    Consumidores
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -1553,6 +1566,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                   <NodeResourcesTable
                     nodes={nodeSearch ? nodeResources.filter(n => n.node_name.toLowerCase().includes(nodeSearch.toLowerCase())) : nodeResources}
                     loading={nodeResourcesLoading}
+                    onConsumers={setConsumersNode}
                     onRefresh={() => {
                       if (!clusterWithAdmin || !nodePool?.name) return;
                       setNodeResourcesLoading(true);
