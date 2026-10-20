@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Node Pools — maiores consumidores de um node (Outubro 2026)
+
+Na aba Node Pools, tab Nodes, cada node da lista ganhou o botão "Consumidores", que abre um modal com os pods do node ordenados pelo consumo atual de memória ou CPU (alternável), top 10 com "Ver todos". Cada pod mostra uso, request e limit com uma barra em % da capacidade alocável do node, o dono (ReplicaSet vira Deployment) e, ao clicar, o consumo por container (sidecars). Rota nova `GET /api/v1/nodes/:cluster/:nodepool/:node/consumers` (`kubernetes.GetNodeConsumers`, só leitura): pods pelo `spec.nodeName`, métricas do Metrics Server buscadas só nos namespaces do node (ou no cluster todo se forem mais de 10). Sem Metrics Server, a lista vem ordenada pelo request, com aviso.
+
 ### Prometheus — análise: pod não agendado (Outubro 2026)
 
 Primeiro uso em cluster real (Prometheus com pod Pending por taint e node affinity) mostrou dois pontos fracos, corrigidos em `internal/promwal`: o pod sem nó não entra mais na análise profunda (antes virava um aviso "Análise profunda falhou — pod sem PVC ou ainda sem nó") e passa a ter a nota "análise profunda não se aplica"; e o motivo do scheduler (`PodScheduled=False`) vira a causa do pod, traduzido (taint não tolerado, nodeSelector/affinity, recurso insuficiente, volume em outra zona) com a dica de conferir tolerations/nodeSelector/affinity e o node pool. O resumo da verificação de integridade (`/prometheus/wal/health`) traz a mesma causa.
