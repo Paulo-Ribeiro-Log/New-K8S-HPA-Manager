@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ContainerStatus, PodSummary } from "@/lib/api/types";
 
@@ -42,6 +43,8 @@ export function PodReadyTooltip({ pod, children, className }: PodReadyTooltipPro
           {label}
         </span>
       </TooltipTrigger>
+      {/* Portal: o TooltipContent do projeto não usa; dentro das tabelas (overflow hidden/auto) o balão seria cortado. */}
+      <TooltipPrimitive.Portal>
       <TooltipContent className="space-y-1 max-w-sm">
         <div className="text-xs font-semibold">
           Containers ({pod.readyContainers}/{pod.totalContainers} prontos)
@@ -58,6 +61,7 @@ export function PodReadyTooltip({ pod, children, className }: PodReadyTooltipPro
           </>
         )}
       </TooltipContent>
+      </TooltipPrimitive.Portal>
     </Tooltip>
   );
 }
