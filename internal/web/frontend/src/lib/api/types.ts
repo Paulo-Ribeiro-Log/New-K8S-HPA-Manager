@@ -983,6 +983,44 @@ export interface PodOnNode {
   memory_usage_pct?: number;
 }
 
+/** Container de um pod no modal de maiores consumidores do node. */
+export interface NodeConsumerContainer {
+  name: string;
+  cpu_usage_m: number;
+  mem_usage_bytes: number;
+}
+
+/** Pod de um node com o consumo atual (Metrics Server) e o que reservou. */
+export interface NodeConsumer {
+  name: string;
+  namespace: string;
+  workload: string;
+  workload_kind: string;
+  phase: string;
+  restart_count: number;
+  cpu_usage_m: number;
+  mem_usage_bytes: number;
+  cpu_request_m: number;
+  mem_request_bytes: number;
+  cpu_limit_m: number;
+  mem_limit_bytes: number;
+  has_metrics: boolean;
+  containers?: NodeConsumerContainer[];
+}
+
+/** GET /nodes/:cluster/:nodepool/:node/consumers */
+export interface NodeConsumers {
+  node: string;
+  cpu_allocatable_m: number;
+  mem_allocatable_bytes: number;
+  cpu_usage_m: number;
+  mem_usage_bytes: number;
+  cpu_requested_m: number;
+  mem_requested_bytes: number;
+  metrics_available: boolean;
+  pods: NodeConsumer[];
+}
+
 export interface NodeDetailsResponse {
   node: NodeInfo;
   pods: PodOnNode[];

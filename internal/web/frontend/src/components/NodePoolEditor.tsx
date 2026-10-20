@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { NodePool, NodeInfo, PendingWorkload, NodeResourceInfo, AutoscalerStatus } from "@/lib/api/types";
 import { formatBytes, formatMillicores } from "@/lib/monitorUtils";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History, Activity, Search } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History, Activity, Search, BarChart3 } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -29,6 +29,7 @@ import { NodePoolPredictionModal } from "./NodePoolPredictionModal";
 import { NodePoolPredictionHistoryModal } from "./NodePoolPredictionHistoryModal";
 import { useAnalyzeNodePool } from "@/hooks/useNodePoolPredictions";
 import { ConntrackTab } from "./ConntrackTab";
+import { NodeConsumersModal } from "./NodeConsumersModal";
 
 function computeLifetime(createdAt: string, removedAt: string): string {
   const start = createdAt ? new Date(createdAt).getTime() : 0;
@@ -248,6 +249,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
   // Recursos por node
   const [nodesView, setNodesView] = useState<"list" | "resources">("list");
   const [nodeResources, setNodeResources] = useState<NodeResourceInfo[]>([]);
+  const [consumersNode, setConsumersNode] = useState<string | null>(null);
   const [nodeResourcesLoading, setNodeResourcesLoading] = useState(false);
 
   // Status do cluster-autoscaler
@@ -1694,6 +1696,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                           <TableCell className="text-sm">{node.age}</TableCell>
                           <TableCell className="text-right">
                             <Button
+                              onClick={() => setConsumersNode(node.name)}
+                              variant="ghost"
+                              size="sm"
+                              title="Pods que mais consomem CPU e memória neste node"
+                            >
+                              <BarChart3 className="w-4 h-4 mr-2" />
+                              Consumidores
+                            </Button>
+                            <Button
                               onClick={() => handleViewNodeDetails(node.name)}
                               variant="ghost"
                               size="sm"
@@ -2045,6 +2056,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
         vmSize={nodePool.vm_size}
         cluster={clusterWithAdmin}
         osDisk={osDisk}
+      />
+
+      {/* Maiores consumidores do node */}
+      <NodeConsumersModal
+        open={consumersNode !== null}
+        onOpenChange={(o) => { if (!o) setConsumersNode(null); }}
+        cluster={clusterWithAdmin}
+        nodePool={nodePool.name}
+        nodeName={consumersNode}
       />
 
       {/* Node Details Modal */}
