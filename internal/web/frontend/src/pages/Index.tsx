@@ -52,6 +52,7 @@ import { Badge } from "@/components/ui/badge";
 import { GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB, useNotes } from "@/hooks/useNotes";
 import { StagingPanel } from "@/components/StagingPanel";
 import { VPNWarningBanner } from "@/components/VPNWarningBanner";
+import { AzureSessionBanner } from "@/components/AzureSessionBanner";
 import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
 import { PrometheusHealthAlerts } from "@/components/PrometheusHealthAlerts";
 import { CronJobsTab } from "@/components/CronJobsTab";
@@ -1733,6 +1734,9 @@ const Index = ({ onLogout }: IndexProps) => {
       {selectedCluster && (
         <PrometheusHealthAlerts cluster={selectedCluster} onOpenPrometheus={() => handleTabChange("prometheus")} />
       )}
+
+      {/* Sessão do Azure CLI do servidor expirada (uso prolongado) */}
+      <AzureSessionBanner />
 
       {/* Banner de VPN desconectada — específico para o cluster/cloud selecionado */}
       {showVPNWarning && (

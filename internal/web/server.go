@@ -777,6 +777,8 @@ func (s *Server) setupRoutes() {
 	api.GET("/access-check/rules", rbacMiddleware.RequireSREGroup(), accessCheckHandler.GetRules)
 	api.GET("/access-check/can-i", rbacMiddleware.RequireSREGroup(), accessCheckHandler.CanI)
 	api.GET("/access-check/scan-fleet", rbacMiddleware.RequireSREGroup(), accessCheckHandler.ScanFleet)
+	api.GET("/access-check/cluster-groups", rbacMiddleware.RequireSREGroup(), accessCheckHandler.GetClusterGroups)
+	api.GET("/access-check/group-members", rbacMiddleware.RequireSREGroup(), accessCheckHandler.GetGroupMembers)
 
 	// Base de Conhecimento de Incidentes — registros de problemas/falhas reais
 	// de cluster, confirmados por analista (sintoma, causa raiz, resolução).
@@ -1763,6 +1765,10 @@ func (s *Server) setupRoutes() {
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
+
+	// Sessão do Azure CLI do servidor (expirou? precisa de `az login`?) — só leitura, com cache
+	azureSessionHandler := handlers.NewAzureSessionHandler()
+	api.GET("/azure/session", azureSessionHandler.GetSession)
 
 	// Alerts (Prometheus Alertmanager Integration)
 	alertsHandler := handlers.NewAlertsHandler()

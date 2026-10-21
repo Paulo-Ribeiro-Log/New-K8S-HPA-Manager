@@ -22,6 +22,7 @@ import (
 type AccessCheckHandler struct {
 	kubeManager    *config.KubeConfigManager
 	aadLookup      *rbac.AADGroupLookup
+	groupDirectory *rbac.AADGroupDirectory
 	historyTracker *history.HistoryTracker
 }
 
@@ -30,6 +31,7 @@ func NewAccessCheckHandler(kubeManager *config.KubeConfigManager, historyTracker
 	return &AccessCheckHandler{
 		kubeManager:    kubeManager,
 		aadLookup:      rbac.NewAADGroupLookup(),
+		groupDirectory: rbac.NewAADGroupDirectory(),
 		historyTracker: historyTracker,
 	}
 }

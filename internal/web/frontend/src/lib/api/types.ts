@@ -3060,6 +3060,55 @@ export interface AccessCheckFleetScanResult {
   results: AccessCheckFleetClusterResult[];
 }
 
+// Grupo do Entra ID presente num cluster (admin do AKS e/ou citado em RoleBindings) — espelha
+// handlers.ClusterGroup (internal/web/handlers/access_check_groups.go).
+export interface ClusterGroupBinding {
+  kind: "RoleBinding" | "ClusterRoleBinding";
+  name: string;
+  namespace?: string;
+  role_kind: string;
+  role_name: string;
+}
+
+// Binding que dá permissão a um grupo aberto (anônimo ou qualquer usuário logado) além do padrão.
+export interface ClusterGroupRisk {
+  severity: "baixo" | "alto" | "crítico";
+  who: string;
+  binding: string;
+  role: string;
+  message: string;
+}
+
+export interface ClusterGroup {
+  id: string;
+  displayName: string; // vazio = Object ID que o Entra ID não resolveu
+  isObjectId: boolean;
+  builtin: boolean; // grupo interno do Kubernetes (system:*), não é do Entra ID
+  risks: ClusterGroupRisk[]; // bindings fora do padrão em system:unauthenticated/anonymous/authenticated
+  sources: ("aks-admin" | "rbac")[];
+  bindings: ClusterGroupBinding[];
+}
+
+export interface ClusterGroupsResult {
+  cluster: string;
+  groups: ClusterGroup[];
+  warnings: string[];
+}
+
+export interface GroupMember {
+  id: string;
+  displayName: string;
+  mail?: string;
+  upn?: string;
+  type: "user" | "group" | "servicePrincipal" | "other";
+}
+
+export interface GroupMembersResult {
+  groupId: string;
+  members: GroupMember[];
+  truncated: boolean;
+}
+
 // Entrada de chave/valor de um Secret ou ConfigMap indexada para a busca em Secrets/ConfigMaps da
 // aba Dependencies (modo "Secrets") — espelha storage.SecretDataRecord
 // (internal/storage/dependency_registry.go).
@@ -3625,4 +3674,12 @@ export interface HttpClientExecution {
   size_bytes: number;
   executed_from?: string;
   error?: string;
+}
+
+export interface AzureSessionStatus {
+  ok: boolean;
+  reason?: "login_required" | "cli_missing" | "error";
+  resource?: "arm" | "graph";
+  detail?: string;
+  checkedAt: string;
 }
