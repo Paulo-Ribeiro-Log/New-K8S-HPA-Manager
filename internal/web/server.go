@@ -1766,6 +1766,10 @@ func (s *Server) setupRoutes() {
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
 
+	// Sessão do Azure CLI do servidor (expirou? precisa de `az login`?) — só leitura, com cache
+	azureSessionHandler := handlers.NewAzureSessionHandler()
+	api.GET("/azure/session", azureSessionHandler.GetSession)
+
 	// Alerts (Prometheus Alertmanager Integration)
 	alertsHandler := handlers.NewAlertsHandler()
 	alertsGroup := api.Group("/alerts")

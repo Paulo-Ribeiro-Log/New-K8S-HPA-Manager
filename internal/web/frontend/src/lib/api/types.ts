@@ -3070,12 +3070,21 @@ export interface ClusterGroupBinding {
   role_name: string;
 }
 
+// Binding que dá permissão a um grupo aberto (anônimo ou qualquer usuário logado) além do padrão.
+export interface ClusterGroupRisk {
+  severity: "baixo" | "alto" | "crítico";
+  who: string;
+  binding: string;
+  role: string;
+  message: string;
+}
+
 export interface ClusterGroup {
   id: string;
   displayName: string; // vazio = Object ID que o Entra ID não resolveu
   isObjectId: boolean;
   builtin: boolean; // grupo interno do Kubernetes (system:*), não é do Entra ID
-  risks: string[]; // bindings fora do padrão em system:unauthenticated/anonymous/authenticated
+  risks: ClusterGroupRisk[]; // bindings fora do padrão em system:unauthenticated/anonymous/authenticated
   sources: ("aks-admin" | "rbac")[];
   bindings: ClusterGroupBinding[];
 }
@@ -3665,4 +3674,12 @@ export interface HttpClientExecution {
   size_bytes: number;
   executed_from?: string;
   error?: string;
+}
+
+export interface AzureSessionStatus {
+  ok: boolean;
+  reason?: "login_required" | "cli_missing" | "error";
+  resource?: "arm" | "graph";
+  detail?: string;
+  checkedAt: string;
 }

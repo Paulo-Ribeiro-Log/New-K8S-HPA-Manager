@@ -130,6 +130,7 @@ import type {
   AccessCheckCanIResult,
   AccessCheckFleetScanResult,
   ClusterGroupsResult,
+  AzureSessionStatus,
   GroupMembersResult,
   PortForwardSession,
   PortForwardPodPort,
@@ -3091,6 +3092,11 @@ class APIClient {
   // Validation (VPN + Azure CLI)
   async validateEnvironment(): Promise<ValidationStatus> {
     return this.request("/validate");
+  }
+
+  // Sessão do Azure CLI do servidor (precisa de `az login`?)
+  async getAzureSession(refresh = false): Promise<AzureSessionStatus> {
+    return this.request(`/azure/session${refresh ? "?refresh=1" : ""}`);
   }
 
   // VPN Status Check

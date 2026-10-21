@@ -3,6 +3,12 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Aviso de sessão do Azure CLI expirada (Outubro 2026)
+
+- `GET /api/v1/azure/session` (só leitura, cache de 60 s, `?refresh=1`): pede token do ARM e do Graph via `az` e classifica a falha (`login_required`, `cli_missing`, `error`) com o stderr do `az`. Nunca dispara `az login`.
+- `AzureSessionBanner` (topo do `Index.tsx`): checa a cada 5 min e ao voltar para a aba; mostra `az login` copiável e "Verificar novamente".
+- Erro de token Graph (`getGraphAccessToken`) agora inclui o stderr do `az` em vez de só "exit status 1".
+
 ### Verificar Acesso — grupos do Entra ID do cluster e seus membros (Outubro 2026)
 
 Nova aba "Grupos do Cluster" em Verificar Acesso. Lista os grupos do Entra ID que o cluster usa, juntando duas fontes: os administradores do AKS (`aadProfile.adminGroupObjectIDs`, lido no ARM com o resource group/subscription do `clusters-config.json`; é o `admin_group_object_ids` do Terraform) e os subjects `Group` das RoleBindings/ClusterRoleBindings (com a lista das bindings e roles de cada grupo). Os Object IDs viram nome via Graph (`directoryObjects/getByIds`, em lote); subject por nome (sem GUID) aparece, mas não tem como listar membros. Clicar no grupo mostra os membros (`/groups/{id}/members`, com opção de incluir grupos aninhados). O filtro aceita curinga (`vv_cloud_*_*`, `az_c_*`) e Object ID; um ID que não está no cluster pode ser consultado mesmo assim. Os membros aparecem em árvore: subgrupos abrem sob demanda (com trava contra ciclo). Os grupos internos do Kubernetes (`system:*`) ficam numa seção à parte, sem lista de membros (não existem no Entra ID), e as bindings fora do padrão em `system:unauthenticated`/`system:anonymous` (só `system:public-info-viewer` é esperado) e em `system:authenticated` viram um alerta de acesso concedido sem autorização individual. Só leitura. Falha de uma fonte (ex.: ARM sem permissão) vira aviso e a outra segue valendo. Rotas `GET /access-check/cluster-groups` e `GET /access-check/group-members`.

@@ -1,36 +1,44 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Copy, Loader2, ShieldAlert, ShieldQuestion, Users } from "lucide-react";
-import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CopyValue } from "@/components/CopyValue";
 import { apiClient } from "@/lib/api/client";
-import type { ClusterGroup, GroupMember } from "@/lib/api/types";
+import { copyText } from "@/lib/clipboard";
+import { globMatcher } from "@/lib/groupFilter";
+import type { ClusterGroup, ClusterGroupRisk, GroupMember } from "@/lib/api/types";
 
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Filtro por nome ou ID: "vv_cloud_*_*" e "az_c_*" funcionam como curinga (* = qualquer trecho);
-// sem curinga é "contém". Sem diferenciar maiúsculas.
-function buildMatcher(term: string): (g: ClusterGroup) => boolean {
-  const t = term.trim().toLowerCase();
-  if (!t) return () => true;
-  if (!t.includes("*")) return (g) => g.displayName.toLowerCase().includes(t) || g.id.toLowerCase().includes(t);
-  const re = new RegExp(t.split("*").map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*"), "i");
-  return (g) => re.test(g.displayName) || re.test(g.id);
-}
-
-async function copyText(text: string, what: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast.success(`${what} copiado(s) para a área de transferência`);
-  } catch {
-    toast.error("Falha ao copiar — verifique permissões do navegador");
-  }
-}
-
 // Árvore de membros: usuários são folhas; grupos aninhados abrem sob demanda (um nível por vez).
 // `ancestors` guarda os grupos do caminho para não entrar em ciclo (grupo que contém a si mesmo).
+const SEVERITY_RANK = { "crítico": 3, alto: 2, baixo: 1 } as const;
+const SEVERITY_TEXT = { "crítico": "text-red-500", alto: "text-orange-500", baixo: "text-amber-500" } as const;
+
+function maxSeverity(risks: ClusterGroupRisk[]): ClusterGroupRisk["severity"] {
+  return risks.reduce<ClusterGroupRisk["severity"]>((m, r) => (SEVERITY_RANK[r.severity] > SEVERITY_RANK[m] ? r.severity : m), "baixo");
+}
+
+// Um acesso aberto: quem recebe, qual binding/role dá o acesso e o que isso significa.
+function RiskItem({ r }: { r: ClusterGroupRisk }) {
+  return (
+    <li className="text-xs">
+      <div>
+        <span className={`font-semibold uppercase ${SEVERITY_TEXT[r.severity]}`}>{r.severity}</span>
+        <span className="ml-2 font-medium text-foreground">{r.who}</span>
+        <span className="text-muted-foreground"> recebe a role </span>
+        <span className="font-mono text-foreground">{r.role}</span>
+      </div>
+      <div className="text-muted-foreground">
+        via <span className="font-mono">{r.binding}</span>
+      </div>
+      <div className="text-muted-foreground">{r.message}</div>
+    </li>
+  );
+}
+
 function MemberNode({ m, depth, ancestors }: { m: GroupMember; depth: number; ancestors: string[] }) {
   const [open, setOpen] = useState(false);
   const isGroup = m.type === "group";
@@ -47,8 +55,9 @@ function MemberNode({ m, depth, ancestors }: { m: GroupMember; depth: number; an
         ) : (
           <span className="w-3.5 shrink-0" />
         )}
-        <span className={`text-sm break-all ${isGroup ? "font-medium" : ""}`}>{m.displayName || "—"}</span>
-        <span className="text-xs text-muted-foreground break-all">{m.mail || m.upn || ""}</span>
+        <CopyValue value={m.displayName} label={isGroup ? "nome do subgrupo" : "nome"} className={`text-sm break-all ${isGroup ? "font-medium" : ""}`} />
+        <CopyValue value={m.mail || m.upn || ""} label="e-mail" className="text-xs text-muted-foreground break-all" />
+        <CopyValue value={m.id} label="Object ID" className="text-xs font-mono text-muted-foreground/60 break-all" />
         <Badge variant={isGroup ? "secondary" : "outline"} className="ml-auto shrink-0">
           {typeLabel}
         </Badge>
@@ -128,22 +137,35 @@ function GroupRow({ group, open, onToggle }: { group: ClusterGroup; open: boolea
   return (
     <div className="border-b border-border py-2">
       <div className="flex items-start gap-2">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex items-start gap-2 text-left flex-1 min-w-0"
-          title={group.isObjectId ? "Mostrar bindings e membros" : "Mostrar as bindings (sem Object ID não há membros para listar)"}
-        >
-          {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0" />}
+        <div className="flex items-start gap-2 flex-1 min-w-0">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="shrink-0 mt-0.5"
+            title={group.isObjectId ? "Mostrar bindings e membros" : "Mostrar as bindings (sem Object ID não há membros para listar)"}
+          >
+            {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+          {/* Fora do <button>: o navegador não deixa selecionar texto dentro de botão. */}
           <div className="min-w-0">
-            <div className="text-sm font-medium break-all">
-              {group.displayName || <span className="text-muted-foreground italic">não resolvido no Entra ID</span>}
+            <div>
+              {group.displayName ? (
+                <CopyValue value={group.displayName} label="nome do grupo" className="text-sm font-medium break-all" />
+              ) : (
+                <span className="text-sm text-muted-foreground italic">não resolvido no Entra ID</span>
+              )}
             </div>
-            <div className="text-xs font-mono text-muted-foreground break-all">{group.id}</div>
+            <div>
+              <CopyValue value={group.id} label={group.isObjectId ? "Object ID" : "nome"} className="text-xs font-mono text-muted-foreground break-all" />
+            </div>
           </div>
-        </button>
+        </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {group.risks.length > 0 && <Badge variant="destructive">acesso aberto ({group.risks.length})</Badge>}
+          {group.risks.length > 0 && (
+            <Badge variant={maxSeverity(group.risks) === "baixo" ? "secondary" : "destructive"}>
+              acesso aberto: {maxSeverity(group.risks)} ({group.risks.length})
+            </Badge>
+          )}
           {group.sources.includes("aks-admin") && <Badge variant="destructive">admin AKS</Badge>}
           {group.sources.includes("rbac") && <Badge variant="secondary">RBAC ({group.bindings.length})</Badge>}
           <Button
@@ -160,9 +182,9 @@ function GroupRow({ group, open, onToggle }: { group: ClusterGroup; open: boolea
       {open && (
         <>
           {group.risks.length > 0 && (
-            <ul className="mt-2 pl-6 text-xs text-red-500 space-y-0.5">
+            <ul className="mt-2 pl-6 space-y-2">
               {group.risks.map((r) => (
-                <li key={r}>⚠ {r}</li>
+                <RiskItem key={`${r.binding}/${r.role}`} r={r} />
               ))}
             </ul>
           )}
@@ -203,12 +225,13 @@ export default function AccessCheckClusterGroups({ cluster }: { cluster: string 
   });
 
   const filtered = useMemo(() => {
-    const match = buildMatcher(search);
-    return (data?.groups ?? []).filter(match);
+    const match = globMatcher(search);
+    return (data?.groups ?? []).filter((g) => match(g.displayName, g.id));
   }, [data, search]);
   const entraGroups = filtered.filter((g) => !g.builtin);
   const builtinGroups = filtered.filter((g) => g.builtin);
   const allRisks = (data?.groups ?? []).flatMap((g) => g.risks);
+  const topSeverity = maxSeverity(allRisks);
 
   // ID colado que não está na lista do cluster: dá para consultar o grupo mesmo assim.
   const typed = search.trim();
@@ -283,14 +306,24 @@ export default function AccessCheckClusterGroups({ cluster }: { cluster: string 
         </div>
       )}
       {allRisks.length > 0 && (
-        <div className="mb-3 border border-red-500/50 bg-red-500/10 rounded p-3">
-          <div className="flex items-center gap-2 font-semibold text-red-500">
-            <ShieldAlert className="w-4 h-4" /> Acesso concedido a quem não foi autorizado individualmente ({allRisks.length})
+        <div
+          className={`mb-3 border rounded p-3 ${
+            topSeverity === "baixo" ? "border-amber-500/50 bg-amber-500/10" : "border-red-500/50 bg-red-500/10"
+          }`}
+        >
+          <div className={`flex items-center gap-2 font-semibold ${SEVERITY_TEXT[topSeverity]}`}>
+            <ShieldAlert className="w-4 h-4" /> Permissões abertas a todos ({allRisks.length}) — gravidade máxima: {topSeverity}
           </div>
-          <ul className="mt-1 text-xs text-muted-foreground space-y-0.5">
-            {allRisks.map((r) => (
-              <li key={r}>• {r}</li>
-            ))}
+          <div className="text-xs text-muted-foreground mt-1 mb-2">
+            Bindings que dão permissão a quem não tem login (anônimo) ou a qualquer usuário logado, além do que o
+            Kubernetes concede por padrão.
+          </div>
+          <ul className="space-y-2">
+            {[...allRisks]
+              .sort((x, y) => SEVERITY_RANK[y.severity] - SEVERITY_RANK[x.severity])
+              .map((r) => (
+                <RiskItem key={`${r.who}/${r.binding}/${r.role}`} r={r} />
+              ))}
           </ul>
         </div>
       )}

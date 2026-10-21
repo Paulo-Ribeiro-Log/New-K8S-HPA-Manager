@@ -3,6 +3,7 @@ package rbac
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,13 +70,31 @@ func getGraphAccessToken(ctx context.Context) (string, error) {
 		"--resource", "https://graph.microsoft.com",
 		"--query", "accessToken", "-o", "tsv").Output()
 	if err != nil {
-		return "", fmt.Errorf("falha ao obter token Graph via az cli: %w", err)
+		// O stderr do az diz o motivo real (sessão expirada, CAE, consentimento do Graph...);
+		// sem ele o erro fica só "exit status 1".
+		return "", fmt.Errorf("falha ao obter token Graph via az cli: %w%s", err, azStderrSuffix(err))
 	}
 	token := strings.TrimSpace(string(out))
 	if token == "" {
 		return "", fmt.Errorf("token Graph vazio retornado pelo az cli")
 	}
 	return token, nil
+}
+
+// azStderrSuffix devolve ": <stderr do az em uma linha>" quando o comando falhou com saída de erro.
+func azStderrSuffix(err error) string {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return ""
+	}
+	msg := strings.Join(strings.Fields(string(ee.Stderr)), " ")
+	if msg == "" {
+		return ""
+	}
+	if len(msg) > 400 {
+		msg = msg[:400] + "…"
+	}
+	return ": " + msg
 }
 
 // graphGet executa um GET autenticado contra a Graph API e decodifica a resposta em `out`.

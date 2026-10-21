@@ -45,7 +45,7 @@ type ClusterGroup struct {
 	DisplayName string                `json:"displayName"`
 	IsObjectID  bool                  `json:"isObjectId"`
 	Builtin     bool                  `json:"builtin"` // grupo interno do Kubernetes (system:*), não é do Entra ID
-	Risks       []string              `json:"risks"`   // bindings fora do padrão num grupo interno aberto (ex.: system:unauthenticated)
+	Risks       []ClusterGroupRisk    `json:"risks"`   // bindings fora do padrão num grupo interno aberto (ex.: system:unauthenticated)
 	Sources     []string              `json:"sources"`
 	Bindings    []ClusterGroupBinding `json:"bindings"`
 }
@@ -70,7 +70,7 @@ func mergeClusterGroups(aksAdminIDs []string, bindings []ClusterGroupBinding, su
 		}
 		g, ok := byKey[key]
 		if !ok {
-			g = &ClusterGroup{ID: key, IsObjectID: isID, Builtin: isBuiltinSubject(key), Sources: []string{}, Bindings: []ClusterGroupBinding{}, Risks: []string{}}
+			g = &ClusterGroup{ID: key, IsObjectID: isID, Builtin: isBuiltinSubject(key), Sources: []string{}, Bindings: []ClusterGroupBinding{}, Risks: []ClusterGroupRisk{}}
 			byKey[key] = g
 		}
 		return g
@@ -124,21 +124,44 @@ var (
 		"system:basic-user": true, "system:discovery": true, "system:public-info-viewer": true,
 		"system:service-account-issuer-discovery": true,
 	}
+	// Roles que só leem os endpoints de descoberta da API (/api, /apis, /version, /healthz):
+	// não expõem nenhum dado do cluster.
+	discoveryOnlyRoles = map[string]bool{
+		"system:discovery": true, "system:basic-user": true, "system:public-info-viewer": true,
+		"system:service-account-issuer-discovery": true,
+	}
+	writeAdminRoles = map[string]bool{"cluster-admin": true, "admin": true, "edit": true}
 )
 
-// bindingRisks devolve um aviso por binding fora do padrão nos grupos abertos a todos.
-func bindingRisks(g ClusterGroup) []string {
+const (
+	riskLow      = "baixo"
+	riskHigh     = "alto"
+	riskCritical = "crítico"
+)
+
+// ClusterGroupRisk é uma binding que dá permissão a um grupo aberto além do padrão do Kubernetes.
+type ClusterGroupRisk struct {
+	Severity string `json:"severity"` // baixo | alto | crítico
+	Who      string `json:"who"`      // quem recebe o acesso, em português
+	Binding  string `json:"binding"`  // ex.: "ClusterRoleBinding system:discovery"
+	Role     string `json:"role"`     // ex.: "ClusterRole/system:discovery"
+	Message  string `json:"message"`  // o que isso significa na prática
+}
+
+// bindingRisks devolve um item por binding fora do padrão nos grupos abertos a todos.
+func bindingRisks(g ClusterGroup) []ClusterGroupRisk {
 	var allowed map[string]bool
 	var who string
+	anonymous := false
 	switch strings.ToLower(g.ID) {
 	case "system:unauthenticated", "system:anonymous":
-		allowed, who = defaultUnauthenticatedRoles, "qualquer pessoa SEM autenticação"
+		allowed, who, anonymous = defaultUnauthenticatedRoles, "Anônimo (sem login)", true
 	case "system:authenticated":
-		allowed, who = defaultAuthenticatedRoles, "qualquer identidade autenticada no cluster"
+		allowed, who = defaultAuthenticatedRoles, "Qualquer usuário logado no cluster"
 	default:
-		return []string{}
+		return []ClusterGroupRisk{}
 	}
-	risks := []string{}
+	risks := []ClusterGroupRisk{}
 	for _, b := range g.Bindings {
 		if allowed[b.RoleName] {
 			continue
@@ -147,9 +170,31 @@ func bindingRisks(g ClusterGroup) []string {
 		if b.Namespace != "" {
 			where = b.Kind + " " + b.Namespace + "/" + b.Name
 		}
-		risks = append(risks, where+" dá a role "+b.RoleKind+"/"+b.RoleName+" a "+who)
+		severity, msg := classifyOpenBinding(b, anonymous)
+		risks = append(risks, ClusterGroupRisk{
+			Severity: severity, Who: who, Binding: where, Role: b.RoleKind + "/" + b.RoleName, Message: msg,
+		})
 	}
 	return risks
+}
+
+func classifyOpenBinding(b ClusterGroupBinding, anonymous bool) (severity, message string) {
+	scope := "no cluster inteiro"
+	if b.Namespace != "" {
+		scope = "no namespace " + b.Namespace
+	}
+	switch {
+	case discoveryOnlyRoles[b.RoleName]:
+		msg := "A role só permite consultar os endpoints de descoberta da API (versão e lista de recursos), sem acesso a nenhum dado do cluster."
+		if anonymous {
+			msg += " Era o padrão do Kubernetes antes da 1.14; vale remover o grupo anônimo dessa binding."
+		}
+		return riskLow, msg
+	case writeAdminRoles[b.RoleName]:
+		return riskCritical, "A role permite criar, alterar e apagar recursos " + scope + ". Ninguém deveria ter isso sem autenticação individual."
+	default:
+		return riskHigh, "A role concede permissões sobre recursos " + scope + " sem autorização individual. Confira o que a role permite."
+	}
 }
 
 // sortClusterGroups: admins do AKS primeiro, depois por nome (ou ID, quando sem nome).

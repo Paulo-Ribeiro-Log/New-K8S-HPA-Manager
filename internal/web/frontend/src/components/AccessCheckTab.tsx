@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
 import AccessCheckClusterGroups from "@/components/AccessCheckClusterGroups";
+import { AccessCheckAnalystGroupsModal } from "@/components/AccessCheckAnalystGroupsModal";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -136,6 +137,7 @@ export default function AccessCheckTab() {
   const [email, setEmail] = useState("");
   const [section, setSection] = useState<"overview" | "pointcheck" | "allgroups" | "clustergroups" | "fleet" | "history">("overview");
   const [groupsSearch, setGroupsSearch] = useState("");
+  const [analystGroupsOpen, setAnalystGroupsOpen] = useState(false);
 
   const [fleetResult, setFleetResult] = useState<AccessCheckFleetScanResult | null>(null);
   const [fleetError, setFleetError] = useState<string | null>(null);
@@ -330,8 +332,7 @@ export default function AccessCheckTab() {
       )}
 
       {(section === "overview" || section === "pointcheck" || section === "allgroups" || section === "fleet") && matchedGroups && (
-        <div className="px-6 py-3 border-b border-border">
-          <div className="text-xs font-medium text-muted-foreground mb-1.5">Grupos AAD usados na verificação (todos os grupos do analista, sem filtro de prefixo)</div>
+        <div className="px-6 py-2 border-b border-border">
           {groupsResolutionError ? (
             <div className="flex items-center gap-2 text-sm text-amber-500">
               <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -340,14 +341,17 @@ export default function AccessCheckTab() {
           ) : matchedGroups.length === 0 ? (
             <div className="text-sm text-muted-foreground">Nenhum grupo AAD encontrado para este e-mail.</div>
           ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {matchedGroups.map((g) => (
-                <Badge key={g.id} variant="outline" className="font-mono text-xs">
-                  {g.displayName}
-                  <span className="ml-1.5 opacity-60">{g.id.slice(0, 8)}…</span>
-                </Badge>
-              ))}
-            </div>
+            <>
+              <Button variant="outline" size="sm" onClick={() => setAnalystGroupsOpen(true)}>
+                Grupos AAD usados na verificação ({matchedGroups.length})
+              </Button>
+              <AccessCheckAnalystGroupsModal
+                open={analystGroupsOpen}
+                onOpenChange={setAnalystGroupsOpen}
+                email={pointCheckEmail ?? email}
+                groups={matchedGroups}
+              />
+            </>
           )}
         </div>
       )}

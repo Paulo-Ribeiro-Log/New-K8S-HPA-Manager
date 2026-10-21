@@ -117,7 +117,7 @@ func TestBindingRisksGruposAbertos(t *testing.T) {
 	got := mergeClusterGroups(nil, bindings, subjects)
 
 	unauth := findGroup(t, got, "system:unauthenticated")
-	if !unauth.Builtin || len(unauth.Risks) != 1 {
+	if !unauth.Builtin || len(unauth.Risks) != 1 || unauth.Risks[0].Severity != riskHigh || unauth.Risks[0].Who != "Anônimo (sem login)" {
 		t.Errorf("unauthenticated: só a binding 'oops' é fora do padrão: %+v", unauth)
 	}
 	auth := findGroup(t, got, "system:authenticated")
@@ -131,5 +131,38 @@ func TestBindingRisksGruposAbertos(t *testing.T) {
 	masters := findGroup(t, got, "system:masters")
 	if !masters.Builtin || len(masters.Risks) != 0 {
 		t.Errorf("system:masters é interno e não entra na checagem de grupos abertos: %+v", masters)
+	}
+}
+
+func TestBindingRisksGravidade(t *testing.T) {
+	bindings := []ClusterGroupBinding{
+		{Kind: "ClusterRoleBinding", Name: "system:discovery", RoleKind: "ClusterRole", RoleName: "system:discovery"},
+		{Kind: "ClusterRoleBinding", Name: "x", RoleKind: "ClusterRole", RoleName: "cluster-admin"},
+		{Kind: "RoleBinding", Name: "y", Namespace: "app", RoleKind: "ClusterRole", RoleName: "view"},
+	}
+	subjects := [][]rbacv1.Subject{
+		{groupSubject("system:unauthenticated")},
+		{groupSubject("system:authenticated")},
+		{groupSubject("system:unauthenticated")},
+	}
+	got := mergeClusterGroups(nil, bindings, subjects)
+
+	unauth := findGroup(t, got, "system:unauthenticated")
+	if len(unauth.Risks) != 2 {
+		t.Fatalf("esperava 2 riscos em unauthenticated: %+v", unauth.Risks)
+	}
+	bySeverity := map[string]ClusterGroupRisk{}
+	for _, r := range unauth.Risks {
+		bySeverity[r.Severity] = r
+	}
+	if r, ok := bySeverity[riskLow]; !ok || r.Binding != "ClusterRoleBinding system:discovery" {
+		t.Errorf("system:discovery deveria ser risco baixo: %+v", unauth.Risks)
+	}
+	if r, ok := bySeverity[riskHigh]; !ok || r.Binding != "RoleBinding app/y" {
+		t.Errorf("view num namespace deveria ser risco alto: %+v", unauth.Risks)
+	}
+	auth := findGroup(t, got, "system:authenticated")
+	if len(auth.Risks) != 1 || auth.Risks[0].Severity != riskCritical || auth.Risks[0].Who != "Qualquer usuário logado no cluster" {
+		t.Errorf("cluster-admin em authenticated deveria ser crítico: %+v", auth.Risks)
 	}
 }

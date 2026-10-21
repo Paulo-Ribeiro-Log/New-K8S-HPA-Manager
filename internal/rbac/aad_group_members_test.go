@@ -1,6 +1,9 @@
 package rbac
 
-import "testing"
+import (
+	"os/exec"
+	"testing"
+)
 
 func TestParseGetByIDs(t *testing.T) {
 	got, err := parseGetByIDs([]byte(`{"value":[{"id":"09E0FE45-A425-4090-9D19-935E3D01E79D","displayName":"AZ_C-AKS_X"}]}`))
@@ -36,5 +39,15 @@ func TestSortMembersGruposPrimeiro(t *testing.T) {
 	sortMembers(ms)
 	if ms[0].Type != "group" || ms[1].DisplayName != "Ana" || ms[2].DisplayName != "zeca" {
 		t.Errorf("ordem inesperada: %+v", ms)
+	}
+}
+
+func TestAzStderrSuffix(t *testing.T) {
+	if got := azStderrSuffix(nil); got != "" {
+		t.Errorf("sem erro deveria ser vazio: %q", got)
+	}
+	_, err := exec.Command("sh", "-c", "echo 'ERROR:   sessão\n expirada' >&2; exit 1").Output()
+	if got := azStderrSuffix(err); got != ": ERROR: sessão expirada" {
+		t.Errorf("stderr deveria vir em uma linha: %q", got)
 	}
 }
