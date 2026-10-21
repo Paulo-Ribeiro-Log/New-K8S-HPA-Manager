@@ -129,6 +129,8 @@ import type {
   AccessCheckRulesResult,
   AccessCheckCanIResult,
   AccessCheckFleetScanResult,
+  ClusterGroupsResult,
+  GroupMembersResult,
   PortForwardSession,
   PortForwardPodPort,
   StartPortForwardRequest,
@@ -555,6 +557,18 @@ class APIClient {
     const params = new URLSearchParams({ email });
     if (namespace) params.append("namespace", namespace);
     return this.request<AccessCheckFleetScanResult>(`/access-check/scan-fleet?${params.toString()}`);
+  }
+
+  // Grupos do Entra ID presentes no cluster (admin do AKS + subjects das bindings).
+  async getAccessCheckClusterGroups(cluster: string): Promise<ClusterGroupsResult> {
+    return this.request<ClusterGroupsResult>(`/access-check/cluster-groups?cluster=${encodeURIComponent(cluster)}`);
+  }
+
+  // Membros de um grupo do Entra ID pelo Object ID (transitive inclui os de grupos aninhados).
+  async getAccessCheckGroupMembers(groupId: string, transitive = false): Promise<GroupMembersResult> {
+    const params = new URLSearchParams({ id: groupId });
+    if (transitive) params.append("transitive", "1");
+    return this.request<GroupMembersResult>(`/access-check/group-members?${params.toString()}`);
   }
 
   async getNamespaceMetrics(cluster: string, limit: number = 5): Promise<TopNamespacesResponse> {

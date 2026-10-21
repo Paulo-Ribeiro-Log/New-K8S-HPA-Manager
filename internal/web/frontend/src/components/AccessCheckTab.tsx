@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
+import AccessCheckClusterGroups from "@/components/AccessCheckClusterGroups";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -133,7 +134,7 @@ export default function AccessCheckTab() {
   const [cluster, setCluster] = useState("");
   const [namespace, setNamespace] = useState("");
   const [email, setEmail] = useState("");
-  const [section, setSection] = useState<"overview" | "pointcheck" | "allgroups" | "fleet" | "history">("overview");
+  const [section, setSection] = useState<"overview" | "pointcheck" | "allgroups" | "clustergroups" | "fleet" | "history">("overview");
   const [groupsSearch, setGroupsSearch] = useState("");
 
   const [fleetResult, setFleetResult] = useState<AccessCheckFleetScanResult | null>(null);
@@ -356,6 +357,7 @@ export default function AccessCheckTab() {
           { id: "overview", label: "Visão Geral" },
           { id: "pointcheck", label: "Verificação Pontual" },
           { id: "allgroups", label: `Todos os Grupos AAD${allGroups ? ` (${allGroups.length})` : ""}` },
+          { id: "clustergroups", label: "Grupos do Cluster" },
           { id: "fleet", label: `Todos os Clusters${fleetResult ? ` (${fleetResult.results.length})` : ""}` },
           { id: "history", label: "Histórico" },
         ] as const).map((tab) => (
@@ -676,6 +678,8 @@ export default function AccessCheckTab() {
             })()}
           </>
         )}
+
+        {section === "clustergroups" && <AccessCheckClusterGroups cluster={cluster} />}
 
         {section === "fleet" && (
           <>

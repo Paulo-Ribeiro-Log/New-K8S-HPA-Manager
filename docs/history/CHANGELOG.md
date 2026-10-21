@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Verificar Acesso — grupos do Entra ID do cluster e seus membros (Outubro 2026)
+
+Nova aba "Grupos do Cluster" em Verificar Acesso. Lista os grupos do Entra ID que o cluster usa, juntando duas fontes: os administradores do AKS (`aadProfile.adminGroupObjectIDs`, lido no ARM com o resource group/subscription do `clusters-config.json`; é o `admin_group_object_ids` do Terraform) e os subjects `Group` das RoleBindings/ClusterRoleBindings (com a lista das bindings e roles de cada grupo). Os Object IDs viram nome via Graph (`directoryObjects/getByIds`, em lote); subject por nome (sem GUID) aparece, mas não tem como listar membros. Clicar no grupo mostra os membros (`/groups/{id}/members`, com opção de incluir grupos aninhados). O filtro aceita curinga (`vv_cloud_*_*`, `az_c_*`) e Object ID; um ID que não está no cluster pode ser consultado mesmo assim. Os membros aparecem em árvore: subgrupos abrem sob demanda (com trava contra ciclo). Os grupos internos do Kubernetes (`system:*`) ficam numa seção à parte, sem lista de membros (não existem no Entra ID), e as bindings fora do padrão em `system:unauthenticated`/`system:anonymous` (só `system:public-info-viewer` é esperado) e em `system:authenticated` viram um alerta de acesso concedido sem autorização individual. Só leitura. Falha de uma fonte (ex.: ARM sem permissão) vira aviso e a outra segue valendo. Rotas `GET /access-check/cluster-groups` e `GET /access-check/group-members`.
+
 ### Servidor — watches órfãos e profiling opcional (Outubro 2026)
 
 **Watch órfão.** Os watches de Pods/Deployments/HPAs (`watch_common.go`) só eram cancelados pelo `Cancel()` explícito do frontend; ao fechar a aba, dar F5 ou perder a rede, o stream SSE caía mas o Informer seguia vivo até reiniciar o servidor, guardando todos os objetos do namespace (cluster inteiro, na aba Pods) em memória e uma conexão aberta com a API do cluster, a cada recarga. Agora a sessão conta as conexões SSE e é cancelada depois de 30 s sem nenhuma (cobre a reconexão automática do EventSource e a sessão que nunca recebeu stream).
