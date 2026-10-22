@@ -269,12 +269,16 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
                       <ul className="space-y-1">
                         {p.placement.nodes.map((n) => (
                           <li key={n.node} className="flex gap-1.5">
-                            <span className={n.fits ? "text-green-600" : "text-red-600"} aria-label={n.fits ? "serve" : "não serve"}>
-                              {n.fits ? "✔" : "✖"}
+                            <span
+                              className={n.fits && !n.blocker ? "text-green-600" : n.fits ? "text-amber-600" : "text-red-600"}
+                              aria-label={n.fits && !n.blocker ? "serve" : n.fits ? "passa no seletor, mas está bloqueado" : "não serve"}
+                            >
+                              {n.fits && !n.blocker ? "✔" : n.fits ? "⚠" : "✖"}
                             </span>
                             <span className="min-w-0">
                               <span className="font-mono break-all">{n.node}</span>
                               {n.pool && <span className="text-muted-foreground"> · pool {n.pool}</span>}
+                              {n.blocker && <span className="block text-amber-700 dark:text-amber-400">bloqueado: {n.blocker}</span>}
                               {n.reasons && n.reasons.length > 0 && (
                                 <span className="block text-muted-foreground">{n.reasons.join("; ")}</span>
                               )}

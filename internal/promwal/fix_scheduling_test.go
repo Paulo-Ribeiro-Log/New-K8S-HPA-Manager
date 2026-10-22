@@ -253,3 +253,60 @@ func TestPlacementFacts_ZonaDoVolumeESomaDeRequests(t *testing.T) {
 		t.Fatalf("PVC inexistente vira nota, não zona: %+v", f)
 	}
 }
+
+// O seletor já aponta para um pool cujos nodes passam em seletor/taints, mas sem folga: o resumo diz por quê.
+func TestPlacement_NodesQuePassamMasSemFolgaViramBlocker(t *testing.T) {
+	p := monitoringPod()
+	p.NodeSelector = map[string]string{"agentpool": "cshubapp2spt"}
+	p.CPURequestMilli, p.MemRequestBytes = 1000, 4<<30
+	nodes := []corev1.Node{
+		withAlloc(node("app-s", "cshubapp2spt", nil), "4", "16Gi"),
+		withAlloc(node("app-v", "cshubapp2spt", nil), "4", "16Gi"),
+		withAlloc(node("sys", "cshubsystem", nil, taintCritical), "4", "16Gi"),
+	}
+	facts := PlacementFacts{NodeRequests: map[string]Requests{
+		"app-s": {CPUMilli: 3800, MemBytes: 2 << 30},
+		"app-v": {CPUMilli: 1000, MemBytes: 14 << 30},
+	}}
+	pl := diagnosePlacementFacts(p, nodes, "", facts)
+	for _, n := range pl.Nodes {
+		if n.Node != "sys" && (!n.Fits || n.Blocker == "") {
+			t.Fatalf("node que passa no seletor mas sem folga deve ter Blocker: %+v", n)
+		}
+	}
+	if !strings.Contains(pl.Summary, "nenhum serve") || !strings.Contains(pl.Summary, "CPU livre 200m") || !strings.Contains(pl.Summary, "memória livre 2Gi") {
+		t.Fatalf("resumo deve citar a falta de recursos: %s", pl.Summary)
+	}
+
+	// com folga e sem dados de recursos, mantém o texto de "o bloqueio é outro"
+	pl = diagnosePlacementFacts(p, nodes, "", PlacementFacts{})
+	if !strings.Contains(pl.Summary, "o bloqueio é outro") {
+		t.Fatalf("sem blocker: %s", pl.Summary)
+	}
+}
+
+// Volume na zona 2; o pool do seletor só tem nodes nas zonas 1 e 3. O resumo explica a zona e as opções de outros
+// pools aparecem (só com node na zona do volume).
+func TestPlacement_VolumeZonalOfereceOutroPoolComNodeNaZona(t *testing.T) {
+	p := monitoringPod()
+	p.NodeSelector = map[string]string{"agentpool": "cshubapp2spt"}
+	z := func(n corev1.Node, zone string) corev1.Node { n.Labels["topology.kubernetes.io/zone"] = zone; return n }
+	nodes := []corev1.Node{
+		z(node("app-s", "cshubapp2spt", nil), "brazilsouth-1"),
+		z(node("app-v", "cshubapp2spt", nil), "brazilsouth-3"),
+		z(node("runner-z2", "runnerspot2", nil), "brazilsouth-2"),
+		z(node("runner-z1", "runnerspot2", nil), "brazilsouth-1"),
+	}
+	pl := diagnosePlacementFacts(p, nodes, "", PlacementFacts{PVCZone: "brazilsouth-2"})
+	if !strings.Contains(pl.Summary, "zona brazilsouth-2") || !strings.Contains(pl.Summary, "runner-z2") || !strings.Contains(pl.Summary, "Não apague o PVC") {
+		t.Fatalf("resumo deve explicar a zona do volume e citar o node nela: %s", pl.Summary)
+	}
+	if len(pl.Options) == 0 {
+		t.Fatal("nenhum node serve: as opções de outros pools devem aparecer mesmo com nodes que passam só no seletor")
+	}
+	for _, o := range pl.Options {
+		if o.ID == "pool:runnerspot2" && (len(o.Nodes) != 1 || o.Nodes[0] != "runner-z2") {
+			t.Fatalf("só o node na zona do volume serve: %+v", o)
+		}
+	}
+}

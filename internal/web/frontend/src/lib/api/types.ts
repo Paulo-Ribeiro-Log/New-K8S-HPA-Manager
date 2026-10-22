@@ -1151,7 +1151,7 @@ export interface PrometheusSchedulingResult {
 export interface PrometheusWALPlacement {
   options?: PrometheusWALFixOption[];
   label_advice?: PrometheusWALLabelAdvice;
-  nodes?: { node: string; pool?: string; fits: boolean; reasons?: string[] }[];
+  nodes?: { node: string; pool?: string; fits: boolean; reasons?: string[]; blocker?: string }[];
   summary: string;
   note: string;
   /** Por que não foi possível diagnosticar (ex.: sem permissão para listar nodes). */
