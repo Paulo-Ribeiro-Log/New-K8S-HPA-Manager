@@ -65,11 +65,11 @@ export function CordonDrainProgress({ operationId, onComplete, onError }: Cordon
 
   // Determinar cor da progress bar
   const getProgressColor = () => {
-    if (hasError()) return 'bg-red-500';
-    if (isComplete()) return 'bg-green-500';
-    if (progress >= 80) return 'bg-purple-500';
-    if (progress >= 20) return 'bg-orange-500';
-    return 'bg-blue-500';
+    if (hasError()) return '[&>div]:bg-red-500';
+    if (isComplete()) return '[&>div]:bg-green-500';
+    if (progress >= 80) return '[&>div]:bg-purple-500';
+    if (progress >= 20) return '[&>div]:bg-orange-500';
+    return '[&>div]:bg-blue-500';
   };
 
   return (
@@ -84,12 +84,7 @@ export function CordonDrainProgress({ operationId, onComplete, onError }: Cordon
       </div>
 
       {/* Progress bar */}
-      <Progress value={progress} className="h-2">
-        <div
-          className={`h-full transition-all ${getProgressColor()}`}
-          style={{ width: `${progress}%` }}
-        />
-      </Progress>
+      <Progress value={progress} className={`h-2 ${getProgressColor()}`} />
 
       {/* Mensagem de status */}
       {lastEvent && (
