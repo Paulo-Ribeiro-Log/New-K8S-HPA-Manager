@@ -25,11 +25,23 @@ function pct(value: number, total: number): number {
   return total > 0 ? (value / total) * 100 : 0;
 }
 
-/** Barra fina: a parte cheia é o uso, o traço é o request. Tudo em % da capacidade alocável do node. */
+/**
+ * Escala da barra de um pod: o limit (100% = limit); sem limit, o maior entre uso e request com folga,
+ * para o traço do request e o preenchimento ficarem proporcionais entre si.
+ */
+function podBarScale(used: number, request: number, limit: number): number {
+  return limit > 0 ? Math.max(limit, used) : Math.max(used, request) * 1.25;
+}
+
+/** Barra fina: a parte cheia é o uso, o traço é o request. Âmbar quando o uso passa do request. */
 function UsageBar({ usedPct, requestPct }: { usedPct: number; requestPct: number }) {
+  const overRequest = requestPct > 0 && usedPct > requestPct;
   return (
     <div className="relative h-1.5 w-full rounded bg-muted overflow-hidden">
-      <div className="absolute inset-y-0 left-0 bg-primary" style={{ width: `${Math.min(usedPct, 100)}%` }} />
+      <div
+        className={`absolute inset-y-0 left-0 ${overRequest ? "bg-amber-500" : "bg-primary"}`}
+        style={{ width: `${Math.min(usedPct, 100)}%` }}
+      />
       {requestPct > 0 && (
         <div className="absolute inset-y-0 w-px bg-foreground/60" style={{ left: `${Math.min(requestPct, 100)}%` }} />
       )}
@@ -81,8 +93,9 @@ export function NodeConsumersModal({ open, onOpenChange, cluster, nodePool, node
         <DialogHeader>
           <DialogTitle>Maiores consumidores — {nodeName}</DialogTitle>
           <DialogDescription>
-            Pods do node ordenados pelo consumo atual (Metrics Server). A barra mostra o uso em % da capacidade
-            alocável do node; o traço é o request.
+            Pods do node ordenados pelo consumo atual (Metrics Server). Nos cards do node a barra é o uso em % da
+            capacidade alocável; em cada pod, em % do limit (ou do maior entre uso e request, se não há limit). O traço
+            é o request; âmbar = uso acima do request.
           </DialogDescription>
         </DialogHeader>
 
@@ -196,7 +209,10 @@ export function NodeConsumersModal({ open, onOpenChange, cluster, nodePool, node
                                 {p.cpu_limit_m > 0 && ` · lim ${formatMillicores(p.cpu_limit_m)}`}
                               </span>
                             </div>
-                            <UsageBar usedPct={pct(p.cpu_usage_m, cpuAlloc)} requestPct={pct(p.cpu_request_m, cpuAlloc)} />
+                            {(() => {
+                              const scale = podBarScale(p.cpu_usage_m, p.cpu_request_m, p.cpu_limit_m);
+                              return <UsageBar usedPct={pct(p.cpu_usage_m, scale)} requestPct={pct(p.cpu_request_m, scale)} />;
+                            })()}
                           </TableCell>
                           <TableCell className="text-xs space-y-1">
                             <div className="tabular-nums">
@@ -206,7 +222,10 @@ export function NodeConsumersModal({ open, onOpenChange, cluster, nodePool, node
                                 {p.mem_limit_bytes > 0 && ` · lim ${formatBytes(p.mem_limit_bytes)}`}
                               </span>
                             </div>
-                            <UsageBar usedPct={pct(p.mem_usage_bytes, memAlloc)} requestPct={pct(p.mem_request_bytes, memAlloc)} />
+                            {(() => {
+                              const scale = podBarScale(p.mem_usage_bytes, p.mem_request_bytes, p.mem_limit_bytes);
+                              return <UsageBar usedPct={pct(p.mem_usage_bytes, scale)} requestPct={pct(p.mem_request_bytes, scale)} />;
+                            })()}
                           </TableCell>
                           <TableCell className="text-xs text-center tabular-nums">{p.restart_count}</TableCell>
                         </TableRow>

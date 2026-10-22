@@ -158,10 +158,10 @@ export const TopNamespacesCard = ({ cluster }: TopNamespacesCardProps) => {
 
     const color =
       percent > 75
-        ? "bg-red-500"
+        ? "[&>div]:bg-red-500"
         : percent > 50
-        ? "bg-yellow-500"
-        : "bg-green-500";
+        ? "[&>div]:bg-yellow-500"
+        : "[&>div]:bg-green-500";
 
     const displayValue =
       type === "cpu"
