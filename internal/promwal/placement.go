@@ -18,6 +18,9 @@ type NodeFit struct {
 	Pool    string   `json:"pool,omitempty"`
 	Fits    bool     `json:"fits"`
 	Reasons []string `json:"reasons,omitempty"`
+	// Blocker: o node passa em seletor/afinidade/taints, mas não serve ao pod: sem CPU/memória livres ou está
+	// em zona diferente da do volume. Só preenchido com Fits=true.
+	Blocker string `json:"blocker,omitempty"`
 }
 
 // Placement é o diagnóstico node a node de um pod que não foi agendado.
@@ -27,6 +30,10 @@ type Placement struct {
 	Note    string    `json:"note"`
 	// Unavailable: por que não foi possível diagnosticar (ex.: sem permissão para listar nodes).
 	Unavailable string `json:"unavailable,omitempty"`
+	// Options: correções que fariam algum node servir ao pod (só quando nenhum serve hoje).
+	Options []FixOption `json:"options,omitempty"`
+	// LabelAdvice: quando o seletor do pod não casa com nenhum node, o caminho preferível é devolver o label ao node pool.
+	LabelAdvice *LabelAdvice `json:"label_advice,omitempty"`
 }
 
 type nodeEval struct {
@@ -37,6 +44,11 @@ type nodeEval struct {
 
 // diagnosePlacement avalia cada node contra as restrições do pod. nodesErr != "" = a listagem de nodes falhou.
 func diagnosePlacement(p PodInfo, nodes []corev1.Node, nodesErr string) *Placement {
+	return diagnosePlacementFacts(p, nodes, nodesErr, PlacementFacts{})
+}
+
+// diagnosePlacementFacts é o diagnóstico com os dados extras (recursos livres, zona do volume) que validam as correções.
+func diagnosePlacementFacts(p PodInfo, nodes []corev1.Node, nodesErr string, facts PlacementFacts) *Placement {
 	pl := &Placement{Note: placementNote}
 	if nodesErr != "" {
 		pl.Unavailable = nodesErr
@@ -56,8 +68,64 @@ func diagnosePlacement(p PodInfo, nodes []corev1.Node, nodesErr string) *Placeme
 	for _, e := range evals {
 		pl.Nodes = append(pl.Nodes, e.fit)
 	}
-	pl.Summary = placementSummary(p, evals, nodes)
+	byName := map[string]*corev1.Node{}
+	for i := range nodes {
+		byName[nodes[i].Name] = &nodes[i]
+	}
+	for i := range evals {
+		if evals[i].fit.Fits {
+			evals[i].fit.Blocker = nodeBlocker(p, byName[evals[i].fit.Node], facts)
+			pl.Nodes[i].Blocker = evals[i].fit.Blocker
+		}
+	}
+	pl.Summary = placementSummary(p, evals, nodes) + zoneHint(evals, nodes, facts)
+	if !anyServes(evals) {
+		pl.Options = fixOptions(p, nodes, facts)
+		pl.LabelAdvice = labelAdvice(p, nodes)
+	}
 	return pl
+}
+
+// anyServes: algum node passa em tudo (seletor, afinidade, taints, recursos livres e zona do volume).
+func anyServes(evals []nodeEval) bool {
+	for _, e := range evals {
+		if e.fit.Fits && e.fit.Blocker == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// zoneHint explica o caso do volume zonal: o disco só anexa em node da mesma zona, então escolher um pool que não
+// tem node nela não resolve. Só aparece quando a zona do volume é o que barra algum node que passou no seletor.
+func zoneHint(evals []nodeEval, nodes []corev1.Node, facts PlacementFacts) string {
+	if facts.PVCZone == "" {
+		return ""
+	}
+	zoneBlocked := false
+	for _, e := range evals {
+		zoneBlocked = zoneBlocked || (e.fit.Fits && strings.Contains(e.fit.Blocker, "o volume está na zona"))
+	}
+	if !zoneBlocked {
+		return ""
+	}
+	var inZone []string
+	for i := range nodes {
+		for _, k := range zoneKeys {
+			if z := nodes[i].Labels[k]; z != "" {
+				if z == facts.PVCZone {
+					inZone = append(inZone, nodes[i].Name)
+				}
+				break
+			}
+		}
+	}
+	sort.Strings(inZone)
+	where := "nenhum node do cluster está nessa zona hoje"
+	if len(inZone) > 0 {
+		where = "nodes nessa zona: " + strings.Join(inZone, ", ")
+	}
+	return fmt.Sprintf(" O volume do Prometheus está na zona %s e um disco só anexa em node da mesma zona (%s). Para o pod subir é preciso ter um node nessa zona no pool escolhido (escalar o node pool; o cluster autoscaler escolhe a zona pelo volume) ou usar um pool que já tenha node nela. Não apague o PVC: ele guarda as métricas.", facts.PVCZone, where)
 }
 
 func evalNode(p PodInfo, n *corev1.Node) nodeEval {
@@ -110,7 +178,23 @@ func placementSummary(p PodInfo, evals []nodeEval, nodes []corev1.Node) string {
 
 	switch {
 	case len(fits) > 0:
-		return fmt.Sprintf("%d node(s) passam em nodeSelector, nodeAffinity e taints (%s): o bloqueio é outro (recursos livres, afinidade entre pods ou volume). Veja a mensagem do scheduler.", len(fits), names(fits))
+		var blocked, free []string
+		for _, e := range fits {
+			if e.fit.Blocker != "" {
+				blocked = append(blocked, fmt.Sprintf("%s (%s)", e.fit.Node, e.fit.Blocker))
+			} else {
+				free = append(free, e.fit.Node)
+			}
+		}
+		base := fmt.Sprintf("%d node(s) passam em nodeSelector, nodeAffinity e taints (%s)", len(fits), names(fits))
+		switch {
+		case len(free) == 0:
+			return base + ", mas nenhum serve: " + strings.Join(blocked, "; ") + ". Libere recursos no pool (escalar o node pool ou reduzir requests de outros pods) ou escolha outro pool."
+		case len(blocked) > 0:
+			return base + "; bloqueados: " + strings.Join(blocked, "; ") + ". Em " + strings.Join(free, ", ") + " a CPU/memória livre e a zona do volume estão ok: o bloqueio é outro (afinidade entre pods ou volume). Veja a mensagem do scheduler."
+		default:
+			return base + ": o bloqueio é outro (afinidade entre pods ou volume; CPU/memória livres e zona do volume não são o problema quando verificados). Veja a mensagem do scheduler."
+		}
 
 	case len(selectorOK) == 0:
 		what := selectorDescription(p)

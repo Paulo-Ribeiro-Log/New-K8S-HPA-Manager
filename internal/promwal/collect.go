@@ -173,6 +173,7 @@ func (c *Collector) Collect(ctx context.Context, cluster, namespace, name string
 				in.NodesError = "sem permissão ou falha ao listar os nodes: " + err.Error()
 			} else {
 				in.Nodes = nodes.Items
+				in.Facts = c.placementFacts(ctx, namespace, p)
 			}
 			break
 		}
@@ -183,8 +184,91 @@ func (c *Collector) Collect(ctx context.Context, cluster, namespace, name string
 	return in, nil
 }
 
+// placementFacts lê o que valida uma correção de agendamento: quanto cada node já tem requisitado e em que zona
+// está o volume do pod. Cada leitura que falha vira nota (nunca derruba a análise).
+func (c *Collector) placementFacts(ctx context.Context, namespace string, p PodInfo) PlacementFacts {
+	f := PlacementFacts{NodeRequests: map[string]Requests{}}
+
+	pods, err := c.Client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{FieldSelector: "status.phase!=Succeeded,status.phase!=Failed"})
+	if err != nil {
+		f.RequestsErr = "sem permissão ou falha ao listar os pods do cluster: " + err.Error()
+	} else {
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			if pod.Spec.NodeName == "" {
+				continue
+			}
+			r := f.NodeRequests[pod.Spec.NodeName]
+			cpu, mem := podRequests(pod)
+			r.CPUMilli += cpu
+			r.MemBytes += mem
+			f.NodeRequests[pod.Spec.NodeName] = r
+		}
+	}
+
+	if p.PVC == "" {
+		return f
+	}
+	pvc, err := c.Client.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, p.PVC, metav1.GetOptions{})
+	switch {
+	case err != nil:
+		f.PVCNote = "não foi possível ler o PVC " + p.PVC + ": " + err.Error()
+	case pvc.Spec.VolumeName == "":
+		f.PVCNote = "o PVC " + p.PVC + " ainda não tem volume (será criado na zona onde o pod for agendado)"
+	default:
+		pv, err := c.Client.CoreV1().PersistentVolumes().Get(ctx, pvc.Spec.VolumeName, metav1.GetOptions{})
+		if err != nil {
+			f.PVCNote = "não foi possível ler o volume " + pvc.Spec.VolumeName + " (zona não verificada): " + err.Error()
+		} else {
+			f.PVCZone = pvZone(pv)
+		}
+	}
+	return f
+}
+
+var zoneKeys = []string{"topology.kubernetes.io/zone", "topology.disk.csi.azure.com/zone", "failure-domain.beta.kubernetes.io/zone"}
+
+// pvZone devolve a zona fixada no volume (nodeAffinity do PV ou labels); "" se não há.
+func pvZone(pv *corev1.PersistentVolume) string {
+	if pv.Spec.NodeAffinity != nil && pv.Spec.NodeAffinity.Required != nil {
+		for _, term := range pv.Spec.NodeAffinity.Required.NodeSelectorTerms {
+			for _, r := range term.MatchExpressions {
+				for _, k := range zoneKeys {
+					if r.Key == k && r.Operator == corev1.NodeSelectorOpIn && len(r.Values) == 1 {
+						return r.Values[0]
+					}
+				}
+			}
+		}
+	}
+	for _, k := range zoneKeys {
+		if v := pv.Labels[k]; v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// podRequests soma os requests dos containers (init containers entram pelo maior, como o scheduler).
+func podRequests(pod *corev1.Pod) (cpuMilli, memBytes int64) {
+	for _, ct := range pod.Spec.Containers {
+		cpuMilli += ct.Resources.Requests.Cpu().MilliValue()
+		memBytes += ct.Resources.Requests.Memory().Value()
+	}
+	for _, ct := range pod.Spec.InitContainers {
+		if v := ct.Resources.Requests.Cpu().MilliValue(); v > cpuMilli {
+			cpuMilli = v
+		}
+		if v := ct.Resources.Requests.Memory().Value(); v > memBytes {
+			memBytes = v
+		}
+	}
+	return cpuMilli, memBytes
+}
+
 func podInfo(pod *corev1.Pod) PodInfo {
 	pi := PodInfo{Name: pod.Name, Node: pod.Spec.NodeName, Phase: string(pod.Status.Phase)}
+	pi.CPURequestMilli, pi.MemRequestBytes = podRequests(pod)
 	for _, v := range pod.Spec.Volumes {
 		if v.PersistentVolumeClaim != nil {
 			pi.PVC = v.PersistentVolumeClaim.ClaimName

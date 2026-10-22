@@ -136,7 +136,7 @@ func analyzePod(in Input, p PodInfo) PodReport {
 	}
 	schedCause, placement := schedulingCause(p.SchedulingMessage)
 	if p.Node == "" && schedCause != "" {
-		pr.Placement = diagnosePlacement(p, in.Nodes, in.NodesError)
+		pr.Placement = diagnosePlacementFacts(p, in.Nodes, in.NodesError, in.Facts)
 	}
 	if placement && pr.Placement == nil {
 		pr.Evidence = append(pr.Evidence, placementHint)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"k8s-hpa-manager/internal/config"
@@ -24,6 +25,7 @@ const (
 	walAnalyzeDeepTimeout = 5 * time.Minute
 	walHealthTimeout      = 20 * time.Second
 	walHealthTTL          = 45 * time.Second
+	walSchedulingTimeout  = 90 * time.Second
 )
 
 // PrometheusWALHandler analisa um Prometheus que não sobe e diz se limpar o WAL é indicado
@@ -440,6 +442,53 @@ func (h *PrometheusWALHandler) Restore(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"restored_replicas": n})
+}
+
+// Scheduling godoc
+// POST /api/v1/prometheus/wal/scheduling (SRE) {cluster,namespace,name,node_selector,tolerations} — corrige o
+// agendamento de um Prometheus cujo pod não cabe em nenhum node: substitui o spec.nodeSelector e soma tolerations no
+// recurso Prometheus e recria os pods presos em Pending. Não toca no WAL nem nos volumes.
+func (h *PrometheusWALHandler) Scheduling(c *gin.Context) {
+	var req struct {
+		Cluster      string              `json:"cluster"`
+		Namespace    string              `json:"namespace"`
+		Name         string              `json:"name"`
+		NodeSelector map[string]string   `json:"node_selector"`
+		Tolerations  []corev1.Toleration `json:"tolerations"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Cluster == "" || req.Namespace == "" || req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "informe cluster, namespace e name"})
+		return
+	}
+	client, err := h.kubeManager.GetClient(req.Cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("falha ao obter client do cluster: %v", err)})
+		return
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), walSchedulingTimeout)
+	defer cancel()
+	col := &promwal.Collector{Client: client, Run: promwal.KubectlRunner}
+	res, err := col.ApplyScheduling(ctx, promwal.SchedulingRequest{
+		Cluster: req.Cluster, Namespace: req.Namespace, Name: req.Name,
+		NodeSelector: req.NodeSelector, Tolerations: req.Tolerations,
+	})
+	// Só labels e taints (identificação): nada sensível no histórico.
+	logOperation(c, h.historyTracker, "prometheus_scheduling_fix", req.Namespace+"/"+req.Name, req.Cluster,
+		map[string]interface{}{"node_selector": res.BeforeSelector},
+		map[string]interface{}{"node_selector": res.AfterSelector, "tolerations_added": res.AddedTolerations, "pods_recreated": res.RecreatedPods},
+		start, err)
+	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	h.healthMu.Lock()
+	delete(h.healthCache, req.Cluster)
+	h.healthMu.Unlock()
+	c.JSON(http.StatusOK, res)
 }
 
 func newWALOpID() string {

@@ -16,6 +16,7 @@ oferece a limpeza de `wal/` e `chunks_head/`.
 | Contador de reincidência (anotação persistente + Change History) e aviso de problema crônico | **Pronto** (fase 5; testado com fakes e `history.db` real em SQLite temporário; não validado em cluster real nem no browser) |
 | Verificação de integridade do Prometheus (rota `GET /prometheus/wal/health`) | **Pronto** (fase 6; testado com fakes; não validado em cluster real) |
 | Alertas de integridade e reincidência no app (`usePrometheusHealth`, `PrometheusHealthAlerts`, contagem no `CriticalAlertsBanner`) | **Pronto** (fase 7; type-check, lint e build limpos; **não testado no browser nem em cluster real**) |
+| Correção de agendamento (pod não agendado): opções por node pool + `POST /prometheus/wal/scheduling` | **Pronto** (testado com fakes; type-check e lint limpos; **não validado em cluster real nem no browser**) |
 
 Este documento descreve o desenho e o uso pretendidos. Atualize a tabela acima conforme as fases entrarem.
 

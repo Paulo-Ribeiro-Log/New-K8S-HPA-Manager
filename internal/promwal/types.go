@@ -37,6 +37,24 @@ type PodInfo struct {
 	NodeAffinity *corev1.NodeSelector
 	Tolerations  []corev1.Toleration
 	LogTail      string // últimas linhas do container anterior (ou do atual, se não houve anterior)
+	// Requests do pod (soma dos containers; init containers pelo maior): o que o scheduler precisa achar livre.
+	CPURequestMilli int64
+	MemRequestBytes int64
+}
+
+// Requests é a soma dos requests dos pods que já ocupam um node.
+type Requests struct {
+	CPUMilli int64
+	MemBytes int64
+}
+
+// PlacementFacts são os dados extras lidos só quando há pod não agendado, para validar as correções de
+// agendamento além de nodeSelector/taints: recursos livres por node e a zona do volume.
+type PlacementFacts struct {
+	NodeRequests map[string]Requests // node -> soma dos requests dos pods ativos nele
+	RequestsErr  string              // por que não foi possível somar (ex.: sem permissão para listar pods)
+	PVCZone      string              // zona do volume já criado ("" = sem restrição conhecida)
+	PVCNote      string              // PVC ainda não existe / não foi possível ler o volume
 }
 
 // DeepInfo é o que a análise profunda leu do PVC (somente leitura).
@@ -78,6 +96,7 @@ type Input struct {
 	// Nodes do cluster, lidos só quando há pod não agendado (diagnóstico por node); NodesError se a leitura falhou.
 	Nodes      []corev1.Node
 	NodesError string
+	Facts      PlacementFacts
 }
 
 // PodReport é o diagnóstico de um pod.

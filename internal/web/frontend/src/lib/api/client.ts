@@ -14,6 +14,8 @@ import type {
   PrometheusResource,
   PrometheusUpdateResult,
   PrometheusWALReport,
+  PrometheusSchedulingResult,
+  K8sToleration,
   PrometheusWALHealth,
   PrometheusWALCleanupRequest,
   ValidationStatus,
@@ -3019,6 +3021,20 @@ class APIClient {
     return this.request("/prometheus/wal/restore", {
       method: "POST",
       body: JSON.stringify({ cluster, namespace, name }),
+    });
+  }
+
+  /** Corrige o agendamento do Prometheus: troca o nodeSelector e soma tolerations no recurso (não toca no WAL). */
+  async fixPrometheusScheduling(
+    cluster: string,
+    namespace: string,
+    name: string,
+    nodeSelector: Record<string, string>,
+    tolerations: K8sToleration[]
+  ): Promise<PrometheusSchedulingResult> {
+    return this.request("/prometheus/wal/scheduling", {
+      method: "POST",
+      body: JSON.stringify({ cluster, namespace, name, node_selector: nodeSelector, tolerations }),
     });
   }
 

@@ -1106,9 +1106,52 @@ export interface PrometheusUpdateResult {
 // Análise do WAL (GET /prometheus/wal/analyze) — docs: PROMETHEUS-WAL-CLEANUP.md
 export type PrometheusWALVerdict = 'saudavel' | 'aumentar_memoria' | 'limpar_wal' | 'investigar';
 
+export interface K8sToleration {
+  key?: string;
+  operator?: string;
+  value?: string;
+  effect?: string;
+}
+
+/** Correção de agendamento verificada: com ela ao menos um node passa a servir ao pod. */
+export interface PrometheusWALFixOption {
+  id: string;
+  label: string;
+  pool?: string;
+  nodes: string[];
+  /** Seletor COMPLETO resultante (vazio = remover o nodeSelector). */
+  node_selector: Record<string, string>;
+  tolerations?: K8sToleration[];
+  /** Avisos que não impedem a aplicação. */
+  notes?: string[];
+  /** Nodes do pool descartados (sem CPU/memória livre, zona do volume diferente) e o motivo. */
+  excluded?: string[];
+  /** Preenchido quando nenhum node do pool passa nas checagens: a opção não pode ser aplicada. */
+  blocked?: string;
+}
+
+/** Recomendação preferível: devolver o label ao node pool (não mexe no recurso Prometheus). */
+export interface PrometheusWALLabelAdvice {
+  selector: Record<string, string>;
+  pools: { pool: string; nodes: number; current?: string }[];
+  command?: string;
+  warning?: string;
+}
+
+export interface PrometheusSchedulingResult {
+  before_node_selector: Record<string, string>;
+  after_node_selector: Record<string, string>;
+  added_tolerations?: string[];
+  recreated_pods?: string[];
+  managed_by?: string;
+  warnings?: string[];
+}
+
 /** Diagnóstico node a node de um pod que não foi agendado. */
 export interface PrometheusWALPlacement {
-  nodes?: { node: string; pool?: string; fits: boolean; reasons?: string[] }[];
+  options?: PrometheusWALFixOption[];
+  label_advice?: PrometheusWALLabelAdvice;
+  nodes?: { node: string; pool?: string; fits: boolean; reasons?: string[]; blocker?: string }[];
   summary: string;
   note: string;
   /** Por que não foi possível diagnosticar (ex.: sem permissão para listar nodes). */
