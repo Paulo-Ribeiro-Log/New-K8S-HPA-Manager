@@ -55,7 +55,10 @@ jobs:
       - name: Test cross-compilation (compile-only, não valida CGO/SQLite em darwin)
         run: make release
 
+      # Só guarda o binário para conferência manual: se a cota de artefatos do repositório estourar, o upload não
+      # pode reprovar a CI (build e testes já passaram).
       - name: Upload build artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: new-k8s-hpa-dev
