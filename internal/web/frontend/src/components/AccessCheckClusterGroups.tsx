@@ -5,6 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CopyValue } from "@/components/CopyValue";
+import { AzureLoginModal } from "@/components/AzureLoginModal";
+import { isAzureLoginError } from "@/lib/azureError";
 import { apiClient } from "@/lib/api/client";
 import { copyText } from "@/lib/clipboard";
 import { globMatcher } from "@/lib/groupFilter";
@@ -215,6 +217,7 @@ function GroupRow({ group, open, onToggle }: { group: ClusterGroup; open: boolea
 export default function AccessCheckClusterGroups({ cluster }: { cluster: string }) {
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [loginDismissed, setLoginDismissed] = useState("");
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ["access-check-cluster-groups", cluster],
@@ -223,6 +226,14 @@ export default function AccessCheckClusterGroups({ cluster }: { cluster: string 
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
+
+  // Sessão do `az` expirada: avisos do servidor (ou o erro da própria chamada) que pedem `az login`.
+  const loginErrors = useMemo(() => {
+    const texts = [...(data?.warnings ?? []), ...(error ? [(error as Error).message] : [])];
+    return texts.filter(isAzureLoginError);
+  }, [data, error]);
+  const loginKey = loginErrors.join("\n");
+  const loginModalOpen = loginErrors.length > 0 && loginDismissed !== loginKey;
 
   const filtered = useMemo(() => {
     const match = globMatcher(search);
@@ -285,8 +296,19 @@ export default function AccessCheckClusterGroups({ cluster }: { cluster: string 
       {data?.warnings.map((w) => (
         <div key={w} className="text-xs text-amber-500 mb-1 break-words">
           ⚠ {w}
+          {isAzureLoginError(w) && (
+            <button type="button" className="ml-2 underline" onClick={() => setLoginDismissed("")}>
+              como resolver
+            </button>
+          )}
         </div>
       ))}
+      <AzureLoginModal
+        open={loginModalOpen}
+        onOpenChange={(o) => !o && setLoginDismissed(loginKey)}
+        errors={loginErrors}
+        onRetry={() => refetch()}
+      />
 
       {extraId && (
         <div className="mb-2 border border-dashed border-border rounded p-2">

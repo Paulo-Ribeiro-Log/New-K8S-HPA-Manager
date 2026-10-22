@@ -7,6 +7,7 @@
 
 - `GET /api/v1/azure/session` (só leitura, cache de 60 s, `?refresh=1`): pede token do ARM e do Graph via `az` e classifica a falha (`login_required`, `cli_missing`, `error`) com o stderr do `az`. Nunca dispara `az login`.
 - `AzureSessionBanner` (topo do `Index.tsx`): checa a cada 5 min e ao voltar para a aba; mostra `az login` copiável e "Verificar novamente".
+- Aba "Grupos do Cluster": erro de `az login` expirado (ex.: AADSTS70043 por sign-in frequency) abre o `AzureLoginModal` com a explicação, o erro copiável e o passo de refazer o `az login`.
 - Erro de token Graph (`getGraphAccessToken`) agora inclui o stderr do `az` em vez de só "exit status 1".
 
 ### Verificar Acesso — grupos do Entra ID do cluster e seus membros (Outubro 2026)
