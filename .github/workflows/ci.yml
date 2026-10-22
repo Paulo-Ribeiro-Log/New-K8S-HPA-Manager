@@ -60,4 +60,4 @@ jobs:
         with:
           name: new-k8s-hpa-dev
           path: build/new-k8s-hpa
-          retention-days: 7
+          retention-days: 1
