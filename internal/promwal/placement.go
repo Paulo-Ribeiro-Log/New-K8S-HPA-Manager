@@ -27,6 +27,10 @@ type Placement struct {
 	Note    string    `json:"note"`
 	// Unavailable: por que não foi possível diagnosticar (ex.: sem permissão para listar nodes).
 	Unavailable string `json:"unavailable,omitempty"`
+	// Options: correções que fariam algum node servir ao pod (só quando nenhum serve hoje).
+	Options []FixOption `json:"options,omitempty"`
+	// LabelAdvice: quando o seletor do pod não casa com nenhum node, o caminho preferível é devolver o label ao node pool.
+	LabelAdvice *LabelAdvice `json:"label_advice,omitempty"`
 }
 
 type nodeEval struct {
@@ -37,6 +41,11 @@ type nodeEval struct {
 
 // diagnosePlacement avalia cada node contra as restrições do pod. nodesErr != "" = a listagem de nodes falhou.
 func diagnosePlacement(p PodInfo, nodes []corev1.Node, nodesErr string) *Placement {
+	return diagnosePlacementFacts(p, nodes, nodesErr, PlacementFacts{})
+}
+
+// diagnosePlacementFacts é o diagnóstico com os dados extras (recursos livres, zona do volume) que validam as correções.
+func diagnosePlacementFacts(p PodInfo, nodes []corev1.Node, nodesErr string, facts PlacementFacts) *Placement {
 	pl := &Placement{Note: placementNote}
 	if nodesErr != "" {
 		pl.Unavailable = nodesErr
@@ -57,7 +66,20 @@ func diagnosePlacement(p PodInfo, nodes []corev1.Node, nodesErr string) *Placeme
 		pl.Nodes = append(pl.Nodes, e.fit)
 	}
 	pl.Summary = placementSummary(p, evals, nodes)
+	if !anyFits(evals) {
+		pl.Options = fixOptions(p, nodes, facts)
+		pl.LabelAdvice = labelAdvice(p, nodes)
+	}
 	return pl
+}
+
+func anyFits(evals []nodeEval) bool {
+	for _, e := range evals {
+		if e.fit.Fits {
+			return true
+		}
+	}
+	return false
 }
 
 func evalNode(p PodInfo, n *corev1.Node) nodeEval {

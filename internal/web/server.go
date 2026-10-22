@@ -996,6 +996,8 @@ func (s *Server) setupRoutes() {
 	api.POST("/prometheus/wal/cleanup", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Cleanup)
 	api.POST("/prometheus/wal/cancel/:id", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Cancel)
 	api.POST("/prometheus/wal/restore", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Restore)
+	// Correção de agendamento (pod não cabe em nenhum node): nodeSelector/tolerations do recurso Prometheus (SRE)
+	api.POST("/prometheus/wal/scheduling", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Scheduling)
 	s.router.GET("/api/v1/prometheus/wal/progress/:id",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		prometheusWALHandler.Stream)
