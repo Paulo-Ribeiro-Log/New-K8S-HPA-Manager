@@ -494,6 +494,23 @@ func (h *TeamsBroadcastHandler) ServeBroadcastImage(c *gin.Context) {
 	c.File(path)
 }
 
+// ClearBroadcastImages apaga as imagens da pasta temporária. O frontend chama ao abrir "Link do
+// Teams": a pasta só vale para a mensagem carregada, e limpar antes evita arquivos órfãos e a
+// imagem de uma mensagem anterior ficando no preview.
+// DELETE /api/v1/teams/broadcast/images
+func (h *TeamsBroadcastHandler) ClearBroadcastImages(c *gin.Context) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "falha ao resolver diretório home"})
+		return
+	}
+	if _, err := teams.ResetTeamsBroadcastImagesDir(homeDir); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"cleared": true})
+}
+
 // Send inicia o envio em lote de forma assíncrona e retorna 202 imediatamente.
 // O progresso é publicado via SSE no stream identificado por session_id.
 func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
