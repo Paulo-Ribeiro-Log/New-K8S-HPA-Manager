@@ -783,30 +783,46 @@ func markdownToTeamsHTML(md string) string {
 		// vazia entre um parágrafo e o próximo bloco (ex: "texto\n# Título", sem separador): sem
 		// isso o corpo acumulado ficaria pendurado no buffer e sairia DEPOIS do cabeçalho no HTML
 		// final, embora viesse antes no texto original — ordem trocada.
-		if strings.HasPrefix(trimmed, "### ") {
+		// Regra horizontal ("---", "***", "___"): o Teams renderiza <hr> (testado ao vivo).
+		if reHorizontalRule.MatchString(trimmed) {
 			flushBody()
 			closeList()
-			sb.WriteString("<p><b>" + htmlEscape(trimmed[4:]) + "</b></p>")
-			continue
-		}
-		if strings.HasPrefix(trimmed, "## ") {
-			flushBody()
-			closeList()
-			sb.WriteString("<p><b>" + htmlEscape(trimmed[3:]) + "</b></p>")
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") {
-			flushBody()
-			closeList()
-			sb.WriteString("<p><b>" + htmlEscape(trimmed[2:]) + "</b></p>")
+			sb.WriteString("<hr>")
 			continue
 		}
 
-		// Citação (produzida por htmlToMarkdown a partir de <blockquote> ao carregar)
-		if strings.HasPrefix(trimmed, "> ") {
+		// Bloco de código cercado (```): vira <pre>, que o Teams exibe em caixa monoespaçada
+		// preservando a indentação. O conteúdo é literal — sem Markdown inline.
+		if strings.HasPrefix(trimmed, "```") {
 			flushBody()
 			closeList()
-			sb.WriteString("<p>" + applyInlineMarkdown(trimmed[2:]) + "</p>")
+			var code []string
+			for i++; i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "```"); i++ {
+				code = append(code, strings.TrimRight(lines[i], " \t\r"))
+			}
+			sb.WriteString("<pre>" + htmlEscape(strings.Join(code, "\n")) + "</pre>")
+			continue
+		}
+
+		// Títulos: o Teams mostra <h1>-<h3> quase do tamanho do texto, então o destaque vem de
+		// negrito + font-size inline (que ele respeita).
+		if level, text, ok := markdownHeading(trimmed); ok {
+			flushBody()
+			closeList()
+			sb.WriteString(`<p><b><span style="font-size:` + teamsHeadingSizes[level-1] + `">` + applyInlineMarkdown(htmlEscape(text)) + "</span></b></p>")
+			continue
+		}
+
+		// Citação: linhas consecutivas com ">" viram um único <blockquote> (caixa com barra lateral).
+		if strings.HasPrefix(trimmed, ">") {
+			flushBody()
+			closeList()
+			var quote []string
+			for ; i < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i]), ">"); i++ {
+				quote = append(quote, applyInlineMarkdown(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[i]), ">"))))
+			}
+			i-- // compensa o i++ do for
+			sb.WriteString("<blockquote>" + strings.Join(quote, "<br>") + "</blockquote>")
 			continue
 		}
 
@@ -1003,9 +1019,11 @@ func splitTableRow(line string) []string {
 // mão com contagem de colunas inconsistente entre linhas.
 func buildTeamsTableHTML(header []string, rows [][]string) string {
 	var sb strings.Builder
-	sb.WriteString("<table><tr>")
+	// Marcação validada ao vivo no Teams: o <th> com background-color/color inline aparece
+	// colorido; <style>/class e <div> com borda não sobrevivem.
+	sb.WriteString(`<table border="1" style="border-collapse:collapse"><tr>`)
 	for _, h := range header {
-		sb.WriteString("<th>" + applyInlineMarkdown(h) + "</th>")
+		sb.WriteString(`<th style="background-color:#0078d4;color:#ffffff">` + applyInlineMarkdown(h) + "</th>")
 	}
 	sb.WriteString("</tr>")
 	for _, row := range rows {
@@ -1021,6 +1039,21 @@ func buildTeamsTableHTML(header []string, rows [][]string) string {
 	}
 	sb.WriteString("</table>")
 	return sb.String()
+}
+
+// teamsHeadingSizes: font-size de "#", "##" e "###" na mensagem enviada.
+var teamsHeadingSizes = [3]string{"22px", "18px", "15px"}
+
+var reHorizontalRule = regexp.MustCompile(`^(-{3,}|\*{3,}|_{3,})$`)
+
+// markdownHeading reconhece "# ", "## " e "### " no início da linha.
+func markdownHeading(line string) (level int, text string, ok bool) {
+	for l := 3; l >= 1; l-- {
+		if prefix := strings.Repeat("#", l) + " "; strings.HasPrefix(line, prefix) {
+			return l, line[len(prefix):], true
+		}
+	}
+	return 0, "", false
 }
 
 func applyInlineMarkdown(s string) string {
