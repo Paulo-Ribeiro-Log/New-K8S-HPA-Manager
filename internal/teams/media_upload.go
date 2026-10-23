@@ -1,9 +1,15 @@
 package teams
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"regexp"
+	"strings"
 
 	"github.com/go-rod/rod"
 	"github.com/rs/zerolog"
@@ -64,8 +70,20 @@ func uploadImagesInHTML(page *rod.Page, html string, threadIDs []string, logger 
 		}
 		imageURL := fmt.Sprintf("https://%s/v1/objects/%s/views/imgpsh_fullsize", teamsMediaHost, objectID)
 		logger.Info().Str("object_id", objectID).Str("url", imageURL).Msg("[Sender] Imagem enviada pro AMS com sucesso — referenciando na mensagem")
-		return fmt.Sprintf(`<img itemid="%s" itemscope itemtype="http://schema.skype.com/AMSImage" src="%s" alt="%s">`, objectID, imageURL, alt)
+		return fmt.Sprintf(`<img%s itemid="%s" itemscope itemtype="http://schema.skype.com/AMSImage" src="%s" alt="%s">`, imageSizeAttrs(base64Data), objectID, imageURL, alt)
 	})
+}
+
+// imageSizeAttrs devolve ` width="W" height="H" style="…"` com as dimensões reais da imagem. Sem
+// isso o Teams não sabe a proporção e reserva uma moldura padrão maior que a imagem, com fundo
+// cinza em volta (visto ao vivo numa imagem larga e fina); a mensagem original traz a proporção
+// (aspect-ratio) no próprio <img>. Formato não reconhecido (ex.: webp) → string vazia, como antes.
+func imageSizeAttrs(base64Data string) string {
+	cfg, _, err := image.DecodeConfig(base64.NewDecoder(base64.StdEncoding, strings.NewReader(base64Data)))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(` width="%d" height="%d" style="vertical-align:bottom;width:%dpx;height:%dpx"`, cfg.Width, cfg.Height, cfg.Width, cfg.Height)
 }
 
 // uploadImageToAMS executa as 2 chamadas do protocolo de upload (ver comentário de

@@ -488,6 +488,9 @@ func (h *TeamsBroadcastHandler) ServeBroadcastImage(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "imagem não encontrada — pode ter sido descartada por uma coleta mais recente"})
 		return
 	}
+	// O nome é sempre img-<n>.<ext>: cada mensagem carregada sobrescreve o arquivo da anterior, e a
+	// mesma URL em cache faria o preview mostrar a imagem da mensagem antiga.
+	c.Header("Cache-Control", "no-store")
 	c.File(path)
 }
 
