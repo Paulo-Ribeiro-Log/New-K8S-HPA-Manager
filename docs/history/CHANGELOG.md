@@ -3,6 +3,13 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Teams Broadcast — reenvio de imagem pelo AMS (Outubro 2026)
+
+- O upload da imagem ao serviço de mídia (AMS) falhava com HTTP 400 ("platform id could not be created from … User-Agent") e o envio caía no fallback de data URI, que o Teams descarta: a mensagem chegava sem a imagem.
+- Captura do upload real (`scripts/teams-spy-upload`): o Teams Web usa o mesmo User-Agent do Chrome do app; o que faltava era `x-ms-client-version` (+ `x-ams-post-sharing-mode: Inline`, `x-ms-migration`, `x-ms-test-user`) e `sharingMode: "Inline"`. Corrigido em `internal/teams/media_upload.go`.
+- Cartões adaptativos (mensagens de bot) não têm `<img>` no DOM e não são reenviáveis como HTML: a importação de imagem só vale para mensagens comuns.
+- Se o AMS voltar a recusar o "platform id", `teamsMediaClientVersion` é o primeiro candidato a ter envelhecido.
+
 ### Aviso de sessão do Azure CLI expirada (Outubro 2026)
 
 - `GET /api/v1/azure/session` (só leitura, cache de 60 s, `?refresh=1`): pede token do ARM e do Graph via `az` e classifica a falha (`login_required`, `cli_missing`, `error`) com o stderr do `az`. Nunca dispara `az login`.

@@ -16,6 +16,10 @@ import (
 // rede/404 em outra conta, provavelmente é esse host que precisa mudar.
 const teamsMediaHost = "us-prod.asyncgw.teams.microsoft.com"
 
+// teamsMediaClientVersion é o x-ms-client-version enviado pelo Teams Web no upload (valor visto na
+// captura; se o AMS voltar a recusar o "platform id", é o primeiro candidato a ter envelhecido).
+const teamsMediaClientVersion = "1415/26100212017"
+
 // reDataURIImage casa uma tag "<img ... src="data:<mime>;base64,<dados>" ...>" já montada por
 // resolveLocalImagePlaceholders (internal/web/handlers/teams_broadcast.go) — usada por
 // uploadImagesInHTML pra encontrar cada imagem embutida e trocá-la por uma referência real ao
@@ -78,17 +82,25 @@ func uploadImageToAMS(page *rod.Page, threadIDs []string, filename, mimeType, ba
 
 	js := "async () => {\n" + teamsAuthExtractJS + fmt.Sprintf(`
 		const threadIDs = %s;
+		// Cabeçalhos do upload real do Teams Web (captura com scripts/teams-spy-upload): sem
+		// x-ms-client-version o AMS responde 400 "platform id could not be created from … User-Agent".
+		const amsHeaders = {
+			authorization: 'Bearer ' + bearerToken,
+			'x-ms-client-version': '%s',
+			'x-ms-migration': 'True',
+			'x-ms-test-user': 'False',
+		};
 		const permissions = {};
 		for (const id of threadIDs) permissions[id] = ['read'];
 
 		try {
 			const createResp = await fetch('https://%s/v1/objects/', {
 				method: 'POST',
-				headers: { authorization: 'Bearer ' + bearerToken, 'content-type': 'application/json' },
-				body: JSON.stringify({ filename: %s, permissions, sharingMode: 'Attached', type: 'pish/image' }),
+				headers: Object.assign({ 'content-type': 'application/json', 'accept': 'application/json', 'x-ams-post-sharing-mode': 'Inline' }, amsHeaders),
+				body: JSON.stringify({ filename: %s, permissions, sharingMode: 'Inline', type: 'pish/image' }),
 			});
 			if (!createResp.ok) {
-				return JSON.stringify({ error: 'create object failed: HTTP ' + createResp.status + ' ' + (await createResp.text()).slice(0, 200) });
+				return JSON.stringify({ error: 'create object failed: HTTP ' + createResp.status + ' ' + (await createResp.text()).slice(0, 800) });
 			}
 			const createBody = await createResp.json();
 			const objectId = createBody.id;
@@ -101,7 +113,7 @@ func uploadImageToAMS(page *rod.Page, threadIDs []string, filename, mimeType, ba
 
 			const putResp = await fetch('https://%s/v1/objects/' + objectId + '/content/imgpsh', {
 				method: 'PUT',
-				headers: { authorization: 'Bearer ' + bearerToken, 'content-type': 'application/octet-stream' },
+				headers: Object.assign({ 'content-type': 'application/octet-stream' }, amsHeaders),
 				body: bytes,
 			});
 			if (!putResp.ok) {
@@ -111,7 +123,7 @@ func uploadImageToAMS(page *rod.Page, threadIDs []string, filename, mimeType, ba
 		} catch (e) {
 			return JSON.stringify({ error: String(e) });
 		}
-	}`, string(threadIDsJSON), teamsMediaHost, string(filenameJSON), string(base64JSON), teamsMediaHost)
+	}`, string(threadIDsJSON), teamsMediaClientVersion, teamsMediaHost, string(filenameJSON), string(base64JSON), teamsMediaHost)
 
 	res, evalErr := page.Eval(js)
 	if evalErr != nil {
