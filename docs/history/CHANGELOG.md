@@ -3,6 +3,11 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Teams Broadcast — Markdown enviado com estilo (Outubro 2026)
+
+- Teste ao vivo no chat "(You)": o Teams mantém `style` inline (`color`, `background-color`, `font-size`), tabelas coloridas, `<pre>`, `<blockquote>`, `<hr>` e listas; descarta `<style>`/`class`, `<font>`, `font-family`, `<div>` com borda/fundo e botão estilizado. `<h1>`–`<h3>` aparecem quase do tamanho do texto.
+- `markdownToTeamsHTML` agora gera: cabeçalho de tabela azul com texto branco, títulos com negrito + `font-size` (22/18/15 px), `---` → `<hr>`, bloco ``` → `<pre>` e `>` consecutivos → um único `<blockquote>`.
+
 ### Aviso de sessão do Azure CLI expirada (Outubro 2026)
 
 - `GET /api/v1/azure/session` (só leitura, cache de 60 s, `?refresh=1`): pede token do ARM e do Graph via `az` e classifica a falha (`login_required`, `cli_missing`, `error`) com o stderr do `az`. Nunca dispara `az login`.
