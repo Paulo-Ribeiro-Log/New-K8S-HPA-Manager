@@ -5233,6 +5233,11 @@ class APIClient {
     return this.request(`/teams/broadcast/templates/${encodeURIComponent(filename)}`);
   }
 
+  /** Apaga as imagens da pasta temporária de broadcast (chamado ao abrir "Link do Teams"). */
+  async clearTeamsBroadcastImages(): Promise<{ cleared: boolean }> {
+    return this.request("/teams/broadcast/images", { method: "DELETE" });
+  }
+
   async deleteBroadcastTemplate(filename: string): Promise<{ deleted: string }> {
     return this.request(`/teams/broadcast/templates/${encodeURIComponent(filename)}`, { method: "DELETE" });
   }
@@ -5279,9 +5284,9 @@ class APIClient {
    *  getNetDiscoveryStreamURL) de uma imagem salva na pasta temporária de broadcast do Teams.
    *  Resolve o esquema interno "teams-temp:<filename>" usado por FetchedMessage.text — ver
    *  MD_COMPONENTS.img em TeamsBroadcastTab.tsx. */
-  getTeamsBroadcastImageURL(filename: string): string {
+  getTeamsBroadcastImageURL(filename: string, version = 0): string {
     const token = localStorage.getItem("auth_token") ?? "";
-    return `/api/v1/teams/broadcast/images/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}`;
+    return `/api/v1/teams/broadcast/images/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}&v=${version}`;
   }
 
   async sendBroadcastMessage(payload: {

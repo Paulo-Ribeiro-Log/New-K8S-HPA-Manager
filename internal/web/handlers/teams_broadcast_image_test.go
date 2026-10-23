@@ -2,10 +2,14 @@ package handlers
 
 import (
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 
 	"k8s-hpa-manager/internal/teams"
 )
@@ -109,5 +113,37 @@ func TestResolveLocalImagePlaceholders_RejectsFilenameOutsideGeneratedFormat(t *
 	}
 	if !strings.Contains(got, "imagem indisponível") {
 		t.Errorf("esperava aviso de imagem indisponível, got: %s", got)
+	}
+}
+
+// TestClearBroadcastImages_RemovesAllFiles confirma que abrir "Link do Teams" deixa a pasta
+// temporária vazia (sem arquivos órfãos de mensagens anteriores).
+func TestClearBroadcastImages_RemovesAllFiles(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	dir, err := teams.ResetTeamsBroadcastImagesDir(homeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := teams.SaveTeamsBroadcastImage(dir, i, "image/png", []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	(&TeamsBroadcastHandler{}).ClearBroadcastImages(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("a pasta deveria continuar existindo: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("esperava pasta vazia, sobraram %d arquivo(s)", len(entries))
 	}
 }

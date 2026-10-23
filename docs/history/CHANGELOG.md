@@ -3,6 +3,15 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Teams Broadcast — reenvio de imagem pelo AMS (Outubro 2026)
+
+- O upload da imagem ao serviço de mídia (AMS) falhava com HTTP 400 ("platform id could not be created from … User-Agent") e o envio caía no fallback de data URI, que o Teams descarta: a mensagem chegava sem a imagem.
+- Captura do upload real (`scripts/teams-spy-upload`): o Teams Web usa o mesmo User-Agent do Chrome do app; o que faltava era `x-ms-client-version` (+ `x-ams-post-sharing-mode: Inline`, `x-ms-migration`, `x-ms-test-user`) e `sharingMode: "Inline"`. Corrigido em `internal/teams/media_upload.go`.
+- Cartões adaptativos (mensagens de bot) não têm `<img>` no DOM e não são reenviáveis como HTML: a importação de imagem só vale para mensagens comuns.
+- Se o AMS voltar a recusar o "platform id", `teamsMediaClientVersion` é o primeiro candidato a ter envelhecido.
+- A tag `<img>` do reenvio leva `width`/`height`/`style` com as dimensões reais; sem isso o Teams reservava uma moldura maior com fundo cinza.
+- Preview: o arquivo temporário é sempre `img-<n>.<ext>`, então a URL se repetia e mostrava a imagem da mensagem anterior (ou mantinha quebrado o `<img>` que deu 404). Abrir "Link do Teams" agora limpa a pasta (`DELETE /teams/broadcast/images`) e a URL do preview leva `&v=<n>`, incrementado a cada mensagem carregada.
+
 ### Teams Broadcast — Markdown enviado com estilo (Outubro 2026)
 
 - Teste ao vivo no chat "(You)": o Teams mantém `style` inline (`color`, `background-color`, `font-size`), tabelas coloridas, `<pre>`, `<blockquote>`, `<hr>` e listas; descarta `<style>`/`class`, `<font>`, `font-family`, `<div>` com borda/fundo e botão estilizado. `<h1>`–`<h3>` aparecem quase do tamanho do texto.

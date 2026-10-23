@@ -1927,6 +1927,7 @@ func (s *Server) setupRoutes() {
 		teamsGroup.GET("/broadcast/templates/:filename", broadcastHandler.GetTemplate)
 		teamsGroup.DELETE("/broadcast/templates/:filename", broadcastHandler.DeleteTemplate)
 		teamsGroup.POST("/broadcast/message/fetch", broadcastHandler.FetchMessage)
+		teamsGroup.DELETE("/broadcast/images", broadcastHandler.ClearBroadcastImages)
 		teamsGroup.POST("/broadcast/send", broadcastHandler.Send)
 		teamsGroup.POST("/broadcast/delete", broadcastHandler.DeleteMessages)
 		// SSE stream: EventSource não suporta headers → token via query param

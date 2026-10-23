@@ -1,9 +1,15 @@
 package teams
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"regexp"
+	"strings"
 
 	"github.com/go-rod/rod"
 	"github.com/rs/zerolog"
@@ -15,6 +21,10 @@ import (
 // pública documentada de descobrir esse host dinamicamente; se um upload falhar com erro de
 // rede/404 em outra conta, provavelmente é esse host que precisa mudar.
 const teamsMediaHost = "us-prod.asyncgw.teams.microsoft.com"
+
+// teamsMediaClientVersion é o x-ms-client-version enviado pelo Teams Web no upload (valor visto na
+// captura; se o AMS voltar a recusar o "platform id", é o primeiro candidato a ter envelhecido).
+const teamsMediaClientVersion = "1415/26100212017"
 
 // reDataURIImage casa uma tag "<img ... src="data:<mime>;base64,<dados>" ...>" já montada por
 // resolveLocalImagePlaceholders (internal/web/handlers/teams_broadcast.go) — usada por
@@ -60,8 +70,20 @@ func uploadImagesInHTML(page *rod.Page, html string, threadIDs []string, logger 
 		}
 		imageURL := fmt.Sprintf("https://%s/v1/objects/%s/views/imgpsh_fullsize", teamsMediaHost, objectID)
 		logger.Info().Str("object_id", objectID).Str("url", imageURL).Msg("[Sender] Imagem enviada pro AMS com sucesso — referenciando na mensagem")
-		return fmt.Sprintf(`<img itemid="%s" itemscope itemtype="http://schema.skype.com/AMSImage" src="%s" alt="%s">`, objectID, imageURL, alt)
+		return fmt.Sprintf(`<img%s itemid="%s" itemscope itemtype="http://schema.skype.com/AMSImage" src="%s" alt="%s">`, imageSizeAttrs(base64Data), objectID, imageURL, alt)
 	})
+}
+
+// imageSizeAttrs devolve ` width="W" height="H" style="…"` com as dimensões reais da imagem. Sem
+// isso o Teams não sabe a proporção e reserva uma moldura padrão maior que a imagem, com fundo
+// cinza em volta (visto ao vivo numa imagem larga e fina); a mensagem original traz a proporção
+// (aspect-ratio) no próprio <img>. Formato não reconhecido (ex.: webp) → string vazia, como antes.
+func imageSizeAttrs(base64Data string) string {
+	cfg, _, err := image.DecodeConfig(base64.NewDecoder(base64.StdEncoding, strings.NewReader(base64Data)))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(` width="%d" height="%d" style="vertical-align:bottom;width:%dpx;height:%dpx"`, cfg.Width, cfg.Height, cfg.Width, cfg.Height)
 }
 
 // uploadImageToAMS executa as 2 chamadas do protocolo de upload (ver comentário de
@@ -78,17 +100,25 @@ func uploadImageToAMS(page *rod.Page, threadIDs []string, filename, mimeType, ba
 
 	js := "async () => {\n" + teamsAuthExtractJS + fmt.Sprintf(`
 		const threadIDs = %s;
+		// Cabeçalhos do upload real do Teams Web (captura com scripts/teams-spy-upload): sem
+		// x-ms-client-version o AMS responde 400 "platform id could not be created from … User-Agent".
+		const amsHeaders = {
+			authorization: 'Bearer ' + bearerToken,
+			'x-ms-client-version': '%s',
+			'x-ms-migration': 'True',
+			'x-ms-test-user': 'False',
+		};
 		const permissions = {};
 		for (const id of threadIDs) permissions[id] = ['read'];
 
 		try {
 			const createResp = await fetch('https://%s/v1/objects/', {
 				method: 'POST',
-				headers: { authorization: 'Bearer ' + bearerToken, 'content-type': 'application/json' },
-				body: JSON.stringify({ filename: %s, permissions, sharingMode: 'Attached', type: 'pish/image' }),
+				headers: Object.assign({ 'content-type': 'application/json', 'accept': 'application/json', 'x-ams-post-sharing-mode': 'Inline' }, amsHeaders),
+				body: JSON.stringify({ filename: %s, permissions, sharingMode: 'Inline', type: 'pish/image' }),
 			});
 			if (!createResp.ok) {
-				return JSON.stringify({ error: 'create object failed: HTTP ' + createResp.status + ' ' + (await createResp.text()).slice(0, 200) });
+				return JSON.stringify({ error: 'create object failed: HTTP ' + createResp.status + ' ' + (await createResp.text()).slice(0, 800) });
 			}
 			const createBody = await createResp.json();
 			const objectId = createBody.id;
@@ -101,7 +131,7 @@ func uploadImageToAMS(page *rod.Page, threadIDs []string, filename, mimeType, ba
 
 			const putResp = await fetch('https://%s/v1/objects/' + objectId + '/content/imgpsh', {
 				method: 'PUT',
-				headers: { authorization: 'Bearer ' + bearerToken, 'content-type': 'application/octet-stream' },
+				headers: Object.assign({ 'content-type': 'application/octet-stream' }, amsHeaders),
 				body: bytes,
 			});
 			if (!putResp.ok) {
@@ -111,7 +141,7 @@ func uploadImageToAMS(page *rod.Page, threadIDs []string, filename, mimeType, ba
 		} catch (e) {
 			return JSON.stringify({ error: String(e) });
 		}
-	}`, string(threadIDsJSON), teamsMediaHost, string(filenameJSON), string(base64JSON), teamsMediaHost)
+	}`, string(threadIDsJSON), teamsMediaClientVersion, teamsMediaHost, string(filenameJSON), string(base64JSON), teamsMediaHost)
 
 	res, evalErr := page.Eval(js)
 	if evalErr != nil {

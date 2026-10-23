@@ -87,6 +87,11 @@ const teamsUrlTransform = (url: string): string => {
   return defaultUrlTransform(url);
 };
 
+// teamsImageLoadVersion muda a cada mensagem carregada por link. O backend grava sempre img-<n>.<ext>,
+// então sem isso a URL do preview se repete: o navegador mostra a imagem da mensagem anterior, ou
+// mantém quebrado o <img> que deu 404 enquanto a pasta estava vazia.
+let teamsImageLoadVersion = 0;
+
 // ── ReactMarkdown components com estilos distintos ────────────────────────────
 
 const MD_COMPONENTS: Components = {
@@ -174,7 +179,7 @@ const MD_COMPONENTS: Components = {
   img: ({ src, alt }) => {
     const resolvedSrc =
       typeof src === "string" && src.startsWith("teams-temp:")
-        ? apiClient.getTeamsBroadcastImageURL(src.slice("teams-temp:".length))
+        ? apiClient.getTeamsBroadcastImageURL(src.slice("teams-temp:".length), teamsImageLoadVersion)
         : src;
     return (
       <img
@@ -838,6 +843,7 @@ export const TeamsBroadcastTab = () => {
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [loadLinkOpen, setLoadLinkOpen] = useState(false);
+  const [, setImageLoadVersion] = useState(0);
   const [currentFilename, setCurrentFilename] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [sending, setSending] = useState(false);
@@ -1181,6 +1187,8 @@ export const TeamsBroadcastTab = () => {
         <button
           onClick={() => {
             if (isDirty && !window.confirm("Há alterações não salvas. Descartar e carregar mensagem via link do Teams?")) return;
+            // Limpa as imagens da mensagem anterior: a pasta só vale para a mensagem carregada.
+            apiClient.clearTeamsBroadcastImages().catch(() => {});
             setLoadLinkOpen(true);
           }}
           title="Carregar conteúdo a partir de um link de mensagem do Teams (Copiar link)"
@@ -1458,6 +1466,8 @@ export const TeamsBroadcastTab = () => {
         open={loadLinkOpen}
         onClose={() => setLoadLinkOpen(false)}
         onLoaded={(text, meta) => {
+          teamsImageLoadVersion += 1;
+          setImageLoadVersion(teamsImageLoadVersion); // refaz o preview mesmo se o texto não mudou
           setContent(text);
           // Backend agora converte o HTML da mensagem do Teams pra Markdown (negrito/itálico/
           // links/listas) em vez de innerText puro — mantém o modo Markdown (não mais Texto
