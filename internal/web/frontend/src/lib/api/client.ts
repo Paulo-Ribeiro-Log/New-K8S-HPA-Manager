@@ -133,6 +133,7 @@ import type {
   AccessCheckFleetScanResult,
   ClusterGroupsResult,
   AzureSessionStatus,
+  AzureLoginResult,
   GroupMembersResult,
   PortForwardSession,
   PortForwardPodPort,
@@ -3113,6 +3114,11 @@ class APIClient {
   // Sessão do Azure CLI do servidor (precisa de `az login`?)
   async getAzureSession(refresh = false): Promise<AzureSessionStatus> {
     return this.request(`/azure/session${refresh ? "?refresh=1" : ""}`);
+  }
+
+  // az login silencioso na subscription atual (abre o navegador do servidor; leva até ~3 min)
+  async azureLogin(): Promise<AzureLoginResult> {
+    return this.request("/azure/login", { method: "POST" });
   }
 
   // VPN Status Check

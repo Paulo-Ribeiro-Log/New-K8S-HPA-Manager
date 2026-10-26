@@ -12,8 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Estado da sessão do Azure CLI do processo do servidor. Só leitura: nunca dispara `az login`
-// (o login é interativo e o usuário o faz no terminal dele).
+// Estado da sessão do Azure CLI do processo do servidor. GET /azure/session só lê; o login só
+// roda quando o usuário pede (POST /azure/login, em azure_login.go).
 
 const (
 	azureSessionCacheTTL = 60 * time.Second
@@ -39,10 +39,13 @@ type AzureSessionHandler struct {
 	cached  AzureSessionStatus
 	expires time.Time
 	check   func(ctx context.Context) AzureSessionStatus
+
+	loginMu sync.Mutex
+	run     azRun
 }
 
 func NewAzureSessionHandler() *AzureSessionHandler {
-	return &AzureSessionHandler{check: checkAzureSession}
+	return &AzureSessionHandler{check: checkAzureSession, run: runAz}
 }
 
 // GetSession devolve o estado da sessão do `az` (cache de 60 s; ?refresh=1 força nova checagem).

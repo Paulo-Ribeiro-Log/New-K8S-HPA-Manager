@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle, LogIn, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { apiClient } from "@/lib/api/client";
 import { Button } from "./ui/button";
 import { CopyValue } from "./CopyValue";
+import { toast } from "sonner";
 
 const RECHECK_MS = 5 * 60 * 1000;
 
@@ -18,6 +19,7 @@ const TITLES: Record<string, string> = {
 export function AzureSessionBanner() {
   const queryClient = useQueryClient();
   const [checking, setChecking] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
   const { data } = useQuery({
     queryKey: ["azure-session"],
     queryFn: () => apiClient.getAzureSession(),
@@ -36,6 +38,22 @@ export function AzureSessionBanner() {
       queryClient.setQueryData(["azure-session"], fresh);
     } finally {
       setChecking(false);
+    }
+  };
+
+  // az login na subscription atual, sem o seletor do terminal; a janela de login abre no
+  // navegador da máquina do servidor e a chamada só volta quando o login termina.
+  const silentLogin = async () => {
+    setLoggingIn(true);
+    try {
+      const res = await apiClient.azureLogin();
+      queryClient.setQueryData(["azure-session"], res);
+      if (res.ok) toast.success(`Login do Azure feito${res.subscription ? ` (${res.subscription})` : ""}`);
+      else toast.error("Login concluído, mas a sessão ainda não está válida");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha no login do Azure");
+    } finally {
+      setLoggingIn(false);
     }
   };
 
@@ -66,10 +84,19 @@ export function AzureSessionBanner() {
             )}
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={recheck} disabled={checking} className="flex-shrink-0 border-amber-500/30 hover:bg-amber-500/10">
-          <RefreshCw className={`w-4 h-4 mr-2 ${checking ? "animate-spin" : ""}`} />
-          {checking ? "Verificando..." : "Verificar novamente"}
-        </Button>
+        <div className="flex flex-col gap-2 flex-shrink-0">
+          {reason !== "cli_missing" && (
+            <Button size="sm" onClick={silentLogin} disabled={loggingIn || checking}
+              title="Roda az login no tenant da subscription atual e volta a selecioná-la, sem o seletor do terminal">
+              <LogIn className="w-4 h-4 mr-2" />
+              {loggingIn ? "Aguardando login no navegador..." : "Login silencioso"}
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={recheck} disabled={checking || loggingIn} className="border-amber-500/30 hover:bg-amber-500/10">
+            <RefreshCw className={`w-4 h-4 mr-2 ${checking ? "animate-spin" : ""}`} />
+            {checking ? "Verificando..." : "Verificar novamente"}
+          </Button>
+        </div>
       </div>
     </div>
   );

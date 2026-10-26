@@ -1771,6 +1771,7 @@ func (s *Server) setupRoutes() {
 	// Sessão do Azure CLI do servidor (expirou? precisa de `az login`?) — só leitura, com cache
 	azureSessionHandler := handlers.NewAzureSessionHandler()
 	api.GET("/azure/session", azureSessionHandler.GetSession)
+	api.POST("/azure/login", azureSessionHandler.Login) // login silencioso (subscription atual)
 
 	// Alerts (Prometheus Alertmanager Integration)
 	alertsHandler := handlers.NewAlertsHandler()
