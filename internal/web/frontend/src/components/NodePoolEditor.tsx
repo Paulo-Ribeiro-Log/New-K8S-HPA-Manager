@@ -831,7 +831,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                           size="sm"
                           className="h-4 w-4 p-0 shrink-0"
                           onClick={() => {
-                            navigator.clipboard.writeText(key);
+                            // key=value; se a label tem valores diferentes entre os nodes, uma linha por valor
+                            const text = Array.from(values).map(v => `${key}=${v}`).join('\n');
+                            navigator.clipboard.writeText(text);
                             toast.success(`Label ${key} copiada!`);
                           }}
                         >
