@@ -267,9 +267,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifacts (retenção 90 dias)
+      - name: Upload artifacts (retenção 1 dia; os binários ficam na release)
         uses: actions/upload-artifact@v4
         with:
           name: new-k8s-hpa-${{ needs.version.outputs.version }}
           path: build/release/*
-          retention-days: 90
+          retention-days: 1
