@@ -3726,3 +3726,7 @@ export interface AzureSessionStatus {
   detail?: string;
   checkedAt: string;
 }
+
+export interface AzureLoginResult extends AzureSessionStatus {
+  subscription?: string;
+}
