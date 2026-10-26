@@ -332,6 +332,7 @@ interface OpenTab {
   currentContent: string;
   savedContent: string;
   repoId: string;
+  deleted?: boolean; // arquivo removido do disco/árvore com a aba ainda aberta
 }
 
 // ─── Toast ─────────────────────────────────────────────────────────────────
@@ -2462,6 +2463,38 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   }
 
   const activeTab = openTabs[activeTabIdx] ?? null;
+
+  // Aba cujo arquivo sumiu da árvore (apagado por fora, pelo terminal, git…) fica marcada
+  // como deletada. Só vale para caminhos que estavam na árvore anterior: a árvore omite
+  // pastas ignoradas e corta por profundidade, então "ausente" sozinho daria falso positivo.
+  const prevTreeRef = useRef<{ repoId: string; paths: Set<string> } | null>(null);
+  useEffect(() => {
+    const repoId = selectedRepo?.id;
+    if (!repoId) { prevTreeRef.current = null; return; }
+    const paths = new Set(flattenTree(tree).map(n => n.path));
+    const prev = prevTreeRef.current;
+    prevTreeRef.current = { repoId, paths };
+    if (!prev || prev.repoId !== repoId || tree.length === 0) return;
+    setOpenTabs(old => {
+      let changed = false;
+      const next = old.map(t => {
+        if (t.repoId !== repoId || t.node.path.startsWith("__k8s_virtual__/")) return t;
+        const gone = prev.paths.has(t.node.path) && !paths.has(t.node.path);
+        const back = !!t.deleted && paths.has(t.node.path);
+        if (gone && !t.deleted) { changed = true; return { ...t, deleted: true }; }
+        if (back) { changed = true; return { ...t, deleted: false }; }
+        return t;
+      });
+      return changed ? next : old;
+    });
+  }, [tree]);
+
+  // Marca como deletadas as abas do caminho (ou de dentro dele, se for pasta).
+  function markTabsDeleted(path: string) {
+    setOpenTabs(prev => prev.map(t =>
+      t.repoId === selectedRepoIdRef.current && (t.node.path === path || t.node.path.startsWith(path + "/"))
+        ? { ...t, deleted: true } : t));
+  }
   const isModified = activeTab ? activeTab.currentContent !== activeTab.savedContent : false;
   const modifiedPaths = useMemo(() => new Set((status?.files ?? []).map(f => f.path)), [status]);
   const gitFileStatusMap = new Map((status?.files ?? []).map(f => [f.path, f.status]));
@@ -2793,7 +2826,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       }
       setOpenTabs(prev => prev.map((t, i) =>
         i === tabIdx && t.node.path === tabPath
-          ? { ...t, currentContent: contentToSave, savedContent: contentToSave }
+          ? { ...t, currentContent: contentToSave, savedContent: contentToSave, deleted: false }
           : t
       ));
       await loadStatus(tabRepoId);
@@ -2878,9 +2911,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     if (!await showConfirm(`Deletar "${node.path}"?`)) return;
     try {
       await apiClient.codeEditorDeleteFile(selectedRepo.id, node.path);
-      // Fechar a aba se estiver aberta
-      const tabIdx = openTabs.findIndex(t => t.node.path === node.path);
-      if (tabIdx >= 0) closeTab(tabIdx);
+      // A aba (ou as de dentro da pasta) continua aberta, marcada como deletada
+      markTabsDeleted(node.path);
       await loadTree(selectedRepo.id);
       await loadStatus(selectedRepo.id);
       addToast("success", `Deletado: ${node.name}`);
@@ -3000,11 +3032,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     for (const p of paths) {
       try {
         await apiClient.codeEditorDeleteFile(selectedRepo.id, p);
-        const tabIdx = openTabs.findIndex(t => t.node.path === p);
-        if (tabIdx >= 0) {
-          setOpenTabs(prev => prev.filter((_, i) => i !== tabIdx));
-          if (activeTabIdx >= openTabs.length - 1) setActiveTabIdx(Math.max(0, openTabs.length - 2));
-        }
+        markTabsDeleted(p);
       } catch { /* continua */ }
     }
     setSelectedPaths(new Set());
@@ -4802,12 +4830,13 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                 return (
                   <div
                     key={`${tab.repoId}/${tab.node.path}`}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-border/30 cursor-pointer flex-shrink-0 group ${idx === activeTabIdx ? "bg-background border-b-2 border-b-primary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted/30"}`}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-border/30 cursor-pointer flex-shrink-0 group ${tab.deleted ? "text-yellow-400" : idx === activeTabIdx ? "text-foreground" : "text-muted-foreground hover:text-foreground"} ${idx === activeTabIdx ? "bg-background border-b-2 border-b-primary" : "hover:bg-muted/30"}`}
+                    title={tab.deleted ? "Arquivo deletado — salvar (Ctrl+S) o recria" : undefined}
                     onClick={() => setActiveTabIdx(idx)}
                     style={{ borderBottom: idx === activeTabIdx ? "2px solid hsl(var(--primary))" : undefined }}
                   >
                     <File className="w-3 h-3 flex-shrink-0" />
-                    <span className="truncate max-w-32">{tab.node.name}</span>
+                    <span className={`truncate max-w-32 ${tab.deleted ? "line-through" : ""}`}>{tab.node.name}</span>
                     {unsaved && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
                     <button
                       onClick={e => { e.stopPropagation(); closeTab(idx); }}
@@ -5025,12 +5054,12 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                           return (
                             <div
                               key={`split-${tab.repoId}/${tab.node.path}`}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-border/30 cursor-pointer flex-shrink-0 group ${idx === rightTabIdx ? "bg-background border-b-2 border-b-primary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted/30"}`}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-border/30 cursor-pointer flex-shrink-0 group ${tab.deleted ? "text-yellow-400" : idx === rightTabIdx ? "text-foreground" : "text-muted-foreground hover:text-foreground"} ${idx === rightTabIdx ? "bg-background border-b-2 border-b-primary" : "hover:bg-muted/30"}`}
                               style={{ borderBottom: idx === rightTabIdx ? "2px solid hsl(var(--primary))" : undefined }}
                               onClick={e => { e.stopPropagation(); setRightTabIdx(idx); setFocusedPane("right"); }}
                             >
                               <File className="w-3 h-3 flex-shrink-0" />
-                              <span className="truncate max-w-32">{tab.node.name}</span>
+                              <span className={`truncate max-w-32 ${tab.deleted ? "line-through" : ""}`}>{tab.node.name}</span>
                               {unsaved && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 flex-shrink-0" />}
                             </div>
                           );

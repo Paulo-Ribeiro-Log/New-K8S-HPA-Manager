@@ -3,6 +3,12 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — aba de arquivo deletado (Outubro 2026)
+
+- Arquivo apagado com a aba aberta (pela árvore, seleção múltipla, pasta, terminal ou git) agora fica na barra de abas em amarelo com o nome riscado, como no VS Code, em vez de sumir ou parecer normal.
+- Deleção pela árvore/pasta marca na hora; deleção por fora é detectada pela atualização da árvore, só para caminhos que estavam nela antes (a árvore omite pastas ignoradas e corta por profundidade).
+- Salvar a aba (Ctrl+S) recria o arquivo e tira a marca; se o arquivo reaparecer na árvore, a marca some.
+
 ### Teams Broadcast — reenvio de imagem pelo AMS (Outubro 2026)
 
 - O upload da imagem ao serviço de mídia (AMS) falhava com HTTP 400 ("platform id could not be created from … User-Agent") e o envio caía no fallback de data URI, que o Teams descarta: a mensagem chegava sem a imagem.
