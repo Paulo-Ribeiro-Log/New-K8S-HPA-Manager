@@ -277,6 +277,16 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	c.JSON(result.status, result.body)
 }
 
+// refreshNodePools atualiza o registry de node pools do cluster a partir dos nodes ao vivo.
+func (h *FinOpsHandler) refreshNodePools(ctx context.Context, cluster string) {
+	if h.npRegistryStore == nil {
+		return
+	}
+	if _, _, err := refreshNodePoolRegistry(ctx, h.kubeManager, h.npRegistryStore, cluster); err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("FinOps: não consegui atualizar os node pools ao vivo; usando o registry salvo")
+	}
+}
+
 // doGetReport é o trabalho de verdade de GetReport, extraído pra rodar atrás do singleflight —
 // ver comentário de GetReport/reportSF. Retorna (status HTTP, corpo) em vez de escrever direto no
 // gin.Context, porque múltiplas requisições concorrentes deduplicadas compartilham esta MESMA
@@ -332,6 +342,9 @@ func (h *FinOpsHandler) doGetReport(
 		}
 	}
 
+	// O registry só é reescrito no scan de node pools; sem reler os nodes aqui, trocar nome ou
+	// família de um node pool não aparecia na análise. Best-effort: se falhar, usa o que já há.
+	h.refreshNodePools(ctx, cluster)
 	// Buscar node pools do cluster no registry
 	pools, err := h.npRegistryStore.GetAll(cluster)
 	if err != nil {

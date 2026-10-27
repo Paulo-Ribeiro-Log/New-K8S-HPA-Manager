@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -65,116 +66,12 @@ func (h *NodePoolRegistryHandler) Scan(c *gin.Context) {
 		}
 
 		res := scanResult{Cluster: clusterName}
-
-		client, err := h.kubeManager.GetClient(clusterName)
+		scanned, inserted, err := refreshNodePoolRegistry(c.Request.Context(), h.kubeManager, h.store, clusterName)
+		res.Scanned, res.Inserted = scanned, inserted
 		if err != nil {
-			res.Error = fmt.Sprintf("falha ao obter client: %v", err)
-			log.Warn().Str("cluster", clusterName).Err(err).Msg("NodePoolRegistry: falha ao obter client")
-			results = append(results, res)
-			continue
+			res.Error = err.Error()
 		}
-
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-		nodeList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-		cancel()
-		if err != nil {
-			res.Error = fmt.Sprintf("falha ao listar nodes: %v", err)
-			log.Warn().Str("cluster", clusterName).Err(err).Msg("NodePoolRegistry: falha ao listar nodes")
-			results = append(results, res)
-			continue
-		}
-
-		res.Scanned = len(nodeList.Items)
-
-		// Agregar por node pool
-		type poolInfo struct {
-			count      int
-			vmSize     string
-			osSku      string
-			mode       string
-			diskSizeGB int32
-			diskType   string
-		}
-		pools := map[string]*poolInfo{}
-
-		for _, node := range nodeList.Items {
-			labels := node.Labels
-			// nodePoolLabel (nodepools_snat.go) já cobre AKS/EKS/GKE — antes daqui só existia o
-			// label AKS + fallback de nome de nó AKS, então nós GKE/EKS (sem
-			// kubernetes.azure.com/agentpool) nunca eram reconhecidos e eram descartados em
-			// silêncio (nenhum erro, só node_count=0 pools=0 pro cluster inteiro).
-			poolName := nodePoolLabel(labels)
-			if poolName == "default" {
-				// nodePoolLabel não reconheceu nenhum label conhecido — tenta o fallback
-				// histórico específico de AKS (nome do nó no padrão aks-<pool>-<digits>-vmss*)
-				// antes de aceitar "default" como nome genérico, preservando o comportamento
-				// anterior pra esse caso.
-				if fromName := extractNodePoolFromName(node.Name); fromName != "" {
-					poolName = fromName
-				}
-			}
-
-			if _, ok := pools[poolName]; !ok {
-				pools[poolName] = &poolInfo{
-					vmSize: labels["node.kubernetes.io/instance-type"],
-					osSku:  labels["kubernetes.azure.com/os-sku"],
-					mode:   labels["kubernetes.azure.com/mode"],
-				}
-			}
-			pools[poolName].count++
-		}
-
-		// GKE não expõe o tamanho/tipo do disco de boot via label de node nenhum (diferente da
-		// Azure, que tem kubernetes.azure.com/os-disk-size-gb) — só a Container API do GKE sabe
-		// disso (NodePool.config.diskSizeGb/diskType). Enriquece via NodeGroupProvider, mesmo
-		// caminho de auth já usado por Node Pools/SNAT/predictions, sem custo extra pra AKS/EKS
-		// (só chamado quando o context é GKE).
-		if strings.HasPrefix(clusterName, "gke_") {
-			if provider := h.kubeManager.GetNodeGroupProvider(clusterName); provider != nil {
-				// ctx acima já foi cancelado logo após o List de nodes (cancel() na linha de cima)
-				// — precisa de um context novo pra esta chamada.
-				diskCtx, diskCancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
-				gkePools, gkeErr := provider.ListNodeGroups(diskCtx, clusterName)
-				diskCancel()
-				if gkeErr != nil {
-					log.Warn().Str("cluster", clusterName).Err(gkeErr).Msg("NodePoolRegistry: falha ao buscar disco via Container API (GKE)")
-				}
-				for _, gp := range gkePools {
-					if info, ok := pools[gp.Name]; ok {
-						info.diskSizeGB = gp.DiskSizeGB
-						info.diskType = gp.DiskType
-					}
-				}
-			}
-		}
-
-		// Limpar entries antigas do cluster antes de inserir novas
-		if len(pools) > 0 {
-			if err := h.store.DeleteByCluster(clusterName); err != nil {
-				log.Warn().Str("cluster", clusterName).Err(err).Msg("NodePoolRegistry: falha ao deletar entries antigas")
-			}
-		}
-
-		now := time.Now().UTC()
-		for poolName, info := range pools {
-			entry := storage.NodePoolRegistryEntry{
-				Cluster:     clusterName,
-				NodePool:    poolName,
-				NodeCount:   info.count,
-				VMSize:      info.vmSize,
-				OSSku:       info.osSku,
-				Mode:        strings.Title(strings.ToLower(info.mode)),
-				DiskSizeGB:  int(info.diskSizeGB),
-				DiskType:    info.diskType,
-				LastScanned: now,
-			}
-			if err := h.store.Upsert(entry); err != nil {
-				log.Warn().Str("cluster", clusterName).Str("pool", poolName).Err(err).Msg("NodePoolRegistry: falha ao upsert")
-				continue
-			}
-			res.Inserted++
-			totalInserted++
-		}
+		totalInserted += inserted
 
 		results = append(results, res)
 	}
@@ -184,6 +81,124 @@ func (h *NodePoolRegistryHandler) Scan(c *gin.Context) {
 		"total_inserted": totalInserted,
 		"scanned_at":     time.Now().UTC(),
 	})
+}
+
+// nodePoolAgg é o resumo de um node pool a partir dos nodes ao vivo.
+type nodePoolAgg struct {
+	count      int
+	vmSize     string
+	osSku      string
+	mode       string
+	diskSizeGB int32
+	diskType   string
+}
+
+// aggregateNodePools agrupa os nodes por node pool (nome vem dos labels do node).
+func aggregateNodePools(nodes []corev1.Node) map[string]*nodePoolAgg {
+	pools := map[string]*nodePoolAgg{}
+
+	for _, node := range nodes {
+		labels := node.Labels
+		// nodePoolLabel (nodepools_snat.go) já cobre AKS/EKS/GKE — antes daqui só existia o
+		// label AKS + fallback de nome de nó AKS, então nós GKE/EKS (sem
+		// kubernetes.azure.com/agentpool) nunca eram reconhecidos e eram descartados em
+		// silêncio (nenhum erro, só node_count=0 pools=0 pro cluster inteiro).
+		poolName := nodePoolLabel(labels)
+		if poolName == "default" {
+			// nodePoolLabel não reconheceu nenhum label conhecido — tenta o fallback
+			// histórico específico de AKS (nome do nó no padrão aks-<pool>-<digits>-vmss*)
+			// antes de aceitar "default" como nome genérico, preservando o comportamento
+			// anterior pra esse caso.
+			if fromName := extractNodePoolFromName(node.Name); fromName != "" {
+				poolName = fromName
+			}
+		}
+
+		if _, ok := pools[poolName]; !ok {
+			pools[poolName] = &nodePoolAgg{
+				vmSize: labels["node.kubernetes.io/instance-type"],
+				osSku:  labels["kubernetes.azure.com/os-sku"],
+				mode:   labels["kubernetes.azure.com/mode"],
+			}
+		}
+		pools[poolName].count++
+	}
+	return pools
+}
+
+// refreshNodePoolRegistry relê os nodes do cluster e reescreve o registry dele (nome, VM size,
+// quantidade por node pool). Usado pelo Scan e pelas análises do FinOps, que precisam do estado
+// atual — sem isso, trocar nome/família de um node pool não aparecia até o próximo scan manual.
+func refreshNodePoolRegistry(ctx context.Context, km *config.KubeConfigManager, store *storage.NodePoolRegistryStore, clusterName string) (scanned, inserted int, err error) {
+	client, err := km.GetClient(clusterName)
+	if err != nil {
+		log.Warn().Str("cluster", clusterName).Err(err).Msg("NodePoolRegistry: falha ao obter client")
+		return 0, 0, fmt.Errorf("falha ao obter client: %v", err)
+	}
+
+	listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	nodeList, err := client.CoreV1().Nodes().List(listCtx, metav1.ListOptions{})
+	cancel()
+	if err != nil {
+		log.Warn().Str("cluster", clusterName).Err(err).Msg("NodePoolRegistry: falha ao listar nodes")
+		return 0, 0, fmt.Errorf("falha ao listar nodes: %v", err)
+	}
+
+	scanned = len(nodeList.Items)
+
+	pools := aggregateNodePools(nodeList.Items)
+
+	// GKE não expõe o tamanho/tipo do disco de boot via label de node nenhum (diferente da
+	// Azure, que tem kubernetes.azure.com/os-disk-size-gb) — só a Container API do GKE sabe
+	// disso (NodePool.config.diskSizeGb/diskType). Enriquece via NodeGroupProvider, mesmo
+	// caminho de auth já usado por Node Pools/SNAT/predictions, sem custo extra pra AKS/EKS
+	// (só chamado quando o context é GKE).
+	if strings.HasPrefix(clusterName, "gke_") {
+		if provider := km.GetNodeGroupProvider(clusterName); provider != nil {
+			// ctx acima já foi cancelado logo após o List de nodes (cancel() na linha de cima)
+			// — precisa de um context novo pra esta chamada.
+			diskCtx, diskCancel := context.WithTimeout(ctx, 15*time.Second)
+			gkePools, gkeErr := provider.ListNodeGroups(diskCtx, clusterName)
+			diskCancel()
+			if gkeErr != nil {
+				log.Warn().Str("cluster", clusterName).Err(gkeErr).Msg("NodePoolRegistry: falha ao buscar disco via Container API (GKE)")
+			}
+			for _, gp := range gkePools {
+				if info, ok := pools[gp.Name]; ok {
+					info.diskSizeGB = gp.DiskSizeGB
+					info.diskType = gp.DiskType
+				}
+			}
+		}
+	}
+
+	// Limpar entries antigas do cluster antes de inserir novas
+	if len(pools) > 0 {
+		if err := store.DeleteByCluster(clusterName); err != nil {
+			log.Warn().Str("cluster", clusterName).Err(err).Msg("NodePoolRegistry: falha ao deletar entries antigas")
+		}
+	}
+
+	now := time.Now().UTC()
+	for poolName, info := range pools {
+		entry := storage.NodePoolRegistryEntry{
+			Cluster:     clusterName,
+			NodePool:    poolName,
+			NodeCount:   info.count,
+			VMSize:      info.vmSize,
+			OSSku:       info.osSku,
+			Mode:        strings.Title(strings.ToLower(info.mode)),
+			DiskSizeGB:  int(info.diskSizeGB),
+			DiskType:    info.diskType,
+			LastScanned: now,
+		}
+		if err := store.Upsert(entry); err != nil {
+			log.Warn().Str("cluster", clusterName).Str("pool", poolName).Err(err).Msg("NodePoolRegistry: falha ao upsert")
+			continue
+		}
+		inserted++
+	}
+	return scanned, inserted, nil
 }
 
 // Lookup dado um nome de entidade Dynatrace (ex: "aks-nodepool1-12345678-vmss000000"),

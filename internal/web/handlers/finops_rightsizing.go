@@ -289,6 +289,9 @@ func (h *FinOpsHandler) doScanRightsizing(ctx context.Context, cluster string, w
 		return http.StatusBadRequest, gin.H{"error": "Nenhuma fonte de métricas disponível (Dynatrace não configurado e " + promReason + ") — rightsizing exige uso real histórico."}
 	}
 
+	// O registry só é reescrito no scan de node pools; sem reler os nodes aqui, trocar nome ou
+	// família de um node pool não aparecia na análise. Best-effort: se falhar, usa o que já há.
+	h.refreshNodePools(ctx, cluster)
 	pools, err := h.npRegistryStore.GetAll(cluster)
 	if err != nil {
 		return http.StatusInternalServerError, gin.H{"error": "Falha ao buscar node pools: " + err.Error()}
