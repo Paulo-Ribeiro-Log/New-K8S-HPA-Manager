@@ -172,28 +172,25 @@ export function DashboardTab({ cluster, report, provider }: { cluster: string; r
         {/* Custo/mês */}
         <Card className="col-span-1">
           <CardContent className="p-3">
-            <p className="text-[10px] text-muted-foreground">
-              {(summary.total_with_storage_brl ?? 0) > 0 ? "Compute/mês" : "Custo/mês"}{effective ? " (efetivo)" : ""}
-            </p>
-            <p className="text-lg font-bold text-blue-600 leading-tight">{fmtBRL(summary.total_monthly_cost_brl)}</p>
             {(summary.total_with_storage_brl ?? 0) > 0 ? (
               <>
-                {/* Bug real corrigido — crash "Cannot read properties of undefined (reading
-                    'toLocaleString')": total_with_storage_brl = compute + storage_monthly_cost_brl
-                    (PVC) + os_disk_cost_brl (disco OS dos nodes, quase sempre > 0). Um cluster sem
-                    NENHUM PVC (storage_monthly_cost_brl genuinamente 0 → omitido do JSON por
-                    `omitempty`) ainda tem total_with_storage_brl > 0 só pelo disco OS — a condição
-                    acima então entrava neste branch com storage_monthly_cost_brl undefined, e o
-                    `!` do TypeScript não protege nada em runtime. Corrigido guardando esta linha
-                    pelo PRÓPRIO campo, não pelo de total — some quando não há custo de PVC real,
-                    "Total" abaixo continua mostrando compute+disco OS normalmente. */}
+                {/* Total do cluster em destaque: total_with_storage_brl = compute + PVC (storage) +
+                    disco OS dos nodes. Compute e storage ficam abaixo, em letra menor. O storage é
+                    guardado pelo próprio campo: sem PVC o campo é omitido do JSON (omitempty) e o
+                    `!` do TypeScript não protege em runtime (crash em toLocaleString). */}
+                <p className="text-[10px] text-muted-foreground">Total/mês{effective ? " (efetivo)" : ""}</p>
+                <p className="text-lg font-bold text-blue-600 leading-tight">{fmtBRL(summary.total_with_storage_brl!)}</p>
+                <p className="text-[10px] text-muted-foreground">Compute: {fmtBRL(summary.total_monthly_cost_brl)}</p>
                 {(summary.storage_monthly_cost_brl ?? 0) > 0 && (
                   <p className="text-[10px] text-purple-500 font-medium">+{fmtBRL(summary.storage_monthly_cost_brl ?? 0)} storage</p>
                 )}
-                <p className="text-[10px] text-muted-foreground">Total: <strong>{fmtBRL(summary.total_with_storage_brl!)}</strong></p>
               </>
             ) : (
-              <p className="text-[10px] text-muted-foreground">{fmtUSD(summary.total_monthly_cost_usd)}</p>
+              <>
+                <p className="text-[10px] text-muted-foreground">Total/mês{effective ? " (efetivo)" : ""}</p>
+                <p className="text-lg font-bold text-blue-600 leading-tight">{fmtBRL(summary.total_monthly_cost_brl)}</p>
+                <p className="text-[10px] text-muted-foreground">{fmtUSD(summary.total_monthly_cost_usd)}</p>
+              </>
             )}
             {effective && (
               <p className="text-[10px] text-muted-foreground" title="Pools com cobertura do Cost Management pelo custo efetivo (reserva/Savings Plan); demais pools e discos em preço de tabela">
