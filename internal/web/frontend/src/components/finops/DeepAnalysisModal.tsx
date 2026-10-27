@@ -339,7 +339,7 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
 
   return (
     <Dialog open onOpenChange={v => !v && onClose()}>
-      <DialogContent className="max-w-7xl max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-7xl max-h-[92vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base flex-wrap">
             <Microscope className="h-4 w-4 text-indigo-500" />
@@ -385,7 +385,7 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
         )}
 
         {data && ov && al && ds && (
-          <div className="space-y-3">
+          <>
             {data.warnings.length > 0 && (
               <Alert>
                 <AlertTriangle className="h-4 w-4" />
@@ -395,7 +395,7 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
               </Alert>
             )}
 
-            <div className="flex gap-1 border-b overflow-x-auto">
+            <div className="flex gap-1 border-b overflow-x-auto flex-shrink-0">
               {sections.map(s => (
                 <button
                   key={s.id}
@@ -408,6 +408,10 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
               ))}
             </div>
 
+            {/* Só o conteúdo rola: título, controles e abas ficam fixos, e o cabeçalho das tabelas
+                (sticky) fica preso no topo desta área. O wrapper overflow-auto do Table do shadcn
+                viraria o contêiner do sticky, então aqui ele deixa de rolar. */}
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-3 [&_div.relative.w-full.overflow-auto]:overflow-visible [&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:z-10 [&_thead_th]:bg-muted [&_thead_th]:text-foreground [&_thead_th]:font-semibold [&_thead_th]:text-xs [&_thead_th]:uppercase [&_thead_th]:tracking-wide [&_thead_th]:border-b-2 [&_thead_th]:border-indigo-500/60 [&_thead_th]:h-10">
             {section === "summary" && (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
@@ -632,7 +636,8 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
                 <SimulationTable sims={data.simulation} coverage={ov.coverage} />
               </div>
             )}
-          </div>
+            </div>
+          </>
         )}
       </DialogContent>
     </Dialog>
