@@ -3,6 +3,12 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### FinOps — node pool alterado aparece na análise (Outubro 2026)
+
+- A análise (e o scan de rightsizing) lia os node pools do registry (`nodepool_registry.db`), que só era reescrito pelo scan manual da aba Dynatrace; renomear um node pool ou trocar a família da VM não aparecia (ex.: `calculofrete` → `calculofret2`).
+- Agora `GET /finops/report` e o scan de rightsizing releem os nodes ao vivo (`refreshNodePoolRegistry`, extraída do `Scan`) antes de montar o relatório. Se a releitura falhar, usam o registry salvo e logam o aviso.
+- O relatório em cache (`/finops/report/last`) continua sendo o da última análise: é preciso clicar em "Analisar" de novo.
+
 ### Code Editor — aba de arquivo deletado (Outubro 2026)
 
 - Arquivo apagado com a aba aberta (pela árvore, seleção múltipla, pasta, terminal ou git) agora fica na barra de abas em amarelo com o nome riscado, como no VS Code, em vez de sumir ou parecer normal.
