@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { AlertTriangle, CheckCircle2, Copy, Loader2, Plus, Trash2 } from "lucide-react";
+import { PrometheusHelmHistory } from "@/components/PrometheusHelmHistory";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { copyText } from "@/lib/clipboard";
@@ -45,12 +46,30 @@ interface Row extends Toleration {
 
 interface SelRow { id: number; key: string; value: string }
 
+/** Requests/limits de um componente; campo vazio = não mexe (o --reuse-values mantém o que o release já tem). */
+export interface Res { cpuReq: string; cpuLim: string; memReq: string; memLim: string }
+const emptyRes = (): Res => ({ cpuReq: "", cpuLim: "", memReq: "", memLim: "" });
+const RES_FIELDS: { key: keyof Res; label: string; cpu: boolean }[] = [
+  { key: "cpuReq", label: "CPU request", cpu: true },
+  { key: "cpuLim", label: "CPU limit", cpu: true },
+  { key: "memReq", label: "Mem request", cpu: false },
+  { key: "memLim", label: "Mem limit", cpu: false },
+];
+// Quantidade do Kubernetes: 500m, 2, 1.5, 512Mi, 4Gi, 4G…
+const reQuantity = /^[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$/;
+const validQty = (v: string) => v.trim() === "" || reQuantity.test(v.trim());
+const resFilled = (r: Res | undefined) => !!r && Object.values(r).some((v) => v.trim() !== "");
+
 /** Ponto de partida vindo de uma correção de agendamento do relatório do WAL. */
 export interface HelmInitial {
   tolerations: { key?: string; operator?: string; value?: string; effect?: string }[];
   nodeSelector: Record<string, string>;
   /** nodeSelector vazio na correção = remover o seletor atual. */
   removeSelector: boolean;
+  /** Requests/limits já preenchidos por componente (ex.: o memory limit sugerido pelo diagnóstico). */
+  resources?: Record<string, Partial<Res>>;
+  /** Componentes marcados ao abrir (padrão: só o Prometheus, no ponto de partida). */
+  components?: string[];
 }
 
 // Opções prontas: o taint do pool dedicado do Prometheus e o do pool spot do AKS.
@@ -88,7 +107,7 @@ const asToleration = (t: HelmInitial["tolerations"][number]): Toleration => ({
 // Monta o override de values: strings sempre entre aspas (JSON é YAML válido), sem value quando o operador é Exists.
 // O nodeSelector vai para todos os componentes marcados (no chart ele fica ao lado das tolerations); `null` remove o
 // seletor que o release já tem.
-function buildOverrideYaml(tols: Toleration[], components: string[], selector: Record<string, string>, removeSelector: boolean): string {
+function buildOverrideYaml(tols: Toleration[], components: string[], selector: Record<string, string>, removeSelector: boolean, resources: Record<string, Res>): string {
   const items = tols.map((t) => {
     const lines = [`- key: ${JSON.stringify(t.key)}`, `  operator: ${t.operator}`];
     if (t.operator === "Equal") lines.push(`  value: ${JSON.stringify(t.value)}`);
@@ -99,7 +118,9 @@ function buildOverrideYaml(tols: Toleration[], components: string[], selector: R
   for (const c of COMPONENTS.filter((c) => components.includes(c.id))) {
     const selKeys = Object.keys(selector);
     const nullSel = removeSelector && selKeys.length === 0;
-    if (items.length === 0 && selKeys.length === 0 && !nullSel) continue;
+    const res = resources[c.id];
+    const hasRes = resFilled(res);
+    if (items.length === 0 && selKeys.length === 0 && !nullSel && !hasRes) continue;
     c.path.forEach((seg, i) => out.push(`${"  ".repeat(i)}${seg}:`));
     const base = "  ".repeat(c.path.length);
     if (items.length > 0) {
@@ -111,6 +132,17 @@ function buildOverrideYaml(tols: Toleration[], components: string[], selector: R
       selKeys.forEach((k) => out.push(`${base}  ${JSON.stringify(k)}: ${JSON.stringify(selector[k])}`));
     } else if (nullSel) {
       out.push(`${base}nodeSelector: null`);
+    }
+    if (hasRes) {
+      const block = (name: string, cpu: string, mem: string) => {
+        if (!cpu.trim() && !mem.trim()) return;
+        out.push(`${base}  ${name}:`);
+        if (cpu.trim()) out.push(`${base}    cpu: ${JSON.stringify(cpu.trim())}`);
+        if (mem.trim()) out.push(`${base}    memory: ${JSON.stringify(mem.trim())}`);
+      };
+      out.push(`${base}resources:`);
+      block("requests", res.cpuReq, res.memReq);
+      block("limits", res.cpuLim, res.memLim);
     }
     out.push("");
   }
@@ -124,13 +156,15 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   cluster: string;
   namespace: string;
+  /** Componente do recurso selecionado na aba e seus valores atuais (viram dica nos campos de recursos). */
+  current?: { component: string; res: Res } | null;
   /** Preenche a lista com a correção de agendamento escolhida no relatório (valores editáveis). */
   initial?: HelmInitial | null;
   /** Chamado depois de aplicar, para recarregar a lista de recursos. */
   onApplied?: () => void;
 }
 
-export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, namespace, initial, onApplied }: Props) => {
+export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, namespace, initial, current, onApplied }: Props) => {
   const [loading, setLoading] = useState(true);
   const [detectError, setDetectError] = useState<string | null>(null);
   const [release, setRelease] = useState("");
@@ -141,6 +175,8 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
   const [components, setComponents] = useState<string[]>(COMPONENTS.map((c) => c.id));
   const [selRows, setSelRows] = useState<SelRow[]>([]);
   const [removeSelector, setRemoveSelector] = useState(false);
+  const [resources, setResources] = useState<Record<string, Res>>({});
+  const [tab, setTab] = useState<"editar" | "historico">("editar");
   const [busy, setBusy] = useState<"dry" | "apply" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PrometheusHelmResult | null>(null);
@@ -161,8 +197,11 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
       const t = { key: r.key.trim(), operator: r.operator, value: r.value.trim(), effect: r.effect };
       if (!tols.some((x) => sameTol(x, t))) tols.push(t); // sem duplicata
     });
-    return buildOverrideYaml(tols, components, selector, removeSelector);
-  }, [complete, components, selector, removeSelector]);
+    return buildOverrideYaml(tols, components, selector, removeSelector, resources);
+  }, [complete, components, selector, removeSelector, resources]);
+  const badRes = components.some((id) => resources[id] && Object.values(resources[id]).some((v) => !validQty(v)));
+  const setRes = (id: string, key: keyof Res, v: string) =>
+    setResources((m) => ({ ...m, [id]: { ...(m[id] ?? emptyRes()), [key]: v } }));
 
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
   const updateRow = (id: number, patch: Partial<Toleration>) =>
@@ -184,6 +223,8 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
     setError(null);
     setResult(null);
     setSimulatedWith(null);
+    setTab("editar");
+    setResources(Object.fromEntries(Object.entries(initial?.resources ?? {}).map(([id, r]) => [id, { ...emptyRes(), ...r }])));
     if (initial) {
       // Correção de agendamento: as tolerations atuais + as da opção, e o nodeSelector resultante; só o Prometheus.
       setRows(initial.tolerations.map((t) => {
@@ -193,7 +234,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
       }));
       setSelRows(Object.entries(initial.nodeSelector).map(([key, value], i) => ({ id: i + 1, key, value })));
       setRemoveSelector(initial.removeSelector);
-      setComponents(["prometheus"]); // a correção de agendamento é do Prometheus; os outros componentes ficam desmarcados
+      setComponents(initial.components ?? ["prometheus"]); // a correção de agendamento é do Prometheus; os outros ficam desmarcados
     } else {
       setRows(PRESETS.map((p) => newRow(p.tol, p.id)));
       setSelRows([]);
@@ -234,25 +275,41 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
     }
   };
 
-  const canRun = !loading && !busy && release.trim() !== "" && valuesYaml.trim() !== "";
+  const canRun = !loading && !busy && release.trim() !== "" && valuesYaml.trim() !== "" && !badRes;
 
   return (
     <>
       <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Tolerations do Prometheus (Helm)</DialogTitle>
+            <DialogTitle>Prometheus via Helm</DialogTitle>
             <DialogDescription>
               Roda <span className="font-mono">helm upgrade --reuse-values -f override</span> no release do kube-prometheus-stack
-              de <span className="font-mono">{namespace}</span> ({cluster}): os values atuais são mantidos, mas a lista de tolerations
-              de cada componente marcado é <b>substituída</b> pela que está abaixo (o helm não soma listas). Simule antes de aplicar.
+              de <span className="font-mono">{namespace}</span> ({cluster}): os values atuais são mantidos (recursos e nodeSelector
+              são mesclados), mas a lista de tolerations de cada componente marcado é <b>substituída</b> pela que está abaixo (o helm
+              não soma listas). Simule antes de aplicar; cada aplicação vira uma revisão do release.
             </DialogDescription>
           </DialogHeader>
+
+          <div className="flex gap-1 border-b flex-shrink-0">
+            {([["editar", "Editar values"], ["historico", "Revisões / rollback"]] as const).map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setTab(id)}
+                className={`px-3 py-1.5 text-xs whitespace-nowrap border-b-2 -mb-px ${tab === id ? "border-indigo-500 font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
 
           {loading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground py-6 justify-center">
               <Loader2 className="w-4 h-4 animate-spin" /> Procurando o release no namespace…
             </div>
+          ) : tab === "historico" ? (
+            release.trim() ? (
+              <PrometheusHelmHistory cluster={cluster} namespace={namespace} release={release.trim()} onRolledBack={onApplied} />
+            ) : (
+              <p className="text-xs text-muted-foreground py-4">Informe o nome do release na aba "Editar values" para ver as revisões.</p>
+            )
           ) : (
             <div className="space-y-3 text-sm">
               {detectError && (
@@ -341,6 +398,26 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                 </div>
               </div>
 
+              <div className="space-y-2">
+                <Label className="text-xs">Recursos (requests/limits) — campo vazio mantém o valor atual do release</Label>
+                {COMPONENTS.filter((c) => components.includes(c.id)).map((c) => {
+                  const r = resources[c.id] ?? emptyRes();
+                  const hint = current?.component === c.id ? current.res : null;
+                  return (
+                    <div key={c.id} className="grid grid-cols-[1.2fr_repeat(4,1fr)] gap-2 items-center">
+                      <span className="text-xs font-medium">{c.label}</span>
+                      {RES_FIELDS.map((f) => (
+                        <Input key={f.key} value={r[f.key]} onChange={(e) => setRes(c.id, f.key, e.target.value)}
+                          placeholder={hint?.[f.key] ? `${f.label} (atual ${hint[f.key]})` : f.label}
+                          title={f.cpu ? "ex.: 500m, 2" : "ex.: 512Mi, 4Gi"}
+                          className={`h-8 text-xs font-mono ${validQty(r[f.key]) ? "" : "border-red-500"}`} />
+                      ))}
+                    </div>
+                  );
+                })}
+                {badRes && <p className="text-[11px] text-red-600">Quantidade inválida (use formatos como 500m, 2, 512Mi, 4Gi).</p>}
+              </div>
+
               {(
                 <div className="space-y-2">
                   <Label className="text-xs">nodeSelector (opcional; vale para todos os componentes marcados)</Label>
@@ -404,6 +481,9 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                             {w.tolerations?.map((t) => (
                               <span key={t} className="font-mono rounded bg-muted px-1.5 py-0.5">{t}</span>
                             ))}
+                            {w.resources?.map((r) => (
+                              <span key={r} className="font-mono rounded bg-emerald-500/15 px-1.5 py-0.5">{r}</span>
+                            ))}
                             {w.node_selector?.map((n) => (
                               <span key={n} className="font-mono rounded bg-indigo-500/15 px-1.5 py-0.5">nodeSelector {n}</span>
                             ))}
@@ -427,6 +507,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
 
           <DialogFooter className="gap-2 sm:gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)} disabled={!!busy}>Fechar</Button>
+            {tab === "editar" && (<>
             <Button variant="outline" onClick={() => run(true)} disabled={!canRun}>
               {busy === "dry" ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" />Simulando…</> : "Simular (dry-run)"}
             </Button>
@@ -434,6 +515,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
               title={simulated ? undefined : "Simule antes: a aplicação só libera depois de uma simulação com estes mesmos valores"}>
               {busy === "apply" ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" />Aplicando…</> : "Aplicar"}
             </Button>
+            </>)}
           </DialogFooter>
         </DialogContent>
       </Dialog>

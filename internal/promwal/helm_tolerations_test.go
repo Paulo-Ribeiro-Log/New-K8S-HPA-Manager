@@ -42,6 +42,9 @@ metadata:
 spec:
   nodeSelector:
     agentpool: prometheus
+  resources:
+    requests: {cpu: 500m, memory: 2Gi}
+    limits: {memory: 4Gi}
   tolerations:
     - key: dedicated
       operator: Exists
@@ -61,7 +64,8 @@ func TestWorkloadsWithTolerations(t *testing.T) {
 		got[0].Tolerations[1] != "kubernetes.azure.com/scalesetpriority=spot:NoSchedule" {
 		t.Fatalf("Deployment = %+v", got[0])
 	}
-	if got[1].Kind != "Prometheus" || got[1].Tolerations[0] != "dedicated" || len(got[1].NodeSelector) != 1 || got[1].NodeSelector[0] != "agentpool=prometheus" {
+	if got[1].Kind != "Prometheus" || got[1].Tolerations[0] != "dedicated" || len(got[1].NodeSelector) != 1 || got[1].NodeSelector[0] != "agentpool=prometheus" ||
+		len(got[1].Resources) != 1 || got[1].Resources[0] != "requests cpu=500m mem=2Gi · limits mem=4Gi" {
 		t.Fatalf("Prometheus = %+v", got[1])
 	}
 }
@@ -160,5 +164,42 @@ func TestUserTolerations_TiraAsAutomaticasDoApiserver(t *testing.T) {
 	got := userTolerations(in)
 	if len(got) != 1 || got[0].Key != "prometheus-only" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestHelmHistory_E_Rollback(t *testing.T) {
+	var got [][]string
+	run := func(_ context.Context, a ...string) ([]byte, error) {
+		got = append(got, a)
+		if a[0] == "history" {
+			return []byte(`[{"revision":1,"updated":"2026-10-01T10:00:00Z","status":"superseded","chart":"kube-prometheus-stack-45.31.1","app_version":"v0.63.0","description":"Install complete"},{"revision":2,"updated":"2026-10-28T10:00:00Z","status":"deployed","chart":"kube-prometheus-stack-45.31.1","app_version":"v0.63.0","description":"Upgrade complete"}]`), nil
+		}
+		return nil, nil
+	}
+	revs, err := HelmHistory(context.Background(), run, "monitoring", "prometheus")
+	if err != nil || len(revs) != 2 || revs[1].Revision != 2 || revs[1].Status != "deployed" {
+		t.Fatalf("revs = %+v, err = %v", revs, err)
+	}
+	if err := HelmRollback(context.Background(), run, "monitoring", "prometheus", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if line := strings.Join(got[1], " "); line != "rollback prometheus 1 -n monitoring --dry-run" {
+		t.Fatalf("rollback = %s", line)
+	}
+	if HelmRollback(context.Background(), run, "monitoring", "--set", 1, false) == nil || HelmRollback(context.Background(), run, "monitoring", "prometheus", 0, false) == nil {
+		t.Fatal("deveria rejeitar release com cara de flag e revisão 0")
+	}
+}
+
+func TestHelmEnv_IsolaARepositoriesYaml(t *testing.T) {
+	env := helmEnv("/tmp/x")
+	var got string
+	for _, e := range env {
+		if strings.HasPrefix(e, "HELM_REPOSITORY_CONFIG=") {
+			got = e
+		}
+	}
+	if got != "HELM_REPOSITORY_CONFIG=/tmp/x/repositories.yaml" {
+		t.Fatalf("HELM_REPOSITORY_CONFIG = %q", got)
 	}
 }

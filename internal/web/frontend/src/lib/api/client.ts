@@ -17,6 +17,7 @@ import type {
   PrometheusSchedulingResult,
   PrometheusHelmInfo,
   PrometheusHelmResult,
+  PrometheusHelmRevision,
   K8sToleration,
   PrometheusWALHealth,
   PrometheusWALCleanupRequest,
@@ -3030,6 +3031,21 @@ class APIClient {
   /** Release do kube-prometheus-stack no namespace e o override de tolerations padrão. */
   async getPrometheusHelmInfo(cluster: string, namespace: string): Promise<PrometheusHelmInfo> {
     return this.request(`/prometheus/wal/helm-tolerations?cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(namespace)}`);
+  }
+
+  /** Revisões do release (helm history). */
+  async getPrometheusHelmHistory(cluster: string, namespace: string, release: string): Promise<PrometheusHelmRevision[]> {
+    const q = `cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(namespace)}&release=${encodeURIComponent(release)}`;
+    const res = await this.request<{ revisions: PrometheusHelmRevision[] }>(`/prometheus/wal/helm-history?${q}`);
+    return res.revisions ?? [];
+  }
+
+  /** Volta o release para uma revisão anterior (helm rollback); cria uma revisão nova. */
+  async rollbackPrometheusHelm(req: { cluster: string; namespace: string; release: string; revision: number; dryRun?: boolean }): Promise<void> {
+    await this.request("/prometheus/wal/helm-rollback", {
+      method: "POST",
+      body: JSON.stringify({ cluster: req.cluster, namespace: req.namespace, release: req.release, revision: req.revision, dry_run: !!req.dryRun }),
+    });
   }
 
   /** helm upgrade --reuse-values -f <override> do kube-prometheus-stack; dryRun só simula. */

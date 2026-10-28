@@ -3,6 +3,14 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Prometheus via Helm — recursos, memory limit sugerido e revisões do release (Outubro 2026)
+
+- O diálogo do Helm (botão "Helm" do painel do WAL) ganha **requests/limits de CPU e memória** por componente (`resources` do chart: prometheusSpec, alertmanagerSpec, kube-state-metrics, prometheusOperator). Campo vazio mantém o valor do release (mapas são mesclados pelo `--reuse-values`, ao contrário das listas de tolerations); quantidades são validadas (500m, 2, 512Mi, 4Gi) e os valores atuais do recurso selecionado aparecem como dica.
+- O diagnóstico do WAL com veredito "aumentar memória" ganha **"Aplicar <valor> via Helm…"**: abre o diálogo com o memory limit sugerido no Prometheus (a mudança persiste, ao contrário da edição direta do StatefulSet que o operator/Helm revertem).
+- Aba **Revisões / rollback**: `GET /prometheus/wal/helm-history` (`helm history`) lista as revisões e `POST /prometheus/wal/helm-rollback` (SRE, `helm rollback`, registrado no Change History) volta o release para uma delas, o que cria uma revisão nova.
+- O dry-run passa a mostrar também os requests/limits por recurso.
+- O helm roda com `HELM_REPOSITORY_CONFIG` apontando para um arquivo inexistente: com `--repo <url>` ele varre todos os repositórios do `repositories.yaml` e abortava com "no cached repo found" se um deles (ex.: repositório interno só alcançável na VPN) não tinha o índice em cache.
+
 ### Prometheus (WAL) — tolerations do kube-prometheus-stack via Helm (Outubro 2026)
 
 - Botão "Tolerations (Helm)" no painel de diagnóstico do WAL: roda `helm upgrade <release> kube-prometheus-stack --repo … --version … -n <ns> --reuse-values -f <override>` (o comando que o SRE rodava à mão), com o override montado na tela: opções prontas `prometheus-only` e `spot` (`kubernetes.azure.com/scalesetpriority`), linhas **Custom** (key, operator, value, effect) e a escolha dos componentes (prometheus, alertmanager, kube-state-metrics, prometheusOperator). O helm substitui a lista de tolerations de cada componente marcado (não soma listas): marque tudo o que o componente precisa.

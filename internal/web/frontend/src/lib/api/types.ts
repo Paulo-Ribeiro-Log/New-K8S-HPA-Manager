@@ -1160,11 +1160,21 @@ export interface PrometheusHelmInfo {
   detect_error?: string;
 }
 
+export interface PrometheusHelmRevision {
+  revision: number;
+  updated: string;
+  status: string;
+  chart: string;
+  app_version: string;
+  description: string;
+}
+
 export interface PrometheusHelmWorkload {
   kind: string;
   name: string;
   tolerations?: string[];
   node_selector?: string[];
+  resources?: string[];
 }
 
 export interface PrometheusHelmResult {

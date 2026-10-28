@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -79,11 +80,25 @@ prometheusOperator:
 // HelmRunner executa o helm com os args (o contexto e o kubeconfig já vão por conta do runner).
 type HelmRunner func(ctx context.Context, args ...string) ([]byte, error)
 
+// helmEnv isola o helm da lista de repositórios do usuário. Com --repo <url>, o helm varre TODOS os repositórios de
+// repositories.yaml atrás do dono da URL e aborta com "no cached repo found" se um deles (ex.: um repositório
+// interno, só alcançável na VPN) não tem o índice em cache. Os comandos daqui usam sempre --repo, então a lista do
+// usuário não serve para nada: aponta para um arquivo que não existe (o helm trata como lista vazia).
+func helmEnv(dir string) []string {
+	return append(os.Environ(), "HELM_REPOSITORY_CONFIG="+filepath.Join(dir, "repositories.yaml"))
+}
+
 // HelmCLIRunner é o runner real: `helm` do PATH, no contexto do cluster, sem shell.
 func HelmCLIRunner(cluster string) HelmRunner {
 	return func(ctx context.Context, args ...string) ([]byte, error) {
+		dir, err := os.MkdirTemp("", "helm-norepos-")
+		if err != nil {
+			return nil, fmt.Errorf("criar diretório temporário do helm: %w", err)
+		}
+		defer os.RemoveAll(dir)
 		full := append([]string{"--kube-context", cluster}, args...)
 		cmd := exec.CommandContext(ctx, "helm", full...)
+		cmd.Env = helmEnv(dir)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
@@ -111,6 +126,7 @@ type HelmWorkload struct {
 	Name         string   `json:"name"`
 	Tolerations  []string `json:"tolerations"`             // "key=value:Effect" (ou "key:Effect" / "Exists")
 	NodeSelector []string `json:"node_selector,omitempty"` // "label=valor"
+	Resources    []string `json:"resources,omitempty"`     // "container: requests cpu=… mem=… · limits cpu=… mem=…"
 }
 
 type HelmTolerationsResult struct {
@@ -289,13 +305,46 @@ type tolerationDoc struct {
 	Spec struct {
 		Tolerations  []tolerationYAML  `yaml:"tolerations"`
 		NodeSelector map[string]string `yaml:"nodeSelector"`
+		Resources    resourcesYAML     `yaml:"resources"` // CRs Prometheus/Alertmanager
 		Template     struct {
 			Spec struct {
 				Tolerations  []tolerationYAML  `yaml:"tolerations"`
 				NodeSelector map[string]string `yaml:"nodeSelector"`
+				Containers   []struct {
+					Name      string        `yaml:"name"`
+					Resources resourcesYAML `yaml:"resources"`
+				} `yaml:"containers"`
 			} `yaml:"spec"`
 		} `yaml:"template"`
 	} `yaml:"spec"`
+}
+
+type resourcesYAML struct {
+	Requests map[string]string `yaml:"requests"`
+	Limits   map[string]string `yaml:"limits"`
+}
+
+// text: "requests cpu=100m mem=256Mi · limits cpu=500m mem=1Gi" ("" se não define nada).
+func (r resourcesYAML) text() string {
+	part := func(name string, m map[string]string) string {
+		if len(m) == 0 {
+			return ""
+		}
+		s := name
+		for _, k := range []string{"cpu", "memory"} {
+			if v, ok := m[k]; ok {
+				s += " " + strings.Replace(k, "memory", "mem", 1) + "=" + v
+			}
+		}
+		return s
+	}
+	var out []string
+	for _, p := range []string{part("requests", r.Requests), part("limits", r.Limits)} {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, " · ")
 }
 
 type tolerationYAML struct {
@@ -340,10 +389,19 @@ func workloadsWithTolerations(manifest string) []HelmWorkload {
 		if len(sel) == 0 {
 			sel = d.Spec.NodeSelector
 		}
-		if (len(tols) == 0 && len(sel) == 0) || d.Kind == "" {
+		var resTxt []string
+		if t := d.Spec.Resources.text(); t != "" {
+			resTxt = append(resTxt, t)
+		}
+		for _, c := range d.Spec.Template.Spec.Containers {
+			if t := c.Resources.text(); t != "" {
+				resTxt = append(resTxt, c.Name+": "+t)
+			}
+		}
+		if (len(tols) == 0 && len(sel) == 0 && len(resTxt) == 0) || d.Kind == "" {
 			continue
 		}
-		w := HelmWorkload{Kind: d.Kind, Name: d.Metadata.Name}
+		w := HelmWorkload{Kind: d.Kind, Name: d.Metadata.Name, Resources: resTxt}
 		for _, t := range tols {
 			w.Tolerations = append(w.Tolerations, t.String())
 		}
@@ -353,4 +411,49 @@ func workloadsWithTolerations(manifest string) []HelmWorkload {
 		res = append(res, w)
 	}
 	return res
+}
+
+// HelmRevision é uma revisão do release (cada `helm upgrade` aplicado cria uma).
+type HelmRevision struct {
+	Revision    int    `json:"revision"`
+	Updated     string `json:"updated"`
+	Status      string `json:"status"`
+	Chart       string `json:"chart"`
+	AppVersion  string `json:"app_version"`
+	Description string `json:"description"`
+}
+
+const helmHistoryMax = 25
+
+// HelmHistory lista as últimas revisões do release (a mais recente por último, como o helm devolve).
+func HelmHistory(ctx context.Context, run HelmRunner, namespace, release string) ([]HelmRevision, error) {
+	if !reHelmName.MatchString(namespace) || !reHelmName.MatchString(release) {
+		return nil, fmt.Errorf("namespace ou release inválido")
+	}
+	out, err := run(ctx, "history", release, "-n", namespace, "--max", fmt.Sprint(helmHistoryMax), "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var revs []HelmRevision
+	if err := json.Unmarshal(out, &revs); err != nil {
+		return nil, fmt.Errorf("saída do helm history ilegível: %w", err)
+	}
+	return revs, nil
+}
+
+// HelmRollback volta o release para uma revisão anterior (`helm rollback`), o que cria uma revisão nova com os
+// values e o manifesto daquela. dryRun só simula.
+func HelmRollback(ctx context.Context, run HelmRunner, namespace, release string, revision int, dryRun bool) error {
+	if !reHelmName.MatchString(namespace) || !reHelmName.MatchString(release) {
+		return fmt.Errorf("namespace ou release inválido")
+	}
+	if revision < 1 {
+		return fmt.Errorf("revisão inválida")
+	}
+	args := []string{"rollback", release, fmt.Sprint(revision), "-n", namespace}
+	if dryRun {
+		args = append(args, "--dry-run")
+	}
+	_, err := run(ctx, args...)
+	return err
 }
