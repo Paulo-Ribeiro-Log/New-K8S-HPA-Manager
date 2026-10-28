@@ -107,9 +107,10 @@ type HelmTolerationsRequest struct {
 
 // HelmWorkload é um recurso do manifesto que leva tolerations, com as que o chart vai aplicar.
 type HelmWorkload struct {
-	Kind        string   `json:"kind"`
-	Name        string   `json:"name"`
-	Tolerations []string `json:"tolerations"` // "key=value:Effect" (ou "key:Effect" / "Exists")
+	Kind         string   `json:"kind"`
+	Name         string   `json:"name"`
+	Tolerations  []string `json:"tolerations"`             // "key=value:Effect" (ou "key:Effect" / "Exists")
+	NodeSelector []string `json:"node_selector,omitempty"` // "label=valor"
 }
 
 type HelmTolerationsResult struct {
@@ -286,10 +287,12 @@ type tolerationDoc struct {
 		Name string `yaml:"name"`
 	} `yaml:"metadata"`
 	Spec struct {
-		Tolerations []tolerationYAML `yaml:"tolerations"`
-		Template    struct {
+		Tolerations  []tolerationYAML  `yaml:"tolerations"`
+		NodeSelector map[string]string `yaml:"nodeSelector"`
+		Template     struct {
 			Spec struct {
-				Tolerations []tolerationYAML `yaml:"tolerations"`
+				Tolerations  []tolerationYAML  `yaml:"tolerations"`
+				NodeSelector map[string]string `yaml:"nodeSelector"`
 			} `yaml:"spec"`
 		} `yaml:"template"`
 	} `yaml:"spec"`
@@ -330,16 +333,22 @@ func workloadsWithTolerations(manifest string) []HelmWorkload {
 			}
 			break // manifesto com documento ilegível: devolve o que já leu
 		}
-		tols := d.Spec.Template.Spec.Tolerations
+		tols, sel := d.Spec.Template.Spec.Tolerations, d.Spec.Template.Spec.NodeSelector
 		if len(tols) == 0 {
 			tols = d.Spec.Tolerations
 		}
-		if len(tols) == 0 || d.Kind == "" {
+		if len(sel) == 0 {
+			sel = d.Spec.NodeSelector
+		}
+		if (len(tols) == 0 && len(sel) == 0) || d.Kind == "" {
 			continue
 		}
 		w := HelmWorkload{Kind: d.Kind, Name: d.Metadata.Name}
 		for _, t := range tols {
 			w.Tolerations = append(w.Tolerations, t.String())
+		}
+		for _, k := range sortedKeys(sel) {
+			w.NodeSelector = append(w.NodeSelector, k+"="+sel[k])
 		}
 		res = append(res, w)
 	}

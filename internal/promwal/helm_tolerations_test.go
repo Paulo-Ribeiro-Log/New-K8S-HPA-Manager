@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 const testManifest = `---
@@ -38,6 +40,8 @@ kind: Prometheus
 metadata:
   name: prometheus-kube-prometheus-prometheus
 spec:
+  nodeSelector:
+    agentpool: prometheus
   tolerations:
     - key: dedicated
       operator: Exists
@@ -57,7 +61,7 @@ func TestWorkloadsWithTolerations(t *testing.T) {
 		got[0].Tolerations[1] != "kubernetes.azure.com/scalesetpriority=spot:NoSchedule" {
 		t.Fatalf("Deployment = %+v", got[0])
 	}
-	if got[1].Kind != "Prometheus" || got[1].Tolerations[0] != "dedicated" {
+	if got[1].Kind != "Prometheus" || got[1].Tolerations[0] != "dedicated" || len(got[1].NodeSelector) != 1 || got[1].NodeSelector[0] != "agentpool=prometheus" {
 		t.Fatalf("Prometheus = %+v", got[1])
 	}
 }
@@ -144,5 +148,17 @@ func TestDetectHelmRelease(t *testing.T) {
 	r, err := DetectHelmRelease(context.Background(), run, "monitoring")
 	if err != nil || r == nil || r.Release != "prometheus" || r.ChartVersion != "45.31.1" {
 		t.Fatalf("release = %+v, err = %v", r, err)
+	}
+}
+
+func TestUserTolerations_TiraAsAutomaticasDoApiserver(t *testing.T) {
+	secs := int64(300)
+	in := []corev1.Toleration{
+		{Key: "node.kubernetes.io/not-ready", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: &secs},
+		{Key: "prometheus-only", Operator: corev1.TolerationOpEqual, Value: "true", Effect: corev1.TaintEffectNoSchedule},
+	}
+	got := userTolerations(in)
+	if len(got) != 1 || got[0].Key != "prometheus-only" {
+		t.Fatalf("got %+v", got)
 	}
 }
