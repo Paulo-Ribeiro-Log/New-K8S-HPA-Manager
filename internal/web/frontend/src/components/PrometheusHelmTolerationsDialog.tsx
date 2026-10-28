@@ -30,20 +30,27 @@ import { apiClient } from "@/lib/api/client";
 import { copyText } from "@/lib/clipboard";
 import type { PrometheusHelmResult } from "@/lib/api/types";
 
-interface Props {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  cluster: string;
-  namespace: string;
-  /** Chamado depois de aplicar, para recarregar a lista de recursos. */
-  onApplied?: () => void;
-}
-
 interface Toleration {
   key: string;
   operator: "Equal" | "Exists";
   value: string;
   effect: "" | "NoSchedule" | "PreferNoSchedule" | "NoExecute";
+}
+
+// Cada linha da lista é editável; `preset` liga a linha ao checkbox (marcar cria a linha, desmarcar remove).
+interface Row extends Toleration {
+  id: number;
+  preset?: string;
+}
+
+interface SelRow { id: number; key: string; value: string }
+
+/** Ponto de partida vindo de uma correção de agendamento do relatório do WAL. */
+export interface HelmInitial {
+  tolerations: { key?: string; operator?: string; value?: string; effect?: string }[];
+  nodeSelector: Record<string, string>;
+  /** nodeSelector vazio na correção = remover o seletor atual. */
+  removeSelector: boolean;
 }
 
 // Opções prontas: o taint do pool dedicado do Prometheus e o do pool spot do AKS.
@@ -60,10 +67,28 @@ const COMPONENTS: { id: string; label: string; path: string[] }[] = [
   { id: "prometheusOperator", label: "Prometheus Operator", path: ["prometheusOperator"] },
 ];
 
-const emptyCustom = (): Toleration => ({ key: "", operator: "Equal", value: "", effect: "NoSchedule" });
+let rowSeq = 0;
+const newRow = (t: Partial<Toleration> = {}, preset?: string): Row => ({
+  id: ++rowSeq, preset, key: "", operator: "Equal", value: "", effect: "NoSchedule", ...t,
+});
+
+// Linha sem key só vale com operator Exists (tolera tudo); do contrário está incompleta e fica fora do YAML.
+const isComplete = (t: Toleration) => t.key.trim() !== "" || t.operator === "Exists";
+
+const sameTol = (a: Toleration, b: Toleration) =>
+  a.key === b.key && a.operator === b.operator && a.effect === b.effect && (a.operator === "Exists" || a.value === b.value);
+
+const asToleration = (t: HelmInitial["tolerations"][number]): Toleration => ({
+  key: t.key ?? "",
+  operator: t.operator === "Exists" ? "Exists" : "Equal",
+  value: t.value ?? "",
+  effect: (t.effect ?? "") as Toleration["effect"],
+});
 
 // Monta o override de values: strings sempre entre aspas (JSON é YAML válido), sem value quando o operador é Exists.
-function buildOverrideYaml(tols: Toleration[], components: string[]): string {
+// O nodeSelector vai para todos os componentes marcados (no chart ele fica ao lado das tolerations); `null` remove o
+// seletor que o release já tem.
+function buildOverrideYaml(tols: Toleration[], components: string[], selector: Record<string, string>, removeSelector: boolean): string {
   const items = tols.map((t) => {
     const lines = [`- key: ${JSON.stringify(t.key)}`, `  operator: ${t.operator}`];
     if (t.operator === "Equal") lines.push(`  value: ${JSON.stringify(t.value)}`);
@@ -72,27 +97,50 @@ function buildOverrideYaml(tols: Toleration[], components: string[]): string {
   });
   const out: string[] = [];
   for (const c of COMPONENTS.filter((c) => components.includes(c.id))) {
+    const selKeys = Object.keys(selector);
+    const nullSel = removeSelector && selKeys.length === 0;
+    if (items.length === 0 && selKeys.length === 0 && !nullSel) continue;
     c.path.forEach((seg, i) => out.push(`${"  ".repeat(i)}${seg}:`));
     const base = "  ".repeat(c.path.length);
-    out.push(`${base}tolerations:`);
-    items.forEach((lines) => lines.forEach((l) => out.push(`${base}  ${l}`)));
+    if (items.length > 0) {
+      out.push(`${base}tolerations:`);
+      items.forEach((lines) => lines.forEach((l) => out.push(`${base}  ${l}`)));
+    }
+    if (selKeys.length > 0) {
+      out.push(`${base}nodeSelector:`);
+      selKeys.forEach((k) => out.push(`${base}  ${JSON.stringify(k)}: ${JSON.stringify(selector[k])}`));
+    } else if (nullSel) {
+      out.push(`${base}nodeSelector: null`);
+    }
     out.push("");
   }
   return out.join("\n");
 }
 
 // Corrige as tolerations do kube-prometheus-stack com o mesmo `helm upgrade --reuse-values -f override` que o SRE
-// roda à mão: primeiro a simulação (--dry-run), depois a aplicação. A tela só mostra as tolerations por recurso.
-export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, namespace, onApplied }: Props) => {
+// roda à mão: primeiro a simulação (--dry-run), depois a aplicação. A tela só mostra o que o chart vai aplicar.
+interface Props {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  cluster: string;
+  namespace: string;
+  /** Preenche a lista com a correção de agendamento escolhida no relatório (valores editáveis). */
+  initial?: HelmInitial | null;
+  /** Chamado depois de aplicar, para recarregar a lista de recursos. */
+  onApplied?: () => void;
+}
+
+export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, namespace, initial, onApplied }: Props) => {
   const [loading, setLoading] = useState(true);
   const [detectError, setDetectError] = useState<string | null>(null);
   const [release, setRelease] = useState("");
   const [chart, setChart] = useState("kube-prometheus-stack");
   const [repo, setRepo] = useState("");
   const [version, setVersion] = useState("");
-  const [presets, setPresets] = useState<string[]>(PRESETS.map((p) => p.id));
-  const [custom, setCustom] = useState<Toleration[]>([]);
+  const [rows, setRows] = useState<Row[]>([]);
   const [components, setComponents] = useState<string[]>(COMPONENTS.map((c) => c.id));
+  const [selRows, setSelRows] = useState<SelRow[]>([]);
+  const [removeSelector, setRemoveSelector] = useState(false);
   const [busy, setBusy] = useState<"dry" | "apply" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PrometheusHelmResult | null>(null);
@@ -100,18 +148,31 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
   // O que a última simulação usou: qualquer edição depois dela invalida a aplicação.
   const [simulatedWith, setSimulatedWith] = useState<string | null>(null);
 
-  // Custom sem key só vale com operator Exists (tolera tudo); do contrário a linha ainda está incompleta.
-  const customValid = custom.every((t) => t.key.trim() !== "" || t.operator === "Exists");
+  const complete = rows.filter(isComplete);
+  const incomplete = rows.length - complete.length;
+  const selector = useMemo(() => {
+    const m: Record<string, string> = {};
+    selRows.forEach((r) => { if (r.key.trim()) m[r.key.trim()] = r.value.trim(); });
+    return m;
+  }, [selRows]);
   const valuesYaml = useMemo(() => {
-    const tols = [
-      ...PRESETS.filter((p) => presets.includes(p.id)).map((p) => p.tol),
-      ...custom.map((t) => ({ ...t, key: t.key.trim(), value: t.value.trim() })),
-    ];
-    return tols.length === 0 || components.length === 0 ? "" : buildOverrideYaml(tols, components);
-  }, [presets, custom, components]);
+    const tols: Toleration[] = [];
+    complete.forEach((r) => {
+      const t = { key: r.key.trim(), operator: r.operator, value: r.value.trim(), effect: r.effect };
+      if (!tols.some((x) => sameTol(x, t))) tols.push(t); // sem duplicata
+    });
+    return buildOverrideYaml(tols, components, selector, removeSelector);
+  }, [complete, components, selector, removeSelector]);
+
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
-  const updateCustom = (i: number, patch: Partial<Toleration>) =>
-    setCustom((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const updateRow = (id: number, patch: Partial<Toleration>) =>
+    setRows((l) => l.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const togglePreset = (id: string) =>
+    setRows((l) => {
+      if (l.some((r) => r.preset === id)) return l.filter((r) => r.preset !== id);
+      const p = PRESETS.find((x) => x.id === id)!;
+      return [...l, newRow(p.tol, id)];
+    });
 
   const signature = JSON.stringify([release, chart, repo, version, valuesYaml]);
   const simulated = result?.dry_run === true && simulatedWith === signature;
@@ -123,6 +184,22 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
     setError(null);
     setResult(null);
     setSimulatedWith(null);
+    if (initial) {
+      // Correção de agendamento: as tolerations atuais + as da opção, e o nodeSelector resultante; só o Prometheus.
+      setRows(initial.tolerations.map((t) => {
+        const tol = asToleration(t);
+        const preset = PRESETS.find((p) => sameTol(p.tol, tol))?.id;
+        return newRow(tol, preset);
+      }));
+      setSelRows(Object.entries(initial.nodeSelector).map(([key, value], i) => ({ id: i + 1, key, value })));
+      setRemoveSelector(initial.removeSelector);
+      setComponents(["prometheus"]); // a correção de agendamento é do Prometheus; os outros componentes ficam desmarcados
+    } else {
+      setRows(PRESETS.map((p) => newRow(p.tol, p.id)));
+      setSelRows([]);
+      setRemoveSelector(false);
+      setComponents(COMPONENTS.map((c) => c.id));
+    }
     apiClient.getPrometheusHelmInfo(cluster, namespace)
       .then((info) => {
         if (!alive) return;
@@ -135,7 +212,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)))
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, [open, cluster, namespace]);
+  }, [open, cluster, namespace, initial]);
 
   const run = async (dryRun: boolean) => {
     setBusy(dryRun ? "dry" : "apply");
@@ -157,7 +234,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
     }
   };
 
-  const canRun = !loading && !busy && release.trim() !== "" && valuesYaml.trim() !== "" && customValid;
+  const canRun = !loading && !busy && release.trim() !== "" && valuesYaml.trim() !== "";
 
   return (
     <>
@@ -203,33 +280,30 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                 </div>
               </div>
               <div className="space-y-2">
-                <Label className="text-xs">Tolerations a somar</Label>
+                <Label className="text-xs">Tolerations (a lista do componente passa a ser exatamente esta)</Label>
                 <div className="flex flex-wrap gap-x-4 gap-y-1">
                   {PRESETS.map((p) => (
                     <label key={p.id} className="flex items-center gap-1.5 text-xs cursor-pointer">
-                      <Checkbox checked={presets.includes(p.id)} onCheckedChange={() => setPresets((l) => toggle(l, p.id))} />
+                      <Checkbox checked={rows.some((r) => r.preset === p.id)} onCheckedChange={() => togglePreset(p.id)} />
                       <span className="font-medium">{p.label}</span>
-                      <span className="font-mono text-muted-foreground">
-                        {p.tol.key}={p.tol.value}:{p.tol.effect}
-                      </span>
                     </label>
                   ))}
                 </div>
 
-                {custom.map((t, i) => (
-                  <div key={i} className="grid grid-cols-[1.6fr_0.9fr_1fr_1.2fr_auto] gap-2 items-center">
-                    <Input value={t.key} onChange={(e) => updateCustom(i, { key: e.target.value })}
-                      placeholder="key" className="h-8 text-xs font-mono" />
-                    <Select value={t.operator} onValueChange={(v) => updateCustom(i, { operator: v as Toleration["operator"] })}>
+                {rows.map((t) => (
+                  <div key={t.id} className="grid grid-cols-[1.6fr_0.9fr_1fr_1.2fr_auto] gap-2 items-center">
+                    <Input value={t.key} onChange={(e) => updateRow(t.id, { key: e.target.value })}
+                      placeholder="key" className={`h-8 text-xs font-mono ${isComplete(t) ? "" : "border-amber-500"}`} />
+                    <Select value={t.operator} onValueChange={(v) => updateRow(t.id, { operator: v as Toleration["operator"] })}>
                       <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="Equal">Equal</SelectItem>
                         <SelectItem value="Exists">Exists</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Input value={t.value} onChange={(e) => updateCustom(i, { value: e.target.value })}
+                    <Input value={t.value} onChange={(e) => updateRow(t.id, { value: e.target.value })}
                       placeholder="value" disabled={t.operator === "Exists"} className="h-8 text-xs font-mono" />
-                    <Select value={t.effect || "all"} onValueChange={(v) => updateCustom(i, { effect: v === "all" ? "" : (v as Toleration["effect"]) })}>
+                    <Select value={t.effect || "all"} onValueChange={(v) => updateRow(t.id, { effect: v === "all" ? "" : (v as Toleration["effect"]) })}>
                       <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="NoSchedule">NoSchedule</SelectItem>
@@ -239,17 +313,19 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                       </SelectContent>
                     </Select>
                     <Button type="button" size="icon" variant="ghost" className="h-8 w-8"
-                      onClick={() => setCustom((rows) => rows.filter((_, idx) => idx !== i))} title="Remover">
+                      onClick={() => setRows((l) => l.filter((r) => r.id !== t.id))} title="Remover">
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
                   </div>
                 ))}
                 <Button type="button" size="sm" variant="outline" className="h-7 text-xs"
-                  onClick={() => setCustom((rows) => [...rows, emptyCustom()])}>
+                  onClick={() => setRows((l) => [...l, newRow()])}>
                   <Plus className="w-3.5 h-3.5 mr-1" /> Custom
                 </Button>
-                {!customValid && (
-                  <p className="text-[11px] text-amber-600">Toda toleration custom precisa de key (ou do operador Exists).</p>
+                {incomplete > 0 && (
+                  <p className="text-[11px] text-amber-600">
+                    {incomplete} linha(s) sem key ficam fora do YAML (preencha a key ou use o operador Exists).
+                  </p>
                 )}
               </div>
 
@@ -265,8 +341,38 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                 </div>
               </div>
 
+              {(
+                <div className="space-y-2">
+                  <Label className="text-xs">nodeSelector (opcional; vale para todos os componentes marcados)</Label>
+                  {selRows.map((r) => (
+                    <div key={r.id} className="grid grid-cols-[1.6fr_1.6fr_auto] gap-2 items-center">
+                      <Input value={r.key} onChange={(e) => setSelRows((l) => l.map((x) => (x.id === r.id ? { ...x, key: e.target.value } : x)))}
+                        placeholder="label" className="h-8 text-xs font-mono" />
+                      <Input value={r.value} onChange={(e) => setSelRows((l) => l.map((x) => (x.id === r.id ? { ...x, value: e.target.value } : x)))}
+                        placeholder="valor" className="h-8 text-xs font-mono" />
+                      <Button type="button" size="icon" variant="ghost" className="h-8 w-8"
+                        onClick={() => setSelRows((l) => l.filter((x) => x.id !== r.id))} title="Remover">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                  <div className="flex items-center gap-3">
+                    <Button type="button" size="sm" variant="outline" className="h-7 text-xs"
+                      onClick={() => setSelRows((l) => [...l, { id: Date.now(), key: "", value: "" }])}>
+                      <Plus className="w-3.5 h-3.5 mr-1" /> nodeSelector
+                    </Button>
+                    {selRows.length === 0 && (
+                      <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                        <Checkbox checked={removeSelector} onCheckedChange={(v) => setRemoveSelector(v === true)} />
+                        remover o nodeSelector atual dos componentes marcados (<span className="font-mono">nodeSelector: null</span>)
+                      </label>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-1">
-                <Label className="text-xs">Override gerado (tolerations-override.yaml)</Label>
+                <Label className="text-xs">Override gerado (tolerations-override.yaml) — reflete as linhas acima</Label>
                 <Textarea value={valuesYaml || "# selecione ao menos uma toleration e um componente"} readOnly
                   spellCheck={false} className="font-mono text-xs h-48 bg-muted/40" />
               </div>
@@ -295,8 +401,11 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                         <li key={`${w.kind}/${w.name}`} className="text-xs">
                           <span className="font-medium">{w.kind}</span> <span className="font-mono">{w.name}</span>
                           <div className="flex flex-wrap gap-1 mt-0.5">
-                            {w.tolerations.map((t) => (
+                            {w.tolerations?.map((t) => (
                               <span key={t} className="font-mono rounded bg-muted px-1.5 py-0.5">{t}</span>
+                            ))}
+                            {w.node_selector?.map((n) => (
+                              <span key={n} className="font-mono rounded bg-indigo-500/15 px-1.5 py-0.5">nodeSelector {n}</span>
                             ))}
                           </div>
                         </li>

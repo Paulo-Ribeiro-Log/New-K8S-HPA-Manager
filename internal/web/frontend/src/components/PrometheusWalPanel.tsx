@@ -7,7 +7,7 @@ import { Loader2, Stethoscope, AlertTriangle } from "lucide-react";
 import { useAnalyzePrometheusWAL } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { PrometheusWalCleanupDialog } from "@/components/PrometheusWalCleanupDialog";
-import { PrometheusHelmTolerationsDialog } from "@/components/PrometheusHelmTolerationsDialog";
+import { PrometheusHelmTolerationsDialog, type HelmInitial } from "@/components/PrometheusHelmTolerationsDialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,6 +56,8 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
   const analyze = useAnalyzePrometheusWAL();
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [helmOpen, setHelmOpen] = useState(false);
+  // Preenchimento vindo de uma correção de agendamento (null = abertura pelo botão do cabeçalho).
+  const [helmInitial, setHelmInitial] = useState<HelmInitial | null>(null);
   const [restoring, setRestoring] = useState(false);
   const [fixId, setFixId] = useState<string | null>(null);
   const [fixConfirm, setFixConfirm] = useState(false);
@@ -135,7 +137,7 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
           <h4 className="text-sm font-semibold">Diagnóstico do WAL</h4>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => setHelmOpen(true)}
+          <Button size="sm" variant="outline" onClick={() => { setHelmInitial(null); setHelmOpen(true); }}
             title="helm upgrade --reuse-values com o override de tolerations do kube-prometheus-stack">
             Tolerations (Helm)
           </Button>
@@ -337,7 +339,8 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
                         <p className="text-[11px] text-muted-foreground">
                           Troca o nodeSelector do recurso Prometheus e recria o pod que está Pending. Não mexe no WAL nem no
                           volume. Cada opção foi simulada contra os nodes atuais (seletor, afinidade, taints, CPU/memória livres e
-                          zona do volume). Um helm upgrade ou sync do Argo CD desfaz a mudança.
+                          zona do volume). Um helm upgrade ou sync do Argo CD desfaz a mudança: se o Prometheus é gerenciado pelo Helm,
+                          use "Aplicar via Helm" para que ela persista.
                         </p>
                         <div className="space-y-1">
                           {p.placement.options.map((o) => (
@@ -366,9 +369,24 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
                             </button>
                           ))}
                         </div>
-                        <Button size="sm" disabled={!fixId || fixing} onClick={() => setFixConfirm(true)}>
-                          {fixing ? "Aplicando..." : "Aplicar correção…"}
-                        </Button>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" disabled={!fixId || fixing} onClick={() => setFixConfirm(true)}>
+                            {fixing ? "Aplicando..." : "Aplicar correção…"}
+                          </Button>
+                          <Button size="sm" variant="outline" disabled={!fixId || fixing || !selectedFix}
+                            title="Abre o helm upgrade com as tolerations e o nodeSelector desta opção, editáveis, para a mudança persistir"
+                            onClick={() => {
+                              if (!selectedFix) return;
+                              setHelmInitial({
+                                tolerations: [...(selectedFix.current_tolerations ?? []), ...(selectedFix.tolerations ?? [])],
+                                nodeSelector: selectedFix.node_selector,
+                                removeSelector: Object.keys(selectedFix.node_selector).length === 0,
+                              });
+                              setHelmOpen(true);
+                            }}>
+                            Aplicar via Helm…
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -468,6 +486,7 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
           onOpenChange={setHelmOpen}
           cluster={selectedCluster}
           namespace={resource.namespace}
+          initial={helmInitial}
           onApplied={() => onChanged?.()}
         />
       )}

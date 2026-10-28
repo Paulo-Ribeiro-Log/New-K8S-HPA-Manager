@@ -1122,6 +1122,8 @@ export interface PrometheusWALFixOption {
   /** Seletor COMPLETO resultante (vazio = remover o nodeSelector). */
   node_selector: Record<string, string>;
   tolerations?: K8sToleration[];
+  /** Tolerations do pod hoje (sem as automáticas do apiserver): o helm substitui a lista, então o override as leva junto. */
+  current_tolerations?: K8sToleration[];
   /** Avisos que não impedem a aplicação. */
   notes?: string[];
   /** Nodes do pool descartados (sem CPU/memória livre, zona do volume diferente) e o motivo. */
@@ -1161,7 +1163,8 @@ export interface PrometheusHelmInfo {
 export interface PrometheusHelmWorkload {
   kind: string;
   name: string;
-  tolerations: string[];
+  tolerations?: string[];
+  node_selector?: string[];
 }
 
 export interface PrometheusHelmResult {

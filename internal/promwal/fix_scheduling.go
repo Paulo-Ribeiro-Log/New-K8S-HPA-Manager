@@ -24,8 +24,11 @@ type FixOption struct {
 	NodeSelector map[string]string `json:"node_selector"`
 	// Tolerations a acrescentar às que o recurso já tem.
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
-	Notes       []string            `json:"notes,omitempty"`    // avisos: não impedem a aplicação
-	Excluded    []string            `json:"excluded,omitempty"` // nodes do pool descartados e o motivo
+	// CurrentTolerations são as do pod hoje, sem as que o apiserver põe sozinho. Quem aplica pelo Helm precisa delas:
+	// o helm substitui a lista inteira, então o override leva as atuais mais as de Tolerations.
+	CurrentTolerations []corev1.Toleration `json:"current_tolerations,omitempty"`
+	Notes              []string            `json:"notes,omitempty"`    // avisos: não impedem a aplicação
+	Excluded           []string            `json:"excluded,omitempty"` // nodes do pool descartados e o motivo
 	// Blocked: a correção não resolveria (nenhum node do pool passa); a UI mostra o motivo e não deixa aplicar.
 	Blocked string `json:"blocked,omitempty"`
 }
@@ -155,11 +158,12 @@ func fixOptions(p PodInfo, nodes []corev1.Node, facts PlacementFacts) []FixOptio
 			continue // nodeSelector/afinidade/taints continuam barrando: nem vale mostrar
 		}
 		o := FixOption{
-			ID:           "pool:" + name,
-			Label:        fmt.Sprintf("Usar o node pool %s (nodeSelector %s=%s)", name, g.key, g.val),
-			Pool:         name,
-			NodeSelector: sel,
-			Tolerations:  tols,
+			ID:                 "pool:" + name,
+			Label:              fmt.Sprintf("Usar o node pool %s (nodeSelector %s=%s)", name, g.key, g.val),
+			Pool:               name,
+			NodeSelector:       sel,
+			Tolerations:        tols,
+			CurrentTolerations: userTolerations(p.Tolerations),
 		}
 		for _, t := range tols {
 			o.Notes = append(o.Notes, "adiciona a toleration "+formatToleration(t))
@@ -181,16 +185,30 @@ func fixOptions(p PodInfo, nodes []corev1.Node, facts PlacementFacts) []FixOptio
 		}
 		if fitting := fittingNodes(p, map[string]string{}, nil, all); len(fitting) > 0 {
 			o := FixOption{
-				ID:           "no-selector",
-				Label:        "Remover o nodeSelector",
-				NodeSelector: map[string]string{},
-				Notes:        []string{"o pod pode cair em qualquer node sem taint, inclusive pools de aplicação e de sistema"},
+				ID:                 "no-selector",
+				Label:              "Remover o nodeSelector",
+				NodeSelector:       map[string]string{},
+				CurrentTolerations: userTolerations(p.Tolerations),
+				Notes:              []string{"o pod pode cair em qualquer node sem taint, inclusive pools de aplicação e de sistema"},
 			}
 			validateOption(&o, p, nodes, fitting, facts)
 			opts = append(opts, o)
 		}
 	}
 	return opts
+}
+
+// userTolerations tira as tolerations que o apiserver acrescenta a todo pod (not-ready/unreachable com
+// tolerationSeconds): o que sobra é o que veio do recurso Prometheus.
+func userTolerations(tols []corev1.Toleration) []corev1.Toleration {
+	var out []corev1.Toleration
+	for _, t := range tols {
+		if t.TolerationSeconds != nil && strings.HasPrefix(t.Key, "node.kubernetes.io/") {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // validateOption descarta os nodes sem recursos livres ou em zona diferente da do volume e acrescenta os avisos.
