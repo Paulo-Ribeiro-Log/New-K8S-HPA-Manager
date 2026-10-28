@@ -280,7 +280,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
   return (
     <>
       <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-[54rem] max-h-[90vh] overflow-y-auto overflow-x-hidden">
           <DialogHeader>
             <DialogTitle>Prometheus via Helm</DialogTitle>
             <DialogDescription>
@@ -348,7 +348,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                 </div>
 
                 {rows.map((t) => (
-                  <div key={t.id} className="grid grid-cols-[1.6fr_0.9fr_1fr_1.2fr_auto] gap-2 items-center">
+                  <div key={t.id} className="grid grid-cols-[1.6fr_0.9fr_1fr_1.2fr_auto] gap-2 items-center [&>*]:min-w-0">
                     <Input value={t.key} onChange={(e) => updateRow(t.id, { key: e.target.value })}
                       placeholder="key" className={`h-8 text-xs font-mono ${isComplete(t) ? "" : "border-amber-500"}`} />
                     <Select value={t.operator} onValueChange={(v) => updateRow(t.id, { operator: v as Toleration["operator"] })}>
@@ -404,7 +404,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                   const r = resources[c.id] ?? emptyRes();
                   const hint = current?.component === c.id ? current.res : null;
                   return (
-                    <div key={c.id} className="grid grid-cols-[1.2fr_repeat(4,1fr)] gap-2 items-center">
+                    <div key={c.id} className="grid grid-cols-[1.2fr_repeat(4,1fr)] gap-2 items-center [&>*]:min-w-0">
                       <span className="text-xs font-medium">{c.label}</span>
                       {RES_FIELDS.map((f) => (
                         <Input key={f.key} value={r[f.key]} onChange={(e) => setRes(c.id, f.key, e.target.value)}
@@ -422,7 +422,7 @@ export const PrometheusHelmTolerationsDialog = ({ open, onOpenChange, cluster, n
                 <div className="space-y-2">
                   <Label className="text-xs">nodeSelector (opcional; vale para todos os componentes marcados)</Label>
                   {selRows.map((r) => (
-                    <div key={r.id} className="grid grid-cols-[1.6fr_1.6fr_auto] gap-2 items-center">
+                    <div key={r.id} className="grid grid-cols-[1.6fr_1.6fr_auto] gap-2 items-center [&>*]:min-w-0">
                       <Input value={r.key} onChange={(e) => setSelRows((l) => l.map((x) => (x.id === r.id ? { ...x, key: e.target.value } : x)))}
                         placeholder="label" className="h-8 text-xs font-mono" />
                       <Input value={r.value} onChange={(e) => setSelRows((l) => l.map((x) => (x.id === r.id ? { ...x, value: e.target.value } : x)))}
