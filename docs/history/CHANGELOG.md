@@ -3,6 +3,13 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Prometheus (WAL) — tolerations do kube-prometheus-stack via Helm (Outubro 2026)
+
+- Botão "Tolerations (Helm)" no painel de diagnóstico do WAL: roda `helm upgrade <release> kube-prometheus-stack --repo … --version … -n <ns> --reuse-values -f <override>` (o comando que o SRE rodava à mão), com o override montado na tela: opções prontas `prometheus-only` e `spot` (`kubernetes.azure.com/scalesetpriority`), linhas **Custom** (key, operator, value, effect) e a escolha dos componentes (prometheus, alertmanager, kube-state-metrics, prometheusOperator). O helm substitui a lista de tolerations de cada componente marcado (não soma listas): marque tudo o que o componente precisa.
+- Release e versão do chart são detectados no namespace (`helm list`). Primeiro a simulação (`--dry-run`), que libera o "Aplicar" só enquanto nada mudou depois dela; a aplicação pede confirmação.
+- A resposta mostra só a revisão e as tolerations por recurso (Deployment/StatefulSet/DaemonSet/Prometheus/Alertmanager); o manifesto do helm, que traz Secrets, nunca sai do servidor. Só a aplicação vai ao Change History, com SHA-256 e tamanho do YAML.
+- Rotas: `GET`/`POST /prometheus/wal/helm-tolerations` (POST atrás do grupo SRE). Entradas validadas (nome, versão, repositório só https) e o helm roda sem shell.
+
 ### FinOps — node pool alterado aparece na análise (Outubro 2026)
 
 - A análise (e o scan de rightsizing) lia os node pools do registry (`nodepool_registry.db`), que só era reescrito pelo scan manual da aba Dynatrace; renomear um node pool ou trocar a família da VM não aparecia (ex.: `calculofrete` → `calculofret2`).

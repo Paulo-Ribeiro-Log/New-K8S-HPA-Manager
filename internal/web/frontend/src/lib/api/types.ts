@@ -1147,6 +1147,33 @@ export interface PrometheusSchedulingResult {
   warnings?: string[];
 }
 
+/** Release do kube-prometheus-stack + override padrão de tolerations (GET /prometheus/wal/helm-tolerations). */
+export interface PrometheusHelmInfo {
+  release?: string;
+  chart: string;
+  chart_version?: string;
+  status?: string;
+  repo: string;
+  values_yaml: string;
+  detect_error?: string;
+}
+
+export interface PrometheusHelmWorkload {
+  kind: string;
+  name: string;
+  tolerations: string[];
+}
+
+export interface PrometheusHelmResult {
+  dry_run: boolean;
+  release: string;
+  chart_version: string;
+  revision: number;
+  status: string;
+  workloads: PrometheusHelmWorkload[];
+  command: string;
+}
+
 /** Diagnóstico node a node de um pod que não foi agendado. */
 export interface PrometheusWALPlacement {
   options?: PrometheusWALFixOption[];

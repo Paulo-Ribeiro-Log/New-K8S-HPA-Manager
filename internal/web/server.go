@@ -998,6 +998,9 @@ func (s *Server) setupRoutes() {
 	api.POST("/prometheus/wal/restore", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Restore)
 	// Correção de agendamento (pod não cabe em nenhum node): nodeSelector/tolerations do recurso Prometheus (SRE)
 	api.POST("/prometheus/wal/scheduling", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.Scheduling)
+	// Tolerations do kube-prometheus-stack via `helm upgrade --reuse-values -f` (SRE); dry_run só simula
+	api.GET("/prometheus/wal/helm-tolerations", prometheusWALHandler.HelmRelease)
+	api.POST("/prometheus/wal/helm-tolerations", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.HelmTolerations)
 	s.router.GET("/api/v1/prometheus/wal/progress/:id",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		prometheusWALHandler.Stream)

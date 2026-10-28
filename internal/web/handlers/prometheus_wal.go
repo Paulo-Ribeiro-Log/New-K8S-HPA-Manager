@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -26,6 +27,7 @@ const (
 	walHealthTimeout      = 20 * time.Second
 	walHealthTTL          = 45 * time.Second
 	walSchedulingTimeout  = 90 * time.Second
+	walHelmTimeout        = 3 * time.Minute // o helm baixa o índice/chart do repositório
 )
 
 // PrometheusWALHandler analisa um Prometheus que não sobe e diz se limpar o WAL é indicado
@@ -488,6 +490,69 @@ func (h *PrometheusWALHandler) Scheduling(c *gin.Context) {
 	h.healthMu.Lock()
 	delete(h.healthCache, req.Cluster)
 	h.healthMu.Unlock()
+	c.JSON(http.StatusOK, res)
+}
+
+// HelmRelease godoc
+// GET /api/v1/prometheus/wal/helm-tolerations?cluster=X&namespace=Y — acha o release do kube-prometheus-stack
+// (nome e versão do chart) e devolve o override de tolerations padrão e o repositório, para preencher o diálogo.
+func (h *PrometheusWALHandler) HelmRelease(c *gin.Context) {
+	cluster, namespace := c.Query("cluster"), c.Query("namespace")
+	if cluster == "" || namespace == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "informe cluster e namespace"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), walAnalyzeTimeout)
+	defer cancel()
+	rel, err := promwal.DetectHelmRelease(ctx, promwal.HelmCLIRunner(cluster), namespace)
+	resp := gin.H{"values_yaml": promwal.DefaultTolerationsYAML, "chart": promwal.DefaultHelmChart, "repo": promwal.DefaultHelmRepo}
+	if err != nil {
+		resp["detect_error"] = err.Error() // o diálogo ainda abre: o usuário informa o release à mão
+	} else if rel != nil {
+		resp["release"], resp["chart_version"], resp["status"] = rel.Release, rel.ChartVersion, rel.Status
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// HelmTolerations godoc
+// POST /api/v1/prometheus/wal/helm-tolerations (SRE) {cluster,namespace,release,chart,repo,version,values_yaml,dry_run}
+// — `helm upgrade --reuse-values -f <override>` do kube-prometheus-stack para corrigir as tolerations. Com dry_run
+// só simula. A resposta traz só o resumo (revisão e tolerations por recurso), nunca o manifesto.
+func (h *PrometheusWALHandler) HelmTolerations(c *gin.Context) {
+	var req promwal.HelmTolerationsRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "informe cluster, namespace, release e o YAML de tolerations"})
+		return
+	}
+	if err := req.Validate(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), walHelmTimeout)
+	defer cancel()
+	res, err := promwal.ApplyHelmTolerations(ctx, promwal.HelmCLIRunner(req.Cluster), req)
+	if !req.DryRun { // simulação não altera nada: só a aplicação vai ao histórico
+		sum := sha256.Sum256([]byte(req.ValuesYAML))
+		after := map[string]interface{}{"chart": req.Chart, "chart_version": req.Version,
+			"values_sha256": hex.EncodeToString(sum[:]), "values_bytes": len(req.ValuesYAML)}
+		if res != nil {
+			after["revision"], after["status"] = res.Revision, res.Status
+		}
+		logOperation(c, h.historyTracker, "prometheus_helm_tolerations", req.Namespace+"/"+req.Release, req.Cluster, nil, after, start, err)
+	}
+	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	if !req.DryRun {
+		h.healthMu.Lock()
+		delete(h.healthCache, req.Cluster)
+		h.healthMu.Unlock()
+	}
 	c.JSON(http.StatusOK, res)
 }
 
