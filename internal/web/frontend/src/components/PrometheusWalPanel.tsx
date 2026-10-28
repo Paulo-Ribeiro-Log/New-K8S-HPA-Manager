@@ -7,7 +7,7 @@ import { Loader2, Stethoscope, AlertTriangle } from "lucide-react";
 import { useAnalyzePrometheusWAL } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { PrometheusWalCleanupDialog } from "@/components/PrometheusWalCleanupDialog";
-import { PrometheusHelmTolerationsDialog, type HelmInitial } from "@/components/PrometheusHelmTolerationsDialog";
+import { PrometheusHelmTolerationsDialog, type HelmInitial, type Res } from "@/components/PrometheusHelmTolerationsDialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -45,6 +45,19 @@ const formatBytes = (b: number) => {
   if (b >= 1 << 20) return `${(b / (1 << 20)).toFixed(0)} MiB`;
   return `${Math.round(b / 1024)} KiB`;
 };
+
+// Componente do chart a que o recurso selecionado pertence (para mostrar os valores atuais nos campos do Helm).
+const helmComponentOf = (r: PrometheusResource) => {
+  const n = r.name.toLowerCase();
+  if (n.includes("alertmanager")) return "alertmanager";
+  if (n.includes("kube-state-metrics")) return "kube-state-metrics";
+  if (n.includes("operator")) return "prometheusOperator";
+  return "prometheus";
+};
+const helmCurrentOf = (r: PrometheusResource): { component: string; res: Res } => ({
+  component: helmComponentOf(r),
+  res: { cpuReq: r.current_cpu_request || "", cpuLim: r.current_cpu_limit || "", memReq: r.current_memory_request || "", memLim: r.current_memory_limit || "" },
+});
 
 // O StatefulSet do operator se chama "prometheus-<recurso Prometheus>"; vazio = o backend usa o único do namespace.
 const crNameOf = (r: PrometheusResource) =>
@@ -138,8 +151,8 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => { setHelmInitial(null); setHelmOpen(true); }}
-            title="helm upgrade --reuse-values com o override de tolerations do kube-prometheus-stack">
-            Tolerations (Helm)
+            title="helm upgrade --reuse-values do kube-prometheus-stack: tolerations, nodeSelector, requests/limits e histórico de revisões">
+            Helm
           </Button>
           <Button size="sm" variant="outline" onClick={run} disabled={analyze.isPending}>
             {analyze.isPending ? (
@@ -187,13 +200,27 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
                 Memory limit sugerido: <b>{report.suggested_memory}</b>. A ferramenta só informa o valor; a alteração é feita
                 no editor de recursos desta aba.
               </p>
-              {onSuggestMemory && (
-                <Button size="sm" variant="outline" onClick={() => onSuggestMemory(report.suggested_memory!)}>
-                  Abrir o editor com {report.suggested_memory}
+              <div className="flex flex-wrap gap-2">
+                {onSuggestMemory && (
+                  <Button size="sm" variant="outline" onClick={() => onSuggestMemory(report.suggested_memory!)}>
+                    Abrir o editor com {report.suggested_memory}
+                  </Button>
+                )}
+                <Button size="sm" variant="outline"
+                  title="Abre o helm upgrade com este memory limit no Prometheus: a mudança persiste e vira uma revisão do release"
+                  onClick={() => {
+                    setHelmInitial({
+                      tolerations: [], nodeSelector: {}, removeSelector: false,
+                      resources: { [helmComponentOf(resource)]: { memLim: report.suggested_memory! } },
+                      components: [helmComponentOf(resource)],
+                    });
+                    setHelmOpen(true);
+                  }}>
+                  Aplicar {report.suggested_memory} via Helm…
                 </Button>
-              )}
+              </div>
               <p className="text-xs text-muted-foreground">
-                Se o prometheus-operator reverter a edição do StatefulSet, altere o limit no recurso Prometheus (CRD/Helm).
+                Se o prometheus-operator reverter a edição do StatefulSet, aplique pelo Helm: o limit persiste e vira uma revisão do release.
               </p>
             </div>
           )}
@@ -487,6 +514,7 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
           cluster={selectedCluster}
           namespace={resource.namespace}
           initial={helmInitial}
+          current={helmCurrentOf(resource)}
           onApplied={() => onChanged?.()}
         />
       )}

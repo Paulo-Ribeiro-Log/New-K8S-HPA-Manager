@@ -556,6 +556,63 @@ func (h *PrometheusWALHandler) HelmTolerations(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
+// HelmHistory godoc
+// GET /api/v1/prometheus/wal/helm-history?cluster=X&namespace=Y&release=Z — revisões do release (helm history).
+func (h *PrometheusWALHandler) HelmHistory(c *gin.Context) {
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "informe cluster, namespace e release"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), walAnalyzeTimeout)
+	defer cancel()
+	revs, err := promwal.HelmHistory(ctx, promwal.HelmCLIRunner(cluster), c.Query("namespace"), c.Query("release"))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"revisions": revs})
+}
+
+// HelmRollback godoc
+// POST /api/v1/prometheus/wal/helm-rollback (SRE) {cluster,namespace,release,revision,dry_run} — volta o release para
+// uma revisão anterior (helm rollback); cria uma revisão nova. Só a execução real vai ao histórico de mudanças.
+func (h *PrometheusWALHandler) HelmRollback(c *gin.Context) {
+	var req struct {
+		Cluster   string `json:"cluster"`
+		Namespace string `json:"namespace"`
+		Release   string `json:"release"`
+		Revision  int    `json:"revision"`
+		DryRun    bool   `json:"dry_run"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "informe cluster, namespace, release e revision"})
+		return
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), walHelmTimeout)
+	defer cancel()
+	run := promwal.HelmCLIRunner(req.Cluster)
+	err := promwal.HelmRollback(ctx, run, req.Namespace, req.Release, req.Revision, req.DryRun)
+	if !req.DryRun {
+		logOperation(c, h.historyTracker, "prometheus_helm_rollback", req.Namespace+"/"+req.Release, req.Cluster,
+			nil, map[string]interface{}{"revision": req.Revision}, start, err)
+	}
+	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	if !req.DryRun {
+		h.healthMu.Lock()
+		delete(h.healthCache, req.Cluster)
+		h.healthMu.Unlock()
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "dry_run": req.DryRun, "revision": req.Revision})
+}
+
 func newWALOpID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)

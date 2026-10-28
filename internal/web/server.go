@@ -1001,6 +1001,9 @@ func (s *Server) setupRoutes() {
 	// Tolerations do kube-prometheus-stack via `helm upgrade --reuse-values -f` (SRE); dry_run só simula
 	api.GET("/prometheus/wal/helm-tolerations", prometheusWALHandler.HelmRelease)
 	api.POST("/prometheus/wal/helm-tolerations", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.HelmTolerations)
+	// Revisões do release e rollback (helm history / helm rollback)
+	api.GET("/prometheus/wal/helm-history", prometheusWALHandler.HelmHistory)
+	api.POST("/prometheus/wal/helm-rollback", rbacMiddleware.RequireSREGroup(), prometheusWALHandler.HelmRollback)
 	s.router.GET("/api/v1/prometheus/wal/progress/:id",
 		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		prometheusWALHandler.Stream)
