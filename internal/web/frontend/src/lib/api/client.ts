@@ -15,6 +15,8 @@ import type {
   PrometheusUpdateResult,
   PrometheusWALReport,
   PrometheusSchedulingResult,
+  PrometheusHelmInfo,
+  PrometheusHelmResult,
   K8sToleration,
   PrometheusWALHealth,
   PrometheusWALCleanupRequest,
@@ -3022,6 +3024,25 @@ class APIClient {
     return this.request("/prometheus/wal/restore", {
       method: "POST",
       body: JSON.stringify({ cluster, namespace, name }),
+    });
+  }
+
+  /** Release do kube-prometheus-stack no namespace e o override de tolerations padrão. */
+  async getPrometheusHelmInfo(cluster: string, namespace: string): Promise<PrometheusHelmInfo> {
+    return this.request(`/prometheus/wal/helm-tolerations?cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(namespace)}`);
+  }
+
+  /** helm upgrade --reuse-values -f <override> do kube-prometheus-stack; dryRun só simula. */
+  async applyPrometheusHelmTolerations(req: {
+    cluster: string; namespace: string; release: string; chart: string; repo: string;
+    version: string; valuesYaml: string; dryRun: boolean;
+  }): Promise<PrometheusHelmResult> {
+    return this.request("/prometheus/wal/helm-tolerations", {
+      method: "POST",
+      body: JSON.stringify({
+        cluster: req.cluster, namespace: req.namespace, release: req.release, chart: req.chart,
+        repo: req.repo, version: req.version, values_yaml: req.valuesYaml, dry_run: req.dryRun,
+      }),
     });
   }
 

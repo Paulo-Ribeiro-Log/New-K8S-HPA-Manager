@@ -7,6 +7,7 @@ import { Loader2, Stethoscope, AlertTriangle } from "lucide-react";
 import { useAnalyzePrometheusWAL } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { PrometheusWalCleanupDialog } from "@/components/PrometheusWalCleanupDialog";
+import { PrometheusHelmTolerationsDialog } from "@/components/PrometheusHelmTolerationsDialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,6 +55,7 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
   const [report, setReport] = useState<PrometheusWALReport | null>(null);
   const analyze = useAnalyzePrometheusWAL();
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [helmOpen, setHelmOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [fixId, setFixId] = useState<string | null>(null);
   const [fixConfirm, setFixConfirm] = useState(false);
@@ -132,16 +134,22 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
           <Stethoscope className="w-4 h-4 text-muted-foreground" />
           <h4 className="text-sm font-semibold">Diagnóstico do WAL</h4>
         </div>
-        <Button size="sm" variant="outline" onClick={run} disabled={analyze.isPending}>
-          {analyze.isPending ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-              Analisando...
-            </>
-          ) : (
-            "Analisar WAL"
-          )}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setHelmOpen(true)}
+            title="helm upgrade --reuse-values com o override de tolerations do kube-prometheus-stack">
+            Tolerations (Helm)
+          </Button>
+          <Button size="sm" variant="outline" onClick={run} disabled={analyze.isPending}>
+            {analyze.isPending ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                Analisando...
+              </>
+            ) : (
+              "Analisar WAL"
+            )}
+          </Button>
+        </div>
       </div>
 
       <label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
@@ -453,6 +461,16 @@ export const PrometheusWalPanel = ({ resource, selectedCluster, onSuggestMemory,
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {helmOpen && (
+        <PrometheusHelmTolerationsDialog
+          open={helmOpen}
+          onOpenChange={setHelmOpen}
+          cluster={selectedCluster}
+          namespace={resource.namespace}
+          onApplied={() => onChanged?.()}
+        />
+      )}
 
       {report && report.verdict === "limpar_wal" && cleanupOpen && (
         <PrometheusWalCleanupDialog
