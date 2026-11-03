@@ -728,6 +728,9 @@ func (c *CLIClient) buildUninstallArgs(req HelmActionRequest) ([]string, func(),
 	if req.Namespace != "" {
 		args = append(args, "--namespace", req.Namespace)
 	}
+	if req.DryRun {
+		args = append(args, "--dry-run")
+	}
 
 	return args, nil, nil
 }

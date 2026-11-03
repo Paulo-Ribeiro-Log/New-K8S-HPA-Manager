@@ -19,6 +19,8 @@ type rawItem struct {
 		UID             string            `json:"uid"`
 		Labels          map[string]string `json:"labels"`
 		Annotations     map[string]string `json:"annotations"`
+		DeletionTS      string            `json:"deletionTimestamp"`
+		Finalizers      []string          `json:"finalizers"`
 		OwnerReferences []struct {
 			Kind string `json:"kind"`
 			Name string `json:"name"`
@@ -46,15 +48,17 @@ func ParseList(data []byte) ([]Resource, error) {
 	out := make([]Resource, 0, len(list.Items))
 	for _, it := range list.Items {
 		r := Resource{
-			Kind:        it.Kind,
-			Name:        it.Metadata.Name,
-			UID:         it.Metadata.UID,
-			Type:        it.Type,
-			Labels:      it.Metadata.Labels,
-			Annotations: it.Metadata.Annotations,
-			Spec:        it.Spec,
-			RoleRefKind: it.RoleRef.Kind,
-			RoleRefName: it.RoleRef.Name,
+			Kind:              it.Kind,
+			Name:              it.Metadata.Name,
+			UID:               it.Metadata.UID,
+			Type:              it.Type,
+			Labels:            it.Metadata.Labels,
+			Annotations:       it.Metadata.Annotations,
+			Spec:              it.Spec,
+			DeletionTimestamp: it.Metadata.DeletionTS,
+			Finalizers:        it.Metadata.Finalizers,
+			RoleRefKind:       it.RoleRef.Kind,
+			RoleRefName:       it.RoleRef.Name,
 		}
 		for _, o := range it.Metadata.OwnerReferences {
 			r.Owners = append(r.Owners, Owner{Kind: o.Kind, Name: o.Name, UID: o.UID})

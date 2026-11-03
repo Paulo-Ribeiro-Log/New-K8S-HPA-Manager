@@ -3792,13 +3792,68 @@ export interface AppRemovalItem {
   data_risk: boolean;
   removed_by_helm: boolean;
   default_selected: boolean;
+  /** só na verificação pós-remoção */
+  state?: AppRemovalItemState;
+  finalizers?: string[];
 }
 
+export type AppRemovalItemState = "removed" | "remaining" | "terminating" | "recreated" | "new";
+
 export interface AppRemovalScanResult {
+  /** identifica o scan guardado no servidor; base da execução e da verificação */
+  scan_id?: string;
   namespace: string;
   name: string;
   origin: AppRemovalOrigin;
   helm?: { release: string; revisions: number };
   items: AppRemovalItem[];
   warnings: string[];
+}
+
+export interface AppRemovalTarget {
+  kind: string;
+  name: string;
+  uid?: string;
+}
+
+export interface ExecuteAppRemovalRequest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  items: AppRemovalTarget[];
+  dry_run: boolean;
+  confirm_name: string;
+  scan_id?: string;
+}
+
+export interface AppRemovalVerifyResult {
+  namespace: string;
+  name: string;
+  app_gone: boolean;
+  items: AppRemovalItem[];
+  leftovers?: AppRemovalScanResult;
+}
+
+export interface ExecuteAppRemovalResponse {
+  operation_id: string;
+  total: number;
+  dry_run: boolean;
+}
+
+export type AppRemovalStatus = "deleted" | "simulated" | "not_found" | "skipped" | "failed";
+
+export interface AppRemovalOutcome {
+  kind: string;
+  name: string;
+  status: AppRemovalStatus;
+  message?: string;
+}
+
+export interface AppRemovalSSEEvent {
+  type: "init" | "item" | "complete" | "error";
+  phase: string;
+  message: string;
+  progress: number;
+  error?: string;
+  result?: AppRemovalOutcome | { dry_run: boolean; failed: boolean; outcomes: AppRemovalOutcome[] };
 }

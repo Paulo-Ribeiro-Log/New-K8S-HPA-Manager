@@ -328,14 +328,7 @@ func (s *scanner) finish(res *Result) []Item {
 	for i := range items {
 		it := &items[i]
 		it.DataRisk = it.Kind == KindSecret || it.Kind == KindPVC
-		switch {
-		case it.Shared, it.RemovedByHelm:
-			it.DefaultSelected = false
-		case it.Kind == KindSecret, it.Kind == KindPVC, it.Kind == KindExternalSecret:
-			it.DefaultSelected = false
-		default:
-			it.DefaultSelected = true
-		}
+		it.DefaultSelected = defaultSelected(*it)
 	}
 	if res.Helm != nil {
 		removed := 0
@@ -517,4 +510,17 @@ func removalRank(kind string) int {
 	default:
 		return 5
 	}
+}
+
+// defaultSelected é a seleção sugerida: nunca marca o que é compartilhado, coberto pelo release
+// Helm (o release já o remove) ou guarda dados (Secret, PVC) e o ExternalSecret que recria o Secret.
+func defaultSelected(it Item) bool {
+	if it.Shared || it.RemovedByHelm {
+		return false
+	}
+	switch it.Kind {
+	case KindSecret, KindPVC, KindExternalSecret:
+		return false
+	}
+	return true
 }
