@@ -3770,3 +3770,35 @@ export interface AzureSessionStatus {
 export interface AzureLoginResult extends AzureSessionStatus {
   subscription?: string;
 }
+
+// ─── Remoção de Aplicação (Tools menu) ──────────────────────────────────────
+
+export type AppRemovalOrigin = "helm" | "kustomize" | "kustomize-provavel" | "manual";
+
+export interface AppRemovalCandidate {
+  kind: string;
+  name: string;
+  helm_release?: string;
+}
+
+export interface AppRemovalItem {
+  kind: string;
+  name: string;
+  uid?: string;
+  origin: AppRemovalOrigin;
+  reason: string;
+  shared: boolean;
+  used_by?: string[];
+  data_risk: boolean;
+  removed_by_helm: boolean;
+  default_selected: boolean;
+}
+
+export interface AppRemovalScanResult {
+  namespace: string;
+  name: string;
+  origin: AppRemovalOrigin;
+  helm?: { release: string; revisions: number };
+  items: AppRemovalItem[];
+  warnings: string[];
+}

@@ -74,6 +74,7 @@ import DatabaseTestTab from "@/components/DatabaseTestTab";
 import NetDiscoveryTab from "@/components/NetDiscoveryTab";
 import VMsTab from "@/components/VMsTab";
 import AKVDiscoveryTab from "@/components/AKVDiscoveryTab";
+import AppRemovalTab from "@/components/AppRemovalTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
 import { NodesTab } from "@/components/NodesTab";
@@ -1479,6 +1480,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="VMs Tab">
             <VMsTab />
+          </ErrorBoundary>
+        );
+
+      case "app-removal":
+        return (
+          <ErrorBoundary componentName="App Removal Tab">
+            <AppRemovalTab />
           </ErrorBoundary>
         );
 

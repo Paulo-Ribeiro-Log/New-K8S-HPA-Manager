@@ -1572,6 +1572,14 @@ func (s *Server) setupRoutes() {
 		akvDiscovery.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), akvDiscoveryHandler.Stop)
 	}
 
+	// Remoção de Aplicação (Tools menu) — fase 1: só leitura (candidatos e scan de dependências)
+	appRemovalHandler := handlers.NewAppRemovalHandler()
+	appRemoval := api.Group("/app-removal")
+	{
+		appRemoval.GET("/:cluster/:namespace/candidates", appRemovalHandler.Candidates)
+		appRemoval.GET("/:cluster/:namespace/:name/scan", appRemovalHandler.Scan)
+	}
+
 	// Certificates TLS
 	certificatesHandler := handlers.NewCertificatesHandler(s.kubeManager, s.historyTracker)
 	certGroup := api.Group("/certificates")

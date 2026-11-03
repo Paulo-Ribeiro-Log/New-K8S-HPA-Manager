@@ -28,6 +28,7 @@ import {
   Route,
   ScanEye,
   Server,
+  PackageX,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -64,6 +65,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "net-discovery", label: "Descoberta de Rede", icon: Route },
   { id: "akv-discovery", label: "Descoberta AKV", icon: ScanEye },
   { id: "vms", label: "VMs / EC2", icon: Server },
+  { id: "app-removal", label: "Remoção de Aplicação", icon: PackageX },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {
