@@ -4683,6 +4683,22 @@ class APIClient {
     );
   }
 
+  /** Inicia a remoção (ou a simulação, com dry_run) da seleção; o progresso vem por SSE */
+  async executeAppRemoval(
+    req: import("./types").ExecuteAppRemovalRequest
+  ): Promise<import("./types").ExecuteAppRemovalResponse> {
+    return this.request<import("./types").ExecuteAppRemovalResponse>("/app-removal/execute", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** URL do SSE de progresso da remoção — token via query param (EventSource não aceita headers) */
+  getAppRemovalStreamURL(operationId: string): string {
+    const token = localStorage.getItem("auth_token");
+    return `/api/v1/app-removal-stream/${encodeURIComponent(operationId)}?token=${encodeURIComponent(token ?? "")}`;
+  }
+
   // ─── Teste de Kafka sob Demanda ────────────────────────────────────────────
 
   /** Inicia o teste de Kafka (cria pod efêmero kcat) e retorna session_id para SSE */
