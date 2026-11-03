@@ -4660,6 +4660,29 @@ class APIClient {
     );
   }
 
+  // ─── Remoção de Aplicação (Tools menu) ─────────────────────────────────────
+
+  /** Workloads e releases Helm do namespace, como alvos possíveis do scan */
+  async listAppRemovalCandidates(
+    cluster: string,
+    namespace: string
+  ): Promise<{ candidates: import("./types").AppRemovalCandidate[] }> {
+    return this.request<{ candidates: import("./types").AppRemovalCandidate[] }>(
+      `/app-removal/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/candidates`
+    );
+  }
+
+  /** Descobre tudo o que pertence à aplicação (só leitura) */
+  async scanAppRemoval(
+    cluster: string,
+    namespace: string,
+    name: string
+  ): Promise<import("./types").AppRemovalScanResult> {
+    return this.request<import("./types").AppRemovalScanResult>(
+      `/app-removal/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/scan`
+    );
+  }
+
   // ─── Teste de Kafka sob Demanda ────────────────────────────────────────────
 
   /** Inicia o teste de Kafka (cria pod efêmero kcat) e retorna session_id para SSE */
