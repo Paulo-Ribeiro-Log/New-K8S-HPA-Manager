@@ -107,6 +107,8 @@ type Item struct {
 	DataRisk        bool     `json:"data_risk"`
 	RemovedByHelm   bool     `json:"removed_by_helm"`
 	DefaultSelected bool     `json:"default_selected"`
+	// Step é a etapa do plano de remoção em que o item entra (ver order.go).
+	Step string `json:"step"`
 	// State e Finalizers só vêm preenchidos pela verificação (verify.go).
 	State      string   `json:"state,omitempty"`
 	Finalizers []string `json:"finalizers,omitempty"`
@@ -116,6 +118,15 @@ type Item struct {
 type HelmInfo struct {
 	Release   string `json:"release"`
 	Revisions int    `json:"revisions"`
+	Chart     string `json:"chart,omitempty"`  // ex.: "api-1.4.2" (vem do helm list)
+	Status    string `json:"status,omitempty"` // ex.: "deployed", "failed"
+}
+
+// ReleaseRef é um release Helm como o `helm list` o descreve.
+type ReleaseRef struct {
+	Name   string
+	Chart  string
+	Status string
 }
 
 // Result é o resultado do scan.
@@ -136,4 +147,6 @@ type Candidate struct {
 	Kind        string `json:"kind"`
 	Name        string `json:"name"`
 	HelmRelease string `json:"helm_release,omitempty"`
+	Chart       string `json:"chart,omitempty"`
+	Status      string `json:"status,omitempty"`
 }

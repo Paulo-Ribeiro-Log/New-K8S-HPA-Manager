@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const deleteTimeout = 120 * time.Second
+const deleteTimeout = 180 * time.Second
 
 // resourceFor mapeia o Kind para o recurso totalmente qualificado do kubectl. Também é a lista
 // de tipos que a ferramenta aceita remover.
@@ -103,6 +103,11 @@ func (k KubectlRunner) Delete(ctx context.Context, cluster, namespace, kind, nam
 	ctx, cancel := context.WithTimeout(ctx, deleteTimeout)
 	defer cancel()
 	args := []string{"delete", res, name, "-n", namespace, "--context", cluster, "--timeout=90s"}
+	if isController(kind) {
+		// foreground: o kubectl só volta depois que ReplicaSets e pods saíram, então nada mais usa
+		// PVC/config e nada é recriado pelo controller enquanto seguimos para as próximas etapas.
+		args = []string{"delete", res, name, "-n", namespace, "--context", cluster, "--timeout=150s", "--cascade=foreground"}
+	}
 	if dryRun {
 		args = append(args, "--dry-run=server")
 	}
@@ -120,6 +125,14 @@ func (k KubectlRunner) HelmUninstall(ctx context.Context, cluster, namespace, re
 		return errors.New("helm indisponível")
 	}
 	return k.Uninstall(ctx, cluster, namespace, release, dryRun)
+}
+
+func isController(kind string) bool {
+	switch kind {
+	case KindDeployment, KindStatefulSet, KindDaemonSet, KindCronJob:
+		return true
+	}
+	return false
 }
 
 func isNotFound(err error) bool {

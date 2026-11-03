@@ -1,9 +1,6 @@
 package appremoval
 
-import (
-	"fmt"
-	"sort"
-)
+import "fmt"
 
 // Estados de um item na verificação pós-remoção.
 const (
@@ -93,13 +90,7 @@ func Verify(original *Result, resources []Resource) *VerifyResult {
 		return v
 	}
 
-	sort.SliceStable(left, func(i, j int) bool {
-		ri, rj := removalRank(left[i].Kind), removalRank(left[j].Kind)
-		if ri != rj {
-			return ri < rj
-		}
-		return left[i].Name < left[j].Name
-	})
+	sortByRemovalPlan(left)
 	res := &Result{
 		Namespace: original.Namespace,
 		Name:      original.Name,
