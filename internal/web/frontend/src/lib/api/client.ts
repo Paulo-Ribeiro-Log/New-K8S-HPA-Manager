@@ -5787,13 +5787,20 @@ class APIClient {
     });
   }
 
-  // View Plan: último plan do Atlantis comentado no PR da branch atual (somente leitura)
+  // View Plan: plans/outputs do PR da branch atual — Atlantis, comentários, checks e jobs do
+  // Actions (somente leitura)
   async codeEditorGetPRPlan(id: string, pr?: number, profileId?: string): Promise<CodeEditorPRPlanResponse> {
     const params = new URLSearchParams();
     if (pr) params.set("pr", String(pr));
     if (profileId) params.set("profile_id", profileId);
     const qs = params.toString();
     return this.request(`/code-editor/repos/${id}/pr/plan${qs ? `?${qs}` : ""}`);
+  }
+
+  // Há plan/output para mostrar? (consulta barata, sem baixar logs) — habilita o botão View Plan
+  async codeEditorPlanAvailable(id: string, profileId?: string): Promise<CodeEditorPlanAvailability> {
+    const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
+    return this.request(`/code-editor/repos/${id}/pr/plan/available${qs}`);
   }
 
   // ─── Port Forward ─────────────────────────────────────────────────────
@@ -5978,6 +5985,7 @@ export interface CodeEditorPlanPR {
   state: string; // open | closed | merged
   url: string;
   updated_at: string;
+  head_sha?: string;
 }
 
 export interface CodeEditorPlanProject {
@@ -5987,17 +5995,36 @@ export interface CodeEditorPlanProject {
   error: boolean;
 }
 
+/** De onde veio o plan/output: Atlantis, comentário de outro bot, check run ou log de job do Actions */
+export type CodeEditorPlanSourceKind = "atlantis" | "comment" | "check" | "workflow";
+
+export interface CodeEditorPlanSource {
+  kind: CodeEditorPlanSourceKind;
+  label: string;
+  url: string;
+  author: string;
+  created_at: string;
+  comments: number; // > 1 quando o plan do Atlantis veio dividido em vários comentários
+  projects: CodeEditorPlanProject[];
+}
+
 export interface CodeEditorPRPlanResponse {
   branch: string;
   prs: CodeEditorPlanPR[];
   pr: CodeEditorPlanPR | null;
-  plan: {
-    comment_url: string;
-    author: string;
-    created_at: string;
-    comments: number;
-    projects: CodeEditorPlanProject[];
-  } | null;
+  sources: CodeEditorPlanSource[];
+  warnings: string[];
+}
+
+/** Resposta barata que habilita/desabilita o botão View Plan */
+export interface CodeEditorPlanAvailability {
+  available: boolean;
+  branch: string;
+  pr: CodeEditorPlanPR | null;
+  reason?: "no_pr" | "no_output";
+  comments: number;
+  checks: number;
+  jobs: number;
 }
 
 export interface CodeEditorLogEntry {
