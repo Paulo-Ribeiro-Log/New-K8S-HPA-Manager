@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Check, ChevronsUpDown, FlaskConical, Loader2, PackageX, ScanSearch, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, ChevronsUpDown, FlaskConical, Loader2, PackageX, RefreshCw, ScanSearch, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -134,6 +134,13 @@ interface RunState {
   error?: string;
 }
 
+interface VerificationSummary {
+  removed: number;
+  total: number;
+  appGone: boolean;
+  leftovers: number;
+}
+
 function ItemRow({
   item,
   checked,
@@ -171,6 +178,9 @@ function ItemRow({
             Também usado por: {item.used_by.join(", ")}
           </div>
         )}
+        {item.finalizers && item.finalizers.length > 0 && (
+          <div className="mt-1 text-amber-600 dark:text-amber-400">Finalizers: {item.finalizers.join(", ")}</div>
+        )}
         {outcome?.message && <div className="mt-1 text-red-600 dark:text-red-400">{outcome.message}</div>}
       </td>
       <td className="px-3 py-2">
@@ -178,6 +188,9 @@ function ItemRow({
           {item.shared && <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-600">Compartilhado</Badge>}
           {item.data_risk && <Badge variant="outline" className="text-[10px] border-red-500 text-red-600">Dados</Badge>}
           {coveredByHelm && <Badge variant="outline" className="text-[10px]">Removido pelo Helm</Badge>}
+          {item.state === "terminating" && <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-600">Terminating</Badge>}
+          {item.state === "recreated" && <Badge variant="outline" className="text-[10px] border-red-500 text-red-600">Recriado</Badge>}
+          {item.state === "new" && <Badge variant="outline" className="text-[10px] border-blue-500 text-blue-600">Novo</Badge>}
         </div>
       </td>
       <td className="px-3 py-2 text-xs whitespace-nowrap">
@@ -203,6 +216,9 @@ export default function AppRemovalTab() {
   const [result, setResult] = useState<AppRemovalScanResult | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [run, setRun] = useState<RunState | null>(null);
+  const [verification, setVerification] = useState<VerificationSummary | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const verifiedRef = useRef<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmName, setConfirmName] = useState("");
@@ -226,8 +242,44 @@ export default function AppRemovalTab() {
     setResult(null);
     setScanError(null);
     setRun(null);
+    setVerification(null);
     setSelected(new Set());
   };
+
+  // Confere o namespace contra o scan guardado; as sobras viram a nova lista de seleção.
+  const verify = async (scanId: string) => {
+    setVerifying(true);
+    try {
+      const v = await apiClient.verifyAppRemoval(scanId);
+      setVerification({
+        removed: v.items.filter((i) => i.state === "removed").length,
+        total: v.items.length,
+        appGone: v.app_gone,
+        leftovers: v.leftovers?.items.length ?? 0,
+      });
+      if (v.app_gone || !v.leftovers) {
+        setResult(null);
+        setSelected(new Set());
+      } else {
+        setResult(v.leftovers);
+        setSelected(new Set(v.leftovers.items.filter((i) => i.default_selected).map(itemKey)));
+      }
+    } catch (e) {
+      toast.error("Falha ao verificar o namespace", {
+        description: e instanceof Error ? e.message : "Erro desconhecido",
+      });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  // Ao terminar uma remoção real, verifica sozinho (uma vez por operação).
+  useEffect(() => {
+    if (!run?.finished || run.dryRun || !result?.scan_id) return;
+    if (verifiedRef.current === run.operationId) return;
+    verifiedRef.current = run.operationId;
+    void verify(result.scan_id);
+  }, [run?.finished, run?.operationId, run?.dryRun, result?.scan_id]);
 
   const handleScan = async () => {
     if (!targetCandidate) return;
@@ -314,6 +366,7 @@ export default function AppRemovalTab() {
         items: selectedItems.map((i) => ({ kind: i.kind, name: i.name, uid: i.uid })),
         dry_run: dryRun,
         confirm_name: dryRun ? "" : confirmName,
+        scan_id: result.scan_id,
       });
       setRun({
         operationId: res.operation_id,
@@ -435,6 +488,36 @@ export default function AppRemovalTab() {
         </Alert>
       )}
 
+      {verifying && (
+        <Alert>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <AlertDescription>Verificando o namespace (itens em Terminating podem levar alguns segundos)...</AlertDescription>
+        </Alert>
+      )}
+
+      {verification && !verifying && (
+        <Alert className={verification.appGone ? "border-green-500" : "border-amber-500"}>
+          {verification.appGone ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <AlertTriangle className="h-4 w-4" />}
+          <AlertTitle>
+            {verification.appGone ? "Aplicação totalmente removida" : `Sobrou ${verification.leftovers} item(ns)`}
+          </AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <span>
+              {verification.removed} de {verification.total} itens removidos
+              {verification.appGone
+                ? ". Nada restou no namespace."
+                : ". Os que restam estão abaixo: marque o que ainda deve sair ou deixe como está."}
+            </span>
+            {!verification.appGone && result?.scan_id && (
+              <Button size="sm" variant="outline" disabled={running} onClick={() => verify(result.scan_id!)}>
+                <RefreshCw className="h-3 w-3 mr-1" />
+                Verificar novamente
+              </Button>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       {result && (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -470,11 +553,6 @@ export default function AppRemovalTab() {
               </div>
               <Progress value={run.progress * 100} />
               {run.error && <p className="text-xs text-red-600 dark:text-red-400">{run.error}</p>}
-              {run.finished && !run.dryRun && (
-                <p className="text-xs text-muted-foreground">
-                  Escaneie novamente para conferir o que restou no cluster.
-                </p>
-              )}
             </div>
           )}
 

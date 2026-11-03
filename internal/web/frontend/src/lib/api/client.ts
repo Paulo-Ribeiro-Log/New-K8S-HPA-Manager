@@ -4693,6 +4693,14 @@ class APIClient {
     });
   }
 
+  /** Confere o namespace contra o scan guardado: removido, sobrou, Terminating, recriado e novo */
+  async verifyAppRemoval(scanId: string): Promise<import("./types").AppRemovalVerifyResult> {
+    return this.request<import("./types").AppRemovalVerifyResult>("/app-removal/verify", {
+      method: "POST",
+      body: JSON.stringify({ scan_id: scanId }),
+    });
+  }
+
   /** URL do SSE de progresso da remoção — token via query param (EventSource não aceita headers) */
   getAppRemovalStreamURL(operationId: string): string {
     const token = localStorage.getItem("auth_token");

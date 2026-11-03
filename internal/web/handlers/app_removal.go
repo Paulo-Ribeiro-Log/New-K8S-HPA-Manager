@@ -27,11 +27,12 @@ type AppRemovalHandler struct {
 	helmService    *helmservice.Service
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
+	store          *appremoval.Store
 	active         sync.Map // "cluster/namespace/app" -> struct{}: uma execução por aplicação
 }
 
 func NewAppRemovalHandler(hs *helmservice.Service, tracker *sse.ProgressTracker, ht *history.HistoryTracker) *AppRemovalHandler {
-	return &AppRemovalHandler{helmService: hs, tracker: tracker, historyTracker: ht}
+	return &AppRemovalHandler{helmService: hs, tracker: tracker, historyTracker: ht, store: appremoval.NewStore()}
 }
 
 // Candidates lista workloads e releases Helm do namespace.
@@ -65,6 +66,7 @@ func (h *AppRemovalHandler) Scan(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, errorResponse("SCAN_ERROR", err.Error()))
 		return
 	}
+	h.store.Put(cluster, result)
 	c.JSON(http.StatusOK, result)
 }
 
@@ -83,6 +85,9 @@ type executeAppRemovalRequest struct {
 	Items       []appremoval.Target `json:"items"`
 	DryRun      bool                `json:"dry_run"`
 	ConfirmName string              `json:"confirm_name"`
+	// ScanID: scan (ou verificação) guardado no servidor que serve de base à seleção. Sem ele, a
+	// execução faz um scan novo.
+	ScanID string `json:"scan_id"`
 }
 
 // Execute valida a seleção contra um scan novo e inicia a remoção em background. O progresso
@@ -100,13 +105,8 @@ func (h *AppRemovalHandler) Execute(c *gin.Context) {
 		return
 	}
 
-	scan, err := scanApp(c.Request.Context(), req.Cluster, req.Namespace, req.Name)
-	if errors.Is(err, appremoval.ErrNotFound) {
-		c.JSON(http.StatusNotFound, errorResponse("NOT_FOUND", err.Error()))
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, errorResponse("SCAN_ERROR", err.Error()))
+	scan, ok := h.executionBasis(c, req)
+	if !ok {
 		return
 	}
 	plan, err := appremoval.Plan(scan, req.Items)
@@ -131,6 +131,82 @@ func (h *AppRemovalHandler) Execute(c *gin.Context) {
 	go h.run(userCtx, lock, operationID, req, scan, plan)
 
 	c.JSON(http.StatusAccepted, gin.H{"operation_id": operationID, "total": len(plan), "dry_run": req.DryRun})
+}
+
+// executionBasis devolve o scan que valida a seleção: o guardado (scan_id) ou, sem ele, um scan novo.
+// Responde ao cliente e devolve ok=false em qualquer falha.
+func (h *AppRemovalHandler) executionBasis(c *gin.Context, req executeAppRemovalRequest) (*appremoval.Result, bool) {
+	if req.ScanID != "" {
+		cluster, scan, found := h.store.Get(req.ScanID)
+		if !found {
+			c.JSON(http.StatusNotFound, errorResponse("SCAN_EXPIRED", "scan expirado ou desconhecido: escaneie novamente"))
+			return nil, false
+		}
+		if cluster != req.Cluster || scan.Namespace != req.Namespace || scan.Name != req.Name {
+			c.JSON(http.StatusBadRequest, errorResponse("SCAN_MISMATCH", "o scan não pertence a esta aplicação"))
+			return nil, false
+		}
+		return scan, true
+	}
+	scan, err := scanApp(c.Request.Context(), req.Cluster, req.Namespace, req.Name)
+	if errors.Is(err, appremoval.ErrNotFound) {
+		c.JSON(http.StatusNotFound, errorResponse("NOT_FOUND", err.Error()))
+		return nil, false
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("SCAN_ERROR", err.Error()))
+		return nil, false
+	}
+	return scan, true
+}
+
+type verifyAppRemovalRequest struct {
+	ScanID string `json:"scan_id" binding:"required"`
+}
+
+const (
+	verifyAttempts = 3
+	verifyInterval = 3 * time.Second
+)
+
+// Verify confere o namespace contra o scan guardado: o que foi removido, o que sobrou, o que está
+// em Terminating, o que foi recriado e o que apareceu de novo. As sobras viram um novo scan_id,
+// base de uma nova rodada de remoção. Só lê o cluster.
+// POST /api/v1/app-removal/verify
+func (h *AppRemovalHandler) Verify(c *gin.Context) {
+	var req verifyAppRemovalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+	cluster, original, found := h.store.Get(req.ScanID)
+	if !found {
+		c.JSON(http.StatusNotFound, errorResponse("SCAN_EXPIRED", "scan expirado ou desconhecido: escaneie novamente"))
+		return
+	}
+
+	// Itens em Terminating costumam sumir em segundos: espera um pouco antes de reportar.
+	var result *appremoval.VerifyResult
+	for attempt := 1; attempt <= verifyAttempts; attempt++ {
+		resources, err := appremoval.Collect(c.Request.Context(), cluster, original.Namespace)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, errorResponse("VERIFY_ERROR", err.Error()))
+			return
+		}
+		result = appremoval.Verify(original, resources)
+		if !result.Settling() || attempt == verifyAttempts {
+			break
+		}
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-time.After(verifyInterval):
+		}
+	}
+	if result.Leftovers != nil {
+		h.store.Put(cluster, result.Leftovers)
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h *AppRemovalHandler) run(userCtx context.Context, lock, operationID string, req executeAppRemovalRequest, scan *appremoval.Result, plan []appremoval.Target) {

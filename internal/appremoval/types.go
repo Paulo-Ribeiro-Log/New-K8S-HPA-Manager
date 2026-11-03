@@ -87,9 +87,12 @@ type Resource struct {
 	Annotations map[string]string
 	Owners      []Owner
 	Spec        json.RawMessage
-	Subjects    []Subject // RoleBinding
-	RoleRefKind string    // RoleBinding
-	RoleRefName string    // RoleBinding
+	// DeletionTimestamp preenchido = recurso em Terminating.
+	DeletionTimestamp string
+	Finalizers        []string
+	Subjects          []Subject // RoleBinding
+	RoleRefKind       string    // RoleBinding
+	RoleRefName       string    // RoleBinding
 }
 
 // Item é um recurso encontrado pelo scan.
@@ -104,6 +107,9 @@ type Item struct {
 	DataRisk        bool     `json:"data_risk"`
 	RemovedByHelm   bool     `json:"removed_by_helm"`
 	DefaultSelected bool     `json:"default_selected"`
+	// State e Finalizers só vêm preenchidos pela verificação (verify.go).
+	State      string   `json:"state,omitempty"`
+	Finalizers []string `json:"finalizers,omitempty"`
 }
 
 // HelmInfo descreve o release quando a aplicação é gerenciada por Helm.
@@ -114,6 +120,9 @@ type HelmInfo struct {
 
 // Result é o resultado do scan.
 type Result struct {
+	// ScanID identifica este resultado guardado no servidor (Store): a execução e a verificação
+	// partem dele, nunca de itens enviados pelo cliente.
+	ScanID    string    `json:"scan_id,omitempty"`
 	Namespace string    `json:"namespace"`
 	Name      string    `json:"name"`
 	Origin    Origin    `json:"origin"`

@@ -1583,6 +1583,7 @@ func (s *Server) setupRoutes() {
 	{
 		appRemoval.GET("/:cluster/:namespace/candidates", appRemovalHandler.Candidates)
 		appRemoval.GET("/:cluster/:namespace/:name/scan", appRemovalHandler.Scan)
+		appRemoval.POST("/verify", appRemovalHandler.Verify)
 		appRemoval.POST("/execute", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), appRemovalHandler.Execute)
 	}
 
