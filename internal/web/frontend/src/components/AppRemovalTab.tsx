@@ -165,7 +165,10 @@ function ItemRow({
           aria-label={`Selecionar ${item.kind} ${item.name}`}
         />
       </td>
-      <td className="px-3 py-2 font-mono text-xs">{item.name}</td>
+      <td className="px-3 py-2 font-mono text-xs">
+        <span className="text-muted-foreground">{item.kind}/</span>
+        {item.name}
+      </td>
       <td className="px-3 py-2">
         <Badge variant="outline" className="text-[10px]">
           {ORIGIN_LABEL[item.origin]}
@@ -388,14 +391,24 @@ export default function AppRemovalTab() {
     }
   };
 
+  // Grupos = etapas do plano de remoção, na ordem em que serão executadas.
   const groups = result
-    ? result.items.reduce<{ kind: string; items: AppRemovalItem[] }[]>((acc, item) => {
+    ? result.items.reduce<{ step: string; items: AppRemovalItem[] }[]>((acc, item) => {
         const last = acc[acc.length - 1];
-        if (last && last.kind === item.kind) last.items.push(item);
-        else acc.push({ kind: item.kind, items: [item] });
+        if (last && last.step === item.step) last.items.push(item);
+        else acc.push({ step: item.step, items: [item] });
         return acc;
       }, [])
     : [];
+
+  // Controllers que ficam de pé podem recriar ou continuar usando o que for removido.
+  const controllerKinds = ["Deployment", "StatefulSet", "DaemonSet", "CronJob"];
+  const keptControllers =
+    result && !helmSelected
+      ? result.items.filter((i) => controllerKinds.includes(i.kind) && !selected.has(itemKey(i)))
+      : [];
+  const dependsOnControllers = ["Service", "ExternalSecret", "ConfigMap", "Secret", "PersistentVolumeClaim"];
+  const removesWhatControllersUse = selectedItems.some((i) => dependsOnControllers.includes(i.kind));
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-4">
@@ -458,7 +471,10 @@ export default function AppRemovalTab() {
               }}
               options={candidates.map((c) => ({
                 value: candidateKey(c),
-                label: c.kind === "HelmRelease" ? `${c.name} (release Helm)` : `${c.name} (${c.kind})`,
+                label:
+                  c.kind === "HelmRelease"
+                    ? `${c.name} (release Helm${c.chart ? ` · ${c.chart}` : ""}${c.status && c.status !== "deployed" ? ` · ${c.status}` : ""})`
+                    : `${c.name} (${c.kind})`,
               }))}
               placeholder={loadingCandidates ? "Carregando..." : "Selecione..."}
               searchPlaceholder="Buscar aplicação..."
@@ -525,7 +541,10 @@ export default function AppRemovalTab() {
             <Badge variant="outline">{ORIGIN_LABEL[result.origin]}</Badge>
             {result.helm && (
               <span className="text-muted-foreground">
-                release <code>{result.helm.release}</code> · {result.helm.revisions} revisões
+                release <code>{result.helm.release}</code>
+                {result.helm.chart && <> · chart <code>{result.helm.chart}</code></>}
+                {result.helm.status && result.helm.status !== "deployed" && <> · {result.helm.status}</>} ·{" "}
+                {result.helm.revisions} revisões
               </span>
             )}
             <span className="text-muted-foreground">
@@ -556,6 +575,11 @@ export default function AppRemovalTab() {
             </div>
           )}
 
+          <p className="text-xs text-muted-foreground">
+            A remoção segue a ordem das etapas abaixo: primeiro o que recria (release Helm, autoscaling, CronJobs,
+            controllers com espera pela saída dos pods), depois o que é recriado (ExternalSecrets, Secrets, PVCs).
+          </p>
+
           <div className="flex flex-wrap gap-2">
             <ProtectedAction>
               <Button
@@ -578,10 +602,11 @@ export default function AppRemovalTab() {
             </ProtectedAction>
           </div>
 
-          {groups.map((g) => (
-            <div key={g.kind} className="rounded-md border overflow-hidden">
+          {groups.map((g, gi) => (
+            <div key={g.step} className="rounded-md border overflow-hidden">
               <div className="bg-muted px-3 py-1.5 text-xs font-semibold">
-                {g.kind} <span className="text-muted-foreground font-normal">({g.items.length})</span>
+                Etapa {gi + 1} · {g.step}{" "}
+                <span className="text-muted-foreground font-normal">({g.items.length})</span>
               </div>
               <table className="w-full text-left">
                 <thead className="sr-only">
@@ -643,6 +668,12 @@ export default function AppRemovalTab() {
                   <p className="text-amber-600 dark:text-amber-400">
                     O <code>helm uninstall</code> também remove {coveredByHelm.length} recurso(s) do release
                     {coveredByHelm.some((i) => i.data_risk) && ", incluindo Secrets/PVCs"}.
+                  </p>
+                )}
+                {keptControllers.length > 0 && removesWhatControllersUse && (
+                  <p className="text-amber-600 dark:text-amber-400">
+                    Os controllers {keptControllers.map((i) => `${i.kind}/${i.name}`).join(", ")} não estão
+                    selecionados e podem recriar ou continuar usando o que será removido.
                   </p>
                 )}
                 {selectedItems.some((i) => i.data_risk) && (

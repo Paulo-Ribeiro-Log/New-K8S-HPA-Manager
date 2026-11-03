@@ -47,6 +47,8 @@ func (h *AppRemovalHandler) Candidates(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, errorResponse("LIST_ERROR", err.Error()))
 		return
 	}
+	// helm list é a fonte dos releases (a mesma da aba Helm): traz os que nenhum workload denuncia.
+	items = appremoval.MergeReleases(items, h.helmReleases(c.Request.Context(), cluster, namespace))
 	c.JSON(http.StatusOK, gin.H{"candidates": items})
 }
 
@@ -66,8 +68,30 @@ func (h *AppRemovalHandler) Scan(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, errorResponse("SCAN_ERROR", err.Error()))
 		return
 	}
+	appremoval.EnrichHelm(result, h.helmReleases(c.Request.Context(), cluster, namespace))
 	h.store.Put(cluster, result)
 	c.JSON(http.StatusOK, result)
+}
+
+const helmListTimeout = 25 * time.Second
+
+// helmReleases lista os releases do namespace com `helm list`. Melhor esforço: sem Helm ou com
+// falha, devolve vazio e a ferramenta segue só com o que enxerga pelos recursos do namespace.
+func (h *AppRemovalHandler) helmReleases(ctx context.Context, cluster, namespace string) []appremoval.ReleaseRef {
+	if h.helmService == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, helmListTimeout)
+	defer cancel()
+	list, err := h.helmService.ListReleases(ctx, cluster, helm.ListReleasesOptions{Namespace: namespace})
+	if err != nil {
+		return nil
+	}
+	out := make([]appremoval.ReleaseRef, 0, len(list))
+	for _, r := range list {
+		out = append(out, appremoval.ReleaseRef{Name: r.Name, Chart: r.Chart, Status: r.Status})
+	}
+	return out
 }
 
 func scanApp(ctx context.Context, cluster, namespace, name string) (*appremoval.Result, error) {

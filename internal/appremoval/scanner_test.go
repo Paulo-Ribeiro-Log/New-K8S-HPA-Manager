@@ -315,3 +315,85 @@ func TestCandidates(t *testing.T) {
 		t.Errorf("candidatos: %+v", got)
 	}
 }
+
+// Release listado pelo armazenamento do Helm, mesmo sem workloads de pé.
+func TestScanReleaseSemWorkloads(t *testing.T) {
+	rs := []Resource{
+		{Kind: KindSecret, Name: "sh.helm.release.v1.api.v1", Type: helmSecretType, Labels: map[string]string{"name": "api"}},
+		{Kind: KindConfigMap, Name: "api-cfg", Annotations: helmAnn("api")},
+	}
+	res, err := Scan("ns", "api", rs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Helm == nil || res.Helm.Release != "api" || res.Helm.Revisions != 1 {
+		t.Fatalf("helm: %+v", res.Helm)
+	}
+	find(t, res, KindHelmRelease, "api")
+	find(t, res, KindConfigMap, "api-cfg")
+}
+
+// Workload sem a annotation do Helm, mas com a label de instância de um release existente.
+func TestScanReleasePelaLabelDeInstancia(t *testing.T) {
+	lbl := map[string]string{labelAppInst: "api", "app": "api"}
+	rs := []Resource{
+		{Kind: KindDeployment, Name: "api", Labels: lbl, Spec: spec(podTpl(lbl, map[string]any{}))},
+		{Kind: KindSecret, Name: "sh.helm.release.v1.api.v3", Type: helmSecretType, Labels: map[string]string{"name": "api"}},
+	}
+	res, err := Scan("ns", "api", rs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Origin != OriginHelm || res.Helm == nil || res.Helm.Release != "api" {
+		t.Fatalf("origem=%s helm=%+v", res.Origin, res.Helm)
+	}
+	dep := find(t, res, KindDeployment, "api")
+	if dep.RemovedByHelm || !dep.DefaultSelected {
+		t.Errorf("sem annotation, o release não o remove: o workload segue selecionável: %+v", dep)
+	}
+}
+
+func TestScanInstanciaSemReleaseNaoViraHelm(t *testing.T) {
+	lbl := map[string]string{labelAppInst: "api"}
+	rs := []Resource{{Kind: KindDeployment, Name: "api", Labels: lbl, Spec: spec(podTpl(lbl, map[string]any{}))}}
+	res, err := Scan("ns", "api", rs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Helm != nil {
+		t.Errorf("sem release no namespace, não há Helm: %+v", res.Helm)
+	}
+}
+
+func TestMergeReleasesEEnrichHelm(t *testing.T) {
+	cands := []Candidate{
+		{Kind: KindDeployment, Name: "api", HelmRelease: "api"},
+		{Kind: KindHelmRelease, Name: "api", HelmRelease: "api"},
+	}
+	got := MergeReleases(cands, []ReleaseRef{
+		{Name: "api", Chart: "api-1.4.2", Status: "deployed"},
+		{Name: "so-no-helm", Chart: "x-0.1.0", Status: "failed"},
+	})
+	if len(got) != 3 {
+		t.Fatalf("candidatos: %+v", got)
+	}
+	var withChart, extra int
+	for _, c := range got {
+		if c.Name == "api" && c.Chart == "api-1.4.2" {
+			withChart++
+		}
+		if c.Name == "so-no-helm" && c.Kind == KindHelmRelease && c.Status == "failed" {
+			extra++
+		}
+	}
+	if withChart != 2 || extra != 1 {
+		t.Errorf("merge incorreto: %+v", got)
+	}
+
+	res := &Result{Helm: &HelmInfo{Release: "api"}}
+	EnrichHelm(res, []ReleaseRef{{Name: "api", Chart: "api-1.4.2", Status: "deployed"}})
+	if res.Helm.Chart != "api-1.4.2" || res.Helm.Status != "deployed" {
+		t.Errorf("enrich: %+v", res.Helm)
+	}
+	EnrichHelm(nil, nil) // não pode quebrar
+}

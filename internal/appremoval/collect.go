@@ -124,3 +124,49 @@ func candidatesFrom(resources []Resource) []Candidate {
 	})
 	return out
 }
+
+// MergeReleases completa a lista de alvos com os releases do `helm list`: inclui os que nenhum
+// workload denuncia (sem annotation, ou sem workloads de pé) e preenche chart e status.
+func MergeReleases(cands []Candidate, releases []ReleaseRef) []Candidate {
+	byName := make(map[string]ReleaseRef, len(releases))
+	for _, r := range releases {
+		byName[r.Name] = r
+	}
+	hasRelease := map[string]bool{}
+	for i := range cands {
+		if cands[i].HelmRelease == "" {
+			continue
+		}
+		if r, ok := byName[cands[i].HelmRelease]; ok {
+			cands[i].Chart, cands[i].Status = r.Chart, r.Status
+		}
+		if cands[i].Kind == KindHelmRelease {
+			hasRelease[cands[i].Name] = true
+		}
+	}
+	for _, r := range releases {
+		if !hasRelease[r.Name] {
+			cands = append(cands, Candidate{Kind: KindHelmRelease, Name: r.Name, HelmRelease: r.Name, Chart: r.Chart, Status: r.Status})
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].Name != cands[j].Name {
+			return cands[i].Name < cands[j].Name
+		}
+		return cands[i].Kind < cands[j].Kind
+	})
+	return cands
+}
+
+// EnrichHelm preenche chart e status do release no resultado do scan.
+func EnrichHelm(res *Result, releases []ReleaseRef) {
+	if res == nil || res.Helm == nil {
+		return
+	}
+	for _, r := range releases {
+		if r.Name == res.Helm.Release {
+			res.Helm.Chart, res.Helm.Status = r.Chart, r.Status
+			return
+		}
+	}
+}

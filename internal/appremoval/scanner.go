@@ -27,7 +27,7 @@ func Scan(namespace, name string, resources []Resource) (*Result, error) {
 	}
 
 	roots := s.findRoots(resources, name)
-	if len(roots) == 0 {
+	if len(roots) == 0 && s.release == "" {
 		return nil, ErrNotFound
 	}
 
@@ -40,6 +40,10 @@ func Scan(namespace, name string, resources []Resource) (*Result, error) {
 			if r.Annotations[annHelmRelease] == s.release && !isHelmStorage(r) {
 				s.add(r, fmt.Sprintf("gerenciado pelo release Helm %s", s.release))
 			}
+		}
+		// workload encontrado pela label (sem annotation do Helm): entra, mas o release não o remove
+		for _, r := range roots {
+			s.add(r, "workload informado")
 		}
 	} else {
 		res.Origin = originOf(roots[0])
@@ -61,8 +65,11 @@ func Scan(namespace, name string, resources []Resource) (*Result, error) {
 	return res, nil
 }
 
-// findRoots acha os workloads com o nome informado; sem isso, trata `name` como release Helm.
+// findRoots acha os workloads com o nome informado e define o release Helm da aplicação, nesta
+// ordem: annotation do release no workload; label app.kubernetes.io/instance igual a um release
+// existente no namespace; `name` ser ele próprio um release (mesmo sem workloads de pé).
 func (s *scanner) findRoots(resources []Resource, name string) []*Resource {
+	releases := storageReleases(resources)
 	var roots []*Resource
 	for i := range resources {
 		r := &resources[i]
@@ -76,6 +83,12 @@ func (s *scanner) findRoots(resources []Resource, name string) []*Resource {
 			return roots
 		}
 	}
+	for _, r := range roots {
+		if rel := r.Labels[labelAppInst]; rel != "" && releases[rel] > 0 {
+			s.release = rel
+			return roots
+		}
+	}
 	if len(roots) > 0 {
 		return roots
 	}
@@ -85,6 +98,9 @@ func (s *scanner) findRoots(resources []Resource, name string) []*Resource {
 			s.release = name
 			roots = append(roots, r)
 		}
+	}
+	if s.release == "" && releases[name] > 0 {
+		s.release = name
 	}
 	return roots
 }
@@ -346,13 +362,7 @@ func (s *scanner) finish(res *Result) []Item {
 			DefaultSelected: true,
 		})
 	}
-	sort.SliceStable(items, func(i, j int) bool {
-		ri, rj := removalRank(items[i].Kind), removalRank(items[j].Kind)
-		if ri != rj {
-			return ri < rj
-		}
-		return items[i].Name < items[j].Name
-	})
+	sortByRemovalPlan(items)
 	return items
 }
 
@@ -461,6 +471,19 @@ func isHelmStorage(r *Resource) bool {
 	return r.Kind == KindSecret && r.Type == helmSecretType
 }
 
+// storageReleases: releases Helm existentes no namespace (pelos Secrets de armazenamento) e quantas
+// revisões cada um tem.
+func storageReleases(resources []Resource) map[string]int {
+	out := map[string]int{}
+	for i := range resources {
+		r := &resources[i]
+		if isHelmStorage(r) && r.Labels["name"] != "" {
+			out[r.Labels["name"]]++
+		}
+	}
+	return out
+}
+
 func countHelmRevisions(resources []Resource, release string) int {
 	n := 0
 	for i := range resources {
@@ -486,30 +509,6 @@ func originOf(r *Resource) Origin {
 		return OriginKustomizeProvavel
 	}
 	return OriginManual
-}
-
-// removalRank: exposição primeiro, depois o que se anexa ao workload, workload, Service e por fim config/dados/RBAC.
-func removalRank(kind string) int {
-	switch kind {
-	case KindHelmRelease:
-		return 0
-	case KindIngress, KindHTTPRoute, KindVirtualService:
-		return 1
-	case KindHPA, KindPDB, KindNetworkPolicy, KindServiceMonitor, KindPodMonitor:
-		return 2
-	case KindDeployment, KindStatefulSet, KindDaemonSet, KindCronJob:
-		return 3
-	case KindService:
-		return 4
-	case KindRoleBinding:
-		return 6
-	case KindRole:
-		return 7
-	case KindSA:
-		return 8
-	default:
-		return 5
-	}
 }
 
 // defaultSelected é a seleção sugerida: nunca marca o que é compartilhado, coberto pelo release

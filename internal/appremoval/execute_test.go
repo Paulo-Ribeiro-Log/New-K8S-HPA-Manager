@@ -186,8 +186,14 @@ func TestKubectlRunnerArgs(t *testing.T) {
 	if strings.Join(got[0], " ") != "get deployments.apps dep -n ns --context ctx -o jsonpath={.metadata.uid}" {
 		t.Errorf("get: %v", got[0])
 	}
-	if strings.Join(got[1], " ") != "delete deployments.apps dep -n ns --context ctx --timeout=90s --dry-run=server" {
+	if strings.Join(got[1], " ") != "delete deployments.apps dep -n ns --context ctx --timeout=150s --cascade=foreground --dry-run=server" {
 		t.Errorf("delete: %v", got[1])
+	}
+	if err := k.Delete(context.Background(), "ctx", "ns", KindService, "svc", false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got[2], " ") != "delete services svc -n ns --context ctx --timeout=90s" {
+		t.Errorf("delete de Service não usa cascade foreground: %v", got[2])
 	}
 	if err := k.Delete(context.Background(), "ctx", "ns", "Pod", "x", false); !errors.Is(err, ErrInvalidTarget) {
 		t.Errorf("tipo fora da lista deve ser recusado: %v", err)

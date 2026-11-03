@@ -3779,6 +3779,8 @@ export interface AppRemovalCandidate {
   kind: string;
   name: string;
   helm_release?: string;
+  chart?: string;
+  status?: string;
 }
 
 export interface AppRemovalItem {
@@ -3792,6 +3794,8 @@ export interface AppRemovalItem {
   data_risk: boolean;
   removed_by_helm: boolean;
   default_selected: boolean;
+  /** etapa do plano de remoção em que o item entra (a ordem é a da lista) */
+  step: string;
   /** só na verificação pós-remoção */
   state?: AppRemovalItemState;
   finalizers?: string[];
@@ -3805,7 +3809,7 @@ export interface AppRemovalScanResult {
   namespace: string;
   name: string;
   origin: AppRemovalOrigin;
-  helm?: { release: string; revisions: number };
+  helm?: { release: string; revisions: number; chart?: string; status?: string };
   items: AppRemovalItem[];
   warnings: string[];
 }
