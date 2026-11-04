@@ -241,7 +241,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
   const { analyze: analyzeNodePool, loading: predictionLoading, result: predictionResult } = useAnalyzeNodePool();
   const [predictionModalOpen, setPredictionModalOpen] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
-  const [historyResult, setHistoryResult] = useState<any>(null);
+  const [historyResult, setHistoryResult] = useState<unknown>(null);
 
   // Nodes states
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
@@ -249,7 +249,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
   const [modalKey, setModalKey] = useState(0); // Force modal re-creation
   const [nodeSearch, setNodeSearch] = useState("");
   const [removedNodes, setRemovedNodes] = useState<Array<{
-    name: string; removed_at: string; created_at: string; reason: string; source: string; details: string;
+    name: string; removed_at: string; created_at?: string; reason: string; source: string; details: string;
     category?: "spot-eviction" | "scheduled-event";
     initiated_by?: string; initiated_by_kind?: string; likely_cause?: string;
   }>>([]);
@@ -442,7 +442,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
 
     // Se config foi fornecido, adicionar ao updates (será salvo no staging)
     if (config) {
-      (updates as any).cordon_drain_config = {
+      Object.assign(updates, { cordon_drain_config: {
         cordon_enabled: config.cordonEnabled,
         drain_enabled: config.drainEnabled,
         grace_period: config.gracePeriod,
@@ -451,7 +451,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
         ignore_daemonsets: config.ignoreDaemonSets,
         delete_emptydir: config.deleteEmptyDir,
         chunk_size: config.chunkSize,
-      };
+      } });
     }
 
     staging.updateNodePoolInStaging(nodePool.cluster_name, nodePool.name, updates);
@@ -639,8 +639,12 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
       return "secondary";
     };
 
+    // "success" não é uma variante do Badge (o cva ignora o valor): comportamento mantido de propósito.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- variante inexistente em Badge
+    const variant = getVariant() as any;
+
     return (
-      <Badge variant={getVariant() as any}>
+      <Badge variant={variant}>
         {status}
       </Badge>
     );
@@ -892,7 +896,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
         if (tab === "nodes" && clusterWithAdmin && nodePool?.name && removedNodes.length === 0 && !removedLoading) {
           setRemovedLoading(true);
           apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
-            .then(r => { setRemovedNodes((r.removed_nodes ?? []) as any[]); setRemovedDebug((r as any)._debug ?? []); })
+            .then(r => { setRemovedNodes(r.removed_nodes ?? []); setRemovedDebug((r as { _debug?: string[] })._debug ?? []); })
             .catch(() => {})
             .finally(() => setRemovedLoading(false));
         }
@@ -1547,7 +1551,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied, onRefresh, refres
                         setRemovedLoading(true);
                         setRemovedNodes([]);
                         apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
-                          .then(r => { setRemovedNodes((r.removed_nodes ?? []) as any[]); setRemovedDebug((r as any)._debug ?? []); })
+                          .then(r => { setRemovedNodes(r.removed_nodes ?? []); setRemovedDebug((r as { _debug?: string[] })._debug ?? []); })
                           .catch(() => {})
                           .finally(() => setRemovedLoading(false));
                       }}

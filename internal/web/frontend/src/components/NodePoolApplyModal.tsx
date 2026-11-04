@@ -375,7 +375,7 @@ export const NodePoolApplyModal = ({
     }
   };
 
-  const renderChange = (label: string, before: any, after: any) => {
+  const renderChange = (label: string, before, after) => {
     // Se os valores são iguais, não mostrar
     if (before === after) {
       return null;

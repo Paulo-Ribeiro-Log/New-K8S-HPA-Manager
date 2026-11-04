@@ -5,17 +5,17 @@ import { toast } from 'sonner';
 
 interface ClusterTabCache {
   selectedNamespace: string;
-  selectedHPA: any;
-  selectedNodePool: any;
-  hpas: any[];
-  namespaces: any[];
-  nodePools: any[];
+  selectedHPA: unknown;
+  selectedNodePool: unknown;
+  hpas: unknown[];
+  namespaces: unknown[];
+  nodePools: unknown[];
 }
 
 interface ClusterTab {
   id: string;
   label: string;
-  icon: any;
+  icon: unknown;
   cluster: string;
   // Cache de dados por aba
   cache?: ClusterTabCache;

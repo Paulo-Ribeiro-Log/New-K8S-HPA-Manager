@@ -4,8 +4,8 @@
 export function useToast() {
   return {
     toasts: [],
-    toast: (props: any) => console.log('Toast:', props),
+    toast: (props) => console.log('Toast:', props),
   };
 }
 
-export const toast = (props: any) => console.log('Toast:', props);
+export const toast = (props) => console.log('Toast:', props);

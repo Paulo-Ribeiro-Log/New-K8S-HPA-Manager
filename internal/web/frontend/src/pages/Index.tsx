@@ -344,7 +344,7 @@ const Index = ({ onLogout }: IndexProps) => {
   useEffect(() => {
     const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "gateways", "healthcheck", "codeEditor", "accessCheck"];
     const tabKey = activeTab === "code-editor" ? "codeEditor" : activeTab === "access-check" ? "accessCheck" : activeTab;
-    if (workloadTabs.includes(tabKey as any)) {
+    if ((workloadTabs as string[]).includes(tabKey)) {
       hasBeenMounted.current[tabKey as keyof typeof hasBeenMounted.current] = true;
     }
   }, [activeTab]);
@@ -948,7 +948,7 @@ const Index = ({ onLogout }: IndexProps) => {
                         // Verificar se HPA está sendo monitorado
                         const stored = localStorage.getItem("monitored_hpas");
                         const monitoredHPAs = stored ? JSON.parse(stored) : [];
-                        const isMonitored = monitoredHPAs.some((h: any) =>
+                        const isMonitored = monitoredHPAs.some((h) =>
                           h.cluster === displayHPA.cluster &&
                           h.namespace === displayHPA.namespace &&
                           h.name === displayHPA.name
@@ -982,7 +982,7 @@ const Index = ({ onLogout }: IndexProps) => {
                                 const stored = localStorage.getItem("monitored_hpas");
                                 const current = stored ? JSON.parse(stored) : [];
 
-                                const exists = current.some((h: any) =>
+                                const exists = current.some((h) =>
                                   h.cluster === displayHPA.cluster &&
                                   h.namespace === displayHPA.namespace &&
                                   h.name === displayHPA.name
@@ -2082,7 +2082,7 @@ const Index = ({ onLogout }: IndexProps) => {
 
             // Limpar seleção de node pools
             setSequencedNodePools([]);
-          } catch (error: any) {
+          } catch (error) {
             toast.error(error.message || "Erro ao executar sequenciamento");
           }
         }}

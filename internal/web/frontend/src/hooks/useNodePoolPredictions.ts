@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 export function useAnalyzeNodePool() {
   const [loading, setLoading] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estado com o payload do backend, que não tem tipo no frontend
   const [result, setResult] = useState<any>(null);
 
   const analyze = async (cluster: string, nodepool: string) => {
@@ -52,6 +53,7 @@ export function useNodePoolPredictionHistory(filters?: {
   offset?: number;
 }) {
   const [loading, setLoading] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estado com o payload do backend, que não tem tipo no frontend
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 

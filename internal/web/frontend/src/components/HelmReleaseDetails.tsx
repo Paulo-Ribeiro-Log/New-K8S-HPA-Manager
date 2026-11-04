@@ -875,6 +875,7 @@ const HistoryTab = ({
   currentValuesRendered,
   onRollbackClick,
 }: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   revisions: any[];
   loading: boolean;
   currentRevision: number;

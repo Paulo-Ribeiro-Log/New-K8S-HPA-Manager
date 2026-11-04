@@ -47,6 +47,7 @@ import { ResyncAkvModal } from "@/components/ResyncAkvModal";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { parseYaml } from "@/lib/yamlTree";
 
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
@@ -312,8 +313,8 @@ export const SecretsTab = ({
     setHistory([]);
     setHistoryIndex(-1);
     setIsDecoded(false);
-  }, [cluster, selectedNamespace]);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setIsDecoded, setSelectedSecret, setShowLabels,, setViewMode
+  }, [cluster, selectedNamespace]);
 
   const filteredSecrets = useMemo(() => {
     let filtered = secrets;
@@ -616,7 +617,7 @@ export const SecretsTab = ({
     };
 
     try {
-      const yamlObj = yaml.load(editorValue) as any;
+      const yamlObj = parseYaml(editorValue);
 
       if (!yamlObj || !yamlObj.data) {
         toast.error("YAML inválido ou sem seção 'data'");
@@ -1201,8 +1202,8 @@ export const SecretsTab = ({
 
     try {
       // Carregar ambos os YAMLs como objetos
-      const currentObj = yaml.load(editorValue) as any;
-      const originalObj = yaml.load(originalYaml) as any;
+      const currentObj = parseYaml(editorValue);
+      const originalObj = parseYaml(originalYaml);
 
       // Comparar estruturas (exceto data que precisa de comparação especial)
       const currentCopy = { ...currentObj };
@@ -1891,12 +1892,13 @@ export const SecretsTab = ({
     // Gerar diff compacto apenas com mudanças
     const generateCompactDiff = () => {
       try {
-        const originalObj = yaml.load(originalYaml) as any;
-        const updatedObj = yaml.load(editorValue) as any;
+        const originalObj = parseYaml(originalYaml);
+        const updatedObj = parseYaml(editorValue);
         
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- valores arbitrários de um diff de YAML
         const changes: Array<{ path: string; before: any; after: any }> = [];
         
-        const compareObjects = (obj1: any, obj2: any, path: string = '') => {
+        const compareObjects = (obj1, obj2, path: string = '') => {
           const allKeys = new Set([...Object.keys(obj1 || {}), ...Object.keys(obj2 || {})]);
           
           for (const key of allKeys) {

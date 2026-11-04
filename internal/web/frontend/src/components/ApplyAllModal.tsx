@@ -338,7 +338,7 @@ export const ApplyAllModal = ({
     }
   };
 
-  const renderChange = (label: string, before: any, after: any) => {
+  const renderChange = (label: string, before, after) => {
     // Normalizar valores undefined, null e string vazia para null
     const normalizedBefore = (before === undefined || before === null || before === "") ? null : before;
     const normalizedAfter = (after === undefined || after === null || after === "") ? null : after;

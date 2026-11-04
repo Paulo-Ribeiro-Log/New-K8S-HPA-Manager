@@ -2,6 +2,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { AnalysisResult } from "@/types/ai";
 import { addLogoHeaderToPDF, getMarkdownHeader, APP_NAME } from "./logoUtils";
+import { lastTableY } from "@/lib/pdfAutoTable";
 
 // Formatar data para exibição
 const formatDate = (dateStr: string | undefined): string => {
@@ -96,7 +97,7 @@ export const generateAIDiagnosticsPDF = async (analysis: AnalysisResult): Promis
       margin: { left: 14, right: 14 },
     });
 
-    yPosition = (doc as any).lastAutoTable.finalY + 8;
+    yPosition = lastTableY(doc) + 8;
 
     // Recursos (CPU/Memory)
     doc.setFontSize(11);
@@ -142,7 +143,7 @@ export const generateAIDiagnosticsPDF = async (analysis: AnalysisResult): Promis
       margin: { left: 14, right: 14 },
     });
 
-    yPosition = (doc as any).lastAutoTable.finalY + 12;
+    yPosition = lastTableY(doc) + 12;
   }
 
   // ========================================================================
@@ -197,7 +198,7 @@ export const generateAIDiagnosticsPDF = async (analysis: AnalysisResult): Promis
       margin: { left: 14, right: 14 },
     });
 
-    yPosition = (doc as any).lastAutoTable.finalY + 12;
+    yPosition = lastTableY(doc) + 12;
   } else {
     // Fallback: análise legada (texto plano)
     doc.setFontSize(10);
@@ -332,7 +333,7 @@ export const generateAIDiagnosticsPDF = async (analysis: AnalysisResult): Promis
       margin: { left: 14, right: 14 },
     });
 
-    yPosition = (doc as any).lastAutoTable.finalY + 8;
+    yPosition = lastTableY(doc) + 8;
 
     if (analysis.impact_assessment.business_impact) {
       doc.setFontSize(11);

@@ -69,7 +69,7 @@ export const useFilters = () => {
       const response = await apiClient.getFilters();
       setRules(response.data.rules);
       setStats(response.data.stats);
-    } catch (err: any) {
+    } catch (err) {
       const errorMsg = err.message || "Falha ao carregar filtros";
       setError(errorMsg);
       toast.error(errorMsg);
@@ -83,7 +83,7 @@ export const useFilters = () => {
     try {
       const response = await apiClient.getFilterCategories();
       setCategories(response.data);
-    } catch (err: any) {
+    } catch (err) {
       console.error("Failed to fetch categories:", err);
     }
   }, []);
@@ -95,7 +95,7 @@ export const useFilters = () => {
       toast.success("Filtro adicionado com sucesso");
       await fetchRules(); // Recarregar lista
       return true;
-    } catch (err: any) {
+    } catch (err) {
       const errorMsg = err.message || "Falha ao adicionar filtro";
       toast.error(errorMsg);
       return false;
@@ -109,7 +109,7 @@ export const useFilters = () => {
       toast.success("Filtro removido com sucesso");
       await fetchRules(); // Recarregar lista
       return true;
-    } catch (err: any) {
+    } catch (err) {
       const errorMsg = err.message || "Falha ao remover filtro";
       toast.error(errorMsg);
       return false;

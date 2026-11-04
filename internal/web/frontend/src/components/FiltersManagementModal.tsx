@@ -92,6 +92,7 @@ export const FiltersManagementModal = ({ open, onOpenChange }: FiltersManagement
 
     setSubmitting(true);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dado dinâmico do backend, sem tipo definido no frontend
     const rule: any = {
       type: formType,
       resource_type: formResourceType,

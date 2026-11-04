@@ -216,7 +216,7 @@ export const ApplyValuesModal = ({
             </div>
 
             {/* Tabs */}
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="flex-1 flex flex-col min-h-0">
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="flex-1 flex flex-col min-h-0">
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="diff" className="gap-2">
                   <GitCompare className="h-4 w-4" />

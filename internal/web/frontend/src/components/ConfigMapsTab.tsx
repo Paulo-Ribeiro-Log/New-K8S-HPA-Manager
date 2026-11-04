@@ -38,6 +38,7 @@ import { ProtectedAction } from "@/components/rbac";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { parseYaml } from "@/lib/yamlTree";
 
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
@@ -163,8 +164,8 @@ export const ConfigMapsTab = ({
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
-  }, [cluster, selectedNamespace]);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setSelectedConfigMap, setShowLabels,, setViewMode
+  }, [cluster, selectedNamespace]);
 
   const filteredConfigMaps = useMemo(() => {
     let filtered = configMaps;
@@ -1305,12 +1306,13 @@ data:
     // Gerar diff compacto apenas com mudanças
     const generateCompactDiff = () => {
       try {
-        const originalObj = yaml.load(originalYaml) as any;
-        const updatedObj = yaml.load(editorValue) as any;
+        const originalObj = parseYaml(originalYaml);
+        const updatedObj = parseYaml(editorValue);
         
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- valores arbitrários de um diff de YAML
         const changes: Array<{ path: string; before: any; after: any }> = [];
         
-        const compareObjects = (obj1: any, obj2: any, path: string = '') => {
+        const compareObjects = (obj1, obj2, path: string = '') => {
           const allKeys = new Set([...Object.keys(obj1 || {}), ...Object.keys(obj2 || {})]);
           
           for (const key of allKeys) {

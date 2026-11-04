@@ -14,7 +14,7 @@ interface NodePoolPredictionHistoryModalProps {
   onOpenChange: (open: boolean) => void;
   cluster?: string;
   nodepool?: string;
-  onSelectRecord?: (record: any) => void;
+  onSelectRecord?: (record) => void;
 }
 
 interface HistoryRecord {

@@ -1614,7 +1614,7 @@ function DetailsTab({ problem, uiBaseUrl }: { problem: DynatraceProblem; uiBaseU
             </div>
             <div className="p-2">
               {problem.rootCauseEntity ? (
-                <EntityCard entity={problem.rootCauseEntity as any} isRoot />
+                <EntityCard entity={problem.rootCauseEntity as DynatraceProblem["affectedEntities"][0]} isRoot />
               ) : (
                 <div className="text-center py-5 text-[11px] text-muted-foreground space-y-1">
                   <p className="font-medium">No root cause</p>
@@ -2002,6 +2002,7 @@ function sanitizePDF(text: string): string {
     .trim();
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- resultado da investigação do backend, sem tipo no frontend
 function buildInvestigationMarkdown(problem: DynatraceProblem, inv: any, quickAnalysis: string): string {
   const lines: string[] = [];
   lines.push(`# Diagnóstico Dynatrace — ${problem.displayId}`);
@@ -2019,15 +2020,15 @@ function buildInvestigationMarkdown(problem: DynatraceProblem, inv: any, quickAn
     if (inv.identified_workload) lines.push(`- **Workload:** ${inv.identified_workload}`);
     lines.push("");
 
-    const entities = (inv.dt_metrics?.entities ?? []).filter((e: any) =>
-      (e.metrics ?? []).some((m: any) => (m.points ?? []).some((p: any) => !isNaN(p.v)))
+    const entities = (inv.dt_metrics?.entities ?? []).filter((e) =>
+      (e.metrics ?? []).some((m) => (m.points ?? []).some((p) => !isNaN(p.v)))
     );
     if (entities.length > 0) {
       lines.push("## Métricas Dynatrace");
       for (const ed of entities) {
         lines.push(`\n### ${ed.entityName} [${ed.entityType}]${ed.isRootCause ? " ⭐ Causa Raiz" : ""}`);
         for (const m of ed.metrics ?? []) {
-          const vals = (m.points ?? []).map((p: any) => p.v).filter((v: number) => !isNaN(v) && v >= 0);
+          const vals = (m.points ?? []).map((p) => p.v).filter((v: number) => !isNaN(v) && v >= 0);
           if (!vals.length) continue;
           const max = Math.max(...vals), avg = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
           lines.push(`- ${m.label}: avg=${avg.toFixed(2)} max=${max.toFixed(2)} ${m.unit}`);
@@ -2037,7 +2038,7 @@ function buildInvestigationMarkdown(problem: DynatraceProblem, inv: any, quickAn
     }
 
     if (inv.health_check_result) {
-      const hc = inv.health_check_result as any;
+      const hc = inv.health_check_result;
       lines.push("## Health Check K8s");
       lines.push(`Status: **${hc.overall_status}** | Total: ${hc.total_checks} | Críticos: ${hc.severity_counts?.critical ?? 0}`);
       for (const d of hc.deployment_results ?? []) {
@@ -2048,7 +2049,7 @@ function buildInvestigationMarkdown(problem: DynatraceProblem, inv: any, quickAn
           lines.push(`Container ${cr.name}: cpu ${cr.cpu_request || "—"}/${cr.cpu_limit || "—"} | mem ${cr.memory_request || "—"}/${cr.memory_limit || "—"}`);
         }
       }
-      for (const h of (hc.hpa_results ?? []).filter((h: any) => h.status !== "healthy")) {
+      for (const h of (hc.hpa_results ?? []).filter((h) => h.status !== "healthy")) {
         lines.push(`\n### HPA ${h.namespace}/${h.name} [${h.status}]`);
         lines.push(`Réplicas: atual=${h.current_replicas} desejado=${h.desired_replicas} min=${h.min_replicas} max=${h.max_replicas}`);
       }
@@ -2083,6 +2084,7 @@ function buildInvestigationMarkdown(problem: DynatraceProblem, inv: any, quickAn
   return lines.join("\n");
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- resultado da investigação do backend, sem tipo no frontend
 function exportMarkdown(problem: DynatraceProblem, inv: any, quickAnalysis: string) {
   const md = buildInvestigationMarkdown(problem, inv, quickAnalysis);
   const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
@@ -2094,6 +2096,7 @@ function exportMarkdown(problem: DynatraceProblem, inv: any, quickAnalysis: stri
   URL.revokeObjectURL(url);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- resultado da investigação do backend, sem tipo no frontend
 async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: string) {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -2150,15 +2153,15 @@ async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: str
     if (inv.identified_namespace) line(`Namespace: ${inv.identified_namespace}  Workload: ${inv.identified_workload}`);
     y += 4;
 
-    const entities = (inv.dt_metrics?.entities ?? []).filter((e: any) =>
-      (e.metrics ?? []).some((m: any) => (m.points ?? []).some((p: any) => !isNaN(p.v)))
+    const entities = (inv.dt_metrics?.entities ?? []).filter((e) =>
+      (e.metrics ?? []).some((m) => (m.points ?? []).some((p) => !isNaN(p.v)))
     );
     if (entities.length > 0) {
       h1("METRICAS DYNATRACE");
       for (const ed of entities) {
         h2(`${ed.entityName} [${ed.entityType}]${ed.isRootCause ? " - CAUSA RAIZ" : ""}`);
         for (const m of ed.metrics ?? []) {
-          const vals = (m.points ?? []).map((p: any) => p.v).filter((v: number) => !isNaN(v) && v >= 0);
+          const vals = (m.points ?? []).map((p) => p.v).filter((v: number) => !isNaN(v) && v >= 0);
           if (!vals.length) continue;
           const mx = Math.max(...vals), avg = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
           line(`${m.label}: avg=${avg.toFixed(2)} max=${mx.toFixed(2)} ${m.unit}`, 4);
@@ -2168,7 +2171,7 @@ async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: str
     }
 
     if (inv.health_check_result) {
-      const hc = inv.health_check_result as any;
+      const hc = inv.health_check_result;
       h1("HEALTH CHECK K8S");
       line(`Status: ${hc.overall_status} | Total: ${hc.total_checks} | Criticos: ${hc.severity_counts?.critical ?? 0}`);
       y += 2;
@@ -2180,7 +2183,7 @@ async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: str
           line(`Container ${cr.name}: cpu req=${cr.cpu_request || "n/d"} lim=${cr.cpu_limit || "n/d"} | mem req=${cr.memory_request || "n/d"} lim=${cr.memory_limit || "n/d"}`, 6);
         }
       }
-      for (const h of (hc.hpa_results ?? []).filter((h: any) => h.status !== "healthy")) {
+      for (const h of (hc.hpa_results ?? []).filter((h) => h.status !== "healthy")) {
         h2(`HPA: ${h.namespace}/${h.name} [${h.status}]`);
         line(`Replicas: atual=${h.current_replicas} desejado=${h.desired_replicas} min=${h.min_replicas} max=${h.max_replicas}`, 4);
       }
@@ -2301,6 +2304,7 @@ function DiagnosticoTab({
   onCancelQuickAnalyze: () => void;
   onInvestigate: () => void;
   investigating: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   investigationResult: any;
   onCancelInvestigate: () => void;
 }) {
@@ -2440,8 +2444,8 @@ function DiagnosticoTab({
 
           {/* Métricas DT com charts — igual à tab Métricas (agrupado por família) */}
           {(() => {
-            const entities = (investigationResult.dt_metrics?.entities ?? []).filter((e: any) =>
-              (e.metrics ?? []).some((m: any) => (m.points ?? []).some((p: any) => !isNaN(p.v) && p.v >= 0))
+            const entities = (investigationResult.dt_metrics?.entities ?? []).filter((e) =>
+              (e.metrics ?? []).some((m) => (m.points ?? []).some((p) => !isNaN(p.v) && p.v >= 0))
             );
             if (!entities.length) return null;
             const hasVRP = (problem.affectedEntities?.length ?? 0) > 0 || !!problem.rootCauseEntity;
@@ -2457,7 +2461,7 @@ function DiagnosticoTab({
                   </p>
                 </CardHeader>
                 <CardContent className="px-3 pb-3 space-y-8">
-                  {entities.map((ed: any, ei: number) => (
+                  {entities.map((ed, ei: number) => (
                     <div key={ei}>
                       <EntityMetricsSection entity={ed} problemStartMs={problemStartMs} columns={2} />
                       {ei < entities.length - 1 && (
@@ -2487,9 +2491,9 @@ function DiagnosticoTab({
             </Card>
           )}
           {investigationResult.health_check_result && (() => {
-            const hc = investigationResult.health_check_result as any;
+            const hc = investigationResult.health_check_result;
             const allDeploys = hc.deployment_results ?? [];
-            const hpaProblems = (hc.hpa_results ?? []).filter((h: any) => h.status !== "healthy");
+            const hpaProblems = (hc.hpa_results ?? []).filter((h) => h.status !== "healthy");
             const events = hc.event_results ?? [];
             const statusColor = hc.overall_status === "healthy" ? "green" : hc.overall_status === "critical" ? "red" : "yellow";
             return (
@@ -2511,7 +2515,7 @@ function DiagnosticoTab({
                   {allDeploys.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Deployments</p>
-                      {allDeploys.map((d: any, i: number) => (
+                      {allDeploys.map((d, i: number) => (
                         <div key={i} className={`text-xs rounded px-2 py-1.5 space-y-1 ${d.status !== "healthy" ? "bg-red-500/10" : "bg-background/50"}`}>
                           <div className="flex justify-between">
                             <span className={`font-mono font-medium ${d.status !== "healthy" ? "text-red-300" : ""}`}>
@@ -2530,7 +2534,7 @@ function DiagnosticoTab({
                               CPU: {d.cpu_usage_percent.toFixed(1)}% | Mem: {d.memory_usage_percent.toFixed(1)}% | QoS: {d.qos_class}
                             </div>
                           )}
-                          {(d.container_resources ?? []).map((cr: any, ci: number) => (
+                          {(d.container_resources ?? []).map((cr, ci: number) => (
                             <div key={ci} className="text-[10px] font-mono text-muted-foreground/70 pl-2">
                               {cr.name}: cpu {cr.cpu_request || "—"}/{cr.cpu_limit || "—"} · mem {cr.memory_request || "—"}/{cr.memory_limit || "—"}
                             </div>
@@ -2542,6 +2546,7 @@ function DiagnosticoTab({
                   {hpaProblems.length > 0 && (
                     <div className="space-y-1">
                       <p className="text-[10px] text-muted-foreground uppercase tracking-wide">HPAs com problema</p>
+                      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- item de resposta do backend sem tipo no frontend */}
                       {hpaProblems.map((h: any, i: number) => (
                         <div key={i} className="text-xs bg-orange-500/10 rounded px-2 py-1 flex justify-between">
                           <span className="font-mono">{h.namespace}/{h.name}</span>
@@ -2553,6 +2558,7 @@ function DiagnosticoTab({
                   {events.length > 0 && (
                     <div className="space-y-1">
                       <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Eventos críticos</p>
+                      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- item de resposta do backend sem tipo no frontend */}
                       {events.slice(0, 5).map((e: any, i: number) => (
                         <div key={i} className="text-xs bg-background/50 rounded px-2 py-1">
                           <span className="text-orange-400">[{e.severity}]</span> {e.namespace}/{e.name} — {e.reason}
@@ -2574,6 +2580,7 @@ function DiagnosticoTab({
                 </p>
               </CardHeader>
               <CardContent className="px-3 pb-3 space-y-1">
+                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- item de resposta do backend sem tipo no frontend */}
                 {Array.from(new Map(investigationResult.dependencies!.map((d: any) => [`${d.service_type}:${d.service_name}`, d])).values()).slice(0, 12).map((dep: any, i: number) => (
                   <div key={i} className="text-xs flex items-center gap-2">
                     <Badge variant="outline" className="text-[9px] shrink-0">{dep.service_type}</Badge>
@@ -2637,6 +2644,7 @@ function ProblemDetailPanel({
   onCancelQuickAnalyze: () => void;
   onInvestigate: () => void;
   investigating: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   investigationResult: any;
   onCancelInvestigate: () => void;
 }) {
@@ -2728,6 +2736,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   const [quickActionItems, setQuickActionItems] = useState<ActionItem[]>([]);
   const [quickAnalyzingId, setQuickAnalyzingId] = useState<string | null>(null);
   const [investigatingId, setInvestigatingId] = useState<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estado com o payload do backend, que não tem tipo no frontend
   const [investigationResult, setInvestigationResult] = useState<any>(null);
 
   const analyzeAbortRef = useRef<AbortController | null>(null);
@@ -2827,7 +2836,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
       setQuickActionItems(result.action_items ?? []);
       setQuickAnalyzingId(null);
     },
-    onError: (err: any) => {
+    onError: (err) => {
       if (err?.name === "AbortError") return; // cancelado pelo usuário — não exibe erro
       setQuickAnalysisResult(`**Erro na análise:** ${err.message ?? "Erro desconhecido"}`);
       setQuickAnalyzingId(null);
@@ -2847,7 +2856,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
       setInvestigationResult(result);
       setInvestigatingId(null);
     },
-    onError: (err: any) => {
+    onError: (err) => {
       if (err?.name === "AbortError") return; // cancelado pelo usuário — não exibe erro
       setInvestigationResult({ ai_error: err.message ?? "Erro desconhecido" });
       setInvestigatingId(null);

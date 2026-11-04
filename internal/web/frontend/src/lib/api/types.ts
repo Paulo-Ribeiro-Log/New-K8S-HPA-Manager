@@ -1548,6 +1548,7 @@ export interface Anomaly {
   detected_at: string;
   duration_seconds: number;
   message: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dado dinâmico do backend, sem tipo definido no frontend
   details: Record<string, any>;
   resolved: boolean;
   resolved_at?: string;

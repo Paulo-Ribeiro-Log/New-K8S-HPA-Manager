@@ -15,7 +15,22 @@ interface PredictionHistoryModalProps {
   cluster?: string;
   namespace?: string;
   deployment?: string;
-  onSelectRecord?: (record: any) => void;
+  onSelectRecord?: (record) => void;
+}
+
+interface PredictionEntry {
+  timeframe?: string;
+  event?: string;
+  impact?: string;
+  probability?: number;
+  severity?: string;
+}
+
+// O backend devolve as previsões agrupadas por horizonte (não uma lista plana).
+interface PredictionBuckets {
+  short_term?: PredictionEntry[];
+  medium_term?: PredictionEntry[];
+  long_term?: PredictionEntry[];
 }
 
 interface PredictionRecord {
@@ -25,9 +40,12 @@ interface PredictionRecord {
   deployment: string;
   health_score: number;
   risk_level: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   executive_summary: any;
-  predictions: any[];
+  predictions: PredictionBuckets;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   recommendations: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   raw_metrics: any;
   provider: string;
   model: string;
@@ -493,11 +511,11 @@ export const PredictionHistoryModal = ({
                       {!Array.isArray(selectedRecord.predictions) && typeof selectedRecord.predictions === 'object' && (
                         <>
                           {/* Short Term */}
-                          {Array.isArray((selectedRecord.predictions as any).short_term) && (selectedRecord.predictions as any).short_term.length > 0 && (
+                          {Array.isArray(selectedRecord.predictions.short_term) && selectedRecord.predictions.short_term.length > 0 && (
                             <div>
                               <div className="font-semibold text-xs text-muted-foreground mb-1">Curto Prazo (1-7 dias)</div>
                               <div className="space-y-1">
-                                {(selectedRecord.predictions as any).short_term.map((pred: any, idx: number) => (
+                                {selectedRecord.predictions.short_term.map((pred, idx: number) => (
                                   <div key={idx} className="text-sm pl-3 border-l-2 border-blue-500">
                                     <div className="font-medium text-blue-400">{pred.timeframe} - {pred.event}</div>
                                     <div className="text-muted-foreground">{pred.impact}</div>
@@ -510,11 +528,11 @@ export const PredictionHistoryModal = ({
                           )}
                           
                           {/* Medium Term */}
-                          {Array.isArray((selectedRecord.predictions as any).medium_term) && (selectedRecord.predictions as any).medium_term.length > 0 && (
+                          {Array.isArray(selectedRecord.predictions.medium_term) && selectedRecord.predictions.medium_term.length > 0 && (
                             <div>
                               <div className="font-semibold text-xs text-muted-foreground mb-1">Médio Prazo (1-4 semanas)</div>
                               <div className="space-y-1">
-                                {(selectedRecord.predictions as any).medium_term.map((pred: any, idx: number) => (
+                                {selectedRecord.predictions.medium_term.map((pred, idx: number) => (
                                   <div key={idx} className="text-sm pl-3 border-l-2 border-yellow-500">
                                     <div className="font-medium text-yellow-400">{pred.timeframe} - {pred.event}</div>
                                     <div className="text-muted-foreground">{pred.impact}</div>
@@ -527,11 +545,11 @@ export const PredictionHistoryModal = ({
                           )}
                           
                           {/* Long Term */}
-                          {Array.isArray((selectedRecord.predictions as any).long_term) && (selectedRecord.predictions as any).long_term.length > 0 && (
+                          {Array.isArray(selectedRecord.predictions.long_term) && selectedRecord.predictions.long_term.length > 0 && (
                             <div>
                               <div className="font-semibold text-xs text-muted-foreground mb-1">Longo Prazo (1-3 meses)</div>
                               <div className="space-y-1">
-                                {(selectedRecord.predictions as any).long_term.map((pred: any, idx: number) => (
+                                {selectedRecord.predictions.long_term.map((pred, idx: number) => (
                                   <div key={idx} className="text-sm pl-3 border-l-2 border-orange-500">
                                     <div className="font-medium text-orange-400">{pred.timeframe} - {pred.event}</div>
                                     <div className="text-muted-foreground">{pred.impact}</div>
@@ -548,7 +566,7 @@ export const PredictionHistoryModal = ({
                       {/* Fallback: se predictions é um array simples */}
                       {Array.isArray(selectedRecord.predictions) && selectedRecord.predictions.length > 0 && (
                         <div className="space-y-2">
-                          {selectedRecord.predictions.map((pred: any, idx: number) => (
+                          {selectedRecord.predictions.map((pred, idx: number) => (
                             <div key={idx} className="text-sm pl-3 border-l-2 border-blue-500">
                               <div className="font-medium text-blue-400">{pred.timeframe} - {pred.event || pred.description}</div>
                               <div className="text-muted-foreground">{pred.impact || pred.description}</div>
@@ -566,7 +584,7 @@ export const PredictionHistoryModal = ({
                   <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
                     <h3 className="font-semibold mb-2">Recomendações</h3>
                     <div className="space-y-2">
-                      {selectedRecord.recommendations.map((rec: any, idx: number) => (
+                      {selectedRecord.recommendations.map((rec, idx: number) => (
                         <div key={idx} className="text-sm border-l-2 border-green-500 pl-3 py-1">
                           <div className="font-medium text-green-400">{rec.title}</div>
                           <div className="text-muted-foreground mt-0.5">{rec.description}</div>

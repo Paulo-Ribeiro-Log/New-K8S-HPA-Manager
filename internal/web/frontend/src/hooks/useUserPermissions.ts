@@ -58,6 +58,7 @@ export function useRefreshPermissions() {
         description: `Status SRE: ${data.isSRE ? 'Sim' : 'Não'}`,
       });
     },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dado dinâmico do backend, sem tipo definido no frontend
     onError: (error: any) => {
       toast.error('Erro ao atualizar permissões', {
         description: error.response?.data?.error || 'Erro desconhecido',

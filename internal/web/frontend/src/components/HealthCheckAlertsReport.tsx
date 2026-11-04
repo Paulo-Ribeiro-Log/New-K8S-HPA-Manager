@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { addLogoHeaderToPDF, getMarkdownHeader } from "@/lib/logoUtils";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { lastTableY } from "@/lib/pdfAutoTable";
 
 interface HealthCheckAlertsReportProps {
   open: boolean;
@@ -95,7 +96,7 @@ export const HealthCheckAlertsReport = ({
             const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
             // Filtrar histórico por data
-            const filteredHistory = historyResponse.data.filter((h: any) => {
+            const filteredHistory = historyResponse.data.filter((h) => {
               const date = new Date(h.started_at);
               switch (dateFilterMode) {
                 case "today":
@@ -327,7 +328,7 @@ export const HealthCheckAlertsReport = ({
       });
 
       // Atualizar yPosition para próximo cluster
-      yPosition = (doc as any).lastAutoTable.finalY + 15;
+      yPosition = lastTableY(doc) + 15;
     });
 
     // Salvar PDF
@@ -735,7 +736,7 @@ export const HealthCheckAlertsReport = ({
           {/* Seleção de formato */}
           <div className="space-y-4 py-4">
             <Label>Formato de Exportação</Label>
-            <RadioGroup value={exportFormat} onValueChange={(value) => setExportFormat(value as any)}>
+            <RadioGroup value={exportFormat} onValueChange={(value) => setExportFormat(value as typeof exportFormat)}>
               <div className="flex items-center space-x-3 border rounded-lg p-3 hover:bg-accent cursor-pointer">
                 <RadioGroupItem value="pdf" id="pdf" />
                 <Label htmlFor="pdf" className="flex-1 cursor-pointer">

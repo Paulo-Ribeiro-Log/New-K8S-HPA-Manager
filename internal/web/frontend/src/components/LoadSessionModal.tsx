@@ -198,7 +198,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       const data = await response.json();
       
       if (data.success && data.data?.sessions) {
-        setSessions(data.data.sessions.map((sessionSummary: any) => ({
+        setSessions(data.data.sessions.map((sessionSummary) => ({
           name: sessionSummary.name,
           created_at: sessionSummary.created_at,
           created_by: sessionSummary.created_by,

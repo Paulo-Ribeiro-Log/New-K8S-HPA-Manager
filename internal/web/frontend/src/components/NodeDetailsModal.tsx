@@ -99,14 +99,14 @@ const ResourceGauge = ({
 };
 
 const StatusBadge = ({ status }: { status: string }) => {
-  const getVariant = () => {
+  const getVariant = (): "default" | "destructive" | "secondary" => {
     if (status === "Ready") return "default";
     if (status === "NotReady") return "destructive";
     return "secondary";
   };
 
   return (
-    <Badge variant={getVariant() as any} className="ml-2">
+    <Badge variant={getVariant()} className="ml-2">
       {status}
     </Badge>
   );

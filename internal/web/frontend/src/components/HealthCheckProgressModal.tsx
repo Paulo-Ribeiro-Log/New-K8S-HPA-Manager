@@ -31,6 +31,7 @@ interface HealthCheckProgressModalProps {
   sessionId: string;                           // Base session ID
   clusterSessions: Record<string, string>;     // Map: cluster -> sessionID único
   open: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   preloadedEvents?: any[];                     // Eventos pré-carregados (modo visualização)
   preloadedResult?: HealthCheckResult;         // ✅ Resultado completo pré-carregado (modo visualização)
   viewMode?: boolean;                          // Modo visualização (não conecta SSE)
@@ -86,7 +87,7 @@ const ClusterTabContent = ({
           const response = await apiClient.getHealthCheckEvents(sessionId);
 
           if (response.success && response.events && response.events.length > 0) {
-            const formattedEvents: HealthCheckProgress[] = response.events.map((event: any) => ({
+            const formattedEvents: HealthCheckProgress[] = response.events.map((event) => ({
               id: event.id,
               type: event.type,
               phase: event.phase,

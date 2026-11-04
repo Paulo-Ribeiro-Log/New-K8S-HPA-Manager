@@ -7,6 +7,7 @@ interface SimpleIndexProps {
 
 const SimpleIndex = ({ onLogout }: SimpleIndexProps) => {
   console.log('SimpleIndex component rendering');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estado com o payload do backend, que não tem tipo no frontend
   const [clusters, setClusters] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

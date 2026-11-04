@@ -25,6 +25,7 @@ interface NodePoolPredictionModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   loading: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   result: any;
   nodepoolName: string;
   onShowHistory?: () => void;
@@ -104,11 +105,12 @@ function fmtBRL(v: number | undefined) {
 // ── Chart helpers ──────────────────────────────────────────────────────────────
 
 /** Converte array de TrendSnapshot (Go) em dados para Recharts, do mais antigo ao mais recente */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- resultado da investigação do backend, sem tipo no frontend
 function buildTrendChartData(snapshots: any[] | undefined) {
   if (!snapshots?.length) return null;
   return [...snapshots]
-    .sort((a: any, b: any) => b.days_ago - a.days_ago) // D-14 primeiro, D-0 por último
-    .map((s: any) => ({
+    .sort((a, b) => b.days_ago - a.days_ago) // D-14 primeiro, D-0 por último
+    .map((s) => ({
       label: s.days_ago === 0 ? "Hoje" : `D-${s.days_ago}`,
       value: Math.round((s.value_per_node ?? 0) * 10) / 10,
     }));
@@ -154,7 +156,7 @@ function TrendMiniChart({ data, color, unit = "%", showThreshold = false }: Tren
             borderRadius: 6,
             padding: "4px 8px",
           }}
-          formatter={(v: any) => [`${v}${unit}`, ""]}
+          formatter={(v) => [`${v}${unit}`, ""]}
           labelStyle={{ color: "#9ca3af" }}
         />
         {showThreshold && (
@@ -622,7 +624,7 @@ export function NodePoolPredictionModal({
                               </tr>
                             </thead>
                             <tbody>
-                              {result.raw_metrics.nodes_snapshot.slice(0, 10).map((n: any, i: number) => (
+                              {result.raw_metrics.nodes_snapshot.slice(0, 10).map((n, i: number) => (
                                 <tr key={i} className="border-b border-border/20 hover:bg-background/30">
                                   <td className="py-1.5 pr-3 font-mono text-xs truncate max-w-[140px]" title={n.node_name}>
                                     {n.node_name}
@@ -722,7 +724,7 @@ export function NodePoolPredictionModal({
                                 </tr>
                               </thead>
                               <tbody>
-                                {result.raw_metrics.conntrack_pool.nodes.map((cn: any, i: number) => (
+                                {result.raw_metrics.conntrack_pool.nodes.map((cn, i: number) => (
                                   <tr key={i} className="border-b border-border/20 hover:bg-background/30">
                                     <td className="py-1.5 pr-3 font-mono text-xs truncate max-w-[160px]">{cn.node_name}</td>
                                     <td className="text-right py-1.5 px-2">{cn.current_entries?.toLocaleString()}</td>
@@ -930,7 +932,7 @@ export function NodePoolPredictionModal({
                           </p>
                         )}
                         <div className="space-y-2">
-                          {result.saturation_timeline.forecasts.map((f: any, idx: number) => {
+                          {result.saturation_timeline.forecasts.map((f, idx: number) => {
                             const urgencyColor =
                               f.urgency_badge === "CRITICO"
                                 ? "border-l-red-500 bg-red-500/5"
@@ -1021,7 +1023,7 @@ export function NodePoolPredictionModal({
                       </AccordionTrigger>
                       <AccordionContent>
                         <div className="space-y-2 max-h-56 overflow-y-auto">
-                          {result.raw_metrics.autoscaler_events.map((ev: any, i: number) => (
+                          {result.raw_metrics.autoscaler_events.map((ev, i: number) => (
                             <div key={i} className="text-xs bg-background/50 rounded p-2 flex items-start gap-2">
                               <Badge
                                 variant={ev.event_type === "ScaleUp" ? "destructive" : "default"}
@@ -1095,12 +1097,12 @@ export function NodePoolPredictionModal({
                         <span className="flex items-center gap-2 font-semibold">
                           <Scale className="w-4 h-4 text-blue-400" />
                           HPAs neste Pool
-                          {result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                          {result.raw_metrics.hpa_correlation.some((h) => h.at_max) && (
                             <Badge className="ml-2 text-xs bg-red-500/20 text-red-400 border-red-500/30">
-                              {result.raw_metrics.hpa_correlation.filter((h: any) => h.at_max).length} em limite
+                              {result.raw_metrics.hpa_correlation.filter((h) => h.at_max).length} em limite
                             </Badge>
                           )}
-                          {!result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                          {!result.raw_metrics.hpa_correlation.some((h) => h.at_max) && (
                             <Badge className="ml-2 text-xs bg-green-500/20 text-green-500 border-green-500/30">
                               {result.raw_metrics.hpa_correlation.length} HPAs
                             </Badge>
@@ -1109,7 +1111,7 @@ export function NodePoolPredictionModal({
                       </AccordionTrigger>
                       <AccordionContent>
                         <div className="space-y-2">
-                          {result.raw_metrics.hpa_correlation.map((hpa: any, i: number) => (
+                          {result.raw_metrics.hpa_correlation.map((hpa, i: number) => (
                             <div
                               key={i}
                               className={`flex items-center justify-between rounded p-2 text-xs ${
@@ -1156,7 +1158,7 @@ export function NodePoolPredictionModal({
                             </div>
                           ))}
                         </div>
-                        {result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                        {result.raw_metrics.hpa_correlation.some((h) => h.at_max) && (
                           <p className="text-xs text-red-400/80 mt-3">
                             HPAs em limite maximo nao conseguem escalar mais. Se a carga aumentar, as replicas existentes absorvem toda a pressao sem possibilidade de escalonamento horizontal.
                           </p>
@@ -1302,7 +1304,7 @@ export function NodePoolPredictionModal({
                         {result.cost_analysis.recommendations?.length > 0 && (
                           <div className="space-y-2">
                             <div className="text-sm font-medium text-muted-foreground">Recomendações de custo:</div>
-                            {result.cost_analysis.recommendations.map((rec: any, i: number) => (
+                            {result.cost_analysis.recommendations.map((rec, i: number) => (
                               <div key={i} className="bg-background/50 rounded p-2 text-sm">
                                 <div className="font-medium">{rec.title}</div>
                                 <div className="text-xs text-muted-foreground">{rec.description}</div>
@@ -1327,7 +1329,7 @@ export function NodePoolPredictionModal({
                                 return bn === "cpu" ? "CPU" : bn === "memory" ? "Memória" : "CPU e Memória";
                               })()})
                             </div>
-                            {result.cost_analysis.sku_alternatives.map((alt: any, i: number) => (
+                            {result.cost_analysis.sku_alternatives.map((alt, i: number) => (
                               <div
                                 key={i}
                                 className={`rounded border p-3 text-sm ${
@@ -1397,7 +1399,7 @@ export function NodePoolPredictionModal({
                               <div key={label}>
                                 <h4 className="text-sm font-medium text-muted-foreground mb-2">{label}</h4>
                                 <div className="space-y-2">
-                                  {items.map((p: any, i: number) => (
+                                  {items.map((p, i: number) => (
                                     <div key={i} className="bg-background/50 rounded p-3">
                                       <div className="flex items-start justify-between gap-2 mb-1">
                                         <p className="text-sm flex-1">{p.event}</p>
@@ -1438,7 +1440,7 @@ export function NodePoolPredictionModal({
                       </AccordionTrigger>
                       <AccordionContent>
                         <div className="space-y-2">
-                          {result.recommendations.map((rec: any, i: number) => (
+                          {result.recommendations.map((rec, i: number) => (
                             <div key={i} className="bg-background/50 rounded p-3">
                               <div className="flex items-start justify-between gap-2">
                                 <div className="flex items-start gap-2 flex-1">

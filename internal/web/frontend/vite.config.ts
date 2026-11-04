@@ -7,7 +7,7 @@ import monacoEditorPlugin from "vite-plugin-monaco-editor";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const monacoPlugin = (monacoEditorPlugin as any).default || monacoEditorPlugin;
+const monacoPlugin = (monacoEditorPlugin as unknown as { default?: typeof monacoEditorPlugin }).default || monacoEditorPlugin;
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({

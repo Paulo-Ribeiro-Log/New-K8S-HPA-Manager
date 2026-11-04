@@ -36,7 +36,7 @@ export const MonitoringPage = ({ onNavigateToHPA, preSelectedHPA, onHPASelected 
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
   const [monitoringStatus, setMonitoringStatus] = useState<MonitoringStatus | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [portInfo, setPortInfo] = useState<any>(null);
+  const [portInfo, setPortInfo] = useState<unknown>(null);
   const { toast } = useToast();
 
   // Carregar HPAs monitorados do localStorage
