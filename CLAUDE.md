@@ -38,6 +38,7 @@ make test-coverage                                    # gera coverage.out + cove
 cd internal/web/frontend
 npx tsc --noEmit -p tsconfig.app.json   # type-check REAL (ver abaixo); `make web-typecheck` na raiz, é o que a CI roda (~4 min)
 npm run lint                            # eslint (no-undef desligado); `make web-lint` na raiz, é o que a CI roda (bloqueia; ~2 min)
+npm run help:check                      # abas sem página de ajuda; `make web-help-check` na raiz (aviso na CI)
 ```
 
 Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod vendor` (⚠️ ver patch do go-rod), e rebuild do frontend se mexeu nele.
@@ -63,7 +64,7 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - Chamadas a CLI cloud (`az`/`aws`/`gcloud`) **sempre** com `exec.CommandContext` + timeout e, se no caminho quente de request, cache com TTL.
 
 **Frontend** (`internal/web/frontend`, React 18 + Vite + shadcn/ui + Tailwind + Monaco + xterm + Cytoscape)
-- Uma só rota útil (`/` → `pages/Index.tsx`); a navegação é o estado `activeTab` (sem rotas por aba). Abas pesadas ficam montadas com `display:none` (ref `hasBeenMounted`); as demais são desmontadas via `renderTabContent()`. Menus: `WorkloadMenu`, `ToolsMenu` (nova ferramenta = novo item ali). Vários arquivos em `pages/` (`Index.backup/broken`, `SimpleIndex`, …) e `NodePoolTab.tsx` são **código morto** — edite `Index.tsx`/`TabContent.tsx`.
+- Uma só rota útil (`/` → `pages/Index.tsx`); a navegação é o estado `activeTab` (sem rotas por aba). Abas pesadas ficam montadas com `display:none` (ref `hasBeenMounted`); as demais são desmontadas via `renderTabContent()`. Menus: `WorkloadMenu`, `ToolsMenu` (nova ferramenta = novo item ali **e** uma página de ajuda: entrada em `src/help/helpRegistry.ts` + `src/help/pages/<id>.md`, com o mesmo id da aba; `make web-help-check` confere, e a CI avisa das abas sem página). A ajuda é o botão `?` do `Header` (`components/help/`), um painel não modal que acompanha a aba ativa. Vários arquivos em `pages/` (`Index.backup/broken`, `SimpleIndex`, …) e `NodePoolTab.tsx` são **código morto** — edite `Index.tsx`/`TabContent.tsx`.
 - Estado global: `StagingContext` (mudanças pendentes de HPA/NodePool), `TabContext` (multi-cluster). Dados: React Query (`queryKey` único; invalide em vez de `location.reload()`), e algumas listas com polling manual em `hooks/useAPI.ts`.
 - Editor Monaco: importe `Editor`/`DiffEditor` de `@/lib/monacoEditor` (wrapper), **nunca** direto de `@monaco-editor/react` — o wrapper instala as ações globais (comentar linha/bloco com atalhos do VS Code, `lib/codeComments.ts`). Atalho de editor = `editor.addAction({ keybindings })`, **nunca** `editor.addCommand`: este é global no Monaco (vale o último registrado, sem dispose) e um editor rouba o atalho de outro.
 - **Todo** HTTP passa por `lib/api/client.ts` (auto-refresh de JWT, `encodeURIComponent` — nomes de cluster EKS são ARNs com `/` e `:`). Não use `fetch` direto em componentes.

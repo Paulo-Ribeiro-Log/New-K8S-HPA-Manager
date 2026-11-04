@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check, History, AlertCircle } from "lucide-react";
 import { NotificationBell } from "@/components/NotificationBell";
+import { HelpButton } from "@/components/help/HelpButton";
 import { NotificationDrawer } from "@/components/NotificationDrawer";
 import { AlertsDialog } from "@/components/AlertsDialog";
 import { UserProfileMenu } from "@/components/UserProfileMenu";
@@ -409,6 +410,8 @@ export const Header = ({
         )}
 
         {/* Notification Bell */}
+        <HelpButton />
+
         <NotificationBell
           unreadCount={unreadCount}
           onClick={() => setNotificationDrawerOpen(true)}

@@ -6,6 +6,7 @@ import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
 import { WorkloadMenu } from "@/components/WorkloadMenu";
 import { ToolsMenu } from "@/components/ToolsMenu";
+import { useHelpTab } from "@/components/help/helpContext";
 import { DashboardCharts } from "@/components/DashboardCharts";
 import { SplitView } from "@/components/SplitView";
 import {
@@ -162,6 +163,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const navigate = useNavigate();
   const historyTab = (location.state as { tab?: string } | null)?.tab ?? "dashboard";
   const [activeTab, setActiveTab] = useState(historyTab);
+  useHelpTab(activeTab); // a ajuda (botão "?" do cabeçalho) acompanha a aba ativa
   useEffect(() => {
     setActiveTab(historyTab);
   }, [historyTab]);
