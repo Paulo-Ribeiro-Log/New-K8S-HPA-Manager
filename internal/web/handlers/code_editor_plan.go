@@ -17,11 +17,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// View Plan — lê (somente leitura) o último plan que o Atlantis comentou no PR da branch
-// atual do repo. O Atlantis publica cada projeto num bloco <details><summary>Show Output</summary>
-// com um ```diff dentro; plans maiores que o limite de comentário do GitHub são quebrados em
-// vários comentários seguidos ("Continued plan output from previous comment."), que são
-// reemendados aqui para o texto voltar a ficar inteiro.
+// View Plan — lê (somente leitura) os plans/outputs que o GitHub guarda para o PR da branch atual
+// do repo. As fontes (code_editor_plan_sources.go) são: comentários do Atlantis, comentários de
+// outros bots/workflows com saída de plan, saídas de check runs e logs dos jobs do GitHub Actions
+// que rodam plan/diff/preview.
+//
+// O Atlantis publica cada projeto num bloco <details><summary>Show Output</summary> com um ```diff
+// dentro; plans maiores que o limite de comentário do GitHub são quebrados em vários comentários
+// seguidos ("Continued plan output from previous comment."), que são reemendados aqui para o texto
+// voltar a ficar inteiro.
+
+// githubAPIBase é trocável nos testes.
+var githubAPIBase = "https://api.github.com"
 
 // PlanPR é um PR da branch atual.
 type PlanPR struct {
@@ -31,6 +38,7 @@ type PlanPR struct {
 	State     string `json:"state"`
 	URL       string `json:"url"`
 	UpdatedAt string `json:"updated_at"`
+	HeadSHA   string `json:"head_sha"`
 }
 
 // PlanProject é a saída de plan de um projeto/dir do Atlantis.
@@ -66,23 +74,28 @@ var (
 	planContinuationRe = regexp.MustCompile(`(?i)^continued plan output from previous comment`)
 )
 
-// GetPRPlan — GET /api/v1/code-editor/repos/:id/pr/plan?pr=<n>&profile_id=<id>
-// Sem `pr`, usa o PR aberto mais recente da branch atual (ou o mais recente fechado/mergeado).
-func (h *CodeEditorHandler) GetPRPlan(c *gin.Context) {
+// planTarget identifica o repo/branch/token usados nas chamadas ao GitHub.
+type planTarget struct {
+	owner, repo, branch, token string
+}
+
+// resolvePlanTarget valida o repo e acha owner/repo, branch atual e PAT. Em falha, já responde
+// ao cliente e devolve ok=false.
+func (h *CodeEditorHandler) resolvePlanTarget(c *gin.Context) (planTarget, bool) {
 	dir := filepath.Join(h.reposBase, c.Param("id"))
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "repositório não encontrado"})
-		return
+		return planTarget{}, false
 	}
 	owner, repo := ownerRepo(dir)
 	if owner == "" || repo == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "não foi possível determinar owner/repo do repositório"})
-		return
+		return planTarget{}, false
 	}
 	branch := currentBranch(dir)
 	if branch == "" || branch == "HEAD" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "repositório não está numa branch (HEAD destacado)"})
-		return
+		return planTarget{}, false
 	}
 
 	token := h.resolveProfileToken(c, c.Query("profile_id"))
@@ -94,40 +107,88 @@ func (h *CodeEditorHandler) GetPRPlan(c *gin.Context) {
 	}
 	if token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PAT GitHub não configurado — configure em GitHub Releases → perfil"})
-		return
+		return planTarget{}, false
 	}
+	return planTarget{owner: owner, repo: repo, branch: branch, token: token}, true
+}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
-	defer cancel()
-
-	prs, err := listBranchPRs(ctx, token, owner, repo, branch)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
-	}
-	resp := gin.H{"branch": branch, "prs": prs, "pr": nil, "plan": nil}
-	if len(prs) == 0 {
-		c.JSON(http.StatusOK, resp)
-		return
-	}
-
+// pickPR escolhe o PR pedido (?pr=<n>) ou, sem ele, o primeiro da lista (aberto mais recente).
+func pickPR(prs []PlanPR, requested string) PlanPR {
 	selected := prs[0]
-	if n, _ := strconv.Atoi(c.Query("pr")); n > 0 {
+	if n, _ := strconv.Atoi(requested); n > 0 {
 		for _, p := range prs {
 			if p.Number == n {
 				selected = p
 			}
 		}
 	}
-	resp["pr"] = selected
+	return selected
+}
 
-	comments, err := listIssueComments(ctx, token, owner, repo, selected.Number)
+// GetPRPlan — GET /api/v1/code-editor/repos/:id/pr/plan?pr=<n>&profile_id=<id>
+// Sem `pr`, usa o PR aberto mais recente da branch atual (ou o mais recente fechado/mergeado).
+// Devolve todas as fontes de plan/output achadas no GitHub para o PR.
+func (h *CodeEditorHandler) GetPRPlan(c *gin.Context) {
+	t, ok := h.resolvePlanTarget(c)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+
+	prs, err := listBranchPRs(ctx, t.token, t.owner, t.repo, t.branch)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	resp["plan"] = extractAtlantisPlan(comments)
+	resp := gin.H{"branch": t.branch, "prs": prs, "pr": nil, "sources": []PlanSource{}, "warnings": []string{}}
+	if len(prs) == 0 {
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	selected := pickPR(prs, c.Query("pr"))
+	resp["pr"] = selected
+
+	sources, warnings, err := gatherPlanSources(ctx, t.token, t.owner, t.repo, selected)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	resp["sources"] = sources
+	resp["warnings"] = warnings
 	c.JSON(http.StatusOK, resp)
+}
+
+// GetPRPlanAvailability — GET /api/v1/code-editor/repos/:id/pr/plan/available?profile_id=<id>
+// Resposta barata (PRs, comentários e check runs; sem baixar logs) usada para habilitar ou
+// desabilitar o botão View Plan.
+func (h *CodeEditorHandler) GetPRPlanAvailability(c *gin.Context) {
+	t, ok := h.resolvePlanTarget(c)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	prs, err := listBranchPRs(ctx, t.token, t.owner, t.repo, t.branch)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	if len(prs) == 0 {
+		c.JSON(http.StatusOK, PlanAvailability{Branch: t.branch, Reason: "no_pr"})
+		return
+	}
+	av, err := checkPlanAvailability(ctx, t.token, t.owner, t.repo, prs[0])
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	av.Branch = t.branch
+	c.JSON(http.StatusOK, av)
 }
 
 // listBranchPRs lista os PRs cuja head é a branch, abertos primeiro e depois por atualização.
@@ -148,13 +209,16 @@ func listBranchPRs(ctx context.Context, token, owner, repo, branch string) ([]Pl
 		Base      struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
 	}
-	if err := githubGetJSON(ctx, token, fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls?%s", owner, repo, q.Encode()), &raw); err != nil {
+	if err := githubGetJSON(ctx, token, fmt.Sprintf("%s/repos/%s/%s/pulls?%s", githubAPIBase, owner, repo, q.Encode()), &raw); err != nil {
 		return nil, err
 	}
 	var open, other []PlanPR
 	for _, r := range raw {
-		p := PlanPR{Number: r.Number, Title: r.Title, Base: r.Base.Ref, State: r.State, URL: r.HTMLURL, UpdatedAt: r.UpdatedAt}
+		p := PlanPR{Number: r.Number, Title: r.Title, Base: r.Base.Ref, State: r.State, URL: r.HTMLURL, UpdatedAt: r.UpdatedAt, HeadSHA: r.Head.SHA}
 		if r.State == "open" {
 			open = append(open, p)
 			continue
@@ -172,7 +236,7 @@ func listIssueComments(ctx context.Context, token, owner, repo string, number in
 	var all []ghIssueComment
 	for page := 1; page <= 30; page++ {
 		var batch []ghIssueComment
-		u := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments?per_page=100&page=%d", owner, repo, number, page)
+		u := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments?per_page=100&page=%d", githubAPIBase, owner, repo, number, page)
 		if err := githubGetJSON(ctx, token, u, &batch); err != nil {
 			return nil, err
 		}

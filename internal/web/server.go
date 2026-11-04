@@ -2047,7 +2047,8 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetGitHubProfiles)
 		codeEditor.PUT("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.SaveGitHubProfiles)
 		codeEditor.POST("/repos/:id/pr/create", rbacMiddleware.InjectUserEmail(), codeEditorHandler.CreatePR)
-		codeEditor.GET("/repos/:id/pr/plan", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRPlan) // View Plan (Atlantis), somente leitura
+		codeEditor.GET("/repos/:id/pr/plan", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRPlan)                       // View Plan: plans/outputs do PR (Atlantis, comentários, checks, Actions), somente leitura
+		codeEditor.GET("/repos/:id/pr/plan/available", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRPlanAvailability) // habilita/desabilita o botão View Plan
 		// LSP
 		lspHandler := handlers.NewCodeEditorLSPHandler(codeEditorHandler.ReposBase())
 		codeEditor.POST("/repos/:id/lsp/open", lspHandler.Open)

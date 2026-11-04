@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Editor, { DiffEditor, OnMount } from "@/lib/monacoEditor";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -2206,6 +2207,15 @@ function BranchesPanel({ branches, onRefresh, refreshing, onCheckout, onCreateBr
 // isActive: a aba fica sempre montada (display:none) depois da 1ª visita — ver hasBeenMounted em
 // pages/Index.tsx. Escondida, só os polls (diagnósticos LSP e árvore/status) pausam; o editor, os
 // atalhos (Ctrl+S via saveFileRef) e o estado continuam intactos.
+// Resumo para o tooltip do botão View Plan: de onde vêm os plans/outputs do PR.
+function viewPlanSummary(a: { pr: { number: number } | null; comments: number; checks: number; jobs: number }): string {
+  const parts: string[] = [];
+  if (a.comments > 0) parts.push(`${a.comments} em comentários`);
+  if (a.jobs > 0) parts.push(`${a.jobs} job(s) do Actions`);
+  if (a.checks > 0) parts.push(`${a.checks} em check runs`);
+  return `Ver plans e outputs do PR #${a.pr?.number ?? ""}: ${parts.join(", ")} (somente leitura)`;
+}
+
 export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) {
   const [repos, setRepos] = useState<CodeEditorRepo[]>([]);
   // IDs de pastas locais sem Git ("Abrir pasta") — loadStatus/Branches/Log/Tags não consultam o Git
@@ -2379,6 +2389,32 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const [showBranchDiff, setShowBranchDiff] = useState(false);
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [showViewPlan, setShowViewPlan] = useState(false);
+  // View Plan só faz sentido com algo para mostrar: consulta barata (PR, comentários e check runs)
+  // que habilita o botão. Em erro (GitHub fora do ar, PAT ausente) o botão continua clicável e o
+  // modal mostra o erro — só desabilita quando se sabe que não há plan nem output.
+  const queryClient = useQueryClient();
+  const planBranch = branches?.current;
+  const planCheckEnabled = !!selectedRepo && !!planBranch && planBranch !== "main" && planBranch !== "master";
+  const { data: planAvail, isError: planAvailError } = useQuery({
+    queryKey: ["code-editor-plan-available", selectedRepo?.id, planBranch, activeProfileId()],
+    queryFn: () => apiClient.codeEditorPlanAvailable(selectedRepo!.id, activeProfileId()),
+    enabled: planCheckEnabled,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+  const planButton = planAvail
+    ? planAvail.available
+      ? { disabled: false, title: viewPlanSummary(planAvail) }
+      : {
+          disabled: true,
+          title: planAvail.reason === "no_pr"
+            ? "Sem plan: esta branch não tem Pull Request"
+            : `Sem plan nem output no PR #${planAvail.pr?.number ?? ""} (Atlantis, comentários, checks ou jobs de plan/diff do Actions)`,
+        }
+    : planAvailError
+      ? { disabled: false, title: "Ver plans e outputs do PR desta branch (não foi possível verificar antes; o erro aparece ao abrir)" }
+      : { disabled: true, title: "Verificando se há plan ou output no PR…" };
   const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
   const [markdownPreviewWidth, setMarkdownPreviewWidth] = useState(() => {
     const saved = localStorage.getItem("ce_md_preview_width");
@@ -3998,7 +4034,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
             )}
             {branches?.current && branches.current !== "main" && branches.current !== "master" && (
               <Button variant="ghost" size="sm" className="h-6 text-xs gap-1"
-                title="Ver o plan do Atlantis no PR desta branch (somente leitura)"
+                title={planButton.title}
+                disabled={planButton.disabled}
                 onClick={() => setShowViewPlan(true)}>
                 <FileDiff className="w-3 h-3" />View Plan
               </Button>
@@ -5650,7 +5687,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       {showCreatePR && selectedRepo && branches?.current && (
         <CreatePRModal
           open={showCreatePR}
-          onClose={() => setShowCreatePR(false)}
+          onClose={() => { setShowCreatePR(false); queryClient.invalidateQueries({ queryKey: ["code-editor-plan-available"] }); }}
           repoId={selectedRepo.id}
           head={branches.current}
           rawBranches={branches}
@@ -5658,7 +5695,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         />
       )}
 
-      {/* ── View Plan (Atlantis) ── */}
+      {/* ── View Plan (plans/outputs do PR) ── */}
       {showViewPlan && selectedRepo && (
         <ViewPlanModal
           repoId={selectedRepo.id}

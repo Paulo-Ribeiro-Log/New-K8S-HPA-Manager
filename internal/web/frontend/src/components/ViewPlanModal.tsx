@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Copy, ExternalLink, FileDiff, Loader2, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { apiClient, type CodeEditorPRPlanResponse } from "@/lib/api/client";
+import { apiClient, type CodeEditorPRPlanResponse, type CodeEditorPlanSourceKind } from "@/lib/api/client";
 
-// View Plan — mostra (somente leitura) o último plan que o Atlantis comentou no PR da branch
-// atual. Não usa o Dialog do shadcn: o modal é flutuante (arrastável pelo cabeçalho) e tem
+const SOURCE_LABEL: Record<CodeEditorPlanSourceKind, string> = {
+  atlantis: "Atlantis",
+  comment: "Comentário",
+  workflow: "GitHub Actions",
+  check: "Check",
+};
+
+// View Plan — mostra (somente leitura) os plans/outputs que o GitHub guarda para o PR da branch
+// atual: comentário do Atlantis, comentários de outros bots/workflows, saída de check runs e logs
+// de jobs do GitHub Actions (plan/diff/preview). Não usa o Dialog do shadcn: o modal é flutuante (arrastável pelo cabeçalho) e tem
 // `resize: both` nativo, então a posição é top/left em px controlados aqui — com o Dialog
 // centralizado por translate, arrastar a alça faz a caixa crescer pros dois lados e a alça
 // "foge" do mouse.
@@ -63,6 +71,7 @@ export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [prNumber, setPrNumber] = useState<number | undefined>(undefined);
+  const [sourceIdx, setSourceIdx] = useState(0);
   const [projectIdx, setProjectIdx] = useState(0);
   const [copied, setCopied] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -98,6 +107,7 @@ export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps
     try {
       const r = await apiClient.codeEditorGetPRPlan(repoId, pr, profileId);
       setData(r);
+      setSourceIdx(0);
       setProjectIdx(0);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro ao buscar o plan");
@@ -109,7 +119,9 @@ export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(prNumber); }, [repoId, prNumber]);
 
-  const projects = data?.plan?.projects ?? [];
+  const sources = data?.sources ?? [];
+  const source = sources[sourceIdx];
+  const projects = source?.projects ?? [];
   const project = projects[projectIdx];
   const lines = useMemo(() => (project ? project.content.split("\n") : []), [project]);
   const gutter = String(lines.length).length;
@@ -167,8 +179,8 @@ export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps
           <Button variant="ghost" size="sm" className="h-6 text-xs gap-1" onClick={copy} disabled={!project}>
             <Copy className="w-3 h-3" />{copied ? "Copiado" : "Copiar"}
           </Button>
-          {data?.plan && (
-            <Button variant="ghost" size="sm" className="h-6 text-xs gap-1" onClick={() => window.open(data.plan!.comment_url, "_blank")}>
+          {source?.url && (
+            <Button variant="ghost" size="sm" className="h-6 text-xs gap-1" onClick={() => window.open(source.url, "_blank")}>
               <ExternalLink className="w-3 h-3" />GitHub
             </Button>
           )}
@@ -177,6 +189,25 @@ export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps
           </Button>
         </div>
       </div>
+
+      {/* Fonte do plan (Atlantis, comentário, Actions, check): só quando há mais de uma */}
+      {sources.length > 1 && (
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-700 flex-shrink-0 text-xs">
+          <label htmlFor="view-plan-source" className="text-zinc-400 whitespace-nowrap">
+            Fonte ({sources.length}):
+          </label>
+          <select
+            id="view-plan-source"
+            className="h-7 min-w-0 max-w-[80%] rounded bg-zinc-800 border border-zinc-600 px-2 text-xs"
+            value={sourceIdx}
+            onChange={e => { setSourceIdx(Number(e.target.value)); setProjectIdx(0); }}
+          >
+            {sources.map((src, i) => (
+              <option key={i} value={i}>{SOURCE_LABEL[src.kind]} — {src.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Projeto do plan: select (lista numerada com o resumo de cada um) + resumo colorido do escolhido */}
       {projects.length > 0 && (
@@ -201,30 +232,39 @@ export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps
               <SummaryBadge summary={project.summary} error={project.error} />
             </span>
           )}
-          {data?.plan && (
+          {source && (
             <span className="ml-auto pl-2 text-[11px] text-zinc-500 whitespace-nowrap">
-              por {data.plan.author} em {new Date(data.plan.created_at).toLocaleString("pt-BR")}
-              {data.plan.comments > 1 && ` · reunido de ${data.plan.comments} comentários`}
+              {SOURCE_LABEL[source.kind]}
+              {source.author && ` · por ${source.author}`}
+              {source.created_at && ` em ${new Date(source.created_at).toLocaleString("pt-BR")}`}
+              {source.comments > 1 && ` · reunido de ${source.comments} comentários`}
             </span>
           )}
+        </div>
+      )}
+
+      {data && data.warnings.length > 0 && (
+        <div className="px-3 py-1.5 border-b border-zinc-700 flex-shrink-0 text-[11px] text-amber-300 space-y-0.5">
+          {data.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
         </div>
       )}
 
       {/* Conteúdo: sem quebra de linha, rolagem nos dois eixos */}
       <div className="flex-1 min-h-0 overflow-auto">
         {loading && !data ? (
-          <div className="flex items-center gap-2 p-4 text-sm text-zinc-400"><Loader2 className="w-4 h-4 animate-spin" />Buscando plan no PR…</div>
+          <div className="flex items-center gap-2 p-4 text-sm text-zinc-400"><Loader2 className="w-4 h-4 animate-spin" />Buscando plans e outputs no PR…</div>
         ) : error ? (
           <div className="flex items-start gap-2 p-4 text-sm text-red-400"><AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /><span className="whitespace-pre-wrap">{error}</span></div>
         ) : !data?.pr ? (
           <div className="p-4 text-sm text-zinc-400">Nenhum PR encontrado para a branch <span className="font-mono">{data?.branch}</span>.</div>
-        ) : !data.plan ? (
+        ) : sources.length === 0 ? (
           <div className="p-4 text-sm text-zinc-400">
-            Nenhum plan do Atlantis nos comentários do PR #{data.pr.number}.{" "}
+            Nenhum plan ou output encontrado no PR #{data.pr.number} (comentários do Atlantis ou de outros bots,
+            check runs e jobs de plan/diff/preview do GitHub Actions).{" "}
             <a className="text-sky-400 underline" href={data.pr.url} target="_blank" rel="noreferrer">Abrir PR</a>
           </div>
         ) : !project ? (
-          <div className="p-4 text-sm text-zinc-400">O último comentário do Atlantis não tem saída de plan.</div>
+          <div className="p-4 text-sm text-zinc-400">Esta fonte não tem saída de plan.</div>
         ) : (
           <pre className="font-mono text-[12.5px] leading-[1.45] py-2 min-w-max">
             {lines.map((line, i) => (
