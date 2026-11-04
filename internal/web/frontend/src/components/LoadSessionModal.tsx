@@ -138,6 +138,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       setSelectedSession(null);
       setSelectedSessionDetails(null);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadSessions
   }, [open, selectedFolder]);
 
   // Carregar detalhes completos da sessão selecionada

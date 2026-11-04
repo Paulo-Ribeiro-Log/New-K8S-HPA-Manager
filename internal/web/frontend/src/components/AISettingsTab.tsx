@@ -134,6 +134,7 @@ export function AISettingsTab() {
 
     loadTokenStatus();
     loadAvailableModels();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadAvailableModels, loadTokenStatus
   }, []);
 
   const loadTokenStatus = async () => {

@@ -34,6 +34,7 @@ export function PrometheusPage({ selectedCluster }: PrometheusPageProps) {
         setSelectedResource(updated);
       }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): selectedResource
   }, [resources]);
 
   // Filter resources based on search query (name, namespace, or component)

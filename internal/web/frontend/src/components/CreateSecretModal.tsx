@@ -79,6 +79,7 @@ stringData:
     if (secretType === "custom" && !customYaml) {
       setCustomYaml(generateCustomTemplate());
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): customYaml
   }, [secretType]);
 
   // Validar YAML em tempo real no modo custom (apenas sintaxe, name/namespace vêm dos campos)
@@ -124,6 +125,7 @@ stringData:
     } else {
       setAnnotations([{ key: "", value: "" }]);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): customYaml
   }, [secretType]);
 
   const handleAddAnnotation = () => {

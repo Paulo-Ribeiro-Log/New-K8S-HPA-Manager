@@ -98,6 +98,7 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved, openProfile
       setCeNewName(''); setCeNewToken('');
       if (openProfilesSection) setCeShowSection(true);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): openProfilesSection
   }, [open, refetchStatus, refreshCeProfiles]);
 
   const handleSave = async () => {

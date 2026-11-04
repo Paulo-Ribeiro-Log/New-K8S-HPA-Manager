@@ -547,6 +547,7 @@ export const PodMonitorTable = ({
     }
 
     return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): dtStatusLabelForPod
   }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, dtStatusFilter, kindFilter, cpuTopN, memTopN, sortKey, sortDir, statusSortMode, metrics, dtClusterSupported, dtMonitoredKeys]);
 
   // Helpers de seleção

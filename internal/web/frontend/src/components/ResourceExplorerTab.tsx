@@ -219,6 +219,7 @@ export const ResourceExplorerTab = ({
     if (!selectedNamespace) return;
     const exists = filteredNamespaces.some((ns) => ns.name === selectedNamespace);
     if (!exists) onNamespaceChange("");
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): onNamespaceChange, selectedNamespace
   }, [filteredNamespaces]);
 
   // ── Grouped resources for combobox ─────────────────────────────────────
@@ -564,6 +565,7 @@ export const ResourceExplorerTab = ({
     if (rightTab === "logs" && selectedItem && selectedResource?.kind === "Pod") {
       fetchLogs();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchLogs, selectedItem,, selectedResource?.kind
   }, [rightTab]);
 
   // ── Export logs ────────────────────────────────────────────────────────

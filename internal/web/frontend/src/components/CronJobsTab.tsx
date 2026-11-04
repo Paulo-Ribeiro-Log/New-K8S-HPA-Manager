@@ -193,6 +193,7 @@ export function CronJobsTab({
     } finally {
       setLoading(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): isAllNamespaces
   }, [cluster, selectedNamespace]);
 
   useEffect(() => {

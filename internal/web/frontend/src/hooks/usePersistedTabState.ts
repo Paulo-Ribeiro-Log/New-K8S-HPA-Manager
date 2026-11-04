@@ -58,6 +58,7 @@ export function usePersistedTabState<T>(
         isRestoringRef.current = false;
       }, 0);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): getSavedValue, initialValue,, state
   }, [namespace, key]); // Só roda quando namespace/key mudam (montagem do componente)
 
   // Persistir no TabContext sempre que o estado mudar

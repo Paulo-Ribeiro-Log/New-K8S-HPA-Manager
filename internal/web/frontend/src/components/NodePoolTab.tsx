@@ -67,6 +67,7 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
       (np) => np.name === selectedNodePool.name && np.cluster_name === selectedNodePool.cluster_name
     );
     if (!stillExists) setSelectedNodePool(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): selectedNodePool
   }, [nodePools]);
 
   // Escutar eventos de progresso de aplicação de node pools

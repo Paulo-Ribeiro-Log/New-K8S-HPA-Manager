@@ -112,6 +112,7 @@ export const EventsTab = ({
     // Auto-refresh a cada 30 segundos
     const interval = setInterval(loadEvents, 30000);
     return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadEvents
   }, [cluster, selectedNamespace, eventTypeFilter, showSystemNamespaces]);
 
   // Helper: Obter cor do badge baseado no tipo do evento

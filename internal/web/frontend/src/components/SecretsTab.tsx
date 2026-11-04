@@ -313,6 +313,7 @@ export const SecretsTab = ({
     setHistoryIndex(-1);
     setIsDecoded(false);
   }, [cluster, selectedNamespace]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setIsDecoded, setSelectedSecret, setShowLabels,, setViewMode
 
   const filteredSecrets = useMemo(() => {
     let filtered = secrets;

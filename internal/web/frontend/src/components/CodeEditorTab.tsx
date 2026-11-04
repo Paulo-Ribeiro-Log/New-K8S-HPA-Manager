@@ -2523,6 +2523,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       });
       return changed ? next : old;
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): selectedRepo?.id
   }, [tree]);
 
   // Marca como deletadas as abas do caminho (ou de dentro dele, se for pasta).

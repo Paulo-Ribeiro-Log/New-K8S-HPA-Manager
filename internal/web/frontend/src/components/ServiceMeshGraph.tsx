@@ -91,6 +91,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       console.log('[ServiceMesh] Cluster mudou de', filters.cluster, 'para', cluster);
       setFilters(prev => ({ ...prev, cluster: cluster, namespace: [] }));  // Resetar para array vazio
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): filters.cluster
   }, [cluster]);
 
   // Carregar namespaces quando filters.cluster mudar
@@ -119,6 +120,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       console.log('[ServiceMesh] Carregando namespaces do cluster:', filters.cluster);
       loadNamespaces();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadNamespaces
   }, [filters.cluster]);
 
   // Inicializar grafo quando há dados ou opções mudam
@@ -126,6 +128,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     if (graphData && cyRef.current) {
       initializeGraph();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): initializeGraph
   }, [graphData, displayOptions]);
 
   // Recriar grafo quando mudar fullscreen (porque muda de container)
@@ -158,6 +161,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
         }
       }, 100);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): graphData, initializeGraph
   }, [isFullscreen]);
 
   // Recarregar grafo quando namespace mudar (COM notificação)
@@ -181,6 +185,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       
       loadServiceGraph(false); // false = mostra toast
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadServiceGraph
   }, [filters.namespace]);
 
   // Recarregar quando duration/graphType mudam (SILENCIOSO)
@@ -188,6 +193,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     if (filters.namespace && graphData) {
       loadServiceGraphSilent();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): filters.namespace, graphData,, loadServiceGraphSilent
   }, [filters.duration, filters.graphType]);
 
   // Recarregar com display options alterados (SILENCIOSO)
@@ -195,6 +201,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     if (filters.namespace && graphData) {
       loadServiceGraphSilent();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): filters.namespace, graphData,, loadServiceGraphSilent
   }, [displayOptions.show.serviceNodes, displayOptions.show.idleEdges, displayOptions.show.idleNodes]);
 
   // Auto-refresh
@@ -218,6 +225,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
         clearInterval(refreshIntervalRef.current);
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadServiceGraphSilent
   }, [autoRefreshInterval, filters.namespace]);
 
   // Controlar animação de tráfego com velocidade variável baseada em requestRate

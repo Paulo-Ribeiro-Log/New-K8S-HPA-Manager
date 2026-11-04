@@ -698,7 +698,7 @@ export const NamespacesTab = ({
     } finally {
       setIsCreating(false);
     }
-  }, [newNamespaceName, cluster, isSpotInstance, showAnnotationsEditor, annotationsYaml, onRefresh, getAnnotationsTemplate]);
+  }, [newNamespaceName, cluster, isSpotInstance, showAnnotationsEditor, annotationsYaml, onRefresh]);
 
   // Verificar se AWX está configurado ao montar o componente
   useEffect(() => {
@@ -718,6 +718,7 @@ export const NamespacesTab = ({
       loadOverviewMetrics();
     }
   }, [cluster]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadOverviewMetrics
 
   // Carregar manifest e deployments quando namespace é selecionado
   useEffect(() => {
@@ -738,6 +739,7 @@ export const NamespacesTab = ({
       setNamespacePods([]);
     }
   }, [selectedNamespace, cluster]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadDeployments, loadEvents, loadManifest, loadNamespacePods, loadNetworkPolicies, loadPodsSummary, loadResourceQuotas,, loadServices
 
   useEffect(() => {
     setWorkloadsNamespace("");

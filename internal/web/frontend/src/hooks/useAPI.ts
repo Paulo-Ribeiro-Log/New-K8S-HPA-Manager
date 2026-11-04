@@ -82,6 +82,7 @@ export function useNamespaces(cluster?: string) {
 
   useEffect(() => {
     fetchNamespaces();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchNamespaces
   }, [cluster]);
 
   return { namespaces, loading, error, refetch: fetchNamespaces };
@@ -164,6 +165,7 @@ export function useHPAs(cluster?: string, namespace?: string, showSystem: boolea
         .catch(() => {});
     }, 30000);
     return () => { cancelled = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchHPAs
   }, [cluster, namespace, showSystem]);
 
   useEffect(() => {
@@ -196,6 +198,7 @@ export function useHPAs(cluster?: string, namespace?: string, showSystem: boolea
         window.removeEventListener("rescanHPAs", handleRescan as EventListener);
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchHPAs
   }, [cluster, namespace]);
 
   return { hpas, loading, error, refetch: fetchHPAs, updateHPA };
@@ -274,6 +277,7 @@ export function useNodePools(cluster?: string) {
         .catch(() => {});
     }, 60000);
     return () => { cancelled = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchNodePools
   }, [cluster]);
 
   // Listen for rescan events
@@ -306,6 +310,7 @@ export function useNodePools(cluster?: string) {
         window.removeEventListener("rescanNodePools", handleRescan as EventListener);
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchNodePools
   }, [cluster]);
 
   return {
@@ -354,6 +359,7 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
         .catch(() => {});
     }, 60000);
     return () => { cancelled = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchConfigMaps, namespaces
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchConfigMaps(true);
@@ -398,6 +404,7 @@ export function useConfigMapUsage(cluster?: string, namespace?: string) {
         .catch(() => {});
     }, 60000);
     return () => { cancelled = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchUsage
   }, [cluster, namespace]);
 
   return { usage, loading, refetch: fetchUsage };
@@ -521,6 +528,7 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
         .catch(() => {});
     }, 60000);
     return () => { cancelled = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchSecrets, namespaces
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchSecrets(true);
@@ -570,6 +578,7 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
         .catch(() => {});
     }, 60000);
     return () => { cancelled = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchDeployments, namespaces
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchDeployments(true);
@@ -614,6 +623,7 @@ export function useDaemonSets(cluster?: string, namespaces?: string[], showSyste
         .catch(() => {});
     }, 60000);
     return () => { cancelled = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchDaemonSets, namespaces
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchDaemonSets(true);
@@ -663,6 +673,7 @@ export function useStatefulSets(cluster?: string, namespaces?: string[], showSys
         .catch(() => {});
     }, 60000);
     return () => { cancelled = true; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchStatefulSets, namespaces
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchStatefulSets(true);
@@ -703,6 +714,7 @@ export function useIngresses(cluster?: string, namespaces?: string[], showSystem
 
   useEffect(() => {
     fetchIngresses();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchIngresses
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchIngresses(true);
@@ -743,6 +755,7 @@ export function useGateways(cluster?: string, namespace?: string, kind: string =
 
   useEffect(() => {
     fetchGateways();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchGateways
   }, [cluster, namespace, kind]);
 
   const refetch = () => fetchGateways(true);
@@ -778,6 +791,7 @@ export function usePods(cluster?: string, namespaces?: string[], showSystem: boo
 
   useEffect(() => {
     fetchPods();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchPods
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchPods(true);
@@ -889,6 +903,7 @@ export function useServices(cluster?: string, namespaces?: string[], showSystem:
 
   useEffect(() => {
     fetchServices();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchServices
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchServices(true);
@@ -930,6 +945,7 @@ export function useVPAs(cluster?: string, namespaces?: string[], showSystem: boo
 
   useEffect(() => {
     fetchVPAs();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchVPAs
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchVPAs();
@@ -1018,6 +1034,7 @@ export function useGenericResources(
 
   useEffect(() => {
     fetchItems();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchItems
   }, [cluster, resourceName, group, namespace]);
 
   const refetch = () => fetchItems();

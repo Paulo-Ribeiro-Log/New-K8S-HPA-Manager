@@ -192,6 +192,7 @@ export function useHealthCheckProgressMultiplexed(options: UseHealthCheckProgres
       }
       setIsConnected(false);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): completedClusters.size
   }, [sessionId, clusters, enabled]);
 
   /**

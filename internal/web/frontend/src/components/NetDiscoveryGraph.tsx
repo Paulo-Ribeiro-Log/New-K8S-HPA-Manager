@@ -204,7 +204,7 @@ export default function NetDiscoveryGraph({ hops, running }: NetDiscoveryGraphPr
       cyInstance.current?.destroy();
       cyInstance.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // Alimenta a instância incrementalmente — só adiciona os saltos NOVOS desde a última renderização

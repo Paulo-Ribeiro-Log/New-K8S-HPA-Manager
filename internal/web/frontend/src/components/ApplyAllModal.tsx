@@ -68,6 +68,7 @@ export const ApplyAllModal = ({
   // 🔧 FIX: Buscar do temp staging primeiro (para "Aplicar Agora" editado no modal)
   // Depois buscar do staging normal (para "Aplicar Todas")
   const freshModifiedHPAs = useMemo(() => {
+    void refreshCounter; // gatilho de recálculo: o staging é relido sempre que o contador muda
     return modifiedHPAs.map(({ key, current, original }) => {
       // 1. Tentar buscar do temp staging (para "Aplicar Agora" com edições no modal)
       const tempHPA = staging?.tempHPA;

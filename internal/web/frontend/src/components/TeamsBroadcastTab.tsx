@@ -289,7 +289,7 @@ function ChatSelectorModal({
     return [...filtered].sort((a, b) =>
       (selected.has(a.id) ? 0 : 1) - (selected.has(b.id) ? 0 : 1)
     );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [q, allChats, selected]);
 
   return (

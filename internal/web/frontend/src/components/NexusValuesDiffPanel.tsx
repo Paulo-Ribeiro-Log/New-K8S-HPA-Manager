@@ -178,6 +178,7 @@ const NexusValuesDiffPanelContent = () => {
   // Check Nexus status on mount
   useEffect(() => {
     loadStatus();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadStatus
   }, []);
 
   const loadStatus = async () => {

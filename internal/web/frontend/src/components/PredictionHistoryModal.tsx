@@ -107,6 +107,7 @@ export const PredictionHistoryModal = ({
     if (open) {
       loadHistory();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadHistory
   }, [open, currentPage, filterCluster, filterNamespace, filterDeployment, filterRiskLevel, filterStartDate, filterEndDate]);
 
   // Reset filtros

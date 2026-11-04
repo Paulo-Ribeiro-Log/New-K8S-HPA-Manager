@@ -128,7 +128,7 @@ export function usePodsWatch(cluster: string, namespace: string, showSystem: boo
     } catch {
       setWatchFailed(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [cluster, namespace, showSystem, scheduleFlush, closeStream]);
 
   useEffect(() => {

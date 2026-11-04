@@ -34,6 +34,7 @@ export function useNodes(cluster: string, nodePoolName: string) {
 
   useEffect(() => {
     fetchNodes();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchNodes
   }, [cluster, nodePoolName]);
 
   return { nodes, loading, error, refetch: fetchNodes };
@@ -89,6 +90,7 @@ export function useNodeDetails(cluster: string, nodePoolName: string, nodeName: 
     }, 50); // Small delay to ensure state is cleared
 
     return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchNodeDetails
   }, [cluster, nodePoolName, nodeName]);
 
   return { nodeDetails, loading, error, refetch: fetchNodeDetails };

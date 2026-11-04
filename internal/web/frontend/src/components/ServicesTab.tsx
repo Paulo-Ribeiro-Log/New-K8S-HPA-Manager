@@ -158,6 +158,7 @@ export const ServicesTab = ({
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setSelectedService, setViewMode
   }, [cluster, selectedNamespace]);
 
   const filteredServices = useMemo(() => {

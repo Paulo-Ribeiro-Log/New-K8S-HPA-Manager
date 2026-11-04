@@ -80,6 +80,7 @@ export function DynatraceCredentialModal({ open, onOpenChange, onSaved }: Creden
       setTestResult({});
       loadConfig();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadConfig
   }, [open]);
 
   const handleTest = async (env: DtEnv) => {

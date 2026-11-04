@@ -61,7 +61,11 @@ export function AlertsDialog({
   } = useAllAlerts(cluster, !isHPASpecific && open);
 
   const loading = loadingSpecific || loadingAll;
-  const alerts = isHPASpecific ? hpaSpecificAlerts || [] : hpaAlerts;
+  // useMemo: o `|| []` criaria um array novo a cada render e anularia os useMemo abaixo.
+  const alerts = useMemo(
+    () => (isHPASpecific ? hpaSpecificAlerts || [] : hpaAlerts),
+    [isHPASpecific, hpaSpecificAlerts, hpaAlerts]
+  );
 
   // Filtrar alertas baseado no filtro ativo
   const filteredAlerts = useMemo(() => {

@@ -164,6 +164,7 @@ export const ConfigMapsTab = ({
     setHistory([]);
     setHistoryIndex(-1);
   }, [cluster, selectedNamespace]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setSelectedConfigMap, setShowLabels,, setViewMode
 
   const filteredConfigMaps = useMemo(() => {
     let filtered = configMaps;

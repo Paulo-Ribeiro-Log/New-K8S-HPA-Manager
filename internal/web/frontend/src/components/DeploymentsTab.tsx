@@ -335,6 +335,7 @@ export const DeploymentsTab = ({
       .then(setDeploymentInsights)
       .catch(() => setDeploymentInsights(null)); // best-effort — nunca bloqueia a visualização
   }, [selectedDeployment?.cluster, selectedDeployment?.namespace, selectedDeployment?.name]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): selectedDeployment
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
   const [isValidating, setIsValidating] = useState(false);
@@ -695,6 +696,7 @@ export const DeploymentsTab = ({
     setRightView({ kind: "deployment-table" });
     setMonitorPods([]);
     setBatchMetrics(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setSelectedDeployment, setShowLabels,, setViewMode
   }, [cluster, selectedNamespace]);
 
   // Pods deste Deployment pelo dono real (OwnerReferences), não pelo nome — ver lib/deploymentPods.ts.
@@ -1297,6 +1299,7 @@ export const DeploymentsTab = ({
     } catch (err) {
       console.error("[RolloutMonitor] Falha ao atualizar progresso do rollout", err);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): currentReplicaSetHash
   }, [setSelectedDeployment, updateRolloutMetrics]);
 
   const startRolloutMonitor = useCallback(

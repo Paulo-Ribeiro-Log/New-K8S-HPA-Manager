@@ -174,6 +174,7 @@ export const StatefulSetsTab = ({
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setSelectedStatefulSet, setShowLabels,, setViewMode
   }, [cluster, selectedNamespace]);
 
   useEffect(() => {

@@ -532,6 +532,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     setWorkloadEvents([]);
     setSameImagePods([]);
     setSameImageSearched(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): pod
   }, [pod?.namespace, pod?.name]);
 
   const selectedContainerImage = pod?.containers?.find(c => c.name === selectedContainer)?.image ?? "";
@@ -675,6 +676,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
       .catch(() => { if (!cancelled) setWorkloadEvents([]); })
       .finally(() => { if (!cancelled) setWorkloadEventsLoading(false); });
     return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): pod
   }, [activeTab, cluster, pod?.namespace, workloadSearchTerm]);
 
   const filteredPreviousLines = useMemo(
