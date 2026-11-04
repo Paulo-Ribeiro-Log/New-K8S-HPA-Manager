@@ -5513,8 +5513,17 @@ class APIClient {
     });
   }
 
-  async codeEditorGetLog(id: string, limit = 20): Promise<CodeEditorLogEntry[]> {
-    return this.request(`/code-editor/repos/${id}/log?limit=${limit}`);
+  // q — busca por prefixo do hash, trecho da mensagem ou do autor (nos últimos 500 commits)
+  async codeEditorGetLog(id: string, limit = 20, q?: string): Promise<CodeEditorLogEntry[]> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (q && q.trim()) params.set("q", q.trim());
+    return this.request(`/code-editor/repos/${id}/log?${params.toString()}`);
+  }
+
+  // Remotes do repositório (URL sem credenciais). O fetch/push/pull rodam por SSE em
+  // /code-editor/repos/:id/{fetch,push,pull}, via diálogo de streaming.
+  async codeEditorGetRemotes(id: string): Promise<CodeEditorRemote[]> {
+    return this.request(`/code-editor/repos/${id}/remotes`);
   }
 
   async codeEditorGetDiff(id: string, path?: string): Promise<{ diff: string }> {
@@ -6031,6 +6040,11 @@ export interface CodeEditorPlanAvailability {
   comments: number;
   checks: number;
   jobs: number;
+}
+
+export interface CodeEditorRemote {
+  name: string;
+  url: string;
 }
 
 export interface CodeEditorLogEntry {

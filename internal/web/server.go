@@ -2009,6 +2009,8 @@ func (s *Server) setupRoutes() {
 		codeEditor.POST("/repos/:id/commit", codeEditorHandler.Commit)
 		codeEditor.POST("/repos/:id/push", rbacMiddleware.InjectUserEmail(), codeEditorHandler.Push)
 		codeEditor.GET("/repos/:id/log", codeEditorHandler.GetCommitLog)
+		codeEditor.GET("/repos/:id/remotes", codeEditorHandler.Remotes)
+		codeEditor.POST("/repos/:id/fetch", rbacMiddleware.InjectUserEmail(), codeEditorHandler.Fetch)
 		codeEditor.GET("/repos/:id/diff", codeEditorHandler.GetFileDiff)
 		codeEditor.GET("/repos/:id/search", codeEditorHandler.SearchFiles)
 		// Fase 2

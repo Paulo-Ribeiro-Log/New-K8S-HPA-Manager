@@ -83,6 +83,8 @@ import { CodeEditorOpenFolderDialog } from "@/components/CodeEditorOpenFolderDia
 import { attachTerminalClipboard, decodeTerminalOutput, encodeTerminalInput } from "@/lib/xtermShared";
 import { ViewPlanModal } from "@/components/ViewPlanModal";
 import { Input } from "@/components/ui/input";
+import { scmBadge, scmColor } from "@/lib/gitStatus";
+import { GitSidePanel } from "@/components/GitSidePanel";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Dialog,
@@ -252,24 +254,6 @@ function statusLabel(s: string): string {
 }
 
 // VSCode-like: badge letter shown in the file tree
-function scmBadge(xy: string): string {
-  if (xy === "??" || xy.startsWith("?")) return "U";
-  const x = xy[0], y = xy[1];
-  if (x === "A") return "A";
-  if (x === "D" || y === "D") return "D";
-  if (x === "R") return "R";
-  if (x === "C") return "C";
-  return "M";
-}
-
-function scmColor(xy: string): string {
-  if (xy === "??" || xy.startsWith("?")) return "text-green-400"; // untracked
-  if (xy.includes("A")) return "text-green-400";                   // added
-  if (xy.includes("D")) return "text-red-400";                     // deleted
-  if (xy.startsWith("R")) return "text-orange-400";                // renamed
-  return "text-yellow-400";                                        // modified
-}
-
 // VSCode-like: ícone + cor por extensão/nome de arquivo
 function getFileIcon(name: string): { Icon: typeof File; color: string } {
   const lower = name.toLowerCase();
@@ -2268,6 +2252,17 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     setSidebarCollapsed(false);
   }
 
+  // Painel Git do lado direito (branch, histórico, remotes, sincronizar e commit), recolhível.
+  const [gitPanelOpen, setGitPanelOpen] = useState(() => {
+    try { return localStorage.getItem("ce_git_panel_open") !== "0"; } catch { return true; }
+  });
+  const [gitPanelWidth, setGitPanelWidth] = useState(() => {
+    try {
+      const saved = parseInt(localStorage.getItem("ce_git_panel_width") ?? "", 10);
+      return saved >= 240 && saved <= 560 ? saved : 300;
+    } catch { return 300; }
+  });
+
   // Editor options
   const [showMinimap, setShowMinimap] = useState(false);
 
@@ -2547,6 +2542,14 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   useEffect(() => {
     try { localStorage.setItem("ce_sidebar_collapsed", sidebarCollapsed ? "1" : "0"); } catch { /* storage indisponível */ }
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    try { localStorage.setItem("ce_git_panel_open", gitPanelOpen ? "1" : "0"); } catch { /* storage indisponível */ }
+  }, [gitPanelOpen]);
+
+  useEffect(() => {
+    try { localStorage.setItem("ce_git_panel_width", String(gitPanelWidth)); } catch { /* storage indisponível */ }
+  }, [gitPanelWidth]);
 
   // ── LSP: aplica navegação pendente após troca de aba (go-to-definition cross-file) ──
   useEffect(() => {
@@ -5445,6 +5448,58 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
             </div>
           )}
         </div>
+
+        {/* ── Painel Git (direita, recolhível) ── */}
+        {selectedRepo && selectedRepo.is_git !== false && (
+          <>
+            {gitPanelOpen && (
+              <>
+                <ResizeDivider onDrag={d => setGitPanelWidth(w => Math.max(240, Math.min(560, w - d)))} />
+                <div className="flex-shrink-0 flex flex-col min-h-0 overflow-hidden" style={{ width: gitPanelWidth }}>
+                  <GitSidePanel
+                    repoId={selectedRepo.id}
+                    status={status}
+                    branches={branches}
+                    profileId={activeProfileId()}
+                    onCollapse={() => setGitPanelOpen(false)}
+                    onRefresh={async () => {
+                      await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id)]);
+                    }}
+                    onCheckout={handleCheckout}
+                    onCreateBranch={() => setShowBranch(true)}
+                    onRunSse={d => setSseDialog(d)}
+                    onCommitted={async () => {
+                      await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadBranches(selectedRepo.id)]);
+                    }}
+                    onOpenFile={path => openFile({ name: path.split("/").pop() ?? path, path, type: "file" })}
+                    onToast={addToast}
+                  />
+                </div>
+              </>
+            )}
+            <TooltipProvider delayDuration={400}>
+              <div className="flex-shrink-0 w-10 flex flex-col items-center border-l border-border/50 bg-card/20 py-1">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => setGitPanelOpen(v => !v)}
+                      aria-label={gitPanelOpen ? "Recolher painel Git" : "Expandir painel Git"}
+                      className={`relative w-10 h-10 flex items-center justify-center border-r-2 transition-colors ${gitPanelOpen ? "text-foreground border-primary" : "text-muted-foreground border-transparent hover:text-foreground"}`}
+                    >
+                      <GitBranch className="w-5 h-5" />
+                      {(status?.files.length ?? 0) > 0 && (
+                        <span className="absolute top-2 left-2 w-1.5 h-1.5 rounded-full bg-primary" />
+                      )}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="left" className="text-xs">
+                    Git — {gitPanelOpen ? "recolher" : "expandir"}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            </TooltipProvider>
+          </>
+        )}
       </div>
 
       {/* ── CreateTag dialog ── */}
