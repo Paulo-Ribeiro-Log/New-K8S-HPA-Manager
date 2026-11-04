@@ -103,14 +103,12 @@ jobs:
         run: make web-typecheck
 
   # ─── Frontend: eslint ───
-  # no-explicit-any está como aviso (323 usos = dívida de tipagem). Sobram ~27 erros reais
-  # anteriores a esta CI (ver docs); até serem corrigidos o job NÃO bloqueia (continue-on-error),
-  # mas aparece no PR. Quando o baseline zerar, remover o continue-on-error.
+  # Bloqueia. Baseline: 0 erros. no-explicit-any está como aviso (323 usos = dívida de tipagem),
+  # então só erro novo de verdade reprova.
   web-lint:
     name: Frontend (eslint)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
 
     steps:
       - name: Checkout code
