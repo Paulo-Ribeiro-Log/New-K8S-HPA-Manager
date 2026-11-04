@@ -89,4 +89,4 @@ A ordem existe porque o que sobra pode ser **recriado** por quem ainda está de 
 
 ## Veja também
 
-Helm, Deployments (rollback), Events.
+[Deployments](ajuda:deployments) (rollback), [abas de recurso](ajuda:geral-abas-de-recurso); e as abas Helm e Events.

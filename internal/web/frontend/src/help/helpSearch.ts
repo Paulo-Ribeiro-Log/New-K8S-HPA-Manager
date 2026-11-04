@@ -65,3 +65,10 @@ export function groupEntries(entries: HelpEntry[]): { group: HelpGroup; items: H
     items: entries.filter((e) => e.group === group).sort((a, b) => a.title.localeCompare(b.title, "pt-BR")),
   })).filter((g) => g.items.length > 0);
 }
+
+/** Link interno de uma página de ajuda para outra: `ajuda:<id>` ou `ajuda:<id>#<seção>`. */
+export function parseHelpLink(href: string | undefined): { id: string; anchor: string | null } | null {
+  if (!href || !href.startsWith("ajuda:")) return null;
+  const [id, anchor] = href.slice("ajuda:".length).split("#");
+  return id ? { id, anchor: anchor || null } : null;
+}

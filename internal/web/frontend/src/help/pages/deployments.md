@@ -61,7 +61,7 @@ Todos os modos exigem **ver o diff ou o resumo antes de confirmar**. Durante a o
 
 ## Impacto
 
-**Altera o cluster.** Aplicar YAML, escalar, reiniciar, reverter e deletar mudam recursos em produção, e as operações ficam registradas no **Change History**. **Deletar** e **Rollout Restart** derrubam pods.
+**Altera o cluster.** Aplicar YAML, escalar, reiniciar, reverter e deletar mudam recursos em produção. **Aplicar, escalar, reiniciar (inclusive em lote) e reverter ficam registrados no Change History; deletar, individual ou em lote, não fica.** **Deletar** e **Rollout Restart** derrubam pods.
 
 ## Cuidados e erros comuns
 
@@ -73,4 +73,4 @@ Todos os modos exigem **ver o diff ou o resumo antes de confirmar**. Durante a o
 
 ## Veja também
 
-Pods, HPAs, Helm, Staging, Remoção de Aplicação.
+[DaemonSets](ajuda:daemonsets), [StatefulSets](ajuda:statefulsets), [abas de recurso](ajuda:geral-abas-de-recurso), [Remoção de Aplicação](ajuda:app-removal); e as abas Pods, HPAs, Helm e Staging.
