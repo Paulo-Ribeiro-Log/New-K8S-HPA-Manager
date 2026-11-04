@@ -135,6 +135,25 @@ func (h *DynatraceHandler) SaveConfig(c *gin.Context) {
 		return
 	}
 
+	// URL inválida (ex.: um nome solto) é recusada aqui, com a causa, em vez de ser gravada e só
+	// falhar na hora de usar ("unsupported protocol scheme"). A URL é gravada já normalizada.
+	if req.DynatraceURL != "" {
+		normalized, err := dtclient.NormalizeBaseURL(req.DynatraceURL)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		req.DynatraceURL = normalized
+	}
+	if req.DynatraceHLGURL != "" {
+		normalized, err := dtclient.NormalizeBaseURL(req.DynatraceHLGURL)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant de homologação: " + err.Error()})
+			return
+		}
+		req.DynatraceHLGURL = normalized
+	}
+
 	if h.tokensStore == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "tokens store não configurado"})
 		return

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"k8s-hpa-manager/internal/ai"
+	dtclient "k8s-hpa-manager/internal/dynatrace"
 	"k8s-hpa-manager/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -97,6 +98,16 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 			"error": "ai_email is required",
 		})
 		return
+	}
+
+	// URL do Dynatrace inválida (ex.: um nome solto) é recusada aqui, com a causa; gravada normalizada.
+	if req.DynatraceURL != "" {
+		normalized, err := dtclient.NormalizeBaseURL(req.DynatraceURL)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		req.DynatraceURL = normalized
 	}
 
 	// Usar ai_email do request (independente do Azure AD)

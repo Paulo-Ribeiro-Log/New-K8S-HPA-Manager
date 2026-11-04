@@ -48,13 +48,11 @@ func NewClient(baseURL, apiToken string) (*Client, error) {
 	if apiToken == "" {
 		return nil, fmt.Errorf("Dynatrace API token não configurado (configure em AI Settings ou via env DT_API_TOKEN)")
 	}
-	// Normalizar URL — remover trailing slash e sufixo /api/v2 se já vier na URL
-	baseURL = strings.TrimRight(baseURL, "/")
-	baseURL = strings.TrimSuffix(baseURL, "/api/v2")
-
-	// Corrigir domínio: apps.dynatrace.com é a UI web, a API usa live.dynatrace.com
-	// Ex: https://abc123.apps.dynatrace.com → https://abc123.live.dynatrace.com
-	baseURL = strings.ReplaceAll(baseURL, ".apps.dynatrace.com", ".live.dynatrace.com")
+	normalized, err := NormalizeBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	baseURL = normalized
 
 	return &Client{
 		baseURL:  baseURL,
@@ -63,6 +61,41 @@ func NewClient(baseURL, apiToken string) (*Client, error) {
 			Timeout: 30 * time.Second,
 		},
 	}, nil
+}
+
+// NormalizeBaseURL valida e padroniza a URL base do ambiente Dynatrace.
+//
+//   - sem esquema, mas com cara de endereço (tem "." ou porta): assume https://
+//   - nome solto, sem ponto (ex.: "casas-bahia"): recusa — não é um endereço, e antes virava uma
+//     requisição sem esquema ("unsupported protocol scheme") só na hora de usar
+//   - só http/https, com host
+//   - remove "/" final e o sufixo "/api/v2"
+//   - apps.dynatrace.com (UI web) vira live.dynatrace.com (API):
+//     https://abc123.apps.dynatrace.com → https://abc123.live.dynatrace.com
+func NormalizeBaseURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("URL do Dynatrace vazia")
+	}
+	if !strings.Contains(s, "://") {
+		host := strings.SplitN(s, "/", 2)[0]
+		if !strings.ContainsAny(host, ".:") && host != "localhost" {
+			return "", fmt.Errorf("URL do Dynatrace inválida: %q não é um endereço. Informe a URL completa do ambiente, por exemplo https://<id>.live.dynatrace.com", raw)
+		}
+		s = "https://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("URL do Dynatrace inválida: %q. Informe a URL completa do ambiente, por exemplo https://<id>.live.dynatrace.com", raw)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("URL do Dynatrace inválida: o esquema %q não é suportado (use https)", u.Scheme)
+	}
+
+	s = strings.TrimRight(s, "/")
+	s = strings.TrimSuffix(s, "/api/v2")
+	s = strings.TrimRight(s, "/")
+	return strings.ReplaceAll(s, ".apps.dynatrace.com", ".live.dynatrace.com"), nil
 }
 
 // BaseURL retorna a URL base configurada (sem token)
