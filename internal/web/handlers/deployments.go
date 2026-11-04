@@ -537,7 +537,9 @@ func (h *DeploymentHandler) Delete(c *gin.Context) {
 
 	// Deletar deployment
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.DeleteDeployment(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "delete_deployment", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
@@ -808,7 +810,9 @@ func (h *DeploymentHandler) BatchDelete(c *gin.Context) {
 			Name:      depRef.Name,
 		}
 
+		start := time.Now()
 		err := clientset.AppsV1().Deployments(depRef.Namespace).Delete(ctx, depRef.Name, metav1.DeleteOptions{})
+		logOperation(c, h.historyTracker, "delete_deployment", depRef.Namespace+"/"+depRef.Name, cluster, nil, map[string]interface{}{"batch": true}, start, err)
 		if err != nil {
 			result.Success = false
 			result.Error = err.Error()

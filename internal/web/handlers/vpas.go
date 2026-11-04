@@ -5,22 +5,25 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pmezard/go-difflib/difflib"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 )
 
 // VPAHandler gerencia as rotas de VPAs (Vertical Pod Autoscalers)
 type VPAHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager    *config.KubeConfigManager
+	historyTracker *history.HistoryTracker
 }
 
-// NewVPAHandler cria um handler de VPA
-func NewVPAHandler(km *config.KubeConfigManager) *VPAHandler {
-	return &VPAHandler{kubeManager: km}
+// NewVPAHandler cria um handler de VPA. ht pode ser nil (nada é gravado no Change History).
+func NewVPAHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *VPAHandler {
+	return &VPAHandler{kubeManager: km, historyTracker: ht}
 }
 
 // List retorna VPAs com filtros (cluster obrigatório)
@@ -259,7 +262,12 @@ func (h *VPAHandler) Apply(c *gin.Context) {
 		return
 	}
 
-	if err := kubeclient.ApplyVPA(cluster, namespace, req.YAML, req.DryRun, req.Force); err != nil {
+	start := time.Now()
+	err := kubeclient.ApplyVPA(cluster, namespace, req.YAML, req.DryRun, req.Force)
+	if !req.DryRun { // dry-run não altera nada: não entra no histórico
+		logOperation(c, h.historyTracker, "apply_vpa", namespace+"/"+name, cluster, nil, nil, start, err)
+	}
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
 		return
 	}
@@ -293,7 +301,10 @@ func (h *VPAHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if err := kubeclient.DeleteVPA(cluster, namespace, name); err != nil {
+	start := time.Now()
+	err := kubeclient.DeleteVPA(cluster, namespace, name)
+	logOperation(c, h.historyTracker, "delete_vpa", namespace+"/"+name, cluster, nil, nil, start, err)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{

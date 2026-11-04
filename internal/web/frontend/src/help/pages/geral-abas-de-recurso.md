@@ -39,18 +39,18 @@ ConfigMaps, Ingresses, Services, VPAs, DaemonSets e StatefulSets funcionam do me
 
 ## Impacto e Change History
 
-**Altera o cluster.** O que fica registrado no **Change History** hoje:
+**Altera o cluster.** Tudo o que altera o cluster fica registrado no **Change History**:
 
 | Aba | Aplicar | Criar | Excluir | Outras |
 |---|---|---|---|---|
-| ConfigMaps | sim | sim | **não** | |
-| Ingresses | sim | sim | **não** | |
-| Services | sim | **não** | **não** | |
-| VPAs | **não** | n/a | **não** | |
-| DaemonSets | sim | n/a | **não** | restart: sim |
-| StatefulSets | sim | n/a | **não** | restart: sim; scale: sim |
+| ConfigMaps | sim | sim | sim | |
+| Ingresses | sim | sim | sim | |
+| Services | sim | sim | sim | |
+| VPAs | sim | n/a | sim | |
+| DaemonSets | sim | n/a | sim | restart: sim |
+| StatefulSets | sim | n/a | sim | restart: sim; scale: sim |
 
-Ou seja, **excluir não fica registrado em nenhuma dessas abas**, e a aba VPAs não grava nada. Validar (dry-run) nunca é registrado, por não alterar nada.
+Só o registro de identificação (recurso, cluster, autor, resultado) é gravado, nunca o conteúdo. Validar (dry-run) nunca é registrado, por não alterar nada.
 
 ## Cuidados e erros comuns
 

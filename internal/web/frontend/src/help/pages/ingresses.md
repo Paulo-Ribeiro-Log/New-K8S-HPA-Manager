@@ -28,7 +28,7 @@ Os botões que alteram só ficam disponíveis com permissão de escrita no names
 
 ## Impacto
 
-**Altera o cluster, e a mudança vale na hora para o tráfego.** Aplicar e criar ficam no Change History; **excluir não fica**.
+**Altera o cluster, e a mudança vale na hora para o tráfego.** Aplicar, criar e excluir ficam no Change History.
 
 ## Cuidados e erros comuns
 

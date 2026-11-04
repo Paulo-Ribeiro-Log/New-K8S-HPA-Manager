@@ -611,7 +611,9 @@ func (h *ConfigMapHandler) Delete(c *gin.Context) {
 	}
 
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.DeleteConfigMap(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "delete_configmap", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if checkForbidden(c, err) {
 			return

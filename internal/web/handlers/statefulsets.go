@@ -474,7 +474,9 @@ func (h *StatefulSetHandler) Delete(c *gin.Context) {
 
 	// Deletar statefulset
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.DeleteStatefulSet(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "delete_statefulset", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if checkForbidden(c, err) {
 			return
