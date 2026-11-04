@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { apiClient } from "@/lib/api/client";
 import { fmtBRL } from "@/lib/finopsFormat";
 import type { ShowbackRow } from "./types";
-import { AXIS_TICK, COST_COLORS, SectionTitle, StatTile, TooltipBox, TooltipRow } from "./charts";
+import { SectionTitle, StatTile, TooltipBox, TooltipRow } from "./charts";
+import { AXIS_TICK, COST_COLORS } from "./chartTheme";
 
 const UNALLOCATED = "(não alocado)";
 const shortCluster = (c: string) => c.replace(/-admin$/, "").replace(/^aks(priv|pub)?-/, "");

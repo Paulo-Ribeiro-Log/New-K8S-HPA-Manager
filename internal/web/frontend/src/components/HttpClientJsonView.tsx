@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 // camelCase / snake_case / kebab-case → "Primeira maiúscula e resto em minúsculas".
-export function humanizeKey(key: string): string {
+function humanizeKey(key: string): string {
   const words = key
     .replace(/[_-]+/g, " ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")

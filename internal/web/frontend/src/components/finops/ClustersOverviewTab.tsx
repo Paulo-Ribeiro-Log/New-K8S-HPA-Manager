@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { apiClient } from "@/lib/api/client";
 import { fmtBRL } from "@/lib/finopsFormat";
 import type { ClusterOverview } from "./types";
-import { AXIS_TICK, COST_COLORS, SectionTitle, StatTile, TooltipBox, TooltipRow } from "./charts";
+import { SectionTitle, StatTile, TooltipBox, TooltipRow } from "./charts";
+import { AXIS_TICK, COST_COLORS } from "./chartTheme";
 
 const shortBRL = (v: number) => (v >= 1000 ? `R$ ${(v / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mil` : fmtBRL(v));
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);

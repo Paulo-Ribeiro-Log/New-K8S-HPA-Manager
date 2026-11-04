@@ -17,7 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { COVERAGE_STATUS } from "@/components/DynatraceStatusIcon";
+import { COVERAGE_STATUS } from "@/lib/dynatraceStatus";
 
 type CoverageData = Awaited<ReturnType<typeof apiClient.getDynatraceCoverage>>;
 type StatusFilter = string; // "all" ou um deep_monitoring_status

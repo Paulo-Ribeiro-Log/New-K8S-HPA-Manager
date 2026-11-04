@@ -24,7 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, FolderOpen, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
-import { getStatusBadge } from "@/components/CertificateDetailModal";
+import { getStatusBadge } from "@/lib/certStatusBadge";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { useCertificates } from "@/hooks/useCertificates";
 import { countPemCertificates } from "@/lib/pemUtils";

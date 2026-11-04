@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Loader2, Plus, RefreshCcw, Trash2, Pencil, Globe, ListPlus, Download, FileSpreadsheet, FileText } from "lucide-react";
 import { toast } from "sonner";
-import { getStatusBadge } from "@/components/CertificateDetailModal";
+import { getStatusBadge } from "@/lib/certStatusBadge";
 import { ExternalEndpointDetailModal } from "@/components/ExternalEndpointDetailModal";
 import { apiClient } from "@/lib/api/client";
 import {

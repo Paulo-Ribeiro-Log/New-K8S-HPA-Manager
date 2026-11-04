@@ -1,18 +1,7 @@
 // Peças visuais compartilhadas pelas abas Relatório e Node Pools do FinOps.
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
-
-// Paleta da decomposição de custo (mesma no Relatório, no Node Pools e no PDF).
-export const COST_COLORS = {
-  productive: "#10b981", // em uso
-  waste: "#f59e0b",      // request acima do necessário
-  idle: "#f43f5e",       // capacidade ociosa
-  osDisk: "#38bdf8",
-  pvc: "#818cf8",
-  orphan: "#e879f9",
-} as const;
-
-export const AXIS_TICK = { fontSize: 10, fill: "hsl(var(--muted-foreground))" };
+import { COST_COLORS } from "./chartTheme";
 
 // Caixa de tooltip dos gráficos Recharts.
 export function TooltipBox({ title, children }: { title?: ReactNode; children: ReactNode }) {

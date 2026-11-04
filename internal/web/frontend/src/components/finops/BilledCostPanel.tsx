@@ -10,24 +10,7 @@ import { apiClient } from "@/lib/api/client";
 import type { BilledCostResponse } from "./types";
 import type { CostBreakdown } from "./capacity";
 import { SectionTitle } from "./charts";
-
-export function useBilledCost(cluster: string, enabled: boolean) {
-  return useQuery({
-    queryKey: ["finops-billed-cost", cluster],
-    queryFn: () => apiClient.getFinOpsBilledCost<BilledCostResponse>(cluster),
-    enabled: enabled && !!cluster,
-    staleTime: 60 * 60 * 1000,
-    retry: false,
-  });
-}
-
-// Fator para converter a moeda da fatura em BRL (null = moeda sem conversão conhecida).
-export function billedToBRL(data: BilledCostResponse | undefined, exchangeRate: number): number | null {
-  const cur = (data?.currency ?? "BRL").toUpperCase();
-  if (cur === "BRL") return 1;
-  if (cur === "USD" && exchangeRate > 0) return exchangeRate;
-  return null;
-}
+import { billedToBRL, useBilledCost } from "./billedCost";
 
 // Serviços que correspondem ao compute e aos discos estimados, por provedor. No GKE o "Compute
 // Engine" inclui os discos (PD), então compute e discos vão juntos.

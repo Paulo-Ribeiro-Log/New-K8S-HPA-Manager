@@ -16,7 +16,8 @@ import { CoverageLine, CoverageWarningBox, ReservedHintChip, type CoverageWarnin
 import { DeepAnalysisModal } from "./DeepAnalysisModal";
 import { OffHoursCard } from "./OffHoursCard";
 import { BaseReservationCard } from "./BaseReservationCard";
-import { AXIS_TICK, COST_COLORS, CapacityBar, SectionTitle, StatTile, TooltipBox, TooltipRow } from "./charts";
+import { CapacityBar, SectionTitle, StatTile, TooltipBox, TooltipRow } from "./charts";
+import { AXIS_TICK, COST_COLORS } from "./chartTheme";
 
 interface VMAlternativeItem {
   vm_size: string;

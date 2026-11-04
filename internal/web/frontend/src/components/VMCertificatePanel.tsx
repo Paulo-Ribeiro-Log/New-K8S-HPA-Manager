@@ -54,7 +54,7 @@ import {
 import { toast } from "sonner";
 import { ProtectedAction } from "@/components/rbac";
 import { useVMAwsProfiles, useVMInstances, useVMCredentialProfiles } from "@/hooks/useVMs";
-import { getStatusBadge } from "@/components/CertificateDetailModal";
+import { getStatusBadge } from "@/lib/certStatusBadge";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import VMConnectModal from "@/components/VMConnectModal";
 import { countPemCertificates } from "@/lib/pemUtils";

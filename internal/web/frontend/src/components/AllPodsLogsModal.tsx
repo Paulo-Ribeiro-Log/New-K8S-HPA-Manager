@@ -22,8 +22,8 @@ import {
   getLogLevel,
   logLineColor,
   LOG_LEVEL_CONFIG,
-} from "@/components/PodQuickViewModal";
-import type { LogLevel } from "@/components/PodQuickViewModal";
+} from "@/lib/podLogUtils";
+import type { LogLevel } from "@/lib/podLogUtils";
 import { useJsonInspector } from "@/hooks/useJsonInspector";
 import { JsonInspectorModal, JsonFloatingButton } from "@/components/JsonInspectorModal";
 

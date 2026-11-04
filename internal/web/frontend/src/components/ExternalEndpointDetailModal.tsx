@@ -8,7 +8,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
-import { getStatusBadge } from "@/components/CertificateDetailModal";
+import { getStatusBadge } from "@/lib/certStatusBadge";
 import { useCertEndpointHistory } from "@/hooks/useCertEndpoints";
 import type { CertEndpointWithStatus } from "@/lib/api/types";
 
