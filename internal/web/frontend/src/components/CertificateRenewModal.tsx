@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Loader2, RefreshCw, TriangleAlert, FolderOpen } from "lucide-react";
 import { toast } from "sonner";
 import { useCertificates } from "@/hooks/useCertificates";
-import { getStatusBadge } from "@/components/CertificateDetailModal";
+import { getStatusBadge } from "@/lib/certStatusBadge";
 import { CertificateChainValidationPanel } from "@/components/CertificateChainValidationPanel";
 import { CertificateSourcePickerModal } from "@/components/CertificateSourcePickerModal";
 import { AWXCertForm } from "@/components/AWXCertForm";

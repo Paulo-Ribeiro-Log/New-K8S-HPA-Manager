@@ -44,7 +44,7 @@ export interface ServiceMeshNamespace {
 }
 
 export interface ServiceMeshMetrics {
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface ServiceMeshFilters {

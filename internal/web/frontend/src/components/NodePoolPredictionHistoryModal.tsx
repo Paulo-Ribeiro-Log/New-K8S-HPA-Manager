@@ -14,7 +14,7 @@ interface NodePoolPredictionHistoryModalProps {
   onOpenChange: (open: boolean) => void;
   cluster?: string;
   nodepool?: string;
-  onSelectRecord?: (record: any) => void;
+  onSelectRecord?: (record) => void;
 }
 
 interface HistoryRecord {
@@ -84,6 +84,7 @@ export function NodePoolPredictionHistoryModal({
 
   useEffect(() => {
     if (open) loadRecords(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadRecords
   }, [open, cluster, nodepool]);
 
   const handleSelectRecord = (record: HistoryRecord) => {

@@ -91,6 +91,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       console.log('[ServiceMesh] Cluster mudou de', filters.cluster, 'para', cluster);
       setFilters(prev => ({ ...prev, cluster: cluster, namespace: [] }));  // Resetar para array vazio
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): filters.cluster
   }, [cluster]);
 
   // Carregar namespaces quando filters.cluster mudar
@@ -119,6 +120,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       console.log('[ServiceMesh] Carregando namespaces do cluster:', filters.cluster);
       loadNamespaces();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadNamespaces
   }, [filters.cluster]);
 
   // Inicializar grafo quando há dados ou opções mudam
@@ -126,6 +128,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     if (graphData && cyRef.current) {
       initializeGraph();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): initializeGraph
   }, [graphData, displayOptions]);
 
   // Recriar grafo quando mudar fullscreen (porque muda de container)
@@ -136,7 +139,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       // Salvar posições antes de destruir
       if (cyInstance.current) {
         try {
-          cyInstance.current.nodes().forEach((node: any) => {
+          cyInstance.current.nodes().forEach((node) => {
             const pos = node.position();
             nodePositions.current.set(node.id(), { x: pos.x, y: pos.y });
           });
@@ -158,6 +161,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
         }
       }, 100);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): graphData, initializeGraph
   }, [isFullscreen]);
 
   // Recarregar grafo quando namespace mudar (COM notificação)
@@ -181,6 +185,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       
       loadServiceGraph(false); // false = mostra toast
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadServiceGraph
   }, [filters.namespace]);
 
   // Recarregar quando duration/graphType mudam (SILENCIOSO)
@@ -188,6 +193,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     if (filters.namespace && graphData) {
       loadServiceGraphSilent();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): filters.namespace, graphData,, loadServiceGraphSilent
   }, [filters.duration, filters.graphType]);
 
   // Recarregar com display options alterados (SILENCIOSO)
@@ -195,6 +201,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     if (filters.namespace && graphData) {
       loadServiceGraphSilent();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): filters.namespace, graphData,, loadServiceGraphSilent
   }, [displayOptions.show.serviceNodes, displayOptions.show.idleEdges, displayOptions.show.idleNodes]);
 
   // Auto-refresh
@@ -218,6 +225,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
         clearInterval(refreshIntervalRef.current);
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadServiceGraphSilent
   }, [autoRefreshInterval, filters.namespace]);
 
   // Controlar animação de tráfego com velocidade variável baseada em requestRate
@@ -233,7 +241,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       animationIntervalRef.current = setInterval(() => {
         if (cyInstance.current) {
           // Animar cada edge individualmente baseado em seu requestRate
-          cyInstance.current.edges().forEach((edge: any) => {
+          cyInstance.current.edges().forEach((edge) => {
             const requestRate = parseFloat(edge.data('requestRate') || '0');
             // Calcular velocidade: quanto maior o rate, mais rápido
             // Base speed: 0.5, max speed: 5.0 (para rates > 1000)
@@ -415,7 +423,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           
           // IMPORTANTE: Salvar TODAS as posições antes de qualquer mudança
           const savedPositions = new Map<string, { x: number; y: number }>();
-          cyInstance.current.nodes().forEach((node: any) => {
+          cyInstance.current.nodes().forEach((node) => {
             const pos = node.position();
             if (pos && !isNaN(pos.x) && !isNaN(pos.y)) {
               savedPositions.set(node.id(), { x: pos.x, y: pos.y });
@@ -559,7 +567,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
             cyInstance.current.forceRender();
             
             // Contar nodes com e sem posição
-            const nodesWithPosition = cyInstance.current.nodes().filter((node: any) => {
+            const nodesWithPosition = cyInstance.current.nodes().filter((node) => {
               return savedPositions.has(node.id());
             }).length;
             
@@ -582,7 +590,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               }, 50);
             } else if (nodesWithPosition < cyInstance.current.nodes().length) {
               // Apenas alguns nodes novos
-              const newNodes = cyInstance.current.nodes().filter((node: any) => {
+              const newNodes = cyInstance.current.nodes().filter((node) => {
                 return !savedPositions.has(node.id());
               });
               console.log('[ServiceMesh] Fazendo layout para', newNodes.length, 'nodes novos');
@@ -722,7 +730,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           selector: 'node',
           style: {
             'background-color': '#3b82f6',
-            'label': function(ele: any) {
+            'label': function(ele: NodeSingular) {
               const workload = ele.data('workload') || ele.data('service') || ele.data('app');
               const version = ele.data('version');
               const nodeType = ele.data('nodeType');
@@ -819,7 +827,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             'arrow-scale': 1.5,
-            'label': function(ele: any) {
+            'label': function(ele: EdgeSingular) {
               const labels = [];
               const rate = ele.data('requestRate');
               const responseTime = ele.data('responseTime');
@@ -866,7 +874,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
               return labels.join('\n');
             },
-            'line-color': function(ele: any) {
+            'line-color': function(ele: EdgeSingular) {
               const errorRate = parseFloat(ele.data('errorRate') || '0');
               const rate = parseFloat(ele.data('requestRate') || '0');
               
@@ -900,7 +908,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               // Cinza padrão
               return '#9ca3af'; // gray-400
             },
-            'target-arrow-color': function(ele: any) {
+            'target-arrow-color': function(ele: EdgeSingular) {
               const errorRate = parseFloat(ele.data('errorRate') || '0');
               const rate = parseFloat(ele.data('requestRate') || '0');
               
@@ -1015,7 +1023,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     // Salvar posições antes de mudar de modo
     if (cyInstance.current) {
       try {
-        cyInstance.current.nodes().forEach((node: any) => {
+        cyInstance.current.nodes().forEach((node) => {
           const pos = node.position();
           nodePositions.current.set(node.id(), { x: pos.x, y: pos.y });
         });
@@ -1114,7 +1122,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               <label className="text-xs font-medium mb-1 block text-muted-foreground">Duração</label>
               <Select
                 value={filters.duration}
-                onValueChange={(value: any) => setFilters(prev => ({ ...prev, duration: value }))}
+                onValueChange={(value: ServiceMeshFilters["duration"]) => setFilters(prev => ({ ...prev, duration: value }))}
               >
                 <SelectTrigger className="h-8 text-sm">
                   <SelectValue />
@@ -1136,7 +1144,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               <label className="text-xs font-medium mb-1 block text-muted-foreground">Tipo de Grafo</label>
               <Select
                 value={filters.graphType}
-                onValueChange={(value: any) => setFilters(prev => ({ ...prev, graphType: value }))}
+                onValueChange={(value: ServiceMeshFilters["graphType"]) => setFilters(prev => ({ ...prev, graphType: value }))}
               >
                 <SelectTrigger className="h-8 text-sm">
                   <SelectValue />
@@ -1894,7 +1902,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
                 <Select
                   value={filters.duration}
-                  onValueChange={(value: any) => setFilters(prev => ({ ...prev, duration: value }))}
+                  onValueChange={(value: ServiceMeshFilters["duration"]) => setFilters(prev => ({ ...prev, duration: value }))}
                 >
                   <SelectTrigger className="w-28">
                     <SelectValue />
@@ -1913,7 +1921,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
                 <Select
                   value={filters.graphType}
-                  onValueChange={(value: any) => setFilters(prev => ({ ...prev, graphType: value }))}
+                  onValueChange={(value: ServiceMeshFilters["graphType"]) => setFilters(prev => ({ ...prev, graphType: value }))}
                 >
                   <SelectTrigger className="w-36">
                     <SelectValue />

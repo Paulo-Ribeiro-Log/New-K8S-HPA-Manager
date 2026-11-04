@@ -101,7 +101,7 @@ export function useHealthCheckProgressMultiplexed(options: UseHealthCheckProgres
         // ✅ Extrair cluster do evento
         // Backend adiciona "cluster:nome" no campo details (lowercase - JSON tag)
         let cluster = '';
-        const details = (event as any).details || event.Details;  // Tenta lowercase primeiro, fallback para uppercase
+        const details = event.details || event.Details;  // Tenta lowercase primeiro, fallback para uppercase
         if (details && details.startsWith('cluster:')) {
           cluster = details.replace('cluster:', '');
         } else if (event.ID || event.id) {
@@ -192,6 +192,7 @@ export function useHealthCheckProgressMultiplexed(options: UseHealthCheckProgres
       }
       setIsConnected(false);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): completedClusters.size
   }, [sessionId, clusters, enabled]);
 
   /**

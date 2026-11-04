@@ -25,4 +25,19 @@ export default tseslint.config(
       "@typescript-eslint/no-explicit-any": "warn",
     },
   },
+  {
+    // Arquivos em que componente e hook/utilitário convivem de propósito: shadcn/ui (código
+    // gerado: buttonVariants etc.), providers com seu hook (padrão do React), stores e libs.
+    // Em componentes comuns a regra continua valendo: helper vai para arquivo à parte.
+    files: [
+      "src/components/ui/**/*.{ts,tsx}",
+      "src/components/theme-provider.tsx",
+      "src/contexts/**/*.{ts,tsx}",
+      "src/store/**/*.{ts,tsx}",
+      "src/lib/**/*.{ts,tsx}",
+    ],
+    rules: {
+      "react-refresh/only-export-components": "off",
+    },
+  },
 );

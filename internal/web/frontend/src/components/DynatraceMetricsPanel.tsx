@@ -255,6 +255,7 @@ function mergeSeries(series: DTMetricSeries[]): Record<string, number>[] {
 
 function ChartTooltip({ active, payload, label, seriesMap }: {
   active?: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tipo do callback/props do Recharts
   payload?: any[];
   label?: number;
   seriesMap: Record<string, DTMetricSeries>;
@@ -263,7 +264,7 @@ function ChartTooltip({ active, payload, label, seriesMap }: {
   return (
     <div className="rounded border bg-background/98 p-2 text-xs shadow-xl backdrop-blur-sm">
       <p className="font-semibold mb-1.5 text-muted-foreground">{fmtTime(label)}</p>
-      {payload.map((p: any, i: number) => {
+      {payload.map((p, i: number) => {
         const s = seriesMap[p.dataKey];
         if (p.value === undefined || p.value === null) return null;
         return (
@@ -408,6 +409,7 @@ function MetricChart({ group, availableSeries, problemStartMs, height = 150 }: M
           {availableSeries.length > 1 && (
             <Legend
               wrapperStyle={{ fontSize: 9, paddingTop: 4 }}
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tipo do callback/props do Recharts
               formatter={(value, entry: any) => {
                 const s = seriesMap[entry.dataKey];
                 return s?.label ?? value;
@@ -553,7 +555,7 @@ export function DynatraceMetricsPanel({ problemId, aiEmail, problemTitle }: Dyna
       <div className="flex flex-col items-center gap-2 py-8 text-center">
         <AlertCircle className="h-6 w-6 text-red-400" />
         <p className="text-sm text-muted-foreground">
-          {(error as any)?.message ?? "Erro ao carregar métricas"}
+          {(error as { message?: string } | null)?.message ?? "Erro ao carregar métricas"}
         </p>
         <Button size="sm" variant="outline" onClick={() => refetch()}>
           <RefreshCw className="h-3 w-3 mr-1.5" />Tentar novamente

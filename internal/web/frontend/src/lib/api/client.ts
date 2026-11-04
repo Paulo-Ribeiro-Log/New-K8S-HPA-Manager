@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- cliente HTTP: corpos e respostas JSON chegam dinâmicos e cada
+   rota tipa o seu retorno pelo parâmetro genérico; `any` só aparece como padrão desse genérico e em corpos livres */
 // API Client - connects to Go backend
 
 import type {
@@ -800,7 +802,7 @@ class APIClient {
       }>(
         `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/metrics`
       );
-    } catch (error: any) {
+    } catch (error) {
       return {
         success: false,
         data: {

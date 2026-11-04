@@ -748,6 +748,7 @@ const RevisionValuesModal = ({
       loadRevisionValues();
       setShowDiff(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadRevisionValues
   }, [open, revision]);
 
   const loadRevisionValues = async () => {
@@ -874,6 +875,7 @@ const HistoryTab = ({
   currentValuesRendered,
   onRollbackClick,
 }: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   revisions: any[];
   loading: boolean;
   currentRevision: number;

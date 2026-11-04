@@ -52,6 +52,7 @@ import { AWXCertModal } from "@/components/AWXCertModal";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { NamespaceRbacModal } from "@/components/NamespaceRbacModal";
+import { parseYaml } from "@/lib/yamlTree";
 
 interface NamespacesTabProps {
   cluster: string;
@@ -260,7 +261,7 @@ export const NamespacesTab = ({
   const isIstioEnabled = useMemo(() => {
     if (!namespaceManifest?.yaml) return false;
     try {
-      const manifest = yaml.load(namespaceManifest.yaml) as any;
+      const manifest = parseYaml(namespaceManifest.yaml);
       return manifest?.metadata?.labels?.["istio-injection"] === "enabled";
     } catch {
       return false;
@@ -698,7 +699,7 @@ export const NamespacesTab = ({
     } finally {
       setIsCreating(false);
     }
-  }, [newNamespaceName, cluster, isSpotInstance, showAnnotationsEditor, annotationsYaml, onRefresh, getAnnotationsTemplate]);
+  }, [newNamespaceName, cluster, isSpotInstance, showAnnotationsEditor, annotationsYaml, onRefresh]);
 
   // Verificar se AWX está configurado ao montar o componente
   useEffect(() => {
@@ -717,6 +718,7 @@ export const NamespacesTab = ({
     if (cluster) {
       loadOverviewMetrics();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadOverviewMetrics
   }, [cluster]);
 
   // Carregar manifest e deployments quando namespace é selecionado
@@ -737,6 +739,7 @@ export const NamespacesTab = ({
       setShowDeployments(false);
       setNamespacePods([]);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadDeployments, loadEvents, loadManifest, loadNamespacePods, loadNetworkPolicies, loadPodsSummary, loadResourceQuotas,, loadServices
   }, [selectedNamespace, cluster]);
 
   useEffect(() => {
@@ -2043,13 +2046,13 @@ export const NamespacesTab = ({
     // Gerar diff compacto apenas com mudanças
     const generateCompactDiff = () => {
       try {
-        const originalObj = yaml.load(originalYaml) as any;
-        const updatedObj = yaml.load(editorValue) as any;
+        const originalObj = parseYaml(originalYaml);
+        const updatedObj = parseYaml(editorValue);
 
         const changes: Array<{ path: string; before: string; after: string }> = [];
 
         // Função auxiliar para formatar valores de forma legível
-        const formatValue = (val: any, isAfter: boolean = false): string => {
+        const formatValue = (val, isAfter: boolean = false): string => {
           if (val === undefined) return isAfter ? '(removido)' : '(não existe)';
           if (val === null) return 'null';
           if (val === '') return '""';  // String vazia - exibe aspas para indicar valor vazio
@@ -2057,7 +2060,7 @@ export const NamespacesTab = ({
           return String(val);
         };
 
-        const compareObjects = (obj1: any, obj2: any, path: string = '') => {
+        const compareObjects = (obj1, obj2, path: string = '') => {
           const allKeys = new Set([...Object.keys(obj1 || {}), ...Object.keys(obj2 || {})]);
 
           for (const key of allKeys) {

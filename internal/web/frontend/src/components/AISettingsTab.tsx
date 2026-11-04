@@ -134,6 +134,7 @@ export function AISettingsTab() {
 
     loadTokenStatus();
     loadAvailableModels();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadAvailableModels, loadTokenStatus
   }, []);
 
   const loadTokenStatus = async () => {
@@ -315,6 +316,7 @@ export function AISettingsTab() {
 
     try {
       // Preparar payload - enviar apenas campos preenchidos
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dado dinâmico do backend, sem tipo definido no frontend
       const payload: any = {
         ai_email: aiEmail.trim(), // Email para identificar configurações (independente do Azure AD)
         preferred_provider: preferredProvider,

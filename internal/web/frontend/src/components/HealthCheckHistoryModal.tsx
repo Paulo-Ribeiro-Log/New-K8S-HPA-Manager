@@ -57,6 +57,7 @@ export const HealthCheckHistoryModal = ({
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [alertsExportModalOpen, setAlertsExportModalOpen] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dado dinâmico do backend, sem tipo definido no frontend
   const [alertsToExport, setAlertsToExport] = useState<{cluster: string, events: any[]}>({ cluster: "", events: [] });
 
   // Carregar histórico ao abrir modal
@@ -530,7 +531,7 @@ export const HealthCheckHistoryModal = ({
 
                                 // Filtrar apenas warnings e criticals
                                 const alerts = response.events.filter(
-                                  (e: any) => e.status === "warning" || e.status === "critical"
+                                  (e) => e.status === "warning" || e.status === "critical"
                                 );
 
                                 if (alerts.length === 0) {

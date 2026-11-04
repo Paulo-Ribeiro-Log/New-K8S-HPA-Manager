@@ -29,6 +29,7 @@ export function CronJobsPage({ selectedCluster }: CronJobsPageProps) {
         setSelectedCronJob(updated);
       }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): selectedCronJob
   }, [cronJobs]);
 
   // Filter CronJobs based on search query

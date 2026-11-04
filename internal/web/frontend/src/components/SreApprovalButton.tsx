@@ -27,6 +27,7 @@ export function SreApprovalButton({ approvalUrl, chgNumber, preCheckedStatus, pr
       return;
     }
     checkStatus();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): checkStatus, preCheckedApproverEmail
   }, [approvalUrl, preCheckedStatus]);
 
   const checkStatus = async (silent = false) => {

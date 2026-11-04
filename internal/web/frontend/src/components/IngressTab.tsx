@@ -37,6 +37,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
+import { parseYaml } from "@/lib/yamlTree";
 
 interface IngressTabProps {
   cluster: string;
@@ -1255,12 +1256,13 @@ spec:
     // Gerar diff compacto apenas com mudanças
     const generateCompactDiff = () => {
       try {
-        const originalObj = yaml.load(originalYaml) as any;
-        const updatedObj = yaml.load(editorValue) as any;
+        const originalObj = parseYaml(originalYaml);
+        const updatedObj = parseYaml(editorValue);
         
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- valores arbitrários de um diff de YAML
         const changes: Array<{ path: string; before: any; after: any }> = [];
         
-        const compareObjects = (obj1: any, obj2: any, path: string = '') => {
+        const compareObjects = (obj1, obj2, path: string = '') => {
           const allKeys = new Set([...Object.keys(obj1 || {}), ...Object.keys(obj2 || {})]);
           
           for (const key of allKeys) {

@@ -15,12 +15,12 @@ export interface TabState {
     activeTab: string;
     selectedCluster: string;
     selectedNamespace: string;
-    selectedHPA: any | null;
-    selectedNodePool: any | null;
+    selectedHPA: unknown | null;
+    selectedNodePool: unknown | null;
     showApplyModal: boolean;
-    hpasToApply: Array<{ key: string; current: any; original: any }>;
+    hpasToApply: Array<{ key: string; current: unknown; original: unknown }>;
     showNodePoolApplyModal: boolean;
-    nodePoolsToApply: Array<{ key: string; current: any; original: any }>;
+    nodePoolsToApply: Array<{ key: string; current: unknown; original: unknown }>;
     showSaveSessionModal: boolean;
     showLoadSessionModal: boolean;
     isContextSwitching: boolean;
@@ -28,7 +28,7 @@ export interface TabState {
     // Estados aninhados de cada aba do Workload (Pods, ConfigMaps, Deployments, Secrets, etc)
     // Estrutura: { [namespace]: { [key]: value } }
     // Ex: { pods: { selectedPod: {...}, showSystemPods: false }, configmaps: { selectedConfigMap: {...} } }
-    workloadStates?: Record<string, Record<string, any>>;
+    workloadStates?: Record<string, Record<string, unknown>>;
   };
   
   // Status de mudanças pendentes
@@ -58,12 +58,12 @@ export type TabAction =
 export interface MultiTabAppState {
   tabManager: TabManager;
   sessionManager: {
-    availableTemplates: any[];
-    savedSessions: any[];
+    availableTemplates: unknown[];
+    savedSessions: unknown[];
     currentSessionFolder?: string;
   };
   clusters: {
-    available: any[];
+    available: unknown[];
     connecting: string[];
   };
   ui: {

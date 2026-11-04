@@ -239,7 +239,7 @@ export interface ServiceHealth {
   connection_error?: string;
 
   // Detalhes específicos do serviço (opcional)
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
 
   // Fonte da configuração
   config_source: string; // "configmap:my-config/key" ou "secret:my-secret/key"

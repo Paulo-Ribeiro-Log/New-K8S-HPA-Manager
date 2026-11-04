@@ -14,7 +14,8 @@ import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
 import { useDynatracePodCoverage } from "@/hooks/useAPI";
-import { DynatraceStatusIcon, resolveDynatraceStatus, DT_STATUS_LABEL, DT_STATUS_PRIORITY } from "@/components/DynatraceStatusIcon";
+import { DynatraceStatusIcon } from "@/components/DynatraceStatusIcon";
+import { resolveDynatraceStatus, DT_STATUS_LABEL, DT_STATUS_PRIORITY } from "@/lib/dynatraceStatus";
 import { AllPodsLogsModal } from "@/components/AllPodsLogsModal";
 import { PodReadyTooltip } from "@/components/PodReadyTooltip";
 
@@ -546,6 +547,7 @@ export const PodMonitorTable = ({
     }
 
     return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): dtStatusLabelForPod
   }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, dtStatusFilter, kindFilter, cpuTopN, memTopN, sortKey, sortDir, statusSortMode, metrics, dtClusterSupported, dtMonitoredKeys]);
 
   // Helpers de seleção

@@ -219,7 +219,7 @@ export function AKVDiscoveryModal({ cluster, namespace, name, targetName, onClos
   // uma sobreposição manual explícita, não precisa persistir através de re-sincronizações).
   useEffect(() => {
     setEditorValue(baselineYaml);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [baselineYaml]);
 
   const handleCopyAll = () => {

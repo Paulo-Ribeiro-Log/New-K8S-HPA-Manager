@@ -97,6 +97,7 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
     const interval = setInterval(() => fetchClusterInfo(true), 30000);
 
     return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchClusterInfo
   }, [selectedCluster]); // Reagir quando o cluster selecionado mudar
 
   if (loading) {

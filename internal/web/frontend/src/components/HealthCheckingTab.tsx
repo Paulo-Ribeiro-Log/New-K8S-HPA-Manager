@@ -106,7 +106,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [preloadedLogs, setPreloadedLogs] = useState<{
     cluster: string;
     sessionId: string;
-    events: any[];
+    events: unknown[];
     result: HealthCheckResult; // ✅ Incluir resultado completo para exibir badges
   } | null>(null);
 
@@ -175,7 +175,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
         }
 
         // Formatar eventos para o formato esperado pelo modal
-        const formattedEvents = response.events.map((event: any) => ({
+        const formattedEvents = response.events.map((event) => ({
           id: event.id,
           type: event.type,
           phase: event.phase,

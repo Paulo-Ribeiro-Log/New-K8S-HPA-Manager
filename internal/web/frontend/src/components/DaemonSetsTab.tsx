@@ -247,6 +247,7 @@ export const DaemonSetsTab = ({
     setRightView({ kind: "daemonset-table" });
     setMonitorPods([]);
     setBatchMetrics(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setSelectedDaemonSet, setShowLabels,, setViewMode
   }, [cluster, selectedNamespace]);
 
   useEffect(() => {

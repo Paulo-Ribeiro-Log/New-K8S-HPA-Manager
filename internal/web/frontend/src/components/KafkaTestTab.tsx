@@ -527,7 +527,7 @@ export default function KafkaTestTab() {
       es.close();
       esRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [sessionId]);
 
   return (

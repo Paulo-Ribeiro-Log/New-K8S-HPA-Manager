@@ -42,12 +42,12 @@ export async function guardVPNOperation(
  * );
  * ```
  */
-export function withVPNGuard<T extends (...args: any[]) => Promise<any>>(
+export function withVPNGuard<T extends (...args: unknown[]) => Promise<unknown>>(
   checkVPN: () => Promise<boolean>,
   operationName: string,
   handler: T
 ): T {
-  return (async (...args: any[]) => {
+  return (async (...args: unknown[]) => {
     const connected = await guardVPNOperation(checkVPN, operationName);
     if (!connected) {
       return; // Bloquear operação

@@ -108,7 +108,7 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
     }
   };
 
-  const updateHPAChange = (index: number, field: string, value: any) => {
+  const updateHPAChange = (index: number, field: string, value) => {
     if (!editedSession) return;
     
     const updatedChanges = [...editedSession.changes];
@@ -121,7 +121,7 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
         [subField]: value,
       };
     } else {
-      (change as any)[field] = value;
+      (change as unknown as Record<string, unknown>)[field] = value;
     }
     
     setEditedSession({
@@ -130,7 +130,7 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
     });
   };
 
-  const updateNodePoolChange = (index: number, field: string, value: any) => {
+  const updateNodePoolChange = (index: number, field: string, value) => {
     if (!editedSession) return;
     
     const updatedChanges = [...editedSession.node_pool_changes];
@@ -143,7 +143,7 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
         [subField]: value === '' ? 0 : (typeof value === 'string' ? parseInt(value) : value),
       };
     } else {
-      (change as any)[field] = value;
+      (change as unknown as Record<string, unknown>)[field] = value;
     }
     
     setEditedSession({

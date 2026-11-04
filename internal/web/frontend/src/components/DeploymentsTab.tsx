@@ -70,6 +70,7 @@ import { useRevealOnKeyChange } from "@/hooks/useRevealOnKeyChange";
 import { useSpinnakerRolloutStatus } from "@/hooks/useSpinnaker";
 import { deriveSpinnakerEnv } from "@/lib/spinnakerEnv";
 import { SpinnakerRolloutModal } from "@/components/SpinnakerRolloutModal";
+import { parseYaml } from "@/lib/yamlTree";
 
 // Badge que diferencia visualmente "aplicação da empresa" (passou pela esteira CI/CD sancionada,
 // ver isCompanyManagedDeployment no backend — mesma heurística da política Kyverno
@@ -334,6 +335,7 @@ export const DeploymentsTab = ({
     apiClient.getDeploymentInsights(selectedDeployment.cluster, selectedDeployment.namespace, selectedDeployment.name)
       .then(setDeploymentInsights)
       .catch(() => setDeploymentInsights(null)); // best-effort — nunca bloqueia a visualização
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): selectedDeployment
   }, [selectedDeployment?.cluster, selectedDeployment?.namespace, selectedDeployment?.name]);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
@@ -350,6 +352,7 @@ export const DeploymentsTab = ({
   const [describeLoading, setDescribeLoading] = useState(false);
   const [predictionModalOpen, setPredictionModalOpen] = useState(false);
   const [predictionLoading, setPredictionLoading] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estado com o payload do backend, que não tem tipo no frontend
   const [predictionResult, setPredictionResult] = useState<any>(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<"pdf" | "markdown" | "json">("markdown");
@@ -695,6 +698,7 @@ export const DeploymentsTab = ({
     setRightView({ kind: "deployment-table" });
     setMonitorPods([]);
     setBatchMetrics(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setSelectedDeployment, setShowLabels,, setViewMode
   }, [cluster, selectedNamespace]);
 
   // Pods deste Deployment pelo dono real (OwnerReferences), não pelo nome — ver lib/deploymentPods.ts.
@@ -1297,6 +1301,7 @@ export const DeploymentsTab = ({
     } catch (err) {
       console.error("[RolloutMonitor] Falha ao atualizar progresso do rollout", err);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): currentReplicaSetHash
   }, [setSelectedDeployment, updateRolloutMetrics]);
 
   const startRolloutMonitor = useCallback(
@@ -1958,9 +1963,9 @@ export const DeploymentsTab = ({
       });
       yPosition += 4;
 
-      const highImpact = replicas.competing_apps.filter((app: any) => app.impact_level === "high");
-      const mediumImpact = replicas.competing_apps.filter((app: any) => app.impact_level === "medium");
-      const lowImpact = replicas.competing_apps.filter((app: any) => app.impact_level === "low" || !app.impact_level);
+      const highImpact = replicas.competing_apps.filter((app) => app.impact_level === "high");
+      const mediumImpact = replicas.competing_apps.filter((app) => app.impact_level === "medium");
+      const lowImpact = replicas.competing_apps.filter((app) => app.impact_level === "low" || !app.impact_level);
 
       if (highImpact.length > 0) {
         checkPageBreak(15);
@@ -1968,7 +1973,7 @@ export const DeploymentsTab = ({
         doc.text("Impacto Alto:", 14, yPosition);
         yPosition += 5;
         doc.setFont("helvetica", "normal");
-        highImpact.forEach((app: any) => {
+        highImpact.forEach((app) => {
           checkPageBreak(8);
           doc.text(`• ${app.name} (${app.namespace})`, 14, yPosition);
           yPosition += 4;
@@ -1983,7 +1988,7 @@ export const DeploymentsTab = ({
         doc.text("Impacto Médio:", 14, yPosition);
         yPosition += 5;
         doc.setFont("helvetica", "normal");
-        mediumImpact.forEach((app: any) => {
+        mediumImpact.forEach((app) => {
           checkPageBreak(6);
           doc.text(`• ${app.name} (${app.namespace}): CPU ${app.cpu_usage_cores.toFixed(2)} | Mem ${app.memory_usage_gb.toFixed(2)} GB`, 14, yPosition);
           yPosition += 4;
@@ -1997,7 +2002,7 @@ export const DeploymentsTab = ({
         doc.text("Impacto Baixo:", 14, yPosition);
         yPosition += 5;
         doc.setFont("helvetica", "normal");
-        lowImpact.slice(0, 5).forEach((app: any) => {
+        lowImpact.slice(0, 5).forEach((app) => {
           checkPageBreak(5);
           doc.text(`• ${app.name}: CPU ${app.cpu_usage_cores.toFixed(2)} | Mem ${app.memory_usage_gb.toFixed(2)} GB`, 14, yPosition);
           yPosition += 4;
@@ -2009,8 +2014,8 @@ export const DeploymentsTab = ({
       }
 
       // Totais
-      const totalCPU = replicas.competing_apps.reduce((sum: number, app: any) => sum + (app.cpu_usage_cores || 0), 0);
-      const totalMem = replicas.competing_apps.reduce((sum: number, app: any) => sum + (app.memory_usage_gb || 0), 0);
+      const totalCPU = replicas.competing_apps.reduce((sum: number, app) => sum + (app.cpu_usage_cores || 0), 0);
+      const totalMem = replicas.competing_apps.reduce((sum: number, app) => sum + (app.memory_usage_gb || 0), 0);
       checkPageBreak(6);
       doc.setFont("helvetica", "bold");
       doc.text(`Total Consumido: ${totalCPU.toFixed(2)} cores CPU | ${totalMem.toFixed(2)} GB Mem`, 14, yPosition);
@@ -2088,7 +2093,7 @@ export const DeploymentsTab = ({
         doc.text("Recomendacoes de Custo:", 14, yPosition);
         yPosition += 5;
         doc.setFont("helvetica", "normal");
-        cost.recommendations.forEach((rec: any) => {
+        cost.recommendations.forEach((rec) => {
           checkPageBreak(8);
           doc.text(`[${rec.impact.toUpperCase()}] ${rec.title}`, 14, yPosition);
           yPosition += 4;
@@ -2243,6 +2248,7 @@ export const DeploymentsTab = ({
       });
       yPosition += 4;
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dado dinâmico do backend, sem tipo definido no frontend
       const addPredictions = (predictions: any[], title: string) => {
         if (predictions && predictions.length > 0) {
           checkPageBreak(10);
@@ -2252,7 +2258,7 @@ export const DeploymentsTab = ({
           doc.text(title, 14, yPosition);
           yPosition += 6;
 
-          predictions.forEach((pred: any) => {
+          predictions.forEach((pred) => {
             checkPageBreak(18);
             doc.setFontSize(9);
             doc.setFont("helvetica", "bold");
@@ -2332,7 +2338,7 @@ export const DeploymentsTab = ({
         yPosition += 4;
       }
 
-      predictionResult.root_cause_analysis.identified_causes.forEach((cause: any, idx: number) => {
+      predictionResult.root_cause_analysis.identified_causes.forEach((cause, idx: number) => {
         checkPageBreak(20);
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
@@ -2543,7 +2549,7 @@ export const DeploymentsTab = ({
 
       // Verificar se há recomendações de custo
       const hasCostOptimization = predictionResult.recommendations.some(
-        (rec: any) => rec.category === 'cost-optimization' || rec.category === 'downsizing'
+        (rec) => rec.category === 'cost-optimization' || rec.category === 'downsizing'
       );
 
       // Alerta de economia de custos
@@ -2566,7 +2572,7 @@ export const DeploymentsTab = ({
         yPosition += 8;
       }
 
-      predictionResult.recommendations.slice(0, 5).forEach((rec: any, idx: number) => {
+      predictionResult.recommendations.slice(0, 5).forEach((rec, idx: number) => {
         checkPageBreak(20);
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
@@ -3731,12 +3737,13 @@ export const DeploymentsTab = ({
     // Gerar diff compacto apenas com mudanças
     const generateCompactDiff = () => {
       try {
-        const originalObj = yaml.load(originalYaml) as any;
-        const updatedObj = yaml.load(editorValue) as any;
+        const originalObj = parseYaml(originalYaml);
+        const updatedObj = parseYaml(editorValue);
         
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- valores arbitrários de um diff de YAML
         const changes: Array<{ path: string; before: any; after: any }> = [];
         
-        const compareObjects = (obj1: any, obj2: any, path: string = '') => {
+        const compareObjects = (obj1, obj2, path: string = '') => {
           const allKeys = new Set([...Object.keys(obj1 || {}), ...Object.keys(obj2 || {})]);
           
           for (const key of allKeys) {
@@ -4479,12 +4486,12 @@ export const DeploymentsTab = ({
                         </div>
                         <div className="space-y-3 max-h-60 overflow-y-auto">
                           {/* Impacto Alto */}
-                          {predictionResult.raw_metrics.competing_apps.filter((app: any) => app.impact_level === 'high').length > 0 && (
+                          {predictionResult.raw_metrics.competing_apps.filter((app) => app.impact_level === 'high').length > 0 && (
                             <div>
                               <div className="text-xs font-semibold text-red-500 mb-1">Impacto Alto:</div>
                               {predictionResult.raw_metrics.competing_apps
-                                .filter((app: any) => app.impact_level === 'high')
-                                .map((app: any, idx: number) => (
+                                .filter((app) => app.impact_level === 'high')
+                                .map((app, idx: number) => (
                                   <div key={idx} className="bg-red-500/10 border border-red-500/30 rounded p-2 mb-1">
                                     <div className="text-xs font-semibold">{app.name}</div>
                                     <div className="text-xs text-muted-foreground">Namespace: {app.namespace}</div>
@@ -4497,12 +4504,12 @@ export const DeploymentsTab = ({
                             </div>
                           )}
                           {/* Impacto Médio */}
-                          {predictionResult.raw_metrics.competing_apps.filter((app: any) => app.impact_level === 'medium').length > 0 && (
+                          {predictionResult.raw_metrics.competing_apps.filter((app) => app.impact_level === 'medium').length > 0 && (
                             <div>
                               <div className="text-xs font-semibold text-yellow-500 mb-1">Impacto Médio:</div>
                               {predictionResult.raw_metrics.competing_apps
-                                .filter((app: any) => app.impact_level === 'medium')
-                                .map((app: any, idx: number) => (
+                                .filter((app) => app.impact_level === 'medium')
+                                .map((app, idx: number) => (
                                   <div key={idx} className="bg-yellow-500/10 border border-yellow-500/30 rounded p-2 mb-1 text-xs">
                                     <span className="font-semibold">{app.name}</span> ({app.namespace}) - 
                                     CPU: {app.cpu_usage_cores?.toFixed(2) || 0} | Mem: {app.memory_usage_gb?.toFixed(2) || 0} GB
@@ -4511,13 +4518,13 @@ export const DeploymentsTab = ({
                             </div>
                           )}
                           {/* Impacto Baixo (lista completa) */}
-                          {predictionResult.raw_metrics.competing_apps.filter((app: any) => app.impact_level === 'low' || !app.impact_level).length > 0 && (
+                          {predictionResult.raw_metrics.competing_apps.filter((app) => app.impact_level === 'low' || !app.impact_level).length > 0 && (
                             <div>
                               <div className="text-xs font-semibold text-green-500 mb-1">Impacto Baixo:</div>
                               <div className="space-y-1">
                                 {predictionResult.raw_metrics.competing_apps
-                                  .filter((app: any) => app.impact_level === 'low' || !app.impact_level)
-                                  .map((app: any, idx: number) => (
+                                  .filter((app) => app.impact_level === 'low' || !app.impact_level)
+                                  .map((app, idx: number) => (
                                     <div key={idx} className="bg-green-500/10 border border-green-500/30 rounded p-2 text-xs">
                                       <span className="font-semibold">{app.name}</span> ({app.namespace}) - 
                                       CPU: {app.cpu_usage_cores?.toFixed(2) || 0} | Mem: {app.memory_usage_gb?.toFixed(2) || 0} GB
@@ -4530,8 +4537,8 @@ export const DeploymentsTab = ({
                           <div className="bg-primary/10 border border-primary/30 rounded p-2">
                             <div className="text-xs font-semibold">Total Consumido por Concorrentes:</div>
                             <div className="text-xs mt-1">
-                              CPU: {predictionResult.raw_metrics.competing_apps.reduce((sum: number, app: any) => sum + (app.cpu_usage_cores || 0), 0).toFixed(2)} cores | 
-                              Memória: {predictionResult.raw_metrics.competing_apps.reduce((sum: number, app: any) => sum + (app.memory_usage_gb || 0), 0).toFixed(2)} GB
+                              CPU: {predictionResult.raw_metrics.competing_apps.reduce((sum: number, app) => sum + (app.cpu_usage_cores || 0), 0).toFixed(2)} cores | 
+                              Memória: {predictionResult.raw_metrics.competing_apps.reduce((sum: number, app) => sum + (app.memory_usage_gb || 0), 0).toFixed(2)} GB
                             </div>
                           </div>
                         </div>
@@ -4619,7 +4626,7 @@ export const DeploymentsTab = ({
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {growth.competing_apps.map((app: any, idx: number) => {
+                                        {growth.competing_apps.map((app, idx: number) => {
                                           const cpuPerReplica = app.replicas > 0 ? app.usage.cpu_cores / app.replicas : app.usage.cpu_cores;
                                           const memPerReplica = app.replicas > 0 ? app.usage.memory_gb / app.replicas : app.usage.memory_gb;
                                           return (
@@ -4844,7 +4851,7 @@ export const DeploymentsTab = ({
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {ct.nodes.map((node: any, idx: number) => (
+                                      {ct.nodes.map((node, idx: number) => (
                                         <tr key={idx} className={`border-t border-border/20 ${idx % 2 === 0 ? '' : 'bg-secondary/10'}`}>
                                           <td className="px-3 py-2">
                                             <span className="font-mono text-xs">{node.node_name}</span>
@@ -5157,7 +5164,7 @@ export const DeploymentsTab = ({
                         <div>
                           <div className="text-xs font-semibold mb-2 text-muted-foreground">Recomendações de Economia</div>
                           <div className="space-y-2">
-                            {predictionResult.cost_analysis.recommendations.map((rec: any, idx: number) => (
+                            {predictionResult.cost_analysis.recommendations.map((rec, idx: number) => (
                               <div key={idx} className="bg-secondary/30 rounded p-3 text-xs">
                                 <div className="flex justify-between items-start mb-1">
                                   <span className="font-semibold">{rec.title}</span>
@@ -5227,7 +5234,7 @@ export const DeploymentsTab = ({
                             <YAxis stroke="#888" style={{ fontSize: '12px' }} tickFormatter={(value) => value >= 1 ? value.toFixed(2) : (value * 1000).toFixed(0) + 'm'} />
                             <Tooltip 
                               contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #333' }} 
-                              formatter={(value: any) => [value >= 1 ? `${value.toFixed(3)} cores` : `${(value * 1000).toFixed(0)} milicores`, '']}
+                              formatter={(value: number) => [value >= 1 ? `${value.toFixed(3)} cores` : `${(value * 1000).toFixed(0)} milicores`, '']}
                             />
                             <Legend />
                             <Line type="monotone" dataKey="avg" stroke="#8884d8" name="Média" strokeWidth={2} />
@@ -5369,8 +5376,8 @@ export const DeploymentsTab = ({
                         ];
 
                         const tipStyle = { backgroundColor: '#1a1a1a', border: '1px solid #333' };
-                        const fmtCPU = (v: any) => v != null ? (v >= 1 ? `${v.toFixed(3)} cores` : `${(v * 1000).toFixed(0)}m`) : '';
-                        const fmtMem = (v: any) => v != null ? `${Number(v).toFixed(2)} GB` : '';
+                        const fmtCPU = (v) => v != null ? (v >= 1 ? `${v.toFixed(3)} cores` : `${(v * 1000).toFixed(0)}m`) : '';
+                        const fmtMem = (v) => v != null ? `${Number(v).toFixed(2)} GB` : '';
 
                         const currentCostBRL = predictionResult.cost_analysis?.current_monthly_cost_brl ?? 0;
                         const recommendedCostBRL = predictionResult.cost_analysis?.recommended_cost_brl ?? 0;
@@ -5406,7 +5413,7 @@ export const DeploymentsTab = ({
                                   <CartesianGrid strokeDasharray="3 3" stroke="#333" />
                                   <XAxis dataKey="label" stroke="#888" style={{ fontSize: '11px' }} />
                                   <YAxis stroke="#888" style={{ fontSize: '11px' }} tickFormatter={(v) => v >= 1 ? v.toFixed(2) : `${(v*1000).toFixed(0)}m`} />
-                                  <Tooltip contentStyle={tipStyle} formatter={(v: any, name: string) => [fmtCPU(v), name]} />
+                                  <Tooltip contentStyle={tipStyle} formatter={(v, name: string) => [fmtCPU(v), name]} />
                                   <ReferenceLine x="Atual" stroke="#555" strokeDasharray="3 3" />
                                   <Line type="monotone" dataKey="p95"        stroke="#60a5fa" name="Histórico P95"     strokeWidth={2} connectNulls={false} dot={false} />
                                   <Line type="monotone" dataKey="noAction"   stroke="#f87171" name="Sem Ação"          strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
@@ -5433,7 +5440,7 @@ export const DeploymentsTab = ({
                                   <CartesianGrid strokeDasharray="3 3" stroke="#333" />
                                   <XAxis dataKey="label" stroke="#888" style={{ fontSize: '11px' }} />
                                   <YAxis stroke="#888" style={{ fontSize: '11px' }} tickFormatter={(v) => Number(v).toFixed(2)} />
-                                  <Tooltip contentStyle={tipStyle} formatter={(v: any, name: string) => [fmtMem(v), name]} />
+                                  <Tooltip contentStyle={tipStyle} formatter={(v, name: string) => [fmtMem(v), name]} />
                                   <ReferenceLine x="Atual" stroke="#555" strokeDasharray="3 3" />
                                   <Line type="monotone" dataKey="p95"        stroke="#60a5fa" name="Histórico P95"     strokeWidth={2} connectNulls={false} dot={false} />
                                   <Line type="monotone" dataKey="noAction"   stroke="#f87171" name="Sem Ação"          strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
@@ -5559,7 +5566,7 @@ export const DeploymentsTab = ({
                                     contentStyle={{ backgroundColor: '#0f0f1a', border: '1px solid #444', borderRadius: '6px', padding: '6px 10px' }}
                                     labelStyle={{ color: '#e2e8f0', fontWeight: 600, fontSize: '12px', marginBottom: '2px' }}
                                     itemStyle={{ color: '#cbd5e1', fontSize: '12px' }}
-                                    formatter={(v: number, _: string, props: any) => {
+                                    formatter={(v: number, _: string, props) => {
                                       const d = props.payload;
                                       const label = d.isPeak ? ' (pico)' : d.isLow ? ' (vale)' : '';
                                       return [`${v}m${label}`, 'CPU'];
@@ -5634,7 +5641,7 @@ export const DeploymentsTab = ({
                       {Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0 && (
                         <div className="mb-4">
                           <h4 className="font-semibold text-sm mb-2 text-orange-400">Curto Prazo (4h)</h4>
-                          {predictionResult.predictions.short_term.map((pred: any, idx: number) => (
+                          {predictionResult.predictions.short_term.map((pred, idx: number) => (
                             <div key={idx} className="bg-background/50 rounded p-3 mb-2">
                               <div className="flex items-start justify-between mb-1">
                                 <span className="font-semibold text-sm">{pred.event}</span>
@@ -5672,7 +5679,7 @@ export const DeploymentsTab = ({
                     <div className="pt-2">
                       
                       {/* Alerta de Economia de Custos */}
-                      {predictionResult.recommendations.some((rec: any) => 
+                      {predictionResult.recommendations.some((rec) => 
                         rec.category === 'cost-optimization' || rec.category === 'downsizing'
                       ) && (
                         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-4">
@@ -5691,7 +5698,7 @@ export const DeploymentsTab = ({
                         </div>
                       )}
 
-                      {predictionResult.recommendations.map((rec: any, idx: number) => (
+                      {predictionResult.recommendations.map((rec, idx: number) => (
                         <div 
                           key={idx} 
                           className={`bg-background/50 rounded p-3 mb-3 border-l-4 ${

@@ -124,6 +124,7 @@ export const HealthCheckMetricsDashboard = () => {
 
   useEffect(() => {
     fetchMetrics();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchMetrics
   }, [days]);
 
   const formatDuration = (ms: number) => {

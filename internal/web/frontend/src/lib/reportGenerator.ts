@@ -2,6 +2,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { HealthCheckResult } from "@/types/healthcheck";
 import { addLogoHeaderToPDF, getMarkdownHeader } from "./logoUtils";
+import { lastTableY } from "@/lib/pdfAutoTable";
 
 export interface ReportData {
   results: Record<string, HealthCheckResult>;
@@ -138,7 +139,7 @@ export const generatePDFReport = async (data: ReportData): Promise<void> => {
     margin: { left: 14, right: 14 },
   });
 
-  yPosition = (doc as any).lastAutoTable.finalY + 15;
+  yPosition = lastTableY(doc) + 15;
 
   // Título da seção de análise detalhada
   doc.setFontSize(14);
@@ -195,7 +196,7 @@ export const generatePDFReport = async (data: ReportData): Promise<void> => {
       margin: { left: 20, right: 14 },
     });
 
-    yPosition = (doc as any).lastAutoTable.finalY + 8;
+    yPosition = lastTableY(doc) + 8;
 
     // Avisos (Warnings)
     if (warnings.length > 0) {
@@ -243,7 +244,7 @@ export const generatePDFReport = async (data: ReportData): Promise<void> => {
         tableWidth: 'auto',
       });
 
-      yPosition = (doc as any).lastAutoTable.finalY + 8;
+      yPosition = lastTableY(doc) + 8;
     }
 
     // Críticos
@@ -292,7 +293,7 @@ export const generatePDFReport = async (data: ReportData): Promise<void> => {
         tableWidth: 'auto',
       });
 
-      yPosition = (doc as any).lastAutoTable.finalY + 8;
+      yPosition = lastTableY(doc) + 8;
     }
 
     // Se não há problemas

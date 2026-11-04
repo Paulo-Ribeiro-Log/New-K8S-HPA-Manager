@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Loader2, RefreshCcw, Webhook, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
-import { getStatusBadge } from "@/components/CertificateDetailModal";
+import { getStatusBadge } from "@/lib/certStatusBadge";
 import { WebhookCABundleUpdateModal } from "@/components/WebhookCABundleUpdateModal";
 import { ClusterSelectorForTab } from "@/components/ClusterSelectorForTab";
 import { ProtectedAction } from "@/components/rbac";

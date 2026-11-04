@@ -57,6 +57,7 @@ function base64DecodeUtf8(str: string): string {
 }
 
 export function parseSecretDataLines(yamlText: string): SecretDataLine[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- documento YAML arbitrário
   let yamlObj: any;
   try {
     yamlObj = yaml.load(yamlText);

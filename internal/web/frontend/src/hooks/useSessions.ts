@@ -91,7 +91,9 @@ export function useSaveSession() {
       folder: string;
       description?: string;
       template: string;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- lista de alterações com formato dinâmico (staging/sessão)
       changes: any[];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- lista de alterações com formato dinâmico (staging/sessão)
       node_pool_changes: any[];
     }) => {
       // Usar o endpoint real do backend que já existe

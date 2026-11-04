@@ -276,6 +276,7 @@ export const TabProvider = ({ children }: { children: React.ReactNode }) => {
       return tabs[activeTabIndex];
     }
     return null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): state.tabManager
   }, [state.tabManager.activeTabIndex, state.tabManager.tabs]);
   
   const canAddTab = useCallback((): boolean => {
@@ -354,6 +355,7 @@ export const TabProvider = ({ children }: { children: React.ReactNode }) => {
       }, 10);
       return () => clearTimeout(timer);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): state.tabManager.tabs.length
   }, []);
   
   const value = {

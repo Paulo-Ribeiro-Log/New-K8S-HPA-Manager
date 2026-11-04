@@ -236,7 +236,7 @@ const DTProblemDetailView = ({
     try {
       const r = await apiClient.analyzeDynatraceProblem(problem.problem_id, email);
       setAnalysis(r.analysis);
-    } catch (e: any) {
+    } catch (e) {
       toast({ title: "Falha na análise AI", description: e.message, variant: "destructive" });
     } finally { setAnalyzing(false); }
   };

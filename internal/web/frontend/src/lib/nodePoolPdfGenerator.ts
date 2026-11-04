@@ -1,6 +1,7 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { addLogoHeaderToPDF, addFooterToPDF } from "./logoUtils";
+import { lastTableY } from "@/lib/pdfAutoTable";
 
 // ============================================================================
 // Helpers internos
@@ -64,7 +65,7 @@ const riskColor = (level: string): [number, number, number] => {
 // GERACAO DO PDF
 // ============================================================================
 
-export const generateNodePoolPredictionPDF = async (result: any): Promise<void> => {
+export const generateNodePoolPredictionPDF = async (result): Promise<void> => {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
 
@@ -154,7 +155,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       margin: { left: 14, right: 14 },
       tableWidth: "wrap",
     });
-    y = (doc as any).lastAutoTable.finalY + 6;
+    y = lastTableY(doc) + 6;
   }
 
   // Key findings
@@ -206,7 +207,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
     columnStyles: { 0: { cellWidth: 60, fontStyle: "bold" } },
     margin: { left: 14, right: 14 },
   });
-  y = (doc as any).lastAutoTable.finalY + 6;
+  y = lastTableY(doc) + 6;
 
   // ── Estado dos Nodes ──────────────────────────────────────────────────────
   if (rm?.nodes_snapshot?.length) {
@@ -214,7 +215,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
     y = sectionHeader(doc, "ESTADO ATUAL DOS NODES", y);
     y += 2;
 
-    const nodeRows = rm.nodes_snapshot.map((n: any) => [
+    const nodeRows = rm.nodes_snapshot.map((n) => [
       n.node_name?.replace(/.*-vmss/, "vmss") ?? "—",
       fmtPct(n.cpu_usage_percent),
       fmtPct(n.cpu_requested_percent),
@@ -233,7 +234,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       bodyStyles: { fontSize: 8 },
       margin: { left: 14, right: 14 },
     });
-    y = (doc as any).lastAutoTable.finalY + 6;
+    y = lastTableY(doc) + 6;
   }
 
   // ── Tendências ────────────────────────────────────────────────────────────
@@ -271,16 +272,16 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       bodyStyles: { fontSize: 9 },
       margin: { left: 14, right: 14 },
     });
-    y = (doc as any).lastAutoTable.finalY + 6;
+    y = lastTableY(doc) + 6;
   }
 
   // ── Previsões ─────────────────────────────────────────────────────────────
   const preds = result.predictions;
   if (preds) {
     const allPreds = [
-      ...( preds.short_term ?? []).map((p: any) => ({ ...p, horizon: "Curto prazo" })),
-      ...( preds.medium_term ?? []).map((p: any) => ({ ...p, horizon: "Medio prazo" })),
-      ...( preds.long_term ?? []).map((p: any) => ({ ...p, horizon: "Longo prazo" })),
+      ...( preds.short_term ?? []).map((p) => ({ ...p, horizon: "Curto prazo" })),
+      ...( preds.medium_term ?? []).map((p) => ({ ...p, horizon: "Medio prazo" })),
+      ...( preds.long_term ?? []).map((p) => ({ ...p, horizon: "Longo prazo" })),
     ];
 
     if (allPreds.length > 0) {
@@ -288,7 +289,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       y = sectionHeader(doc, "PREVISOES", y);
       y += 2;
 
-      const predRows = allPreds.map((p: any) => [
+      const predRows = allPreds.map((p) => [
         p.horizon,
         p.timeframe ?? "—",
         removeEmojis(p.event ?? ""),
@@ -306,7 +307,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
         columnStyles: { 2: { cellWidth: 70 } },
         margin: { left: 14, right: 14 },
       });
-      y = (doc as any).lastAutoTable.finalY + 6;
+      y = lastTableY(doc) + 6;
     }
   }
 
@@ -395,7 +396,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       columnStyles: { 0: { cellWidth: 60, fontStyle: "bold" } },
       margin: { left: 14, right: 14 },
     });
-    y = (doc as any).lastAutoTable.finalY + 6;
+    y = lastTableY(doc) + 6;
   }
 
   // ── Timeline de Saturação ─────────────────────────────────────────────────
@@ -416,7 +417,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       doc.setTextColor(0, 0, 0);
     }
 
-    const tlBody = tl.forecasts.map((f: any) => {
+    const tlBody = tl.forecasts.map((f) => {
       const days = f.days_until_saturation != null ? `${Math.round(f.days_until_saturation)}d` : "—";
       const date = f.estimated_date ? new Date(f.estimated_date).toLocaleDateString("pt-BR") : "—";
       const node = f.affected_node ? ` (${f.affected_node})` : "";
@@ -457,7 +458,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
         7: { cellWidth: 14 },
       },
       margin: { left: 14, right: 14 },
-      didParseCell: (data: any) => {
+      didParseCell: (data) => {
         if (data.section === "body" && data.column.index === 6) {
           const badge = String(data.cell.raw ?? "");
           data.cell.styles.textColor = urgencyColor(badge);
@@ -465,7 +466,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
         }
       },
     });
-    y = (doc as any).lastAutoTable.finalY + 6;
+    y = lastTableY(doc) + 6;
   }
 
   // ── Custo ─────────────────────────────────────────────────────────────────
@@ -511,7 +512,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       columnStyles: { 0: { cellWidth: 70, fontStyle: "bold" } },
       margin: { left: 14, right: 14 },
     });
-    y = (doc as any).lastAutoTable.finalY + 6;
+    y = lastTableY(doc) + 6;
 
     if (cost.recommendations?.length) {
       y = checkNewPage(doc, y, 20);
@@ -520,7 +521,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       doc.text("Recomendacoes de custo:", 14, y);
       y += 5;
 
-      const crRows = cost.recommendations.slice(0, 4).map((cr: any) => [
+      const crRows = cost.recommendations.slice(0, 4).map((cr) => [
         removeEmojis(cr.title ?? ""),
         cr.savings_usd > 0 ? `$${cr.savings_usd.toFixed(2)}/mes` : "—",
         cr.impact?.toUpperCase() ?? "—",
@@ -537,7 +538,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
         columnStyles: { 0: { cellWidth: 45 }, 1: { cellWidth: 25 }, 2: { cellWidth: 18 }, 3: { cellWidth: 75 } },
         margin: { left: 14, right: 14 },
       });
-      y = (doc as any).lastAutoTable.finalY + 6;
+      y = lastTableY(doc) + 6;
     }
   }
 
@@ -553,7 +554,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
     doc.text(`Fator principal: ${removeEmojis(rc.primary_factor ?? "—")}`, 14, y);
     y += 6;
 
-    const rcRows = rc.identified_causes.slice(0, 5).map((c: any) => [
+    const rcRows = rc.identified_causes.slice(0, 5).map((c) => [
       removeEmojis(c.cause ?? ""),
       c.category ?? "—",
       `${Math.round((c.certainty ?? 0) * 100)}%`,
@@ -570,7 +571,7 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
       columnStyles: { 0: { cellWidth: 55 }, 3: { cellWidth: 55 } },
       margin: { left: 14, right: 14 },
     });
-    y = (doc as any).lastAutoTable.finalY + 6;
+    y = lastTableY(doc) + 6;
   }
 
   // ── Footer em todas as páginas ────────────────────────────────────────────

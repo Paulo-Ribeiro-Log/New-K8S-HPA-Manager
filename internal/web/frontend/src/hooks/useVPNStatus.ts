@@ -39,6 +39,7 @@ export function useVPNStatus() {
   // Check inicial ao montar componente
   useEffect(() => {
     checkVPNConnection();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): checkVPNConnection
   }, []);
 
   // Re-check periódico a cada 30 segundos

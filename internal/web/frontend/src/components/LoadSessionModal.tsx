@@ -138,6 +138,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       setSelectedSession(null);
       setSelectedSessionDetails(null);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadSessions
   }, [open, selectedFolder]);
 
   // Carregar detalhes completos da sessão selecionada
@@ -197,7 +198,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       const data = await response.json();
       
       if (data.success && data.data?.sessions) {
-        setSessions(data.data.sessions.map((sessionSummary: any) => ({
+        setSessions(data.data.sessions.map((sessionSummary) => ({
           name: sessionSummary.name,
           created_at: sessionSummary.created_at,
           created_by: sessionSummary.created_by,

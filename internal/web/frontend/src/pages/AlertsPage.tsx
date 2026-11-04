@@ -46,7 +46,11 @@ export default function AlertsPage() {
   } = useAllAlerts(cluster || "", !isHPASpecific);
 
   const loading = loadingSpecific || loadingAll;
-  const alerts = isHPASpecific ? hpaSpecificAlerts || [] : hpaAlerts;
+  // useMemo: o `|| []` criaria um array novo a cada render e anularia os useMemo abaixo.
+  const alerts = useMemo(
+    () => (isHPASpecific ? hpaSpecificAlerts || [] : hpaAlerts),
+    [isHPASpecific, hpaSpecificAlerts, hpaAlerts]
+  );
 
   // Filtrar alertas baseado no filtro ativo
   const filteredAlerts = useMemo(() => {
@@ -234,6 +238,7 @@ export default function AlertsPage() {
 
 // Componente de Card individual para cada alerta
 interface AlertCardProps {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- campo com payload dinâmico do backend, sem tipo no frontend
   alert: any;
   type: "hpa" | "nodepool";
 }

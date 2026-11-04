@@ -155,6 +155,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
       }, 300); // Debounce de 300ms para evitar muitas requisições
       return () => clearTimeout(timer);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): fetchHistory
   }, [open, filterAction, filterCluster, filterUser, filterStatus, filterResource, filterStartDate]);
 
   const buildParams = (offset: number, limit: number) => {

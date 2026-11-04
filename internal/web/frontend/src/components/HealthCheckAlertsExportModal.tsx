@@ -416,7 +416,7 @@ export const HealthCheckAlertsExportModal = ({
           {/* Seleção de formato */}
           <div className="space-y-4 py-4">
             <Label>Formato de Exportação</Label>
-            <RadioGroup value={exportFormat} onValueChange={(value) => setExportFormat(value as any)}>
+            <RadioGroup value={exportFormat} onValueChange={(value) => setExportFormat(value as typeof exportFormat)}>
               <div className="flex items-center space-x-3 border rounded-lg p-3 hover:bg-accent cursor-pointer">
                 <RadioGroupItem value="pdf" id="pdf" />
                 <Label htmlFor="pdf" className="flex-1 cursor-pointer">

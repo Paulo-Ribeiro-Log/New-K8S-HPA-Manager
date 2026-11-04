@@ -50,7 +50,7 @@ export function useHPAAlerts(cluster: string, enabled = true) {
     queryKey: ["hpa-alerts", cluster],
     queryFn: async () => {
       console.log(`[useHPAAlerts] Fetching alerts for cluster: ${cluster}`);
-      const response: any = await api.getHPAAlerts(cluster);
+      const response = await api.getHPAAlerts(cluster);
       return response.alerts || [];
     },
     enabled: enabled && !!cluster,
@@ -85,7 +85,7 @@ export function useHPAAlertsByNamespace(
   return useQuery<HPAAlert[]>({
     queryKey: ["hpa-alerts", cluster, namespace],
     queryFn: async () => {
-      const response: any = await api.getHPAAlertsByNamespace(cluster, namespace);
+      const response = await api.getHPAAlertsByNamespace(cluster, namespace);
       return response.alerts || [];
     },
     enabled: enabled && !!cluster && !!namespace,
@@ -104,7 +104,7 @@ export function useHPASpecificAlerts(
   return useQuery<HPAAlert[]>({
     queryKey: ["hpa-specific-alerts", cluster, namespace, hpaName],
     queryFn: async () => {
-      const response: any = await api.getHPAAlertsByNamespace(cluster, namespace);
+      const response = await api.getHPAAlertsByNamespace(cluster, namespace);
       const allAlerts: HPAAlert[] = response.alerts || [];
       // Filtrar alertas relacionados a este HPA específico
       // IMPORTANTE: namespace já está filtrado pela API, aqui filtramos pelo HPA/deployment específico
@@ -127,7 +127,7 @@ export function useNodePoolAlerts(cluster: string, enabled = true) {
     queryKey: ["nodepool-alerts", cluster],
     queryFn: async () => {
       console.log(`[useNodePoolAlerts] Fetching alerts for cluster: ${cluster}`);
-      const response: any = await api.getNodePoolAlerts(cluster);
+      const response = await api.getNodePoolAlerts(cluster);
       return response.alerts || [];
     },
     enabled: enabled && !!cluster,
@@ -154,7 +154,7 @@ export function useAlertSummary(cluster: string, enabled = true) {
     queryKey: ["alert-summary", cluster],
     queryFn: async () => {
       console.log(`[useAlertSummary] Fetching summary for cluster: ${cluster}`);
-      const response: any = await api.getAlertSummary(cluster);
+      const response = await api.getAlertSummary(cluster);
       return response.summary || { critical: 0, warning: 0, info: 0, total: 0 };
     },
     enabled: enabled && !!cluster,
@@ -229,7 +229,7 @@ export function useHPASpecificAlertsWithDuration(
   return useQuery<HPAAlert[]>({
     queryKey: ["hpa-specific-alerts-duration", cluster, namespace, hpaName, duration],
     queryFn: async () => {
-      const response: any = await api.getHPAAlertsByNamespace(cluster, namespace);
+      const response = await api.getHPAAlertsByNamespace(cluster, namespace);
       const allAlerts: HPAAlert[] = response.alerts || [];
 
       // Filtrar alertas relacionados a este HPA específico

@@ -26,7 +26,7 @@ import { HPAHistoryTab } from "./finops/HPAHistoryTab";
 import { RelatorioTab } from "./finops/RelatorioTab";
 import { ClustersOverviewTab } from "./finops/ClustersOverviewTab";
 import { ShowbackTab } from "./finops/ShowbackTab";
-import { billedToBRL, useBilledCost } from "./finops/BilledCostPanel";
+import { billedToBRL, useBilledCost } from "./finops/billedCost";
 import { fmtBRL } from "@/lib/finopsFormat";
 import { WorkloadsHubTab } from "./finops/WorkloadsHubTab";
 import { StorageOrphansTab } from "./finops/StorageOrphansTab";

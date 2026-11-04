@@ -28,7 +28,8 @@ import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { useUserPermissions } from "@/hooks/useUserPermissions";
 import { useDynatracePodStatus, useDynatracePodCoverage } from "@/hooks/useAPI";
-import { DynatraceStatusIcon, resolveDynatraceStatus } from "@/components/DynatraceStatusIcon";
+import { DynatraceStatusIcon } from "@/components/DynatraceStatusIcon";
+import { resolveDynatraceStatus } from "@/lib/dynatraceStatus";
 import { PodTerminal } from "@/components/PodTerminal";
 import { PodSFTPModal } from "@/components/PodSFTPModal";
 import { PodConfigFinderModal } from "@/components/PodConfigFinderModal";
@@ -562,7 +563,7 @@ export const PodsPanel = ({
     }, 30000);
 
     return () => clearInterval(interval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [selectedPod, isActive]);
 
   const fetchPods = async (silent = false) => {
@@ -662,6 +663,7 @@ export const PodsPanel = ({
     setPodLogs({});
     setExpandedLabels(false);
     setRightView({ kind: "pod-table" });
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setExpandedLabels, setSelectedPod
   }, [cluster, selectedNamespace]);
 
   // Busca métricas automaticamente quando pods muda ou cluster/namespace mudam
@@ -688,7 +690,7 @@ export const PodsPanel = ({
     fetchMetrics();
     const id = setInterval(fetchMetrics, 10000);
     return () => clearInterval(id);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [pods, cluster, selectedNamespace, isActive]);
 
   const filteredPods = useMemo(() => {

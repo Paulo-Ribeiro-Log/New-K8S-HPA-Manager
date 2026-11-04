@@ -1076,7 +1076,7 @@ export default function DatabaseTestTab() {
       es.close();
       esRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [sessionId]);
 
   // O nível listado pelo Explorar dados varia por engine E por ter ou não um Database informado

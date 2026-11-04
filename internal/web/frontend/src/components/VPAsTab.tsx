@@ -133,6 +133,7 @@ export const VPAsTab = ({
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): setSelectedVPA, setViewMode
   }, [cluster, selectedNamespace]);
 
   const filteredVPAs = useMemo(() => {

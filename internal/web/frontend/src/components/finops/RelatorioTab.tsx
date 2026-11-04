@@ -18,8 +18,10 @@ import { fmtBRL } from "@/lib/finopsFormat";
 import { apiClient } from "@/lib/api/client";
 import type { FinOpsReport, FinOpsWorkload } from "./types";
 import { buildActionPlan, computeCostBreakdown, computeEfficiency, computePoolUsage, poolCostFactors } from "./capacity";
-import { AXIS_TICK, COST_COLORS, RingGauge, SectionTitle, TooltipBox, TooltipRow } from "./charts";
-import { BilledCostPanel, billedToBRL, useBilledCost } from "./BilledCostPanel";
+import { RingGauge, SectionTitle, TooltipBox, TooltipRow } from "./charts";
+import { AXIS_TICK, COST_COLORS } from "./chartTheme";
+import { BilledCostPanel } from "./BilledCostPanel";
+import { billedToBRL, useBilledCost } from "./billedCost";
 
 interface Risk {
   count: number;

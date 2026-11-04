@@ -47,6 +47,7 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved, onOpenSSOPro
       loadExistingConfig();
       setTestResult(null);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadExistingConfig
   }, [open]);
 
   const loadExistingConfig = async () => {

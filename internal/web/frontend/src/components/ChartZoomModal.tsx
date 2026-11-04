@@ -28,7 +28,7 @@ interface ChartZoomModalProps {
   onOpenChange: (open: boolean) => void;
   title: string;
   chartType: "cpu" | "memory" | "replicas";
-  chartData: any[];
+  chartData: unknown[];
   chartConfig: {
     // Dados do snapshot
     cpuTarget?: number;

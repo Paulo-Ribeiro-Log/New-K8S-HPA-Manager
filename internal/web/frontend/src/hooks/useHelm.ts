@@ -10,6 +10,7 @@ import type {
   HelmHistoryResponse,
   HelmActionApiResponse,
   OperationEvent,
+  OperationStatus,
 } from '../types/helm';
 
 const API_BASE = '/api/v1/helm';
@@ -361,7 +362,7 @@ export function useHelmOperation() {
           // Update operation in store
           updateOperation(operationId, {
             operationId: event.operationId,
-            status: event.phase as any,
+            status: event.phase as OperationStatus,
             startedAt: '',
             logs: [event.message],
           });

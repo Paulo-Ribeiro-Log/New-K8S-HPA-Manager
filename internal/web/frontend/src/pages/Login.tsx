@@ -20,7 +20,7 @@ export const Login = ({ onLogin }: LoginProps) => {
     try {
       await apiClient.login();
       onLogin();
-    } catch (err: any) {
+    } catch (err) {
       if (err?.status === 401 || err?.code === "AZ_CLI_ERROR") {
         setError("Azure CLI não autenticado. Execute `az login` no terminal e tente novamente.");
       } else {

@@ -50,6 +50,7 @@ import { useHPAMetrics } from "@/hooks/useMonitoring";
 import type { HPASnapshot } from "@/lib/api/types";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import type { LucideIcon } from "lucide-react";
 
 interface MetricsPanelProps {
   cluster: string;
@@ -473,7 +474,7 @@ export function MetricsPanel({
     percentValue,
     limitValue,
   }: {
-    icon: any;
+    icon: LucideIcon;
     label: string;
     percentValue: number;
     limitValue?: string;
@@ -519,7 +520,7 @@ export function MetricsPanel({
     percentile,
     onPercentileChange,
   }: {
-    icon: any;
+    icon: LucideIcon;
     stats: LatencyStats;
     percentile: "p95" | "p99";
     onPercentileChange: (value: "p95" | "p99") => void;
@@ -624,6 +625,7 @@ export function MetricsPanel({
   };
 
   // Custom Tooltip com valores absolutos completos
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tipo do callback/props do Recharts
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload || !payload.length) return null;
 
@@ -634,7 +636,7 @@ export function MetricsPanel({
     return (
       <div className="bg-background border rounded-lg shadow-lg p-3 space-y-1.5">
         <p className="text-sm font-semibold mb-2">{label}</p>
-        {payload.map((entry: any, index: number) => {
+        {payload.map((entry, index: number) => {
           const dataKey = entry.dataKey || '';
           const name = entry.name || '';
 
@@ -836,14 +838,14 @@ export function MetricsPanel({
   };
 
   // Funções para seleção de área (como no Grafana)
-  const handleMouseDown = (e: any) => {
+  const handleMouseDown = (e) => {
     if (e && e.activeTooltipIndex !== undefined) {
       setRefAreaLeft(e.activeTooltipIndex);
       setRefAreaRight(e.activeTooltipIndex);
     }
   };
 
-  const handleMouseMove = (e: any) => {
+  const handleMouseMove = (e) => {
     if (refAreaLeft !== null && e && e.activeTooltipIndex !== undefined) {
       setRefAreaRight(e.activeTooltipIndex);
     }
@@ -1389,7 +1391,7 @@ export function MetricsPanel({
                       return (
                         <div className="bg-background border rounded-lg shadow-lg p-3 space-y-1.5">
                           <p className="text-sm font-semibold mb-2">{props.label}</p>
-                          {props.payload.map((entry: any, index: number) => (
+                          {props.payload.map((entry, index: number) => (
                             <div key={index} className="flex items-center justify-between gap-3 text-xs">
                               <div className="flex items-center gap-2 min-w-0">
                                 <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
@@ -1819,7 +1821,7 @@ export function MetricsPanel({
                       return (
                         <div className="bg-background border rounded-lg shadow-lg p-3 space-y-1.5">
                           <p className="text-sm font-semibold mb-2">{props.label}</p>
-                          {props.payload.map((entry: any, index: number) => (
+                          {props.payload.map((entry, index: number) => (
                             <div key={index} className="flex items-center justify-between gap-3 text-xs">
                               <div className="flex items-center gap-2 min-w-0">
                                 <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />

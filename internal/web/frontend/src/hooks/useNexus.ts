@@ -54,7 +54,7 @@ export const useNexusConfig = () => {
     try {
       const response = await apiClient.get<NexusConfig>(`${API_BASE}/config`);
       return response;
-    } catch (err: any) {
+    } catch (err) {
       if (err.message?.includes('404') || err.message?.includes('not found')) {
         return null; // No config found
       }

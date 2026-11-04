@@ -303,7 +303,7 @@ const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEma
       const res = await apiClient.analyzeOneAgentSignal(signal, email);
       setAnalysis(res.analysis);
       setOpen(true);
-    } catch (e: any) {
+    } catch (e) {
       toast({ title: "Erro na análise AI", description: e.message, variant: "destructive" });
     } finally {
       setAnalyzing(false);

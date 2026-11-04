@@ -244,6 +244,7 @@ export function ServiceNowImportModal({
       if (!playwrightStatus.checked) checkPlaywrightStatus();
       loadTeamsApprovals();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- o efeito deve rodar só pelas deps listadas; omitido(s): loadTeamsApprovals, playwrightStatus.checked
   }, [open]);
 
   const checkApprovalStatuses = (items: TeamsApprovalItem[]) => {

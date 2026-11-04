@@ -48,7 +48,9 @@ interface StagingContextType {
 
   // Preview de alterações para salvar
   getSessionData: () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- lista de alterações com formato dinâmico (staging/sessão)
     changes: any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- lista de alterações com formato dinâmico (staging/sessão)
     node_pool_changes: any[];
   };
 
@@ -61,7 +63,9 @@ interface StagingContextType {
     hasChanges: boolean;
     canSaveSession: boolean;
     sessionPreview: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- lista de alterações com formato dinâmico (staging/sessão)
       changes: any[];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- lista de alterações com formato dinâmico (staging/sessão)
       node_pool_changes: any[];
     };
   };
