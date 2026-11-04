@@ -125,6 +125,13 @@ web-lint:
 	@echo "Linting frontend..."
 	@cd internal/web/frontend && npm run lint
 
+# Cobertura da ajuda: toda aba precisa de entrada em help/helpRegistry.ts e de um help/pages/<id>.md.
+# Falta de página é aviso; registro sem arquivo (ou arquivo sem registro) é erro. `--strict` reprova
+# também a falta de página.
+.PHONY: web-help-check
+web-help-check:
+	@cd internal/web/frontend && node scripts/check-help-coverage.mjs
+
 .PHONY: web-build
 web-build:
 	@echo "Building frontend for production..."

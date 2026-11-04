@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
+    "help:check": "node scripts/check-help-coverage.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

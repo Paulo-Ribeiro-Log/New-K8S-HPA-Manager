@@ -127,3 +127,8 @@ jobs:
 
       - name: Lint
         run: make web-lint
+
+      # Aviso por enquanto (ajuda sendo escrita aba por aba): lista as abas sem página. Já reprova se
+      # o registro e os arquivos de help/pages divergirem. Virar `--strict` quando todas existirem.
+      - name: Cobertura da ajuda
+        run: make web-help-check

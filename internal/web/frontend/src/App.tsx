@@ -13,6 +13,7 @@ import { apiClient } from "./lib/api/client";
 import { StagingProvider } from "./contexts/StagingContext";
 import { TabProvider } from "./contexts/TabContext";
 import { ThemeProvider } from "@/components/theme-provider";
+import { HelpProvider } from "@/components/help/HelpProvider";
 import { useHeartbeat } from "./hooks/useHeartbeat";
 
 const queryClient = new QueryClient();
@@ -71,6 +72,7 @@ const App = () => {
             <TooltipProvider>
               <Toaster />
               <Sonner />
+              <HelpProvider>
               <BrowserRouter>
               <Routes>
               <Route
@@ -130,6 +132,7 @@ const App = () => {
               <Route path="*" element={<NotFound />} />
               </Routes>
             </BrowserRouter>
+              </HelpProvider>
           </TooltipProvider>
         </StagingProvider>
         </TabProvider>
