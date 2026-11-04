@@ -1165,7 +1165,7 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
-      case "nodepools":
+      case "nodepools": {
         const markedNodePools = staging?.stagedNodePools.filter(
           np => np.sequence_order > 0
         ) || [];
@@ -1327,6 +1327,7 @@ const Index = ({ onLogout }: IndexProps) => {
             </div>
           </div>
         );
+      }
 
       case "staging":
         return <StagingPanel />;

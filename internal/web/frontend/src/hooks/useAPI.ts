@@ -123,38 +123,34 @@ export function useHPAs(cluster?: string, namespace?: string, showSystem: boolea
     hpaName: string,
     updates: Partial<HPA>
   ): Promise<HPA> => {
-    try {
-      await apiClient.updateHPA(hpaCluster, hpaNamespace, hpaName, updates);
-      const fresh = await apiClient.getHPA(hpaCluster, hpaNamespace, hpaName, true);
+    await apiClient.updateHPA(hpaCluster, hpaNamespace, hpaName, updates);
+    const fresh = await apiClient.getHPA(hpaCluster, hpaNamespace, hpaName, true);
 
-      setHPAs((prev) => {
-        const index = prev.findIndex(
-          (item) =>
-            item.cluster === fresh.cluster &&
-            item.namespace === fresh.namespace &&
-            item.name === fresh.name
-        );
+    setHPAs((prev) => {
+      const index = prev.findIndex(
+        (item) =>
+          item.cluster === fresh.cluster &&
+          item.namespace === fresh.namespace &&
+          item.name === fresh.name
+      );
 
-        if (index === -1) {
-          return [...prev, fresh];
-        }
-
-        const next = [...prev];
-        next[index] = fresh;
-        return next;
-      });
-
-      // Disparar evento de rescan para recarregar a lista correta
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("rescanHPAs", {
-          detail: { cluster: hpaCluster, namespace: hpaNamespace }
-        }));
+      if (index === -1) {
+        return [...prev, fresh];
       }
 
-      return fresh;
-    } catch (err) {
-      throw err;
+      const next = [...prev];
+      next[index] = fresh;
+      return next;
+    });
+
+    // Disparar evento de rescan para recarregar a lista correta
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("rescanHPAs", {
+        detail: { cluster: hpaCluster, namespace: hpaNamespace }
+      }));
     }
+
+    return fresh;
   };
 
   useEffect(() => {
@@ -260,13 +256,7 @@ export function useNodePools(cluster?: string) {
     }
   };
 
-  const applySequential = async (pools: NodePool[]) => {
-    try {
-      return await apiClient.applyNodePoolsSequential(pools);
-    } catch (err) {
-      throw err;
-    }
-  };
+  const applySequential = (pools: NodePool[]) => apiClient.applyNodePoolsSequential(pools);
 
   useEffect(() => {
     fetchNodePools();

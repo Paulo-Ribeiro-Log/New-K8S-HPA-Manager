@@ -352,7 +352,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
   const filteredCerts = useMemo(() => {
     if (!scanResult?.certificates) return [];
 
-    let certs = scanResult.certificates.filter(cert => {
+    const certs = scanResult.certificates.filter(cert => {
       const matchesStatus = statusFilters.has(cert.status);
       const matchesAlert = statusFilters.has("alert") && !!cert.chainValidation && cert.chainValidation.valid === false;
       const matchesConfigAlert = statusFilters.has("configAlert") && !!cert.hasConfigIssues;
@@ -1628,7 +1628,8 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                                 checked={batchSelected.has(key)}
                                 onCheckedChange={() => setBatchSelected((prev) => {
                                   const next = new Set(prev);
-                                  next.has(key) ? next.delete(key) : next.add(key);
+                                  if (next.has(key)) next.delete(key);
+                                  else next.add(key);
                                   return next;
                                 })}
                                 disabled={isBatchUpdating}

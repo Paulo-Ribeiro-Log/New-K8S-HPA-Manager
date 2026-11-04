@@ -248,11 +248,11 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
   useEffect(() => {
     return () => {
       if (diffEditorRef.current) {
-        try { diffEditorRef.current.dispose(); } catch (_) {}
+        try { diffEditorRef.current.dispose(); } catch (_) { /* já descartado */ }
         diffEditorRef.current = null;
       }
       if (editorRef.current) {
-        try { editorRef.current.dispose(); } catch (_) {}
+        try { editorRef.current.dispose(); } catch (_) { /* já descartado */ }
         editorRef.current = null;
       }
     };

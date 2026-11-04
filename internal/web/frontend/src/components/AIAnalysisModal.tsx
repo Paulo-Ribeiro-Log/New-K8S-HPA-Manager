@@ -131,11 +131,10 @@ const CommandCopy = ({ command }: { command: string }) => {
 };
 
 export function AIAnalysisModal({ analysis, open, onOpenChange }: AIAnalysisModalProps) {
-  if (!analysis) return null;
-
-  // Parse do JSON estruturado no campo analysis
+  // Parse do JSON estruturado no campo analysis. O hook vem ANTES do early return: com
+  // `analysis` indo de nulo para preenchido, o React exige a mesma quantidade de hooks por render.
   const parsed = useMemo<ParsedAnalysis | null>(() => {
-    if (!analysis.analysis) return null;
+    if (!analysis?.analysis) return null;
 
     try {
       const trimmed = analysis.analysis.trim();
@@ -146,7 +145,9 @@ export function AIAnalysisModal({ analysis, open, onOpenChange }: AIAnalysisModa
       // Não é JSON válido
     }
     return null;
-  }, [analysis.analysis]);
+  }, [analysis?.analysis]);
+
+  if (!analysis) return null;
 
   // Formatar data
   const formatDate = () => {

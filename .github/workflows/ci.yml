@@ -6,9 +6,20 @@ on:
   pull_request:
     branches: [ main, master ]
 
+# Um push novo na mesma branch/PR cancela a execução anterior (a CI é a parte lenta do fluxo).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  build:
+  # ─── Backend: testes com race detector, build e smoke-test de cross-compilação ───
+  backend:
+    name: Backend (go test -race + build)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -35,10 +46,10 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
-      - name: Run tests
-        env:
-          SKIP_AZURE_TESTS: 1
-        run: make test
+      # -race exige CGO (o ubuntu-latest já traz gcc). Baseline medido: 0 falhas, 0 data races.
+      # Sem az CLI autenticado, o make target liga SKIP_AZURE_TESTS.
+      - name: Run tests (race detector)
+        run: make test-race
 
       - name: Build
         run: make build
@@ -64,3 +75,55 @@ jobs:
           name: new-k8s-hpa-dev
           path: build/new-k8s-hpa
           retention-days: 1
+
+  # ─── Frontend: type-check REAL ───
+  # `vite build` não checa tipos, e `tsc -p .` (tsconfig raiz "solution") sempre passa: o comando
+  # válido é -p tsconfig.app.json. Baseline medido: 0 erros (com strict: false).
+  web-typecheck:
+    name: Frontend (tsc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: internal/web/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: internal/web/frontend
+        run: npm ci
+
+      - name: Type-check
+        run: make web-typecheck
+
+  # ─── Frontend: eslint ───
+  # Bloqueia. Baseline: 0 erros. no-explicit-any está como aviso (323 usos = dívida de tipagem),
+  # então só erro novo de verdade reprova.
+  web-lint:
+    name: Frontend (eslint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: internal/web/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: internal/web/frontend
+        run: npm ci
+
+      - name: Lint
+        run: make web-lint

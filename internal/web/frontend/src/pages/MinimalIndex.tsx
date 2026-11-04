@@ -16,6 +16,14 @@ const MinimalIndex = ({ onLogout }: MinimalIndexProps) => {
   
   console.log('[MinimalIndex] Clusters:', clusters.length);
   
+  // Auto-select first cluster
+  useEffect(() => {
+    if (clusters.length > 0 && !selectedCluster) {
+      console.log('[MinimalIndex] Auto-selecting cluster:', clusters[0].context);
+      setSelectedCluster(clusters[0].context);
+    }
+  }, [clusters, selectedCluster]);
+
   // Early return se carregando
   if (clustersLoading) {
     return (
@@ -41,14 +49,6 @@ const MinimalIndex = ({ onLogout }: MinimalIndexProps) => {
       </div>
     );
   }
-
-  // Auto-select first cluster
-  useEffect(() => {
-    if (clusters.length > 0 && !selectedCluster) {
-      console.log('[MinimalIndex] Auto-selecting cluster:', clusters[0].context);
-      setSelectedCluster(clusters[0].context);
-    }
-  }, [clusters, selectedCluster]);
 
   return (
     <div style={{ 

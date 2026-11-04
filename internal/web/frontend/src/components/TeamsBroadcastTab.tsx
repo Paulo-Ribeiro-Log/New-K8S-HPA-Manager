@@ -932,7 +932,8 @@ export const TeamsBroadcastTab = () => {
   const toggleChat = (chat: BroadcastChat) =>
     setSelected((prev) => {
       const next = new Map(prev);
-      next.has(chat.id) ? next.delete(chat.id) : next.set(chat.id, chat);
+      if (next.has(chat.id)) next.delete(chat.id);
+      else next.set(chat.id, chat);
       return next;
     });
 

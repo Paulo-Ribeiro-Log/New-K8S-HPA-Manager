@@ -30,24 +30,25 @@ make web-dev                            # Vite HMR (5173) — rode o backend em 
 
 go test -v ./internal/... -race                       # tudo, com race detector
 go test -run TestNome -v ./internal/web/handlers/...  # teste único
-SKIP_AZURE_TESTS=1 make test                          # sem az CLI autenticado (é o que a CI roda em ci.yml; sem -race)
+SKIP_AZURE_TESTS=1 make test                          # rápido, sem az CLI autenticado
+make test-race                                        # o que a CI roda (ci.yml): -race, SKIP_AZURE_TESTS=1; ~6 min no WSL2
 make test-coverage                                    # gera coverage.out + coverage.html
 ./testes/test-rbac.sh                                 # suíte RBAC
 
 cd internal/web/frontend
-npx tsc --noEmit -p tsconfig.app.json   # type-check REAL (ver abaixo)
-npm run lint                            # eslint (no-undef desligado)
+npx tsc --noEmit -p tsconfig.app.json   # type-check REAL (ver abaixo); `make web-typecheck` na raiz, é o que a CI roda (~4 min)
+npm run lint                            # eslint (no-undef desligado); `make web-lint` na raiz, é o que a CI roda (bloqueia; ~2 min)
 ```
 
 Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod vendor` (⚠️ ver patch do go-rod), e rebuild do frontend se mexeu nele.
 
 **Armadilhas de build/tooling**
 - O arquivo é `makefile` (minúsculo).
-- `vite build` **não** type-checka. `npx tsc --noEmit -p .` também não (tsconfig raiz é "solution", retorna sucesso sempre) — use `-p tsconfig.app.json`. O repo tem dezenas de erros de tipo/lint pré-existentes (`Index.tsx`, `client.ts`, …); compare com o baseline via `git stash` em vez de tentar zerar.
+- `vite build` **não** type-checka. `npx tsc --noEmit -p .` também não (tsconfig raiz é "solution", retorna sucesso sempre) — use `-p tsconfig.app.json`. Baseline: `tsc` com 0 erros (o `tsconfig.app.json` tem `strict: false`, então checa pouco); `eslint` com 0 erros e ~440 avisos (`no-explicit-any` é aviso, dívida de tipagem). Não introduza erros novos: a CI barra o `tsc` e o `eslint`.
 - `vendor/github.com/go-rod/rod/lib/cdp/client.go` tem **patch manual** (`consumeMessages` loga+`continue` em vez de `panic` em frame CDP malformado; comentário `PATCH MANUAL`). `go mod vendor` apaga o patch em silêncio — reaplique (o comentário no código cita uma seção "Notas de Build" que virou esta lista).
 - `go.mod` tem `godebug tlsmlkem=0` (o key share pós-quântico do Go 1.24+ trava handshake TLS em VPN/EKS privado). Não remover. O comentário no `go.mod` cita a seção "Bug real corrigido — TLS handshake timeout…", que hoje está em `docs/history/CLAUDE-DETAILED-NOTES.md` (~linha 326).
 - `make release`/`build-all` num host Linux geram binários **darwin com SQLite quebrado** (cgo desligado → stub do `go-sqlite3` compila mas falha em runtime; detecção em `internal/storage/sqlite_health.go`). Release de verdade = workflow `release.yml` (runners macOS nativos, alvo `make release-single` com `GOOS`/`GOARCH` no ambiente). O `make release` em `ci.yml` é só smoke-test de compilação.
-- Não existe test runner de frontend, e a CI (`ci.yml`) não roda `tsc` nem `eslint` — erro de tipo só aparece se você rodar à mão. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
+- Não existe test runner de frontend (a CI roda `tsc` e `eslint`, mas não testes de tela). `make run-test` está quebrado (`cmd/k8s-teste` não existe).
 - A raiz tem muitos scripts soltos (`create-release*.sh`, `create_release.sh`, `web-server*.sh`, `new-web-server.sh`, `teste.*`, …). O fluxo oficial é `make` + `rebuild-web.sh` (dev) e `release.yml` (release); `install.sh`/`auto-update.sh`/`uninstall.sh` são os instaladores do usuário final. Não tome os demais como referência.
 
 ## Arquitetura (visão geral)

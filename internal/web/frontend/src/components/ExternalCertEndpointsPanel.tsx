@@ -308,7 +308,7 @@ export function ExternalCertEndpointsPanel() {
     endpoints.forEach((e) => {
       lines.push(exportRow(e).map(csvField).join(csvDelimiter));
     });
-    // BOM UTF-8 (﻿) na frente: sem ele, o Excel abre o arquivo assumindo Windows-1252 e
+    // BOM UTF-8 (U+FEFF) na frente: sem ele, o Excel abre o arquivo assumindo Windows-1252 e
     // qualquer acento (ã, ç, é — presentes em Status/Grupo/Subject) vira caractere corrompido; com
     // o BOM, o Excel detecta UTF-8 sozinho. \r\n (não só \n) é o quebra-linha que o Excel espera
     // por padrão nesse tipo de arquivo — CRLF explícito evita depender do comportamento do
