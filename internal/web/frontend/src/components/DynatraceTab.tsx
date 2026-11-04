@@ -1997,6 +1997,7 @@ function sanitizePDF(text: string): string {
     .replace(/[≠]/g, "!=")
     .replace(/[∞]/g, "inf")
     // Remove qualquer caractere acima de U+00FF que ainda reste (fallback)
+    // eslint-disable-next-line no-control-regex -- faixa Latin-1 (U+0000-U+00FF) de propósito
     .replace(/[^\x00-\xFF]/g, "")
     .trim();
 }

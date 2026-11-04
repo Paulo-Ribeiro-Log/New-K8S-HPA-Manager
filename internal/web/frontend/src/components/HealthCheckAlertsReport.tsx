@@ -95,17 +95,19 @@ export const HealthCheckAlertsReport = ({
             const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
             // Filtrar histórico por data
-            let filteredHistory = historyResponse.data.filter((h: any) => {
+            const filteredHistory = historyResponse.data.filter((h: any) => {
               const date = new Date(h.started_at);
               switch (dateFilterMode) {
                 case "today":
                   return date >= startOfDay;
-                case "week":
+                case "week": {
                   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
                   return date >= weekAgo;
-                case "month":
+                }
+                case "month": {
                   const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
                   return date >= monthAgo;
+                }
                 case "custom":
                   if (!dateRange) return true;
                   if (dateRange.from && !dateRange.to) {

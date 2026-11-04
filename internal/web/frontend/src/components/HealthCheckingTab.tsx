@@ -49,9 +49,8 @@ import { useFilters } from "@/hooks/useFilters";
 import { apiClient } from "@/lib/api/client";
 import type { HealthCheckResult } from "@/types/healthcheck";
 
-interface HealthCheckingTabProps {
-  // Componente independente - não recebe contexto do Dashboard
-}
+// Componente independente - não recebe contexto do Dashboard
+type HealthCheckingTabProps = Record<string, never>;
 
 export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   // Buscar TODOS os clusters disponíveis (independente do contexto)

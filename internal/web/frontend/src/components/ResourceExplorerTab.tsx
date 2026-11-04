@@ -511,7 +511,7 @@ export const ResourceExplorerTab = ({
   // ── Container names from YAML (for Pod logs) ──────────────────────────
   const containerNames = useMemo(() => {
     if (selectedResource?.kind !== "Pod" || !originalYaml) return [];
-    const matches = [...originalYaml.matchAll(/^  - name:\s+(\S+)/gm)];
+    const matches = [...originalYaml.matchAll(/^ {2}- name:\s+(\S+)/gm)];
     return matches.map((m) => m[1]);
   }, [originalYaml, selectedResource?.kind]);
 

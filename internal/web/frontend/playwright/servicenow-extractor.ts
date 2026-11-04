@@ -284,7 +284,7 @@ export async function extractCHGData(chgUrl: string, options: {
       });
     }
 
-    let page = context.pages()[0] || await context.newPage();
+    const page = context.pages()[0] || await context.newPage();
 
     // Navegar para a CHG
     console.log(`[ServiceNow] Navegando para: ${chgUrl}`);

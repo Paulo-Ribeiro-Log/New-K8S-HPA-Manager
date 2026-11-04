@@ -109,7 +109,7 @@ export function OpportunitiesTab({ cluster, workloads, windowDays, historicalRan
   const allFilteredSelected = opportunities.length > 0 && opportunities.every(o => selectedKeys.has(itemKey(o)));
 
   const toggleItem = (key: string) =>
-    setSelectedKeys(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+    setSelectedKeys(prev => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
 
   const toggleAll = () => {
     const keys = opportunities.map(itemKey);
@@ -125,7 +125,7 @@ export function OpportunitiesTab({ cluster, workloads, windowDays, historicalRan
     .filter(g => g.items.length > 0);
 
   const toggleGroup = (type: string) =>
-    setCollapsedGroups(prev => { const n = new Set(prev); n.has(type) ? n.delete(type) : n.add(type); return n; });
+    setCollapsedGroups(prev => { const n = new Set(prev); if (n.has(type)) n.delete(type); else n.add(type); return n; });
 
   // Copiar um kubectl registra a recomendação no acompanhamento (o backend ignora repetição em 24 h).
   const queryClient = useQueryClient();

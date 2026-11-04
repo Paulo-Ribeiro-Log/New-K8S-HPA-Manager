@@ -159,6 +159,7 @@ function AnsiLine({ text }: { text: string }) {
   const parts: { text: string; style: React.CSSProperties }[] = [];
   // Remove carriage returns (saída de comandos com \r\n)
   const clean = text.replace(/\r/g, "");
+  // eslint-disable-next-line no-control-regex -- o ESC (\x1b) é justamente o que se procura
   const ansiRe = /\x1b\[([0-9;]*)m/g;
   let style: React.CSSProperties = {};
   let last = 0;
