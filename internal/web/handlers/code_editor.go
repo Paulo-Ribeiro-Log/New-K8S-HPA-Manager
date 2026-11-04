@@ -1237,38 +1237,6 @@ func (h *CodeEditorHandler) Push(c *gin.Context) {
 	}
 }
 
-// GetCommitLog — GET /api/v1/code-editor/repos/:id/log?limit=20
-func (h *CodeEditorHandler) GetCommitLog(c *gin.Context) {
-	id := c.Param("id")
-	dir := h.repoDir(id)
-	limit := c.DefaultQuery("limit", "20")
-	out, err := runGit(dir, "log", "--oneline", "-"+limit, "--pretty=format:%H|%s|%an|%ar")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": out})
-		return
-	}
-	type LogEntry struct {
-		Hash    string `json:"hash"`
-		Message string `json:"message"`
-		Author  string `json:"author"`
-		When    string `json:"when"`
-	}
-	entries := []LogEntry{}
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) < 4 {
-			continue
-		}
-		entries = append(entries, LogEntry{
-			Hash:    parts[0],
-			Message: parts[1],
-			Author:  parts[2],
-			When:    parts[3],
-		})
-	}
-	c.JSON(http.StatusOK, entries)
-}
-
 // GetFileDiff — GET /api/v1/code-editor/repos/:id/diff?path=...
 func (h *CodeEditorHandler) GetFileDiff(c *gin.Context) {
 	id := c.Param("id")
