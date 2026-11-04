@@ -86,6 +86,12 @@ test:
 	@echo "Running tests..."
 	@go test -v ./...
 
+# Mesmo comando da CI: com o detector de data race (mais lento que `make test`; ~6 min no WSL2).
+.PHONY: test-race
+test-race:
+	@echo "Running tests with race detector..."
+	@SKIP_AZURE_TESTS=1 go test -race -count=1 ./...
+
 .PHONY: test-coverage
 test-coverage:
 	@echo "Running tests with coverage..."
@@ -107,6 +113,17 @@ web-dev:
 	@echo "Frontend: http://localhost:5173"
 	@echo "Backend:  http://localhost:8080 (start separately)"
 	@cd internal/web/frontend && npm run dev
+
+# Type-check REAL do frontend (vite build não checa tipos; o tsconfig raiz é "solution" e sempre passa).
+.PHONY: web-typecheck
+web-typecheck:
+	@echo "Type-checking frontend..."
+	@cd internal/web/frontend && npx tsc --noEmit -p tsconfig.app.json
+
+.PHONY: web-lint
+web-lint:
+	@echo "Linting frontend..."
+	@cd internal/web/frontend && npm run lint
 
 .PHONY: web-build
 web-build:
