@@ -224,6 +224,8 @@ func (h *PodHandler) List(c *gin.Context) {
 	namespaces := parseNamespaces(c.Query("namespaces"))
 	showSystem := c.Query("showSystem") == "true"
 	search := strings.ToLower(c.Query("search"))
+	// owner ("Deployment/api") filtra pelo dono real do pod, em vez de pelo texto no nome.
+	owner := c.Query("owner")
 
 	clientset, err := h.kubeManager.GetClient(cluster)
 	if err != nil {
@@ -317,6 +319,10 @@ func (h *PodHandler) List(c *gin.Context) {
 	var pods []PodSummary
 	for _, pod := range allPods.Items {
 		if !showSystem && isSystemNamespace(pod.Namespace) {
+			continue
+		}
+
+		if owner != "" && !podOwnedBy(&pod, owner) {
 			continue
 		}
 

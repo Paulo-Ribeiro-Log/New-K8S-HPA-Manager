@@ -2015,7 +2015,10 @@ class APIClient {
     namespaces?: string[],
     search?: string,
     showSystem: boolean = false,
-    bypassCache: boolean = false
+    bypassCache: boolean = false,
+    // owner — só os pods deste dono (ex.: "Deployment/api", ver lib/deploymentPods.ts). Resolvido no
+    // servidor pelo OwnerReferences; `search` casa por texto em nome/namespace/node/container.
+    owner?: string
   ): Promise<PodSummary[]> {
     const params = new URLSearchParams();
     if (cluster) params.append("cluster", cluster);
@@ -2023,6 +2026,7 @@ class APIClient {
       params.append("namespaces", namespaces.join(","));
     }
     if (search) params.append("search", search);
+    if (owner) params.append("owner", owner);
     if (showSystem) params.append("showSystem", "true");
     if (bypassCache) params.append("_t", Date.now().toString());
 
