@@ -146,7 +146,7 @@ func (c *Calculator) BuildReport(
 	// 2. Coletar workloads do cluster (pods + HPAs) + mapa pod→workload para o enricher +
 	// mapa node→pool (reaproveitado abaixo pra NodeUsage).
 	stepStart = time.Now()
-	rawWorkloads, podToWorkload, nodeToPool, allocByPool, err := collectWorkloads(ctx, client, namespaces)
+	rawWorkloads, podToWorkload, nodeToPool, allocByPool, collectWarnings, err := collectWorkloads(ctx, client, namespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -381,6 +381,7 @@ func (c *Calculator) BuildReport(
 		Storage:      storageSummary,
 		Summary:      summary,
 		NodeUsage:    nodeUsage,
+		Warnings:     collectWarnings,
 	}, nil
 }
 
@@ -554,11 +555,11 @@ func collectWorkloads(
 	ctx context.Context,
 	client kubernetes.Interface,
 	namespaces []string,
-) ([]rawWorkload, map[string]string, map[string]string, map[string]poolAllocatable, error) {
+) ([]rawWorkload, map[string]string, map[string]string, map[string]poolAllocatable, []string, error) {
 	// 1. Listar todos os ReplicaSets para resolver RS → Deployment
 	rsItems, err := listAllReplicaSets(ctx, client)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	rsOwner := make(map[string]string) // "ns/rs-name" → deployment name
 	for _, rs := range rsItems {
@@ -569,17 +570,38 @@ func collectWorkloads(
 		}
 	}
 
-	// 2. Listar HPAs (todos os namespaces)
-	hpaList, err := client.AutoscalingV2().HorizontalPodAutoscalers("").List(ctx, metav1.ListOptions{})
+	// 3. Listar pods Running
+	nsFilter := buildNamespaceFilter(namespaces)
+	podItems, err := listAllPods(ctx, client, metav1.ListOptions{
+		FieldSelector: "status.phase=Running",
+	})
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
+	}
+
+	// 3a. Listar HPAs. Vem DEPOIS dos pods porque, se o escopo de cluster for negado, a listagem cai
+	// para os namespaces que têm pods Running no filtro (ver listHPAs).
+	hpaNamespaces := make(map[string]struct{})
+	for i := range podItems {
+		if shouldIncludeNamespace(podItems[i].Namespace, nsFilter) {
+			hpaNamespaces[podItems[i].Namespace] = struct{}{}
+		}
+	}
+	nsList := make([]string, 0, len(hpaNamespaces))
+	for ns := range hpaNamespaces {
+		nsList = append(nsList, ns)
+	}
+	sort.Strings(nsList)
+	hpaItems, hpaWarnings, err := listHPAs(ctx, client, nsList)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
 	}
 	type hpaInfo struct {
 		name              string
 		min, max, current int
 	}
 	hpaMap := make(map[string]hpaInfo)
-	for _, h := range hpaList.Items {
+	for _, h := range hpaItems {
 		min := 1
 		if h.Spec.MinReplicas != nil {
 			min = int(*h.Spec.MinReplicas)
@@ -591,15 +613,6 @@ func collectWorkloads(
 			max:     int(h.Spec.MaxReplicas),
 			current: int(h.Status.CurrentReplicas),
 		}
-	}
-
-	// 3. Listar pods Running
-	nsFilter := buildNamespaceFilter(namespaces)
-	podItems, err := listAllPods(ctx, client, metav1.ListOptions{
-		FieldSelector: "status.phase=Running",
-	})
-	if err != nil {
-		return nil, nil, nil, nil, err
 	}
 
 	// 3b. Listar Nodes (uma única vez) e resolver node → pool — necessário pra saber em qual pool
@@ -677,7 +690,7 @@ func collectWorkloads(
 	for _, wl := range workloadMap {
 		result = append(result, *wl)
 	}
-	return result, podToWorkload, nodeToPool, allocByPool, nil
+	return result, podToWorkload, nodeToPool, allocByPool, hpaWarnings, nil
 }
 
 // allocateCosts distribui o custo do cluster proporcionalmente entre os workloads.
