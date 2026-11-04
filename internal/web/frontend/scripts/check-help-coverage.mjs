@@ -7,6 +7,10 @@
 // Sempre reprova (independe do --strict), por ser defeito e não lacuna:
 //   - entrada no registro sem arquivo help/pages/<id>.md
 //   - arquivo .md sem entrada no registro
+//   - link interno [texto](ajuda:<id>#<seção>) para página ou seção que não existe
+//
+// Páginas com id `geral-*` explicam um padrão compartilhado (não são de uma aba) e ficam de fora
+// da conferência de cobertura.
 //
 // Ids de aba vêm dos menus (ToolsMenu, WorkloadMenu) mais as abas principais abaixo, que não
 // estão em menu nenhum.
@@ -39,7 +43,43 @@ const pageIds = new Set(existsSync(pagesDir) ? readdirSync(pagesDir).filter((f) 
 const missing = [...tabIds].filter((id) => !registryIds.has(id)).sort();
 const registryWithoutPage = [...registryIds].filter((id) => !pageIds.has(id)).sort();
 const pageWithoutRegistry = [...pageIds].filter((id) => !registryIds.has(id)).sort();
-const unknownInRegistry = [...registryIds].filter((id) => !tabIds.has(id)).sort();
+const unknownInRegistry = [...registryIds].filter((id) => !tabIds.has(id) && !id.startsWith("geral-")).sort();
+
+// Mesma regra de âncora de helpSearch.ts (slugify/plainHeadingText): manter igual.
+const slugify = (text) =>
+  text
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[`*_~]/g, "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+function headingIds(markdown) {
+  const ids = new Set();
+  let inFence = false;
+  for (const line of markdown.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    else if (!inFence) {
+      const m = /^(#{2,3})\s+(.+?)\s*#*\s*$/.exec(line);
+      if (m) ids.add(slugify(m[2]));
+    }
+  }
+  return ids;
+}
+
+const brokenLinks = [];
+const pageHeadings = new Map([...pageIds].map((id) => [id, headingIds(readFileSync(join(pagesDir, `${id}.md`), "utf8"))]));
+for (const id of pageIds) {
+  const text = readFileSync(join(pagesDir, `${id}.md`), "utf8");
+  for (const m of text.matchAll(/\]\(ajuda:([a-z0-9-]+)(?:#([a-z0-9-]+))?\)/g)) {
+    const [, target, anchor] = m;
+    if (!pageIds.has(target)) brokenLinks.push(`${id}.md aponta para a página inexistente "${target}"`);
+    else if (anchor && !pageHeadings.get(target).has(anchor)) brokenLinks.push(`${id}.md aponta para a seção inexistente "${target}#${anchor}"`);
+  }
+}
 
 const inCI = process.env.GITHUB_ACTIONS === "true";
 const warn = (msg) => console.log(inCI ? `::warning title=Ajuda::${msg}` : `aviso: ${msg}`);
@@ -55,6 +95,10 @@ for (const id of registryWithoutPage) {
 }
 for (const id of pageWithoutRegistry) {
   fail(`src/help/pages/${id}.md existe, mas "${id}" não está em src/help/helpRegistry.ts`);
+  defects++;
+}
+for (const msg of brokenLinks) {
+  fail(`link quebrado: ${msg}`);
   defects++;
 }
 for (const id of unknownInRegistry) {

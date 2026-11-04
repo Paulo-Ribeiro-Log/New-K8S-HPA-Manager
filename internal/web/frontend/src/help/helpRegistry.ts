@@ -4,7 +4,7 @@
 // Regra do projeto: nova aba ou ferramenta = item no menu + entrada aqui + página .md. O script
 // scripts/check-help-coverage.mjs (make web-help-check) confere isso.
 
-export type HelpGroup = "Principal" | "Workloads" | "Ferramentas";
+export type HelpGroup = "Geral" | "Principal" | "Workloads" | "Ferramentas";
 
 /** O que a aba pode fazer: só ler, alterar recursos ou apagar/derrubar coisas. */
 export type HelpImpact = "leitura" | "escrita" | "destrutiva";
@@ -20,7 +20,7 @@ export interface HelpEntry {
   keywords?: string[];
 }
 
-export const HELP_GROUP_ORDER: HelpGroup[] = ["Principal", "Workloads", "Ferramentas"];
+export const HELP_GROUP_ORDER: HelpGroup[] = ["Geral", "Principal", "Workloads", "Ferramentas"];
 
 export const HELP_IMPACT_LABEL: Record<HelpImpact, string> = {
   leitura: "Somente leitura",
@@ -28,7 +28,65 @@ export const HELP_IMPACT_LABEL: Record<HelpImpact, string> = {
   destrutiva: "Pode apagar recursos",
 };
 
+// Páginas "Geral" (id começa com `geral-`) não são de uma aba: explicam um padrão que várias abas
+// compartilham e são alcançadas por link ([texto](ajuda:geral-...)) ou pelo índice.
 export const HELP_ENTRIES: HelpEntry[] = [
+  {
+    id: "geral-abas-de-recurso",
+    title: "Abas de recurso (padrão comum)",
+    group: "Geral",
+    impact: "escrita",
+    summary: "O que ConfigMaps, Ingresses, Services, VPAs, DaemonSets e StatefulSets têm em comum: lista, editor YAML, diff, validar e aplicar.",
+    keywords: ["yaml", "editor", "diff", "dry-run", "validar", "aplicar", "change history", "histórico", "excluir", "criar"],
+  },
+  {
+    id: "configmaps",
+    title: "ConfigMaps",
+    group: "Workloads",
+    impact: "escrita",
+    summary: "Lista, edita, cria e exclui ConfigMaps, e mostra quais workloads os usam (ou se são órfãos).",
+    keywords: ["configmap", "órfão", "uso", "envfrom", "volume", "checkpoint"],
+  },
+  {
+    id: "ingresses",
+    title: "Ingresses",
+    group: "Workloads",
+    impact: "escrita",
+    summary: "Lista, edita, cria e exclui Ingresses; a busca também acha pelo host.",
+    keywords: ["ingress", "host", "rota", "tls", "nginx"],
+  },
+  {
+    id: "services",
+    title: "Services",
+    group: "Workloads",
+    impact: "escrita",
+    summary: "Lista, edita, cria e exclui Services.",
+    keywords: ["service", "clusterip", "loadbalancer", "porta", "selector"],
+  },
+  {
+    id: "vpas",
+    title: "VPAs",
+    group: "Workloads",
+    impact: "escrita",
+    summary: "Lista, edita e exclui VerticalPodAutoscalers existentes (não cria).",
+    keywords: ["vpa", "vertical", "autoscaler", "recomendação", "requests"],
+  },
+  {
+    id: "daemonsets",
+    title: "DaemonSets",
+    group: "Workloads",
+    impact: "escrita",
+    summary: "Lista os DaemonSets e seus pods, edita o YAML, reinicia o rollout e exclui.",
+    keywords: ["daemonset", "restart", "rollout", "pods", "node"],
+  },
+  {
+    id: "statefulsets",
+    title: "StatefulSets",
+    group: "Workloads",
+    impact: "escrita",
+    summary: "Lista, edita o YAML, escala, reinicia o rollout e exclui StatefulSets.",
+    keywords: ["statefulset", "scale", "réplicas", "restart", "rollout", "pvc"],
+  },
   {
     id: "deployments",
     title: "Deployments",

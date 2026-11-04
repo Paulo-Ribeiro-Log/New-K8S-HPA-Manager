@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { slugify } from "@/help/helpSearch";
+import { parseHelpLink, slugify } from "@/help/helpSearch";
+import { useHelp } from "./helpContext";
 
 // Renderiza uma página de ajuda. O plugin typography do Tailwind não está ativo no projeto, então
 // cada elemento é estilizado aqui (mesmo caminho do Markdown do Code Editor). Os títulos recebem
@@ -12,6 +13,28 @@ function textOf(node: ReactNode): string {
   if (Array.isArray(node)) return node.map(textOf).join("");
   if (node && typeof node === "object" && "props" in node) return textOf((node as { props: { children?: ReactNode } }).props.children);
   return "";
+}
+
+// Link de uma página de ajuda para outra (`ajuda:<id>#<seção>`) vira botão; os demais abrem em outra aba.
+function HelpAnchor({ href, children }: { href?: string; children?: ReactNode }) {
+  const { openHelp } = useHelp();
+  const link = parseHelpLink(href);
+  if (link) {
+    return (
+      <button
+        type="button"
+        onClick={() => openHelp(link.id, link.anchor ?? undefined)}
+        className="text-primary underline underline-offset-2 hover:opacity-80"
+      >
+        {children}
+      </button>
+    );
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2 hover:opacity-80">
+      {children}
+    </a>
+  );
 }
 
 const components: Components = {
@@ -31,11 +54,7 @@ const components: Components = {
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5 text-[13px] text-foreground/90">{children}</ol>,
   li: ({ children }) => <li className="leading-relaxed marker:text-muted-foreground">{children}</li>,
   strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2 hover:opacity-80">
-      {children}
-    </a>
-  ),
+  a: ({ href, children }) => <HelpAnchor href={href}>{children}</HelpAnchor>,
   code: ({ className, children }) =>
     className?.startsWith("language-") ? (
       <code className={className}>{children}</code>
@@ -65,7 +84,11 @@ const components: Components = {
 
 export function HelpMarkdown({ source }: { source: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={components}
+      urlTransform={(url) => (url.startsWith("ajuda:") ? url : defaultUrlTransform(url))}
+    >
       {source}
     </ReactMarkdown>
   );
