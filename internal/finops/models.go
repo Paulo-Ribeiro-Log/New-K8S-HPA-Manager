@@ -25,6 +25,9 @@ type FinOpsReport struct {
 	// ComputeNodeUsage em live_metrics.go) — só preenchido quando BuildReport recebe um
 	// metricsClient não-nil (ver Calculator.BuildReport).
 	NodeUsage []NodeUsage `json:"node_usage,omitempty"`
+	// Warnings são avisos de dados parciais (ex.: sem permissão para listar HPAs em alguns
+	// namespaces). O relatório sai mesmo assim; a tela mostra o aviso.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // FinOpsPool representa um node pool com seu custo baseado no VM SKU real

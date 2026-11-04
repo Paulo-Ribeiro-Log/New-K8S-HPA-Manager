@@ -401,6 +401,14 @@ export const FinOpsTab = ({ selectedCluster, journeys = [] }: { selectedCluster?
       {/* Relatório */}
       {report && !isFetching && (
         <>
+          {report.warnings?.map((w) => (
+            <Alert key={w} className="border-amber-200 bg-amber-50 dark:bg-amber-950/20">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <AlertDescription className="text-sm text-amber-800 dark:text-amber-300">
+                <strong>Dados parciais:</strong> {w}
+              </AlertDescription>
+            </Alert>
+          ))}
           {report.summary.prometheus_unavailable && (
             <Alert className="border-amber-200 bg-amber-50 dark:bg-amber-950/20">
               <AlertTriangle className="h-4 w-4 text-amber-600" />
