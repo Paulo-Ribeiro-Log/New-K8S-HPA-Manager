@@ -1290,7 +1290,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// VPAs (Vertical Pod Autoscalers)
-	vpaHandler := handlers.NewVPAHandler(s.kubeManager)
+	vpaHandler := handlers.NewVPAHandler(s.kubeManager, s.historyTracker)
 	vpas := api.Group("/vpas")
 	{
 		vpas.GET("", vpaHandler.List)

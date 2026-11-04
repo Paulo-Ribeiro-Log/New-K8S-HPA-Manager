@@ -372,7 +372,13 @@ func (h *ServiceHandler) Create(c *gin.Context) {
 	}
 
 	kc := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	result, err := kc.ApplyService(c.Request.Context(), req.YAML, namespace, "", false, false)
+	createdName := ""
+	if result != nil {
+		createdName = result.Name
+	}
+	logOperation(c, h.historyTracker, "create_service", namespace+"/"+createdName, cluster, nil, nil, start, err)
 	if err != nil {
 		if checkForbidden(c, err) {
 			return
@@ -422,7 +428,10 @@ func (h *ServiceHandler) Delete(c *gin.Context) {
 	}
 
 	kc := kubeclient.NewClient(clientset, cluster)
-	if err := kc.DeleteService(c.Request.Context(), namespace, name); err != nil {
+	start := time.Now()
+	err = kc.DeleteService(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "delete_service", namespace+"/"+name, cluster, nil, nil, start, err)
+	if err != nil {
 		if checkForbidden(c, err) {
 			return
 		}

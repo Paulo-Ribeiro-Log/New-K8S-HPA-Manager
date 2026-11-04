@@ -22,7 +22,7 @@ Lista, edita e exclui **VerticalPodAutoscalers (VPA)** que já existem. **Não c
 
 ## Impacto
 
-**Altera o cluster, e esta aba não grava nada no Change History** (nem aplicar, nem excluir).
+**Altera o cluster.** Aplicar (sem dry-run) e excluir ficam no Change History.
 
 ## Cuidados e erros comuns
 

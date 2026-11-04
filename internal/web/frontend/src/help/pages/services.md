@@ -26,7 +26,7 @@ Os botões que alteram só ficam disponíveis com permissão de escrita no names
 
 ## Impacto
 
-**Altera o cluster.** Só **aplicar** fica no Change History; **criar e excluir não ficam**.
+**Altera o cluster.** Aplicar, criar e excluir ficam no Change History.
 
 ## Cuidados e erros comuns
 

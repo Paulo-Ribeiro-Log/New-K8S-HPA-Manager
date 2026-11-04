@@ -466,7 +466,9 @@ func (h *DaemonSetHandler) Delete(c *gin.Context) {
 
 	// Deletar daemonset
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.DeleteDaemonSet(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "delete_daemonset", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if checkForbidden(c, err) {
 			return

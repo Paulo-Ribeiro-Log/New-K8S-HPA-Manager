@@ -571,7 +571,9 @@ func (h *IngressHandler) Delete(c *gin.Context) {
 	}
 
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.DeleteIngress(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "delete_ingress", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if checkForbidden(c, err) {
 			return
