@@ -59,4 +59,4 @@ Executar, rodar em lote e cancelar exigem perfil SRE. No modo cluster é preciso
 
 ## Veja também
 
-[Pods](ajuda:pods), [Events](ajuda:events).
+[Teste de Latência](ajuda:latency-test), [Pods](ajuda:pods), [Events](ajuda:events).

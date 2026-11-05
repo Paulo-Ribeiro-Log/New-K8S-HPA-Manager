@@ -55,4 +55,4 @@ Executar, buscar tópicos, ver a visão geral e cancelar exigem perfil SRE. No m
 
 ## Veja também
 
-[Pods](ajuda:pods), [Events](ajuda:events).
+[Teste de Banco de Dados](ajuda:db-test), [Teste de Latência](ajuda:latency-test), [Pods](ajuda:pods), [Events](ajuda:events).
