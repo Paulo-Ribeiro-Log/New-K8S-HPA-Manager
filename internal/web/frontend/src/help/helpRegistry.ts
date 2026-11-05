@@ -200,6 +200,14 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["helm", "release", "chart", "values", "upgrade", "rollback", "uninstall", "install", "revisão", "manifest", "dry run"],
   },
   {
+    id: "prometheus",
+    title: "Prometheus",
+    group: "Workloads",
+    impact: "destrutiva",
+    summary: "Recursos do Prometheus Stack: requests e limits, rollout, diagnóstico e limpeza do WAL, e aplicação via Helm.",
+    keywords: ["prometheus", "wal", "oomkilled", "crashloop", "limpar wal", "operator", "kube-prometheus-stack", "tolerations", "nodeselector", "helm", "alertmanager", "memória"],
+  },
+  {
     id: "latency-test",
     title: "Teste de Latência",
     group: "Ferramentas",
