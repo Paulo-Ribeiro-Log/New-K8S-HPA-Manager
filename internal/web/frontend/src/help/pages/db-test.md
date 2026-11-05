@@ -48,4 +48,4 @@ Executar, visualizar amostras e cancelar exigem perfil SRE. No modo pod, é prec
 
 ## Veja também
 
-[Teste de Latência](ajuda:latency-test), [Pods](ajuda:pods).
+[Teste Kafka](ajuda:kafka-test), [Teste de Latência](ajuda:latency-test), [Pods](ajuda:pods).
