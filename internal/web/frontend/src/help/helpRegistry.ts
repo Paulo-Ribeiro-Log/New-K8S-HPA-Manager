@@ -96,6 +96,22 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["pods", "rollout", "restart", "scale", "rollback", "replicas", "yaml", "spinnaker"],
   },
   {
+    id: "secrets",
+    title: "Secrets",
+    group: "Workloads",
+    impact: "destrutiva",
+    summary: "Lista, cria, edita e exclui Secrets, vê certificados TLS e controla a sincronização com o External Secrets.",
+    keywords: ["secret", "base64", "tls", "certificado", "external secrets", "akv", "key vault", "resync", "pausar sincronização", "senha", "credencial"],
+  },
+  {
+    id: "gateways",
+    title: "Gateways",
+    group: "Workloads",
+    impact: "destrutiva",
+    summary: "Gerencia Gateway, HTTPRoute, GRPCRoute, TCPRoute e GatewayClass (Gateway API).",
+    keywords: ["gateway api", "httproute", "grpcroute", "tcproute", "gatewayclass", "rota", "tráfego"],
+  },
+  {
     id: "finops",
     title: "FinOps",
     group: "Ferramentas",
