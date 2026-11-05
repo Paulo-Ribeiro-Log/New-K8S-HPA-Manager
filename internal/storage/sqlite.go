@@ -25,6 +25,8 @@ func NewSQLiteClient(dbPath string) (*SQLiteClient, error) {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
+	restrictSQLitePermissions(dbPath)
+
 	// Abrir conexão SQLite com WAL mode (melhor concorrência)
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
@@ -51,6 +53,21 @@ func NewSQLiteClient(dbPath string) (*SQLiteClient, error) {
 	}
 
 	return client, nil
+}
+
+// restrictSQLitePermissions deixa o banco legível só pelo dono (0600). Bancos da aplicação guardam
+// credenciais (tokens de IA e do Dynatrace, conteúdo de Secrets), então não podem ficar abertos aos
+// outros usuários da máquina. O SQLite cria -wal/-shm com a permissão do banco: criar já 0600 cobre
+// os três; em instalações existentes o chmod corrige o que já estava 0644.
+func restrictSQLitePermissions(dbPath string) {
+	if f, err := os.OpenFile(dbPath, os.O_CREATE|os.O_RDWR, 0600); err == nil {
+		f.Close()
+	}
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if _, err := os.Stat(p); err == nil {
+			_ = os.Chmod(p, 0600)
+		}
+	}
 }
 
 // Close fecha a conexão com o banco de dados
