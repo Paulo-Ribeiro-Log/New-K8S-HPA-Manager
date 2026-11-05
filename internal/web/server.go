@@ -2076,8 +2076,12 @@ func (s *Server) setupRoutes() {
 	fmt.Println("✅ Code Editor routes registradas")
 
 	// WebSocket do terminal do Code Editor (fora do grupo api — WebSocket não envia header Authorization)
+	// É um shell bash no servidor (usuário do sistema e ambiente do servidor), então fica atrás de
+	// RequireSREGroup() como os demais terminais (pod, tshoot, node, VM). Hoje o RBAC de grupo é um
+	// no-op (ver middleware/rbac.go): o filtro mantém a rota coberta quando for reativado.
 	wsCodeEditor := s.router.Group("/api/v1/code-editor")
 	wsCodeEditor.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
+	wsCodeEditor.Use(rbacMiddleware.RequireSREGroup())
 	wsCodeEditor.GET("/repos/:id/terminal", codeEditorHandler.HandleTerminal)
 
 	// Sessions

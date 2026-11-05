@@ -49,7 +49,7 @@ Há suporte a **autocompletar, hover, ir para a definição e diagnósticos** pa
 
 ## Permissões
 
-**Abrir pasta** e navegar pelas pastas do servidor exigem perfil SRE. A maioria das ações de Git e de arquivos exige apenas estar autenticado. Veja [Permissões](ajuda:geral-abas-de-recurso#permissoes).
+**Abrir pasta**, navegar pelas pastas do servidor e o **terminal integrado** exigem perfil SRE. A maioria das ações de Git e de arquivos exige apenas estar autenticado. Veja [Permissões](ajuda:geral-abas-de-recurso#permissoes).
 
 ## Impacto
 
