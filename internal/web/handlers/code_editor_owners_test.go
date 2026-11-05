@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -201,5 +203,57 @@ func TestRepoOwnersArquivoPrivadoESimultaneo(t *testing.T) {
 	h.setRepoOwner("x", "") // e-mail vazio não registra
 	if h.repoOwner("x") != "" {
 		t.Error("e-mail vazio não deveria registrar dono")
+	}
+}
+
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git indisponível")
+	}
+	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+}
+
+// Clone com trabalho não commitado: a exclusão recusa (409) e nada é apagado; com force=true apaga.
+func TestDeleteRepoComMudancasPendentesExigeForce(t *testing.T) {
+	r, h, _ := newDeleteRepoRouter(t)
+	dir := filepath.Join(h.reposBase, "org-sujo")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "novo.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := doDelete(r, "org-sujo", "ana@corp")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "UNCOMMITTED_CHANGES") {
+		t.Fatalf("status %d (%s), quer 409 UNCOMMITTED_CHANGES", w.Code, w.Body.String())
+	}
+	if !exists(filepath.Join(dir, "novo.txt")) {
+		t.Fatal("o trabalho não commitado foi apagado sem confirmação")
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/repos/org-sujo?force=true", nil)
+	req.Header.Set("X-Test-User", "ana@corp")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || exists(dir) {
+		t.Fatalf("com force deveria apagar: status %d", w.Code)
+	}
+}
+
+// Clone limpo é apagado sem pedir confirmação.
+func TestDeleteRepoLimpoNaoExigeForce(t *testing.T) {
+	r, h, _ := newDeleteRepoRouter(t)
+	dir := filepath.Join(h.reposBase, "org-limpo")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, dir)
+	if w := doDelete(r, "org-limpo", "ana@corp"); w.Code != http.StatusOK || exists(dir) {
+		t.Fatalf("status %d, quer 200 e pasta removida", w.Code)
 	}
 }

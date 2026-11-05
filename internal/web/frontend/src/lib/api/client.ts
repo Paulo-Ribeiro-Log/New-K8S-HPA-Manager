@@ -5464,8 +5464,9 @@ class APIClient {
     return this.request("/code-editor/open-folder", { method: "POST", body: JSON.stringify({ path }) });
   }
 
-  async codeEditorDeleteRepo(id: string): Promise<void> {
-    return this.request(`/code-editor/repos/${id}`, { method: "DELETE" });
+  // Sem force, o servidor recusa (409, code UNCOMMITTED_CHANGES) clone com mudanças não commitadas.
+  async codeEditorDeleteRepo(id: string, force = false): Promise<void> {
+    return this.request(`/code-editor/repos/${id}${force ? "?force=true" : ""}`, { method: "DELETE" });
   }
 
   async codeEditorGetFileTree(id: string): Promise<CodeEditorFileNode[]> {

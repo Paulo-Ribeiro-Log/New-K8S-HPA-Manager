@@ -437,8 +437,8 @@ func (h *CodeEditorHandler) DeleteRepo(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"removed": id, "closed": true})
 		return
 	}
-	if status, msg := h.deleteClonedRepo(c, id); status != http.StatusOK {
-		c.JSON(status, gin.H{"error": msg})
+	if status, msg := h.deleteClonedRepo(c, id, c.Query("force") == "true"); status != http.StatusOK {
+		c.JSON(status, gin.H{"error": msg, "code": deleteRepoCode(status)})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"removed": id})
