@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -87,9 +90,20 @@ func canDeleteRepo(owner, caller string) bool {
 	return owner == "" || strings.EqualFold(owner, caller)
 }
 
+// hasUncommittedChanges diz se o clone tem alterações ou arquivos novos ainda não commitados. Se o
+// git não responder (pasta sem repositório válido, timeout), devolve false: a trava é um aviso, não
+// pode impedir a limpeza de um clone quebrado.
+func hasUncommittedChanges(dir string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain").Output()
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
+}
+
 // deleteClonedRepo exclui um clone (não vale para "Abrir pasta"), respeitando o dono, e registra a
-// operação no Change History. Devolve o status HTTP e a mensagem de erro ("" em caso de sucesso).
-func (h *CodeEditorHandler) deleteClonedRepo(c *gin.Context, id string) (status int, errMsg string) {
+// operação no Change History. Com mudanças não commitadas recusa (409) a menos que force seja true.
+// Devolve o status HTTP e a mensagem de erro ("" em caso de sucesso).
+func (h *CodeEditorHandler) deleteClonedRepo(c *gin.Context, id string, force bool) (status int, errMsg string) {
 	start := time.Now()
 	owner := h.repoOwner(id)
 	caller := GetUserInfoForHistory(c).Email
@@ -99,12 +113,23 @@ func (h *CodeEditorHandler) deleteClonedRepo(c *gin.Context, id string) (status 
 			map[string]interface{}{"owner": owner, "denied": true}, start, err)
 		return 403, "este repositório foi clonado por " + owner + "; só essa pessoa pode excluí-lo"
 	}
+	if !force && hasUncommittedChanges(h.repoDir(id)) {
+		return http.StatusConflict, "o repositório tem mudanças não commitadas que serão perdidas"
+	}
 	err := os.RemoveAll(h.repoDir(id))
 	logOperation(c, h.historyTracker, "code_editor_delete_repo", id, "", nil,
-		map[string]interface{}{"owner": owner}, start, err)
+		map[string]interface{}{"owner": owner, "forced": force}, start, err)
 	if err != nil {
 		return 500, err.Error()
 	}
 	h.clearRepoOwner(id)
 	return 200, ""
+}
+
+// deleteRepoCode dá ao frontend um código estável para o 409, que ele trata pedindo confirmação.
+func deleteRepoCode(status int) string {
+	if status == http.StatusConflict {
+		return "UNCOMMITTED_CHANGES"
+	}
+	return ""
 }

@@ -3237,7 +3237,13 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       : `Remover repositório "${id}" localmente?`;
     if (!await showConfirm(msg)) return;
     try {
-      await apiClient.codeEditorDeleteRepo(id);
+      try {
+        await apiClient.codeEditorDeleteRepo(id);
+      } catch (e) {
+        if ((e as { code?: string }).code !== "UNCOMMITTED_CHANGES") throw e;
+        if (!await showConfirm(`"${id}" tem mudanças não commitadas que serão PERDIDAS. Excluir mesmo assim?`)) return;
+        await apiClient.codeEditorDeleteRepo(id, true);
+      }
       if (selectedRepo?.id === id) {
         setSelectedRepo(null); setTree([]); setOpenTabs([]); setActiveTabIdx(0);
         setStatus(null); setBranches(null); setLog([]);
