@@ -136,6 +136,22 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["evento", "warning", "backoff", "failedscheduling", "kubectl get events"],
   },
   {
+    id: "namespaces",
+    title: "Namespaces",
+    group: "Workloads",
+    impact: "destrutiva",
+    summary: "Uso por namespace, deployments, events, quotas, policies, RBAC; cria, edita e exclui namespaces.",
+    keywords: ["namespace", "quota", "resourcequota", "networkpolicy", "rbac", "squad", "spot", "awx", "certificado tls", "deletar namespace"],
+  },
+  {
+    id: "cronjobs",
+    title: "CronJobs",
+    group: "Workloads",
+    impact: "destrutiva",
+    summary: "Lista, edita, suspende e dispara CronJobs; cria Jobs e CronJobs; apaga CronJobs e Jobs com proteções.",
+    keywords: ["cronjob", "job", "trigger", "suspender", "agendamento", "schedule", "batch", "helm", "argo"],
+  },
+  {
     id: "nodes",
     title: "Nodes",
     group: "Workloads",

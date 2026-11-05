@@ -60,4 +60,4 @@ As ações aparecem desabilitadas, com **(sem permissão)**, quando o RBAC do cl
 
 ## Veja também
 
-[Pods](ajuda:pods), [Events](ajuda:events).
+[Pods](ajuda:pods), [Events](ajuda:events), [Namespaces](ajuda:namespaces).
