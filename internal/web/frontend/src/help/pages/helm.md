@@ -45,7 +45,7 @@ Quem executa é o **servidor**, com o `helm` e o acesso ao cluster que ele tem. 
 
 ## Impacto
 
-**Altera o cluster e pode derrubar aplicações.** Install, upgrade, rollback e uninstall ficam no Change History (sem dry-run), com release, namespace, chart, versão e revisão. Os **values nunca vão para o histórico**: só o tamanho e o SHA-256, porque podem conter segredo. **Apagar o Secret de uma revisão não fica registrado.**
+**Altera o cluster e pode derrubar aplicações.** Install, upgrade, rollback e uninstall ficam no Change History (sem dry-run), com release, namespace, chart, versão e revisão. Os **values nunca vão para o histórico**: só o tamanho e o SHA-256, porque podem conter segredo. **Apagar o Secret de uma revisão** também fica registrado, como a exclusão de qualquer Secret (`delete_secret`).
 
 ## Cuidados e erros comuns
 
