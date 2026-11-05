@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"time"
@@ -60,6 +61,7 @@ func NewPersistence(config *PersistenceConfig) (*Persistence, error) {
 	}
 
 	// Abre/cria banco SQLite
+	dbfile.Restrict(config.DBPath)
 	db, err := sql.Open("sqlite3", config.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)

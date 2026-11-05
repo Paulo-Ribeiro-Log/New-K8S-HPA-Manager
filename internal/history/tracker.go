@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,6 +104,8 @@ func NewHistoryTracker(baseDir string) (*HistoryTracker, error) {
 		f.Close()
 	}
 	_ = os.Chmod(dbPath, 0600)
+
+	dbfile.Restrict(dbPath)
 
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
 	if err != nil {

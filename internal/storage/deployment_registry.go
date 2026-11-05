@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,7 @@ func NewDeploymentRegistry() (*DeploymentRegistry, error) {
 
 	// Abrir/criar banco SQLite
 	dbPath := filepath.Join(configDir, "deployment-registry.db")
+	dbfile.Restrict(dbPath)
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)

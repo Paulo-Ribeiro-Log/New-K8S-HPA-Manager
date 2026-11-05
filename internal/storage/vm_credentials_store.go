@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"time"
@@ -73,6 +74,7 @@ func NewVMCredentialStore() (*VMCredentialStore, error) {
 	}
 
 	dbPath := filepath.Join(configDir, "vm-credentials.db")
+	dbfile.Restrict(dbPath)
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)

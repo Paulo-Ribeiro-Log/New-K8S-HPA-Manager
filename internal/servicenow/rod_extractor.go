@@ -3,6 +3,7 @@ package servicenow
 import (
 	"context"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,9 +48,8 @@ func NewRodExtractor(logger *zerolog.Logger) *RodExtractor {
 	sessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "rod-session")
 
 	// Criar diretório de sessão se não existir
-	if err := os.MkdirAll(sessionDir, 0755); err != nil {
-		logger.Warn().Err(err).Msg("[Rod] Erro ao criar diretório de sessão")
-	}
+	// 0700: o perfil do Chromium guarda cookies da sessão SSO.
+	dbfile.PrivateDir(sessionDir)
 
 	logger.Info().
 		Str("session_dir", sessionDir).
@@ -216,7 +216,7 @@ func (r *RodExtractor) ClearSession() error {
 	}
 
 	// Recriar diretório vazio
-	os.MkdirAll(dir, 0755) //nolint:errcheck
+	dbfile.PrivateDir(dir)
 
 	r.logger.Info().Str("dir", dir).Msg("[Rod] Sessão limpa com sucesso")
 	return nil
@@ -340,8 +340,8 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 
 	// Limpar sessão anterior para garantir login fresco
 	r.logger.Info().Msg("[Rod] Limpando sessão anterior para garantir login fresco...")
-	os.RemoveAll(sessionDir)      //nolint:errcheck
-	os.MkdirAll(sessionDir, 0755) //nolint:errcheck
+	os.RemoveAll(sessionDir) //nolint:errcheck
+	dbfile.PrivateDir(sessionDir)
 
 	// Iniciar browser abrindo diretamente no ServiceNow (sem aba em branco)
 	const serviceNowHome = "https://viavarejo.service-now.com"
@@ -913,8 +913,8 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 
 			activeDir := r.activeSessionDir()
 			r.logger.Info().Str("session_dir", activeDir).Msg("[Rod] Limpando sessão inválida e reabrindo browser para login...")
-			os.RemoveAll(activeDir)      //nolint:errcheck
-			os.MkdirAll(activeDir, 0755) //nolint:errcheck
+			os.RemoveAll(activeDir) //nolint:errcheck
+			dbfile.PrivateDir(activeDir)
 
 			r.logger.Info().Msg("[Rod] ============================================")
 			r.logger.Info().Msg("[Rod] ABRINDO BROWSER PARA LOGIN NO AZURE AD...")

@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,7 @@ func NewNotesStore(dbPath string) (*NotesStore, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, fmt.Errorf("criar diretório notes: %w", err)
 	}
+	dbfile.Restrict(dbPath)
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("abrir notes.db: %w", err)
