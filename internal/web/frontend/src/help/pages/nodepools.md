@@ -62,4 +62,4 @@ Aplicar só fica disponível com permissão de escrita no cluster. Veja [Permiss
 
 ## Veja também
 
-[Pods](ajuda:pods), [Events](ajuda:events), [FinOps](ajuda:finops).
+[Nodes](ajuda:nodes), [Pods](ajuda:pods), [Events](ajuda:events), [FinOps](ajuda:finops).

@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,7 +25,8 @@ import (
 //   - escolha explícita do que fazer com os Jobs (apagar junto ou manter órfãos);
 //   - precondition de UID: só apaga o MESMO objeto mostrado na prévia (se foi recriado no meio
 //     tempo, o delete é recusado);
-//   - histórico com o manifesto completo, para dar para recriar.
+//   - histórico só com a identificação (SHA-256 e tamanho do manifesto): o histórico é
+//     somente-inclusão e o manifesto pode ter env com segredo, então não se guarda o conteúdo.
 // Job usa propagation Background explícito: na API batch/v1 o padrão de um Job é Orphan (os
 // pods ficariam para trás) — o kubectl é que usa Background por padrão.
 
@@ -258,7 +261,9 @@ func (h *CronJobHandler) DeleteJob(c *gin.Context) {
 func (h *CronJobHandler) recordBatchDelete(c *gin.Context, action, resource, cluster, manifest string, after map[string]interface{}, start time.Time, err error) {
 	var before map[string]interface{}
 	if manifest != "" {
-		before = map[string]interface{}{"yaml": manifest}
+		// Só hash e tamanho: o manifesto pode ter env com segredo e o histórico é somente-inclusão.
+		sum := sha256.Sum256([]byte(manifest))
+		before = map[string]interface{}{"yaml_sha256": hex.EncodeToString(sum[:]), "yaml_bytes": len(manifest)}
 	}
 	h.recordBatchDeleteMap(c, action, resource, cluster, before, start, err, after)
 }
