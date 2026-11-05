@@ -136,6 +136,14 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["evento", "warning", "backoff", "failedscheduling", "kubectl get events"],
   },
   {
+    id: "nodes",
+    title: "Nodes",
+    group: "Workloads",
+    impact: "destrutiva",
+    summary: "Nodes do cluster com uso, pools e taints; cordon, uncordon, drain, edição do YAML, shell e remoção.",
+    keywords: ["node", "cordon", "uncordon", "drain", "evict", "taint", "node pool", "notready", "manutenção", "shell no node", "allocatable"],
+  },
+  {
     id: "finops",
     title: "FinOps",
     group: "Ferramentas",
