@@ -2000,7 +2000,7 @@ func (s *Server) setupRoutes() {
 		// "Abrir pasta": navega/abre pastas da máquina do servidor (code_editor_local.go)
 		codeEditor.GET("/browse", rbacMiddleware.RequireSREGroup(), codeEditorHandler.BrowseFolders)
 		codeEditor.POST("/open-folder", rbacMiddleware.RequireSREGroup(), codeEditorHandler.OpenFolder)
-		codeEditor.DELETE("/repos/:id", codeEditorHandler.DeleteRepo)
+		codeEditor.DELETE("/repos/:id", rbacMiddleware.InjectUserEmail(), codeEditorHandler.DeleteRepo)
 		codeEditor.GET("/repos/:id/tree", codeEditorHandler.GetFileTree)
 		codeEditor.GET("/repos/:id/file", codeEditorHandler.ReadFile)
 		codeEditor.POST("/repos/:id/file", codeEditorHandler.WriteFile)
