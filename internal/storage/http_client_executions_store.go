@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"time"
@@ -64,11 +65,7 @@ func NewHTTPClientExecutionStore(dbPath string) (*HTTPClientExecutionStore, erro
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
 		return nil, fmt.Errorf("criar diretório http client executions: %w", err)
 	}
-	// O SQLite cria -wal/-shm com a permissão do banco: criar já 0600 cobre os três.
-	if f, err := os.OpenFile(dbPath, os.O_CREATE|os.O_RDWR, 0600); err == nil {
-		f.Close()
-	}
-	_ = os.Chmod(dbPath, 0600)
+	dbfile.Restrict(dbPath) // 0600: headers podem ter tokens
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("abrir http_client_executions.db: %w", err)

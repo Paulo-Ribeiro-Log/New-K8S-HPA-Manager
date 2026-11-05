@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,7 @@ func TestRestrictSQLitePermissions(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "dependency-registry.db")
 
-	restrictSQLitePermissions(db) // arquivo novo
+	dbfile.Restrict(db) // arquivo novo
 	assertMode(t, db, 0600)
 
 	for _, p := range []string{db, db + "-wal", db + "-shm"} { // instalação antiga, aberta
@@ -23,7 +24,7 @@ func TestRestrictSQLitePermissions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	restrictSQLitePermissions(db)
+	dbfile.Restrict(db)
 	for _, p := range []string{db, db + "-wal", db + "-shm"} {
 		assertMode(t, p, 0600)
 	}

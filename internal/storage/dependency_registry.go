@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,7 +75,7 @@ func NewDependencyRegistry() (*DependencyRegistry, error) {
 	}
 
 	dbPath := filepath.Join(dbDir, "dependency-registry.db")
-	restrictSQLitePermissions(dbPath)
+	dbfile.Restrict(dbPath)
 
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ type HealthCheckStorage struct {
 
 // NewHealthCheckStorage cria um novo storage
 func NewHealthCheckStorage(dbPath string) (*HealthCheckStorage, error) {
+	dbfile.Restrict(dbPath)
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -235,14 +237,14 @@ func (s *HealthCheckStorage) GetEventChronicity(ctx context.Context, cluster, na
 
 // extraResultFields agrupa campos que não cabem nas colunas individuais.
 type extraResultFields struct {
-	EventResults    []EventHealth         `json:"event_results,omitempty"`
-	HPAResults      []HPAHealth           `json:"hpa_results,omitempty"`
-	PVCResults      []PVCHealth           `json:"pvc_results,omitempty"`
-	NodeResults     []NodeHealth          `json:"node_results,omitempty"`
-	DynatraceResults []DynatraceHealth    `json:"dynatrace_results,omitempty"`
-	CorrelatedItems []CorrelatedHealthItem `json:"correlated_items,omitempty"`
-	OneAgentSignals []OneAgentSignal       `json:"oneagent_signals"` // sem omitempty: [] != null
-	SeverityCounts  SeverityCounts         `json:"severity_counts"`
+	EventResults     []EventHealth          `json:"event_results,omitempty"`
+	HPAResults       []HPAHealth            `json:"hpa_results,omitempty"`
+	PVCResults       []PVCHealth            `json:"pvc_results,omitempty"`
+	NodeResults      []NodeHealth           `json:"node_results,omitempty"`
+	DynatraceResults []DynatraceHealth      `json:"dynatrace_results,omitempty"`
+	CorrelatedItems  []CorrelatedHealthItem `json:"correlated_items,omitempty"`
+	OneAgentSignals  []OneAgentSignal       `json:"oneagent_signals"` // sem omitempty: [] != null
+	SeverityCounts   SeverityCounts         `json:"severity_counts"`
 }
 
 // Save salva resultado de health check

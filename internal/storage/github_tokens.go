@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"k8s-hpa-manager/internal/dbfile"
 	"os"
 	"path/filepath"
 	"time"
@@ -44,6 +45,7 @@ func NewGitHubTokenStore() (*GitHubTokenStore, error) {
 
 	// Abrir/criar banco SQLite
 	dbPath := filepath.Join(configDir, "github-tokens.db")
+	dbfile.Restrict(dbPath)
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)

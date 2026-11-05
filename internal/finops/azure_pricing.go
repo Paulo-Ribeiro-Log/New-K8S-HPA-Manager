@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"k8s-hpa-manager/internal/dbfile"
 	"net/http"
 	"net/url"
 	"os"
@@ -120,6 +121,7 @@ func NewAzurePricer(region string) (*AzurePricer, error) {
 	}
 
 	dbPath := filepath.Join(dbDir, "finops_pricing_cache.db")
+	dbfile.Restrict(dbPath)
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("abrir banco de preços: %w", err)
