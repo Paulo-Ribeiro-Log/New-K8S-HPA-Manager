@@ -808,7 +808,7 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
     <Dialog open={open} onOpenChange={v => !v && !cloning && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader><DialogTitle className="flex items-center gap-2"><FolderGit2 className="w-4 h-4" />Clonar Repositório</DialogTitle></DialogHeader>
-        <div className="space-y-3">
+        <div className="space-y-3 min-w-0">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">URL do GitHub</label>
             <Input placeholder="https://github.com/owner/repo" value={url} onChange={e => setUrl(e.target.value)} disabled={cloning} />
@@ -834,7 +834,7 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
           {logs.length > 0 && (
             <div ref={logsRef} className="bg-black/50 rounded p-2 h-32 overflow-y-auto font-mono text-xs space-y-0.5">
               {logs.map((l, i) => (
-                <div key={i} className={l.startsWith("✅") ? "text-emerald-400" : "text-green-300/80"}>{l}</div>
+                <div key={i} className={`break-all ${l.startsWith("✅") ? "text-emerald-400" : "text-green-300/80"}`}>{l}</div>
               ))}
             </div>
           )}
@@ -846,8 +846,8 @@ function CloneDialog({ open, onClose, onDone }: CloneDialogProps) {
           )}
           {error && (
             <div className="space-y-2">
-              <div className="flex items-center gap-2 text-red-400 text-xs">
-                <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+              <div className="flex items-start gap-2 text-red-400 text-xs">
+                <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" /><span className="min-w-0 break-words">{error}</span>
               </div>
               {existingId && (
                 <Button size="sm" variant="outline" className="text-xs h-7 w-full"

@@ -400,14 +400,16 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 		return
 	}
 
+	var stderrLines []string
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
+		stderrLines = append(stderrLines, scanner.Text())
 		sendEvent(scanner.Text())
 	}
 
 	if err := cmd.Wait(); err != nil {
 		os.RemoveAll(dir)
-		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", err.Error())
+		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"error\":%q}\n\n", cloneFailureMessage(stderrLines, err))
 	} else {
 		runGit(dir, "config", "user.email", "k8s-hpa-manager@local") //nolint:errcheck
 		runGit(dir, "config", "user.name", "K8s HPA Manager")        //nolint:errcheck
