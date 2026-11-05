@@ -216,6 +216,14 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["rede", "traceroute", "tcptraceroute", "salto", "hop", "nmap", "fingerprint", "asn", "porta", "mtls", "firewall", "rota", "dns reverso"],
   },
   {
+    id: "prometheus",
+    title: "Prometheus",
+    group: "Workloads",
+    impact: "destrutiva",
+    summary: "Recursos do Prometheus Stack: requests e limits, rollout, diagnóstico e limpeza do WAL, e aplicação via Helm.",
+    keywords: ["prometheus", "wal", "oomkilled", "crashloop", "limpar wal", "operator", "kube-prometheus-stack", "tolerations", "nodeselector", "helm", "alertmanager", "memória"],
+  },
+  {
     id: "latency-test",
     title: "Teste de Latência",
     group: "Ferramentas",
