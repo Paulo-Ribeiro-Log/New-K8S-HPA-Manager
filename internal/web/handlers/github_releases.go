@@ -334,15 +334,6 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 	repo := c.Param("repo")
 	basehead := c.Param("basehead") // Formato: "base...head"
 
-	// DEBUG: Log ALL headers
-	h.logger.Debug().Msg("=== ALL REQUEST HEADERS ===")
-	for key, values := range c.Request.Header {
-		for _, value := range values {
-			h.logger.Debug().Str("header", key).Str("value", value).Msg("Header received")
-		}
-	}
-	h.logger.Debug().Msg("=== END HEADERS ===")
-
 	// Parsear base e head
 	parts := strings.Split(basehead, "...")
 	if len(parts) != 2 {
@@ -881,15 +872,6 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Deployment registry not available"})
 		return
 	}
-
-	// 🔍 DEBUG: Log ALL headers received
-	h.logger.Debug().Msg("=== ALL REQUEST HEADERS ===")
-	for key, values := range c.Request.Header {
-		for _, value := range values {
-			h.logger.Debug().Str("header", key).Str("value", value).Msg("Header received")
-		}
-	}
-	h.logger.Debug().Msg("=== END HEADERS ===")
 
 	h.logger.Info().
 		Str("release", releaseName).
