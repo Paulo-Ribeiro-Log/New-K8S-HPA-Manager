@@ -17,7 +17,7 @@ Inventaria os **certificados TLS** do ambiente: os guardados em **Secrets** dos 
 | **Certificados K8s** | escaneia os Secrets TLS dos clusters, valida a cadeia e permite copiar, instalar e atualizar |
 | **Endpoints Externos** | monitora a validade de servidores **fora de qualquer cluster**, por handshake TLS |
 | **Webhooks (CA Bundle)** | atualiza o `caBundle` de uma `MutatingWebhookConfiguration` |
-| **Certificados em VM** | lê, valida, grava na VM o par certificado e chave e reinicia o serviço (a aba VMs / EC2 explica o transporte por SFTP e SSM) |
+| **Certificados em VM** | lê, valida, grava na VM o par certificado e chave e reinicia o serviço (veja [VMs / EC2](ajuda:vms)) |
 
 ## Certificados K8s
 
@@ -65,4 +65,4 @@ Ler e escanear não exige o grupo SRE. **Copiar, upload, atualização em massa,
 
 ## Veja também
 
-[Secrets](ajuda:secrets), [Ingresses](ajuda:ingresses).
+[Secrets](ajuda:secrets), [Ingresses](ajuda:ingresses), [VMs / EC2](ajuda:vms).
