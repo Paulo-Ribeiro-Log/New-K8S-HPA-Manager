@@ -200,6 +200,22 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["helm", "release", "chart", "values", "upgrade", "rollback", "uninstall", "install", "revisão", "manifest", "dry run"],
   },
   {
+    id: "kafka-test",
+    title: "Teste Kafka",
+    group: "Ferramentas",
+    impact: "escrita",
+    summary: "Testa a conexão com Kafka ou Event Hub, lê e conta mensagens e, com confirmação, publica uma mensagem de teste.",
+    keywords: ["kafka", "event hub", "kcat", "sasl", "tópico", "broker", "mensagens", "offset", "produce", "consume", "oauthbearer", "azure"],
+  },
+  {
+    id: "net-discovery",
+    title: "Descoberta de Rede",
+    group: "Ferramentas",
+    impact: "escrita",
+    summary: "Traceroute TCP salto a salto com fingerprint do destino, ASN, nuvem e cruzamento com o Kubernetes; modos único, lote e monitor.",
+    keywords: ["rede", "traceroute", "tcptraceroute", "salto", "hop", "nmap", "fingerprint", "asn", "porta", "mtls", "firewall", "rota", "dns reverso"],
+  },
+  {
     id: "finops",
     title: "FinOps",
     group: "Ferramentas",
