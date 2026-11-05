@@ -1944,17 +1944,21 @@ func (s *Server) setupRoutes() {
 		teamsGroup.GET("/docker-session", teamsHandler.GetDockerSession)
 		teamsGroup.GET("/docker-status", teamsHandler.DockerStatus)
 
+		// Rotas com efeito (enviar e apagar mensagens no Teams, usar a sessão do navegador do servidor,
+		// gravar em disco) ficam atrás de RequireSREGroup(); as de leitura (chats e modelos) não.
+		// Hoje o RBAC de grupo é um no-op (middleware/rbac.go): o filtro mantém as rotas cobertas
+		// quando for reativado.
 		broadcastHandler := handlers.NewTeamsBroadcastHandler(&githubLogger, s.historyTracker)
 		teamsGroup.GET("/broadcast/chats", broadcastHandler.GetChats)
-		teamsGroup.POST("/broadcast/chats/scan", broadcastHandler.ScanChats)
+		teamsGroup.POST("/broadcast/chats/scan", rbacMiddleware.RequireSREGroup(), broadcastHandler.ScanChats)
 		teamsGroup.GET("/broadcast/templates", broadcastHandler.ListTemplates)
-		teamsGroup.POST("/broadcast/templates", broadcastHandler.SaveTemplate)
+		teamsGroup.POST("/broadcast/templates", rbacMiddleware.RequireSREGroup(), broadcastHandler.SaveTemplate)
 		teamsGroup.GET("/broadcast/templates/:filename", broadcastHandler.GetTemplate)
-		teamsGroup.DELETE("/broadcast/templates/:filename", broadcastHandler.DeleteTemplate)
-		teamsGroup.POST("/broadcast/message/fetch", broadcastHandler.FetchMessage)
-		teamsGroup.DELETE("/broadcast/images", broadcastHandler.ClearBroadcastImages)
-		teamsGroup.POST("/broadcast/send", broadcastHandler.Send)
-		teamsGroup.POST("/broadcast/delete", broadcastHandler.DeleteMessages)
+		teamsGroup.DELETE("/broadcast/templates/:filename", rbacMiddleware.RequireSREGroup(), broadcastHandler.DeleteTemplate)
+		teamsGroup.POST("/broadcast/message/fetch", rbacMiddleware.RequireSREGroup(), broadcastHandler.FetchMessage)
+		teamsGroup.DELETE("/broadcast/images", rbacMiddleware.RequireSREGroup(), broadcastHandler.ClearBroadcastImages)
+		teamsGroup.POST("/broadcast/send", rbacMiddleware.RequireSREGroup(), broadcastHandler.Send)
+		teamsGroup.POST("/broadcast/delete", rbacMiddleware.RequireSREGroup(), broadcastHandler.DeleteMessages)
 		// SSE stream: EventSource não suporta headers → token via query param
 		s.router.GET("/api/v1/teams/broadcast/send/stream/:sessionId",
 			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
