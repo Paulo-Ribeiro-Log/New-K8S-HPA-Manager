@@ -22,7 +22,7 @@ Lista os **releases Helm** do cluster e permite ver os values e o manifest de ca
 |---|---|
 | **Valores** | edita os values em YAML (desfazer, refazer, tela cheia). **Validar** confere só a **sintaxe do YAML**; **Aplicar** abre a confirmação com o diff. Dá para alternar para a visão dos values renderizados, somente leitura |
 | **Histórico** | as revisões, com a atual marcada. Cada uma tem **Rollback** direto para ela e a lixeira, que apaga o **Secret** que o Helm guarda daquela revisão |
-| **Manifest** | o manifest renderizado do release, em YAML editável |
+| **Manifest** | o manifest renderizado do release (o que o chart gerou), **somente leitura**, com **copiar**, **baixar** e tela cheia; mostra também as Release Notes |
 
 ## Ações
 
@@ -50,7 +50,7 @@ Quem executa é o **servidor**, com o `helm` e o acesso ao cluster que ele tem. 
 ## Cuidados e erros comuns
 
 - **O upgrade usa só os values que você envia mais os padrões do chart.** Ele não reaproveita os values antigos (não usa `--reuse-values`): o que você tirar do YAML **volta ao padrão do chart**. Por isso a aba Valores envia o YAML inteiro; não apague trechos sem querer.
-- **Editar o Manifest e Aplicar não aplica o manifest no cluster.** O Aplicar dessa aba usa o mesmo caminho da aba Valores, e o texto editado é enviado como **values** do upgrade. Para mudar recursos, edite os **values** (ou o chart), não o manifest.
+- **O Manifest não é editável, de propósito.** Ele é a **saída** do chart, não uma entrada: para mudar o release, edite os **Valores** (ou o chart). Para mexer em um recurso avulso, use o [Explorer](ajuda:explorer). Se alguém tentar enviar um manifest como values pela API, o servidor **recusa** (`VALUES_LOOK_LIKE_MANIFEST`), porque o Helm faria o release voltar aos padrões do chart.
 - **Validar** só confere se o YAML está bem formado; não confere se o chart aceita os values. Use o **Dry run** do Upgrade para isso.
 - **Rollback com Force** recria recursos e pode causar indisponibilidade.
 - **Uninstall remove tudo do release**, inclusive o que ele criou; não pede para digitar o nome. Confira o namespace antes.
