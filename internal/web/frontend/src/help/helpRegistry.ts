@@ -136,6 +136,22 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["evento", "warning", "backoff", "failedscheduling", "kubectl get events"],
   },
   {
+    id: "hpas",
+    title: "HPAs",
+    group: "Principal",
+    impact: "escrita",
+    summary: "Ajusta réplicas, metas de CPU e memória e requests/limits dos HPAs, com staging ou aplicação imediata.",
+    keywords: ["hpa", "horizontalpodautoscaler", "réplicas", "min", "max", "target cpu", "requests", "limits", "rollout", "monitoramento", "staging"],
+  },
+  {
+    id: "nodepools",
+    title: "Node Pools / Node Groups",
+    group: "Principal",
+    impact: "destrutiva",
+    summary: "Node pools (AKS) e node groups (EKS): tamanho, autoscaling, nodes, disco, pendentes e troca sequencial com cordon e drain.",
+    keywords: ["node pool", "node group", "aks", "eks", "autoscaling", "spot", "sequencing", "cordon", "drain", "conntrack", "pendentes", "análise preditiva"],
+  },
+  {
     id: "finops",
     title: "FinOps",
     group: "Ferramentas",
