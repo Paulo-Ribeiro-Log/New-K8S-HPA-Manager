@@ -34,7 +34,7 @@ Consultar o registro e a busca por serviço não exige o grupo SRE. **Escanear, 
 
 ## Cuidados e erros comuns
 
-- **O índice de Secrets guarda valores reais em texto decodificado, no disco do servidor.** Ele fica no arquivo `~/.k8s-hpa-manager/dependency-registry.db`, o mesmo banco do registro, **sem criptografia**. Dependendo das permissões do sistema, **outros usuários da máquina podem ler esse arquivo**: confira as permissões e use **Limpar índice de Secrets e ConfigMaps** quando não precisar mais da busca.
+- **O índice de Secrets guarda valores reais em texto decodificado, no disco do servidor.** Ele fica no arquivo `~/.k8s-hpa-manager/dependency-registry.db`, o mesmo banco do registro, **sem criptografia**. O arquivo é criado com permissão restrita ao dono (`0600`, e as instalações antigas são corrigidas quando o servidor reinicia com a versão atual), mas quem tem acesso ao usuário do servidor, ou a um backup do disco, lê os valores. Use **Limpar índice de Secrets e ConfigMaps** quando não precisar mais da busca.
 - **Limpar o índice** apaga todo o conteúdo indexado, de **todos os clusters**, e **não afeta** o registro de dependências. Um novo **Atualizar** reconstrói o índice do zero.
 - **A descoberta é por padrão de nome**, não por conexão real: uma dependência fora dos padrões não aparece, e uma que casa por acaso pode ser um falso positivo.
 - **Os dados valem até o último scan.** Mudanças muito recentes só aparecem depois do próximo scan (a cada 24 horas, ou manual).
