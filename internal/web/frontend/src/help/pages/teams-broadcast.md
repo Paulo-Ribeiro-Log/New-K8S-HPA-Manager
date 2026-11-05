@@ -20,7 +20,7 @@ Envia **a mesma mensagem para vários chats do Microsoft Teams** de uma vez (por
 
 ## Permissões
 
-Exige o **login do Teams** no servidor (a sessão do Chrome). As rotas desta aba **não passam pelo filtro de perfil SRE**: **qualquer usuário autenticado** pode enviar e apagar. Veja [Permissões](ajuda:geral-abas-de-recurso#permissoes).
+Exige o **login do Teams** no servidor (a sessão do Chrome). **Escanear chats, buscar uma mensagem por link, enviar, apagar mensagens, salvar e excluir modelos** exigem perfil SRE; **listar chats e ler modelos** não. Veja [Permissões](ajuda:geral-abas-de-recurso#permissoes).
 
 ## Impacto
 
