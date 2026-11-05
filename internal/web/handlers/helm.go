@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -236,6 +237,10 @@ func (h *HelmHandler) Install(c *gin.Context) {
 		h.respondMissingParam(c, "chartRef")
 		return
 	}
+	if looksLikeRenderedManifest(payload.ValuesYAML) {
+		h.respondBadRequest(c, "VALUES_LOOK_LIKE_MANIFEST", errors.New(helmManifestAsValuesMsg))
+		return
+	}
 
 	actionReq := helm.HelmActionRequest{
 		Namespace:   payload.Namespace,
@@ -278,6 +283,10 @@ func (h *HelmHandler) Upgrade(c *gin.Context) {
 	var payload helmUpgradePayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		h.respondBadRequest(c, "INVALID_PAYLOAD", err)
+		return
+	}
+	if looksLikeRenderedManifest(payload.ValuesYAML) {
+		h.respondBadRequest(c, "VALUES_LOOK_LIKE_MANIFEST", errors.New(helmManifestAsValuesMsg))
 		return
 	}
 
