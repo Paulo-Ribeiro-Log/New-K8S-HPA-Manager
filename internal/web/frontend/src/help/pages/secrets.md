@@ -37,7 +37,7 @@ As ações que alteram só ficam disponíveis com permissão de escrita no names
 
 ## Impacto
 
-**Altera o cluster, e pode derrubar aplicações na hora:** pods que leem o Secret como variável de ambiente só veem o valor novo ao reiniciar; os que montam como volume veem depois de um tempo. Hoje ficam no Change History: criar, aplicar, Resync AKV, pausar e retomar a sincronização. **Excluir um Secret não fica registrado.**
+**Altera o cluster, e pode derrubar aplicações na hora:** pods que leem o Secret como variável de ambiente só veem o valor novo ao reiniciar; os que montam como volume veem depois de um tempo. Ficam no Change History: criar, aplicar, **excluir**, Resync AKV, pausar e retomar a sincronização. **O conteúdo do Secret nunca vai para o histórico**: o aplicar grava só o SHA-256 e o tamanho do YAML, e a exclusão só a identificação.
 
 ## Cuidados e erros comuns
 
