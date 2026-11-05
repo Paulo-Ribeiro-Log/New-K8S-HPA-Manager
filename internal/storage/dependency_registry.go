@@ -74,6 +74,7 @@ func NewDependencyRegistry() (*DependencyRegistry, error) {
 	}
 
 	dbPath := filepath.Join(dbDir, "dependency-registry.db")
+	restrictDependencyRegistryPermissions(dbPath)
 
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -88,6 +89,21 @@ func NewDependencyRegistry() (*DependencyRegistry, error) {
 
 	log.Info().Str("path", dbPath).Msg("Dependency registry initialized")
 	return registry, nil
+}
+
+// restrictDependencyRegistryPermissions deixa o banco legível só pelo dono (0600). Ele guarda o
+// conteúdo decodificado de Secrets e ConfigMaps (índice de busca), então não pode ficar aberto
+// aos outros usuários da máquina. O SQLite cria -wal/-shm com a permissão do banco: criar já 0600
+// cobre os três; em instalações existentes o chmod corrige o que já estava 0644.
+func restrictDependencyRegistryPermissions(dbPath string) {
+	if f, err := os.OpenFile(dbPath, os.O_CREATE|os.O_RDWR, 0600); err == nil {
+		f.Close()
+	}
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if _, err := os.Stat(p); err == nil {
+			_ = os.Chmod(p, 0600)
+		}
+	}
 }
 
 // hasLegacySecretDataSchema detecta se secret_data_entries existe com o schema anterior à
