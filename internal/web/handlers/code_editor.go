@@ -86,8 +86,9 @@ type RepoInfo struct {
 	CurrentBranch string    `json:"current_branch"`
 	RemoteURL     string    `json:"remote_url"`
 	ClonedAt      time.Time `json:"cloned_at"`
-	Size          string    `json:"size,omitempty"` // ex: "42M"
-	IsLocal       bool      `json:"is_local"`       // pasta local aberta via "Abrir pasta" (code_editor_local.go)
+	Size          string    `json:"size,omitempty"`      // ex: "42M"
+	IsLocal       bool      `json:"is_local"`            // pasta local aberta via "Abrir pasta" (code_editor_local.go)
+	ClonedBy      string    `json:"cloned_by,omitempty"` // e-mail de quem clonou (só quem clonou exclui)
 	IsGit         bool      `json:"is_git"`
 }
 
@@ -270,6 +271,7 @@ func (h *CodeEditorHandler) ListRepos(c *gin.Context) {
 		return
 	}
 
+	owners := h.loadRepoOwners()
 	repos := make([]RepoInfo, 0, len(entries))
 	for _, e := range entries {
 		if e.Type()&os.ModeSymlink != 0 {
@@ -306,6 +308,7 @@ func (h *CodeEditorHandler) ListRepos(c *gin.Context) {
 			ClonedAt:      info.ModTime(),
 			Size:          repoSize(dir),
 			IsGit:         true,
+			ClonedBy:      owners[id],
 		})
 	}
 	c.JSON(http.StatusOK, repos)
@@ -408,6 +411,7 @@ func (h *CodeEditorHandler) CloneRepo(c *gin.Context) {
 	} else {
 		runGit(dir, "config", "user.email", "k8s-hpa-manager@local") //nolint:errcheck
 		runGit(dir, "config", "user.name", "K8s HPA Manager")        //nolint:errcheck
+		h.setRepoOwner(id, GetUserInfoForHistory(c).Email)
 		sendEvent("Clone concluído com sucesso.")
 		fmt.Fprintf(c.Writer, "data: {\"done\":true,\"id\":%q}\n\n", id)
 	}
@@ -433,8 +437,8 @@ func (h *CodeEditorHandler) DeleteRepo(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"removed": id, "closed": true})
 		return
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if status, msg := h.deleteClonedRepo(c, id); status != http.StatusOK {
+		c.JSON(status, gin.H{"error": msg})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"removed": id})

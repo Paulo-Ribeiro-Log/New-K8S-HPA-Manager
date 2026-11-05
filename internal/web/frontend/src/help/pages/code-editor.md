@@ -53,13 +53,13 @@ Há suporte a **autocompletar, hover, ir para a definição e diagnósticos** pa
 
 ## Impacto
 
-**Escreve arquivos no servidor, publica no GitHub e pode alterar o cluster.** Ficam no Change History: **commit**, **push**, **criar PR** e **apply no Kubernetes** (com os objetos e o SHA-256 do manifesto, nunca o conteúdo). **Merge, cherry-pick, exclusão de arquivo, tags e substituição em massa não ficam registrados.**
+**Escreve arquivos no servidor, publica no GitHub e pode alterar o cluster.** Ficam no Change History: **commit**, **push**, **criar PR**, **excluir repositório** e **apply no Kubernetes** (com os objetos e o SHA-256 do manifesto, nunca o conteúdo). **Merge, cherry-pick, exclusão de arquivo, tags e substituição em massa não ficam registrados.**
 
 ## Cuidados e erros comuns
 
 - **O terminal é um shell no servidor**, com o usuário do sistema que roda a aplicação, na raiz do repositório e **com as variáveis de ambiente do servidor**. É poder demais para uso casual: use só o necessário.
 - **Aplicar no Kubernetes muda o cluster de verdade.** Rode sempre **diff** e **dry-run** antes, e confira o **contexto** escolhido.
-- **Os clones ficam no servidor e são compartilhados**: a lista mostra todos os repositórios clonados, de qualquer usuário (cada um é identificado por `dono-repo`). **Excluir um repositório apaga o clone para todo mundo**, inclusive mudanças ainda não commitadas dos outros.
+- **Os clones ficam no servidor e são compartilhados**: a lista mostra todos os repositórios clonados, de qualquer usuário (cada um é identificado por `dono-repo`). **Só quem clonou pode excluir o clone**, porque a exclusão apaga a pasta para todo mundo, inclusive mudanças ainda não commitadas. Quem tentar excluir o clone de outra pessoa recebe um aviso com o nome do dono, e a tentativa fica no histórico. Clones **antigos, de antes desse registro, não têm dono** e qualquer pessoa pode excluí-los. Em instalações com token estático (sem login individual), todos aparecem como a mesma pessoa, então a trava não diferencia ninguém. **Abrir pasta** não tem essa trava: excluir só remove o atalho, nunca os arquivos da pasta.
 - **O commit usa o seu nome e e-mail** (ou o e-mail do seu SSO), não o do aplicativo.
 - **Push exige a conta GitHub certa.** Em caso de várias contas, confira qual está ativa antes de fazer push.
 - **Edição em "Abrir pasta" altera os arquivos reais** daquela pasta do servidor, sem Git por trás se ela não for um repositório.
