@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -1148,12 +1150,15 @@ func (h *PodHandler) Apply(c *gin.Context) {
 		// Capturar estado anterior para history tracking
 		pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err == nil {
+			// Só hash e tamanho: o YAML do pod pode trazer env com segredo e o histórico é somente-inclusão.
 			yamlBytes, _ := yaml.Marshal(pod)
+			sum := sha256.Sum256(yamlBytes)
 			before = map[string]interface{}{
-				"name":      pod.Name,
-				"namespace": pod.Namespace,
-				"phase":     string(pod.Status.Phase),
-				"yaml":      string(yamlBytes),
+				"name":        pod.Name,
+				"namespace":   pod.Namespace,
+				"phase":       string(pod.Status.Phase),
+				"yaml_sha256": hex.EncodeToString(sum[:]),
+				"yaml_bytes":  len(yamlBytes),
 			}
 		}
 	}
