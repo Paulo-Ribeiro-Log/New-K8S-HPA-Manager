@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"k8s-hpa-manager/internal/dbfile"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -223,6 +224,8 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
 	}
 	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
+	// 0700: a pasta guarda bancos com credenciais, sessões de navegador e cópia do kubeconfig.
+	dbfile.PrivateDir(baseDir)
 
 	// Checagem cedo e centralizada do driver SQLite — ver comentário completo em
 	// internal/storage/sqlite_health.go. Roda ANTES de qualquer um dos ~14 stores SQLite

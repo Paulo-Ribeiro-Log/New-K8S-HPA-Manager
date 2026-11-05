@@ -86,3 +86,63 @@ func TestRestrictDonoLeEGrava(t *testing.T) {
 		}
 	}
 }
+
+func TestPrivateDirCriaECorrige(t *testing.T) {
+	base := t.TempDir()
+
+	novo := filepath.Join(base, "a", "b") // não existe: cria 0700 (inclusive os pais)
+	PrivateDir(novo)
+	if got := modo(t, novo); got != 0700 {
+		t.Errorf("novo: %o, quer 700", got)
+	}
+
+	antigo := filepath.Join(base, "antigo") // instalação antiga, aberta
+	if err := os.Mkdir(antigo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(antigo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	PrivateDir(antigo)
+	if got := modo(t, antigo); got != 0700 {
+		t.Errorf("antigo: %o, quer 700", got)
+	}
+}
+
+// O dono continua listando, criando e lendo arquivos dentro da pasta 0700 (inclusive o que já
+// existia antes do chmod).
+func TestPrivateDirDonoContinuaUsando(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessao")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pre := filepath.Join(dir, "Cookies")
+	if err := os.WriteFile(pre, []byte("antes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	PrivateDir(dir)
+
+	if b, err := os.ReadFile(pre); err != nil || string(b) != "antes" {
+		t.Fatalf("ler arquivo antigo: %q %v", b, err)
+	}
+	novo := filepath.Join(dir, "novo.txt")
+	if err := os.WriteFile(novo, []byte("depois"), 0600); err != nil {
+		t.Fatalf("gravar: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("listar: %d entradas, err=%v", len(entries), err)
+	}
+	if err := os.RemoveAll(dir); err != nil { // e recriar, como o extrator faz a cada extração
+		t.Fatal(err)
+	}
+	PrivateDir(dir)
+	if got := modo(t, dir); got != 0700 {
+		t.Errorf("recriada: %o, quer 700", got)
+	}
+}
+
+func TestPrivateDirVazioNaoFazNada(t *testing.T) {
+	PrivateDir("") // não pode criar/alterar nada nem entrar em pânico
+}
