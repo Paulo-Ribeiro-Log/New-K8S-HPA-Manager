@@ -1,4 +1,4 @@
-// Package dbfile cuida das permissões dos arquivos SQLite da aplicação.
+// Package dbfile cuida das permissões dos arquivos SQLite e das pastas privadas da aplicação.
 //
 // Os bancos em ~/.k8s-hpa-manager guardam credenciais, tokens, manifestos e histórico. O SQLite
 // os cria com a permissão padrão do sistema (0644), legível por qualquer usuário da máquina. O
@@ -30,4 +30,18 @@ func Restrict(dbPath string) {
 			_ = os.Chmod(p, 0600)
 		}
 	}
+}
+
+// PrivateDir cria a pasta (se não existir) e a deixa acessível só pelo dono (0700). Serve para
+// pastas que guardam credenciais ou sessões de navegador (cookies), ou que contêm os bancos: em
+// instalações existentes o chmod corrige o que foi criado antes com 0755. O dono continua
+// listando, lendo e gravando normalmente. Falhas não derrubam a aplicação.
+func PrivateDir(dir string) {
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return
+	}
+	_ = os.Chmod(dir, 0700)
 }
