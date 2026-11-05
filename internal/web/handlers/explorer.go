@@ -1,26 +1,57 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pmezard/go-difflib/difflib"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 )
 
 // ExplorerHandler gerencia as rotas do Resource Explorer —
 // navegador universal de recursos Kubernetes (built-in e CRDs).
 type ExplorerHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager    *config.KubeConfigManager
+	historyTracker *history.HistoryTracker
 }
 
-// NewExplorerHandler cria um handler do Resource Explorer
-func NewExplorerHandler(km *config.KubeConfigManager) *ExplorerHandler {
-	return &ExplorerHandler{kubeManager: km}
+// NewExplorerHandler cria um handler do Resource Explorer. ht pode ser nil (nada é gravado no
+// Change History).
+func NewExplorerHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *ExplorerHandler {
+	return &ExplorerHandler{kubeManager: km, historyTracker: ht}
+}
+
+// explorerResourceLabel identifica o recurso no Change History: tipo/namespace/nome (recurso de
+// cluster, sem namespace, vira tipo/nome).
+func explorerResourceLabel(resource, namespace, name string) string {
+	if namespace == "" {
+		return resource + "/" + name
+	}
+	return resource + "/" + namespace + "/" + name
+}
+
+// explorerApplyHistory é o que entra no histórico de um apply: só identificação, SHA-256 e tamanho
+// do YAML. Nunca o conteúdo: o Explorer aplica qualquer tipo, inclusive Secret, e o histórico é
+// somente-inclusão.
+func explorerApplyHistory(group, yamlContent string, force bool) map[string]interface{} {
+	sum := sha256.Sum256([]byte(yamlContent))
+	after := map[string]interface{}{
+		"yaml_sha256": hex.EncodeToString(sum[:]),
+		"yaml_bytes":  len(yamlContent),
+		"force":       force,
+	}
+	if group != "" {
+		after["group"] = group
+	}
+	return after
 }
 
 // ListResources retorna todos os tipos de recursos disponíveis no cluster via Discovery API.
@@ -275,8 +306,14 @@ func (h *ExplorerHandler) Apply(c *gin.Context) {
 	}
 	defer cleanup()
 
-	if err := kubeclient.ApplyGenericResource(cluster, namespace, req.YAML, req.DryRun, req.Force, authArgs); err != nil {
-		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
+	start := time.Now()
+	applyErr := kubeclient.ApplyGenericResource(cluster, namespace, req.YAML, req.DryRun, req.Force, authArgs)
+	if !req.DryRun { // dry-run não altera nada: não entra no histórico
+		logOperation(c, h.historyTracker, "explorer_apply", explorerResourceLabel(resource, namespace, name), cluster,
+			nil, explorerApplyHistory(strings.TrimSpace(c.Query("group")), req.YAML, req.Force), start, applyErr)
+	}
+	if applyErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", applyErr.Error()))
 		return
 	}
 
@@ -313,8 +350,15 @@ func (h *ExplorerHandler) Delete(c *gin.Context) {
 	}
 	defer cleanup()
 
-	if err := kubeclient.DeleteGenericResource(cluster, namespace, resource, group, name, authArgs); err != nil {
-		c.JSON(http.StatusInternalServerError, errorResponse("DELETE_ERROR", err.Error()))
+	start := time.Now()
+	deleteErr := kubeclient.DeleteGenericResource(cluster, namespace, resource, group, name, authArgs)
+	var deleteAfter map[string]interface{}
+	if group != "" {
+		deleteAfter = map[string]interface{}{"group": group}
+	}
+	logOperation(c, h.historyTracker, "explorer_delete", explorerResourceLabel(resource, namespace, name), cluster, nil, deleteAfter, start, deleteErr)
+	if deleteErr != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("DELETE_ERROR", deleteErr.Error()))
 		return
 	}
 

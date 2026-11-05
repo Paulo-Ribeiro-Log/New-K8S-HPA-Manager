@@ -1415,7 +1415,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)
-	explorerHandler := handlers.NewExplorerHandler(s.kubeManager)
+	explorerHandler := handlers.NewExplorerHandler(s.kubeManager, s.historyTracker)
 	explorer := api.Group("/explorer")
 	{
 		explorer.GET("/api-resources", explorerHandler.ListResources)
