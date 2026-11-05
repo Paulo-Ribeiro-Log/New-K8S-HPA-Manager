@@ -208,6 +208,22 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["prometheus", "wal", "oomkilled", "crashloop", "limpar wal", "operator", "kube-prometheus-stack", "tolerations", "nodeselector", "helm", "alertmanager", "memória"],
   },
   {
+    id: "latency-test",
+    title: "Teste de Latência",
+    group: "Ferramentas",
+    impact: "escrita",
+    summary: "Mede a latência HTTP, HTTPS ou ICMP a partir de um pod no namespace, com P95/P99, histórico e topologia.",
+    keywords: ["latência", "latency", "ping", "icmp", "http", "p95", "p99", "curl", "topologia", "região", "aws", "pod efêmero"],
+  },
+  {
+    id: "db-test",
+    title: "Teste de Banco de Dados",
+    group: "Ferramentas",
+    impact: "escrita",
+    summary: "Testa conexão com PostgreSQL, MySQL, MongoDB, Redis e SQL Server e explora o banco em somente leitura.",
+    keywords: ["banco de dados", "database", "postgres", "mysql", "mariadb", "mongodb", "redis", "sqlserver", "azure sql", "conexão", "tcp", "tls", "autenticação", "ephemeral container", "docker"],
+  },
+  {
     id: "finops",
     title: "FinOps",
     group: "Ferramentas",
