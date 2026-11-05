@@ -25,7 +25,8 @@ import (
 //   - escolha explícita do que fazer com os Jobs (apagar junto ou manter órfãos);
 //   - precondition de UID: só apaga o MESMO objeto mostrado na prévia (se foi recriado no meio
 //     tempo, o delete é recusado);
-//   - histórico com o manifesto completo, para dar para recriar.
+//   - histórico só com a identificação (SHA-256 e tamanho do manifesto): o histórico é
+//     somente-inclusão e o manifesto pode ter env com segredo, então não se guarda o conteúdo.
 // Job usa propagation Background explícito: na API batch/v1 o padrão de um Job é Orphan (os
 // pods ficariam para trás) — o kubectl é que usa Background por padrão.
 
