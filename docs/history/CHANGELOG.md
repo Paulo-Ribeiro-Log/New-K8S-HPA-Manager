@@ -3,6 +3,20 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Auditoria de segurança e do Change History (Novembro 2026)
+
+Achados ao escrever a ajuda contextual das abas; cada item saiu em PR próprio.
+
+- **Change History:** Secrets (`apply_secret`, `delete_secret`) e Explorer (`explorer_apply`, `explorer_delete`) passam a registrar, só com identificação, SHA-256 e tamanho (nunca o YAML). Exclusão de repositório do Code Editor registra `code_editor_delete_repo`.
+- **Permissões:** todos os bancos SQLite em `~/.k8s-hpa-manager` são criados com 0600 (`-wal`/`-shm` junto) e a pasta base e `rod-session` com 0700 (`internal/dbfile`).
+- **Logs:** `github_releases.go` deixou de logar todos os headers da requisição (vazava `Authorization`).
+- **RBAC de grupo (`RequireSREGroup`):** terminal do Code Editor e as 7 rotas com efeito do Teams Broadcast ficam atrás dele, com testes que impedem a regressão.
+- **Code Editor:** só quem clonou o repositório pode excluí-lo (403 para os demais; `RepoInfo.ClonedBy`).
+- **Cliente HTTP:** execuções salvas guardam o `request` cifrado (AES-GCM, prefixo `enc:v1:`), URLs com credenciais são mascaradas e registros legados são migrados na abertura.
+- **Helm:** a aba Manifest passa a ser somente leitura e a API recusa, em Install/Upgrade, values que parecem manifesto renderizado (`VALUES_LOOK_LIKE_MANIFEST`).
+- **Descoberta de Rede:** decisão de manter **sem bloqueio de destino**; o aviso de uso só em alvos próprios ou autorizados está na página de ajuda.
+- **Verificação em produção:** o `history.db` não guarda YAML antigo de Secret/Pod (os `create_secret` têm só `name`, `namespace`, `resourceVersion`).
+
 ### Prometheus via Helm — recursos, memory limit sugerido e revisões do release (Outubro 2026)
 
 - O diálogo do Helm (botão "Helm" do painel do WAL) ganha **requests/limits de CPU e memória** por componente (`resources` do chart: prometheusSpec, alertmanagerSpec, kube-state-metrics, prometheusOperator). Campo vazio mantém o valor do release (mapas são mesclados pelo `--reuse-values`, ao contrário das listas de tolerations); quantidades são validadas (500m, 2, 512Mi, 4Gi) e os valores atuais do recurso selecionado aparecem como dica.
