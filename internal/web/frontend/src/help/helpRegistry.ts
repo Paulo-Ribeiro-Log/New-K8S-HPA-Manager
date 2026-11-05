@@ -192,6 +192,14 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["monitoramento", "monitoring", "hpa", "prometheus", "métricas", "cpu", "memória", "réplicas", "alertas", "engine"],
   },
   {
+    id: "helm",
+    title: "Helm",
+    group: "Workloads",
+    impact: "destrutiva",
+    summary: "Releases Helm: values, histórico e manifest; install, upgrade, rollback e uninstall.",
+    keywords: ["helm", "release", "chart", "values", "upgrade", "rollback", "uninstall", "install", "revisão", "manifest", "dry run"],
+  },
+  {
     id: "finops",
     title: "FinOps",
     group: "Ferramentas",
