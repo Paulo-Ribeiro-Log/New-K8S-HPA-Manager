@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -294,7 +296,7 @@ func (h *SecretHandler) Apply(c *gin.Context) {
 	if !req.DryRun && h.historyTracker != nil {
 		after := secretToHistoryMap(result)
 		entry := history.HistoryEntry{
-			Action:   "apply_configmap",
+			Action:   "apply_secret",
 			Resource: fmt.Sprintf("%s/%s", namespace, name),
 			Cluster:  cluster,
 			Before:   before,
@@ -465,8 +467,12 @@ func secretManifestToHistoryMap(manifest *models.SecretManifest) map[string]inte
 	if manifest == nil {
 		return nil
 	}
+	// Nunca o YAML: o Secret traz os valores (base64) e o histórico é somente-inclusão.
+	// Hash e tamanho bastam para saber se o conteúdo mudou entre dois registros.
+	sum := sha256.Sum256([]byte(manifest.YAML))
 	return map[string]interface{}{
-		"yaml":            manifest.YAML,
+		"yaml_sha256":     hex.EncodeToString(sum[:]),
+		"yaml_bytes":      len(manifest.YAML),
 		"resourceVersion": manifest.Metadata.ResourceVersion,
 	}
 }
@@ -702,7 +708,9 @@ func (h *SecretHandler) Delete(c *gin.Context) {
 	}
 
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.DeleteSecret(c.Request.Context(), namespace, name)
+	logOperation(c, h.historyTracker, "delete_secret", namespace+"/"+name, cluster, nil, nil, start, err)
 	if err != nil {
 		if checkForbidden(c, err) {
 			return
