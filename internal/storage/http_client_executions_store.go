@@ -1,12 +1,20 @@
 package storage
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
-	"k8s-hpa-manager/internal/dbfile"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
+
+	"k8s-hpa-manager/internal/dbfile"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -38,7 +46,142 @@ type HTTPClientExecution struct {
 // HTTPClientExecutionStore persiste as execuções do Cliente HTTP em
 // ~/.k8s-hpa-manager/http_client_executions.db (0600: headers podem ter tokens).
 type HTTPClientExecutionStore struct {
-	db *sql.DB
+	db  *sql.DB
+	key []byte // AES-256: criptografa a coluna request (headers e corpo, que carregam tokens)
+}
+
+// httpClientRequestPrefix marca a coluna request já criptografada. Linhas sem o prefixo são do
+// formato antigo (JSON em texto puro) e são migradas ao abrir o banco.
+const httpClientRequestPrefix = "enc:v1:"
+
+// httpClientURLRe acha URLs dentro de um texto (mensagens de erro de rede do Go incluem a URL inteira,
+// com a query string).
+var httpClientURLRe = regexp.MustCompile(`https?://[^\s"'<>)]+`)
+
+// redactURL devolve a URL sem credenciais (user:senha@), sem query string e sem fragmento: query
+// costuma carregar token (?api_key=...). Com query, termina em "?…" para deixar claro que existia.
+// O texto que não parece uma URL volta igual.
+func redactURL(raw string) string {
+	if !strings.Contains(raw, "://") {
+		return raw
+	}
+	rest := raw
+	if i := strings.IndexByte(rest, '#'); i >= 0 {
+		rest = rest[:i]
+	}
+	hadQuery := false
+	if i := strings.IndexByte(rest, '?'); i >= 0 {
+		rest, hadQuery = rest[:i], true
+	}
+	if i := strings.Index(rest, "://"); i >= 0 {
+		scheme, after := rest[:i+3], rest[i+3:]
+		hostEnd := strings.IndexByte(after, '/')
+		authority, tail := after, ""
+		if hostEnd >= 0 {
+			authority, tail = after[:hostEnd], after[hostEnd:]
+		}
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			authority = authority[at+1:]
+		}
+		rest = scheme + authority + tail
+	}
+	if hadQuery {
+		rest += "?…"
+	}
+	return rest
+}
+
+// redactURLsInText aplica redactURL a cada URL encontrada em um texto livre.
+func redactURLsInText(s string) string {
+	return httpClientURLRe.ReplaceAllStringFunc(s, redactURL)
+}
+
+func (s *HTTPClientExecutionStore) encryptRequest(plain string) (string, error) {
+	block, err := aes.NewCipher(s.key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	return httpClientRequestPrefix + base64.StdEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte(plain), nil)), nil
+}
+
+// decryptRequest decifra a coluna request. Texto sem o prefixo é o formato antigo e volta igual.
+func (s *HTTPClientExecutionStore) decryptRequest(stored string) (string, error) {
+	if !strings.HasPrefix(stored, httpClientRequestPrefix) {
+		return stored, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, httpClientRequestPrefix))
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(s.key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) < gcm.NonceSize() {
+		return "", fmt.Errorf("conteúdo cifrado curto demais")
+	}
+	plain, err := gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], nil)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+// migrateLegacy criptografa as linhas gravadas em texto puro por versões anteriores e tira a query
+// string e as credenciais da URL e do erro. Idempotente: linhas já migradas não são tocadas.
+func (s *HTTPClientExecutionStore) migrateLegacy() error {
+	rows, err := s.db.Query(`SELECT id, request, url, error FROM http_client_executions
+		WHERE request NOT LIKE ? OR url LIKE '%?%' OR url LIKE '%@%' OR error LIKE '%?%'`, httpClientRequestPrefix+"%")
+	if err != nil {
+		return err
+	}
+	type linha struct {
+		id                 int64
+		req, urlCol, errTx string
+	}
+	var pend []linha
+	for rows.Next() {
+		var l linha
+		if err := rows.Scan(&l.id, &l.req, &l.urlCol, &l.errTx); err != nil {
+			rows.Close()
+			return err
+		}
+		pend = append(pend, l)
+	}
+	rows.Close()
+	if len(pend) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	for _, l := range pend {
+		req := l.req
+		if !strings.HasPrefix(req, httpClientRequestPrefix) {
+			if req, err = s.encryptRequest(req); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`UPDATE http_client_executions SET request = ?, url = ?, error = ? WHERE id = ?`,
+			req, redactURL(l.urlCol), redactURLsInText(l.errTx), l.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 const httpClientExecutionsSchema = `
@@ -80,7 +223,17 @@ func NewHTTPClientExecutionStore(dbPath string) (*HTTPClientExecutionStore, erro
 		db.Close()
 		return nil, fmt.Errorf("criar schema http_client_executions: %w", err)
 	}
-	return &HTTPClientExecutionStore{db: db}, nil
+	key, err := getOrCreateEncryptionKey(filepath.Dir(dbPath))
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("chave de criptografia do cliente http: %w", err)
+	}
+	store := &HTTPClientExecutionStore{db: db, key: key}
+	if err := store.migrateLegacy(); err != nil {
+		// A migração é melhor esforço: o store continua funcionando (linhas antigas ficam legíveis).
+		fmt.Printf("⚠️  Cliente HTTP: não foi possível proteger execuções antigas: %v\n", err)
+	}
+	return store, nil
 }
 
 func (s *HTTPClientExecutionStore) Close() error {
@@ -92,11 +245,15 @@ func (s *HTTPClientExecutionStore) Add(e *HTTPClientExecution) error {
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now()
 	}
+	enc, err := s.encryptRequest(e.Request)
+	if err != nil {
+		return fmt.Errorf("proteger execução do cliente http: %w", err)
+	}
 	res, err := s.db.Exec(
 		`INSERT INTO http_client_executions (user_email, created_at, request, method, url, execution_mode, cluster,
 			status, status_text, duration_ms, size_bytes, executed_from, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		e.UserEmail, e.CreatedAt.UTC(), e.Request, e.Method, e.URL, e.ExecutionMode, e.Cluster,
-		e.Status, e.StatusText, e.DurationMs, e.SizeBytes, e.ExecutedFrom, e.Error,
+		e.UserEmail, e.CreatedAt.UTC(), enc, e.Method, redactURL(e.URL), e.ExecutionMode, e.Cluster,
+		e.Status, e.StatusText, e.DurationMs, e.SizeBytes, e.ExecutedFrom, redactURLsInText(e.Error),
 	)
 	if err != nil {
 		return fmt.Errorf("gravar execução do cliente http: %w", err)
@@ -132,6 +289,12 @@ func (s *HTTPClientExecutionStore) List(userEmail string, limit int) ([]HTTPClie
 		if err := rows.Scan(&e.ID, &e.UserEmail, &e.CreatedAt, &e.Request, &e.Method, &e.URL, &e.ExecutionMode, &e.Cluster,
 			&e.Status, &e.StatusText, &e.DurationMs, &e.SizeBytes, &e.ExecutedFrom, &e.Error); err != nil {
 			return nil, err
+		}
+		// Sem chave que decifre (ex.: .secret trocado), a linha sai com request vazio e o handler a omite.
+		if plain, derr := s.decryptRequest(e.Request); derr == nil {
+			e.Request = plain
+		} else {
+			e.Request = ""
 		}
 		out = append(out, e)
 	}

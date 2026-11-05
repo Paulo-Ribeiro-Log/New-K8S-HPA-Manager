@@ -27,7 +27,7 @@ Monta e envia uma **requisição HTTP** (ou **cola um comando cURL**) e mostra a
 
 ## Lista de execuções
 
-Cada envio entra na sua lista de **Execuções**, com método, URL, status e tempo. Dali você pode **abrir no formulário** (sem enviar), **re-executar** ou **remover**. A lista guarda as **últimas 200** execuções e é **só sua**.
+Cada envio entra na sua lista de **Execuções**, com método, URL (sem a query string), status e tempo. Dali você pode **abrir no formulário** (sem enviar), **re-executar** ou **remover**. A lista guarda as **últimas 200** execuções e é **só sua**.
 
 ## Permissões
 
@@ -39,7 +39,7 @@ Cada envio entra na sua lista de **Execuções**, com método, URL, status e tem
 
 ## Cuidados e erros comuns
 
-- **Headers e corpo ficam guardados na sua lista de execuções**, em texto puro, em um banco local do servidor (arquivo com permissão restrita ao dono). Isso inclui **tokens** (`Authorization`) e senhas que você tenha colado. **Remova da lista** as execuções com segredo quando terminar.
+- **Headers e corpo ficam guardados na sua lista de execuções**, para o re-executar funcionar, mas **criptografados** (AES-256-GCM) em um banco local do servidor com permissão restrita ao dono. Isso inclui **tokens** (`Authorization`) e senhas que você tenha colado. A **URL mostrada na lista aparece sem a query string** (`?…`) e sem usuário e senha, porque é nela que costuma ficar o token. A chave de criptografia fica no servidor (`~/.k8s-hpa-manager/.secret`): quem tem acesso ao usuário do servidor ainda consegue ler. **Remova da lista** as execuções com segredo quando terminar.
 - **Pelo servidor, o alcance é o da rede do servidor**, não o da sua máquina nem o do cluster. A ferramenta **não bloqueia nenhum destino**: use com critério, principalmente contra endereços internos.
 - **Não use `DELETE` ou `POST` de verdade em produção** só para testar. Prefira um ambiente de teste.
 - **Ignorar o certificado TLS** desliga a verificação do servidor: só para diagnóstico.
