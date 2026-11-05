@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -258,7 +260,9 @@ func (h *CronJobHandler) DeleteJob(c *gin.Context) {
 func (h *CronJobHandler) recordBatchDelete(c *gin.Context, action, resource, cluster, manifest string, after map[string]interface{}, start time.Time, err error) {
 	var before map[string]interface{}
 	if manifest != "" {
-		before = map[string]interface{}{"yaml": manifest}
+		// Só hash e tamanho: o manifesto pode ter env com segredo e o histórico é somente-inclusão.
+		sum := sha256.Sum256([]byte(manifest))
+		before = map[string]interface{}{"yaml_sha256": hex.EncodeToString(sum[:]), "yaml_bytes": len(manifest)}
 	}
 	h.recordBatchDeleteMap(c, action, resource, cluster, before, start, err, after)
 }
