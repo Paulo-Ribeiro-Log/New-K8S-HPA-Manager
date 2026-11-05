@@ -18,7 +18,7 @@ Lista os **node pools** do cluster e permite ver a configuração de cada um (VM
 2. **Clique em um pool** para abrir o editor, com cinco abas: **Configuration**, **Nodes**, **Disk**, **Conntrack** e **Pendentes**.
 3. Em **Configuration**, edite o **Autoscaling**. Com ele desligado você define o **Node Count**; com ele ligado, **Min Nodes** e **Max Nodes**. O painel também mostra a VM (com as especificações), o disco do SO, a versão do Kubernetes, a imagem do node, o máximo de pods por node, a prioridade (**Spot** é destacado como "pode ser removido") e os taints do pool.
 4. Escolha como aplicar:
-   - **Salvar (Staging):** guarda a mudança para aplicar depois, junto com outras, pela aba Staging.
+   - **Salvar (Staging):** guarda a mudança para aplicar depois, junto com outras, pela aba [Staging](ajuda:staging).
    - **Aplicar Agora:** abre a confirmação e aplica ao confirmar.
 5. **Análise Preditiva** (e seu histórico) avalia o pool com base nos dados coletados.
 
@@ -62,4 +62,4 @@ Aplicar só fica disponível com permissão de escrita no cluster. Veja [Permiss
 
 ## Veja também
 
-[Nodes](ajuda:nodes), [Pods](ajuda:pods), [Events](ajuda:events), [FinOps](ajuda:finops).
+[Staging](ajuda:staging), [Nodes](ajuda:nodes), [Pods](ajuda:pods), [Events](ajuda:events), [FinOps](ajuda:finops).

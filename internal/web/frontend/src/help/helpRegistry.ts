@@ -176,6 +176,22 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["node", "cordon", "uncordon", "drain", "evict", "taint", "node pool", "notready", "manutenção", "shell no node", "allocatable"],
   },
   {
+    id: "staging",
+    title: "Staging",
+    group: "Principal",
+    impact: "escrita",
+    summary: "Fila de alterações pendentes de HPAs e Node Pools: revisar o de-para, aplicar em lote e guardar em sessões.",
+    keywords: ["staging", "pendente", "aplicar todos", "sessão", "save session", "load session", "alterações", "lote"],
+  },
+  {
+    id: "monitoring",
+    title: "Monitoramento",
+    group: "Ferramentas",
+    impact: "leitura",
+    summary: "Acompanha HPAs ao longo do tempo: CPU, memória, réplicas e alertas, a partir do Prometheus.",
+    keywords: ["monitoramento", "monitoring", "hpa", "prometheus", "métricas", "cpu", "memória", "réplicas", "alertas", "engine"],
+  },
+  {
     id: "finops",
     title: "FinOps",
     group: "Ferramentas",
