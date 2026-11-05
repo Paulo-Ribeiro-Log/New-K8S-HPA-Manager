@@ -28,11 +28,11 @@ Listar, ler YAML, descrever e ver logs não exigem o grupo SRE. **Aplicar e excl
 
 **Altera o cluster e pode apagar qualquer coisa.** Funciona para **qualquer tipo de recurso**, inclusive Secrets, Namespaces, ClusterRoles e CRDs. O **Aplicar** primeiro faz um `kubectl replace` (**substitui o objeto inteiro**, como o `kubectl edit`); se o recurso não existe, cria com `apply`; e, se o `replace` falhar por outro motivo, tenta um **server-side apply com `--force-conflicts`**, que **toma a propriedade** dos campos de outro gerenciador (Helm, operator).
 
-**Importante: Aplicar e Excluir por esta aba não são registrados no Change History.** Ao contrário das abas dedicadas, o Explorer não grava trilha de auditoria. Prefira a aba própria do recurso quando houver uma.
+Ficam no Change History: **Aplicar** (`explorer_apply`, só quando **não** é dry-run) e **Excluir** (`explorer_delete`), com o recurso no formato `tipo/namespace/nome`, o cluster, o autor e o resultado, **inclusive as falhas**. O registro do Aplicar leva só o **SHA-256 e o tamanho do YAML**, o grupo da API e se o `force` foi usado, **nunca o conteúdo** (que pode ser um Secret). Prefira a aba própria do recurso quando houver uma: ela valida mais coisas para aquele tipo.
 
 ## Cuidados e erros comuns
 
-- **Não há trilha de auditoria** do que você fizer aqui. Se mudar algo importante, avise o time ou registre por outro meio.
+- **O histórico não guarda o conteúdo que você aplicou**, só a identificação e o hash. Para saber *o que* mudou, compare com o estado anterior (use o **Diff** antes de aplicar) ou guarde o YAML no Git.
 - **Excluir é definitivo e vale para qualquer tipo.** Excluir um Namespace apaga tudo dentro dele; excluir um CRD apaga todos os objetos daquele tipo. Leia o nome e o namespace na confirmação.
 - **O YAML de um Secret mostra os valores** (em base64). Quem tem acesso a esta aba lê Secrets de qualquer namespace que o RBAC permitir.
 - **Mudanças em recursos gerenciados por Helm, Argo CD ou Flux** são desfeitas no próximo sync. Ajuste a origem.
