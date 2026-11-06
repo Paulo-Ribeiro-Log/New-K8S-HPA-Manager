@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { apiClient, type VolumeItem, type VolumesResponse } from "@/lib/api/client";
+import { apiClient, type VolumeAppCost, type VolumeItem, type VolumesResponse } from "@/lib/api/client";
 
 // Volumes do cluster (PV/PVC) ligados à aplicação, node e node pool. Somente leitura.
 
@@ -15,7 +15,7 @@ interface Props {
   onClose: () => void;
 }
 
-type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "pool" | "issues";
+type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "pool" | "issues";
 
 const OWNER_SOURCE_LABEL: Record<string, string> = { pod: "pod", spec: "spec do workload", statefulset: "volumeClaimTemplate", label: "label" };
 const OWNER_SOURCE_HELP: Record<string, string> = {
@@ -25,6 +25,8 @@ const OWNER_SOURCE_HELP: Record<string, string> = {
   label: "Deduzido pelas labels app/app.kubernetes.io/name do PVC",
 };
 const GIB = 1024 ** 3;
+const fmtBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const COST_KIND_LABEL: Record<string, string> = { effective: "efetivo", estimate: "estimado", none: "sem preço" };
 const fmtGiB = (b: number) => (b ? `${(b / GIB).toFixed(b >= 10 * GIB ? 0 : 1)} GiB` : "—");
 
 function sortValue(it: VolumeItem, k: SortKey): string | number {
@@ -35,6 +37,7 @@ function sortValue(it: VolumeItem, k: SortKey): string | number {
     case "storage_class": return it.storage_class;
     case "source": return `${it.source ?? ""} ${it.source_detail ?? ""}`;
     case "capacity": return it.capacity_bytes;
+    case "cost": return it.cost_brl_month ?? 0;
     case "pool": return it.node_pools.join(",");
     case "issues": return it.issues.length;
   }
@@ -46,12 +49,18 @@ function csvCell(v: string | number): string {
 }
 
 function toCSV(items: VolumeItem[]): string {
-  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "capacidade_gib", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "problemas"];
+  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "problemas"];
   const rows = items.map((i) => [
     i.kind, i.namespace, i.workloads.length ? i.workloads.join(" ") : (i.app_hint ? `(label) ${i.app_hint}` : ""), i.owner_source ?? "", i.pvc ?? "", i.pvc_status ?? "", i.pv ?? "", i.pv_phase ?? "",
-    i.storage_class, i.source ?? "", i.source_detail ?? "", (i.capacity_bytes / GIB).toFixed(2), i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
+    i.storage_class, i.source ?? "", i.source_detail ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
     i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "", i.issues.join(" | "),
   ]);
+  return [head, ...rows].map((r) => r.map(csvCell).join(";")).join("\n");
+}
+
+function toAppsCSV(apps: VolumeAppCost[]): string {
+  const head = ["namespace", "aplicação", "volumes", "compartilhados", "capacidade_gib", "custo_brl_mes", "volumes_sem_preco"];
+  const rows = apps.map((a) => [a.namespace, a.app, a.volumes, a.shared_volumes, (a.capacity_bytes / GIB).toFixed(2), a.cost_brl_month.toFixed(2), a.unpriced]);
   return [head, ...rows].map((r) => r.map(csvCell).join(";")).join("\n");
 }
 
@@ -60,6 +69,8 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [includeUsage, setIncludeUsage] = useState(false);
+  const [includeCost, setIncludeCost] = useState(false);
+  const [view, setView] = useState<"volumes" | "apps">("volumes");
   const [query, setQuery] = useState("");
   const [namespace, setNamespace] = useState("");
   const [pool, setPool] = useState("");
@@ -72,12 +83,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
     setLoading(true);
     setError("");
     apiClient
-      .getNodePoolVolumes(cluster, includeUsage)
+      .getNodePoolVolumes(cluster, includeUsage, includeCost)
       .then((r) => { if (!cancelled) setData(r); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Erro ao listar os volumes"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [cluster, includeUsage]);
+  }, [cluster, includeUsage, includeCost]);
 
   const items = data?.items ?? [];
   const namespaces = useMemo(() => [...new Set(items.map((i) => i.namespace).filter(Boolean))].sort(), [items]);
@@ -105,11 +116,18 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: false }));
   }
 
+  const apps = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (data?.by_app ?? []).filter((a) => (!namespace || a.namespace === namespace) && (!q || `${a.namespace} ${a.app}`.toLowerCase().includes(q)));
+  }, [data, query, namespace]);
+  const costOn = includeCost && !!data && !data.cost_warning;
+  const appsView = view === "apps" && costOn;
+
   function exportCSV() {
-    const blob = new Blob(["﻿" + toCSV(rows)], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob(["﻿" + (appsView ? toAppsCSV(apps) : toCSV(rows))], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `volumes-${cluster.replace(/[^\w.-]+/g, "_")}.csv`;
+    a.download = `${appsView ? "volumes-por-aplicacao" : "volumes"}-${cluster.replace(/[^\w.-]+/g, "_")}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -142,6 +160,14 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <span><b>{s.pvs}</b> PVs</span>
             <span><b>{fmtGiB(s.capacity_bytes)}</b> provisionados</span>
             <span><b>{s.nfs}</b> NFS</span>
+            {costOn && (
+              <>
+                <span title="Soma dos volumes com preço (efetivo ou estimado)"><b>{fmtBRL(s.cost_brl_month)}</b>/mês</span>
+                <span className={s.cost_idle_brl_month ? "text-amber-300" : "text-muted-foreground"} title="Volumes sem pod usando ou PV sem PVC">
+                  <b>{fmtBRL(s.cost_idle_brl_month)}</b>/mês em volumes ociosos
+                </span>
+              </>
+            )}
             <span className={s.with_issues ? "text-amber-300" : "text-muted-foreground"}><b>{s.with_issues}</b> com problema</span>
             <span className={s.unused_pvcs ? "text-amber-300" : "text-muted-foreground"}><b>{s.unused_pvcs}</b> PVCs sem pod</span>
             <span className={s.no_owner ? "text-amber-300" : "text-muted-foreground"}><b>{s.no_owner}</b> sem aplicação identificada</span>
@@ -169,18 +195,77 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
           <label className="flex items-center gap-1.5 text-xs cursor-pointer">
             <Checkbox checked={onlyIssues} onCheckedChange={(v) => setOnlyIssues(v === true)} />Só com problema
           </label>
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="Custo mensal por volume e por aplicação: efetivo do Cost Management quando existe (Azure) e, no resto, estimativa de tabela on-demand do FinOps">
+            <Checkbox checked={includeCost} onCheckedChange={(v) => { setIncludeCost(v === true); if (v !== true) setView("volumes"); }} />Incluir custo (FinOps)
+          </label>
           <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="Consulta o Prometheus do cluster (kubelet_volume_stats); pode demorar alguns segundos">
             <Checkbox checked={includeUsage} onCheckedChange={(v) => setIncludeUsage(v === true)} />Incluir uso (Prometheus)
           </label>
           <div className="flex-1" />
-          <span className="text-xs text-muted-foreground">{rows.length} de {items.length}</span>
-          <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={exportCSV} disabled={rows.length === 0}>
+          {costOn && (
+            <div className="flex rounded-md border border-input overflow-hidden text-xs">
+              {(["volumes", "apps"] as const).map((v) => (
+                <button key={v} onClick={() => setView(v)} className={`px-2 h-7 ${view === v ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}>
+                  {v === "volumes" ? "Volumes" : "Por aplicação"}
+                </button>
+              ))}
+            </div>
+          )}
+          <span className="text-xs text-muted-foreground">{appsView ? `${apps.length} aplicações` : `${rows.length} de ${items.length}`}</span>
+          <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={exportCSV} disabled={appsView ? apps.length === 0 : rows.length === 0}>
             <Download className="w-3 h-3" />CSV
           </Button>
         </div>
 
+        {includeCost && data?.cost_warning && (
+          <div className="flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300 flex-shrink-0">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /><span className="[overflow-wrap:anywhere]">{data.cost_warning}</span>
+          </div>
+        )}
+        {costOn && (
+          <p className="text-[11px] text-muted-foreground flex-shrink-0">
+            {s?.cost_effective ?? 0} volume(s) com custo efetivo (Cost Management), {s?.cost_estimate ?? 0} estimado(s) por preço de tabela on-demand (sem reserva) e {s?.cost_none ?? 0} sem preço
+            (NFS/Files/EFS: o custo é do servidor). Volume compartilhado entra dividido entre as aplicações.
+          </p>
+        )}
+
         <div className="flex-1 min-h-0 overflow-auto border border-border/40 rounded">
-          {loading ? (
+          {appsView && !loading && !error ? (
+            apps.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">Nenhuma aplicação com esses filtros.</div>
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-card border-b border-border/40 text-muted-foreground z-10">
+                  <tr>
+                    <th className="text-left font-medium px-2 py-1.5">Namespace</th>
+                    <th className="text-left font-medium px-2 py-1.5">Aplicação</th>
+                    <th className="text-right font-medium px-2 py-1.5">Volumes</th>
+                    <th className="text-right font-medium px-2 py-1.5">Capacidade</th>
+                    <th className="text-right font-medium px-2 py-1.5">Custo/mês</th>
+                    <th className="text-right font-medium px-2 py-1.5">% do total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {apps.map((a) => (
+                    <tr key={`${a.namespace}|${a.app}`} className="border-b border-border/20 hover:bg-muted/30">
+                      <td className="px-2 py-1.5 font-mono">{a.namespace || "—"}</td>
+                      <td className="px-2 py-1.5">
+                        {a.app === "(sem aplicação identificada)" ? <span className="text-amber-300">{a.app}</span> : <span className="font-mono">{a.app}</span>}
+                      </td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                        {a.volumes}
+                        {a.shared_volumes > 0 && <span className="ml-1 text-[10px] text-muted-foreground" title="Volumes compartilhados com outras aplicações (custo dividido)">({a.shared_volumes} comp.)</span>}
+                        {a.unpriced > 0 && <span className="ml-1 text-[10px] text-amber-300" title="Volumes sem preço: o custo real pode ser maior">+{a.unpriced} sem preço</span>}
+                      </td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">{fmtGiB(a.capacity_bytes)}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap font-semibold">{fmtBRL(a.cost_brl_month)}</td>
+                      <td className="px-2 py-1.5 text-right text-muted-foreground">{s && s.cost_brl_month > 0 ? `${((a.cost_brl_month / s.cost_brl_month) * 100).toFixed(1)}%` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          ) : loading ? (
             <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" />Listando PVs, PVCs e pods do cluster…</div>
           ) : error ? (
             <div className="p-4 text-sm text-red-400 whitespace-pre-wrap">{error}</div>
@@ -196,6 +281,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                   <Th k="storage_class">Storage class</Th>
                   <Th k="source">Origem</Th>
                   <Th k="capacity">Capacidade</Th>
+                  {costOn && <Th k="cost">Custo/mês</Th>}
                   {includeUsage && <th className="text-left font-medium px-2 py-1.5">Uso</th>}
                   <Th k="pool">{resourceLabel.replace(/s$/, "")}</Th>
                   <Th k="issues">Situação</Th>
@@ -243,6 +329,16 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                       {fmtGiB(i.capacity_bytes)}
                       <div className="text-[10px] text-muted-foreground">{i.access_modes.join(", ")}</div>
                     </td>
+                    {costOn && (
+                      <td className="px-2 py-1.5 whitespace-nowrap" title={i.cost_note}>
+                        {i.cost_kind && i.cost_kind !== "none" ? (
+                          <>
+                            <span className={i.idle ? "text-amber-300 font-semibold" : "font-semibold"}>{fmtBRL(i.cost_brl_month ?? 0)}</span>
+                            <div className="text-[10px] text-muted-foreground">{COST_KIND_LABEL[i.cost_kind]}</div>
+                          </>
+                        ) : <span className="text-muted-foreground text-[11px]">sem preço</span>}
+                      </td>
+                    )}
                     {includeUsage && (
                       <td className="px-2 py-1.5 whitespace-nowrap">
                         {i.used_bytes ? `${fmtGiB(i.used_bytes)} (${(i.usage_percentage ?? 0).toFixed(0)}%)` : <span className="text-muted-foreground">—</span>}

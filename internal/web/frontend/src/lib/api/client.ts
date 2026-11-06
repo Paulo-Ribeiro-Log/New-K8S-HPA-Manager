@@ -2723,9 +2723,10 @@ class APIClient {
   }
 
   // PV/PVC do cluster ligados à aplicação, node e node pool (somente leitura)
-  async getNodePoolVolumes(cluster: string, includeUsage = false): Promise<VolumesResponse> {
+  async getNodePoolVolumes(cluster: string, includeUsage = false, includeCost = false): Promise<VolumesResponse> {
     const params = new URLSearchParams({ cluster });
     if (includeUsage) params.set("include_usage", "true");
+    if (includeCost) params.set("include_cost", "true");
     const r = await this.request<{ success: boolean; data: VolumesResponse }>(`/nodepools/volumes?${params.toString()}`);
     return r.data;
   }
@@ -6137,11 +6138,28 @@ export interface VolumeItem {
   used_bytes?: number;
   usage_percentage?: number;
   issues: string[];
+  idle: boolean; // PVC sem pod ou PV sem PVC: cobra sem uso
+  cost_brl_month?: number;
+  cost_kind?: "effective" | "estimate" | "none"; // só com include_cost
+  cost_note?: string;
+}
+
+export interface VolumeAppCost {
+  namespace: string;
+  app: string; // "Kind/nome" ou "(sem aplicação identificada)"
+  volumes: number;
+  shared_volumes: number;
+  capacity_bytes: number;
+  cost_brl_month: number;
+  unpriced: number;
 }
 
 export interface VolumesResponse {
   items: VolumeItem[];
-  summary: { pvcs: number; pvs: number; capacity_bytes: number; with_issues: number; orphan_pvs: number; unused_pvcs: number; no_owner: number; nfs: number };
+  by_app: VolumeAppCost[];
+  cost_warning?: string;
+  summary: {
+    cost_brl_month: number; cost_idle_brl_month: number; cost_effective: number; cost_estimate: number; cost_none: number; pvcs: number; pvs: number; capacity_bytes: number; with_issues: number; orphan_pvs: number; unused_pvcs: number; no_owner: number; nfs: number };
 }
 
 export interface CodeEditorPlanAvailability {

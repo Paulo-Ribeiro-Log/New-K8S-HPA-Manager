@@ -44,6 +44,10 @@ type VolumeItem struct {
 	UsedBytes     float64  `json:"used_bytes,omitempty"`
 	UsagePercent  float64  `json:"usage_percentage,omitempty"`
 	Issues        []string `json:"issues"`
+	Idle          bool     `json:"idle"` // PVC sem pod ou PV sem PVC: o disco existe e cobra sem uso
+	CostBRL       float64  `json:"cost_brl_month,omitempty"`
+	CostKind      string   `json:"cost_kind,omitempty"` // effective | estimate | none (só com include_cost)
+	CostNote      string   `json:"cost_note,omitempty"`
 }
 
 // VolumesSummary são os totais do cluster.
@@ -54,6 +58,11 @@ type VolumesSummary struct {
 	WithIssues    int     `json:"with_issues"`
 	OrphanPVs     int     `json:"orphan_pvs"`
 	UnusedPVCs    int     `json:"unused_pvcs"`
+	CostBRL       float64 `json:"cost_brl_month"`
+	CostIdleBRL   float64 `json:"cost_idle_brl_month"` // custo dos volumes ociosos (sem pod / sem PVC)
+	CostEffective int     `json:"cost_effective"`
+	CostEstimate  int     `json:"cost_estimate"`
+	CostNone      int     `json:"cost_none"`
 	NoOwner       int     `json:"no_owner"` // volumes sem nenhuma aplicação identificada
 	NFS           int     `json:"nfs"`      // volumes NFS: PVs NFS + NFS montado direto em pod
 }
@@ -384,6 +393,7 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 			it.Issues = append(it.Issues, "PVC Lost (PV perdido)")
 		case len(it.Pods) == 0:
 			it.Issues = append(it.Issues, "PVC sem pod usando")
+			it.Idle = true
 			sum.UnusedPVCs++
 		}
 		if it.ReclaimPolicy == string(corev1.PersistentVolumeReclaimRetain) && len(it.Pods) == 0 {
@@ -425,6 +435,7 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 				it.OwnerSource = "label"
 			}
 		}
+		it.Idle = true
 		sum.OrphanPVs++
 		sum.CapacityBytes += it.CapacityBytes
 		items = append(items, it)
@@ -519,5 +530,22 @@ func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
 	}
 
 	items, summary := buildVolumeItems(in)
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"items": items, "summary": summary}})
+	data := gin.H{"items": items, "summary": summary, "by_app": []AppCost{}}
+	if c.Query("include_cost") == "true" {
+		if h.volumeCost == nil {
+			data["cost_warning"] = "Custo indisponível: o FinOps não está ligado neste servidor."
+		} else if costIn, err := h.volumeCost.VolumeCostInputs(cluster); err != nil {
+			data["cost_warning"] = "Custo indisponível: " + err.Error()
+		} else {
+			scParams := map[string]map[string]string{}
+			if scs, err := client.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{}); err == nil {
+				for _, sc := range scs.Items {
+					scParams[sc.Name] = sc.Parameters
+				}
+			}
+			data["by_app"] = applyVolumeCosts(items, in.PVs, scParams, costIn, &summary)
+			data["summary"] = summary
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
