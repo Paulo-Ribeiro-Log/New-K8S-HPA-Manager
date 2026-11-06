@@ -5500,6 +5500,22 @@ class APIClient {
     });
   }
 
+  // Renomeia a branch local (e no origin com renameRemote). `warning`: o remoto falhou depois do local.
+  async codeEditorRenameBranch(id: string, oldName: string, newName: string, renameRemote: boolean, profileId?: string): Promise<{ old: string; new: string; current: string; remote_renamed: boolean; warning?: string }> {
+    return this.request(`/code-editor/repos/${id}/branch/rename`, {
+      method: "POST",
+      body: JSON.stringify({ old: oldName, new: newName, rename_remote: renameRemote, ...(profileId ? { profile_id: profileId } : {}) }),
+    });
+  }
+
+  // scope: local (git branch -d/-D), remote (push --delete) ou both. 409 com error_type "not_merged" = precisa de force.
+  async codeEditorDeleteBranch(id: string, name: string, scope: "local" | "remote" | "both", force = false, profileId?: string): Promise<{ branch: string; scope: string }> {
+    return this.request(`/code-editor/repos/${id}/branch/delete`, {
+      method: "POST",
+      body: JSON.stringify({ name, scope, force, ...(profileId ? { profile_id: profileId } : {}) }),
+    });
+  }
+
   async codeEditorCheckoutBranch(id: string, branch: string): Promise<{ branch: string; message: string }> {
     return this.request(`/code-editor/repos/${id}/checkout`, {
       method: "POST",

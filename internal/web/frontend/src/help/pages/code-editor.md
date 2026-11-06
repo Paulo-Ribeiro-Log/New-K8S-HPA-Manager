@@ -23,7 +23,7 @@ Um editor de código no navegador, com **Git completo**, **terminal** e **integr
 | Painel | Para que serve |
 |---|---|
 | **Arquivos** | árvore do repositório |
-| **Branches** | listar, criar e trocar de branch; **comparar dois branches**; merge; tags |
+| **Branches** | listar, criar e trocar de branch; **renomear** e **apagar** branch; **comparar dois branches**; merge; tags |
 | **Git / Source Control** | ver o que mudou, **adicionar ao staging**, descartar, commit, **pull**, **push**, sincronizar (pull e depois push), stash e **cherry-pick** |
 | **Painel Git (lado direito, recolhível)** | branch atual, **histórico** com busca (e seletor de outra branch), remotes, push/pull/fetch e commit com seleção de arquivos; cada commit tem o botão de **cherry-pick** |
 | **Log** | histórico de commits (da branch atual ou de **outra branch**, escolhida no seletor), **cherry-pick** e criar tag |
@@ -39,6 +39,14 @@ Dá ainda para ver o **histórico do arquivo**, o **blame** inline e o **diff** 
 ## Conflitos de merge
 
 Quando um merge, pull ou cherry-pick gera conflito, o editor lista os arquivos em conflito, deixa **resolver** cada um e permite **finalizar** (commit do merge) ou **abortar** o merge.
+
+## Renomear e apagar branch
+
+No painel **Branches**, passe o mouse sobre uma branch para ver os ícones de **lápis** (renomear) e **lixeira** (apagar). A branch atual só pode ser renomeada.
+
+- **Renomear:** troca o nome local. Marque **Renomear também no origin** para publicar o nome novo e apagar o antigo do GitHub (PRs abertos da branch antiga são fechados pelo GitHub). Se o remoto falhar, a renomeação local fica feita e a tela avisa.
+- **Apagar:** apaga a branch local só se ela já estiver mergeada; se tiver commits que não estão em outro lugar, o editor avisa e oferece **Apagar mesmo assim**. Marque **Apagar também do origin** para remover do GitHub. Branch que existe só no remoto (seção Remotos) mostra a lixeira para apagar do origin.
+- **Proteção:** `main` e `master` não são apagadas nem renomeadas no remoto por aqui, e a branch atual não pode ser apagada (troque antes).
 
 ## Cherry-pick
 
@@ -62,7 +70,7 @@ Há suporte a **autocompletar, hover, ir para a definição e diagnósticos** pa
 
 ## Impacto
 
-**Escreve arquivos no servidor, publica no GitHub e pode alterar o cluster.** Ficam no Change History: **commit**, **push**, **criar PR**, **excluir repositório** e **apply no Kubernetes** (com os objetos e o SHA-256 do manifesto, nunca o conteúdo). **Merge, cherry-pick, exclusão de arquivo, tags e substituição em massa não ficam registrados.**
+**Escreve arquivos no servidor, publica no GitHub e pode alterar o cluster.** Ficam no Change History: **commit**, **push**, **criar PR**, **renomear e apagar branch**, **excluir repositório** e **apply no Kubernetes** (com os objetos e o SHA-256 do manifesto, nunca o conteúdo). **Merge, cherry-pick, exclusão de arquivo, tags e substituição em massa não ficam registrados.**
 
 ## Cuidados e erros comuns
 

@@ -2012,6 +2012,8 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/branches", rbacMiddleware.InjectUserEmail(), codeEditorHandler.ListBranches)
 		codeEditor.POST("/repos/:id/branch", codeEditorHandler.CreateBranch)
 		codeEditor.POST("/repos/:id/checkout", codeEditorHandler.CheckoutBranch)
+		codeEditor.POST("/repos/:id/branch/rename", rbacMiddleware.InjectUserEmail(), codeEditorHandler.RenameBranch)
+		codeEditor.POST("/repos/:id/branch/delete", rbacMiddleware.InjectUserEmail(), codeEditorHandler.DeleteBranch)
 		codeEditor.POST("/repos/:id/pull", rbacMiddleware.InjectUserEmail(), codeEditorHandler.Pull)
 		codeEditor.POST("/repos/:id/commit", codeEditorHandler.Commit)
 		codeEditor.POST("/repos/:id/push", rbacMiddleware.InjectUserEmail(), codeEditorHandler.Push)

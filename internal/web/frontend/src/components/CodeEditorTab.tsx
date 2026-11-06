@@ -82,6 +82,7 @@ import { setCommentFileName, BLOCK_COMMENT_ACTION_ID } from "@/lib/codeComments"
 import { CodeEditorOpenFolderDialog } from "@/components/CodeEditorOpenFolderDialog";
 import { attachTerminalClipboard, decodeTerminalOutput, encodeTerminalInput } from "@/lib/xtermShared";
 import { ViewPlanModal } from "@/components/ViewPlanModal";
+import { DeleteBranchDialog, RenameBranchDialog } from "@/components/BranchManageDialogs";
 import { Input } from "@/components/ui/input";
 import { scmBadge, scmColor } from "@/lib/gitStatus";
 import { GitSidePanel } from "@/components/GitSidePanel";
@@ -2066,11 +2067,16 @@ interface BranchesPanelProps {
   onCreateBranch: () => void;
   onMerge: () => void;
   onBranchDiff: () => void;
+  profileId?: string;
+  /** Depois de renomear/apagar: recarrega status e branches e mostra o resultado. */
+  onChanged: (message: string) => void | Promise<void>;
 }
 
-function BranchesPanel({ branches, onRefresh, refreshing, onCheckout, onCreateBranch, onMerge, onBranchDiff }: BranchesPanelProps) {
+function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, onCreateBranch, onMerge, onBranchDiff, profileId, onChanged }: BranchesPanelProps) {
   const [checkingOut, setCheckingOut] = useState("");
   const [filter, setFilter] = useState("");
+  const [manage, setManage] = useState<{ kind: "rename" | "delete"; branch: string; hasLocal: boolean } | null>(null);
+  const onRemote = (b: string) => !!branches?.remote?.includes(`origin/${b}`);
 
   async function handleCheckout(branch: string) {
     if (branches?.current === branch) return;
@@ -2132,7 +2138,11 @@ function BranchesPanel({ branches, onRefresh, refreshing, onCheckout, onCreateBr
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Atual</p>
               <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-primary/10 border border-primary/20">
                 <GitBranch className="w-3 h-3 text-primary flex-shrink-0" />
-                <span className="text-xs font-medium text-primary truncate">{branches.current}</span>
+                <span className="text-xs font-medium text-primary truncate flex-1">{branches.current}</span>
+                <button title="Renomear branch" className="p-0.5 rounded hover:bg-muted"
+                  onClick={() => setManage({ kind: "rename", branch: branches.current, hasLocal: true })}>
+                  <Pencil className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+                </button>
               </div>
             </div>
           )}
@@ -2142,14 +2152,26 @@ function BranchesPanel({ branches, onRefresh, refreshing, onCheckout, onCreateBr
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1 px-1">Locais</p>
               <div className="space-y-0.5">
                 {branches!.local.filter(b => b !== branches?.current).filter(matchBranch).map(b => (
-                  <button key={b} onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
-                    <GitBranch className="w-3 h-3 text-muted-foreground flex-shrink-0" />
-                    <span className="truncate flex-1 text-foreground/80">{b}</span>
-                    {checkingOut === b
-                      ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                      : <ArrowRightLeft className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />}
-                  </button>
+                  <div key={b} className="flex items-center rounded hover:bg-muted/60 group">
+                    <button onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
+                      className="min-w-0 flex-1 flex items-center gap-2 px-2 py-1.5 text-xs text-left disabled:opacity-40 disabled:cursor-not-allowed">
+                      <GitBranch className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                      <span className="truncate flex-1 text-foreground/80">{b}</span>
+                      {checkingOut === b
+                        ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                        : <ArrowRightLeft className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />}
+                    </button>
+                    <div className="hidden group-hover:flex gap-0.5 pr-1 flex-shrink-0">
+                      <button title="Renomear branch" className="p-0.5 rounded hover:bg-muted"
+                        onClick={() => setManage({ kind: "rename", branch: b, hasLocal: true })}>
+                        <Pencil className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+                      </button>
+                      <button title="Apagar branch" className="p-0.5 rounded hover:bg-muted"
+                        onClick={() => setManage({ kind: "delete", branch: b, hasLocal: true })}>
+                        <Trash2 className="w-3 h-3 text-red-400/70 hover:text-red-400" />
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -2164,14 +2186,20 @@ function BranchesPanel({ branches, onRefresh, refreshing, onCheckout, onCreateBr
                   .filter(r => !branches!.local.includes(r.replace("origin/", "")))
                   .filter(matchBranch)
                   .map(b => (
-                    <button key={b} onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/60 text-left group disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
-                      <GitBranch className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
-                      <span className="truncate flex-1 text-muted-foreground">{b}</span>
-                      {checkingOut === b
-                        ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                        : <Download className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />}
-                    </button>
+                    <div key={b} className="flex items-center rounded hover:bg-muted/60 group">
+                      <button onClick={() => handleCheckout(b)} disabled={checkingOut !== ""}
+                        className="min-w-0 flex-1 flex items-center gap-2 px-2 py-1.5 text-xs text-left disabled:opacity-40 disabled:cursor-not-allowed">
+                        <GitBranch className="w-3 h-3 text-muted-foreground/60 flex-shrink-0" />
+                        <span className="truncate flex-1 text-muted-foreground">{b}</span>
+                        {checkingOut === b
+                          ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                          : <Download className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />}
+                      </button>
+                      <button title="Apagar do origin" className="hidden group-hover:block p-0.5 mr-1 rounded hover:bg-muted flex-shrink-0"
+                        onClick={() => setManage({ kind: "delete", branch: b.replace(/^origin\//, ""), hasLocal: false })}>
+                        <Trash2 className="w-3 h-3 text-red-400/70 hover:text-red-400" />
+                      </button>
+                    </div>
                   ))}
               </div>
             </div>
@@ -2182,6 +2210,17 @@ function BranchesPanel({ branches, onRefresh, refreshing, onCheckout, onCreateBr
           )}
         </div>
       </ScrollArea>
+
+      {manage?.kind === "rename" && (
+        <RenameBranchDialog repoId={repoId} branch={manage.branch} onRemote={onRemote(manage.branch)} profileId={profileId}
+          onClose={() => setManage(null)}
+          onDone={async (m) => { setManage(null); await onChanged(m); }} />
+      )}
+      {manage?.kind === "delete" && (
+        <DeleteBranchDialog repoId={repoId} branch={manage.branch} hasLocal={manage.hasLocal} onRemote={onRemote(manage.branch)} profileId={profileId}
+          onClose={() => setManage(null)}
+          onDone={async (m) => { setManage(null); await onChanged(m); }} />
+      )}
     </div>
   );
 }
@@ -4397,6 +4436,13 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                 onCreateBranch={() => setShowBranch(true)}
                 onMerge={() => setShowMerge(true)}
                 onBranchDiff={() => setShowBranchDiff(true)}
+                profileId={activeProfileId()}
+                onChanged={async (m) => {
+                  if (!selectedRepo) return;
+                  await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadLog(selectedRepo.id)]);
+                  queryClient.invalidateQueries({ queryKey: ["code-editor-plan-available"] });
+                  showGitResult("success", "Branch", m);
+                }}
               />
             )}
 
