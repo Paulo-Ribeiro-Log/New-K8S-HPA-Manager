@@ -24,8 +24,9 @@ Um editor de código no navegador, com **Git completo**, **terminal** e **integr
 |---|---|
 | **Arquivos** | árvore do repositório |
 | **Branches** | listar, criar e trocar de branch; **comparar dois branches**; merge; tags |
-| **Git / Source Control** | ver o que mudou, **adicionar ao staging**, descartar, commit, **pull**, **push** e sincronizar (pull e depois push) |
-| **Log** | histórico de commits, diff por commit, **cherry-pick** e criar tag |
+| **Git / Source Control** | ver o que mudou, **adicionar ao staging**, descartar, commit, **pull**, **push**, sincronizar (pull e depois push), stash e **cherry-pick** |
+| **Painel Git (lado direito, recolhível)** | branch atual, **histórico** com busca (e seletor de outra branch), remotes, push/pull/fetch e commit com seleção de arquivos; cada commit tem o botão de **cherry-pick** |
+| **Log** | histórico de commits (da branch atual ou de **outra branch**, escolhida no seletor), **cherry-pick** e criar tag |
 | **Replace** | buscar e substituir em vários arquivos |
 | **K8s** | diff, dry-run e apply do manifesto contra um cluster |
 
@@ -37,7 +38,15 @@ Dá ainda para ver o **histórico do arquivo**, o **blame** inline e o **diff** 
 
 ## Conflitos de merge
 
-Quando um merge ou pull gera conflito, o editor lista os arquivos em conflito, deixa **resolver** cada um e permite **finalizar** (commit do merge) ou **abortar** o merge.
+Quando um merge, pull ou cherry-pick gera conflito, o editor lista os arquivos em conflito, deixa **resolver** cada um e permite **finalizar** (commit do merge) ou **abortar** o merge.
+
+## Cherry-pick
+
+1. Faça checkout da branch de **destino** (painel **Branches**).
+2. No **painel Git da direita** (seção Histórico), no painel **Git** da esquerda (seção Cherry-pick) ou no **Log**, escolha no seletor a branch de **origem** (locais e remotas; no padrão, a branch atual).
+3. Clique no ícone de cereja (**pick**) no commit e confirme. O commit é aplicado na branch atual, mantendo o autor original (você aparece como committer).
+
+Com **conflito**, abre o resolvedor de conflitos ("Resolver Conflitos de Cherry-pick"): resolva os arquivos e finalize, ou use **Abortar Cherry-pick** para voltar ao estado anterior. Qualquer outra falha (ex.: o commit já foi aplicado e ficaria vazio) aborta o cherry-pick sozinho e mostra o motivo. Aplica **um commit por vez**; para vários, repita do mais antigo para o mais novo. Mudanças não commitadas que colidem com o commit fazem o git recusar: faça commit ou stash antes. Branch remota nova só aparece depois de um fetch (botão Atualizar do painel **Branches**).
 
 ## Integração com o Kubernetes
 

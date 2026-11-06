@@ -146,3 +146,16 @@ func TestGitPanelEndpoints_RepoReal(t *testing.T) {
 		t.Errorf("remotes: %+v", remotes)
 	}
 }
+
+func TestValidGitRev(t *testing.T) {
+	for _, ok := range []string{"abc1234", "main", "origin/feat/x", "HEAD~2", "v1.0.0"} {
+		if !validGitRev(ok) {
+			t.Errorf("%q deveria ser válido", ok)
+		}
+	}
+	for _, bad := range []string{"", "--output=/tmp/x", "-n1", "a b", "a:b", "a\nb"} {
+		if validGitRev(bad) {
+			t.Errorf("%q deveria ser inválido", bad)
+		}
+	}
+}

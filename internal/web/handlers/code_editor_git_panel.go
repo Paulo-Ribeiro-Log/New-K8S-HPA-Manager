@@ -68,6 +68,20 @@ func filterLogEntries(entries []commitLogEntry, q string, limit int) []commitLog
 	return out
 }
 
+// validGitRev rejeita valores que o git leria como opção ("--output=…") ou que não são um nome
+// de ref/hash plausível.
+func validGitRev(s string) bool {
+	if s == "" || strings.HasPrefix(s, "-") {
+		return false
+	}
+	for _, r := range s {
+		if r <= ' ' || strings.ContainsRune(":?*[\\", r) {
+			return false
+		}
+	}
+	return true
+}
+
 // parseLogLimit lê ?limit= (padrão 20, entre 1 e logMaxLimit).
 func parseLogLimit(raw string) int {
 	n, err := strconv.Atoi(raw)
@@ -109,7 +123,16 @@ func (h *CodeEditorHandler) GetCommitLog(c *gin.Context) {
 	if q != "" {
 		window = logSearchWindow
 	}
-	out, err := runGit(dir, "log", "-"+strconv.Itoa(window), "--pretty=format:%H"+logFieldSep+"%s"+logFieldSep+"%an"+logFieldSep+"%ar")
+	args := []string{"log", "-" + strconv.Itoa(window), "--pretty=format:%H" + logFieldSep + "%s" + logFieldSep + "%an" + logFieldSep + "%ar"}
+	// ?ref= lista os commits de outra branch/tag (origem do cherry-pick) em vez de HEAD
+	if ref := strings.TrimSpace(c.Query("ref")); ref != "" {
+		if !validGitRev(ref) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ref inválida"})
+			return
+		}
+		args = append(args, ref, "--")
+	}
+	out, err := runGit(dir, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": out})
 		return
