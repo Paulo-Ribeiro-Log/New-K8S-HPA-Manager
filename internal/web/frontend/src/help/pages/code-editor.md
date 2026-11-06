@@ -25,7 +25,7 @@ Um editor de código no navegador, com **Git completo**, **terminal** e **integr
 | **Arquivos** | árvore do repositório |
 | **Branches** | listar, criar e trocar de branch; **comparar dois branches**; merge; tags |
 | **Git / Source Control** | ver o que mudou, **adicionar ao staging**, descartar, commit, **pull**, **push** e sincronizar (pull e depois push) |
-| **Log** | histórico de commits, diff por commit, **cherry-pick** e criar tag |
+| **Log** | histórico de commits (da branch atual ou de **outra branch**, escolhida no seletor), **cherry-pick** (com resolução de conflitos) e criar tag |
 | **Replace** | buscar e substituir em vários arquivos |
 | **K8s** | diff, dry-run e apply do manifesto contra um cluster |
 

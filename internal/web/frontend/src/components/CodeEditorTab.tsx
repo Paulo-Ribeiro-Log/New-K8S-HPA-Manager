@@ -2229,6 +2229,9 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const [status, setStatus] = useState<CodeEditorGitStatus | null>(null);
   const [branches, setBranches] = useState<CodeEditorBranches | null>(null);
   const [log, setLog] = useState<CodeEditorLogEntry[]>([]);
+  // Branch/tag cujo histórico o painel Log mostra ("" = branch atual); origem do cherry-pick
+  const [logRef, setLogRef] = useState("");
+  const logRefRef = useRef("");
 
   // Search / grep
   const [searchQuery, setSearchQuery] = useState("");
@@ -2381,6 +2384,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   // Fase 5: Conflitos, branch diff, markdown preview
   const [showConflictResolver, setShowConflictResolver] = useState(false);
   const [conflictFiles, setConflictFiles] = useState<string[]>([]);
+  const [conflictIsPick, setConflictIsPick] = useState(false);
   const [showBranchDiff, setShowBranchDiff] = useState(false);
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [showViewPlan, setShowViewPlan] = useState(false);
@@ -2680,7 +2684,14 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     nonGitIdsRef.current = new Set(list.filter(r => r.is_git === false).map(r => r.id));
   }
 
+  function changeLogRef(ref: string) {
+    logRefRef.current = ref;
+    setLogRef(ref);
+    if (selectedRepo) loadLog(selectedRepo.id, true).catch(e => addToast("error", errMessage(e)));
+  }
+
   async function selectRepo(repo: CodeEditorRepo) {
+    logRefRef.current = ""; setLogRef("");
     if (repo.is_git === false) {
       nonGitIdsRef.current.add(repo.id);
       setStatus(null); setBranches(null); setLog([]); setTags([]);
@@ -2734,7 +2745,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
   async function loadLog(id: string, manual = false) {
     if (nonGitIdsRef.current.has(id)) return;
-    try { const l = await apiClient.codeEditorGetLog(id); if (isCurrentRepo(id)) setLog(l); }
+    try { const l = await apiClient.codeEditorGetLog(id, 20, undefined, logRefRef.current); if (isCurrentRepo(id)) setLog(l); }
     catch (e) { if (manual) throw e; }
   }
 
@@ -3256,11 +3267,19 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
 
   async function handleCherryPick(hash: string) {
     if (!selectedRepo) return;
-    if (!await showConfirm(`Aplicar commit ${hash.slice(0, 7)} no branch atual?`)) return;
+    if (!await showConfirm(`Aplicar commit ${hash.slice(0, 7)}${logRef ? ` (de ${logRef})` : ""} no branch atual (${branches?.current ?? "HEAD"})?`)) return;
     try {
       const r = await apiClient.codeEditorCherryPick(selectedRepo.id, hash);
+      if (r.has_conflicts) {
+        const c = await apiClient.codeEditorGetConflicts(selectedRepo.id);
+        await loadStatus(selectedRepo.id);
+        setConflictIsPick(true);
+        setConflictFiles(c.files);
+        setShowConflictResolver(true);
+        return;
+      }
       showGitResult("success", "Cherry-pick", "Cherry-pick aplicado");
-      await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id)]);
+      await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadTree(selectedRepo.id)]);
       return r.message;
     } catch (e) {
       showGitResult("error", "Erro no cherry-pick", errMessage(e) || "Erro no cherry-pick");
@@ -4621,6 +4640,16 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                                 <RefreshCw className={`w-3 h-3 mr-1 ${refreshing.log ? "animate-spin" : ""}`} />Atualizar
                               </Button>
                             )}
+                            {selectedRepo && branches && (
+                              <select className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground"
+                                title="Mostrar os commits de outro branch (origem do cherry-pick)"
+                                value={logRef} onChange={e => changeLogRef(e.target.value)}>
+                                <option value="">Branch atual ({branches.current})</option>
+                                {[...branches.local, ...branches.remote]
+                                  .filter(b => b !== branches.current && !b.includes("->"))
+                                  .map(b => <option key={b} value={b}>{b}</option>)}
+                              </select>
+                            )}
                             {log.map(entry => (
                               <div key={entry.hash} className="border-b border-border/30 pb-2 group">
                                 <p className="text-xs text-foreground/90 leading-tight">{entry.message}</p>
@@ -5628,6 +5657,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
               showGitResult("success", "Merge", "Merge concluído");
             }}
             onConflict={(files) => {
+              setConflictIsPick(false);
               setConflictFiles(files);
               setShowConflictResolver(true);
             }}
@@ -5720,18 +5750,19 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         <ConflictResolverModal
           repoId={selectedRepo.id}
           files={conflictFiles}
+          operation={conflictIsPick ? "Cherry-pick" : "Merge"}
           onClose={() => setShowConflictResolver(false)}
           onDone={async () => {
             setShowConflictResolver(false);
             setOpenTabs([]);
             setActiveTabIdx(0);
             await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadTree(selectedRepo.id)]);
-            showGitResult("success", "Merge", "Merge concluído após resolução de conflitos");
+            showGitResult("success", conflictIsPick ? "Cherry-pick" : "Merge", `${conflictIsPick ? "Cherry-pick concluído" : "Merge concluído"} após resolução de conflitos`);
           }}
           onAbort={async () => {
             setShowConflictResolver(false);
             await Promise.all([loadStatus(selectedRepo.id), loadTree(selectedRepo.id)]);
-            showGitResult("success", "Merge", "Merge abortado");
+            showGitResult("success", conflictIsPick ? "Cherry-pick" : "Merge", `${conflictIsPick ? "Cherry-pick abortado" : "Merge abortado"}`);
           }}
         />
       )}
@@ -6282,12 +6313,13 @@ function rebuildContent(original: string, blocks: ConflictBlock[]): string {
 interface ConflictResolverModalProps {
   repoId: string;
   files: string[];
+  operation?: "Merge" | "Cherry-pick";
   onClose: () => void;
   onDone: () => void;
   onAbort: () => void;
 }
 
-function ConflictResolverModal({ repoId, files, onClose, onDone, onAbort }: ConflictResolverModalProps) {
+function ConflictResolverModal({ repoId, files, operation = "Merge", onClose, onDone, onAbort }: ConflictResolverModalProps) {
   const [selectedFile, setSelectedFile] = useState(files[0] ?? "");
   const [fileContent, setFileContent] = useState("");
   const [blocks, setBlocks] = useState<ConflictBlock[]>([]);
@@ -6368,14 +6400,14 @@ function ConflictResolverModal({ repoId, files, onClose, onDone, onAbort }: Conf
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-2 border-b border-border/50 flex-shrink-0 bg-card/20">
         <ShieldAlert className="w-4 h-4 text-yellow-400 flex-shrink-0" />
-        <span className="text-sm font-medium">Resolver Conflitos de Merge</span>
+        <span className="text-sm font-medium">Resolver Conflitos de {operation}</span>
         <span className="text-xs text-muted-foreground">({resolvedFiles.size}/{files.length} arquivos resolvidos)</span>
         <div className="flex-1" />
         {error && <span className="text-xs text-red-400">{error}</span>}
         <Button variant="ghost" size="sm" className="h-6 text-xs text-red-400 hover:text-red-300"
           onClick={abortMerge} disabled={aborting || committing}>
           {aborting ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
-          Abortar Merge
+          Abortar {operation}
         </Button>
         {allFilesResolved && (
           <Button size="sm" className="h-6 text-xs bg-green-700 hover:bg-green-600"

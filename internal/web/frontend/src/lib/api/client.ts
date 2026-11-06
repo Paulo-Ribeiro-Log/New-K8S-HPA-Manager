@@ -5515,9 +5515,11 @@ class APIClient {
   }
 
   // q — busca por prefixo do hash, trecho da mensagem ou do autor (nos últimos 500 commits)
-  async codeEditorGetLog(id: string, limit = 20, q?: string): Promise<CodeEditorLogEntry[]> {
+  // ref — lista os commits dessa branch/tag em vez da atual (origem do cherry-pick)
+  async codeEditorGetLog(id: string, limit = 20, q?: string, ref?: string): Promise<CodeEditorLogEntry[]> {
     const params = new URLSearchParams({ limit: String(limit) });
     if (q && q.trim()) params.set("q", q.trim());
+    if (ref) params.set("ref", ref);
     return this.request(`/code-editor/repos/${id}/log?${params.toString()}`);
   }
 
@@ -5625,7 +5627,8 @@ class APIClient {
     });
   }
 
-  async codeEditorCherryPick(id: string, hash: string): Promise<{ message: string }> {
+  // has_conflicts: o cherry-pick ficou em andamento — resolver pelo resolvedor de conflitos
+  async codeEditorCherryPick(id: string, hash: string): Promise<{ message: string; has_conflicts?: boolean }> {
     return this.request(`/code-editor/repos/${id}/cherry-pick`, {
       method: "POST",
       body: JSON.stringify({ hash }),
@@ -5692,7 +5695,7 @@ class APIClient {
   }
 
   // Fase 5: Conflitos e branch diff
-  async codeEditorGetConflicts(id: string): Promise<{ in_merge: boolean; files: string[] }> {
+  async codeEditorGetConflicts(id: string): Promise<{ in_merge: boolean; cherry_pick?: boolean; files: string[] }> {
     return this.request(`/code-editor/repos/${id}/conflicts`);
   }
 

@@ -1743,20 +1743,64 @@ func (h *CodeEditorHandler) FormatFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"content": string(out)})
 }
 
+// gitPathExists diz se existe `name` dentro do .git do repo (MERGE_HEAD, CHERRY_PICK_HEAD…).
+func gitPathExists(dir, name string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git", name))
+	return err == nil
+}
+
 // CherryPick — POST /api/v1/code-editor/repos/:id/cherry-pick
-// Body: { "hash": "abc1234" }
+// Body: { "hash": "abc1234" } ou { "hashes": ["a","b"] } (aplicados na ordem informada, do mais
+// antigo ao mais novo). Commit de merge usa o primeiro pai (-m 1). Com conflito, o cherry-pick fica
+// em andamento e a resposta traz has_conflicts (o resolvedor de conflitos finaliza ou aborta); em
+// qualquer outra falha o cherry-pick é abortado para não deixar o repositório pela metade.
 func (h *CodeEditorHandler) CherryPick(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 	var req struct {
-		Hash string `json:"hash"`
+		Hash   string   `json:"hash"`
+		Hashes []string `json:"hashes"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.Hash == "" {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "hash é obrigatório"})
 		return
 	}
-	out, err := runGitAsUser(c, dir, "cherry-pick", req.Hash)
+	hashes := req.Hashes
+	if req.Hash != "" {
+		hashes = append([]string{req.Hash}, hashes...)
+	}
+	if len(hashes) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hash é obrigatório"})
+		return
+	}
+	for _, hs := range hashes {
+		if !validGitRev(hs) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "hash inválido: " + hs})
+			return
+		}
+	}
+	if gitPathExists(dir, "CHERRY_PICK_HEAD") || gitPathExists(dir, "MERGE_HEAD") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Já existe um merge/cherry-pick em andamento — conclua ou aborte antes."})
+		return
+	}
+
+	args := []string{"cherry-pick"}
+	// merge commit exige -m; só vale quando todos os commits pedidos são merges ou um único commit
+	if len(hashes) == 1 {
+		if parents, err := runGit(dir, "rev-list", "--parents", "-n", "1", hashes[0]); err == nil && len(strings.Fields(parents)) > 2 {
+			args = append(args, "-m", "1")
+		}
+	}
+	args = append(args, hashes...)
+	out, err := runGitAsUser(c, dir, args...)
 	if err != nil {
+		if gitPathExists(dir, "CHERRY_PICK_HEAD") && strings.Contains(out, "CONFLICT") {
+			c.JSON(http.StatusOK, gin.H{"message": out, "has_conflicts": true})
+			return
+		}
+		if gitPathExists(dir, "CHERRY_PICK_HEAD") || gitPathExists(dir, "sequencer") {
+			runGit(dir, "cherry-pick", "--abort") //nolint:errcheck
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return
 	}
@@ -2278,7 +2322,7 @@ func (h *CodeEditorHandler) GetConflicts(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
 
-	if _, err := os.Stat(filepath.Join(dir, ".git", "MERGE_HEAD")); err != nil {
+	if !gitPathExists(dir, "MERGE_HEAD") && !gitPathExists(dir, "CHERRY_PICK_HEAD") {
 		c.JSON(http.StatusOK, gin.H{"in_merge": false, "files": []string{}})
 		return
 	}
@@ -2290,7 +2334,7 @@ func (h *CodeEditorHandler) GetConflicts(c *gin.Context) {
 			files = append(files, line)
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"in_merge": true, "files": files})
+	c.JSON(http.StatusOK, gin.H{"in_merge": true, "cherry_pick": gitPathExists(dir, "CHERRY_PICK_HEAD"), "files": files})
 }
 
 // ResolveConflict — POST /api/v1/code-editor/repos/:id/resolve-conflict
@@ -2332,7 +2376,11 @@ func (h *CodeEditorHandler) ResolveConflict(c *gin.Context) {
 func (h *CodeEditorHandler) AbortMerge(c *gin.Context) {
 	id := c.Param("id")
 	dir := h.repoDir(id)
-	out, err := runGit(dir, "merge", "--abort")
+	abort := []string{"merge", "--abort"}
+	if gitPathExists(dir, "CHERRY_PICK_HEAD") {
+		abort = []string{"cherry-pick", "--abort"}
+	}
+	out, err := runGit(dir, abort...)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": out})
 		return
