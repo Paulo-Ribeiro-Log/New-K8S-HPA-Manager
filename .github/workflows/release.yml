@@ -135,7 +135,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "v${{ needs.version.outputs.version }}" build/release/new-k8s-hpa-linux-amd64 --repo "$GITHUB_REPOSITORY" --clobber
 
-  # Roda em macos-14 (Apple Silicon), NÃO macos-13 (Intel) — runners macos-13 do GitHub têm fila
+  # Roda em macos-15 (Apple Silicon; macos-14 deixou de ser aceito em 2026-11), NÃO macos-13 (Intel) — runners macos-13 do GitHub têm fila
   # historicamente longa/instável (confirmado na prática: job ficou >15min em "queued" sem nenhum
   # runner atribuído, `runner_id: 0`, enquanto macos-14 pegou runner em segundos). Em vez de
   # depender de um pool de runner escasso, cross-compila amd64 a partir do host arm64 usando o
@@ -143,7 +143,7 @@ jobs:
   # a Apple usa pra gerar binários "Universal" nativamente suporta as duas arquiteturas Darwin.
   build-darwin-amd64:
     needs: [version, create-release]
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
@@ -200,10 +200,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "v${{ needs.version.outputs.version }}" build/release/new-k8s-hpa-darwin-amd64 --repo "$GITHUB_REPOSITORY" --clobber
 
-  # macos-14 = runner Apple Silicon (arm64) — build NATIVO.
+  # macos-15 = runner Apple Silicon (arm64) — build NATIVO.
   build-darwin-arm64:
     needs: [version, create-release]
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
