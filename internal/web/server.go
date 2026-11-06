@@ -873,6 +873,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools", nodePoolHandler.List)
 	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics)       // Métricas de disco
 	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview)       // Visão geral de storage
+	api.GET("/nodepools/volumes", nodePoolHandler.GetVolumes)                        // PV/PVC do cluster ligados à aplicação, node e node pool (somente leitura)
 	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress)        // SSE progress tracking
 	api.GET("/nodepools/conntrack", nodePoolHandler.GetConntrackStats)               // Conntrack stats por node
 	api.GET("/nodepools/conntrack/history", nodePoolHandler.GetConntrackNodeHistory) // Histórico via Prometheus

@@ -31,6 +31,19 @@ Lista os **node pools** do cluster e permite ver a configuração de cada um (VM
 | **Conntrack** | monitoramento da tabela de conexões (conntrack) do pool |
 | **Pendentes** | workloads com pods **não prontos**, que podem estar esperando capacidade |
 
+## Volumes (PV/PVC) do cluster
+
+O botão **Volumes**, no cabeçalho do painel direito (junto dos widgets de SNAT e Conntrack), abre a visão de **todos os volumes persistentes do cluster** e de **quais aplicações os usam**. Cada linha cruza o **PVC**, o **PV** que o atende, a **origem** do disco, as **aplicações**, o **node pool/group** onde elas rodam, a storage class e a capacidade.
+
+- **Aplicações:** lista **todas** as aplicações que usam o volume (um PVC pode ser compartilhado), com o tipo (Deployment, StatefulSet, DaemonSet, CronJob, Job…) e **como o vínculo foi descoberto**: por um **pod** rodando; pelo **spec do workload** (acha o dono mesmo com 0 réplicas ou entre execuções de um CronJob); pelo **volumeClaimTemplate** de um StatefulSet (PVC `<template>-<sts>-<n>`); ou só pela **label** do PVC (`app.kubernetes.io/name`/`app`), quando nenhum workload o referencia. Volume sem nenhum desses vínculos aparece como **sem aplicação identificada**. Para um PV Released, o dono vem do PVC que existia.
+- **Origem e NFS:** mostra o tipo do backend de cada volume — **NFS** (com `servidor:/caminho`), NFS via CSI, EFS, Azure Disk, Azure Files, EBS, GCE PD, HostPath, Local. Também entram os **NFS montados direto no pod** (sem PV nem PVC), com a aplicação que os monta. A busca encontra servidor e caminho NFS, e há filtro por tipo.
+- **Situação:** aponta o que costuma ser desperdício ou problema — PVC **sem pod** usando, PVC **Pending** ou **Lost**, PV **sem PVC** (disco ocioso), PV **Released** (o PVC foi apagado mas o disco continua e cobra) e PV com reclaim **Retain** sem uso.
+- **Filtros e ordem:** busca por aplicação, PVC, PV, pod, node ou servidor NFS; filtro por namespace, pool e tipo; **Só com problema**; clique no cabeçalho da coluna para ordenar.
+- **Incluir uso (Prometheus):** acrescenta o uso real de cada volume (consulta o Prometheus do cluster; pode demorar alguns segundos, e fica em branco para quem não tem métricas). Não se aplica a NFS direto no pod.
+- **CSV:** exporta a lista como está filtrada, com as aplicações e a origem do vínculo.
+
+É somente leitura e usa o acesso de leitura do cluster (PVCs, PVs, pods, nodes e os workloads). Sem permissão de listar nodes, a coluna de pool fica vazia; sem permissão de listar workloads, o dono só vem dos pods e das labels. Um volume que nenhum pod monta no momento aparece sem pool.
+
 ## Troca sequencial entre dois pools
 
 Em **Execution Order**, marque um pool como `*1` e outro como `*2`. Com os dois marcados, aparece **Configure Sequencing**, e a ferramenta executa em fases:

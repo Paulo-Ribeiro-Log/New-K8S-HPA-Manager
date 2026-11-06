@@ -25,6 +25,7 @@ import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
+import { NodePoolVolumesModal } from "@/components/NodePoolVolumesModal";
 import { SNATPortWidget } from "@/components/SNATPortWidget";
 import { ConntrackAlertWidget } from "@/components/ConntrackAlertWidget";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
@@ -220,6 +221,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const [nodePoolResults, setNodePoolResults] = useState<Record<string, "success" | "error">>({});
   const [nodePoolErrors, setNodePoolErrors] = useState<Record<string, string>>({});
   const [showSequencingModal, setShowSequencingModal] = useState(false);
+  const [showVolumesModal, setShowVolumesModal] = useState(false);
   const [sequencedNodePools, setSequencedNodePools] = useState<NodePool[]>([]);
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [progressSessionId, setProgressSessionId] = useState("");
@@ -1305,6 +1307,14 @@ const Index = ({ onLogout }: IndexProps) => {
                       <Button
                         variant="outline"
                         size="sm"
+                        onClick={() => setShowVolumesModal(true)}
+                        title="Listar todos os PVs/PVCs/NFS do cluster e a aplicação que usa cada um"
+                      >
+                        <Database className="w-4 h-4 mr-1" />Volumes
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={refreshSnatConntrack}
                         disabled={snatConntrackFetching > 0}
                         title="Atualizar SNAT e Conntrack"
@@ -2018,6 +2028,10 @@ const Index = ({ onLogout }: IndexProps) => {
           staging.clearStaging();
         }}
       />
+
+      {showVolumesModal && selectedCluster && (
+        <NodePoolVolumesModal cluster={selectedCluster} resourceLabel={nodeResourceLabel} onClose={() => setShowVolumesModal(false)} />
+      )}
 
       {/* Modal de Configuração de Sequenciamento - Cordon/Drain */}
       <NodePoolSequencingModal
