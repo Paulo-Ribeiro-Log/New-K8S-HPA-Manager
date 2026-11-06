@@ -83,6 +83,8 @@ import { CodeEditorOpenFolderDialog } from "@/components/CodeEditorOpenFolderDia
 import { attachTerminalClipboard, decodeTerminalOutput, encodeTerminalInput } from "@/lib/xtermShared";
 import { ViewPlanModal } from "@/components/ViewPlanModal";
 import { DeleteBranchDialog, RenameBranchDialog } from "@/components/BranchManageDialogs";
+import { PRDiffModal } from "@/components/PRDiffModal";
+import { PRBranchFlow, PRMergeStatusLine } from "@/components/PRMergeInfo";
 import { Input } from "@/components/ui/input";
 import { scmBadge, scmColor } from "@/lib/gitStatus";
 import { GitSidePanel } from "@/components/GitSidePanel";
@@ -905,9 +907,10 @@ interface CreatePRModalProps {
   head: string;                       // branch atual (source)
   rawBranches: CodeEditorBranches | null; // objeto bruto do repo — a lista de base é derivada aqui via useMemo
   profileId?: string;                 // perfil GitHub ativo (ProfileSwitcher) — resolvido no servidor
+  onViewDiff?: (prNumber: number) => void; // abre o diff do PR recém-criado
 }
 
-function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: CreatePRModalProps) {
+function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId, onViewDiff }: CreatePRModalProps) {
   // Derivado do objeto bruto (referência estável entre renders — só muda quando loadBranches()
   // de fato busca dados novos), não recriado a cada render do CodeEditorTab. Mesmo padrão de
   // BranchDiffModal.allBranches.
@@ -924,6 +927,7 @@ function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: 
   const [error, setError] = useState("");
   const [errorInstructions, setErrorInstructions] = useState<string[]>([]);
   const [result, setResult] = useState<{ number: number; url: string } | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   // Reseta o formulário só na transição fechado→aberto, nunca a cada re-render com o modal
   // já aberto. `branches`/`head` chegam do CodeEditorTab como valores recalculados a cada
@@ -977,30 +981,43 @@ function CreatePRModal({ open, onClose, repoId, head, rawBranches, profileId }: 
               <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
               PR #{result.number} criado com sucesso!
             </div>
-            <Button className="w-full" onClick={() => window.open(result.url, "_blank")}>
-              <ExternalLink className="w-3 h-3 mr-2" />Abrir no GitHub
-            </Button>
+            <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+              <span className="font-mono text-blue-300">{head}</span> → <span className="font-mono text-emerald-300">{base}</span>
+            </div>
+            <PRMergeStatusLine repoId={repoId} prNumber={result.number} profileId={profileId} />
+            <div className="flex items-center gap-2 text-xs bg-muted rounded px-2 py-1.5 font-mono">
+              <span className="truncate flex-1 min-w-0" title={result.url}>{result.url}</span>
+              <Button variant="ghost" size="sm" className="h-6 text-xs gap-1 flex-shrink-0"
+                onClick={() => {
+                  navigator.clipboard.writeText(result.url).then(() => {
+                    setLinkCopied(true);
+                    setTimeout(() => setLinkCopied(false), 1500);
+                  }).catch(() => {});
+                }}>
+                <Copy className="w-3 h-3" />{linkCopied ? "Copiado!" : "Copiar"}
+              </Button>
+            </div>
+            <div className="flex gap-2">
+              <Button className="flex-1" onClick={() => window.open(result.url, "_blank")}>
+                <ExternalLink className="w-3 h-3 mr-2" />Abrir no GitHub
+              </Button>
+              {onViewDiff && (
+                <Button variant="outline" className="flex-1" onClick={() => onViewDiff(result.number)}>
+                  <FileDiff className="w-3 h-3 mr-2" />Ver diff
+                </Button>
+              )}
+            </div>
           </div>
         ) : (
           <div className="space-y-3 flex-1 min-h-0 overflow-y-auto pr-1">
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Branch origem → destino</label>
-              <div className="flex flex-wrap items-center gap-2 text-xs bg-muted rounded px-2 py-1.5 font-mono">
-                <span className="text-blue-400 break-all min-w-0" title={head}>{head}</span>
-                <span className="text-muted-foreground flex-shrink-0">→</span>
-                <select
-                  className="border-none outline-none flex-1 min-w-[12rem] max-w-full text-xs"
-                  style={{ background: "var(--muted)", color: "var(--foreground)" }}
-                  value={base}
-                  onChange={e => setBase(e.target.value)}
-                  disabled={loading}
-                >
-                  {branches.filter(b => b !== head).map(b => (
-                    <option key={b} value={b} style={{ background: "#1e1e2e", color: "#cdd6f4" }}>{b}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            <PRBranchFlow
+              repoId={repoId}
+              head={head}
+              base={base}
+              bases={branches.filter(b => b !== head)}
+              onBaseChange={setBase}
+              disabled={loading}
+            />
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">Título *</label>
               <Input
@@ -2427,6 +2444,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const [showBranchDiff, setShowBranchDiff] = useState(false);
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [showViewPlan, setShowViewPlan] = useState(false);
+  // Diff do PR; prNumber só vem do PR recém-criado (senão usa o PR da branch atual)
+  const [prDiff, setPrDiff] = useState<{ prNumber?: number } | null>(null);
   // View Plan só faz sentido com algo para mostrar: consulta barata (PR, comentários e check runs)
   // que habilita o botão. Em erro (GitHub fora do ar, PAT ausente) o botão continua clicável e o
   // modal mostra o erro — só desabilita quando se sabe que não há plan nem output.
@@ -4117,6 +4136,14 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                 disabled={planButton.disabled}
                 onClick={() => setShowViewPlan(true)}>
                 <FileDiff className="w-3 h-3" />View Plan
+              </Button>
+            )}
+            {branches?.current && branches.current !== "main" && branches.current !== "master" && (
+              <Button variant="ghost" size="sm" className="h-6 text-xs gap-1"
+                title={planAvail && !planAvail.pr ? "Sem diff: esta branch não tem Pull Request" : "Ver o diff do Pull Request desta branch (somente leitura)"}
+                disabled={!!planAvail && !planAvail.pr}
+                onClick={() => setPrDiff({})}>
+                <GitPullRequest className="w-3 h-3" />Diff PR
               </Button>
             )}
           </>
@@ -5851,6 +5878,17 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
           head={branches.current}
           rawBranches={branches}
           profileId={activeProfileId()}
+          onViewDiff={(prNumber) => setPrDiff({ prNumber })}
+        />
+      )}
+
+      {/* ── Diff do PR ── */}
+      {prDiff && selectedRepo && (
+        <PRDiffModal
+          repoId={selectedRepo.id}
+          profileId={activeProfileId()}
+          prNumber={prDiff.prNumber}
+          onClose={() => setPrDiff(null)}
         />
       )}
 
