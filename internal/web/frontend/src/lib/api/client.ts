@@ -5816,6 +5816,28 @@ class APIClient {
     return this.request(`/code-editor/repos/${id}/pr/plan${qs ? `?${qs}` : ""}`);
   }
 
+  // Prévia local do merge head → base (commits à frente/atrás e conflitos), antes de criar o PR
+  async codeEditorPRPreview(id: string, head: string, base: string): Promise<CodeEditorPRPreview> {
+    const params = new URLSearchParams({ head, base });
+    return this.request(`/code-editor/repos/${id}/pr/preview?${params.toString()}`);
+  }
+
+  // O que o GitHub diz sobre poder mergear o PR (mergeable nulo = ainda calculando)
+  async codeEditorPRMergeStatus(id: string, pr: number, profileId?: string): Promise<CodeEditorPRMergeStatus> {
+    const params = new URLSearchParams({ pr: String(pr) });
+    if (profileId) params.set("profile_id", profileId);
+    return this.request(`/code-editor/repos/${id}/pr/status?${params.toString()}`);
+  }
+
+  // Arquivos e patches do PR da branch atual (somente leitura)
+  async codeEditorGetPRDiff(id: string, pr?: number, profileId?: string): Promise<CodeEditorPRDiffResponse> {
+    const params = new URLSearchParams();
+    if (pr) params.set("pr", String(pr));
+    if (profileId) params.set("profile_id", profileId);
+    const qs = params.toString();
+    return this.request(`/code-editor/repos/${id}/pr/diff${qs ? `?${qs}` : ""}`);
+  }
+
   // Há plan/output para mostrar? (consulta barata, sem baixar logs) — habilita o botão View Plan
   async codeEditorPlanAvailable(id: string, profileId?: string): Promise<CodeEditorPlanAvailability> {
     const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
@@ -6036,6 +6058,37 @@ export interface CodeEditorPRPlanResponse {
 }
 
 /** Resposta barata que habilita/desabilita o botão View Plan */
+export interface CodeEditorPRPreview {
+  base_ref: string;
+  ahead: number;
+  behind: number;
+  checked: boolean; // false: não deu para simular o merge
+  conflicts: boolean;
+  conflict_files: string[];
+}
+
+export interface CodeEditorPRMergeStatus {
+  number: number;
+  state: string; // open | closed | merged
+  mergeable: boolean | null;
+  mergeable_state: string; // clean | dirty | blocked | behind | unstable | draft | unknown
+  draft: boolean;
+}
+
+export interface CodeEditorPRDiffFile {
+  filename: string;
+  previous_filename?: string;
+  status: string; // added | modified | removed | renamed
+  additions: number;
+  deletions: number;
+  patch?: string; // ausente em binário/arquivo grande demais
+}
+
+export interface CodeEditorPRDiffResponse {
+  pr: CodeEditorPlanPR;
+  files: CodeEditorPRDiffFile[];
+}
+
 export interface CodeEditorPlanAvailability {
   available: boolean;
   branch: string;

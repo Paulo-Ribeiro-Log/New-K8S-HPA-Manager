@@ -36,6 +36,12 @@ Dá ainda para ver o **histórico do arquivo**, o **blame** inline e o **diff** 
 
 **Criar Pull Request** abre o PR do branch atual. **View Plan** mostra os **plans e outputs do PR** (Atlantis, comentários, checks e jobs de plan/diff do GitHub Actions). O botão fica **desabilitado** quando o branch não tem PR, ou quando o PR não tem plan nem output.
 
+**Diff PR** (botão ao lado de View Plan) abre o **diff do Pull Request** da branch atual, somente leitura: os arquivos alterados à esquerda e o patch do arquivo selecionado à direita (linhas adicionadas em verde, removidas em vermelho). Tem **Copiar link** e **Abrir no GitHub**. Fica desabilitado quando a branch não tem PR. Arquivo binário ou grande demais não vem com patch do GitHub — use **Abrir no GitHub**.
+
+No modal **Criar Pull Request**, a **branch de origem** (azul) e o **destino** (verde, onde será mergeada) aparecem em blocos separados, com uma frase explicando o merge. Abaixo, o editor simula o merge e mostra se **pode ser mergeado**: verde (sem conflitos), amarelo (destino avançou, nada a mergear ou não deu para simular) ou vermelho (**conflitos**, com os arquivos). A simulação é local, usa `origin/<destino>` (faça **Fetch** para ficar em dia) e não altera seus arquivos.
+
+Ao **criar** o PR, a tela de sucesso mostra a origem → destino, o **status de merge calculado pelo GitHub** (pode levar alguns segundos: sem conflitos, bloqueado por checks/aprovações, desatualizado, rascunho ou conflitos) e o link, com **Copiar**, além de **Abrir no GitHub** e **Ver diff**.
+
 ## Conflitos de merge
 
 Quando um merge, pull ou cherry-pick gera conflito, o editor lista os arquivos em conflito, deixa **resolver** cada um e permite **finalizar** (commit do merge) ou **abortar** o merge.
