@@ -22,6 +22,13 @@ func gitCP(t *testing.T, dir string, args ...string) string {
 
 func TestCherryPickFluxo(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	// o handler roda sem usuário no contexto: a identidade vem do ambiente (a CI não tem git config global)
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		t.Setenv(k, "teste")
+	}
+	for _, k := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(k, "teste@example.com")
+	}
 	dir := t.TempDir()
 	gitCP(t, dir, "init", "-b", "main")
 	write := func(name, body string) { os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644) } //nolint:errcheck
