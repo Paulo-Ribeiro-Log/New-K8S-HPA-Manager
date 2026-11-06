@@ -3277,9 +3277,9 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     } catch (e) { addToast("error", errMessage(e)); }
   }
 
-  async function handleCherryPick(hash: string) {
+  async function handleCherryPick(hash: string, from?: string) {
     if (!selectedRepo) return;
-    if (!await showConfirm(`Aplicar commit ${hash.slice(0, 7)}${logRef ? ` (de ${logRef})` : ""} no branch atual (${branches?.current ?? "HEAD"})?`)) return;
+    if (!await showConfirm(`Aplicar commit ${hash.slice(0, 7)}${(from ?? logRef) ? ` (de ${from ?? logRef})` : ""} no branch atual (${branches?.current ?? "HEAD"})?`)) return;
     try {
       const r = await apiClient.codeEditorCherryPick(selectedRepo.id, hash);
       if (r.has_conflicts) {
@@ -3292,7 +3292,6 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       }
       showGitResult("success", "Cherry-pick", "Cherry-pick aplicado");
       await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadTree(selectedRepo.id)]);
-      return r.message;
     } catch (e) {
       showGitResult("error", "Erro no cherry-pick", errMessage(e) || "Erro no cherry-pick");
     }
@@ -5527,6 +5526,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                       await Promise.all([loadStatus(selectedRepo.id), loadLog(selectedRepo.id), loadBranches(selectedRepo.id)]);
                     }}
                     onOpenFile={path => openFile({ name: path.split("/").pop() ?? path, path, type: "file" })}
+                    onCherryPick={handleCherryPick}
                     onToast={addToast}
                   />
                 </div>

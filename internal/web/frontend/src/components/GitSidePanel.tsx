@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Copy, Download, GitBranch, GitCommit, Loader2, Plus, RefreshCw, Search, Upload } from "lucide-react";
+import { Cherry, ChevronRight, Copy, Download, GitBranch, GitCommit, Loader2, Plus, RefreshCw, Search, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -47,6 +47,8 @@ export interface GitSidePanelProps {
   onRunSse: (dialog: { title: string; endpoint: string; body?: object }) => void;
   onCommitted: () => void | Promise<void>;
   onOpenFile: (path: string) => void;
+  /** Cherry-pick do commit no branch atual (confirmação e conflitos ficam com o editor). `from` = branch de origem. */
+  onCherryPick: (hash: string, from?: string) => void | Promise<void>;
   onToast: (kind: "success" | "error", message: string) => void;
 }
 
@@ -74,11 +76,14 @@ export function GitSidePanel({
   onRunSse,
   onCommitted,
   onOpenFile,
+  onCherryPick,
   onToast,
 }: GitSidePanelProps) {
   const [limit, setLimit] = useState(readLogLimit);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  // Branch cujo histórico é listado ("" = atual); permite escolher a origem do cherry-pick
+  const [logRef, setLogRef] = useState("");
   const [log, setLog] = useState<CodeEditorLogEntry[]>([]);
   const [logLoading, setLogLoading] = useState(false);
   const [logError, setLogError] = useState("");
@@ -94,6 +99,7 @@ export function GitSidePanel({
   useEffect(() => {
     setQuery("");
     setDebouncedQuery("");
+    setLogRef("");
     setUnchecked(new Set());
     setMessage("");
   }, [repoId]);
@@ -109,7 +115,7 @@ export function GitSidePanel({
     const id = ++logRequest.current;
     setLogLoading(true);
     apiClient
-      .codeEditorGetLog(repoId, limit, debouncedQuery)
+      .codeEditorGetLog(repoId, limit, debouncedQuery, logRef)
       .then((entries) => {
         if (id !== logRequest.current) return;
         setLog(entries);
@@ -123,7 +129,7 @@ export function GitSidePanel({
       .finally(() => {
         if (id === logRequest.current) setLogLoading(false);
       });
-  }, [repoId, limit, debouncedQuery, status]);
+  }, [repoId, limit, debouncedQuery, logRef, status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -265,6 +271,22 @@ export function GitSidePanel({
           <SectionTitle right={logLoading ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" /> : undefined}>
             Histórico
           </SectionTitle>
+          <select
+            className={`${selectClass} w-full mb-1`}
+            value={logRef}
+            onChange={(e) => setLogRef(e.target.value)}
+            title="Mostrar os commits de outro branch (origem do cherry-pick)"
+            aria-label="Branch do histórico"
+          >
+            <option value="">Branch atual{branches ? ` (${branches.current})` : ""}</option>
+            {[...(branches?.local ?? []), ...(branches?.remote ?? [])]
+              .filter((b) => b !== branches?.current && !b.includes("->"))
+              .map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+          </select>
           <div className="flex gap-1 mb-1.5">
             <select
               className={`${selectClass} w-14 flex-shrink-0`}
@@ -298,16 +320,25 @@ export function GitSidePanel({
           ) : (
             <div className="space-y-0.5">
               {log.map((c) => (
-                <button
-                  key={c.hash}
-                  onClick={() => copyHash(c.hash)}
-                  title={`${c.hash}\n${c.author} · ${c.when}\n\n${c.message}\n\nClique para copiar o hash`}
-                  className="group w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-left text-xs hover:bg-muted/40"
-                >
-                  <span className="font-mono text-[10px] text-primary flex-shrink-0">{c.hash.slice(0, 7)}</span>
-                  <span className="truncate flex-1 text-foreground/80">{c.message}</span>
-                  <Copy className="w-2.5 h-2.5 text-muted-foreground opacity-0 group-hover:opacity-100 flex-shrink-0" />
-                </button>
+                <div key={c.hash} className="group flex items-center gap-1 rounded hover:bg-muted/40">
+                  <button
+                    onClick={() => copyHash(c.hash)}
+                    title={`${c.hash}\n${c.author} · ${c.when}\n\n${c.message}\n\nClique para copiar o hash`}
+                    className="min-w-0 flex-1 flex items-center gap-1.5 px-1.5 py-1 text-left text-xs"
+                  >
+                    <span className="font-mono text-[10px] text-primary flex-shrink-0">{c.hash.slice(0, 7)}</span>
+                    <span className="truncate flex-1 text-foreground/80">{c.message}</span>
+                    <Copy className="w-2.5 h-2.5 text-muted-foreground opacity-0 group-hover:opacity-100 flex-shrink-0" />
+                  </button>
+                  <button
+                    onClick={() => void onCherryPick(c.hash, logRef || undefined)}
+                    title={`Cherry-pick: aplicar este commit no branch atual${branches ? ` (${branches.current})` : ""}`}
+                    aria-label={`Cherry-pick de ${c.hash.slice(0, 7)}`}
+                    className="flex-shrink-0 mr-1 p-0.5 rounded text-primary hover:bg-muted"
+                  >
+                    <Cherry className="w-3 h-3" />
+                  </button>
+                </div>
               ))}
             </div>
           )}
