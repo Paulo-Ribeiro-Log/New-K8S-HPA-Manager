@@ -2057,6 +2057,9 @@ func (s *Server) setupRoutes() {
 		codeEditor.PUT("/github-profiles", rbacMiddleware.InjectUserEmail(), codeEditorHandler.SaveGitHubProfiles)
 		codeEditor.POST("/repos/:id/pr/create", rbacMiddleware.InjectUserEmail(), codeEditorHandler.CreatePR)
 		codeEditor.GET("/repos/:id/pr/plan", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRPlan)                       // View Plan: plans/outputs do PR (Atlantis, comentários, checks, Actions), somente leitura
+		codeEditor.GET("/repos/:id/pr/preview", codeEditorHandler.GetPRPreview)                                                   // prévia local do merge (commits à frente/atrás, conflitos) antes de criar o PR
+		codeEditor.GET("/repos/:id/pr/status", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRMergeStatus)              // mergeable/mergeable_state do PR no GitHub
+		codeEditor.GET("/repos/:id/pr/diff", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRDiff)                       // arquivos e patches do PR da branch atual, somente leitura
 		codeEditor.GET("/repos/:id/pr/plan/available", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRPlanAvailability) // habilita/desabilita o botão View Plan
 		// LSP
 		lspHandler := handlers.NewCodeEditorLSPHandler(codeEditorHandler.ReposBase())
