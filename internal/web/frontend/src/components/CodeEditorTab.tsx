@@ -4185,7 +4185,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                     </Button>
                   </div>
                 )}
-                <ScrollArea className="flex-1">
+                <ScrollArea className="flex-1 [&>[data-radix-scroll-area-viewport]>div]:!block">
                   {!selectedRepo && (
                     <div className="p-2 space-y-1">
                       {repos.length === 0 ? (
@@ -4204,7 +4204,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                               {r.size && <span className="text-[10px] text-muted-foreground/60 font-mono">{r.size}</span>}
                             </div>
                           </button>
-                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100" onClick={() => deleteRepo(r.id)}
+                          <Button variant="ghost" size="sm" className="h-5 w-5 p-0 flex-shrink-0 opacity-0 group-hover:opacity-100" onClick={() => deleteRepo(r.id)}
                             title={r.is_local ? "Fechar pasta (não apaga os arquivos)" : "Remover repositório clonado"}>
                             {r.is_local ? <X className="w-3 h-3 text-muted-foreground" /> : <Trash2 className="w-3 h-3 text-red-400" />}
                           </Button>
