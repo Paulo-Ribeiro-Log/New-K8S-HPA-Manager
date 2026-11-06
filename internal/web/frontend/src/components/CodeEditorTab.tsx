@@ -2497,6 +2497,18 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     setGitResult({ type, title, message, actions });
   }
 
+  // Seletor da branch/tag cujo histórico alimenta o cherry-pick (painéis Log e Git)
+  const logRefSelect = selectedRepo && branches && (
+    <select className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground"
+      title="Mostrar os commits de outro branch (origem do cherry-pick)"
+      value={logRef} onChange={e => changeLogRef(e.target.value)}>
+      <option value="">Branch atual ({branches.current})</option>
+      {[...branches.local, ...branches.remote]
+        .filter(b => b !== branches.current && !b.includes("->"))
+        .map(b => <option key={b} value={b}>{b}</option>)}
+    </select>
+  );
+
   const activeTab = openTabs[activeTabIdx] ?? null;
 
   // Aba cujo arquivo sumiu da árvore (apagado por fora, pelo terminal, git…) fica marcada
@@ -4439,6 +4451,23 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                             Pop
                           </Button>
                         </div>
+                        {/* Cherry-pick */}
+                        <div className="border-t border-border/30 pt-2 space-y-1">
+                          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                            <Cherry className="w-3 h-3" />Cherry-pick
+                          </p>
+                          {logRefSelect}
+                          {log.slice(0, 10).map(entry => (
+                            <div key={entry.hash} className="flex items-center gap-1 text-xs">
+                              <span className="font-mono text-[10px] text-muted-foreground/60 flex-shrink-0">{entry.hash.slice(0, 7)}</span>
+                              <span className="truncate flex-1 min-w-0 text-foreground/80" title={`${entry.message} · ${entry.author} · ${entry.when}`}>{entry.message}</span>
+                              <button title="Aplicar este commit no branch atual"
+                                className="text-[10px] text-primary hover:underline flex-shrink-0"
+                                onClick={() => handleCherryPick(entry.hash)}>pick</button>
+                            </div>
+                          ))}
+                          {log.length === 0 && <p className="text-[11px] text-muted-foreground italic">Sem commits</p>}
+                        </div>
                       </>
                     ) : (
                       <p className="text-xs text-muted-foreground text-center py-4">Selecione um repositório</p>
@@ -4640,16 +4669,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                                 <RefreshCw className={`w-3 h-3 mr-1 ${refreshing.log ? "animate-spin" : ""}`} />Atualizar
                               </Button>
                             )}
-                            {selectedRepo && branches && (
-                              <select className="w-full text-xs bg-muted border border-border/50 rounded px-2 py-1 text-foreground"
-                                title="Mostrar os commits de outro branch (origem do cherry-pick)"
-                                value={logRef} onChange={e => changeLogRef(e.target.value)}>
-                                <option value="">Branch atual ({branches.current})</option>
-                                {[...branches.local, ...branches.remote]
-                                  .filter(b => b !== branches.current && !b.includes("->"))
-                                  .map(b => <option key={b} value={b}>{b}</option>)}
-                              </select>
-                            )}
+                            {logRefSelect}
                             {log.map(entry => (
                               <div key={entry.hash} className="border-b border-border/30 pb-2 group">
                                 <p className="text-xs text-foreground/90 leading-tight">{entry.message}</p>
