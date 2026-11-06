@@ -2722,6 +2722,14 @@ class APIClient {
     return this.request<CertEndpointCheck[]>(`/cert-endpoints/${id}/history${query}`);
   }
 
+  // PV/PVC do cluster ligados à aplicação, node e node pool (somente leitura)
+  async getNodePoolVolumes(cluster: string, includeUsage = false): Promise<VolumesResponse> {
+    const params = new URLSearchParams({ cluster });
+    if (includeUsage) params.set("include_usage", "true");
+    const r = await this.request<{ success: boolean; data: VolumesResponse }>(`/nodepools/volumes?${params.toString()}`);
+    return r.data;
+  }
+
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {
     const response = await this.request<{ success: boolean; data: any }>(
       `/nodepools/storage-overview?cluster=${encodeURIComponent(cluster)}`
@@ -6103,6 +6111,37 @@ export interface CodeEditorPRDiffFile {
 export interface CodeEditorPRDiffResponse {
   pr: CodeEditorPlanPR;
   files: CodeEditorPRDiffFile[];
+}
+
+export interface VolumeItem {
+  kind: "pvc" | "pv" | "nfs"; // pv = PV sem PVC existente; nfs = NFS montado direto no pod (sem PV/PVC)
+  namespace: string;
+  pvc?: string;
+  pvc_status?: string;
+  pv?: string;
+  pv_phase?: string;
+  storage_class: string;
+  source?: string; // NFS, NFS (CSI), EFS (NFS), Azure Disk, Azure Files, EBS…
+  source_detail?: string; // NFS: servidor:/caminho
+  capacity_bytes: number;
+  access_modes: string[];
+  reclaim_policy?: string;
+  workload_kind?: string;
+  workload?: string;
+  workloads: string[]; // todas as aplicações que usam o volume ("Kind/nome")
+  owner_source?: "pod" | "spec" | "statefulset" | "label"; // como o dono foi descoberto
+  app_hint?: string; // nome pelas labels do PVC quando nenhum workload o referencia
+  pods: string[];
+  nodes: string[];
+  node_pools: string[];
+  used_bytes?: number;
+  usage_percentage?: number;
+  issues: string[];
+}
+
+export interface VolumesResponse {
+  items: VolumeItem[];
+  summary: { pvcs: number; pvs: number; capacity_bytes: number; with_issues: number; orphan_pvs: number; unused_pvcs: number; no_owner: number; nfs: number };
 }
 
 export interface CodeEditorPlanAvailability {

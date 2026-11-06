@@ -1,0 +1,523 @@
+package handlers
+
+import (
+	"context"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// Volumes do cluster (PV/PVC) — lista todo volume persistente e o liga à aplicação que o usa:
+// pods que montam o PVC → workload dono (Deployment/StatefulSet/…) → node → node pool. Também
+// aponta o que costuma ser desperdício ou problema (PVC sem pod, PV órfão/Released, PVC Pending).
+// Somente leitura; o uso em bytes (Prometheus) só entra a pedido (?include_usage=true).
+
+// VolumeItem é uma linha da visão de volumes: um PVC (com o PV que o atende) ou um PV sem PVC.
+type VolumeItem struct {
+	Kind          string   `json:"kind"` // "pvc" | "pv" (PV sem PVC existente) | "nfs" (NFS montado direto no pod, sem PV/PVC)
+	Namespace     string   `json:"namespace"`
+	PVC           string   `json:"pvc,omitempty"`
+	PVCStatus     string   `json:"pvc_status,omitempty"`
+	PV            string   `json:"pv,omitempty"`
+	PVPhase       string   `json:"pv_phase,omitempty"`
+	StorageClass  string   `json:"storage_class"`
+	Source        string   `json:"source,omitempty"`        // tipo do backend: NFS, Azure Disk, Azure Files, EBS, EFS…
+	SourceDetail  string   `json:"source_detail,omitempty"` // NFS: servidor:/caminho
+	CapacityBytes float64  `json:"capacity_bytes"`
+	AccessModes   []string `json:"access_modes"`
+	ReclaimPolicy string   `json:"reclaim_policy,omitempty"`
+	WorkloadKind  string   `json:"workload_kind,omitempty"` // dono principal (o primeiro de Workloads)
+	Workload      string   `json:"workload,omitempty"`
+	Workloads     []string `json:"workloads"`              // TODAS as aplicações que usam o volume, "Kind/nome"
+	OwnerSource   string   `json:"owner_source,omitempty"` // como o dono foi descoberto: pod | spec | statefulset | label
+	AppHint       string   `json:"app_hint,omitempty"`     // nome da aplicação pelas labels do PVC, quando nenhum workload referencia o volume
+	Pods          []string `json:"pods"`
+	Nodes         []string `json:"nodes"`
+	NodePools     []string `json:"node_pools"`
+	UsedBytes     float64  `json:"used_bytes,omitempty"`
+	UsagePercent  float64  `json:"usage_percentage,omitempty"`
+	Issues        []string `json:"issues"`
+}
+
+// VolumesSummary são os totais do cluster.
+type VolumesSummary struct {
+	PVCs          int     `json:"pvcs"`
+	PVs           int     `json:"pvs"`
+	CapacityBytes float64 `json:"capacity_bytes"`
+	WithIssues    int     `json:"with_issues"`
+	OrphanPVs     int     `json:"orphan_pvs"`
+	UnusedPVCs    int     `json:"unused_pvcs"`
+	NoOwner       int     `json:"no_owner"` // volumes sem nenhuma aplicação identificada
+	NFS           int     `json:"nfs"`      // volumes NFS: PVs NFS + NFS montado direto em pod
+}
+
+// nodePoolLabelKeys: label do node que diz a que pool/group ele pertence (AKS, AKS antigo, EKS, GKE).
+var nodePoolLabelKeys = []string{"agentpool", "kubernetes.azure.com/agentpool", "eks.amazonaws.com/nodegroup", "cloud.google.com/gke-nodepool"}
+
+func nodePoolOf(labels map[string]string) string {
+	for _, k := range nodePoolLabelKeys {
+		if v := labels[k]; v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// workloadOf devolve o dono lógico do pod. Pod de ReplicaSet vira o Deployment (o nome do RS é
+// <deployment>-<pod-template-hash>).
+func workloadOf(pod corev1.Pod) (kind, name string) {
+	for _, o := range pod.OwnerReferences {
+		if o.Controller != nil && !*o.Controller {
+			continue
+		}
+		if o.Kind == "ReplicaSet" {
+			if h := pod.Labels["pod-template-hash"]; h != "" && strings.HasSuffix(o.Name, "-"+h) {
+				return "Deployment", strings.TrimSuffix(o.Name, "-"+h)
+			}
+		}
+		return o.Kind, o.Name
+	}
+	return "Pod", pod.Name
+}
+
+// pvSource descreve o backend do PV. NFS vem de spec.nfs ou de um driver CSI de NFS (servidor/share
+// nos volumeAttributes); EFS é NFS gerenciado da AWS.
+func pvSource(pv corev1.PersistentVolume) (source, detail string, isNFS bool) {
+	sp := pv.Spec
+	switch {
+	case sp.NFS != nil:
+		return "NFS", sp.NFS.Server + ":" + sp.NFS.Path, true
+	case sp.CSI != nil:
+		d := sp.CSI.Driver
+		attrs := sp.CSI.VolumeAttributes
+		switch {
+		case strings.Contains(d, "nfs"):
+			detail := attrs["server"]
+			if sh := attrs["share"]; sh != "" {
+				detail += ":" + sh
+			}
+			return "NFS (CSI)", detail, true
+		case d == "efs.csi.aws.com":
+			return "EFS (NFS)", sp.CSI.VolumeHandle, true
+		case d == "file.csi.azure.com":
+			return "Azure Files", attrs["shareName"], false
+		case d == "disk.csi.azure.com":
+			return "Azure Disk", "", false
+		case d == "ebs.csi.aws.com":
+			return "EBS", sp.CSI.VolumeHandle, false
+		case d == "pd.csi.storage.gke.io":
+			return "GCE PD", "", false
+		}
+		return "CSI: " + d, "", false
+	case sp.AzureFile != nil:
+		return "Azure Files", sp.AzureFile.ShareName, false
+	case sp.AzureDisk != nil:
+		return "Azure Disk", "", false
+	case sp.AWSElasticBlockStore != nil:
+		return "EBS", sp.AWSElasticBlockStore.VolumeID, false
+	case sp.GCEPersistentDisk != nil:
+		return "GCE PD", sp.GCEPersistentDisk.PDName, false
+	case sp.HostPath != nil:
+		return "HostPath", sp.HostPath.Path, false
+	case sp.Local != nil:
+		return "Local", sp.Local.Path, false
+	}
+	return "", "", false
+}
+
+// workloadSpec é um workload lido do cluster (Deployment, StatefulSet, DaemonSet, CronJob), com os
+// volumes do pod template. Serve para achar o dono de um volume mesmo sem pod rodando (0 réplicas).
+type workloadSpec struct {
+	Namespace, Kind, Name string
+	Volumes               []corev1.Volume
+	ClaimTemplates        []string // StatefulSet: nomes dos volumeClaimTemplates
+}
+
+func specsFromCluster(deps []appsv1.Deployment, stss []appsv1.StatefulSet, dss []appsv1.DaemonSet, cjs []batchv1.CronJob) []workloadSpec {
+	var out []workloadSpec
+	for _, d := range deps {
+		out = append(out, workloadSpec{Namespace: d.Namespace, Kind: "Deployment", Name: d.Name, Volumes: d.Spec.Template.Spec.Volumes})
+	}
+	for _, st := range stss {
+		w := workloadSpec{Namespace: st.Namespace, Kind: "StatefulSet", Name: st.Name, Volumes: st.Spec.Template.Spec.Volumes}
+		for _, t := range st.Spec.VolumeClaimTemplates {
+			w.ClaimTemplates = append(w.ClaimTemplates, t.Name)
+		}
+		out = append(out, w)
+	}
+	for _, d := range dss {
+		out = append(out, workloadSpec{Namespace: d.Namespace, Kind: "DaemonSet", Name: d.Name, Volumes: d.Spec.Template.Spec.Volumes})
+	}
+	for _, c := range cjs {
+		out = append(out, workloadSpec{Namespace: c.Namespace, Kind: "CronJob", Name: c.Name, Volumes: c.Spec.JobTemplate.Spec.Template.Spec.Volumes})
+	}
+	return out
+}
+
+// isOrdinalSuffix: "0", "12"… (o que o StatefulSet acrescenta ao nome do PVC).
+func isOrdinalSuffix(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// appHintOf: nome da aplicação pelas labels do PVC/PV (padrão Kubernetes e o legado "app").
+func appHintOf(labels map[string]string) string {
+	for _, k := range []string{"app.kubernetes.io/name", "app.kubernetes.io/instance", "app"} {
+		if v := labels[k]; v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// volumeInput agrupa o que foi lido do cluster (separado do handler para testar sem API).
+type volumeInput struct {
+	PVCs  []corev1.PersistentVolumeClaim
+	PVs   []corev1.PersistentVolume
+	Pods  []corev1.Pod
+	Nodes []corev1.Node
+	Specs []workloadSpec
+	Usage map[string]VolumeMetric // "<ns>/<pvc>"; nil quando não pedido
+}
+
+func addUnique(list []string, v string) []string {
+	if v == "" {
+		return list
+	}
+	for _, x := range list {
+		if x == v {
+			return list
+		}
+	}
+	return append(list, v)
+}
+
+func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
+	poolByNode := map[string]string{}
+	for _, n := range in.Nodes {
+		poolByNode[n.Name] = nodePoolOf(n.Labels)
+	}
+	pvByName := map[string]corev1.PersistentVolume{}
+	for _, pv := range in.PVs {
+		pvByName[pv.Name] = pv
+	}
+
+	// owners: quem usa cada PVC ("<ns>/<pvc>"), em ordem de descoberta e sem repetir.
+	type owner struct{ kind, name, via string }
+	type mount struct {
+		pods, nodes, pools []string
+		owners             []owner
+	}
+	mounts := map[string]*mount{}
+	mountOf := func(key string) *mount {
+		m := mounts[key]
+		if m == nil {
+			m = &mount{}
+			mounts[key] = m
+		}
+		return m
+	}
+	addOwner := func(m *mount, kind, name, via string) {
+		for _, o := range m.owners {
+			if o.kind == kind && o.name == name {
+				return
+			}
+		}
+		m.owners = append(m.owners, owner{kind, name, via})
+	}
+	directNFS := map[string]*VolumeItem{}
+	var directOrder []string
+	nfsItem := func(ns, kind, name, detail, via string) *VolumeItem {
+		key := ns + "/" + kind + "/" + name + "/" + detail
+		it := directNFS[key]
+		if it == nil {
+			it = &VolumeItem{Kind: "nfs", Namespace: ns, Source: "NFS (direto no pod)", SourceDetail: detail, WorkloadKind: kind, Workload: name, Workloads: []string{kind + "/" + name},
+				OwnerSource: via, AccessModes: []string{}, Pods: []string{}, Nodes: []string{}, NodePools: []string{}, Issues: []string{}}
+			directNFS[key] = it
+			directOrder = append(directOrder, key)
+		}
+		return it
+	}
+
+	for _, pod := range in.Pods {
+		kind, name := workloadOf(pod)
+		for _, v := range pod.Spec.Volumes {
+			if v.NFS != nil { // montado direto no pod: não há PV nem PVC, só aparece aqui
+				it := nfsItem(pod.Namespace, kind, name, v.NFS.Server+":"+v.NFS.Path, "pod")
+				it.Pods = addUnique(it.Pods, pod.Name)
+				if pod.Spec.NodeName != "" {
+					it.Nodes = addUnique(it.Nodes, pod.Spec.NodeName)
+					it.NodePools = addUnique(it.NodePools, poolByNode[pod.Spec.NodeName])
+				}
+				continue
+			}
+			claim := ""
+			switch {
+			case v.PersistentVolumeClaim != nil:
+				claim = v.PersistentVolumeClaim.ClaimName
+			case v.Ephemeral != nil: // PVC gerado para o volume efêmero: <pod>-<volume>
+				claim = pod.Name + "-" + v.Name
+			default:
+				continue
+			}
+			m := mountOf(pod.Namespace + "/" + claim)
+			addOwner(m, kind, name, "pod")
+			m.pods = addUnique(m.pods, pod.Name)
+			if pod.Spec.NodeName != "" {
+				m.nodes = addUnique(m.nodes, pod.Spec.NodeName)
+				m.pools = addUnique(m.pools, poolByNode[pod.Spec.NodeName])
+			}
+		}
+	}
+
+	// Specs dos workloads: acha o dono mesmo com 0 réplicas ou entre execuções (CronJob).
+	type vct struct{ ns, kind, name, prefix string }
+	var vcts []vct
+	for _, w := range in.Specs {
+		for _, v := range w.Volumes {
+			switch {
+			case v.PersistentVolumeClaim != nil:
+				addOwner(mountOf(w.Namespace+"/"+v.PersistentVolumeClaim.ClaimName), w.Kind, w.Name, "spec")
+			case v.NFS != nil:
+				nfsItem(w.Namespace, w.Kind, w.Name, v.NFS.Server+":"+v.NFS.Path, "spec")
+			}
+		}
+		for _, t := range w.ClaimTemplates {
+			vcts = append(vcts, vct{w.Namespace, w.Kind, w.Name, t + "-" + w.Name + "-"})
+		}
+	}
+	// PVC criado por volumeClaimTemplate de StatefulSet: <template>-<sts>-<ordinal>
+	vctOwner := func(ns, claim string) (kind, name string, ok bool) {
+		for _, t := range vcts {
+			if t.ns == ns && strings.HasPrefix(claim, t.prefix) && isOrdinalSuffix(strings.TrimPrefix(claim, t.prefix)) {
+				return t.kind, t.name, true
+			}
+		}
+		return "", "", false
+	}
+	// completa o dono de um PVC (existente ou já apagado) e devolve o que foi achado
+	resolveOwners := func(ns, claim string) *mount {
+		key := ns + "/" + claim
+		if k, n, ok := vctOwner(ns, claim); ok {
+			addOwner(mountOf(key), k, n, "statefulset")
+		}
+		return mounts[key]
+	}
+	fillOwners := func(it *VolumeItem, m *mount) {
+		if m == nil {
+			return
+		}
+		for _, o := range m.owners {
+			it.Workloads = append(it.Workloads, o.kind+"/"+o.name)
+		}
+		if len(m.owners) > 0 {
+			it.WorkloadKind, it.Workload, it.OwnerSource = m.owners[0].kind, m.owners[0].name, m.owners[0].via
+		}
+		it.Pods, it.Nodes, it.NodePools = m.pods, m.nodes, m.pools
+		if it.Pods == nil {
+			it.Pods, it.Nodes, it.NodePools = []string{}, []string{}, []string{}
+		}
+	}
+
+	sum := VolumesSummary{PVCs: len(in.PVCs), PVs: len(in.PVs)}
+	items := make([]VolumeItem, 0, len(in.PVCs))
+	claimed := map[string]bool{} // PVs atendendo algum PVC existente
+
+	for _, pvc := range in.PVCs {
+		it := VolumeItem{
+			Kind: "pvc", Namespace: pvc.Namespace, PVC: pvc.Name, PVCStatus: string(pvc.Status.Phase),
+			PV: pvc.Spec.VolumeName, AccessModes: []string{}, Workloads: []string{}, Pods: []string{}, Nodes: []string{}, NodePools: []string{}, Issues: []string{},
+		}
+		if pvc.Spec.StorageClassName != nil {
+			it.StorageClass = *pvc.Spec.StorageClassName
+		}
+		if c, ok := pvc.Status.Capacity[corev1.ResourceStorage]; ok {
+			it.CapacityBytes = float64(c.Value())
+		} else if c, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+			it.CapacityBytes = float64(c.Value())
+		}
+		for _, m := range pvc.Spec.AccessModes {
+			it.AccessModes = append(it.AccessModes, string(m))
+		}
+		if pv, ok := pvByName[pvc.Spec.VolumeName]; ok {
+			claimed[pv.Name] = true
+			it.PVPhase = string(pv.Status.Phase)
+			it.ReclaimPolicy = string(pv.Spec.PersistentVolumeReclaimPolicy)
+			var nfs bool
+			it.Source, it.SourceDetail, nfs = pvSource(pv)
+			if nfs {
+				sum.NFS++
+			}
+			if it.StorageClass == "" {
+				it.StorageClass = pv.Spec.StorageClassName
+			}
+		}
+		key := pvc.Namespace + "/" + pvc.Name
+		fillOwners(&it, resolveOwners(pvc.Namespace, pvc.Name))
+		if len(it.Workloads) == 0 {
+			if it.AppHint = appHintOf(pvc.Labels); it.AppHint != "" {
+				it.OwnerSource = "label"
+			}
+		}
+		if u, ok := in.Usage[key]; ok {
+			it.UsedBytes, it.UsagePercent = u.UsedBytes, u.UsagePercentage
+		}
+
+		switch {
+		case pvc.Status.Phase == corev1.ClaimPending:
+			it.Issues = append(it.Issues, "PVC Pending (sem PV)")
+		case pvc.Status.Phase == corev1.ClaimLost:
+			it.Issues = append(it.Issues, "PVC Lost (PV perdido)")
+		case len(it.Pods) == 0:
+			it.Issues = append(it.Issues, "PVC sem pod usando")
+			sum.UnusedPVCs++
+		}
+		if it.ReclaimPolicy == string(corev1.PersistentVolumeReclaimRetain) && len(it.Pods) == 0 {
+			it.Issues = append(it.Issues, "PV com reclaim Retain: continua cobrando se o PVC for apagado")
+		}
+		sum.CapacityBytes += it.CapacityBytes
+		items = append(items, it)
+	}
+
+	for _, pv := range in.PVs {
+		if claimed[pv.Name] {
+			continue
+		}
+		it := VolumeItem{
+			Kind: "pv", PV: pv.Name, PVPhase: string(pv.Status.Phase), StorageClass: pv.Spec.StorageClassName,
+			ReclaimPolicy: string(pv.Spec.PersistentVolumeReclaimPolicy), AccessModes: []string{}, Workloads: []string{}, Pods: []string{}, Nodes: []string{}, NodePools: []string{}, Issues: []string{},
+		}
+		if c, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok {
+			it.CapacityBytes = float64(c.Value())
+		}
+		var nfs bool
+		it.Source, it.SourceDetail, nfs = pvSource(pv)
+		if nfs {
+			sum.NFS++
+		}
+		for _, m := range pv.Spec.AccessModes {
+			it.AccessModes = append(it.AccessModes, string(m))
+		}
+		if pv.Spec.ClaimRef != nil {
+			it.Namespace, it.PVC = pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.Name
+			// o PVC sumiu, mas o spec do workload (ou o nome do PVC do StatefulSet) ainda diz quem era o dono
+			fillOwners(&it, resolveOwners(it.Namespace, it.PVC))
+			it.Issues = append(it.Issues, "PV "+string(pv.Status.Phase)+": o PVC "+pv.Spec.ClaimRef.Name+" não existe mais, mas o disco continua")
+		} else {
+			it.Issues = append(it.Issues, "PV sem PVC (disco ocioso)")
+		}
+		if len(it.Workloads) == 0 {
+			if it.AppHint = appHintOf(pv.Labels); it.AppHint != "" {
+				it.OwnerSource = "label"
+			}
+		}
+		sum.OrphanPVs++
+		sum.CapacityBytes += it.CapacityBytes
+		items = append(items, it)
+	}
+
+	for _, key := range directOrder {
+		items = append(items, *directNFS[key])
+		sum.NFS++
+	}
+
+	for _, it := range items {
+		if len(it.Workloads) == 0 {
+			sum.NoOwner++
+		}
+		if len(it.Issues) > 0 {
+			sum.WithIssues++
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Namespace != items[j].Namespace {
+			return items[i].Namespace < items[j].Namespace
+		}
+		if items[i].Workload != items[j].Workload {
+			return items[i].Workload < items[j].Workload
+		}
+		return items[i].PVC+items[i].PV < items[j].PVC+items[j].PV
+	})
+	return items, sum
+}
+
+// GetVolumes — GET /api/v1/nodepools/volumes?cluster=<ctx>&include_usage=true
+func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "MISSING_PARAMETERS", "message": "Parameter 'cluster' is required"}})
+		return
+	}
+	client, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "KUBERNETES_CLIENT_ERROR", "message": "Failed to get Kubernetes client: " + err.Error()}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+
+	var in volumeInput
+	fail := func(what string, err error) {
+		c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": gin.H{"code": "KUBERNETES_API_ERROR", "message": "Falha ao listar " + what + ": " + err.Error()}})
+	}
+	pvcs, err := client.CoreV1().PersistentVolumeClaims("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		fail("PVCs", err)
+		return
+	}
+	in.PVCs = pvcs.Items
+	pvs, err := client.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		fail("PVs", err)
+		return
+	}
+	in.PVs = pvs.Items
+	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		fail("pods", err)
+		return
+	}
+	in.Pods = pods.Items
+	// nodes é só enriquecimento (node pool): se o RBAC negar, segue sem a coluna
+	if nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{}); err == nil {
+		in.Nodes = nodes.Items
+	}
+	// specs dos workloads: enriquecimento (dono do volume sem pod rodando); RBAC negado → segue sem
+	var deps []appsv1.Deployment
+	var stss []appsv1.StatefulSet
+	var dss []appsv1.DaemonSet
+	var cjs []batchv1.CronJob
+	if l, err := client.AppsV1().Deployments("").List(ctx, metav1.ListOptions{}); err == nil {
+		deps = l.Items
+	}
+	if l, err := client.AppsV1().StatefulSets("").List(ctx, metav1.ListOptions{}); err == nil {
+		stss = l.Items
+	}
+	if l, err := client.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{}); err == nil {
+		dss = l.Items
+	}
+	if l, err := client.BatchV1().CronJobs("").List(ctx, metav1.ListOptions{}); err == nil {
+		cjs = l.Items
+	}
+	in.Specs = specsFromCluster(deps, stss, dss, cjs)
+	if c.Query("include_usage") == "true" {
+		in.Usage = h.getVolumeMetricsFromPrometheus(cluster)
+	}
+
+	items, summary := buildVolumeItems(in)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"items": items, "summary": summary}})
+}
