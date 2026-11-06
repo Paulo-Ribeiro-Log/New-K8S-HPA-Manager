@@ -143,7 +143,7 @@ jobs:
   # a Apple usa pra gerar binários "Universal" nativamente suporta as duas arquiteturas Darwin.
   build-darwin-amd64:
     needs: [version, create-release]
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
@@ -203,7 +203,7 @@ jobs:
   # macos-14 = runner Apple Silicon (arm64) — build NATIVO.
   build-darwin-arm64:
     needs: [version, create-release]
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
