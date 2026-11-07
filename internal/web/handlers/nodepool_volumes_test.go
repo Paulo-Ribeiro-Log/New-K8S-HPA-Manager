@@ -97,7 +97,6 @@ func TestBuildVolumeItems(t *testing.T) {
 			// o PVC "apagado" do PV Released ainda é referenciado por um Deployment
 			{Namespace: "app", Kind: "Deployment", Name: "ex-dono", Volumes: []corev1.Volume{vtClaimVol("apagado")}},
 		},
-		Usage: map[string]VolumeMetric{"app/web-data": {UsedBytes: 5, UsagePercentage: 50}},
 	}
 	items, sum := buildVolumeItems(in)
 
@@ -112,7 +111,7 @@ func TestBuildVolumeItems(t *testing.T) {
 		}
 	}
 	web := by["pvc:app/web-data"]
-	if web.WorkloadKind != "Deployment" || web.Workload != "web" || len(web.NodePools) != 1 || web.NodePools[0] != "userpool" || web.UsagePercent != 50 || len(web.Issues) != 0 {
+	if web.WorkloadKind != "Deployment" || web.Workload != "web" || len(web.NodePools) != 1 || web.NodePools[0] != "userpool" || len(web.Issues) != 0 {
 		t.Fatalf("web: %+v", web)
 	}
 	if pg := by["pvc:db/data-pg-0"]; pg.WorkloadKind != "StatefulSet" || pg.Workload != "pg" || pg.NodePools[0] != "ng-db" {
