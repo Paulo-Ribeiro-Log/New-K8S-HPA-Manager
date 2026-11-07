@@ -57,6 +57,7 @@ type NamespacePermissions struct {
 	CanPatchPVC  bool `json:"canPatchPVC"`
 	CanDeletePVC bool `json:"canDeletePVC"`
 	CanDeletePV  bool `json:"canDeletePV"`
+	CanSnapshot  bool `json:"canSnapshot"` // criar VolumeSnapshot
 
 	// Indica que o K8s não conseguiu listar todas as regras (wildcard policies complexas).
 	// Quando true, assume-se acesso total para não bloquear o usuário indevidamente.
@@ -101,7 +102,7 @@ func CheckNamespacePermissions(ctx context.Context, client kubernetes.Interface,
 		perms.CanWriteStatefulSets = true
 		perms.CanWriteDaemonSets = true
 		perms.CanWritePods = true
-		perms.CanPatchPVC, perms.CanDeletePVC, perms.CanDeletePV = true, true, true
+		perms.CanPatchPVC, perms.CanDeletePVC, perms.CanDeletePV, perms.CanSnapshot = true, true, true, true
 		return perms, nil
 	}
 
@@ -241,6 +242,9 @@ func applyResourceRule(rule authorizationv1.ResourceRule, p *NamespacePermission
 		if hasVerb("delete") {
 			p.CanDeletePVC = true
 		}
+	}
+	if inGroup("snapshot.storage.k8s.io") && hasResource("volumesnapshots") && hasVerb("create") {
+		p.CanSnapshot = true
 	}
 	if inGroup("") && hasResource("persistentvolumes") && hasVerb("delete") {
 		p.CanDeletePV = true

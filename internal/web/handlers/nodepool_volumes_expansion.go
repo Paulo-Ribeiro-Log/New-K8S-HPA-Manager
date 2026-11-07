@@ -65,9 +65,12 @@ type snapInfo struct {
 }
 
 // fetchSnapshots lista os VolumeSnapshots (CRD do snapshot-controller) pela REST bruta — o projeto
-// não usa dynamic client. false = API ausente ou sem permissão (não dá para afirmar "sem snapshot").
-func fetchSnapshots(ctx context.Context, client kubernetes.Interface) (map[string]snapInfo, bool) {
-	raw, err := client.CoreV1().RESTClient().Get().AbsPath("/apis/snapshot.storage.k8s.io/v1/volumesnapshots").DoRaw(ctx)
+// não usa dynamic client, na versão detectada por detectSnapshotVersion. false = API ausente ou sem permissão (não dá para afirmar "sem snapshot").
+func fetchSnapshots(ctx context.Context, client kubernetes.Interface, version string) (map[string]snapInfo, bool) {
+	if version == "" {
+		return nil, false
+	}
+	raw, err := client.CoreV1().RESTClient().Get().AbsPath("/apis/" + snapshotGroup + "/" + version + "/volumesnapshots").DoRaw(ctx)
 	if err != nil {
 		return nil, false
 	}

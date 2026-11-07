@@ -26,6 +26,7 @@ const READ_ONLY_PERMISSIONS: K8sNamespacePermissions = {
   canPatchPVC: false,
   canDeletePVC: false,
   canDeletePV: false,
+  canSnapshot: false,
   incomplete: false,
 };
 

@@ -20,6 +20,11 @@ func TestApplyResourceRuleVolumes(t *testing.T) {
 	if !p.CanDeletePVC || !p.CanDeletePV {
 		t.Fatalf("delete: %+v", p)
 	}
+	var sn NamespacePermissions
+	applyResourceRule(authorizationv1.ResourceRule{APIGroups: []string{"snapshot.storage.k8s.io"}, Resources: []string{"volumesnapshots"}, Verbs: []string{"create"}}, &sn)
+	if !sn.CanSnapshot {
+		t.Fatalf("create volumesnapshots deveria liberar snapshot: %+v", sn)
+	}
 	var q NamespacePermissions
 	applyResourceRule(rule("persistentvolumes", "get", "list"), &q)
 	if q.CanDeletePV {
@@ -27,7 +32,7 @@ func TestApplyResourceRuleVolumes(t *testing.T) {
 	}
 	var w NamespacePermissions
 	applyResourceRule(authorizationv1.ResourceRule{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"*"}}, &w)
-	if !w.CanPatchPVC || !w.CanDeletePVC || !w.CanDeletePV {
+	if !w.CanPatchPVC || !w.CanDeletePVC || !w.CanDeletePV || !w.CanSnapshot {
 		t.Fatalf("wildcard: %+v", w)
 	}
 }
