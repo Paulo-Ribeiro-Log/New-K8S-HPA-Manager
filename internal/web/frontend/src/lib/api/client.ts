@@ -2731,6 +2731,15 @@ class APIClient {
     return r.data;
   }
 
+  // Ações de escrita do modal Volumes (o servidor revalida tudo)
+  async expandVolume(cluster: string, namespace: string, name: string, sizeGiB: number): Promise<void> {
+    await this.post("/nodepools/volumes/expand", { cluster, namespace, name, size_gib: sizeGiB });
+  }
+
+  async deleteVolume(cluster: string, kind: "pvc" | "pv", namespace: string, name: string, confirm: string): Promise<void> {
+    await this.post("/nodepools/volumes/delete", { cluster, kind, namespace, name, confirm });
+  }
+
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {
     const response = await this.request<{ success: boolean; data: any }>(
       `/nodepools/storage-overview?cluster=${encodeURIComponent(cluster)}`
