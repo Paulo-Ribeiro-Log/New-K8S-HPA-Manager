@@ -890,6 +890,7 @@ func (s *Server) setupRoutes() {
 
 	// Node Pools - Write Operations (SRE-only)
 	api.POST("/nodepools/volumes/expand", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExpandVolume)     // expande um PVC (revalida no servidor)
+	api.GET("/nodepools/volumes/storage-azure", nodePoolHandler.GetVolumeAzureDetails)                        // detalhes do storage na Azure (GET no ARM, a pedido)
 	api.GET("/nodepools/volumes/snapshot-info", nodePoolHandler.GetSnapshotInfo)                              // versão da API de snapshot e classes compatíveis com o PVC
 	api.POST("/nodepools/volumes/snapshot", rbacMiddleware.RequireSREGroup(), nodePoolHandler.CreateSnapshot) // cria um VolumeSnapshot do PVC
 	api.POST("/nodepools/volumes/delete", rbacMiddleware.RequireSREGroup(), nodePoolHandler.DeleteVolume)     // apaga PVC sem pod / PV sem uso (exige colar a frase de confirmação)
