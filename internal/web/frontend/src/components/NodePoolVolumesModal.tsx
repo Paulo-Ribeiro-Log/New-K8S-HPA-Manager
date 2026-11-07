@@ -129,6 +129,11 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const [zone, setZone] = useState("");
   const [onlyIssues, setOnlyIssues] = useState(false);
   const [noSnapshot, setNoSnapshot] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [action, setAction] = useState<{ type: "expand" | "delete"; item: VolumeItem } | null>(null);
+  const [actionInput, setActionInput] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "namespace", desc: false });
 
   useEffect(() => {
@@ -141,7 +146,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Erro ao listar os volumes"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [cluster, includeUsage, includeCost]);
+  }, [cluster, includeUsage, includeCost, reloadKey]);
 
   const items = data?.items ?? [];
   const namespaces = useMemo(() => [...new Set(items.map((i) => i.namespace).filter(Boolean))].sort(), [items]);
@@ -168,6 +173,29 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       return (typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb))) * dir;
     });
   }, [items, query, namespace, pool, source, usageFilter, zone, onlyIssues, noSnapshot, sort]);
+
+  function openAction(type: "expand" | "delete", item: VolumeItem) {
+    setAction({ type, item });
+    setActionInput("");
+    setActionError("");
+  }
+
+  async function runAction() {
+    if (!action) return;
+    const { type, item } = action;
+    setActionBusy(true);
+    setActionError("");
+    try {
+      if (type === "expand") await apiClient.expandVolume(cluster, item.namespace, item.pvc ?? "", Number(actionInput));
+      else await apiClient.deleteVolume(cluster, item.kind === "pv" ? "pv" : "pvc", item.namespace, item.kind === "pv" ? (item.pv ?? "") : (item.pvc ?? ""), actionInput);
+      setAction(null);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Falha ao executar a ação");
+    } finally {
+      setActionBusy(false);
+    }
+  }
 
   function toggleSort(key: SortKey) {
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: false }));
@@ -428,6 +456,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                   {includeUsage && <Th k="usage">Uso</Th>}
                   <Th k="pool">{resourceLabel.replace(/s$/, "")}</Th>
                   <Th k="issues">Situação</Th>
+                  <th className="text-left font-medium px-2 py-1.5">Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -528,12 +557,66 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                         </div>
                       ))}
                     </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <div className="flex flex-col items-start gap-1">
+                        {i.kind === "pvc" && i.can_expand && i.pvc_status === "Bound" && (
+                          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => openAction("expand", i)}>Expandir</Button>
+                        )}
+                        {(i.kind === "pvc" || i.kind === "pv") && i.idle && (
+                          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] text-red-400 hover:text-red-300" onClick={() => openAction("delete", i)}>Apagar</Button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
         </div>
+
+        {action && (
+          <Dialog open onOpenChange={(v) => { if (!v && !actionBusy) setAction(null); }}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle className="text-sm">
+                  {action.type === "expand" ? "Expandir volume" : action.item.kind === "pv" ? "Apagar PV" : "Apagar PVC"}
+                </DialogTitle>
+              </DialogHeader>
+              {(() => {
+                const name = action.item.kind === "pv" ? (action.item.pv ?? "") : (action.item.pvc ?? "");
+                return action.type === "expand" ? (
+                  <div className="space-y-2 text-xs">
+                    <p><span className="font-mono">{action.item.namespace}/{name}</span> — atual: <b>{fmtGiB(action.item.capacity_bytes)}</b>. Disco só cresce; reduzir exige recriar o volume.</p>
+                    <Input type="number" min={1} step={1} className="h-8 text-xs" placeholder="Novo tamanho em GiB" value={actionInput} onChange={(e) => setActionInput(e.target.value)} autoFocus />
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-xs">
+                    <p>
+                      Vai apagar <span className="font-mono">{action.item.kind === "pvc" ? `${action.item.namespace}/` : ""}{name}</span>.
+                      {action.item.reclaim_policy === "Delete"
+                        ? <b className="text-red-400"> O reclaim é Delete: o disco e os dados serão apagados junto e não há como desfazer.</b>
+                        : " O reclaim é " + (action.item.reclaim_policy || "desconhecido") + ": o disco pode continuar existindo (e cobrando) fora do cluster."}
+                    </p>
+                    <p className="text-muted-foreground">O servidor confere de novo que ninguém está usando o volume. Digite o nome para confirmar:</p>
+                    <Input className="h-8 text-xs font-mono" placeholder={name} value={actionInput} onChange={(e) => setActionInput(e.target.value)} autoFocus />
+                  </div>
+                );
+              })()}
+              {actionError && <div className="text-xs text-red-400 whitespace-pre-wrap [overflow-wrap:anywhere]">{actionError}</div>}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setAction(null)} disabled={actionBusy}>Cancelar</Button>
+                <Button
+                  size="sm"
+                  variant={action.type === "delete" ? "destructive" : "default"}
+                  onClick={runAction}
+                  disabled={actionBusy || !actionInput || (action.type === "delete" && actionInput !== (action.item.kind === "pv" ? action.item.pv : action.item.pvc))}
+                >
+                  {actionBusy && <Loader2 className="w-3 h-3 animate-spin mr-1" />}{action.type === "expand" ? "Expandir" : "Apagar"}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
       </DialogContent>
     </Dialog>
   );

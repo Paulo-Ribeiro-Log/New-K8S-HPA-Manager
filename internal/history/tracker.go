@@ -509,6 +509,8 @@ const (
 	ActionRolloutDeployment  = "rollout_deployment"  // Rollout de Deployment executado
 	ActionRolloutDaemonSet   = "rollout_daemonset"   // Rollout de DaemonSet executado
 	ActionRolloutStatefulSet = "rollout_statefulset" // Rollout de StatefulSet executado
+	ActionExpandVolume       = "expand_volume"       // PVC expandido (modal Volumes)
+	ActionDeleteVolume       = "delete_volume"       // PVC ou PV removido (modal Volumes)
 )
 
 // Status constants
