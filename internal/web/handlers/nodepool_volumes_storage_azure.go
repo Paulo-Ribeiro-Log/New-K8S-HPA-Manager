@@ -152,6 +152,12 @@ func decode(raw []byte) map[string]any {
 	return m
 }
 
+// isGeoSKU: SKUs com região secundária (única situação em que geoReplicationStats existe).
+func isGeoSKU(sku string) bool {
+	_, r := splitSKU(sku)
+	return r == "GRS" || r == "GZRS" || r == "RAGRS" || r == "RAGZRS"
+}
+
 func accountSections(acc map[string]any, d *AzStorageDetails) {
 	sku, kind, tier := digStr(acc, "sku", "name"), digStr(acc, "kind"), digStr(acc, "properties", "accessTier")
 	d.Sections = append(d.Sections, section("Conta de armazenamento",
@@ -388,7 +394,13 @@ func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		acc, accErr = get(base + "?api-version=" + storageAPIVer + "&$expand=geoReplicationStats")
+		// $expand=geoReplicationStats só vale em conta geo-replicada: em LRS/ZRS a Azure responde
+		// InvalidAccountType. Lê a conta sem o expand e pede as estatísticas só se o SKU for geo.
+		if acc, accErr = get(base + "?api-version=" + storageAPIVer); accErr == nil && isGeoSKU(digStr(acc, "sku", "name")) {
+			if withStats, err := get(base + "?api-version=" + storageAPIVer + "&$expand=geoReplicationStats"); err == nil {
+				acc = withStats
+			}
+		}
 	}()
 	svcName, itemKind := "blobServices", "containers"
 	if t.driver == "file.csi.azure.com" {

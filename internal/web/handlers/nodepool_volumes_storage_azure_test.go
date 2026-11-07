@@ -11,6 +11,10 @@ func fakeAz(t *testing.T, routes map[string]string) func() {
 	t.Helper()
 	old := azRestGet
 	azRestGet = func(_ context.Context, u string) ([]byte, error) {
+		if strings.Contains(u, "geoReplicationStats") && !strings.Contains(u, "geoOK") {
+			// como a Azure: o expand só é aceito em conta geo-replicada (rota do teste marca com "geoOK")
+			return nil, fmt.Errorf(`Bad Request({"error":{"code":"InvalidAccountType","message":"AccountType Standard_LRS is invalid."}})`)
+		}
 		for frag, body := range routes {
 			if strings.Contains(u, frag) {
 				if body == "" {
@@ -80,6 +84,25 @@ func TestCollectAzureDetailsFileShare(t *testing.T) {
 	for _, want := range []string{"TLS mínimo", "Sem firewall", "soft delete desligado", "90%"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("faltou nota %q em %q", want, joined)
+		}
+	}
+}
+
+func TestCollectAzureDetailsLRSNaoPedeExpandGeo(t *testing.T) {
+	defer fakeAz(t, map[string]string{
+		"/storageAccounts/stfoo?": `{"kind":"StorageV2","sku":{"name":"Standard_LRS"},"properties":{"accessTier":"Hot"}}`,
+		"/blobServices/default?":  `{"properties":{"deleteRetentionPolicy":{"enabled":true,"days":7}}}`,
+	})()
+	d := collectAzureDetails(context.Background(), azTarget{kind: "storage", driver: "blob.csi.azure.com", sub: "s", rg: "rg", account: "stfoo"})
+	if len(d.Warnings) != 0 || len(d.Sections) == 0 {
+		t.Fatalf("conta LRS não deveria dar aviso: warnings=%v sections=%d", d.Warnings, len(d.Sections))
+	}
+}
+
+func TestIsGeoSKU(t *testing.T) {
+	for sku, want := range map[string]bool{"Standard_LRS": false, "Premium_ZRS": false, "Standard_GRS": true, "Standard_RAGRS": true, "Standard_GZRS": true, "Standard_RAGZRS": true, "": false} {
+		if isGeoSKU(sku) != want {
+			t.Errorf("%q: esperava %v", sku, want)
 		}
 	}
 }
