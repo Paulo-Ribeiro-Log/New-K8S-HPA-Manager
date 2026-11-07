@@ -15,7 +15,7 @@ interface Props {
   onClose: () => void;
 }
 
-type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "pool" | "issues";
+type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "usage" | "pool" | "issues";
 
 const OWNER_SOURCE_LABEL: Record<string, string> = { pod: "pod", spec: "spec do workload", statefulset: "volumeClaimTemplate", label: "label" };
 const OWNER_SOURCE_HELP: Record<string, string> = {
@@ -26,6 +26,8 @@ const OWNER_SOURCE_HELP: Record<string, string> = {
 };
 const GIB = 1024 ** 3;
 const fmtBRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const USAGE_CLASS_LABEL: Record<string, string> = { critical: "Crítico", warning: "Atenção", oversized: "Superdimensionado" };
+const USAGE_BAR: Record<string, string> = { critical: "bg-red-500", warning: "bg-amber-400", oversized: "bg-sky-400", ok: "bg-emerald-500" };
 const COST_KIND_LABEL: Record<string, string> = { effective: "efetivo", estimate: "estimado", none: "sem preço" };
 const fmtGiB = (b: number) => (b ? `${(b / GIB).toFixed(b >= 10 * GIB ? 0 : 1)} GiB` : "—");
 
@@ -38,6 +40,7 @@ function sortValue(it: VolumeItem, k: SortKey): string | number {
     case "source": return `${it.source ?? ""} ${it.source_detail ?? ""}`;
     case "capacity": return it.capacity_bytes;
     case "cost": return it.cost_brl_month ?? 0;
+    case "usage": return it.usage_percentage ?? -1;
     case "pool": return it.node_pools.join(",");
     case "issues": return it.issues.length;
   }
@@ -49,11 +52,12 @@ function csvCell(v: string | number): string {
 }
 
 function toCSV(items: VolumeItem[]): string {
-  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "problemas"];
+  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
   const rows = items.map((i) => [
     i.kind, i.namespace, i.workloads.length ? i.workloads.join(" ") : (i.app_hint ? `(label) ${i.app_hint}` : ""), i.owner_source ?? "", i.pvc ?? "", i.pvc_status ?? "", i.pv ?? "", i.pv_phase ?? "",
     i.storage_class, i.source ?? "", i.source_detail ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
-    i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "", i.issues.join(" | "),
+    i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "",
+    i.growth_bytes_per_day ? (i.growth_bytes_per_day / GIB).toFixed(3) : "", i.days_to_full ?? "", i.usage_class ?? "", i.issues.join(" | "),
   ]);
   return [head, ...rows].map((r) => r.map(csvCell).join(";")).join("\n");
 }
@@ -75,6 +79,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const [namespace, setNamespace] = useState("");
   const [pool, setPool] = useState("");
   const [source, setSource] = useState("");
+  const [usageFilter, setUsageFilter] = useState("");
   const [onlyIssues, setOnlyIssues] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "namespace", desc: false });
 
@@ -101,6 +106,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       if (namespace && i.namespace !== namespace) return false;
       if (pool && !i.node_pools.includes(pool)) return false;
       if (source && i.source !== source) return false;
+      if (usageFilter && i.usage_class !== usageFilter) return false;
       if (onlyIssues && i.issues.length === 0) return false;
       if (!q) return true;
       return [i.namespace, ...i.workloads, i.app_hint, i.pvc, i.pv, i.storage_class, i.source, i.source_detail, ...i.pods, ...i.nodes].some((v) => v?.toLowerCase().includes(q));
@@ -110,7 +116,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       const va = sortValue(a, sort.key), vb = sortValue(b, sort.key);
       return (typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb))) * dir;
     });
-  }, [items, query, namespace, pool, source, onlyIssues, sort]);
+  }, [items, query, namespace, pool, source, usageFilter, onlyIssues, sort]);
 
   function toggleSort(key: SortKey) {
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: false }));
@@ -121,6 +127,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
     return (data?.by_app ?? []).filter((a) => (!namespace || a.namespace === namespace) && (!q || `${a.namespace} ${a.app}`.toLowerCase().includes(q)));
   }, [data, query, namespace]);
   const costOn = includeCost && !!data && !data.cost_warning;
+  const usageOn = includeUsage && !!data && !data.usage_warning;
   const appsView = view === "apps" && costOn;
 
   function exportCSV() {
@@ -160,6 +167,13 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <span><b>{s.pvs}</b> PVs</span>
             <span><b>{fmtGiB(s.capacity_bytes)}</b> provisionados</span>
             <span><b>{s.nfs}</b> NFS</span>
+            {usageOn && (
+              <>
+                <span className={s.usage_critical ? "text-red-400" : "text-muted-foreground"} title="Uso a partir de 90% ou previsão de encher em até 7 dias"><b>{s.usage_critical}</b> enchendo (crítico)</span>
+                <span className={s.usage_warning ? "text-amber-300" : "text-muted-foreground"} title="Uso a partir de 80% ou previsão de encher em até 30 dias"><b>{s.usage_warning}</b> em atenção</span>
+                <span className={s.usage_oversized ? "text-sky-300" : "text-muted-foreground"} title="Volume de 10 GiB ou mais usando menos de 20%"><b>{s.usage_oversized}</b> superdimensionados</span>
+              </>
+            )}
             {costOn && (
               <>
                 <span title="Soma dos volumes com preço (efetivo ou estimado)"><b>{fmtBRL(s.cost_brl_month)}</b>/mês</span>
@@ -188,6 +202,14 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <option value="">Todos os {resourceLabel}</option>
             {pools.map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
+          {usageOn && (
+            <select className={selectCls} value={usageFilter} onChange={(e) => setUsageFilter(e.target.value)} aria-label="Situação de uso">
+              <option value="">Todo o uso</option>
+              <option value="critical">Crítico (enche)</option>
+              <option value="warning">Atenção</option>
+              <option value="oversized">Superdimensionado</option>
+            </select>
+          )}
           <select className={selectCls} value={source} onChange={(e) => setSource(e.target.value)} aria-label="Tipo de volume">
             <option value="">Todos os tipos</option>
             {sources.map((n) => <option key={n} value={n}>{n}</option>)}
@@ -217,6 +239,17 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
           </Button>
         </div>
 
+        {includeUsage && data?.usage_warning && (
+          <div className="flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300 flex-shrink-0">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /><span className="[overflow-wrap:anywhere]">Uso indisponível: {data.usage_warning}</span>
+          </div>
+        )}
+        {usageOn && (
+          <p className="text-[11px] text-muted-foreground flex-shrink-0">
+            Uso do kubelet (Prometheus) e crescimento pela regressão linear dos últimos 7 dias. Só volumes montados por um pod têm métrica; a previsão de “enche em N dias”
+            some quando há pouco histórico ou o volume não cresce. Disco não reduz no lugar: superdimensionado exige recriar o volume.
+          </p>
+        )}
         {includeCost && data?.cost_warning && (
           <div className="flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300 flex-shrink-0">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /><span className="[overflow-wrap:anywhere]">{data.cost_warning}</span>
@@ -282,7 +315,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                   <Th k="source">Origem</Th>
                   <Th k="capacity">Capacidade</Th>
                   {costOn && <Th k="cost">Custo/mês</Th>}
-                  {includeUsage && <th className="text-left font-medium px-2 py-1.5">Uso</th>}
+                  {includeUsage && <Th k="usage">Uso</Th>}
                   <Th k="pool">{resourceLabel.replace(/s$/, "")}</Th>
                   <Th k="issues">Situação</Th>
                 </tr>
@@ -340,8 +373,27 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                       </td>
                     )}
                     {includeUsage && (
-                      <td className="px-2 py-1.5 whitespace-nowrap">
-                        {i.used_bytes ? `${fmtGiB(i.used_bytes)} (${(i.usage_percentage ?? 0).toFixed(0)}%)` : <span className="text-muted-foreground">—</span>}
+                      <td className="px-2 py-1.5 min-w-[9rem]">
+                        {i.usage_class ? (
+                          <>
+                            <div className="flex items-center gap-2">
+                              <div className="h-1.5 w-16 rounded bg-muted overflow-hidden flex-shrink-0">
+                                <div className={`h-full ${USAGE_BAR[i.usage_class]}`} style={{ width: `${Math.min(100, i.usage_percentage ?? 0)}%` }} />
+                              </div>
+                              <span className="whitespace-nowrap">{fmtGiB(i.used_bytes ?? 0)} ({(i.usage_percentage ?? 0).toFixed(0)}%)</span>
+                            </div>
+                            {i.days_to_full != null ? (
+                              <div className={`text-[10px] ${i.days_to_full <= 7 ? "text-red-400" : i.days_to_full <= 30 ? "text-amber-300" : "text-muted-foreground"}`}>
+                                enche em ~{i.days_to_full} dia(s) · +{((i.growth_bytes_per_day ?? 0) / GIB).toFixed(2)} GiB/dia
+                              </div>
+                            ) : i.growth_bytes_per_day ? (
+                              <div className="text-[10px] text-muted-foreground">{i.growth_bytes_per_day > 0 ? "estável" : "diminuindo"}</div>
+                            ) : null}
+                            {USAGE_CLASS_LABEL[i.usage_class] && (
+                              <div className={`text-[10px] ${i.usage_class === "critical" ? "text-red-400" : i.usage_class === "warning" ? "text-amber-300" : "text-sky-300"}`}>{USAGE_CLASS_LABEL[i.usage_class]}</div>
+                            )}
+                          </>
+                        ) : <span className="text-muted-foreground">—</span>}
                       </td>
                     )}
                     <td className="px-2 py-1.5 font-mono" title={i.nodes.join(", ")}>{i.node_pools.length ? i.node_pools.join(", ") : <span className="text-muted-foreground">—</span>}</td>

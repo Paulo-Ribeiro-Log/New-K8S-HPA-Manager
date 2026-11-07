@@ -43,28 +43,36 @@ type VolumeItem struct {
 	NodePools     []string `json:"node_pools"`
 	UsedBytes     float64  `json:"used_bytes,omitempty"`
 	UsagePercent  float64  `json:"usage_percentage,omitempty"`
-	Issues        []string `json:"issues"`
-	Idle          bool     `json:"idle"` // PVC sem pod ou PV sem PVC: o disco existe e cobra sem uso
-	CostBRL       float64  `json:"cost_brl_month,omitempty"`
-	CostKind      string   `json:"cost_kind,omitempty"` // effective | estimate | none (só com include_cost)
-	CostNote      string   `json:"cost_note,omitempty"`
+	// Tendência (só com include_usage): crescimento médio dos últimos 7 dias e previsão de quando enche
+	GrowthBytesPerDay float64  `json:"growth_bytes_per_day,omitempty"`
+	DaysToFull        *int     `json:"days_to_full,omitempty"`
+	UsageClass        string   `json:"usage_class,omitempty"` // critical | warning | oversized | ok
+	Issues            []string `json:"issues"`
+	Idle              bool     `json:"idle"` // PVC sem pod ou PV sem PVC: o disco existe e cobra sem uso
+	CostBRL           float64  `json:"cost_brl_month,omitempty"`
+	CostKind          string   `json:"cost_kind,omitempty"` // effective | estimate | none (só com include_cost)
+	CostNote          string   `json:"cost_note,omitempty"`
 }
 
 // VolumesSummary são os totais do cluster.
 type VolumesSummary struct {
-	PVCs          int     `json:"pvcs"`
-	PVs           int     `json:"pvs"`
-	CapacityBytes float64 `json:"capacity_bytes"`
-	WithIssues    int     `json:"with_issues"`
-	OrphanPVs     int     `json:"orphan_pvs"`
-	UnusedPVCs    int     `json:"unused_pvcs"`
-	CostBRL       float64 `json:"cost_brl_month"`
-	CostIdleBRL   float64 `json:"cost_idle_brl_month"` // custo dos volumes ociosos (sem pod / sem PVC)
-	CostEffective int     `json:"cost_effective"`
-	CostEstimate  int     `json:"cost_estimate"`
-	CostNone      int     `json:"cost_none"`
-	NoOwner       int     `json:"no_owner"` // volumes sem nenhuma aplicação identificada
-	NFS           int     `json:"nfs"`      // volumes NFS: PVs NFS + NFS montado direto em pod
+	PVCs           int     `json:"pvcs"`
+	PVs            int     `json:"pvs"`
+	CapacityBytes  float64 `json:"capacity_bytes"`
+	WithIssues     int     `json:"with_issues"`
+	OrphanPVs      int     `json:"orphan_pvs"`
+	UnusedPVCs     int     `json:"unused_pvcs"`
+	CostBRL        float64 `json:"cost_brl_month"`
+	CostIdleBRL    float64 `json:"cost_idle_brl_month"` // custo dos volumes ociosos (sem pod / sem PVC)
+	CostEffective  int     `json:"cost_effective"`
+	CostEstimate   int     `json:"cost_estimate"`
+	CostNone       int     `json:"cost_none"`
+	UsageKnown     int     `json:"usage_known"` // PVCs com métrica de uso no Prometheus
+	UsageCritical  int     `json:"usage_critical"`
+	UsageWarning   int     `json:"usage_warning"`
+	UsageOversized int     `json:"usage_oversized"`
+	NoOwner        int     `json:"no_owner"` // volumes sem nenhuma aplicação identificada
+	NFS            int     `json:"nfs"`      // volumes NFS: PVs NFS + NFS montado direto em pod
 }
 
 // nodePoolLabelKeys: label do node que diz a que pool/group ele pertence (AKS, AKS antigo, EKS, GKE).
@@ -200,7 +208,6 @@ type volumeInput struct {
 	Pods  []corev1.Pod
 	Nodes []corev1.Node
 	Specs []workloadSpec
-	Usage map[string]VolumeMetric // "<ns>/<pvc>"; nil quando não pedido
 }
 
 func addUnique(list []string, v string) []string {
@@ -375,15 +382,11 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 				it.StorageClass = pv.Spec.StorageClassName
 			}
 		}
-		key := pvc.Namespace + "/" + pvc.Name
 		fillOwners(&it, resolveOwners(pvc.Namespace, pvc.Name))
 		if len(it.Workloads) == 0 {
 			if it.AppHint = appHintOf(pvc.Labels); it.AppHint != "" {
 				it.OwnerSource = "label"
 			}
-		}
-		if u, ok := in.Usage[key]; ok {
-			it.UsedBytes, it.UsagePercent = u.UsedBytes, u.UsagePercentage
 		}
 
 		switch {
@@ -525,12 +528,17 @@ func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
 		cjs = l.Items
 	}
 	in.Specs = specsFromCluster(deps, stss, dss, cjs)
-	if c.Query("include_usage") == "true" {
-		in.Usage = h.getVolumeMetricsFromPrometheus(cluster)
-	}
-
 	items, summary := buildVolumeItems(in)
 	data := gin.H{"items": items, "summary": summary, "by_app": []AppCost{}}
+	if c.Query("include_usage") == "true" {
+		if usage, err := fetchVolumeUsage(ctx, cluster); err != nil {
+			data["usage_warning"] = err.Error()
+		} else {
+			applyVolumeUsage(items, usage, &summary)
+			recountIssues(items, &summary)
+			data["summary"] = summary
+		}
+	}
 	if c.Query("include_cost") == "true" {
 		if h.volumeCost == nil {
 			data["cost_warning"] = "Custo indisponível: o FinOps não está ligado neste servidor."
