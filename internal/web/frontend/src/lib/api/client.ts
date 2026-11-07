@@ -2736,6 +2736,14 @@ class APIClient {
     await this.post("/nodepools/volumes/expand", { cluster, namespace, name, size_gib: sizeGiB });
   }
 
+  // Consulta a Azure (GET no ARM) sobre o storage de um volume — só a pedido do usuário.
+  async getVolumeAzureDetails(cluster: string, item: { namespace?: string; pvc?: string; pv?: string }): Promise<AzStorageDetails> {
+    const params = new URLSearchParams({ cluster });
+    if (item.pvc) { params.set("namespace", item.namespace ?? ""); params.set("pvc", item.pvc); } else params.set("pv", item.pv ?? "");
+    const r = await this.request<{ success: boolean; data: AzStorageDetails }>(`/nodepools/volumes/storage-azure?${params.toString()}`);
+    return r.data;
+  }
+
   async getSnapshotInfo(cluster: string, namespace: string, name: string): Promise<SnapshotInfo> {
     const params = new URLSearchParams({ cluster, namespace, name });
     const r = await this.request<{ success: boolean; data: SnapshotInfo }>(`/nodepools/volumes/snapshot-info?${params.toString()}`);
@@ -6164,6 +6172,7 @@ export interface VolumeItem {
   usage_class?: "critical" | "warning" | "oversized" | "ok";
   created_at?: string;
   age_days?: number;
+  storage?: StorageInfo;
   zone?: string;
   can_expand?: boolean;
   snapshots?: number;
@@ -6183,6 +6192,14 @@ export interface VolumeAppCost {
   unpriced: number;
 }
 
+export interface StorageInfo {
+  driver?: string; sku?: string; performance?: string; redundancy?: string; redundancy_note?: string;
+  tier?: string; protocol?: string; account?: string; resource_group?: string; share?: string; resource_id?: string;
+  params?: Record<string, string>;
+}
+export interface AzField { label: string; value: string; warn?: boolean }
+export interface AzSection { title: string; fields: AzField[] }
+export interface AzStorageDetails { sections: AzSection[]; notes: string[]; warnings: string[]; subscription?: string; queried_at: string }
 export interface SnapshotClassInfo { name: string; driver: string; default: boolean; deletion_policy?: string }
 export interface SnapshotInfo { api_version: string; driver: string; classes: SnapshotClassInfo[]; suggested: string }
 export interface SnapshotCreated { snapshot: string; class: string; api_version: string; deletion_policy?: string }

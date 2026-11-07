@@ -21,34 +21,35 @@ import (
 
 // VolumeItem é uma linha da visão de volumes: um PVC (com o PV que o atende) ou um PV sem PVC.
 type VolumeItem struct {
-	Kind          string   `json:"kind"` // "pvc" | "pv" (PV sem PVC existente) | "nfs" (NFS montado direto no pod, sem PV/PVC)
-	Namespace     string   `json:"namespace"`
-	PVC           string   `json:"pvc,omitempty"`
-	PVCStatus     string   `json:"pvc_status,omitempty"`
-	PV            string   `json:"pv,omitempty"`
-	PVPhase       string   `json:"pv_phase,omitempty"`
-	StorageClass  string   `json:"storage_class"`
-	Source        string   `json:"source,omitempty"`        // tipo do backend: NFS, Azure Disk, Azure Files, EBS, EFS…
-	SourceDetail  string   `json:"source_detail,omitempty"` // NFS: servidor:/caminho
-	CapacityBytes float64  `json:"capacity_bytes"`
-	AccessModes   []string `json:"access_modes"`
-	ReclaimPolicy string   `json:"reclaim_policy,omitempty"`
-	WorkloadKind  string   `json:"workload_kind,omitempty"` // dono principal (o primeiro de Workloads)
-	Workload      string   `json:"workload,omitempty"`
-	Workloads     []string `json:"workloads"`              // TODAS as aplicações que usam o volume, "Kind/nome"
-	OwnerSource   string   `json:"owner_source,omitempty"` // como o dono foi descoberto: pod | spec | statefulset | label
-	AppHint       string   `json:"app_hint,omitempty"`     // nome da aplicação pelas labels do PVC, quando nenhum workload referencia o volume
-	Pods          []string `json:"pods"`
-	Nodes         []string `json:"nodes"`
-	NodePools     []string `json:"node_pools"`
-	CanExpand     *bool    `json:"can_expand,omitempty"` // StorageClass com allowVolumeExpansion (nil = não sei)
-	Snapshots     int      `json:"snapshots,omitempty"`
-	LastSnapshot  string   `json:"last_snapshot,omitempty"`
-	CreatedAt     string   `json:"created_at,omitempty"` // criação do PVC (ou do PV, se não há PVC)
-	AgeDays       *int     `json:"age_days,omitempty"`
-	Zone          string   `json:"zone,omitempty"` // zona do disco (PV zonal); vazio = sem afinidade de zona
-	UsedBytes     float64  `json:"used_bytes,omitempty"`
-	UsagePercent  float64  `json:"usage_percentage,omitempty"`
+	Kind          string       `json:"kind"` // "pvc" | "pv" (PV sem PVC existente) | "nfs" (NFS montado direto no pod, sem PV/PVC)
+	Namespace     string       `json:"namespace"`
+	PVC           string       `json:"pvc,omitempty"`
+	PVCStatus     string       `json:"pvc_status,omitempty"`
+	PV            string       `json:"pv,omitempty"`
+	PVPhase       string       `json:"pv_phase,omitempty"`
+	StorageClass  string       `json:"storage_class"`
+	Source        string       `json:"source,omitempty"`        // tipo do backend: NFS, Azure Disk, Azure Files, EBS, EFS…
+	SourceDetail  string       `json:"source_detail,omitempty"` // NFS: servidor:/caminho
+	CapacityBytes float64      `json:"capacity_bytes"`
+	AccessModes   []string     `json:"access_modes"`
+	ReclaimPolicy string       `json:"reclaim_policy,omitempty"`
+	WorkloadKind  string       `json:"workload_kind,omitempty"` // dono principal (o primeiro de Workloads)
+	Workload      string       `json:"workload,omitempty"`
+	Workloads     []string     `json:"workloads"`              // TODAS as aplicações que usam o volume, "Kind/nome"
+	OwnerSource   string       `json:"owner_source,omitempty"` // como o dono foi descoberto: pod | spec | statefulset | label
+	AppHint       string       `json:"app_hint,omitempty"`     // nome da aplicação pelas labels do PVC, quando nenhum workload referencia o volume
+	Pods          []string     `json:"pods"`
+	Nodes         []string     `json:"nodes"`
+	NodePools     []string     `json:"node_pools"`
+	Storage       *StorageInfo `json:"storage,omitempty"`    // SKU, redundância, tier, protocolo, conta (só do Kubernetes)
+	CanExpand     *bool        `json:"can_expand,omitempty"` // StorageClass com allowVolumeExpansion (nil = não sei)
+	Snapshots     int          `json:"snapshots,omitempty"`
+	LastSnapshot  string       `json:"last_snapshot,omitempty"`
+	CreatedAt     string       `json:"created_at,omitempty"` // criação do PVC (ou do PV, se não há PVC)
+	AgeDays       *int         `json:"age_days,omitempty"`
+	Zone          string       `json:"zone,omitempty"` // zona do disco (PV zonal); vazio = sem afinidade de zona
+	UsedBytes     float64      `json:"used_bytes,omitempty"`
+	UsagePercent  float64      `json:"usage_percentage,omitempty"`
 	// Tendência (só com include_usage): crescimento médio dos últimos 7 dias e previsão de quando enche
 	GrowthBytesPerDay float64  `json:"growth_bytes_per_day,omitempty"`
 	DaysToFull        *int     `json:"days_to_full,omitempty"`
@@ -605,12 +606,15 @@ func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
 	in.Specs = specsFromCluster(deps, stss, dss, cjs)
 	items, summary := buildVolumeItems(in)
 	expandBySC := map[string]bool{}
+	scParams := map[string]map[string]string{}
 	if scs, err := client.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{}); err == nil {
 		for _, sc := range scs.Items {
 			expandBySC[sc.Name] = sc.AllowVolumeExpansion != nil && *sc.AllowVolumeExpansion
+			scParams[sc.Name] = sc.Parameters
 		}
 	}
 	applyExpansion(items, in.PVCs, expandBySC, &summary)
+	applyStorageInfo(items, in.PVs, scParams)
 	summary.SnapshotAPI = detectSnapshotVersion(ctx, client)
 	if snaps, ok := fetchSnapshots(ctx, client, summary.SnapshotAPI); ok {
 		applySnapshots(items, snaps, &summary)
@@ -633,12 +637,6 @@ func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
 		} else if costIn, err := h.volumeCost.VolumeCostInputs(cluster); err != nil {
 			data["cost_warning"] = "Custo indisponível: " + err.Error()
 		} else {
-			scParams := map[string]map[string]string{}
-			if scs, err := client.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{}); err == nil {
-				for _, sc := range scs.Items {
-					scParams[sc.Name] = sc.Parameters
-				}
-			}
 			data["by_app"] = applyVolumeCosts(items, in.PVs, scParams, costIn, &summary)
 			data["summary"] = summary
 		}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, Camera, Database, Download, Loader2, MoreVertical, Search, Trash2, Maximize2 } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Camera, Database, Download, Info, Loader2, MoreVertical, Search, Trash2, Maximize2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
-import { apiClient, type SnapshotCreated, type SnapshotInfo, type VolumeAppCost, type VolumeItem, type VolumesResponse } from "@/lib/api/client";
+import { apiClient, type AzStorageDetails, type SnapshotCreated, type SnapshotInfo, type VolumeAppCost, type VolumeItem, type VolumesResponse } from "@/lib/api/client";
 
 // Volumes do cluster (PV/PVC) ligados à aplicação, node e node pool. Somente leitura.
 
@@ -17,7 +17,7 @@ interface Props {
   onClose: () => void;
 }
 
-type VolumeActionType = "expand" | "delete" | "snapshot";
+type VolumeActionType = "expand" | "delete" | "snapshot" | "details";
 type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "usage" | "age" | "pool" | "issues";
 
 const OWNER_SOURCE_LABEL: Record<string, string> = { pod: "pod", spec: "spec do workload", statefulset: "volumeClaimTemplate", label: "label" };
@@ -59,10 +59,10 @@ function csvCell(v: string | number): string {
 }
 
 function toCSV(items: VolumeItem[]): string {
-  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "zona", "criado_em", "idade_dias", "expansivel", "snapshots", "ultimo_snapshot", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
+  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "sku", "redundancia", "tier_acesso", "protocolo", "conta_storage", "zona", "criado_em", "idade_dias", "expansivel", "snapshots", "ultimo_snapshot", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
   const rows = items.map((i) => [
     i.kind, i.namespace, i.workloads.length ? i.workloads.join(" ") : (i.app_hint ? `(label) ${i.app_hint}` : ""), i.owner_source ?? "", i.pvc ?? "", i.pvc_status ?? "", i.pv ?? "", i.pv_phase ?? "",
-    i.storage_class, i.source ?? "", i.source_detail ?? "", i.zone ?? "", i.created_at ?? "", i.age_days ?? "", i.can_expand === undefined ? "" : i.can_expand ? "sim" : "não", i.snapshots ?? 0, i.last_snapshot ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
+    i.storage_class, i.source ?? "", i.source_detail ?? "", i.storage?.sku ?? "", i.storage?.redundancy ?? "", i.storage?.tier ?? "", i.storage?.protocol ?? "", i.storage?.account ?? "", i.zone ?? "", i.created_at ?? "", i.age_days ?? "", i.can_expand === undefined ? "" : i.can_expand ? "sim" : "não", i.snapshots ?? 0, i.last_snapshot ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
     i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "",
     i.growth_bytes_per_day ? (i.growth_bytes_per_day / GIB).toFixed(3) : "", i.days_to_full ?? "", i.usage_class ?? "", i.issues.join(" | "),
   ]);
@@ -131,19 +131,138 @@ function VolumeRowActions({ cluster, item, snapshotApi, onAction }: { cluster: s
   const mayExpand = canExpand && permissions.canPatchPVC;
   const mayDelete = canDelete && (item.kind === "pv" ? permissions.canDeletePV : permissions.canDeletePVC);
   const maySnap = canSnap && permissions.canSnapshot;
-  if (!mayExpand && !mayDelete && !maySnap) return null;
+  if (!mayExpand && !mayDelete && !maySnap && !item.storage) return null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" className="h-6 w-6 p-0" aria-label="Ações do volume"><MoreVertical className="w-4 h-4" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="text-xs">
+        {item.storage && <DropdownMenuItem className="text-xs gap-2" onSelect={() => onAction("details", item)}><Info className="w-3.5 h-3.5" />Detalhes do storage</DropdownMenuItem>}
+        {item.storage && (maySnap || mayExpand || mayDelete) && <DropdownMenuSeparator />}
         {maySnap && <DropdownMenuItem className="text-xs gap-2" onSelect={() => onAction("snapshot", item)}><Camera className="w-3.5 h-3.5" />Tirar snapshot</DropdownMenuItem>}
         {mayExpand && <DropdownMenuItem className="text-xs gap-2" onSelect={() => onAction("expand", item)}><Maximize2 className="w-3.5 h-3.5" />Expandir</DropdownMenuItem>}
         {mayDelete && (maySnap || mayExpand) && <DropdownMenuSeparator />}
         {mayDelete && <DropdownMenuItem className="text-xs gap-2 text-red-400 focus:text-red-400" onSelect={() => onAction("delete", item)}><Trash2 className="w-3.5 h-3.5" />Apagar</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+const STORAGE_LABEL: Record<string, string> = {
+  driver: "Driver CSI", sku: "SKU", performance: "Desempenho", redundancy: "Redundância", tier: "Tier de acesso",
+  protocol: "Protocolo", account: "Storage account", resource_group: "Resource group", share: "Share / container",
+};
+
+// Detalhes do storage: o que o cluster declara (StorageClass + PV). Kind da conta (StorageV2…) e tier real
+// só existem no Azure: o botão "Consultar na Azure" faz a leitura (GET) a pedido; o comando az fica como alternativa.
+function StorageDetailDialog({ cluster, item, onClose }: { cluster: string; item: VolumeItem; onClose: () => void }) {
+  const st = item.storage!;
+  const [az, setAz] = useState<AzStorageDetails | null>(null);
+  const [azBusy, setAzBusy] = useState(false);
+  const [azError, setAzError] = useState("");
+  const isAzure = /azure/.test(st.driver ?? "");
+
+  async function queryAzure() {
+    setAzBusy(true);
+    setAzError("");
+    try {
+      setAz(await apiClient.getVolumeAzureDetails(cluster, { namespace: item.namespace, pvc: item.kind === "pvc" ? item.pvc : undefined, pv: item.pv }));
+    } catch (e) {
+      setAzError(e instanceof Error ? e.message : "Falha ao consultar a Azure");
+    } finally {
+      setAzBusy(false);
+    }
+  }
+  const azCmd = st.account && /azure/.test(st.driver ?? "")
+    ? `az storage account show -n ${st.account}${st.resource_group ? ` -g ${st.resource_group}` : ""} --query "{kind:kind,sku:sku.name,accessTier:accessTier,hns:isHnsEnabled,tls:minimumTlsVersion,publicBlob:allowBlobPublicAccess}" -o table`
+    : "";
+  const rows = Object.keys(STORAGE_LABEL).filter((k) => st[k as keyof typeof st]);
+  return (
+    <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[88vh] overflow-auto">
+        <DialogHeader><DialogTitle className="text-sm">Detalhes do storage</DialogTitle></DialogHeader>
+        <div className="space-y-2 text-xs">
+          <p className="font-mono">{item.namespace ? `${item.namespace}/` : ""}{item.pvc || item.pv}</p>
+          <table className="w-full">
+            <tbody>
+              {rows.map((k) => (
+                <tr key={k} className="border-b border-border/20 align-top">
+                  <td className="py-1 pr-3 text-muted-foreground whitespace-nowrap">{STORAGE_LABEL[k]}</td>
+                  <td className="py-1 font-mono [overflow-wrap:anywhere]">{String(st[k as keyof typeof st])}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {st.redundancy_note && <p className="text-muted-foreground">{st.redundancy}: {st.redundancy_note}.</p>}
+          {st.params && (
+            <details>
+              <summary className="cursor-pointer text-muted-foreground">Parâmetros da StorageClass e do PV ({Object.keys(st.params).length})</summary>
+              <table className="w-full mt-1">
+                <tbody>
+                  {Object.entries(st.params).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => (
+                    <tr key={k} className="border-b border-border/10 align-top">
+                      <td className="py-0.5 pr-3 font-mono text-muted-foreground">{k}</td>
+                      <td className="py-0.5 font-mono [overflow-wrap:anywhere]">{v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          )}
+          <p className="text-muted-foreground">Só o que a StorageClass e o PV declaram. Se um campo não aparece, o cluster não informa — ele pode existir na conta.</p>
+          {isAzure && (
+            <div className="space-y-2 rounded border border-border/40 p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Kind da conta, tier real, replicação, rede, proteção de dados e (disco) IOPS/estado só existem na Azure.</span>
+                <Button size="sm" className="h-7 px-2 text-[11px] flex-shrink-0" onClick={queryAzure} disabled={azBusy}>
+                  {azBusy && <Loader2 className="w-3 h-3 animate-spin mr-1" />}{az ? "Consultar de novo" : "Consultar na Azure"}
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">Somente leitura (GET no Azure Resource Manager), com o <code>az login</code> do servidor. Nada é alterado.</p>
+              {azError && <div className="text-red-400 whitespace-pre-wrap [overflow-wrap:anywhere]">{azError}</div>}
+              {az && (
+                <div className="space-y-2">
+                  {az.warnings.map((w) => (
+                    <div key={w} className="flex items-start gap-1.5 text-amber-300"><AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /><span className="[overflow-wrap:anywhere]">{w}</span></div>
+                  ))}
+                  {az.notes.length > 0 && (
+                    <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-amber-300 space-y-0.5">
+                      <div className="font-medium">Pontos de atenção</div>
+                      {az.notes.map((n) => <div key={n}>• {n}</div>)}
+                    </div>
+                  )}
+                  {az.sections.map((sec) => (
+                    <div key={sec.title}>
+                      <div className="font-medium mb-0.5">{sec.title}</div>
+                      <table className="w-full">
+                        <tbody>
+                          {sec.fields.map((f) => (
+                            <tr key={f.label} className="border-b border-border/10 align-top">
+                              <td className="py-0.5 pr-3 text-muted-foreground whitespace-nowrap">{f.label}</td>
+                              <td className={`py-0.5 font-mono [overflow-wrap:anywhere] ${f.warn ? "text-amber-300" : ""}`}>{f.value}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                  <div className="text-[10px] text-muted-foreground">Consultado em {new Date(az.queried_at).toLocaleString("pt-BR")}{az.subscription ? ` · subscription ${az.subscription}` : ""}</div>
+                </div>
+              )}
+              {azCmd && (
+                <details>
+                  <summary className="cursor-pointer text-muted-foreground">Ou rode você mesmo no terminal</summary>
+                  <code className="block mt-1 rounded border border-border/40 bg-muted/40 px-2 py-1 font-mono [overflow-wrap:anywhere] select-all">{azCmd}</code>
+                  <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] mt-1" onClick={() => { void navigator.clipboard?.writeText(azCmd); }}>Copiar comando</Button>
+                </details>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end"><Button variant="outline" size="sm" onClick={onClose}>Fechar</Button></div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -227,6 +346,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const [source, setSource] = useState("");
   const [usageFilter, setUsageFilter] = useState("");
   const [zone, setZone] = useState("");
+  const [redundancy, setRedundancy] = useState("");
   const [onlyIssues, setOnlyIssues] = useState(false);
   const [noSnapshot, setNoSnapshot] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -252,6 +372,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const namespaces = useMemo(() => [...new Set(items.map((i) => i.namespace).filter(Boolean))].sort(), [items]);
   const sources = useMemo(() => [...new Set(items.map((i) => i.source).filter((v): v is string => !!v))].sort(), [items]);
   const zones = useMemo(() => [...new Set(items.map((i) => i.zone).filter((v): v is string => !!v))].sort(), [items]);
+  const redundancies = useMemo(() => [...new Set(items.map((i) => i.storage?.redundancy).filter((v): v is string => !!v))].sort(), [items]);
   const pools = useMemo(() => [...new Set(items.flatMap((i) => i.node_pools).filter(Boolean))].sort(), [items]);
 
   const rows = useMemo(() => {
@@ -262,17 +383,18 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       if (source && i.source !== source) return false;
       if (usageFilter && i.usage_class !== usageFilter) return false;
       if (zone && i.zone !== zone) return false;
+      if (redundancy && i.storage?.redundancy !== redundancy) return false;
       if (onlyIssues && i.issues.length === 0) return false;
       if (noSnapshot && (i.kind !== "pvc" || i.snapshots)) return false;
       if (!q) return true;
-      return [i.namespace, ...i.workloads, i.app_hint, i.pvc, i.pv, i.storage_class, i.source, i.source_detail, ...i.pods, ...i.nodes].some((v) => v?.toLowerCase().includes(q));
+      return [i.namespace, ...i.workloads, i.app_hint, i.pvc, i.pv, i.storage_class, i.source, i.source_detail, i.storage?.sku, i.storage?.account, ...i.pods, ...i.nodes].some((v) => v?.toLowerCase().includes(q));
     });
     const dir = sort.desc ? -1 : 1;
     return [...filtered].sort((a, b) => {
       const va = sortValue(a, sort.key), vb = sortValue(b, sort.key);
       return (typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb))) * dir;
     });
-  }, [items, query, namespace, pool, source, usageFilter, zone, onlyIssues, noSnapshot, sort]);
+  }, [items, query, namespace, pool, source, usageFilter, zone, redundancy, onlyIssues, noSnapshot, sort]);
 
   function openAction(type: VolumeActionType, item: VolumeItem) {
     setAction({ type, item });
@@ -283,7 +405,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   async function runAction() {
     if (!action) return;
     const { type, item } = action;
-    if (type === "snapshot") return;
+    if (type === "snapshot" || type === "details") return;
     setActionBusy(true);
     setActionError("");
     try {
@@ -406,6 +528,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <select className={selectCls} value={zone} onChange={(e) => setZone(e.target.value)} aria-label="Zona do disco">
               <option value="">Todas as zonas</option>
               {zones.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          )}
+          {redundancies.length > 0 && (
+            <select className={selectCls} value={redundancy} onChange={(e) => setRedundancy(e.target.value)} aria-label="Redundância do storage">
+              <option value="">Toda redundância</option>
+              {redundancies.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           )}
           <select className={selectCls} value={source} onChange={(e) => setSource(e.target.value)} aria-label="Tipo de volume">
@@ -597,6 +725,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                     <td className="px-2 py-1.5">
                       {i.source ? <span>{i.source}</span> : <span className="text-muted-foreground">—</span>}
                       {i.source_detail && <div className="font-mono text-[10px] text-muted-foreground [overflow-wrap:anywhere]" title={i.source_detail}>{i.source_detail}</div>}
+                      {i.storage?.sku && (
+                        <div className="text-[10px] text-muted-foreground" title={i.storage.redundancy_note || undefined}>
+                          {i.storage.sku}{i.storage.tier ? ` · ${i.storage.tier}` : ""}{i.storage.protocol ? ` · ${i.storage.protocol}` : ""}
+                        </div>
+                      )}
+                      {i.storage?.account && <div className="font-mono text-[10px] text-muted-foreground [overflow-wrap:anywhere]" title="Storage account">{i.storage.account}</div>}
                       {i.zone && <div className="text-[10px] text-muted-foreground" title="Zona de disponibilidade do disco">zona {i.zone}</div>}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
@@ -671,7 +805,8 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
         {action?.type === "snapshot" && (
           <SnapshotDialog cluster={cluster} item={action.item} onClose={() => setAction(null)} onDone={() => setReloadKey((k) => k + 1)} />
         )}
-        {action && action.type !== "snapshot" && (
+        {action?.type === "details" && action.item.storage && <StorageDetailDialog cluster={cluster} item={action.item} onClose={() => setAction(null)} />}
+        {action && action.type !== "snapshot" && action.type !== "details" && (
           <Dialog open onOpenChange={(v) => { if (!v && !actionBusy) setAction(null); }}>
             <DialogContent className="max-w-md">
               <DialogHeader>
