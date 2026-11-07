@@ -52,10 +52,10 @@ function csvCell(v: string | number): string {
 }
 
 function toCSV(items: VolumeItem[]): string {
-  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "zona", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
+  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "zona", "expansivel", "snapshots", "ultimo_snapshot", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
   const rows = items.map((i) => [
     i.kind, i.namespace, i.workloads.length ? i.workloads.join(" ") : (i.app_hint ? `(label) ${i.app_hint}` : ""), i.owner_source ?? "", i.pvc ?? "", i.pvc_status ?? "", i.pv ?? "", i.pv_phase ?? "",
-    i.storage_class, i.source ?? "", i.source_detail ?? "", i.zone ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
+    i.storage_class, i.source ?? "", i.source_detail ?? "", i.zone ?? "", i.can_expand === undefined ? "" : i.can_expand ? "sim" : "não", i.snapshots ?? 0, i.last_snapshot ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
     i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "",
     i.growth_bytes_per_day ? (i.growth_bytes_per_day / GIB).toFixed(3) : "", i.days_to_full ?? "", i.usage_class ?? "", i.issues.join(" | "),
   ]);
@@ -127,6 +127,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const [usageFilter, setUsageFilter] = useState("");
   const [zone, setZone] = useState("");
   const [onlyIssues, setOnlyIssues] = useState(false);
+  const [noSnapshot, setNoSnapshot] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "namespace", desc: false });
 
   useEffect(() => {
@@ -156,6 +157,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       if (usageFilter && i.usage_class !== usageFilter) return false;
       if (zone && i.zone !== zone) return false;
       if (onlyIssues && i.issues.length === 0) return false;
+      if (noSnapshot && (i.kind !== "pvc" || i.snapshots)) return false;
       if (!q) return true;
       return [i.namespace, ...i.workloads, i.app_hint, i.pvc, i.pv, i.storage_class, i.source, i.source_detail, ...i.pods, ...i.nodes].some((v) => v?.toLowerCase().includes(q));
     });
@@ -164,7 +166,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       const va = sortValue(a, sort.key), vb = sortValue(b, sort.key);
       return (typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb))) * dir;
     });
-  }, [items, query, namespace, pool, source, usageFilter, zone, onlyIssues, sort]);
+  }, [items, query, namespace, pool, source, usageFilter, zone, onlyIssues, noSnapshot, sort]);
 
   function toggleSort(key: SortKey) {
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: false }));
@@ -217,6 +219,9 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <span><b>{s.pvs}</b> PVs</span>
             <span><b>{fmtGiB(s.capacity_bytes)}</b> provisionados</span>
             <span><b>{s.nfs}</b> NFS</span>
+            {s.resize_pending > 0 && <span className="text-amber-300" title="PVC com expansão em andamento ou aguardando o pod reiniciar"><b>{s.resize_pending}</b> expandindo</span>}
+            {usageOn && s.expand_blocked > 0 && <span className="text-red-400" title="Volume cheio ou enchendo em StorageClass sem allowVolumeExpansion"><b>{s.expand_blocked}</b> cheios sem como expandir</span>}
+            {s.snapshots_known && <span title="PVCs com VolumeSnapshot pronto"><b>{s.with_snapshot}</b> com snapshot</span>}
             {zones.length > 0 && (
               <>
                 <span className={s.zone_no_nodes ? "text-red-400" : "text-muted-foreground"} title="Disco zonal em zona sem nenhum node no cluster"><b>{s.zone_no_nodes}</b> em zona sem node</span>
@@ -279,6 +284,11 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
           <label className="flex items-center gap-1.5 text-xs cursor-pointer">
             <Checkbox checked={onlyIssues} onCheckedChange={(v) => setOnlyIssues(v === true)} />Só com problema
           </label>
+          {s?.snapshots_known && (
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="PVCs sem nenhum VolumeSnapshot pronto">
+              <Checkbox checked={noSnapshot} onCheckedChange={(v) => setNoSnapshot(v === true)} />Sem snapshot
+            </label>
+          )}
           <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="Custo mensal por volume e por aplicação: efetivo do Cost Management quando existe (Azure) e, no resto, estimativa de tabela on-demand do FinOps">
             <Checkbox checked={includeCost} onCheckedChange={(v) => { setIncludeCost(v === true); if (v !== true) setView((cur) => (cur === "apps" ? "volumes" : cur)); }} />Incluir custo (FinOps)
           </label>
@@ -459,6 +469,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                     <td className="px-2 py-1.5 whitespace-nowrap">
                       {fmtGiB(i.capacity_bytes)}
                       <div className="text-[10px] text-muted-foreground">{i.access_modes.join(", ")}</div>
+                      {i.can_expand !== undefined && (
+                        <div className={`text-[10px] ${i.can_expand ? "text-muted-foreground" : "text-amber-300"}`} title="allowVolumeExpansion da StorageClass">{i.can_expand ? "expansível" : "não expansível"}</div>
+                      )}
+                      {!!i.snapshots && (
+                        <div className="text-[10px] text-muted-foreground" title={i.last_snapshot ? `Último: ${new Date(i.last_snapshot).toLocaleString("pt-BR")}` : undefined}>{i.snapshots} snapshot(s)</div>
+                      )}
                     </td>
                     {costOn && (
                       <td className="px-2 py-1.5 whitespace-nowrap" title={i.cost_note}>

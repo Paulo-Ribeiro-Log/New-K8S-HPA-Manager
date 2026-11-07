@@ -41,6 +41,9 @@ type VolumeItem struct {
 	Pods          []string `json:"pods"`
 	Nodes         []string `json:"nodes"`
 	NodePools     []string `json:"node_pools"`
+	CanExpand     *bool    `json:"can_expand,omitempty"` // StorageClass com allowVolumeExpansion (nil = não sei)
+	Snapshots     int      `json:"snapshots,omitempty"`
+	LastSnapshot  string   `json:"last_snapshot,omitempty"`
 	Zone          string   `json:"zone,omitempty"` // zona do disco (PV zonal); vazio = sem afinidade de zona
 	UsedBytes     float64  `json:"used_bytes,omitempty"`
 	UsagePercent  float64  `json:"usage_percentage,omitempty"`
@@ -68,6 +71,10 @@ type VolumesSummary struct {
 	CostEffective  int     `json:"cost_effective"`
 	CostEstimate   int     `json:"cost_estimate"`
 	CostNone       int     `json:"cost_none"`
+	ResizePending  int     `json:"resize_pending"`  // expansões em andamento ou aguardando reinício do pod
+	ExpandBlocked  int     `json:"expand_blocked"`  // volume cheio/enchendo em StorageClass sem expansão (com uso)
+	SnapshotsKnown bool    `json:"snapshots_known"` // a API de VolumeSnapshot respondeu
+	WithSnapshot   int     `json:"with_snapshot"`
 	ZoneNoNodes    int     `json:"zone_no_nodes"`    // volumes cuja zona não tem nenhum node no cluster
 	ZoneSingleNode int     `json:"zone_single_node"` // volumes em uso cuja zona tem um único node
 	UsageKnown     int     `json:"usage_known"`      // PVCs com métrica de uso no Prometheus
@@ -589,12 +596,24 @@ func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
 	}
 	in.Specs = specsFromCluster(deps, stss, dss, cjs)
 	items, summary := buildVolumeItems(in)
+	expandBySC := map[string]bool{}
+	if scs, err := client.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{}); err == nil {
+		for _, sc := range scs.Items {
+			expandBySC[sc.Name] = sc.AllowVolumeExpansion != nil && *sc.AllowVolumeExpansion
+		}
+	}
+	applyExpansion(items, in.PVCs, expandBySC, &summary)
+	if snaps, ok := fetchSnapshots(ctx, client); ok {
+		applySnapshots(items, snaps, &summary)
+	}
+	recountIssues(items, &summary)
 	data := gin.H{"items": items, "summary": summary, "by_app": []AppCost{}}
 	if c.Query("include_usage") == "true" {
 		if usage, err := fetchVolumeUsage(ctx, cluster); err != nil {
 			data["usage_warning"] = err.Error()
 		} else {
 			applyVolumeUsage(items, usage, &summary)
+			markExpandBlocked(items, &summary)
 			recountIssues(items, &summary)
 			data["summary"] = summary
 		}
