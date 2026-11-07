@@ -68,13 +68,58 @@ function toAppsCSV(apps: VolumeAppCost[]): string {
   return [head, ...rows].map((r) => r.map(csvCell).join(";")).join("\n");
 }
 
+// Servidor NFS e seus exports: quantos volumes, aplicações e namespaces dependem de cada servidor.
+interface NFSServer {
+  server: string;
+  volumes: number;
+  capacity: number;
+  idle: number;
+  exports: string[];
+  apps: string[];
+  namespaces: string[];
+  kinds: string[];
+}
+
+function groupNFS(items: VolumeItem[]): NFSServer[] {
+  const by = new Map<string, NFSServer & { e: Set<string>; a: Set<string>; n: Set<string>; k: Set<string> }>();
+  for (const i of items) {
+    if (!/^(NFS|EFS)/.test(i.source ?? "")) continue;
+    const detail = i.source_detail || "(sem servidor)";
+    const idx = detail.indexOf(":");
+    const server = idx > 0 ? detail.slice(0, idx) : detail;
+    const path = idx > 0 ? detail.slice(idx + 1) : "";
+    let g = by.get(server);
+    if (!g) {
+      g = { server, volumes: 0, capacity: 0, idle: 0, exports: [], apps: [], namespaces: [], kinds: [], e: new Set(), a: new Set(), n: new Set(), k: new Set() };
+      by.set(server, g);
+    }
+    g.volumes++;
+    g.capacity += i.capacity_bytes;
+    if (i.idle) g.idle++;
+    if (path) g.e.add(path);
+    if (i.namespace) g.n.add(i.namespace);
+    g.k.add(i.source ?? "");
+    for (const w of i.workloads) g.a.add(`${i.namespace}/${w}`);
+    if (!i.workloads.length && i.app_hint) g.a.add(`${i.namespace}/${i.app_hint}`);
+  }
+  return [...by.values()]
+    .map((g) => ({ server: g.server, volumes: g.volumes, capacity: g.capacity, idle: g.idle, exports: [...g.e].sort(), apps: [...g.a].sort(), namespaces: [...g.n].sort(), kinds: [...g.k].sort() }))
+    .sort((a, b) => b.apps.length - a.apps.length || b.volumes - a.volumes);
+}
+
+function toNFSCSV(servers: NFSServer[]): string {
+  const head = ["servidor", "tipo", "volumes", "exports", "aplicações", "namespaces", "ociosos", "capacidade_declarada_gib"];
+  const rows = servers.map((v) => [v.server, v.kinds.join(" "), v.volumes, v.exports.join(" "), v.apps.join(" "), v.namespaces.join(" "), v.idle, (v.capacity / GIB).toFixed(2)]);
+  return [head, ...rows].map((r) => r.map(csvCell).join(";")).join("\n");
+}
+
 export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props) {
   const [data, setData] = useState<VolumesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [includeUsage, setIncludeUsage] = useState(false);
   const [includeCost, setIncludeCost] = useState(false);
-  const [view, setView] = useState<"volumes" | "apps">("volumes");
+  const [view, setView] = useState<"volumes" | "apps" | "nfs">("volumes");
   const [query, setQuery] = useState("");
   const [namespace, setNamespace] = useState("");
   const [pool, setPool] = useState("");
@@ -126,15 +171,17 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
     const q = query.trim().toLowerCase();
     return (data?.by_app ?? []).filter((a) => (!namespace || a.namespace === namespace) && (!q || `${a.namespace} ${a.app}`.toLowerCase().includes(q)));
   }, [data, query, namespace]);
+  const nfsServers = useMemo(() => groupNFS(items.filter((i) => (!namespace || i.namespace === namespace) && (!pool || i.node_pools.includes(pool)))), [items, namespace, pool]);
+  const nfsView = view === "nfs";
   const costOn = includeCost && !!data && !data.cost_warning;
   const usageOn = includeUsage && !!data && !data.usage_warning;
   const appsView = view === "apps" && costOn;
 
   function exportCSV() {
-    const blob = new Blob(["﻿" + (appsView ? toAppsCSV(apps) : toCSV(rows))], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob(["﻿" + (nfsView ? toNFSCSV(nfsServers) : appsView ? toAppsCSV(apps) : toCSV(rows))], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${appsView ? "volumes-por-aplicacao" : "volumes"}-${cluster.replace(/[^\w.-]+/g, "_")}.csv`;
+    a.download = `${nfsView ? "volumes-servidores-nfs" : appsView ? "volumes-por-aplicacao" : "volumes"}-${cluster.replace(/[^\w.-]+/g, "_")}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -218,23 +265,23 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <Checkbox checked={onlyIssues} onCheckedChange={(v) => setOnlyIssues(v === true)} />Só com problema
           </label>
           <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="Custo mensal por volume e por aplicação: efetivo do Cost Management quando existe (Azure) e, no resto, estimativa de tabela on-demand do FinOps">
-            <Checkbox checked={includeCost} onCheckedChange={(v) => { setIncludeCost(v === true); if (v !== true) setView("volumes"); }} />Incluir custo (FinOps)
+            <Checkbox checked={includeCost} onCheckedChange={(v) => { setIncludeCost(v === true); if (v !== true) setView((cur) => (cur === "apps" ? "volumes" : cur)); }} />Incluir custo (FinOps)
           </label>
           <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="Consulta o Prometheus do cluster (kubelet_volume_stats); pode demorar alguns segundos">
             <Checkbox checked={includeUsage} onCheckedChange={(v) => setIncludeUsage(v === true)} />Incluir uso (Prometheus)
           </label>
           <div className="flex-1" />
-          {costOn && (
+          {(costOn || (s?.nfs ?? 0) > 0) && (
             <div className="flex rounded-md border border-input overflow-hidden text-xs">
-              {(["volumes", "apps"] as const).map((v) => (
-                <button key={v} onClick={() => setView(v)} className={`px-2 h-7 ${view === v ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}>
-                  {v === "volumes" ? "Volumes" : "Por aplicação"}
+              {(["volumes", ...(costOn ? ["apps"] : []), ...((s?.nfs ?? 0) > 0 ? ["nfs"] : [])] as const).map((v) => (
+                <button key={v} onClick={() => setView(v as "volumes" | "apps" | "nfs")} className={`px-2 h-7 ${view === v ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}>
+                  {v === "volumes" ? "Volumes" : v === "apps" ? "Por aplicação" : "Servidores NFS"}
                 </button>
               ))}
             </div>
           )}
-          <span className="text-xs text-muted-foreground">{appsView ? `${apps.length} aplicações` : `${rows.length} de ${items.length}`}</span>
-          <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={exportCSV} disabled={appsView ? apps.length === 0 : rows.length === 0}>
+          <span className="text-xs text-muted-foreground">{nfsView ? `${nfsServers.length} servidores` : appsView ? `${apps.length} aplicações` : `${rows.length} de ${items.length}`}</span>
+          <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={exportCSV} disabled={nfsView ? nfsServers.length === 0 : appsView ? apps.length === 0 : rows.length === 0}>
             <Download className="w-3 h-3" />CSV
           </Button>
         </div>
@@ -263,7 +310,42 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
         )}
 
         <div className="flex-1 min-h-0 overflow-auto border border-border/40 rounded">
-          {appsView && !loading && !error ? (
+          {nfsView && !loading && !error ? (
+            nfsServers.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">Nenhum volume NFS com esses filtros.</div>
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-card border-b border-border/40 text-muted-foreground z-10">
+                  <tr>
+                    <th className="text-left font-medium px-2 py-1.5">Servidor</th>
+                    <th className="text-right font-medium px-2 py-1.5">Volumes</th>
+                    <th className="text-right font-medium px-2 py-1.5">Aplicações</th>
+                    <th className="text-left font-medium px-2 py-1.5">Exports</th>
+                    <th className="text-left font-medium px-2 py-1.5">Aplicações que dependem</th>
+                    <th className="text-left font-medium px-2 py-1.5">Namespaces</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {nfsServers.map((v) => (
+                    <tr key={v.server} className="border-b border-border/20 hover:bg-muted/30 align-top">
+                      <td className="px-2 py-1.5">
+                        <div className="font-mono">{v.server}</div>
+                        <div className="text-[10px] text-muted-foreground">{v.kinds.join(", ")}</div>
+                      </td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                        {v.volumes}
+                        {v.idle > 0 && <span className="ml-1 text-[10px] text-amber-300" title="Volumes sem pod ou PV sem PVC">({v.idle} ocioso(s))</span>}
+                      </td>
+                      <td className={`px-2 py-1.5 text-right font-semibold ${v.apps.length >= 5 ? "text-amber-300" : ""}`} title="Quantas aplicações param se este servidor cair">{v.apps.length}</td>
+                      <td className="px-2 py-1.5 font-mono [overflow-wrap:anywhere]">{v.exports.map((e) => <div key={e}>{e}</div>)}</td>
+                      <td className="px-2 py-1.5 font-mono [overflow-wrap:anywhere]">{v.apps.length ? v.apps.map((a) => <div key={a}>{a}</div>) : <span className="text-amber-300">nenhuma identificada</span>}</td>
+                      <td className="px-2 py-1.5 font-mono [overflow-wrap:anywhere]">{v.namespaces.join(", ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          ) : appsView && !loading && !error ? (
             apps.length === 0 ? (
               <div className="p-4 text-sm text-muted-foreground">Nenhuma aplicação com esses filtros.</div>
             ) : (
