@@ -41,6 +41,7 @@ type VolumeItem struct {
 	Pods          []string `json:"pods"`
 	Nodes         []string `json:"nodes"`
 	NodePools     []string `json:"node_pools"`
+	Zone          string   `json:"zone,omitempty"` // zona do disco (PV zonal); vazio = sem afinidade de zona
 	UsedBytes     float64  `json:"used_bytes,omitempty"`
 	UsagePercent  float64  `json:"usage_percentage,omitempty"`
 	// Tendência (só com include_usage): crescimento médio dos últimos 7 dias e previsão de quando enche
@@ -67,7 +68,9 @@ type VolumesSummary struct {
 	CostEffective  int     `json:"cost_effective"`
 	CostEstimate   int     `json:"cost_estimate"`
 	CostNone       int     `json:"cost_none"`
-	UsageKnown     int     `json:"usage_known"` // PVCs com métrica de uso no Prometheus
+	ZoneNoNodes    int     `json:"zone_no_nodes"`    // volumes cuja zona não tem nenhum node no cluster
+	ZoneSingleNode int     `json:"zone_single_node"` // volumes em uso cuja zona tem um único node
+	UsageKnown     int     `json:"usage_known"`      // PVCs com métrica de uso no Prometheus
 	UsageCritical  int     `json:"usage_critical"`
 	UsageWarning   int     `json:"usage_warning"`
 	UsageOversized int     `json:"usage_oversized"`
@@ -208,6 +211,60 @@ type volumeInput struct {
 	Pods  []corev1.Pod
 	Nodes []corev1.Node
 	Specs []workloadSpec
+}
+
+var zoneLabels = []string{"topology.kubernetes.io/zone", "failure-domain.beta.kubernetes.io/zone"}
+
+// pvZone: zona do disco, pela label do PV ou pela nodeAffinity (CSI). Vazio para disco regional
+// (várias zonas) ou sem zona (Azure usa "0" para disco não zonal).
+func pvZone(pv corev1.PersistentVolume) string {
+	valid := func(z string) bool { return z != "" && z != "0" && !strings.ContainsAny(z, ",_") }
+	for _, k := range zoneLabels {
+		if z := pv.Labels[k]; valid(z) {
+			return z
+		}
+	}
+	if na := pv.Spec.NodeAffinity; na != nil && na.Required != nil {
+		for _, t := range na.Required.NodeSelectorTerms {
+			for _, e := range t.MatchExpressions {
+				for _, k := range zoneLabels {
+					if e.Key == k && len(e.Values) == 1 && valid(e.Values[0]) {
+						return e.Values[0]
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// applyZoneIssues aponta disco zonal em zona sem node (não monta até existir um) e em zona com um
+// só node (se ele cair, o pod não reagenda em outra zona).
+func applyZoneIssues(items []VolumeItem, nodes []corev1.Node, sum *VolumesSummary) {
+	perZone := map[string]int{}
+	for _, n := range nodes {
+		for _, k := range zoneLabels {
+			if z := n.Labels[k]; z != "" {
+				perZone[z]++
+				break
+			}
+		}
+	}
+	if len(perZone) == 0 {
+		return // sem label de zona nos nodes: nada a concluir
+	}
+	for i := range items {
+		it := &items[i]
+		switch c := perZone[it.Zone]; {
+		case it.Zone == "":
+		case c == 0:
+			it.Issues = append(it.Issues, "zona "+it.Zone+" do disco sem nenhum node: o volume não monta até existir um node nela")
+			sum.ZoneNoNodes++
+		case c == 1 && len(it.Pods) > 0:
+			it.Issues = append(it.Issues, "zona "+it.Zone+" tem um só node: se ele cair, o pod não reagenda em outra zona")
+			sum.ZoneSingleNode++
+		}
+	}
 }
 
 func addUnique(list []string, v string) []string {
@@ -372,6 +429,7 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 		if pv, ok := pvByName[pvc.Spec.VolumeName]; ok {
 			claimed[pv.Name] = true
 			it.PVPhase = string(pv.Status.Phase)
+			it.Zone = pvZone(pv)
 			it.ReclaimPolicy = string(pv.Spec.PersistentVolumeReclaimPolicy)
 			var nfs bool
 			it.Source, it.SourceDetail, nfs = pvSource(pv)
@@ -412,7 +470,7 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 		}
 		it := VolumeItem{
 			Kind: "pv", PV: pv.Name, PVPhase: string(pv.Status.Phase), StorageClass: pv.Spec.StorageClassName,
-			ReclaimPolicy: string(pv.Spec.PersistentVolumeReclaimPolicy), AccessModes: []string{}, Workloads: []string{}, Pods: []string{}, Nodes: []string{}, NodePools: []string{}, Issues: []string{},
+			ReclaimPolicy: string(pv.Spec.PersistentVolumeReclaimPolicy), Zone: pvZone(pv), AccessModes: []string{}, Workloads: []string{}, Pods: []string{}, Nodes: []string{}, NodePools: []string{}, Issues: []string{},
 		}
 		if c, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok {
 			it.CapacityBytes = float64(c.Value())
@@ -448,6 +506,8 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 		items = append(items, *directNFS[key])
 		sum.NFS++
 	}
+
+	applyZoneIssues(items, in.Nodes, &sum)
 
 	for _, it := range items {
 		if len(it.Workloads) == 0 {

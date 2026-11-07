@@ -159,3 +159,36 @@ func TestBuildVolumeItems(t *testing.T) {
 		t.Fatalf("resumo: %+v", sum)
 	}
 }
+
+func TestApplyZoneIssues(t *testing.T) {
+	node := func(name, zone string) corev1.Node {
+		return corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{"topology.kubernetes.io/zone": zone}}}
+	}
+	nodes := []corev1.Node{node("a1", "z1"), node("a2", "z1"), node("b1", "z2")}
+	items := []VolumeItem{
+		{Zone: "z1", Pods: []string{"p"}},
+		{Zone: "z2", Pods: []string{"p"}},
+		{Zone: "z2"},
+		{Zone: "z3"},
+		{},
+	}
+	var sum VolumesSummary
+	applyZoneIssues(items, nodes, &sum)
+	if len(items[0].Issues) != 0 || len(items[1].Issues) != 1 || len(items[2].Issues) != 0 || len(items[3].Issues) != 1 || len(items[4].Issues) != 0 {
+		t.Fatalf("issues inesperadas: %+v", items)
+	}
+	if sum.ZoneNoNodes != 1 || sum.ZoneSingleNode != 1 {
+		t.Fatalf("sum = %+v", sum)
+	}
+}
+
+func TestPVZone(t *testing.T) {
+	pv := corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"topology.kubernetes.io/zone": "brazilsouth-2"}}}
+	if z := pvZone(pv); z != "brazilsouth-2" {
+		t.Fatalf("zona = %q", z)
+	}
+	pv.Labels["topology.kubernetes.io/zone"] = "0"
+	if z := pvZone(pv); z != "" {
+		t.Fatalf("zona 0 deveria ser vazia, veio %q", z)
+	}
+}
