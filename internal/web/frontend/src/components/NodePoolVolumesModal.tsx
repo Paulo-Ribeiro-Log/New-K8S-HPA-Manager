@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { ProtectedAction } from "@/components/rbac";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { apiClient, type VolumeAppCost, type VolumeItem, type VolumesResponse } from "@/lib/api/client";
 
 // Volumes do cluster (PV/PVC) ligados à aplicação, node e node pool. Somente leitura.
@@ -30,6 +32,9 @@ const USAGE_CLASS_LABEL: Record<string, string> = { critical: "Crítico", warnin
 const USAGE_BAR: Record<string, string> = { critical: "bg-red-500", warning: "bg-amber-400", oversized: "bg-sky-400", ok: "bg-emerald-500" };
 const COST_KIND_LABEL: Record<string, string> = { effective: "efetivo", estimate: "estimado", none: "sem preço" };
 const fmtGiB = (b: number) => (b ? `${(b / GIB).toFixed(b >= 10 * GIB ? 0 : 1)} GiB` : "—");
+
+// Mesma frase que o servidor exige (deleteConfirmPhrase): copiada na tela e colada no campo.
+const deletePhrase = (i: VolumeItem) => (i.kind === "pv" ? `apagar pv ${i.pv ?? ""}` : `apagar pvc ${i.namespace}/${i.pvc ?? ""}`);
 
 function sortValue(it: VolumeItem, k: SortKey): string | number {
   switch (k) {
@@ -112,6 +117,31 @@ function toNFSCSV(servers: NFSServer[]): string {
   const head = ["servidor", "tipo", "volumes", "exports", "aplicações", "namespaces", "ociosos", "capacidade_declarada_gib"];
   const rows = servers.map((v) => [v.server, v.kinds.join(" "), v.volumes, v.exports.join(" "), v.apps.join(" "), v.namespaces.join(" "), v.idle, (v.capacity / GIB).toFixed(2)]);
   return [head, ...rows].map((r) => r.map(csvCell).join(";")).join("\n");
+}
+
+// Botões de escrita de uma linha, só com o que o RBAC do cluster permite no namespace do volume
+// (SelfSubjectRulesReview, em cache por namespace). O servidor revalida de qualquer forma.
+function VolumeRowActions({ cluster, item, onAction }: { cluster: string; item: VolumeItem; onAction: (t: "expand" | "delete", i: VolumeItem) => void }) {
+  const canExpand = item.kind === "pvc" && !!item.can_expand && item.pvc_status === "Bound";
+  const canDelete = (item.kind === "pvc" || item.kind === "pv") && item.idle;
+  const { permissions } = useK8sPermissions(cluster, canExpand || canDelete ? item.namespace || "default" : "");
+  const mayExpand = canExpand && permissions.canPatchPVC;
+  const mayDelete = canDelete && (item.kind === "pv" ? permissions.canDeletePV : permissions.canDeletePVC);
+  if (!mayExpand && !mayDelete) return null;
+  return (
+    <div className="flex flex-col items-start gap-1">
+      {mayExpand && (
+        <ProtectedAction allowed={permissions.canPatchPVC} showWarning={false}>
+          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => onAction("expand", item)}>Expandir</Button>
+        </ProtectedAction>
+      )}
+      {mayDelete && (
+        <ProtectedAction allowed={item.kind === "pv" ? permissions.canDeletePV : permissions.canDeletePVC} showWarning={false}>
+          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] text-red-400 hover:text-red-300" onClick={() => onAction("delete", item)}>Apagar</Button>
+        </ProtectedAction>
+      )}
+    </div>
+  );
 }
 
 export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props) {
@@ -558,14 +588,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                       ))}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
-                      <div className="flex flex-col items-start gap-1">
-                        {i.kind === "pvc" && i.can_expand && i.pvc_status === "Bound" && (
-                          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => openAction("expand", i)}>Expandir</Button>
-                        )}
-                        {(i.kind === "pvc" || i.kind === "pv") && i.idle && (
-                          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] text-red-400 hover:text-red-300" onClick={() => openAction("delete", i)}>Apagar</Button>
-                        )}
-                      </div>
+                      <VolumeRowActions cluster={cluster} item={i} onAction={openAction} />
                     </td>
                   </tr>
                 ))}
@@ -597,8 +620,23 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                         ? <b className="text-red-400"> O reclaim é Delete: o disco e os dados serão apagados junto e não há como desfazer.</b>
                         : " O reclaim é " + (action.item.reclaim_policy || "desconhecido") + ": o disco pode continuar existindo (e cobrando) fora do cluster."}
                     </p>
-                    <p className="text-muted-foreground">O servidor confere de novo que ninguém está usando o volume. Digite o nome para confirmar:</p>
-                    <Input className="h-8 text-xs font-mono" placeholder={name} value={actionInput} onChange={(e) => setActionInput(e.target.value)} autoFocus />
+                    <p className="text-muted-foreground">O servidor confere de novo que ninguém está usando o volume. Copie a frase abaixo e cole no campo (não vale digitar):</p>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 rounded border border-border/40 bg-muted/40 px-2 py-1 font-mono [overflow-wrap:anywhere] select-all">{deletePhrase(action.item)}</code>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => { void navigator.clipboard?.writeText(deletePhrase(action.item)); }}>Copiar</Button>
+                    </div>
+                    <Input
+                      className="h-8 text-xs font-mono"
+                      placeholder="Cole a frase aqui"
+                      value={actionInput}
+                      onChange={(e) => {
+                        // só aceita colagem; digitar não altera o campo e apagar limpa tudo
+                        const t = (e.nativeEvent as InputEvent).inputType ?? "";
+                        if (t === "insertFromPaste") setActionInput(e.target.value.trim());
+                        else if (t.startsWith("delete") || e.target.value === "") setActionInput("");
+                      }}
+                      autoFocus
+                    />
                   </div>
                 );
               })()}
@@ -609,7 +647,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                   size="sm"
                   variant={action.type === "delete" ? "destructive" : "default"}
                   onClick={runAction}
-                  disabled={actionBusy || !actionInput || (action.type === "delete" && actionInput !== (action.item.kind === "pv" ? action.item.pv : action.item.pvc))}
+                  disabled={actionBusy || !actionInput || (action.type === "delete" && actionInput !== deletePhrase(action.item))}
                 >
                   {actionBusy && <Loader2 className="w-3 h-3 animate-spin mr-1" />}{action.type === "expand" ? "Expandir" : "Apagar"}
                 </Button>

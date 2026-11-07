@@ -3078,6 +3078,9 @@ export interface K8sNamespacePermissions {
   canWriteStatefulSets: boolean;
   canWriteDaemonSets: boolean;
   canWritePods: boolean;
+  canPatchPVC: boolean;
+  canDeletePVC: boolean;
+  canDeletePV: boolean;
   incomplete: boolean;
 }
 

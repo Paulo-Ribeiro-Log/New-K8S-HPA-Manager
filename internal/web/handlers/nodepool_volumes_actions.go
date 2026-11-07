@@ -25,7 +25,16 @@ type volumeActionReq struct {
 	Namespace string  `json:"namespace"`
 	Name      string  `json:"name"` // PVC ou PV
 	SizeGiB   float64 `json:"size_gib"`
-	Confirm   string  `json:"confirm"` // delete: precisa repetir o nome
+	Confirm   string  `json:"confirm"` // delete: a frase de deleteConfirmPhrase, copiada e colada na tela
+}
+
+// deleteConfirmPhrase é o texto que a tela manda copiar e colar para liberar a exclusão; o servidor
+// exige a mesma frase, então chamar a rota direto também não apaga sem ela.
+func deleteConfirmPhrase(kind, namespace, name string) string {
+	if kind == "pv" {
+		return "apagar pv " + name
+	}
+	return "apagar pvc " + namespace + "/" + name
 }
 
 // validateExpand: só cresce, só PVC Bound e só se a StorageClass permite.
@@ -137,7 +146,7 @@ func (h *NodePoolHandler) ExpandVolume(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"size": want.String()}})
 }
 
-// DeleteVolume apaga um PVC sem pod ou um PV sem uso. Exige repetir o nome. Com reclaimPolicy
+// DeleteVolume apaga um PVC sem pod ou um PV sem uso. Exige a frase de confirmação. Com reclaimPolicy
 // Delete, apagar o PVC apaga também o disco: a tela avisa, o servidor só confere o que é seguro.
 func (h *NodePoolHandler) DeleteVolume(c *gin.Context) {
 	start := time.Now()
@@ -145,8 +154,8 @@ func (h *NodePoolHandler) DeleteVolume(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if req.Confirm != req.Name {
-		volumeActionFail(c, http.StatusBadRequest, "CONFIRMATION_MISMATCH", fmt.Errorf("a confirmação não confere com o nome do volume"))
+	if req.Confirm != deleteConfirmPhrase(req.Kind, req.Namespace, req.Name) {
+		volumeActionFail(c, http.StatusBadRequest, "CONFIRMATION_MISMATCH", fmt.Errorf("a frase de confirmação não confere"))
 		return
 	}
 	client, err := h.kubeManager.GetClient(req.Cluster)

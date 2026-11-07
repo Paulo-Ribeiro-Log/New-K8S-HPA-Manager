@@ -3,6 +3,19 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Node Pools — modal Volumes (PV/PVC/NFS) (Novembro 2026)
+
+Botão **Volumes** no painel direito da aba Node Pools/Groups (`GET /nodepools/volumes`, `handlers/nodepool_volumes*.go`, `NodePoolVolumesModal.tsx`).
+
+- **Mapa de volumes:** todo PV/PVC do cluster ligado à aplicação (pod → workload; também spec do workload, `volumeClaimTemplate` e labels quando não há pod), node e node pool; NFS/EFS/CSI e NFS montado direto no pod; problemas (PVC sem pod, PV órfão/Released, Pending/Lost, Retain).
+- **Custo** (`?include_cost=true`, via `VolumeCostSource` do FinOps): efetivo do Cost Management quando existe (Azure) e estimativa de tabela no resto; visão por aplicação com volume compartilhado dividido. NFS/Files/EFS ficam sem preço (o custo é do servidor).
+- **Uso e tendência** (`?include_usage=true`, Prometheus `kubelet_volume_stats_*`): uso real, crescimento por regressão linear de 7 dias e previsão de "enche em N dias"; classes Crítico (≥90% ou ≤7 dias), Atenção (≥80% ou ≤30 dias) e Superdimensionado (≥10 GiB usando <20%). Aviso explícito se o Prometheus estiver indisponível.
+- **Servidores NFS:** visão agrupada por servidor (volumes, exports, aplicações que dependem, ociosos).
+- **Zona e disponibilidade:** zona do disco (label/nodeAffinity do PV) e alerta de zona sem node ou com um só node.
+- **Expansão e snapshots:** `allowVolumeExpansion` da StorageClass, expansão pendente/travada e VolumeSnapshots prontos por PVC (REST bruta em `/apis/snapshot.storage.k8s.io/v1`, sem dynamic client; sem a API o filtro "Sem snapshot" não aparece).
+- **Idade:** coluna Idade e ocioso com mais de 30 dias como candidato a limpeza (a idade é só o teto do tempo ocioso; o Kubernetes não guarda desde quando).
+- **Ações de escrita:** `POST /nodepools/volumes/expand` (só cresce, StorageClass expansível, PVC Bound) e `/delete` (PVC sem pod ou PV Released/Available; exige a frase `apagar pvc <ns>/<nome>` / `apagar pv <nome>` colada na tela e conferida no servidor). Atrás de `RequireSREGroup()`; Change History `expand_volume`/`delete_volume` (só identificação). Os botões só aparecem se o RBAC do cluster permite (`canPatchPVC`, `canDeletePVC`, `canDeletePV` em `kubernetes/permissions.go`).
+
 ### Auditoria de segurança e do Change History (Novembro 2026)
 
 Achados ao escrever a ajuda contextual das abas; cada item saiu em PR próprio.
