@@ -15,7 +15,7 @@ interface Props {
   onClose: () => void;
 }
 
-type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "usage" | "pool" | "issues";
+type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "usage" | "age" | "pool" | "issues";
 
 const OWNER_SOURCE_LABEL: Record<string, string> = { pod: "pod", spec: "spec do workload", statefulset: "volumeClaimTemplate", label: "label" };
 const OWNER_SOURCE_HELP: Record<string, string> = {
@@ -41,6 +41,7 @@ function sortValue(it: VolumeItem, k: SortKey): string | number {
     case "capacity": return it.capacity_bytes;
     case "cost": return it.cost_brl_month ?? 0;
     case "usage": return it.usage_percentage ?? -1;
+    case "age": return it.age_days ?? -1;
     case "pool": return it.node_pools.join(",");
     case "issues": return it.issues.length;
   }
@@ -52,10 +53,10 @@ function csvCell(v: string | number): string {
 }
 
 function toCSV(items: VolumeItem[]): string {
-  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "zona", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
+  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "zona", "criado_em", "idade_dias", "expansivel", "snapshots", "ultimo_snapshot", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
   const rows = items.map((i) => [
     i.kind, i.namespace, i.workloads.length ? i.workloads.join(" ") : (i.app_hint ? `(label) ${i.app_hint}` : ""), i.owner_source ?? "", i.pvc ?? "", i.pvc_status ?? "", i.pv ?? "", i.pv_phase ?? "",
-    i.storage_class, i.source ?? "", i.source_detail ?? "", i.zone ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
+    i.storage_class, i.source ?? "", i.source_detail ?? "", i.zone ?? "", i.created_at ?? "", i.age_days ?? "", i.can_expand === undefined ? "" : i.can_expand ? "sim" : "não", i.snapshots ?? 0, i.last_snapshot ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
     i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "",
     i.growth_bytes_per_day ? (i.growth_bytes_per_day / GIB).toFixed(3) : "", i.days_to_full ?? "", i.usage_class ?? "", i.issues.join(" | "),
   ]);
@@ -127,6 +128,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const [usageFilter, setUsageFilter] = useState("");
   const [zone, setZone] = useState("");
   const [onlyIssues, setOnlyIssues] = useState(false);
+  const [noSnapshot, setNoSnapshot] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [action, setAction] = useState<{ type: "expand" | "delete"; item: VolumeItem } | null>(null);
+  const [actionInput, setActionInput] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "namespace", desc: false });
 
   useEffect(() => {
@@ -139,7 +146,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Erro ao listar os volumes"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [cluster, includeUsage, includeCost]);
+  }, [cluster, includeUsage, includeCost, reloadKey]);
 
   const items = data?.items ?? [];
   const namespaces = useMemo(() => [...new Set(items.map((i) => i.namespace).filter(Boolean))].sort(), [items]);
@@ -156,6 +163,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       if (usageFilter && i.usage_class !== usageFilter) return false;
       if (zone && i.zone !== zone) return false;
       if (onlyIssues && i.issues.length === 0) return false;
+      if (noSnapshot && (i.kind !== "pvc" || i.snapshots)) return false;
       if (!q) return true;
       return [i.namespace, ...i.workloads, i.app_hint, i.pvc, i.pv, i.storage_class, i.source, i.source_detail, ...i.pods, ...i.nodes].some((v) => v?.toLowerCase().includes(q));
     });
@@ -164,7 +172,30 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       const va = sortValue(a, sort.key), vb = sortValue(b, sort.key);
       return (typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb))) * dir;
     });
-  }, [items, query, namespace, pool, source, usageFilter, zone, onlyIssues, sort]);
+  }, [items, query, namespace, pool, source, usageFilter, zone, onlyIssues, noSnapshot, sort]);
+
+  function openAction(type: "expand" | "delete", item: VolumeItem) {
+    setAction({ type, item });
+    setActionInput("");
+    setActionError("");
+  }
+
+  async function runAction() {
+    if (!action) return;
+    const { type, item } = action;
+    setActionBusy(true);
+    setActionError("");
+    try {
+      if (type === "expand") await apiClient.expandVolume(cluster, item.namespace, item.pvc ?? "", Number(actionInput));
+      else await apiClient.deleteVolume(cluster, item.kind === "pv" ? "pv" : "pvc", item.namespace, item.kind === "pv" ? (item.pv ?? "") : (item.pvc ?? ""), actionInput);
+      setAction(null);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Falha ao executar a ação");
+    } finally {
+      setActionBusy(false);
+    }
+  }
 
   function toggleSort(key: SortKey) {
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: false }));
@@ -217,6 +248,10 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <span><b>{s.pvs}</b> PVs</span>
             <span><b>{fmtGiB(s.capacity_bytes)}</b> provisionados</span>
             <span><b>{s.nfs}</b> NFS</span>
+            <span className={s.idle_old ? "text-amber-300" : "text-muted-foreground"} title="Volumes ociosos criados há mais de 30 dias"><b>{s.idle_old}</b> ociosos antigos</span>
+            {s.resize_pending > 0 && <span className="text-amber-300" title="PVC com expansão em andamento ou aguardando o pod reiniciar"><b>{s.resize_pending}</b> expandindo</span>}
+            {usageOn && s.expand_blocked > 0 && <span className="text-red-400" title="Volume cheio ou enchendo em StorageClass sem allowVolumeExpansion"><b>{s.expand_blocked}</b> cheios sem como expandir</span>}
+            {s.snapshots_known && <span title="PVCs com VolumeSnapshot pronto"><b>{s.with_snapshot}</b> com snapshot</span>}
             {zones.length > 0 && (
               <>
                 <span className={s.zone_no_nodes ? "text-red-400" : "text-muted-foreground"} title="Disco zonal em zona sem nenhum node no cluster"><b>{s.zone_no_nodes}</b> em zona sem node</span>
@@ -279,6 +314,11 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
           <label className="flex items-center gap-1.5 text-xs cursor-pointer">
             <Checkbox checked={onlyIssues} onCheckedChange={(v) => setOnlyIssues(v === true)} />Só com problema
           </label>
+          {s?.snapshots_known && (
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="PVCs sem nenhum VolumeSnapshot pronto">
+              <Checkbox checked={noSnapshot} onCheckedChange={(v) => setNoSnapshot(v === true)} />Sem snapshot
+            </label>
+          )}
           <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="Custo mensal por volume e por aplicação: efetivo do Cost Management quando existe (Azure) e, no resto, estimativa de tabela on-demand do FinOps">
             <Checkbox checked={includeCost} onCheckedChange={(v) => { setIncludeCost(v === true); if (v !== true) setView((cur) => (cur === "apps" ? "volumes" : cur)); }} />Incluir custo (FinOps)
           </label>
@@ -411,10 +451,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                   <Th k="storage_class">Storage class</Th>
                   <Th k="source">Origem</Th>
                   <Th k="capacity">Capacidade</Th>
+                  <Th k="age">Idade</Th>
                   {costOn && <Th k="cost">Custo/mês</Th>}
                   {includeUsage && <Th k="usage">Uso</Th>}
                   <Th k="pool">{resourceLabel.replace(/s$/, "")}</Th>
                   <Th k="issues">Situação</Th>
+                  <th className="text-left font-medium px-2 py-1.5">Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -459,6 +501,15 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                     <td className="px-2 py-1.5 whitespace-nowrap">
                       {fmtGiB(i.capacity_bytes)}
                       <div className="text-[10px] text-muted-foreground">{i.access_modes.join(", ")}</div>
+                      {i.can_expand !== undefined && (
+                        <div className={`text-[10px] ${i.can_expand ? "text-muted-foreground" : "text-amber-300"}`} title="allowVolumeExpansion da StorageClass">{i.can_expand ? "expansível" : "não expansível"}</div>
+                      )}
+                      {!!i.snapshots && (
+                        <div className="text-[10px] text-muted-foreground" title={i.last_snapshot ? `Último: ${new Date(i.last_snapshot).toLocaleString("pt-BR")}` : undefined}>{i.snapshots} snapshot(s)</div>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground" title={i.created_at ? `Criado em ${new Date(i.created_at).toLocaleString("pt-BR")}` : undefined}>
+                      {i.age_days === undefined ? "—" : i.age_days >= 365 ? `${(i.age_days / 365).toFixed(1)} anos` : `${i.age_days} d`}
                     </td>
                     {costOn && (
                       <td className="px-2 py-1.5 whitespace-nowrap" title={i.cost_note}>
@@ -506,12 +557,66 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                         </div>
                       ))}
                     </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <div className="flex flex-col items-start gap-1">
+                        {i.kind === "pvc" && i.can_expand && i.pvc_status === "Bound" && (
+                          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => openAction("expand", i)}>Expandir</Button>
+                        )}
+                        {(i.kind === "pvc" || i.kind === "pv") && i.idle && (
+                          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] text-red-400 hover:text-red-300" onClick={() => openAction("delete", i)}>Apagar</Button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
         </div>
+
+        {action && (
+          <Dialog open onOpenChange={(v) => { if (!v && !actionBusy) setAction(null); }}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle className="text-sm">
+                  {action.type === "expand" ? "Expandir volume" : action.item.kind === "pv" ? "Apagar PV" : "Apagar PVC"}
+                </DialogTitle>
+              </DialogHeader>
+              {(() => {
+                const name = action.item.kind === "pv" ? (action.item.pv ?? "") : (action.item.pvc ?? "");
+                return action.type === "expand" ? (
+                  <div className="space-y-2 text-xs">
+                    <p><span className="font-mono">{action.item.namespace}/{name}</span> — atual: <b>{fmtGiB(action.item.capacity_bytes)}</b>. Disco só cresce; reduzir exige recriar o volume.</p>
+                    <Input type="number" min={1} step={1} className="h-8 text-xs" placeholder="Novo tamanho em GiB" value={actionInput} onChange={(e) => setActionInput(e.target.value)} autoFocus />
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-xs">
+                    <p>
+                      Vai apagar <span className="font-mono">{action.item.kind === "pvc" ? `${action.item.namespace}/` : ""}{name}</span>.
+                      {action.item.reclaim_policy === "Delete"
+                        ? <b className="text-red-400"> O reclaim é Delete: o disco e os dados serão apagados junto e não há como desfazer.</b>
+                        : " O reclaim é " + (action.item.reclaim_policy || "desconhecido") + ": o disco pode continuar existindo (e cobrando) fora do cluster."}
+                    </p>
+                    <p className="text-muted-foreground">O servidor confere de novo que ninguém está usando o volume. Digite o nome para confirmar:</p>
+                    <Input className="h-8 text-xs font-mono" placeholder={name} value={actionInput} onChange={(e) => setActionInput(e.target.value)} autoFocus />
+                  </div>
+                );
+              })()}
+              {actionError && <div className="text-xs text-red-400 whitespace-pre-wrap [overflow-wrap:anywhere]">{actionError}</div>}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setAction(null)} disabled={actionBusy}>Cancelar</Button>
+                <Button
+                  size="sm"
+                  variant={action.type === "delete" ? "destructive" : "default"}
+                  onClick={runAction}
+                  disabled={actionBusy || !actionInput || (action.type === "delete" && actionInput !== (action.item.kind === "pv" ? action.item.pv : action.item.pvc))}
+                >
+                  {actionBusy && <Loader2 className="w-3 h-3 animate-spin mr-1" />}{action.type === "expand" ? "Expandir" : "Apagar"}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
       </DialogContent>
     </Dialog>
   );

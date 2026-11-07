@@ -2731,6 +2731,15 @@ class APIClient {
     return r.data;
   }
 
+  // Ações de escrita do modal Volumes (o servidor revalida tudo)
+  async expandVolume(cluster: string, namespace: string, name: string, sizeGiB: number): Promise<void> {
+    await this.post("/nodepools/volumes/expand", { cluster, namespace, name, size_gib: sizeGiB });
+  }
+
+  async deleteVolume(cluster: string, kind: "pvc" | "pv", namespace: string, name: string, confirm: string): Promise<void> {
+    await this.post("/nodepools/volumes/delete", { cluster, kind, namespace, name, confirm });
+  }
+
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {
     const response = await this.request<{ success: boolean; data: any }>(
       `/nodepools/storage-overview?cluster=${encodeURIComponent(cluster)}`
@@ -6142,7 +6151,12 @@ export interface VolumeItem {
   growth_bytes_per_day?: number; // regressão dos últimos 7 dias (só com include_usage)
   days_to_full?: number; // previsão de quando enche, se o volume está crescendo
   usage_class?: "critical" | "warning" | "oversized" | "ok";
+  created_at?: string;
+  age_days?: number;
   zone?: string;
+  can_expand?: boolean;
+  snapshots?: number;
+  last_snapshot?: string;
   cost_brl_month?: number;
   cost_kind?: "effective" | "estimate" | "none"; // só com include_cost
   cost_note?: string;
@@ -6164,6 +6178,8 @@ export interface VolumesResponse {
   cost_warning?: string;
   usage_warning?: string; // Prometheus indisponível ou sem métrica de volume
   summary: {
+    resize_pending: number; expand_blocked: number; snapshots_known: boolean; with_snapshot: number;
+    idle_old: number;
     zone_no_nodes: number; zone_single_node: number;
     usage_known: number; usage_critical: number; usage_warning: number; usage_oversized: number;
     cost_brl_month: number; cost_idle_brl_month: number; cost_effective: number; cost_estimate: number; cost_none: number; pvcs: number; pvs: number; capacity_bytes: number; with_issues: number; orphan_pvs: number; unused_pvcs: number; no_owner: number; nfs: number };
