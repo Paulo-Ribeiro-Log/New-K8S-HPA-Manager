@@ -73,9 +73,10 @@ type VolumesSummary struct {
 	CostEffective  int     `json:"cost_effective"`
 	CostEstimate   int     `json:"cost_estimate"`
 	CostNone       int     `json:"cost_none"`
-	ResizePending  int     `json:"resize_pending"`  // expansões em andamento ou aguardando reinício do pod
-	ExpandBlocked  int     `json:"expand_blocked"`  // volume cheio/enchendo em StorageClass sem expansão (com uso)
-	SnapshotsKnown bool    `json:"snapshots_known"` // a API de VolumeSnapshot respondeu
+	ResizePending  int     `json:"resize_pending"`         // expansões em andamento ou aguardando reinício do pod
+	ExpandBlocked  int     `json:"expand_blocked"`         // volume cheio/enchendo em StorageClass sem expansão (com uso)
+	SnapshotsKnown bool    `json:"snapshots_known"`        // a API de VolumeSnapshot respondeu
+	SnapshotAPI    string  `json:"snapshot_api,omitempty"` // versão servida de snapshot.storage.k8s.io (v1, v1beta1); vazio = ausente
 	WithSnapshot   int     `json:"with_snapshot"`
 	IdleOld        int     `json:"idle_old"`         // volumes ociosos criados há mais de 30 dias: candidatos a limpeza
 	ZoneNoNodes    int     `json:"zone_no_nodes"`    // volumes cuja zona não tem nenhum node no cluster
@@ -610,7 +611,8 @@ func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
 		}
 	}
 	applyExpansion(items, in.PVCs, expandBySC, &summary)
-	if snaps, ok := fetchSnapshots(ctx, client); ok {
+	summary.SnapshotAPI = detectSnapshotVersion(ctx, client)
+	if snaps, ok := fetchSnapshots(ctx, client, summary.SnapshotAPI); ok {
 		applySnapshots(items, snaps, &summary)
 	}
 	recountIssues(items, &summary)

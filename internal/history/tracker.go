@@ -511,6 +511,7 @@ const (
 	ActionRolloutStatefulSet = "rollout_statefulset" // Rollout de StatefulSet executado
 	ActionExpandVolume       = "expand_volume"       // PVC expandido (modal Volumes)
 	ActionDeleteVolume       = "delete_volume"       // PVC ou PV removido (modal Volumes)
+	ActionSnapshotVolume     = "snapshot_volume"     // VolumeSnapshot criado a partir de um PVC (modal Volumes)
 )
 
 // Status constants

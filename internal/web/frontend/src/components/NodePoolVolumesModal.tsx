@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, Database, Download, Loader2, Search } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Camera, Database, Download, Loader2, MoreVertical, Search, Trash2, Maximize2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
-import { apiClient, type VolumeAppCost, type VolumeItem, type VolumesResponse } from "@/lib/api/client";
+import { apiClient, type SnapshotCreated, type SnapshotInfo, type VolumeAppCost, type VolumeItem, type VolumesResponse } from "@/lib/api/client";
 
 // Volumes do cluster (PV/PVC) ligados à aplicação, node e node pool. Somente leitura.
 
@@ -17,6 +17,7 @@ interface Props {
   onClose: () => void;
 }
 
+type VolumeActionType = "expand" | "delete" | "snapshot";
 type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "usage" | "age" | "pool" | "issues";
 
 const OWNER_SOURCE_LABEL: Record<string, string> = { pod: "pod", spec: "spec do workload", statefulset: "volumeClaimTemplate", label: "label" };
@@ -119,28 +120,97 @@ function toNFSCSV(servers: NFSServer[]): string {
   return [head, ...rows].map((r) => r.map(csvCell).join(";")).join("\n");
 }
 
-// Botões de escrita de uma linha, só com o que o RBAC do cluster permite no namespace do volume
+// Menu de ações (⋮) de uma linha, só com o que o RBAC do cluster permite no namespace do volume
 // (SelfSubjectRulesReview, em cache por namespace). O servidor revalida de qualquer forma.
-function VolumeRowActions({ cluster, item, onAction }: { cluster: string; item: VolumeItem; onAction: (t: "expand" | "delete", i: VolumeItem) => void }) {
-  const canExpand = item.kind === "pvc" && !!item.can_expand && item.pvc_status === "Bound";
+function VolumeRowActions({ cluster, item, snapshotApi, onAction }: { cluster: string; item: VolumeItem; snapshotApi?: string; onAction: (t: VolumeActionType, i: VolumeItem) => void }) {
+  const bound = item.kind === "pvc" && item.pvc_status === "Bound";
+  const canExpand = bound && !!item.can_expand;
   const canDelete = (item.kind === "pvc" || item.kind === "pv") && item.idle;
-  const { permissions } = useK8sPermissions(cluster, canExpand || canDelete ? item.namespace || "default" : "");
+  const canSnap = bound && !!snapshotApi;
+  const { permissions } = useK8sPermissions(cluster, canExpand || canDelete || canSnap ? item.namespace || "default" : "");
   const mayExpand = canExpand && permissions.canPatchPVC;
   const mayDelete = canDelete && (item.kind === "pv" ? permissions.canDeletePV : permissions.canDeletePVC);
-  if (!mayExpand && !mayDelete) return null;
+  const maySnap = canSnap && permissions.canSnapshot;
+  if (!mayExpand && !mayDelete && !maySnap) return null;
   return (
-    <div className="flex flex-col items-start gap-1">
-      {mayExpand && (
-        <ProtectedAction allowed={permissions.canPatchPVC} showWarning={false}>
-          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => onAction("expand", item)}>Expandir</Button>
-        </ProtectedAction>
-      )}
-      {mayDelete && (
-        <ProtectedAction allowed={item.kind === "pv" ? permissions.canDeletePV : permissions.canDeletePVC} showWarning={false}>
-          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] text-red-400 hover:text-red-300" onClick={() => onAction("delete", item)}>Apagar</Button>
-        </ProtectedAction>
-      )}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="sm" className="h-6 w-6 p-0" aria-label="Ações do volume"><MoreVertical className="w-4 h-4" /></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="text-xs">
+        {maySnap && <DropdownMenuItem className="text-xs gap-2" onSelect={() => onAction("snapshot", item)}><Camera className="w-3.5 h-3.5" />Tirar snapshot</DropdownMenuItem>}
+        {mayExpand && <DropdownMenuItem className="text-xs gap-2" onSelect={() => onAction("expand", item)}><Maximize2 className="w-3.5 h-3.5" />Expandir</DropdownMenuItem>}
+        {mayDelete && (maySnap || mayExpand) && <DropdownMenuSeparator />}
+        {mayDelete && <DropdownMenuItem className="text-xs gap-2 text-red-400 focus:text-red-400" onSelect={() => onAction("delete", item)}><Trash2 className="w-3.5 h-3.5" />Apagar</DropdownMenuItem>}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// Tirar snapshot: confere a versão da API de snapshot e as classes compatíveis com o driver do volume.
+function SnapshotDialog({ cluster, item, onClose, onDone }: { cluster: string; item: VolumeItem; onClose: () => void; onDone: () => void }) {
+  const [info, setInfo] = useState<SnapshotInfo | null>(null);
+  const [klass, setKlass] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [created, setCreated] = useState<SnapshotCreated | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .getSnapshotInfo(cluster, item.namespace, item.pvc ?? "")
+      .then((r) => { if (!cancelled) { setInfo(r); setKlass(r.suggested); } })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Erro ao consultar o snapshot"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [cluster, item.namespace, item.pvc]);
+
+  async function create() {
+    setBusy(true);
+    setError("");
+    try {
+      setCreated(await apiClient.createSnapshot(cluster, item.namespace, item.pvc ?? "", klass));
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao criar o snapshot");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => { if (!v && !busy) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader><DialogTitle className="text-sm">Tirar snapshot</DialogTitle></DialogHeader>
+        <div className="space-y-2 text-xs">
+          <p><span className="font-mono">{item.namespace}/{item.pvc}</span> — {fmtGiB(item.capacity_bytes)}</p>
+          {loading && <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" />Consultando a API de snapshot do cluster…</div>}
+          {info && !created && (
+            <>
+              <p className="text-muted-foreground">API <span className="font-mono">snapshot.storage.k8s.io/{info.api_version}</span> · driver <span className="font-mono">{info.driver}</span></p>
+              <select className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs" value={klass} onChange={(e) => setKlass(e.target.value)} aria-label="VolumeSnapshotClass">
+                {info.suggested === "" && <option value="">Escolha a VolumeSnapshotClass…</option>}
+                {info.classes.map((c) => <option key={c.name} value={c.name}>{c.name}{c.default ? " (padrão)" : ""}{c.deletion_policy ? ` · ${c.deletion_policy}` : ""}</option>)}
+              </select>
+              <p className="text-muted-foreground">Cria um VolumeSnapshot no namespace do PVC. Snapshot cobra armazenamento e continua existindo até alguém apagá-lo. Com a classe em <b>Delete</b>, apagar o snapshot apaga a cópia.</p>
+            </>
+          )}
+          {created && (
+            <p className="text-emerald-400">Snapshot <span className="font-mono">{created.snapshot}</span> criado (classe {created.class}). Ele leva alguns instantes até ficar pronto; recarregue a lista para ver a contagem.</p>
+          )}
+          {error && <div className="text-red-400 whitespace-pre-wrap [overflow-wrap:anywhere]">{error}</div>}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>{created ? "Fechar" : "Cancelar"}</Button>
+          {!created && (
+            <Button size="sm" onClick={create} disabled={busy || loading || !info || !klass}>
+              {busy && <Loader2 className="w-3 h-3 animate-spin mr-1" />}Criar snapshot
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -160,7 +230,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const [onlyIssues, setOnlyIssues] = useState(false);
   const [noSnapshot, setNoSnapshot] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const [action, setAction] = useState<{ type: "expand" | "delete"; item: VolumeItem } | null>(null);
+  const [action, setAction] = useState<{ type: VolumeActionType; item: VolumeItem } | null>(null);
   const [actionInput, setActionInput] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -204,7 +274,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
     });
   }, [items, query, namespace, pool, source, usageFilter, zone, onlyIssues, noSnapshot, sort]);
 
-  function openAction(type: "expand" | "delete", item: VolumeItem) {
+  function openAction(type: VolumeActionType, item: VolumeItem) {
     setAction({ type, item });
     setActionInput("");
     setActionError("");
@@ -213,6 +283,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   async function runAction() {
     if (!action) return;
     const { type, item } = action;
+    if (type === "snapshot") return;
     setActionBusy(true);
     setActionError("");
     try {
@@ -281,7 +352,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <span className={s.idle_old ? "text-amber-300" : "text-muted-foreground"} title="Volumes ociosos criados há mais de 30 dias"><b>{s.idle_old}</b> ociosos antigos</span>
             {s.resize_pending > 0 && <span className="text-amber-300" title="PVC com expansão em andamento ou aguardando o pod reiniciar"><b>{s.resize_pending}</b> expandindo</span>}
             {usageOn && s.expand_blocked > 0 && <span className="text-red-400" title="Volume cheio ou enchendo em StorageClass sem allowVolumeExpansion"><b>{s.expand_blocked}</b> cheios sem como expandir</span>}
-            {s.snapshots_known && <span title="PVCs com VolumeSnapshot pronto"><b>{s.with_snapshot}</b> com snapshot</span>}
+            {s.snapshots_known && <span title={`PVCs com VolumeSnapshot pronto · API snapshot.storage.k8s.io/${s.snapshot_api ?? "?"}`}><b>{s.with_snapshot}</b> com snapshot</span>}
             {zones.length > 0 && (
               <>
                 <span className={s.zone_no_nodes ? "text-red-400" : "text-muted-foreground"} title="Disco zonal em zona sem nenhum node no cluster"><b>{s.zone_no_nodes}</b> em zona sem node</span>
@@ -588,7 +659,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                       ))}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
-                      <VolumeRowActions cluster={cluster} item={i} onAction={openAction} />
+                      <VolumeRowActions cluster={cluster} item={i} snapshotApi={s?.snapshot_api} onAction={openAction} />
                     </td>
                   </tr>
                 ))}
@@ -597,7 +668,10 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
           )}
         </div>
 
-        {action && (
+        {action?.type === "snapshot" && (
+          <SnapshotDialog cluster={cluster} item={action.item} onClose={() => setAction(null)} onDone={() => setReloadKey((k) => k + 1)} />
+        )}
+        {action && action.type !== "snapshot" && (
           <Dialog open onOpenChange={(v) => { if (!v && !actionBusy) setAction(null); }}>
             <DialogContent className="max-w-md">
               <DialogHeader>
@@ -640,6 +714,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                   </div>
                 );
               })()}
+              {s?.snapshot_api && action.item.kind === "pvc" && !action.item.snapshots && (
+                <div className="flex items-center justify-between gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300">
+                  <span>Este PVC não tem snapshot pronto.</span>
+                  <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] flex-shrink-0" onClick={() => openAction("snapshot", action.item)}>Tirar snapshot antes</Button>
+                </div>
+              )}
               {actionError && <div className="text-xs text-red-400 whitespace-pre-wrap [overflow-wrap:anywhere]">{actionError}</div>}
               <div className="flex justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={() => setAction(null)} disabled={actionBusy}>Cancelar</Button>

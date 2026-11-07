@@ -2736,6 +2736,17 @@ class APIClient {
     await this.post("/nodepools/volumes/expand", { cluster, namespace, name, size_gib: sizeGiB });
   }
 
+  async getSnapshotInfo(cluster: string, namespace: string, name: string): Promise<SnapshotInfo> {
+    const params = new URLSearchParams({ cluster, namespace, name });
+    const r = await this.request<{ success: boolean; data: SnapshotInfo }>(`/nodepools/volumes/snapshot-info?${params.toString()}`);
+    return r.data;
+  }
+
+  async createSnapshot(cluster: string, namespace: string, name: string, snapshotClass: string): Promise<SnapshotCreated> {
+    const r = await this.post<{ success: boolean; data: SnapshotCreated }>("/nodepools/volumes/snapshot", { cluster, namespace, name, snapshot_class: snapshotClass });
+    return r.data;
+  }
+
   async deleteVolume(cluster: string, kind: "pvc" | "pv", namespace: string, name: string, confirm: string): Promise<void> {
     await this.post("/nodepools/volumes/delete", { cluster, kind, namespace, name, confirm });
   }
@@ -6172,6 +6183,10 @@ export interface VolumeAppCost {
   unpriced: number;
 }
 
+export interface SnapshotClassInfo { name: string; driver: string; default: boolean; deletion_policy?: string }
+export interface SnapshotInfo { api_version: string; driver: string; classes: SnapshotClassInfo[]; suggested: string }
+export interface SnapshotCreated { snapshot: string; class: string; api_version: string; deletion_policy?: string }
+
 export interface VolumesResponse {
   items: VolumeItem[];
   by_app: VolumeAppCost[];
@@ -6181,6 +6196,7 @@ export interface VolumesResponse {
     resize_pending: number; expand_blocked: number; snapshots_known: boolean; with_snapshot: number;
     idle_old: number;
     zone_no_nodes: number; zone_single_node: number;
+    snapshot_api?: string;
     usage_known: number; usage_critical: number; usage_warning: number; usage_oversized: number;
     cost_brl_month: number; cost_idle_brl_month: number; cost_effective: number; cost_estimate: number; cost_none: number; pvcs: number; pvs: number; capacity_bytes: number; with_issues: number; orphan_pvs: number; unused_pvcs: number; no_owner: number; nfs: number };
 }

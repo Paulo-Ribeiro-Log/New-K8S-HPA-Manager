@@ -889,8 +889,10 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/snat/costs", nodePoolHandler.GetSNATCosts)                   // Preços de referência por cloud provider (Azure/GCP/AWS native pricing APIs)
 
 	// Node Pools - Write Operations (SRE-only)
-	api.POST("/nodepools/volumes/expand", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExpandVolume) // expande um PVC (revalida no servidor)
-	api.POST("/nodepools/volumes/delete", rbacMiddleware.RequireSREGroup(), nodePoolHandler.DeleteVolume) // apaga PVC sem pod / PV sem uso (exige colar a frase de confirmação)
+	api.POST("/nodepools/volumes/expand", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExpandVolume)     // expande um PVC (revalida no servidor)
+	api.GET("/nodepools/volumes/snapshot-info", nodePoolHandler.GetSnapshotInfo)                              // versão da API de snapshot e classes compatíveis com o PVC
+	api.POST("/nodepools/volumes/snapshot", rbacMiddleware.RequireSREGroup(), nodePoolHandler.CreateSnapshot) // cria um VolumeSnapshot do PVC
+	api.POST("/nodepools/volumes/delete", rbacMiddleware.RequireSREGroup(), nodePoolHandler.DeleteVolume)     // apaga PVC sem pod / PV sem uso (exige colar a frase de confirmação)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
 	api.POST("/nodepools/:cluster/:resource_group/:name/abort", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Abort)
 	api.POST("/nodepools/:cluster/:resource_group/:name/reconcile", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Reconcile) // reaplica a config atual (pool em Failed/Canceled)

@@ -3081,6 +3081,7 @@ export interface K8sNamespacePermissions {
   canPatchPVC: boolean;
   canDeletePVC: boolean;
   canDeletePV: boolean;
+  canSnapshot: boolean;
   incomplete: boolean;
 }
 
