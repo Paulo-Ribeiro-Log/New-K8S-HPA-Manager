@@ -52,10 +52,10 @@ function csvCell(v: string | number): string {
 }
 
 function toCSV(items: VolumeItem[]): string {
-  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
+  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "zona", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
   const rows = items.map((i) => [
     i.kind, i.namespace, i.workloads.length ? i.workloads.join(" ") : (i.app_hint ? `(label) ${i.app_hint}` : ""), i.owner_source ?? "", i.pvc ?? "", i.pvc_status ?? "", i.pv ?? "", i.pv_phase ?? "",
-    i.storage_class, i.source ?? "", i.source_detail ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
+    i.storage_class, i.source ?? "", i.source_detail ?? "", i.zone ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
     i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "",
     i.growth_bytes_per_day ? (i.growth_bytes_per_day / GIB).toFixed(3) : "", i.days_to_full ?? "", i.usage_class ?? "", i.issues.join(" | "),
   ]);
@@ -125,6 +125,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const [pool, setPool] = useState("");
   const [source, setSource] = useState("");
   const [usageFilter, setUsageFilter] = useState("");
+  const [zone, setZone] = useState("");
   const [onlyIssues, setOnlyIssues] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "namespace", desc: false });
 
@@ -143,6 +144,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
   const items = data?.items ?? [];
   const namespaces = useMemo(() => [...new Set(items.map((i) => i.namespace).filter(Boolean))].sort(), [items]);
   const sources = useMemo(() => [...new Set(items.map((i) => i.source).filter((v): v is string => !!v))].sort(), [items]);
+  const zones = useMemo(() => [...new Set(items.map((i) => i.zone).filter((v): v is string => !!v))].sort(), [items]);
   const pools = useMemo(() => [...new Set(items.flatMap((i) => i.node_pools).filter(Boolean))].sort(), [items]);
 
   const rows = useMemo(() => {
@@ -152,6 +154,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       if (pool && !i.node_pools.includes(pool)) return false;
       if (source && i.source !== source) return false;
       if (usageFilter && i.usage_class !== usageFilter) return false;
+      if (zone && i.zone !== zone) return false;
       if (onlyIssues && i.issues.length === 0) return false;
       if (!q) return true;
       return [i.namespace, ...i.workloads, i.app_hint, i.pvc, i.pv, i.storage_class, i.source, i.source_detail, ...i.pods, ...i.nodes].some((v) => v?.toLowerCase().includes(q));
@@ -161,7 +164,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
       const va = sortValue(a, sort.key), vb = sortValue(b, sort.key);
       return (typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb))) * dir;
     });
-  }, [items, query, namespace, pool, source, usageFilter, onlyIssues, sort]);
+  }, [items, query, namespace, pool, source, usageFilter, zone, onlyIssues, sort]);
 
   function toggleSort(key: SortKey) {
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: false }));
@@ -214,6 +217,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <span><b>{s.pvs}</b> PVs</span>
             <span><b>{fmtGiB(s.capacity_bytes)}</b> provisionados</span>
             <span><b>{s.nfs}</b> NFS</span>
+            {zones.length > 0 && (
+              <>
+                <span className={s.zone_no_nodes ? "text-red-400" : "text-muted-foreground"} title="Disco zonal em zona sem nenhum node no cluster"><b>{s.zone_no_nodes}</b> em zona sem node</span>
+                <span className={s.zone_single_node ? "text-amber-300" : "text-muted-foreground"} title="Volume em uso cuja zona tem um único node"><b>{s.zone_single_node}</b> em zona com 1 node</span>
+              </>
+            )}
             {usageOn && (
               <>
                 <span className={s.usage_critical ? "text-red-400" : "text-muted-foreground"} title="Uso a partir de 90% ou previsão de encher em até 7 dias"><b>{s.usage_critical}</b> enchendo (crítico)</span>
@@ -255,6 +264,12 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
               <option value="critical">Crítico (enche)</option>
               <option value="warning">Atenção</option>
               <option value="oversized">Superdimensionado</option>
+            </select>
+          )}
+          {zones.length > 0 && (
+            <select className={selectCls} value={zone} onChange={(e) => setZone(e.target.value)} aria-label="Zona do disco">
+              <option value="">Todas as zonas</option>
+              {zones.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           )}
           <select className={selectCls} value={source} onChange={(e) => setSource(e.target.value)} aria-label="Tipo de volume">
@@ -439,6 +454,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                     <td className="px-2 py-1.5">
                       {i.source ? <span>{i.source}</span> : <span className="text-muted-foreground">—</span>}
                       {i.source_detail && <div className="font-mono text-[10px] text-muted-foreground [overflow-wrap:anywhere]" title={i.source_detail}>{i.source_detail}</div>}
+                      {i.zone && <div className="text-[10px] text-muted-foreground" title="Zona de disponibilidade do disco">zona {i.zone}</div>}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
                       {fmtGiB(i.capacity_bytes)}
