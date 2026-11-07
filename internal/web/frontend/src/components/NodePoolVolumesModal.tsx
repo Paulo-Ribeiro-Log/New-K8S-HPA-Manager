@@ -15,7 +15,7 @@ interface Props {
   onClose: () => void;
 }
 
-type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "usage" | "pool" | "issues";
+type SortKey = "namespace" | "workload" | "pvc" | "storage_class" | "source" | "capacity" | "cost" | "usage" | "age" | "pool" | "issues";
 
 const OWNER_SOURCE_LABEL: Record<string, string> = { pod: "pod", spec: "spec do workload", statefulset: "volumeClaimTemplate", label: "label" };
 const OWNER_SOURCE_HELP: Record<string, string> = {
@@ -41,6 +41,7 @@ function sortValue(it: VolumeItem, k: SortKey): string | number {
     case "capacity": return it.capacity_bytes;
     case "cost": return it.cost_brl_month ?? 0;
     case "usage": return it.usage_percentage ?? -1;
+    case "age": return it.age_days ?? -1;
     case "pool": return it.node_pools.join(",");
     case "issues": return it.issues.length;
   }
@@ -52,10 +53,10 @@ function csvCell(v: string | number): string {
 }
 
 function toCSV(items: VolumeItem[]): string {
-  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "zona", "expansivel", "snapshots", "ultimo_snapshot", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
+  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "zona", "criado_em", "idade_dias", "expansivel", "snapshots", "ultimo_snapshot", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
   const rows = items.map((i) => [
     i.kind, i.namespace, i.workloads.length ? i.workloads.join(" ") : (i.app_hint ? `(label) ${i.app_hint}` : ""), i.owner_source ?? "", i.pvc ?? "", i.pvc_status ?? "", i.pv ?? "", i.pv_phase ?? "",
-    i.storage_class, i.source ?? "", i.source_detail ?? "", i.zone ?? "", i.can_expand === undefined ? "" : i.can_expand ? "sim" : "não", i.snapshots ?? 0, i.last_snapshot ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
+    i.storage_class, i.source ?? "", i.source_detail ?? "", i.zone ?? "", i.created_at ?? "", i.age_days ?? "", i.can_expand === undefined ? "" : i.can_expand ? "sim" : "não", i.snapshots ?? 0, i.last_snapshot ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
     i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "",
     i.growth_bytes_per_day ? (i.growth_bytes_per_day / GIB).toFixed(3) : "", i.days_to_full ?? "", i.usage_class ?? "", i.issues.join(" | "),
   ]);
@@ -219,6 +220,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             <span><b>{s.pvs}</b> PVs</span>
             <span><b>{fmtGiB(s.capacity_bytes)}</b> provisionados</span>
             <span><b>{s.nfs}</b> NFS</span>
+            <span className={s.idle_old ? "text-amber-300" : "text-muted-foreground"} title="Volumes ociosos criados há mais de 30 dias"><b>{s.idle_old}</b> ociosos antigos</span>
             {s.resize_pending > 0 && <span className="text-amber-300" title="PVC com expansão em andamento ou aguardando o pod reiniciar"><b>{s.resize_pending}</b> expandindo</span>}
             {usageOn && s.expand_blocked > 0 && <span className="text-red-400" title="Volume cheio ou enchendo em StorageClass sem allowVolumeExpansion"><b>{s.expand_blocked}</b> cheios sem como expandir</span>}
             {s.snapshots_known && <span title="PVCs com VolumeSnapshot pronto"><b>{s.with_snapshot}</b> com snapshot</span>}
@@ -421,6 +423,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                   <Th k="storage_class">Storage class</Th>
                   <Th k="source">Origem</Th>
                   <Th k="capacity">Capacidade</Th>
+                  <Th k="age">Idade</Th>
                   {costOn && <Th k="cost">Custo/mês</Th>}
                   {includeUsage && <Th k="usage">Uso</Th>}
                   <Th k="pool">{resourceLabel.replace(/s$/, "")}</Th>
@@ -475,6 +478,9 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                       {!!i.snapshots && (
                         <div className="text-[10px] text-muted-foreground" title={i.last_snapshot ? `Último: ${new Date(i.last_snapshot).toLocaleString("pt-BR")}` : undefined}>{i.snapshots} snapshot(s)</div>
                       )}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground" title={i.created_at ? `Criado em ${new Date(i.created_at).toLocaleString("pt-BR")}` : undefined}>
+                      {i.age_days === undefined ? "—" : i.age_days >= 365 ? `${(i.age_days / 365).toFixed(1)} anos` : `${i.age_days} d`}
                     </td>
                     {costOn && (
                       <td className="px-2 py-1.5 whitespace-nowrap" title={i.cost_note}>

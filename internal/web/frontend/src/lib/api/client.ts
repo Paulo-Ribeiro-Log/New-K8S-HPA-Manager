@@ -6142,6 +6142,8 @@ export interface VolumeItem {
   growth_bytes_per_day?: number; // regressão dos últimos 7 dias (só com include_usage)
   days_to_full?: number; // previsão de quando enche, se o volume está crescendo
   usage_class?: "critical" | "warning" | "oversized" | "ok";
+  created_at?: string;
+  age_days?: number;
   zone?: string;
   can_expand?: boolean;
   snapshots?: number;
@@ -6168,6 +6170,7 @@ export interface VolumesResponse {
   usage_warning?: string; // Prometheus indisponível ou sem métrica de volume
   summary: {
     resize_pending: number; expand_blocked: number; snapshots_known: boolean; with_snapshot: number;
+    idle_old: number;
     zone_no_nodes: number; zone_single_node: number;
     usage_known: number; usage_critical: number; usage_warning: number; usage_oversized: number;
     cost_brl_month: number; cost_idle_brl_month: number; cost_effective: number; cost_estimate: number; cost_none: number; pvcs: number; pvs: number; capacity_bytes: number; with_issues: number; orphan_pvs: number; unused_pvcs: number; no_owner: number; nfs: number };

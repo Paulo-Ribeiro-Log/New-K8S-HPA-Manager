@@ -44,6 +44,8 @@ type VolumeItem struct {
 	CanExpand     *bool    `json:"can_expand,omitempty"` // StorageClass com allowVolumeExpansion (nil = não sei)
 	Snapshots     int      `json:"snapshots,omitempty"`
 	LastSnapshot  string   `json:"last_snapshot,omitempty"`
+	CreatedAt     string   `json:"created_at,omitempty"` // criação do PVC (ou do PV, se não há PVC)
+	AgeDays       *int     `json:"age_days,omitempty"`
 	Zone          string   `json:"zone,omitempty"` // zona do disco (PV zonal); vazio = sem afinidade de zona
 	UsedBytes     float64  `json:"used_bytes,omitempty"`
 	UsagePercent  float64  `json:"usage_percentage,omitempty"`
@@ -75,6 +77,7 @@ type VolumesSummary struct {
 	ExpandBlocked  int     `json:"expand_blocked"`  // volume cheio/enchendo em StorageClass sem expansão (com uso)
 	SnapshotsKnown bool    `json:"snapshots_known"` // a API de VolumeSnapshot respondeu
 	WithSnapshot   int     `json:"with_snapshot"`
+	IdleOld        int     `json:"idle_old"`         // volumes ociosos criados há mais de 30 dias: candidatos a limpeza
 	ZoneNoNodes    int     `json:"zone_no_nodes"`    // volumes cuja zona não tem nenhum node no cluster
 	ZoneSingleNode int     `json:"zone_single_node"` // volumes em uso cuja zona tem um único node
 	UsageKnown     int     `json:"usage_known"`      // PVCs com métrica de uso no Prometheus
@@ -413,6 +416,7 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 		}
 	}
 
+	now := time.Now()
 	sum := VolumesSummary{PVCs: len(in.PVCs), PVs: len(in.PVs)}
 	items := make([]VolumeItem, 0, len(in.PVCs))
 	claimed := map[string]bool{} // PVs atendendo algum PVC existente
@@ -467,6 +471,7 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 		if it.ReclaimPolicy == string(corev1.PersistentVolumeReclaimRetain) && len(it.Pods) == 0 {
 			it.Issues = append(it.Issues, "PV com reclaim Retain: continua cobrando se o PVC for apagado")
 		}
+		setAge(&it, pvc.CreationTimestamp, now)
 		sum.CapacityBytes += it.CapacityBytes
 		items = append(items, it)
 	}
@@ -504,6 +509,7 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 			}
 		}
 		it.Idle = true
+		setAge(&it, pv.CreationTimestamp, now)
 		sum.OrphanPVs++
 		sum.CapacityBytes += it.CapacityBytes
 		items = append(items, it)
@@ -515,6 +521,7 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 	}
 
 	applyZoneIssues(items, in.Nodes, &sum)
+	flagIdleOld(items, &sum)
 
 	for _, it := range items {
 		if len(it.Workloads) == 0 {
