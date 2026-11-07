@@ -23,6 +23,9 @@ const READ_ONLY_PERMISSIONS: K8sNamespacePermissions = {
   canWriteStatefulSets: false,
   canWriteDaemonSets: false,
   canWritePods: false,
+  canPatchPVC: false,
+  canDeletePVC: false,
+  canDeletePV: false,
   incomplete: false,
 };
 

@@ -40,6 +40,15 @@ func TestPodsUsingPVC(t *testing.T) {
 	}
 }
 
+func TestDeleteConfirmPhrase(t *testing.T) {
+	if got := deleteConfirmPhrase("pvc", "a", "x"); got != "apagar pvc a/x" {
+		t.Fatalf("pvc: %q", got)
+	}
+	if got := deleteConfirmPhrase("pv", "", "pv-1"); got != "apagar pv pv-1" {
+		t.Fatalf("pv: %q", got)
+	}
+}
+
 func TestValidateDeletePV(t *testing.T) {
 	pv := corev1.PersistentVolume{}
 	for ph, ok := range map[corev1.PersistentVolumePhase]bool{corev1.VolumeReleased: true, corev1.VolumeAvailable: true, corev1.VolumeBound: false} {

@@ -53,6 +53,11 @@ type NamespacePermissions struct {
 	// Pods (write = delete/kill/restart)
 	CanWritePods bool `json:"canWritePods"`
 
+	// Volumes (modal Volumes): expandir PVC, apagar PVC e apagar PV (este só aparece com regra de cluster)
+	CanPatchPVC  bool `json:"canPatchPVC"`
+	CanDeletePVC bool `json:"canDeletePVC"`
+	CanDeletePV  bool `json:"canDeletePV"`
+
 	// Indica que o K8s não conseguiu listar todas as regras (wildcard policies complexas).
 	// Quando true, assume-se acesso total para não bloquear o usuário indevidamente.
 	Incomplete bool `json:"incomplete"`
@@ -96,6 +101,7 @@ func CheckNamespacePermissions(ctx context.Context, client kubernetes.Interface,
 		perms.CanWriteStatefulSets = true
 		perms.CanWriteDaemonSets = true
 		perms.CanWritePods = true
+		perms.CanPatchPVC, perms.CanDeletePVC, perms.CanDeletePV = true, true, true
 		return perms, nil
 	}
 
@@ -225,6 +231,19 @@ func applyResourceRule(rule authorizationv1.ResourceRule, p *NamespacePermission
 		if hasVerb("update") || hasVerb("patch") || hasVerb("create") || hasVerb("delete") {
 			p.CanWriteDaemonSets = true
 		}
+	}
+
+	// PVC (expandir = patch/update; apagar = delete) e PV (cluster) — core group
+	if inGroup("") && hasResource("persistentvolumeclaims") {
+		if hasVerb("patch") || hasVerb("update") {
+			p.CanPatchPVC = true
+		}
+		if hasVerb("delete") {
+			p.CanDeletePVC = true
+		}
+	}
+	if inGroup("") && hasResource("persistentvolumes") && hasVerb("delete") {
+		p.CanDeletePV = true
 	}
 
 	// Pods write (delete = restart/kill) — core group
