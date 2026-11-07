@@ -77,6 +77,8 @@ type NodePoolHandler struct {
 	// Cache de ListNodeGroups por cluster (evita 5-6s de az CLI a cada refresh)
 	nodePoolCache   map[string]*nodePoolCacheEntry
 	nodePoolCacheMu sync.RWMutex
+	// Precificação dos volumes (visão Volumes); nil = sem custo. Injetado pelo server.go.
+	volumeCost VolumeCostSource
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools

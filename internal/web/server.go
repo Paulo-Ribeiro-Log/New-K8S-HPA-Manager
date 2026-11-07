@@ -910,6 +910,7 @@ func (s *Server) setupRoutes() {
 
 	// FinOps — análise de custo real de clusters AKS (Azure Pricing API + alocação por workload)
 	finOpsHandler := handlers.NewFinOpsHandler(s.kubeManager, s.npRegistryStore, s.finopsTimelineStore, s.finopsRightsizingStore, s.finopsReportCacheStore, s.aiHandler, s.aiTokensStore)
+	nodePoolHandler.SetVolumeCostSource(finOpsHandler) // custo dos volumes (visão Volumes da aba Node Pools)
 	finOpsHandler.SetExemptionsStore(s.finopsExemptionsStore, s.historyTracker)
 	finOpsHandler.SetActionsStore(s.finopsActionsStore)
 	api.GET("/finops/report", finOpsHandler.GetReport)
