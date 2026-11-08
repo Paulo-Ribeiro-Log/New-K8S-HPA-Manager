@@ -890,6 +890,9 @@ func (s *Server) setupRoutes() {
 
 	// Node Pools - Write Operations (SRE-only)
 	api.POST("/nodepools/volumes/expand", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExpandVolume)     // expande um PVC (revalida no servidor)
+	api.GET("/nodepools/volumes/scan", nodePoolHandler.GetVolumeScan)                                         // varredura periódica: clusters marcados e último resultado
+	api.PUT("/nodepools/volumes/scan/watch", nodePoolHandler.SetVolumeScanWatch)                              // troca a lista de clusters varridos
+	api.POST("/nodepools/volumes/scan/run", nodePoolHandler.RunVolumeScan)                                    // varre agora, em segundo plano
 	api.GET("/nodepools/volumes/storage-azure", nodePoolHandler.GetVolumeAzureDetails)                        // detalhes do storage na Azure (GET no ARM, a pedido)
 	api.GET("/nodepools/volumes/snapshot-info", nodePoolHandler.GetSnapshotInfo)                              // versão da API de snapshot e classes compatíveis com o PVC
 	api.POST("/nodepools/volumes/snapshot", rbacMiddleware.RequireSREGroup(), nodePoolHandler.CreateSnapshot) // cria um VolumeSnapshot do PVC
@@ -921,6 +924,12 @@ func (s *Server) setupRoutes() {
 			fmt.Printf("⚠️  Volume Idle Store: falha ao criar store: %v\n", err)
 		} else {
 			nodePoolHandler.SetVolumeIdleTracker(store)
+		}
+		if store, err := storage.NewVolumeScanStore(filepath.Join(home, ".k8s-hpa-manager", "volume_scan.db")); err != nil {
+			fmt.Printf("⚠️  Volume Scan Store: falha ao criar store: %v\n", err)
+		} else {
+			nodePoolHandler.SetVolumeScanStore(store)
+			nodePoolHandler.StartVolumeScanner(context.Background()) // varredura periódica dos clusters marcados (só com o servidor ligado)
 		}
 	}
 	nodePoolHandler.SetVolumeCostSource(finOpsHandler) // custo dos volumes (visão Volumes da aba Node Pools)

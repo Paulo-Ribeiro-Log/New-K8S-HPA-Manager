@@ -26,6 +26,7 @@ import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
 import { NodePoolVolumesModal } from "@/components/NodePoolVolumesModal";
+import { VolumeScanDialog, scanAttention, useVolumeScan } from "@/components/VolumeScanDialog";
 import { SNATPortWidget } from "@/components/SNATPortWidget";
 import { ConntrackAlertWidget } from "@/components/ConntrackAlertWidget";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
@@ -92,6 +93,7 @@ import {
   Server,
   Layers,
   Package,
+  Bell,
   Database,
   FileText,
   Search,
@@ -222,6 +224,9 @@ const Index = ({ onLogout }: IndexProps) => {
   const [nodePoolErrors, setNodePoolErrors] = useState<Record<string, string>>({});
   const [showSequencingModal, setShowSequencingModal] = useState(false);
   const [showVolumesModal, setShowVolumesModal] = useState(false);
+  const [showVolumeScan, setShowVolumeScan] = useState(false);
+  const volumeScan = useVolumeScan();
+  const volumeAttention = scanAttention(volumeScan.data);
   const [sequencedNodePools, setSequencedNodePools] = useState<NodePool[]>([]);
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [progressSessionId, setProgressSessionId] = useState("");
@@ -1315,6 +1320,20 @@ const Index = ({ onLogout }: IndexProps) => {
                       <Button
                         variant="outline"
                         size="sm"
+                        className="relative"
+                        onClick={() => setShowVolumeScan(true)}
+                        title="Varredura periódica de volumes: enchendo, ociosos antigos e sem snapshot nos clusters marcados"
+                      >
+                        <Bell className="w-4 h-4" />
+                        {volumeAttention.total > 0 && (
+                          <span className={`absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 text-center text-white ${volumeAttention.fresh > 0 ? "bg-red-500" : "bg-amber-500"}`}>
+                            {volumeAttention.total > 99 ? "99+" : volumeAttention.total}
+                          </span>
+                        )}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={refreshSnatConntrack}
                         disabled={snatConntrackFetching > 0}
                         title="Atualizar SNAT e Conntrack"
@@ -2029,6 +2048,13 @@ const Index = ({ onLogout }: IndexProps) => {
         }}
       />
 
+      {showVolumeScan && (
+        <VolumeScanDialog
+          clusters={clusters.map((c) => ({ context: c.context, name: c.name }))}
+          onClose={() => setShowVolumeScan(false)}
+          onOpenCluster={(ctx) => { setSelectedCluster(ctx); setShowVolumeScan(false); setShowVolumesModal(true); }}
+        />
+      )}
       {showVolumesModal && selectedCluster && (
         <NodePoolVolumesModal cluster={selectedCluster} resourceLabel={nodeResourceLabel} onClose={() => setShowVolumesModal(false)} />
       )}
