@@ -49,6 +49,15 @@ O botão **Volumes**, no cabeçalho do painel direito (junto dos widgets de SNAT
 - **Incluir custo (FinOps):** mostra o custo mensal (R$) por volume e uma visão **Por aplicação** (quanto cada aplicação gasta em volumes, em ordem de custo, com a % do total). O custo é **efetivo** (Cost Management, com reserva/desconto) quando existe para o disco — só Azure — e, no resto, uma **estimativa por preço de tabela on-demand** pelo tipo e tamanho do disco (Azure, AWS e GCP), sem reserva. O topo soma o total e quanto está em **volumes ociosos** (PVC sem pod, PV sem PVC). Volume compartilhado entra **dividido** entre as aplicações. **NFS, Azure Files, EFS, HostPath e Local não têm preço por volume** (o custo é do servidor/share) e aparecem como "sem preço"; disco cujo tipo não dá para identificar também. Por isso o total pode **subestimar** o gasto real. Depende da cotação USD→BRL e dos preços do FinOps.
 - **CSV:** exporta a lista como está filtrada, com as aplicações, a origem do vínculo, zona, idade, expansível, snapshots e (se ligados) custo e uso; na visão Por aplicação e na de Servidores NFS, exporta o que está na tela.
 
+### Varredura periódica de volumes
+
+O botão **🔔** ao lado de **Volumes** abre a varredura: você marca os clusters e, **a cada 30 minutos, enquanto o servidor estiver ligado**, eles são lidos (com o uso do Prometheus) e o resultado fica guardado. O botão ganha um **selo** com a soma de volumes **enchendo** (crítico) e **ociosos antigos** (mais de 30 dias) — vermelho se surgiu algo **novo** desde a varredura anterior, âmbar se já era conhecido. **Sem snapshot** aparece só como informação, sem entrar no selo.
+
+- **Escolha dos clusters:** marque e clique em **Salvar lista** (guardada localmente; no máximo 50). A primeira varredura roda cerca de 1 minuto depois; **Varrer agora** não espera o ciclo.
+- **Por cluster:** hora da última leitura, os três contadores, os achados (clique no nome para abrir a lista; o • marca os novos) e **Abrir Volumes** para ir ao modal daquele cluster. O filtro **Só novos** mostra o que apareceu desde a varredura anterior.
+- **Falhas:** se a leitura de um cluster falha (VPN, credencial), o painel avisa e **mantém o último estado conhecido**; se só o Prometheus falha, avisa que "enchendo" pode estar incompleto.
+- **Limites:** **não é um serviço 24x7** — o servidor se desliga sozinho depois de uns 40 minutos sem o navegador aberto, e a varredura para junto. Ela usa a rede e as credenciais do processo do servidor (se ele subiu sem VPN, os clusters privados falharão). Cada ciclo também alimenta o registro de **"ocioso há N d*"**, o que torna essa contagem mais confiável. Somente leitura.
+
 A listagem é somente leitura e usa o acesso de leitura do cluster (PVCs, PVs, pods, nodes, StorageClasses, snapshots e os workloads); só os botões da coluna **Ações** escrevem no cluster. Sem permissão de listar nodes, a coluna de pool fica vazia; sem permissão de listar workloads, o dono só vem dos pods e das labels. Um volume que nenhum pod monta no momento aparece sem pool.
 
 ## Troca sequencial entre dois pools
