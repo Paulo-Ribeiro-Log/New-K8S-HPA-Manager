@@ -557,40 +557,49 @@ func buildVolumeItems(in volumeInput) ([]VolumeItem, VolumesSummary) {
 }
 
 // GetVolumes — GET /api/v1/nodepools/volumes?cluster=<ctx>&include_usage=true
-func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
-	cluster := c.Query("cluster")
-	if cluster == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "MISSING_PARAMETERS", "message": "Parameter 'cluster' is required"}})
-		return
-	}
+// volumesData é o resultado de uma leitura de volumes (resposta de GET /nodepools/volumes e base da
+// varredura periódica).
+type volumesData struct {
+	Items        []VolumeItem   `json:"items"`
+	Summary      VolumesSummary `json:"summary"`
+	ByApp        []AppCost      `json:"by_app"`
+	UsageWarning string         `json:"usage_warning,omitempty"`
+	CostWarning  string         `json:"cost_warning,omitempty"`
+}
+
+// volumesError carrega o status HTTP e o código da falha, para o handler responder igual a antes.
+type volumesError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *volumesError) Error() string { return e.Message }
+
+// collectVolumes lê o cluster e monta a visão de volumes. ctx já deve ter o timeout.
+func (h *NodePoolHandler) collectVolumes(ctx context.Context, cluster string, includeUsage, includeCost bool) (*volumesData, *volumesError) {
 	client, err := h.kubeManager.GetClient(cluster)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "KUBERNETES_CLIENT_ERROR", "message": "Failed to get Kubernetes client: " + err.Error()}})
-		return
+		return nil, &volumesError{http.StatusInternalServerError, "KUBERNETES_CLIENT_ERROR", "Failed to get Kubernetes client: " + err.Error()}
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
-	defer cancel()
 
 	var in volumeInput
-	fail := func(what string, err error) {
-		c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": gin.H{"code": "KUBERNETES_API_ERROR", "message": "Falha ao listar " + what + ": " + err.Error()}})
+	fail := func(what string, err error) *volumesError {
+		return &volumesError{http.StatusBadGateway, "KUBERNETES_API_ERROR", "Falha ao listar " + what + ": " + err.Error()}
 	}
 	pvcs, err := client.CoreV1().PersistentVolumeClaims("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		fail("PVCs", err)
-		return
+		return nil, fail("PVCs", err)
 	}
 	in.PVCs = pvcs.Items
 	pvs, err := client.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		fail("PVs", err)
-		return
+		return nil, fail("PVs", err)
 	}
 	in.PVs = pvs.Items
 	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		fail("pods", err)
-		return
+		return nil, fail("pods", err)
 	}
 	in.Pods = pods.Items
 	// nodes é só enriquecimento (node pool): se o RBAC negar, segue sem a coluna
@@ -633,26 +642,42 @@ func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
 		applySnapshots(items, snaps, &summary)
 	}
 	recountIssues(items, &summary)
-	data := gin.H{"items": items, "summary": summary, "by_app": []AppCost{}}
-	if c.Query("include_usage") == "true" {
+	data := &volumesData{Items: items, Summary: summary, ByApp: []AppCost{}}
+	if includeUsage {
 		if usage, err := fetchVolumeUsage(ctx, cluster); err != nil {
-			data["usage_warning"] = err.Error()
+			data.UsageWarning = err.Error()
 		} else {
 			applyVolumeUsage(items, usage, &summary)
 			markExpandBlocked(items, &summary)
 			recountIssues(items, &summary)
-			data["summary"] = summary
+			data.Summary = summary
 		}
 	}
-	if c.Query("include_cost") == "true" {
+	if includeCost {
 		if h.volumeCost == nil {
-			data["cost_warning"] = "Custo indisponível: o FinOps não está ligado neste servidor."
+			data.CostWarning = "Custo indisponível: o FinOps não está ligado neste servidor."
 		} else if costIn, err := h.volumeCost.VolumeCostInputs(cluster); err != nil {
-			data["cost_warning"] = "Custo indisponível: " + err.Error()
+			data.CostWarning = "Custo indisponível: " + err.Error()
 		} else {
-			data["by_app"] = applyVolumeCosts(items, in.PVs, scParams, costIn, &summary)
-			data["summary"] = summary
+			data.ByApp = applyVolumeCosts(items, in.PVs, scParams, costIn, &summary)
+			data.Summary = summary
 		}
+	}
+	return data, nil
+}
+
+func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "MISSING_PARAMETERS", "message": "Parameter 'cluster' is required"}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+	data, verr := h.collectVolumes(ctx, cluster, c.Query("include_usage") == "true", c.Query("include_cost") == "true")
+	if verr != nil {
+		c.JSON(verr.Status, gin.H{"success": false, "error": gin.H{"code": verr.Code, "message": verr.Message}})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }

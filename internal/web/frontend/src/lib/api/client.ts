@@ -2744,6 +2744,20 @@ class APIClient {
     return r.data;
   }
 
+  // Varredura periódica de volumes (clusters marcados + último resultado)
+  async getVolumeScan(): Promise<VolumeScanState> {
+    const r = await this.request<{ success: boolean; data: VolumeScanState }>("/nodepools/volumes/scan");
+    return r.data;
+  }
+
+  async setVolumeScanWatch(clusters: string[]): Promise<void> {
+    await this.request("/nodepools/volumes/scan/watch", { method: "PUT", body: JSON.stringify({ clusters }) });
+  }
+
+  async runVolumeScan(): Promise<void> {
+    await this.post("/nodepools/volumes/scan/run");
+  }
+
   async getSnapshotInfo(cluster: string, namespace: string, name: string): Promise<SnapshotInfo> {
     const params = new URLSearchParams({ cluster, namespace, name });
     const r = await this.request<{ success: boolean; data: SnapshotInfo }>(`/nodepools/volumes/snapshot-info?${params.toString()}`);
@@ -6205,6 +6219,13 @@ export interface StorageInfo {
 export interface AzField { label: string; value: string; warn?: boolean }
 export interface AzSection { title: string; fields: AzField[] }
 export interface AzStorageDetails { sections: AzSection[]; notes: string[]; warnings: string[]; subscription?: string; queried_at: string }
+export interface ScanFinding { kind: "critical" | "idle_old" | "no_snapshot"; namespace?: string; name: string; detail: string; new?: boolean }
+export interface ScanResult {
+  cluster: string; scanned_at: string; error?: string; usage_warning?: string;
+  counts: { critical: number; idle_old: number; no_snapshot: number };
+  new_count: number; findings: ScanFinding[]; truncated?: boolean;
+}
+export interface VolumeScanState { enabled: boolean; watched: string[]; results: ScanResult[]; interval_minutes?: number; scanning?: boolean }
 export interface SnapshotClassInfo { name: string; driver: string; default: boolean; deletion_policy?: string }
 export interface SnapshotInfo { api_version: string; driver: string; classes: SnapshotClassInfo[]; suggested: string }
 export interface SnapshotCreated { snapshot: string; class: string; api_version: string; deletion_policy?: string }

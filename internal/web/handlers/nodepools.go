@@ -81,6 +81,8 @@ type NodePoolHandler struct {
 	volumeCost VolumeCostSource
 	// Desde quando cada volume foi visto ocioso (visão Volumes); nil = sem registro. Injetado pelo server.go.
 	volumeIdle VolumeIdleTracker
+	// Varredura periódica de volumes (clusters marcados + último resultado); sem store = desligada.
+	scan volumeScanState
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools
